@@ -6,7 +6,7 @@ APIs, the default compute account's Editor grant, and the state bucket
 |---|---|---|
 | `foundations.project` | `other.gcp-project`, `other.billing-link` | decision 6 (2026-10-30): one typed approval showing the cost estimate and the budget, then `projects.create` and `projects.updateBillingInfo`; a refusal opens the parent's IAM page or the project's billing page and polls until the grant or the link is seen |
 | `foundations.apis` | every core `api.*` entry with a `service_enabled` probe, and `api.containerscanning-NOT-enabled` | 4: one list, read from the manifest; containerscanning is disabled through Service Usage |
-| `foundations.budget` | `monitoring.budget-alert` | the amount chosen at the approval; asked here when there was no approval (the project already existed and was linked); both questions default to the sizing's `budget_usd`; a refusal opens the account's Budgets page and polls for the budget |
+| `foundations.budget` | `monitoring.budget-alert` | the sizing's `budget_usd`, accepted in stage 0 and shown at the approval without being asked again; with no sizing, the amount asked at the approval; asked here when there was no approval (the project already existed and was linked), defaulting to the sizing's `budget_usd`; a refusal opens the account's Budgets page and polls for the budget |
 | `foundations.default-compute-editor` | `iam-binding.default-compute-sa-editor-removed` | 6 (#1020); 3: a write-rate limit is retried, never reported as a denial |
 | `foundations.state-bucket` | `bucket.state`, `other.install-state` | 7: created with bootstrap.sh's settings, then the local state is uploaded |
 | `foundations.config` | (none) | generic-repository design §2.3, §2.4: writes `config/<env>/deny-list.json`, the never-touch list, to the state bucket (explicitly empty for a project the installer created; for one that existed, what it holds that the deployment does not own, after a typed approval) and reads it into the state's `deny_list` |
@@ -30,8 +30,8 @@ from ..state import STATE_OBJECT, PreconditionFailed, state_bucket
 from ..tfvars import config_object
 from ..waits import Clock, WaitGaveUp, WaitSpec, cloud_page, wait_until
 from . import Observation, Plan, open_page
-from .preflight import (ASK, BILLING, CRM, GCP, USAGE, ApiError, Ask, Gcp, confirm, neighbours,
-                        project_created_by_install, project_number, remember)
+from .preflight import (ASK, BILLING, CRM, GCP, USAGE, ApiError, Ask, Gcp, QuotasRecheckStep, ask_until, confirm,
+                        neighbours, project_created_by_install, project_number, remember)
 
 def _enablement_look_at(ctx: Any) -> str:
     return (f"the project's enabled APIs, {cloud_page('apis/dashboard', ctx)}: an API stuck enabling usually "
@@ -81,9 +81,10 @@ OPERATION_BOUND_S = 5 * 60.0
 #: The budget's default, in USD a month, when stage 0 recorded no sizing (the
 #: sizing's `budget_usd` is the default otherwise, `default_budget`): five times
 #: the fixed floor below, so the 50 % alert fires only once agents run in
-#: earnest. The person may type another amount at the approval, or at
-#: foundations.budget when there was no approval (an optional choice; Enter
-#: keeps the default).
+#: earnest. With no sizing the person may type another amount at the approval,
+#: or at foundations.budget when there was no approval (an optional choice;
+#: Enter keeps the default); a sizing's budget, accepted in stage 0, is not
+#: asked again at the approval.
 DEFAULT_BUDGET_USD = 1000
 
 #: When a write is refused, the engine opens the page where the person (or
@@ -208,15 +209,29 @@ def budgets_page(account: str, project: str) -> str:
     return f"{CONSOLE}/billing/{account}/budgets?project={project}"
 
 
-def default_budget(ctx: Any) -> int:
-    """The budget question's default: the sizing's `budget_usd` when stage 0
-    recorded a sizing (lane SIZING-ASK's proposal, which the person already
-    accepted or changed), else DEFAULT_BUDGET_USD."""
+def sized_budget(ctx: Any) -> int | None:
+    """The sizing's `budget_usd` when stage 0 recorded a sizing (lane
+    SIZING-ASK's proposal, which the person already accepted or changed), else
+    None."""
     found = ctx.outputs.get("sizing")
     budget = found.get("budget_usd") if isinstance(found, Mapping) else None
     if isinstance(budget, int) and not isinstance(budget, bool) and budget > 0:
         return budget
-    return DEFAULT_BUDGET_USD
+    return None
+
+
+def default_budget(ctx: Any) -> int:
+    """The budget question's default: the sizing's budget, else DEFAULT_BUDGET_USD."""
+    return sized_budget(ctx) or DEFAULT_BUDGET_USD
+
+
+def ask_budget(ask: Ask, ctx: Any, step_id: str) -> int:
+    """The monthly budget, asked until it is a whole number of dollars
+    (`parse_budget`), Enter keeping `default_budget`."""
+    default = default_budget(ctx)
+    return ask_until(ask, ctx, step_id, f"Monthly budget for {ctx.project}, in US dollars (Enter keeps it)",
+                     lambda answer: parse_budget(answer, default), default=str(default),
+                     nothing="the budget was not set")
 
 #: The monthly fixed floor at Google's list price, before any agent runs: what
 #: the deployment costs while nobody uses it. Agent runs bill on top, by the
@@ -225,7 +240,7 @@ def default_budget(ctx: Any) -> int:
 MONTHLY_FLOOR_USD = (
     ("swarm-api's two always-on instances, 2 vCPU / 2 GiB each (terraform/infra/main.tf, swarm-api's "
      "min_instances)", 210),
-    ("the GKE cluster's management fee, $0.10 an hour (docs/BUILD_PROMPT_V2.md, section 2.1)", 73),
+    ("the GKE cluster's management fee, $0.10 an hour (https://cloud.google.com/kubernetes-engine/pricing)", 73),
     ("the HTTPS load balancer's forwarding rule, $0.025 an hour", 18),
 )
 
@@ -426,11 +441,9 @@ class ProjectStep(_Base):
         if link and not account:
             raise LookupError("no billing account is recorded (preflight.inputs records it)")
 
-        default = default_budget(ctx)
-        budget = parse_budget(self._ask(
-            ctx, self.id, f"Monthly budget for {ctx.project}, in US dollars (Enter keeps it)",
-            default=str(default),
-        ), default)
+        # The sizing's budget was accepted (or changed) in stage 0 and is shown
+        # in the approval below: it is not asked again here.
+        budget = sized_budget(ctx) or ask_budget(self._ask, ctx, self.id)
         summary = "\n".join(f"  {line}" for line in self._summary(ctx, create, link, budget))
         doing = " and ".join([*(["create"] if create else []), *(["link billing for"] if link else [])])
         confirm(self._ask, ctx, self.id,
@@ -585,17 +598,21 @@ class ProjectStep(_Base):
             after_enabling(ctx, self.id, lambda: self.api.link_billing(ctx.project, account))
             return
         except ApiError as exc:
-            if not exc.denied:
-                left = (f"project {ctx.project} was created and is left in place; " if created else "")
-                raise PermissionError(f"linking billing account {account} failed: {exc}. {left}run swarm "
-                                      "install again to link it") from None
+            refusal = exc
         # Refused: the person (or a billing administrator) links it on the
         # project's billing page, and the engine polls the project's billing.
-        open_page(billing_page(ctx.project), why=(
-            f"You cannot link billing account billingAccounts/{account} to {ctx.project} "
-            f"(billing.resourceAssociations.create). Link it on the project's billing page, or ask a billing "
-            f"administrator to grant you roles/billing.user on billingAccounts/{account}; the installer carries "
-            "on by itself once the project shows billing enabled"))
+        # A refusal that is not a 403 (the account's linked-project limit, a
+        # closed account) is the same dead end on every rerun with the same
+        # account, so it opens the same page, where another account can be picked.
+        if refusal.denied:
+            why = (f"You cannot link billing account billingAccounts/{account} to {ctx.project} "
+                   f"(billing.resourceAssociations.create). Link it on the project's billing page, or ask a "
+                   f"billing administrator to grant you roles/billing.user on billingAccounts/{account}")
+        else:
+            why = (f"Google refused linking billing account billingAccounts/{account} to {ctx.project}: "
+                   f"{refusal}. Link it, or another open billing account, on the project's billing page")
+        open_page(billing_page(ctx.project), why=f"{why}; the installer carries on by itself once the project "
+                                                 "shows billing enabled")
 
         def linked() -> str:
             try:
@@ -607,10 +624,12 @@ class ProjectStep(_Base):
             wait_until(f"{self.id}:billing", BILLING_BY_HAND, linked, clock=ctx.clock, events=ctx.events)
         except WaitGaveUp:
             left = (f"project {ctx.project} was created and is left in place; " if created else "")
+            cause = ((f"you cannot link billing account {account} (billing.resourceAssociations.create; "
+                      f"roles/billing.user on billingAccounts/{account})") if refusal.denied
+                     else f"linking billing account {account} was refused ({refusal})")
             raise PermissionError(
-                f"you cannot link billing account {account} (billing.resourceAssociations.create; "
-                f"roles/billing.user on billingAccounts/{account}), and the project's billing page did not link "
-                f"it within {BILLING_BY_HAND.bound_s / 60:.0f} min. {left}run swarm install again to link it"
+                f"{cause}, and the project's billing page did not link it within "
+                f"{BILLING_BY_HAND.bound_s / 60:.0f} min. {left}run swarm install again to link it"
             ) from None
 
 
@@ -695,11 +714,7 @@ class BudgetStep(_Base):
         if not ctx.outputs.get("budget_amount"):
             # No approval ran (the project already existed and was linked), so
             # nobody has chosen the amount yet: ask it here (owner pick, 2026-10-30).
-            default = default_budget(ctx)
-            amount = parse_budget(self._ask(
-                ctx, self.id, f"Monthly budget for {ctx.project}, in US dollars (Enter keeps it)",
-                default=str(default),
-            ), default)
+            amount = ask_budget(self._ask, ctx, self.id)
             remember(ctx, outputs={"budget_amount": amount})
         number = ctx.outputs.get("project_number") or project_number(self.gcp, ctx.project)
         body = {
@@ -801,6 +816,15 @@ class DefaultComputeEditorStep(_Base):
 STATE_BUCKET_LABELS = {"managed-by": "swarm-bootstrap", "component": "tfstate"}
 
 
+def bucket_taken(name: str) -> str:
+    """Why a state bucket name another project holds stops the install."""
+    return (f"the bucket name gs://{name} is taken by another project: bucket names are global, and every "
+            "verb (swarm install, doctor, upgrade, uninstall) and scripts/lib/common.sh derive the state "
+            "bucket's name from the project id, so the installer cannot move to another name on its own. "
+            f"If that gs://{name} is yours, delete or rename it in the project that holds it; otherwise install "
+            "into a project with another id")
+
+
 class StateBucketStep(_Base):
     id = "foundations.state-bucket"
     satisfies = ("bucket.state", "other.install-state")
@@ -826,9 +850,23 @@ class StateBucketStep(_Base):
             problems.append("public access prevention is not enforced")
         return problems
 
+    def _found(self, name: str) -> Mapping[str, Any] | None:
+        """The bucket, None when no bucket has the name; a 403 is a bucket of
+        that global name in a project the person cannot read: taken."""
+        try:
+            return self.gcp.bucket(name)
+        except ApiError as exc:
+            if exc.status == 403:
+                raise RuntimeError(bucket_taken(name)) from None
+            raise
+
     def _check(self, ctx: Any) -> Observation:
         name = state_bucket(ctx.project)
-        problems = self._problems(self.gcp.bucket(name))
+        try:
+            found = self._found(name)
+        except RuntimeError as taken:
+            return Observation(UNMET, str(taken))
+        problems = self._problems(found)
         if not problems and ctx.engine.store.bucket is None:
             problems.append("the install state is still local only")
         if not problems and ctx.engine.store.bucket.read(STATE_OBJECT) is None:
@@ -840,7 +878,7 @@ class StateBucketStep(_Base):
     def plan(self, ctx: Any) -> Plan:
         name = state_bucket(ctx.project)
         actions = []
-        if self.gcp.bucket(name) is None:
+        if self._found(name) is None:
             actions.append(f"create gs://{name} in {ctx.state.region}: versioning, uniform access, "
                            "public access prevention enforced")
         actions.append(f"upload the local install state to gs://{name}/{STATE_OBJECT}")
@@ -848,24 +886,32 @@ class StateBucketStep(_Base):
 
     def apply(self, ctx: Any, plan: Plan) -> None:
         name = state_bucket(ctx.project)
-        found = self.gcp.bucket(name)
+        found = self._found(name)
         if found is None:
             if not ctx.state.region:
                 raise LookupError("no region is confirmed (preflight.region)")
-            self.gcp.create_bucket(ctx.project, {
-                "name": name,
-                "location": ctx.state.region,
-                "versioning": {"enabled": True},
-                "iamConfiguration": {
-                    "uniformBucketLevelAccess": {"enabled": True},
-                    "publicAccessPrevention": "enforced",
-                },
-                "labels": {**STATE_BUCKET_LABELS, "environment": ctx.environment},
-            })
+            try:
+                self._create(ctx, name)
+            except ApiError as exc:
+                if exc.status == 409:  # created elsewhere since the read: someone else's
+                    raise RuntimeError(bucket_taken(name)) from None
+                raise
         elif self._problems(found):
             raise RuntimeError(f"gs://{name} exists but {'; '.join(self._problems(found))}; fix it by hand "
                                "(a state bucket is never changed under its writer)")
         ctx.attach_bucket(self.gcp.object_store(name))
+
+    def _create(self, ctx: Any, name: str) -> None:
+        self.gcp.create_bucket(ctx.project, {
+            "name": name,
+            "location": ctx.state.region,
+            "versioning": {"enabled": True},
+            "iamConfiguration": {
+                "uniformBucketLevelAccess": {"enabled": True},
+                "publicAccessPrevention": "enforced",
+            },
+            "labels": {**STATE_BUCKET_LABELS, "environment": ctx.environment},
+        })
 
 
 # -- foundations.config: the never-touch list (generic-repository design §2.4) --
@@ -1043,6 +1089,8 @@ def build_steps(gcp: Callable[[], Gcp] = GCP, ask: Ask = ASK, manifest: Manifest
         DefaultComputeEditorStep(gcp, ask),
         StateBucketStep(gcp, ask),
         ConfigStep(gcp, ask),
+        # After foundations.apis: the quotas stage 0 could not read are read again.
+        QuotasRecheckStep(gcp, ask),
     ]
 
 
