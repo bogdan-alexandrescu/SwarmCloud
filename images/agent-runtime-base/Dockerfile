@@ -421,6 +421,22 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # in every pull of the image; the service listens on loopback without TLS, so
 # the pair is deleted.
 #
+# PGVECTOR BESIDE THE SERVER (the owner, 2026-11-12, on #2442). A consuming
+# project's branch API runs migrations that `CREATE EXTENSION vector`, and a
+# step must be able to run that API against the worker's server; without the
+# package the migration fails and the step cannot seed its database. So
+# PGDG's `postgresql-16-pgvector` installs in this same RUN, while the PGDG
+# source is still configured, with no recommends. The extension is NOT
+# declared anywhere: .swarm/test-services.toml still names only a version and
+# databases (invariant 10), and the repository's own migrations create it,
+# connecting as `postgres`, the trust superuser the worker's server runs with.
+# The build refuses a release older than PGVECTOR_MIN_VERSION, PGDG's
+# bookworm-pgdg release read on 2026-11-12 (0.8.7-1.pgdg12+2), and refuses a
+# package that left no vector.control in the server's extension directory;
+# the toolbox smoke step checks that file again. trivy does not track PGDG's
+# pgvector either (Debian's tracker has no such package), so its findings
+# are under-reported, as the server's are.
+#
 # CHROMIUM'S SYSTEM LIBRARIES AND FONTS, AND NO CHROMIUM (the owner, 2026-10-26,
 # fix (c) on #2253). A step on plain claude-code must be able to run a
 # repository's own headless suite: `npx playwright install chromium`, then
@@ -457,6 +473,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 ARG PGDG_KEY_FINGERPRINT=B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8
 ARG POSTGRES_MAJOR=16
 ARG POSTGRES_MIN_VERSION=16.15
+ARG PGVECTOR_MIN_VERSION=0.8.7
 ARG APT_REFRESH=unset
 RUN echo "apt layer of ${APT_REFRESH}" \
  && apt-get update \
@@ -507,6 +524,11 @@ RUN echo "apt layer of ${APT_REFRESH}" \
  && if ! dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "postgresql-${POSTGRES_MAJOR}")" ge "${POSTGRES_MIN_VERSION}"; then \
       echo "postgresql-${POSTGRES_MAJOR} is older than POSTGRES_MIN_VERSION=${POSTGRES_MIN_VERSION}" >&2; exit 1; \
     fi \
+ && apt-get install --no-install-recommends -y "postgresql-${POSTGRES_MAJOR}-pgvector" \
+ && if ! dpkg --compare-versions "$(dpkg-query -W -f='${Version}' "postgresql-${POSTGRES_MAJOR}-pgvector")" ge "${PGVECTOR_MIN_VERSION}"; then \
+      echo "postgresql-${POSTGRES_MAJOR}-pgvector is older than PGVECTOR_MIN_VERSION=${PGVECTOR_MIN_VERSION}" >&2; exit 1; \
+    fi \
+ && test -f "/usr/share/postgresql/${POSTGRES_MAJOR}/extension/vector.control" \
  && test ! -e "/var/lib/postgresql/${POSTGRES_MAJOR}" \
  && test ! -e "/etc/postgresql/${POSTGRES_MAJOR}" \
  && for t in postgres initdb pg_ctl pg_isready; do \
@@ -1185,6 +1207,20 @@ RUN mkdir -p /tmp/toolbox /opt/coderabbit \
  && rm -rf "${crhome}"
 COPY --chmod=0555 images/agent-runtime-base/coderabbit /usr/local/bin/coderabbit
 
+# The agent's `swarm-handoff` (docs/design/live-browser.md §4.1; lane L4, part
+# of #1030). Here, not only in agent-runtime-browser, since the owner's
+# 2026-11-12 comment on #2442: a claude-code or claude-code-large step renders
+# its own branch headless with the repository's Playwright
+# (docs/browser-qa.md) and runs `swarm-handoff compare` against the frame PNGs
+# before it finishes, and `serve` for a static mock-up. Both need no live path
+# and fall back to the standard-library PNG decoder without Pillow (only the
+# browser image's venv carries it); every command that needs the live browser
+# refuses with exit 5, "no live browser" (tests/unit/worker/
+# test_base_render_tools.py). agent-runtime-browser is built FROM this image
+# and inherits it. Root-owned, executable by every uid, writable by none: the
+# agent runs it and cannot change what it does.
+COPY --chmod=0555 images/agent-runtime-browser/swarm-handoff /usr/local/bin/swarm-handoff
+
 # checkov is Python, so it gets its OWN environment (/opt/uv-tools/checkov,
 # entry point in /usr/local/bin) and can never change the worker's /opt/venv
 # or the agent's `pip install` target. 3.3.17 is the version CI's
@@ -1431,7 +1467,9 @@ print({c.name: _resolve_program(c.argv[0]) for c in GENERIC_COMMANDS.values()})"
 # HOME is a throwaway so `gcloud --version` leaves no config in the image.
 # The PostgreSQL binaries must also say POSTGRES_MAJOR: the test-service
 # catalogue offers 16 alone (docs/design/test-services.md §3.1), and a server
-# of another major on the PATH is a broken tool, not a working one.
+# of another major on the PATH is a broken tool, not a working one. pgvector
+# is a file the server loads, not a program, so its control file is checked
+# beside the list (and named when missing) without adding to the count.
 RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shellcheck make docker postgres initdb pg_ctl pg_isready coderabbit" \
  && if [ "${INSTALL_TOFU}" = "1" ]; then tools="$tools tofu"; fi \
  && if [ "${INSTALL_TFLINT}" = "1" ]; then tools="$tools tflint"; fi \
@@ -1451,6 +1489,11 @@ RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov trivy shel
       fi; \
     done \
  && rm -rf "$HOME" \
+ && if [ -f "/usr/share/postgresql/${POSTGRES_MAJOR}/extension/vector.control" ]; then \
+      echo "pgvector: vector.control for PostgreSQL ${POSTGRES_MAJOR}"; \
+    else \
+      missing="$missing pgvector (no vector.control for PostgreSQL ${POSTGRES_MAJOR})"; \
+    fi \
  && if [ -n "$missing" ]; then echo "toolbox smoke: missing or broken:$missing" >&2; exit 1; fi \
  && echo "toolbox smoke: $n tools ok"
 

@@ -6,7 +6,7 @@ scanned (trivy, HIGH and CRITICAL) before promotion and weekly after it.
 
 | image | built from | carries | runs |
 |---|---|---|---|
-| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, trivy, shellcheck, make, the docker CLI, the CodeRabbit CLI; tofu only with `INSTALL_TOFU=1`, tflint only with `INSTALL_TFLINT=1`) | every profile but `browser`, `claude-code-browser`, `indexer` and `claude-code-lightpanda`: `mock`, `generic`, `claude-code`, `claude-code-large`, `claude-code-medium`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
+| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, trivy, shellcheck, make, the docker CLI, the CodeRabbit CLI; tofu only with `INSTALL_TOFU=1`, tflint only with `INSTALL_TFLINT=1`), PostgreSQL 16 with pgvector for the test services ([test-services.md](test-services.md)), `swarm-handoff` (its `compare` and `serve` run with no live browser; [browser-qa.md](browser-qa.md)), and Chromium's system libraries and fonts but no browser binary | every profile but `browser`, `claude-code-browser`, `indexer` and `claude-code-lightpanda`: `mock`, `generic`, `claude-code`, `claude-code-large`, `claude-code-medium`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
 | `agent-runtime-browser` | `agent-runtime-base` by digest | Playwright and Chromium | `browser` and `claude-code-browser` (contract request 67, accepted by the owner 2026-10-11), both on GKE Autopilot |
 | `agent-runtime-indexer` | `agent-runtime-base` by digest | the repository index's toolchain: the tree-sitter extractor `swarm-repo-index`, the shard writer `swarm-repo-graph`, the Go toolchain, gopls (compiled from module source), pyright and typescript-language-server | `indexer` (contract request 48, accepted by the owner 2026-10-05) |
 | `agent-runtime-lightpanda` | `agent-runtime-base` by digest | the Lightpanda 1.0.2 headless browser, at `/opt/swarm/lightpanda/lightpanda`, and its licence notices; no Chromium | `claude-code-lightpanda` (contract request 127, accepted by the owner 2026-10-31), on GKE Autopilot ([below](#the-agent-runtime-lightpanda-image-contract-request-127)) |
@@ -422,9 +422,22 @@ workspace admin sets it, in the console, under Settings › Workspace ›
    command or MCP tool takes it, though `/sc` can mint a one-time link to
    the form.
 2. **Grant** it to each runner profile that should be able to review, in the
-   profile's `files` slot: `profile:claude-code`, and `profile:codex` or
-   `profile:claude-code-browser` if their lanes review too. It takes effect
-   at the next attempt.
+   profile's `files` slot: `profile:claude-code`, `profile:claude-code-large`,
+   and `profile:codex` or `profile:claude-code-browser` if their lanes review
+   too. **`claude-code-large` is its own profile**: a grant to
+   `profile:claude-code` does not reach it, so a lane that runs on the large
+   profile needs its own grant in slot `files`. It takes effect at the next
+   attempt.
+
+**`CODERABBIT_API_KEY` is `coderabbit-api-key`.** A project whose own docs or
+CI call the key `CODERABBIT_API_KEY` stores the same value as the workspace
+secret `coderabbit-api-key`: workspace secret names are lowercase letters,
+digits and hyphens (`NAME_PATTERN` in
+`apps/swarm-api/swarm_api/workspace_secrets.py`), so the upper-case name
+cannot be a secret name, and `coderabbit-api-key` is the one the launcher
+reads. The owner sets it through the console's form, or through the
+one-time link `/sc` mints to that form, never in a brief, a prompt, an issue
+or a log.
 
 `scripts/create-secrets.sh --stdin` is **not** the route for this key: it
 stores a tenant's provider key or one of the platform's own secrets, has no

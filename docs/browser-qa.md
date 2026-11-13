@@ -402,6 +402,114 @@ curl -sf --retry 60 --retry-delay 2 --retry-connrefused http://127.0.0.1:3000/ >
 * `swarm-handoff serve <dir>` is for a static directory, such as a mockup or
   the frames themselves. It is not for the app.
 
+### On a step without a live browser (claude-code, claude-code-large)
+
+For lane authors. A step on `claude-code` or `claude-code-large` has no live
+Chromium: the display sidecar, the gate and the `browser_*` tools exist only on
+`claude-code-browser`. And `agent-runtime-base` carries **no browser binary**,
+which is the owner's 2026-10-26 decision, kept: a baked revision would be
+the wrong one for most repositories, and would be in every image whether or not
+its lane renders anything. So the step installs the repository's own pinned
+Chromium, renders headless, and scores the renders with `swarm-handoff compare`,
+which now ships in the base image. `swarm-handoff compare` and `serve` need no
+live path, and no Pillow; every other `swarm-handoff` command refuses there
+(exit 5, `no_live_path`). Where a lane can choose, §6.1 is still the default for
+a UI lane: a person can watch and take over on `claude-code-browser`. On that
+profile the agent must still use the live browser and not its own headless
+launch, which the runner refuses (§6.2). This subsection is for the step that
+cannot be on it.
+
+1. **Install Chromium into the cache.** Run it from the directory whose
+   lockfile pins `@playwright/test` or `playwright`, so that the revision is
+   the repository's. Never `--with-deps`: the system libraries and fonts are in
+   the image, and the agent is not root. The download lands in
+   `$XDG_CACHE_HOME/ms-playwright`, which is never checkpointed, so a resumed
+   attempt installs it again:
+
+   ```bash
+   (cd web && npm ci && npx playwright install chromium)
+   ```
+
+2. **Run the branch's API on Postgres with pgvector.** Declare the server in
+   `.swarm/test-services.toml`; the worker starts it right after the clone
+   and keeps it up for the whole attempt
+   ([test-services.md](test-services.md)). pgvector is in the image, so
+   `CREATE EXTENSION vector` succeeds. Then use the repository's own
+   migrations and seed, against `127.0.0.1:5432`, and start the API on
+   loopback:
+
+   ```toml
+   [postgres]
+   version = 16
+   databases = ["app"]
+   ```
+
+   ```bash
+   export DATABASE_URL="postgresql://postgres@127.0.0.1:5432/app"   # trust auth, no password
+   psql "$DATABASE_URL" -c 'CREATE EXTENSION IF NOT EXISTS vector'
+   (cd backend && uv sync && uv run alembic upgrade head && uv run python -m app.seed)   # the repository's own commands
+   (cd backend && nohup uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > "$TMPDIR/api.log" 2>&1 &)
+   ```
+
+3. **Start the frontend on 127.0.0.1**, as in §6.2, with its log under
+   `$TMPDIR`, and wait for it with `curl --retry`. Stop it, and the API, when
+   the renders are done.
+
+4. **Take headless renders.** `npx playwright screenshot` takes a viewport shot
+   at the device scale of 1 (CSS pixels equal image pixels, which is what the
+   frames are compared at). Take desktop at 1440x900 and phone at 390x844,
+   light and dark:
+
+   ```bash
+   mkdir -p "$SWARM_ARTIFACTS_DIR/render"
+   cd web
+   for scheme in light dark; do
+     npx playwright screenshot --browser chromium --color-scheme "$scheme" \
+       --viewport-size 1440,900 --wait-for-timeout 1000 \
+       http://127.0.0.1:3000/settings "$SWARM_ARTIFACTS_DIR/render/settings--desktop--$scheme.png"
+     npx playwright screenshot --browser chromium --color-scheme "$scheme" \
+       --viewport-size 390,844 --wait-for-timeout 1000 \
+       http://127.0.0.1:3000/settings "$SWARM_ARTIFACTS_DIR/render/settings--phone-390--$scheme.png"
+   done
+   ```
+
+   Do not pass `--full-page`: a phone render is a viewport shot, and a frame is
+   often the whole page, so compare it with `--top-only` (§6.4), as the
+   command's own docstring says. A desktop render against a frame of the same
+   height needs no flag. Use 380,800 in place of 390,844 when the repository's
+   phone frames are drawn at 380.
+
+5. **Score every render with its frame** and list the scores in the summary,
+   as §6.4 and §6.5 say. The names go in `--name`, so that no two renders
+   overwrite each other's diff:
+
+   ```bash
+   swarm-handoff compare "$SWARM_ARTIFACTS_DIR/render/settings--desktop--dark.png" \
+       design/frames/settings--desktop--dark.png --name settings--desktop--dark
+   swarm-handoff compare "$SWARM_ARTIFACTS_DIR/render/settings--phone-390--dark.png" \
+       design/frames/settings--phone-390--dark.png --top-only --name settings--phone-390--dark
+   ```
+
+6. **A "before" render of main.** Fetch the base branch at depth 1: the
+   clone is one commit deep, so a plain fetch of main answers `too_large` on a
+   long history, and a before render needs main's tree and not its history
+   ([runner-git-tools.md](runner-git-tools.md#131-a-depth-1-fetch-the-base-branch-for-a-before-render-2442)).
+   Call the `git_fetch` tool with `{"ref": "main", "depth": 1}`: the objects
+   land as `refs/remotes/origin/main`. Render it from a worktree, with its own
+   dependencies and the same database and API steps as above, on other ports:
+
+   ```bash
+   git worktree add "$TMPDIR/before" origin/main
+   (cd "$TMPDIR/before/web" && npm ci && nohup npm run dev -- --hostname 127.0.0.1 --port 3001 > "$TMPDIR/before-web.log" 2>&1 &)
+   ```
+
+   Name those renders `--before`, and do not compare them with a frame: they
+   show what the branch changed.
+
+A lane on `claude-code-large` that wants a CodeRabbit review as well finds the
+grant and the secret name in the [CodeRabbit section of
+worker-images.md](worker-images.md#coderabbit).
+
 ### Sign-in is never typed by an agent
 
 An agent never types a password, a one-time code or a recovery key into a
