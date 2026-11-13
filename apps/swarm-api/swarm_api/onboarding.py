@@ -739,13 +739,22 @@ def _covered_grants(caller: Caller, own: list[dict[str, Any]],
     """The caller's own grants, then their tenant's workspace grants on every
     other repository (`via: workspace`): the grant Admin › Setup enforces for
     everyone in the workspace covers a teammate with no grant of their own.
-    Only the caller's tenant's, with a read or write mode (invariant 9)."""
+    Only the caller's tenant's, with a read or write mode (invariant 9).
+
+    An own grant copied from the workspace's (`access.person_grant_from_workspace`,
+    on the person's first task there: `via: workspace_repository_grants`, no
+    checks of its own) yields to the workspace grant still covering it, so
+    that first task does not send the teammate back to Verify."""
+    covering = {str(doc.get("repository") or "").lower() for doc in workspace
+                if doc.get("tenant_id") == caller.tenant_id
+                and doc.get("mode") in ("read", "write") and doc.get("repository")}
+    own = [g for g in own if not (g.get("via") == WORKSPACE_GRANTS and not g.get("checks")
+                                  and str(g.get("repository") or "").lower() in covering)]
     mine = [{**g, "via": "own"} for g in own]
     held = {str(g.get("repository") or "").lower() for g in own}
     for doc in sorted(workspace, key=lambda g: str(g.get("repository") or "").lower()):
         repository = str(doc.get("repository") or "")
-        if doc.get("tenant_id") != caller.tenant_id or doc.get("mode") not in ("read", "write") \
-                or not repository or repository.lower() in held:
+        if repository.lower() not in covering or repository.lower() in held:
             continue
         held.add(repository.lower())
         mine.append({**doc, "via": "workspace"})
