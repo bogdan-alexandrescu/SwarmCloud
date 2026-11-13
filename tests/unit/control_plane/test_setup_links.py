@@ -447,3 +447,25 @@ def test_a_voice_key_link_is_not_minted_while_the_broker_cannot_say_who_owns_the
     assert refused.status_code == 503, refused.text
     assert {k: v for k, v in db.docs.items() if k.startswith(COLLECTION)} == \
         {k: v for k, v in before.items() if k.startswith(COLLECTION)}
+
+
+@pytest.mark.parametrize("label", ["pool-", "a" * 41, "-pool"])
+def test_a_label_the_quota_broker_refuses_is_refused_at_mint(setup_client, label) -> None:
+    """The broker's label rule (`quota_broker.accounts._LABEL`): at most 40
+    characters, ending alphanumeric; a link minted past it could never land."""
+    assert _mint(setup_client, "pool-account", label).status_code == 422
+    assert _mint(setup_client, "pool-account", "a" * 40).status_code != 422
+
+
+def test_a_redeemed_team_git_link_marks_the_slot_written(setup_client, db, fake_secrets) -> None:
+    """Once the team's git secret is written, the team's `progress.git_link`
+    says so (never the value), and the console's Team git slot reads done."""
+    team = _team(setup_client, db)
+    value = secrets.token_hex(20)
+    git = setup_client.post(REDEEM, json={"token": _token(_mint(setup_client, "team-git", team)),
+                                          "value": value}, headers=auth_header("alice"))
+    assert git.status_code == 200, git.text
+    doc = next(d for path, d in db.docs.items() if path.endswith(f"/teams/{team}"))
+    link = doc["progress"]["git_link"]
+    assert link["written_at"] is not None and link["written_by"] == ALICE
+    assert value not in json.dumps(db.docs, default=str)
