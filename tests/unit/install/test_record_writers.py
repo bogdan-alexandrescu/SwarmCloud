@@ -162,3 +162,26 @@ def test_record_refuses_secret_values() -> None:
             InstallState(project="p", environment="dev"), {},
             verify={"result": SecretStr(secrets.token_hex(8))},
         )
+
+
+@pytest.mark.parametrize("method", ["get", "create", "update"])
+@pytest.mark.parametrize("path", ["swarm-install", "swarm-install/dev/console", "", "swarm-install//dev/console"])
+def test_fake_documents_refuse_a_path_that_is_not_a_document(method: str, path: str) -> None:
+    """Real Firestore refuses a document path with an odd segment count (a
+    collection) or an empty segment, so the fake must too: a writer that built
+    a wrong path fails its test instead of silently working."""
+    documents = FakeDocuments()
+    call = {
+        "get": lambda: documents.get(path),
+        "create": lambda: documents.create(path, {"phase": "x"}),
+        "update": lambda: documents.update(path, {"phase": "x"}, update_time=0),
+    }[method]
+    with pytest.raises(ValueError, match="even number"):
+        call()
+    assert documents.docs == {}
+
+
+def test_fake_documents_accept_the_record_paths() -> None:
+    documents = FakeDocuments()
+    documents.create(engine_document("dev"), {"phase": "x"})
+    assert documents.get(console_document("dev", "github_app")) is None
