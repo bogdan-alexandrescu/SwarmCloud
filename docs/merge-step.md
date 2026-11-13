@@ -507,10 +507,25 @@ while mergeability was read -- the head commit is read. The step ends
 **`superseded_by_person_push`** instead of `head_moved` when all of these
 hold:
 
-* **it is not a merge.** The decision is about a person's content commit. A
-  person's two-parent merge that `_merge_impurity` does not show clean stays
-  `head_moved`: that proof may refuse what git accepts, and a refusal there
-  is the platform's to look at;
+* **it is a single commit, or a person's refused merge of the base onto an
+  accepted head** (Revised 2026-11-12, #3601). A two-parent commit counts
+  only when its first parent is the pinned head or a head `_accept` takes,
+  its second parent is on the base, GitHub did not commit it, and
+  `_merge_impurity` refused it (a clean merge is accepted and merged long
+  before this question). Why: on 2026-11-06 at 23:25Z the owner merged main
+  into six train-parked pull requests by hand and resolved real conflicts;
+  each step ended FAILED `merge_refused`/`head_moved` with "both parents
+  change <path>", and failure-review filed all six. Until then this bullet
+  said the decision was about content commits only, since the proof may
+  refuse what git accepts. But a merge a person on the pull request made on
+  top of a head this step accepted carries nothing but the base and that
+  person's resolution: it is their content, which is what the 2026-10-27
+  decision ends without a failure. Nothing new merges -- `_accept` and
+  `_merge_impurity` did not change -- and `refusal.commit` still carries
+  `_head_record`'s `why`, so a proof that refused a merge git would take
+  clean stays visible in the record. A merge onto a head the step never
+  accepted, one whose second parent is not on the base, and a commit of
+  three or more parents still stay `head_moved`;
 * **the platform did not make it.** Not under one of the platform's own
   committer addresses (`PLATFORM_COMMITTER_EMAILS`: the worker's default and
   `BOT_GIT_IDENTITY`), and its message does not end with the worker's line,
@@ -1281,7 +1296,7 @@ matches:
 | merged at the pinned head (another merger won) | close the issues (below); SUCCEEDED, `merged_by_this_task: false` |
 | merged at another head, or closed | MERGE_REFUSED `merged_at_other_head` / `pull_request_closed` |
 | the head moved, and the step did not move it, nor a CI-fix or conflict fix round of this workflow, nor the PR-side CI fixer for this pull request (Revised 2026-10-11) | MERGE_REFUSED `head_moved` |
-| the head is a person's non-merge commit, not the platform's, by the pull request's author or an assignee (Revised 2026-10-27) | MERGE_REFUSED `superseded_by_person_push`, skipped by failure-review; `CANCELLED` once contract request 145 (SUPERSEDED_BY_PERSON_PUSH) lands. So is a worker commit from a plain lane that person dispatched onto the branch (Revised 2026-11-05) |
+| the head is a person's commit, or their merge of the base onto an accepted head that `_merge_impurity` refused (Revised 2026-11-12, #3601), not the platform's, by the pull request's author or an assignee (Revised 2026-10-27) | MERGE_REFUSED `superseded_by_person_push`, skipped by failure-review; `CANCELLED` once contract request 145 (SUPERSEDED_BY_PERSON_PUSH) lands. So is a worker commit from a plain lane that person dispatched onto the branch (Revised 2026-11-05) |
 | `mergeable` false (`dirty`, GraphQL CONFLICTING), read BEFORE the checks (Revised 2026-10-11) | park `CI_PENDING` for a **conflict fix round**, at most 2; with them spent, MERGE_REFUSED `merge_conflict` at once. Never a wait for checks |
 | a required check **failed** | **if the workflow has CI-fix rounds left** (§6 MS7), the tick hands the red reading to the **CI-fix loop** first, so this row only runs once the rounds are spent or there were none. Otherwise MERGE_REFUSED `checks_failed`, naming every failing check and its conclusion |
 | still pending, and `first_parked_at` is older than `MERGE_CI_MAX_SECONDS` (proposed 6 h) | MERGE_REFUSED `checks_timeout`, naming the checks still pending |
