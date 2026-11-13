@@ -39,7 +39,7 @@ import {
   type ScheduleFiring,
   type ScheduleTypeRow,
 } from './api'
-import { Button, CIcon, Dialog, ToneMark } from './components'
+import { Button, CIcon, Dialog } from './components'
 import { WarnGlyph } from './components/glyphs'
 import type { ApiError, Result } from './fetch'
 import { usd } from './measure'
@@ -50,12 +50,12 @@ import { dayWords, EditSchedule, HardStops, plainValue } from './ScheduleEdit'
 import { gapWords } from './ScheduleTemplates'
 import { HistoryTimeline, workAddress } from './ScheduleHistoryTimeline'
 import {
+  AskWord,
   DryRunChip,
   InApp,
   SCHEDULES_ADDRESS,
   STATE_WORD,
   STATE_WORD_SAID,
-  WORD_TONE,
   Said,
   ScheduleActions,
   SpendFigure,
@@ -68,10 +68,12 @@ import {
   type StateWord,
 } from './Schedules'
 import { APPROVALS_ADDRESS } from './Approvals'
+import { Info } from './AccountsVerdict'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import type { RepoRecord } from './RepositoriesData'
 import { useNow } from './useNow'
 import './styles/automate-sheet.css'
+import './styles/automate-cards.css'
 
 export type DetailTab = 'history' | 'budget' | 'gate' | 'settings' | 'audit'
 
@@ -1118,7 +1120,7 @@ function Kv({ name, children }: { name: string; children: ReactNode }) {
 function Sec({ name, title, sub, children }: { name: string; title: string; sub?: ReactNode; children: ReactNode }) {
   const id = useId()
   return (
-    <section className="as-sec" data-sec={name} aria-labelledby={id}>
+    <section className="as-sec acd-panel" data-sec={name} aria-labelledby={id}>
       <h3 id={id}>
         {title}
         {sub !== undefined && <small>{sub}</small>}
@@ -1336,7 +1338,7 @@ function Spend({ s, type }: { s: Schedule; type: ScheduleTypeRow | null | 'unrea
             left('per_day_usd', (v) => `${usd(v)} a day`)
           ) : (
             <>
-              <b>{usd(b.per_day_usd)}</b> a day. When it is spent, the next firing is skipped.
+              <b>{usd(b.per_day_usd)}</b> a day <Info about="Day budget" tip="The tripwire: when it is spent, the next firing is skipped." />
             </>
           )}
         </Kv>
@@ -1345,7 +1347,7 @@ function Spend({ s, type }: { s: Schedule; type: ScheduleTypeRow | null | 'unrea
             left('per_run_usd', (v) => `${usd(v)} a run`)
           ) : (
             <>
-              <b>{usd(b.per_run_usd)}</b> a run. A run that costs more fails its firing and pauses this schedule.
+              <b>{usd(b.per_run_usd)}</b> a run <Info about="Per-run tripwire" tip="A run that costs more fails its firing and pauses this schedule." />
             </>
           )}
         </Kv>
@@ -1418,7 +1420,7 @@ function FoldSec({
 }) {
   const id = useId()
   return (
-    <section className="as-sec as-fold" data-sec={name} data-open={open ? 'open' : 'shut'}>
+    <section className="as-sec as-fold acd-panel" data-sec={name} data-open={open ? 'open' : 'shut'}>
       <h3>
         <button type="button" className="as-fold-b" aria-expanded={open} aria-controls={id} onClick={onToggle}>
           <span>{title}</span>
@@ -1582,6 +1584,7 @@ function ScheduleSheet({ scheduleId, go, fold }: { scheduleId: string; go: (to: 
   const s = r.status === 'ok' || r.status === 'stale' ? r.data.schedule : null
   const title = s?.name ?? scheduleId
   const word = s?.state_word
+  const now = useNow()
   return (
     <aside className="as-sheet" ref={sheet} aria-labelledby={headingId} data-schedule={scheduleId}>
       <InApp go={go} to={SCHEDULES_ADDRESS} className="as-back" onGo={() => sheetClosed(scheduleId)}>
@@ -1595,13 +1598,8 @@ function ScheduleSheet({ scheduleId, go, fold }: { scheduleId: string; go: (to: 
           </h1>
           {s !== null && !gone && (
             <p className="as-meta" data-testid="as-meta">
-              {word === undefined ? (
-                <i className="ctl-em" title="This API serves no state_word.">&mdash; not served</i>
-              ) : (
-                <ToneMark tone={WORD_TONE[word]} className="as-word">
-                  {STATE_WORD_SAID[word]}
-                </ToneMark>
-              )}
+              {/* The word only where the schedule asks for something (the cards pick). */}
+              {word === undefined ? <i className="ctl-em" title="This API serves no state_word.">&mdash; not served</i> : <AskWord s={s} mine={[]} now={now} />}
               <DryRunChip s={s} />
               <span>{s.tier === null ? s.type : `${s.type} · ${s.tier}`}</span>
               <span className="mono">{s.schedule_id}</span>

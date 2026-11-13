@@ -737,7 +737,7 @@ export const ASKS: Readonly<Partial<Record<StateWord, { word: string; tone: 'inf
 }
 
 /** The card's word and the API's own line for it as the word's tooltip; nothing for a word that asks for nothing. */
-function AskWord({ s, mine, now }: { s: Listed; mine: ApprovalItem[]; now: number }) {
+export function AskWord({ s, mine, now }: { s: Listed; mine: ApprovalItem[]; now: number }) {
   const ask = s.state_word === undefined ? undefined : ASKS[s.state_word]
   if (ask === undefined) return null
   const line = wordLine(s, s.state_word!, mine, now)

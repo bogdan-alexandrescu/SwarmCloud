@@ -69,7 +69,10 @@ const sec = (name: string) => sheet().querySelector<HTMLElement>(`[data-sec="${n
 function kv(root: HTMLElement, name: string): string {
   const dt = [...root.querySelectorAll('dt')].find((d) => visible(d) === name)
   expect(dt, `no ${name}`).toBeTruthy()
-  return visible(dt!.nextElementSibling)
+  // The (i)'s copy is its tooltip's, not the fact's.
+  const dd = dt!.nextElementSibling!.cloneNode(true) as HTMLElement
+  for (const tip of dd.querySelectorAll('.c-tip-host')) tip.remove()
+  return visible(dd)
 }
 
 // One instant for the fixture and the page: "in 1h" is not a race (CLOCK-ONCE).

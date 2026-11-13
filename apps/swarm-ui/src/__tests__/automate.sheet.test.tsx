@@ -174,7 +174,10 @@ const cell = (fid: string, label: string) => row(fid).querySelector<HTMLElement>
 function kv(root: HTMLElement, name: string): string {
   const dt = [...root.querySelectorAll('dt')].find((d) => visible(d) === name)
   expect(dt, `no ${name}`).toBeTruthy()
-  return visible(dt!.nextElementSibling)
+  // The (i)'s copy is its tooltip's, not the fact's.
+  const dd = dt!.nextElementSibling!.cloneNode(true) as HTMLElement
+  for (const tip of dd.querySelectorAll('.c-tip-host')) tip.remove()
+  return visible(dd)
 }
 
 beforeEach(() => holdScheduleClock())
@@ -233,7 +236,11 @@ describe('one schedule in the side sheet (frame A2)', () => {
       // MUTATION: the word drawn on every state, or the stored `state` drawn instead of `state_word`.
       const word = sheet()!.querySelector<HTMLElement>('[data-testid="acd-word"]')
       if (words === null) expect(word, JSON.stringify(over)).toBeNull()
-      else expect(visible(word).replace(/\s+/g, ' ')).toBe(words)
+      else {
+        const said = word!.cloneNode(true) as HTMLElement
+        for (const tip of said.querySelectorAll('.c-tip-host')) tip.remove()
+        expect(visible(said).replace(/\s+/g, ' ')).toBe(words)
+      }
       expect(visible(sheet()!.querySelector('.as-head'))).not.toMatch(/\bdisabled\b|\bactive\b|never fired/)
       unmount()
       seen += 1
