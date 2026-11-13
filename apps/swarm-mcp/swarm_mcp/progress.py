@@ -1383,32 +1383,60 @@ QUESTIONS_ROUTE = "/v1/tasks/{task_id}/questions"
 ANSWER_UNKNOWN_CHARS = 200
 
 
-def stored_answers(client: SwarmClient, task: dict[str, Any]) -> tuple[set[int], str | None]:
+def answered_by_document(task: dict[str, Any], questions: list[Any] | None) -> set[int]:
+    """The indexes of `questions` (as asked now) the task document's
+    `owner_answers` answer.
+
+    An answer answers the question it records, not its index (#3349): one
+    recording a question counts only where that same question is asked at
+    its index now, and not at all when `questions` is not known. Only an
+    answer stored before answers recorded their question counts by index.
+    """
+    out: set[int] = set()
+    for answer in owner_answers(task):
+        index = answer.get("question_index")
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            continue
+        recorded = answer.get("question")
+        asked = questions[index] if questions is not None and index < len(questions) else None
+        if not isinstance(recorded, str) or not recorded:
+            out.add(index)
+        elif isinstance(asked, dict) and asked.get("question") == recorded:
+            out.add(index)
+    return out
+
+
+def stored_answers(client: SwarmClient, task: dict[str, Any], *,
+                   questions: list[Any] | None = None) -> tuple[set[int], str | None]:
     """`(indexes, why)`: which of the task's questions hold a stored answer.
 
     Read the way `swarm_check` reads a parked task's (`check._parked_questions`):
     one `GET /v1/tasks/{id}/questions` per call, never cached, since an answer
     can be given at any time -- `swarm_task_answer` and the console store it,
-    and a task document read before that does not carry it. The task's own
-    `owner_answers` count too. `why` is set when the route could not be read
-    or did not serve the questions: the indexes are then only what the task
-    document carried, and the rest cannot be told answered or open.
+    and a task document read before that does not carry it.
+
+    When the route reads ok, its answers are the answer: it serves only an
+    answer to the question now asked at its index (#3349), so the task
+    document's `owner_answers` never add an index it served unanswered -- a
+    later attempt may have asked another question there. `why` is set when
+    the route could not be read or did not serve the questions: the indexes
+    are then the task document's `owner_answers` that answer the question
+    now asked at their index (`answered_by_document`, given the caller's
+    `questions`), and the rest cannot be told answered or open.
     """
-    known = {a.get("question_index") for a in owner_answers(task)}
-    indexes = {i for i in known if isinstance(i, int) and not isinstance(i, bool)}
+    documented = answered_by_document(task, questions)
     tid = urllib.parse.quote(str(task_id_of(task) or ""), safe="")
     try:
         served = client.request("GET", QUESTIONS_ROUTE.format(task_id=tid))
     except SwarmError as exc:
-        return indexes, clip(f"its stored answers could not be read: {exc}", ANSWER_UNKNOWN_CHARS)
+        return documented, clip(f"its stored answers could not be read: {exc}", ANSWER_UNKNOWN_CHARS)
     if (not isinstance(served, dict) or served.get("status") != "ok"
             or not isinstance(served.get("questions"), list)):
         status = served.get("status") if isinstance(served, dict) else None
-        return indexes, clip(f"its stored answers could not be read: the questions route says {status}",
+        return documented, clip(f"its stored answers could not be read: the questions route says {status}",
                              ANSWER_UNKNOWN_CHARS)
-    for index, question in enumerate(served["questions"]):
-        if isinstance(question, dict) and question.get("answer") is not None:
-            indexes.add(index)
+    indexes = {index for index, question in enumerate(served["questions"])
+               if isinstance(question, dict) and question.get("answer") is not None}
     return indexes, None
 
 
@@ -1437,7 +1465,7 @@ def open_owner_questions(client: SwarmClient, task: dict[str, Any], *,
     questions = asked.get("questions") or []
     if not questions:
         return asked
-    answered, why = stored_answers(client, task)
+    answered, why = stored_answers(client, task, questions=questions)
     open_ = [{"index": i, **q, **({"answer_unknown_because": why} if why else {})}
              for i, q in enumerate(questions) if i not in answered]
     out = {**asked, "questions": open_, "questions_answered": len(questions) - len(open_)}
@@ -1452,7 +1480,7 @@ def asked_with_answers(client: SwarmClient, task: dict[str, Any],
     questions = asked.get("questions") or []
     if not questions:
         return []
-    answered, why = stored_answers(client, task)
+    answered, why = stored_answers(client, task, questions=questions)
     out = []
     for i, q in enumerate(questions):
         entry = {"index": i, **q, "answered": True if i in answered else (None if why else False)}
