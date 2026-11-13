@@ -329,6 +329,86 @@ def test_a_new_local_branch_that_does_not_descend_from_the_start_publishes_nothi
     assert forge.pulls == [] and f"swarm/{config.task_id}" not in refs(origin)
 
 
+COLLIDING = "rebuild/x"
+
+
+def _unrelated_branch(origin: Path, tmp: Path) -> str:
+    """A branch on the remote that does not descend from main, under a name an
+    agent may also pick for a branch of its own (#3435)."""
+    clone = tmp / "other"
+    subprocess.run(["git", "clone", "--quiet", str(origin), str(clone)],
+                   check=True, capture_output=True)
+    _git(clone, "checkout", "--quiet", "--orphan", COLLIDING)
+    _git(clone, "rm", "-rf", "--quiet", ".")
+    (clone / "elsewhere.py").write_text("someone else's line\n")
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "--quiet", "-m", "An unrelated line")
+    _git(clone, "push", "--quiet", "origin", f"HEAD:refs/heads/{COLLIDING}")
+    return refs(origin)[COLLIDING]
+
+
+def _fetches_the_colliding_branch(repo: Path) -> None:
+    _git(repo, "fetch", "--quiet", "origin")
+    assert (repo / ".git" / "refs" / "remotes" / "origin" / COLLIDING).is_file() or (
+        COLLIDING in (repo / ".git" / "packed-refs").read_text()
+    ), "the scenario needs an origin counterpart"
+
+
+def test_a_new_local_branch_whose_name_collides_with_a_fetched_origin_branch_publishes_its_commits(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    """task_884a993427ce44feb7a6 (#3435): `git checkout -b rebuild/pr-1233` at
+    the start, commits on top, then a `git fetch --deepen=50 origin` wrote an
+    unrelated `refs/remotes/origin/rebuild/pr-1233`; its 3 commits were lost."""
+    other_tip = _unrelated_branch(origin, tmp_path)
+
+    def edit(repo: Path) -> None:
+        _git(repo, "checkout", "--quiet", "-b", COLLIDING)
+        _fetches_the_colliding_branch(repo)
+        _commits(repo, "tests", "fix")
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin, task_id="t-colliding-name",
+        dispatch=IMPLEMENT, edit=edit,
+    )
+
+    branch = f"swarm/{config.task_id}"
+    # MUTATION: call a branch fetched on its name alone and this publishes
+    # nothing, "HEAD moved off this task's branch (to rebuild/x)".
+    assert out["published"] is True, out.get("publish_reason")
+    assert "head_moved" not in out, out
+    assert out["commit_count"] == 2 and out.get("agent_commits_kept") == 2, out
+    commits = pushed_commits(origin, branch)
+    assert [c["message"].strip() for c in commits] == _kept(config.task_id, "Add the fix", "Add the tests")
+    assert_only_the_worker_wrote(commits, config)
+    assert [pull["head"] for pull in forge.pulls] == [branch]
+    assert refs(origin)[COLLIDING] == other_tip, "someone else's branch was pushed to"
+
+
+def test_a_colliding_local_branch_that_does_not_descend_from_the_start_publishes_nothing(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    other_tip = _unrelated_branch(origin, tmp_path)
+
+    def edit(repo: Path) -> None:
+        _fetches_the_colliding_branch(repo)
+        _git(repo, "checkout", "--quiet", "--orphan", COLLIDING)
+        _git(repo, "rm", "-rf", "--quiet", ".")
+        _commits(repo, "unrelated")
+
+    _, config, out = run_attempt(
+        worker_factory, monkeypatch, origin, task_id="t-colliding-unrelated",
+        dispatch=IMPLEMENT, edit=edit,
+    )
+
+    # MUTATION: treat a name collision as the agent's own line without the
+    # descent check and this unrelated line is published as the step's work.
+    assert out["published"] is False, out
+    assert out["head_moved"] == COLLIDING, out
+    assert forge.pulls == [] and f"swarm/{config.task_id}" not in refs(origin)
+    assert refs(origin)[COLLIDING] == other_tip
+
+
 def test_a_head_detached_onto_an_origin_tip_publishes_nothing(
     worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
 ):
