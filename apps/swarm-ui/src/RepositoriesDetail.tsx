@@ -799,7 +799,7 @@ function DegradedLanguages({ state, go, repoId, here }: { state: Result<Language
 
 /** Who sets the policy, as a chip; none when the policy itself was not served beside a "set here" (QA G4-15). */
 function policyChip(pol: RepoRecord['selection_policy']): string | null {
-  if (pol.inherited_from_tenant === true) return 'from the tenant default'
+  if (pol.inherited_from_tenant === true) return 'from the workspace default'
   if (pol.inherited_from_tenant === false && pol.policy !== null) return 'set for this repository'
   return null
 }
@@ -1169,7 +1169,7 @@ function HardStopsCard({ stops }: { stops: RepoHardStops }) {
       <p className="ur-hint">
         {stops.platform
           ? "A change to a protected path here is held for the platform owner's approval."
-          : 'A change to a protected path here is held for a second member of the tenant.'}
+          : 'A change to a protected path here is held for a second member of the workspace.'}
       </p>
       <h3 className="ur-subh">Protected paths</h3>
       <div className="ur-rows">
@@ -1355,7 +1355,7 @@ function rulesetHint(policy: string | null, branch: string | null, inherited: bo
   if (policy === 'P2') return `The ruleset this policy expects on ${on}: the full suite required; swarmcloud/selected-tests reports first.`
   if (policy === 'off') return 'Selection is off: every pull request runs the full suite.'
   // The registration says it inherits and carries no policy of its own (repositories.py serves exactly that).
-  if (inherited) return "Inherited from the tenant default, which this page does not read: the expected ruleset is the tenant's."
+  if (inherited) return "Inherited from the workspace default, which this page does not read: the expected ruleset is the workspace's."
   return 'The policy was not served.'
 }
 
@@ -1364,7 +1364,7 @@ function ResolvedRows({ t }: { t: ResolvedToken }) {
   if (t.token === null) {
     return (
       <EmptyState kind="partial" heading="No token resolves for this repository">
-        {t.reason ?? 'Neither a repository token nor the tenant token covers it.'}
+        {t.reason ?? 'Neither a repository token nor the workspace token covers it.'}
       </EmptyState>
     )
   }
@@ -1394,7 +1394,7 @@ function ResolvedRows({ t }: { t: ResolvedToken }) {
         <span>last verified {k.verified_at === null ? <Dash why="Never verified" /> : timeAgo(k.verified_at)}</span>
       </p>
       <p className="ur-meta">
-        <span>{t.order === 'R2' ? 'order R2: repository token, then tenant token' : t.order === null ? <>order <Dash why="The resolution order was not served" /></> : `order ${t.order}`}</span>
+        <span>{t.order === 'R2' ? 'order R2: repository token, then workspace token' : t.order === null ? <>order <Dash why="The resolution order was not served" /></> : `order ${t.order}`}</span>
         {t.user_token !== null && (
           <span>your user token{t.user_token.last4 !== null ? ` (…${t.user_token.last4})` : ''} is used only for attribution</span>
         )}
