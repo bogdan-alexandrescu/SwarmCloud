@@ -93,6 +93,9 @@ class FakeGcp:
         self.secrets: dict[str, list[bytes]] = {}
         self.release = release_files(dt.date(2026, 12, 31))
         self.release.update(echo_files(INSTALLER_IP))
+        # GitHub's users API: the organisation the answers name exists.
+        self.release[f"https://api.github.com/users/{GITHUB_ORG}"] = json.dumps(
+            {"login": GITHUB_ORG, "type": "Organization"}).encode()
         self.billing_account_list: list[dict[str, Any]] = [
             {"name": f"billingAccounts/{ACCOUNT}", "displayName": "Main", "open": True},
         ]
@@ -550,7 +553,7 @@ def test_alert_email_asked(tmp_path: Path) -> None:
     questions = [q for step, q in ask.asked if step == "preflight.inputs"]
     assert questions and "alert" in questions[0].lower()
 
-    step = preflight.InputsStep(lambda: gcp, Answers(preflight_inputs=["not-an-email"]))
+    step = preflight.InputsStep(lambda: gcp, Answers(preflight_inputs=["not-an-email"] * preflight.CONFIRM_TRIES))
     ctx = ctx_for()
     assert step.check(ctx).status == UNMET
     with pytest.raises(ValueError):
@@ -856,7 +859,8 @@ def test_github_org_asked_and_recorded() -> None:
     assert step.check(ctx).status == MET
 
     for wrong in ("-acme", "acme_eng", "https://github.com/acme", "a" * 40):
-        bad = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", wrong])
+        bad = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com",
+                                        *[wrong] * preflight.CONFIRM_TRIES])
         with pytest.raises(ValueError):
             preflight.InputsStep(lambda: gcp, bad).apply(ctx_for(), step.plan(ctx_for()))
 
@@ -904,11 +908,11 @@ def test_org_domain_falls_back_to_the_account_confirmed() -> None:
 
     # A consumer account's domain is never offered, and never accepted: IAP would admit everyone on it.
     consumer = min(preflight.CONSUMER_DOMAINS)
-    ask = Answers(preflight_org_domain=[consumer])
+    ask = Answers(preflight_org_domain=[consumer] * preflight.CONFIRM_TRIES)
     step = preflight.OrgDomainStep(lambda: gcp, ask, account=lambda: f"someone@{consumer}")
     with pytest.raises(ValueError):
         step.apply(ctx_for(), step.plan(ctx_for()))
-    assert ask.defaults == [None]
+    assert ask.defaults == [None] * preflight.CONFIRM_TRIES
 
 
 def test_installer_cidr_from_two_agreeing_echoes() -> None:
@@ -938,7 +942,7 @@ def test_installer_cidr_asked_when_the_echoes_disagree() -> None:
     assert step.check(ctx).status == MET
 
     del gcp.release[preflight.ADDRESS_ECHOES[0]]  # one echo down is not agreement either
-    ask = Answers(preflight_installer_address=["not-an-address"])
+    ask = Answers(preflight_installer_address=["not-an-address"] * preflight.CONFIRM_TRIES)
     with pytest.raises(ValueError):
         preflight.InstallerAddressStep(lambda: gcp, ask).apply(ctx_for(), step.plan(ctx_for()))
 
@@ -2175,3 +2179,159 @@ def test_a_confirmation_gives_up_after_its_tries_and_records_nothing() -> None:
     assert ctx.state.region is None and "region_confirmed" not in ctx.outputs
     assert len(ask.asked) == 1 + preflight.CONFIRM_TRIES
     assert "'europe-west2' is not europe-west1" in ask.asked[-1][1]
+
+
+# -- epic findings, engine stages 0-2 ------------------------------------------
+
+
+def test_a_mistyped_answer_is_asked_again_not_the_end_of_the_run() -> None:
+    """Epic comment 61: one bad answer to the inputs, the organization domain
+    or the installer's address is asked again, saying what was wrong."""
+    gcp = FakeGcp()
+    ask = Answers(preflight_inputs=["not-an-email", "alerts@example.com", "swarm.example.com", GITHUB_ORG, ACCOUNT])
+    step = preflight.InputsStep(lambda: gcp, ask)
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["alert_email"] == "alerts@example.com"
+    assert "'not-an-email' is not a valid answer" in ask.asked[1][1]
+
+    gcp.org_failure = ApiError(403, "PERMISSION_DENIED", "no")
+    consumer = min(preflight.CONSUMER_DOMAINS)
+    ask = Answers(preflight_org_domain=[consumer, "example.org"])
+    domain = preflight.OrgDomainStep(lambda: gcp, ask, account=lambda: f"someone@{consumer}")
+    ctx = ctx_for()
+    domain.apply(ctx, domain.plan(ctx))
+    assert ctx.outputs["org_domain"] == "example.org"
+    assert "consumer domain" in ask.asked[1][1]
+
+    gcp.release.update(echo_files(INSTALLER_IP, "203.0.113.9"))
+    ask = Answers(preflight_installer_address=["not-an-address", "203.0.113.9"])
+    address = preflight.InstallerAddressStep(lambda: gcp, ask)
+    ctx = ctx_for()
+    address.apply(ctx, address.plan(ctx))
+    assert ctx.outputs["installer_cidr"] == "203.0.113.9/32"
+    assert "'not-an-address' is not a public IPv4 address" in ask.asked[1][1]
+
+
+def test_a_github_login_that_does_not_exist_is_asked_again() -> None:
+    """Epic comment 85: GitHub's users API, asked without credentials, says a
+    mistyped login does not exist (404) and it is asked again; the kind of
+    account it names is recorded."""
+    gcp = FakeGcp()
+    typo = "acme-egn"
+    ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", typo, GITHUB_ORG, ACCOUNT])
+    step = preflight.InputsStep(lambda: gcp, ask)
+    ctx = ctx_for()
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["github_org"] == GITHUB_ORG
+    assert f"GitHub has no account named {typo!r}" in ask.asked[3][1]
+    assert (f"{preflight.GITHUB_USERS}{typo}",) in gcp.called("read_public")
+    assert ctx.outputs[preflight.GITHUB_TYPE_OUTPUT] == preflight.GITHUB_ORGANIZATION
+
+    person = "someone-personal"
+    gcp.release[f"{preflight.GITHUB_USERS}{person}"] = json.dumps({"login": person, "type": "User"}).encode()
+    ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", person, ACCOUNT])
+    ctx = ctx_for()
+    preflight.InputsStep(lambda: gcp, ask).apply(ctx, step.plan(ctx))
+    assert ctx.outputs["github_org"] == person
+    assert ctx.outputs[preflight.GITHUB_TYPE_OUTPUT] == preflight.GITHUB_USER
+
+
+def test_a_github_that_cannot_be_asked_takes_the_login_as_typed() -> None:
+    """Rate-limited or offline, the existence check is said and skipped: it is
+    a help, never a gate."""
+
+    class RateLimited(FakeGcp):
+        def read_public(self, url):
+            if url.startswith(preflight.GITHUB_USERS):
+                raise ApiError(403, "", url)
+            return super().read_public(url)
+
+    gcp = RateLimited()
+    ask = Answers(preflight_inputs=["alerts@example.com", "swarm.example.com", GITHUB_ORG, ACCOUNT])
+    ctx = ctx_for()
+    step = preflight.InputsStep(lambda: gcp, ask)
+    step.apply(ctx, step.plan(ctx))
+    assert ctx.outputs["github_org"] == GITHUB_ORG
+    assert preflight.GITHUB_TYPE_OUTPUT not in ctx.outputs
+    assert [q for _, q in ask.asked if "GitHub" in q] == [preflight.QUESTIONS[2][1]], "asked once, not again"
+
+
+def test_the_first_sign_in_does_not_also_sign_in_application_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Epic comment 30: `gcloud auth login` signs gcloud in only; the one
+    application-default sign-in is preflight.sign-in's scoped login, so the
+    browser is not opened twice for it."""
+    ran: list[list[str]] = []
+    monkeypatch.setattr(preflight.subprocess, "run",
+                        lambda argv, **kw: ran.append(list(argv)) or SimpleNamespace(returncode=0))
+    assert preflight.run_login("/opt/gcloud") == 0
+    assert ran == [["/opt/gcloud", "auth", "login"]]
+
+
+def test_a_missing_right_opens_the_iam_page_it_is_granted_on(pages: list[Any]) -> None:
+    """Epic comment 12: preflight.rights opens the IAM page of the resource the
+    right is missing on, not only naming it."""
+    gcp = FakeGcp()
+    gcp.perms = {}
+    step = preflight.RightsStep(lambda: gcp, answers())
+    ctx = ctx_for(outputs={"billing_account": ACCOUNT})
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [f"https://console.cloud.google.com/iam-admin/iam?project={PROJECT}"]
+    assert preflight.IAP_SETTINGS in pages[0][1]
+
+    pages.clear()
+    fresh = FakeGcp(exists=False, billed=False)
+    fresh.perms[ORG] = set()
+    ctx = ctx_for(outputs={"billing_account": ACCOUNT, "parent": ORG})
+    preflight.RightsStep(lambda: fresh, answers()).apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == ["https://console.cloud.google.com/iam-admin/iam?organizationId=4242"]
+
+    pages.clear()
+    fresh = FakeGcp(exists=False, billed=False)
+    fresh.perms[f"billingAccounts/{ACCOUNT}"] = set()
+    preflight.RightsStep(lambda: fresh, answers()).apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [f"https://console.cloud.google.com/billing/{ACCOUNT}/manage"]
+
+    pages.clear()
+    preflight.RightsStep(lambda: FakeGcp(), answers()).apply(ctx_for(outputs={"billing_account": ACCOUNT}),
+                                                             step.plan(ctx))
+    assert pages == [], "nothing missing, no page"
+
+
+def test_a_blocking_org_policy_opens_the_org_policies_page(pages: list[Any]) -> None:
+    """Epic comment 12: preflight.org-policies opens the organization policies
+    page of the resource the policy is read on."""
+    gcp = FakeGcp()
+    gcp.policies["gcp.resourceLocations"] = {"listPolicy": {"allowedValues": ["in:eu-locations"]}}
+    step = preflight.OrgPoliciesStep(lambda: gcp, answers())
+    ctx = ctx_for(region="us-central1")
+    assert step.check(ctx).status == UNMET
+    step.apply(ctx, step.plan(ctx))
+    assert [url for url, _ in pages] == [f"https://console.cloud.google.com/iam-admin/orgpolicies?project={PROJECT}"]
+    assert "gcp.resourceLocations" in pages[0][1]
+
+
+def test_every_quota_is_read_again_in_stage_1(pages: list[Any]) -> None:
+    """Epic comment 27: stage 0 reads no quota of a project that does not
+    exist yet; preflight.quotas-recheck reads every one of QUOTAS (the NAT
+    addresses, the regional clusters, KMS signing) once foundations.apis has
+    enabled the APIs, and opens the Quotas page on one below its floor."""
+    fresh = FakeGcp(exists=False)
+    assert preflight.QuotasStep(lambda: fresh, answers()).check(ctx_for()).status == MET
+    recheck = preflight.QuotasRecheckStep(lambda: fresh, answers())
+    assert recheck.stage == 1 and recheck.satisfies == ("quota.recheck-after-apis",) and recheck.kind == "wait"
+    assert recheck.check(ctx_for()).status == UNMET
+
+    gcp = FakeGcp()
+    gcp.quotas["cloudkms.googleapis.com"] = [_metric("cloudkms.googleapis.com/crypto_requests", 100)]
+    recheck = preflight.QuotasRecheckStep(lambda: gcp, answers())
+    ctx = ctx_for()
+    low = recheck.check(ctx)
+    assert low.status == UNMET and "quota.kms-signing-h4" in low.detail
+    recheck.apply(ctx, recheck.plan(ctx))
+    assert "quota.kms-signing-h4" in pages[0][1]
+    for quota in preflight.QUOTAS:
+        assert quota.entry in recheck.check(ctx).outputs["quotas"], quota.entry
+
+    ids = [s.id for s in foundations.build_steps(lambda: gcp, answers(), load_manifest())]
+    assert ids.index("preflight.quotas-recheck") > ids.index("foundations.apis")
