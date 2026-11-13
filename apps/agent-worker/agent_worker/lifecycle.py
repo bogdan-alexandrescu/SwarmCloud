@@ -3868,18 +3868,22 @@ class Worker:
         # `work/owner-questions.json`, and the verdict instructions closing
         # the prompt. `input_from` stages one file per parent, so they never
         # reached a review before. Nothing for any other step, or a workflow
-        # that asked nothing.
-        owner_questions_mod.stage(ws.work, payload, owner_questions_mod.collect(
-            task,
-            fetch=lambda upstream: inputs_mod.fetch_upstream_task(
+        # that asked nothing. #3086: an earlier step's questions.json the
+        # worker did not take is named in the prompt, with its reason.
+        def fetch_upstream(upstream: str) -> dict[str, Any]:
+            return inputs_mod.fetch_upstream_task(
                 self.db,
                 upstream_task_id=upstream,
                 tenant_id=cfg.tenant_id,
                 call_options=self.control.call_options(),
-            ),
-            store=self.store,
-            tenant_id=cfg.tenant_id,
-        ))
+            )
+
+        owner_questions_mod.stage(
+            ws.work, payload,
+            owner_questions_mod.collect(
+                task, fetch=fetch_upstream, store=self.store, tenant_id=cfg.tenant_id),
+            rejected=owner_questions_mod.collect_rejected(task, fetch=fetch_upstream),
+        )
         # A step that builds on another (#2836): the owner's answers to the
         # questions that step asked, in `work/owner-answers.json`, and a
         # prompt section naming the decisions already made, so its agent never
