@@ -1,8 +1,10 @@
 # Application checks on every pull request.
 #
-# A lane's pull request runs the fast checks only; the merge train's pull
-# request (`train/` head), one labelled `full-ci`, main and a queue entry run
-# everything (the `changes` job's `full` output says why).
+# A lane's pull request (`swarm/` head, this repository) runs no job at all
+# but ci-gate's lane note (the note at `on.pull_request` says why). The merge
+# train's pull request (`train/` head), one labelled `full-ci`, main and a
+# queue entry run everything; any other pull request runs the fast checks only
+# (the `changes` job's `full` output says why).
 #
 # Everything in this workflow runs WITHOUT cloud credentials except the image
 # build, which uses Workload Identity Federation. That split is deliberate: the
@@ -34,6 +36,17 @@ on:
   # decided inside it, by the `changes` job: a job it does not reach is skipped
   # by its own `if:`, which reads as a pass. The list that used to be this
   # trigger's `paths:` is that job's APP_PATHS, comments and all.
+  # A LANE'S PULL REQUEST RUNS NOTHING (owner direction, 12 November 2026:
+  # no testing on lane pull requests, only on the merge train's run on its
+  # way to main, to cut CI wait time; docs/ci.md "A lane's pull request runs
+  # no checks"). A pull request whose head is a `swarm/` branch of this
+  # repository skips every job here: each job's `if:` ends with
+  # `&& !(<that pull request>)`, a job skipped by its own `if:` reports a
+  # passing required check, and ci-gate runs no step but its
+  # lane note, so it passes at once.
+  # The train's pull request (`train/`), main, a queue entry, a fork and any
+  # other branch run exactly what they ran before.
+  # tests/unit/scripts/test_fast_checks_on_lane_prs.py.
   pull_request:
   # A MERGE QUEUE ENTRY (owner decision 2026-10-06, docs/ci.md "Merging
   # through the merge queue"). ci-gate is required and is a job of this
@@ -116,7 +129,7 @@ jobs:
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     # Skipped when the change reaches nothing in this workflow (`changes`).
     needs: changes
-    if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'shell')
+    if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'shell') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     # Job-level permissions REPLACE the workflow's, so contents: read is
     # restated. actions: read is for the plugin-tag check's `gh run list` of
     # this workflow's push runs; nothing here mints a cloud token, so no
@@ -413,7 +426,7 @@ jobs:
     name: release workflow wiring (actionlint)
     runs-on: ubuntu-24.04
     needs: [changes, quick-checks]
-    if: always() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows')
+    if: always() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     # release.yml runs only on main, so NOTHING on a pull request ever parses
     # it: a mistyped `needs.` reference, a step output that does not exist or
     # an input an action does not take would first fail during a release. Now
@@ -469,7 +482,7 @@ jobs:
     name: ruff check
     runs-on: ubuntu-24.04
     needs: [changes, quick-checks]
-    if: always() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ruff')
+    if: always() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ruff') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - name: the folded check passed in `quick-checks`
         env:
@@ -523,6 +536,7 @@ jobs:
     # path-filter matrix (docs-only, UI-only, both, neither, a near miss).
     name: what this change reaches
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     # Job-level permissions REPLACE the workflow's. actions: read lists the
     # `tested-tree-<tree>` records and the runs that wrote them, and
     # pull-requests: read names the pull request a push to main merged (the
@@ -546,6 +560,8 @@ jobs:
       # pull request (main's push, a queue entry, a dispatch), on the merge
       # train's pull request (a `train/` head, scripts/merge-train.sh) and on
       # a pull request labelled `full-ci`; `false` on any other pull request.
+      # A lane's pull request (`swarm/` head) never reaches it: it skips every
+      # job, this one included, labelled `full-ci` or not.
       # THE ONE PLACE the rule is written: every heavy job -- the unit and
       # component-test shards, the swarm-ui typecheck / build, the
       # integration tests, the pull request's image build -- reads it first in
@@ -555,7 +571,9 @@ jobs:
       # the event, so it counts from the next push after it is added.
       # tests/unit/scripts/test_fast_checks_on_lane_prs.py pins it.
       full: ${{ (github.event_name != 'pull_request' || startsWith(github.head_ref, 'train/') || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'true' || 'false' }}
-      # A lane's pull request (a `swarm/**` head): `true` when it runs only
+      # A lane's pull request (a `swarm/**` head) now skips this job, so this
+      # is empty on every run (the `lane` step below says why it stays).
+      # Before: `true` when it ran only
       # what its change reaches, `false` when its change touches shared ground
       # and it runs the full suite, empty on every other run (the `lane` step).
       lane: ${{ steps.lane.outputs.lane }}
@@ -786,6 +804,11 @@ jobs:
         # manifest, a lockfile, the frozen contract, the test runner's config,
         # a workflow) or a selection that cannot be computed -- runs the full
         # suite. A merge train's pull request and main always run it.
+        #
+        # NOT REACHED SINCE 12 NOVEMBER 2026: a lane's pull request skips this
+        # whole job, as every job of this workflow (the owner's direction; the
+        # note at `on.pull_request` says why). The step stays so that dropping
+        # the lane clause from the jobs' `if:` brings the selection back whole.
         if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository
         env:
           APP: ${{ steps.diff.outputs.app }}
@@ -1047,7 +1070,7 @@ jobs:
     name: lock / contract / format / bridge install
     runs-on: ubuntu-24.04
     needs: [changes, quick-checks]
-    if: always() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks')
+    if: always() && (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - name: the folded check passed in `quick-checks`
         env:
@@ -1084,7 +1107,7 @@ jobs:
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: changes
     # Runs when any one of its checks would have run.
-    if: (needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows')) || (needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ruff')) || (needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'manifests')) || ((needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks'))
+    if: ((needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows')) || (needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ruff')) || (needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'manifests')) || ((needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks'))) && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     outputs:
       workflows: ${{ steps.verdict.outputs.workflows }}
       ruff: ${{ steps.verdict.outputs.ruff }}
@@ -1378,7 +1401,7 @@ jobs:
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: changes
-    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.python != 'none' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-unit')
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.python != 'none' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-unit') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     strategy:
       # One red shard must not cancel the others: the next push wants every
       # failure, not the first.
@@ -1595,7 +1618,7 @@ jobs:
     # nothing else, so a VM create and boot (~52 s) bought it nothing.
     runs-on: ubuntu-24.04
     needs: [changes, python-checks, python-unit]
-    if: always()
+    if: always() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - name: every job this check stands for passed, or was skipped by its own if
         # `needs.<job>.result` is success, failure, cancelled or skipped. A job
@@ -1673,7 +1696,7 @@ jobs:
     # 2026-11-11; tests/unit/scripts/test_workflow_needs_result_status.py).
     # With it, the job runs exactly when `python` succeeded on a push to
     # main, whatever was skipped above it; a cancelled run tags nothing.
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.python.result == 'success' }}
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.python.result == 'success' && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     permissions:
       contents: write
     steps:
@@ -1777,7 +1800,7 @@ jobs:
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: changes
-    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.ui == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ui-build')
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.ui == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ui-build') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - uses: actions/checkout@v5
 
@@ -1901,7 +1924,7 @@ jobs:
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: changes
-    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.ui == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ui-tests')
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.ui == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ui-tests') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     strategy:
       fail-fast: false
       matrix:
@@ -2025,7 +2048,7 @@ jobs:
     # nothing else, so a VM create and boot (~52 s) bought it nothing.
     runs-on: ubuntu-24.04
     needs: [changes, ui-build, ui-tests]
-    if: always()
+    if: always() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - name: every job this check stands for passed, or was skipped by its own if
         # `needs.<job>.result` is success, failure, cancelled or skipped. A job
@@ -2056,7 +2079,7 @@ jobs:
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     # Skipped when the change reaches nothing in this workflow (`changes`).
     needs: changes
-    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'integration')
+    if: needs.changes.outputs.full == 'true' && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'integration') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - uses: actions/checkout@v5
 
@@ -2217,7 +2240,7 @@ jobs:
     name: kubernetes manifests
     runs-on: ubuntu-24.04
     needs: [changes, quick-checks]
-    if: always() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'manifests')
+    if: always() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'manifests') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - name: the folded check passed in `quick-checks`
         env:
@@ -2275,7 +2298,7 @@ jobs:
     # and the image build is the slowest check, so it starts at once.
     timeout-minutes: 120
     needs: changes
-    if: needs.changes.outputs.full == 'true' && github.event_name == 'pull_request' && needs.changes.outputs.images == 'true'
+    if: needs.changes.outputs.full == 'true' && github.event_name == 'pull_request' && needs.changes.outputs.images == 'true' && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
     env:
@@ -2551,7 +2574,7 @@ jobs:
     # is tested here but never builds or pushes an image. A disjunction, not
     # parentheses: `&&` binds tighter than `||`, and the workflow models in
     # tests/unit/scripts read this shape (test_workflow_step_reachability.py).
-    if: ${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || !cancelled() && !failure() && github.event_name == 'workflow_dispatch' }}
+    if: ${{ (!cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || !cancelled() && !failure() && github.event_name == 'workflow_dispatch') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     environment: build-pr
     # Authenticates to Google through workload identity: the only reason this
     # job holds id-token (the workflow grants it to no one by default).
@@ -2705,7 +2728,7 @@ jobs:
     name: record the tested tree
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     needs: [changes, shell, workflows, ruff, python-checks, python-unit, ui-build, ui-tests, integration, manifests]
-    if: always() && needs.changes.result == 'success' && github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch'
+    if: always() && needs.changes.result == 'success' && github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     permissions:
       contents: read
     steps:
@@ -2760,6 +2783,11 @@ jobs:
     #     and `changes` itself succeeded. A heavy job a lane's pull request
     #     skips (`changes`' `full` output is `false`) is skipped by its own
     #     `if:`, so it passes here; one that ran and failed still fails it;
+    #   * a lane's pull request (`swarm/` head, this repository): every job it
+    #     needs is skipped by its own `if:`, so it starts at once, and every
+    #     step below but the last is skipped by its own `if:` too -- nothing
+    #     to judge, nothing to wait for -- so it passes in seconds (the
+    #     owner's direction of 12 November 2026, note at `on.pull_request`);
     #   * terraform.yml, still path-filtered, still its own run:
     #     scripts/ci-gate.sh waits for it at this commit -- told to gate only
     #     terraform.yml (CI_GATE_WORKFLOWS), since waiting here for this
@@ -2802,6 +2830,7 @@ jobs:
       contents: read
     steps:
       - name: every job of this workflow passed, or was skipped by its own if
+        if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
@@ -2819,7 +2848,7 @@ jobs:
           echo "every job passed or was skipped by its own if"
 
       - uses: actions/checkout@v5
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name != 'workflow_dispatch' && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
         with:
           # The changed files are `git diff base...head`; a shallow clone has
           # neither the base nor the merge base.
@@ -2833,7 +2862,7 @@ jobs:
         # that was skipped passes only when the `changes` job's `reuse` step
         # listed it and named the run it passed in. The summary cites that
         # run, so a reader can see where the green came from.
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name != 'workflow_dispatch' && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
         # GATE_NEEDS, not NEEDS: test_ci_gate.py runs the one step reading
         # NEEDS as the gate's first judgement.
         env:
@@ -2847,7 +2876,7 @@ jobs:
       - name: wait for terraform.yml at this commit
         # A dispatch has no pull request, push or queue entry to compare, and
         # terraform.yml is not dispatched with it: there is nothing to wait for.
-        if: github.event_name != 'workflow_dispatch'
+        if: github.event_name != 'workflow_dispatch' && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
         # Every value reaches the shell through env:, never through an
         # expression inside run:.
         env:
@@ -2874,3 +2903,15 @@ jobs:
           # has not, look again in 20 s rather than 60.
           CI_GATE_POLL: "20"
         run: scripts/ci-gate.sh wait --event "$EVENT" --sha "$HEAD_SHA" --base "$BASE_SHA"
+
+      - name: a lane's pull request runs no checks
+        # The owner's direction of 12 November 2026 (docs/ci.md "A lane's pull
+        # request runs no checks"): every other job of this workflow, of
+        # security.yml and of terraform.yml is skipped by its own `if:` on a
+        # `swarm/` pull request from this repository, and the steps above are
+        # too, so the gate passes at once without waiting for anything. The
+        # merge train's pull request runs the whole suite on the change.
+        if: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          set -euo pipefail
+          echo "a lane's pull request runs no checks: the merge train's pull request tests this change" | tee -a "${GITHUB_STEP_SUMMARY}"
