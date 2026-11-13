@@ -634,7 +634,11 @@ GITHUB_COMMITTER_EMAIL = "noreply@github.com"
 #: non-failure end: superseded_by_person_push (not FAILED) when the committer
 #: is not the platform identity, so failure-review stops filing it; a foreign
 #: head from an unknown branch-mate still refuses." The refusal is unchanged:
-#: `_accept` takes no head a person made of content, and nothing merges. The
+#: `_accept` takes no head a person made of content, and nothing merges. A
+#: person's push is a one-parent commit or, since #3601 (the owner's hand
+#: merges of main into six train-parked pull requests, 2026-11-06 23:25Z), a
+#: two-parent merge of the base onto an accepted head that `_merge_impurity`
+#: refused: their conflict resolution is their content. The
 #: step's end cause is the frozen `EndCause`, which has no such member yet, so
 #: until contract request SUPERSEDED_BY_PERSON_PUSH lands the step ends
 #: FAILED/MERGE_REFUSED with this code, and failure-review's `person_push`
@@ -3742,7 +3746,9 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         record = None if head is None else _head_record(
             merger, head=head, pinned=pinned, fix_heads=fix_heads, base=default, proven=proven,
             people=pr.people)
-        person = None if head is None else _person_push(merger, head=head, pr=pr, lane=lane)
+        person = None if head is None else _person_push(
+            merger, head=head, pr=pr, lane=lane, pinned=pinned, fix_heads=fix_heads,
+            base=default, proven=proven)
         if person is not None:
             return _superseded(run, number=number, head=head, was=pinned, person=person,
                                record=record)
@@ -3924,10 +3930,16 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         ctx.sleep(MERGEABLE_REREAD_SECONDS)
         pr = merger.pull_request(number)
     if pr.head_sha != head:
-        person = None if pr.head_sha is None else _person_push(merger, head=pr.head_sha, pr=pr,
-                                                               lane=lane)
+        # The accepted head is `head` now, so a person's refused merge of
+        # the base onto it is theirs (#3601).
+        person = None if pr.head_sha is None else _person_push(
+            merger, head=pr.head_sha, pr=pr, lane=lane, pinned=head, fix_heads=fix_heads,
+            base=default, proven=proven)
         if person is not None:
-            return _superseded(run, number=number, head=pr.head_sha, was=head, person=person)
+            return _superseded(run, number=number, head=pr.head_sha, was=head, person=person,
+                               record=_head_record(merger, head=pr.head_sha, pinned=head,
+                                                   fix_heads=fix_heads, base=default,
+                                                   proven=proven, people=pr.people))
         return run.refuse("head_moved",
                           f"pull request #{number}'s head moved to {pr.head_sha} while its "
                           f"mergeability was read at {head}")
@@ -4489,18 +4501,27 @@ def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str,
 
 
 def _person_pusher(commit: CommitFacts, pr: PullRequestFacts,
-                   lane: Callable[[str], bool] | None = None) -> str | None:
+                   lane: Callable[[str], bool] | None = None, *,
+                   refused_merge_onto_accepted: bool = False) -> str | None:
     """The login of the person on `pr` who made `commit`, or None (#2505).
 
-    A person's push is a commit that is not a merge (the owner's decision is about
-    a person's content commit: a two-parent merge the purity proof refuses
-    stays `head_moved`, since the proof may refuse what git accepts and that
-    is the platform's to look at), that the platform did not make -- not
-    under one of its own committer addresses, nor ending with the worker's
-    line -- and that GitHub links to a `User` account which is the pull
-    request's author or one of its assignees. GitHub commits a web-UI edit
-    itself, so for those the person is the commit's author. Anyone else is
-    an unknown branch-mate, and their head is `head_moved` as before.
+    A person's push is a commit that the platform did not make -- not under
+    one of its own committer addresses, nor ending with the worker's line --
+    and that GitHub links to a `User` account which is the pull request's
+    author or one of its assignees. GitHub commits a web-UI edit itself, so
+    for those the person is the commit's author. Anyone else is an unknown
+    branch-mate, and their head is `head_moved` as before.
+
+    It is a one-parent commit, or (#3601) a two-parent merge of the base
+    the caller found `refused_merge_onto_accepted`: its first parent is a
+    head `_accept` takes, its second is on the base, GitHub did not commit
+    it, and `_merge_impurity` refused it. That is a person's hand
+    resolution of a conflict on top of the step's own head -- the owner
+    merged main into six train-parked pull requests so on 2026-11-06 at
+    23:25Z, each refused 'both parents change <path>' -- and so their
+    content, as #2505 means. A clean merge is accepted and merged before
+    this is asked; any other merge, and every commit of three or more
+    parents, names nobody.
 
     One worker commit is a person's push: one whose line names a task
     `lane` says is a plain lane a person dispatched onto this pull
@@ -4509,7 +4530,8 @@ def _person_pusher(commit: CommitFacts, pr: PullRequestFacts,
     publishes as that person (#765), so the person is still the committer
     GitHub links, held to the pull request's people as any other push is.
     """
-    if len(commit.parents) >= 2:
+    if len(commit.parents) > 2 or (len(commit.parents) == 2
+                                   and not refused_merge_onto_accepted):
         return None
     if commit.by_worker and (lane is None or commit.worker_task is None
                              or not lane(commit.worker_task)):
@@ -4525,11 +4547,30 @@ def _person_pusher(commit: CommitFacts, pr: PullRequestFacts,
 
 
 def _person_push(merger: ForgeMerger, *, head: str, pr: PullRequestFacts,
-                 lane: Callable[[str], bool] | None = None) -> str | None:
+                 lane: Callable[[str], bool] | None = None, pinned: str,
+                 fix_heads: list[tuple[str, str]], base: str,
+                 proven: dict[str, str | None] | None = None) -> str | None:
     """`_person_pusher` of the commit at `head`, read best-effort: a read that
-    fails names nobody, and the refusal stays `head_moved`."""
+    fails names nobody, and the refusal stays `head_moved`.
+
+    For a two-parent commit it first reads what `_person_pusher` takes as
+    given (#3601): whether its first parent is a head `_accept` takes from
+    `pinned` and `fix_heads`, its second is on `base`, and, GitHub not
+    having committed it, `_merge_impurity` refused it (through `proven`,
+    the walk's cache, so no tree is proved twice)."""
+    proven = {} if proven is None else proven
     try:
-        return _person_pusher(merger.commit(head), pr, lane)
+        commit = merger.commit(head)
+        refused = False
+        if len(commit.parents) == 2 and not commit.by_github:
+            first, second = commit.parents
+            if (_accept(merger, head=first, pinned=pinned, fix_heads=fix_heads, base=base,
+                        proven=proven) is not None
+                    and merger.on_base(base, second)):
+                if commit.sha not in proven:
+                    proven[commit.sha] = _merge_impurity(merger, commit)
+                refused = proven[commit.sha] is not None
+        return _person_pusher(commit, pr, lane, refused_merge_onto_accepted=refused)
     except (forge_mod.ForgeError, ValueError):
         return None
 
