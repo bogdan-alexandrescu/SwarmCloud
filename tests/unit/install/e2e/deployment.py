@@ -47,6 +47,10 @@ class Deployment:
         self.workflows: dict[str, list[tuple[str, str]]] = {}  # id -> (step_id, task_id)
         self.index_sha = secrets.token_hex(20)
         self.tenants: list[str] = []
+        #: The workspaces the person has connected GitHub in (`swarm sc
+        #: setup`); none on a new deployment, so swarm-api refuses their first
+        #: `sc access repos` with github_not_connected (routes' `NotConnected`).
+        self.github_connected: set[str] = set()
 
     def submit(self, *, profile: str, submitter: str, tenant: str, repository: str, prompt: str,
                opens_pr: bool) -> Task:
@@ -132,7 +136,13 @@ def attach(world: World) -> Deployment:
         if words[:1] == ["tenants"]:
             rows = [{"tenant_id": t} for t in deployment.tenants]
             return 0, json.dumps({"tenants": rows, "current": deployment.tenants[0] if rows else None}), ""
+        if words[:2] == ["sc", "setup"]:  # the person connects GitHub in the browser
+            deployment.github_connected.add(tenant)
+            return 0, "", ""
         if words[:3] == ["sc", "access", "repos"]:
+            if tenant not in deployment.github_connected:
+                return 1, "", ("sc: HTTP 409 github_not_connected: you have not connected GitHub in this "
+                               "tenant: press Connect GitHub (POST /v1/onboarding/github/authorize) first\n")
             return 0, json.dumps({"repositories": [{"repository": REPOSITORY, "archived": False}]}), ""
         if words[:1] == ["dispatch"]:
             task = deployment.submit(profile=flags.get("profile", "claude-code"), submitter=PERSON, tenant=tenant,
