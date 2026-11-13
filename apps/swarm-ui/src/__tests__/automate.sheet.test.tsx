@@ -186,27 +186,31 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+/** The card's one Manage, which opens the schedule in the sheet. */
+const manage = () => document.querySelector<HTMLElement>('section[data-schedule="sch_a"] a.acd-manage')
+
 describe('one schedule in the side sheet (frame A2)', () => {
   it('opens from a list row beside the list, marks the row, and closes back to the list', async () => {
     const s = schedule('sch_a')
     const { go } = await mount(routes(s, [NEWEST]), null)
-    const link = await screen.findByRole('link', { name: 'Sweep sch_a' }, WAIT)
-    // MUTATION: a row that opens the old full page and the list is gone.
-    fireEvent.click(link)
+    await waitFor(() => expect(manage()).not.toBeNull(), WAIT)
+    // MUTATION: a card that opens the old full page and the list is gone.
+    fireEvent.click(manage()!)
     const h = await screen.findByRole('heading', { name: 'Sweep sch_a', level: 1 }, WAIT)
     expect(sheet()!.contains(h)).toBe(true)
     expect(screen.getByRole('heading', { name: 'Schedules', level: 1 })).toBeTruthy()
-    await waitFor(() => expect(document.querySelector('tr[data-schedule="sch_a"]')).not.toBeNull(), WAIT)
-    const opened = document.querySelector<HTMLElement>('tr[data-schedule="sch_a"]')!
+    await waitFor(() => expect(document.querySelector('section[data-schedule="sch_a"]')).not.toBeNull(), WAIT)
+    const opened = document.querySelector<HTMLElement>('section[data-schedule="sch_a"]')!
     expect(opened.classList.contains('is-open')).toBe(true)
-    expect(within(opened).getByRole('link', { name: 'Sweep sch_a' }).getAttribute('aria-current')).toBe('true')
+    expect(within(opened).getByRole('link', { name: 'Manage' }).getAttribute('aria-current')).toBe('true')
     // Close goes back to the list, which is still drawn.
     fireEvent.click(within(sheet()!).getByRole('button', { name: 'Close this schedule' }))
     expect(go).toHaveBeenLastCalledWith('automate/schedules')
     await waitFor(() => expect(sheet()).toBeNull(), WAIT)
     expect(screen.getByRole('heading', { name: 'Schedules', level: 1 })).toBeTruthy()
     // Escape closes it too.
-    fireEvent.click(await screen.findByRole('link', { name: 'Sweep sch_a' }, WAIT))
+    await waitFor(() => expect(manage()).not.toBeNull(), WAIT)
+    fireEvent.click(manage()!)
     await screen.findByRole('heading', { name: 'Sweep sch_a', level: 1 }, WAIT)
     fireEvent.keyDown(document, { key: 'Escape' })
     await waitFor(() => expect(sheet()).toBeNull(), WAIT)
