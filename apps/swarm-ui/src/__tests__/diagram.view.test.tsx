@@ -51,6 +51,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 function decodedSvg(img: HTMLImageElement): string {
@@ -197,5 +198,42 @@ describe('export', () => {
     })
     expect(text).toBe(decodedSvg(img))
     expect(screen.getByRole('button', { name: /download a png/i })).toBeTruthy()
+  })
+  it('downloads a PNG drawn from the image on a canvas', async () => {
+    const blobs: Blob[] = []
+    Object.assign(URL, {
+      createObjectURL: vi.fn((b: Blob) => {
+        blobs.push(b)
+        return 'blob:diagram'
+      }),
+      revokeObjectURL: vi.fn(),
+    })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    const drawImage = vi.fn()
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(
+      () => ({ fillRect: vi.fn(), drawImage, fillStyle: '' }) as unknown as CanvasRenderingContext2D,
+    )
+    vi.spyOn(HTMLCanvasElement.prototype, 'toBlob').mockImplementation(function (cb: BlobCallback, type?: string) {
+      cb(new Blob(['png'], { type }))
+    })
+    const loaded: string[] = []
+    class LoadingImage {
+      onload: (() => void) | null = null
+      onerror: (() => void) | null = null
+      naturalWidth = 100
+      naturalHeight = 40
+      set src(v: string) {
+        loaded.push(v)
+        queueMicrotask(() => this.onload?.())
+      }
+    }
+    vi.stubGlobal('Image', LoadingImage)
+    render(<DiagramView source={FLOW} title="Release flow" theme="light" />)
+    const img = (await screen.findByRole('img', { name: /Release flow/ })) as HTMLImageElement
+    fireEvent.click(screen.getByRole('button', { name: /download a png/i }))
+    await waitFor(() => expect(click).toHaveBeenCalled())
+    expect(loaded).toEqual([img.getAttribute('src')])
+    expect(drawImage).toHaveBeenCalled()
+    expect(blobs.at(-1)?.type).toBe('image/png')
   })
 })
