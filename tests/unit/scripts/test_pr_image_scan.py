@@ -26,6 +26,7 @@ import yaml
 from .ci_fold_layout import check_steps
 from .test_build_images_local import _builds, _local, _value
 from .test_build_mirror import _refresh
+from .test_fast_checks_on_lane_prs import without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
 APPLICATION = REPO / ".github" / "workflows" / "application.yml"
@@ -285,7 +286,8 @@ def test_main_fills_the_tool_mirror_before_it_builds_and_a_pull_request_never_do
     fill = names.index("fill the tool mirror with what this commit pins")
     assert fill < names.index("build with Cloud Build"), names
     assert job["steps"][fill]["run"].strip() == "./scripts/refresh-build-mirror.sh --tools-only"
-    assert job["if"] == ("${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' "
+    # (Then the lane clause every job ends with, test_fast_checks_on_lane_prs.py.)
+    assert without_lane_clause(job["if"]) == ("${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' "
         # A lane push (`swarm/**`) runs the tests but never builds (LANE CI-EARLY, test_ci_early.py).
         "&& github.ref == 'refs/heads/main' || !cancelled() && !failure() && github.event_name == 'workflow_dispatch' }}"), job["if"]
     for other_id, other in _jobs().items():
