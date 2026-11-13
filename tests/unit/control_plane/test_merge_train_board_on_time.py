@@ -362,8 +362,10 @@ def test_the_window_comes_from_the_one_shared_source():
     data = json.loads(trainboard.GATHER_SOURCE.read_text())
     assert trainboard.gather_defaults() == trainboard.Gather(
         min_prs=data["min_prs"], max_wait_minutes=data["max_wait_minutes"])
-    # The owner's pick, "6 ready or 20 minutes", unchanged.
-    assert (data["min_prs"], data["max_wait_minutes"]) == (6, 20)
+    # The owner's direction of 13 November 2026, "8 ready or 15 minutes, up
+    # to 40" (it was "15 pull requests or 30 minutes", before that "6 ready or
+    # 20 minutes").
+    assert (data["min_prs"], data["max_wait_minutes"]) == (8, 15)
 
 
 def test_the_script_reads_the_same_file_and_states_no_second_copy():
