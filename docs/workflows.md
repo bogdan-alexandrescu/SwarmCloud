@@ -2068,7 +2068,25 @@ changed paths (`own_files` when recorded, else `files`) and
   bundle; the reason now reads "review runs: its parent hands it <name>;
   the gate counts code lines only". An issue-run implementer (always
   `allow_empty_diff`, handing only its patch) is still counted on its own
-  diff's lines. swarm-api
+  diff's lines.
+* **Renders make the review run** (#3066). A mock-up build commits nothing:
+  its frames are artifacts, so a gate that counts code lines reads it as
+  "0 changed lines" and cannot judge it -- the mock-up workflow's two
+  reviews were both skipped with a gate-written MERGE on that reason. So the
+  review runs, whatever the line count, when a direct parent published any
+  image (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, under `shots/` or not;
+  `renders` on the decision): "review runs: its parent published N rendered
+  image(s) (...); the gate counts code lines only". Only direct parents
+  count; a `builds_on` ancestor's images do not.
+* **A rendered review is never gated on line count** (#3066). A review step
+  on the rendered-review runner profile, `claude-code-browser`, exists to
+  read rendered frames, so after a risk path and an over-count it always
+  runs: "review runs: it is a rendered review, which reads rendered pages
+  whatever the line count". `"review_gate": false` is no longer needed on a
+  mock-up review step to keep it from being skipped. A small code change
+  with no risk path, no handed files and no renders, reviewed on any other
+  profile, is still skipped as before.
+* **A review that runs is declined.** swarm-api
   declines the claim (`control_publish.state: declined`, code
   `review_runs`, the decision as the reason) and rings the parent's wake
   again, and the scheduler promotes the review on it. A gate block that
@@ -2143,10 +2161,11 @@ changed paths (`own_files` when recorded, else `files`) and
 * **Not `result_summary.skipped`.** That key means "did not run and left
   nothing", which makes a step that stages anything from it skip as well: the
   integrator would never publish.
-* **Renders reused: recorded, not yet acted on.** The decision records
-  whether a parent published images under `shots/` (`renders_published`,
-  `shots`); no runner writes a compare-report manifest, so the listing is the
-  check. A UI review still runs on `claude-code-browser`: [the owner], 2026-10-28,
+* **Renders: they run the review; moving it is a follow-up.** The decision
+  records whether a parent published images under `shots/`
+  (`renders_published`, `shots`); no runner writes a compare-report manifest,
+  so the listing is the check. Since #3066 a direct parent's images make the
+  review run (above). A UI review still runs on `claude-code-browser`: [the owner], 2026-10-28,
   moved acting on it to a follow-up lane, because it needs the worker's
   rendered-review rule (above), which downgrades a UI MERGE from any other
   profile to NOT_YET, and the review's signed `input_from` to change.
