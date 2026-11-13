@@ -150,7 +150,7 @@
 .apc-card.is-info, .apd-head.is-info { box-shadow: inset 3px 0 0 var(--sk-ac); }
 .apc-card-h, .apd-card-h { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
 .apc-card-h > h3, .apd-card-h > h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
-.apd-card-h > h2 { font-size: var(--t-title); line-height: 28px; }
+.apd-card-h > h2 { font-size: var(--t-title); line-height: var(--lh-title); }
 .apc-card-f { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line-soft, var(--line)); }
 .apc-card-f > .c-btn { margin-left: auto; }
 
@@ -167,13 +167,13 @@
 }
 .apd-head-t { display: flex; flex-direction: column; gap: 8px; flex: 1 1 420px; min-width: 0; }
 .apd-expiry { display: flex; flex-direction: column; align-items: flex-end; text-align: right; min-width: 0; }
-.apd-big { font-size: var(--t-figure); line-height: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.apd-big { font-size: var(--t-figure); line-height: var(--lh-figure); font-weight: 600; font-variant-numeric: tabular-nums; }
 .apd-big.is-none { font-size: var(--t-lead); color: var(--text-dim); font-weight: 500; }
 .apd-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; min-width: 0; }
 .apd-cols.is-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .apd-checks { display: flex; align-items: center; gap: 12px; font-size: var(--t-meta); line-height: var(--lh-meta); }
 .apd-checks .apd-line { display: block; }
-.apd-huge { font-size: calc(var(--t-figure) * 1.27); line-height: 32px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.apd-huge { font-size: calc(var(--t-figure) * 1.27); line-height: var(--lh-figure); font-weight: 650; font-variant-numeric: tabular-nums; }
 .apd-huge.is-ok { color: var(--s-live); }
 .apd-huge.is-warn { color: var(--s-warn); }
 .apd-huge.is-bad { color: var(--s-bad); }
@@ -213,7 +213,7 @@
   .apd-expiry { align-items: flex-start; text-align: left; }
   .apd-facts.is-row { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; }
   .apd-facts.is-row > .apd-pair { display: contents; }
-  .apd-huge { font-size: var(--t-figure); line-height: 26px; }
+  .apd-huge { font-size: var(--t-figure); line-height: var(--lh-figure); }
   /* On a phone the strip follows the evidence rather than covering it. */
   .apd-decide { position: static; }
   .apd-decide > .c-btn, .apc-card-f > .c-btn { flex: 1 1 auto; min-height: 44px; }
