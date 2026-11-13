@@ -606,6 +606,29 @@ it:
   under "This flow wrote" (`flow-<id>.json`'s `this_flow_wrote`, and the line
   heading the flow's section of `flows.md`), so whoever reads the report sees
   what was meant to be written beside what was.
+* **Declared removal (the owner, 2026-11-13, #3977).** "A mutating QA flow
+  may click a Remove control only when its declared writes name that removal
+  AND the item was created by the same flow run. Every other Remove or Delete
+  click stays refused, including on any item the run did not create." A flow
+  that stages an item to test Remove then Undo was told never to click
+  'remove' (a default excluded control), so it stopped and left its item
+  behind. Now a mutating flow whose `writes` names a removal (a whole word of
+  the remove family, any case: remove, removes, removed, removing, removal;
+  `qaspec.declares_removal`) gets a brief whose never-click list drops
+  'remove' and carries one exception: it may click Remove, and the Undo it
+  shows, only on the item this same run created earlier, as its writes say;
+  never Remove or Delete on anything the run did not create; after it sees
+  Undo it leaves the item removed, or removes it, so nothing it staged is
+  left behind. Its `flow-<id>.json` records `this_flow_removed`, each item
+  with `created_by_this_run: true`, beside `this_flow_wrote`. The bounds:
+  Remove only; 'delete' and every other default and target control stay
+  refused, whatever the writes say; a target whose own `exclusions.controls`
+  names 'remove' keeps refusing it (the target's own word wins); a read-only
+  flow, a flow batch, a screen capture and the crawl (`--exclude-control`)
+  are unchanged, and so is `DEFAULT_EXCLUDED_CONTROLS` and swarm_qa's mirror
+  of it. Why the brief and not the gate: like the writes sentence, the gate
+  cannot tell one DELETE to a non-production origin from another, so what
+  bounds the click is the brief, and the report shows what was removed.
 * **Older flows read.** A mutating flow stored before `writes` was required
   renders read-only at run time: no `flow-<id>` step, the flow in a
   read-only batch, and the worker route answers `mutating: false`. This only

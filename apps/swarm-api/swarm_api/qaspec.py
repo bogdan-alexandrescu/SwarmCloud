@@ -728,6 +728,19 @@ def declared_writes(flow: Mapping[str, Any]) -> str | None:
     return writes.strip() if isinstance(writes, str) and writes.strip() else None
 
 
+#: A writes sentence that names a removal (the owner, 2026-11-13, #3977): the
+#: remove family only, whole words, any case, so 'removable' or 'remover' is
+#: not one and 'delete' never is (§6, "Declared removal").
+_REMOVAL = re.compile(r"\bremov(?:e|es|ed|ing|al)\b", re.IGNORECASE)
+
+
+def declares_removal(flow: Mapping[str, Any]) -> bool:
+    """Whether the flow's `writes` sentence names a removal (§6): such a
+    mutating flow may click Remove, only on what its own run created."""
+    writes = declared_writes(flow)
+    return bool(writes and _REMOVAL.search(writes))
+
+
 def leg(target: Mapping[str, Any], name: str | None = None, *,
         writing_flows: bool | None = None) -> dict[str, Any]:
     """The target as its leg `name` sees it: the app's fields, and that
@@ -1224,9 +1237,29 @@ def _gate_report_line() -> str:
     )
 
 
+def _removal_allowed(target: Mapping[str, Any], flow: Mapping[str, Any]) -> bool:
+    """A mutating flow whose writes name a removal, on a target that does not
+    exclude 'remove' itself: the target's own word wins (§6, #3977)."""
+    if not (flow["mutating"] and declares_removal(flow)):
+        return False
+    own = (target.get("exclusions") or {}).get("controls") or ()
+    return not any(isinstance(c, str) and c.strip().casefold() == "remove" for c in own)
+
+
 def _safety(target: Mapping[str, Any], origin: str, *, mutating: bool = False,
-            declared: str | None = None) -> str:
+            declared: str | None = None, removal: bool = False) -> str:
     paths, controls = _exclusions(target)
+    removes = ""
+    if mutating and removal:
+        # The one exception (the owner, 2026-11-13, #3977): the gate cannot
+        # tell one DELETE from another, so the brief bounds it, like `writes`.
+        controls = [c for c in controls if c != "remove"]
+        removes = (
+            " This flow's writes name a removal, so it may click a Remove control, and the Undo it shows, "
+            "only on the item this same run created earlier, as its writes say; it never clicks Remove or "
+            "Delete on anything this run did not create. After it sees Undo, it leaves the item removed, or "
+            "removes it, so nothing it staged is left behind."
+        )
     writes = (
         "This flow may submit forms on the target, whose environment is non-production, and only to do "
         f"what it declares it writes, which is the limit of what it may write: \"{declared}\" Write nothing "
@@ -1238,7 +1271,7 @@ def _safety(target: Mapping[str, Any], origin: str, *, mutating: bool = False,
     return (
         f"This is someone else's application. Stay on {origin}: the live browser answers a navigation "
         f"anywhere else with a page saying you left the QA target. {writes} Never visit these paths: "
-        f"{', '.join(paths)}. Never click a control whose text names any of: {', '.join(controls)}. "
+        f"{', '.join(paths)}. Never click a control whose text names any of: {', '.join(controls)}.{removes} "
         "Never solve or hand over an MFA or CAPTCHA challenge."
     )
 
@@ -1360,6 +1393,7 @@ def _flow_prompt(target: Mapping[str, Any], base: str, flow: Mapping[str, Any], 
             f"flow-{fid}-{width}`, reach the goal, then `swarm-handoff record stop`"
         )
     json_name = FLOW_LAYOUT["json"].format(id=fid)
+    removal = _removal_allowed(target, flow)
     return (
         f"Goal-driven flow test of {target['name']}. Open {screen_url(base, flow['start_path'])} in the live "
         f"browser.{_sign_in_note(own_login, start_clicks(target))} {_FLOW_TOOL_SENTENCE[tool]}, reach this goal as a person "
@@ -1368,8 +1402,9 @@ def _flow_prompt(target: Mapping[str, Any], base: str, flow: Mapping[str, Any], 
         f"the goal was reached, the steps taken, and every point where a label was missing, ambiguous or "
         f"misleading, each with its screenshot. {_flow_json_line(json_name)} Then bundle it: in "
         f"$SWARM_ARTIFACTS_DIR run {_flow_tar_command(fid)}, and stage {FLOW_LAYOUT['flow_tar'].format(id=fid)} "
-        f"under that name. {_wrote_line(flow)}"
-        f"{_safety(target, _origin(base), mutating=flow['mutating'], declared=flow.get('writes'))} {NO_CHANGE}"
+        f"under that name. {_wrote_line(flow, removal=removal)}"
+        f"{_safety(target, _origin(base), mutating=flow['mutating'], declared=flow.get('writes'), removal=removal)} "
+        f"{NO_CHANGE}"
     )
 
 
@@ -1417,12 +1452,18 @@ def _flow_tar_command(fid: str) -> str:
     )
 
 
-def _wrote_line(flow: Mapping[str, Any]) -> str:
-    """A writing flow's report repeats its `writes` word for word (§6)."""
+def _wrote_line(flow: Mapping[str, Any], *, removal: bool = False) -> str:
+    """A writing flow's report repeats its `writes` word for word (§6); one
+    that may remove says what it removed and that its run created it (#3977)."""
     if not flow["mutating"]:
         return ""
-    return (f"Set flow-{flow['id']}.json's `this_flow_wrote` to this sentence, word for word: "
+    line = (f"Set flow-{flow['id']}.json's `this_flow_wrote` to this sentence, word for word: "
             f"{flow['writes']} ")
+    if removal:
+        line += ("Set its `this_flow_removed` to what this flow removed, each as "
+                 '{"item": "<what it removed>", "created_by_this_run": true}, naming only items this run '
+                 "created earlier. ")
+    return line
 
 
 def _flow_batch_prompt(target: Mapping[str, Any], base: str, batch_id: str, flows: Sequence[Mapping[str, Any]],
