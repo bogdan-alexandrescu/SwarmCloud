@@ -537,7 +537,7 @@ function Panel({ title, label, tip, children }: { title: ReactNode; label: strin
 function AtItsHead({ d }: { d: Decision }) {
   const a = d.approval
   const pr = d.merge?.pull_request
-  const { head } = mergeDigest(d)
+  const { head, verdict } = mergeDigest(d)
   const now = a.head_sha_now ?? null
   const moved = a.state === 'superseded' ? (now ?? a.superseded_by?.head_sha ?? null) : null
   const c = checkCounts(d)
@@ -594,6 +594,8 @@ function AtItsHead({ d }: { d: Decision }) {
             </>
           )}
         </Kv>
+        {/* A digest with no verdict draws no Verdict row (visual QA automate2-20). */}
+        {verdict !== null && <Kv name="Verdict">{verdict}</Kv>}
       </dl>
       <MergeChecks d={d} />
       {moved !== null && (
@@ -939,7 +941,7 @@ function Outcome({ d, kind, go }: { d: Decision; kind: string | null; go: (to: s
         {word}
       </span>
       {line}
-      <InfoTip about={word} tip={tip} />
+      <InfoTip about="the outcome" tip={tip} />
       <span className="apd-grow" />
       {act}
     </Strip>
@@ -976,13 +978,12 @@ function ContractStepBar({ d, go }: { d: Decision; go: (to: string) => void }) {
         <span className="apd-dot is-info" aria-hidden />
         <span className="apd-strong">Not decided in this inbox</span>
         <InfoTip about="the step" tip="Jev’s judgment is evidence for your decision; it approves nothing, and this page has no verb." />
+        {taskId !== null && (
+          <InApp go={go} to={`work/task/${encodeURIComponent(taskId)}`} className="c-btn is-primary">
+            Open the step ›
+          </InApp>
+        )}
       </span>
-      <span className="apd-grow" />
-      {taskId !== null && (
-        <InApp go={go} to={`work/task/${encodeURIComponent(taskId)}`} className="c-btn is-primary">
-          Open the step ›
-        </InApp>
-      )}
     </Strip>
   )
 }
