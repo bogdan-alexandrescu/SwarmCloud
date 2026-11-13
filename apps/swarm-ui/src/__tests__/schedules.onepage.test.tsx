@@ -120,14 +120,14 @@ describe('one Schedules page, with an admin switch', () => {
   it('draws no switch for a non-admin, and never reads the admin list', async () => {
     const { calls } = await mount(false, null)
     await waitFor(() => expect(sent(calls, '/v1/tenants/me').length).toBeGreaterThan(0), WAIT)
-    await screen.findByText('No schedules yet', undefined, WAIT)
+    await screen.findByRole('heading', { name: 'No schedules' }, WAIT)
     expect(screen.queryByRole('navigation', SWITCH)).toBeNull()
     expect(sent(calls, '/v1/admin/schedules')).toHaveLength(0)
   })
 
   it('a non-admin following a ?scope=all link gets their own list, with no switch', async () => {
     const { calls } = await mount(false, 'scope=all')
-    await screen.findByText('No schedules yet', undefined, WAIT)
+    await screen.findByRole('heading', { name: 'No schedules' }, WAIT)
     expect(screen.queryByRole('navigation', SWITCH)).toBeNull()
     expect(document.querySelector('th[data-col="tenant"]')).toBeNull()
     expect(sent(calls, '/v1/admin/schedules')).toHaveLength(0)
