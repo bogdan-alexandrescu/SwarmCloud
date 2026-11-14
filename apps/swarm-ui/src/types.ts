@@ -3534,7 +3534,8 @@ export interface TaskPage {
 
 /**
  * The frozen catalogue, profiles.py RESOURCE_CLASSES. Bundled client-side
- * because it is frozen and four entries long (medium: contract request 147);
+ * because it is frozen and five entries long (medium: contract request 147;
+ * builder: contract request 135);
  * the alternative is a request per render to learn something that cannot
  * change without a contract change.
  */
@@ -3542,6 +3543,7 @@ export const RESOURCE_UNITS: Readonly<Record<string, number>> = {
   standard: 1,
   browser: 1,
   medium: 2,
+  builder: 2,
   large: 4,
 }
 
