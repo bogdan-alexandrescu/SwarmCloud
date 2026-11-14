@@ -6,13 +6,13 @@
  * spec, a workflow step waiting for an answer -- as `GET /v1/approvals`
  * serves it.
  *
- * THE LIST, THEN ONE ITEM ON ITS OWN PAGE. The lead says how many items wait
- * (every inbox item, not only the reader's) and when the oldest expires; then
- * Waiting, oldest first, each with its expiry and who may decide; then
- * Decided and Expired or superseded, drawn only from items the read serves
- * in those states. A row opens the item's decision page,
- * `/automate/approvals/<id>` (`ApprovalDecision.tsx`, proposal B's A5): read
- * before you decide, on a page of its own.
+ * THE LIST AS CARDS, THEN ONE ITEM ON ITS OWN PAGE (the Automate redesign's
+ * cards direction, the owner's pick of 12 November 2026). A kind filter, then
+ * Waiting, oldest first, each card with its expiry and its approvers; then
+ * Decided, Expired and Superseded, drawn only from items the read serves in
+ * those states. A card opens the item's decision page,
+ * `/automate/approvals/<id>` (`ApprovalDecision.tsx`): read before you
+ * decide, on a page of its own.
  *
  * THE SERVER HOLDS EVERY RULE. Who may approve (§4.6), a hold's stricter
  * approver (§4.4), the one-person tenant's typed confirmation (SD11), the
@@ -25,11 +25,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadApprovals } from './api'
 import type { Result } from './fetch'
-import { Button, Dash } from './components'
-import { Explained } from './OverviewRegions'
+import { Button, Dash, Tag } from './components'
+import { InfoTip } from './People'
 import { PersonName } from './PersonName'
-import { Absent as AbsentState } from './primitives'
-import { InApp, untilWords } from './Schedules'
+import { InApp, untilWords, useScheduleName } from './Schedules'
 import { Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
@@ -37,8 +36,6 @@ import {
   APPROVAL_KIND,
   ApprovalDecisionScreen,
   BackToList,
-  HOLD_WORDS,
-  STATE_WORD,
   approvalAddress,
   approvalsAddress,
   decidersWords,
@@ -90,118 +87,121 @@ function approversShort(a: unknown): string | null {
   return String(a)
 }
 
-/** Who may decide a row, and whether the reader is one: `may_decide`, else the stored approvers. */
-function whoCell(item: InboxItem): ReactNode {
-  if (item.kind === 'input') {
-    return (
-      <>
-        any member of this workspace<small>answered on its step</small>
-      </>
-    )
-  }
-  if (item.kind === 'contract') {
-    return (
-      <>
-        {approversShort(item.approvers) ?? 'the step’s owner'}
-        <small>not decided in this inbox</small>
-      </>
-    )
-  }
+/** Who may decide an item, in words: `may_decide`, else the stored approvers. */
+function approversOf(item: InboxItem): string | null {
+  if (item.kind === 'input') return 'any member of this workspace'
+  return decidersWords(item.may_decide ?? null) ?? approversShort(item.approvers) ?? (item.kind === 'contract' ? 'the step’s owner' : null)
+}
+
+/** A served time, as the page says it, the instant in its title; a dash with its reason when unserved. */
+function At({ iso }: { iso: string | null | undefined }) {
+  return iso ? <span title={iso}>{when(iso)}</span> : <Dash why="not served" />
+}
+
+/** Where an item came from: its schedule by name, else its run, else a dash. */
+function FromWords({ item }: { item: InboxItem }) {
+  const s = item.subject ?? {}
+  const scheduleId = typeof s.schedule_id === 'string' && s.schedule_id !== '' ? s.schedule_id : null
+  const name = useScheduleName(scheduleId)
+  if (scheduleId !== null) return <span title={scheduleId}>{name ?? scheduleId}</span>
+  if (typeof s.run_id === 'string' && s.run_id !== '') return <span className="apc-mono">{s.run_id}</span>
+  return <Dash why="what asked for it is not served" />
+}
+
+const DECIDED_BY: Readonly<Record<string, string>> = { approved: 'Approved by', rejected: 'Rejected by', answered: 'Answered by' }
+
+/**
+ * ONE ITEM AS A CARD (the cards mock-up). Its kind, what it asks, where it
+ * came from and when; then what its state asks for: a waiting item its
+ * expiry, a decided one who decided and when, an ended one when it ended.
+ * Its approvers are on every card. One action opens the item's page.
+ */
+function ApprovalCard({ item, kind, go }: { item: InboxItem; kind: string | null; go: (to: string) => void }) {
+  const now = useNow()
+  const waiting = isWaiting(item)
+  const st = item.state ?? 'pending'
+  const who = approversOf(item)
   const md = item.may_decide ?? null
-  const who = decidersWords(md) ?? approversShort(item.approvers)
-  const you = md === null ? null : md.approve ? 'you may decide' : md.reject ? 'you may reject, not approve' : 'not you'
   return (
-    <>
-      {who ?? <Dash why="who may decide is not served" />}
-      {you !== null && <small data-you={md?.approve ? 'yes' : 'no'}>{you}</small>}
-    </>
-  )
-}
-
-/** A row's "What": the summary, which opens the item's page, and its hold. */
-function WhatCell({ item, kind, go }: { item: InboxItem; kind: string | null; go: (to: string) => void }) {
-  const held = item.hold?.code !== undefined ? HOLD_WORDS[item.hold.code] : undefined
-  return (
-    <>
-      <InApp go={go} to={approvalAddress(item.approval_id, kind)} className="apl-open">
-        {item.summary}
-      </InApp>
-      {held !== undefined && <small>{held}</small>}
-    </>
-  )
-}
-
-const kindCell = (item: InboxItem) => <span className="apl-kind">{APPROVAL_KIND[item.kind] ?? item.kind}</span>
-
-/** A small table: the column heads, then a row per item. Each cell names its column for the phone's stacked rows. */
-function Table({ label, heads, rows }: { label: string; heads: string[]; rows: { id: string; cells: ReactNode[] }[] }) {
-  return (
-    <table className="apl-t" aria-label={label}>
-      <thead>
-        <tr>
-          {heads.map((h) => (
-            <th key={h} scope="col">
-              {h}
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((r) => (
-          <tr key={r.id} data-approval={r.id}>
-            {r.cells.map((c, i) => (
-              <td key={heads[i]} data-l={heads[i]}>
-                {c}
-              </td>
-            ))}
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-function Card({ title, note, children, testId }: { title: string; note: string; children: ReactNode; testId: string }) {
-  return (
-    <section className="apl-card" aria-label={title} data-testid={testId}>
-      <div className="apl-card-h">
-        <h2>{title}</h2>
-        <span>{note}</span>
+    <section className={`apc-card${waiting ? ' is-info' : ''}`} data-approval={item.approval_id} aria-label={item.summary}>
+      <div className="apc-card-h">
+        <Tag>{APPROVAL_KIND[item.kind] ?? item.kind}</Tag>
+        <h3>{item.summary}</h3>
       </div>
-      {children}
+      <dl className="apc-facts">
+        <dt>From</dt>
+        <dd>
+          <FromWords item={item} />
+        </dd>
+        <dt>Asked</dt>
+        <dd>
+          <At iso={item.requested_at} />
+        </dd>
+        {waiting && (
+          <>
+            <dt>Expires</dt>
+            <dd className="apc-strong">
+              {item.expires_at === null ? (
+                <>
+                  never <InfoTip about="never expires" tip="A run made by hand waits as it always has." />
+                </>
+              ) : (
+                <span title={`${when(item.expires_at)} (${item.expires_at})`}>{untilWords(item.expires_at, now)}</span>
+              )}
+            </dd>
+          </>
+        )}
+        {st === 'expired' && (
+          <>
+            <dt>Expired</dt>
+            <dd>
+              <At iso={item.decided_at ?? item.expires_at} />
+            </dd>
+          </>
+        )}
+        {isDecided(item) && (
+          <>
+            <dt>{DECIDED_BY[st] ?? 'Decided by'}</dt>
+            <dd>{item.decided_by ? <PersonName email={item.decided_by} name={item.decided_by_name} /> : <Dash why="who decided is not served" />}</dd>
+            <dt>Decided</dt>
+            <dd>
+              <At iso={item.decided_at} />
+            </dd>
+          </>
+        )}
+        {st === 'superseded' && (
+          <>
+            <dt>Superseded</dt>
+            <dd>
+              <At iso={item.decided_at} /> · {item.kind === 'merge' ? 'head moved' : 'replaced'}
+            </dd>
+          </>
+        )}
+        <dt>Approvers</dt>
+        <dd>
+          {who ?? <Dash why="who may decide is not served" />}
+          {waiting && md !== null && !md.approve && <span className="apc-dim"> · {md.reject ? 'you may reject' : 'not you'}</span>}
+        </dd>
+      </dl>
+      <div className="apc-card-f">
+        <InApp go={go} to={approvalAddress(item.approval_id, kind)} className={`c-btn is-sm${waiting ? ' is-primary' : ''}`}>
+          {waiting ? 'Review' : 'Open'}
+        </InApp>
+      </div>
     </section>
   )
 }
 
-/** The lead: how many wait, and when the oldest expires. */
-function Lead({ waiting, kind, go }: { waiting: InboxItem[]; kind: string | null; go: (to: string) => void }) {
-  const now = useNow()
-  const oldest = waiting[0]!
-  const expiry =
-    oldest.expires_at === null ? (
-      <>never expires: a run made by hand waits as it always has.</>
-    ) : (
-      <>
-        expires <b title={oldest.expires_at}>{untilWords(oldest.expires_at, now)}</b> ({when(oldest.expires_at)}).
-      </>
-    )
+/** A titled panel of cards: its heading, a count or note beside it, and an (i) where it needs one. */
+function Panel({ title, note, tip, testId, children }: { title: string; note: string | null; tip?: string; testId: string; children: ReactNode }) {
   return (
-    <section className="apl-lead" data-testid="apl-lead">
-      <div className="apl-lead-t">
-        <span className="apl-lead-k">Waiting</span>
-        <b data-testid="apl-count">
-          {pluralise(waiting.length, 'item')} {waiting.length === 1 ? 'waits' : 'wait'} for a decision.
-        </b>
-        <span data-testid="apl-oldest">
-          The oldest, {oldest.summary}, {expiry}
-        </span>
-        <span className="apl-lead-s">Waiting items hold no capacity. An item nobody decides expires; a merge that expires leaves its pull request open.</span>
+    <section className="apc-panel" aria-label={title} data-testid={testId}>
+      <div className="apc-panel-h">
+        <h2>{title}</h2>
+        {note !== null && <span className="apc-dim">{note}</span>}
+        {tip !== undefined && <InfoTip about={title} tip={tip} />}
       </div>
-      <div className="apl-lead-a">
-        <InApp go={go} to={approvalAddress(oldest.approval_id, kind)} className="c-btn is-primary">
-          Open the oldest
-        </InApp>
-      </div>
+      {children}
     </section>
   )
 }
@@ -242,150 +242,82 @@ function KindFilter({ kind, items, every, go }: { kind: string | null; items: In
   )
 }
 
+/** Oldest first by `requested_at`; an item with no time goes last. */
+const byAsked = (a: InboxItem, b: InboxItem) => (Date.parse(a.requested_at ?? '') || Infinity) - (Date.parse(b.requested_at ?? '') || Infinity)
+
 /**
- * THE LIST. The read serves waiting items; an item it serves in another state
- * is drawn in the Decided or the Expired-or-superseded card, and a card with
- * nothing served in it is not drawn at all, rather than drawn as an empty
- * table that reads as "nothing was decided".
+ * THE LIST, AS CARDS (the cards mock-up). Waiting, oldest first; then what
+ * the read serves in other states, each in its own panel: Decided (newest
+ * first), Expired and Superseded. A panel with nothing served in it is not
+ * drawn, rather than drawn empty, which would read as "nothing was decided".
+ * An answered await-input step is decided (QA2B-E review).
  */
 function ApprovalsList({ items, every, kind, go }: { items: InboxItem[]; every: InboxItem[] | null; kind: string | null; go: (to: string) => void }) {
-  const now = useNow()
-  const waiting = items.filter(isWaiting)
-  // NEWEST FIRST, AND SAID SO (visual QA pass 2, automate2-08). The note read
-  // `as the read served them`, how the rows arrived rather than their order;
-  // the route serves the inbox by `requested_at`, oldest first, so the card
-  // orders its own rows by when they were decided. One with no decision time
-  // goes last.
-  // AN ANSWERED STEP IS DECIDED (QA2B-E review): `state=all` serves await-input
-  // steps a member answered as `answered`, which the route counts with the
-  // decisions; under "nobody decided these" it contradicted itself.
+  const waiting = items.filter(isWaiting).sort(byAsked)
   const decided = items
     .filter(isDecided)
     .sort((a, b) => (Date.parse(b.decided_at ?? '') || 0) - (Date.parse(a.decided_at ?? '') || 0))
-  const ended = items.filter((i) => !isWaiting(i) && !isDecided(i))
-  const at = (iso: string | null | undefined) => (iso ? <span title={iso}>{when(iso)}</span> : <Dash why="not served" />)
+  const expired = items.filter((i) => i.state === 'expired')
+  const superseded = items.filter((i) => !isWaiting(i) && !isDecided(i) && i.state !== 'expired')
+  const cards = (rows: InboxItem[]) => rows.map((i) => <ApprovalCard key={i.approval_id} item={i} kind={kind} go={go} />)
   return (
-    <>
-      {waiting.length > 0 && <Lead waiting={waiting} kind={kind} go={go} />}
-      <KindFilter kind={kind} items={items} every={every} go={go} />
-      {waiting.length === 0 ? (
-        <EmptyInbox kind={kind} elsewhere={every === null ? null : every.filter(isWaiting).length} go={go} />
-      ) : (
-        <Card title={`Waiting · ${waiting.length}`} note="oldest first" testId="apl-waiting">
-          <Table
-            label="Waiting, oldest first"
-            heads={['Kind', 'What', 'Asked', 'Expires in', 'Who may decide']}
-            rows={waiting.map((i) => ({
-              id: i.approval_id,
-              cells: [
-                kindCell(i),
-                <WhatCell key="what" item={i} kind={kind} go={go} />,
-                i.requested_at === null ? <Dash why="not served" /> : <span title={i.requested_at}>{timeAgo(i.requested_at, now)}</span>,
-                i.expires_at === null ? (
-                  <>
-                    never<small>a run made by hand waits</small>
-                  </>
-                ) : (
-                  <>
-                    <b title={i.expires_at}>{untilWords(i.expires_at, now)}</b>
-                    <small>{when(i.expires_at)}</small>
-                  </>
-                ),
-                whoCell(i),
-              ],
-            }))}
-          />
-        </Card>
+    <div className="apc-page">
+      <div className="apc-bar-row">
+        <KindFilter kind={kind} items={items} every={every} go={go} />
+      </div>
+      <Panel title="Waiting" note={waiting.length === 0 ? null : `${waiting.length}, oldest first`} testId="apl-waiting">
+        {waiting.length === 0 ? (
+          <EmptyInbox kind={kind} elsewhere={every === null ? null : every.filter(isWaiting).length} go={go} />
+        ) : (
+          <div className="apc-grid is-3">{cards(waiting)}</div>
+        )}
+      </Panel>
+      {decided.length + expired.length + superseded.length > 0 && (
+        <div className="apc-lapsed" data-testid="apl-lapsed">
+          {decided.length > 0 && (
+            <Panel title="Decided" note={`${decided.length}, newest first`} testId="apl-decided">
+              <div className="apc-grid is-2">{cards(decided)}</div>
+            </Panel>
+          )}
+          {expired.length > 0 && (
+            <Panel title="Expired" note={String(expired.length)} tip="Nobody decided in time, so it did not go ahead. A merge that expires leaves its pull request open." testId="apl-expired">
+              <div className="apc-stack">{cards(expired)}</div>
+            </Panel>
+          )}
+          {superseded.length > 0 && (
+            <Panel title="Superseded" note={String(superseded.length)} tip="A newer request replaced it, so nobody decides it; the newer one asks again." testId="apl-superseded">
+              <div className="apc-stack">{cards(superseded)}</div>
+            </Panel>
+          )}
+        </div>
       )}
-      {decided.length > 0 && (
-        <Card title={`Decided · ${decided.length}`} note="newest first" testId="apl-decided">
-          <Table
-            label="Decided"
-            heads={['Kind', 'What', 'Decision', 'By', 'When', 'Reason']}
-            rows={decided.map((i) => ({
-              id: i.approval_id,
-              cells: [
-                kindCell(i),
-                <WhatCell key="what" item={i} kind={kind} go={go} />,
-                <span key="d" className={`apl-state is-${i.state}`}>
-                  {STATE_WORD[i.state] ?? i.state}
-                </span>,
-                i.decided_by ? <PersonName email={i.decided_by} name={i.decided_by_name} /> : <Dash why="who decided is not served" />,
-                at(i.decided_at),
-                i.reason ? <q>{i.reason}</q> : <span className="apl-dim">{i.state === 'approved' ? 'an approval carries no reason' : i.state === 'answered' ? 'answered on its step' : 'no reason served'}</span>,
-              ],
-            }))}
-          />
-        </Card>
-      )}
-      {ended.length > 0 && (
-        <Card title={`Expired or superseded · ${ended.length}`} note="nobody decided these" testId="apl-ended">
-          <Table
-            label="Expired or superseded"
-            heads={['Kind', 'What', 'Ended', 'When', 'Why']}
-            rows={ended.map((i) => ({
-              id: i.approval_id,
-              cells: [
-                kindCell(i),
-                <WhatCell key="what" item={i} kind={kind} go={go} />,
-                <span key="e" className={`apl-state is-${i.state}`}>
-                  {STATE_WORD[i.state] ?? i.state}
-                </span>,
-                at(i.decided_at ?? (i.state === 'expired' ? i.expires_at : null)),
-                i.state === 'expired'
-                  ? i.kind === 'merge'
-                    ? 'nobody decided in time; the pull request stays open'
-                    : 'nobody decided in time, so it did not go ahead'
-                  : i.state === 'superseded'
-                    ? 'a newer request replaced it'
-                    : (i.reason ?? <Dash why="not served" />),
-              ],
-            }))}
-          />
-        </Card>
-      )}
-    </>
+    </div>
   )
 }
 
 /**
- * A measured empty inbox (A6d): said, never an empty table. An empty kind
- * says how many wait under the other kinds, from the whole inbox's read
- * (`elsewhere`), and links to Every kind (automate-05): "Nothing waiting"
- * alone, beside a spine badge of 3, read as an empty inbox.
+ * A measured empty inbox (A6d), the mock-up's one line: "Nothing waiting".
+ * What was read is its tooltip, the kinds named from the chips' table
+ * (QA-048). An empty kind says how many wait under the other kinds, from the
+ * whole inbox's read, and links to Every kind (automate-05): "Nothing
+ * waiting" alone, beside a spine badge of 3, read as an empty inbox.
  */
 function EmptyInbox({ kind, elsewhere, go }: { kind: string | null; elsewhere: number | null; go: (to: string) => void }) {
+  const tip = kind === null ? `The inbox was read: no ${EVERY_KIND} waits for a person.` : `The inbox was read: no ${APPROVAL_KIND[kind] ?? kind} item waits for a person.`
   return (
-    <AbsentState
-      kind="zero"
-      heading="Nothing waiting"
-      say={kind === null ? 'The inbox was read and nothing is waiting' : `The inbox was read and no ${APPROVAL_KIND[kind] ?? kind} item is waiting`}
-    >
-      {kind === null ? (
-        // THE KINDS ARE THE TOOLTIP (the owner's standing rule, 5 November 2026: no
-        // explanatory prose on the surface). The list grew a kind (contract
-        // judgment, PR #3255) and took the page past its prose ceiling; it is
-        // the drawn words' hover and accessible description now, still named
-        // from the chips' table (QA-048).
-        <>
-          <Explained className="apl-every" tip={`No ${EVERY_KIND} waits for a person.`}>
-            Nothing of any kind
-          </Explained>{' '}
-          is waiting: the inbox was read and is empty.
-        </>
-      ) : elsewhere !== null && elsewhere > 0 ? (
-        <span data-testid="apl-elsewhere">
-          Nothing of this kind is waiting for a person. {pluralise(elsewhere, 'item')} {elsewhere === 1 ? 'waits' : 'wait'} under other kinds.{' '}
+    <p className="apc-nothing" data-testid="apl-nothing">
+      <span className="apc-dot is-ok" aria-hidden />
+      Nothing waiting
+      <InfoTip about="Nothing waiting" tip={tip} />
+      {kind !== null && elsewhere !== null && elsewhere > 0 && (
+        <span className="apc-dim" data-testid="apl-elsewhere">
+          {pluralise(elsewhere, 'item')} under other kinds ·{' '}
           <InApp go={go} to={approvalsAddress(null)}>
-            Read every kind ›
+            Every kind ›
           </InApp>
         </span>
-      ) : elsewhere === 0 ? (
-        'Nothing of any kind is waiting for a person: the whole inbox was read and is empty.'
-      ) : (
-        'Nothing of this kind is waiting for a person. Choose Every kind to read the whole inbox.'
       )}
-    </AbsentState>
+    </p>
   )
 }
 

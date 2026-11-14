@@ -174,11 +174,11 @@ describe('the Approvals page', () => {
 
   it('lists every kind oldest first, each row opening the item’s own page', async () => {
     await mount('', routes(() => null))
-    await waitFor(() => expect(document.querySelectorAll('tr[data-approval]')).toHaveLength(2), WAIT)
-    const rows = [...document.querySelectorAll<HTMLElement>('tr[data-approval]')]
+    await waitFor(() => expect(document.querySelectorAll('.apc-card[data-approval]')).toHaveLength(2), WAIT)
+    const rows = [...document.querySelectorAll<HTMLElement>('.apc-card[data-approval]')]
     expect(rows.map((r) => r.dataset.approval)).toEqual(['run:run_8f2a', 'apr_merge1'])
     expect(visible(rows[1]!)).toContain('Merge')
-    // #2417: no pane beside the list; the row is a link to the item's page.
+    // #2417: no pane beside the list; the card's Review is a link to the item's page.
     expect(document.querySelector('[data-testid="ap-detail"]')).toBeNull()
     expect(rows[1]!.querySelector('a')!.getAttribute('href')).toBe('/automate/approvals/apr_merge1')
   })
@@ -288,7 +288,7 @@ describe('one item', () => {
     )
     const detail = await loaded()
     // Visual QA automate2-05: the hold leads with its words, not its code.
-    await waitFor(() => expect(visible(detail)).toContain('Held for a second member.'), WAIT)
+    await waitFor(() => expect(visible(detail)).toContain('Held for a second member'), WAIT)
     expect(visible(detail)).toContain('terraform/iam.tf')
     fireEvent.click(within(detail).getByRole('button', { name: 'Approve' }))
     const field = await within(detail).findByRole('textbox', { name: /approve it yourself/ }, WAIT)
@@ -308,10 +308,10 @@ describe('one item', () => {
       ),
     )
     const detail = await loaded()
-    // #2417 A5: the reason box sits beside Reject, which is one click, never "Reject…".
-    const reject = (await within(detail).findByRole('button', { name: 'Reject' }, WAIT)) as HTMLButtonElement
+    // The cards mock-up: Reject asks for its reason once pressed.
+    fireEvent.click(await within(detail).findByRole('button', { name: 'Reject' }, WAIT))
     // MUTATION: allow a blank reason, which the server refuses with a 422.
-    expect(reject.disabled).toBe(true)
+    expect((within(detail).getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(true)
     fireEvent.change(within(detail).getByRole('textbox', { name: /Reason/ }), { target: { value: 'the plan touches the wrong module' } })
     fireEvent.click(within(detail).getByRole('button', { name: 'Reject' }))
     await waitFor(() => expect(sent(calls, 'POST', '/v1/approvals/run%3Arun_8f2a:reject')).toHaveLength(1), WAIT)
@@ -326,7 +326,7 @@ describe('one item', () => {
       ),
     )
     const detail = await loaded()
-    await within(detail).findByRole('button', { name: 'Reject' }, WAIT)
+    fireEvent.click(await within(detail).findByRole('button', { name: 'Reject' }, WAIT))
     fireEvent.change(within(detail).getByRole('textbox', { name: /Reason/ }), { target: { value: 'the plan touches the wrong module' } })
     const reject = within(detail).getByRole('button', { name: 'Reject' })
     reject.focus()
@@ -472,10 +472,10 @@ describe('the inbox on a phone', () => {
     media(true)
     await mount('approval=run%3Arun_8f2a', routes(() => null))
     const detail = await loaded()
-    expect(detail.closest('tr')).toBeNull()
+    expect(detail.closest('.apc-card')).toBeNull()
     // A plan is its brief: the facts two up, and the decision in the header card, not pinned.
     expect(painted(detail.querySelector<HTMLElement>('.ab-facts')!, 'grid-template-columns', PHONE)).toBe('1fr 1fr')
-    expect(painted(detail.querySelector<HTMLElement>('.ab-head .ad-bar')!, 'position', PHONE)).toBe('static')
+    expect(painted(detail.querySelector<HTMLElement>('.ab-head .apd-decide')!, 'position', PHONE)).toBe('static')
   })
 })
 
@@ -494,20 +494,20 @@ describe('live QA: automate, approvals', () => {
       status: 200,
       body: { approval: item('apr_old', { kind: 'merge', state, decided_by: 'teammate@example.com', decided_at: hoursFromNow(-1), ...over }) },
     })
-    for (const [state, words] of [
-      ['rejected', /Rejected by teammate@example\.com.*not now.*Nothing is left to decide\./],
-      ['expired', /Expired .*: nobody decided it in time/],
-      ['approved', /Approved by teammate@example.com/],
+    for (const [state, word, words] of [
+      ['rejected', 'Rejected', /Rejected\s*by teammate@example\.com.*not now/],
+      ['expired', 'Expired', /Expired.*nobody decided/],
+      ['approved', 'Approved', /Approved\s*by teammate@example.com/],
     ] as const) {
       const view = await mount(
         'approval=apr_old',
         routes((m, url) => (m === 'GET' && url === '/v1/approvals/apr_old' ? decided(state, state === 'rejected' ? { reason: 'not now' } : {}) : null), []),
       )
-      const said = await screen.findByTestId('ap-decided', undefined, WAIT)
+      const said = await screen.findByTestId('apd-decide', undefined, WAIT)
       expect(said.getAttribute('data-state')).toBe(state)
       expect(visible(said)).toMatch(words)
       expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull()
-      expect(screen.getByTestId('ap-state').textContent).toBe(state)
+      expect(screen.getByTestId('ap-state').textContent).toBe(word)
       view.unmount()
     }
   })
@@ -537,8 +537,8 @@ describe('live QA: automate, approvals', () => {
     fireEvent.click(within(group).getByRole('button', { name: 'Every kind · 2' }))
     expect(go).toHaveBeenLastCalledWith('automate/approvals')
     // An item opened from a filtered list keeps the filter.
-    await waitFor(() => expect(document.querySelectorAll('tr[data-approval]').length).toBeGreaterThan(0), WAIT)
-    expect(document.querySelector('tr[data-approval="apr_merge1"] a')!.getAttribute('href')).toBe('/automate/approvals/apr_merge1?kind=merge')
+    await waitFor(() => expect(document.querySelectorAll('.apc-card[data-approval]').length).toBeGreaterThan(0), WAIT)
+    expect(document.querySelector('.apc-card[data-approval="apr_merge1"] a')!.getAttribute('href')).toBe('/automate/approvals/apr_merge1?kind=merge')
   })
 
   it('asks for the whole inbox when no kind is named', async () => {
