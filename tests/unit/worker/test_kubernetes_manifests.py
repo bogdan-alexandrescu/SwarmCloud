@@ -669,6 +669,29 @@ def test_workers_are_granted_no_kubernetes_api_access_at_all(tenant_docs):
     assert not role.get("rules"), "a worker needs nothing from the Kubernetes API"
 
 
+def test_the_reaper_reads_events_and_gains_nothing_else(tenant_docs):
+    """A Job refused its pod leaves no pod to read, only the Job controller's
+    `FailedCreate` event; the reconciler reads it when this Role lets it, and
+    otherwise asks once and stays quiet (`GkeBackend._failed_create`).
+
+    EXACT, not a subset check: `get` and `list` on core `events` are the whole
+    addition -- no `watch`, no write, nothing else new -- and only in the
+    namespace the Role already lives in (it is a Role, rendered per tenant
+    namespace; `test_nothing_here_is_cluster_scoped` holds the rest).
+
+    MUTATION: drop the events rule from swarm-reaper, or add `watch` to it,
+    and this names the Role's rules.
+    """
+    role = one(tenant_docs, "Role", "swarm-reaper")
+    assert role["metadata"]["namespace"].startswith("swarm-tenant-"), role["metadata"]
+    rules = [(tuple(r["apiGroups"]), tuple(r["resources"]), tuple(r["verbs"])) for r in role["rules"]]
+    assert rules == [
+        (("batch",), ("jobs",), ("get", "list", "watch", "delete")),
+        (("",), ("pods",), ("get", "list", "watch", "delete")),
+        (("",), ("events",), ("get", "list")),
+    ], rules
+
+
 def test_nothing_here_is_cluster_scoped(tenant_docs):
     kinds = {d["kind"] for d in tenant_docs}
     assert "ClusterRole" not in kinds
