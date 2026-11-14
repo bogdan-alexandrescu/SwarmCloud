@@ -508,8 +508,9 @@ def test_kms_signing_quota_read() -> None:
     step = preflight.QuotasStep(lambda: gcp, answers())
     observed = step.check(ctx_for())
     assert observed.status == MET
+    assert observed.outputs == {}, "the limits read are judged here and never kept in the state"
     assert (PROJECT, "cloudkms.googleapis.com") in gcp.called("quota_metrics")
-    assert observed.outputs["quotas"]["quota.kms-signing-h4"] == {
+    assert step.binding(ctx_for())[1]["quotas"]["quota.kms-signing-h4"] == {
         "cloudkms.googleapis.com/crypto_requests (1/min/{project})": 60_000
     }
 
@@ -591,11 +592,14 @@ def test_release_cve_acceptances_shown_with_expiry() -> None:
     observed = step.check(ctx)
     assert observed.status == MET
     assert "CVE-2026-1111 in openssl, accepted until 2026-12-31" in observed.detail
+    # Said, never kept: the state's release is `state.release`, and nothing reads the lines back.
+    assert observed.outputs == {}
     assert step.plan(ctx).actions == ("CVE-2026-1111 in openssl, accepted until 2026-12-31: no fix upstream yet",)
 
     gcp.release = release_files(dt.date(2026, 10, 1))
     expired = step.check(ctx)
     assert expired.status == UNMET and "CVE-2026-1111" in expired.detail and "expiry" in expired.detail
+    assert expired.outputs == {}
 
     with pytest.raises(ValueError):
         preflight.parse_acceptances(json.dumps([{"cve": "CVE-1", "package": "x"}]).encode())
@@ -1711,7 +1715,7 @@ def test_the_cpu_quota_is_the_exact_metric_in_the_install_region(pages: list[Any
     step = preflight.QuotasStep(lambda: gcp, answers())
     observed = step.check(ctx_for(region="us-central1"))
     assert observed.status == MET, observed.detail
-    assert list(observed.outputs["quotas"]["quota.compute-regional-cpus"].values()) == [200]
+    assert list(step.binding(ctx_for(region="us-central1"))[1]["quotas"]["quota.compute-regional-cpus"].values()) == [200]
 
     assert step.check(ctx_for(region="europe-west1")).status == MET  # the default bucket, 24
     gcp.quotas["compute.googleapis.com"][0] = _cpus({None: 24, "us-central1": 12})
@@ -1835,7 +1839,7 @@ def test_a_quota_the_service_does_not_report_is_said_in_one_line_not_raised() ->
     gcp.quotas["run.googleapis.com"] = [_metric("run.googleapis.com/requests", 100)]
     observed = preflight.QuotasStep(lambda: gcp, answers()).check(ctx_for())
     assert observed.status == MET
-    said = observed.outputs["quotas"]["quota.cloud-run-jobs"]
+    said = preflight.QuotasStep(lambda: gcp, answers()).binding(ctx_for())[1]["quotas"]["quota.cloud-run-jobs"]
     assert isinstance(said, str) and "reports no" in said and "\n" not in said
     assert "reports no" in observed.detail
 
@@ -2331,7 +2335,7 @@ def test_every_quota_is_read_again_in_stage_1(pages: list[Any]) -> None:
     recheck.apply(ctx, recheck.plan(ctx))
     assert "quota.kms-signing-h4" in pages[0][1]
     for quota in preflight.QUOTAS:
-        assert quota.entry in recheck.check(ctx).outputs["quotas"], quota.entry
+        assert quota.entry in recheck.findings(ctx)[1]["quotas"], quota.entry
 
     ids = [s.id for s in foundations.build_steps(lambda: gcp, answers(), load_manifest())]
     assert ids.index("preflight.quotas-recheck") > ids.index("foundations.apis")

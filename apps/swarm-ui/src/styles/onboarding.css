@@ -230,6 +230,13 @@
   .ac-grant-acts { grid-column: 1 / -1; justify-content: flex-start; }
 }
 @media (max-width: 719px) {
+  /* An (i) in a row's prose sits mid-line: its tip, anchored left at 240 wide,
+     would run past a 390 phone. Here it spans the viewport. Its vertical
+     anchor is EXPLICIT: `top: auto` on a fixed box is its unscrolled static
+     position, which ignores `.ctl-scroll`'s offset. `About` (AdminSetupSteps)
+     sets `--ob-tip-top`/`--ob-tip-bottom` from the (i)'s viewport box; before
+     any measure it sits above the dock. */
+  .ob-about .c-tip { position: fixed; top: var(--ob-tip-top, auto); bottom: var(--ob-tip-bottom, calc(var(--dock-h, 28px) + 12px)); left: 16px; right: 16px; width: auto; max-width: none; }
   .ob-step { grid-template-columns: 18px minmax(0, 1fr); }
   .ob-step-act { grid-column: 2; justify-content: flex-start; }
   .ob-step-act .c-btn, .ob-step-act a { min-height: 44px; }

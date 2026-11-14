@@ -14,6 +14,8 @@
 //
 // Fixtures only; no network. Fake values are built at runtime.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { StrictMode } from 'react'
@@ -425,6 +427,120 @@ describe('Admin › Setup says only what exists', () => {
     expect(visible(waiting)).toContain('no repository')
   })
 
+  it('the team row shows the test repository, not the first of the grant, and picks another', async () => {
+    const TEST = 'example-org/swarm-install-test'
+    const repositories = ['example-org/aardvark', TEST]
+    let current = TEST
+    const calls = serve((m, url, body) => {
+      if (url !== '/v1/admin/setup/test-repository') return null
+      if (m === 'PUT') current = (body as Json).repository as string
+      return { status: 200, body: { test_repository: current, default: TEST, repositories } }
+    })
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const mod = await import('../AdminSetupSteps')
+    const { normSetupState } = await import('../api')
+    const reread = vi.fn()
+    render(<mod.AdminSetupSteps state={normSetupState(state(teamWith({ grant: { ...GRANTED, repositories } })))} now={NOW_MS} onChanged={reread} />)
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    const pick = within(row).getByLabelText('Pick the test repository') as HTMLSelectElement
+    // MUTATION: use the grant's first repository (`repositories[0]`).
+    expect(pick.value).toBe(TEST)
+    expect(within(row).getByText(TEST, { selector: 'code' })).toBeTruthy()
+    // MUTATION: offer anything but the grant's repositories.
+    expect([...pick.options].map((o) => o.value)).toEqual(repositories)
+    fireEvent.change(pick, { target: { value: 'example-org/aardvark' } })
+    // MUTATION: pick without telling swarm-api.
+    await waitFor(() => expect(calls.find((c) => c.method === 'PUT' && c.url === '/v1/admin/setup/test-repository')?.body).toEqual({ repository: 'example-org/aardvark' }))
+    await waitFor(() => expect(within(row).getByText('example-org/aardvark', { selector: 'code' })).toBeTruthy())
+    // MUTATION: leave the page on its old read after the pick.
+    expect(reread).toHaveBeenCalled()
+  })
+
+  it('with no test repository the team row says to create it or pick one', async () => {
+    serve((m, url) =>
+      m === 'GET' && url === '/v1/admin/setup/test-repository'
+        ? { status: 200, body: { test_repository: null, default: 'example-org/swarm-install-test', repositories: GRANTED.repositories } }
+        : null,
+    )
+    await mountSteps(state(teamWith({ grant: GRANTED })))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    // MUTATION: fall back to the grant's first repository when there is no test repository.
+    expect(visible(row)).toContain('Create example-org/swarm-install-test or pick a repository')
+    expect((within(row).getByLabelText('Pick the test repository') as HTMLSelectElement).value).toBe('')
+    // MUTATION: say why on the surface instead of behind the (i).
+    expect(within(row).getByRole('button', { name: 'About the test repository' })).toBeTruthy()
+  })
+
+  it('on a phone an (i) tip spans the viewport, never past 390 (review finding)', async () => {
+    serve((m, url) =>
+      m === 'GET' && url === '/v1/admin/setup/test-repository'
+        ? { status: 200, body: { test_repository: null, default: 'example-org/swarm-install-test', repositories: GRANTED.repositories } }
+        : null,
+    )
+    await mountSteps(state(teamWith({ grant: GRANTED })))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    for (const name of ['About the test repository', 'About the repository grant']) {
+      const host = within(row).getByRole('button', { name }).closest('.ob-about')
+      // MUTATION: drop the `ob-about` wrapper, so the tip keeps the shared left-anchored 240px box.
+      expect(host?.querySelector('.c-tip')).toBeTruthy()
+    }
+    const sheet = readFileSync(join(__dirname, '..', 'styles', 'onboarding.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+    const phone = sheet.slice(sheet.indexOf('@media (max-width: 719px)'))
+    const rule = /\.ob-about \.c-tip \{([^}]*)\}/.exec(phone)?.[1] ?? ''
+    // MUTATION: anchor the tip at the (i) (`position: absolute; left: 0`), which ran to x=479 at 390.
+    expect(rule).toMatch(/position: fixed/)
+    expect(rule).toMatch(/left: 16px/)
+    expect(rule).toMatch(/right: 16px/)
+    expect(rule).toMatch(/max-width: none/)
+    // MUTATION: `top: auto` with no anchor -- the unscrolled static position (review finding).
+    expect(rule).toMatch(/top: var\(--ob-tip-top, auto\)/)
+    expect(rule).toMatch(/bottom: var\(--ob-tip-bottom, calc\(var\(--dock-h, 28px\) \+ 12px\)\)/)
+  })
+
+  it('on a phone an open (i) tip is placed at its button, scrolled or not (review finding)', async () => {
+    serve((m, url) =>
+      m === 'GET' && url === '/v1/admin/setup/test-repository'
+        ? { status: 200, body: { test_repository: null, default: 'example-org/swarm-install-test', repositories: GRANTED.repositories } }
+        : null,
+    )
+    vi.stubGlobal('innerHeight', 844)
+    await mountSteps(state(teamWith({ grant: GRANTED })))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    const button = within(row).getByRole('button', { name: 'About the test repository' })
+    const host = button.closest('.ob-about') as HTMLElement
+    // Where the (i) is in the viewport: `.ctl-scroll`'s scroll offset is already in this box.
+    let at = { top: 300, bottom: 330 }
+    vi.spyOn(button, 'getBoundingClientRect').mockImplementation(() => ({ ...at, left: 200, right: 230, width: 30, height: 30, x: 200, y: at.top, toJSON: () => ({}) }) as DOMRect)
+    const placed = () => [host.style.getPropertyValue('--ob-tip-top'), host.style.getPropertyValue('--ob-tip-bottom')]
+    fireEvent.focus(button)
+    expect(host.querySelector('.c-tip')?.hasAttribute('hidden')).toBe(false)
+    // MUTATION: leave the tip at its static position (no anchor), hundreds of pixels below the (i).
+    expect(placed()).toEqual(['338px', 'auto'])
+    // The inner scroller moves the (i) into the bottom half: the tip opens above it, clear of the dock.
+    at = { top: 700, bottom: 730 }
+    const scroller = document.createElement('div')
+    document.body.append(scroller)
+    fireEvent.scroll(scroller)
+    // MUTATION: measure only on open, so a scroll leaves the tip where the (i) was.
+    expect(placed()).toEqual(['auto', '152px'])
+    fireEvent.blur(button)
+    at = { top: 100, bottom: 130 }
+    fireEvent.scroll(scroller)
+    // MUTATION: keep measuring on every scroll after the tip has closed.
+    expect(placed()).toEqual(['auto', '152px'])
+    scroller.remove()
+    vi.unstubAllGlobals()
+  })
+
+  it('aboutTipAnchor opens under the (i) in the top half and above it in the bottom half', async () => {
+    const { aboutTipAnchor } = await import('../AdminSetupSteps')
+    const box = (top: number) => ({ top, bottom: top + 30, height: 30 }) as DOMRect
+    // MUTATION: always below, so an (i) near the dock opens its tip under the dock.
+    expect(aboutTipAnchor(box(10), 844)).toEqual({ top: '48px', bottom: 'auto' })
+    expect(aboutTipAnchor(box(790), 844)).toEqual({ top: 'auto', bottom: '62px' })
+  })
+
   it('the invite control opens the Google Admin members page and waits for them to join', async () => {
     const tabs = fakeTabs()
     const calls = serve((m, url, body) =>
@@ -829,8 +945,9 @@ describe('the first team needs no typing the install already knows (#26, N20; DA
 // ADMIN › SETUP FOLLOWS THE ENGINE (DAYONE-SETUP-UI-7; part of #2688; audit 3).
 //
 // WHAT EACH CASE HOLDS:
-//   * N10: the plugin line installs from the marketplace of the deployment's
-//     own release channel (an rc release's `channels/rc.marketplace.json`);
+//   * the plugin line installs from the deployment's pinned release
+//     marketplace (`releases/<version>/marketplace.json`), never its
+//     channel's, which moves on with the next promotion;
 //   * A7: the engine's epoch-seconds times read as dates, ISO text still
 //     reads, and no field renders Invalid Date;
 //   * A8: a failed or cancelled console run offers "Run the console checks
@@ -843,18 +960,19 @@ const FAILED_RUNS = (retries: Json = {}): Json => ({
 })
 
 describe('Admin › Setup follows the engine', () => {
-  it('the plugin line installs from the marketplace of the deployment’s channel', async () => {
+  it('the plugin line installs from the deployment’s pinned release marketplace', async () => {
     const passed = { verify: { ...VERIFYING, done: 8, result: 'passed' } }
     await mountSteps(state({}, { ...passed, release: '2026.10.3-rc.2' }))
     const rc = visible(screen.getByRole('region', { name: 'Send to your team' }).querySelector('figure.c-code pre'))
-    // MUTATION: install every deployment from the stable marketplace.
-    expect(rc).toContain('claude plugin marketplace add https://storage.googleapis.com/swarmcloud/channels/rc.marketplace.json ')
+    // MUTATION: install a candidate from its channel's marketplace.
+    expect(rc).toContain('claude plugin marketplace add https://storage.googleapis.com/swarmcloud/releases/2026.10.3-rc.2/marketplace.json ')
     cleanup()
     await mountSteps(state({}, { ...passed, release: '2026.10.3' }))
     const stable = visible(screen.getByRole('region', { name: 'Send to your team' }).querySelector('figure.c-code pre'))
-    // MUTATION: send a stable deployment to a channel file.
-    expect(stable).toContain('claude plugin marketplace add https://storage.googleapis.com/swarmcloud/marketplace.json ')
+    // MUTATION: send a stable deployment to the bucket root's marketplace.
+    expect(stable).toContain('claude plugin marketplace add https://storage.googleapis.com/swarmcloud/releases/2026.10.3/marketplace.json ')
     const mod = await import('../AdminSetupSteps')
+    expect(mod.teammateMarketplace(null)).toBe(mod.PLUGIN_MARKETPLACE)
     expect(mod.releaseChannel(null)).toBe('stable')
     expect(mod.pluginMarketplace('beta')).toBe('https://storage.googleapis.com/swarmcloud/channels/beta.marketplace.json')
   })
