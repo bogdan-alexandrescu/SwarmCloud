@@ -40,6 +40,7 @@ from agent_worker import gittools
 from agent_worker.gitmcp import server as shim
 from agent_worker.logs import build_logger
 from swarm_api import childkey as api_childkey
+from swarm_api.gitexec import GitExec
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
@@ -126,6 +127,16 @@ class FakeApi:
                                                      "-e", f"{sha}^{{commit}}"],
                                                     capture_output=True).returncode == 0]}
         ref = body["ref"]
+        if "depth" in body:
+            # #2442: swarm-api's own depth-1 path, against the bare origin.
+            fetched = GitExec(scratch_root=self.scratch / "gitexec", local_remotes=True) \
+                .fetch_bundle(url=f"file://{self.origin}", token=secrets.token_hex(8), ref=ref,
+                              haves=body["haves"], depth=body["depth"])
+            if fetched.bundle is None:
+                return {"resolved_sha": fetched.sha, "depth": 1}
+            return {"resolved_sha": fetched.sha, "depth": 1,
+                    "bundle": base64.b64encode(fetched.bundle).decode(),
+                    "bundle_sha256": hashlib.sha256(fetched.bundle).hexdigest()}
         sha = _git(self.origin, "rev-parse", f"{ref}^{{commit}}")
         if sha in body["haves"]:
             return {"resolved_sha": sha}
@@ -477,6 +488,118 @@ def test_a_fetch_lands_on_origin_ref_and_a_sha_under_refs_swarm_fetched(world: W
     answer = world.spool("git_fetch", {"ref": world.base}, request_id="f2")
     assert answer["result"]["local_ref"] == f"refs/swarm/fetched/{world.base}"
     assert _git(world.clone, "rev-parse", f"refs/swarm/fetched/{world.base}") == world.base
+
+
+def _long_main(world: World, commits: int = 12) -> str:
+    """main moves `commits` commits past the clone base, each by somebody else."""
+    tip = ""
+    for i in range(commits):
+        tip = world.advance_main("big.txt", secrets.token_hex(256) + "\n", f"main {i}")
+    return tip
+
+
+def test_a_depth_1_fetch_lands_the_tip_alone_in_a_depth_1_clone(tmp_path: Path):
+    world = World(tmp_path, shallow=True)
+    tip = _long_main(world)
+    answer = world.spool("git_fetch", {"ref": "main", "depth": 1}, request_id="d1")
+    assert answer["result"] == {"ref": "main", "resolved_sha": tip,
+                                "local_ref": "refs/remotes/origin/main", "depth": 1}
+    body = world.api.calls[-1]["body"]
+    assert (body["depth"], body["haves"]) == (1, [world.base])
+    assert tip in (world.clone / ".git" / "shallow").read_text().split()
+    assert _git(world.clone, "rev-list", "--count", "refs/remotes/origin/main") == "1"
+    # A before render's reads: the base branch's tree, beside the agent's own.
+    assert "big.txt" in _git(world.clone, "diff", "--stat", "refs/remotes/origin/main")
+    _git(world.clone, "checkout", "refs/remotes/origin/main", "--", ".")
+    assert (world.clone / "big.txt").read_text() == \
+        _git(world.origin, "show", "main:big.txt") + "\n"
+    _git(world.clone, "fsck", "--no-dangling")
+    assert world.tools.origin.haves == [world.base, tip]
+    assert not list((tmp_path / "private").glob("fetch-*"))
+
+    # Asked again, nothing is sent: the tip is a have now.
+    again = world.spool("git_fetch", {"ref": "main", "depth": 1}, request_id="d2")
+    assert again["result"]["resolved_sha"] == tip
+
+
+def test_a_depth_1_tip_whose_parent_is_here_is_not_left_shallow(tmp_path: Path):
+    world = World(tmp_path, shallow=False)
+    tip = world.advance_main("other.txt", "theirs\n", "main moved")
+    answer = world.spool("git_fetch", {"ref": "main", "depth": 1}, request_id="d1")
+    assert answer["result"]["resolved_sha"] == tip
+    shallow = world.clone / ".git" / "shallow"
+    assert not shallow.exists() or tip not in shallow.read_text().split()
+    assert _git(world.clone, "rev-parse", "refs/remotes/origin/main~1") == world.base
+    assert world.tools.origin.shallow == []
+
+
+def test_a_depth_1_fetch_refuses_a_shallow_file_that_is_not_a_regular_file(tmp_path: Path):
+    world = World(tmp_path, shallow=True)
+    _long_main(world, commits=2)
+    shallow = world.clone / ".git" / "shallow"
+    shallow.unlink()
+    os.mkfifo(shallow)
+    answer = world.spool("git_fetch", {"ref": "main", "depth": 1}, request_id="d1")
+    assert answer["refused"]["code"] == "fetch_failed"
+
+
+def test_a_plain_fetch_after_a_depth_1_fetch_brings_the_history_and_unshallows_the_tip(
+    tmp_path: Path
+):
+    world = World(tmp_path, shallow=True)
+    tip = _long_main(world, commits=4)
+    world.spool("git_fetch", {"ref": "main", "depth": 1}, request_id="d1")
+    mine = _commit(world.clone, "src/app.py", "x = 1\n", "mine")
+    result = world.spool("git_rebase_onto", {"ref": "main"}, request_id="rb")["result"]
+    # The shallow tip is not offered as a have, or the bundle would be empty
+    # and the rebase would replay the clone's own base onto a parentless tip.
+    assert world.api.calls[-1]["body"]["haves"] == [world.base]
+    assert "depth" not in world.api.calls[-1]["body"]
+    assert result["onto"] == tip and result["conflicts"] == []
+    assert _git(world.clone, "rev-parse", "HEAD~1") == tip
+    assert tip not in (world.clone / ".git" / "shallow").read_text().split()
+    assert _git(world.clone, "rev-list", "--count", f"{world.base}..HEAD") == "5"
+    assert result["head"] != mine
+    pushed = world.spool("git_push_branch", {}, request_id="p1")["result"]
+    assert pushed["new_sha"] == result["head"]
+    bundle = _bundle_of(world.api.calls[-1], tmp_path / "rb.bundle")
+    assert _commits_in(bundle, tmp_path, world.origin, exclude=[tip]) == [result["head"]]
+
+
+def test_a_push_of_work_on_a_depth_1_tip_sends_only_the_tasks_commits(tmp_path: Path):
+    world = World(tmp_path, shallow=True)
+    tip = _long_main(world, commits=3)
+    world.spool("git_fetch", {"ref": "main", "depth": 1}, request_id="d1")
+    _git(world.clone, "reset", "-q", "--hard", "refs/remotes/origin/main")
+    mine = _commit(world.clone, "src/app.py", "x = 1\n", "mine")
+    pushed = world.spool("git_push_branch", {}, request_id="p1")
+    assert pushed["result"]["new_sha"] == mine, pushed
+    bundle = _bundle_of(world.api.calls[-1], tmp_path / "p1.bundle")
+    assert _prerequisites(bundle, world.origin) == [tip]
+    assert _commits_in(bundle, tmp_path, world.origin, exclude=[tip]) == [mine]
+
+
+@pytest.mark.parametrize("depth", [2, 0, "1", True, 1.0, None])
+def test_a_depth_other_than_1_is_refused_before_any_request(world: World, depth):
+    answer = world.spool("git_fetch", {"ref": "main", "depth": depth})
+    assert answer["refused"]["code"] == "bad_depth"
+    assert world.api.calls == []
+
+
+def test_a_rebase_takes_no_depth(world: World):
+    answer = world.spool("git_rebase_onto", {"ref": "main", "depth": 1})
+    assert answer["refused"]["code"] == "request_invalid"
+    assert world.api.calls == []
+
+
+def test_a_plain_fetch_sends_no_depth_and_applies_a_bundle(world: World):
+    moved = world.advance_main("other.txt", "theirs\n", "main moved")
+    answer = world.spool("git_fetch", {"ref": "main"}, request_id="f1")
+    assert "depth" not in answer["result"]
+    assert set(world.api.calls[-1]["body"]) >= {"ref", "haves"}
+    assert "depth" not in world.api.calls[-1]["body"]
+    assert moved not in ((world.clone / ".git" / "shallow").read_text().split()
+                         if (world.clone / ".git" / "shallow").exists() else [])
 
 
 def test_a_rebase_conflict_leaves_the_rebase_in_progress_and_lists_the_paths(world: World):

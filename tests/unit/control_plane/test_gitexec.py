@@ -738,3 +738,97 @@ def test_a_fetch_bundle_can_be_delivered_as_a_file_instead_of_bytes(world) -> No
     [(data, size)] = seen
     assert size == len(data) == fetched.size and _pack_object_count(data) == 3
     assert _scratch_is_empty(world)
+
+
+# ---------------------------------------------------------------------------
+# fetch at depth 1 (#2442): a pack of the tip alone, for a before render
+# ---------------------------------------------------------------------------
+
+
+def _pack_header_count(pack: bytes) -> int:
+    assert pack[:4] == b"PACK"
+    return struct.unpack(">I", pack[8:12])[0]
+
+
+def _long_history(world, commits: int = 40) -> str:
+    """origin/main grows `commits` commits past B, each rewriting one sizeable file."""
+    for i in range(commits):
+        (world["work"] / "big").write_text(secrets.token_hex(2048) + "\n")
+        _git(world["work"], "add", "big")
+        _git(world["work"], "commit", "-q", "-m", f"h{i}")
+    _git(world["work"], "push", "-q", str(world["remote"]), "HEAD:refs/heads/main")
+    return _git(world["work"], "rev-parse", "HEAD")
+
+
+def test_a_depth_1_fetch_delivers_the_tip_alone_under_a_cap_the_bundle_exceeds(world) -> None:
+    tip = _long_history(world)
+    gx = _exec(world)
+    whole = gx.fetch_bundle(url=world["url"], token=_token(), ref="main", haves=[world["b"]])
+    cap = whole.size // 2
+
+    with pytest.raises(GitExecError) as caught:
+        _exec(world, max_bundle_bytes=cap).fetch_bundle(
+            url=world["url"], token=_token(), ref="main", haves=[world["b"]])
+    assert caught.value.code == "too_large"
+
+    shallow = _exec(world, max_bundle_bytes=cap).fetch_bundle(
+        url=world["url"], token=_token(), ref="main", haves=[world["b"]], depth=1)
+    assert shallow.sha == tip and shallow.shallow is True
+    assert shallow.size == len(shallow.bundle) < cap
+    # One commit, its one tree and the one blob of that tree the have B
+    # lacks (`big` as main has it), and not B's two (`a`, `b`).
+    assert _pack_header_count(shallow.bundle) == 1 + 1 + 1
+    assert _scratch_is_empty(world)
+
+    # The pack lands in a depth-1 clone of B once the tip is listed in
+    # .git/shallow (its parent is not there), and its tree reads whole.
+    clone = world["tmp"] / "clone"
+    _git(world["tmp"], "clone", "-q", "--depth=1", "--branch", "swarm/x", world["url"],
+         str(clone))
+    with (clone / ".git" / "shallow").open("a") as handle:
+        handle.write(tip + "\n")
+    subprocess.run(["git", "index-pack", "--strict", "--stdin"], cwd=clone, env=_ENV,
+                   check=True, capture_output=True, input=shallow.bundle)
+    _git(clone, "update-ref", "refs/remotes/origin/main", tip)
+    assert _git(clone, "rev-list", "--count", "refs/remotes/origin/main") == "1"
+    _git(clone, "fsck", "--no-dangling")
+
+
+def test_a_depth_1_fetch_of_what_the_worker_has_delivers_nothing(world) -> None:
+    fetched = _exec(world).fetch_bundle(url=world["url"], token=_token(), ref="main",
+                                        haves=[world["b"]], depth=1)
+    assert (fetched.sha, fetched.bundle, fetched.size) == (world["b"], None, 0)
+
+
+def test_a_depth_1_fetch_can_be_delivered_as_a_file(world) -> None:
+    tip = _long_history(world, commits=3)
+    seen: list[int] = []
+
+    def deliver(path: Path, size: int) -> str:
+        seen.append(_pack_header_count(path.read_bytes()))
+        return "object"
+
+    fetched = _exec(world).fetch_bundle(url=world["url"], token=_token(), ref="main",
+                                        haves=[world["b"]], depth=1, deliver=deliver)
+    assert (fetched.sha, fetched.bundle, fetched.delivered, fetched.shallow) == \
+        (tip, None, "object", True)
+    assert seen == [1 + 1 + 1]
+
+
+@pytest.mark.parametrize("depth", [0, 2, 50, -1, True, "1", 1.0])
+def test_a_depth_other_than_1_is_refused_before_any_git(world, depth) -> None:
+    rec = Recorder()
+    with pytest.raises(GitExecError) as caught:
+        _exec(world, rec).fetch_bundle(url=world["url"], token=_token(), ref="main",
+                                       depth=depth)
+    assert caught.value.code == "bad_depth"
+    assert rec.calls == []
+
+
+def test_a_fetch_without_depth_still_bundles_the_whole_line(world) -> None:
+    _long_history(world, commits=3)
+    fetched = _exec(world).fetch_bundle(url=world["url"], token=_token(), ref="main",
+                                        haves=[world["b"]])
+    assert fetched.shallow is False
+    assert fetched.bundle.startswith(b"# v2 git bundle")
+    assert _pack_object_count(fetched.bundle) == 3 * 3
