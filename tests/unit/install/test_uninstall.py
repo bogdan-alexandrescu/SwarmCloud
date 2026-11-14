@@ -888,6 +888,24 @@ def test_firestore_kept_is_recorded_as_kept():
     assert "was deleted" in gone["firestore-database"].why
 
 
+def test_dns_record_links_the_zone_in_its_own_project():
+    # edge.dns may write the record to a zone that lives in another project;
+    # the console link must open the zone there, not in the deployment's.
+    state = install_state()
+    state.outputs.update({"dns_zone": "edge-zone", "dns_zone_project": "zone-host-project"})
+    by = {r.kind: r for r in remains_mod.survivors(state, {})}
+    assert "zones/edge-zone/details?project=zone-host-project" in by["dns-record"].step
+    assert f"project={PROJECT}" not in by["dns-record"].step
+    assert "zone-host-project" in by["dns-record"].why
+
+
+def test_dns_record_links_the_deployment_project_when_no_zone_project_is_recorded():
+    state = install_state()
+    state.outputs["dns_zone"] = "edge-zone"
+    by = {r.kind: r for r in remains_mod.survivors(state, {})}
+    assert f"zones/edge-zone/details?project={PROJECT}" in by["dns-record"].step
+
+
 def test_real_world_firestore_delete_lifts_its_protection_first():
     from swarm_install.verbs.uninstall import FIRESTORE
 
