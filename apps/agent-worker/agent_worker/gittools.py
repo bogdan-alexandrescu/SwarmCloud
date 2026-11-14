@@ -882,6 +882,11 @@ class GitTools:
             self._shallow_write(new)
         try:
             self._apply_bundle(bundle, sha, local)
+            if self.origin.shallow:
+                # A depth-1 tip fetched earlier (#2442) whose parents this
+                # bundle brings leaves `.git/shallow` too, or the merge base
+                # stays unreadable behind it.
+                self._deepen_shallow(bundle)
         except BaseException:
             if new != old:
                 self._shallow_write(old)

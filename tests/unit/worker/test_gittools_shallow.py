@@ -168,6 +168,26 @@ def test_a_shallow_clone_merging_its_base_publishes(tmp_path: Path):
     assert _git(pr.origin, "rev-parse", f"refs/heads/{OWN_BRANCH}") == merge
 
 
+def test_a_depth_one_fetch_of_the_base_then_a_plain_fetch_merges_and_publishes(tmp_path: Path):
+    """The documented before-render step (#2442) fetches the base at depth 1;
+    a later plain fetch of it must still leave the clone's `.git/shallow`
+    saying where its history now stops, so the merge needs no
+    `--allow-unrelated-histories` and publishes."""
+    pr = PullRequest(tmp_path)
+    assert "refused" not in pr.spool("git_fetch", {"ref": "main", "depth": 1}, request_id="d1")
+    answer = pr.spool("git_fetch", {"ref": "main"}, request_id="f1")
+    assert "refused" not in answer, answer
+    assert answer["result"]["merge_base"] == pr.fork
+    assert pr.main not in pr.shallow_file()
+    assert _git(pr.clone, "merge-base", "HEAD", "origin/main") == pr.fork
+    merge = pr.merge_main()
+    parents = _git(pr.clone, "rev-list", "--parents", "-n", "1", merge).split()[1:]
+    assert parents == [pr.head, pr.main]
+    answer = pr.spool("git_push_branch", {}, request_id="p1")
+    assert "refused" not in answer, answer
+    assert _git(pr.origin, "rev-parse", f"refs/heads/{OWN_BRANCH}") == merge
+
+
 def test_failed_apply_restores_the_shallow_file(tmp_path: Path):
     """The shallow file is written first (H unshallowed, main's cut-off
     added) and the bundle then fails to apply -- here it is not a bundle at
