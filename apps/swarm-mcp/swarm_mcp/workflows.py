@@ -97,6 +97,11 @@ _STEP_KEYS = frozenset(
         # review's verdict, and start its checkout from an upstream's branch.
         "when",
         "builds_on",
+        # A step that starts from its own ref (#2895): a branch, tag or full
+        # sha, written as the step task's `repository_ref`. Sent as given;
+        # swarm-api refuses an abbreviated sha and a ref the forge lacks, and
+        # the combinations it conflicts with (`builds_on`, `pr_role`, ...).
+        "repository_ref",
         # A step that may end SUCCEEDED with no change (#644): the API has taken
         # it since then; until 2026-10-07 this list refused it at the keyboard.
         "allow_empty_diff",
@@ -761,6 +766,17 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
                     "pushed branch this step's checkout starts from"
                 )
             step["builds_on"] = raw["builds_on"]
+        if raw.get("repository_ref") is not None:
+            # THE SHAPE ONLY: a non-empty string, sent as given. An abbreviated
+            # sha, a ref the forge does not have and the keys it may not sit
+            # beside are swarm-api's rules (`check_repository_ref`,
+            # `_check_ref_exists`) and are not restated here.
+            if not isinstance(raw["repository_ref"], str) or not raw["repository_ref"]:
+                raise SwarmError(
+                    f"{where}: repository_ref must be a non-empty branch, tag or full "
+                    "commit sha -- the ref this step's checkout starts from"
+                )
+            step["repository_ref"] = raw["repository_ref"]
         if raw.get("allow_empty_diff") is not None:
             # A real boolean only: `"true"` or 1 reaching the API as a 422 is a
             # worse place to learn it. Sent only when set, so every other
