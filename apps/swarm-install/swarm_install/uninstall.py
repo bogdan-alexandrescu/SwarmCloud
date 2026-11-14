@@ -16,9 +16,9 @@ approval terraform.py's rule asks of every destroy.
 | 3 | `terraform destroy` infra, after a targeted pass lifts `deletion_protection` and its buckets are emptied | deployer | registry, infra, GitHub and alert passes |
 | 4 | the images in the project's registry | deployer | images |
 | 5 | the secrets the engine created (`managed-by=swarm-install`), the Desktop client's included, and the ones swarm-api wrote (`managed-by=swarm-api`, every `swarm-tenant-*`: the teams' forge tokens) | deployer | secrets, Desktop client, GitHub, infra, team |
-| 6 | engine-made IAM bindings; the workspace job's worker accounts and their project bindings; then the installer's impersonation grant on the deployer | owner | bootstrap, identity |
+| 6 | the workspace job's worker accounts and their project bindings; then the installer's impersonation grant on the deployer | owner | bootstrap, identity |
 | 7 | the Firestore database infra abandons; `terraform destroy` bootstrap; the KMS key versions destroyed | owner | bootstrap |
-| 8 | the budget; the "what remains" record written and printed; the state buckets; then, behind its own typed id, the project when stage 1 created it | owner | foundations |
+| 8 | the budget; the A record `edge.dns` wrote to the project's Cloud DNS zone; the "what remains" record written and printed, its console and GitHub pages opened; the state buckets; then, behind its own typed id, the project when stage 1 created it | owner | foundations, edge |
 
 Step 5 is the last that impersonates. Step 6 checks the owner's own rights
 first and stops with exit 4 naming what is missing; it removes the
@@ -47,6 +47,7 @@ one is refused before anything is asked.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,6 +106,9 @@ KEEP: dict[str, tuple[str, ...]] = {
         "google_kms_crypto_key.",
     ),
 }
+
+#: The remains whose page step 8 opens: each needs a person in a console.
+MANUAL_PAGES = ("desktop-client", "github-app", "dns-record")
 
 PLAN_FILE = "swarm-install.tfplan"
 DEPLOYER = "deployer"
@@ -206,8 +210,6 @@ class Teardown(Protocol):
 
     def missing_permissions(self, permissions: Sequence[str]) -> list[str]: ...
 
-    def remove_project_binding(self, role: str, member: str) -> bool: ...
-
     def remove_impersonation_grant(self, deployer: str, member: str) -> bool: ...
 
     def destroy_key_versions(self, key: str) -> int: ...
@@ -229,6 +231,8 @@ class Teardown(Protocol):
     def project_made_by_install(self) -> bool: ...
 
     def delete_project(self) -> None: ...
+
+    def delete_dns_record(self, zone: str, name: str, address: str) -> str: ...
 
 
 # -- the rules a destroy keeps ---------------------------------------------------
@@ -427,6 +431,9 @@ class Uninstall:
     holder: str
     lease: Lease | None = None
     remains_dir: Path | None = None
+    #: The GitHub App owner's account type (`remains.github_account_type`): the
+    #: record's App page is the organisation's or the personal account's.
+    github_account_type: Callable[[str], str] = remains_mod.github_account_type
     state: InstallState = field(init=False)
     approved: str = field(default="", init=False)
 
@@ -624,11 +631,9 @@ class Uninstall:
             raise MissingPermission(
                 f"steps 6-8 run as you, and you lack {', '.join(missing)} on {self.project}: grant them "
                 "(roles/owner holds every one), then run swarm uninstall again to continue")
-        removed = 0
-        for binding in self.state.outputs.get("engine_iam_bindings") or ():
-            role, member = str(binding.get("role")), str(binding.get("member"))
-            refuse_denied("an engine-made IAM binding", [member], self.state.deny_list)
-            removed += int(self.world.remove_project_binding(role, member))
+        # The engine grants no project role outside Terraform (foundations only
+        # removes the default compute account's Editor), so steps 3 and 7's
+        # destroys remove every binding the install made but these.
         # Audit 4e F7: the workspace job (register-tenant.sh --workspace) makes
         # each worker account and its project bindings outside Terraform, so no
         # destroy removes them. Bindings first: a deleted account's binding
@@ -641,7 +646,7 @@ class Uninstall:
             self.world.delete_account(email)
         installer = str(self.state.outputs.get("installer") or self.holder)
         grant = self.world.remove_impersonation_grant(deployer_email(self.project), f"user:{installer}")
-        return (f"{removed} engine-made binding(s) removed; {len(accounts)} workspace account(s) and their "
+        return (f"{len(accounts)} workspace account(s) and their "
                 f"{bindings} project binding(s) removed; impersonation grant "
                 + ("removed" if grant else "already gone"))
 
@@ -706,8 +711,40 @@ class Uninstall:
                 "install's but what this record lists",
             step=f"https://console.cloud.google.com/iam-admin/settings?project={self.project}: Shut down")
 
+    def _dns_record(self) -> None:
+        """Delete the A record edge.dns wrote to the project's own Cloud DNS
+        zone (the owner's rights cover it); a record at a registrar, or one that
+        now holds another address, stays a remain. A refusal is a remain too."""
+        zone = str(self.state.outputs.get("dns_zone") or "")
+        hostname, address = str(self.state.hostname or ""), str(self.state.outputs.get("global_ip") or "")
+        if not zone or not hostname or not address:
+            return
+        refuse_denied("the Cloud DNS zone", [zone], self.state.deny_list)
+        try:
+            done = self.world.delete_dns_record(zone, hostname, address)
+        except Exception as exc:  # the record is listed with its console page instead
+            self.say(redact(f"swarm uninstall: the A record for {hostname} in Cloud DNS zone {zone} was not "
+                            f"deleted ({type(exc).__name__}: {exc})").text[:400])
+            done = remains_mod.DNS_FAILED
+        self._remember(dns_record=done)
+
+    def _open_pages(self, record: remains_mod.Record) -> None:
+        """Open the console and GitHub pages a person still has to act on,
+        the way the install opens its one-time pages."""
+        from .steps import open_page
+
+        for remain in record.remains:
+            if remain.kind not in MANUAL_PAGES or "(not recorded)" in remain.name or "<" in remain.step:
+                continue
+            # Every page the step names: an App whose owner's account type is
+            # unknown names both its organisation and its personal-account page.
+            what = remain.step.rsplit(": ", 1)[-1]
+            for url in re.findall(r"https://[^\s)]+", remain.step):
+                open_page(url.rstrip(":"), why=f"To remove {remain.kind} {remain.name}: {what}", say=self.say)
+
     def _step_state(self, who: str | None) -> str:
         budget = self._budget()
+        self._dns_record()
         delete_project, project = self._project()
         fresh = [vars(r) for r in (budget, project) if r is not None]
 
@@ -719,6 +756,9 @@ class Uninstall:
 
         self.state = self.store.update(relist)
         found = self._found()
+        org = str(self.state.outputs.get("github_org") or "")
+        if org and "github_account_type" not in found:
+            found["github_account_type"] = self.github_account_type(org)
         record = remains_mod.Record(
             project=self.project, environment=self.state.environment, written_at=self.clock.now(),
             remains=remains_mod.survivors(self.state, found),
@@ -726,6 +766,7 @@ class Uninstall:
         path = remains_mod.write(record, self.remains_dir)
         self.say(record.render())
         self.say(f"(written to {path})")
+        self._open_pages(record)
         buckets = [state_bucket(self.project), logs_bucket(self.project)]
         refuse_denied("a state bucket", buckets, self.state.deny_list)
         if self.lease is not None and self.store.bucket is not None:
