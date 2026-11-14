@@ -100,6 +100,8 @@ from quota_broker.accounts import _LABEL as _ACCOUNT_LABEL  # noqa: E402
 from scheduler.dispatch import (  # noqa: E402
     CACHE_STORAGE_CLASS,
     CACHE_VOLUME_GIB,
+    CLAIMED_CACHE_STORAGE_CLASS,
+    RETIRED_CACHE_STORAGE_CLASS,
     backend_deadline_seconds,
     cpu_quantity,
     gke_disk,
@@ -332,6 +334,7 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "QUOTA_EPHEMERAL": re.compile(r"^[0-9]{1,9}(Ki|Mi|Gi|Ti|K|M|G|T)?$"),
     "QUOTA_CACHE_STORAGE": re.compile(r"^[0-9]{1,9}Gi$"),
     "CACHE_STORAGE_CLASS": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
+    "RETIRED_CACHE_STORAGE_CLASS": re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"),
     # Firestore document ids. Underscores are legal here and are exactly why the
     # label spellings have to be sanitised separately.
     "TASK_ID": re.compile(r"^[A-Za-z0-9._-]{1,128}$"),
@@ -1051,6 +1054,9 @@ def policy_values(args: argparse.Namespace) -> dict[str, str]:
             # The dispatcher's own name for the cache's class, so the
             # StorageClass applied and the claim every pod makes cannot differ.
             "CACHE_STORAGE_CLASS": CACHE_STORAGE_CLASS,
+            # The ext4 class it replaced (#4061), applied unchanged for the
+            # claims of pods still running on it.
+            "RETIRED_CACHE_STORAGE_CLASS": RETIRED_CACHE_STORAGE_CLASS,
             # The Terraform tenants' namespaces, which the deployer's scope
             # policy refuses by name (workspace-kinds §3.1).
             "TERRAFORM_NAMESPACES": terraform_namespaces(args.terraform_tfvars),
@@ -1521,6 +1527,11 @@ def render_job(args: argparse.Namespace) -> str:
             "DISK": f"{gke_disk(rc).workspace_gib}Gi",
             "TMP_DISK": f"{gke_disk(rc).tmp_gib}Gi",
             "CACHE_DISK": f"{CACHE_VOLUME_GIB}Gi",
+            # The class the cache claim names: the dispatcher's own
+            # CLAIMED_CACHE_STORAGE_CLASS, so the rendered Job claims what the
+            # dispatched one does (the applied class), while the tenant quota
+            # rendered from tenant_values keeps naming CACHE_STORAGE_CLASS.
+            "CACHE_STORAGE_CLASS": CLAIMED_CACHE_STORAGE_CLASS,
             "HOME_DISK": f"{gke_disk(rc).home_gib}Gi",
             "EPHEMERAL": f"{gke_ephemeral_storage_gib(rc)}Gi",
             # The worker's local scratch volumes and their limits, the

@@ -1585,8 +1585,11 @@ function ScheduleSheet({ scheduleId, go, fold }: { scheduleId: string; go: (to: 
   const title = s?.name ?? scheduleId
   const word = s?.state_word
   const now = useNow()
+  // A DIALOG NAMED BY ITS TITLE, NOT MODAL: the list beside it stays drawn
+  // and usable at desktop width (frame A2), so nothing behind it is inert and
+  // aria-modal is not set.
   return (
-    <aside className="as-sheet" ref={sheet} aria-labelledby={headingId} data-schedule={scheduleId}>
+    <aside className="as-sheet" ref={sheet} role="dialog" aria-labelledby={headingId} data-schedule={scheduleId}>
       <InApp go={go} to={SCHEDULES_ADDRESS} className="as-back" onGo={() => sheetClosed(scheduleId)}>
         ‹ Schedules
       </InApp>
