@@ -68,6 +68,24 @@ runs:
         "${GITHUB_WORKSPACE}/scripts/install-trivy.sh" /usr/local/bin
         trivy --version
 
+    - name: fetch this environment's tfvars
+      # THE IMAGE SWITCHES ARE READ FROM THE DEPLOYMENT'S OWN TFVARS
+      # (scripts/lib/image-switches.sh): an image this environment switches
+      # off -- swarm-speech while its voice_speech.enabled is false -- is
+      # neither promoted nor allowed to block the release. The real tfvars are
+      # not in the checkout (docs/design/generic-repository.md, sections
+      # 2.2-2.3), so resolve.sh fetches them from config/<env>/ in the state
+      # bucket into the runner's temporary directory, outside the checkout,
+      # and fails, naming the object, when the file is missing: without it
+      # every switched-off image would silently count as deployed. Only the
+      # path is passed on.
+      if: steps.order.outputs.superseded != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        file="$(XDG_CACHE_HOME="${RUNNER_TEMP}" ./scripts/lib/resolve.sh tfvars "${ENVIRONMENT}")"
+        echo "SWARM_TFVARS_FILE=${file}" >> "$GITHUB_ENV"
+
     - name: scan and promote the recorded digests
       id: promote
       # THOSE DIGESTS, NOT A TAG. `--manifest` promotes the digest each image

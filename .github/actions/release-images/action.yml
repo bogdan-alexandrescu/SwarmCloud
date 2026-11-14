@@ -48,6 +48,23 @@ runs:
     # here -- correct, but a Cloud Build CI had already judged unnecessary.
     - uses: astral-sh/setup-uv@v7
 
+    - name: fetch this environment's tfvars
+      # THE IMAGE SWITCHES ARE READ FROM THE DEPLOYMENT'S OWN TFVARS
+      # (scripts/lib/image-switches.sh): an image this environment switches
+      # off -- swarm-speech while its voice_speech.enabled is false -- is
+      # neither built, scanned as a gate nor allowed to block the release. The real tfvars are
+      # not in the checkout (docs/design/generic-repository.md, sections
+      # 2.2-2.3), so resolve.sh fetches them from config/<env>/ in the state
+      # bucket into the runner's temporary directory, outside the checkout,
+      # and fails, naming the object, when the file is missing: without it
+      # every switched-off image would silently count as deployed. Only the
+      # path is passed on.
+      shell: bash
+      run: |
+        set -euo pipefail
+        file="$(XDG_CACHE_HOME="${RUNNER_TEMP}" ./scripts/lib/resolve.sh tfvars "${ENVIRONMENT}")"
+        echo "SWARM_TFVARS_FILE=${file}" >> "$GITHUB_ENV"
+
     - name: the images CI built for this commit
       id: images
       # NO SECOND CLOUD BUILD ON A PUSH. `--reuse-ci only` waits for

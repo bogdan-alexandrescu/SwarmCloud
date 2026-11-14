@@ -34,7 +34,8 @@ FOLDED: dict[str, tuple[str, dict[str, str]]] = {
     "security.yml": ("checks", {
         "secrets": "secret scan",
         "policy": "platform policy assertions",
-        "deployment-values": "deployment-values",
+        # `deployment-values` is its own job, never folded: it holds the
+        # pattern list, and the folded job runs the change's own scripts.
     }),
     "terraform.yml": ("offline", {
         "validate": "fmt / validate / tflint",

@@ -574,6 +574,7 @@ CLOUD = "cloud"
 JUDGE = "judge"
 KEEPER = "keeper"
 SUMMARY = "summary"
+GUARD = "guard"
 
 REASONS = {
     CLOUD: (
@@ -588,6 +589,12 @@ REASONS = {
     KEEPER: (
         "only reads its `needs` -- a name-keeper with no action, no checkout and "
         "no secret (CI-FOLD, #1799): a VM create and boot (~52 s) bought it nothing"
+    ),
+    GUARD: (
+        "holds the deployment-values pattern list and runs only the base commit's "
+        "guard over the change checked out as data (docs/design/generic-repository.md, "
+        "section 4.3): read-only, every step before the guard is a credential-less "
+        "checkout, and the list is its only secret"
     ),
     SUMMARY: (
         "only writes a fixed step summary -- no action, no checkout, no `needs`, "
@@ -608,9 +615,6 @@ GUARDED_SECRETS: dict[str, tuple[frozenset[str], str]] = {
     "merge-train.yml:tick": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
     "accept.yml:sandbox": (frozenset({"SWARM_SANDBOX_GITHUB_TOKEN"}), SECRETS_ON_VMS),
     "accept.yml:sandbox-results": (frozenset({"SWARM_SANDBOX_GITHUB_TOKEN"}), SECRETS_ON_VMS),
-    # The deployment-values guard's private pattern list
-    # (docs/design/generic-repository.md, section 4): never on a fork's run.
-    "security.yml:checks": (frozenset({"DEPLOYMENT_PATTERNS"}), SECRETS_ON_VMS),
 }
 
 #: Every job NOT on the guarded expression. Keyed `file:job`.
@@ -649,7 +653,7 @@ HOSTED_JOBS: dict[str, str] = {
     "application.yml:ui": KEEPER,
     "security.yml:secrets": KEEPER,
     "security.yml:policy": KEEPER,
-    "security.yml:deployment-values": KEEPER,
+    "security.yml:deployment-values": GUARD,
     "terraform.yml:validate": KEEPER,
     "terraform.yml:test": KEEPER,
     "terraform.yml:plan-not-run": SUMMARY,
@@ -698,6 +702,22 @@ def _reason_holds(reason: str, job: dict, workflow_permissions: object) -> bool:
         if reason == KEEPER:
             return bare and bool(job.get("needs"))
         return bare and not job.get("needs") and all("GITHUB_STEP_SUMMARY" in s["run"] for s in steps)
+    if reason == GUARD:
+        steps = job.get("steps") or []
+        runs = [i for i, s in enumerate(steps) if "run" in s]
+        before = steps[: runs[0]] if runs else steps
+        return (
+            job.get("permissions") == {"contents": "read"}
+            and _secrets(job) == {"DEPLOYMENT_PATTERNS"}
+            and len(runs) == 1
+            and all(
+                str(s.get("uses", "")).startswith("actions/checkout@")
+                and (s.get("with") or {}).get("persist-credentials") is False
+                for s in before
+            )
+            and "${GITHUB_WORKSPACE}/guard/" in steps[runs[0]]["run"]
+            and steps[runs[0]].get("working-directory") == "pr"
+        )
     if reason == JUDGE:
         return any(
             u.startswith("actions/create-github-app-token@")

@@ -41,8 +41,9 @@ def _jobs() -> dict:
 
 
 def _job() -> dict:
-    """The folded job the guard runs in (CI-FOLD, #1799)."""
-    return _jobs()["checks"]
+    """The guard's own job: never folded into `checks`, whose steps run the
+    change's own scripts while this one holds the pattern list."""
+    return _jobs()["deployment-values"]
 
 
 def _step() -> dict:
@@ -54,22 +55,45 @@ def _script() -> str:
 
 
 def test_the_check_keeps_its_required_name_and_holds_no_credential():
-    """The ruleset requires the check by name: its name-keeper reports the
-    folded step's verdict. The job can never ask for cloud credentials (no
-    id-token, no auth step), and --diff gets the full history it reads."""
-    keeper = _jobs()["deployment-values"]
-    assert keeper["name"] == "deployment-values"
-    assert keeper["needs"] == "checks"
-    assert keeper["steps"][0]["env"]["VERDICT"] == "${{ needs.checks.outputs.deployment-values }}"
+    """The ruleset requires the check by name. The job can never ask for
+    cloud credentials (no id-token, no auth step), and --diff gets the full
+    history it reads."""
     job = _job()
+    assert job["name"] == "deployment-values"
+    assert "needs" not in job
     assert job["permissions"] == {"contents": "read"}
     assert not [s for s in job["steps"] if "google-github-actions/auth" in str(s.get("uses", ""))]
-    checkout = job["steps"][0]
-    assert checkout["uses"].startswith("actions/checkout@")
-    assert checkout["with"]["fetch-depth"] == 0
     assert _step()["id"] == "deployment-values-enforce"
     assert _step()["env"]["DEPLOYMENT_PATTERNS"] == "${{ secrets.DEPLOYMENT_PATTERNS }}"
-    assert job["outputs"]["deployment-values"] == "${{ steps.verdict.outputs.deployment-values }}"
+    assert "deployment-values" not in (_jobs()["checks"].get("outputs") or {})
+    assert not [s for s in _jobs()["checks"]["steps"] if "DEPLOYMENT_PATTERNS" in yaml.safe_dump(s)]
+
+
+def test_it_never_runs_the_change_s_code_while_holding_the_list():
+    """The independent review of 14 November: the guard, its library and its
+    allowlist come from the base commit (guard/); the change is checked out
+    into pr/ as data only, and nothing of it runs before or during the guard.
+    Every step before the guard is a credential-less checkout."""
+    steps = _job()["steps"]
+    at = steps.index(_step())
+    before = steps[:at]
+    assert before and all(str(s.get("uses", "")).startswith("actions/checkout@") for s in before)
+    assert all((s.get("with") or {}).get("persist-credentials") is False for s in before)
+    by_path = {(s.get("with") or {}).get("path"): s["with"] for s in before}
+    assert set(by_path) == {"guard", "pr"}
+    assert by_path["guard"]["ref"] == (
+        "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha "
+        "|| (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}"
+    )
+    assert by_path["pr"]["fetch-depth"] == 0
+    assert _step()["working-directory"] == "pr"
+    assert '"${GITHUB_WORKSPACE}/guard/scripts/guards/deployment-values.sh"' in _script()
+    for line in _script().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or "GITHUB_WORKSPACE}/guard/" in stripped:
+            continue
+        assert "scripts/" not in stripped, f"the guard step runs the change's own script: {stripped}"
+    assert steps[at + 1:] == []
 
 
 def test_it_runs_on_every_pull_request_and_on_main():
@@ -80,7 +104,7 @@ def test_it_runs_on_every_pull_request_and_on_main():
     # (tests/unit/scripts/test_fast_checks_on_lane_prs.py) skips a lane's
     # pull request and nothing else, so the only condition is that clause.
     assert _job()["if"] == (
-        "${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') "
+        "${{ !cancelled() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') "
         "&& github.event.pull_request.head.repo.full_name == github.repository) }}"
     )
 
@@ -109,7 +133,12 @@ def lane(tmp_path: Path) -> dict:
     # A name the pattern list holds, built at run time so no file holds it.
     word = "zq" + secrets.token_hex(5)
     _, listed = guard.stamp(f"C9\tliteral\t{word}\n")
-    return {"root": root, "word": word, "list": listed, "tmp": tmp_path}
+    # The runner's workspace: guard/ is the base commit's checkout (this
+    # checkout stands in for it), and the lane's repository is pr/.
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "guard").symlink_to(REPO)
+    return {"root": root, "word": word, "list": listed, "tmp": tmp_path, "workspace": workspace}
 
 
 def _add(lane: dict, line: str) -> None:
@@ -127,7 +156,8 @@ def _run(lane: dict, *, event: str = "pull_request", fork: bool = False, pattern
         "GITHUB_ACTIONS": "true",
         "SWARM_ENV_FILE": str(lane["tmp"] / "no.env"),
         "EVENT": event,
-        "BASE_REF": "main" if event == "pull_request" else "",
+        "PR_BASE": _git(lane["root"], "rev-parse", "origin/main") if event == "pull_request" else "",
+        "GITHUB_WORKSPACE": str(lane["workspace"]),
         "QUEUE_BASE": "",
         "FORK": "true" if fork else "false",
         "DEPLOYMENT_PATTERNS": lane["list"] if patterns is None else patterns,
@@ -145,6 +175,20 @@ def test_a_pull_request_adding_a_listed_value_is_red_and_never_prints_it(lane):
     proc = _run(lane)
     assert proc.returncode == 1, proc.stdout + proc.stderr
     assert "notes.md:1 C9 list:" in proc.stdout
+    assert lane["word"] not in proc.stdout + proc.stderr
+
+
+def test_marking_files_binary_never_hides_an_added_line(lane):
+    """The re-review of 14 November: a change that adds `* -diff` to
+    .gitattributes made git print "Binary files differ" for every modified
+    file, so the guard saw none of its added lines. The guard diffs as text."""
+    (lane["root"] / ".gitattributes").write_text("* -diff\n", encoding="utf-8")
+    (lane["root"] / "README.md").write_text(f"A clean file.\nnow {lane['word']}\n", encoding="utf-8")
+    _git(lane["root"], "add", ".gitattributes", "README.md")
+    _git(lane["root"], "commit", "-q", "-m", "hide")
+    proc = _run(lane)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "README.md:2 C9" in proc.stdout
     assert lane["word"] not in proc.stdout + proc.stderr
 
 

@@ -418,7 +418,10 @@ def diff_sources(root: Path, base: str) -> Iterator[Source]:
     """Only the lines added since the merge base with `base`, from the files at HEAD."""
     added = set(_git("diff", "--no-renames", "--name-only", "--diff-filter=A", "-z", f"{base}...HEAD",
                      cwd=root).split("\0")) - {""}
-    patch = _git("diff", "--no-color", "--no-renames", "--no-ext-diff", "--unified=0", f"{base}...HEAD", cwd=root)
+    # --text --no-textconv: a change could otherwise mark its files binary in
+    # .gitattributes (`* -diff`) and hide every added line from this guard.
+    patch = _git("diff", "--no-color", "--no-renames", "--no-ext-diff", "--text", "--no-textconv",
+                 "--unified=0", f"{base}...HEAD", cwd=root)
     wanted: dict[str, set[int]] = {}
     current: str | None = None
     for line in patch.splitlines():

@@ -54,7 +54,7 @@ concurrency:
   cancel-in-progress: false
 
 # RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
-# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# (id-token) runs on the self-hosted runner pool's VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
 # GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
@@ -71,8 +71,9 @@ jobs:
       contents: read   # checkout of the script and scripts/lib/common.sh
       id-token: write  # the OIDC token WIF exchanges for the deployer's
     env:
-      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      DEPLOYER_SA: ${{ vars.GCP_DEPLOY_SA }}
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      DEPLOYER_SA: ${{ secrets.GCP_DEPLOY_SA }}
     steps:
       - name: refuse any ref but main
         # Before checkout and before auth: nothing on another ref is trusted
@@ -96,8 +97,8 @@ jobs:
       - id: auth
         uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 

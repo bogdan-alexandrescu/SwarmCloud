@@ -85,7 +85,7 @@ env:
   TRIVY_VERSION: "0.74.0"
 
 # RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
-# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# (id-token) runs on the self-hosted runner pool's VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
 # GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
@@ -169,16 +169,18 @@ jobs:
       superseded: ${{ steps.after.outputs.superseded == 'true' }}
     env:
       ENVIRONMENT: dev
-      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
+      # release-images fetches this environment's tfvars from the state bucket.
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
     steps:
       - uses: actions/checkout@v5
 
       - id: auth
         uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
@@ -196,7 +198,7 @@ jobs:
         # ships main's head and fails here as it always did.
         continue-on-error: ${{ github.event_name == 'push' }}
 
-      # A BUILD A NEWER PUSH CANCELLED ENDS THE HOTFIX GREEN (BGD, 2026-10-26,
+      # A BUILD A NEWER PUSH CANCELLED ENDS THE HOTFIX GREEN (the owner, 2026-10-26,
       # part of #2441). Since #2438 application.yml runs all of main in one
       # group with cancel-in-progress, so a newer push can cancel this
       # commit's `build images` before it records anything, and the stage
@@ -274,9 +276,9 @@ jobs:
       id-token: write
     env:
       ENVIRONMENT: dev
-      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
     steps:
       # Full history: the order guard asks git whether the commit already out
       # is an ancestor of this one.
@@ -287,8 +289,8 @@ jobs:
       - id: auth
         uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
@@ -309,9 +311,9 @@ jobs:
       id-token: write
     env:
       ENVIRONMENT: dev
-      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -320,8 +322,8 @@ jobs:
       - id: auth
         uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
@@ -355,9 +357,9 @@ jobs:
       id-token: write
     env:
       ENVIRONMENT: dev
-      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
-      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -367,8 +369,8 @@ jobs:
       - id: auth
         uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
@@ -427,7 +429,7 @@ jobs:
       # --confirm` by hand. scripts/roll-live-relay.sh applies it through that
       # same apply.sh path (its manifest checks and the live-ingress parity
       # check), waits for `rollout status`, and fails unless the relay's pods
-      # run the rendered digest. It refuses the shared agents-staging cluster.
+      # run the rendered digest. It refuses the other team's cluster in the shared project.
       # With enable_live_browser off it notices and exits 0.
       #
       # Its own uv setup and sync, NOT switched by vars.APPLY_TENANT_NAMESPACES:
@@ -492,7 +494,7 @@ jobs:
         # relay, in the same stream), but nothing waited for it to roll or
         # read back what it runs. scripts/roll-egress.sh is
         # roll-live-relay.sh --component egress: the same apply.sh path, the
-        # same agents-staging refusal, then `rollout status` and the digest
+        # same other-team-cluster refusal, then `rollout status` and the digest
         # check for swarm-egress. Its Python is the relay's, synced above.
         # No continue-on-error: a forwarder left on the old image fails every
         # proxied browser attempt closed. enable_browser_egress false is a
@@ -507,7 +509,7 @@ jobs:
         # swarm-graph, the Deployment swarm-system/swarm-graph on
         # swarm-autopilot, is rendered by terraform/infra/graph_service.tf as
         # `swarm_graph_manifest`, null until graph_service.serve. This applies
-        # it through kubernetes/apply.sh --swarm-graph (the same agents-staging
+        # it through kubernetes/apply.sh --swarm-graph (the same other-team-cluster
         # refusal), waits for `rollout status deploy/swarm-graph` and checks
         # its pods run the manifest's digest. Not served is a notice, not a
         # failure, and then gcloud and the cluster are asked nothing.
@@ -523,7 +525,7 @@ jobs:
         # on swarm-autopilot, is rendered by terraform/infra/typesafe_fwd.tf
         # as `swarm_typesafe_fwd_manifest`, null until
         # typesafe_forwarder.serve. This applies it through
-        # kubernetes/apply.sh --swarm-typesafe-fwd (the same agents-staging
+        # kubernetes/apply.sh --swarm-typesafe-fwd (the same other-team-cluster
         # refusal), waits for `rollout status deploy/swarm-typesafe-fwd` and
         # checks its pod runs the manifest's digest. Not served is a notice,
         # not a failure, and then gcloud and the cluster are asked nothing.
@@ -539,7 +541,7 @@ jobs:
         # swarm-voice, the one-replica StatefulSet swarm-system/swarm-voice on
         # swarm-autopilot, is rendered by terraform/infra/voice.tf as
         # `swarm_voice_manifest`, null until voice_it = "on". This applies it
-        # through kubernetes/apply.sh --swarm-voice (the same agents-staging
+        # through kubernetes/apply.sh --swarm-voice (the same other-team-cluster
         # refusal, and swarm-autopilot only), waits for `rollout status
         # statefulset/swarm-voice` and checks its pod runs the manifest's
         # digest. Not served is a notice, not a failure, and then gcloud and
