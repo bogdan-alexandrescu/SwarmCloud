@@ -88,7 +88,10 @@ from . import console_view as cv  # noqa: E402
 from .firestore_rules import StrictFirestore, path_errors  # noqa: E402
 
 ENGINE_DOC = engine_record.engine_document(ENV)
-REPOSITORIES = (f"{ORG}/demo", f"{ORG}/api")
+#: The dedicated test repository the smoke and the verify runs open their pull
+#: requests on, beside two product repositories that sort before it.
+TEST_REPO = f"{ORG}/swarm-install-test"
+REPOSITORIES = (f"{ORG}/demo", f"{ORG}/api", TEST_REPO)
 #: A teammate invited after the team is made.
 DAVE = "dave@example.com"
 #: Steps the engine has passed at hand-off, and its own hand-off step, by
@@ -527,7 +530,7 @@ def team_walk(walk, setup_app, db, github, pool, directory, runs) -> Console:
     assert view["finished"]["by"] == ROOT
     started = view["verify_runs"]
     assert started["task"] and started["workflow"]
-    assert started["repository"] in REPOSITORIES
+    assert started["repository"] == TEST_REPO
     assert started["retries"] == {"task": 0, "workflow": 0}
     assert runs.workflows[0]["tenant"] == team
     # A failed run is started again on the page's next read; the route the
@@ -601,7 +604,7 @@ def individual_walk(walk, setup_app, db, github, pool, runs) -> Console:
     assert cv.norm_finish(console.call(cv.FINISH))["at"]
     assert not db.paths(f"swarm-install/{ENV}/teams/")
     started = console.page()["verify_runs"]
-    assert started["task"] and started["workflow"] and started["repository"] in REPOSITORIES
+    assert started["task"] and started["workflow"] and started["repository"] == TEST_REPO
     assert runs.workflows[0]["tenant"] == tenant
     assert cv.norm_verify_runs(console.call(cv.VERIFY_RUNS)) == started
     engine_sees_finished(console, tenant=tenant, one_person=True)

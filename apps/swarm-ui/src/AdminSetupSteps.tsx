@@ -52,7 +52,10 @@
  * its label in the first workspace's pool, not only once `finish` stamped
  * `signed_in_at`. The hand-over waits for the smoke's `succeeded` (the route's
  * word), as `finish` does, and a failed smoke has a Retry
- * (`POST /v1/admin/setup/smoke`). The team form links Google Admin's groups
+ * (`POST /v1/admin/setup/smoke`). The smoke and the console's verify runs
+ * open their pull requests on the TEST REPOSITORY (`TestRepositoryPick`): an
+ * admin's pick among the grant's repositories, else `<org>/swarm-install-test`
+ * (`GET`/`PUT /v1/admin/setup/test-repository`). The team form links Google Admin's groups
  * page and shows the route's refusal when the group cannot be read or the
  * installer is not in it. The App self-check waits, disabled with its reason,
  * until stage 9 reports infra pass 3, and `app_id_not_configured` reads as
@@ -86,6 +89,7 @@ import {
   startGitHubApp,
   startSetupVerifyRuns,
   undoSetupPluginsSkip,
+  USE_FIXTURES,
   type ApiError,
   type Result,
   type SetupAccount,
@@ -103,7 +107,8 @@ import {
   type SetupVerifyRuns,
   VERIFY_RUN_RETRIES,
 } from './api'
-import { Banner, Button, ButtonLink, Card, Chip, CodeBlock, ToneMark, type MarkTone } from './components'
+import { Banner, Button, ButtonLink, Card, Chip, CodeBlock, ToneMark, Tooltip, buttonClass, type MarkTone } from './components'
+import { read, route, write } from './fetch'
 import { ADMIN_PLUGIN_ADD_PATH, adminPluginPath } from './AdminPlugins'
 import { agentPath } from './OverviewRegions'
 import { OWN_SIGN_IN_WINDOW } from './SetupLink'
@@ -129,6 +134,18 @@ export function releaseChannel(release: string | null): string {
  */
 export function pluginMarketplace(channel: string): string {
   return channel === 'stable' ? PLUGIN_MARKETPLACE : `https://storage.googleapis.com/swarmcloud/channels/${channel}.marketplace.json`
+}
+
+/**
+ * The marketplace a teammate adds: the recorded release's own,
+ * `releases/<version>/marketplace.json` (published with the release, never
+ * overwritten), so the plugin matches the release the deployment runs; a
+ * channel's moves on with its next promotion. Before a release is recorded,
+ * the channel's.
+ */
+export function teammateMarketplace(release: string | null): string {
+  const pinned = release?.trim()
+  return pinned ? `https://storage.googleapis.com/swarmcloud/releases/${pinned}/marketplace.json` : pluginMarketplace(releaseChannel(release))
 }
 
 /** How often the page re-reads while it is open: the verify row's refresh (§5.1). */
@@ -262,7 +279,7 @@ function untilWords(iso: string | null, nowMs: number): string | null {
 
 /** The one line a teammate runs: the deployment URL is its only value, from the marketplace of the release the engine recorded. */
 export function pluginLine(hostname: string, release: string | null): string {
-  return `claude plugin marketplace add ${pluginMarketplace(releaseChannel(release))} && claude plugin install sc@swarmcloud --config deployment_url=https://${hostname}`
+  return `claude plugin marketplace add ${teammateMarketplace(release)} && claude plugin install sc@swarmcloud --config deployment_url=https://${hostname}`
 }
 
 /** The page's clock: the given instant (a test, a capture) or the browser's, ticking each second. */
@@ -891,6 +908,58 @@ function teamPeople(team: SetupTeam): SetupMember[] {
   return team.members.length > 0 ? team.members : team.invites.map((email) => ({ email, member: null }))
 }
 
+/** The phone tip's vertical anchor: under its (i) in the viewport's top half, above it in the bottom half. */
+export function aboutTipAnchor(button: DOMRect, viewport: number, gap = 8): { top: string; bottom: string } {
+  return button.top + button.height / 2 <= viewport / 2
+    ? { top: `${Math.round(button.bottom + gap)}px`, bottom: 'auto' }
+    : { top: 'auto', bottom: `${Math.round(viewport - button.top + gap)}px` }
+}
+
+/** An (i) whose words are help, kept out of the surface (`Tooltip`'s `data-help-description`). */
+function About({ about, tip }: { about: string; tip: string }) {
+  // On a phone the tip is `position: fixed` (onboarding.css), and a fixed box
+  // with `top: auto` sits at its UNSCROLLED static position: `.ctl-scroll`'s
+  // offset is not in it, so the open tip landed hundreds of pixels below its
+  // (i). It is anchored from the button's viewport box instead, measured when
+  // it opens and again on any scroll while it is open.
+  const host = useRef<HTMLSpanElement>(null)
+  const [open, setOpen] = useState(false)
+  const place = useCallback(() => {
+    const el = host.current
+    const button = el?.querySelector('button')
+    if (!el || !button) return
+    const at = aboutTipAnchor(button.getBoundingClientRect(), window.innerHeight)
+    el.style.setProperty('--ob-tip-top', at.top)
+    el.style.setProperty('--ob-tip-bottom', at.bottom)
+  }, [])
+  useEffect(() => {
+    if (!open) return
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [open, place])
+  const opening = () => {
+    place()
+    setOpen(true)
+  }
+  return (
+    // `ob-about`: on a phone its tip spans the viewport (onboarding.css), never past 390.
+    <span className="ob-about" ref={host} onFocus={opening} onMouseEnter={opening} onBlur={() => setOpen(false)} onMouseLeave={() => setOpen(false)}>
+      <Tooltip tip={tip}>
+        <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label={`About ${about}`} style={{ marginBlock: -6, verticalAlign: 'middle' }}>
+          <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <circle cx="12" cy="12" r="8.5" />
+            <path d="M12 11v5.5M12 7.75v.01" />
+          </svg>
+        </button>
+      </Tooltip>
+    </span>
+  )
+}
+
 function grantFact(g: SetupGrant | null, org: string, whose: string = 'the team'): Fact {
   if (g === null) return { state: 'in_progress', name: 'Repository grant', text: `${whose}’s grant over the repositories the GitHub App installation on ${org} covers; read on the next refresh` }
   if (g.state === 'granted' && g.repositories.length > 0) {
@@ -898,7 +967,13 @@ function grantFact(g: SetupGrant | null, org: string, whose: string = 'the team'
     return {
       state: 'done',
       name: 'Repository grant',
-      text: `${whose} may write to the ${n === 1 ? 'repository' : `${n} repositories`} the App installation${g.account === null ? '' : ` on ${g.account}`} covers: ${g.repositories.join(', ')}`,
+      text: (
+        <>
+          {n === 1 ? 'one repository' : `${n} repositories`}
+          {g.account === null ? '' : ` on ${g.account}`}{' '}
+          <About about="the repository grant" tip={`${whose} may write to the repositories the App installation covers: ${g.repositories.join(', ')}`} />
+        </>
+      ),
     }
   }
   if (g.state === 'waiting_for_repositories') {
@@ -921,6 +996,117 @@ function grantFact(g: SetupGrant | null, org: string, whose: string = 'the team'
     }
   }
   return { state: 'in_progress', name: 'Repository grant', text: `waits for the GitHub App to be installed on ${org}` }
+}
+
+/** The dedicated test repository's name in the GitHub organisation (`routes/setup.py` TEST_REPOSITORY). */
+export const TEST_REPOSITORY = 'swarm-install-test'
+
+const TEST_REPOSITORY_ROUTE = '/v1/admin/setup/test-repository'
+
+/** `GET`/`PUT /v1/admin/setup/test-repository`: the repository in use (null: none), the default, the choice. */
+export interface TestRepositoryView {
+  test_repository: string | null
+  default: string
+  repositories: string[]
+}
+
+/** The grant's organisation: its account, else the owner part of its first repository. */
+function grantOrg(g: SetupGrant, org: string): string {
+  return g.account ?? g.repositories.map((r) => r.split('/')[0]).find((o) => o !== '') ?? org
+}
+
+/**
+ * The test repository as far as the grant alone says it: `<org>/swarm-install-test`
+ * when the grant covers it (in the grant's spelling), else none. The route's
+ * answer, which also knows an admin's pick, replaces it once read.
+ */
+export function grantTestRepository(g: SetupGrant, org: string): TestRepositoryView {
+  const fallback = `${grantOrg(g, org)}/${TEST_REPOSITORY}`
+  const found = g.repositories.find((r) => r.toLowerCase() === fallback.toLowerCase()) ?? null
+  return { test_repository: found, default: fallback, repositories: g.repositories }
+}
+
+function normTestRepository(raw: unknown, base: TestRepositoryView): TestRepositoryView {
+  const o = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
+  const repositories = Array.isArray(o.repositories) ? o.repositories.filter((r): r is string => typeof r === 'string' && r !== '') : base.repositories
+  return {
+    test_repository: typeof o.test_repository === 'string' && o.test_repository !== '' ? o.test_repository : null,
+    default: typeof o.default === 'string' && o.default !== '' ? o.default : base.default,
+    repositories,
+  }
+}
+
+/**
+ * Where the smoke and the console's verify runs open their pull requests: the
+ * test repository, and a select of the grant's repositories to pick another
+ * (`PUT /v1/admin/setup/test-repository`, then the page reads again). A pick
+ * starts nothing: a failed smoke keeps its Retry.
+ */
+export function TestRepositoryPick({ grant, org, onChanged }: { grant: SetupGrant; org: string; onChanged: () => void }) {
+  const base = grantTestRepository(grant, org)
+  const key = grant.repositories.join(',')
+  const [served, setServed] = useState<TestRepositoryView | null>(null)
+  // A read asked before a pick answers the old value: it is dropped once a pick is made.
+  const picks = useRef(0)
+  const act = useAction(onChanged)
+  useEffect(() => {
+    if (USE_FIXTURES) return undefined
+    let alive = true
+    const asked = picks.current
+    void read<unknown>(route(TEST_REPOSITORY_ROUTE), () => false).then((r) => {
+      if (alive && asked === picks.current && (r.status === 'ok' || r.status === 'stale')) setServed(normTestRepository(r.data, grantTestRepository(grant, org)))
+    })
+    return () => {
+      alive = false
+    }
+    // The grant's repositories are what a fresh read can change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key])
+  const view = served ?? base
+  const pick = (repository: string) => {
+    picks.current += 1
+    act.run(
+      'test-repository',
+      async (): Promise<Result<TestRepositoryView>> => {
+        if (USE_FIXTURES) return { status: 'ok', data: { ...view, test_repository: repository }, fetchedAt: Date.now() }
+        const r = await write(route(TEST_REPOSITORY_ROUTE), 'PUT', { repository })
+        if (r.status === 'ok' || r.status === 'stale') return { status: 'ok', data: normTestRepository(r.data, view), fetchedAt: Date.now() }
+        return r.status === 'error' ? r : { status: 'ok', data: { ...view, test_repository: repository }, fetchedAt: Date.now() }
+      },
+      (d) => setServed(d),
+    )
+  }
+  return (
+    <div className="ob-ws" data-test-repository="">
+      <p className="ob-line ur-hint">
+        <b>Test repository</b> {view.test_repository === null ? `Create ${view.default} or pick a repository` : <code>{view.test_repository}</code>}{' '}
+        <About about="the test repository" tip="The smoke and the console's verify runs open their pull requests here, never on a product repository. Pick another repository of the grant to use it instead." />
+      </p>
+      <select
+        className="c-inp"
+        aria-label="Pick the test repository"
+        style={{ maxWidth: '100%' }}
+        value={view.test_repository ?? ''}
+        disabled={act.busy === 'test-repository'}
+        onChange={(e) => {
+          if (e.target.value !== '') pick(e.target.value)
+        }}
+      >
+        {view.test_repository === null && <option value="" disabled />}
+        {view.repositories.map((r) => (
+          <option key={r} value={r}>
+            {r}
+          </option>
+        ))}
+      </select>
+      <ErrorLine error={act.error} />
+    </div>
+  )
+}
+
+/** The grant a test repository can be picked from: granted, with at least one repository. */
+function pickable(g: SetupGrant | null): g is SetupGrant {
+  return g !== null && g.state === 'granted' && g.repositories.length > 0
 }
 
 /** The first workspace's smoke, in the route's words: `succeeded` is done, `failed` is failed (finding 20). */
@@ -1110,6 +1296,7 @@ function personalRow(state: SetupState, onChanged: () => void): Row {
     body: (
       <>
         <Facts items={facts} label="First workspace" />
+        {pickable(p.grant) && <TestRepositoryPick grant={p.grant} org={state.github_org ?? ''} onChanged={onChanged} />}
         <SmokeRetry smoke={p.smoke} onChanged={onChanged} />
       </>
     ),
@@ -1146,6 +1333,7 @@ export function teamRow(state: SetupState, onChanged: () => void, nowMs: number)
     body: (
       <>
         <Facts items={teamFacts(team, signedIn, nowMs, state.github_org ?? 'your GitHub organisation')} label="First team" />
+        {pickable(team.grant) && <TestRepositoryPick grant={team.grant} org={state.github_org ?? ''} onChanged={onChanged} />}
         <SmokeRetry smoke={team.smoke} onChanged={onChanged} />
         <InviteControl team={team} onChanged={onChanged} />
         {failed && <TeamRetry team={team} onChanged={onChanged} />}
