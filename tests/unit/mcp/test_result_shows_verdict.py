@@ -71,3 +71,19 @@ def test_a_verdict_file_that_does_not_read_says_so(swarm, world):
     shown = _result(swarm, "task_u")["verdict"]
     assert shown["verdict"] is None
     assert "LGTM" in shown["unavailable_because"]
+
+
+def test_a_review_the_size_gate_skipped_shows_skipped_never_merge(swarm, world):
+    """#4101: the gate's verdict says SKIPPED and why; a reader of `verdict`
+    alone must not take an unreviewed change for an approval."""
+    reason = "review skipped: 12 changed lines (the gate runs a review from 300)"
+    body = json.dumps({"verdict": "SKIPPED", "findings": [], "skipped": reason})
+    _finish(world, "task_s", body=body)
+
+    shown = _result(swarm, "task_s")["verdict"]
+
+    # MUTATION: drop the SKIPPED branch in `server._verdict_of` and this is
+    # `{"verdict": None, "unavailable_because": ...}`.
+    assert shown == {"verdict": "SKIPPED", "skipped": reason, "findings": 0, "file": NAME}
+    assert shown["verdict"] != "MERGE"
+    assert server.SKIPPED_VERDICT == "SKIPPED"
