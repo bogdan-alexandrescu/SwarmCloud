@@ -25,6 +25,14 @@ import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 
 const WAIT = { timeout: 4000 }
+/** The open modal dialog (Overlay's `.c-dlg`): the schedule sheet is a dialog too, not a modal one. */
+const modal = () => document.querySelector<HTMLElement>('.c-dlg')
+const findModal = () =>
+  waitFor(() => {
+    const d = modal()
+    expect(d).not.toBeNull()
+    return d!
+  }, WAIT)
 const PHONE: CascadeEnv = { width: 390 }
 const DESK: CascadeEnv = { width: 1280 }
 
@@ -158,7 +166,7 @@ describe('the delete dialog on a phone (automate2-21)', () => {
     // MUTATION: drop the `.sc-del-acts` wrapper or its phone rule and the actions wrap as two rows at 36px.
     await mountSheet(() => null)
     fireEvent.click(within(head()).getByRole('button', { name: 'Delete…' }))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await findModal()
     const acts = dialog.querySelector<HTMLElement>('.sc-del-acts')
     expect(acts).not.toBeNull()
     const keep = within(dialog).getByRole('button', { name: 'Keep it' })

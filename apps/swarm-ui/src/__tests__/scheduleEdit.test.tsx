@@ -36,6 +36,14 @@ import { painted } from './marks'
 import { addressToPath, pathToAddress } from '../paths'
 
 const WAIT = { timeout: 4000 }
+/** The open modal dialog (Overlay's `.c-dlg`): the schedule sheet is a dialog too, not a modal one. */
+const modal = () => document.querySelector<HTMLElement>('.c-dlg')
+const findModal = () =>
+  waitFor(() => {
+    const d = modal()
+    expect(d).not.toBeNull()
+    return d!
+  }, WAIT)
 const PHONE: CascadeEnv = { width: 390 }
 
 type Json = Record<string, unknown>
@@ -430,7 +438,7 @@ describe('the SD3 merge switch', () => {
   /** Step one, then step two with the name typed, then Switch now. */
   async function switchTyped(name = 'Weekday sweep') {
     fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await findModal()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Switch to automatic merging' }))
     const box = await within(dialog).findByRole('textbox', undefined, WAIT)
     fireEvent.change(box, { target: { value: name } })
@@ -441,7 +449,7 @@ describe('the SD3 merge switch', () => {
   it('switches to automatic in two steps with the revision, and the page reads the schedule again', async () => {
     const { calls } = await gateTab((m, url) => (m === 'POST' && url === MODE ? { status: 200, body: { schedule: schedule({ revision: 3, gate: { merge: 'auto' } }) } } : null))
     fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await findModal()
     // §4.4, said where the decision is made, behind Details (owner review
     // 2026-10-11): workflow files are refused, and outside a platform
     // repository the holds are a second member's.
@@ -480,7 +488,7 @@ describe('the SD3 merge switch', () => {
       return null
     })
     fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await findModal()
     // Blocked, the primary reads "Switch to automatic", with no ellipsis: nothing follows a click.
     const sw = () => within(dialog).getByRole('button', { name: 'Switch to automatic' }) as HTMLButtonElement
     // MUTATION: drop `useSwitchBlock` and the button is live for the person the dialog says cannot switch.
@@ -505,7 +513,7 @@ describe('the SD3 merge switch', () => {
         return null
       })
       fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
-      const dialog = await screen.findByRole('dialog', undefined, WAIT)
+      const dialog = await findModal()
       // Let the reads land, then the button is still live: a rename is not a gate edit,
       // and a personal tenant's one member types the name instead.
       await waitFor(() => expect(view.calls.some((c) => c.url.startsWith('/v1/schedules/sch_a/audit'))).toBe(true), WAIT)
@@ -528,9 +536,9 @@ describe('the SD3 merge switch', () => {
     const trigger = await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT)
     ;(document.activeElement as HTMLElement | null)?.blur()
     fireEvent.click(trigger)
-    await screen.findByRole('dialog', undefined, WAIT)
+    await findModal()
     fireEvent.keyDown(document, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    await waitFor(() => expect(modal()).toBeNull(), WAIT)
     // MUTATION: drop the focus in `close` and this is <body>.
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Merge automatically…' })), WAIT)
   })
