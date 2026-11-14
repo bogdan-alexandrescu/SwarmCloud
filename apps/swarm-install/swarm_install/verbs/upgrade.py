@@ -99,7 +99,10 @@ NAME = "upgrade"
 HELP = "upgrade the deployment to release V: plan, approve IAM changes, apply in order, check, roll back on failure"
 
 _PROJECT_ID = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
-_VERSION = re.compile(r"^v?\d+(\.\d+)*(-[0-9A-Za-z.-]+)?$")
+#: A release name as the release path is published under (scripts/release/
+#: marketplace.py `RELEASE_NAME`): `YYYY.MM.N` or `YYYY.MM.N-rc.N`, no `v`.
+#: `--to` and the channel's answer take only this; anything looser 404s at releases/V/.
+RELEASE_NAME = re.compile(r"\A(\d{4})\.(\d{2})\.(\d+)(?:-rc\.(\d+))?\Z")
 _ENV = re.compile(r"^[a-z][a-z0-9-]{0,29}$")
 
 #: Stage 14's quick checks: what `swarm doctor` runs after a release.
@@ -144,7 +147,7 @@ def _check(pattern: re.Pattern[str], what: str) -> Any:
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--to", default=None, type=_check(_VERSION, "a release version"),
+    parser.add_argument("--to", default=None, type=_check(RELEASE_NAME, "a release name (YYYY.MM.N or YYYY.MM.N-rc.N)"),
                         help="the release to upgrade to, e.g. 2026.11.1 (default: the release the deployment's "
                              "channel names now, shown with its notes before the typed approval)")
     parser.add_argument("--project", required=True, type=_check(_PROJECT_ID, "a Google Cloud project id"),
@@ -180,7 +183,7 @@ def channel_release(read_public: Any, running: str | None) -> str:
 
     channel = channel_of(running)
     found = read_public(f"{RELEASE_HOME}/channels/{channel}").decode().strip()
-    if not _VERSION.match(found):
+    if not RELEASE_NAME.match(found):
         raise UpgradeRefused(f"channels/{channel} names {found[:60]!r}, which is not a release")
     return found
 
@@ -578,17 +581,23 @@ class LiveWorld:
             print(f"swarm upgrade: the GitHub App's permissions could not be read after the deploy "
                   f"({type(exc).__name__}); check them on the App's settings page: {self._app_settings_url()}")
 
+    def github_account_type(self, login: str) -> str:
+        """The App owner's account type, from GitHub's public users API (no credential)."""
+        from ..remains import github_account_type
+
+        return github_account_type(login)
+
     def _app_settings_url(self) -> str:
-        """The App's settings page, from the install's record of it (no GitHub read)."""
+        """The App's settings page, from the install's record of it, under the
+        organisation or the personal account GitHub's public users API says owns it."""
+        from ..remains import github_app_url
+
         record = self._app_record()
         slug = str(record.get("slug") or "")
         owner = str(record.get("installed_on") or self.store.load().outputs.get("github_org") or "")
         if not slug:
             return "https://github.com/settings/apps"
-        if owner:
-            return (f"https://github.com/organizations/{owner}/settings/apps/{slug} (an App owned by a personal "
-                    f"account: https://github.com/settings/apps/{slug})")
-        return f"https://github.com/settings/apps/{slug}"
+        return github_app_url(owner, slug, self.github_account_type(owner) if owner else "")
 
     def release_app_permissions(self, version: str) -> dict[str, str] | None:
         from ..steps.bootstrap import workdir

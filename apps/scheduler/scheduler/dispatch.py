@@ -275,6 +275,15 @@ CACHE_STORAGE_CLASS = "swarm-cache-pd-balanced-xfs"
 #: The ext4 class every claim used before #4061. Kept, never edited, until no
 #: running pod holds a claim on it; nothing new is created on it.
 RETIRED_CACHE_STORAGE_CLASS = "swarm-cache-pd-balanced"
+#: The class every pod's cache claim names TODAY. The release does not apply
+#: cluster-scoped manifests (kubernetes/storage/ is an operator step through
+#: the policies apply), so CACHE_STORAGE_CLASS did not exist in the cluster
+#: when the dispatcher that names it deployed, and every GKE pod sat
+#: Unschedulable ("pod has unbound immediate PersistentVolumeClaims. not
+#: found") until the reconciler failed it as never started. The claim stays
+#: on the applied ext4 class until the operator has applied the xfs class;
+#: then this becomes CACHE_STORAGE_CLASS in one line.
+CLAIMED_CACHE_STORAGE_CLASS = RETIRED_CACHE_STORAGE_CLASS
 CACHE_VOLUME_GIB = 20
 
 #: THE CLOUD RUN WORKSPACE IS A TMPFS, sized as terraform sizes it.
@@ -3709,11 +3718,11 @@ class GkeJobDispatcher:
                             # volume controller creates the claim with the pod
                             # and deletes it with the pod, under its own
                             # identity, so the dispatcher's Role needs nothing
-                            # new. Not ephemeral-storage. See CACHE_STORAGE_CLASS.
+                            # new. Not ephemeral-storage. See CLAIMED_CACHE_STORAGE_CLASS.
                             {"name": "cache", "ephemeral": {"volumeClaimTemplate": {
                                 "spec": {
                                     "accessModes": ["ReadWriteOnce"],
-                                    "storageClassName": CACHE_STORAGE_CLASS,
+                                    "storageClassName": CLAIMED_CACHE_STORAGE_CLASS,
                                     "resources": {"requests": {
                                         "storage": f"{CACHE_VOLUME_GIB}Gi"}},
                                 }}}},

@@ -36,6 +36,14 @@ import { HISTORY_VIEW_KEY } from '../ScheduleHistoryTimeline'
 import SCHEDULE_DETAIL_TSX from '../ScheduleDetail.tsx?raw'
 
 const WAIT = { timeout: 4000 }
+/** The open modal dialog (Overlay's `.c-dlg`): the schedule sheet is a dialog too, not a modal one. */
+const modal = () => document.querySelector<HTMLElement>('.c-dlg')
+const findModal = () =>
+  waitFor(() => {
+    const d = modal()
+    expect(d).not.toBeNull()
+    return d!
+  }, WAIT)
 const PHONE: CascadeEnv = { width: 390 }
 
 type Json = Record<string, unknown>
@@ -303,17 +311,17 @@ describe("a schedule's page head", () => {
     await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
     fireEvent.click(within(head()).getByRole('button', { name: 'Dry run' }))
     await waitFor(() => expect(posts(calls, '/v1/schedules/sch_a:run')).toHaveLength(1), WAIT)
-    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(modal()).toBeNull()
     expect(posts(calls, '/v1/schedules/sch_a:run')[0]!.body).toEqual({ dry_run: true })
     expect(visible(await screen.findByTestId('sc-said', undefined, WAIT))).toContain('Schedule sch_a recorded a dry run: nothing was created')
     await waitFor(() => expect(reads(calls, '/v1/schedules/sch_a')).toBe(2), WAIT)
     await screen.findByTestId('sc-acts-head', undefined, WAIT)
     fireEvent.click(within(head()).getByRole('button', { name: 'Pause' }))
     // Pause asks for an optional reason (QA1 automate-12); none written sends none.
-    fireEvent.click(within(await screen.findByRole('dialog', undefined, WAIT)).getByRole('button', { name: 'Pause' }))
+    fireEvent.click(within(await findModal()).getByRole('button', { name: 'Pause' }))
     await waitFor(() => expect(posts(calls, '/v1/schedules/sch_a:pause')).toHaveLength(1), WAIT)
     expect(posts(calls, '/v1/schedules/sch_a:pause')[0]!.body).toEqual({})
-    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(modal()).toBeNull()
     await waitFor(() => expect(visible(screen.getByTestId('sc-said'))).toContain('Paused: no new firings'), WAIT)
     await waitFor(() => expect(reads(calls, '/v1/schedules/sch_a')).toBe(3), WAIT)
   })
@@ -324,9 +332,9 @@ describe("a schedule's page head", () => {
     )
     await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
     fireEvent.click(within(head()).getByRole('button', { name: 'Run now' }))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await findModal()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Not now' }))
-    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(modal()).toBeNull()
     expect(posts(calls, '/v1/schedules/sch_a:run')).toHaveLength(0)
   })
 
@@ -337,7 +345,7 @@ describe("a schedule's page head", () => {
     )
     await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
     fireEvent.click(within(head()).getByRole('button', { name: 'Delete…' }))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await findModal()
     const confirm = () => within(dialog).getByRole('button', { name: 'Delete schedule' })
     expect(confirm()).toHaveProperty('disabled', true)
     fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'Schedule sch' } })
@@ -360,7 +368,7 @@ describe("a schedule's page head", () => {
     )
     await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
     fireEvent.click(within(head()).getByRole('button', { name: 'Delete…' }))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await findModal()
     fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'Schedule sch_a' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Delete schedule' }))
     expect(visible(await within(dialog).findByRole('alert', undefined, WAIT))).toContain('nothing was deleted')
@@ -749,7 +757,7 @@ describe('live QA: automate, the list and the page', () => {
     gone = true
     // The sheet reads itself again after an action (frame A2); the list's ⟳ re-reads the list.
     fireEvent.click(within(screen.getByTestId('sc-acts-head')).getByRole('button', { name: 'Pause' }))
-    fireEvent.click(within(await screen.findByRole('dialog', undefined, WAIT)).getByRole('button', { name: 'Pause' }))
+    fireEvent.click(within(await findModal()).getByRole('button', { name: 'Pause' }))
     // MUTATION: drop `setGone` and the stale record stays, Edit enabled.
     await screen.findByText('This schedule was deleted', undefined, WAIT)
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
