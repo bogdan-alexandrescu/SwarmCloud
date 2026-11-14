@@ -1696,3 +1696,72 @@ def test_plugins_check_holds_the_bundle_build_once_infra_applied_the_switch_on()
     missing.found.pop(_BUNDLER_ACCOUNT)
     observed = verify.PluginsStep(lambda: missing, Answers()).check(ctx)
     assert observed.status == UNMET and "swarm-plugin-bundler" in observed.detail and "swarm install" in observed.detail
+
+
+def test_a_failed_quick_check_writes_a_failed_row_with_its_cause() -> None:
+    """A quick check that fails says so in the console's verify row, with the
+    terminal's cause, instead of leaving the row reading as still running."""
+    gcp = VerifyFakeGcp()
+    gcp.services = [_service("swarm-api", "swarm-api-00002", [{"latestRevision": True, "percent": 100}])]
+    gcp.revisions = {"swarm-api-00002": {"status": {"imageDigest": f"us-docker.pkg.dev/x/swarm-api@{OTHER_DIGEST}"}}}
+    ctx = _ctx(image_digests={"swarm-api": f"us-docker.pkg.dev/x/swarm-api@{DIGEST}"})
+    ctx.dry_run = False
+    ctx.engine = _Recording(ctx)
+    observed = verify.DigestsStep(lambda: gcp, Answers()).check(ctx)
+    assert observed.status == UNMET
+    row = ctx.engine.row()
+    # MUTATION: write the row only on MET -> no row, the console reads "in progress".
+    assert row["check"] == "digests" and row["result"] == "failed"
+    assert row["done"] == verify.QUICK_CHECKS.index("digests")
+    assert OTHER_DIGEST in row["detail"]
+
+
+def test_the_reconciler_check_waits_for_the_first_tenant_namespace() -> None:
+    """No tenant namespace yet is a wait for Admin › Setup's first team or
+    personal workspace, named as the console names it, never a failure and
+    never an internal stage number; a refused grant still ends it at once."""
+    namespaces = ""
+    allowed = {RECONCILER, RECONCILER_UID}
+
+    def kube(*args: str, stdin: str | None = None) -> tuple[int, str, str]:
+        if args[:2] == ("get", "namespaces"):
+            return 0, namespaces, ""
+        who = next(a for a in args if a.startswith("--as=")).removeprefix("--as=")
+        return (0, "yes\n", "") if who in allowed else (1, "no\n", "")
+
+    step = verify.ReconcilerJobsStep(lambda: VerifyFakeGcp(), Answers(), kube=lambda ctx: kube)
+    assert step.kind == "wait" and step.wait is verify.NAMESPACE_WAIT
+    ctx = _ctx()
+    ctx.dry_run = False
+    ctx.engine = _Recording(ctx)
+    observed = step.check(ctx)
+    assert observed.status == WAITING
+    assert "stage" not in observed.detail and "Admin › Setup's first team or personal workspace" in observed.detail
+    assert engine_document("dev") not in ctx.engine.documents.docs
+
+    namespaces = "namespace/swarm-tenant-a\n"
+    allowed.discard(RECONCILER_UID)
+    observed = step.check(ctx)
+    assert observed.status == UNMET and observed.outputs.get(verify.FAILED) is True
+    assert ctx.engine.row()["result"] == "failed"
+
+
+def test_verify_says_what_it_opens_before_each_browser_sign_in() -> None:
+    """The GitHub connect is announced before `swarm sc setup` opens its
+    browser, and the deployment sign-in names the login as the engine's own
+    step, not as a command to type."""
+    swarm = FakeSwarm({}, None)
+    cli = verify.SwarmCli(Answers(), run=swarm, interactive=swarm)
+    ctx = _target_ctx(verify_context=HOSTNAME, verify_tenant=TEAM)
+    _signed_in(swarm)
+    swarm.repos, swarm.connect_on_setup = None, [{"repository": "acme/first", "archived": False}]
+    assert cli.repository(ctx) == "acme/first"
+    said = [e["message"] for e in ctx.events.of_kind("step_apply")]
+    assert any("connect GitHub" in m and "runs swarm sc setup for you" in m for m in said)
+
+    swarm.contexts[HOSTNAME]["signed_in"] = False
+    with contextlib.suppress(Exception):
+        cli.target(ctx)
+    said = [e["message"] for e in ctx.events.of_kind("step_apply")]
+    signing = [m for m in said if "sign in to" in m]
+    assert signing and all(f"runs swarm --context {HOSTNAME} login for you" in m for m in signing)
