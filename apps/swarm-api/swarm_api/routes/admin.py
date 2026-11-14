@@ -61,6 +61,7 @@ from ..repoindex import RepoIndex
 from ..repositories import RepositoryPush
 from ..brokerclient import AccountPool
 from ..children import release_held_runs
+from ..heldworkflows import release_tenant as release_held_workflows
 from ..schemas import (
     AdaptiveTargetRequest,
     DrainRequest,
@@ -1379,6 +1380,14 @@ def wake_merges(
     # empty queries and nothing else.
     trains = tick_merge_trains(ctx, tenant_id, limit=paged_limit(ctx, limit))
     ctx.metrics.admin_actions.labels(action="merge_train").inc()
+    # Held workflows (`after_merge`, docs/design/merging-without-a-laptop.md
+    # §4.2 A) ride it after the trains, so a train that landed a predecessor
+    # this minute releases its successor in the same response. A HELD row is
+    # a Firestore document, never demand (invariant 1); a released one is
+    # submitted through the ordinary path as its submitter and admitted like
+    # any other (invariants 2 and 3). Only `tenant_id`'s rows are read.
+    held = release_held_workflows(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="held_workflows").inc()
     # The fix loop's sweep (docs/design/fix-loop.md §4.3) rides it as well:
     # a PARKED loop whose last round ended over five minutes ago and whose
     # `task_finished` push was lost is driven as the push would have. It
@@ -1397,6 +1406,8 @@ def wake_merges(
         "after_prs_failures": gates.failures,
         "merge_train": trains.to_api(),
         "merge_train_failures": trains.failures,
+        "held_workflows": held.to_api(),
+        "held_workflows_failures": held.failures,
         "fix_loop": loops.to_api(),
         "fix_loop_failures": loops.failures,
     }
