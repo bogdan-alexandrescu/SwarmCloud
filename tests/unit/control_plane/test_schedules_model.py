@@ -59,6 +59,10 @@ CATALOGUE = [
     # daily; a firing reads every page, so no more often than six-hourly.
     # MUTATION: drop the entry, or give it a 1 h minimum, and this list differs.
     ("branch-sweep", timedelta(hours=6)),
+    # #1840, the owner's decision of 2026-10-27: the cold graph answer p95
+    # report, every 6 hours (graph-answer-cache.md §1.3, the owner Q2).
+    # MUTATION: drop the entry, or give it a 1 h minimum, and this list differs.
+    ("graph-latency-report", timedelta(hours=6)),
 ]
 
 
