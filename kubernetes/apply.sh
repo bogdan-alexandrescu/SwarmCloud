@@ -652,6 +652,13 @@ uid_of() {
   printf '%s' "${uid}"
 }
 
+# The cluster's network, read by ONE implementation (cluster-network.sh): for
+# the tenant's egress policy, and for --policies, whose workspace deployer
+# check holds that policy's four cluster values to it.
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=cluster-network.sh
+source "${HERE}/cluster-network.sh"
+
 if [[ "${MODE}" == "policies" ]]; then
   [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to the cluster-scoped policies"
   SCHEDULER_UID="$(uid_of "swarm-scheduler@${PROJECT_ID}.iam.gserviceaccount.com")"
@@ -685,9 +692,35 @@ if [[ "${MODE}" == "policies" ]]; then
   TF_TFVARS="$(tf_var_file)"
   info "terraform tenants  refused by name, from ${TF_TFVARS#"${REPO}/"}"
 
+  # THE CLUSTER'S NETWORK, so the workspace deployer's NetworkPolicy check
+  # pins swarm-allow-worker-egress's two DNS addresses and pod and service
+  # ranges to this cluster's exactly, read the way the tenant render reads
+  # them (resolve_cluster_network; called directly, not in $(...), for the
+  # reason given there). The one read allowed to fail, like the deployer's
+  # uniqueId: a first bootstrap may apply these policies before the cluster's
+  # DNS objects can be read, and then render.py keeps the shape check -- the
+  # two DNS peers any one address, the two carve-outs any range -- and says
+  # so. An expired session still stops here (die_if_auth_failure).
+  NETWORK_ARGS=()
+  NETWORK_READ="yes"
+  resolve_cluster_network "${KUBECTL}" "${CLUSTER}" "${GKE_LOCATION}" "${PROJECT_ID}" \
+    ${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"} \
+    || NETWORK_READ="no"
+  if [[ "${NETWORK_READ}" == "yes" ]]; then
+    NETWORK_ARGS=(--pod-cidr "${CLUSTER_POD_CIDR}" --service-cidr "${CLUSTER_SERVICE_CIDR}"
+      --cluster-dns-ip "${CLUSTER_DNS_IP}" --node-local-dns-ip "${CLUSTER_NODE_LOCAL_DNS_IP}"
+      --network-source "${CLUSTER_NETWORK_SOURCE}")
+    info "network  pods=${CLUSTER_POD_CIDR} services=${CLUSTER_SERVICE_CIDR} node-local=${CLUSTER_NODE_LOCAL_DNS_IP} kube-dns=${CLUSTER_DNS_IP}  pinned exactly (${CLUSTER_NETWORK_SOURCE})"
+  else
+    warn "could not read ${CLUSTER}'s network (above); the workspace deployer's NetworkPolicy"
+    warn "check holds swarm-allow-worker-egress's DNS addresses and ranges by shape only."
+    warn "Re-run kubernetes/apply.sh --policies --confirm once the cluster's network can be read."
+  fi
+
   MANIFEST="$("${PYTHON}" "${HERE}/render.py" policies --project "${PROJECT_ID}" \
     --scheduler-uid "${SCHEDULER_UID}" --reconciler-uid "${RECONCILER_UID}" \
-    --workspace-deployer-uid "${DEPLOYER_UID}" --terraform-tfvars "${TF_TFVARS}")"
+    --workspace-deployer-uid "${DEPLOYER_UID}" --terraform-tfvars "${TF_TFVARS}" \
+    ${NETWORK_ARGS[@]+"${NETWORK_ARGS[@]}"})"
   info "rendering cluster-scoped admission policies and the workspace deployer's RBAC"
 elif [[ "${MODE}" == "swarm-system" ]]; then
   # --tenant, --spec-verify-keys and render arguments were refused at 0.
@@ -1196,10 +1229,8 @@ else
   #
   # FATAL, like the uniqueIds above: rendering without them is what produced
   # the 2026-09-24 policy, and there is no default that is right for a cluster
-  # this script has not read.
-  # shellcheck source-path=SCRIPTDIR
-  # shellcheck source=cluster-network.sh
-  source "${HERE}/cluster-network.sh"
+  # this script has not read. (cluster-network.sh is sourced above, once, for
+  # this and the --policies render.)
   resolve_cluster_network "${KUBECTL}" "${CLUSTER}" "${GKE_LOCATION}" "${PROJECT_ID}" \
     ${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"} \
     || die "could not read ${CLUSTER}'s network (above); nothing was rendered or applied.
