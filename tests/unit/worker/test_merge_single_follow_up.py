@@ -77,10 +77,11 @@ def _run(world: MergeWorld, cfg) -> Any:
     fake = ctx.verify_upstream
     real = specverify.upstream_verifier(cfg, merge_world.WORKFLOW)
 
-    def verify(task_id: str, doc: Any, *, of_workflow: str | None = None) -> Any:
+    def verify(task_id: str, doc: Any, *, of_workflow: str | None = None,
+               single_task: bool = False) -> Any:
         if task_id == SINGLE:
-            return real(task_id, doc, of_workflow=of_workflow)
-        return fake(task_id, doc, of_workflow=of_workflow)
+            return real(task_id, doc, of_workflow=of_workflow, single_task=single_task)
+        return fake(task_id, doc, of_workflow=of_workflow, single_task=single_task)
 
     return merge.run_merge(replace(ctx, verify_upstream=verify))
 

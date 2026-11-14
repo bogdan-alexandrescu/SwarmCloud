@@ -4836,11 +4836,6 @@ def _person_lane(ctx: ActionContext, root: str | None) -> Callable[[str], bool] 
     return lane
 
 
-#: The workflow a single task is verified against (`_single_task_verified`):
-#: no task's signed `workflow_id` is ever this string, a workflow id's shape.
-_SINGLE_TASK_PROBE = "wf_single_task_probe"
-
-
 def _single_task_verified(ctx: ActionContext, task_id: str, doc: Mapping[str, Any]) -> bool:
     """Whether `doc`, a task whose `workflow_id` is null, is a SIGNED single task.
 
@@ -4848,20 +4843,20 @@ def _single_task_verified(ctx: ActionContext, task_id: str, doc: Mapping[str, An
     sent with `publish_to_pr` (`swarm_dispatch`) has no workflow to verify it
     against, and `verify_upstream` refuses a null workflow -- so that night
     two merge steps refused such a task's head `head_moved`, 'not a person's
-    plain lane'. `specverify.verify_upstream_spec` checks the signature over
-    the canonical spec, which covers `workflow_id`, BEFORE it compares the
-    workflow; asked for a workflow no task has, a document whose signature
-    verified fails that comparison alone, `workflow_mismatch`, and the signed
-    null is the fact that it is a single task. Every other refusal -- unsigned,
-    forged, rewritten, a foreign key -- and a verify that returns are not.
+    plain lane'. `verify_upstream` asked `single_task=True`
+    (`specverify.verify_upstream_spec`'s explicit single-task mode, the
+    owner's pick on #4092) checks the signature over the canonical spec, which
+    covers `workflow_id`, and requires the signed `workflow_id` to be null;
+    nothing here is inferred from a refusal. Every refusal -- unsigned,
+    forged, rewritten, a foreign key, a workflow -- is not a single task.
     """
     if doc.get("workflow_id") is not None:
         return False
     try:
-        ctx.verify_upstream(task_id, doc, of_workflow=_SINGLE_TASK_PROBE)
-    except UpstreamSpecUnverified as exc:
-        return exc.reason == f"upstream:{task_id}:workflow_mismatch"
-    return False
+        ctx.verify_upstream(task_id, doc, single_task=True)
+    except UpstreamSpecUnverified:
+        return False
+    return True
 
 
 def _superseded(run: _Run, *, number: int, head: str, was: str, person: str,
