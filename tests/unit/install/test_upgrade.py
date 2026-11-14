@@ -305,7 +305,7 @@ def test_apply_order_is_section_9_3(tmp_path: Path) -> None:
                      ("apply_policies", ("hardening", "worker-sizes"))]
     assert world.calls[-1] == ("resume_dispatch",)
     state = store.load()
-    assert state.release == NEW and state.outputs[up.PREVIOUS_KEY] == OLD
+    assert state.release == NEW and state.outputs[up.UPGRADE_KEY]["from"] == OLD
     assert state.outputs[up.UPGRADE_KEY]["done"] == list(up.ORDER)
 
 
