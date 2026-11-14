@@ -271,6 +271,19 @@ describe('one schedule in the side sheet (frame A2)', () => {
     expect(painted(panel, 'border-radius', WIDE)).toBe('var(--r-card)')
   })
 
+  it('keeps the cadence rules behind an (i), not as a paragraph under the firings (visual QA)', async () => {
+    await open(schedule('sch_a', { policy: { overlap: 'skip', catch_up: 'skip', dry_run: false, jitter: true } }), [NEWEST])
+    const cadence = sec('cadence')
+    const copy = cadence.cloneNode(true) as HTMLElement
+    for (const t of copy.querySelectorAll('.c-tip-host')) t.remove()
+    // MUTATION: draw the rules as a visible note again and this fails.
+    expect(visible(copy)).not.toMatch(/is skipped|jitter/)
+    const about = within(cadence).getByRole('button', { name: 'About Missed and overlapping slots' })
+    const tip = about.closest('.c-tip-host')!
+    expect(visible(tip)).toContain('A slot missed in an outage is skipped.')
+    expect(visible(tip)).toContain('A firing while the last one is still running is skipped.')
+  })
+
   it('says a paused schedule has no next firing, and reads none for it', async () => {
     const { calls } = await open(schedule('sch_a', { state: 'paused', next_run_at: null, state_word: 'paused' }), [])
     expect(visible(sheet()!.querySelector('[data-testid="as-next"]'))).toBe('— paused, so no next firing')

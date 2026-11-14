@@ -1131,6 +1131,7 @@ function SchedulesBody({ d, go, scopeSwitch, open }: { d: Landing; go: (to: stri
       <div className="acd-page" data-testid="acd-none">
         {scopeSwitch !== null && <div className="acd-bar-row">{scopeSwitch}</div>}
         <EmptyState kind="empty" heading="No schedules" action={newSchedule}>
+          <span className="acd-dim">Start from a type</span>{' '}
           <Info about="Schedules" tip="A schedule fires work on a cron, from a type. Nothing runs until you make one." />
         </EmptyState>
         <WaitingPanel summary={d.summary} inbox={inbox} rows={rows} go={go} />

@@ -153,6 +153,16 @@ export function approversWords(a: unknown): string | null {
   return String(a)
 }
 
+/**
+ * Who a stored `approvers` value admits, in the few words a hold's panel
+ * shows; `approversWords`' full rule rides behind the (i) beside them (the
+ * cards mock-up's "Approvers: owner only (i)").
+ */
+const APPROVERS_SHORT: Readonly<Record<string, string>> = {
+  owner_only: 'the platform owner',
+  second_member: 'a second member',
+}
+
 export const HOLD_WORDS: Readonly<Record<string, string>> = {
   NEEDS_SECOND_MEMBER: 'held for a second member',
   NEEDS_OWNER: 'held for the platform owner',
@@ -631,6 +641,8 @@ function HoldPanel({ hold }: { hold: ServedHold }) {
   for (const f of hold.matched ?? []) if (!byFile.some(([x]) => x === f)) byFile.push([f, []])
   const reasons = hold.reasons ?? []
   const lead = holdLead(hold.code).replace(/\.$/, '')
+  const rule = approversWords(hold.approvers)
+  const short = typeof hold.approvers === 'string' && rule !== null ? (APPROVERS_SHORT[hold.approvers] ?? null) : null
   return (
     <Panel title={<span title={hold.code}>{lead}</span>} label="Why it is held" tip="A held item waits for the approvers the hold names, even when every check passed.">
       {byFile.length > 0 ? (
@@ -655,7 +667,13 @@ function HoldPanel({ hold }: { hold: ServedHold }) {
       )}
       <dl className="apd-facts">
         <Kv name="Approvers">
-          <span className="apd-strong">{approversWords(hold.approvers) ?? <Dash why="the hold’s approvers are not served" />}</span>
+          {short === null ? (
+            <span className="apd-strong">{rule ?? <Dash why="the hold’s approvers are not served" />}</span>
+          ) : (
+            <>
+              <span className="apd-strong">{short}</span> <InfoTip about="Approvers" tip={`${rule}.`} />
+            </>
+          )}
         </Kv>
       </dl>
     </Panel>

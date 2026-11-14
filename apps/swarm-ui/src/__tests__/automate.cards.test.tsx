@@ -270,6 +270,19 @@ describe('the empty and honest states', () => {
     expect(document.querySelector('section.acd-card')).toBeNull()
   })
 
+  it('says what the empty state\u2019s (i) is about: Start from a type, as the mock-up draws it (visual QA)', async () => {
+    await mount(
+      routes({
+        '/v1/schedules': { status: 200, body: { schedules: [], summary: { by_state: {}, pending_approvals: 0, oldest_expires_at: null, unread: null }, tenant_id: 'eng' } },
+        '/v1/approvals': { status: 200, body: { approvals: [], tenant_id: 'eng' } },
+      }),
+    )
+    const none = await screen.findByTestId('acd-none', undefined, WAIT)
+    // A lone (i) under the heading said nothing until it was opened.
+    const empty = none.querySelector('.c-tip-host')!.parentElement!
+    expect(said(empty)).toContain('Start from a type')
+  })
+
   it('draws a 404 as not served by this deployment, counting nothing', async () => {
     await mount(routes({ '/v1/schedules': { status: 404, body: { code: 'not_found', message: 'Not Found' } } }))
     const ns = await screen.findByTestId('acd-not-served', undefined, WAIT)
