@@ -544,7 +544,7 @@ def canonical_platform_settings(fields: Mapping[str, Any]) -> bytes:
     )
 
 
-#: Per-person signed submissions (contract request 155, request E of
+#: Per-person signed submissions (contract request 156, request E of
 #: docs/design/workspace-secrets.md section 11.9, accepted by the owner
 #: 2026-11-13). A person signs these bytes with their own key, so swarm-api,
 #: the `sc` plugin and the console must all produce the same ones: an `sc`

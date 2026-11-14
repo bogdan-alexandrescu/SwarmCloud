@@ -533,3 +533,47 @@ def evaluate(
     elif reading.pending:
         reading.state = PENDING
     return reading
+
+
+# --------------------------------------------------------------------------
+# the merge train's parity reads (docs/design/merging-without-a-laptop.md §6.3)
+# --------------------------------------------------------------------------
+
+def without_contexts(required: Sequence[RequiredCheck],
+                     contexts: Sequence[str]) -> list[RequiredCheck]:
+    """The required set less `contexts`: a context only the train itself
+    posts (`merge-train`) never reports on the composed head, so judging the
+    head by it would hold every train until its max age."""
+    drop = set(contexts)
+    return [check for check in required if check.context not in drop]
+
+
+def not_started(required: Sequence[RequiredCheck], runs: Sequence[Mapping[str, Any]],
+                statuses: Sequence[Mapping[str, Any]]) -> list[str]:
+    """The required contexts nothing reported at a sha: no check run of that
+    name (by its pinned App, when it has one) and, for a check pinned to no
+    App, no commit status. In the rules' order, once each."""
+    runs = [run for run in runs if isinstance(run, Mapping)]
+    statuses = [status for status in statuses if isinstance(status, Mapping)]
+    missing: list[str] = []
+    for check in required:
+        ran = any(run.get("name") == check.context
+                  and (check.app_id is None or _app_id(run) == check.app_id) for run in runs)
+        posted = check.app_id is None and any(
+            status.get("context") == check.context for status in statuses)
+        if not ran and not posted and check.context not in missing:
+            missing.append(check.context)
+    return missing
+
+
+def failed_workflow_runs(reading: CiReading) -> list[int]:
+    """The Actions workflow runs a red reading's failing check runs are jobs
+    of, once each in order: what a train re-runs once before it bisects (the
+    script's `retry_failed_runs`). A failing check that is not an Actions job
+    names none; a red commit status cannot be re-run."""
+    found: list[int] = []
+    for run in reading.failing_runs:
+        run_id = workflow_run_of(run)
+        if run_id is not None and run_id not in found:
+            found.append(run_id)
+    return found

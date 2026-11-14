@@ -121,7 +121,11 @@ it spares a `question_wait` or `release_wait` one, so it never dead-letters
 at `human_park_max_seconds`. Its pull request merged or closed outside the
 workflow ends it instead (MERGE-OUTSIDE-ENDS, #2441): swarm-api's wake tick
 marks the hold, the scheduler wakes it, and `_ended_outside` reads the pull
-request before any question and ends the step SUCCEEDED or CANCELLED. The review's `open_questions`, the ones it
+request before any question and ends the step SUCCEEDED or CANCELLED. A
+closed-unmerged pull request read on the wake of any park, marked or not,
+ends CANCELLED the same way (`_closed_outside`, #3603): the tick never marks
+a merge-train or merge-slot park, and PR #3333's train wait woke on its
+fallback, read its pull request closed and ended FAILED `merge_refused`. The review's `open_questions`, the ones it
 judged need not hold, never stop the merge; those still unanswered are
 listed, in the asking task's own words, in the comment that records the
 merge -- so a merge made by `auto-merge.yml` rather than this step lists
@@ -2068,16 +2072,47 @@ def merger_for(
     token: str,
     transport: forge_mod.Transport | None = None,
     retry: forge_mod.RetryPolicy | None = None,
+    read_again: Callable[[], str] | None = None,
 ) -> ForgeMerger:
-    """The `ForgeMerger` for the workflow's repository, or `UnsupportedForge`."""
+    """The `ForgeMerger` for the workflow's repository, or `UnsupportedForge`.
+
+    `read_again` reads the token afresh on the client's first 401
+    (`token_reader`); without it a 401 is answered as it is.
+    """
     ref = forge_mod.parse_repo(repository_url or "")
     if ref is None or ref.host not in MERGEABLE_HOSTS:
         raise UnsupportedForge(
             "the merge step merges on github.com only, and this workflow's repository "
             "is not there"
         )
-    client = forge_mod.PinnedForgeClient(token=token, transport=transport, retry=retry)
+    client = forge_mod.PinnedForgeClient(token=token, transport=transport, retry=retry,
+                                         read_again=read_again)
     return GitHubMerger(client, owner=ref.owner, repo=ref.name)
+
+
+def token_reader(ctx: ActionContext, *, call: str) -> Callable[[], str] | None:
+    """The person's token read again, for the forge client's first 401 (#3223).
+
+    swarm-api's forge refresh replaces a person's token every 15 minutes and
+    GitHub ends the replaced one, so the token this step read can be refused
+    mid-step. The value read again is registered for redaction before the
+    client sees it; a read that raises leaves the 401 standing, which
+    `_forge_outcome` refuses as `token_lacks_rights`.
+    """
+    read = ctx.read_git_token
+    if read is None:
+        return None
+
+    def again() -> str:
+        ctx.log.warning(
+            "the forge refused the credential; reading its secret again and retrying once",
+            call=call,
+        )
+        value = read()
+        ctx.register_secret(value)
+        return value
+
+    return again
 
 
 def mergeable_repository(repository_url: str | None) -> str | None:
@@ -2698,7 +2733,8 @@ def _hold_not_yet(run: _Run, opener: Mapping[str, Any], verdict: verdict_mod.Ver
     ctx.register_secret(token)
     try:
         merger = merger_for(ctx.repository_url, token=token, transport=ctx.transport,
-                            retry=forge_retry(ctx))
+                            retry=forge_retry(ctx),
+                            read_again=token_reader(ctx, call="review_not_yet"))
     finally:
         del token
     if ctx.recheck():
@@ -2954,7 +2990,9 @@ def _ended_outside(run: _Run, target: MergeTarget,
       * open (a forged or stale mark), not this workflow's pull request, or
         unreadable: None, and the hold parks again exactly as before.
 
-    No mark, no read: an ordinary hold stays credential-free.
+    No mark, no read: an ordinary hold stays credential-free. An unmarked
+    park still ends CANCELLED when its wake reads its own pull request closed
+    unmerged: `_with_forge` ends it with `_closed_outside`, as here (#3603).
     """
     ctx, summary = run.ctx, run.summary
     wait = _mapping(_mapping(_own_doc(ctx).get("metadata")).get(MERGE_WAIT_METADATA_KEY))
@@ -2977,7 +3015,8 @@ def _ended_outside(run: _Run, target: MergeTarget,
     ctx.register_secret(token)
     try:
         merger = merger_for(ctx.repository_url, token=token, transport=ctx.transport,
-                            retry=forge_retry(ctx))
+                            retry=forge_retry(ctx),
+                            read_again=token_reader(ctx, call="outside_hold"))
         pr = merger.pull_request(number)
     except Exception as exc:  # noqa: BLE001 - unread is not ended: the hold parks again
         summary["outside_unread"] = (f"pull request #{number} could not be read "
@@ -3006,12 +3045,17 @@ def _ended_outside(run: _Run, target: MergeTarget,
                         "outcome": words})
         return _outcome(TaskState.SUCCEEDED, None, summary, words)
     if pr.state == "closed":
-        message = (f"pull request #{number} was closed without merging, outside the "
-                   "workflow; there is nothing left to merge")
-        summary["refusal"] = {"code": "pull_request_closed", "message": message}
-        return _outcome(TaskState.CANCELLED, EndCause.MERGE_REFUSED, summary,
-                        f"pull_request_closed: {message}", exit_code=ExitCode.CANCELLED)
+        return _closed_outside(summary, number)
     return None
+
+
+def _closed_outside(summary: dict[str, Any], number: int) -> ActionOutcome:
+    """The CANCELLED end of a step whose own pull request was closed unmerged."""
+    message = (f"pull request #{number} was closed without merging, outside the "
+               "workflow; there is nothing left to merge")
+    summary["refusal"] = {"code": "pull_request_closed", "message": message}
+    return _outcome(TaskState.CANCELLED, EndCause.MERGE_REFUSED, summary,
+                    f"pull_request_closed: {message}", exit_code=ExitCode.CANCELLED)
 
 
 def _answer_of(ctx: ActionContext, task_id: str, doc: Mapping[str, Any], index: int,
@@ -3685,7 +3729,8 @@ def _merge_with_token(run: _Run, *, number: int, pinned: str, branch: str | None
     ctx.register_secret(token)
     try:
         merger = merger_for(ctx.repository_url, token=token, transport=ctx.transport,
-                            retry=forge_retry(ctx))
+                            retry=forge_retry(ctx),
+                            read_again=token_reader(ctx, call="merge"))
     except UnsupportedForge as exc:
         return run.refuse("forge_unsupported", str(exc))
     finally:
@@ -3844,6 +3889,19 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         return run.refuse("merged_at_other_head",
                           f"pull request #{number} was merged at {pr.head_sha}, not {pinned}")
     if pr.state != "open":
+        # A step woken from a park -- train, slot, CI or any other, marked by
+        # the tick or not -- whose own pull request a person closed meanwhile
+        # ends CANCELLED, as `_ended_outside` ends a marked hold (#3603). A
+        # first attempt, or another branch's pull request, is refused.
+        parked = _mapping(_mapping((own or {}).get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+        if parked.get("code") and not pr.merged and pr.head_repo is not None \
+                and pr.head_repo.lower() == (pr.base_repo or "").lower() \
+                and (branch is None or pull_request_belongs(
+                    {"head": {"ref": pr.head_ref, "repo": {"full_name": pr.head_repo}},
+                     "base": {"repo": {"full_name": pr.base_repo}}},
+                    author_branch=branch)):
+            summary["pull_request"] = number
+            return _closed_outside(summary, number)
         return run.refuse("pull_request_closed", f"pull request #{number} is closed, not merged")
     if pr.head_repo is None or pr.head_repo.lower() != (pr.base_repo or "").lower():
         return run.refuse("from_fork",

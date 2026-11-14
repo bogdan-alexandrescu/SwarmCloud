@@ -31,6 +31,16 @@ what swarm-api accepted rather than from what the model said, or that nothing
 was drawn (NOTHING_DRAWN) and why: the voice's instructions (live.py) let it
 point at a card only when the result says one was drawn.
 
+WHAT IT DRAWS APPEARS AS IT IS DRAWN (owner, 12 November 2026: the session
+looked frozen while the planner worked). A card is written the moment its
+`draw_<kind>` call comes in, not at the end of the turn, and a mock-up's
+frames are written one at a time (`draw_mockup`): frame one alone, then one
+and two, and so on, each a new version of the same visual, so the stage draws
+frame one before frame three is written; a card whose body carries frames
+(`write_card`) is written the same way, each frame the next version of one
+card. A visual's frame that cannot be drawn writes no version of its own; what was repaired and left out is reported for the
+whole mock-up, as one call would.
+
 AN UNKNOWN KIND IS REFUSED. A tool the model calls that is not a read tool,
 not `speak` and not one of the catalogue's `draw_<kind>` tools as served this
 turn is answered with an error and never reaches swarm-api; the refusal is
@@ -273,6 +283,75 @@ def _card_from(kind: str, args: dict[str, Any], known: tuple[str, ...]) -> dict[
     return _scrub_all(card, known)
 
 
+#: The most frames a card's body carries (swarm_api/voice/cards.py `_FRAMES`).
+CARD_FRAMES_MAX = 12
+
+
+def _card_view(written: Any) -> dict[str, Any]:
+    written = written if isinstance(written, dict) else {}
+    return written["card"] if isinstance(written.get("card"), dict) else written
+
+
+async def write_card(api: tools_read.SwarmApi, kind: str, args: dict[str, Any],
+                     known: tuple[str, ...]) -> tuple[dict[str, Any], str | None]:
+    """Write a `draw_<kind>` card now, while the turn goes on: (the card as
+    last written, why a later frame was not written or None). A card whose
+    body carries frames (a mock-up, a wireframe) is written frame by frame,
+    each frame the next version of the same card, so the console draws frame
+    one before frame three is written. Raises ApiRefused when the first write
+    is refused; a later frame refused leaves the card at the frames before it."""
+    body = args.get("body") if isinstance(args.get("body"), dict) else {}
+    frames = body.get("frames")
+    if not isinstance(frames, list) or not 1 < len(frames) <= CARD_FRAMES_MAX:
+        return _card_view(await api.write_card(_card_from(kind, args, known))), None
+    def upto(n: int, card_id: Any) -> dict[str, Any]:
+        return _card_from(kind, {**args, "card_id": card_id, "body": {**body, "frames": frames[:n]}}, known)
+
+    card = _card_view(await api.write_card(upto(1, args.get("card_id"))))
+    for n in range(2, len(frames) + 1):
+        try:
+            card = _card_view(await api.write_card(upto(n, card.get("card_id"))))
+        except tools_read.ApiRefused as exc:
+            return card, f"frame {n} of {len(frames)} and after were not written: {exc}"
+    return card, None
+
+
+def _drawable(frame: Any) -> bool:
+    """Whether one frame survives swarm-api's frame rules (after repair)."""
+    try:
+        tools_visual.frames_of([frame])
+    except tools_read.BadInput:
+        return False
+    return True
+
+
+async def draw_mockup(api: tools_read.SwarmApi, args: dict[str, Any]) -> Any:
+    """`show_mockup`, written frame by frame: each drawable frame writes the
+    frames so far as the next version of one visual, so the page shows frame
+    one before frame three is written. The answer is the last write's, with
+    what was repaired and left out counted over every frame asked for."""
+    frames = args.get("frames")
+    if not isinstance(frames, list) or not 1 < len(frames) <= tools_visual.FRAMES_MAX:
+        return await tools_visual.run_visual_tool(api, tools_visual.SHOW_MOCKUP, args)
+    # Raises FramesRefused when no frame is left, before anything is written.
+    _, repaired, dropped = tools_visual.frames_of(frames)
+    visual_id = args.get("visual_id")
+    answer: dict[str, Any] = {}
+    for n, frame in enumerate(frames, start=1):
+        if not _drawable(frame):
+            continue
+        answer = await tools_visual.run_visual_tool(api, tools_visual.SHOW_MOCKUP, {
+            **args, "frames": frames[:n], "visual_id": visual_id})
+        visual_id = answer.get("visual_id") or visual_id
+    answer = {k: v for k, v in answer.items() if k not in ("repaired", "dropped")}
+    answer["asked"] = len(frames)
+    if repaired:
+        answer["repaired"] = repaired
+    if dropped:
+        answer["dropped"] = dropped
+    return answer
+
+
 class Planner:
     """Claude Opus, as Claude Code on a pool lease, over the catalogue's draw
     tools and the read tools."""
@@ -468,7 +547,10 @@ class Planner:
             return "said", False, said
         if tools_visual.is_visual_tool(name):
             try:
-                body = await tools_visual.run_visual_tool(api, name, _scrub_all(args, known))
+                if name == tools_visual.SHOW_MOCKUP:
+                    body = await draw_mockup(api, _scrub_all(args, known))
+                else:
+                    body = await tools_visual.run_visual_tool(api, name, _scrub_all(args, known))
             except (tools_read.BadInput, tools_read.ApiRefused) as exc:
                 result.refused.append(name)
                 if name in VISUAL_KINDS:
@@ -530,21 +612,23 @@ class Planner:
                                  "refused": f"a turn draws at most {MAX_CARDS} cards"})
             return f"refused: a turn draws at most {MAX_CARDS} cards", True, None
         try:
-            written = await api.write_card(_card_from(kind, args, known))
+            card, short = await write_card(api, kind, args, known)
         except tools_read.ApiRefused as exc:
             result.refused.append(name)
             result.drawn.append({"kind": kind, "title": _title(args), "refused": str(exc)})
             log.warning("voice session %s: a %s card was not written: %s", api.session_id, kind, exc)
             return f"the card was not written: {exc}", True, None
-        card = written.get("card") if isinstance(written.get("card"), dict) else written
         result.cards.append({"kind": kind, "card_id": card.get("card_id"), "title": card.get("title")})
         if self._updates is not None:
             # On screen as it is drawn; the voice names it at the next gap.
             self._updates.drawn(api.session_id, kind, card.get("title"), card.get("card_id"))
         result.drawn.append({"kind": kind, "title": card.get("title") if isinstance(card.get("title"), str)
                              else _title(args)})
-        return prompts.as_text({"written": True, "card_id": card.get("card_id"),
-                                "version": card.get("version")}), False, None
+        answer = {"written": True, "card_id": card.get("card_id"), "version": card.get("version")}
+        if short is not None:
+            log.warning("voice session %s: a %s card stopped short: %s", api.session_id, kind, short)
+            return prompts.as_text({**answer, "not_written": short}), True, None
+        return prompts.as_text(answer), False, None
 
 
     @staticmethod

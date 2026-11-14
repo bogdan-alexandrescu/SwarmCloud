@@ -31,6 +31,7 @@ from agent_worker.errors import ExitCode
 from swarm_common.models import EndCause, utcnow
 from swarm_common.states import EventType, ParkReason, TaskState
 
+from fake_github import fresh_token
 from worker_seeds import seed_attempt
 
 import merge_world
@@ -1447,3 +1448,102 @@ def test_a_forged_queue_record_on_an_unqueued_pull_request_only_refuses(tmp_path
     outcome = merge.run_merge(world.context())
     assert outcome.summary["refusal"]["code"] == "merge_dequeued"
     assert world.merge_calls() == [] and _graphql(world, "enqueuePullRequest") == []
+
+
+# -- #3223: a token the forge refresh ended is read again once ----------------
+#
+# swarm-api's 15-minute forge refresh replaces a person's token and GitHub
+# ends the replaced one, so the token the step read answers 401 mid-step.
+# MUTATIONS: pass no `read_again` in `merger_for` -- the first case refuses
+# token_lacks_rights. Read again on a 403 -- the last case reads twice.
+
+
+def _refreshed(world: MergeWorld, *answers: Any,
+               path: str = f"{API}/actions/runs") -> tuple[Any, list[str]]:
+    """The world's context whose token is replaced after its first read.
+
+    `path` answers `answers` in turn, the last one for good. The check is
+    listed twice, so the merge reads `actions/runs` to group the two
+    (`_suite_events`).
+    """
+    world.runs.append(dict(world.runs[0]))
+    tokens = [world.token, fresh_token()]
+    pending = list(answers)
+    world.github.route("GET", path, lambda _s: (
+        pending.pop(0) if len(pending) > 1 else pending[0]))
+    ctx = world.context()
+
+    def read_token() -> str:
+        value = tokens[min(world.token_reads, 1)]
+        world.token_reads += 1
+        return value
+
+    ctx.read_git_token = read_token
+    return ctx, tokens
+
+
+def _runs(world: MergeWorld):
+    return (200, {}, {"total_count": len(world.workflow_runs),
+                      "workflow_runs": world.workflow_runs})
+
+
+def test_a_401_from_a_refreshed_token_reads_it_again_and_merges(tmp_path):
+    world = MergeWorld(tmp_path)
+    ctx, (first, second) = _refreshed(world, (401, {}, {"message": "Bad credentials"}),
+                                      _runs(world))
+    outcome = merge.run_merge(ctx)
+
+    assert outcome.summary.get("refusal", {}).get("code") != "token_lacks_rights", outcome.summary
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert world.token_reads == 2
+    runs = world.github.calls("GET", f"{API}/actions/runs")
+    assert runs[0].headers["Authorization"] == f"Bearer {first}"
+    assert runs[1].headers["Authorization"] == f"Bearer {second}"
+    (call,) = world.merge_calls()
+    assert call.headers["Authorization"] == f"Bearer {second}"
+    # The value read again is registered for redaction and is nowhere else.
+    assert second in world.log.secrets
+    assert "reading its secret again" in world.log.text
+    for token in (first, second):
+        assert token not in json.dumps(outcome.summary, default=str) + outcome.message
+        assert token not in world.log.text
+
+
+def test_a_401_from_the_token_read_again_still_refuses_token_lacks_rights(tmp_path):
+    world = MergeWorld(tmp_path)
+    ctx, _tokens = _refreshed(world, (401, {}, {"message": "Bad credentials"}))
+    outcome = merge.run_merge(ctx)
+    assert outcome.summary["refusal"]["code"] == "token_lacks_rights", outcome.summary
+    assert world.token_reads == 2
+    assert world.merge_calls() == []
+
+
+def test_a_re_read_that_raises_refuses_token_lacks_rights_without_the_value(tmp_path):
+    world = MergeWorld(tmp_path)
+    ctx, _tokens = _refreshed(world, (401, {}, {"message": "Bad credentials"}))
+    first_read = ctx.read_git_token
+    leaked = fresh_token()
+
+    def read_token() -> str:
+        if world.token_reads:
+            world.token_reads += 1
+            raise RuntimeError(f"unreadable {leaked}")
+        return first_read()
+
+    ctx.read_git_token = read_token
+    outcome = merge.run_merge(ctx)
+    assert outcome.summary["refusal"]["code"] == "token_lacks_rights", outcome.summary
+    assert world.token_reads == 2
+    assert leaked not in json.dumps(outcome.summary, default=str) + outcome.message
+    assert leaked not in world.log.text
+
+
+def test_a_403_refuses_token_lacks_rights_without_reading_again(tmp_path):
+    world = MergeWorld(tmp_path)
+    # The repository read: a 403 on `actions/runs` reads as no events, by design.
+    ctx, _tokens = _refreshed(world, (403, {}, {"message": "Resource not accessible"}),
+                              path=API)
+    outcome = merge.run_merge(ctx)
+    assert outcome.summary["refusal"]["code"] == "token_lacks_rights", outcome.summary
+    assert world.token_reads == 1
+    assert world.merge_calls() == []

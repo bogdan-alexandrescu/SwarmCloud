@@ -680,6 +680,29 @@ def test_a_fetch_from_a_long_attempt_negotiates_against_its_newest_haves(client,
     assert f"-{origin['a']}" in raw[:raw.index(b"\n\n")].decode()
 
 
+def test_a_depth_1_fetch_answers_a_pack_of_the_tip_alone(client, db, origin):
+    """#2442: the before render's fetch of the base branch."""
+    attempt, _ = running_task(client, db)
+    response = call(client, attempt, "git_fetch", {"ref": "main", "haves": [origin["a"]],
+                                                   "depth": 1})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["resolved_sha"], body["depth"]) == (origin["b"], 1)
+    raw = base64.b64decode(body["bundle"])
+    assert hashlib.sha256(raw).hexdigest() == body["bundle_sha256"]
+    assert raw[:4] == b"PACK"
+    assert audit_rows(db)[-1]["depth"] == 1
+
+
+@pytest.mark.parametrize(("tool", "depth"), [("git_fetch", 2), ("git_fetch", 0),
+                                             ("git_rebase_onto", 1)])
+def test_a_depth_other_than_1_or_on_a_rebase_is_bad_depth(client, db, origin, tool, depth):
+    attempt, _ = running_task(client, db)
+    response = call(client, attempt, tool, {"ref": "main", "depth": depth})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "bad_depth"
+
+
 def test_rebase_onto_is_served_as_the_fetch_it_starts_with(client, db, origin):
     attempt, _ = running_task(client, db)
     response = call(client, attempt, "git_rebase_onto", {"ref": "main", "haves": [origin["b"]]})

@@ -159,6 +159,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 152 | `models.py`: `Attempt.account_id`, `credential_source` and `credential_tier`, the account and the credential tier (plan or API key) an attempt ran on; request 13 taken up and extended (LLM providers, docs/design/llm-providers.md Q8) | ACCEPTED by the owner 2026-11-09 (accepted by the owner as Q8 of docs/design/llm-providers.md) and APPLIED 2026-11-10 by the pull request that adds this line (lane LP-C1): the three fields at the end of `Attempt`, `CREDENTIAL_TIERS` (`plan`, `api_key`) refused otherwise in `__post_init__`, restated on `AttemptRow` and as `CredentialTier` in `types.ts` and held by `check-contract-parity.sh` section 5; nothing writes or reads them yet (LP-W1 writes, LP-U5 reads) |
 | 153 | `specsign.py`: the plugin record kind `bundle` in `PLUGIN_RECORD_KINDS`, ids `("bundle_id",)`, platform scope only, so a `plugin_bundles/{bundle_id}` record is MAC'd in request 140's canonical form (managed plugins P6, lane 13 of the design's table 17.1) | ACCEPTED by the owner 2026-11-09 (accepted by the owner 2026-11-09, answering docs/design/managed-plugins.md section 18, Q20) and APPLIED 2026-11-09 by the pull request that adds this line (lane plugins-bundle-contract): a bundle record names no tenant and a workspace-scope one has no canonical form |
 | 154 | `profiles.py` / `states.py`: five comment lines name the owner by initials, and take the placeholder "the owner", behaviour unchanged (the repository move) | ACCEPTED by the owner 11 November 2026 and APPLIED by the pull request that adds this line |
+| 155 | `specsign.py`: a `"plans"` block in `SETTINGS_MAC_FIELDS`, `("diagrams", "chat_model_class")`, so a workspace's plan-review settings (`workspace_settings/{tenant_id}.plans`, docs/design/plans-pipeline.md sections 6.4 and 7.8) are signed by the frozen list (PLAN-SETTINGS) | REQUESTED 2026-11-13 by the pull request that adds this line; not applied. Until it is, `canonical_settings_block` refuses the block and swarm-api cannot sign it through the frozen list |
 
 ---
 
@@ -17857,7 +17858,134 @@ None changes; nothing a program reads moved.
 The owner, 11 November 2026, accepting the move's contract change for exactly
 these five lines: they take placeholders, with no change in behaviour.
 
-## 155. `specsign.py`: the submission statement, the standing grant and its revoke, one definition (per-person signed submissions, request E)
+## 155. `specsign.py`: a `"plans"` block in `SETTINGS_MAC_FIELDS` (PLAN-SETTINGS)
+
+**Status:** REQUESTED 2026-11-13 by the pull request that adds this section;
+not applied. Asked by the plan settings lane (docs/design/plans-pipeline.md
+sections 6.4 and 7.8), which stores the workspace level of the plan-review
+settings "under the settings MAC every writer there stores".
+
+### What is true today
+
+Read on `main` at the commit this section was written on, 2026-11-13.
+
+* `swarm_common.specsign.SETTINGS_MAC_FIELDS` lists seven blocks: `top`,
+  `merge`, `code_intelligence`, `budget`, `quality_gates`, `plugins` and
+  `contract_review`. There is no `plans`, so
+  `canonical_settings_block(block="plans")` raises `SpecNotCanonical` and
+  nothing can sign the block through the frozen list.
+* swarm-api has no second signing list any more: `judgment.API_SETTINGS_MAC_FIELDS`
+  was removed when request 138 was applied, so there is no interim route
+  either.
+* `workspace_settings/{tenant_id}.plans` is not written by anything on
+  `main`; `plansettings.py` and `GET/PUT /v1/workspaces/{tenant_id}/plan-settings`
+  are the plan settings lane's to build. No MAC over the block is stored
+  anywhere yet.
+* `judgment.WRITER_FIELDS` names the keys each writer writes, and
+  `tests/unit/control_plane/test_settings_mac.py::test_each_writers_fields_are_the_ones_the_module_writes`
+  holds its block names equal to `SETTINGS_MAC_FIELDS`'s.
+
+### Why
+
+The plans block decides two things a tenant would like to change without
+its admin: whether the planner and the plan-review chat draw diagrams, and
+which model class answers the chat (a cost). A tenant's worker identity can
+write its own `workspace_settings` document directly, which is exactly what
+the settings MAC exists to stop (design/tenant-settings-integrity.md). Every
+other signed block is named once, in the frozen module; the plans block
+should be too, rather than bringing back a swarm-api-only list that request
+138 removed.
+
+### The change: the fields
+
+```python
+SETTINGS_MAC_FIELDS = MappingProxyType({
+    ...,
+    "contract_review": ("enabled",),
+    "plans": ("diagrams", "chat_model_class"),
+})
+```
+
+| field | values | meaning (plans-pipeline.md) |
+|---|---|---|
+| `diagrams` | `"on"` \| `"off"` \| absent | the workspace's diagram switch; absent is the platform's `plan_diagrams_default` (section 6.4) |
+| `chat_model_class` | a `MODEL_CLASSES` name `claude-code` carries \| absent | the plan-review chat's class; absent is the platform's `plan_chat_model_class` (section 7.8) |
+
+Not covered: `set_at` and `set_by` (who changed it, acted on by no reader),
+and `mac` itself. The caps are not in the block: a workspace only reads them,
+from the platform's `plan_review_caps`. The schedule level (`plan_diagrams`
+on the schedule document) and the per-plan override (`plan_chat_model` on the
+run) are not `workspace_settings` and are not signed by this list. A comment
+beside the entry names this request, as the other entries name theirs.
+Nothing else in `specsign.py` changes; `_SETTINGS_ADDED_FIELDS` gains nothing,
+because no MAC over the block exists to keep.
+
+### Who reads them
+
+* **swarm-api only.** `plansettings.py` writes and signs the block on
+  `PUT /v1/workspaces/{tenant_id}/plan-settings`, and reads it when a planner,
+  re-plan, on-demand diagram or chat turn is submitted, resolving the
+  effective setting it records in `plan_settings` and `model` (sections 6.4
+  and 7.8). For a tenant cut over in `SETTINGS_MAC_TENANTS`, a block whose MAC
+  does not verify reads as absent: the platform's defaults, as for
+  `merge` and `quality_gates`.
+* **The re-sign pass** (`judgment.resign_workspace_settings`,
+  `scripts/resign-workspace-settings.sh`) walks `SETTINGS_MAC_FIELDS`, so it
+  covers the block with no change of its own once `WRITER_FIELDS` names it.
+* **Not the scheduler and not the worker.** The planner's and the chat's
+  agents receive the resolved values in their `TaskCreate` (`model_class`,
+  `metadata`), which the step-spec signature already covers. The
+  scheduler's `trusted_settings` checks only its `NESTED_BLOCKS`
+  (`code_intelligence`) and the top level, so it never touches `plans`.
+
+### Compatibility: what it would break if accepted
+
+Nothing stored: a new block changes no other block's bytes, and no MAC over
+`plans` exists to invalidate. One test and one map must move with the
+change, in the pull request that applies it (or `plansettings.py`'s, if that
+lands with it):
+
+* `judgment.WRITER_FIELDS` gains `"plans": ("diagrams", "chat_model_class")`.
+  Without it, `test_each_writers_fields_are_the_ones_the_module_writes`
+  fails (its block names no longer match), and `unowned_covered_keys("plans")`
+  raises `KeyError` on the re-sign pass's first stored plans block.
+* `tests/unit/common/test_settings_block.py` pins the entry and its bytes.
+
+A service built before the change that called
+`canonical_settings_block(block="plans")` would have raised; none does.
+
+### If it is declined
+
+The plan settings lane has two ways on, neither as good: swarm-api brings
+back its own list for the block (request 138's interim, building the same
+bytes so they survive a later application), or the workspace level is stored
+unsigned and a tenant worker can switch its diagrams and pick the chat's
+model class. The first costs the second list request 138 removed; the second
+is the forgery the settings MAC exists to stop.
+
+### Invariants
+
+None of CONTRACT.md's ten changes. Invariant 9 (per-tenant isolation): the
+tenant and the block are inside the signed bytes, so a plans block copied
+onto another workspace's document, or into another block, does not verify.
+Invariant 10: a caller still picks a `model_class` by name from those the
+profile carries; the block stores a name, never an image or a resource spec.
+No setting here creates demand (invariant 1): it changes what an admitted
+agent draws and which class it runs at.
+
+### How it is tested
+
+`tests/unit/common/test_settings_block.py` pins the entry and refuses a block
+that is not listed; `plansettings.py`'s own tests sign a block with its `PUT`,
+read a forged and a copied block as the platform's defaults for a cut-over
+tenant, and re-sign it through the pass after a key rotation.
+
+### Who decides
+
+The owner: accepting it lets the plan settings lane sign the workspace level
+through the frozen list. Awaiting the owner's acceptance.
+
+## 156. `specsign.py`: the submission statement, the standing grant and its revoke, one definition (per-person signed submissions, request E)
 
 **Status:** ACCEPTED by the owner 13 November 2026 for per-person signed
 submissions, and APPLIED by the pull request that adds this section (lane

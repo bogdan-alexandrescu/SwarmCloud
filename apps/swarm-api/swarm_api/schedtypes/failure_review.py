@@ -105,7 +105,9 @@ from ..forgewrite import ForgeWriteError, ForgeWriteNotFound, GitHubWriter
 from ..issueci import excerpt_at
 from ..issuecomments import bounded as bounded_body
 from ..issuecomments import code, plain, prose
-from ..issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState, hard_stop_hold, refuse_auto_merge
+from ..issueruns import (
+    TERMINAL_RUN_STATES, IssueRuns, RunState, hard_stop_hold, refuse_auto_merge, run_source,
+)
 from ..repositories import Repositories, hard_stop_paths_of, platform_of
 from ..routes.runs import start_run
 from ..schemas import TaskCreate
@@ -725,6 +727,8 @@ class _Filing:
                 plan_approval=options.plan_approval, auto_merge=options.auto_merge,
                 fix_rounds=options.fix_rounds, created_by=f"schedule:{schedule_id}",
                 schedule=self.firing.mark, merge_approval=options.merge_approval,
+                # plans-pipeline §3.1: the cause this run fixes, beside `record_run`.
+                source=run_source(self.firing.mark, fingerprint=cause.fingerprint),
             )
         except ApiError as exc:
             if exc.status_code >= 500:

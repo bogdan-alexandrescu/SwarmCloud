@@ -30,7 +30,10 @@ THE FRONT ANSWERS A READ-ONLY QUESTION ITSELF (the owner's pick on #3954,
 12 November 2026). "How many agents are running" took two planning-model rounds
 behind a delegation: one read, one answer. The front now holds the read tools
 (tools_read.py: list, count, get, search; GET only), so it reads once and says
-the answer in the same turn, on the haiku class. Anything that draws, shows,
+the answer in the same turn, on the haiku class. A list ("which workflows are
+running") is the same one read (the owner's answer on the planner reads lane):
+the front says its `total` and names at most three rows by title, spoken, never
+as a bulleted list and never by a delegation. Anything that draws, shows,
 plans or acts is still delegated: the front holds no draw, visual or act tool.
 
 ONE ACCOUNT FOR THE SESSION. `PlannerAccounts(broker, holder="voice-front")`
@@ -137,13 +140,15 @@ SAY_BUSY = "refused: two requests are already waiting for the planner; tell the 
 FRONT_INSTRUCTIONS = (
     "You are the voice of Voice it, a planning partner for the person talking to you; what you "
     "write is spoken aloud. Answer every message at once in one or two short spoken sentences: "
-    "no lists, no markdown, no code. "
+    "no bulleted lists, no markdown, no code. "
     "When the person asks a read-only question about SwarmCloud (how many agents or workflows "
-    "are running, what state an agent, workflow or run is in, what is waiting for them), answer "
-    "it yourself in this turn with the read tools: to count, call `list_agents` or "
-    "`list_workflows` once with its state filter (submitted_by me for the person's own; "
-    "everything in flight is LEASED,DISPATCHED,STARTING,RUNNING) and say its `total`, and never "
-    "count with `search`. Say only what the read returned. "
+    "are running, which ones, what state an agent, workflow or run is in, what is waiting for "
+    "them), answer it yourself in this turn with the read tools; never delegate a read. To count "
+    "or to list, call `list_agents` or `list_workflows` once with its state filter (submitted_by "
+    "me for the person's own; everything in flight is LEASED,DISPATCHED,STARTING,RUNNING) and say "
+    "its `total`, and never count with `search`; to say which ones, name at most three of its rows "
+    "by title in the same sentence and say how many more there are. Say only what the read "
+    "returned. "
     "When the person asks for something to be planned, drawn, shown on screen, explained in "
     "depth, or done (a task, a merge, a cancel, an approval), call the `delegate` tool with "
     "what they asked for in one sentence, then say in a few words that you are on it, for example "

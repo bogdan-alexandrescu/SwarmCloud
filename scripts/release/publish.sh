@@ -42,16 +42,21 @@
 #      section 6(d)) goes instead to the bucket ROOT, third-party/..., the URL
 #      the image's SOURCE notice names, before SHA256SUMS: one copy for every
 #      release with that Lightpanda, an object already there left as it is;
-#   5. once all of that has succeeded, every publish: the root install.sh
-#      (Cache-Control: no-cache). It is channel-agnostic: it reads
-#      channels/<SWARM_CHANNEL>, so a candidate's is what `curl .../install.sh |
-#      SWARM_CHANNEL=rc sh` runs, before any promotion (audit finding N10);
-#   6. for a candidate (YYYY.MM.N-rc.N) only: channels/rc.marketplace.json (the
+#   5. once all of that has succeeded, a final release (YYYY.MM.N) only: the
+#      root install.sh (Cache-Control: no-cache), what every stable install
+#      runs. A candidate never writes it: its script would replace the stable
+#      one before the candidate is tested (Day One audit, owner's pick of
+#      2026-11-13);
+#   6. for a candidate (YYYY.MM.N-rc.N) only: channels/rc.install.sh (its own
+#      install.sh, which reads channels/<SWARM_CHANNEL>, so `curl
+#      .../channels/rc.install.sh | SWARM_CHANNEL=rc sh` installs it before any
+#      promotion, audit finding N10), channels/rc.marketplace.json (the
 #      release's marketplace, for a deployment on the rc channel), then LAST
-#      channels/rc (one line: V), both Cache-Control: no-cache, each written as
-#      exactly that object whatever channels/rc/ prefix exists (A5), and
-#      channels/rc read back: it must hold V. install.sh reads channels/rc under
-#      SWARM_CHANNEL=rc (DAYONE-RELEASE-2).
+#      channels/rc (one line: V), all Cache-Control: no-cache, each written as
+#      exactly that object whatever channels/rc/ prefix exists (A5); then
+#      channels/rc.install.sh is read back (it must be the bundle's
+#      install.sh, byte for byte) and channels/rc (it must hold V).
+#      install.sh reads channels/rc under SWARM_CHANNEL=rc (DAYONE-RELEASE-2).
 #   It never touches channels/stable or the root marketplace.json.
 #
 # --record-test V --record FILE: the manual install-and-upgrade test of
@@ -253,6 +258,17 @@ check_channel() {
   [[ "${held}" == "${version}" ]] \
     || die "${CHANNELS}/${name} holds '${held}', not ${version}: an installer on that channel does not install ${version}"
   ok "${CHANNELS}/${name} reads back as ${version}"
+}
+
+# check_channel_file NAME FILE: channels/NAME, read back, is FILE byte for byte.
+check_channel_file() {
+  local name="$1" file="$2"
+  [[ "${DRY_RUN}" -eq 0 ]] || return 0
+  gcloud storage cat "${CHANNELS}/${name}" >"${WORK}/readback-${name}" 2>/dev/null \
+    || die "cannot read ${CHANNELS}/${name} back: an installer that fetches it finds nothing"
+  cmp -s "${WORK}/readback-${name}" "${file}" \
+    || die "${CHANNELS}/${name} does not read back as ${file}: an installer that fetches it runs another script"
+  ok "${CHANNELS}/${name} reads back as the bundle's $(basename -- "${file}")"
 }
 
 # ---------------------------------------------------------------------------
@@ -492,19 +508,25 @@ publish() {
   done 4< <(if [[ -d "${BUNDLE}/third-party" ]]; then cd -- "${BUNDLE}" && find third-party -type f | LC_ALL=C sort; fi)
   # LAST: a release cut short above has no SHA256SUMS, so no installer reads it.
   write gcloud storage cp --no-clobber "${BUNDLE}/SHA256SUMS" "${release}/SHA256SUMS"
-  # Every publish puts install.sh at the root: it reads the channel it is asked
-  # for, so it is the same for stable and rc, and an rc's install (which its
-  # promotion needs, as TESTED) must not wait for a promotion (N10).
-  write gcloud storage cp --cache-control=no-cache "${BUNDLE}/install.sh" "${BUCKET}/install.sh"
   # A candidate moves the rc channel, after the release it names is complete.
   # A final release moves no channel here: stable moves only by --promote.
   if [[ "${VERSION}" == *-rc.* ]]; then
     printf '%s\n' "${VERSION}" >"${WORK}/rc"
+    # The candidate's own install.sh, never the root one, which is what every
+    # stable install runs (Day One audit, owner's pick of 2026-11-13). An rc's
+    # install (which its promotion needs, as TESTED) must not wait for a
+    # promotion (N10), so it is fetched from here.
+    put_channel_object "${BUNDLE}/install.sh" rc.install.sh
     # The rc channel's marketplace, for a deployment that follows rc (N10).
     put_channel_object "${BUNDLE}/marketplace.json" rc.marketplace.json
     put_channel_object "${WORK}/rc" rc
+    check_channel_file rc.install.sh "${BUNDLE}/install.sh"
     check_channel rc "${VERSION}"
     [[ "${DRY_RUN}" -eq 1 ]] || ok "${CHANNELS}/rc names ${VERSION}: SWARM_CHANNEL=rc installs it"
+  else
+    # A final release's install.sh goes to the root, what a stable install
+    # runs; it reads the channel it is asked for, and --promote writes it again.
+    write gcloud storage cp --cache-control=no-cache "${BUNDLE}/install.sh" "${BUCKET}/install.sh"
   fi
   ok "published ${VERSION}$([[ "${DRY_RUN}" -eq 0 ]] || printf ' (dry run: nothing written)')"
   info "next: the manual test (plan section 7.3), then --record-test ${VERSION} --record <file>, then --promote ${VERSION}"

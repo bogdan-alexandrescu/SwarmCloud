@@ -588,7 +588,7 @@ def test_a_model_class_added_to_an_older_format_has_no_canonical_form(spec_forma
 
 
 # ---------------------------------------------------------------------------
-# Per-person signed submissions (contract request 155, design
+# Per-person signed submissions (contract request 156, design
 # docs/design/workspace-secrets.md section 11.9, request E): the submission
 # statement, the standing grant and its revoke statement, one definition.
 # A person's `sc` key is Ed25519 and signs "<purpose>\n" || SHA-256(bytes)
