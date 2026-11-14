@@ -21,13 +21,21 @@ THE SHAPE, one entry per volume, keyed by the kubelet volume name -- the name
 kubelet's `Usage of EmptyDir volume "<name>"` message uses:
 
     {"tmp": {"used_bytes": int, "limit_bytes": int,
-             "top": [[absolute path, bytes], ...], "partial": bool}}
+             "top": [[absolute path, bytes], ...], "partial": bool,
+             "inodes_used": int | None, "inodes_total": int | None}}
 
 BYTES ARE ALLOCATED BLOCKS (`st_blocks * 512`), as kubelet's du-style
 accounting counts them: a sparse file costs what it allocated, not its
 length. Entries are `lstat`ed and no symlink is followed (a link costs its own
 blocks, and its target is on whichever volume holds it); a hard link counts
 once. An entry that cannot be read is skipped, never fatal.
+
+INODES TOO (#4061). A run of small files used every inode of a 20 GiB ext4
+volume (1,310,720 of them) with 14 GB still free, and from then on every
+create failed `No space left on device` while `df -h` showed room. So each
+entry also carries the volume's `inodes_used` and `inodes_total` (`statvfs`;
+None when it cannot be read), and `enospc_words` turns an ENOSPC on a volume
+with free bytes into a message that names inodes, not space.
 
 THE WALK IS BOUNDED, by an entry count and a wall time per volume, because it
 runs on the loop that heartbeats the lease. A walk that stopped early says so
@@ -36,6 +44,7 @@ runs on the loop that heartbeats the lease. A walk that stopped early says so
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -140,11 +149,13 @@ def sample(
     max_seconds: float = MAX_SECONDS,
     scrub: Callable[[str], str] | None = None,
     clock: Callable[[], float] = time.monotonic,
+    statvfs: Callable[[Any], Any] = os.statvfs,
 ) -> dict[str, Any]:
     """One reading of every volume that exists here: see the module docstring.
 
     `scrub` is the worker's redactor (`StructuredLogger.scrub_text`, over
-    `agent_worker.redact`); a path is redacted whole, then cut.
+    `agent_worker.redact`); a path is redacted whole, then cut. `statvfs` is
+    `os.statvfs`, injectable so a test can fill a volume's inodes.
     """
     out: dict[str, Any] = {}
     for name, mount, limit in volumes:
@@ -164,13 +175,52 @@ def sample(
             else:
                 break
         ranked = sorted(children.get(node, []), key=lambda p: (-sizes.get(p, 0), p))[:top]
+        inodes_used, inodes_total = _inodes(mount, statvfs)
         out[name] = {
             "used_bytes": used,
             "limit_bytes": limit,
             "top": [[_shown(path, scrub), sizes.get(path, 0)] for path in ranked],
             "partial": partial,
+            "inodes_used": inodes_used,
+            "inodes_total": inodes_total,
         }
     return bounded(out)
+
+
+def _inodes(mount: Path, statvfs: Callable[[Any], Any]) -> tuple[int | None, int | None]:
+    """The filesystem's (used, total) inodes under `mount`; (None, None) when unreadable."""
+    try:
+        st = statvfs(mount)
+    except OSError:
+        return None, None
+    return st.f_files - st.f_ffree, st.f_files
+
+
+def enospc_words(exc: OSError, path: str | Path, *,
+                 statvfs: Callable[[Any], Any] = os.statvfs) -> str:
+    """What an OSError at `path` means, naming inodes when they, not bytes, ran out.
+
+    ENOSPC is `No space left on device` whether the filesystem ran out of
+    blocks or of inodes, and `df -h` shows room in the second case. So an
+    ENOSPC on a filesystem with no inode an unprivileged process may take
+    (`f_favail`) and bytes still free (`f_bavail`) reads as out of inodes,
+    with both counts. Any other error, or an ENOSPC whose filesystem cannot
+    be read or has no bytes free, is the error's own text.
+    """
+    if exc.errno != errno.ENOSPC:
+        return str(exc)
+    try:
+        st = statvfs(path)
+    except OSError:
+        return str(exc)
+    free = st.f_bavail * st.f_frsize
+    if st.f_favail > 0 or free <= 0 or st.f_files <= 0:
+        return str(exc)
+    return (
+        f"{path} is out of inodes, not space: all {st.f_files:,} inodes are used while "
+        f"{size_words(free)} is free, so no file can be created there. Delete small files "
+        "(a build cache, old checkouts, a file per test case) rather than large ones."
+    )
 
 
 def bounded(reading: dict[str, Any], max_bytes: int = SCRATCH_DETAIL_MAX_BYTES) -> dict[str, Any]:

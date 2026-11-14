@@ -43,7 +43,7 @@ from swarm_common.profiles import (
     units_for,
 )
 
-from .dispatch import live_split_for
+from .dispatch import live_size
 
 log = logging.getLogger(__name__)
 
@@ -193,8 +193,10 @@ def current(store: Any) -> SizeVersion:
 
 def _default(name: str, live: bool) -> Sized:
     size = default_sizes()[name]
-    split = live_split_for(RESOURCE_CLASSES[name], size) if live else None
-    return Sized(resource_class=name, version=0, size=size, live_split=split)
+    if not live:
+        return Sized(resource_class=name, version=0, size=size)
+    size = live_size(RESOURCE_CLASSES[name], size)
+    return Sized(resource_class=name, version=0, size=size, live_split=size.live_split)
 
 
 def for_task(version: SizeVersion, task: Task, *, backend: Backend, live: bool) -> Sized:
@@ -206,7 +208,10 @@ def for_task(version: SizeVersion, task: Task, *, backend: Backend, live: bool) 
     default and is version 0, because Cloud Run fixes resources on the Job
     (`effective_size`, §4.7). `live` is whether the GKE pod carries the
     display sidecar (`dispatch.live_display_on`); only then is a split
-    recorded. A resized class whose live split would leave the worker
+    recorded, and the size is the live pod's (`dispatch.live_size`): its
+    memory the two containers' sum, which the live worker's memory floor
+    may raise, so the units charged before the lease are the pod's. A
+    resized class whose live split would leave the worker
     nothing is sized at its default, logged at ERROR, rather than refused:
     `check_size` cannot see the renderer's table for a class with no stored
     split.
@@ -219,9 +224,10 @@ def for_task(version: SizeVersion, task: Task, *, backend: Backend, live: bool) 
     split = None
     if live:
         try:
-            split = live_split_for(RESOURCE_CLASSES[name], size)
+            size = live_size(RESOURCE_CLASSES[name], size)
         except ValueError as exc:
             log.error("runner sizes: version %s's %s leaves a live pod no room (%s); "
                       "task %s is sized at the code default", version.version, name, exc, task.id)
             return _default(name, live)
+        split = size.live_split
     return Sized(resource_class=name, version=version.version, size=size, live_split=split)
