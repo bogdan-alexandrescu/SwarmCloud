@@ -833,6 +833,24 @@ def test_a_large_fetch_bundle_is_created_under_the_proven_attempts_own_prefix_on
     assert bucket.uploads[0][1].get("if_generation_match") == 0
 
 
+def test_large_shallow_fetch_bundle_is_a_tenant_prefixed_object(client, db, origin, bucket):
+    """#2901: a shallow clone's deepened slice goes to the same proven-attempt
+    prefix as any large bundle, with the shallow lines still in the answer."""
+    head = _feature_off_a(origin)
+    attempt, _ = running_task(client, db)
+    t = attempt.tuple
+    response = call(client, attempt, "git_fetch", {"ref": "main", "haves": [head],
+                                                   "shallow": [head]},
+                    request_id="req-deep")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    key = f"tenants/{t.tenant_id}/attempts/{t.attempt_id}/git/req-deep.fetch.bundle"
+    assert body["bundle_object"] == key and "bundle" not in body
+    assert [k for k, _ in bucket.uploads] == [key]
+    assert hashlib.sha256(bucket.objects[key]).hexdigest() == body["bundle_sha256"]
+    assert (body["unshallow"], body["merge_base"]) == ([head], origin["a"])
+
+
 def test_a_bundle_the_bucket_refuses_is_a_named_audited_refusal_the_worker_does_not_retry(
         client, db, origin, bucket):
     from google.api_core import exceptions as gexc
