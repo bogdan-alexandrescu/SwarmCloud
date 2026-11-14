@@ -24,7 +24,7 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { approveApproval, loadApproval, loadRun, loadSchedule, rejectApproval, type ApprovalDetail, type ApprovalItem } from './api'
-import { Dash } from './components'
+import { Button, Dash, Tag } from './components'
 import { AcceptanceVerdicts, contractAcceptance } from './ContractJev'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { diagramFrame, docFrame, loadPlannerDocuments, type PlannerDocuments, type ShownDocuments } from './InterviewPage'
@@ -349,18 +349,6 @@ function CheckCounts({ d, head }: { d: Decision; head: string | null }) {
   )
 }
 
-/** One numbered evidence card. */
-function Card({ n, title, children }: { n: number; title: string; children: ReactNode }) {
-  return (
-    <section className="ad-card" aria-label={title} data-n={n}>
-      <h3 className="ad-card-h">
-        {n} · {title}
-      </h3>
-      {children}
-    </section>
-  )
-}
-
 function Kv({ name, children }: { name: string; children: ReactNode }) {
   return (
     <>
@@ -527,136 +515,210 @@ function planSteps(raw: unknown[] | undefined): { key: string; title: string; pr
   })
 }
 
-/** The evidence, as numbered cards: what it is, why it is held, what you approve, what asked for it. */
-function Evidence({ d, go }: { d: Decision; go: (to: string) => void }) {
+/** A titled panel on the decision page: its heading, and an (i) where it needs one. */
+function Panel({ title, label, tip, children }: { title: ReactNode; label: string; tip?: string; children: ReactNode }) {
+  return (
+    <section className="apd-panel" aria-label={label}>
+      <div className="apd-panel-h">
+        <h2>{title}</h2>
+        {tip !== undefined && <InfoTip about={label} tip={tip} />}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+/**
+ * AT ITS HEAD (the cards mock-up): the checks passed at the head the approval
+ * names, as one large figure over the bar, then the pull request, the head
+ * and the merge's checklist. Counts nobody served are a dash with its reason
+ * (`CheckCounts`), never "0 passed". A head that moved says so in its own row.
+ */
+function AtItsHead({ d }: { d: Decision }) {
+  const a = d.approval
+  const pr = d.merge?.pull_request
+  const { head, verdict } = mergeDigest(d)
+  const now = a.head_sha_now ?? null
+  const moved = a.state === 'superseded' ? (now ?? a.superseded_by?.head_sha ?? null) : null
+  const c = checkCounts(d)
+  const total = c === null ? 0 : c.passed + c.failed + c.pending
+  const tone = c === null ? '' : c.failed > 0 ? 'is-bad' : c.pending > 0 ? 'is-warn' : 'is-ok'
+  return (
+    <Panel title="At its head" label="At its head">
+      {c !== null && total > 0 ? (
+        <>
+          <div className="apd-checks" data-testid="ad-check-counts">
+            <span className={`apd-huge ${tone}`}>{c.passed}</span>
+            <span>
+              <span className="apd-strong">of {total} checks passed</span>
+              {(c.failed > 0 || c.pending > 0) && (
+                <span className="apd-dim">
+                  {' '}
+                  · {c.failed} failed · {c.pending} pending
+                </span>
+              )}
+              {head !== null && (
+                <span className="apd-dim apd-mono apd-line">head {short(head)}</span>
+              )}
+            </span>
+          </div>
+          <div className="ad-cbar" role="img" aria-label={`${c.passed} passed, ${c.failed} failed, ${c.pending} pending`}>
+            {c.passed > 0 && <i className="is-passed" style={{ flexGrow: c.passed }} />}
+            {c.failed > 0 && <i className="is-failed" style={{ flexGrow: c.failed }} />}
+            {c.pending > 0 && <i className="is-pending" style={{ flexGrow: c.pending }} />}
+          </div>
+        </>
+      ) : (
+        <CheckCounts d={d} head={head} />
+      )}
+      <dl className="apd-facts">
+        <Kv name="Pull request">
+          {pr?.url ? (
+            <a href={pr.url} target="_blank" rel="noreferrer">
+              #{pr.number ?? '?'}
+            </a>
+          ) : pr?.number !== undefined ? (
+            `#${pr.number}`
+          ) : (
+            <Dash why="the pull request is not served" />
+          )}
+        </Kv>
+        <Kv name="Head">
+          {head === null ? <Dash why="the head is not served" /> : <code>{short(head)}</code>}
+          {now !== null && head !== null && now !== head && moved === null && (
+            <>
+              {' '}
+              <span className="ad-chip is-warn" data-testid="ad-head-now">
+                now {short(now)}
+              </span>
+            </>
+          )}
+        </Kv>
+        {/* A digest with no verdict draws no Verdict row (visual QA automate2-20). */}
+        {verdict !== null && <Kv name="Verdict">{verdict}</Kv>}
+      </dl>
+      <MergeChecks d={d} />
+      {moved !== null && (
+        <div className="apd-check is-warn" data-testid="ad-head-now">
+          <span className="apd-dot is-warn" aria-hidden />
+          <span className="apd-strong">
+            Head moved to <span className="apd-mono">{short(moved)}</span>
+          </span>
+        </div>
+      )}
+    </Panel>
+  )
+}
+
+/**
+ * WHY IT IS HELD (the cards mock-up): the hold's words as the panel's
+ * heading, each file it matched with the reason that matched it, and the
+ * hold's approvers. The code rides on the heading's title (visual QA
+ * automate2-05: "Held NEEDS_OWNER: held for the platform owner." said it twice).
+ */
+function HoldPanel({ hold }: { hold: ServedHold }) {
+  const pairs = hold.reason_files ?? null
+  const byFile: [string, string[]][] = []
+  if (pairs !== null) {
+    for (const [r, files] of Object.entries(pairs)) {
+      for (const f of files) {
+        const hit = byFile.find(([x]) => x === f)
+        if (hit === undefined) byFile.push([f, [r]])
+        else hit[1].push(r)
+      }
+    }
+  }
+  for (const f of hold.matched ?? []) if (!byFile.some(([x]) => x === f)) byFile.push([f, []])
+  const reasons = hold.reasons ?? []
+  const lead = holdLead(hold.code).replace(/\.$/, '')
+  return (
+    <Panel title={<span title={hold.code}>{lead}</span>} label="Why it is held" tip="A held item waits for the approvers the hold names, even when every check passed.">
+      {byFile.length > 0 ? (
+        <ul className="apd-paths" aria-label="Files each reason matched">
+          {byFile.map(([f, rs]) => (
+            <li key={f}>
+              <code className="apd-mono">{f}</code>
+              {rs.length > 0 && <span className="apd-dim">{rs.join(', ')}</span>}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        reasons.length > 0 && (
+          <p className="ad-tags" aria-label="Reasons">
+            {reasons.map((r) => (
+              <span key={r} className="ad-chip is-warn">
+                {r}
+              </span>
+            ))}
+          </p>
+        )
+      )}
+      <dl className="apd-facts">
+        <Kv name="Approvers">
+          <span className="apd-strong">{approversWords(hold.approvers) ?? <Dash why="the hold’s approvers are not served" />}</span>
+        </Kv>
+      </dl>
+    </Panel>
+  )
+}
+
+/**
+ * THE EVIDENCE, AS PANELS (the cards mock-up): a merge at its head, then why
+ * it is held; a plan's summary, steps and files; Jev's judgment of a work
+ * contract. Where the item came from is in the head card above, and what a
+ * decision does is the decision strip's tooltip below.
+ */
+function Evidence({ d }: { d: Decision }) {
   const a = d.approval
   const plan = d.run?.plan ?? null
   const files = plan?.files ?? []
   const steps = planSteps(plan?.steps)
-  const pending = a.state === 'pending'
   const hold = a.hold ?? d.merge?.approval_hold ?? null
-  const { head, verdict } = a.kind === 'merge' ? mergeDigest(d) : { head: null, verdict: null }
-  const now = a.head_sha_now ?? null
-  const cards: { title: string; body: ReactNode; side: 'l' | 'r' }[] = []
-  if (d.merge !== undefined) {
-    const pr = d.merge.pull_request
-    cards.push({
-      title: 'The pull request',
-      side: 'l',
-      body: (
-        <>
-          <dl className="ad-kv">
-            <Kv name="Pull request">
-              {pr?.url ? (
-                <a href={pr.url} target="_blank" rel="noreferrer">
-                  #{pr.number ?? '?'}
-                </a>
-              ) : pr?.number !== undefined ? (
-                `#${pr.number}`
-              ) : (
-                <Dash why="the pull request is not served" />
-              )}
-            </Kv>
-            <Kv name="Head">
-              {head === null ? <Dash why="the head is not served" /> : <code>{short(head)}</code>}
-              {now !== null && head !== null && now !== head && (
-                <>
-                  {' '}
-                  <span className="ad-chip is-warn" data-testid="ad-head-now">
-                    now {short(now)}
-                  </span>
-                </>
-              )}
-            </Kv>
-          </dl>
-          <CheckCounts d={d} head={head} />
-          <MergeChecks d={d} />
-        </>
-      ),
-    })
-  }
+  const panels: ReactNode[] = []
+  if (d.merge !== undefined) panels.push(<AtItsHead key="head" d={d} />)
+  if (hold !== null) panels.push(<HoldPanel key="hold" hold={hold} />)
   if (plan !== null) {
-    cards.push({
-      title: 'The plan',
-      side: 'l',
-      body: (
-        <>
-          {plan.summary ? <p className="ad-p">{plan.summary}</p> : <p className="ad-p">The plan carries no summary.</p>}
-          {steps.length > 0 ? (
-            <ol className="ad-files ad-steps" aria-label="The plan’s steps">
-              {steps.map((st) => (
-                <li key={st.key}>
-                  <b>{st.title}</b>
-                  {st.prompt !== null && <span className="ad-sub ad-step-p">{st.prompt}</span>}
-                </li>
-              ))}
-            </ol>
-          ) : (
-            <p className="ad-p">The plan serves no steps.</p>
-          )}
-          {files.length > 0 ? (
-            <ul className="ad-files" aria-label="Files the plan names">
-              {files.map((f) => (
-                <li key={f} className="mono">
-                  {f}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="ad-p">The plan names no file. Its files are advisory: a hold is checked again at merge.</p>
-          )}
-        </>
-      ),
-    })
+    panels.push(
+      <Panel key="plan" title="The plan" label="The plan">
+        {plan.summary ? <p className="ad-p">{plan.summary}</p> : <p className="ad-p">The plan carries no summary.</p>}
+        {steps.length > 0 ? (
+          <ol className="ad-files ad-steps" aria-label="The plan’s steps">
+            {steps.map((st) => (
+              <li key={st.key}>
+                <b>{st.title}</b>
+                {st.prompt !== null && <span className="ad-sub ad-step-p">{st.prompt}</span>}
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="ad-p">The plan serves no steps.</p>
+        )}
+        {files.length > 0 ? (
+          <ul className="ad-files" aria-label="Files the plan names">
+            {files.map((f) => (
+              <li key={f} className="mono">
+                {f}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="ad-p">The plan names no file.</p>
+        )}
+      </Panel>,
+    )
   }
   // JEV'S JUDGMENT OF THE WORK CONTRACT (jev-contract.md section 5.4): each
   // verdict beside what it cites, labelled as Jev's. Evidence, never the
-  // decision: the card says so, and the bar below is still the only verb.
+  // decision: the strip below is still the only verb.
   const acceptance = contractAcceptance(d.contract_acceptance)
-  if (acceptance !== null) cards.push({ title: 'Jev’s judgment of the work contract', side: 'l', body: <AcceptanceVerdicts acceptance={acceptance} /> })
-  // Why it is held reads before what you approve, in the left column as the
-  // mock-up draws it, so the DOM, the Tab order and the numbers agree
-  // (visual QA automate2-04: the right column put 2 after 3 in the DOM).
-  if (hold !== null) cards.push({ title: 'Why it is held', side: 'l', body: <HoldBody hold={hold} itemApprovers={a.approvers} /> })
-  // Once decided, the card says what the item asked for, in the past tense,
-  // and no longer what a decision would send (automate-07).
-  cards.push({
-    title: pending ? 'What you approve' : 'What it asked for',
-    side: 'l',
-    body: (
-      <>
-        <p className="ad-p">{pending ? (APPROVE_DOES[a.kind] ?? 'Approving lets this go ahead.') : (ASKED_FOR[a.kind] ?? 'It asked to let this go ahead.')}</p>
-        {a.kind === 'merge' ? (
-          <>
-            {pending && <p className="ad-p">A decision is sent with this digest. If the head moves before it arrives, the server refuses it.</p>}
-            {/* A digest with no verdict draws no Verdict row (visual QA automate2-20). */}
-            <dl className="ad-kv">
-              {verdict !== null && <Kv name="Verdict">{verdict}</Kv>}
-              <Kv name="At head">{head === null ? <Dash why="the head is not served" /> : <code>{short(head)}</code>}</Kv>
-            </dl>
-          </>
-        ) : (
-          pending && a.digest !== undefined && a.digest !== null && <p className="ad-p">Approve sends back what this page read: a plan or a firing changed since is refused, never approved unread.</p>
-        )}
-      </>
-    ),
-  })
-  cards.push({ title: 'What asked for it', side: 'r', body: <AskedBy d={d} go={go} /> })
-  const numbered = cards.map((c, i) => ({ ...c, n: i + 1 }))
-  const col = (side: 'l' | 'r') =>
-    numbered
-      .filter((c) => c.side === side)
-      .map((c) => (
-        <Card key={c.title} n={c.n} title={c.title}>
-          {c.body}
-        </Card>
-      ))
-  return (
-    <div className="ad-ev">
-      <div className="ad-col">{col('l')}</div>
-      <div className="ad-col">{col('r')}</div>
-    </div>
-  )
+  if (acceptance !== null) {
+    panels.push(
+      <Panel key="jev" title="Jev’s judgment of the work contract" label="Jev’s judgment of the work contract">
+        <AcceptanceVerdicts acceptance={acceptance} />
+      </Panel>,
+    )
+  }
+  return panels.length === 0 ? null : <div className={`apd-cols${panels.length > 1 ? ' is-2' : ''}`}>{panels}</div>
 }
 
 /** What each kind's item is, as a decided headline names it: "This plan was rejected." */
@@ -760,48 +822,83 @@ function expiryLine(a: Decision['approval'], now: number): string {
   return `Expires ${when(a.expires_at)}, ${untilWords(a.expires_at, now)}.`
 }
 
-/** The decision bar of a decided, expired or superseded item: its outcome. */
+/** A decided item's word, as its strip says it. */
+const OUTCOME_WORD: Readonly<Record<string, string>> = {
+  approved: 'Approved',
+  rejected: 'Rejected',
+  expired: 'Expired',
+  superseded: 'Superseded',
+}
+
+/** The decision strip (the cards mock-up): one row, the state's own words and actions. */
+function Strip({ state, tone = '', label = 'Decision', children }: { state: string; tone?: string; label?: string; children: ReactNode }) {
+  return (
+    <section className={`apd-decide${tone === '' ? '' : ` ${tone}`}`} data-testid="apd-decide" data-state={state} aria-label={label}>
+      {children}
+    </section>
+  )
+}
+
+/**
+ * THE STRIP OF A DECIDED, EXPIRED OR SUPERSEDED ITEM: its word, who and when,
+ * and the one action that leads on. What it asked for, and what became of a
+ * merge's pull request, are its tooltip.
+ */
 function Outcome({ d, kind, go }: { d: Decision; kind: string | null; go: (to: string) => void }) {
   const a = d.approval
-  const runId = typeof a.subject.run_id === 'string' && a.subject.run_id !== '' ? a.subject.run_id : null
+  const s = a.subject ?? {}
+  const runId = typeof s.run_id === 'string' && s.run_id !== '' ? s.run_id : null
+  const scheduleId = typeof s.schedule_id === 'string' && s.schedule_id !== '' ? s.schedule_id : null
   // Who decided, through `PersonName` (user-profile.md §4.4): their name, when
-  // they set one, always beside the email that decided.
-  const by = a.decided_by ? (
-    <>
-      {' by '}
-      <PersonName email={a.decided_by} name={a.decided_by_name} />
-    </>
-  ) : null
-  const at = a.decided_at ? <span title={a.decided_at}>, {when(a.decided_at)}</span> : null
+  // they set one, always beside the email that decided, at `ap-decided`.
+  const by = <span data-testid="ap-decided">{a.decided_by ? <PersonName email={a.decided_by} name={a.decided_by_name} /> : <Dash why="who decided is not served" />}</span>
+  const at = (iso: string | null | undefined) => (iso ? <span title={iso}>{when(iso)}</span> : <Dash why="when is not served" />)
   const openRun =
     runId === null ? null : (
       <InApp go={go} to={runAddress(runId)} className="c-btn">
         Open the run ›
       </InApp>
     )
+  const asked = ASKED_FOR[a.kind] ?? 'It asked to let this go ahead.'
   let tone = 'is-done'
-  let head: ReactNode
-  let body: ReactNode = null
+  let dot = 'is-paused'
+  let line: ReactNode = null
+  let tip = asked
   let act: ReactNode = openRun
   switch (a.state) {
     case 'approved':
       tone = 'is-ok'
-      head = <>Approved{by}{at}.</>
-      body = a.kind === 'merge' ? 'The merge step merges it next. Read it on the run.' : 'What it let go ahead is on the run.'
+      dot = 'is-ok'
+      line = (
+        <span>
+          by {by} · {at(a.decided_at)}
+        </span>
+      )
+      tip = `${asked} ${a.kind === 'merge' ? 'The merge step merges it next; the run says when.' : 'What it let go ahead is on the run.'}`
       break
     case 'rejected':
       tone = 'is-bad'
-      head = <>Rejected{by}{at}.</>
-      body = (
+      dot = 'is-bad'
+      line = (
         <>
-          {a.reason ? <q className="ad-quote">{a.reason}</q> : <span className="ad-sub">The rejection carries no reason.</span>}
-          {a.kind === 'merge' && <span className="ad-sub">The pull request stays open and unmerged.</span>}
+          <span>
+            by {by} · {at(a.decided_at)}
+          </span>
+          {a.reason && <q className="apd-quote">{a.reason}</q>}
         </>
       )
+      if (a.kind === 'merge') tip = `${asked} The pull request stays open and unmerged.`
       break
     case 'expired':
-      head = a.expires_at ? <>Expired <span title={a.expires_at}>{when(a.expires_at)}</span>: nobody decided it in time.</> : 'Expired: nobody decided it in time.'
-      body = a.kind === 'merge' ? 'So it did not merge. The pull request stays open.' : 'So it did not go ahead.'
+      line = <span>{a.expires_at ? at(a.expires_at) : null} · nobody decided</span>
+      tip = `${asked} ${a.kind === 'merge' ? 'Nobody decided in time, so it did not merge; the pull request stays open.' : 'Nobody decided in time, so it did not go ahead.'}`
+      if (scheduleId !== null) {
+        act = (
+          <InApp go={go} to={scheduleAddress(scheduleId)} className="c-btn">
+            Open the schedule ›
+          </InApp>
+        )
+      }
       break
     case 'superseded': {
       tone = 'is-warn'
@@ -813,89 +910,89 @@ function Outcome({ d, kind, go }: { d: Decision; kind: string | null; go: (to: s
       const isPlan = a.kind === 'plan' || a.kind === 'hold'
       const moved = isMerge ? (a.head_sha_now ?? next?.head_sha ?? null) : null
       const { head: was } = isMerge ? mergeDigest(d) : { head: null }
-      head =
-        moved !== null ? <>Superseded: the head moved to <span className="mono">{short(moved)}</span>.</> : isPlan ? 'Superseded: the run’s plan changed.' : 'Superseded: a newer request replaced it.'
-      body = (
-        <>
-          {was !== null && (
-            <span className="ad-sub">
-              This approval was for <span className="mono">{short(was)}</span> and can no longer merge anything.
-            </span>
-          )}
-          {isPlan && served && <span className="ad-sub">The new plan has its own request.</span>}
-          {!served && (
-            <span className="ad-sub">
-              {isMerge ? 'No newer request is served for the new head yet.' : isPlan ? 'The new plan has its own request; none is served yet.' : 'No newer request is served for it yet.'}
-            </span>
-          )}
-        </>
+      line = (
+        <span>
+          {at(a.decided_at)} · {moved !== null ? 'the head moved' : isPlan ? 'the run’s plan changed' : 'a newer request replaced it'}
+        </span>
       )
-      if (next !== null && next.approval_id) {
-        act = (
-          <InApp go={go} to={approvalAddress(next.approval_id, kind)} className="c-btn is-primary">
-            Open the newer request ›
-          </InApp>
-        )
-      }
+      tip = [
+        was !== null ? `This approval was for ${short(was)} and can no longer merge anything.` : asked,
+        served ? 'The newer request asks again.' : isMerge ? 'No newer request is served for the new head yet.' : 'No newer request is served for it yet.',
+      ].join(' ')
+      act = served ? (
+        <InApp go={go} to={approvalAddress(next.approval_id!, kind)} className="c-btn is-primary">
+          Open the new approval ›
+        </InApp>
+      ) : null
       break
     }
     default:
-      head = <>{a.state}{by}{at}.</>
+      line = (
+        <span>
+          by {by} · {at(a.decided_at)}
+        </span>
+      )
   }
+  const word = OUTCOME_WORD[a.state] ?? a.state
   return (
-    <div className={`ad-bar ${tone}`} data-testid="ap-decided" data-state={a.state}>
-      <div className="ad-bar-l">
-        <b className="ad-bar-h">{head}</b>
-        {body !== null && <span className="ad-sub">{body}</span>}
-        <span className="ad-sub">Nothing is left to decide.</span>
-      </div>
-      {act !== null && <div className="ad-bar-acts">{act}</div>}
-    </div>
+    <Strip state={a.state} tone={tone}>
+      <span className={`apd-dot ${dot}`} aria-hidden />
+      <span className="apd-strong" data-testid="ap-state">
+        {word}
+      </span>
+      {line}
+      <InfoTip about="the outcome" tip={tip} />
+      <span className="apd-grow" />
+      {act}
+    </Strip>
   )
 }
 
-/** The bar a reader who may not decide sees (B's A5f): no button, who decides, and why not them. */
+/** The strip a reader who may not decide sees: no button, who decides, and why not them in a tooltip. */
 function NotYours({ md }: { md: MayDecide }) {
   const who = decidersWords(md)
+  const said = who === null ? 'Not yours to decide' : `${who.charAt(0).toUpperCase()}${who.slice(1)} only`
   return (
-    <div className="ad-bar is-info" data-testid="ap-no-decide">
-      <div className="ad-bar-l">
-        <b className="ad-bar-h">{who === null ? 'You may not decide this' : `Only ${who} decides this`}</b>
-        {md.why && <span className="ad-sub">{md.why}</span>}
-        <span className="ad-sub">You can read the evidence. When it is decided, the outcome shows here.</span>
-      </div>
-    </div>
+    <Strip state="pending">
+      <span className="apd-who" data-testid="ap-no-decide">
+        <span className="apd-dot is-paused" aria-hidden />
+        <span className="apd-strong">{said}</span>
+        <InfoTip about="who decides" tip={md.why || 'You can read the evidence; the decision is theirs, and its outcome shows here.'} />
+      </span>
+    </Strip>
   )
 }
 
 /**
- * A CONTRACT STEP'S BAR (jev-contract.md section 5.4; the owner's pick on PR
+ * CONTRACT STEP'S STRIP (jev-contract.md section 5.4; the owner's pick on PR
  * #3255). The item is projected from the step's task and the inbox has no
  * decide path for it (`approvals.project_contract`): no Approve or Reject is
- * drawn, since either would answer 404. The bar says so and links the step's
- * page, beside Jev's judgment above it.
+ * drawn, since either would answer 404. The strip links the step's page.
  */
 function ContractStepBar({ d, go }: { d: Decision; go: (to: string) => void }) {
   const s = d.approval.subject ?? {}
   const taskId = typeof s.task_id === 'string' && s.task_id !== '' ? s.task_id : null
   return (
-    <div className="ad-bar is-info" data-testid="ap-contract-step">
-      <div className="ad-bar-l">
-        <b className="ad-bar-h">Not decided in this inbox</b>
-        <span className="ad-sub">Jev’s judgment is evidence for your decision; it approves nothing, and this page has no verb.</span>
-      </div>
-      {taskId !== null && (
-        <div className="ad-bar-acts">
+    <Strip state={d.approval.state}>
+      <span className="apd-who" data-testid="ap-contract-step">
+        <span className="apd-dot is-info" aria-hidden />
+        <span className="apd-strong">Not decided in this inbox</span>
+        <InfoTip about="the step" tip="Jev’s judgment is evidence for your decision; it approves nothing, and this page has no verb." />
+        {taskId !== null && (
           <InApp go={go} to={`work/task/${encodeURIComponent(taskId)}`} className="c-btn is-primary">
             Open the step ›
           </InApp>
-        </div>
-      )}
-    </div>
+        )}
+      </span>
+    </Strip>
   )
 }
 
-/** Approve and Reject, as `may_decide` allows, with the server's refusal said in place. */
+/**
+ * Approve and Reject, as `may_decide` allows, with the server's refusal said
+ * in place. Reject asks for its reason only once pressed (the cards mock-up):
+ * the reason field, Reject and Cancel take the verbs' place.
+ */
 function Decide({ d, onDecided, edit = null }: { d: Decision; onDecided: (word: string) => void; edit?: { to: string; go: (to: string) => void } | null }) {
   const a = d.approval
   const now = useNow()
@@ -904,17 +1001,23 @@ function Decide({ d, onDecided, edit = null }: { d: Decision; onDecided: (word: 
   const [refused, setRefused] = useState<ApiError | null>(null)
   const [confirm, setConfirm] = useState<{ expected: string; typed: string } | null>(null)
   const [reason, setReason] = useState('')
+  const [rejecting, setRejecting] = useState(false)
   // A VIEWER DECIDES NOTHING (docs/design/workspace-roles.md §4.8). With
   // `may_decide` served the server already says so (no button); an older API
   // draws both verbs disabled with the role sentence.
   const roleGate = useRoleGate('member', 'decide')
   // After a `hold_approver_required` refusal the typed confirmation is what
-  // comes next, so focus lands there (visual QA V249).
+  // comes next, so focus lands there (visual QA V249); a pressed Reject puts
+  // focus in its reason.
   const confirmField = useRef<HTMLInputElement>(null)
+  const reasonField = useRef<HTMLInputElement>(null)
   const asking = confirm !== null
   useEffect(() => {
     if (asking) confirmField.current?.focus()
   }, [asking])
+  useEffect(() => {
+    if (rejecting) reasonField.current?.focus()
+  }, [rejecting])
 
   if (md !== null && !md.approve && !md.reject) return <NotYours md={md} />
   const offerApprove = md === null || md.approve
@@ -945,59 +1048,75 @@ function Decide({ d, onDecided, edit = null }: { d: Decision; onDecided: (word: 
   // A merge names its head on the button: that head is what is approved.
   const head = a.kind === 'merge' ? mergeDigest(d).head : null
   const approveWord = a.kind !== 'merge' ? 'Approve' : head === null ? 'Approve merge' : `Approve merge at ${short(head)}`
-  const lead = md === null ? 'Decide this' : offerApprove ? 'You may decide this' : 'You may reject this, not approve it'
+  const tip = [
+    APPROVE_DOES[a.kind] ?? 'Approving lets this go ahead.',
+    a.kind === 'merge' && head !== null ? `It merges ${short(head)} only: a new commit asks again.` : a.digest ? 'A plan or a firing changed since you read it is refused, never approved unread.' : '',
+    edit !== null ? 'Edit opens the run to change its plan.' : '',
+    offerReject ? 'Rejecting ends it, with the reason.' : '',
+    md !== null && !md.approve && md.why ? md.why : '',
+    expiryLine(a, now),
+  ]
+    .filter((x) => x !== '')
+    .join(' ')
   return (
-    <div className="ad-bar is-decide" data-testid="ad-decide">
-      <div className="ad-bar-l">
-        <b className="ad-bar-h">{lead}</b>
-        <span className="ad-sub">{expiryLine(a, now)}</span>
-        {md !== null && !md.approve && md.why && <span className="ad-sub">{md.why}</span>}
-        {gate !== null && (
-          <span className="ad-sub" data-role-gate="member">
-            {gate}
-          </span>
-        )}
-      </div>
-      {offerReject && (
-        <label className="c-field ad-why">
-          <span className="c-lbl">Reason (needed to reject)</span>
-          <textarea className="c-inp" rows={2} maxLength={1000} value={reason} placeholder="Say why it is rejected" onChange={(e) => setReason(e.target.value)} />
-        </label>
-      )}
-      {confirm !== null && (
-        <label className="c-field ad-why">
-          <span className="c-lbl">
-            You are the only person in this workspace, so no second member can approve this hold. Type <code>{confirm.expected}</code> to approve it yourself.
-          </span>
-          <input ref={confirmField} className="c-inp is-mono" value={confirm.typed} autoComplete="off" spellCheck={false} onChange={(e) => setConfirm({ ...confirm, typed: e.target.value })} />
-        </label>
-      )}
-      <div className="ad-bar-acts">
-        {offerReject && (
-          // A pressed Reject keeps focus while busy (QA2 automate2-16): `HeldButton`, not `busy`'s disabled.
-          <HeldButton kind="danger" busy={busy === 'reject' ? 'Rejecting…' : false} disabled={gate !== null} disabledReason={reason.trim() === '' ? 'Say why it is rejected.' : undefined} onClick={() => void reject()}>
+    <Strip state="pending" tone="is-decide">
+      {rejecting ? (
+        <>
+          <input ref={reasonField} className="c-inp apd-reason" aria-label="Reason" placeholder="Reason" maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
+          {/* A pressed Reject keeps focus while busy (QA2 automate2-16): `HeldButton`, not `busy`'s disabled. */}
+          <HeldButton kind="danger-filled" busy={busy === 'reject' ? 'Rejecting…' : false} disabled={gate !== null} disabledReason={reason.trim() === '' ? 'Say why it is rejected.' : undefined} onClick={() => void reject()}>
             Reject
           </HeldButton>
-        )}
-        {edit !== null && (
-          // Edit opens the run's page, where its plan editor is (Runs.tsx's PlanEditor).
-          <InApp go={edit.go} to={edit.to} className="c-btn">
-            Edit
-          </InApp>
-        )}
-        {offerApprove && (
-          <HeldButton kind="primary" busy={busy === 'approve' ? 'Approving…' : false} disabled={gate !== null} disabledReason={confirmOk ? undefined : 'Type the words shown exactly.'} onClick={() => void approve()}>
-            {approveWord}
-          </HeldButton>
-        )}
-        {edit !== null && <InfoTip about="the decision" tip={`${APPROVE_DOES[a.kind] ?? 'Approving lets this go ahead.'} Edit opens the run to change its plan. Rejecting ends the run, with the reason.`} end />}
-      </div>
+          <Button kind="ghost" onClick={() => setRejecting(false)}>
+            Cancel
+          </Button>
+        </>
+      ) : (
+        <>
+          {confirm !== null && (
+            <span className="apd-confirm">
+              {/* The (i) sits outside the label: a label holding a button labels the button, not the field. */}
+              <label className="c-field">
+                <span className="c-lbl">
+                  Type <code>{confirm.expected}</code> to approve it yourself
+                </span>
+                <input ref={confirmField} className="c-inp is-mono" value={confirm.typed} autoComplete="off" spellCheck={false} onChange={(e) => setConfirm({ ...confirm, typed: e.target.value })} />
+              </label>
+              <InfoTip about="the typed confirmation" tip="You are the only person in this workspace, so no second member can approve this hold." />
+            </span>
+          )}
+          {offerApprove && (
+            <HeldButton kind="primary" busy={busy === 'approve' ? 'Approving…' : false} disabled={gate !== null} disabledReason={confirmOk ? undefined : 'Type the words shown exactly.'} onClick={() => void approve()}>
+              {approveWord}
+            </HeldButton>
+          )}
+          {offerReject && (
+            <Button kind="danger" disabled={gate !== null} onClick={() => setRejecting(true)}>
+              Reject
+            </Button>
+          )}
+          {edit !== null && (
+            // Edit opens the run's page, where its plan editor is (Runs.tsx's PlanEditor).
+            <InApp go={edit.go} to={edit.to} className="c-btn">
+              Edit
+            </InApp>
+          )}
+          <span className="apd-grow" />
+          {head !== null && <span className="apd-dim apd-mono">head {short(head)}</span>}
+          <InfoTip about="the decision" tip={tip} end />
+        </>
+      )}
+      {gate !== null && (
+        <span className="apd-dim apd-line" data-role-gate="member">
+          {gate}
+        </span>
+      )}
       {refused !== null && !(confirm !== null && confirm.typed === '' && confirmationOf(refused) !== null) && (
-        <p className="c-hint ad-refused" role="alert" data-code={refused.code ?? ''}>
+        <p className="c-hint ad-refused apd-line" role="alert" data-code={refused.code ?? ''}>
           {refusalWords(refused)}
         </p>
       )}
-    </div>
+    </Strip>
   )
 }
 
@@ -1701,7 +1820,23 @@ function PlanBriefPage({ d, plan, docs, pulls, kind, go, onDecided }: { d: Decis
   )
 }
 
-/** The page: the way back, the question, the evidence, and the decision. */
+/** One fact in the head's row: its name over its value. */
+function Pair({ name, children }: { name: string; children: ReactNode }) {
+  return (
+    <div className="apd-pair">
+      <dt>{name}</dt>
+      <dd>{children}</dd>
+    </div>
+  )
+}
+
+/**
+ * THE PAGE AS CARDS (the cards mock-up): the head card -- the kind, what it
+ * asks, where it came from, when it was asked, its approvers, and its expiry
+ * on the right in every state -- then the evidence panels, then the decision
+ * strip. The head says no state word: a waiting item asks through the strip,
+ * a decided one says its word there.
+ */
 export function ApprovalDecision({ d, kind, go, onDecided, served = null }: { d: Decision; kind: string | null; go: (to: string) => void; onDecided: (word: string) => void; served?: ServedPlan | null }) {
   const a = d.approval
   const now = useNow()
@@ -1709,47 +1844,73 @@ export function ApprovalDecision({ d, kind, go, onDecided, served = null }: { d:
   // the planner's sections), else the plan the approval served.
   const plan = served?.plan ?? (d.run?.plan as Json | null | undefined) ?? null
   if (plan !== null && (a.kind === 'plan' || a.kind === 'hold')) return <PlanBriefPage d={d} plan={plan} docs={served?.docs ?? null} pulls={served?.pulls ?? []} kind={kind} go={go} onDecided={onDecided} />
-  const word = STATE_WORD[a.state] ?? a.state
   const who = decidersWords(a.may_decide) ?? approversWords(a.approvers)
-  const tone = a.state === 'pending' ? 'is-warn' : a.state === 'approved' ? 'is-ok' : a.state === 'rejected' ? 'is-bad' : 'is-done'
+  const pending = a.state === 'pending'
+  const s = a.subject ?? {}
+  const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null)
+  const scheduleId = str(s.schedule_id)
+  const firingId = str(s.firing_id)
+  const runId = str(s.run_id)
+  const issue = str(s.issue)
   return (
-    <section className="ap-detail ad-page" data-testid="ap-detail" data-state={a.state} aria-label={`${APPROVAL_KIND[a.kind] ?? a.kind}: ${a.summary}`}>
-      <section className="ad-q">
-        <p className="ad-tags">
-          <span className="ad-chip is-kind">{(APPROVAL_KIND[a.kind] ?? a.kind).toLowerCase()} approval</span>
-          <span className={`ad-chip ${tone}`} data-testid="ap-state">
-            {word}
-          </span>
-          <span className="mono ad-id">{a.approval_id}</span>
-        </p>
-        <h2 className="ad-sent">{question(d)}</h2>
-        <p className="ad-say">Its request reads: “{a.summary}”.</p>
-        <dl className="ad-qfacts">
-          <div>
-            <dt>Asked</dt>
-            <dd>{a.requested_at === null ? <Dash why="not served" /> : <span title={a.requested_at}>{when(a.requested_at)} · {timeAgo(a.requested_at, now)}</span>}</dd>
+    <section className="ap-detail apd-page" data-testid="ap-detail" data-state={a.state} aria-label={`${APPROVAL_KIND[a.kind] ?? a.kind}: ${a.summary}`}>
+      <section className={`apd-head${pending ? ' is-info' : ''}`} data-testid="apd-head" aria-label="The request">
+        <div className="apd-head-t">
+          <div className="apd-card-h">
+            <Tag>{APPROVAL_KIND[a.kind] ?? a.kind}</Tag>
+            <h2>{a.summary}</h2>
           </div>
-          <div>
-            <dt>{a.state === 'pending' ? 'Expires' : a.state === 'expired' ? 'Expired' : 'Was due to expire'}</dt>
-            <dd>
-              {a.expires_at === null ? (
-                <span className="ad-sub-i">{a.kind === 'contract' ? 'never: it waits for its owner' : 'never: a run made by hand waits as it always has'}</span>
-              ) : (
-                <span title={a.expires_at}>
-                  {when(a.expires_at)}
-                  {a.state === 'pending' && <> · {untilWords(a.expires_at, now)}</>}
-                </span>
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt>Who decides</dt>
-            <dd data-testid="ad-who">{who ?? <Dash why="not served" />}</dd>
-          </div>
-        </dl>
+          <dl className="apd-facts is-row">
+            {scheduleId !== null && (
+              <Pair name="From">
+                <ScheduleNamed id={scheduleId} go={go} />
+                {firingId !== null && (
+                  <>
+                    {' '}
+                    · <span className="apd-mono">{firingId}</span>
+                  </>
+                )}
+              </Pair>
+            )}
+            {runId !== null && (
+              <Pair name="Run">
+                <InApp go={go} to={runAddress(runId)}>
+                  <span className="apd-mono">{runId}</span>
+                </InApp>
+              </Pair>
+            )}
+            {issue !== null && <Pair name="Issue">{issue}</Pair>}
+            <Pair name="Asked">{a.requested_at === null ? <Dash why="not served" /> : <span title={a.requested_at}>{when(a.requested_at)}</span>}</Pair>
+            <Pair name="Approvers">
+              <span className="apd-strong" data-testid="ad-who">
+                {who ?? <Dash why="not served" />}
+              </span>
+            </Pair>
+          </dl>
+        </div>
+        <div className="apd-expiry" data-testid="apd-expiry">
+          <span className="apd-k">{pending ? 'Expires' : a.state === 'expired' ? 'Expired' : 'Was due'}</span>
+          {a.expires_at === null ? (
+            <span className="apd-big is-none">
+              never{' '}
+              <InfoTip about="never expires" tip={a.kind === 'contract' ? 'It waits for its owner.' : 'A run made by hand waits as it always has.'} end />
+            </span>
+          ) : pending ? (
+            <>
+              <span className="apd-big" title={a.expires_at}>
+                {untilWords(a.expires_at, now)}
+              </span>
+              <span className="apd-dim">{when(a.expires_at)}</span>
+            </>
+          ) : (
+            <span className="apd-big is-none" title={a.expires_at}>
+              {when(a.expires_at)}
+            </span>
+          )}
+        </div>
       </section>
-      <Evidence d={d} go={go} />
-      {a.kind === 'contract' ? <ContractStepBar d={d} go={go} /> : a.state === 'pending' ? <Decide d={d} onDecided={onDecided} /> : <Outcome d={d} kind={kind} go={go} />}
+      <Evidence d={d} />
+      {a.kind === 'contract' ? <ContractStepBar d={d} go={go} /> : pending ? <Decide d={d} onDecided={onDecided} /> : <Outcome d={d} kind={kind} go={go} />}
     </section>
   )
 }
