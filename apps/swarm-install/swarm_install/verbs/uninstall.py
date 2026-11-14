@@ -212,21 +212,6 @@ class GcpTeardown:
         held = self.api(None).test_permissions(f"projects/{self.project}", list(permissions))
         return [p for p in permissions if p not in held]
 
-    def remove_project_binding(self, role: str, member: str) -> bool:
-        api = self.api(None)
-        policy = dict(api.iam_policy(self.project))  # carries its etag: a moved policy is refused
-        changed = False
-        bindings = []
-        for binding in policy.get("bindings") or []:
-            if binding.get("role") == role and member in (binding.get("members") or []):
-                binding = {**binding, "members": [m for m in binding["members"] if m != member]}
-                changed = True
-            if binding.get("members"):
-                bindings.append(binding)
-        if changed:
-            api.set_iam_policy(self.project, {**policy, "bindings": bindings})
-        return changed
-
     def remove_member_bindings(self, member: str) -> int:
         """Remove `member` from every project binding; how many bindings named it."""
         api = self.api(None)
@@ -334,6 +319,26 @@ class GcpTeardown:
         from ..steps.preflight import CRM
 
         self.api(None)._call("DELETE", f"{CRM}/v1/projects/{self.project}")
+
+    # 8. the A record edge.dns wrote to the project's Cloud DNS zone, as the owner -------------------
+
+    def delete_dns_record(self, zone: str, name: str, address: str) -> str:
+        """Delete the A record `name` in `zone` when it holds only `address` (the
+        install's); `remains.DNS_ABSENT` when it is gone, `DNS_CHANGED` when it
+        now holds another address and is left."""
+        from .. import remains
+        from ..steps.edge import DNS_API
+
+        api = self.api(None)
+        zone_url = f"{DNS_API}/projects/{self.project}/managedZones/{zone}"
+        fqdn = name.rstrip(".") + "."
+        found = api._pages(f"{zone_url}/rrsets", "rrsets", {"name": fqdn, "type": "A"})
+        if not found:
+            return remains.DNS_ABSENT
+        if [list(r.get("rrdatas") or ()) for r in found] != [[address]]:
+            return remains.DNS_CHANGED
+        api._call("POST", f"{zone_url}/changes", body={"deletions": list(found)})
+        return remains.DNS_DELETED
 
     def empty_bucket(self, name: str, who: str | None) -> int:
         """Delete every object generation in an infra bucket, so its destroy is not
