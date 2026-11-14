@@ -71,8 +71,8 @@ one action — never a second one the developer did not ask for:
 | `status <wf_id\|task_id>` | one status read of that workflow or task | no |
 | `workflows` | lists your tenant's workflows still running in SwarmCloud, marking `[this session]` the ones this Claude Code session started | no |
 | `attach <wf_id>` | re-attaches live rows to a workflow running in SwarmCloud | no |
-| `attach --all` | live rows for every running workflow THIS Claude Code session started (at most 100), and one per running single task it dispatched (at most 100); `max_live_rows` moves both, 1-200 | no |
-| `attach --all --project` | at session start only, what the SessionStart hook asks for: the same, plus every workflow and single task still running for THIS PROJECT (this checkout's origin repository), whichever session started it. See "Session start" | no |
+| `attach --all` | live rows for every running workflow THIS Claude Code session started AND every one still running for THIS PROJECT (this checkout's origin repository) that another session started (at most 100), and one per such running single task (at most 100); `max_live_rows` moves both, 1-200 | no |
+| `attach --all --project` | what the SessionStart hook asks for: the same as the plain `attach --all` (`project: true` is still accepted and means the same). See "Session start" | no |
 | `check` | which of THIS SESSION's workflows and tasks in THIS PROJECT are stuck or stale, stuck first, each with its reason, evidence, console link and next command: `swarm_check`. Then live rows for every running workflow and single task of the project that has none in this session | no (attaching submits nothing) |
 | `watch [interval]` | a `check` every interval (default `30m`, at least `5m`) in this session, through Claude Code's CronCreate, remembered for this project so the next session re-arms it: `swarm_check_schedule`. It also arms itself when this session attaches or starts work (see "Arming the watch") | schedules a prompt in this session; nothing in SwarmCloud |
 | `build-board` | refreshes this project's build board, `.claude/build-board/index.html`, and opens it in the browser: `swarm_build_board` | writes the local page only (git-ignored); nothing in SwarmCloud |
@@ -230,8 +230,9 @@ goes in `rows`.
 By hand it attaches ANY workflow your tenant may read, this session's or
 not: when the reply carries `not_this_session` (`this_session: false`), say
 in one line that the workflow is not this session's -- another Claude Code
-session started it, or it carries no session tag -- and that `check` and
-`attach --all` leave it out. It is attached all the same.
+session started it, or it carries no session tag -- and that `check` leaves
+it out, and `attach --all` too unless it clones this project's repository. It
+is attached all the same.
 Last, the mandatory final step: [Arming the watch](#arming-the-watch), with
 the reply's `arm_watch` -- also when the workflow has already finished.
 
@@ -259,20 +260,30 @@ any of this session's run, and `/sc attach <wf_id>` for another one.
 
 ### `attach --all`
 
-ONLY THIS CLAUDE CODE SESSION'S WORK (owner, 2026-10-14): every submission
-the plugin makes is tagged with the session that made it, and `attach --all`
-attaches only workflows and single tasks tagged with this Claude Code
-session -- never another session's in the same tenant or workspace, and
-never untagged work (submitted before tagging, or by another client). The
-reply's `session.left_out` counts what was left out and why; say it in one
-line when it is not zero, with `/sc attach <wf_id>` for one by hand.
-`session.session_id: null` means the bridge could not tell which session it
-serves: then nothing is a candidate, and `session.scope` says so -- report it.
+THIS CLAUDE CODE SESSION'S WORK AND THE PROJECT'S (the owner, 2026-11-09):
+every submission the plugin makes is tagged with the session that made it,
+and `attach --all` attaches the workflows and single tasks tagged with this
+Claude Code session AND every one still running that clones this checkout's
+`origin` repository, whichever session started it -- the same as the
+session start's `attach --all --project` (`project: true` is still accepted
+and means the same). Each entry another session started (or nobody tagged)
+is marked `this_session: false`, and the reply's `project.from_other_sessions`
+counts them: say in one line how many came from other sessions. Another
+repository's work from another session is never attached, nor untagged work
+of another repository. The reply's `session.left_out` now counts only those:
+`not_this_project` (another repository's) and `untagged`; say it in one line
+when it is not zero, with `/sc attach <wf_id>` for one by hand. With no
+`origin` naming a repository nothing widens: only this session's work is
+attached, `project.note` says why, and `other_session` counts the rest. In
+the pane layout (`rows: "pane"`) the attach-all stays this session's: the
+pane lists the project's work with no model row. `session.session_id: null`
+means the bridge could not tell which session it serves: then only the
+project's work is a candidate, and `session.scope` says so -- report it.
 
 ONE CLAUDE CODE RUN PER SWARMCLOUD WORKFLOW, never one run over several: each
 workflow keeps its own step count, as the console shows it. Call
 `swarm_workflow_launch` once with `{attach: "all"}`. It lists the caller's
-tenant's running workflows once, keeps this session's and, for the 100 closest to finish (the plugin's
+tenant's running workflows once, keeps this session's and the project's and, for the 100 closest to finish (the plugin's
 `max_live_rows` option, held to 1-200), grouped by workspace, writes one
 titled script each -- named `SC ∴ <name> · N steps`, its description
 starting with its details, `Workspace: <workspace> (<tenant>) · Started by: ...` -- then make one Workflow call per entry of its `launches`,
@@ -330,8 +341,9 @@ reply's `arm_watch` (null when nothing was launched).
 ### Session start: this session's work, and the project's running work
 
 At session start the plugin's SessionStart hook names the SwarmCloud work
-still running that this session should track -- and here, at session start
-only, it is WIDER than every other verb (the owner, 2026-10-25: "at start also try
+still running that this session should track -- and here, as in the plain
+`attach --all` (the owner, 2026-11-09), it is WIDER than `check` and the
+watch (the owner, 2026-10-25: "at start also try
 to run attach and see if there are any workflows that the project its
 starting in has any work running in sc that needs to be attached and tracked
 here"). It names this Claude Code session's own work AND the work still
@@ -359,10 +371,13 @@ named.
   no model row for it; the hook asks for the plain `/sc attach --all` only
   when this session has work of its own, for its quiet finish rows.
 
-WHICH IS WHICH: the widening is **at session start only**. `/sc check` and the watch stay scoped to this session -- they check and attach only
-work this Claude Code session started (owner decision 2026-10-14) -- and so
-does the plain `/sc attach --all`. Never pass `project: true` for anything
-but the session start's attach.
+WHICH IS WHICH: the widening is the session start's AND the plain
+`/sc attach --all`'s (the owner, 2026-11-09: a person attaching from a
+terminal or another session sees the project's work, not a gap that reads as
+a bug) -- `{attach: "all"}` and `{attach: "all", project: true}` mean the
+same. `/sc check` and the watch stay scoped to this session -- they check and
+attach only work this Claude Code session started (owner decision
+2026-10-14); the check's attach passes `new_only`, which keeps it so.
 
 ### `check`
 
