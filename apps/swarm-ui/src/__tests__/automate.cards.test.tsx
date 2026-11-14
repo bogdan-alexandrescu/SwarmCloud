@@ -271,7 +271,8 @@ describe('the empty and honest states', () => {
     const none = await screen.findByTestId('acd-none', undefined, WAIT)
     expect(within(none).getByRole('heading', { name: 'No schedules' })).toBeTruthy()
     expect(within(none).getByRole('link', { name: 'New schedule' }).getAttribute('href')).toBe('/automate/schedules/new')
-    expect(document.querySelector('section.acd-card')).toBeNull()
+    // No schedule card: the starter cards (automate.starters.test.tsx) are a type each, not a schedule.
+    expect(document.querySelector('section.acd-card:not(.acd-starter)')).toBeNull()
   })
 
   it('says what the empty state\u2019s (i) is about: Start from a type, as the mock-up draws it (visual QA)', async () => {
