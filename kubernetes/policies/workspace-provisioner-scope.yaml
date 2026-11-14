@@ -37,6 +37,15 @@
 #                                         namespace. Otherwise the deployer
 #                                         could bind Job creation to itself and
 #                                         run as a person's worker identity.
+#   swarm-workspace-deployer-networkpolicies
+#                                         a NetworkPolicy's selector, policy
+#                                         types, peers and ports are, per
+#                                         name, the render's (#3941; the
+#                                         normal form is at the policy).
+#   swarm-workspace-deployer-fqdnnetworkpolicies
+#                                         the TypeSafe direct hostname policy
+#                                         selects the TypeSafe direct pods
+#                                         and names one host, on TCP 443.
 #
 # THE LITERALS BELOW ARE A RESTATEMENT, AND A TEST HOLDS THEM.
 # tests/unit/worker/test_workspace_provisioner_scope.py renders the tenant
@@ -48,7 +57,7 @@
 # WHY THE SCOPE POLICY MATCHES EVERY KIND THE DEPLOYER WRITES, against the
 # one-kind-per-policy rule pod-security.yaml states. That rule exists because CEL is type-checked
 # against the schema of what it matches; the scope policy reads `request`
-# alone and never `object`, so there is no schema to disagree about. The three
+# alone and never `object`, so there is no schema to disagree about. The five
 # policies that read `object` match one kind each.
 #
 # WHY THE BINDINGS HAVE NO namespaceSelector, unlike every other binding in
@@ -473,4 +482,243 @@ metadata:
     app.kubernetes.io/part-of: swarm
 spec:
   policyName: swarm-workspace-deployer-rolebindings
+  validationActions: ["Deny", "Audit"]
+---
+# A NETWORK POLICY'S CONTENT, NOT ONLY ITS NAME (#3941, decided 2026-11-12).
+# The scope policy admits a NetworkPolicy by kind, name and namespace; this
+# one holds what it says to the render. Without it the deployer could write
+# `swarm-allow-live-egress` selecting every pod and allowing every port to
+# anywhere, inside a person's namespace.
+#
+# One kind (pod-security.yaml's rule): the CEL reads `object`. Matched for the
+# deployer and, by name, inside swarm-tenant-* namespaces only -- the scope
+# policy refuses the deployer everywhere else by itself, so nothing outside
+# the swarm namespaces is evaluated here (CLAUDE.md rule 2). By name, not by a
+# namespaceSelector, for the reason the header gives.
+#
+# THE NORMAL FORM. CEL has no user functions and Kubernetes' CEL refuses a
+# literal mixing types, so each policy is written as four maps by name, every
+# leaf a map of strings:
+#   selectors  the pod selector's matchLabels; {"~": "matchExpressions"} when
+#              it has expressions (the render writes none);
+#   types      policyTypes;
+#   ingress,   one entry per rule: [namespace selectors, pod selectors,
+#   egress     ipBlocks, ports], the first three one per peer, in order.
+#              A peer's absent selector or ipBlock is {"~": "absent"} (absent
+#              and empty select different things); a port is {protocol, port,
+#              endPort}, an absent port "~all". `~` is in no label key or CIDR
+#              the API server accepts, so nothing written can forge these.
+# Every list is compared in order, which costs nothing: apply sends the render.
+#
+# THE CLUSTER'S OWN NETWORK. swarm-allow-worker-egress carries four values
+# read from the cluster (render.py NETWORK_INPUTS: the two DNS addresses and
+# the pod and service ranges), and `render.py policies` is given none of them.
+# A CIDR in `fixed_cidrs` -- every one the templates write literally -- is
+# compared as written; any other is compared by shape, "~host" for a /32 and
+# "~range" otherwise, and the positions where the render puts a cluster value
+# are the only ones that expect a shape. So the two DNS peers may name any one
+# address on port 53, and the two cluster carve-outs any range; every other
+# selector, peer, CIDR and port is the render's exactly.
+#
+# tests/unit/worker/test_workspace_provisioner_scope.py encodes the tenant
+# render the same way and holds every literal here equal to it.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-workspace-deployer-networkpolicies
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["networking.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["networkpolicies"]
+  matchConditions:
+    - name: workspace-deployer
+      expression: >-
+        request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+    - name: swarm-tenant-namespace
+      expression: >-
+        has(request.namespace) && request.namespace.startsWith('swarm-tenant-')
+  variables:
+    - name: fixed_cidrs
+      expression: >-
+        ["169.254.169.254/32", "199.36.153.4/30", "199.36.153.8/30", "0.0.0.0/0", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10"]
+    - name: selectors
+      expression: >-
+        {"swarm-default-deny": {},
+        "swarm-deny-cross-tenant-ingress": {},
+        "swarm-allow-worker-egress": {},
+        "swarm-allow-live-egress": {"swarm-live": "enabled"},
+        "swarm-allow-egress-proxy": {"swarm-egress": "proxy"},
+        "swarm-allow-judge-egress": {"swarm-judge": "internal"},
+        "swarm-allow-graph-service": {},
+        "swarm-allow-typesafe-fwd": {"swarm-typesafe": "inject"}}
+    - name: types
+      expression: >-
+        {"swarm-default-deny": ["Ingress", "Egress"],
+        "swarm-deny-cross-tenant-ingress": ["Ingress"],
+        "swarm-allow-worker-egress": ["Egress"],
+        "swarm-allow-live-egress": ["Egress"],
+        "swarm-allow-egress-proxy": ["Egress"],
+        "swarm-allow-judge-egress": ["Egress"],
+        "swarm-allow-graph-service": ["Egress"],
+        "swarm-allow-typesafe-fwd": ["Egress"]}
+    - name: ingress
+      expression: >-
+        {"swarm-default-deny": [],
+        "swarm-deny-cross-tenant-ingress": [],
+        "swarm-allow-worker-egress": [],
+        "swarm-allow-live-egress": [],
+        "swarm-allow-egress-proxy": [],
+        "swarm-allow-judge-egress": [],
+        "swarm-allow-graph-service": [],
+        "swarm-allow-typesafe-fwd": []}
+    - name: egress
+      expression: >-
+        {"swarm-default-deny": [],
+        "swarm-deny-cross-tenant-ingress": [],
+        "swarm-allow-worker-egress": [[[{"kubernetes.io/metadata.name": "kube-system"}], [{"k8s-app": "kube-dns"}], [{"~": "absent"}], [{"protocol": "UDP", "port": "53", "endPort": ""}, {"protocol": "TCP", "port": "53", "endPort": ""}]], [[{"~": "absent"}, {"~": "absent"}], [{"~": "absent"}, {"~": "absent"}], [{"cidr": "~host", "except": ""}, {"cidr": "~host", "except": ""}], [{"protocol": "UDP", "port": "53", "endPort": ""}, {"protocol": "TCP", "port": "53", "endPort": ""}]], [[{"~": "absent"}], [{"~": "absent"}], [{"cidr": "169.254.169.254/32", "except": ""}], [{"protocol": "TCP", "port": "80", "endPort": ""}, {"protocol": "TCP", "port": "8080", "endPort": ""}]], [[{"~": "absent"}, {"~": "absent"}], [{"~": "absent"}, {"~": "absent"}], [{"cidr": "199.36.153.4/30", "except": ""}, {"cidr": "199.36.153.8/30", "except": ""}], [{"protocol": "TCP", "port": "443", "endPort": ""}]], [[{"~": "absent"}], [{"~": "absent"}], [{"cidr": "0.0.0.0/0", "except": "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,~range,~range,169.254.0.0/16,100.64.0.0/10"}], [{"protocol": "TCP", "port": "443", "endPort": ""}, {"protocol": "TCP", "port": "80", "endPort": ""}, {"protocol": "TCP", "port": "22", "endPort": ""}]]],
+        "swarm-allow-live-egress": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "swarm-live"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "8080", "endPort": ""}]]],
+        "swarm-allow-egress-proxy": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "swarm-egress"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "3128", "endPort": ""}]]],
+        "swarm-allow-judge-egress": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "decision-api-egress"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "8443", "endPort": ""}]]],
+        "swarm-allow-graph-service": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "swarm-graph"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "8080", "endPort": ""}]]],
+        "swarm-allow-typesafe-fwd": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "swarm-typesafe-fwd"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "8080", "endPort": ""}]]]}
+    # The object in the normal form above. podSelector is never absent on a
+    # NetworkPolicy (the API server requires it); a protocol the request
+    # omits is "" here and so refused, though the render always writes one.
+    - name: actual_selector
+      expression: >-
+        has(object.spec.podSelector.matchExpressions) ? {"~": "matchExpressions"} :
+        has(object.spec.podSelector.matchLabels) ? object.spec.podSelector.matchLabels : {}
+    - name: actual_types
+      expression: >-
+        has(object.spec.policyTypes) ? object.spec.policyTypes : []
+    - name: actual_ingress
+      expression: >-
+        has(object.spec.ingress) ? object.spec.ingress.map(r, [
+          has(r.from) ? r.from.map(p, !has(p.namespaceSelector) ? {"~": "absent"} : has(p.namespaceSelector.matchExpressions) ? {"~": "matchExpressions"} : has(p.namespaceSelector.matchLabels) ? p.namespaceSelector.matchLabels : {}) : [],
+          has(r.from) ? r.from.map(p, !has(p.podSelector) ? {"~": "absent"} : has(p.podSelector.matchExpressions) ? {"~": "matchExpressions"} : has(p.podSelector.matchLabels) ? p.podSelector.matchLabels : {}) : [],
+          has(r.from) ? r.from.map(p, !has(p.ipBlock) ? {"~": "absent"} : {"cidr": p.ipBlock.cidr in variables.fixed_cidrs ? p.ipBlock.cidr : (p.ipBlock.cidr.endsWith('/32') ? "~host" : "~range"), "except": has(p.ipBlock.except) ? p.ipBlock.except.map(e, e in variables.fixed_cidrs ? e : (e.endsWith('/32') ? "~host" : "~range")).join(",") : ""}) : [],
+          has(r.ports) ? r.ports.map(q, {"protocol": has(q.protocol) ? q.protocol : "", "port": has(q.port) ? string(q.port) : "~all", "endPort": has(q.endPort) ? string(q.endPort) : ""}) : []]) : []
+    - name: actual_egress
+      expression: >-
+        has(object.spec.egress) ? object.spec.egress.map(r, [
+          has(r.to) ? r.to.map(p, !has(p.namespaceSelector) ? {"~": "absent"} : has(p.namespaceSelector.matchExpressions) ? {"~": "matchExpressions"} : has(p.namespaceSelector.matchLabels) ? p.namespaceSelector.matchLabels : {}) : [],
+          has(r.to) ? r.to.map(p, !has(p.podSelector) ? {"~": "absent"} : has(p.podSelector.matchExpressions) ? {"~": "matchExpressions"} : has(p.podSelector.matchLabels) ? p.podSelector.matchLabels : {}) : [],
+          has(r.to) ? r.to.map(p, !has(p.ipBlock) ? {"~": "absent"} : {"cidr": p.ipBlock.cidr in variables.fixed_cidrs ? p.ipBlock.cidr : (p.ipBlock.cidr.endsWith('/32') ? "~host" : "~range"), "except": has(p.ipBlock.except) ? p.ipBlock.except.map(e, e in variables.fixed_cidrs ? e : (e.endsWith('/32') ? "~host" : "~range")).join(",") : ""}) : [],
+          has(r.ports) ? r.ports.map(q, {"protocol": has(q.protocol) ? q.protocol : "", "port": has(q.port) ? string(q.port) : "~all", "endPort": has(q.endPort) ? string(q.endPort) : ""}) : []]) : []
+  validations:
+    - expression: "object.metadata.name in variables.selectors"
+      message: >-
+        the workspace deployer writes only the NetworkPolicies the tenant render
+        produces (kubernetes/render.py TENANT_FILES).
+      reason: Forbidden
+
+    - expression: >-
+        !(object.metadata.name in variables.selectors) ||
+        (variables.actual_selector == variables.selectors[object.metadata.name] &&
+          variables.actual_types == variables.types[object.metadata.name])
+      message: >-
+        a NetworkPolicy the workspace deployer writes selects exactly the pods,
+        and has exactly the policy types, kubernetes/render.py renders for it.
+      reason: Forbidden
+
+    - expression: >-
+        !(object.metadata.name in variables.selectors) ||
+        (variables.actual_ingress == variables.ingress[object.metadata.name] &&
+          variables.actual_egress == variables.egress[object.metadata.name])
+      message: >-
+        a NetworkPolicy the workspace deployer writes allows exactly the peers
+        and ports kubernetes/render.py renders for it; only the cluster's own
+        DNS addresses and pod and service ranges may differ, and only in shape.
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-workspace-deployer-networkpolicies
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-workspace-deployer-networkpolicies
+  validationActions: ["Deny", "Audit"]
+---
+# The tenant's hostname policy (render.py TENANT_FQDN_FILES), in the same
+# normal form: it selects the TypeSafe direct pods alone and allows egress to
+# the TypeSafe API host alone, on TCP 443. On a cluster that does not serve
+# the kind, the rule matches nothing. Only the fields the GKE kind declares
+# are read (podSelector, egress, matches' name and pattern, ports' protocol
+# and port): a field a CRD's schema lacks fails to compile, and this policy,
+# failing closed, would then refuse the render's own policy.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-workspace-deployer-fqdnnetworkpolicies
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["networking.gke.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["fqdnnetworkpolicies"]
+  matchConditions:
+    - name: workspace-deployer
+      expression: >-
+        request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+    - name: swarm-tenant-namespace
+      expression: >-
+        has(request.namespace) && request.namespace.startsWith('swarm-tenant-')
+  variables:
+    - name: selectors
+      expression: >-
+        {"swarm-allow-typesafe-direct": {"swarm-jev": "typesafe-direct"}}
+    - name: egress
+      expression: >-
+        {"swarm-allow-typesafe-direct": [[[{"name": "api.typesafe.ai", "pattern": ""}], [{"protocol": "TCP", "port": "443"}]]]}
+    - name: actual_selector
+      expression: >-
+        !has(object.spec.podSelector) ? {"~": "absent"} :
+        has(object.spec.podSelector.matchExpressions) ? {"~": "matchExpressions"} :
+        has(object.spec.podSelector.matchLabels) ? object.spec.podSelector.matchLabels : {}
+    - name: actual_egress
+      expression: >-
+        has(object.spec.egress) ? object.spec.egress.map(r, [
+          has(r.matches) ? r.matches.map(m, {"name": has(m.name) ? m.name : "", "pattern": has(m.pattern) ? m.pattern : ""}) : [],
+          has(r.ports) ? r.ports.map(q, {"protocol": has(q.protocol) ? q.protocol : "", "port": has(q.port) ? string(q.port) : "~all"}) : []]) : []
+  validations:
+    - expression: "object.metadata.name in variables.selectors"
+      message: >-
+        the workspace deployer writes only the hostname policy the tenant render
+        produces (kubernetes/render.py TENANT_FQDN_FILES).
+      reason: Forbidden
+
+    - expression: >-
+        !(object.metadata.name in variables.selectors) ||
+        (variables.actual_selector == variables.selectors[object.metadata.name] &&
+          variables.actual_egress == variables.egress[object.metadata.name])
+      message: >-
+        the TypeSafe direct policy selects only the TypeSafe direct pods and
+        allows egress only to the TypeSafe API host, on TCP 443, exactly as
+        kubernetes/render.py renders it.
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-workspace-deployer-fqdnnetworkpolicies
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-workspace-deployer-fqdnnetworkpolicies
   validationActions: ["Deny", "Audit"]

@@ -1250,9 +1250,14 @@ def test_every_policy_is_bound_and_scoped_to_swarm_namespaces(policy_docs):
         if _SCOPED_BY_CALLER.match(binding["spec"]["policyName"]):
             policy = one(policy_docs, "ValidatingAdmissionPolicy", binding["spec"]["policyName"])
             conditions = policy["spec"]["matchConditions"]
-            assert [c["expression"].split(" in ")[0].strip() for c in conditions] == [
+            assert [c["expression"].split(" in ")[0].strip() for c in conditions[:1]] == [
                 "request.userInfo.username"
             ], "an unscoped binding must be scoped by its caller instead"
+            # The network policy content checks (#3941) narrow further, to the
+            # tenant namespaces by name; nothing may widen the caller's scope.
+            assert [c["expression"].strip() for c in conditions[1:]] in (
+                [], ["has(request.namespace) && request.namespace.startsWith('swarm-tenant-')"]
+            ), conditions
             continue
         selector = binding["spec"]["matchResources"]["namespaceSelector"]["matchLabels"]
         assert selector == {"app.kubernetes.io/part-of": "swarm"}, (

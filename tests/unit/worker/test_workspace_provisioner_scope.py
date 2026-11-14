@@ -2,7 +2,7 @@
 
 docs/workspaces.md §2.3, lane W5. `swarm-workspace-deployer` holds a
 ClusterRole (kubernetes/rbac/provisioner-rbac.yaml) because RBAC cannot narrow
-`create` by name, and four ValidatingAdmissionPolicies
+`create` by name, and six ValidatingAdmissionPolicies
 (kubernetes/policies/workspace-provisioner-scope.yaml) narrow it back to
 `swarm-tenant-u-*` and to exactly what the tenant render produces.
 
@@ -1225,7 +1225,10 @@ FQDN_CONTENT_POLICY = "swarm-workspace-deployer-fqdnnetworkpolicies"
 CLUSTER_NETWORK = (
     "--pod-cidr", "10.200.0.0/14", "--service-cidr", "10.204.0.0/20",
     "--cluster-dns-ip", "10.204.0.10", "--node-local-dns-ip", "169.254.20.10",
-    "--network-source", "cluster",
+    "--network-source", "operator-supplied",
+    # A render for a cluster carries the tenant record's quota too.
+    "--quota-pods", "100", "--quota-jobs", "200", "--quota-cpu", "400",
+    "--quota-memory", "800Gi", "--quota-ephemeral", "1000Gi",
 )
 
 
