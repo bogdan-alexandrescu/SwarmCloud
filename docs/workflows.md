@@ -1280,7 +1280,7 @@ main, and on 2026-11-14 a one-line follow-up's `pr-title.txt` retitled a
 feature pull request to that fix, so the feature landed under the fix's
 subject (the workflow-spec findings epic, #4101). A `pr-title.txt` the lane
 wrote is ignored; a `pr-body.md` is posted as **one comment** on the pull
-request, carrying a hidden marker naming the task and attempt, so the same
+request, carrying a hidden marker naming the agent and attempt, so the same
 attempt publishing again posts nothing more. A lane that wrote neither posts
 nothing, and is not asked for a title.
 
