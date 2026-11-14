@@ -2,6 +2,7 @@ import { Fragment, useState } from 'react'
 import { isPaused } from './fetch'
 import { tableMode, usePhoneTables } from './capacityPoll'
 import { WarnMark } from './marks'
+import { useIsAdmin } from './PermissionCards'
 import './styles/profile-matrix.css'
 import {
   FAMILY_TITLE,
@@ -151,6 +152,10 @@ export function disabledSentence(name: string, reason: string | null | undefined
 
 export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
   const [open, setOpen] = useState<string | null>(null)
+  // AN ADMIN'S LINK ONLY (#3015): Spine refuses Pool limits in place to
+  // anyone but a platform admin, so the opened row's link to it would be
+  // dead for them. Unread or failed draws nothing.
+  const admin = useIsAdmin() === true
   // ONE CARD PER PROFILE ON A PHONE (QA G5-08). The matrix was 923px in a
   // 352px box, and Can start and Runs out first -- the answer -- sat 570px
   // off-screen behind the family cells. On a phone each profile is a record:
@@ -294,8 +299,13 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                             binds={binds}
                             complete={capacity.pools_complete !== false}
                           />
-                        )}{' '}
-                        <a className="ctl-link" href="#admin/limits">Pool limits</a>
+                        )}
+                        {admin && (
+                          <>
+                            {' '}
+                            <a className="ctl-link" href="#admin/limits">Pool limits</a>
+                          </>
+                        )}
                       </td>
                     </tr>
                   )}
