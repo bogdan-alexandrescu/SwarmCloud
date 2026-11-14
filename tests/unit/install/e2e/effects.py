@@ -8,15 +8,75 @@ rendered leaves its resource missing and the manifest entry it backs unmet.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from pathlib import Path
 from typing import Any
 
 from swarm_install.api_client import deployer_email
+from swarm_install.steps import alerts
 from swarm_install.steps.bootstrap import PLATFORM_ACCOUNTS
 from swarm_install.terraform import IMPERSONATE_ENV
 
 from .google import Cloud
 from .world import World
+
+
+#: kubernetes/swarm-system, whose files terraform/infra's outputs render.
+SWARM_SYSTEM = Path(__file__).resolve().parents[4] / "kubernetes" / "swarm-system"
+#: The token kubernetes/apply.sh (and the engine) fills, never Terraform.
+_LEFT_FOR_THE_ENGINE = "__LABEL_PREFIX__"
+
+
+def _render(name: str, values: dict[str, str]) -> str:
+    """A swarm-system manifest as a Terraform output renders it: every token
+    replaced but the label prefix, which the engine fills when it applies."""
+    text = (SWARM_SYSTEM / f"{name}.yaml").read_text()
+    for token, value in values.items():
+        text = text.replace(token, value)
+    left = set(re.findall(r"__[A-Z0-9_]+__", text)) - {_LEFT_FOR_THE_ENGINE}
+    if left:
+        raise AssertionError(f"infra: {name}'s render leaves {sorted(left)} unreplaced")
+    return text
+
+
+def workload_manifests(project: str, region: str, inputs: dict[str, Any]) -> dict[str, str | None]:
+    """terraform/infra's swarm_live_manifest (live.tf), swarm_graph_manifest
+    (graph_service.tf) and swarm_voice_manifest (voice.tf): each rendered only
+    while its switch is on, on the Autopilot cluster, with its image's digest
+    in image_refs, and null otherwise (what WorkloadsStep skips)."""
+    images = inputs.get("image_refs") or {}
+    gke = inputs.get("enable_gke_autopilot", True) is not False
+    graph = inputs.get("graph_service") or {}
+    artifacts = f"{project}-swarm-artifacts"
+    egress = "10.40.16.0/28"  # swarm-api's Direct VPC egress range
+    key = f"projects/{project}/secrets/{{}}/versions/1".format
+    live = graph_on = voice = None
+    if gke and inputs.get("enable_live_browser") is True and images.get("swarm-live"):
+        live = _render("swarm-live", {
+            "__SWARM_LIVE_IMAGE__": str(images["swarm-live"]), "__PROJECT_ID__": project,
+            "__ARTIFACT_BUCKET__": artifacts, "__LIVE_KEY_VERSION__": key("swarm-live-key"),
+            "__SWARM_LIVE_ILB_IP__": "10.40.0.50", "__SWARM_API_EGRESS_CIDR__": egress})
+    if gke and inputs.get("enable_graph_service") is True and graph.get("serve") is True and images.get("swarm-graph"):
+        config = json.dumps({"enabled": graph.get("enabled") is True})
+        graph_on = _render("swarm-graph", {
+            "__SWARM_GRAPH_IMAGE__": str(images["swarm-graph"]),
+            "__GRAPH_TICKET_KEY_VERSION__": key("swarm-graph-ticket-key"), "__GRAPH_BUCKET__": artifacts,
+            "__GRAPH_CONFIG_SHA256__": hashlib.sha256(config.encode()).hexdigest(),
+            "__GRAPH_CONFIG_JSON__": config, "__GRAPH_STATS_ADDRESS__": "10.40.0.51",
+            "__SWARM_API_EGRESS_CIDR__": egress})
+    if gke and inputs.get("voice_it") == "on" and images.get("swarm-voice"):
+        broker = "https://swarm-quota-broker-e2e.a.run.app"
+        voice = _render("swarm-voice", {
+            "__SWARM_VOICE_IMAGE__": str(images["swarm-voice"]), "__PROJECT_ID__": project,
+            "__QUOTA_BROKER_URL__": broker, "__QUOTA_BROKER_AUDIENCE__": broker,
+            "__SWARM_API_HOST__": f"swarm-api-e2e.{region}.internal", "__SWARM_VOICE_AUDIENCE__": "swarm-voice",
+            "__SWARM_VOICE_CALLERS__": f"swarm-api@{project}.iam.gserviceaccount.com",
+            "__SWARM_VOICE_GSA__": f"swarm-voice@{project}.iam.gserviceaccount.com",
+            "__SWARM_VOICE_ILB_IP__": "10.40.0.52", "__VOICE_FRONT_MODEL__": "front-model",
+            "__VOICE_PLANNER_MODEL__": "planner-model"})
+    return {"swarm_live_manifest": live, "swarm_graph_manifest": graph_on, "swarm_voice_manifest": voice}
 
 
 def _account(cloud: Cloud, email: str) -> None:
@@ -181,6 +241,9 @@ def infra(world: World, cloud: Cloud, project: str, inputs: dict[str, Any], targ
         cloud.run_jobs["swarm-plugin-intake"] = {
             "name": f"projects/{project}/locations/{region}/jobs/swarm-plugin-intake"}
     outputs["plugins_bucket"] = plugins
+    # live.tf, graph_service.tf and voice.tf: the core workloads' renders,
+    # which stage 10's WorkloadsStep applies to swarm-system.
+    outputs.update(workload_manifests(project, region, inputs))
     # plugin-bundles.tf, planned only with builtins_managed on: the builder
     # account, its repository (push) and its reads of the release images.
     if inputs.get("builtins_managed") == "on":
@@ -204,9 +267,9 @@ def infra(world: World, cloud: Cloud, project: str, inputs: dict[str, Any], targ
     for email in inputs.get("alert_emails") or []:
         if not any(c["labels"]["email_address"] == email for c in cloud.channels):
             cloud.channels.append({"type": "email", "labels": {"email_address": email}})
-    for metric in ("swarm_dispatch_errors", "swarm_stale_generation"):
-        if f"logging.googleapis.com/user/{metric}" not in cloud.descriptors:
-            cloud.descriptors.append(f"logging.googleapis.com/user/{metric}")
+    for metric in alerts.LOG_METRICS:  # every one terraform/modules/monitoring makes, under name_prefix swarm
+        if f"{alerts.LOG_METRIC_PREFIX}/{metric}" not in cloud.descriptors:
+            cloud.descriptors.append(f"{alerts.LOG_METRIC_PREFIX}/{metric}")
     if inputs.get("create_alerts") and not cloud.alert_policies:
         cloud.alert_policies.append({"displayName": "swarm dispatch errors"})
     # swarm-api's revision, its environment as terraform/infra/locals.tf renders it.

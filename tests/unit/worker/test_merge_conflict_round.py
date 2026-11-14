@@ -147,6 +147,83 @@ def test_exhausted_conflict_rounds_fail_fast_with_merge_conflict(tmp_path):
 EARLIER = "a" * 40
 
 
+def _rounds(world: MergeWorld, pushes: list[tuple[str, str | None]]) -> list[str]:
+    """Conflict rounds, round n claimed at `pushes[n-1][0]`, its SUCCEEDED task
+    having pushed `pushes[n-1][1]` (None: nothing); their task ids."""
+    entries, tasks = [], []
+    for n, (head, pushed) in enumerate(pushes, start=1):
+        task_id = f"task_conflict{n}"
+        world.docs[task_id] = {
+            "tenant_id": TENANT, "workflow_id": f"wf_conflict{n}", "state": "SUCCEEDED",
+            "metadata": {"dispatch": {"strategy": "direct-pr", "continues": OPENER}},
+            "result_summary": {"git": {"pushed_head": pushed} if pushed else {}},
+        }
+        entries.append({"round": n, "head": head, "task_id": task_id,
+                        "workflow_id": f"wf_conflict{n}"})
+        tasks.append(task_id)
+    world.docs[TASK]["metadata"] = {
+        merge.MERGE_FIX_METADATA_KEY: {merge.CONFLICT_ROUNDS_KEY: entries},
+    }
+    return tasks
+
+
+H1, H2 = "1" * 40, "2" * 40
+
+
+def test_conflict_rounds_that_moved_the_head_leave_the_next_round_due(tmp_path):
+    """#3073 (PR #3036, #3342): two rounds each resolved a conflict and pushed
+    a new head, PINNED -> H1 -> H2; main moved again and H2 conflicts. A round
+    that moved the head is not spent, so the third is due, not merge_conflict."""
+    world = MergeWorld(tmp_path)
+    _conflicting(world)
+    _rounds(world, [(PINNED, H1), (H1, H2)])
+    world.pr["head"]["sha"] = H2
+
+    outcome = merge.run_merge(world.context())
+
+    _parked(outcome, merge.CONFLICT_FIX_PENDING, head=H2)
+    assert "conflict fix round 3" in outcome.summary["wait"]["message"]
+    assert _check_reads(world) == []
+
+
+@pytest.mark.parametrize("second", [None, H2], ids=["pushed-nothing", "pushed-its-own-head"])
+def test_conflict_rounds_that_left_the_head_where_it_was_are_spent(tmp_path, second):
+    world = MergeWorld(tmp_path)
+    _conflicting(world)
+    _rounds(world, [(H1, None), (H2, second)])
+
+    message = _refused(merge.run_merge(world.context()))
+
+    assert f"after {merge.MERGE_CONFLICT_ROUNDS_MAX} conflict fix round(s)" in message
+    assert world.merge_calls() == []
+
+
+def test_a_round_whose_push_cannot_be_verified_is_spent(tmp_path):
+    """The merge_fix record is tenant-writable: a round 'moved' the head only
+    on its own task's verified record."""
+    world = MergeWorld(tmp_path)
+    _conflicting(world)
+    first, _second = _rounds(world, [(H1, "3" * 40), (H2, None)])
+    world.docs[first]["metadata"]["dispatch"]["continues"] = "task_other"
+
+    message = _refused(merge.run_merge(world.context()))
+
+    assert "conflict fix round(s)" in message
+
+
+def test_conflict_rounds_at_the_total_ceiling_refuse_whatever_they_moved(tmp_path):
+    world = MergeWorld(tmp_path)
+    _conflicting(world)
+    heads = [f"{n:040x}" for n in range(1, merge.MERGE_CONFLICT_ROUNDS_TOTAL_MAX + 1)]
+    _rounds(world, [(head, f"{int(head, 16) + 100:040x}") for head in heads])
+
+    message = _refused(merge.run_merge(world.context()))
+
+    assert f"after {merge.MERGE_CONFLICT_ROUNDS_TOTAL_MAX} conflict fix round(s)" in message
+    assert "ceiling" in message
+    assert world.merge_calls() == []
+
+
 def test_a_conflict_round_running_at_an_earlier_head_parks_running_not_pending(tmp_path):
     """#2577: on 2026-10-27 the merge parked conflict_fix_pending at 40d1cf15
     while round 1 (task_78214f85, claimed at a8cb2f5) was still running, and
@@ -331,3 +408,5 @@ def test_the_tick_and_the_worker_agree_on_the_conflict_rounds():
 
     assert merge.CONFLICT_ROUNDS_KEY == mergewake.CONFLICT_ROUNDS_KEY
     assert merge.MERGE_CONFLICT_ROUNDS_MAX == mergewake.MERGE_CONFLICT_ROUNDS_MAX
+    assert merge.MERGE_CONFLICT_ROUNDS_TOTAL_MAX == mergewake.MERGE_CONFLICT_ROUNDS_TOTAL_MAX
+    assert merge.MERGE_CONFLICT_ROUNDS_TOTAL_MAX > merge.MERGE_CONFLICT_ROUNDS_MAX

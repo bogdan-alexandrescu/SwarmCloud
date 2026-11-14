@@ -12,14 +12,14 @@ entries:
 - id: rbac.dispatcher-role
   kind: namespace-object
   scope: core
-  stage: 11
+  stage: 13
   provider: engine
   check: kubectl --context $E -n swarm-tenant-$T get role,rolebinding -o name | grep dispatcher
   apply: kubernetes/rbac/dispatcher-rbac.yaml:46,76,121,142; TWO Role+RoleBinding pairs, applied per tenant via TENANT_FILES by swarm-workspace-apply when the team is made; swarm team repair <team> --project <project> has that job apply the team's tenant render again (a limits run, A7), then checks both pairs are in the namespace
   verify: kubectl get rolebinding <name> -n swarm-tenant-$T -o yaml shows the scheduler GSA bound BOTH by email and by its numeric uniqueId subject
   explain: the control plane's own GKE dispatch access, without which the GKE backend cannot dispatch at all; bound twice deliberately -- the uniqueId binding is the one that actually authorizes, because GKE presents the scheduler's identity by uniqueId, not email
   guards: the 2026-09-24 dispatch failure (email-only binding authorised nobody)
-  secret_entry: 'null'
+  secret_entry: null
   depends_on:
   - namespace-object.tenant-namespace
   evidence:
@@ -32,7 +32,7 @@ entries:
   - kubernetes/rbac/dispatcher-rbac.yaml:142
   - kubernetes/rbac/dispatcher-rbac.yaml:151-164
   - kubernetes/render.py:399-405
-  notes: 'null'
+  notes: null
   probe:
     type: kubernetes_can_i
     subject: swarm-reconciler

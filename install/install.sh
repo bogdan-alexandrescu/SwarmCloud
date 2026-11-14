@@ -106,7 +106,10 @@ if [ -z "${VERSION}" ]; then
   VERSION="$(curl -fsSL "${HOME_URL}/channels/${CHANNEL}")" || fail "cannot read ${HOME_URL}/channels/${CHANNEL}"
   VERSION="$(printf '%s' "${VERSION}" | tr -d '[:space:]')"
 fi
+# N and the rc number carry no leading zero: the sed below keeps N as written,
+# and the wheels are named by int(N), so 2026.10.01 names no wheel.
 case "${VERSION}" in
+  [0-9][0-9][0-9][0-9].[0-9][0-9].0[0-9]* | *-rc.0[0-9]*) fail "'${VERSION}' is not a SwarmCloud release name (YYYY.MM.N)" ;;
   [0-9][0-9][0-9][0-9].[0-9][0-9].[0-9]*) ;;
   *) fail "'${VERSION}' is not a SwarmCloud release name (YYYY.MM.N)" ;;
 esac
@@ -126,7 +129,10 @@ for dist in swarm_mcp swarm_install swarm_common swarm_redaction; do
   [ "${got}" = "${want}" ] || fail "${wheel} does not match SHA256SUMS (got ${got}); nothing was installed"
 done
 
-uv tool install --force --python '>=3.11' \
+# 3.11.4 is the first 3.11 whose tarfile has extractall(filter="data"), which
+# swarm_install's bootstrap and cluster steps call. --quiet: uv's own PATH
+# advice would sit beside the PATH handling below.
+uv tool install --quiet --force --python '>=3.11.4' \
   "swarm-mcp @ file://${DIR}/swarm_mcp-${WHEEL_VERSION}-py3-none-any.whl" \
   --with "swarm-install @ file://${DIR}/swarm_install-${WHEEL_VERSION}-py3-none-any.whl" \
   --with "swarm-common @ file://${DIR}/swarm_common-${WHEEL_VERSION}-py3-none-any.whl" \

@@ -49,8 +49,18 @@ import {
 import { apiHeaders, chosenTenant, read, route, write } from '../fetch'
 import { noteActivity } from '../Shell'
 import { leave } from '../signoutState'
-import { applyStreamEvent, EMPTY_LIST, readSessionStream, STAGE_EVENTS, STREAM_EVENTS, TIER_EVENTS, TRACE_EVENTS, type CardListState, type StreamEvent } from './CardList'
-import { applyCaption, captionEvent, trimCaptions, type CaptionLine } from './captions'
+import { applyStreamEvent, EMPTY_LIST, readSessionStream, seedCards, STAGE_EVENTS, STREAM_EVENTS, TIER_EVENTS, TRACE_EVENTS, type CardListState, type StreamEvent } from './CardList'
+import {
+  applyCaption,
+  captionEnd,
+  captionEvent,
+  closeCaption,
+  trimCaptions,
+  CAPTION_PAUSE_MS,
+  closedLine,
+  type CaptionLine,
+  type CaptionSide,
+} from './captions'
 import { micEnabled, useMic, type MicMode, type MicState } from './mic'
 import { takeResumedProject } from './Projects'
 import { connectTalk, endVoiceSession, reopenTalk, sendTurn, TalkError, TURN_MAX, TurnError, VOICE_SESSION_END, type TalkCall, type TalkMode } from './rtc'
@@ -100,6 +110,22 @@ export const REOPEN_WAIT_MS = 15_000
 /** The call the holder holds: GPT-Live's or a text session (rtc.ts), or our own engine's (speechSocket.ts). */
 type AnyCall = TalkCall | SpeechCall
 export type PaneMode = TalkMode | 'speech'
+
+/** Stop every side's caption pause timer. */
+function clearPauses(timers: { current: Partial<Record<CaptionSide, ReturnType<typeof setTimeout>>> }): void {
+  for (const t of Object.values(timers.current)) clearTimeout(t)
+  timers.current = {}
+}
+
+/**
+ * `after`, having noted activity when it closed a line: a segment closed with
+ * no final (a pause, the other side, the end of a turn) is speech as much as a
+ * final is. Calling it twice, as React may an updater, notes the same moment.
+ */
+function noted(before: readonly CaptionLine[], after: CaptionLine[]): CaptionLine[] {
+  if (closedLine(before, after)) noteActivity()
+  return after
+}
 
 /** The caption of the phrase a text session is hearing right now. */
 const HEARD = 'you:heard'
@@ -222,8 +248,19 @@ function startProblem(e: unknown): { line: string; tip: string | null } {
   return { line: `Voice it could not start: ${e instanceof Error ? e.message : 'the call failed.'}`, tip: null }
 }
 
+/** A resumed project's cards, as swarm-api serves them (`{cards: [card_view, ...]}`). */
+export const VOICE_PROJECT_CARDS = '/v1/voice/projects/{project_id}/cards'
+
+/** The project's cards, read once when a start takes a resumed project; null when they could not be read. */
+async function projectCards(projectId: string): Promise<unknown[] | null> {
+  const r = await read<unknown>(route(VOICE_PROJECT_CARDS, { project_id: projectId }), () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return null
+  const rows = (r.data as { cards?: unknown } | null)?.cards
+  return Array.isArray(rows) ? rows : null
+}
+
 /**
- * The end a closing tab sends: the session's end route, kept alive past the
+ * The end a closing tab sends:the session's end route, kept alive past the
  * page, with the session cookie and the workspace the session started in.
  * A `sendBeacon` cannot carry `X-Swarm-Tenant`, so it is a fetch. It names
  * its cause, `tab_closed`; End names none, which swarm-api records as
@@ -360,11 +397,16 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
   const turns = useRef<Promise<void>>(Promise.resolve())
   const turnSeq = useRef(0)
   const mounted = useRef(true)
+  // Each side's open caption line closes after CAPTION_PAUSE_MS with no new delta.
+  const captionPause = useRef<Partial<Record<CaptionSide, ReturnType<typeof setTimeout>>>>({})
   const audio = useRef<HTMLAudioElement | null>(null)
   const feed = useMemo(stageFeed, [])
   // The Resume's project: undefined until the first start takes it, then the
   // id until a start succeeds, then null.
   const resumed = useRef<string | null | undefined>(undefined)
+  // The resumed project's open cards, read once per start: the list the start's stream opens on.
+  const seeded = useRef<CardListState>(EMPTY_LIST)
+  const seedRead = useRef(0)
   const live = phase === 'live'
   const textMode = live && talkMode === 'text'
   const { mic, setMuted, setMode, hold } = useMic(track, live && viewing > 0)
@@ -410,11 +452,20 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     const type = eventType(data)
     if (type !== null && VOICE_STARTED.has(type)) setVoicePlaying(true)
     if (type !== null && VOICE_STOPPED.has(type)) setVoicePlaying(false)
+    const ended = captionEnd(data)
+    if (ended !== null) setLines((l) => noted(l, closeCaption(l, ended)))
     const ev = captionEvent(data)
     if (ev === null) return
     // Speech is proof someone is there; a word still being spoken is not yet a segment.
     if (ev.final) noteActivity()
-    setLines((l) => trimCaptions(applyCaption(l, ev)))
+    setLines((l) => trimCaptions(noted(l, applyCaption(l, ev))))
+    const side = ev.side
+    clearTimeout(captionPause.current[side])
+    if (!ev.final) {
+      captionPause.current[side] = setTimeout(() => {
+        if (mounted.current) setLines((l) => trimCaptions(noted(l, closeCaption(l, side))))
+      }, CAPTION_PAUSE_MS)
+    }
   }, [])
 
   const hangUp = useCallback((): AnyCall | null => {
@@ -433,6 +484,7 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     setVoicePlaying(false)
     setStreamId(null)
     // A segment cut off mid-word stays as it was heard, not as a growing line.
+    clearPauses(captionPause)
     setLines((l) => l.filter((x) => x.final))
     return c
   }, [closeSpeech])
@@ -713,6 +765,18 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     setPhase('connecting')
     if (resumed.current === undefined) resumed.current = takeResumedProject()
     setProjectId(resumed.current)
+    const project = resumed.current
+    const reading = ++seedRead.current
+    seeded.current = EMPTY_LIST
+    if (project !== null) {
+      // A resumed project's open cards are drawn before its stream opens; the stream then updates them in place.
+      setCards(EMPTY_LIST)
+      void projectCards(project).then((rows) => {
+        if (!mounted.current || reading !== seedRead.current || rows === null) return
+        seeded.current = seedCards(EMPTY_LIST, rows)
+        setCards((s) => seedCards(s, rows))
+      })
+    }
     try {
       // Only an engine read as GPT-Live sends the offer; `own` or not read yet starts with none.
       const own = !USE_FIXTURES && engine.current !== GPT_LIVE ? await connectOwnSpeech(resumed.current) : GPT_LIVE
@@ -737,6 +801,11 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
       tenant.current = chosenTenant()
       // A new session's project is the one swarm-api opened: the stage reads its visuals.
       setProjectId(c.projectId)
+      if (project !== null && c.projectId !== project) {
+        // swarm-api opened another project: the resumed one's cards are not this session's.
+        seedRead.current += 1
+        seeded.current = EMPTY_LIST
+      }
       setTalkMode(c.mode)
       if (c.mode === 'text') {
         const f = 'fallback' in c ? c.fallback : null
@@ -760,10 +829,10 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
   }, [onEvent, dropped, beginText, beginSpeech])
 
   // THE STREAM, for as long as the call is held, whichever screen is mounted.
-  // A new session starts an empty list; an ended one keeps its cards. An event
-  // at or below the last sequence applied (a stream reopened from further
-  // back) is dropped, so nothing reaches the stage, the turn line or the
-  // reopen twice.
+  // A new session starts from its resumed project's open cards, else empty; an
+  // ended one keeps its cards. An event at or below the last sequence applied
+  // (a stream reopened from further back) is dropped, so nothing reaches the
+  // stage, the turn line or the reopen twice.
   const shownFor = useRef<string | null>(null)
   const lastSeq = useRef(0)
   useEffect(() => {
@@ -771,7 +840,7 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     if (shownFor.current !== streamId) {
       shownFor.current = streamId
       lastSeq.current = 0
-      setCards(EMPTY_LIST)
+      setCards(seeded.current)
       setMeter(null)
     }
     if (typeof EventSource === 'undefined') return
@@ -837,6 +906,7 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     mounted.current = true
     return () => {
       mounted.current = false
+      clearPauses(captionPause)
       if (dropTimer.current !== null) clearTimeout(dropTimer.current)
       dropTimer.current = null
       listener.current?.close()

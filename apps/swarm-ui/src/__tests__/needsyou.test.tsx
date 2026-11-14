@@ -4,8 +4,8 @@
 // MUTATIONS, one per block: count a kind by hand (or approvals as 0 when they
 // were not read); drop the quiet day's line; enable Approve merge while
 // questions hold it, or stop naming them; post the answer to the wrong task or
-// index, or open no box; draw a chip that is not a button (out of the tab
-// order); report a chip's pick without the task ids it covers.
+// index, or open no box; draw the header as no button (out of the tab order);
+// report a pick without the task ids it covers, or keep it once folded.
 
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -105,7 +105,17 @@ function approval(id: string): ApprovalItem {
   return { approval_id: id, kind: 'plan', subject: {}, summary: `Plan ${id}`, state: 'pending', requested_at: null, expires_at: null }
 }
 
-const chip = (name: RegExp) => screen.getByRole('button', { name })
+// A chip is a plain count in the header, which is the strip's one toggle.
+const chip = (name: RegExp) => screen.getByRole('img', { name })
+const header = () => screen.getByRole('button', { name: /^Needs you/ })
+
+/** Renders the strip and opens it, as a person presses its header to read the rows. */
+function show(ui: JSX.Element) {
+  const r = render(ui)
+  const toggle = screen.queryByRole('button', { name: /^Needs you/, expanded: false })
+  if (toggle !== null) fireEvent.click(toggle)
+  return r
+}
 
 beforeEach(() => {
   api.answerQuestion.mockReset()
@@ -117,28 +127,27 @@ beforeEach(() => {
 describe('the counted chips', () => {
   it('counts each kind from the items it was given, and approvals it could not read are "not known", never 0', () => {
     const items = [failed('a'), failed('b'), failed('c'), question('q1', 0), heldMerge(), handoff('h1')]
-    render(<NeedsYou items={items} approvals={null} />)
+    show(<NeedsYou items={items} approvals={null} />)
     expect(chip(/^Failed: 3$/)).toBeTruthy()
     expect(chip(/^Question: 1$/)).toBeTruthy()
     expect(chip(/^Merge waiting: 1$/)).toBeTruthy()
     expect(chip(/^Your turn in a browser: 1$/)).toBeTruthy()
-    const bar = screen.getByRole('group', { name: 'What needs you, by kind' })
-    expect(bar.textContent).toContain('Approvals not known')
-    expect(within(bar).queryByRole('button', { name: /^Approvals/ })).toBeNull()
-    expect(screen.getByRole('button', { name: /Needs you/ }).textContent).toMatch(/Needs you\s*6\+/)
+    expect(header().textContent).toContain('Approvals not known')
+    expect(chip(/^Approvals: not known$/)).toBeTruthy()
+    expect(header().textContent).toMatch(/Needs you\s*6\+/)
   })
 
   it('counts approvals it was given, and a kind with none reads 0', () => {
-    render(<NeedsYou items={[question('q1', 0)]} approvals={[approval('ap1'), approval('ap2')]} />)
+    show(<NeedsYou items={[question('q1', 0)]} approvals={[approval('ap1'), approval('ap2')]} />)
     expect(chip(/^Approvals: 2$/)).toBeTruthy()
     expect(chip(/^Failed: 0$/)).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Needs you/ }).textContent).toMatch(/Needs you\s*3$/)
+    expect(header().textContent).toMatch(/^Needs you\s*3\D/)
   })
 })
 
 describe('a quiet day', () => {
   it('says nothing waits on the person, and keeps approvals not known', () => {
-    render(<NeedsYou items={[]} approvals={null} />)
+    show(<NeedsYou items={[]} approvals={null} />)
     expect(screen.getByText('Nothing waits on you here')).toBeTruthy()
     expect(screen.queryByRole('list')).toBeNull()
     expect(screen.getByRole('group', { name: 'What needs you, by kind' }).textContent).toContain('not known')
@@ -146,7 +155,7 @@ describe('a quiet day', () => {
 
   it('does not call the day quiet while a kind is not known, and names the kinds', () => {
     const items = Object.assign([] as NeedItem[], { unknownKinds: ['question', 'merge', 'handoff'] as NeedKind[] })
-    render(<NeedsYou items={items} approvals={null} />)
+    show(<NeedsYou items={items} approvals={null} />)
     expect(screen.queryByText('Nothing waits on you here')).toBeNull()
     // 'Nothing found', the sentence naming the kinds not known as its tooltip.
     expect(screen.getByText('Nothing found').getAttribute('title')).toBe(
@@ -155,7 +164,7 @@ describe('a quiet day', () => {
   })
 
   it('reads the same with approvals read and none waiting', () => {
-    render(<NeedsYou items={[]} approvals={[]} />)
+    show(<NeedsYou items={[]} approvals={[]} />)
     expect(screen.getByText('Nothing waits on you here')).toBeTruthy()
     expect(chip(/^Approvals: 0$/)).toBeTruthy()
   })
@@ -164,7 +173,7 @@ describe('a quiet day', () => {
 describe('a merge held by two questions', () => {
   it('keeps Approve merge disabled and names both questions', () => {
     const merge = heldMerge()
-    render(<NeedsYou items={[merge]} approvals={null} />)
+    show(<NeedsYou items={[merge]} approvals={null} />)
     const button = screen.getByRole('button', { name: 'Approve merge' }) as HTMLButtonElement
     expect(button.disabled).toBe(true)
     const row = button.closest('li') as HTMLElement
@@ -188,7 +197,7 @@ describe('a merge held by two questions', () => {
       task: runTask({ id: 'task_free', state: 'PARKED', park_reason: 'HUMAN_REQUIRED', runner_profile: 'merge', blocked_by: [] }),
       approval: { id: 'ap_merge', digest: 'digest-1', head: 'abcdef1234' },
     }
-    render(<NeedsYou items={[free]} approvals={null} onChanged={onChanged} />)
+    show(<NeedsYou items={[free]} approvals={null} onChanged={onChanged} />)
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Approve merge at abcdef1' }))
     })
@@ -207,7 +216,7 @@ describe('Answer', () => {
     }
     api.answerQuestion.mockResolvedValue(saved)
     const onChanged = vi.fn()
-    render(<NeedsYou items={[question('task_q', 2)]} approvals={null} onChanged={onChanged} />)
+    show(<NeedsYou items={[question('task_q', 2)]} approvals={null} onChanged={onChanged} />)
     const row = screen.getByRole('button', { name: 'Answer step-task_q question 3' }).closest('li') as HTMLElement
     expect(within(row).queryByRole('group', { name: /Your answer/ })).toBeNull()
     fireEvent.click(within(row).getByRole('button', { name: 'Answer step-task_q question 3' }))
@@ -226,7 +235,7 @@ describe('Answer', () => {
 
   it("sends the person's own words when the question has no options", async () => {
     api.answerQuestion.mockResolvedValue({ status: 'ok', fetchedAt: Date.now(), data: {} })
-    render(<NeedsYou items={[question('task_w', 0, { options: [] })]} approvals={null} />)
+    show(<NeedsYou items={[question('task_w', 0, { options: [] })]} approvals={null} />)
     fireEvent.click(screen.getByRole('button', { name: 'Answer step-task_w question 1' }))
     fireEvent.change(screen.getByRole('textbox', { name: 'Your own answer to step-task_w question 1' }), { target: { value: '  use v3  ' } })
     await act(async () => {
@@ -237,7 +246,7 @@ describe('Answer', () => {
 
   it('says why the answer was not saved', async () => {
     api.answerQuestion.mockResolvedValue({ status: 'error', error: { kind: 'forbidden', httpStatus: 403, code: null, message: 'no' } })
-    render(<NeedsYou items={[question('task_x', 0)]} approvals={null} />)
+    show(<NeedsYou items={[question('task_x', 0)]} approvals={null} />)
     fireEvent.click(screen.getByRole('button', { name: 'Answer step-task_x question 1' }))
     fireEvent.click(screen.getByRole('radio', { name: /v1/ }))
     await act(async () => {
@@ -255,7 +264,7 @@ describe("a failed step's row beside the workflow page's step card", () => {
   const rowOf = (name: string) => screen.getByText(name).closest('li') as HTMLElement
 
   it('drops its error line while the card is open on that step, and keeps Retry and Open', () => {
-    render(<NeedsYou items={items} approvals={null} cardStep="build" />)
+    show(<NeedsYou items={items} approvals={null} cardStep="build" />)
     const row = rowOf('agent step')
     expect(within(row).queryByText('The tests failed')).toBeNull()
     expect(within(row).getByRole('button', { name: 'Retry agent step' })).toBeTruthy()
@@ -264,7 +273,7 @@ describe("a failed step's row beside the workflow page's step card", () => {
   })
 
   it('keeps its error line while the card is on another step, or closed, or on a page with no card', () => {
-    const { rerender } = render(<NeedsYou items={items} approvals={null} cardStep="test" />)
+    const { rerender } = show(<NeedsYou items={items} approvals={null} cardStep="test" />)
     expect(within(rowOf('agent step')).getByText('The tests failed')).toBeTruthy()
     rerender(<NeedsYou items={items} approvals={null} cardStep={null} />)
     expect(within(rowOf('agent step')).getByText('The tests failed')).toBeTruthy()
@@ -276,7 +285,7 @@ describe("a failed step's row beside the workflow page's step card", () => {
 
 describe('the other rows act as the console does today', () => {
   it('offers Retry for a lone agent as Submit, for a workflow step as a re-run, and opens the logs of either', () => {
-    render(<NeedsYou items={[failed('lone'), failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} />)
+    show(<NeedsYou items={[failed('lone'), failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} />)
     const retry = screen.getByRole('link', { name: 'Retry agent lone' }) as HTMLAnchorElement
     expect(retry.getAttribute('href')).toBe('/submit/task')
     expect(screen.queryByRole('link', { name: 'Retry agent step' })).toBeNull()
@@ -285,7 +294,7 @@ describe('the other rows act as the console does today', () => {
   })
 
   it("a workflow step's Retry asks first, naming the step, and sends nothing until confirmed", async () => {
-    render(<NeedsYou items={[failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} />)
+    show(<NeedsYou items={[failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} />)
     fireEvent.click(screen.getByRole('button', { name: 'Retry agent step' }))
     // MUTATION: send on the first press and one stray click re-runs a workflow.
     expect(api.rerunWorkflowStep).not.toHaveBeenCalled()
@@ -308,7 +317,7 @@ describe('the other rows act as the console does today', () => {
       },
     })
     const onChanged = vi.fn()
-    render(<NeedsYou items={[failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} onChanged={onChanged} />)
+    show(<NeedsYou items={[failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} onChanged={onChanged} />)
     fireEvent.click(screen.getByRole('button', { name: 'Retry agent step' }))
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Re-run build' }))
@@ -325,7 +334,7 @@ describe('the other rows act as the console does today', () => {
       error: { kind: 'conflict', httpStatus: 409, code: 'conflict', message: 'a step can be re-run once every step of its workflow has finished' },
     })
     const onChanged = vi.fn()
-    render(<NeedsYou items={[failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} onChanged={onChanged} />)
+    show(<NeedsYou items={[failed('step', { workflow_id: 'wf_one', step_id: 'build' })]} approvals={null} onChanged={onChanged} />)
     fireEvent.click(screen.getByRole('button', { name: 'Retry agent step' }))
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Re-run build' }))
@@ -339,7 +348,7 @@ describe('the other rows act as the console does today', () => {
     api.loadTaskInputOnce.mockResolvedValue({ status: 'ok', fetchedAt: Date.now(), data: { prompt: { text: 'fix the build' } } })
     const { peekTaskPrefill, clearTaskPrefill } = await import('../submitPrefill')
     clearTaskPrefill()
-    render(<NeedsYou items={[failed('lone', { runner_profile: 'claude-code', repository_url: 'https://example.com/r.git' })]} approvals={null} />)
+    show(<NeedsYou items={[failed('lone', { runner_profile: 'claude-code', repository_url: 'https://example.com/r.git' })]} approvals={null} />)
     await act(async () => {
       fireEvent.click(screen.getByRole('link', { name: 'Retry agent lone' }))
     })
@@ -348,50 +357,47 @@ describe('the other rows act as the console does today', () => {
   })
 
   it("Take your turn opens a held browser's Browser tab, with its time left", () => {
-    render(<NeedsYou items={[handoff('task_h')]} approvals={null} />)
+    show(<NeedsYou items={[handoff('task_h')]} approvals={null} />)
     const take = screen.getByRole('link', { name: 'Take your turn in browser task_h' })
     expect(take.getAttribute('href')).toBe('/agents/live/task_h/browser')
     expect((take.closest('li') as HTMLElement).textContent).toMatch(/\d:\d\d left/)
   })
 })
 
-describe('keyboard and the chip filter', () => {
-  it('draws every chip and action as a button or link, so each is in the tab order', () => {
-    render(<NeedsYou items={[failed('a'), question('q', 0), heldMerge(), handoff('h')]} approvals={[approval('ap')]} />)
-    const bar = screen.getByRole('group', { name: 'What needs you, by kind' })
-    const chips = within(bar).getAllByRole('button')
-    expect(chips.map((c) => c.getAttribute('aria-label') ?? c.textContent)).toEqual([
-      expect.stringMatching(/^Needs you/),
+describe('keyboard and the kind filter', () => {
+  it('draws the header as one button and every action as a button or link, so each is in the tab order', () => {
+    show(<NeedsYou items={[failed('a'), question('q', 0), heldMerge(), handoff('h')]} approvals={[approval('ap')]} />)
+    const h = header()
+    // The chips are plain counts in the header: the header is the one button.
+    expect(within(h).queryAllByRole('button')).toHaveLength(0)
+    expect(within(h).getAllByRole('img').map((c) => c.getAttribute('aria-label'))).toEqual([
       'Failed: 1',
       'Question: 1',
       'Merge waiting: 1',
       'Your turn in a browser: 1',
       'Approvals: 1',
     ])
-    for (const c of chips) {
-      c.focus()
-      expect(document.activeElement).toBe(c)
-    }
+    h.focus()
+    expect(document.activeElement).toBe(h)
     const answer = screen.getByRole('button', { name: 'Answer step-q question 1' })
     answer.focus()
     expect(document.activeElement).toBe(answer)
   })
 
-  it('filters the list to the picked kind and reports the task ids it covers', () => {
+  it('filters the list to the kind "N more" picks, reports the task ids it covers, and clears it when folded', () => {
     const onSelect = vi.fn()
-    render(<NeedsYou items={[failed('a'), question('q', 0), heldMerge('task_m')]} approvals={null} onSelect={onSelect} />)
-    fireEvent.click(chip(/^Merge waiting: 1$/))
-    expect(onSelect).toHaveBeenLastCalledWith({ kind: 'merge', taskIds: ['task_m', 'task_design', 'task_review'] })
-    const list = screen.getByRole('list', { name: 'Needs you: Merge waiting' })
-    expect(within(list).getAllByRole('listitem')).toHaveLength(1)
-    expect(chip(/^Merge waiting: 1$/).getAttribute('aria-pressed')).toBe('true')
-    fireEvent.click(chip(/^Merge waiting: 1$/))
+    show(<NeedsYou items={[failed('a'), failed('b'), failed('c'), question('q', 0), heldMerge('task_m')]} approvals={null} onSelect={onSelect} />)
+    fireEvent.click(screen.getByRole('button', { name: '1 more failed' }))
+    expect(onSelect).toHaveBeenLastCalledWith({ kind: 'failed', taskIds: ['a', 'b', 'c'] })
+    expect(within(screen.getByRole('list', { name: 'Needs you: Failed' })).getAllByRole('listitem')).toHaveLength(3)
+    fireEvent.click(header())
     expect(onSelect).toHaveBeenLastCalledWith(null)
-    expect(within(screen.getByRole('list', { name: 'Needs you' })).getAllByRole('listitem')).toHaveLength(3)
+    fireEvent.click(header())
+    expect(within(screen.getByRole('list', { name: 'Needs you' })).getAllByRole('listitem')).toHaveLength(4)
   })
 
   it('folds a kind past two rows into "N more", which picks the kind', () => {
-    render(<NeedsYou items={[failed('a'), failed('b'), failed('c'), failed('d'), failed('e')]} approvals={null} />)
+    show(<NeedsYou items={[failed('a'), failed('b'), failed('c'), failed('d'), failed('e')]} approvals={null} />)
     expect(within(screen.getByRole('list')).getAllByRole('listitem')).toHaveLength(2)
     fireEvent.click(screen.getByRole('button', { name: '3 more failed' }))
     expect(within(screen.getByRole('list')).getAllByRole('listitem')).toHaveLength(5)

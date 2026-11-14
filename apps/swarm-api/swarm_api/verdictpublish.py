@@ -1185,7 +1185,8 @@ def _consider_review(ctx: Any, doc: Mapping[str, Any], report: FinishReport,
             return data
 
         try:
-            decision = reviewgate.resolve(list(doc.get("depends_on") or []), gate, read)
+            decision = reviewgate.resolve(list(doc.get("depends_on") or []), gate, read,
+                                          runner_profile=str(doc.get("runner_profile") or ""))
         except Exception:  # never a reason to keep the review from running
             log.exception("review gate %s tenant=%s could not be decided", task_id, tenant_id)
             code, why = "review_gate_failed", "the review gate could not be decided; the review runs"

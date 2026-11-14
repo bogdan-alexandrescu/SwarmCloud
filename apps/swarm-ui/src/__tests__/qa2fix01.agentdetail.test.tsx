@@ -238,10 +238,10 @@ describe('overview-agents-28: a run past its timeout says so beside the timeout'
 })
 
 describe('overview-agents-29: the Progress footer and the missing prompt are plain sentences', () => {
-  it('says `Newest first · first page only`', async () => {
+  it('says `Newest first · first page`', async () => {
     const { container } = render(<Run run={running(60 * 60_000, 1)} />)
     // MUTATION: put `newest first · one page, cap unknown` back.
-    await waitFor(() => expect(container.querySelector('.dt-progress')?.textContent ?? '').toContain('Newest first · first page only'))
+    await waitFor(() => expect(container.querySelector('.dt-progress')?.textContent ?? '').toContain('Newest first · first page'))
     expect(container.textContent).not.toMatch(/cap unknown/)
   })
 

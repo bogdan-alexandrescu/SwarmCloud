@@ -157,10 +157,11 @@ describe('cards appear as they happen', () => {
   it('keeps the reducer pure: a roster row is merged by kind and id, and a bad row is skipped', () => {
     const one = applyStreamEvent(EMPTY_LIST, { type: 'roster.update', seq: 1, data: { rows: [{ kind: 'workflow', id: 'wf-1', state: 'running', done: 1, total: 4 }] } })
     const two = applyStreamEvent(one, { type: 'roster.update', seq: 2, data: { rows: [{ kind: 'agent', id: 't-1', state: 'queued' }, { kind: 'workflow', id: 'wf-1', state: 'nonsense' }] } })
-    expect(two.roster['workflow:wf-1']?.state).toBe('running')
-    expect(two.roster['agent:t-1']?.state).toBe('queued')
+    const row = (s: typeof one, kind: string, id: string) => s.roster?.find((r) => r.kind === kind && r.id === id)
+    expect(row(two, 'workflow', 'wf-1')?.state).toBe('running')
+    expect(row(two, 'agent', 't-1')?.state).toBe('queued')
     // The rows it did not touch are the same objects, so their cards are not drawn again.
-    expect(two.roster['workflow:wf-1']).toBe(one.roster['workflow:wf-1'])
+    expect(row(two, 'workflow', 'wf-1')).toBe(row(one, 'workflow', 'wf-1'))
     expect(two.cards).toBe(one.cards)
   })
 })

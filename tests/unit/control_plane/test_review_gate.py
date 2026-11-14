@@ -91,9 +91,10 @@ def _parent(db, summary: dict[str, Any] | None, task_id: str = IMPL) -> None:
     doc["completed_at"] = datetime.now(timezone.utc)
 
 
-def _review(db, gate: dict[str, Any] | None = None) -> dict[str, Any]:
+def _review(db, gate: dict[str, Any] | None = None, *,
+            runner_profile: str = "claude-code") -> dict[str, Any]:
     doc = seed_task(db, task_id=REVIEW, tenant_id="eng", state="PARKED",
-                    park_reason="DEPENDENCY_INCOMPLETE", runner_profile="claude-code",
+                    park_reason="DEPENDENCY_INCOMPLETE", runner_profile=runner_profile,
                     provider="anthropic", depends_on=(IMPL,))
     doc["metadata"] = {"review_gate": {"min_lines": 300} if gate is None else gate,
                        "keep": "me"}
@@ -379,6 +380,79 @@ def test_a_handing_parent_is_declined_and_runs_through_the_wake(
     _runs_after_decline(db, make_scheduler, dispatcher, client, waker)
 
 
+def test_a_parent_that_published_renders_runs_the_review_whatever_its_line_count():
+    # #3066: a mock-up build commits nothing; its frames are artifacts.
+    decision = reviewgate.resolve(
+        [IMPL], GATE, {IMPL: _handing(_git(insertions=0, shots=("shots/frame-1440.png",)))}.get)
+    assert decision.run and decision.reason == reviewgate.REASON_RENDERS
+    assert decision.text == ("review runs: its parent published 1 rendered image(s) "
+                             "(shots/frame-1440.png); the gate counts code lines only")
+    assert decision.to_detail()["renders"] == ["shots/frame-1440.png"]
+    assert decision.to_detail()["renders_published"] is True
+
+
+def test_an_image_published_outside_shots_also_runs_the_review():
+    decision = reviewgate.resolve(
+        [IMPL], GATE,
+        {IMPL: _handing(_git(insertions=0, shots=("mockups/a/frame.png", "mockups/a/notes.md")))}.get)
+    assert decision.run and decision.reason == reviewgate.REASON_RENDERS
+    assert decision.renders == ("mockups/a/frame.png",)
+    # `shots_of` keeps its meaning: only images under shots/.
+    assert decision.to_detail()["renders_published"] is False
+
+
+def test_only_a_direct_parents_renders_run_the_review():
+    docs = {
+        IMPL: {**_handing(_git(SMALL_FILE, insertions=10)),
+               "metadata": {"dispatch": {"builds_on": "a"}}},
+        "a": _handing(_git(SMALL_FILE, insertions=0, shots=("shots/frame-1440.png",))),
+    }
+    decision = reviewgate.resolve([IMPL], GATE, docs.get)
+    assert not decision.run and decision.reason == reviewgate.REASON_SMALL
+
+
+def test_a_rendered_review_is_never_gated_on_line_count():
+    decision = reviewgate.resolve(
+        [IMPL], GATE, {IMPL: _handing(_git(insertions=0))}.get,
+        runner_profile=reviewgate.RENDERED_REVIEW_PROFILE)
+    assert decision.run and decision.reason == reviewgate.REASON_RENDERED_REVIEW
+    assert decision.text == ("review runs: it is a rendered review, which reads rendered "
+                             "pages whatever the line count")
+
+
+def test_a_risk_path_still_wins_over_renders_and_a_rendered_review():
+    parent = _handing(_git(RISK_FILE, insertions=1, shots=("shots/frame-1440.png",)))
+    decision = reviewgate.resolve([IMPL], GATE, {IMPL: parent}.get,
+                                  runner_profile=reviewgate.RENDERED_REVIEW_PROFILE)
+    assert decision.run and decision.reason == reviewgate.REASON_RISK
+
+
+def test_a_small_code_change_on_an_ordinary_profile_is_still_skipped():
+    decision = reviewgate.resolve(
+        [IMPL], GATE, {IMPL: _handing(_git(SMALL_FILE, insertions=12))}.get,
+        runner_profile="claude-code")
+    assert not decision.run and decision.reason == reviewgate.REASON_SMALL
+
+
+def test_a_rendered_review_of_a_mockup_build_is_declined_and_runs_through_the_wake(
+        db, make_scheduler, dispatcher, client, waker):
+    # #3066: the mock-up workflow's review, on the browser profile, behind a
+    # build that committed nothing and published its frames.
+    _base(db)
+    _parent(db, _git(insertions=0, shots=("shots/frame-1440.png",)))
+    _review(db, runner_profile=reviewgate.RENDERED_REVIEW_PROFILE)
+    report = _decide(client)
+    doc = _review_doc(db)
+    assert report["reviews_skipped"] == [], report
+    assert doc["state"] == "PARKED"
+    assert doc["metadata"]["control_publish"]["state"] == "declined"
+    assert "review_skipped" not in (doc.get("result_summary") or {})
+    assert not any(a.get("written_by") == reviewgate.INLINE_WRITER
+                   for a in (doc.get("result_summary") or {}).get("artifacts") or [])
+    assert ("task_finished", {"task_id": IMPL, "tenant_id": "eng",
+                              "state": "SUCCEEDED"}) in waker.rung
+
+
 # ---------------------------------------------------------------------------
 # 4. downstream reads it as a MERGE
 # ---------------------------------------------------------------------------
@@ -547,6 +621,7 @@ def test_the_restated_words_are_equal():
     assert reviewgate.VERDICT_FILE in inputs_mod.INLINE_ARTIFACT_NAMES
     assert reviewgate.SHOTS_DIRECTORY == verdict_mod.RENDERED_REVIEW_SHOTS + "/"
     assert reviewgate.SHOT_SUFFIXES == verdict_mod.SHOT_SUFFIXES
+    assert reviewgate.RENDERED_REVIEW_PROFILE == verdict_mod.RENDERED_REVIEW_PROFILE
     assert reviewgate.COUNTED_HANDOFFS == (issueruns.PATCH_FILE, issueruns.VERDICT_FILE)
     assert len(reviewgate.verdict_text("x" * 900).encode()) <= inputs_mod.MAX_INLINE_BYTES
 

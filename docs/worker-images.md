@@ -17,6 +17,21 @@ beside their Dockerfile that pulls `agent-runtime-base:<tag>` and passes its
 digest as `BASE_IMAGE`. The indexer's and the Lightpanda image's Dockerfiles
 have no default `BASE_IMAGE` and refuse one without a digest.
 
+**Which Node each image carries is served** (#3929). All four carry the
+base's Node: the three derived images install none of their own (the browser
+image links Playwright's driver to the base's `/usr/local/bin/node`). The
+version is `ARG NODE_VERSION` in `images/agent-runtime-base/Dockerfile`, which
+the base's build asserts `node --version` equals, so the digest and the stated
+version cannot disagree. `GET /v1/runtimes` serves it per profile as
+`node_version` (null for a `control_plane` profile, which runs no image), so a
+brief can rely on `node --version` without reading this repository. Why it is
+served from swarm-api and not the catalogue: the frozen `RunnerProfile` has no
+toolchain field, so the table is `apps/swarm-api/swarm_api/runnerimages.py`, and
+`tests/unit/control_plane/test_runtimes_node_version.py` holds every entry equal
+to the Dockerfile's `NODE_VERSION` and requires an entry for every image a
+profile names. Re-pin the base without the table, or add an image without an
+entry, and that test fails rather than the route serving a wrong version.
+
 ## Why the repository index has its own image
 
 **What the image's size costs a start, and what it does not.** The move was

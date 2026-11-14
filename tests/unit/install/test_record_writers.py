@@ -34,6 +34,15 @@ from swarm_install.steps import Observation, Plan
 from .test_state_store import FakeBucket, FakeClock
 
 
+def _document_path(path: str) -> str:
+    """Refuse what real Firestore refuses: a document path has an even number
+    of non-empty segments (collection/document pairs)."""
+    segments = path.split("/")
+    if not path or "" in segments or len(segments) % 2:
+        raise ValueError(f"A document must have an even number of path elements: {path!r}")
+    return path
+
+
 class FakeDocuments:
     """Firestore's create / update-with-precondition, recorded."""
 
@@ -43,9 +52,10 @@ class FakeDocuments:
         self._tick = 0
 
     def get(self, path: str):
-        return self.docs.get(path)
+        return self.docs.get(_document_path(path))
 
     def create(self, path: str, data: dict) -> None:
+        _document_path(path)
         self.writes.append(("create", path))
         if path in self.docs:
             raise RecordConflict(path)
@@ -53,6 +63,7 @@ class FakeDocuments:
         self.docs[path] = (dict(data), self._tick)
 
     def update(self, path: str, data: dict, *, update_time) -> None:
+        _document_path(path)
         self.writes.append(("update", path))
         if path not in self.docs or self.docs[path][1] != update_time:
             raise RecordConflict(path)
@@ -162,3 +173,26 @@ def test_record_refuses_secret_values() -> None:
             InstallState(project="p", environment="dev"), {},
             verify={"result": SecretStr(secrets.token_hex(8))},
         )
+
+
+@pytest.mark.parametrize("method", ["get", "create", "update"])
+@pytest.mark.parametrize("path", ["swarm-install", "swarm-install/dev/console", "", "swarm-install//dev/console"])
+def test_fake_documents_refuse_a_path_that_is_not_a_document(method: str, path: str) -> None:
+    """Real Firestore refuses a document path with an odd segment count (a
+    collection) or an empty segment, so the fake must too: a writer that built
+    a wrong path fails its test instead of silently working."""
+    documents = FakeDocuments()
+    call = {
+        "get": lambda: documents.get(path),
+        "create": lambda: documents.create(path, {"phase": "x"}),
+        "update": lambda: documents.update(path, {"phase": "x"}, update_time=0),
+    }[method]
+    with pytest.raises(ValueError, match="even number"):
+        call()
+    assert documents.docs == {}
+
+
+def test_fake_documents_accept_the_record_paths() -> None:
+    documents = FakeDocuments()
+    documents.create(engine_document("dev"), {"phase": "x"})
+    assert documents.get(console_document("dev", "github_app")) is None

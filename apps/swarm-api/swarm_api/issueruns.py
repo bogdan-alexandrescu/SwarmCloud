@@ -264,7 +264,12 @@ log = logging.getLogger(__name__)
 
 #: The collection, and the id prefix of its documents.
 RUNS_COLLECTION = "issue_runs"
+#: The tasks a run's planner and steps are (`linked_workflow_id`).
+TASKS_COLLECTION = "tasks"
 RUN_ID_PREFIX = "run"
+#: Every plan a run has had, one document per revision, under the run
+#: (`issue_runs/{run_id}/plan_revisions/{revision}`, plans-pipeline.md §3.3).
+PLAN_REVISIONS_COLLECTION = "plan_revisions"
 
 #: Who plans, and who works. Fixed here, never a caller's choice (invariant 10).
 PLANNER_PROFILE = "claude-code"
@@ -524,7 +529,10 @@ RUN_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
          RunState.FAILED}
     ),
     # APPROVED lasts as long as one submission: RUNNING when the workflow is
-    # stored, FAILED when it is refused.
+    # stored, FAILED when it is refused -- or, past
+    # APPROVED_SUBMISSION_BOUND_SECONDS, when it was never stored at all
+    # (the tick, `routes.runs._settle_submission`, #3612; or an admin's
+    # POST /v1/runs/{run_id}:end).
     RunState.APPROVED: frozenset({RunState.RUNNING, RunState.FAILED}),
     # A workflow that SUCCEEDED opened a pull request whose CI is not read
     # yet: CHECKING. No pull request is FAILED, saying so -- unless nothing
@@ -550,6 +558,17 @@ RUN_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
 TERMINAL_RUN_STATES: frozenset[RunState] = frozenset(
     state for state, exits in RUN_TRANSITIONS.items() if not exits
 )
+
+#: How long an APPROVED run may wait for its workflow before the tick settles
+#: it (#3612). APPROVED lasts one submission: `routes.runs._approve` commits
+#: the claim, submits, then writes RUNNING, all in one request -- and a
+#: swarm-api that died or timed out in between left the run APPROVED with no
+#: workflow for ever, holding its plan's files against every later run (the
+#: territory guard counts APPROVED as worked). swarm-api's request_timeout is
+#: 660 s (terraform/infra/main.tf), so no request is still submitting past it;
+#: 1800 s leaves room for the workspace gate and a slow submit on top, so a
+#: submission in flight is never failed.
+APPROVED_SUBMISSION_BOUND_SECONDS = 1800
 
 
 class InvalidRunTransition(Conflict):
@@ -681,6 +700,11 @@ class PlanStep(_PlanModel):
     #: `STEP_PROFILE`'s classes, written by the planner. Inside the digest, so
     #: approved with the plan. Absent: the profile's default (`opus`).
     model_class: str | None = Field(default=None, min_length=1, max_length=32)
+    #: The planner's reason for this step, drawn in the margin beside it
+    #: (plans-pipeline.md §3.6). Inside the digest, because it is on the page
+    #: when the decision is made; optional and never defaulted into the dump,
+    #: so a plan stored before it keeps its digest (§4 rule 1).
+    rationale: str | None = Field(default=None, min_length=1, max_length=1_000)
 
     @field_validator("model_class")
     @classmethod
@@ -724,6 +748,9 @@ class PlanSpec(_PlanModel):
     requirements: list[_Line] | None = Field(default=None, max_length=MAX_PLAN_REQUIREMENTS)
     overlaps: list[PlanOverlap] | None = Field(default=None, max_length=MAX_PLAN_OVERLAPS)
     estimate: str | None = Field(default=None, min_length=1, max_length=200)
+    #: The planner's reason for the plan as a whole (§3.6): inside the digest
+    #: and optional, exactly as `PlanStep.rationale` is.
+    rationale: str | None = Field(default=None, min_length=1, max_length=2_000)
 
     @field_validator("steps")
     @classmethod
@@ -1892,6 +1919,7 @@ _PLAN_SHAPE = (
     '                 "note": "<what overlaps, and what this plan does about it>",\n'
     '                 "theirs": "<one line: what that pull request does to the shared files>"}],\n'
     '   "estimate": "<the whole plan, e.g. 3 agent-hours>",\n'
+    '   "rationale": "<why this plan and not another, a paragraph at most>",\n'
     '   "purpose": "<one sentence: what the change does>",\n'
     '   "why": "<the problem, with the issue\'s evidence, two sentences at most>",\n'
     '   "changes": [{"file": "<repository path>", "area": "<module or app>",\n'
@@ -1913,6 +1941,7 @@ _PLAN_SHAPE = (
     '              "files": ["<repository path this step touches>"],\n'
     '              "tests": ["<a test this step adds, written first>"],\n'
     '              "estimate": "<this step>",\n'
+    '              "rationale": "<why this step is needed and built this way, two sentences>",\n'
     '              "depends_on": ["<step_id of an earlier step>"]}]}\n'
 )
 
@@ -4051,6 +4080,197 @@ def _decode_cursor(token: str | None) -> datetime | None:
 Patch = Mapping[str, Any] | Callable[[IssueRun], Mapping[str, Any]]
 
 
+# --------------------------------------------------------------------------
+# Plan revisions (plans-pipeline.md §3.3)
+# --------------------------------------------------------------------------
+#
+# A record of what was shown, deciding nothing: the plan that is approved is
+# still the run's `plan`, checked against its signed `plan_digest`. So a
+# revision document carries no signature; one whose plan does not hash to its
+# digest is served `verified: false`, never drawn as the plan it claims to be.
+
+#: Who made a revision, and by which route (§3.3).
+REVISION_AUTHORS = ("planner", "person", "chat_proposal_applied")
+REVISION_MAKERS = ("plan", "edit", "revise", "add_diagram")
+#: `author.by` of a revision the planner made.
+PLANNER_AUTHOR = "planner"
+#: A revision's `changed` is a summary of at most this many paths; the page
+#: diffs the two plans itself (§3.3).
+MAX_REVISION_CHANGES = 100
+#: The newest revisions the run read serves. A run is edited a handful of
+#: times; the cap keeps a run edited in a loop from making its read unbounded.
+MAX_SERVED_REVISIONS = 100
+#: The keys of a revision as the run read serves it: everything but its plan.
+_SERVED_REVISION_KEYS = ("revision", "digest", "replaces", "author", "made_by", "answers",
+                         "changed", "cost", "at")
+
+
+@dataclass(frozen=True)
+class PlanRevisionWrite:
+    """Who made the plan a transition stores, and how: `IssueRuns.transition`
+    writes the revision document from it in the transaction that moves the
+    run's plan, so the run never holds a plan its revisions do not."""
+
+    author_kind: str
+    by: str
+    made_by: str
+    answers: tuple[str, ...] = ()
+    cost: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.author_kind not in REVISION_AUTHORS:
+            raise ValueError(f"a revision's author is one of {list(REVISION_AUTHORS)}")
+        if self.made_by not in REVISION_MAKERS:
+            raise ValueError(f"a revision is made by one of {list(REVISION_MAKERS)}")
+
+
+def plan_changes(before: Any, after: Any) -> tuple[list[dict[str, str]], bool]:
+    """The paths `after` adds, removes or replaces from `before`, at most
+    MAX_REVISION_CHANGES of them, and whether more were cut.
+
+    Objects are compared key by key and lists index by index, so a changed
+    step prompt is `steps.1.prompt`; a value whose type changed is replaced
+    whole."""
+    changes: list[dict[str, str]] = []
+    cut = False
+
+    def note(path: str, op: str) -> None:
+        nonlocal cut
+        if len(changes) < MAX_REVISION_CHANGES:
+            changes.append({"path": path, "op": op})
+        else:
+            cut = True
+
+    def walk(old: Any, new: Any, path: str) -> None:
+        if old == new:
+            return
+        if isinstance(old, Mapping) and isinstance(new, Mapping):
+            keys = sorted(set(old) | set(new), key=str)
+            pairs = [(str(k), k in old, k in new, old.get(k), new.get(k)) for k in keys]
+        elif isinstance(old, list) and isinstance(new, list):
+            pairs = [(str(i), i < len(old), i < len(new),
+                      old[i] if i < len(old) else None, new[i] if i < len(new) else None)
+                     for i in range(max(len(old), len(new)))]
+        else:
+            note(path or "plan", "replace")
+            return
+        for key, was, now, old_value, new_value in pairs:
+            where = f"{path}.{key}" if path else key
+            if not was:
+                note(where, "add")
+            elif not now:
+                note(where, "remove")
+            else:
+                walk(old_value, new_value, where)
+
+    walk(before if isinstance(before, Mapping) else {}, after, "")
+    return changes, cut
+
+
+def revision_document(before: IssueRun, after: IssueRun, write: PlanRevisionWrite,
+                      at: datetime) -> dict[str, Any]:
+    """The revision `after`'s plan is, made from `before`'s (§3.3).
+
+    `replaces` is the digest it replaced: null for a run that had no plan."""
+    if after.plan is None or not after.plan_digest or after.plan_revision < 1:
+        raise ValueError(
+            f"a plan revision of issue run {after.id} needs the plan, its digest and its "
+            "revision written in the same transition"
+        )
+    changed, cut = plan_changes(before.plan, after.plan) if before.plan is not None else ([], False)
+    document = {
+        "tenant_id": after.tenant_id,
+        "run_id": after.id,
+        "revision": after.plan_revision,
+        "plan": after.plan,
+        "digest": after.plan_digest,
+        "replaces": before.plan_digest if before.plan is not None else None,
+        "author": {"kind": write.author_kind, "by": write.by},
+        "made_by": write.made_by,
+        "answers": list(write.answers),
+        "changed": changed,
+        "cost": dict(write.cost) if write.cost is not None else None,
+        "at": at,
+    }
+    if cut:
+        document["changed_truncated"] = True
+    return document
+
+
+def _revision_verified(plan: Any, digest: Any) -> bool:
+    return isinstance(plan, Mapping) and isinstance(digest, str) and plan_digest(plan) == digest
+
+
+def served_revision(document: Mapping[str, Any], *, whole: bool = False) -> dict[str, Any]:
+    """A stored revision as the API serves it: `verified` says whether its
+    plan hashes to its digest, and `whole` adds the plan itself."""
+    row = {key: document.get(key) for key in _SERVED_REVISION_KEYS}
+    row["at"] = _iso(row["at"])
+    row["answers"] = list(row["answers"] or [])
+    row["changed"] = list(row["changed"] or [])
+    if document.get("changed_truncated"):
+        row["changed_truncated"] = True
+    row["verified"] = _revision_verified(document.get("plan"), document.get("digest"))
+    if whole:
+        row["plan"] = document.get("plan")
+    return row
+
+
+def synthesised_revision(run: IssueRun, *, whole: bool = False) -> dict[str, Any] | None:
+    """The one revision an old run -- planned before revisions were kept --
+    serves: its current plan, from the run itself, with `history_complete:
+    false` so the page says earlier revisions were not kept (§3.3). None for
+    a run with no plan."""
+    if run.plan is None:
+        return None
+    if run.plan_edited_by:
+        author, made_by = {"kind": "person", "by": run.plan_edited_by}, "edit"
+    else:
+        author, made_by = {"kind": "planner", "by": PLANNER_AUTHOR}, "plan"
+    planned_at = [entry.get("at") for entry in run.history
+                  if isinstance(entry, Mapping) and entry.get("to") == RunState.PLANNED.value]
+    row = {
+        "revision": run.plan_revision or 1,
+        "digest": run.plan_digest,
+        "replaces": None,
+        "author": author,
+        "made_by": made_by,
+        "answers": [],
+        "changed": [],
+        "cost": None,
+        "at": _iso(planned_at[-1]) if planned_at else None,
+        "verified": _revision_verified(run.plan, run.plan_digest),
+        "history_complete": False,
+    }
+    if whole:
+        row["plan"] = run.plan
+    return row
+
+
+def served_plan_revisions(run: IssueRun, documents: list[Mapping[str, Any]],
+                          ) -> tuple[list[dict[str, Any]], bool]:
+    """The run's revisions as its read serves them, newest first and without
+    their plans, and whether every revision from 1 to the current one is kept.
+
+    `documents` are the stored ones, newest first; one naming another tenant
+    or run is not this run's and is dropped. An old run with none serves one
+    synthesised from the run; a run with no plan has none, and nothing is
+    missing from that history."""
+    if run.plan is None:
+        return [], True
+    kept = [doc for doc in documents
+            if doc.get("tenant_id") == run.tenant_id and doc.get("run_id") == run.id]
+    if not kept:
+        return [synthesised_revision(run)], False
+    served = [served_revision(doc) for doc in kept]
+    numbers = [row["revision"] for row in served]
+    newest = run.plan_revision or 1
+    complete = numbers[:1] == [newest] and numbers == list(range(newest, newest - len(numbers), -1))
+    if len(numbers) < MAX_SERVED_REVISIONS:
+        complete = complete and numbers[-1] == 1
+    return served, complete
+
+
 class IssueRuns:
     """The `issue_runs` collection. Every read is checked against the caller's tenant."""
 
@@ -4248,6 +4468,7 @@ class IssueRuns:
         digest: str | None = None,
         from_states: frozenset[RunState] | set[RunState] | None = None,
         sign: Resign | None = None,
+        revision: PlanRevisionWrite | None = None,
     ) -> IssueRun:
         """One state change, in one transaction, with the digest check inside it.
 
@@ -4256,7 +4477,12 @@ class IssueRuns:
         run as it will be stored is signed, inside this transaction, so no
         write of a signed field ever lands unsigned or over a rewrite. A
         patch without it that writes one is a ValueError before anything is
-        written: an unsigned writer fails closed, not open."""
+        written: an unsigned writer fails closed, not open.
+
+        A patch that moves the run's plan passes `revision`: the plan it
+        stores is written as its numbered revision (`revision_document`) in
+        this same transaction, so the run and its revisions move together or
+        not at all."""
         ref = self._ref(run_id)
         transaction = self._db.transaction()
 
@@ -4288,6 +4514,11 @@ class IssueRuns:
                 "history": run.to_firestore()["history"]
                 + [{"at": now, "from": run.state.value, "to": to.value, "by": by}],
             })
+            if revision is not None:
+                after = IssueRun.from_firestore({**data, **changes})
+                document = revision_document(run, after, revision, now)
+                txn.set(ref.collection(PLAN_REVISIONS_COLLECTION)
+                        .document(str(after.plan_revision)), document)
             _resigned(run, data, changes, sign)
             txn.update(ref, changes)
             merged = dict(data)
@@ -4299,6 +4530,39 @@ class IssueRuns:
             "issue run %s tenant=%s -> %s by=%s", run_id, tenant_id, to.value, by
         )
         return result
+
+    def plan_revisions(self, run: IssueRun) -> list[dict[str, Any]]:
+        """`run`'s stored revisions, newest first, at most MAX_SERVED_REVISIONS.
+
+        `run` is one `get` already read for the caller's tenant; a document
+        naming another tenant or run is dropped by `served_plan_revisions`."""
+        if run.plan is None:
+            return []
+        query = (self._ref(run.id).collection(PLAN_REVISIONS_COLLECTION)
+                 .order_by("revision", direction=firestore.Query.DESCENDING)
+                 .limit(MAX_SERVED_REVISIONS))
+        return [snap.to_dict() for snap in query.stream()]
+
+    def plan_revision(self, tenant_id: str, run_id: str, revision: int) -> dict[str, Any]:
+        """One revision of the tenant's run, whole, as the API serves it.
+
+        Another tenant's run is the same 404 as no run; a revision not kept
+        is a 404 too, except an old run's current one, synthesised from the
+        run (`synthesised_revision`). A document naming another tenant or run
+        is not this run's: it is read as not kept, exactly as the run read
+        (`served_plan_revisions`) drops it."""
+        run = self.get(tenant_id, run_id)
+        missing = NotFound(f"run {run_id!r} has no plan revision {revision}")
+        if run.plan is None:
+            raise missing
+        snap = self._ref(run_id).collection(PLAN_REVISIONS_COLLECTION).document(
+            str(revision)).get()
+        data = snap.to_dict() if snap.exists else None
+        if data is not None and data.get("tenant_id") == tenant_id and data.get("run_id") == run_id:
+            return served_revision(data, whole=True)
+        if revision == (run.plan_revision or 1):
+            return synthesised_revision(run, whole=True)
+        raise missing
 
     def patch(self, tenant_id: str, run_id: str, patch: Patch, *,
               sign: Resign | None = None) -> IssueRun:
@@ -4347,6 +4611,42 @@ def _resigned(run: IssueRun, data: Mapping[str, Any], changes: dict[str, Any],
     merged = dict(data)
     merged.update(changes)
     changes[OWNER_SIGNATURE] = sign(run, IssueRun.from_firestore(merged))
+
+
+def submission_overdue(run: "IssueRun", now: datetime) -> bool:
+    """Whether `run` is APPROVED with no workflow for longer than one
+    submission can take (APPROVED_SUBMISSION_BOUND_SECONDS). A run with no
+    `approved_at` is timed from when it was last written, then created."""
+    if run.state != RunState.APPROVED or run.workflow_id:
+        return False
+    since = run.approved_at or run.updated_at or run.created_at
+    if since is None:
+        return True
+    return (now - since).total_seconds() > APPROVED_SUBMISSION_BOUND_SECONDS
+
+
+def linked_workflow_id(db: Any, tenant_id: str, run_id: str) -> str | None:
+    """The workflow a step task of `run_id` in `tenant_id` belongs to, or None.
+
+    A compiled workflow's step tasks carry `metadata.issue_run.run_id` (the
+    planner's carries the run id as a plain string, so it never matches), so
+    a task found here is a submission that WAS stored whose RUNNING write was
+    lost. Filtered on the run's tenant, and the tenant checked again on the
+    row, so another tenant's task is never read as this run's (invariant 9).
+    Two equality filters: Firestore's single-field indexes serve them.
+    """
+    rows = (
+        db.collection(TASKS_COLLECTION)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter(f"metadata.{ISSUE_RUN_METADATA_KEY}.run_id", "==", run_id))
+        .limit(5)  # a few: a task with no workflow id is skipped, not the answer
+        .stream()
+    )
+    for snap in rows:
+        data = snap.to_dict() or {}
+        if data.get("tenant_id") == tenant_id and data.get("workflow_id"):
+            return str(data["workflow_id"])
+    return None
 
 
 def failure_text(message: str) -> str:

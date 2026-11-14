@@ -19,7 +19,9 @@
 //   * a finding with no repair (no install step makes it) says so rather
 //     than inventing a command;
 //   * a row in the console's own shape is NOT read as a pass or a finding;
-//   * no doctor run says the hourly doctor is off, not drawn as healthy;
+//   * no doctor run says the hourly doctor has not run yet, never that it
+//     is off (every install turns it on: tfvars.py's SCHEDULED_DOCTOR_SHIPPED,
+//     read from the Python source), and is not drawn as healthy;
 //   * NO EXPLANATORY PROSE ON THE SURFACE (the owner's standing rule, 2026-11-05):
 //     why a check could not look is the tooltip of a tick beside its title,
 //     "no repair command" is the title's tooltip, and what Health is sits
@@ -187,10 +189,15 @@ describe('Admin › Setup › Health reads the doctor’s shape', () => {
     expect(visible(document.body)).toContain('no findings')
   })
 
-  it('says the hourly doctor is off when no run is recorded, not that everything is healthy', async () => {
+  it('says the hourly doctor has not run yet when no run is recorded, not that it is off or that everything is healthy', async () => {
+    // Every install turns the doctor on in infra pass 2; if that stops, this wording is wrong.
+    expect(readFileSync(join(INSTALL, 'tfvars.py'), 'utf8')).toMatch(/^SCHEDULED_DOCTOR_SHIPPED = True$/m)
     await mount({ latest: null })
-    // MUTATION: promise an hourly doctor that is off by default (enable_scheduled_doctor).
-    expect(await screen.findByText(/The hourly doctor is off/)).toBeTruthy()
+    // MUTATION: say the doctor is off right after an install that turned it on.
+    expect(await screen.findByText(/The hourly doctor has not run yet/)).toBeTruthy()
+    expect(visible(document.body)).not.toMatch(/doctor is off/)
+    // Why nothing is known to pass is the (i)'s tooltip, not a line on the page.
+    expect(tipOf(screen.getByRole('button', { name: 'About the doctor run' }))).toMatch(/nothing here is known to pass/)
     expect(visible(document.body)).not.toMatch(/all (checks )?pass/i)
     expect(visible(document.body)).not.toContain('runs every hour')
   })

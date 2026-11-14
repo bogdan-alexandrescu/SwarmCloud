@@ -712,3 +712,12 @@ def test_a_step_in_no_timed_pass_stamps_nothing(tmp_path: Path) -> None:
     rig = Rig(tmp_path)
     assert rig.engine([FakeStep("infra.pass-2", 7, log=[])]).run().exit_code == 0
     assert _pass_times(rig) == {}
+
+
+def test_the_default_human_wait_does_not_send_the_person_to_run_swarm_install_again() -> None:
+    """The engine polls a human step's check itself (audit finding 33): its
+    default look_at must not tell the person to rerun swarm install."""
+    from swarm_install.engine import HUMAN_WAIT
+
+    assert "swarm install again" not in HUMAN_WAIT.look_at
+    assert "by itself" in HUMAN_WAIT.look_at

@@ -101,7 +101,8 @@ WORKLOAD_WAIT = WaitSpec(
     expected="1 to 5 min (an Autopilot node may be added)",
     expected_s=5 * 60,
     bound_s=15 * 60,
-    look_at="kubectl -n swarm-system describe on the workload: an image pull or a secret mount",
+    look_at="swarm doctor, which describes the workload in swarm-system through the kubectl it resolves: "
+            "an image pull or a secret mount",
     interval_s=15,
 )
 
@@ -496,6 +497,8 @@ class Flow:
     hidden_entry: Callable[[str, str], int] | None = None
     #: Opens a page with no API in the browser (steps.open_page).
     open_page: Callable[[str, str], None] | None = None
+    #: Who runs this verb (the gcloud account): a secret link minted for them opens in their browser.
+    caller: str | None = None
 
     def say(self, line: str) -> None:
         self.out.write(line + "\n")
@@ -661,9 +664,14 @@ class Flow:
         where = link.get("url") or link.get("path")
         if not where:
             raise AddonError("swarm-api minted the add-on's link but answered no address for it")
-        self.say(f"{spec.name} goes in through a one-time link, for {who} only, until {link.get('expires_at')}:")
-        self.say(f"  {where}")
-        self.say("Open it in a browser signed in as that person. The value is never typed here.")
+        until = link.get("expires_at")
+        if who == self.caller and self.open_page is not None:
+            self.open_page(where, f"{spec.name} goes in through a one-time link, for you only, until {until}. "
+                                  "Opening it in your browser; the value is never typed here.")
+        else:
+            self.say(f"{spec.name} goes in through a one-time link, for {who} only, until {until}:")
+            self.say(f"  {where}")
+            self.say("Open it in a browser signed in as that person. The value is never typed here.")
         self.events.emit("step_apply", step=step, detail=f"link minted for {who}")
 
         def check() -> str:
@@ -681,12 +689,32 @@ class Flow:
                                "container or the deployer. Nothing was applied")
 
     def apply_phase(self, addon: Addon, phase: str, chosen: Mapping[str, str]) -> dict[str, Any]:
+        # Every root's inputs are generated from the recorded phases (tfvars
+        # reads the state), so the new phase is recorded for the apply; an
+        # apply that is refused or fails puts the previous record back, so
+        # `swarm addon status` never shows a phase that was not applied.
+        before = recorded(self._outputs()).get(addon.name)
         self._record(addon.name, phase=phase, choices=dict(chosen))
         outputs: dict[str, Any] = {}
-        for root, _ in addon.overlay(phase, chosen):
-            self.events.emit("step_apply", step=f"addon.{addon.name}.{phase}", detail=f"terraform {root}")
-            outputs.update(self.world.apply(root, inputs_for(self._outputs(), root), guard=self._guard))
+        try:
+            for root, _ in addon.overlay(phase, chosen):
+                self.events.emit("step_apply", step=f"addon.{addon.name}.{phase}", detail=f"terraform {root}")
+                outputs.update(self.world.apply(root, inputs_for(self._outputs(), root), guard=self._guard))
+        except BaseException:
+            self._restore(addon.name, before)
+            raise
         return outputs
+
+    def _restore(self, name: str, record: Mapping[str, Any] | None) -> None:
+        def change(state: Any) -> None:
+            addons = dict(state.outputs.get(STATE_KEY) or {})
+            if record is None:
+                addons.pop(name, None)
+            else:
+                addons[name] = dict(record)
+            state.outputs[STATE_KEY] = addons
+
+        self.save(change)
 
     # -- workloads and checks -------------------------------------------------
 
@@ -890,8 +918,14 @@ class Flow:
         addon = get(name)
         self._refuse_denied(addon)
         record = recorded(self._outputs()).get(addon.name) or {}
-        chosen = dict(record.get("choices") or _sample_choices(addon))
-        self.apply_phase(addon, OFF, chosen)
+        if record.get("phase") in (None, OFF):
+            # Never switched on (or already off): an OFF overlay would turn a
+            # container's switch on for the first time (typesafe's
+            # enable_typesafe_forwarder), so no Terraform runs.
+            self.events.emit("step_done", step=f"addon.{addon.name}", detail=f"{addon.name} was not on")
+        else:
+            chosen = dict(record.get("choices") or _sample_choices(addon))
+            self.apply_phase(addon, OFF, chosen)
         if addon.workload is not None:
             self.world.kube("delete", addon.workload[0], "--namespace=swarm-system", "--ignore-not-found")
         kept = [s.name for s in addon.secrets] + ([CI_PATTERNS_SLOT] if addon.name == "ci" else [])

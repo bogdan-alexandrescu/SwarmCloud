@@ -32,8 +32,17 @@
  * passed, read from data it already holds. A page that cannot read approvals
  * passes `approvals={null}`, and the chip reads "not known", never 0.
  *
- * A chip filters the list to its kind and reports the pick with the task ids
- * it covers (`onSelect`), so a page can dim the grid cells that do not match.
+ * THE HEADER ROW IS THE TOGGLE (the owner's ask, 11 November 2026, the
+ * workflow page's WorkflowNeedsCard of 6 November made the shared strip's
+ * behaviour): Needs you, its count and one plain count per kind, and a caret,
+ * in one button. The strip ALWAYS STARTS COLLAPSED -- nothing is stored, not
+ * in localStorage, not in the URL -- and a press opens the item rows; one more
+ * folds them back into the row. With nothing waiting there is no toggle: the
+ * counts and the quiet line, as before.
+ *
+ * A list's "N more" picks its kind and reports the pick with the task ids it
+ * covers (`onSelect`), so a page can dim the grid cells that do not match;
+ * folding the strip clears it.
  * Mounted by the Work pages; it reads nothing on its own but the masked
  * prompt a Retry carries over.
  *
@@ -414,7 +423,9 @@ export function NeedsYou({
   const [own, setOwn] = useState<NeedKind | null>(null)
   const [unfolded, setUnfolded] = useState(false)
   const kind = selected === undefined ? own : selected
+  const [open, setOpen] = useState(false)
   const listId = useId()
+  const bodyId = useId()
   const asks = pluginAsksOf(items)
 
   const count = (k: NeedKind): number | null => {
@@ -450,65 +461,76 @@ export function NeedsYou({
   const firstRows = new Map<string, QuestionNeed>()
   for (const i of items) if (i.kind === 'question' && !firstRows.has(i.taskId)) firstRows.set(i.taskId, i)
 
-  return (
-    <section className={`ny${total > 0 ? ' has-some' : ''}`} aria-label="Needs you">
-      <div className="ny-bar" role="group" aria-label="What needs you, by kind">
-        <button type="button" className="ny-all" aria-pressed={kind === null} aria-controls={listId} onClick={() => pick(null)}>
-          <b>Needs you</b> <span className="ny-n">{total}</span>
-          {approvals === null && <span className="ny-plus" title="Approvals are not known here, so the total may be more">+</span>}
-        </button>
-        {NEED_KINDS.map((k) => {
-          const n = count(k)
-          if (n === null) {
-            return (
-              <span
-                key={k}
-                className={`ny-chip is-${k} is-faint`}
-                // ON A PHONE THE WORD IS HIDDEN (needs-you.css), so the label
-                // names the kind, as a counted chip's "Failed: 2" does; `img`
-                // reads the chip as that one name, not a bare "not known".
-                role="img"
-                aria-label={`${NEED_WORD[k]}: not known`}
-                title={
-                  k === 'approval'
-                    ? 'Approvals are not read on this screen, so their count is not known; Automate › Approvals lists them'
-                    : `${NEED_WORD[k]}: not known. This screen's read does not say for every step; each step's page does`
-                }
-              >
-                <span className="ny-glyph" aria-hidden>
-                  {NEED_GLYPH[k]}
-                </span>
-                <span className="ny-word">{NEED_WORD[k]}</span> <b>not known</b>
-              </span>
-            )
-          }
-          return (
-            <button
-              key={k}
-              type="button"
-              className={`ny-chip is-${k}${n === 0 ? ' is-zero' : ''}`}
-              aria-pressed={kind === k}
-              aria-controls={listId}
-              aria-label={`${NEED_WORD[k]}: ${n}`}
-              title={`${NEED_WORD[k]}: ${n}`}
-              onClick={() => pick(kind === k ? null : k)}
-            >
-              <span className="ny-glyph" aria-hidden>
-                {NEED_GLYPH[k]}
-              </span>
-              <span className="ny-word">{NEED_WORD[k]}</span> <b>{n}</b>
-            </button>
-          )
-        })}
-      </div>
-      {parked.length > 0 ? (
-        <div className="ny-body has-parked">
-          {list}
-          <ParkedPluginSteps asks={parked} rows={firstRows} />
+  const marks = (
+    <>
+      <span className="ny-all">
+        <b>Needs you</b> <span className="ny-n">{total}</span>
+        {approvals === null && <span className="ny-plus" title="Approvals are not known here, so the total may be more">+</span>}
+      </span>
+      {NEED_KINDS.map((k) => {
+        const n = count(k)
+        // A CHIP IS A PLAIN COUNT in the header (the owner's ask, 11 November
+        // 2026): the whole header toggles, so it is named, as an image, by its
+        // kind and count. ON A PHONE THE WORD IS HIDDEN (needs-you.css), so the
+        // label names the kind, a faint one's too: "Approvals: not known".
+        const label = `${NEED_WORD[k]}: ${n === null ? 'not known' : n}`
+        return (
+          <span
+            key={k}
+            className={`ny-chip is-${k}${n === null ? ' is-faint' : n === 0 ? ' is-zero' : ''}`}
+            role="img"
+            aria-label={label}
+            title={
+              n !== null
+                ? label
+                : k === 'approval'
+                  ? 'Approvals are not read on this screen, so their count is not known; Automate › Approvals lists them'
+                  : `${NEED_WORD[k]}: not known. This screen's read does not say for every step; each step's page does`
+            }
+          >
+            <span className="ny-glyph" aria-hidden>
+              {NEED_GLYPH[k]}
+            </span>
+            <span className="ny-word">{NEED_WORD[k]}</span> <b>{n === null ? 'not known' : n}</b>
+          </span>
+        )
+      })}
+    </>
+  )
+
+  // WITH NOTHING WAITING the strip draws what it always drew: the counts and
+  // the quiet line, no toggle (there is nothing to open).
+  if (total === 0) {
+    return (
+      <section className="ny" aria-label="Needs you">
+        <div className="ny-bar" role="group" aria-label="What needs you, by kind">
+          {marks}
         </div>
-      ) : (
-        list
-      )}
+        {list}
+      </section>
+    )
+  }
+
+  // THE HEADER IS THE TOGGLE, and the strip ALWAYS STARTS COLLAPSED (the
+  // owner's ask, 11 November 2026, as WorkflowNeedsCard's pick of 6 November):
+  // never stored. Folding it back clears a kind the list picked.
+  const toggle = () => {
+    if (open && kind !== null) pick(null)
+    setUnfolded(false)
+    setOpen(!open)
+  }
+  return (
+    <section className={`ny has-some${open ? ' is-open' : ''}`} aria-label="Needs you">
+      <button type="button" className="ny-bar" aria-expanded={open} aria-controls={bodyId} onClick={toggle}>
+        {marks}
+        <span className="ny-caret" aria-hidden>
+          {open ? '▴' : '▾'}
+        </span>
+      </button>
+      <div id={bodyId} className={`ny-body${parked.length > 0 ? ' has-parked' : ''}`} hidden={!open}>
+        {list}
+        {parked.length > 0 && <ParkedPluginSteps asks={parked} rows={firstRows} />}
+      </div>
     </section>
   )
 }

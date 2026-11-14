@@ -431,8 +431,11 @@ def test_bundle_ships_the_github_app_permissions(bundle: Path) -> None:
     assert sums.get(APP_PERMISSIONS_FILE) == hashlib.sha256(shipped.read_bytes()).hexdigest()
 
 
-def test_refuses_a_version_that_is_not_a_release_name(tmp_path: Path) -> None:
-    proc = assemble(tmp_path, build_record(tmp_path / "r.json"), version="latest")
+@pytest.mark.parametrize("version", ["latest", "2026.10.01", "2026.10.00", "2026.10.1-rc.01"])
+def test_refuses_a_version_that_is_not_a_release_name(tmp_path: Path, version: str) -> None:
+    # A leading zero in N or the rc number is refused: the wheels carry int(N)
+    # (marketplace.py wheel_version), install.sh asks for N as written.
+    proc = assemble(tmp_path, build_record(tmp_path / "r.json"), version=version)
     assert proc.returncode == 2, proc.stderr[-2000:]
     assert not (tmp_path / "out").exists()
 

@@ -363,8 +363,15 @@ describe('the Needs-you row counts what the page read', () => {
     const failed = task('task_eeeeeeee00000000000e', 'FAILED', { metadata: { title: 'Broke' }, last_error: 'exit 1' })
     await land([BROWSER, failed], null)
     const row = screen.getByRole('region', { name: 'Needs you' })
-    expect(within(row).getByRole('button', { name: 'Failed: 1' })).toBeTruthy()
+    expect(within(row).getByRole('img', { name: 'Failed: 1' })).toBeTruthy()
     expect(row.textContent).toMatch(/Approvals\s*not known/)
+    // It starts collapsed (the owner's ask, 11 November 2026): the header opens the rows.
+    const header = within(row).getByRole('button', { name: /^Needs you/ })
+    expect(header.getAttribute('aria-expanded')).toBe('false')
+    expect(within(row).queryAllByRole('listitem')).toHaveLength(0)
+    fireEvent.click(header)
+    expect(header.getAttribute('aria-expanded')).toBe('true')
+    expect(within(row).getAllByRole('listitem')).toHaveLength(1)
   })
 
   it('builds a merge held by questions and each question once', () => {
