@@ -7,6 +7,11 @@ request, [section 11](#11-the-contract-change-request), not an edit
 for when the line has gone. Provider prices in section 6 are list prices read
 the same day and must be read again before any order.
 
+**Postponed by the owner (13 November, merged 14 November).** The design merges
+with its security-model question unanswered; that question is listed in
+[section 13](#13-open-questions-postponed-13-november), and nothing that
+depends on it (lane L5) is built until the owner answers it there.
+
 ---
 
 ## 0. Decision record
@@ -389,8 +394,8 @@ and any deny-listed resource of a shared project.
 A host serving several tenants is the residual risk. The owner may choose
 **tenant-pinned hosts** (a host's registry row names the tenants it may claim
 for), which caps a stolen host at those tenants at the price of idle slots; the
-registry supports it from the first lane, off by default (owner decision 3,
-section 12).
+registry supports it from the first lane, off by default. The choice is
+postponed: [section 13](#13-open-questions-postponed-13-november), question 2.
 
 ---
 
@@ -670,7 +675,7 @@ Each lane pushes its tests alone first and lets CI show them red.
 | L2 Reconciler | `apps/reconciler/reconciler/backends.py` (`OutsideBackend.list_executions`, `terminate`), `repair.py` | `tests/unit/reconciler/test_outside_backend.py`: a LOST host's lease is fenced, released and requeued; `terminate` is unconfirmed, and the slot held, until suspension plus access-token expiry | L1 |
 | L3 Host agent and VM manager | `apps/outside-host/` (new): poll, claim, clone, boot, inject tokens, destroy, heartbeat | `tests/unit/worker/test_outside_host_lifecycle.py` against a fake VM manager: a VM is destroyed on every exit code (0, 70, 75, 1); a VM name carries the generation; nothing is claimed with a full disk | L1 |
 | L4 Golden image | `images/macos-runner/` (new build script and self-test) | `tests/unit/scripts/test_macos_runner_image.py`: pinned versions and checksums are present and no credential-shaped line exists; the self-test script includes the `sandbox-exec` network-deny probe | L3 for the host side; a macOS build host |
-| L5 Broker and job tokens | `apps/swarm-broker-tokens/` (new service), its Terraform under `terraform/infra/` with `managed-by=swarm-terraform`, the refresh route in `attemptstate.py` | `tests/unit/broker/test_outside_tokens.py`: no mint for a lease not DISPATCHED to the asking host, at another generation, or for an account outside `swarm-agent-worker-*`; an access token asks for a 15-minute lifetime; a fenced attempt's refresh is refused | L1; owner decision 3 |
+| L5 Broker and job tokens | `apps/swarm-broker-tokens/` (new service), its Terraform under `terraform/infra/` with `managed-by=swarm-terraform`, the refresh route in `attemptstate.py` | `tests/unit/broker/test_outside_tokens.py`: no mint for a lease not DISPATCHED to the asking host, at another generation, or for an account outside `swarm-agent-worker-*`; an access token asks for a 15-minute lifetime; a fenced attempt's refresh is refused | L1; the answer to section 13's question 2 (postponed) |
 | L6 Worker full clone | `apps/agent-worker/agent_worker/gitops.py` (`full_clone_at_commit`), the runner's clone call | `tests/unit/worker/test_full_clone.py`: on a local bare repository, the clone has full history, `HEAD` is the pin, the tree is clean | L0 |
 | L7 Provider and operations | `scripts/outside-host-enrol.sh`, `scripts/outside-host-drain.sh`, `scripts/outside-fleet.sh` (provider create/delete/list), `docs/operations.md` | `tests/unit/scripts/test_outside_host_scripts.py`: `set -euo pipefail` first, typed confirmation required and `SWARM_ASSUME_YES` ignored, no provider credential read from anything but Secret Manager | L1; owner decisions 1 and 2 |
 | L8 Live proof | `scripts/concurrency-test.sh`, `scripts/race-test.sh` extended for the backend | Run against one enrolled host: two jobs run, a third waits in `READY` holding no slot; a killed host's job retries elsewhere from its checkpoint; a network-denied `sandbox-exec` probe fails to connect | L1-L7 |
@@ -726,7 +731,27 @@ To be filed in `docs/contract-change-requests.md` as the next number:
 2. **Cost ceiling.** The maximum hosts (each a fixed daily cost with a 24-hour
    minimum) and the monthly budget alert. One host is two slots; the design
    starts at one.
-3. **The security model.** (a) Accept the broker of section 4.2 — the only
-   principal with Token Creator on tenant worker accounts, conditioned to
-   their name prefix. (b) Shared hosts or tenant-pinned hosts (section 4.3).
-   (c) The licence check on any third-party VM manager (section 5.3).
+3. **The security model.** Postponed by the owner on 13 November; it is
+   question 2 of [section 13](#13-open-questions-postponed-13-november).
+
+---
+
+## 13. Open questions (postponed 13 November)
+
+The owner postponed these on 13 November and, on 14 November, chose to merge
+the design with them listed here, unanswered. The recommendation stays the
+one this document argues; it is not a decision. A lane that waits on a
+question here does not start until the owner answers it, and the answer is
+recorded in this section, replacing the question.
+
+2. **The security model: the broker with shared hosts, or something
+   narrower.** (a) Accept the broker of section 4.2 — the only principal with
+   Token Creator on tenant worker accounts, conditioned to their name prefix.
+   (b) Shared hosts (any host claims for any tenant; recommended, so no slot
+   idles) or tenant-pinned hosts (a host's registry row names the tenants it
+   may claim for, capping a stolen host at those tenants at the price of idle
+   slots; section 4.3). (c) The licence check on any third-party VM manager
+   (section 5.3). Waiting on it: lane L5 (the broker and job tokens), and with
+   it the live proof L8. Lanes L0-L4, L6 and L7 do not depend on it; the
+   registry still carries the tenant-pinning field, off by default, so either
+   answer needs no change to L1.
