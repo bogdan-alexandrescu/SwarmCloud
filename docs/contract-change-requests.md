@@ -17994,3 +17994,97 @@ tenant, and re-sign it through the pass after a key rotation.
 
 The owner: accepting it lets the plan settings lane sign the workspace level
 through the frozen list. Awaiting the owner's acceptance.
+
+## 156. `specsign.py`: the submission statement, the standing grant and its revoke, one definition (per-person signed submissions, request E)
+
+**Status:** ACCEPTED by the owner 13 November 2026 for per-person signed
+submissions, and APPLIED by the pull request that adds this section (lane
+P2-CONTRACT, part of #1347). Requested by docs/design/workspace-secrets.md
+section 11.9 (request E and its revoke statement), designed 2026-10-27; the
+owner answered the design's questions P1-P10 on 27 October 2026.
+
+### What was true
+
+Phase 2 of the workspace secrets store releases a personal secret only to an
+agent whose spec a person signed with their own key, and a headless job only
+under a standing grant that person signed ahead of it (design sections 11.3
+and 11.5). Three programs must produce the same bytes for each signed
+statement: swarm-api (which prepares and later verifies it), the `sc` plugin
+(which signs it with a keychain key) and the console (which signs it with a
+passkey). The plugin installs `swarm_common` from a git tag, so the frozen
+contract is the only place one definition can live. `specsign.py` had none.
+
+### The change
+
+`apps/common/swarm_common/specsign.py` gains, with no other change:
+
+* `PERSON_SUBMISSION_PURPOSE = "swarm.person-submission/v1"`,
+  `STANDING_GRANT_PURPOSE = "swarm.standing-grant/v1"` and
+  `STANDING_GRANT_REVOKE_PURPOSE = "swarm.standing-grant-revoke/v1"`;
+* `TENANT_VIA = ("member", "platform_admin")` (Q P10) and
+  `STANDING_GRANT_ORIGIN_KINDS = ("schedule", "issue_run", "issue_sweep")`;
+* `canonical_submission_statement(...)`: JCS over `purpose`, `prepared_id`,
+  `tenant_id`, `submitted_by`, `tenant_via`, `issued_at`, `expires_at` and
+  `specs`, each spec exactly `{task_id, spec_format, spec_digest}` with the
+  digest as 64 lowercase hex digits. `specs` is sorted by `task_id` (then
+  format and digest, so a `browser_if_ui` step's runtime alternate under the
+  same task id has one place) and a repeated entry is refused;
+* `canonical_standing_grant(...)`: JCS over `purpose`, `grant_id`, `grantor`,
+  `tenant_id`, `origin {kind, id}`, `profiles`, `secrets`, `forge`,
+  `mcp_servers`, `not_before` and `expires_at`. The lists are sorted sets that
+  never name `"all"`; `profiles` names at least one; `forge` holds only user
+  slots (`git-u-<16 hex>`) (Q P9). An absent `expires_at` means no expiry
+  (Q P4) and is **omitted**, never written as `null`; an absent or empty
+  `forge` or `mcp_servers` covers nothing and is omitted too, so a grant has
+  one byte form;
+* `canonical_standing_grant_revoke(grant_id=, grantor=, revoked_at=)`: JCS
+  over `{purpose, grant_id, grantor, revoked_at}`.
+
+A malformed value raises `SpecNotCanonical`, as the module's other canonical
+forms do. No key, signature or verification is added: an `sc` key signs
+`"<purpose>\n" || spec_digest(bytes)` and a passkey takes
+`spec_digest(bytes)` as its challenge (design section 11.2), in the programs
+that hold the keys.
+
+**Not requested:** a new `SPEC_FORMAT`. The statement is stored beside the
+agent and signs the existing spec digest, so no spec field changes; a
+headless agent's origin goes in `metadata.dispatch`, which is signed already.
+
+### What it would break if applied
+
+Nothing today. Every name is new, no existing name, default, value or
+document shape moves, and `canonical_step_spec`'s bytes are unchanged (its
+pinned golden vector still holds). No reader calls the new functions until
+the later phase 2 lanes (P2-REGISTRY, P2-SUBMIT, P2-RELEASE, P2-HEADLESS,
+P2-UI, P2-SC) land.
+
+### If it had been declined
+
+swarm-api, `sc` and the console would each restate the encoding, and a
+difference in one field (a `null` expiry, a list order) would make a
+person's valid signature fail to verify, or two programs disagree about what
+was signed.
+
+### Invariants
+
+None changes. A prepared submission holds no lease and no capacity, so
+invariants 1-3 are untouched, and the spec signature that fences an attempt
+(invariant 5) is the one swarm-api already makes; the statement only adds a
+person's signature over its digest. Invariant 10 is unchanged: the statement
+names the specs swarm-api built, never a caller-supplied image or command.
+
+### Tests
+
+`tests/unit/common/test_specsign.py`: a signing and verification round trip
+for the statement, the grant and the revoke with Ed25519 keys generated per
+test; a statement with a tampered spec digest, and a widened grant, refused;
+a signature by another key refused; a statement's signature does not verify
+as a grant; the bytes change when any field changes; `specs` order and the
+grant's list order are canonical; an absent `expires_at` is omitted, not
+`null`; malformed values have no canonical form.
+
+### Who decided
+
+The owner, 13 November 2026: file the per-person signed submissions contract
+request with the owner's acceptance recorded, then start the phase 2 lanes in
+the design's order.
