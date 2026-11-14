@@ -19,7 +19,21 @@ or a pool (CONTRACT invariants 1-3): a pod in `ImagePullBackOff` is still
 holding the capacity it was admitted with, and the rules that release a lease
 (`detect.py`) judge it exactly as before. This only says why.
 
-THE MESSAGE IS KUBELET'S, about a tenant's pod. It is bounded here to one
+A POD THAT IS NEVER SCHEDULED HAS NO CONTAINER STATUSES (#3531). On
+2026-11-06 two tasks' GKE pods sat with `PodScheduled` False for the whole
+480 s dispatch deadline, three attempts each, and were reclaimed as
+`dead_worker` with nothing recorded about why: this module read only
+container statuses, and an unscheduled pod has none. So a `PodScheduled`
+condition that is False is a start problem too, with the scheduler's reason
+(`Unschedulable`, `SchedulingGated`) and message, and so is the Job
+controller's `FailedCreate` when the Job made no pod at all
+(`failed_create_problem`, read by `GkeBackend.start_read`). Neither names a
+container, so `container` is empty. The reclaim then names the blocker in the
+reason it records (`start_problem_words`), still a record: the lease is
+judged exactly as before.
+
+THE MESSAGE IS KUBELET'S (or the scheduler's, or the Job controller's), about
+a tenant's pod. It is bounded here to one
 printable line of `MAX_START_MESSAGE_CHARS`, the way `detect._one_line` bounds
 a cause, and masked when it is SERVED, by the task's masker, as `last_error`
 is (`swarm_api.codec.start_problem_to_api`). The reconciler does not depend on
@@ -157,6 +171,66 @@ def _ran(status: Any) -> bool:
     )
 
 
+def pod_scheduling_problem(pod: Any) -> StartProblem | None:
+    """A pod's `PodScheduled` condition when it is False, as a start problem, or None (#3531).
+
+    The scheduler's own reason (`Unschedulable` when no node fits, which is
+    also what Autopilot reports while it scales up) and its message
+    ("0/3 nodes are available: ..."). No container is named: none was
+    created.
+    """
+    status = _get(pod, "status")
+    for condition in list(_get(status, "conditions") or []):
+        if _get(condition, "type") != "PodScheduled" or str(_get(condition, "status")) != "False":
+            continue
+        return StartProblem(
+            container="",
+            reason=str(_get(condition, "reason") or "Unscheduled"),
+            restarts=0,
+            message=_one_line(_get(condition, "message")),
+            pod_started=False,
+        )
+    return None
+
+
+def failed_create_problem(events: list[Any]) -> StartProblem | None:
+    """The Job controller's newest `FailedCreate` event, as a start problem, or None (#3531).
+
+    Read only when the Job has no pod: an admission webhook, a namespace
+    quota or a bad pod spec refuses the create, and the only word of it is
+    this event on the Job.
+    """
+    found = [e for e in events if str(_get(e, "reason") or "") == "FailedCreate"]
+    if not found:
+        return None
+
+    def _when(event: Any) -> str:
+        at = _get(event, "last_timestamp") or _get(event, "event_time") or _get(event, "first_timestamp")
+        return at.isoformat() if isinstance(at, datetime) else str(at or "")
+
+    newest = max(found, key=_when)
+    return StartProblem(
+        container="",
+        reason="FailedCreate",
+        restarts=0,
+        message=_one_line(_get(newest, "message")),
+        pod_started=False,
+    )
+
+
+def start_problem_words(record: Any) -> str | None:
+    """A recorded start problem in the words a reclaim's reason carries, or None (#3531)."""
+    if not isinstance(record, dict):
+        return None
+    reason = _one_line(record.get("reason"))
+    if not reason:
+        return None
+    container = _one_line(record.get("container"))
+    message = _one_line(record.get("message"))
+    head = f"container {container}: {reason}" if container else reason
+    return f"its pod was not starting: {head}" + (f" ({message})" if message else "")
+
+
 def pod_start_problem(pod: Any) -> StartProblem | None:
     """The worst start problem among a pod's containers, or None when it is starting normally.
 
@@ -171,7 +245,8 @@ def pod_start_problem(pod: Any) -> StartProblem | None:
     ]
     ranked = [found for found in (_container_problem(s) for s in statuses) if found is not None]
     if not ranked:
-        return None
+        # No container is failing, and an unscheduled pod has none at all.
+        return pod_scheduling_problem(pod)
     _, worst = max(ranked, key=lambda item: item[0])
     started = _get(status, "start_time") is not None or any(_ran(s) for s in statuses)
     return StartProblem(

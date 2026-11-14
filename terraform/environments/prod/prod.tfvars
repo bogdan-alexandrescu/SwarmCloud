@@ -72,6 +72,9 @@ pool_limits = {
     standard = 100
     browser  = 20
     large    = 8
+    # Contract request 135: claude-code's build steps, 2 units each;
+    # runner:claude-code's 60 binds first.
+    builder = 60
   }
 
   runner_profiles = {

@@ -209,7 +209,12 @@ def test_the_containers_sum_to_the_resource_class(tenant, resource_class):
     mem = sum(_gib(c["resources"]["limits"]["memory"]) for c in containers)
     eph = sum(_gib(c["resources"]["limits"]["ephemeral-storage"]) for c in containers)
     assert cpu == rc.cpu
-    assert mem == rc.memory_gib
+    # Memory is the class's, unless the live worker's floor (#3104) raised the
+    # worker's part: then the pod is the display's row plus the floor, which
+    # is what admission charged (`dispatch.live_size`).
+    display_gib = dispatch.LIVE_DISPLAY_SHARE[rc.name].memory_gib
+    assert mem == display_gib + max(rc.memory_gib - display_gib,
+                                    dispatch.LIVE_WORKER_MEMORY_FLOOR_GIB)
     assert eph == _gib(pod_without_sidecar["resources"]["limits"]["ephemeral-storage"])
     for c in containers:
         assert _cpu(c["resources"]["limits"]["cpu"]) > 0
@@ -223,11 +228,12 @@ def test_the_browser_split_follows_the_measurement(tenant):
     It was display 3 / worker 1 since contract request 79, which ran the
     agent's `npm ci` and dev server on one core. The display's measured peak
     (docs/browser-startup-speed.md §11) is 1.90 cores, so 2 still covers it,
-    about 1.05x. The memory split did not move."""
+    about 1.05x. The memory split did not move until #3104 gave the worker
+    an 8 GiB floor: 3 GiB OOM-killed a worker running a dev server."""
     spec = _spec(_job(tenant))
     worker, display = _worker(spec), _display(spec)
     assert (_cpu(worker["resources"]["requests"]["cpu"]),
-            _gib(worker["resources"]["limits"]["memory"])) == (2, 3)
+            _gib(worker["resources"]["limits"]["memory"])) == (2, 8)
     assert (_cpu(display["resources"]["requests"]["cpu"]),
             _gib(display["resources"]["limits"]["memory"])) == (2, 5)
 
@@ -245,8 +251,44 @@ def test_a_live_browser_pod_requests_two_cores_each_and_bursts_worker_4_display_
     # MUTATION: drop `cpu_limit=3` from LIVE_DISPLAY_SHARE["browser"] and the
     # display's limit reads "4000m".
     assert (display["requests"]["cpu"], display["limits"]["cpu"]) == ("2000m", "3000m")
-    assert worker["requests"]["memory"] == worker["limits"]["memory"] == "3Gi"
+    assert worker["requests"]["memory"] == worker["limits"]["memory"] == "8Gi"
     assert display["requests"]["memory"] == display["limits"]["memory"] == "5Gi"
+
+
+def test_the_live_worker_memory_floor_is_request_equal_limit_on_both_containers(
+        tenant, monkeypatch):
+    """#3104: a live-browser worker at 3 GiB ran the CLI, `npm ci` and a dev
+    server and was OOM-killed, the worker with it. The worker container gets
+    LIVE_WORKER_MEMORY_FLOOR_GIB (8), request == limit (invariant 7); the
+    display keeps its 5 GiB, so the pod is 13 GiB. 0 disables the floor.
+
+    MUTATION: apply the floor to the request only, or drop it from
+    `live_split_for`, and the worker reads 3Gi or a limit above its request.
+    """
+    assert dispatch.LIVE_WORKER_MEMORY_FLOOR_GIB == 8
+    spec = _spec(_job(tenant))
+    for c in (_worker(spec), _display(spec)):
+        r = c["resources"]
+        assert r["requests"]["memory"] == r["limits"]["memory"], c["name"]
+        assert r["requests"]["ephemeral-storage"] == r["limits"]["ephemeral-storage"], c["name"]
+    assert _worker(spec)["resources"]["limits"]["memory"] == "8Gi"
+    assert _display(spec)["resources"]["limits"]["memory"] == "5Gi"
+    env = {e["name"]: e.get("value") for e in _worker(spec)["env"]}
+    assert env["SWARM_SIZED_MEMORY_GIB"] == "8"
+
+    monkeypatch.setattr(dispatch, "LIVE_WORKER_MEMORY_FLOOR_GIB", 0)
+    spec = _spec(_job(tenant))
+    assert _worker(spec)["resources"]["limits"]["memory"] == "3Gi"
+
+
+def test_the_floor_leaves_a_non_live_render_unchanged_byte_for_byte(tenant, monkeypatch):
+    """The floor reaches only the live pod's worker: with the switch off, and
+    for every other profile, the bytes are those of a render with no floor."""
+    floored = {name: json.dumps(_job(tenant, name, live=False), sort_keys=True)
+               for name in _gke_profiles()}
+    monkeypatch.setattr(dispatch, "LIVE_WORKER_MEMORY_FLOOR_GIB", 0)
+    for name in _gke_profiles():
+        assert json.dumps(_job(tenant, name, live=False), sort_keys=True) == floored[name], name
 
 
 def test_the_non_live_browser_pod_is_byte_for_byte_what_the_old_split_rendered(

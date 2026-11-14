@@ -169,8 +169,9 @@ def test_the_live_split_renders_worker_2_of_4_and_display_2_of_3(tenant):
     # MUTATION: drop `cpu_limit=3` from LIVE_DISPLAY_SHARE["browser"] and the
     # display bursts to the class ratio, "4000m".
     assert (display["requests"]["cpu"], display["limits"]["cpu"]) == ("2000m", "3000m")
-    # MUTATION: give either container a memory limit above its request.
-    assert worker["requests"]["memory"] == worker["limits"]["memory"] == "3Gi"
+    # MUTATION: give either container a memory limit above its request. The
+    # worker's is its 8 GiB floor (#3104, LIVE_WORKER_MEMORY_FLOOR_GIB).
+    assert worker["requests"]["memory"] == worker["limits"]["memory"] == "8Gi"
     assert display["requests"]["memory"] == display["limits"]["memory"] == "5Gi"
     for r in (worker, display):
         assert r["requests"]["ephemeral-storage"] == r["limits"]["ephemeral-storage"]

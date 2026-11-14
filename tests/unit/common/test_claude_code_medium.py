@@ -81,7 +81,7 @@ def test_the_medium_class_is_6_cpu_16_gib_at_2_units():
 def test_medium_sits_between_browser_and_large_and_its_defaults_pass_every_bound():
     # MUTATION: append `medium` after `large` and check_size refuses the
     # defaults: large's 8 CPU and 32 GiB are above the "larger" medium's.
-    assert profiles.CLASS_ORDER == ("standard", "browser", "medium", "large")
+    assert profiles.CLASS_ORDER == ("standard", "browser", "medium", "builder", "large")
     # MUTATION: give medium 40 GiB, or a memory/CPU ratio Autopilot would
     # raise, and a refusal names it.
     assert check_size(default_sizes()) == []
@@ -101,6 +101,9 @@ def test_the_profile_is_claude_code_at_the_medium_class():
         name=NAME,
         resource_class="medium",
         inputs={k: v for k, v in claude.inputs.items() if k != "pull_request"},
+        # Contract request 135: only claude-code's build stages run `builder`;
+        # a profile picked by name for its size keeps that size at every stage.
+        build_resource_class=None,
     )
     # MUTATION: a different timeout, image, input or secret on the entry and it
     # is no longer claude-code made bigger.

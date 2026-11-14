@@ -6,6 +6,32 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.87 (2026-11-14)
+
+Releases the plugin and bridge changes merged since 0.5.86, with the
+plain attach-all below.
+
+* A workflow spec and `swarm_dispatch` carry a step's managed plugins, and
+  `swarm_result` shows what they ran.
+* `swarm_profiles` reports each profile's Node version.
+* `swarm_check` names a held merge's rejected questions files and a task's
+  unavailable questions reason, and an owner answer is kept with the
+  question it answered.
+* The plain `/sc attach --all` (`swarm_workflow_launch {attach: "all"}`)
+  attaches this session's running work AND every workflow and single task
+  still running that clones this checkout's `origin` repository, whichever
+  session started it -- what the session start's `attach --all --project`
+  already did (the owner, 2026-11-09). A person attaching from a terminal or
+  another session used to see the project's work left out as
+  `other_session` and read it as a bug. Each entry another session started
+  is marked `this_session: false`, `project.from_other_sessions` counts
+  them, and `session.left_out` now counts only another repository's work
+  (`not_this_project`) and untagged work. `project: true` is still accepted
+  and means the same. In the pane layout the attach-all stays this
+  session's: the pane lists the project's work with no model row.
+* `/sc check`, its `new_only` attach, the watch and `swarm_check` are
+  unchanged: they stay this session's own work.
+
 ## 0.5.86 (2026-11-10)
 
 Releases the plugin and bridge changes merged since 0.5.85; none of them

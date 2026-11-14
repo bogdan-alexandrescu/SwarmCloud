@@ -610,7 +610,11 @@ def _approve(
         # cheap one only where it is pinned (#2524, `issueruns._check_class`).
         compiled = compile_plan(approved, review, class_models=ctx.settings.worker_class_models)
         with issueruns_module.submitting(compiled):
-            submission = ctx.submissions.submit_workflow(auth, compiled)
+            # The class of its implement and fix steps is the platform's
+            # choice from their stage (contract request 135).
+            submission = ctx.submissions.submit_workflow(
+                auth, compiled, step_stages=issueruns_module.build_step_stages(compiled),
+            )
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         runs.transition(

@@ -524,8 +524,16 @@ def test_approving_the_digest_shown_submits_one_new_workflow(client, db, objects
         "review": "claude-code-browser", "fix": "claude-code",
         "re-review": "claude-code-browser",
     }
+    # Contract request 135: the platform picks `builder` for the steps that
+    # build (the implementers and the fix), from the stage the compiler wrote;
+    # the review and the re-review keep their profile's class.
+    assert {t["step_id"]: t["resource_class"] for t in step_tasks} == {
+        "impl-sort-key": "builder", "impl-ui": "builder",
+        "review": "browser", "fix": "builder", "re-review": "browser",
+    }
     review = next(t for t in step_tasks if t["step_id"] == "review")
     assert review["metadata"]["runtime"]["policy"] == "browser_if_ui"
+    assert review["metadata"]["runtime"]["alternate"]["resource_class"] == "standard"
     assert review["metadata"]["runtime"]["alternate"]["runner_profile"] == "claude-code"
     # The re-review runs on what the review resolved to, never re-deciding
     # from the fix's diff: the service names the review's task beside it.
