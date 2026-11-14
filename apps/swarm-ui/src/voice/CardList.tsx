@@ -164,6 +164,30 @@ export interface CardListState {
 
 export const EMPTY_LIST: CardListState = { lastSeq: 0, cards: [], work: [], roster: [] }
 
+/** The states a card is open in (swarm_api/voice/sessions.py `OPEN_CARD_STATES`); every other state is closed. */
+const OPEN_STATES: readonly string[] = ['proposed', 'acting', 'waiting']
+
+/**
+ * The list a resumed project starts from: its open cards of a known kind,
+ * read once before (or while) its new session's stream opens. A card the
+ * stream already drew at the same or a newer version stays as drawn, so the
+ * stream's later events update the project's cards in place and never draw
+ * one twice; the sequence stays the stream's.
+ */
+export function seedCards(s: CardListState, project: readonly unknown[]): CardListState {
+  const held = new Map(s.cards.map((c) => [c.card_id, c]))
+  const seeded: VoiceCard[] = []
+  for (const row of project) {
+    const card = asCard(row)
+    if (card === null || specOf(card.kind) === null || !OPEN_STATES.includes(card.state)) continue
+    if (seeded.some((c) => c.card_id === card.card_id)) continue
+    const drawn = held.get(card.card_id)
+    seeded.push(drawn !== undefined && drawn.version >= card.version ? drawn : card)
+  }
+  const ids = new Set(seeded.map((c) => c.card_id))
+  return { lastSeq: s.lastSeq, cards: [...seeded, ...s.cards.filter((c) => !ids.has(c.card_id))] }
+}
+
 /** One stream event as it arrives: its type, its sequence and its data. */
 export interface StreamEvent {
   type: string
