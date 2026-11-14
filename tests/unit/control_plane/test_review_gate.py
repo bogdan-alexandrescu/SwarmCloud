@@ -166,7 +166,10 @@ def test_a_small_non_risk_diff_skips_the_review_with_the_reason(
     (entry,) = doc["result_summary"]["artifacts"]
     assert entry["name"] == "verdict.json" and "uri" not in entry
     assert entry["written_by"] == "control_plane"
-    assert json.loads(entry["inline"]) == {"verdict": "MERGE", "findings": [], "skipped": reason}
+    # #4101: the verdict says it was skipped; a reader of `verdict` alone
+    # cannot take it for a reviewed approval.
+    assert json.loads(entry["inline"]) == {"verdict": "SKIPPED", "findings": [], "skipped": reason}
+    assert json.loads(entry["inline"])["verdict"] != "MERGE"
     assert entry["bytes"] == len(entry["inline"].encode("utf-8"))
     # Not `skipped`: that would make the integrator, which stages from it, skip too.
     assert "skipped" not in doc["result_summary"]
@@ -477,7 +480,7 @@ def _stage_from(db, tmp_path: Path) -> Path:
     return work / item.path
 
 
-def test_the_skipped_reviews_verdict_shuts_the_integrators_gate_and_reads_merge(
+def test_the_skipped_reviews_verdict_reads_skipped_and_shuts_the_integrators_gate(
     db, client, tmp_path
 ):
     _base(db)
@@ -489,12 +492,15 @@ def test_the_skipped_reviews_verdict_shuts_the_integrators_gate_and_reads_merge(
     path = _stage_from(db, tmp_path)
 
     read = verdict_mod.read_verdict(path, task_id=REVIEW, filename="verdict.json")
-    assert read.verdict == "MERGE" and read.findings == ()
+    assert read.verdict == "SKIPPED" and read.findings == ()
+    assert read.skipped == _review_doc(db)["result_summary"]["review_skipped"]
     # The integrator's gate, as issueruns compiles it: on NOT_YET only. Shut:
-    # it publishes the pull request without a fix agent, as for any MERGE.
+    # the gate compares a skip as MERGE (#4101), so it publishes the pull
+    # request without a fix agent, as it did before.
     gate = verdict_mod.gate_from_dispatch(
         {"verdict_gate": {"task_id": REVIEW, "verdict_in": ["NOT_YET"]}})
-    assert read.verdict not in gate.verdict_in
+    assert verdict_mod.gate_reading(read) == "MERGE"
+    assert verdict_mod.gate_reading(read) not in gate.verdict_in
     # The integrator's left-nothing rule does not skip it either.
     assert inputs_mod.expected_mod.left_nothing(_review_doc(db)["result_summary"]) is None
 
@@ -520,7 +526,7 @@ def test_the_api_serves_the_inline_verdict_redacted(db, client):
 
     # MUTATION: drop `_inline_artifact` and this is a 503 (no usable location).
     assert row["status"] == "ok" and row["truncated"] is False
-    assert json.loads(row["content"])["verdict"] == "MERGE"
+    assert json.loads(row["content"])["verdict"] == "SKIPPED"
     assert row["redacted"] is False
 
     # The document is tenant-writable: a credential written into the inline
@@ -556,8 +562,13 @@ def test_the_integrator_behind_a_skipped_review_is_published_without_a_pod(
     assert first["published"] + second["published"] == [FIX], (first, second)
     fix = db.docs[f"tasks/{FIX}"]
     assert fix["state"] == "SUCCEEDED"
-    assert fix["result_summary"]["verdict_gate"]["verdict"] == "MERGE"
+    # #4101: the record says what the review said, beside how the gate read it.
+    assert fix["result_summary"]["verdict_gate"]["verdict"] == "SKIPPED"
+    assert fix["result_summary"]["verdict_gate"]["gate_reading"] == "MERGE"
+    assert fix["result_summary"]["verdict_gate"]["skipped_review"].startswith("review skipped")
     assert len(github.pulls) == 1
+    (pull,) = github.pulls.values()
+    assert "Review verdict: **SKIPPED**" in pull["body"]
 
 
 
@@ -623,6 +634,10 @@ def test_the_restated_words_are_equal():
     assert reviewgate.SHOT_SUFFIXES == verdict_mod.SHOT_SUFFIXES
     assert reviewgate.RENDERED_REVIEW_PROFILE == verdict_mod.RENDERED_REVIEW_PROFILE
     assert reviewgate.COUNTED_HANDOFFS == (issueruns.PATCH_FILE, issueruns.VERDICT_FILE)
+    assert reviewgate.SKIPPED_VERDICT == verdict_mod.SKIPPED_VERDICT
+    assert reviewgate.SKIPPED_REASON_KEY == verdict_mod.SKIPPED_REASON_KEY
+    assert verdictpublish.MAX_SKIPPED_REASON_CHARS == verdict_mod.MAX_SKIPPED_REASON_CHARS
+    assert reviewgate.SKIPPED_VERDICT not in validation.REVIEW_VERDICTS
     assert len(reviewgate.verdict_text("x" * 900).encode()) <= inputs_mod.MAX_INLINE_BYTES
 
 

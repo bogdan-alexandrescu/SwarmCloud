@@ -8163,7 +8163,10 @@ class Worker:
         read = verdict_mod.read_verdict(
             ws.work / source.path, task_id=gate.task_id, filename=source.filename
         )
-        runs = read.verdict in gate.verdict_in
+        # #4101: a review the size gate skipped reads as MERGE to the gate,
+        # by the gate's rule (`verdict_mod.gate_reading`); its file says SKIPPED.
+        reading = verdict_mod.gate_reading(read)
+        runs = reading in gate.verdict_in
         passed_on = ws.work / source.path
         # The no-op precheck, check (b) (#2524, the owner 2026-10-28): a NOT_YET
         # that would run the agent does not when this head already holds a
@@ -8182,6 +8185,9 @@ class Worker:
             "findings": list(read.findings),
             "findings_dropped": read.findings_dropped,
         }
+        if read.skipped is not None:
+            self._verdict["gate_reading"] = reading
+            self._verdict["skipped_review"] = read.skipped
         # Variant 3 of the diff viewer: where each finding is, and the digest
         # of the patch the review read, so a pin is shown only against that
         # patch. Added only when a finding said where it is: a verdict with no

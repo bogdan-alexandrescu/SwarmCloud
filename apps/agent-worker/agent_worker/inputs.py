@@ -579,7 +579,7 @@ def inline_artifact(
     its review gate skipped it. Every
     other entry is located in the bucket as before. The task document is
     tenant-writable, so this admits nothing a tenant could not already write
-    on its own task: a skipped review is a MERGE by design, and a review that
+    on its own task: a skipped review says SKIPPED (#4101), and a review that
     RAN uploads its verdict and records a `uri`.
     """
     text = entry.get(INLINE_ARTIFACT_KEY)
