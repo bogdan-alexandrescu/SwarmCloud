@@ -8,6 +8,7 @@ are fakes that answer by URL.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import urllib.error
@@ -380,6 +381,45 @@ def test_the_real_manifest_dispatcher_entry_names_the_team_repair():
     assert "swarm team repair" in (entry.apply or "")
 
 
+def test_a_verify_check_says_repair_only_rechecks_it():
+    """Epic finding 66: stage 14's checks apply nothing, so the fix never
+    promises that `--repair` makes them right; it names what does."""
+    entries = [e for e in m.load().entries if str(e.step or "").startswith("verify.") and e.step != "verify.end-to-end"]
+    assert {e.step for e in entries} >= {"verify.digests", "verify.scheduler-targets"}
+    for entry in entries:
+        words = doctor.fix_words(entry)
+        assert "re-runs the check and changes nothing" in words, entry.id
+        assert doctor.CHECK_ONLY[str(entry.step)] in words
+    words = doctor.fix_words(m.load().by_id()["other.verify-digests"])
+    assert "makes it: swarm install --repair other.verify-digests" not in words
+    # A plain `swarm install` skips a met pass (its check compares input digests, never live
+    # traffic, digests or targets), so the fix for drift is the repair of an entry an infra pass
+    # owns through `step:`, which runs that root's latest applied pass again.
+    by_id = m.load().by_id()
+    for step in ("verify.digests", "verify.scheduler-targets", "verify.plugins"):
+        words = doctor.CHECK_ONLY[step]
+        assert "swarm install re-runs" not in words, step
+        found = re.search(r"swarm install --repair (\S+) ", words)
+        assert found, step
+        owner = by_id[found.group(1)]
+        assert str(owner.step or "").startswith("infra.pass-") and owner.expand != doctor.PLATFORM_MADE, step
+        assert f"(manifest step: {owner.step})" in words, step
+    # On the release it already runs, swarm upgrade does nothing: it is no fix for either check.
+    for step in ("verify.digests", "verify.firestore-migrations"):
+        assert "swarm upgrade --to <the running release>" not in doctor.CHECK_ONLY[step]
+        assert "the release it already runs does nothing" in doctor.CHECK_ONLY[step]
+
+
+def test_check_only_names_every_verify_step_that_applies_nothing():
+    """`CHECK_ONLY` is exactly the verify steps that keep the base no-op apply."""
+    from swarm_install.steps import verify
+
+    no_apply = {cls.id for cls in vars(verify).values()
+                if isinstance(cls, type) and issubclass(cls, verify._Base) and cls is not verify._Base
+                and getattr(cls, "id", "").startswith("verify.") and cls.apply is verify._Base.apply}
+    assert no_apply == set(doctor.CHECK_ONLY)
+
+
 def test_installer_network_name_matches_the_tfvars_one():
     from swarm_install import tfvars
 
@@ -414,6 +454,11 @@ def test_desktop_client_in_programmatic_allowlist():
     assert unmet.status == UNMET and "swarm-api-backend" in unmet.detail
     assert unmet.repair == "swarm install --repair iap-setting.frontend-programmatic-clients"
     assert not any("their-backend" in url for _, url in missing.calls)
+    # Epic finding 46: no step records `frontend_iap_backends`; a value there
+    # never widens the read to another team's backend.
+    widened = gcp([client])
+    _one(entry, widened, outputs={"desktop_client_id": client, "frontend_iap_backends": ["their-backend"]})
+    assert not any("their-backend" in url for _, url in widened.calls)
     unknown = _one(entry, gcp([client]))
     assert unknown.status == UNKNOWN  # no client recorded: never fine
     # Issue #2964: the console's Admin › Setup step Sign-in client saves the
@@ -458,6 +503,24 @@ def test_swarm_doctor_prints_each_entry_and_says_the_hourly_doctor_is_off(verb, 
     assert code == ExitCode.OK, out
     assert "met" in out and "api.run" in out
     assert "the hourly doctor is off" in out and "enable_scheduled_doctor" in out
+
+
+def test_swarm_doctor_takes_the_region_from_the_state_only(verb, monkeypatch, capsys):
+    """Epic finding 46: nothing writes an output named `region` (stage 0 sets
+    `state.region`), so the doctor never falls back to one."""
+    from swarm_install import cli
+
+    state = _state()
+    state.region = None
+    state.outputs["region"] = "elsewhere1"
+    monkeypatch.setattr(doctor_verb, "read_state", lambda project: (state, "gs://b/o"))
+    seen: list[str] = []
+    real = doctor.run
+    monkeypatch.setattr(doctor, "run", lambda manifest, target, deps: seen.append(target.region) or real(
+        manifest, target, deps))
+    cli.main(["doctor", "--project", PROJECT])
+    capsys.readouterr()
+    assert seen == [""]
 
 
 def test_swarm_doctor_json_and_exit_3_on_unmet(verb, capsys):
@@ -546,11 +609,13 @@ def test_plugins_unmet_names_what_is_missing(answers, said):
     assert "swarm install" in finding.fix
 
 
-def test_plugins_read_the_bucket_the_install_recorded():
-    answers = {k.replace(PLUGINS_BUCKET, "acme-swarm-plugins"): v for k, v in _plugin_answers(
-        _plugin_policy(_tenant_read(PLATFORM_ARM.replace(PLUGINS_BUCKET, "acme-swarm-plugins")))).items()}
+def test_plugins_read_the_bucket_infra_names():
+    """Epic finding 46: nothing writes `plugins_bucket`, so the doctor reads the
+    bucket terraform/infra names, whatever an output of that name says."""
+    answers = _plugin_answers(_plugin_policy(_tenant_read(PLATFORM_ARM)))
     finding = doctor_verb.plugins_finding(_target(plugins_bucket="acme-swarm-plugins"), FakeGcp(answers))
     assert finding.status == MET, finding.detail
+    assert doctor_verb.plugins_bucket(PROJECT) == f"{PROJECT}-swarm-plugins"
 
 
 def test_plugins_unknown_when_a_read_is_refused():
