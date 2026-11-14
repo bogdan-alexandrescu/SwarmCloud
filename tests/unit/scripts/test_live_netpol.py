@@ -254,7 +254,11 @@ PRE_L6_DIGESTS = {
 #: class-scoped keys name CACHE_STORAGE_CLASS's new xfs class and its comment
 #: says so; with the retired class name and that comment swapped back, the
 #: render's digest is the one this constant held until then, byte for byte.
-PRE_L6_TENANT_RENDER = "4860e54244a260cabfbc5235463ef8a818ef30eb611fb5bc6009299d58f06c7e"
+#: Re-read for the never-scheduled pod follow-up (2026-11-14): the swarm-reaper
+#: Role gains `events: [get, list]` (rbac/dispatcher-rbac.yaml), so the
+#: reconciler can record a Job's FailedCreate; with that rule removed, the
+#: render's digest is the one this constant held until then, byte for byte.
+PRE_L6_TENANT_RENDER = "4ce3e74e6d8f014b0e0851445f7d79877483cbad985865c5f2b2807c68c64553"
 
 
 def _tenant_values() -> dict[str, str]:
