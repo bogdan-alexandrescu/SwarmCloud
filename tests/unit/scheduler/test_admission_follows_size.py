@@ -241,7 +241,9 @@ def test_a_live_browser_attempt_records_the_split_its_manifest_renders(db, batch
     # MUTATION: render the split from LIVE_DISPLAY_SHARE scaled to the size
     # (drop `split=` from with_live_display's call in _manifest, or the stored
     # split from `live_split_for`) and the worker reads 4 / 8 / 7.
-    assert rendered == {"worker": {"cpu_request": 3, "cpu_limit": 6, "memory_gib": 6},
+    # The version's worker 6 GiB is raised to the live worker's 8 GiB floor
+    # (#3104, LIVE_WORKER_MEMORY_FLOOR_GIB); the display keeps its 6.
+    assert rendered == {"worker": {"cpu_request": 3, "cpu_limit": 6, "memory_gib": 8},
                         "display": {"cpu_request": 3, "cpu_limit": 4, "memory_gib": 6}}
     attempt = attempt_of(db, "task_live")
     # MUTATION: record the version's split while the dispatcher renders
@@ -250,8 +252,11 @@ def test_a_live_browser_attempt_records_the_split_its_manifest_renders(db, batch
     assert attempt["size_version"] == 2
     env = {e["name"]: e.get("value") for e in container(job, "worker")["env"]}
     # MUTATION: tell the worker the CLASS's numbers on a live pod and it reads
-    # a 12 GiB ceiling in a 6 GiB container.
-    assert (env["SWARM_SIZED_CPU_LIMIT"], env["SWARM_SIZED_MEMORY_GIB"]) == ("6", "6")
+    # a 14 GiB ceiling in an 8 GiB container.
+    assert (env["SWARM_SIZED_CPU_LIMIT"], env["SWARM_SIZED_MEMORY_GIB"]) == ("6", "8")
+    # The pod is 14 GiB, and the size charged and recorded is the pod's.
+    assert attempt["sized_memory_gib"] == 14
+    assert lease_of(db, "task_live")["units"] == 2
 
 
 def test_a_live_capable_profile_with_the_sidecar_off_records_no_split(db, batch, cloud_run):
@@ -337,6 +342,33 @@ def test_a_mock_agent_on_cloud_run_keeps_the_default_whatever_the_version(db, ba
     assert (attempt["sized_cpu_request"], attempt["sized_cpu_limit"]) == (4, 8)
     assert (attempt["sized_memory_gib"], attempt["sized_disk_gib"]) == (8, 4)
     assert attempt["sized_live_split"] is None
+
+
+def test_a_live_browser_agent_is_charged_the_pod_its_worker_floor_makes(db, batch, cloud_run):
+    """#3104: the live worker's 8 GiB floor makes the browser class's live pod
+    8 + 5 = 13 GiB, so admission charges 2 units, not 1, BEFORE the lease, in
+    the same transaction as every other pool (invariants 2 and 3), and the
+    attempt records the 13 GiB the pod is rendered at (invariant 7: each
+    container's memory request == limit).
+
+    MUTATION: floor the split in the renderer only (keep `sizes.for_task` on
+    `live_split_for`) and the lease charges 1 unit for a 13 GiB pod.
+    """
+    admit(db, make_scheduler(db, batch, cloud_run, live=True), "task_live", "claude-code-browser")
+
+    (job,) = batch.created
+    pod_gib = 0
+    for name in ("worker", "display"):
+        r = container(job, name)["resources"]
+        assert r["requests"]["memory"] == r["limits"]["memory"], name
+        pod_gib += gib(r["requests"]["memory"])
+    assert gib(container(job, "worker")["resources"]["limits"]["memory"]) == 8
+    assert pod_gib == 13
+    assert lease_of(db, "task_live")["units"] == 2
+    attempt = attempt_of(db, "task_live")
+    assert attempt["size_version"] == 0
+    assert attempt["sized_memory_gib"] == 13
+    assert attempt["sized_live_split"]["worker"]["memory_gib"] == 8
 
 
 # --- no version, and a malformed one ---------------------------------------------
