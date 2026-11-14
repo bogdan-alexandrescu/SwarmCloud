@@ -62,6 +62,13 @@ def _cloned(worker_factory, monkeypatch, origin_repo: Path, *, task_id: str, **o
     return worker, repo, _rev(repo, "HEAD")
 
 
+def _origin_confirms_no_cut_off(monkeypatch) -> None:
+    """Origin answers for none of the clone's shallow cut-offs (#2901 made the
+    worker ask it itself), so the clean repository's boundary is the base
+    alone and the publish-fetch fails, as in the #2544 reports."""
+    monkeypatch.setattr(lifecycle, "fetch_shallow_lines_from_origin", lambda **_kwargs: [])
+
+
 def _finish(worker) -> tuple[dict[str, Any], str | None]:
     """The clean finish's order: harvest and upload, then the deferred
     publish, then the error the step ends with."""
@@ -116,7 +123,8 @@ def _apply_onto_base(tmp_path: Path, origin_repo: Path, base: str, patch: Path) 
 def test_a_failed_publish_fetch_on_a_depth_fetched_merge_still_uploads_the_patch(
     worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
 ):
-    """The TOKEN-A / U01 shape: no confirmer, so the publish-fetch fails."""
+    """The TOKEN-A / U01 shape: nothing confirms the cut-off, so the publish-fetch fails."""
+    _origin_confirms_no_cut_off(monkeypatch)
     xs = _origin_with_a_sibling(origin, tmp_path)
     worker, repo, base = _cloned(worker_factory, monkeypatch, origin, task_id="t-2544-fetch")
     _fetch_sibling_with_depth_and_merge(origin, xs)(repo)
@@ -184,6 +192,7 @@ def test_a_failing_push_still_uploads_the_patch_and_the_error_names_it(
 def test_an_over_cap_tree_patch_records_why_in_patch_note(
     worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
 ):
+    _origin_confirms_no_cut_off(monkeypatch)
     xs = _origin_with_a_sibling(origin, tmp_path)
     worker, repo, _base = _cloned(
         worker_factory, monkeypatch, origin, task_id="t-2544-cap", max_patch_bytes=64,
