@@ -1,5 +1,19 @@
-"""A lane's pull request runs the fast checks only; the full suite runs on the
-merge train's pull request, on main and wherever `full-ci` asks for it.
+"""A lane's pull request runs no checks at all; any other pull request runs the
+fast checks only; the full suite runs on the merge train's pull request, on
+main and wherever `full-ci` asks for it.
+
+THE LANE RULE, the owner's direction of 12 November 2026 ("no testing on lane
+pull requests, only on the merge train's run on its way to main, with large
+merge trains, to cut CI wait time"; docs/ci.md "A lane's pull request runs no
+checks"). On a pull request whose head is a `swarm/` branch of this
+repository, every job of application.yml, security.yml and terraform.yml is
+skipped by its own `if:`, which ends `&& LANE_SKIP`, and ci-gate passes at
+once: it skips every step but its lane note. Each job's `if:` is evaluated
+here, the way GitHub does, on a lane's pull request (nothing runs), and on a
+`train/` pull request, a push to main, a fork's pull request, another branch's
+and a queue entry (exactly what the `if:` without the clause runs).
+
+THE FAST-CHECKS RULE, below, still holds for every other pull request.
 
 Owner decision 2026-11-11 ("skip pr testing and only run tests when merging to
 main", "Fast checks only on PRs"; docs/ci.md "What runs where"). Every HEAVY
@@ -28,6 +42,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -79,6 +94,14 @@ AGGREGATE = {
 # The event clauses a main-only job's every disjunct must carry one of.
 NOT_A_PULL_REQUEST = ("github.event_name != 'pull_request'", "github.event_name == 'workflow_dispatch'",
                       "github.event_name == 'schedule'")
+
+
+#: The clause every job's `if:` in the three files ends with (`&& LANE_SKIP`).
+LANE_SKIP = ("!(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') "
+             "&& github.event.pull_request.head.repo.full_name == github.repository)")
+#: The aggregate that still runs on a lane's pull request, so it reports.
+LANE_GATE = ("application.yml", "ci-gate")
+THIS_REPO = "example-org/example-repo"
 
 
 def _jobs(name: str) -> dict:
@@ -206,4 +229,217 @@ def test_docs_say_what_runs_where():
     start = text.index("## What runs where")
     section = text[start:text.index("\n## ", start + 1)]
     for needle in ("full-ci", "train/", "lane's pull request", "main"):
+        assert needle in section, needle
+
+
+# --- a lane's pull request runs no checks (owner, 2026-11-12) ---------------
+_PATH = re.compile(r"\b(?:github|needs|vars|inputs|matrix|steps|runner)(?:\.[A-Za-z0-9_*-]+)+")
+
+
+def _evaluate(expression: str, values: dict) -> bool:
+    """A job's or a step's `if:` as GitHub reads it, for the operators and
+    functions these three files use. A status function is the run's state
+    (nothing failed or was cancelled); a condition with none of them gets
+    GitHub's implicit `success()`. MUTATION: none -- it is the instrument."""
+    text = expression.strip().removeprefix("${{").removesuffix("}}").strip()
+    names: dict[str, object] = {}
+
+    def bind(match: re.Match) -> str:
+        path = match.group(0)
+        assert path in values, f"_evaluate() does not model {path!r} in {text}"
+        names[f"_v{len(names)}"] = values[path]
+        return f"_v{len(names) - 1}"
+
+    py = _PATH.sub(bind, text)
+    py = py.replace("&&", " and ").replace("||", " or ")
+    py = re.sub(r"!(?!=)", " not ", py)
+    py = re.sub(r"\b(startsWith|contains|fromJSON|always|cancelled|failure|success)\(", r"_\1(", py)
+    helpers = {
+        "_startsWith": lambda value, prefix: str(value or "").lower().startswith(str(prefix).lower()),
+        "_contains": lambda haystack, needle: (needle in haystack if isinstance(haystack, list)
+                                               else str(needle).lower() in str(haystack or "").lower()),
+        "_fromJSON": json.loads,
+        "_always": lambda: True, "_cancelled": lambda: False, "_failure": lambda: False,
+        "_success": lambda: True,
+    }
+    value = bool(eval(py, {"__builtins__": {}}, {**names, **helpers}))  # noqa: S307 -- the repo's own workflow
+    if not re.search(r"\b(?:always|cancelled|failure|success)\(", text):
+        value = value and True  # the implicit success(): nothing failed
+    return value
+
+
+#: name -> (event_name, head_ref, head repository, ref).
+EVENTS = {
+    "lane": ("pull_request", "swarm/task_lane", THIS_REPO, "refs/pull/7/merge"),
+    "train": ("pull_request", "train/41-1", THIS_REPO, "refs/pull/8/merge"),
+    "main": ("push", "", None, "refs/heads/main"),
+    "queue": ("merge_group", "", None, "refs/heads/gh-readonly-queue/main/pr-7-abc"),
+    "fork": ("pull_request", "swarm/task_lane", "someone/example-repo", "refs/pull/9/merge"),
+    "other branch": ("pull_request", "fix/thing", THIS_REPO, "refs/pull/10/merge"),
+    "schedule": ("schedule", "", None, "refs/heads/main"),
+}
+
+
+def _values(event: str) -> dict:
+    """Every value the three files' job and step conditions read, for one
+    event, with every job before it passed and `changes` saying the change
+    reaches everything (full suite)."""
+    event_name, head_ref, head_repo, ref = EVENTS[event]
+    is_pr = event_name == "pull_request"
+    full = "true" if (not is_pr or head_ref.startswith("train/")) else "false"
+    values = {
+        "github.event_name": event_name,
+        "github.head_ref": head_ref,
+        "github.ref": ref,
+        "github.repository": THIS_REPO,
+        "github.event.pull_request.head.repo.full_name": head_repo if is_pr else None,
+        "github.event.pull_request.labels.*.name": [] if is_pr else None,
+    }
+    outputs = {"app": "true", "python": "all", "ui": "true", "full": full, "reused": "[]", "images": "true"}
+    for key, value in outputs.items():
+        values[f"needs.changes.outputs.{key}"] = value
+    for job in ("changes", "python", "offline", "checks"):
+        values[f"needs.{job}.result"] = "success"
+    return values
+
+
+def _all_jobs():
+    for name in sorted(FAST):
+        for job_id, job in _jobs(name).items():
+            yield name, job_id, job
+
+
+def _without_the_clause(condition: str) -> str:
+    """The job's `if:` before the lane clause, unwrapped: what it ran before
+    2026-11-12."""
+    inner = condition.strip().removeprefix("${{").removesuffix("}}").strip()
+    if inner == LANE_SKIP:
+        return ""
+    assert inner.endswith(" && " + LANE_SKIP), inner
+    before = inner[: -len(" && " + LANE_SKIP)]
+    if before.startswith("(") and before.endswith(")") and _balanced(before[1:-1]):
+        before = before[1:-1]
+    return before
+
+
+def without_lane_clause(condition: object, *, required: bool = True) -> str:
+    """A job's `if:` as it was written before the lane clause, `${{ }}` and
+    all, for the tests that pin a job's own condition (test_ci_fold.py,
+    test_build_images_local.py). Fails when the clause is missing, unless
+    `required` is false (a sweep over every job, ci-gate included)."""
+    text = str(condition or "").strip()
+    inner = text.removeprefix("${{").removesuffix("}}").strip()
+    if not required and not (inner == LANE_SKIP or inner.endswith(" && " + LANE_SKIP)):
+        return text
+    before = _without_the_clause(text)
+    return "${{ " + before + " }}" if text.startswith("${{") and before else before
+
+
+def _balanced(text: str) -> bool:
+    depth = 0
+    for char in re.sub(r"'[^']*'", "", text):
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+@pytest.mark.parametrize("name, job_id", [(n, j) for n, j, _ in _all_jobs() if (n, j) != LANE_GATE])
+def test_every_job_ends_its_if_with_the_lane_clause(name, job_id):
+    """MUTATION: drop the clause from one job, add a job without it, or put it
+    inside an `||` where it does not bind the whole condition."""
+    condition = str(_jobs(name)[job_id].get("if", ""))
+    assert condition, f"{name} {job_id} has no `if:`, so it runs on a lane's pull request"
+    assert condition.count(LANE_SKIP) == 1, condition
+    _without_the_clause(condition)
+    inner = condition.strip().removeprefix("${{").removesuffix("}}").strip()
+    before = inner[: -len(LANE_SKIP)].removesuffix(" && ")
+    # The clause binds the whole condition: no `||` outside parentheses before it.
+    depth = 0
+    stripped = re.sub(r"'[^']*'", "''", before)
+    for i, char in enumerate(stripped):
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        assert not (depth == 0 and stripped.startswith("||", i)), f"{job_id}: an unparenthesised || in {before}"
+
+
+@pytest.mark.parametrize("name, job_id", [(n, j) for n, j, _ in _all_jobs() if (n, j) != LANE_GATE])
+def test_a_lane_s_pull_request_runs_no_job(name, job_id):
+    """MUTATION: drop the clause from any job, or match `swarm/` from a fork."""
+    assert _evaluate(str(_jobs(name)[job_id].get("if", "true")), _values("lane")) is False, job_id
+
+
+@pytest.mark.parametrize("event", ["train", "main", "queue", "fork", "other branch", "schedule"])
+def test_every_other_event_runs_exactly_what_it_ran_before(event):
+    """The clause is false on every event but a lane's pull request, so each
+    job runs exactly when its `if:` without the clause says. MUTATION: write
+    the clause so that it also matches `train/`, a push or a fork."""
+    values = _values(event)
+    for name, job_id, job in _all_jobs():
+        if (name, job_id) == LANE_GATE:
+            continue
+        condition = str(job.get("if", ""))
+        before = _without_the_clause(condition)
+        expected = _evaluate(before, values) if before else True
+        assert _evaluate(condition, values) is expected, (event, name, job_id)
+
+
+@pytest.mark.parametrize("event", ["train", "main"])
+def test_a_train_s_pull_request_and_a_push_to_main_run_the_full_suite(event):
+    """MUTATION: skip a heavy job on the train, or on main."""
+    values = _values(event)
+    ran = {(n, j) for n, j, job in _all_jobs() if (n, j) != LANE_GATE and _evaluate(str(job.get("if", "true")), values)}
+    heavy = {("application.yml", j) for j in HEAVY_GATED["application.yml"]}
+    if event == "main":
+        heavy -= {("application.yml", "build-check")}  # a pull request's image check
+        heavy |= {("application.yml", "build"), ("terraform.yml", "plan")}
+    fast = {(n, j) for n, js in FAST.items() for j in js} - {("terraform.yml", "plan-not-run")}
+    assert heavy <= ran, sorted(heavy - ran)
+    assert fast <= ran, sorted(fast - ran)
+
+
+def test_ci_gate_runs_on_a_lane_s_pull_request_and_judges_nothing():
+    """ci-gate still reports (it is a required check), starts as soon as the
+    skipped jobs it needs are done, and every step but the lane note is
+    skipped -- nothing to judge, no checkout, no wait for terraform.yml.
+    MUTATION: let the gate's judgement, checkout, reuse or wait run on a lane."""
+    gate = _jobs("application.yml")["ci-gate"]
+    lane = _values("lane")
+    assert _evaluate(str(gate["if"]), lane) is True
+    assert gate["name"] == "ci-gate"
+    steps = gate["steps"]
+    running = [step.get("name") or step.get("uses") for step in steps if _evaluate(str(step.get("if", "true")), lane)]
+    assert running == ["a lane's pull request runs no checks"], running
+    assert "scripts/ci-gate.sh" not in steps[-1]["run"] and "sleep" not in steps[-1]["run"]
+
+
+@pytest.mark.parametrize("event", ["train", "main", "queue", "fork", "other branch"])
+def test_ci_gate_judges_everything_else_as_before(event):
+    """MUTATION: skip the gate's judgement or its wait on a train or main."""
+    steps = _jobs("application.yml")["ci-gate"]["steps"]
+    values = _values(event)
+    running = [step.get("name") or step.get("uses") for step in steps
+               if _evaluate(str(step.get("if", "true")), values)]
+    assert "a lane's pull request runs no checks" not in running
+    assert running[0] == "every job of this workflow passed, or was skipped by its own if"
+    assert "wait for terraform.yml at this commit" in running
+    assert "a job skipped by reuse passes only when the reuse step listed it" in running
+
+
+def test_the_lane_gate_s_first_step_is_still_the_needs_judgement():
+    """ci-gate's first step is the one test_ci_gate.py and the tests above run
+    as its verdict; the lane note comes last."""
+    steps = _jobs("application.yml")["ci-gate"]["steps"]
+    assert steps[0]["env"]["NEEDS"] == "${{ toJSON(needs) }}"
+    assert steps[0]["if"] == "${{ " + LANE_SKIP + " }}"
+    assert steps[-1]["if"] == "${{ " + LANE_SKIP[2:-1] + " }}"
+
+
+def test_docs_say_a_lane_s_pull_request_runs_no_checks_and_why():
+    """MUTATION: drop the subsection, its reason, or the gather it relies on."""
+    text = (ROOT / "docs" / "ci.md").read_text()
+    start = text.index("## What runs where")
+    section = text[start:text.index("\n## ", start + 1)]
+    assert "### A lane's pull request runs no checks" in section
+    for needle in ("swarm/", "CI wait time", "owner's direction", "ci-gate", "skipped", "train/",
+                   "8 pull requests", "15 minutes", "up to 40", LANE_SKIP):
         assert needle in section, needle

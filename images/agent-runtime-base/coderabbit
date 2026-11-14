@@ -15,7 +15,8 @@ given to that one process.
 
 WHERE THE KEY COMES FROM (docs/worker-images.md, "CodeRabbit"). A workspace
 admin stores it as the workspace secret `coderabbit-api-key` (kind api_key)
-and grants it to the profile that runs the lane (`profile:claude-code`,
+and grants it to each profile that runs the lane (`profile:claude-code`,
+`profile:claude-code-large` -- its own profile, so its own grant --
 `profile:codex`, ...), slot `files`. The worker releases it before the agent
 starts, as it releases every granted secret (agent_worker.secretrelease): a
 0600 file under the worker's private/ directory, never checkpointed, listed
@@ -126,7 +127,8 @@ def main(argv: Sequence[str], environ: Mapping[str, str],
         print(
             f"coderabbit: this step was released no workspace secret {SECRET_NAME!r}, "
             "so the CLI runs without a key. A workspace admin stores it and grants it "
-            f"to this runner profile, slot {SLOT!r} (docs/worker-images.md, \"CodeRabbit\").",
+            f"to this runner profile, slot {SLOT!r}: profile:claude-code and "
+            "profile:claude-code-large are separate grants (docs/worker-images.md, \"CodeRabbit\").",
             file=sys.stderr,
         )
     full = command_line(args, key)

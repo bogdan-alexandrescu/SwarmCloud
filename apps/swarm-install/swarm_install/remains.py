@@ -13,7 +13,7 @@ takes if they want it gone:
 | `firestore-database` | deleted by the uninstall, its id reusable only after Google's delay; or, when it was not deleted, kept with its data (infra abandons it) |
 | `desktop-client` | deleting the Desktop OAuth client is a console step; it is kept for reuse |
 | `github-app` | only the account that owns the App (an organisation or a personal account) can delete it |
-| `dns-record` | the record is at the company's registrar; one `edge.dns` wrote to the project's Cloud DNS zone is deleted by the uninstall, and listed only when it could not be |
+| `dns-record` | the record is at the company's registrar, or in a Cloud DNS zone `edge.dns` wrote it to in another project, whose records the uninstall leaves; one in the project's own zone is deleted by the uninstall, and listed only when it could not be |
 | `workspace-groups` | the groups, the Groups Reader role assignment or the delegation are org-admin objects |
 
 The record also carries `left`: anything else the uninstall did not remove (a
@@ -150,14 +150,19 @@ def survivors(state: Any, found: Mapping[str, Any] | None = None) -> list[Remain
     groups = list(outputs.get("admin_groups") or ())
     delegation = str(outputs.get("groups_auth") or "") == "delegation"
     host = _text(state.hostname, "the console hostname")
-    zone = str(outputs.get("dns_zone") or "")  # edge.dns wrote the record to the project's Cloud DNS zone
-    dns_done = str(found.get("dns_record") or "")
-    dns_why = {DNS_CHANGED: "it no longer holds the install's address, so the uninstall left it",
-               DNS_FAILED: "the uninstall's delete was refused (see its output)"}.get(
-        dns_done, "the uninstall has not deleted it yet")
+    zone = str(outputs.get("dns_zone") or "")  # edge.dns wrote the record to this Cloud DNS zone
+    # The zone may live in another project (a shared DNS project); the link
+    # opens it there. No recorded zone project means the deployment's own.
+    zone_project = str(outputs.get("dns_zone_project") or project)
+    foreign_zone = zone_project != project  # the uninstall deletes only in its own project's zone
+    dns_done = "" if foreign_zone else str(found.get("dns_record") or "")
+    dns_why = ("the uninstall leaves records in another project's zone" if foreign_zone else
+               {DNS_CHANGED: "it no longer holds the install's address, so the uninstall left it",
+                DNS_FAILED: "the uninstall's delete was refused (see its output)"}.get(
+                   dns_done, "the uninstall has not deleted it yet"))
     dns_record = (
-        (f"edge.dns wrote it to the project's Cloud DNS zone {zone}; {dns_why}",
-         f"https://console.cloud.google.com/net-services/dns/zones/{zone}/details?project={project}: "
+        (f"edge.dns wrote it to Cloud DNS zone {zone} in project {zone_project}; {dns_why}",
+         f"https://console.cloud.google.com/net-services/dns/zones/{zone}/details?project={zone_project}: "
          f"delete the A record for {host}")
         if zone else
         ("the record is at the company's DNS registrar, which the installer cannot reach",

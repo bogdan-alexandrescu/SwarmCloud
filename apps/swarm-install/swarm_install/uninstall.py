@@ -714,10 +714,13 @@ class Uninstall:
     def _dns_record(self) -> None:
         """Delete the A record edge.dns wrote to the project's own Cloud DNS
         zone (the owner's rights cover it); a record at a registrar, or one that
-        now holds another address, stays a remain. A refusal is a remain too."""
+        now holds another address, stays a remain. A refusal is a remain too, and
+        so is a record in a zone in another project (a shared DNS project): the
+        uninstall touches nothing outside the deployment's project."""
         zone = str(self.state.outputs.get("dns_zone") or "")
+        zone_project = str(self.state.outputs.get("dns_zone_project") or self.project)
         hostname, address = str(self.state.hostname or ""), str(self.state.outputs.get("global_ip") or "")
-        if not zone or not hostname or not address:
+        if not zone or not hostname or not address or zone_project != self.project:
             return
         refuse_denied("the Cloud DNS zone", [zone], self.state.deny_list)
         try:

@@ -100,9 +100,16 @@ vulnerabilities:
   # still the newest 1.36 (dl.k8s.io/release/stable-1.36.txt) and the newest
   # release, 1.37.2, is two minors past the 1.35 control plane, so
   # CVE-2026-78669 stays for kubectl alone, one more week.
+  # REVISITED 2026-11-14 ~02:30Z UTC (owner rule of 2026-11-01: take every
+  # fixed build, extend one week only for what is still unfixed). Nothing
+  # newer links x/net 0.62.0: kubectl's newest are still 1.37.2 and 1.36.6
+  # (dl.k8s.io stable.txt and stable-1.36.txt); gke-gcloud-auth-plugin 593.0.0
+  # (Google's index, SHA256 matched) is go1.27.3 with x/net v0.61.0; gh
+  # 2.104.0 is go1.27.4 with x/net v0.61.0; trivy's newest is 0.76.2, pinned.
+  # Both entries below move to 2026-11-21 unchanged; revisit the same way.
   - id: CVE-2026-78669
     statement: "golang.org/x/net http2 DoS inside vendor-built kubectl (1.36.6 links x/net v0.56.0; the newest release, 1.37.2, v0.57.0); no kubectl release links x/net 0.60.0 yet. The GKE plugin is fixed at 592.0.0."
-    expired_at: 2026-11-14
+    expired_at: 2026-11-21
   # Same class, added the same night (owner, 2026-10-10): the next release after
   # PR 992 was refused on this id alone, in the same vendor binaries and images,
   # fixed by the same Go 1.26.9 / 1.27.2. Same bound: a crafted TLS peer can at
@@ -130,9 +137,16 @@ vulnerabilities:
   # worst stop one retried attempt. Revisit on or before 2026-11-14 the same
   # way: read the newest kubectl, plugin, gh and trivy builds' x/net and pin
   # the first that links 0.62.0.
+  # REVISITED 2026-11-14 ~02:30Z UTC (owner rule of 2026-11-01: take every
+  # fixed build, extend one week only for what is still unfixed). Nothing
+  # newer links x/net 0.62.0: kubectl's newest are still 1.37.2 and 1.36.6
+  # (dl.k8s.io stable.txt and stable-1.36.txt); gke-gcloud-auth-plugin 593.0.0
+  # (Google's index, SHA256 matched) is go1.27.3 with x/net v0.61.0; gh
+  # 2.104.0 is go1.27.4 with x/net v0.61.0; trivy's newest is 0.76.2, pinned.
+  # Both entries below move to 2026-11-21 unchanged; revisit the same way.
   - id: CVE-2026-78661
     statement: "golang.org/x/net/html DoS inside vendor-built kubectl, gke-gcloud-auth-plugin, gh and trivy (x/net v0.56.0 to v0.61.0); no vendor build links the fixed 0.62.0 yet."
-    expired_at: 2026-11-14
+    expired_at: 2026-11-21
   # Same class again (owner, 2026-10-17): golang.org/x/text's precis Nickname
   # profile can panic on an out-of-bounds slice. It is in two vendor-built
   # binaries: kubectl (agent-runtime-base, -nocodex, -browser, -indexer and

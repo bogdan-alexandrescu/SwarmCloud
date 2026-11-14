@@ -396,6 +396,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/worker/test_publish_guard_security_pass.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_keeps_index_removals.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_outcomes.py` | `<module>` | `skipif` | git is not installed |
+| `tests/unit/worker/test_publish_push_reread.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_scan_after_merging_main.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_scan_cli.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_publish_scan_stacked_branch_floor.py` | `<module>` | `skipif` | git is not installed |
@@ -422,6 +423,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/worker/test_standalone_outputs.py` | `test_a_path_longer_than_a_storage_object_name_is_listed_shortened` | `skipif` | a 1,200-byte path is past macOS's PATH_MAX |
 | `tests/unit/worker/test_standalone_outputs.py` | `test_a_repository_task_is_unchanged` | `skipif` | git is not installed |
 | `tests/unit/worker/test_step_parity.py` | `<module>` | `skipif` | git is not installed |
+| `tests/unit/worker/test_step_repository_ref_clone.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_strategy_end_to_end.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_subagent_spend.py` | `test_a_scan_refusal_names_its_rule_and_path_line_and_not_the_text` | `skipif` | git is not installed |
 | `tests/unit/worker/test_swarm_qa.py` | `_node` | `skip_call` | node is not installed here; CI runs the page's scripts |

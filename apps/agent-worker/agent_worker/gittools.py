@@ -161,6 +161,9 @@ _RELAYED_TYPES: dict[str, tuple[type, ...]] = {
 _REPOSITORY_KEYS = frozenset({"repo", "repository", "url", "remote"})
 
 _FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+#: #2442: the most of the clone's `.git/shallow` the worker reads (a line is
+#: 41 bytes; a clone deepened by hand still lists far fewer than this allows).
+_SHALLOW_MAX_BYTES = 1024 * 1024
 #: `owner/name` as GitHub spells it; `.` and `..` are not names.
 _REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -262,6 +265,13 @@ class _Origin:
 
     haves: list[str] = field(default_factory=list)
     tips: dict[str, str] = field(default_factory=dict)
+    #: #2442: tips a `depth: 1` fetch landed with no parent in the clone. Not
+    #: offered as a have to a plain fetch: its bundle would stop at the tip and
+    #: leave it parentless, and a rebase onto it would replay the clone's base.
+    shallow: list[str] = field(default_factory=list)
+
+    def plain_haves(self) -> list[str]:
+        return [sha for sha in self.haves if sha not in self.shallow]
 
     def learn(self, sha: str, branch: str | None = None) -> None:
         if _FULL_SHA.match(sha) and sha not in self.haves:
@@ -297,6 +307,8 @@ def validate_request(tool: Any, arguments: Any) -> tuple[str, dict[str, Any]]:
         raise GitToolRefused("request_invalid", f"{tool} needs {missing}")
     if "ref" in args:
         validate_tool_ref(args["ref"])
+    if "depth" in args:
+        validate_depth(args["depth"])
     if "branch" in args and not isinstance(args["branch"], str):
         raise GitToolRefused("bad_ref", "branch must be a string")
     if "repo" in args and (not isinstance(args["repo"], str) or not _REPO.match(args["repo"])
@@ -329,6 +341,13 @@ def validate_tool_ref(ref: Any) -> str:
             or ref in ("HEAD", "@"):
         raise GitToolRefused("bad_ref", f"{ref!r} is not a branch, a tag or a sha")
     return ref
+
+
+def validate_depth(depth: Any) -> int:
+    """#2442: a fetch's depth is 1, the tip alone, or not given."""
+    if type(depth) is not int or depth != 1:
+        raise GitToolRefused("bad_depth", "depth is 1 (the tip alone) or not given")
+    return depth
 
 
 def validate_path(path: Any) -> str:
@@ -495,7 +514,8 @@ class GitTools:
             name, args = validate_request(tool, arguments)
             self._spend(name)
             handler = {
-                "git_fetch": lambda: self.fetch(args["ref"], request_id=request_id),
+                "git_fetch": lambda: self.fetch(args["ref"], request_id=request_id,
+                                                depth=args.get("depth")),
                 "git_rebase_onto": lambda: self.rebase_onto(args["ref"], request_id=request_id),
                 "git_push_branch": lambda: self.push_branch(args.get("branch"),
                                                             request_id=request_id),
@@ -640,11 +660,24 @@ class GitTools:
 
     # -- git_fetch -------------------------------------------------------------
 
-    def fetch(self, ref: str, *, request_id: str) -> dict[str, Any]:
-        """Ask swarm-api for `ref` and apply its bundle to the agent's clone."""
+    def fetch(self, ref: str, *, request_id: str, depth: int | None = None) -> dict[str, Any]:
+        """Ask swarm-api for `ref` and apply its bundle to the agent's clone.
+
+        `depth=1` (#2442): the tip alone, as a pack of the tip commit and the
+        objects of its tree the haves lack (a bundle cannot be shallow), so a
+        before render of the base branch fits under the bundle cap when the
+        clone's one-commit base hides all of the branch's history. The tip is
+        recorded in the clone's `.git/shallow` when its parents are not there.
+        """
         ref = validate_tool_ref(ref)
-        payload = self.call("git_fetch", {"ref": ref, "haves": list(self.origin.haves)},
-                            request_id=request_id)
+        if depth is not None:
+            validate_depth(depth)
+        fields: dict[str, Any] = {"ref": ref, "haves": list(self.origin.haves)}
+        if depth is not None:
+            fields["depth"] = depth
+        else:
+            fields["haves"] = self.origin.plain_haves()
+        payload = self.call("git_fetch", fields, request_id=request_id)
         sha = payload.get("resolved_sha")
         if not isinstance(sha, str) or not _FULL_SHA.match(sha):
             raise GitToolRefused("api_unavailable", "the platform answered without a sha",
@@ -653,8 +686,12 @@ class GitTools:
         local = f"refs/swarm/fetched/{sha}" if by_sha else f"refs/remotes/origin/{ref}"
         bundle = self._received_bundle(payload, request_id=request_id)
         try:
-            if bundle is not None:
+            if bundle is not None and depth is not None:
+                self._apply_pack(bundle, sha, local)
+            elif bundle is not None:
                 self._apply_bundle(bundle, sha, local)
+                if self.origin.shallow:
+                    self._deepen_shallow(bundle)
             else:
                 # Nothing to send: swarm-api found the sha among the haves.
                 self._clone_git(["update-ref", local, sha], "gittools-fetch-ref")
@@ -662,7 +699,10 @@ class GitTools:
             if bundle is not None:
                 bundle.unlink(missing_ok=True)
         self.origin.learn(sha, None if by_sha else ref)
-        return {"ref": ref, "resolved_sha": sha, "local_ref": local}
+        answer = {"ref": ref, "resolved_sha": sha, "local_ref": local}
+        if depth is not None:
+            answer["depth"] = depth
+        return answer
 
     def _received_bundle(self, payload: dict[str, Any], *, request_id: str) -> Path | None:
         inline = payload.get("bundle")
@@ -724,6 +764,145 @@ class GitTools:
                                        "gittools-fetch-check")
         if code != 0 or landed.strip() != sha:
             raise GitToolRefused("fetch_failed", f"{local} did not land on {sha}")
+
+    def _apply_pack(self, pack: Path, sha: str, local: str) -> None:
+        """A depth-1 fetch's pack (#2442), indexed into the agent's clone.
+
+        No credential is near it: the pack came from swarm-api and the clone
+        is the agent's own. The tip goes into `.git/shallow` first when its
+        commit is not already here (`index-pack --strict` refuses a commit
+        whose parent is missing and not grafted, measured on git 2.39), and
+        comes out again when the pack does not apply or its parents are here.
+        """
+        data = pack.read_bytes()
+        if data[:4] != b"PACK":
+            raise GitToolRefused("api_unavailable", "the platform's depth-1 answer is not a pack",
+                                 retryable=True)
+        if not self._has_object(f"{sha}^{{commit}}"):
+            added = self._shallow_add(sha)
+            if not self._index_pack(data, fix_thin=False):
+                if added:
+                    self._shallow_drop([sha])
+                raise GitToolRefused("fetch_failed", "the depth-1 pack did not apply to the "
+                                                     "clone (an object failed git's checks)")
+            if added and self._missing_parents(sha):
+                self.origin.shallow.append(sha)
+            elif added:
+                self._shallow_drop([sha])      # its history is here after all
+        self._clone_git(["update-ref", local, sha], "gittools-fetch-ref")
+        code, landed = self._clone_git(["rev-parse", "--verify", "--quiet", local],
+                                       "gittools-fetch-check")
+        if code != 0 or landed.strip() != sha:
+            raise GitToolRefused("fetch_failed", f"{local} did not land on {sha}")
+
+    def _deepen_shallow(self, bundle: Path) -> None:
+        """A plain fetch's bundle, indexed whole when a depth-1 tip still lacks parents.
+
+        `git fetch <bundle>` skips a bundle whose tip the clone already has,
+        so a depth-1 tip's history would never land and a rebase onto it
+        would replay the clone's own base. Its pack is indexed directly then,
+        every object checked, and each depth-1 tip whose parents are here now
+        leaves `.git/shallow`.
+        """
+        if any(self._missing_parents(sha) for sha in self.origin.shallow):
+            data = bundle.read_bytes()
+            start = data.find(b"\n\n") + 2
+            if start < 2 or data[start:start + 4] != b"PACK" \
+                    or not self._index_pack(data[start:], fix_thin=True):
+                raise GitToolRefused("fetch_failed", "the bundle's history did not apply under "
+                                                     "the clone's depth-1 tip")
+        done = [sha for sha in self.origin.shallow if not self._missing_parents(sha)]
+        if done:
+            self._shallow_drop(done)
+            self.origin.shallow = [sha for sha in self.origin.shallow if sha not in done]
+
+    def _index_pack(self, data: bytes, *, fix_thin: bool) -> bool:
+        """`git index-pack --stdin --strict` in the agent's clone, fed `data`."""
+        from .procman import run_child
+
+        argv = [self._git, *gitops._NO_HOOKS, "index-pack", "--stdin", "--strict",
+                *(["--fix-thin"] if fix_thin else [])]
+        result = run_child(
+            argv, cwd=self.clone, env=gitops._git_env(self.private_dir),
+            stdout_path=self.logs_dir / "git-gittools-index-pack.out.log",
+            stderr_path=self.logs_dir / "git-gittools-index-pack.err.log",
+            timeout_seconds=self.cfg.timeout_seconds, grace_seconds=5,
+            max_stdout_bytes=64 * 1024, max_stderr_bytes=256 * 1024, logger=self.log,
+            stdin_data=data,
+        )
+        if result.timed_out:
+            raise GitError(f"git index-pack timed out after {self.cfg.timeout_seconds}s")
+        return result.exit_code == 0
+
+    def _missing_parents(self, sha: str) -> bool:
+        code, text = self._clone_git(["cat-file", "commit", sha], "gittools-parents")
+        header = text.split("\n\n", 1)[0]     # a message line may start "parent " too
+        return code != 0 or not all(self._has_object(line.split(" ", 1)[1])
+                                    for line in header.splitlines() if line.startswith("parent "))
+
+    def _has_object(self, sha: str) -> bool:
+        return self._clone_git(["cat-file", "-e", sha], "gittools-has-object")[0] == 0
+
+    def _git_path(self, name: str) -> Path:
+        code, text = self._clone_git(["rev-parse", "--git-path", name], "gittools-git-path")
+        if code != 0 or not text.strip():
+            raise GitToolRefused("fetch_failed", "the clone's git directory cannot be read")
+        return self.clone / text.strip()
+
+    def _shallow_lines(self) -> list[str]:
+        """The clone's `.git/shallow`, read as data: the agent's file, so a
+        regular file of at most `_SHALLOW_MAX_BYTES` or a refusal, never a
+        read that a FIFO or a link could hold up."""
+        try:
+            fd = os.open(self._git_path("shallow"),
+                         os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            return []
+        except OSError:
+            raise GitToolRefused("fetch_failed", "the clone's .git/shallow cannot be "
+                                                 "read") from None
+        with os.fdopen(fd, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_size > _SHALLOW_MAX_BYTES:
+                raise GitToolRefused("fetch_failed", "the clone's .git/shallow is not a "
+                                                     "small regular file")
+            return [line for line in handle.read().decode("ascii", "replace").split()
+                    if _FULL_SHA.match(line)]
+
+    def _shallow_write(self, lines: list[str]) -> None:
+        """`.git/shallow`, replaced whole through git's own lock file name."""
+        target = self._git_path("shallow")
+        lock = target.with_name("shallow.lock")
+        try:
+            fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                         | getattr(os, "O_NOFOLLOW", 0), 0o644)
+        except OSError:
+            raise GitToolRefused("fetch_failed", "the clone's .git/shallow is locked "
+                                                 "(shallow.lock exists)") from None
+        try:
+            with os.fdopen(fd, "w") as handle:
+                handle.write("".join(f"{line}\n" for line in lines))
+            if lines:
+                os.replace(lock, target)
+            else:
+                lock.unlink()
+                target.unlink(missing_ok=True)
+        except BaseException:
+            lock.unlink(missing_ok=True)
+            raise
+
+    def _shallow_add(self, sha: str) -> bool:
+        lines = self._shallow_lines()
+        if sha in lines:
+            return False
+        self._shallow_write([*lines, sha])
+        return True
+
+    def _shallow_drop(self, shas: list[str]) -> None:
+        lines = self._shallow_lines()
+        kept = [line for line in lines if line not in shas]
+        if kept != lines:
+            self._shallow_write(kept)
 
     # -- git_rebase_onto ---------------------------------------------------------
 

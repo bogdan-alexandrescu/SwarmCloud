@@ -659,6 +659,20 @@ def test_a_cloud_dns_record_that_moved_stays_a_remain_with_its_page(tmp_path, op
     assert any(url.startswith("https://console.cloud.google.com/net-services/dns/zones/swarm-zone/") for url, _ in opened)
 
 
+def test_a_record_in_another_projects_zone_is_left_and_listed(tmp_path, opened):
+    # A zone in a shared DNS project is outside the deployment's project: the
+    # uninstall never deletes there, and lists the record with that zone's page.
+    state = install_state()
+    state.outputs.update({"dns_zone": "edge-zone", "dns_zone_project": "zone-host-project"})
+    store, _ = stored_store(tmp_path, state)
+    world = FakeWorld(tmp_path)
+    assert flow(tmp_path, store, world).run() == ExitCode.OK
+    assert "delete_dns_record" not in world.names()
+    remain = _record(tmp_path)["dns-record"]
+    assert "another project's zone" in remain.why
+    assert "zones/edge-zone/details?project=zone-host-project" in remain.step
+
+
 def test_a_registrar_record_is_never_touched(tmp_path):
     store, _ = stored_store(tmp_path, install_state())
     world = FakeWorld(tmp_path)
@@ -1015,6 +1029,24 @@ def test_firestore_kept_is_recorded_as_kept():
     gone = {r.kind: r for r in remains_mod.survivors(state, {"firestore_database": "swarm",
                                                              "firestore_deleted": True})}
     assert "was deleted" in gone["firestore-database"].why
+
+
+def test_dns_record_links_the_zone_in_its_own_project():
+    # edge.dns may write the record to a zone that lives in another project;
+    # the console link must open the zone there, not in the deployment's.
+    state = install_state()
+    state.outputs.update({"dns_zone": "edge-zone", "dns_zone_project": "zone-host-project"})
+    by = {r.kind: r for r in remains_mod.survivors(state, {})}
+    assert "zones/edge-zone/details?project=zone-host-project" in by["dns-record"].step
+    assert f"project={PROJECT}" not in by["dns-record"].step
+    assert "zone-host-project" in by["dns-record"].why
+
+
+def test_dns_record_links_the_deployment_project_when_no_zone_project_is_recorded():
+    state = install_state()
+    state.outputs["dns_zone"] = "edge-zone"
+    by = {r.kind: r for r in remains_mod.survivors(state, {})}
+    assert f"zones/edge-zone/details?project={PROJECT}" in by["dns-record"].step
 
 
 def test_real_world_firestore_delete_lifts_its_protection_first():

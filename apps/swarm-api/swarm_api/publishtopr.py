@@ -43,6 +43,13 @@ own prefix. The worker reads the pull request AGAIN before the clone and
 before the push (`agent_worker.publishpr`): a pull request closed, merged or
 moved since this read is refused there, never force-pushed.
 
+WHAT IS RECORDED (docs/design/merging-without-a-laptop.md §3.2, lane 1). A
+workflow with `publish_to_pr` is marked `pr_fix_head: {kind: "follow_up"}`
+by `cifix.stamp`, and once its task ends `SUCCEEDED` the merge-wake tick
+appends its `pushed_head` and the `started_head` the worker fast-forwarded
+from to the branch task's `pull_request_fix_heads` (`cifix._record_head`),
+for the merge step to check against this signed block.
+
 NOT A FROZEN-CONTRACT FIELD. `Task` has no field for it; it lives in
 `metadata.dispatch`, where `strategy` and `continues` live, and the request
 to type it is in docs/contract-change-requests.md.
