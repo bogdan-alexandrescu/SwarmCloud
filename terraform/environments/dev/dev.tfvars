@@ -794,9 +794,19 @@ additional_repositories_enabled = true
 # manages secrets has a named workspace admin, and eng and smoke do not yet.
 # Turned on before that, the gate would leave a group workspace's secrets
 # with nobody but a platform admin able to change them.
+#
+# repository_ref_not_found is ON in dev (owner decision 2026-11-12, #3566): a
+# submission whose repository_ref the forge does not have (a deleted branch, a
+# sha GitHub does not serve) is refused 422 before it takes a lease, a pod and
+# a failed clone. The report-only lines of 9-11 November also flagged refs that
+# do exist -- pull-request heads (refs/pull/<n>/head) and full branch
+# refnames -- so it is on only now that a full refname is checked as the ref
+# it names. The check fails open when the forge does not answer. Kill switch:
+# false and release.
 api_refusals = {
-  index_refresh_failed = true
-  role_member_required = true
+  index_refresh_failed     = true
+  role_member_required     = true
+  repository_ref_not_found = true
 }
 
 # A platform admin's reach (swarm-api PLATFORM_ADMIN_REACH,

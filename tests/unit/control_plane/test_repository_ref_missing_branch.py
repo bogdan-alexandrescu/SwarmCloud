@@ -522,8 +522,13 @@ def test_a_full_branch_refname_is_checked_as_that_branch(make_client, db):
     assert forge.calls == [("branch", "example-org/example", "feature/x")]
 
     forge.calls.clear()
-    body = _assert_refused(_task(client, "refs/heads/gone"), db, "refs/heads/gone")
+    response = _task(client, "refs/heads/gone")
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "repository_ref_not_found"
+    assert body["detail"]["repository_ref"] == "refs/heads/gone"
     assert "is not a branch of example-org/example" in body["message"]
+    assert len(_stored(db)) == 1, "the refusal wrote nothing"
     # Only the branch is asked: a full branch refname is never a tag.
     assert ("tag", "example-org/example", "gone") not in forge.calls
     assert forge.calls[0] == ("branch", "example-org/example", "gone")
@@ -537,8 +542,13 @@ def test_a_full_tag_refname_is_checked_as_that_tag(make_client, db):
     assert forge.calls == [("tag", "example-org/example", "v2")]
 
     forge.calls.clear()
-    body = _assert_refused(_task(client, "refs/tags/v1.2.3"), db, "refs/tags/v1.2.3")
+    response = _task(client, "refs/tags/v1.2.3")
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "repository_ref_not_found"
+    assert body["detail"]["repository_ref"] == "refs/tags/v1.2.3"
     assert "is not a tag of example-org/example" in body["message"]
+    assert len(_stored(db)) == 1, "the refusal wrote nothing"
     assert forge.calls[0] == ("tag", "example-org/example", "v1.2.3")
 
 

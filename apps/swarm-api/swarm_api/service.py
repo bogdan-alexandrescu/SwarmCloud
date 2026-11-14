@@ -161,7 +161,11 @@ from .validation import (
     StepSpec,
     IssueRef,
     check_repository_ref,
-    is_full_sha,
+    REF_BRANCH,
+    REF_COMMIT,
+    REF_FULL,
+    REF_TAG,
+    ref_kind,
     ref_needs_lookup,
     repository_ref_not_found,
     swarm_task_of_ref,
@@ -2445,6 +2449,13 @@ class SubmissionService:
         the `repository_ref_not_found` switch is on (refusals.py); off, the
         refusal is logged and the submission admitted.
 
+        A full refname (#3566) is one read of the kind it names
+        (`validation.ref_kind`): `refs/heads/<b>` the branch <b>, `refs/tags/<t>`
+        the tag <t>, any other `refs/...` -- a pull request's
+        `refs/pull/<n>/head`, which the worker clones since #3347 -- that exact
+        ref (`ref_head`, `GET git/ref/<ref>`). The report-only lines of 9-11
+        November read both as "neither a branch nor a tag".
+
         A full sha is one read, `commit_head` (`GET commits/<sha>`), instead
         of the branch and tag reads: task_36c8a894 named a sha GitHub does not
         serve and failed in the clone with "not our ref". The commits API can
@@ -2467,8 +2478,8 @@ class SubmissionService:
         owner, repo = named
         target = IssueRef(owner=owner, repo=repo, number=0)
         writer = self._forge_writer
-        full_sha = is_full_sha(ref)
-        task_id = None if full_sha else swarm_task_of_ref(ref)
+        kind, name = ref_kind(ref)
+        task_id = swarm_task_of_ref(ref)
         task: Task | None = None
         if task_id is not None:
             try:
@@ -2482,12 +2493,21 @@ class SubmissionService:
         try:
             token = self._forge_tokens.token_for(tenant, person=person)
             try:
-                if full_sha:
-                    if writer.commit_head(target, ref, token) is not None:
+                if kind == REF_COMMIT:
+                    if writer.commit_head(target, name, token) is not None:
                         return
-                elif writer.branch_head(target, ref, token) is not None:
+                elif kind == REF_BRANCH:
+                    if writer.branch_head(target, name, token) is not None:
+                        return
+                elif kind == REF_TAG:
+                    if writer.tag_head(target, name, token) is not None:
+                        return
+                elif kind == REF_FULL:
+                    if writer.ref_head(target, name, token) is not None:
+                        return
+                elif writer.branch_head(target, name, token) is not None:
                     return
-                elif writer.tag_head(target, ref, token) is not None:
+                elif writer.tag_head(target, name, token) is not None:
                     return
                 # Neither: a 404 is also what a token that cannot see the
                 # repository reads, so the repository itself must answer.
