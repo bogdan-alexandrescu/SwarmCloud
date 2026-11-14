@@ -347,14 +347,18 @@ def _attach_ids(reply: dict) -> tuple[list[str], list[str]]:
     return workflow_ids, task_ids
 
 
-def test_attach_all_attaches_only_this_sessions_work(plugin, swarm, api, db, monkeypatch):  # noqa: F811
+def test_attach_all_with_no_origin_repository_attaches_only_this_sessions_work(plugin, swarm, api, db, monkeypatch):  # noqa: F811
+    """The plain attach-all widens to this project's repository (the owner,
+    2026-11-09; test_sc_browser_followup.py); with no origin naming one,
+    nothing widens and the rest is counted as before."""
     made = _three_sessions(swarm, monkeypatch)
     reply = json.loads(server._call(swarm, "swarm_workflow_launch", {"attach": "all"}))
+    assert reply["project"]["repository"] is None and "no origin remote" in reply["project"]["note"]
     assert _attach_ids(reply) == ([made["mine"]["workflow_id"]], [made["mine"]["task_id"]])
     assert reply["session"]["session_id"] == made["mine"]["sid"]
     assert reply["session"]["left_out"] == {
-        "workflows": {"other_session": 1, "untagged": 1},
-        "single_tasks": {"other_session": 1, "untagged": 1},
+        "workflows": {"other_session": 1, "untagged": 1, "not_this_project": 0},
+        "single_tasks": {"other_session": 1, "untagged": 1, "not_this_project": 0},
     }
     assert reply["arm_watch"] is not None
 

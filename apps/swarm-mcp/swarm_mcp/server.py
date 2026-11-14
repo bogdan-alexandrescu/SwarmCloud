@@ -1695,13 +1695,15 @@ TOOLS: list[dict[str, Any]] = [
                 "project": {
                     "type": "boolean",
                     "description": (
-                        "With attach \"all\" only, AT SESSION START (`/sc attach --all --project`, "
-                        "what the sc plugin's SessionStart hook asks for in the rows layout; "
-                        "SC-BROWSER-FOLLOWUP): this session's work AND every workflow and single task "
-                        "still running that clones this checkout's origin repository (`repository` "
-                        "names another), whichever Claude Code session started it; `project` in the "
-                        "reply says how many came from other sessions. `/sc check`, the watch and the "
-                        "plain attach-all stay this session's."
+                        "With attach \"all\" only (`/sc attach --all --project`, what the sc "
+                        "plugin's SessionStart hook asks for in the rows layout; SC-BROWSER-FOLLOWUP): "
+                        "this session's work AND every workflow and single task still running that "
+                        "clones this checkout's origin repository (`repository` names another), "
+                        "whichever Claude Code session started it, each marked `this_session`; "
+                        "`project` in the reply says how many came from other sessions. The plain "
+                        "attach-all (no `repository`, `new_only` or `exclude`, outside the pane "
+                        "layout) means the same since the owner's 2026-11-09 decision. `/sc check`, "
+                        "its `new_only` attach and the watch stay this session's."
                     ),
                 },
                 "new_only": {
