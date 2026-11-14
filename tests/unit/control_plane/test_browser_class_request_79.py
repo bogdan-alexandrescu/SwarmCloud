@@ -10,8 +10,9 @@ These hold:
 
   * the frozen catalogue says 4/8/4/1;
   * the GKE pod `claude-code-browser` renders asks for exactly 4 vCPU / 8 GiB,
-    with requests == limits on every container (invariant 7) -- with the live
-    display sidecar and without it, so the split still adds up to the class;
+    with requests == limits on every container (invariant 7) -- without the
+    live display sidecar; with it, 4 vCPU / 13 GiB, the worker's 8 GiB floor
+    (#3104) beside the display's 5;
   * admission charges a browser agent 1 unit: a 3-unit pool admits three.
 
 MUTATION: put `cpu=8, memory_gib=16, disk_gib=8, units=2` back in
@@ -90,7 +91,10 @@ def test_the_claude_code_browser_pod_requests_4_vcpu_8_gib_with_memory_requests_
         assert r["requests"]["memory"] == r["limits"]["memory"], f"{c['name']}: invariant 7"
         assert r["requests"]["ephemeral-storage"] == r["limits"]["ephemeral-storage"], c["name"]
     assert sum(_cpu(c["resources"]["requests"]["cpu"]) for c in containers) == 4
-    assert sum(_gib(c["resources"]["requests"]["memory"]) for c in containers) == 8
+    # The live pod is the display's 5 GiB plus the worker's 8 GiB floor
+    # (#3104, LIVE_WORKER_MEMORY_FLOOR_GIB), charged as such at admission.
+    assert sum(_gib(c["resources"]["requests"]["memory"]) for c in containers) == (
+        13 if live else 8)
 
 
 def test_admission_charges_a_browser_agent_one_unit(db, make_scheduler):

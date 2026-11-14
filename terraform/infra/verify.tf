@@ -222,6 +222,24 @@ resource "google_cloud_run_v2_job" "verify" {
           name  = "ENVIRONMENT"
           value = var.environment
         }
+        # Sourcing scripts/lib/common.sh loads the never-touch list, as ONE
+        # object (config_fetch_one): config/<env>/deny-list.json in the state
+        # bucket, which this identity may read and nothing else under config/
+        # (terraform/bootstrap/deny_list_readers.tf). There is no gcloud in
+        # this image, so the read goes over REST with the metadata server's
+        # token -- only because this says so; a host without gcloud and
+        # without this setting refuses. The bucket is named here, in the
+        # template, and not per execution, so no caller chooses it. The name is
+        # bootstrap's default (<prefix>-tfstate-<project>, the one
+        # scripts/lib/common.sh assumes too).
+        env {
+          name  = "SWARM_CONFIG_TRANSPORT"
+          value = "rest"
+        }
+        env {
+          name  = "TF_STATE_BUCKET"
+          value = "${var.name_prefix}-tfstate-${var.project_id}"
+        }
         # The live-browser group's QA identity case (QI-ACCEPT, part of
         # #1649) SKIPs every check unless both are set. verify-remote.sh runs
         # this job with --args only, so its environment is this template's:

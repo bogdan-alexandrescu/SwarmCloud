@@ -86,7 +86,7 @@ def test_the_frozen_bounds_are_the_designs():
     assert (profiles.MEMORY_PER_CPU_MIN, profiles.MEMORY_PER_CPU_MAX) == (1.0, 6.5)
     assert profiles.LIVE_WORKER_MIN == (1, 2)
     assert profiles.LIVE_DISPLAY_MIN == (1, 5)
-    assert profiles.CLASS_ORDER == ("standard", "browser", "medium", "large")
+    assert profiles.CLASS_ORDER == ("standard", "browser", "medium", "builder", "large")
     assert set(profiles.CLASS_ORDER) == set(RESOURCE_CLASSES)
 
 
@@ -143,7 +143,12 @@ def test_check_size_is_pure():
     ids=["0.5", "0.75", "0.25-refused", "0-refused", "8", "7.75", "8.25-refused", "7.25", "7.1-refused"],
 )
 def test_cpu_request_bounds(cls, size, refused):
-    found = _refused(check_size(_table(**{cls: _size(*size)})), cls, "cpu_request")
+    table = {cls: _size(*size)}
+    if cls == "large":
+        # `builder` (contract request 135) sits just below `large` at 8 CPU,
+        # so it moves with it and the ordering cannot refuse `large` too.
+        table["builder"] = _size(size[0], size[1], 16, 8)
+    found = _refused(check_size(_table(**table)), cls, "cpu_request")
     assert bool(found) is refused, found
 
 
@@ -338,19 +343,26 @@ def test_a_value_that_is_no_number_is_refused_not_raised(value):
     # MUTATION: compare without the type check and a string raises TypeError.
     assert _refused(refusals, "standard", "cpu_request"), refusals
 
+#: How often a random class is floored at the one below it, and how many
+#: tables the sweep visits. Five classes (contract request 135 added
+#: `builder`) make an ordered table rarer, so both rose from 0.8 and 5000:
+#: the sweep still reaches both sides of the validator.
+FLOOR_ODDS = 0.9
+SWEEP = 20000
+
 
 def _random_size(rng: random.Random, floor: ResourceSize | None) -> ResourceSize:
     step = profiles.CPU_REQUEST_STEP
     cpu = rng.randint(1, 34) * step  # 0.25 ... 8.5, both edges outside
-    if floor is not None and rng.random() < 0.8:
+    if floor is not None and rng.random() < FLOOR_ODDS:
         cpu = max(cpu, floor.cpu_request)
     limit = cpu * rng.choice([0.9, 1, 1.25, 1.5, 2, 2, 2.1])
     # Mostly near Autopilot's ratio, with both edges reachable.
     memory = max(1, int(cpu * rng.uniform(0.75, 7.0)))
-    if floor is not None and rng.random() < 0.8:
+    if floor is not None and rng.random() < FLOOR_ODDS:
         memory = max(memory, floor.memory_gib)
     disk = rng.randint(0, max(memory, 1))
-    if floor is not None and rng.random() < 0.8:
+    if floor is not None and rng.random() < FLOOR_ODDS:
         disk = max(disk, floor.disk_gib)
     return _size(cpu, limit, memory, disk)
 
@@ -378,7 +390,7 @@ def test_whatever_check_size_accepts_is_inside_autopilots_ratio():
     """
     rng = random.Random(1689)
     visited = accepted = 0
-    for _ in range(5000):
+    for _ in range(SWEEP):
         table: dict[str, ResourceSize] = {}
         floor = None
         for name in profiles.CLASS_ORDER:
@@ -405,7 +417,7 @@ def test_whatever_check_size_accepts_is_inside_autopilots_ratio():
                 assert worker.memory_gib + display.memory_gib == size.memory_gib
     print(f"visited {visited} tables: {accepted} accepted, {visited - accepted} refused")
     # The control: the sweep reached both sides of the validator.
-    assert visited == 5000
+    assert visited == SWEEP
     assert 30 <= accepted <= visited - 30, (visited, accepted)
 
 

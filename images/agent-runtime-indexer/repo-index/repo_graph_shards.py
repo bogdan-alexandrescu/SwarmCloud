@@ -1221,8 +1221,15 @@ def _carried_shards(store: Store, manifest: bytes, *, tenant_id: str, repo_id: s
 def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
                 max_commit_bytes: int = MAX_COMMIT_BYTES,
                 graph_digest: str | None = None, base_commit: str | None = None,
-                context: dict | None = None, index: dict | None = None) -> dict:
+                context: dict | None = None, index: dict | None = None,
+                measure_latency_hours: float | None = None) -> dict:
     """Shard `document` into `store`: blobs first (never clobbered), manifest last.
+
+    MEASURED (`measure_latency_hours`, #1840): after the manifest, the answer
+    battery is timed over the blobs still in memory and `latency.json` is put
+    beside the manifest, unless this registration has one younger than that
+    many hours (`write_latency`). The report's `latency` says which; a failed
+    measurement is reported there and never fails the write.
 
     RESUMABLE: a blob already at its path with our bytes counts as written
     (`blobs_reused`), so a run interrupted after any number of blobs
@@ -1285,6 +1292,9 @@ def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
     stored_document = json.loads(manifest)["document"]
     report["document"] = {"available": stored_document["available"],
                           "reason": stored_document["reason"]}
+    if measure_latency_hours is not None:
+        report["latency"] = write_latency(store, manifest, blobs, document, tenant_id=tenant_id,
+                                          repo_id=repo_id, hours=measure_latency_hours)
     if base_commit is not None:
         # `shards_*` count the five format-2 layers, as they did before format
         # 3; the index layers are counted apart, so neither number changes
@@ -1914,6 +1924,188 @@ def resolve_target(*, tenant: str | None, store: str | None, repo_id: str,
     return tenant, store
 
 
+# --- the answer latency measurement (graph-answer-cache.md §1.2, #1840) -------
+#
+# Opt-in per run (`--measure-latency-hours N`), at most once per N hours per
+# registration. After the manifest is written the indexer still holds every
+# blob it built in memory: it answers a fixed battery from those bytes, cold
+# (each answer decodes its shards again, as a fresh reader does), and times a
+# fixed reference workload after each answer, so a busy node can be told apart
+# from a slower product (the CI gate's `P95_BUDGET_RATIO` relies on the same).
+# The result goes to `graph/<sha>/latency.json`, beside the manifest and NOT
+# named in it: a manifest digest that depended on a timing would change on
+# every re-index of one commit and churn every answer-cache key (§1.2, step 4).
+# A measurement that fails is reported and never fails the write: the report
+# measures the index and must never gate it.
+#
+# This battery is in-process for now: the owner (2026-11-14, design §4 Q9) chose
+# to move it into `agent_worker/graphmcp/battery.py`, shared with the CI gate
+# (`test_graphmcp_budgets.py`), later and as its own change (§1.2).
+
+LATENCY_FILE = "latency.json"
+LATENCY_SCHEMA = "swarm.repo-graph-latency/v1"
+#: Three runs; the reader takes the median run by p95 (swarm_api.graphreports).
+LATENCY_RUNS = 3
+#: §1.1's battery shape: the four busiest callees and an even sample of twelve.
+LATENCY_BUSIEST = 4
+LATENCY_SAMPLE = 12
+#: What each question asks: the cold `context` (every per-module layer of the
+#: symbol's module, decoded whole, which is what grows with a module), its
+#: callers, and a `search` for its name over the `terms` postings.
+LATENCY_TOOLS = ("context", "callers", "search")
+LATENCY_SLOWEST = 5
+#: The reference workload's rows: a few ms on one core, timed after each answer.
+REFERENCE_ROWS = 4000
+
+
+def latency_key(tenant_id: str, repo_id: str, commit_sha: str) -> str:
+    return f"{graph_root(tenant_id, repo_id)}/{commit_sha}/{LATENCY_FILE}"
+
+
+@functools.lru_cache(maxsize=1)
+def _reference_payload() -> bytes:
+    rows = [{"id": f"pkg/module_{i % 97}.py#symbol_{i}", "kind": "function", "line": i,
+             "doc": "a fixed row of the reference workload " * 2} for i in range(REFERENCE_ROWS)]
+    return gzip.compress(b"".join(canonical(row) + b"\n" for row in rows), compresslevel=6,
+                         mtime=0)
+
+
+def reference_workload() -> int:
+    """A fixed shard-shaped decode: the same work every time, on any node."""
+    return len(decode_shard(_reference_payload()))
+
+
+def latency_questions(document: dict) -> list[str]:
+    """The battery's symbols: the busiest callees, then an even sample of the rest."""
+    ids = sorted({str(s.get("id")) for s in document.get("symbols") or [] if s.get("id")})
+    if not ids:
+        return []
+    known = set(ids)
+    incoming: dict[str, int] = {}
+    for edge in document.get("call_edges") or []:
+        to = str(edge.get("to"))
+        if to in known:
+            incoming[to] = incoming.get(to, 0) + 1
+    busiest = [s for s, _n in sorted(incoming.items(), key=lambda kv: (-kv[1], kv[0]))
+               ][:LATENCY_BUSIEST]
+    rest = [s for s in ids if s not in set(busiest)]
+    step = max(1, len(rest) // LATENCY_SAMPLE) if rest else 1
+    return busiest + rest[::step][:LATENCY_SAMPLE]
+
+
+def _nearest_rank(values: list[float], q: float) -> float:
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(q * len(ordered)) - 1)]
+
+
+def measure_latency(manifest: dict, blobs: dict[str, bytes], document: dict, *,
+                    runs: int = LATENCY_RUNS,
+                    clock: Callable[[], float] = time.perf_counter,
+                    reference: Callable[[], Any] = reference_workload,
+                    cpu_limit: float | None = None) -> dict:
+    """latency.json's document: the battery answered `runs` times from `blobs`."""
+    shards, index = manifest.get("shards") or {}, manifest.get("index_shards") or {}
+
+    def rows(entry: dict | None) -> list[dict]:
+        return decode_shard(blobs[entry["blob"].split(":", 1)[1]]) if entry else []
+
+    def ask(tool: str, symbol: str) -> int:
+        module = module_of(symbol)
+        if tool == "context":
+            return sum(len([r for r in rows(shards.get(layer, {}).get(module))
+                            if symbol in (r.get("id"), r.get("from"), r.get("to"),
+                                          r.get("symbol"))])
+                       for layer in ("symbols", "callers", "callees", "tests"))
+        if tool == "callers":
+            return len([e for e in rows(shards.get("callers", {}).get(module))
+                        if e.get("to") == symbol])
+        name = symbol.rsplit("#", 1)[-1]
+        buckets = sorted({term_bucket(term) for term in tokenize(name)})
+        found = [r for bucket in buckets for r in rows(index.get("terms", {}).get(bucket))]
+        return len(bm25_search(found, manifest.get("term_stats") or {}, name))
+
+    questions = latency_questions(document)
+    _reference_payload()  # built once, before the clock runs
+    measured_runs = []
+    for _run in range(max(1, runs)):
+        answers: list[tuple[str, str, float]] = []
+        references: list[float] = []
+        for symbol in questions:
+            for tool in LATENCY_TOOLS:
+                started = clock()
+                ask(tool, symbol)
+                answers.append((tool, symbol, (clock() - started) * 1000.0))
+                started = clock()
+                reference()
+                references.append((clock() - started) * 1000.0)
+        times = [ms for _t, _s, ms in answers]
+        slowest = sorted(answers, key=lambda a: (-a[2], a[0], a[1]))[:LATENCY_SLOWEST]
+        measured_runs.append({
+            "p50_ms": round(_nearest_rank(times, 0.50), 3) if times else None,
+            "p95_ms": round(_nearest_rank(times, 0.95), 3) if times else None,
+            "max_ms": round(max(times), 3) if times else None,
+            "reference_ms": round(_nearest_rank(references, 0.50), 3) if references else None,
+            "slowest": [{"tool": t, "symbol": s, "ms": round(ms, 3)} for t, s, ms in slowest],
+        })
+    return {
+        "schema": LATENCY_SCHEMA,
+        "tool_version": TOOL_VERSION,
+        "commit_sha": manifest.get("commit_sha"),
+        "questions": len(questions) * len(LATENCY_TOOLS),
+        "tools": list(LATENCY_TOOLS),
+        "runs": measured_runs,
+        "symbols": len(document.get("symbols") or []),
+        "raw_bytes": (manifest.get("bytes") or {}).get("raw"),
+        "cpu_limit": cpu_limit if cpu_limit is not None else _cpu_limit(),
+    }
+
+
+def _cpu_limit() -> float | None:
+    """The cgroup's CPU limit in cores (`cpu.max`), else the host's count."""
+    try:
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+        if quota != "max":
+            return round(int(quota) / int(period), 3)
+    except (OSError, ValueError):
+        pass
+    count = os.cpu_count()
+    return float(count) if count else None
+
+
+def latency_due(store: Store, *, tenant_id: str, repo_id: str, hours: float,
+                now: datetime) -> tuple[bool, str]:
+    """(due, why): no latency.json of this registration is younger than `hours`."""
+    prefix = f"{graph_root(tenant_id, repo_id)}/"
+    newest: datetime | None = None
+    for key, created in store.list(prefix):
+        if key.endswith(f"/{LATENCY_FILE}") and created is not None:
+            created = created if created.tzinfo else created.replace(tzinfo=timezone.utc)
+            newest = created if newest is None or created > newest else newest
+    if newest is not None and now - newest < timedelta(hours=hours):
+        return False, f"measured {newest.isoformat()}, within {hours:g} h"
+    return True, "no measurement" if newest is None else f"last measured {newest.isoformat()}"
+
+
+def write_latency(store: Store, manifest: bytes, blobs: dict[str, bytes], document: dict, *,
+                  tenant_id: str, repo_id: str, hours: float, now: datetime | None = None,
+                  measure: Callable[..., dict] = measure_latency) -> dict:
+    """The report's `latency`: measured and written, or why not. Never raises."""
+    try:
+        due, why = latency_due(store, tenant_id=tenant_id, repo_id=repo_id, hours=hours,
+                               now=now or datetime.now(timezone.utc))
+        if not due:
+            return {"measured": False, "reason": why}
+        parsed = json.loads(manifest)
+        result = measure(parsed, blobs, document)
+        key = latency_key(tenant_id, repo_id, parsed["commit_sha"])
+        store.put(key, canonical(result) + b"\n", no_clobber=False)
+        median = sorted(result["runs"], key=lambda r: r["p95_ms"] or 0)[(len(result["runs"]) - 1) // 2]
+        return {"measured": True, "key": key, "p95_ms": median["p95_ms"],
+                "reference_ms": median["reference_ms"], "questions": result["questions"]}
+    except Exception as exc:  # noqa: BLE001 -- a measurement never fails the write
+        return {"measured": False, "reason": f"the measurement failed ({type(exc).__name__})"}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog=TOOL_NAME,
@@ -1942,6 +2134,10 @@ def main(argv: list[str] | None = None) -> int:
     write.add_argument("--no-sweep", action="store_true", help="skip the sweep after writing")
     write.add_argument("--base-commit",
                        help="incremental: the base's commit, to count the shards carried")
+    write.add_argument("--measure-latency-hours", type=float, default=None, metavar="HOURS",
+                       help="opt-in (#1840): time the answer battery over the new snapshot and "
+                            "write latency.json beside the manifest, unless this registration "
+                            "was measured within HOURS")
     write.add_argument("--repo",
                        help="the clone the graph was extracted from, mined for the history "
                             "and rules layers (default: repo/ beside the --graph file, the "
@@ -1991,7 +2187,8 @@ def main(argv: list[str] | None = None) -> int:
             report = write_graph(document, store, tenant_id=tenant,
                                  repo_id=args.repo_id, max_commit_bytes=args.max_commit_bytes,
                                  graph_digest=digest_of(raw), base_commit=args.base_commit,
-                                 context=context, index=index)
+                                 context=context, index=index,
+                                 measure_latency_hours=args.measure_latency_hours)
             report["context"] = {"available": bool(context["meta"].get("available")),
                                  "reason": context["meta"].get("reason")}
             if index_path is not None and isinstance(index, dict):

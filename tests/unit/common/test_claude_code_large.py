@@ -133,6 +133,9 @@ def test_it_is_claude_code_in_every_other_field():
         resource_class="large",
         timeout_seconds=14_400,
         inputs={k: v for k, v in claude.inputs.items() if k != "pull_request"},
+        # Contract request 135: only claude-code's build stages run `builder`;
+        # a profile picked by name for its size keeps that size at every stage.
+        build_resource_class=None,
     )
     # MUTATION: give the entry its own `inputs`, `secrets`, `runner_argv`,
     # `image`, `provider`, `secret_slots` or model classes and it is no

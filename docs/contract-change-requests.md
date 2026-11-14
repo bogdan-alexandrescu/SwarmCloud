@@ -141,8 +141,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 131 | `models.py`: `Task.timeout_seconds_asked`, the `timeout_seconds` a spec asked for, written by swarm-api only when it stored a lower one; a record only, never a limit (TIMEOUT-ASKED-CONTRACT, part of #2688) | ACCEPTED by the owner 2026-11-01 ("API records the ask", answering the pre-publish gate lane's question on #2981, PR 2986; requested the same day by lane TIMEOUT-ASKED-CONTRACT) and APPLIED by the pull request that adds this line (lane TIMEOUT-ASKED-APPLY, part of #2688): the field last in `Task`, unsigned; swarm-api writes it in `_build_task` and a child's `replace`, reads and serves it in its codec and refuses it in a caller's metadata; the console's `Task` type declares it |
 | 132 | `models.py`: `Task.attempt_totals` and `Task.current_account`, read-side copies of a task's attempt totals and the account its current attempt holds, so `GET /v1/tasks` stops reading every row's attempts and account events (STORED-TASK-TOTALS, from LOAD-SPEED-TASKS-LIST, part of #2688) | ACCEPTED by the owner 2026-11-01 ("Accept"; drafted by lane LOAD-SPEED-TASKS-LIST as 131, renumbered: TIMEOUT-ASKED-CONTRACT took 131 the same day). APPLIED by the pull request that adds this line (lane STORED-TASK-TOTALS): the worker and swarm-api write both views with each attempt start, spend and end and each account event; `GET /v1/tasks` serves them and derives a task that has none; `scripts/backfill-task-views.sh` fills older tasks once |
 | 133 | `profiles.py` / `models.py` / `specsign.py`: `RunnerProfile.supports_max_turns` and `max_turns`, `WorkflowStep.max_turns` and `Task.max_turns`, a turn cap the worker passes to the agent CLI (CONTRACT-MAXTURNS, part of #2524) | ACCEPTED by the owner 2 November 2026 ("Accept and build"; owner accepted 2 November 2026; requested 2026-10-28 by lane CONTRACT-MAXTURNS on PR 2682 as 127, renumbered 2026-11-02 by lane CARRY-TURN-CAP). APPLIED 2026-11-02 by the pull request that adds this line (lane TURN-CAP-APPLIED, part of #2688): spec format 7; `supports_max_turns=True` on the six claude-code-runner profiles and `max_turns` None on every profile; swarm-api resolves `max_turns` beside `validate_timeout` on a task, a workflow step, a child and both profiles of a `browser_if_ui` step; the worker passes the verified `Task.max_turns` as `--max-turns`; the requirements check asks for 30 turns and its prompt no longer does |
-| 134 | `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688) | open, REQUESTED 2026-11-03 at the owner's instruction (answering question 0 of PR 3095: merge as built on the current class, and file this request) |
-| 135 | `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688) | REQUESTED 2026-11-03 by lane contract-request-builder-cpus on the owner's choice of a 12-CPU, 16 GiB builder class; not applied |
+| 134 | `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688) | DECLINED by the owner 13 November 2026 in favour of request 135 (requested 2026-11-03 at the owner's instruction, answering question 0 of PR 3095); nothing in it is applied |
+| 135 | `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688) | DONE: ACCEPTED by the owner 13 November 2026 (about 01:18Z, on issue #3100: 8 CPU requested, 12 limit, 16 GiB, chosen by step stage) and APPLIED by the pull request that adds this line (issue #3100): shape B, `builder` between `medium` and `large` in `CLASS_ORDER` |
 | 136 | a new `workcontract.py` (the contract's purpose, schema version and digest, one definition for swarm-api and the worker), a `"plugins"` block in `specsign.SETTINGS_MAC_FIELDS` and `RunnerProfile.runtime_capabilities`, so a worker can enforce a strict work contract (AQ-WORK-CONTRACT, the agent quality program, part of #2688) | ACCEPTED by the owner 2026-11-03 and APPLIED 2026-11-03 by the pull request that adds this line (lane apply-contract-request-work-contract-plugins, part of #2688): `swarm_common/workcontract.py` holds the purpose, the schema version, the projection and `contract_digest`, swarm-api imports them; `SETTINGS_MAC_FIELDS["plugins"] = ("allowed",)`; `RunnerProfile.runtime_capabilities`, `()` on every profile |
 | 137 | `specsign.py`: `"work_contract"` in `SIGNED_METADATA_KEYS`, so the stored work contract the worker reads its plugins from is inside the step-spec signature; spec format 8 (WORK-CONTRACT-SIGNED, part of #2688) | ACCEPTED by the owner 4 November 2026 ("Sign the key"; rejected: a digest-verified allowance list in the cover test) and APPLIED 2026-11-04 by the pull request that adds this line (lane work-contract-signed-metadata-key, part of #2688): spec format 8 covers `metadata.work_contract` and a task is signed at 8 only when its metadata carries a contract; formats 1-7 keep their bytes and refuse a set contract; the worker keeps its digest check against `metadata.dispatch.work_contract`. NOT applied: `RESERVED_METADATA_KEYS` (see the section: a caller sends its contract under that key, so reserving it is the owner's open question) |
 | 138 | `specsign.py`: a `"contract_review"` block in `SETTINGS_MAC_FIELDS`, `("enabled",)`, so the workspace's opt-in to Jev's review of its work contracts at submission is signed by the frozen list rather than swarm-api's own `judgment.API_SETTINGS_MAC_FIELDS` (JEV-SUBMISSION-REVIEW, part of #2688) | ACCEPTED by the owner 4 November 2026 and APPLIED 2026-11-04 by the pull request "The frozen settings MAC list signs the contract_review block and swarm-api drops its own signing list (part of #2688)": `SETTINGS_MAC_FIELDS` lists the block, and swarm-api's `API_SETTINGS_MAC_FIELDS` and `_canonical_block` are removed |
@@ -16093,8 +16093,10 @@ main rather than drop it.
 
 ## 134. `profiles.py`: a `builder` resource class of 12 CPUs and 16 GiB, so the pre-publish gate's guard parts run more at once (BUILDER-CLASS-12CPU, from PR 3095, issue #3100, part of #2688)
 
-**Status:** open, REQUESTED 2026-11-03 by the builder lane of PR 3095
-(task_98b46c02fd214e56a012) at the owner's instruction. The owner answered that
+**Status:** DECLINED by the owner on 13 November 2026, in favour of request
+135 (8 CPU requested, 12 limit, 16 GiB, 2 units, chosen by step stage), which
+is applied. Nothing below is applied. Requested 2026-11-03 by the builder lane
+of PR 3095 (task_98b46c02fd214e56a012) at the owner's instruction. The owner answered that
 pull request's question 0 the same day: *merge this pull request as built,
 on the current builder class*, and file a frozen-contract change request for
 a 12-CPU, 16 GiB builder class (about +$0.31 per builder hour). PR 3095
@@ -16194,9 +16196,17 @@ size alternative), is the owner's.
 
 ## 135. `profiles.py`: a `builder` class (8 CPU requested, 12 limit, 16 GiB, 2 units) for the steps that build, chosen by the platform from the step's stage (BUILDER-CPUS, part of #2688)
 
-**Status:** REQUESTED 2026-11-03 by lane contract-request-builder-cpus (part
-of #2688). Not applied: `apps/common/swarm_common/` is frozen, and which of
-the two shapes below is built is the owner's choice. The owner chose on
+**Status:** DONE. ACCEPTED by the owner on 13 November 2026 (about 01:18Z, on
+issue #3100: "8 CPU requested, 12 limit, 16 GiB, chosen by step stage"), and
+request 134 declined in its favour; APPLIED by the pull request that adds this
+paragraph (issue #3100) as shape B: `builder` (8/12/16/8, 2 units),
+`BUILD_STAGES`, `RunnerProfile.build_resource_class` (`builder` on
+`claude-code` only) and `resource_class_for_stage`. `medium` (request 147)
+landed after this was written, so `CLASS_ORDER` is standard, browser, medium,
+builder, large (medium 6 <= builder 8 CPU, 16 <= 16 GiB, 8 <= 8 GiB workspace).
+swarm-api passes the stage from the issue-run compiler's implement and fix
+steps and the CI fix round. Requested 2026-11-03 by lane
+contract-request-builder-cpus (part of #2688). The owner chose on
 3 November 2026, answering the publish check lane's question on builder
 machine size (after his earlier note to time-box the guard run and to use
 faster guard machines), to merge the time-boxed, parallel guard check as
