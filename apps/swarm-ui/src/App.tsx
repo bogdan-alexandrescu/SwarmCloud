@@ -47,7 +47,7 @@ import { ADMIN_PLUGINS_PATH, AdminPluginsScreen, catalogueCards } from './AdminP
 import { AdminPluginInstallScreen } from './AdminPluginInstall'
 import { PluginDetailScreen } from './PluginDetail'
 import { PluginSettingsForm } from './PluginSettingsForm'
-import { loadPluginCatalogue, loadWorkspacePlugins, PLATFORM_PLUGIN_CATALOGUE, pluginScopeOf } from './api'
+import { loadApproval, loadPluginCatalogue, loadWorkspacePlugins, PLATFORM_PLUGIN_CATALOGUE, pluginScopeOf } from './api'
 import { UrRegion, useUrRead } from './RepositoriesParts'
 import { SecretsScreen } from './Secrets'
 import { AdminPlatformSecretsScreen } from './AdminPlatformSecrets'
@@ -1804,7 +1804,11 @@ export function App() {
   const scheduleNamed = useScheduleName(
     !at.missing && at.sectionId === AUTOMATE && at.tab === 'schedules' ? new URLSearchParams(at.view ?? '').get('schedule') : null,
   )
-  const titled = agentNamed ?? workflowNamed ?? scheduleNamed ?? object
+  // An approval by its summary, as its sheet heads it: "apr_1 · Approvals" named it by its id.
+  const approvalNamed = useApprovalName(
+    !at.missing && at.sectionId === AUTOMATE && at.tab === 'approvals' ? new URLSearchParams(at.view ?? '').get('approval') : null,
+  )
+  const titled = agentNamed ?? workflowNamed ?? scheduleNamed ?? approvalNamed ?? object
   useEffect(() => {
     document.title = documentTitleOf(title, titled)
   }, [title, titled])
@@ -2272,6 +2276,25 @@ export function openObjectOf(at: Route): string | null {
     if (id !== null && id !== '') return id
   }
   return null
+}
+
+/** An open approval's summary (else its kind) for the document title, once its detail is read; null until then. */
+export function useApprovalName(id: string | null): string | null {
+  const [named, setNamed] = useState<{ id: string; name: string } | null>(null)
+  useEffect(() => {
+    if (id === null || id === '') return
+    let live = true
+    void loadApproval(id).then((r) => {
+      if (!live || (r.status !== 'ok' && r.status !== 'stale')) return
+      const item = r.data.approval
+      const name = (typeof item?.summary === 'string' ? item.summary.trim() : '') || (typeof item?.kind === 'string' ? item.kind : '')
+      if (name !== '') setNamed({ id, name })
+    })
+    return () => {
+      live = false
+    }
+  }, [id])
+  return named !== null && named.id === id ? named.name : null
 }
 
 /**

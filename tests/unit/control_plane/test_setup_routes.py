@@ -656,7 +656,7 @@ def test_the_team_row_is_read_live(setup_client, db, directory, pool) -> None:
     invitee's membership per the Groups API now, the team's pool accounts."""
     team = create_team(setup_client, invites=["bob@example.com"]).json()["team"]
     row = page_team(setup_client, team)
-    assert row["members"] == [{"email": "bob@example.com", "member": False}]
+    assert row["members"] == [{"email": "bob@example.com", "member": False, "is_first_admin": False}]
     assert row["pool_accounts"] == []
     db.docs[f"workspaces/{team}"]["state"] = "ready"
     directory.join("bob@example.com", TEAM_GROUP)
@@ -664,7 +664,7 @@ def test_the_team_row_is_read_live(setup_client, db, directory, pool) -> None:
                           "label": "pool-1"})
     row = page_team(setup_client, team)
     assert row["workspace_state"] == "ready"
-    assert row["members"] == [{"email": "bob@example.com", "member": True}]
+    assert row["members"] == [{"email": "bob@example.com", "member": True, "is_first_admin": False}]
     assert row["pool_accounts"] == ["pool-1"]
 
 
@@ -672,7 +672,7 @@ def test_an_unanswered_membership_is_unknown_not_absent(setup_client, directory)
     team = create_team(setup_client, invites=["bob@example.com"]).json()["team"]
     directory.unreadable.add(TEAM_GROUP)
     assert page_team(setup_client, team)["members"] == [
-        {"email": "bob@example.com", "member": None}]
+        {"email": "bob@example.com", "member": None, "is_first_admin": False}]
 
 
 def test_an_invite_answers_the_google_admin_members_page(setup_client, db, directory) -> None:
@@ -713,7 +713,7 @@ def test_smoke_runs_when_the_first_pool_account_lands(setup_client, db, github, 
     assert smoke["state"] == "running" and smoke["task_id"] == "task-1"
     assert runs.tasks == [{"id": "task-1", "tenant": team, "group": TEAM_GROUP,
                            "repository": f"{ORG}/api", "prompt": runs.tasks[0]["prompt"],
-                           "label": "swarm-install-smoke", "strategy": "collect"}]
+                           "label": "swarm-install-smoke", "strategy": "direct-pr"}]
     page_team(setup_client, team)
     assert len(runs.tasks) == 1, "a second read started a second smoke"
     runs.states["task-1"] = "succeeded"
@@ -1043,7 +1043,7 @@ def test_the_console_verify_runs_are_admitted_by_the_real_submission_service(
 def test_the_smoke_is_admitted_by_the_real_submission_service(setup_app, setup_client, db,
                                                               github, pool) -> None:
     """The first team's smoke through the real `SubmissionService`: admitted,
-    and stored `collect` (its prompt asks for no pull request)."""
+    and stored `direct-pr`, so it passes only once the team's credential has pushed."""
     setup_app.state.setup_runs = None
     install_app(db, github)
     team = create_team(setup_client).json()["team"]
@@ -1051,7 +1051,8 @@ def test_the_smoke_is_admitted_by_the_real_submission_service(setup_app, setup_c
                           "label": "pool-1"})
     smoke = page_team(setup_client, team)["smoke"]
     assert smoke["state"] == "running", smoke
-    assert _stored_dispatch(db, smoke["task_id"])["strategy"] == "collect"
+    # MUTATION: keep `collect` -> a credential that clones but cannot push passes the smoke.
+    assert _stored_dispatch(db, smoke["task_id"])["strategy"] == "direct-pr"
 
 
 def _before_pass_3(db) -> None:
@@ -1895,3 +1896,33 @@ def test_a_pass_not_yet_started_is_served_with_no_start_time(setup_client, db, s
         db.docs[ENGINE_DOC]["passes"] = stored
     assert page(setup_client)["passes"] == {"sign_in_pass": {"started_at": None},
                                             "infra_pass_3": {"started_at": None}}
+
+
+def test_the_first_admin_is_flagged_apart_from_the_invitees(setup_client) -> None:
+    """The row flags the first admin, so the page shows them on their own
+    line rather than counted among the invitees."""
+    team = create_team(setup_client, first_admin=WORKSPACE_ADMIN,
+                       invites=["bob@example.com"]).json()["team"]
+    flagged = {m["email"]: m["is_first_admin"] for m in page_team(setup_client, team)["members"]}
+    assert flagged == {"bob@example.com": False, WORKSPACE_ADMIN: True}
+
+
+def test_the_smoke_asks_for_a_pushed_pull_request() -> None:
+    assert setup_routes.SMOKE_STRATEGY == "direct-pr"
+    assert "Do not open a pull request" not in setup_routes.SMOKE_PROMPT
+    assert "pull request" in setup_routes.SMOKE_PROMPT
+
+
+def test_the_default_app_name_names_the_install_not_only_its_environment(setup_client) -> None:
+    """GitHub App names are global: "SwarmCloud prod" from two installs
+    collides, so the default carries the org (else the hostname), within
+    GitHub's 34-character cap."""
+    name = setup_routes.default_app_name
+    assert name("example-org", "swarm.example.com", "prod") == "SwarmCloud example-org prod"
+    assert name(None, "swarm.example.com", "staging") == "SwarmCloud swarm staging"
+    long = name("a-very-long-organisation-name-on-github", None, "prod")
+    assert len(long) <= setup_routes.APP_NAME_MAX and long.startswith("SwarmCloud a-very") and long.endswith(" prod")
+    assert name(None, None, "dev") == "SwarmCloud dev"
+    start = setup_client.post("/v1/admin/setup/github-app/manifest", json={}, headers=auth_header("root"))
+    assert start.status_code == 200, start.text
+    assert start.json()["manifest"]["name"] == f"SwarmCloud {ORG} {ENV}"
