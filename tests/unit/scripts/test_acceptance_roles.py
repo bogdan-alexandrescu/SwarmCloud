@@ -216,7 +216,10 @@ def test_accept_yml_runs_it_in_the_existing_smoke_job():
     assert _code(step["run"]).strip() == f"./scripts/verify-remote.sh {TARGET}"
     assert "!cancelled()" in str(step.get("if"))
     for name in SETTINGS:
-        assert step["env"][name] == f"${{{{ vars.{name.removeprefix('SWARM_ACCEPTANCE_')} }}}}"
+        # An account or a person's address is a masked secret
+        # (docs/design/generic-repository.md, section 2.1); the rest are variables.
+        context = "secrets" if name.endswith(("_SA", "_PERSON")) else "vars"
+        assert step["env"][name] == f"${{{{ {context}.{name.removeprefix('SWARM_ACCEPTANCE_')} }}}}"
     # Not a new matrix group, and not the tenant-isolation job.
     for job_id, job in jobs.items():
         if job_id != "smoke":

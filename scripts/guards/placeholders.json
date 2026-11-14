@@ -94,6 +94,7 @@
       {"host": "dns.google", "why": "Google's public DNS-over-HTTPS host the installer's edge probe calls; its test checks it"},
       {"host": "toolbox.googleapps.com", "why": "Google's public diagnostics host the installer's edge probe names; its tests check it"},
       {"host": "metadata.goog", "why": "the public GCE metadata server name every Google Cloud VM resolves"},
+      {"host": "notmetadata.goog", "why": "a name that only contains the metadata server's; the URL refusal test checks it is still accepted"},
       {"host": "localhost.localdomain", "why": "the conventional loopback name, never a deployment"},
       {"host": "json.schemastore.org", "why": "the public JSON schema host plugin/.claude-plugin/plugin.json names in its $schema"},
       {"host": "the-internet.herokuapp.com", "why": "a public QA practice site the browser benchmark and QA flows drive"},
@@ -157,8 +158,23 @@
       {"slug": "u-someone-not-in-terraform", "why": "a descriptive test workspace"},
       {"slug": "u-alice-browser-login-github", "why": "the placeholder person's browser-login secret stem in a Terraform test"},
       {"slug": "u-a-browser-login-github", "why": "a one-letter person's browser-login secret stem in a unit test"},
-      {"slug": "u-owner", "why": "the personal placeholder workspace the console's fixtures name; a generic test workspace"}
+      {"slug": "u-owner", "why": "the personal placeholder workspace the console's fixtures name; a generic test workspace"},
+      {"slug": "u-alice-browser-login", "why": "the placeholder person's browser-login secret stem for a login named after a provider (tests/terraform/broker_workspace_keys.tftest.hcl)"},
+      {"slug": "u-alice-browser", "why": "the placeholder person's browser secret stem named after a provider (tests/terraform/broker_workspace_keys.tftest.hcl)"}
     ],
+    "public_app_ids": [
+      {"id": "15368", "why": "GitHub Actions' public App id; docs/ci.md's branch-protection command pins every required check to it, so a check of the same name posted by any other App cannot satisfy the rule"}
+    ],
+    "release_home": {
+      "_why": "The owner's ruling of 2026-11-08 (part of #2688): the release home is a product address, not a deployment value. It is the public bucket and project every release is published to and every install fetches from (scripts/release-home.sh, scripts/release/publish.sh).",
+      "buckets": [
+        {"bucket": "swarmcloud", "why": "the release home's public bucket: releases are uploaded to it and installs download from it"}
+      ],
+      "projects": [
+        {"project": "swarmcloud-prod", "why": "the release home's project, which holds the bucket, the image repository and the signing key"},
+        {"project": "swarmcloud-releases", "why": "the release home's alternate project id, which publish.sh also accepts as the release home"}
+      ]
+    },
     "exempt_lines": [
       {"path": "LICENSE", "line": 3, "why": "the licence holder's copyright line, kept by the owner's legal decision of 2026-11-07"}
     ]

@@ -2,12 +2,12 @@
 (docs/design/generic-repository.md sections 1.2 C10 and 2.2, part of #2688).
 
 A tracked `*.tfvars` is a real deployment's configuration in the repository.
-The only ones allowed are the terraform test fixtures under tests/terraform/
-and, until the workflows lane untracks them together with the CI change that
-reads the private copies, the three real files CI's release action still reads
-from the checkout (.github/actions/release-apply/action.yml). That list may
-only shrink: an exception that is no longer tracked fails here until it is
-removed from KNOWN_EXCEPTIONS, so a removed file cannot quietly come back.
+The only ones allowed are the terraform test fixtures under tests/terraform/.
+The workflows lane untracked the last three real files, together with the CI
+change that fetches each environment's tfvars from the private configuration,
+so KNOWN_EXCEPTIONS is empty. It may only shrink: an exception that is no
+longer tracked fails here until it is removed, so a removed file cannot
+quietly come back.
 
 Every root a tfvars feeds has a tracked `*.tfvars.example` with placeholders
 instead.
@@ -23,14 +23,8 @@ ENVIRONMENTS = ROOT / "terraform" / "environments"
 
 FIXTURES = "tests/terraform/"
 
-# The real files the workflows lane untracks (it then deletes these lines).
-KNOWN_EXCEPTIONS = frozenset(
-    {
-        "terraform/bootstrap/terraform.tfvars",
-        "terraform/environments/dev/dev.tfvars",
-        "terraform/environments/prod/prod.tfvars",
-    }
-)
+# Empty since the workflows lane untracked the three real files.
+KNOWN_EXCEPTIONS: frozenset[str] = frozenset()
 
 
 def _tracked(pattern: str) -> list[str]:
@@ -68,3 +62,38 @@ def test_every_root_has_a_tracked_placeholder_example() -> None:
     }
     tracked = set(_tracked("*.tfvars.example"))
     assert sorted(expected - tracked) == []
+
+
+# The three real files the workflows lane untracked: a deployment's copy that
+# an operator fetches into the checkout must stay out of `git add`.
+REAL_TFVARS = (
+    "terraform/bootstrap/terraform.tfvars",
+    "terraform/environments/dev/dev.tfvars",
+    "terraform/environments/prod/prod.tfvars",
+)
+
+
+def test_the_real_tfvars_paths_are_ignored() -> None:
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--", *REAL_TFVARS],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    ignored = set(result.stdout.split())
+    assert sorted(set(REAL_TFVARS) - ignored) == [], (
+        ".gitignore must ignore every real tfvars path, so a fetched copy cannot be committed"
+    )
+
+
+def test_the_examples_are_not_ignored() -> None:
+    examples = [f"{p}.example" for p in REAL_TFVARS]
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--", *examples],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.stdout.split() == []

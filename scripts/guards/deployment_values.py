@@ -99,8 +99,10 @@ class Allow:
         data = json.loads(path.read_text(encoding="utf-8"))
         allow = data["allowlist"]
         domains = tuple(allow["domains"])
+        home = allow["release_home"]
         return cls(
-            projects=frozenset([*data["projects"].values(), *allow["public_projects"]]),
+            projects=frozenset([*data["projects"].values(), *allow["public_projects"],
+                                *(e["project"] for e in home["projects"])]),
             numbers=frozenset(data["project_numbers"].values()),
             domains=domains,
             reserved_tlds=frozenset(allow["reserved_tlds"]),
@@ -109,9 +111,11 @@ class Allow:
                                  *(e["address"].lower() for e in allow["public_service_addresses"])]),
             hosts=domains + tuple(allow["public_hosts"]) + tuple(e["host"] for e in allow["public_product_hosts"]),
             tailnet=data["tailnet"],
-            buckets=frozenset([*data["buckets"], data["shared_project_resources"]["bucket"]]),
+            buckets=frozenset([*data["buckets"], data["shared_project_resources"]["bucket"],
+                               *(e["bucket"] for e in home["buckets"])]),
             tenants=frozenset(data["tenants"]),
-            app_ids=frozenset([data["github"]["app_id"], data["github"]["installation_id"]]),
+            app_ids=frozenset([data["github"]["app_id"], data["github"]["installation_id"],
+                               *(e["id"] for e in allow["public_app_ids"])]),
             repository=data["github"]["repository"],
             cluster_suffixes=frozenset(e["suffix"] for e in allow["cluster_dns_suffixes"]),
             url_paths=tuple(e["path"] for e in allow["public_url_paths"]),
@@ -204,6 +208,12 @@ def _project_path_allowed(m: re.Match[str], allow: Allow) -> bool:
     return m.group(1) in allow.projects or before.endswith(allow.url_paths)
 
 
+#: Google-owned service agent domains that are not a project id: Cloud
+#: Storage's agent is service-<project number>@gs-project-accounts, and the
+#: project-number rule still holds that number to the placeholder set.
+_GOOGLE_AGENT_DOMAINS = frozenset({"gs-project-accounts"})
+
+
 SHAPE_RULES: tuple[Rule, ...] = (
     Rule("project-path", "C1", re.compile(r"\bprojects/" + _PROJECT_ID + _END), _project_path_allowed),
     Rule("project-flag", "C1", re.compile(r"--project(?:=|[ \t]+)[\"']?" + _PROJECT_ID + _END),
@@ -215,7 +225,8 @@ SHAPE_RULES: tuple[Rule, ...] = (
         r"|\b(\d{10,13})-(?![a-z0-9]{32}\.)[a-z0-9]+\.apps\.googleusercontent\.com)"),
          lambda m, a: next(g for g in m.groups() if g) in a.numbers),
     Rule("service-account", "C3", re.compile(r"\b[a-z0-9-]+@([a-z0-9-]+)\.iam\.gserviceaccount\.com\b"),
-         lambda m, a: m.group(1) in a.projects or m.group(1).startswith("gcp-sa-")),
+         lambda m, a: m.group(1) in a.projects or m.group(1).startswith("gcp-sa-")
+         or m.group(1) in _GOOGLE_AGENT_DOMAINS),
     Rule("url-host", "C4", re.compile(r"\bhttps?://([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})" + _END),
          _host_allowed),
     Rule("tailnet", "C4", re.compile(r"\b([a-z0-9-]+\.ts\.net)\b"),
@@ -407,7 +418,10 @@ def diff_sources(root: Path, base: str) -> Iterator[Source]:
     """Only the lines added since the merge base with `base`, from the files at HEAD."""
     added = set(_git("diff", "--no-renames", "--name-only", "--diff-filter=A", "-z", f"{base}...HEAD",
                      cwd=root).split("\0")) - {""}
-    patch = _git("diff", "--no-color", "--no-renames", "--no-ext-diff", "--unified=0", f"{base}...HEAD", cwd=root)
+    # --text --no-textconv: a change could otherwise mark its files binary in
+    # .gitattributes (`* -diff`) and hide every added line from this guard.
+    patch = _git("diff", "--no-color", "--no-renames", "--no-ext-diff", "--text", "--no-textconv",
+                 "--unified=0", f"{base}...HEAD", cwd=root)
     wanted: dict[str, set[int]] = {}
     current: str | None = None
     for line in patch.splitlines():

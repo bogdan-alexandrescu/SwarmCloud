@@ -21,8 +21,8 @@
 # release.yml or hotfix.yml.
 #
 # The caller's job env provides ENVIRONMENT, PROJECT_ID, REGION, TF_ROOT and
-# TF_STATE_BUCKET (a composite action cannot read `vars`), and `environment`
-# below must be the same value as ENVIRONMENT.
+# TF_STATE_BUCKET (a composite action cannot read `vars` or `secrets`), and
+# `environment` below must be the same value as ENVIRONMENT.
 #
 # The caller checks out with fetch-depth: 0 and sets up Terraform first.
 
@@ -45,9 +45,12 @@ outputs:
   iam:
     description: "'true' or 'false' on dev; empty on prod and on a superseded release"
     value: ${{ steps.iam.outputs.iam }}
-  plan_uri:
-    description: Where a dev plan that changes IAM is held for dev-iam (release lane).
-    value: ${{ steps.held.outputs.uri }}
+  plan_path:
+    description: >-
+      Where, under the state bucket, a dev plan that changes IAM is held for
+      dev-iam (release lane). The path only: the consumer rebuilds the
+      gs:// address from its own TF_STATE_BUCKET.
+    value: ${{ steps.held.outputs.path }}
   plan_sha256:
     description: The held plan's sha256.
     value: ${{ steps.held.outputs.sha256 }}
@@ -65,6 +68,22 @@ runs:
       if: inputs.environment != 'prod'
       shell: bash
       run: ./scripts/lib/release-order.sh check --environment "${ENVIRONMENT}"
+
+    - name: fetch this environment's tfvars
+      # THE REAL TFVARS ARE NOT IN THE CHECKOUT (docs/design/
+      # generic-repository.md, sections 2.2-2.3): they are this deployment's
+      # values, kept under config/<env>/ in the state bucket. resolve.sh
+      # fetches them through config_fetch, the read a laptop's `make tf-plan`
+      # makes, into the runner's temporary directory -- outside the checkout,
+      # so no step can upload or commit them -- and fails, naming the object,
+      # when the file is missing: never a plan with no inputs, never a tracked
+      # fallback. Only the path is passed on.
+      if: steps.order.outputs.superseded != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        file="$(XDG_CACHE_HOME="${RUNNER_TEMP}" ./scripts/lib/resolve.sh tfvars "${ENVIRONMENT}")"
+        echo "SWARM_TFVARS_FILE=${file}" >> "$GITHUB_ENV"
 
     - name: init
       shell: bash
@@ -125,7 +144,7 @@ runs:
         # SWARM_SHARED_DENY_LIST_SET renders "0" and the alerts notify nobody.
         ./scripts/lib/private-tfvars.sh --out "${GITHUB_WORKSPACE}/build/private-${ENVIRONMENT}.tfvars.json"
         terraform -chdir="${TF_ROOT}" plan -input=false -lock-timeout="${TF_LOCK_TIMEOUT}" \
-          -var-file="../environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars" \
+          -var-file="${SWARM_TFVARS_FILE}" \
           -var-file="${GITHUB_WORKSPACE}/build/image-refs-${ENVIRONMENT}.tfvars.json" \
           -var-file="${GITHUB_WORKSPACE}/build/private-${ENVIRONMENT}.tfvars.json" \
           -out=plan.tfplan -no-color | tee "${TF_ROOT}/plan.txt"
@@ -208,17 +227,26 @@ runs:
       # bucket already holds the same values in the state, has public access
       # prevention enforced, and the deployer is objectAdmin on it
       # (terraform/bootstrap). The object is deleted once it is applied.
+      #
+      # THE PATH UNDER THE BUCKET, NEVER THE ADDRESS. TF_STATE_BUCKET is a
+      # secret (docs/design/generic-repository.md, section 2.1), and GitHub
+      # drops any job output that contains a secret: a plan_uri output holding the
+      # gs:// address would reach dev-iam empty, and the reviewed plan would
+      # never apply. So the output is the path alone, and dev-iam rebuilds
+      # the address from its own TF_STATE_BUCKET
+      # (tests/unit/scripts/test_release_held_plan_workflow.py runs this step with the bucket
+      # as a secret).
       if: inputs.lane == 'release' && steps.iam.outputs.iam == 'true'
       shell: bash
       run: |
         set -euo pipefail
-        uri="gs://${TF_STATE_BUCKET}/plans/${ENVIRONMENT}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/plan.tfplan"
+        path="plans/${ENVIRONMENT}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/plan.tfplan"
         sha="$(sha256sum "${TF_ROOT}/plan.tfplan" | cut -d' ' -f1)"
-        gcloud storage cp --no-user-output-enabled "${TF_ROOT}/plan.tfplan" "${uri}"
-        echo "uri=${uri}" >> "$GITHUB_OUTPUT"
+        gcloud storage cp --no-user-output-enabled "${TF_ROOT}/plan.tfplan" "gs://${TF_STATE_BUCKET}/${path}"
+        echo "path=${path}" >> "$GITHUB_OUTPUT"
         echo "sha256=${sha}" >> "$GITHUB_OUTPUT"
         {
-          echo "Held for review: \`${uri}\`, sha256 \`${sha}\`. Nothing in this plan has been applied."
+          echo "Held for review in the state bucket: \`${path}\`, sha256 \`${sha}\`. Nothing in this plan has been applied."
           echo
         } >> "$GITHUB_STEP_SUMMARY"
 

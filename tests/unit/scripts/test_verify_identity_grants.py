@@ -56,10 +56,12 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-DEV_TFVARS = ROOT / "terraform" / "environments" / "dev" / "dev.tfvars"
+#: A deployment's real dev.tfvars is private (the state bucket's config/ prefix,
+#: docs/ci.md); a placeholder deployment's stands in (tests/fixtures/tfvars/).
+DEV_TFVARS = ROOT / "tests" / "fixtures" / "tfvars" / "dev.tfvars.fixture"
 #: Where the IAP accessor list lives since #23; scripts/lib/common.sh's IAP
 #: remedy sends the reader to the same file.
-BOOTSTRAP_TFVARS = ROOT / "terraform" / "bootstrap" / "terraform.tfvars"
+BOOTSTRAP_TFVARS = ROOT / "tests" / "fixtures" / "tfvars" / "bootstrap.tfvars.fixture"
 VERIFY_TF = ROOT / "terraform" / "infra" / "verify.tf"
 LOCALS_TF = ROOT / "terraform" / "infra" / "locals.tf"
 VARIABLES_TF = ROOT / "terraform" / "infra" / "variables.tf"

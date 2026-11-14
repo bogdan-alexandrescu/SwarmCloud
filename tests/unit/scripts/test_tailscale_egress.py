@@ -126,7 +126,7 @@ def test_the_template_has_four_placeholders_and_terraform_fills_every_one():
     assert re.search(r"^\s*decision_api_swarm_api_cidr\s*=\s*var\.subnet_cidr$", tf, re.M)
     # No default since DAYONE-TF-1: dev.tfvars names the deployment's tailnet
     # (its value is the deployment's, so it is matched by shape, not restated).
-    tfvars = (REPO / "terraform" / "environments" / "dev" / "dev.tfvars").read_text()
+    tfvars = (REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example").read_text()
     assert re.search(r'^tailscale_egress_target = "[a-z0-9.-]+\.ts\.net"$', tfvars, re.M)
 
 

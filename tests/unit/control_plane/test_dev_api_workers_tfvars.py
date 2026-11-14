@@ -20,7 +20,7 @@ SETTING = re.compile(r"^\s*api_workers\s*=\s*(\d+)\s*$", re.MULTILINE)
 
 
 def _setting(env: str) -> list[str]:
-    return SETTING.findall((ENVIRONMENTS / env / f"{env}.tfvars").read_text())
+    return SETTING.findall((ENVIRONMENTS / env / f"{env}.tfvars.example").read_text())
 
 
 def test_dev_sets_two_workers():

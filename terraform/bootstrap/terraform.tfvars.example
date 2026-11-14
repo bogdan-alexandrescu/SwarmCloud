@@ -24,5 +24,16 @@ ci_fix_service_account = "swarm-ci-fix@example-project.iam.gserviceaccount.com"
 frontend_iap_members = [
   "group:eng@example.com",
   "serviceAccount:swarm-ci-fix@example-project.iam.gserviceaccount.com",
+  # The console QA identity (qa_identity.tf's qa_account_id in this project).
+  "serviceAccount:qa-console@example-project.iam.gserviceaccount.com",
 ]
 frontend_iap_backends = ["swarm-ui-backend"]
+
+# swarmGithubHooksDedup (github_hooks_role.tf) joins the deployer's grantable
+# roles only while this is on; it defaults to false. Committed here as applied:
+# a -var not recorded here reads as false on the next plan and destroys the role.
+enable_github_hooks_dedup_role = true
+
+# Workspace secrets (docs/design/secrets-store.md): the bootstrap side of the
+# per-workspace secret store.
+enable_workspace_secrets = true

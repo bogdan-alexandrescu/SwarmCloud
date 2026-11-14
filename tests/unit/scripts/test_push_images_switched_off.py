@@ -16,18 +16,24 @@ copied repository:
   * the same refusal with the switch on blocks the whole release, as before;
   * a refused image the environment deploys still blocks, switch or no switch;
   * an image that is switched off is not promoted even when its scan is clean;
-  * no tfvars, or a value that is not literally `false`, counts as deployed.
+  * no tfvars, or a value that is not literally `false`, counts as deployed;
+  * with no tfvars in the checkout (the real ones are untracked), the private
+    copy a release fetched and named in SWARM_TFVARS_FILE is the one read --
+    for that ENVIRONMENT only -- and one that names no file counts as deployed.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from . import test_push_images_promotes_recorded_digests as recorded_digests
 from .test_push_images_promotes_recorded_digests import (
+    REPO,
     _channel,
     _last_line,
     _manifest,
@@ -134,3 +140,59 @@ def test_a_one_line_off_block_switches_it_off(tmp_path):
     _, root, proc, _, _, _ = _release(tmp_path, "voice_speech = { enabled = false }\n", FAKE_TRIVY_FAIL=SPEECH)
     assert proc.returncode == 0, proc.stderr[-3000:]
     assert SPEECH not in _deployed(root)
+
+
+def test_the_fetched_private_tfvars_switches_it_off_with_none_in_the_checkout(tmp_path):
+    """The release actions fetch the deployment's tfvars from the state bucket
+    and pass the path as SWARM_TFVARS_FILE; the checkout holds none."""
+    private = tmp_path / "runner-temp" / "dev.tfvars"
+    private.parent.mkdir()
+    private.write_text(OFF)
+    _, root, proc, _, log, _ = _release(tmp_path, None, FAKE_TRIVY_FAIL=SPEECH, SWARM_TFVARS_FILE=str(private))
+    assert not (root / "terraform").exists()
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert f"{SPEECH}: voice_speech is off" in proc.stderr, proc.stderr[-3000:]
+    assert SPEECH not in {e["image"] for e in log if e["event"] == "tag"}
+    assert SPEECH not in _deployed(root)
+
+
+def test_the_fetched_private_tfvars_is_read_before_an_operators_copy(tmp_path):
+    private = tmp_path / "runner-temp" / "dev.tfvars"
+    private.parent.mkdir()
+    private.write_text(ON)
+    _, _, proc, _, log, _ = _release(tmp_path, OFF, FAKE_TRIVY_FAIL=SPEECH, SWARM_TFVARS_FILE=str(private))
+    assert proc.returncode != 0, "the checkout's copy was read instead of the fetched one"
+    assert not [e for e in log if e["event"] == "tag"]
+    assert SPEECH in _last_line(proc)
+
+
+def test_a_fetched_tfvars_for_another_environment_is_not_read(tmp_path):
+    """SWARM_TFVARS_FILE is ENVIRONMENT's file: asked about another
+    environment, the switch reads that environment's own copy instead."""
+    private = tmp_path / "prod.tfvars"
+    private.write_text(OFF)
+    script = (
+        'REPO_ROOT="$1"; source scripts/lib/image-switches.sh; '
+        'printf "[%s]" "$(image_switched_off swarm-speech dev)"'
+    )
+    env = {**os.environ, "ENVIRONMENT": "prod", "SWARM_TFVARS_FILE": str(private)}
+    proc = subprocess.run(
+        ["bash", "-c", script, "_", str(tmp_path / "no-checkout")],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc.stdout == "[]", (proc.stdout, proc.stderr)
+    env["ENVIRONMENT"] = "dev"
+    proc = subprocess.run(
+        ["bash", "-c", script, "_", str(tmp_path / "no-checkout")],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=30, check=False,
+    )
+    assert proc.stdout == "[voice_speech]", (proc.stdout, proc.stderr)
+
+
+def test_a_fetched_tfvars_that_names_no_file_counts_as_deployed_and_says_so(tmp_path):
+    missing = tmp_path / "runner-temp" / "dev.tfvars"
+    _, _, proc, _, log, _ = _release(tmp_path, OFF, FAKE_TRIVY_FAIL=SPEECH, SWARM_TFVARS_FILE=str(missing))
+    assert proc.returncode != 0, "a missing fetched tfvars fell back to the checkout's copy"
+    assert not [e for e in log if e["event"] == "tag"]
+    assert "SWARM_TFVARS_FILE names no readable file" in proc.stderr, proc.stderr[-3000:]
+    assert str(missing) not in proc.stderr

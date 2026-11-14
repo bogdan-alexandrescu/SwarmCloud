@@ -83,7 +83,10 @@ HEAVY_MAIN_ONLY = {
 FAST = {
     "application.yml": {"changes", "shell", "workflows", "ruff", "python-checks", "quick-checks", "manifests"},
     "terraform.yml": {"offline", "validate", "test", "checkov", "plan-not-run"},
-    "security.yml": {"filesystem", "checks", "secrets", "policy", "iac"},
+    # deployment-values: the guard's own job (it holds the pattern list, so it
+    # is never folded into `checks`), which runs on every change like `secrets`
+    # and `policy`.
+    "security.yml": {"filesystem", "checks", "secrets", "policy", "iac", "deployment-values"},
 }
 #: Aggregates and bookkeeping: they read other jobs' results.
 AGGREGATE = {

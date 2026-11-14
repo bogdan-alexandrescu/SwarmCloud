@@ -1178,7 +1178,7 @@ def test_roles_design_records_what_every_lane_built():
     for code in ROLE_CODES:
         assert refusals.SWITCHES[code].default is False, code
         assert f"`{code}`" in body and f"`{refusals.env_name(code)}`" in body, code
-    dev = _text(REPO / "terraform" / "environments" / "dev" / "dev.tfvars")
+    dev = _text(REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example")
     if not any(code in dev for code in ROLE_CODES):
         assert "neither switch is on in dev" in body
     # The reach ships off, and while no Terraform sets it, it is off everywhere.
@@ -2366,7 +2366,7 @@ def _check_ssc_code(text: str) -> None:
     # Platform secrets: off until the owner's bootstrap apply.
     tf = _text(REPO / "terraform" / "bootstrap" / "platform_secret_status.tf")
     assert re.search(r'variable "enable_platform_secret_status" \{.*?default\s*=\s*false', tf, flags=re.S)
-    if "enable_platform_secret_status" not in _text(REPO / "terraform" / "bootstrap" / "terraform.tfvars"):
+    if "enable_platform_secret_status" not in _text(REPO / "terraform" / "bootstrap" / "terraform.tfvars.example"):
         assert "**It is off:**" in body
     # Q3's residual risk is open exactly while workers can read the slots.
     if SSC_STEP5 in _text(REPO / "terraform" / "bootstrap" / "forge_user_slots.tf"):
@@ -2381,7 +2381,7 @@ def _check_ssc_workspace_secrets(text: str) -> None:
     assert "turns on when SEC-RELEASE merges" not in head
     assert "[secrets-scopes.md](secrets-scopes.md)" in head and "**repository**" in head
     assert "SEC-UI-LIST" in head and "SEC-RELEASE" in head
-    tfvars = _text(REPO / "terraform" / "bootstrap" / "terraform.tfvars")
+    tfvars = _text(REPO / "terraform" / "bootstrap" / "terraform.tfvars.example")
     assert "enable_workspace_secrets = true" in tfvars and "`enable_workspace_secrets = true`" in head
 
 

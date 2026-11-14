@@ -106,16 +106,20 @@ def _explode(*_args, **_kwargs):
 # -- half one: the address -------------------------------------------------
 
 
-def test_the_front_door_comes_from_track_cs_tfvars_and_not_from_a_copy():
+def test_the_front_door_comes_from_track_cs_tfvars_and_not_from_a_copy(monkeypatch, tmp_path):
     """READ, not restated. `frontend_hostname` is Track C's input and the only
     place the hostname is decided, so this asserts the bridge agrees with that
     file rather than asserting a literal -- a literal here would be the third
     copy of the name and the one nobody updates.
 
     Parsed independently of the implementation (a different expression, over
-    the same file) so that the two cannot both be wrong in the same way.
+    the same file) so that the two cannot both be wrong in the same way. A
+    deployment's real dev.tfvars is private (the state bucket's config/ prefix,
+    docs/ci.md), so the tracked placeholder stands where the bridge looks.
     """
-    tfvars = (_REPO / "terraform" / "environments" / "dev" / "dev.tfvars").read_text()
+    tfvars = (_REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example").read_text()
+    _tfvars(tmp_path, tfvars)
+    monkeypatch.setattr(client, "_repo_root", lambda: tmp_path)
     expected = re.findall(r'frontend_hostname\s*=\s*"(.+?)"', tfvars)
     assert expected, "dev.tfvars no longer sets frontend_hostname"
     assert client.front_door_host() == expected[0]
@@ -490,8 +494,10 @@ def test_the_iap_grant_remedy_names_the_file_that_actually_sets_it(where):
     named = re.findall(r"terraform/[\w<>./-]+\.tfvars", text)
     assert named, f"{where} names no tfvars file for the IAP accessor grant"
     for relative in named:
-        path = _REPO / relative
-        assert path.is_file(), f"{where} sends the reader to {relative}, which does not exist"
+        # A deployment's real tfvars is private (the state bucket's config/
+        # prefix, docs/ci.md); the tracked placeholder beside it has its shape.
+        path = _REPO / f"{relative}.example"
+        assert path.is_file(), f"{where} sends the reader to {relative}, which has no tracked {relative}.example"
         assert re.search(
             r"^\s*frontend_iap_members\s*=", path.read_text(), re.MULTILINE
         ), f"{where} sends the reader to {relative}, which does not set frontend_iap_members"

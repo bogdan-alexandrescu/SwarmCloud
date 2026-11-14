@@ -574,6 +574,7 @@ CLOUD = "cloud"
 JUDGE = "judge"
 KEEPER = "keeper"
 SUMMARY = "summary"
+GUARD = "guard"
 
 REASONS = {
     CLOUD: (
@@ -588,6 +589,12 @@ REASONS = {
     KEEPER: (
         "only reads its `needs` -- a name-keeper with no action, no checkout and "
         "no secret (CI-FOLD, #1799): a VM create and boot (~52 s) bought it nothing"
+    ),
+    GUARD: (
+        "holds the deployment-values pattern list and runs only the base commit's "
+        "guard over the change checked out as data (docs/design/generic-repository.md, "
+        "section 4.3): read-only, every step before the guard is a credential-less "
+        "checkout, and the list is its only secret"
     ),
     SUMMARY: (
         "only writes a fixed step summary -- no action, no checkout, no `needs`, "
@@ -646,10 +653,15 @@ HOSTED_JOBS: dict[str, str] = {
     "application.yml:ui": KEEPER,
     "security.yml:secrets": KEEPER,
     "security.yml:policy": KEEPER,
+    "security.yml:deployment-values": GUARD,
     "terraform.yml:validate": KEEPER,
     "terraform.yml:test": KEEPER,
     "terraform.yml:plan-not-run": SUMMARY,
 }
+
+#: Jobs only the operator-pushed workflow patch adds (docs/ci.md): listed in
+#: HOSTED_JOBS ahead of the patch, not reported stale while it is unpushed.
+PATCH_ADDED_JOBS = frozenset({"security.yml:deployment-values"})
 
 _SECRET = re.compile(r"secrets\.([A-Za-z_][A-Za-z0-9_]*)")
 
@@ -690,6 +702,22 @@ def _reason_holds(reason: str, job: dict, workflow_permissions: object) -> bool:
         if reason == KEEPER:
             return bare and bool(job.get("needs"))
         return bare and not job.get("needs") and all("GITHUB_STEP_SUMMARY" in s["run"] for s in steps)
+    if reason == GUARD:
+        steps = job.get("steps") or []
+        runs = [i for i, s in enumerate(steps) if "run" in s]
+        before = steps[: runs[0]] if runs else steps
+        return (
+            job.get("permissions") == {"contents": "read"}
+            and _secrets(job) == {"DEPLOYMENT_PATTERNS"}
+            and len(runs) == 1
+            and all(
+                str(s.get("uses", "")).startswith("actions/checkout@")
+                and (s.get("with") or {}).get("persist-credentials") is False
+                for s in before
+            )
+            and "${GITHUB_WORKSPACE}/guard/" in steps[runs[0]]["run"]
+            and steps[runs[0]].get("working-directory") == "pr"
+        )
     if reason == JUDGE:
         return any(
             u.startswith("actions/create-github-app-token@")
@@ -730,7 +758,10 @@ def test_every_job_is_on_the_pool_or_hosted_for_a_checked_reason() -> None:
             )
         elif _verdict_of(name, job)[0] != "gated":
             problems.append(f"{name}: {_verdict_of(name, job)[1]}")
-    stale = sorted(set(HOSTED_JOBS) - names)
+    # The one job workflow-lines.patch adds (the operator pushes it by hand):
+    # missing only while the patch is not on the branch, and every check
+    # above holds it as soon as it is.
+    stale = sorted(set(HOSTED_JOBS) - names - PATCH_ADDED_JOBS)
     problems += [f"{n}: in HOSTED_JOBS but no such job" for n in stale]
     print(f"checked {len(jobs)} job(s), {len(HOSTED_JOBS)} kept hosted")
     assert not problems, "\n".join(problems)

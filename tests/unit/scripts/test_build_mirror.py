@@ -48,7 +48,7 @@ LIB = REPO / "scripts" / "lib" / "build-mirror.sh"
 REFRESH = REPO / "scripts" / "refresh-build-mirror.sh"
 RUNBOOK = REPO / "docs" / "runbooks" / "build-mirror.md"
 RUNBOOK_INDEX = REPO / "docs" / "runbooks" / "README.md"
-DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars"
+DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example"
 
 
 def _tfvar(name: str) -> str:

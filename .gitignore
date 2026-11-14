@@ -33,3 +33,9 @@ deny-list.json
 *.sarif
 /verification.md
 scratchpad/
+
+# A deployment's real tfvars is private: it lives under the state bucket's
+# config/<env>/ prefix (scripts/lib/resolve.sh tfvars), never in the
+# repository. Only the *.tfvars.example placeholders are tracked.
+/terraform/bootstrap/terraform.tfvars
+/terraform/environments/*/*.tfvars

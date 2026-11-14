@@ -836,7 +836,7 @@ def _artifact_retention_days() -> int:
     import re
 
     found = []
-    for tfvars in sorted((REPO_ROOT / "terraform" / "environments").glob("*/*.tfvars")):
+    for tfvars in sorted((REPO_ROOT / "terraform" / "environments").glob("*/*.tfvars.example")):
         match = re.search(
             r"^artifact_retention_days\s*=\s*(\d+)", tfvars.read_text(), flags=re.MULTILINE
         )
