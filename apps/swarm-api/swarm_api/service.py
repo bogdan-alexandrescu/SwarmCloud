@@ -166,6 +166,8 @@ from .validation import (
     REF_FULL,
     REF_TAG,
     ref_kind,
+    check_step_repository_ref,
+    WORKFLOW_REF_SUPPLIERS,
     ref_needs_lookup,
     repository_ref_not_found,
     swarm_task_of_ref,
@@ -178,6 +180,7 @@ from .validation import (
     plan_merge,
     reader_step_ids,
     refuse_control_plane_integrator,
+    refuse_integrated_step_ref,
     refuse_control_plane_outside_workflow,
     refuse_missing_mcp_credentials,
     refuse_uninherited_mcp_servers,
@@ -1524,6 +1527,17 @@ class SubmissionService:
             # Every step clones it, so refused once, here and counted, rather
             # than by `_build_task` on the first step (F4).
             check_repository_ref(spec.repository_ref)
+            # A step's own ref (#2895): its shape and what it may stand
+            # beside, from the spec alone, before anything is read -- so a
+            # step ref under a continuation is refused for that, not for the
+            # continuation. Asked of the forge at the end of this try.
+            ref_supplier = next(
+                (name for name in WORKFLOW_REF_SUPPLIERS if getattr(spec, name) is not None),
+                None,
+            )
+            for index, step in enumerate(spec.steps):
+                check_step_repository_ref(step, index=index, repository_url=spec.repository_url,
+                                          supplied_by=ref_supplier)
             # And asked of the forge once, here, not per step (#2726). A
             # continuation, `merge_pr` or `publish_to_pr` supplies the ref
             # itself and refuses one beside it below, so it is not asked.
@@ -1762,27 +1776,42 @@ class SubmissionService:
             # step names, or one for a server whose key is not the caller's,
             # is unexpected; every value is the right shape (§4.3).
             self.check_mcp_credential_map(spec.mcp_credentials, mcp_modes)
+            by_id = {s.step_id: s for s in spec.steps}
+            # The review a gated integrator reads its verdict from is not one
+            # of the branches it merges (#264). A review's deliverable is its
+            # verdict file; it changes no files, so it pushes no branch, and
+            # the integrator would report it "not found" on the pull request
+            # -- and if it did edit the repository, those edits are exactly
+            # the unreviewed work the gate exists to keep out.
+            # Nor is an `await-input` step (docs/design/human-steps.md §4.1):
+            # it runs no container, so it pushes no branch to merge.
+            # Inside this try since #2895, which refuses a step ref on a step
+            # the integrator merges, so that refusal is counted.
+            not_integrated: frozenset[str] = frozenset(control_plane_steps)
+            if integrator_step_id is not None and by_id[integrator_step_id].when is not None:
+                not_integrated |= {by_id[integrator_step_id].when.step}
+            # An issue run's requirements check (#2524) is read-only: when it
+            # runs it writes requirements.json, and when the review runs it
+            # runs no agent and pushes nothing at all.
+            not_integrated |= requirements_check_steps(spec.steps)
+            # A step ref under `integrate` (#2895): only on a step the
+            # integrator does not merge, which is known only now.
+            if integrator_step_id is not None:
+                for index, step in enumerate(spec.steps):
+                    if step.step_id not in not_integrated:
+                        refuse_integrated_step_ref(step, index=index,
+                                                   integrator_step_id=integrator_step_id)
+            # Each distinct step ref asked of the forge once (#2895), after
+            # every refusal that needs no read; the workflow's own was asked
+            # above. Nothing has been written yet.
+            step_refs = {step.repository_ref for step in spec.steps if step.repository_ref}
+            for ref in sorted(step_refs - {spec.repository_ref}):
+                self._check_ref_exists(tenant, repository_url, ref, person=ctx.email)
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
 
-        by_id = {s.step_id: s for s in spec.steps}
         layout_of = {s.step_id: s.input_layout for s in step_specs}
-        # The review a gated integrator reads its verdict from is not one of
-        # the branches it merges (#264). A review's deliverable is its verdict
-        # file; it changes no files, so it pushes no branch, and the integrator
-        # would report it "not found" on the pull request -- and if it did edit
-        # the repository, those edits are exactly the unreviewed work the gate
-        # exists to keep out.
-        # Nor is an `await-input` step (docs/design/human-steps.md §4.1): it
-        # runs no container, so it pushes no branch to merge.
-        not_integrated: frozenset[str] = frozenset(control_plane_steps)
-        if integrator_step_id is not None and by_id[integrator_step_id].when is not None:
-            not_integrated |= {by_id[integrator_step_id].when.step}
-        # An issue run's requirements check (#2524) is read-only: when it
-        # runs it writes requirements.json, and when the review runs it runs
-        # no agent and pushes nothing at all.
-        not_integrated |= requirements_check_steps(spec.steps)
         # Every review step names a gate by default (#2524, the owner 2026-10-28):
         # one that names none is stored with the platform's default block,
         # which swarm-api resolves against the workspace's setting.
@@ -1860,6 +1889,10 @@ class SubmissionService:
                 # does; the re-review reads the same verdict and would file
                 # every minor a second time.
                 findings_epic=None if step_id == rereview_step_id else findings_epic,
+                # The step's own ref (#2895), even one equal to the
+                # workflow's: the worker clones it as the step's, ahead of
+                # `carrier: branches`, and pins no base for it.
+                step_ref=bool(source.repository_ref),
             ).with_await_input(
                 # Signed with the rest of the block (§4.1); None on every other
                 # step, which then stores exactly the block it stored before.
@@ -1914,7 +1947,7 @@ class SubmissionService:
                 resource_class_override=source.resource_class,
                 priority=spec.priority,
                 repository_url=repository_url,
-                repository_ref=spec.repository_ref,
+                repository_ref=source.repository_ref or spec.repository_ref,
                 git_identity=git_identity,
                 # The workflow's map serves every step (§4.3); checked whole above.
                 mcp_credentials=spec.mcp_credentials,

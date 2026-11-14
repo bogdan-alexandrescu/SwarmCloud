@@ -1905,6 +1905,68 @@ class RepositoryRefNotFound(ValidationFailed):
     code = "repository_ref_not_found"
 
 
+#: The workflow fields that supply every step's ref themselves (#2895): a
+#: continuation's branch, a named pull request's head, a pull request the lane
+#: publishes onto. A step ref beside one would clone something else.
+WORKFLOW_REF_SUPPLIERS = ("continues_task", "merge_pr", "publish_to_pr")
+
+
+def _step_ref_refusal(step: Any, index: int, why: str) -> ValidationFailed:
+    return ValidationFailed(
+        f"step {step.step_id!r} names its own repository_ref {step.repository_ref!r}, {why}",
+        detail={"field": f"steps[{index}].repository_ref", "step_id": step.step_id,
+                "repository_ref": step.repository_ref},
+    )
+
+
+def check_step_repository_ref(step: Any, *, index: int, repository_url: str | None,
+                              supplied_by: str | None) -> None:
+    """Refuse a step's own `repository_ref` (#2895) that cannot be cloned or
+    that contradicts where the step's checkout already comes from.
+
+    The ref's shape is `check_repository_ref`'s rule, its message said of the
+    step. `supplied_by` is the first of `WORKFLOW_REF_SUPPLIERS` the workflow
+    sets, if any. Whether `integrate` merges the step is known only once the
+    integrator is, so that rule is `refuse_integrated_step_ref`'s. Every
+    refusal names the step and its field, and is raised before any forge call.
+    """
+    if not step.repository_ref:
+        return
+    try:
+        check_repository_ref(step.repository_ref)
+    except ValidationFailed as exc:
+        raise ValidationFailed(
+            f"step {step.step_id!r}: {exc.message}",
+            detail={**exc.detail, "field": f"steps[{index}].repository_ref",
+                    "step_id": step.step_id},
+        ) from None
+    if not repository_url:
+        raise _step_ref_refusal(step, index, "but the workflow names no repository_url "
+                                "for it to be a ref of")
+    if step.builds_on:
+        raise _step_ref_refusal(step, index, f"and builds_on {step.builds_on!r}, whose "
+                                "pushed branch is its checkout: name one or the other")
+    if step.pr_role is not None:
+        raise _step_ref_refusal(step, index, f"and pr_role {step.pr_role!r}: a single-pr "
+                                "chain clones its one pull request's branch")
+    if supplied_by is not None:
+        raise _step_ref_refusal(step, index, f"but the workflow's {supplied_by} supplies "
+                                "the ref every step clones")
+
+
+def refuse_integrated_step_ref(step: Any, *, index: int, integrator_step_id: str) -> None:
+    """Refuse a step ref on a step an `integrate` workflow's integrator merges,
+    or on the integrator itself (#2895): its one pull request is built on the
+    workflow's `repository_ref`, so a branch cloned from another ref would
+    carry that ref's history into it."""
+    if not step.repository_ref:
+        return
+    which = ("the integrator" if step.step_id == integrator_step_id
+             else f"a step the integrator {integrator_step_id!r} merges")
+    raise _step_ref_refusal(step, index, f"but it is {which}, and integrate builds its one "
+                            "pull request on the workflow's repository_ref")
+
+
 #: `swarm/<task id>`: the branch a `direct-pr` task or an integrator pushed
 #: (`continuation.TASK_ID_RE`, restated: continuation imports this module).
 _SWARM_TASK_BRANCH_RE = re.compile(r"^swarm/(?P<task_id>task_[0-9a-f]{20})$")
@@ -2211,6 +2273,10 @@ class DispatchOptions:
     #: the id with its own prefix, as it does for `integrates`, so nothing here
     #: is a ref name.
     builds_on: str | None = None
+    #: The step named its own `repository_ref` (#2895), stored on its task:
+    #: the worker clones it ahead of `carrier: branches` and pins no base for
+    #: it. Written only when true, inside the signed block.
+    step_ref: bool = False
     #: The verdict gate (#264): the upstream TASK id whose staged verdict file
     #: decides whether this step's agent runs, and the verdicts that run it.
     gate_task_id: str | None = None
@@ -2327,13 +2393,15 @@ class DispatchOptions:
         allow_empty_diff: bool = False,
         pr_label: str | None = None,
         findings_epic: int | None = None,
+        step_ref: bool = False,
     ) -> "DispatchOptions":
-        """This step's `builds_on`, verdict gate and empty-diff permission,
-        already resolved to task ids. `pr_label` and `findings_epic` are kept
-        only on a gated step."""
+        """This step's `builds_on`, verdict gate, empty-diff permission and
+        whether it names its own ref, already resolved to task ids.
+        `pr_label` and `findings_epic` are kept only on a gated step."""
         return replace(
             self,
             builds_on=builds_on,
+            step_ref=bool(step_ref),
             gate_task_id=gate_task_id,
             gate_verdicts=tuple(gate_verdicts) if gate_task_id else (),
             allow_empty_diff=bool(allow_empty_diff),
@@ -2453,6 +2521,10 @@ class DispatchOptions:
         # exactly the block it stored before #264.
         if self.builds_on:
             block["builds_on"] = self.builds_on
+        # Absent unless the step named its own ref (#2895), so every other
+        # step stores exactly the block it stored before.
+        if self.step_ref:
+            block["step_ref"] = True
         if self.gate_task_id:
             block["verdict_gate"] = {
                 "task_id": self.gate_task_id,

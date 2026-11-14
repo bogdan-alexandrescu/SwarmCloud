@@ -145,6 +145,23 @@ merge step (`agent_worker.merge._recorded_fix_heads`) reads it there and
 holds every task it names to its signed spec before its head counts. The
 record is an index, never the proof.
 
+A FOLLOW-UP'S HEAD, TOO (docs/design/merging-without-a-laptop.md §3.1-§3.2,
+lane 1). A `publish_to_pr` workflow (#2183) pushes onto a pull request a
+branch task opened, and the merge step refused that push `head_moved`:
+nothing recorded it. `stamp` marks such a workflow `FIX_HEAD_FIELD` with
+kind `FOLLOW_UP` -- unless it carries a writer's own mark, which makes it a
+round recorded as one -- and the tick records it against the branch task
+its SIGNED `publish_to_pr.task_id` names, with two narrowings a round does
+not have: only a `SUCCEEDED` follow-up is recorded (a failed one's push is
+the failure review's to read, not the merge's to land: `NOT_SUCCEEDED`),
+and only with the `started_head` the worker's own publish record
+(`result_summary.git.publish_to_pr`) says it fast-forwarded from, for this
+pull request's number and this branch; anything else is `UNADDRESSABLE`.
+`result_summary` is written only by the attempt the fence accepts
+(`agent_worker.control.finish`), so a stale attempt's push is never the
+recorded head. The merge step accepts the head only once `started_head`
+is itself an accepted head (lane 2).
+
 A FIX ROUND RUNS WITH ITS LANE'S TERRITORY (CIFIX-TERRITORY, part of #1499).
 Measured 2026-10-17 on PR 1485: a PR-side round edited
 `apps/swarm-mcp/swarm_mcp/sc.py`, outside lane ISO-WORKER-CORE, and turned a
@@ -295,6 +312,15 @@ CONFLICT_FIX_METADATA_KEY = "pr_shepherd"
 PR_WRITER_KINDS = ROUND_KINDS + (CONFLICT_FIX_METADATA_KEY,)
 #: Keys only this module writes; refused from any caller.
 API_KEYS = (FIX_HEAD_FIELD, FIX_HEADS_FIELD)
+#: The marker's and the record's kind for a `publish_to_pr` follow-up
+#: (docs/design/merging-without-a-laptop.md §3.2), whose entry carries
+#: `started_head` beside `head`.
+FOLLOW_UP = "follow_up"
+#: A follow-up's marker state when it ended other than `SUCCEEDED`: its
+#: push, if any, is never recorded.
+NOT_SUCCEEDED = "not_succeeded"
+#: The one terminal state a follow-up's head is recorded from.
+_SUCCEEDED = "SUCCEEDED"
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _GITHUB_REPOSITORY = re.compile(
@@ -444,6 +470,39 @@ def _fix_head_marker(metadata: Mapping[str, Any], continuation: Continuation | N
         if number is not None:
             return {"kind": kind, "pull_request": number, "state": PENDING}
     return None
+
+
+def _follow_up_marker(spec: WorkflowCreate,
+                      continuation: Continuation | None) -> dict[str, Any] | None:
+    """The `FIX_HEAD_FIELD` marker for a `publish_to_pr` follow-up, or None.
+
+    None beside a continuation (refused there) and beside any writer's mark
+    (a round, recorded as one). A malformed number marks nothing: `service`
+    refuses it after `stamp`, before anything is written.
+    """
+    if continuation is not None or spec.publish_to_pr is None:
+        return None
+    if any(kind in spec.metadata for kind in PR_WRITER_KINDS + (ISSUE_RUN_METADATA_KEY,)):
+        return None
+    try:
+        number = publishtopr.parse_number(spec.publish_to_pr, spec.repository_url)
+    except DispatchOptionError:
+        return None
+    if number is None:
+        return None
+    return {"kind": FOLLOW_UP, "pull_request": number, "state": PENDING}
+
+
+def _follow_up_start(git: Mapping[str, Any], root: str, number: int) -> str | None:
+    """The `started_head` a follow-up's own publish record names for pull request
+    `number` on `root`'s branch, or None when the record names another, or none."""
+    record = _mapping(git.get(publishtopr.DISPATCH_FIELD))
+    if _positive_int(record.get("number")) != number:
+        return None
+    if record.get("branch") != f"{BRANCH_PREFIX}{root}":
+        return None
+    started = record.get("started_head")
+    return started if isinstance(started, str) and _SHA.fullmatch(started) else None
 
 
 def _claim_key(tenant_id: str, repository: str, record: Mapping[str, Any]) -> str:
@@ -1276,9 +1335,12 @@ def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
         _refuse_if_fix_live(store, tenant_id, continuation, spec)
         # And the lane's live merge step, which runs its own rounds (#2685).
         _refuse_if_lane_merge_live(store, tenant_id, continuation, spec)
-        marker = _fix_head_marker(spec.metadata, continuation)
+        marker = (_fix_head_marker(spec.metadata, continuation)
+                  or _follow_up_marker(spec, continuation))
         if marker is None:
             return spec
+        if marker["kind"] == FOLLOW_UP:
+            return spec.model_copy(update={"metadata": {**spec.metadata, FIX_HEAD_FIELD: marker}})
         spec = _with_lane_territory(store, tenant_id, spec, continuation)
         return spec.model_copy(update={"metadata": {**spec.metadata, FIX_HEAD_FIELD: marker}})
     if continuation is None:
@@ -1501,10 +1563,21 @@ def _record_head(db: Any, tenant_id: str, task_id: str, now: datetime) -> str | 
         marker = dict(_mapping(metadata.get(FIX_HEAD_FIELD)))
         if marker.get("state") != PENDING:
             return None
-        root = _mapping(metadata.get(DISPATCH_METADATA_KEY)).get("continues")
+        dispatch = _mapping(metadata.get(DISPATCH_METADATA_KEY))
+        follow_up = marker.get("kind") == FOLLOW_UP
         number = _positive_int(marker.get("pull_request"))
+        if follow_up:
+            # The branch task and the number its SIGNED block names, never the marker's alone.
+            target = _mapping(dispatch.get(publishtopr.DISPATCH_FIELD))
+            root = target.get("task_id")
+            if _positive_int(target.get("number")) != number:
+                number = None
+        else:
+            root = dispatch.get("continues")
         repository = _repository(data.get("repository_url"))
-        pushed = _mapping(_mapping(data.get("result_summary")).get("git")).get("pushed_head")
+        git = _mapping(_mapping(data.get("result_summary")).get("git"))
+        pushed = git.get("pushed_head")
+        started = None
         root_ref = root_data = None
         if isinstance(root, str) and TASK_ID_RE.match(root) and root != task_id:
             root_ref = db.collection(TASKS).document(root)
@@ -1513,19 +1586,26 @@ def _record_head(db: Any, tenant_id: str, task_id: str, now: datetime) -> str | 
         if (root_ref is None or root_data is None or root_data.get("tenant_id") != tenant_id
                 or number is None or repository is None):
             state = UNADDRESSABLE
+        elif follow_up and data.get("state") != _SUCCEEDED:
+            state = NOT_SUCCEEDED
         elif not isinstance(pushed, str) or not _SHA.fullmatch(pushed):
             state = NOTHING_PUSHED
+        elif follow_up and (started := _follow_up_start(git, root, number)) is None:
+            state = UNADDRESSABLE
         else:
             state = RECORDED
             root_metadata = dict(_mapping(root_data.get("metadata")))
             existing = root_metadata.get(FIX_HEADS_FIELD)
             heads = [entry for entry in (existing if isinstance(existing, list) else [])
                      if isinstance(entry, Mapping) and entry.get("task_id") != task_id]
-            heads.append({
+            entry = {
                 "repository": repository, "pull_request": number, "task_id": task_id,
                 "workflow_id": data.get("workflow_id"), "head": pushed,
                 "kind": marker.get("kind"), "recorded_at": now,
-            })
+            }
+            if follow_up:
+                entry["started_head"] = started
+            heads.append(entry)
             root_metadata[FIX_HEADS_FIELD] = heads[-FIX_HEADS_KEPT:]
             txn.update(root_ref, {"metadata": root_metadata})
         marker["state"] = state

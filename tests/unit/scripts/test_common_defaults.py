@@ -44,7 +44,8 @@ REFUSAL = "is not readable; nothing that mutates runs without it"
 #: list. Scrubbed so the developer's or the runner's own settings cannot make a
 #: test pass.
 _SCRUB = ("PROJECT_ID", "REGION", "ZONE", "SWARM_ENV_FILE", "KUBECONFIG", "GKE_CLUSTER",
-          "ARTIFACT_BUCKET", "SWARM_NO_PROJECT", "SWARM_DEPLOY_CONFIG_DIR", "TF_STATE_BUCKET")
+          "ARTIFACT_BUCKET", "SWARM_NO_PROJECT", "SWARM_DEPLOY_CONFIG_DIR", "TF_STATE_BUCKET",
+          "STATE_BUCKET_NAME")
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -278,3 +279,34 @@ def test_a_list_on_one_line_is_read_without_a_note(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.split() == ["example.com", "example.org"]
     assert "spans several lines" not in proc.stderr, proc.stderr
+
+
+_BUCKET = 'printf "%s|" "${TF_STATE_BUCKET}"; unset SWARM_DEPLOY_CONFIG_DIR; config_source dev'
+
+
+def test_a_configured_state_bucket_name_is_read_before_the_default(tmp_path: Path) -> None:
+    # A deployment whose bootstrap set state_bucket_name (a suffixed bucket)
+    # names it in .env as STATE_BUCKET_NAME; the scripts and config_source
+    # find it there, not under the default nobody created.
+    # MUTATION: drop STATE_BUCKET_NAME from TF_STATE_BUCKET's fallback or from
+    # config_source's and this fails.
+    _write_list(tmp_path)
+    proc = _source(tmp_path, _BUCKET, PROJECT_ID=PROJECT, REGION="example-region",
+                   STATE_BUCKET_NAME=f"swarm-tfstate-{PROJECT}-x1")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == f"swarm-tfstate-{PROJECT}-x1|gs://swarm-tfstate-{PROJECT}-x1/config/dev", proc.stdout
+
+
+def test_the_state_bucket_defaults_when_no_name_is_configured(tmp_path: Path) -> None:
+    _write_list(tmp_path)
+    proc = _source(tmp_path, _BUCKET, PROJECT_ID=PROJECT, REGION="example-region")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == f"swarm-tfstate-{PROJECT}|gs://swarm-tfstate-{PROJECT}/config/dev", proc.stdout
+
+
+def test_an_explicit_tf_state_bucket_still_wins(tmp_path: Path) -> None:
+    _write_list(tmp_path)
+    proc = _source(tmp_path, _BUCKET, PROJECT_ID=PROJECT, REGION="example-region",
+                   STATE_BUCKET_NAME="swarm-tfstate-configured", TF_STATE_BUCKET="swarm-tfstate-explicit")
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "swarm-tfstate-explicit|gs://swarm-tfstate-explicit/config/dev", proc.stdout

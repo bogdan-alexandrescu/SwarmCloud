@@ -509,12 +509,19 @@ const STATS_POLL_MS = 60_000
  * live QA CH-4 (2026-10-11) the phone page is the full page too
  * (`PHONE_PAGE_LIMIT` is `TASK_PAGE_LIMIT`, pageLimits.ts), and this screen
  * still counts over the page the list shows (OV-10): the two moved together.
+ *
+ * THE STATE READS START BESIDE THE PAGE, NOT AFTER IT (visual QA pass 1, the
+ * owner's pick of 2026-11-13): awaiting the page first made first paint the
+ * sum of the two reads. Whether they are used is still the page's call (only
+ * when it has a next page); a page with none drops them unread.
+ * `loadStateReads` never rejects, so a dropped one is no unhandled rejection.
  */
 async function loadListPage(): Promise<Result<OverviewTaskPage>> {
+  const states = loadStateReads()
   const page = await loadTasks(phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT, { view: 'summary' })
   if (page.status !== 'ok' && page.status !== 'stale') return page
   if ((page.data.next_page_token ?? null) === null) return page
-  const byState = await loadStateReads()
+  const byState = await states
   return { ...page, data: { ...page.data, byState } }
 }
 
@@ -529,9 +536,12 @@ async function loadListPage(): Promise<Result<OverviewTaskPage>> {
  * three ways of ending badly are each one `?state=` read (an indexed query,
  * `tasks-tenant-state-created`), in the summary view, at the api's full page.
  *
- * ONLY WHEN THE PAGE IS NOT EVERY TASK: a page with no next page already holds
- * every one of these, so a small tenant pays nothing for this. SUCCEEDED is
- * not read: 3,600 rows all-time, and nothing on this screen lists it.
+ * USED ONLY WHEN THE PAGE IS NOT EVERY TASK: a page with no next page already
+ * holds every one of these. They are read beside the page (`loadListPage`),
+ * so a small tenant now pays seven indexed reads a poll for answers it drops;
+ * that is the price of a first paint that waits for one read, not two in
+ * turn. SUCCEEDED is not read: 3,600 rows all-time, and nothing on this
+ * screen lists it.
  *
  * A state read that fails is left out, and the cards that needed it fall back
  * to the page and say they are partial. It never fails the page: the page is

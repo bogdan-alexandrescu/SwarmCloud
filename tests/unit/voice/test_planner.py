@@ -150,6 +150,8 @@ class World:
         self.api_requests: list[httpx.Request] = []
         self.cards: list[dict] = []
         self.visuals: list[dict] = []
+        #: The visual each write landed on, in order.
+        self.visual_ids: list[str] = []
         self.tasks = [{"task_id": "t-" + secrets.token_hex(4), "title": "Fix the login redirect",
                        "state": "FAILED"}]
         self.plan: dict = {"calls": []}
@@ -203,9 +205,11 @@ class World:
                 checked = vcards.validate(json.loads(request.content)["card"])
             except ValidationFailed as exc:
                 return httpx.Response(422, json={"detail": str(exc)})
-            card_id = "vc_" + secrets.token_hex(16)
+            # A card's id writes its next version, as swarm-api stores it.
+            card_id = checked.get("card_id") or "vc_" + secrets.token_hex(16)
+            version = sum(1 for c in self.cards if c["card_id"] == card_id) + 1
             self.cards.append({**checked, "card_id": card_id})
-            return httpx.Response(201, json={"card": {**checked, "card_id": card_id, "version": 1}})
+            return httpx.Response(201, json={"card": {**checked, "card_id": card_id, "version": version}})
         if request.method == "POST" and path == f"/v1/voice/sessions/{self.grant.session_id}/visuals":
             # swarm-api's own frame check, so a refused mock-up is refused here too.
             visual = json.loads(request.content)["visual"]
@@ -214,8 +218,12 @@ class World:
             except ValidationFailed as exc:
                 return httpx.Response(422, json={"detail": str(exc)})
             self.visuals.append(visual)
+            # A visual_id is the next version of that visual, as swarm-api stores it.
+            visual_id = visual.get("visual_id") or "vv_" + secrets.token_hex(16)
+            version = sum(1 for v in self.visual_ids if v == visual_id) + 1
+            self.visual_ids.append(visual_id)
             return httpx.Response(200, json={"visual": {
-                "visual_id": "vv_" + secrets.token_hex(16), "kind": "mockup", "version": 1,
+                "visual_id": visual_id, "kind": "mockup", "version": version,
                 "parts": parts, "lines": None}})
         return httpx.Response(404)
 
@@ -395,10 +403,66 @@ def test_three_versions_asked_for_are_three_frames_drawn(world):
                             ["speak", {"summary": "Three versions are on screen."}]]}
     result = _delegate(world)
     # MUTATION: post each page's <meta charset> as written and swarm-api refuses the mock-up.
-    assert len(world.visuals) == 1 and result.frames_dropped == []
-    assert [f["label"] for f in json.loads(world.visuals[0]["body"])["frames"]] == [
+    assert result.frames_dropped == []
+    assert [f["label"] for f in json.loads(world.visuals[-1]["body"])["frames"]] == [
         "Classic", "Bold", "Minimal"]
     assert result.spoken == "Three versions are on screen. I drew 1 mock-up on screen."
+
+
+def _labels(visual: dict) -> list[str]:
+    return [f["label"] for f in json.loads(visual["body"])["frames"]]
+
+
+def test_a_mockup_of_three_frames_is_written_frame_by_frame_as_one_visual(world):
+    frames = [{"label": n, "html": _page(n)} for n in ("Classic", "Bold", "Minimal")]
+    world.plan = {"calls": [["show_mockup", {"title": "The landing page", "frames": frames,
+                                             "visual_id": None}],
+                            ["speak", {"summary": "Three versions are on screen."}]]}
+    result = _delegate(world)
+    # MUTATION: write all three frames in one call and the page shows nothing until the last.
+    assert [_labels(v) for v in world.visuals] == [
+        ["Classic"], ["Classic", "Bold"], ["Classic", "Bold", "Minimal"]]
+    # Three updates of ONE visual: the first write names none, the next two name its id.
+    assert world.visuals[0]["visual_id"] is None
+    assert len(set(world.visual_ids)) == 1
+    assert [v["visual_id"] for v in world.visuals[1:]] == world.visual_ids[:2]
+    # Drawn once, not three times: the turn says one mock-up and traces its three frames.
+    assert result.drawn == [{"kind": "mockup", "title": "The landing page",
+                             "frames": ["Classic", "Bold", "Minimal"]}]
+    assert len(result.visuals) == 1 and result.visuals[0]["visual_id"] == world.visual_ids[0]
+    answers = json.loads(Path(str(world.dump) + ".results").read_text())
+    answer = answers[0]["result"]["content"][0]["text"]
+    assert world.visual_ids[0] in answer and '"version":3' in answer and '"asked":3' in answer
+
+
+def _mockup_card(names: tuple[str, ...]) -> dict:
+    return {"card_id": None, "state": "proposed", "title": "The landing page",
+            "summary": "Three versions of the landing page.", "references": _refs(),
+            "body": {"drawn_by": "planner", "viewport": "desktop", "height": None,
+                     "frames": [{"name": n, "html": f"<h1>{n}</h1>", "blob_key": None} for n in names]}}
+
+
+def test_a_mockup_card_of_three_frames_is_three_updates_of_one_card(world):
+    world.plan = {"calls": [["draw_mockup", _mockup_card(("Classic", "Bold", "Minimal"))],
+                            ["speak", {"summary": "Three versions are on screen."}]]}
+    result = _delegate(world)
+    # MUTATION: write the card with all three frames at once and the console waits for the last.
+    assert [[f["name"] for f in c["body"]["frames"]] for c in world.cards] == [
+        ["Classic"], ["Classic", "Bold"], ["Classic", "Bold", "Minimal"]]
+    # One card: the first write draws it, the next two name its id.
+    assert world.cards[0]["card_id"] == world.cards[1]["card_id"] == world.cards[2]["card_id"]
+    assert [c["kind"] for c in result.cards] == ["mockup"] and len(result.drawn) == 1
+    assert result.spoken == "Three versions are on screen. I drew 1 card on screen."
+    answers = json.loads(Path(str(world.dump) + ".results").read_text())
+    answer = answers[0]["result"]["content"][0]["text"]
+    assert '"version":3' in answer and not answers[0]["result"]["isError"]
+
+
+def test_a_card_without_frames_is_written_once(world):
+    world.plan = {"calls": [["draw_details_input", _details_card()],
+                            ["speak", {"summary": "The question is on screen."}]]}
+    _delegate(world)
+    assert len(world.cards) == 1
 
 
 def test_a_frame_left_out_of_a_mockup_is_said_with_its_reason(world):
@@ -409,7 +473,8 @@ def test_a_frame_left_out_of_a_mockup_is_said_with_its_reason(world):
                                              "visual_id": None}],
                             ["speak", {"summary": "The versions are on screen."}]]}
     result = _delegate(world)
-    assert [f["label"] for f in json.loads(world.visuals[0]["body"])["frames"]] == ["Classic", "Bold"]
+    # Frame by frame, and the refused third frame writes no version of its own.
+    assert [_labels(v) for v in world.visuals] == [["Classic"], ["Classic", "Bold"]]
     # MUTATION: drop the frame without a word and the person hears of no missing version.
     assert result.spoken.endswith(
         "I drew 1 mock-up on screen. I drew two of the three versions; the third, Minimal, was "
@@ -447,7 +512,8 @@ def test_a_redraw_still_refused_leaves_the_missing_version_said_once(world):
                                              "visual_id": None}],
                             ["speak", {"summary": "The versions are on screen."}]]}
     result = _delegate(world)
-    assert len(world.visuals) == 1 and len(result.frames_dropped) == 1
+    assert [_labels(v) for v in world.visuals] == [["Classic"], ["Classic", "Bold"]]
+    assert len(result.frames_dropped) == 1
     assert result.spoken.count("was refused because") == 1
     assert "I drew two of the three versions; the third, Minimal," in result.spoken
 
