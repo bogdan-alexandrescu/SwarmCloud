@@ -454,6 +454,17 @@ def git_push_policy(
         return True, ()
 
 
+def _pull_base_triple(record: Any) -> tuple[str, str, str] | None:
+    """`(branch, remote_ref, merge_base)` from a pull base record that reached
+    a merge base (`gitops.pull_base_record`), else None (#2901 §5.8)."""
+    if not isinstance(record, dict):
+        return None
+    fields = (record.get("ref"), record.get("remote_ref"), record.get("merge_base"))
+    if not all(isinstance(value, str) and value for value in fields):
+        return None
+    return fields  # type: ignore[return-value]
+
+
 def _repository_name(url: str) -> str:
     """`owner/name` from a repository URL, for the relay's record only."""
     path = url.rstrip("/").split("://", 1)[-1].split(":", 1)[-1]
@@ -908,6 +919,7 @@ class ChildPath:
         private_dir: Path | None = None,
         logs_dir: Path | None = None,
         store: Any = None,
+        pull_base: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         """Create the spools this attempt is offered; return the agent's variables.
 
@@ -922,6 +934,7 @@ class ChildPath:
         env.update(self._prepare_git(
             work, task=task, checkout=checkout, repository_url=repository_url,
             clone_base=clone_base, private_dir=private_dir, logs_dir=logs_dir, store=store,
+            pull_base=pull_base,
         ))
         env.update(self._prepare_search(work))
         env.update(self._prepare_state_reads(work))
@@ -1041,8 +1054,13 @@ class ChildPath:
         private_dir: Path | None,
         logs_dir: Path | None,
         store: Any,
+        pull_base: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         """The git tools' spool, when this attempt is offered them (lane G6).
+
+        `pull_base` is `fetch_pull_base`'s record of a publish_to_pr clone's
+        base branch (`gitops.pull_base_record`), or None: a `too_large` fetch
+        of that branch then names it (#2901 §5.8).
 
         Offered when the attempt is keyed, its profile's runner names the shim
         (`offers_git_tools`), and it has a checkout whose clone base the worker
@@ -1093,6 +1111,7 @@ class ChildPath:
             pushes=pushes,
             branch_prefix=self.cfg.git_branch_prefix,
             timeout_seconds=int(self.cfg.git_clone_timeout_seconds),
+            pull_base=_pull_base_triple(pull_base),
         )
         self._git = gittools.GitTools(
             config,
