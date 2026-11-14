@@ -908,11 +908,46 @@ function teamPeople(team: SetupTeam): SetupMember[] {
   return team.members.length > 0 ? team.members : team.invites.map((email) => ({ email, member: null }))
 }
 
+/** The phone tip's vertical anchor: under its (i) in the viewport's top half, above it in the bottom half. */
+export function aboutTipAnchor(button: DOMRect, viewport: number, gap = 8): { top: string; bottom: string } {
+  return button.top + button.height / 2 <= viewport / 2
+    ? { top: `${Math.round(button.bottom + gap)}px`, bottom: 'auto' }
+    : { top: 'auto', bottom: `${Math.round(viewport - button.top + gap)}px` }
+}
+
 /** An (i) whose words are help, kept out of the surface (`Tooltip`'s `data-help-description`). */
 function About({ about, tip }: { about: string; tip: string }) {
+  // On a phone the tip is `position: fixed` (onboarding.css), and a fixed box
+  // with `top: auto` sits at its UNSCROLLED static position: `.ctl-scroll`'s
+  // offset is not in it, so the open tip landed hundreds of pixels below its
+  // (i). It is anchored from the button's viewport box instead, measured when
+  // it opens and again on any scroll while it is open.
+  const host = useRef<HTMLSpanElement>(null)
+  const [open, setOpen] = useState(false)
+  const place = useCallback(() => {
+    const el = host.current
+    const button = el?.querySelector('button')
+    if (!el || !button) return
+    const at = aboutTipAnchor(button.getBoundingClientRect(), window.innerHeight)
+    el.style.setProperty('--ob-tip-top', at.top)
+    el.style.setProperty('--ob-tip-bottom', at.bottom)
+  }, [])
+  useEffect(() => {
+    if (!open) return
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [open, place])
+  const opening = () => {
+    place()
+    setOpen(true)
+  }
   return (
     // `ob-about`: on a phone its tip spans the viewport (onboarding.css), never past 390.
-    <span className="ob-about">
+    <span className="ob-about" ref={host} onFocus={opening} onMouseEnter={opening} onBlur={() => setOpen(false)} onMouseLeave={() => setOpen(false)}>
       <Tooltip tip={tip}>
         <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label={`About ${about}`} style={{ marginBlock: -6, verticalAlign: 'middle' }}>
           <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">

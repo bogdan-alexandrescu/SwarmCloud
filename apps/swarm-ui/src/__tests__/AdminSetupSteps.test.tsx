@@ -493,6 +493,52 @@ describe('Admin › Setup says only what exists', () => {
     expect(rule).toMatch(/left: 16px/)
     expect(rule).toMatch(/right: 16px/)
     expect(rule).toMatch(/max-width: none/)
+    // MUTATION: `top: auto` with no anchor -- the unscrolled static position (review finding).
+    expect(rule).toMatch(/top: var\(--ob-tip-top, auto\)/)
+    expect(rule).toMatch(/bottom: var\(--ob-tip-bottom, calc\(var\(--dock-h, 28px\) \+ 12px\)\)/)
+  })
+
+  it('on a phone an open (i) tip is placed at its button, scrolled or not (review finding)', async () => {
+    serve((m, url) =>
+      m === 'GET' && url === '/v1/admin/setup/test-repository'
+        ? { status: 200, body: { test_repository: null, default: 'example-org/swarm-install-test', repositories: GRANTED.repositories } }
+        : null,
+    )
+    vi.stubGlobal('innerHeight', 844)
+    await mountSteps(state(teamWith({ grant: GRANTED })))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    const button = within(row).getByRole('button', { name: 'About the test repository' })
+    const host = button.closest('.ob-about') as HTMLElement
+    // Where the (i) is in the viewport: `.ctl-scroll`'s scroll offset is already in this box.
+    let at = { top: 300, bottom: 330 }
+    vi.spyOn(button, 'getBoundingClientRect').mockImplementation(() => ({ ...at, left: 200, right: 230, width: 30, height: 30, x: 200, y: at.top, toJSON: () => ({}) }) as DOMRect)
+    const placed = () => [host.style.getPropertyValue('--ob-tip-top'), host.style.getPropertyValue('--ob-tip-bottom')]
+    fireEvent.focus(button)
+    expect(host.querySelector('.c-tip')?.hasAttribute('hidden')).toBe(false)
+    // MUTATION: leave the tip at its static position (no anchor), hundreds of pixels below the (i).
+    expect(placed()).toEqual(['338px', 'auto'])
+    // The inner scroller moves the (i) into the bottom half: the tip opens above it, clear of the dock.
+    at = { top: 700, bottom: 730 }
+    const scroller = document.createElement('div')
+    document.body.append(scroller)
+    fireEvent.scroll(scroller)
+    // MUTATION: measure only on open, so a scroll leaves the tip where the (i) was.
+    expect(placed()).toEqual(['auto', '152px'])
+    fireEvent.blur(button)
+    at = { top: 100, bottom: 130 }
+    fireEvent.scroll(scroller)
+    // MUTATION: keep measuring on every scroll after the tip has closed.
+    expect(placed()).toEqual(['auto', '152px'])
+    scroller.remove()
+    vi.unstubAllGlobals()
+  })
+
+  it('aboutTipAnchor opens under the (i) in the top half and above it in the bottom half', async () => {
+    const { aboutTipAnchor } = await import('../AdminSetupSteps')
+    const box = (top: number) => ({ top, bottom: top + 30, height: 30 }) as DOMRect
+    // MUTATION: always below, so an (i) near the dock opens its tip under the dock.
+    expect(aboutTipAnchor(box(10), 844)).toEqual({ top: '48px', bottom: 'auto' })
+    expect(aboutTipAnchor(box(790), 844)).toEqual({ top: 'auto', bottom: '62px' })
   })
 
   it('the invite control opens the Google Admin members page and waits for them to join', async () => {

@@ -1727,7 +1727,7 @@ class OrgPoliciesStep(_Base):
                 if blocked:
                     problems.append(f"{constraint} demands CMEK for {blocked}; this release creates Google-managed "
                                     "keys only: an organization admin must exempt the project")
-        return problems, {}
+        return problems, {"org_policies_read_on": resource}
 
     def check(self, ctx: Any) -> Observation:
         problems, outputs = self.findings(ctx)

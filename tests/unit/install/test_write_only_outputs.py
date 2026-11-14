@@ -30,6 +30,12 @@ WRITERS = (
     "verbs/install.py",
 )
 
+#: Written for a reader outside these steps that does not read it yet:
+#: edge.dns records the project of a Cloud DNS zone found in another visible
+#: project, and remains.py still links the zone under the install project (a
+#: question in the pull request, not a key to delete).
+NOT_READ_YET = {"dns_zone_project"}
+
 
 def _trees() -> dict[str, ast.Module]:
     return {str(path.relative_to(PACKAGE)): ast.parse(path.read_text()) for path in sorted(PACKAGE.rglob("*.py"))}
@@ -120,4 +126,8 @@ def test_every_output_a_step_writes_is_read(key):
     trees = _trees()
     constants = _constants(trees)
     where = written(trees, constants)[key]
+    if key in NOT_READ_YET:
+        # MUTATION: a reader appears and the exemption stays, hiding the next write-only key under it.
+        assert key not in read(trees, constants), f"{key!r} is read now: drop it from NOT_READ_YET"
+        return
     assert key in read(trees, constants), f"{where} writes state.outputs[{key!r}] and nothing reads it"

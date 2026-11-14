@@ -242,6 +242,19 @@ def test_the_marketplace_is_the_recorded_releases_never_its_channels():
     assert "channels/" not in install.plugin_marketplace("2026.11.3-rc.2")
 
 
+def test_the_install_guide_names_the_pinned_release_marketplace_for_teammates():
+    from pathlib import Path
+
+    guide = (Path(__file__).resolve().parents[3] / "docs" / "install.md").read_text(encoding="utf-8")
+    pinned = install.RELEASE_MARKETPLACE.format(release="<version>")
+    lines = [ln for ln in guide.splitlines() if "claude plugin marketplace add" in ln]
+    assert lines, "docs/install.md shows no teammate line"
+    for ln in lines:
+        # MUTATION: keep the channel's (or the bucket root's) marketplace in the guide.
+        assert f"claude plugin marketplace add {pinned}" in ln, ln
+    assert "channels/rc.marketplace.json" not in guide
+
+
 def test_with_no_release_recorded_the_channel_is_the_installers(monkeypatch):
     monkeypatch.setenv("SWARM_CHANNEL", "rc")
     assert install.plugin_marketplace(None).endswith("/channels/rc.marketplace.json")

@@ -710,11 +710,14 @@ Admin › Setup › Health, the hourly doctor's checks once setup is done.
    button:
 
    ```
-   claude plugin marketplace add https://storage.googleapis.com/swarmcloud/marketplace.json && claude plugin install sc@swarmcloud --config deployment_url=https://<hostname>
+   claude plugin marketplace add https://storage.googleapis.com/swarmcloud/releases/<version>/marketplace.json && claude plugin install sc@swarmcloud --config deployment_url=https://<hostname>
    ```
 
-   On a release candidate the marketplace is
-   `https://storage.googleapis.com/swarmcloud/channels/rc.marketplace.json`.
+   `<version>` is the release the deployment runs, a release candidate's
+   included: the line pins that release's own marketplace, never its
+   channel's (`channels/<channel>.marketplace.json`), which moves on with the
+   next promotion and would hand a teammate a plugin newer than the
+   deployment it talks to.
    The row also shows the console's URL and
    `Then: sc login, then /sc:submit in Claude Code`.
 
@@ -772,7 +775,7 @@ Admin › Setup then says `Setup is complete`. After that,
 ```
 Ready.
   Console:    https://<hostname>/
-  Teammates:  claude plugin marketplace add <marketplace>  (deployment URL: https://<hostname>)
+  Teammates:  claude plugin marketplace add https://storage.googleapis.com/swarmcloud/releases/<version>/marketplace.json  (deployment URL: https://<hostname>)
   Health:     swarm doctor
 ```
 

@@ -2335,7 +2335,7 @@ def test_every_quota_is_read_again_in_stage_1(pages: list[Any]) -> None:
     recheck.apply(ctx, recheck.plan(ctx))
     assert "quota.kms-signing-h4" in pages[0][1]
     for quota in preflight.QUOTAS:
-        assert quota.entry in recheck.check(ctx).outputs["quotas"], quota.entry
+        assert quota.entry in recheck.findings(ctx)[1]["quotas"], quota.entry
 
     ids = [s.id for s in foundations.build_steps(lambda: gcp, answers(), load_manifest())]
     assert ids.index("preflight.quotas-recheck") > ids.index("foundations.apis")
