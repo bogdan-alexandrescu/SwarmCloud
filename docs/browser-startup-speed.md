@@ -235,10 +235,12 @@ lane:
 
 1. **Whether the pull really fell back to a normal pull.** The proof is the
    pod's `ImageStreaming` event (GKE's documented signal; older versions used
-   `BackedByGCFS`). The reconciler cannot read events: its `swarm-reaper`
-   Role grants `pods` and `jobs` only
-   (`apps/reconciler/reconciler/startsteps.py` module docstring). The operator
-   can read it with
+   `BackedByGCFS`). The reconciler's `swarm-reaper` Role may read
+   events (`get`, `list`), but only to name a Job's creation failure from the
+   Job's `FailedCreate` event; the pod steps it records come from the pod's
+   status, never from events, so it does not read this pod's `ImageStreaming`
+   event (`apps/reconciler/reconciler/startsteps.py` module docstring). The
+   operator can read it with
    `kubectl get events -n swarm-tenant-<t> --field-selector involvedObject.name=<pod>`
    on `swarm-autopilot`, through `kubectl_bin` and **never** on
    `peer-cluster`.
