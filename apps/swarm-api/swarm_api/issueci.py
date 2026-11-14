@@ -178,7 +178,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.states import TaskState
 
-from . import approvals, refusals
+from . import approvals, refusals, reviewgate
 from .cirerun import (
     RERUN_REFUSALS_MAX,
     RERUN_SETTLE_SECONDS,
@@ -2580,7 +2580,19 @@ def _verdict_of(content: str | None, problem: str | None, *, what: str,
     verdict = data.get("verdict") if isinstance(data, Mapping) else None
     if not isinstance(verdict, str):
         return None, f"the {what}'s {name} states no verdict"
+    reason = data.get(reviewgate.SKIPPED_REASON_KEY)
+    if verdict == reviewgate.SKIPPED_VERDICT and not (isinstance(reason, str) and reason.strip()):
+        return None, f"the {what}'s {name} says {verdict} and names no reason"
     return verdict, ""
+
+
+def _merges_on(verdict: str | None) -> bool:
+    """Whether a review's verdict lets the run's pull request merge (#4101):
+    MERGE, or SKIPPED -- the size gate skipped the review, and the owner's
+    rule for the gate (2026-10-27) lets a change under it merge once CI is
+    green, as the merge step's `SKIPPED_REVIEW_MERGES` does. Read from the
+    skip, never from a MERGE the gate does not write."""
+    return verdict in ("MERGE", reviewgate.SKIPPED_VERDICT)
 
 
 def _merge_refusal(ctx: Any, tenant_id: str, workflow: Any) -> str:
@@ -2765,7 +2777,7 @@ def _merge(
         )
 
     verdict, why = _review_verdict(ctx, tenant_id, run)
-    if verdict != "MERGE":
+    if not _merges_on(verdict):
         return _fail(f"the review's verdict is {verdict}, not MERGE" if verdict else why)
     if run.security_review:
         # The security review's say (docs/design/security-review-step.md): a

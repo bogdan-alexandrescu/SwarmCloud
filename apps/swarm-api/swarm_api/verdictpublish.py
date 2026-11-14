@@ -224,6 +224,8 @@ PR_READ_LIMIT_BYTES = 256 * 1024
 MAX_VERDICT_BYTES = 256 * 1024
 MAX_FINDINGS = 50
 MAX_FINDING_CHARS = 1000
+#: `agent_worker.verdict.MAX_SKIPPED_REASON_CHARS`, restated.
+MAX_SKIPPED_REASON_CHARS = 500
 
 #: `agent_worker.gitops.ATTRIBUTION_MARKERS`, restated (held equal by the test).
 ATTRIBUTION_MARKERS = (
@@ -438,6 +440,27 @@ class VerdictRead:
     findings: tuple[str, ...]
     findings_dropped: int
     minors: int
+    #: Why the size gate skipped the review, when `verdict` is
+    #: `reviewgate.SKIPPED_VERDICT` (#4101); None for a review that ran.
+    skipped: str | None = None
+
+
+def _skipped_reason(document: Mapping[str, Any]) -> str | None:
+    """`agent_worker.verdict.skipped_reason`, restated: the reason of a
+    `{"verdict": "SKIPPED", "skipped": "<reason>"}`, else None."""
+    raw = document.get("verdict")
+    if not isinstance(raw, str) or raw.strip().upper() != reviewgate.SKIPPED_VERDICT:
+        return None
+    reason = document.get(reviewgate.SKIPPED_REASON_KEY)
+    text = " ".join(reason.split()) if isinstance(reason, str) else ""
+    return text[:MAX_SKIPPED_REASON_CHARS] or None
+
+
+def gate_reading(read: VerdictRead) -> str:
+    """`agent_worker.verdict.gate_reading`, restated (#4101): the verdict a
+    verdict gate compares. A skipped review reads as MERGE to a gate, by the
+    owner's rule for the size gate; its file still says SKIPPED."""
+    return "MERGE" if read.skipped is not None else read.verdict
 
 
 def parse_verdict(text: str) -> VerdictRead:
@@ -453,7 +476,9 @@ def parse_verdict(text: str) -> VerdictRead:
         raise Decline("verdict_unreadable", "the verdict file is not JSON") from None
     if not isinstance(document, dict):
         raise Decline("verdict_unreadable", "the verdict file is not a JSON object")
-    verdict = _normalise_verdict(document.get("verdict"))
+    skipped = _skipped_reason(document)
+    verdict = (reviewgate.SKIPPED_VERDICT if skipped is not None
+               else _normalise_verdict(document.get("verdict")))
     if verdict is None:
         raise Decline("verdict_unreadable", "the verdict file names no verdict this platform reads")
     raw = document.get("findings")
@@ -464,6 +489,7 @@ def parse_verdict(text: str) -> VerdictRead:
         findings=tuple(texts[:MAX_FINDINGS]),
         findings_dropped=max(len(texts) - MAX_FINDINGS, 0),
         minors=sum(1 for item in items if _is_minor(item)),
+        skipped=skipped,
     )
 
 
@@ -957,7 +983,8 @@ def _publish(ctx: Any, tenant: Any, doc: Mapping[str, Any],
                       required=True, what="verdict")
     read = parse_verdict(text or "")
     noop = noop_verdict_reason(read)
-    if read.verdict in verdict_in and noop is None:
+    reading = gate_reading(read)
+    if reading in verdict_in and noop is None:
         raise Decline("agent_runs", f"the review's verdict is {read.verdict}, so the fix agent runs")
     if read.minors:
         raise Decline("minor_findings",
@@ -994,6 +1021,8 @@ def _publish(ctx: Any, tenant: Any, doc: Mapping[str, Any],
                 "task_id": review, "file": staged, "verdict": read.verdict,
                 "verdict_in": list(verdict_in), "agent_ran": False,
                 "findings": list(read.findings), "findings_dropped": read.findings_dropped,
+                **({"gate_reading": reading, "skipped_review": read.skipped}
+                   if read.skipped is not None else {}),
             }
             generated = "\n".join([
                 "Opened by SwarmCloud's control plane. This branch is written only by this task.",

@@ -300,6 +300,15 @@ class Verdict:
     minors: int
     #: The minor findings, bounded, in the worker's shape (Q7: filed on the epic).
     minor_items: tuple["Minor", ...] = ()
+    #: Why the size gate skipped the review (`verdict` SKIPPED, #4101), else None.
+    skipped: str | None = None
+
+    @property
+    def ends_loop(self) -> bool:
+        """Whether this verdict ends the loop with no further round: a MERGE,
+        or a review the size gate skipped, which the loop ends on as on a
+        MERGE by the gate's rule (`verdictpublish.gate_reading`, #4101)."""
+        return self.verdict == "MERGE" or self.skipped is not None
 
 
 @dataclass(frozen=True)
@@ -355,7 +364,7 @@ def read_verdict(ctx: Any, tenant_id: str, task_id: str) -> Verdict:
     items = raw if isinstance(raw, list) else ([raw] if raw not in (None, "") else [])
     blocking = [t for t in (_finding_text(i) for i in items if not _is_minor(i)) if t]
     return Verdict(verdict=read.verdict, findings=tuple(blocking[:MAX_FINDINGS]),
-                   minors=read.minors, minor_items=_minor_items(items))
+                   minors=read.minors, minor_items=_minor_items(items), skipped=read.skipped)
 
 
 # --------------------------------------------------------------------------
@@ -965,9 +974,9 @@ def _drive(loop: _Loop) -> None:
             patch["findings_epic"] = filed
     _record(db, loop.tenant_id, loop.id, index, patch)
     loop.doc = _doc(db, loop.tenant_id, loop.id) or loop.doc
-    if verdict.verdict == "MERGE":
+    if verdict.ends_loop:
         _finish(loop, TaskState.SUCCEEDED, final_review=task, final_head=head,
-                verdict="MERGE", findings_count=0)
+                verdict=verdict.verdict, findings_count=0)
         return
     if k >= loop.limit:
         _park(loop, EXHAUSTED, {"task_id": task, "round": k, "step": step, "head": head,
@@ -1022,9 +1031,9 @@ def _round_zero(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, A
         head = _pushed_head(root_doc) or judged
     else:
         judged = head = _pushed_head(root_doc)
-    if verdict.verdict == "MERGE":
+    if verdict.ends_loop:
         _finish(loop, TaskState.SUCCEEDED, final_review=review_id, final_head=head,
-                verdict="MERGE", findings_count=0)
+                verdict=verdict.verdict, findings_count=0)
         return
     if head is None:
         _park(loop, CHANGED_NOTHING, {"task_id": str(root_doc.get("id")), "round": 0,

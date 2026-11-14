@@ -1724,6 +1724,12 @@ _EVERY_STEP_PUSHES_STRATEGIES = ("direct-pr", "integrate")
 #: control plane, and tests/unit/worker/test_verdict_gate.py holds the two
 #: equal.
 REVIEW_VERDICTS = ("MERGE", "NOT_YET")
+#: The rule a `when` on a non-integrating step under `integrate` breaks
+#: (#4101), named in the refusal's message and `detail.rule`, and where it
+#: is documented. Only the integrator may carry `when` there, because every
+#: other step's output folds into the integrator's one pull request.
+INTEGRATE_WHEN_RULE = "integrate_when_on_integrator_only"
+INTEGRATE_WHEN_RULE_DOC = "docs/workflows.md#under-integrate-only-the-integrator-carries-when"
 
 #: A `single-pr` step's part in the one pull request (docs/merge-step.md §3),
 #: in the order every refusal lists them.
@@ -3472,14 +3478,22 @@ def validate_step_routing(
                 )
             if strategy == "integrate" and step.step_id not in (integrator_step_id, rereview):
                 raise DispatchOptionError(
-                    f"step {step.step_id!r} is gated on a review verdict, but under "
-                    f"strategy 'integrate' the step that publishes is "
-                    f"{integrator_step_id!r}, and its pull request is where the "
-                    "verdict is shown. Gate the integrating step, or make the "
-                    "gated step the one every other step feeds.",
+                    f"step {step.step_id!r} carries `when`, and under strategy "
+                    "'integrate' only the integrator may carry `when` (here "
+                    f"{integrator_step_id!r}): every other step's output folds "
+                    "into the integrator's one pull request, so a gate on a step "
+                    "that feeds it would decide what that pull request holds "
+                    "without the pull request saying so -- the integrator's is "
+                    "where the verdict is shown. Move the `when` to "
+                    f"{integrator_step_id!r}; for a conditional review or "
+                    "re-review round, end the workflow in a merge step with "
+                    "`on_merge_verdict`, which appends the round for you "
+                    f"({INTEGRATE_WHEN_RULE_DOC}).",
                     detail={
                         "step_id": step.step_id,
                         "integrator_step_id": integrator_step_id,
+                        "rule": INTEGRATE_WHEN_RULE,
+                        "docs": INTEGRATE_WHEN_RULE_DOC,
                     },
                 )
             # The one file a shut gate still publishes is the verdict it read,

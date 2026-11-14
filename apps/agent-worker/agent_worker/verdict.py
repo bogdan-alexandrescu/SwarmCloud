@@ -103,6 +103,16 @@ from .errors import InputUnavailable
 #: not import the control plane; tests/unit/worker/test_verdict_gate.py holds
 #: the two equal.
 REVIEW_VERDICTS = ("MERGE", "NOT_YET")
+#: The verdict of a review the size gate skipped (#4101): swarm-api ends it
+#: without a worker and writes `{"verdict": "SKIPPED", "findings": [],
+#: "skipped": "<reason>"}` (`swarm_api.reviewgate.SKIPPED_VERDICT`, held equal
+#: by tests/unit/control_plane/test_review_gate.py). Never MERGE: no review
+#: ran, so nothing was approved. Read only with its reason, and never one of
+#: `REVIEW_VERDICTS`, so no gate names it and no review that ran may write it.
+SKIPPED_VERDICT = "SKIPPED"
+SKIPPED_REASON_KEY = "skipped"
+#: The most of a skip's reason kept; the gate writes one sentence.
+MAX_SKIPPED_REASON_CHARS = 500
 
 #: The most of a verdict file the worker reads. A verdict and a page of
 #: findings is a few KiB; a file far larger than that is not a verdict, and
@@ -312,6 +322,9 @@ class Verdict:
     #: person's ready on its unreadable `needs_owner` entries acknowledged.
     #: None for a verdict read from a parsed document.
     digest: str | None = field(default=None, compare=False)
+    #: Why the size gate skipped this review, when `verdict` is
+    #: `SKIPPED_VERDICT` (#4101); None for a review that ran.
+    skipped: str | None = None
 
 
 def _normalise(value: Any) -> str | None:
@@ -608,11 +621,40 @@ def _verdict_of_bytes(data: bytes, refuse: Callable[[str], InputUnavailable]) ->
     return replace(read, digest=hashlib.sha256(data).hexdigest())
 
 
+def skipped_reason(document: dict[str, Any]) -> str | None:
+    """Why the size gate skipped the review this verdict file is of, or None.
+
+    Only `{"verdict": "SKIPPED", "skipped": "<reason>"}` (#4101): a SKIPPED
+    that names no reason is no verdict, and refused as one.
+    """
+    raw = document.get("verdict")
+    if not isinstance(raw, str) or raw.strip().upper() != SKIPPED_VERDICT:
+        return None
+    reason = document.get(SKIPPED_REASON_KEY)
+    text = " ".join(reason.split()) if isinstance(reason, str) else ""
+    return text[:MAX_SKIPPED_REASON_CHARS] or None
+
+
+def gate_reading(read: Verdict) -> str:
+    """The verdict a verdict gate (`VerdictGate.verdict_in`) compares (#4101).
+
+    A review that ran: its own verdict. A review the size gate skipped: MERGE,
+    by the owner's rule for the gate (2026-10-27, "risk paths + over 300
+    lines"): a change under it goes on as a reviewed MERGE would -- a step
+    gated on MERGE runs, one gated on NOT_YET (a fix) does not. The rule is
+    read from the skip here, in the gate; the file still says SKIPPED, and
+    the step records both (`gate_reading` beside `verdict`).
+    """
+    return "MERGE" if read.skipped is not None else read.verdict
+
+
 def verdict_of_document(document: dict[str, Any]) -> Verdict | None:
     """A parsed verdict file's object, read and bounded; None when its
-    `verdict` is not one of `REVIEW_VERDICTS`. `read_verdict` refuses that by
-    name; a check-only step's own verdict (#2241) is then no verdict."""
-    verdict = _normalise(document.get("verdict"))
+    `verdict` is not one of `REVIEW_VERDICTS`, nor a `SKIPPED_VERDICT` that
+    names why. `read_verdict` refuses that by name; a check-only step's own
+    verdict (#2241) is then no verdict."""
+    skipped = skipped_reason(document)
+    verdict = SKIPPED_VERDICT if skipped is not None else _normalise(document.get("verdict"))
     if verdict is None:
         return None
 
@@ -644,6 +686,7 @@ def verdict_of_document(document: dict[str, Any]) -> Verdict | None:
         needs_owner_unreadable=needs_owner_unreadable,
         open_questions=open_questions,
         commit=_commit(document.get(COMMIT_KEY)),
+        skipped=skipped,
     )
 
 

@@ -233,6 +233,19 @@ from .specverify import UpstreamSpecUnverified
 #: control plane; tests/unit/worker/test_merge_action.py holds the two equal.
 MERGE_TARGET_FIELD = "merge_target"
 
+#: Whether a review the size gate skipped lets the change merge (#4101).
+#: The gate's verdict.json says SKIPPED, never MERGE, so nothing reads a
+#: skip as an approval; this step reads the skip (`Verdict.skipped`) and
+#: decides here. True by the owner's rule for the gate (2026-10-27, "risk
+#: paths + over 300 lines"): a change under the gate needs no review, so it
+#: merges once CI is green exactly as a reviewed MERGE does. Recorded on the
+#: summary as `skipped_review` beside `verdict` SKIPPED.
+SKIPPED_REVIEW_MERGES = True
+#: `result_summary` key naming why the review this step merged past was
+#: skipped. Not `review_skipped`: on a review's own task that key says the
+#: gate ended THAT task (`swarm_api.reviewgate.REVIEW_SKIPPED_KEY`).
+SKIPPED_REVIEW_KEY = "skipped_review"
+
 #: The code an owner-question hold parks with (#2070).
 OWNER_QUESTIONS_OPEN = "owner_questions_open"
 #: A member's ready on an owner-question hold that named `needs_owner`
@@ -2567,6 +2580,12 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
             except InputUnavailable as exc:
                 return run.refuse("verdict_unreadable", str(exc))
         summary["verdict"] = verdict.verdict
+        # #4101: the review approved the change (MERGE), or the size gate
+        # skipped it and this step's rule lets a skipped review merge.
+        approved = verdict.verdict == "MERGE" or (
+            verdict.skipped is not None and SKIPPED_REVIEW_MERGES)
+        if verdict.skipped is not None:
+            summary[SKIPPED_REVIEW_KEY] = verdict.skipped
         found = f" ({len(verdict.findings)} finding(s))" if verdict.findings else ""
         # #2764: a NOT_YET that names owner questions is held and pick-fixed
         # like a MERGE verdict below, and refused only after. #3149: one that
@@ -2574,7 +2593,7 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         # branch did not build still gets its pick-fix round first: a review
         # that put "the owner's pick is not built" in `findings` rather than
         # `needs_owner` (wf_f0044e94) refused the lane the round would mend.
-        owner_less_not_yet = verdict.verdict != "MERGE" and not (
+        owner_less_not_yet = not approved and not (
             verdict.needs_owner or verdict.needs_owner_unreadable)
         not_merge = f"the review's verdict is {verdict.verdict}, not MERGE{found}"
         # #2441: a hold woken because its pull request was merged or closed
@@ -2636,7 +2655,7 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         # #2764, #3149: the owner's answers are in and their picks built, but
         # a NOT_YET verdict's findings still stand: never merged without a
         # review of the head.
-        if verdict.verdict != "MERGE":
+        if not approved:
             return _refuse_not_yet(
                 run, opener, verdict, target.review,
                 f"{not_merge}; its owner questions are answered and their picks "
@@ -3812,7 +3831,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                           f"default branch {default or '(unreadable)'}")
     if slot is not None:
         slot.base = default
-    if run.summary.get("verdict") == "MERGE" and REVIEW_NOT_YET_LABEL in pr.labels:
+    if (run.summary.get("verdict") == "MERGE" or SKIPPED_REVIEW_KEY in run.summary) \
+            and REVIEW_NOT_YET_LABEL in pr.labels:
         # The review (or the fix loop's final re-review) said MERGE: an
         # earlier NOT_YET's label comes off before anything merges or boards.
         _clear_not_yet(run, merger, number)

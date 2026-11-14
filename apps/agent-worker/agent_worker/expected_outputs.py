@@ -291,7 +291,10 @@ def verdict_problem(artifacts_dir: Path | str) -> str | None:
         return f"{REVIEW_VERDICT_NAME} is not JSON ({type(exc).__name__})"
     if not isinstance(document, dict):
         return f"{REVIEW_VERDICT_NAME} is not a JSON object"
-    if verdict_mod.verdict_of_document(document) is None:
+    read = verdict_mod.verdict_of_document(document)
+    if read is None or read.skipped is not None:
+        # #4101: SKIPPED is the size gate's, written when no review ran; a
+        # review that ran says what it found.
         return (
             f"{REVIEW_VERDICT_NAME} has `verdict` {document.get('verdict')!r}, "
             f"not {accepted}"

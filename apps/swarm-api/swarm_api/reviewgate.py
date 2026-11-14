@@ -93,10 +93,17 @@ there (`agent_worker.inputs.inline_artifact`) and swarm-api serves it,
 redacted, through the same artifact read as any other
 (`inspect.InspectionService.read_artifact`, `inline_verdict`). The text is
 
-    {"verdict": "MERGE", "findings": [], "skipped": "<reason>"}
+    {"verdict": "SKIPPED", "findings": [], "skipped": "<reason>"}
 
-and `result_summary.review_skipped` is the same reason, so the step reads as
-a MERGE to every gate and as a skip to every person. `result_summary.skipped`
+and `result_summary.review_skipped` is the same reason. The verdict says
+SKIPPED, never MERGE (#4101): a review that did not run approved nothing,
+and a reader of `verdict` alone -- a person, a peer's script -- must not
+take it for one. What a skip lets through is each reader's own rule, read
+from the skip, never from a MERGE nobody wrote: a gate on MERGE opens for
+it (`agent_worker.verdict.gate_reading`, `verdictpublish.gate_reading`), the
+fix loop ends on it as on a MERGE (`fixloop`), and the merge step merges it
+once CI is green (`agent_worker.merge.SKIPPED_REVIEW_MERGES`, the owner's
+2026-10-27 rule: a change under the gate needs no review). `result_summary.skipped`
 is deliberately NOT written: that key means "this step did not run and left
 nothing", which makes a dependant that stages anything from it skip too
 (`agent_worker.expected_outputs.nothing_to_work_on`) -- the integrator would
@@ -193,6 +200,14 @@ FOLDED_NOTE_CHARS = (200, 60, 0)
 
 #: The artifact a review writes and every dependant reads.
 VERDICT_FILE = "verdict.json"
+#: The `verdict` a skipped review's verdict.json carries (#4101), beside its
+#: `skipped` reason. Not one of `validation.REVIEW_VERDICTS`: no review writes
+#: it, and no gate or spec may name it. `agent_worker.verdict.SKIPPED_VERDICT`
+#: and `verdictpublish.SKIPPED_VERDICT` restate it; test_review_gate.py holds
+#: them equal.
+SKIPPED_VERDICT = "SKIPPED"
+#: The key of a skipped review's verdict.json that says why it was skipped.
+SKIPPED_REASON_KEY = "skipped"
 #: `result_summary` keys a skipped review carries.
 REVIEW_SKIPPED_KEY = "review_skipped"
 #: The manifest entry's key for text the platform wrote in place of an
@@ -601,14 +616,16 @@ def resolve(
 
 
 def verdict_text(reason: str, requirements: list[dict[str, Any]] | None = None) -> str:
-    """The verdict.json a skipped review leaves: a MERGE naming why.
+    """The verdict.json a skipped review leaves: `SKIPPED_VERDICT`, naming why.
 
     With the requirements check's `requirements` (an issue run, #2524), the
     list is carried as a review's is, so `issueruns.requirements_finding`
-    reads it exactly as after a full review. The verdict is always the
-    gate's MERGE: the check confirms requirements, it never reviews.
+    reads it exactly as after a full review. The verdict is always
+    `SKIPPED_VERDICT`, never MERGE (#4101): the check confirms requirements,
+    it never reviews, and no review ran to approve anything.
     """
-    document: dict[str, Any] = {"verdict": "MERGE", "findings": [], "skipped": reason}
+    document: dict[str, Any] = {"verdict": SKIPPED_VERDICT, "findings": [],
+                                SKIPPED_REASON_KEY: reason}
     if requirements is not None:
         document["requirements"] = requirements
     return json.dumps(document, sort_keys=True) + "\n"
