@@ -137,6 +137,14 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "delete"]
+  # A Job refused its pod (quota, admission) leaves no pod to read: the Job
+  # controller's `FailedCreate` event is the only record of why, and the
+  # reconciler writes it on the task (GkeBackend._failed_create). Read only,
+  # and no `watch`: the reconciler lists once per pass and never streams.
+  # Without this rule the read 403s once and is not asked again.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
