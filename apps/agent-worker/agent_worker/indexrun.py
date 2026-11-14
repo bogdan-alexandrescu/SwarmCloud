@@ -170,6 +170,15 @@ KEEP_LINE = "swarm-index-keep: "
 #: to the extractor as `--lsp-server-cost`, whose LSP pass grants each server
 #: its share of the total in proportion (lsp/driver.py, `planned_needs`).
 LSP_COST_LINE = "swarm-index-lsp-cost: "
+#: The prompt line that turns on the graph write's answer latency measurement
+#: (`swarm_api.repoindex.MEASURE_LATENCY_LINE`; part of #1840): the prefix and
+#: whole hours, from the registration's opt-in `index.measure_latency_hours`.
+#: Signed, like BASE_LINE; passed to the graph write as
+#: `--measure-latency-hours`. No line, no measurement.
+MEASURE_LATENCY_LINE = "swarm-index-measure-latency-hours: "
+#: The hours the line may name: the settings' own range
+#: (`swarm_api.repositories.MEASURE_LATENCY_HOURS_RANGE`).
+MEASURE_LATENCY_HOURS_RANGE = (1, 168)
 #: The most seconds one cost may name: more than any index run's timeout.
 MAX_LSP_COST_SECONDS = 86_400
 #: A base index larger than the index's own bound (§2.2) is not one swarm-api promoted.
@@ -453,9 +462,11 @@ def extractor_argv(
 
 def graph_write_argv(
     program: str, *, work: Path, artifacts: Path, where: Target, bucket: str,
-    base_sha: str | None = None,
+    base_sha: str | None = None, measure_latency_hours: int | None = None,
 ) -> list[str]:
-    """The write, which never sweeps: the sweep is its own phase (`sweep_argv`)."""
+    """The write, which never sweeps: the sweep is its own phase (`sweep_argv`).
+    `measure_latency_hours` (`measure_latency_hours`, #1840) adds the opt-in
+    `--measure-latency-hours`; None, the write is unmeasured."""
     argv = [
         program, "write", "--no-sweep", "--graph", str(work / GRAPH_FILE),
         "--repo-id", where.repo_id, "--destination", where.destination,
@@ -464,6 +475,8 @@ def graph_write_argv(
     ]
     if base_sha is not None:
         argv += ["--base-commit", base_sha]
+    if measure_latency_hours is not None:
+        argv += ["--measure-latency-hours", str(measure_latency_hours)]
     return argv
 
 
@@ -565,6 +578,28 @@ def lsp_costs(task_input: Any) -> dict[str, int] | None:
             return None
         costs[match.group(1)] = seconds
     return costs or None
+
+
+_MEASURE_LATENCY_LINE = re.compile(
+    r"^" + re.escape(MEASURE_LATENCY_LINE) + r"([1-9][0-9]{0,2})$", re.MULTILINE)
+_ANY_MEASURE_LATENCY_LINE = re.compile(r"^" + re.escape(MEASURE_LATENCY_LINE), re.MULTILINE)
+
+
+def measure_latency_hours(task_input: Any) -> int | None:
+    """The hours the graph write measures the answer latency at most once per,
+    from the SIGNED prompt's one `MEASURE_LATENCY_LINE`; None -- unmeasured --
+    when there is no line, two, or one that is not whole hours in
+    `MEASURE_LATENCY_HOURS_RANGE`: it was not written by
+    `swarm_api.repoindex.indexer_prompt`."""
+    prompt = task_input.get("prompt") if isinstance(task_input, Mapping) else None
+    if not isinstance(prompt, str) or len(_ANY_MEASURE_LATENCY_LINE.findall(prompt)) != 1:
+        return None
+    found = _MEASURE_LATENCY_LINE.findall(prompt)
+    if len(found) != 1:
+        return None
+    hours = int(found[0])
+    low, high = MEASURE_LATENCY_HOURS_RANGE
+    return hours if low <= hours <= high else None
 
 
 # --------------------------------------------------------------------------
@@ -814,7 +849,8 @@ __all__ = [
     "EXTRACT_FILE", "GRAPH_FILE", "GRAPH_WRITER_COMMAND", "INDEXER_PROFILE", "INDEX_FILE",
     "KEEP_LINE", "LSP_COST_LINE", "MAX_BASE_INDEX_BYTES", "MAX_LSP_COST_SECONDS", "PHASES_FILE", "PhaseRecord", "SWEEP_PHASE", "Target",
     "base_graph_bytes", "budgets", "content_digest", "extractor_argv", "graph_read_argv",
-    "graph_write_argv", "is_index_run", "kept_commits", "last_line", "lsp_costs", "phase_env",
+    "graph_write_argv", "is_index_run", "kept_commits", "last_line", "lsp_costs",
+    "measure_latency_hours", "MEASURE_LATENCY_HOURS_RANGE", "MEASURE_LATENCY_LINE", "phase_env",
     "repo_id_for", "LSP_BASE_LINE", "base_lsp_only",
     "requested_base", "resolve", "resolve_base", "sweep_argv", "sweep_refusal",
     "sweep_retention", "target",
