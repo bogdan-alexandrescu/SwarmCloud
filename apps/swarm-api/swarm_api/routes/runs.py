@@ -1215,6 +1215,7 @@ def create_run(
         ctx, auth, ref, open_work=open_work, plan_approval=body.plan_approval,
         auto_merge=auto_merge, fix_rounds=body.fix_rounds, claude_session=body.claude_session,
         model_class=model_class, security_review=body.security_review,
+        source=issueruns_module.run_source(None),
     )
     response.headers["Location"] = f"/v1/runs/{run.id}"
     return {"run": run.to_api()}
@@ -1235,6 +1236,7 @@ def start_run(
     claude_session: str | None = None,
     model_class: str | None = None,
     security_review: bool = False,
+    source: dict | None = None,
 ) -> IssueRun:
     """The planner task, then the run document, then the first write-back.
 
@@ -1268,6 +1270,11 @@ def start_run(
     loads its plugin through a signed work contract, so with
     SWARM_WORK_CONTRACTS off it is refused here, before the planner is paid
     for, rather than at compile time after it.
+
+    `source` is what produced the run (`issueruns.run_source`, plans-pipeline
+    §3.1), written with the document: `POST /v1/runs` passes `hand`, the
+    sweep and failure-review executors theirs. A caller that passes none
+    stores the one its `schedule` mark derives.
     """
     if merge_approval not in (None, "required"):
         raise ValueError(f"merge_approval is 'required' or None, not {merge_approval!r}")
@@ -1310,6 +1317,7 @@ def start_run(
         merge_approval=merge_approval,
         claude_session=claude_session,
         security_review=security_review,
+        source=dict(source) if source else issueruns_module.run_source(schedule),
     )
     draft.owner_signature = sign_owner(ctx.submissions.signer, draft)
     issue_read, issue_read_error = _read_issue(ctx, auth, tenant_id, ref)
@@ -1396,14 +1404,60 @@ def list_runs(
     return payload
 
 
+def plan_risk(ctx: AppContext, tenant_id: str, run: IssueRun) -> dict | None:
+    """`plan_risk` (plans-pipeline §3.7): each step's stops over its own files
+    and prompt, with the run's registration exactly as `hard_stops_at_plan`
+    reads it, beside the run's hold as served. Null without a plan."""
+    if run.plan is None:
+        return None
+    record = _registration(ctx, tenant_id, run)
+    return {
+        "digest": run.plan_digest,
+        "steps": issueruns_module.step_holds(
+            run.plan, platform=platform_of(record), hard_stop_paths=hard_stop_paths_of(record),
+            workflow_files=workflow_files_of(record),
+        ),
+        "run_hold": run.to_api()["approval_hold"],
+    }
+
+
+def expected_cost_usd(ctx: AppContext, run: IssueRun) -> dict | None:
+    """`expected_cost_usd` (plans-pipeline §3.8), at the platform's default
+    rate per agent-hour of each class, as read now. Null without a plan."""
+    if run.plan is None:
+        return None
+    return issueruns_module.expected_cost(
+        run.plan, issueruns_module.DEFAULT_USD_PER_AGENT_HOUR, prices_at=ctx.now().isoformat(),
+    )
+
+
+def run_may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, run: IssueRun) -> dict | None:
+    """`may_decide` on the run read (plans-pipeline §3.9): the approval read's
+    own, by the same function over the same projected item, so Work › Runs
+    and the decision page cannot disagree. Null while no plan waits."""
+    if run.state != RunState.PLANNED:
+        return None
+    from . import approvals as approval_routes  # it imports this module
+
+    schedule = approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id"))
+    item = approvals.project_run(run, schedule)
+    return approval_routes.may_decide(ctx, auth, tenant_id, item, run=run, schedule=schedule)
+
+
 @router.get("/{run_id}")
 def get_run(
     run_id: str,
     tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     run = advance_run(ctx, tenant_id, _runs(ctx).get(tenant_id, run_id))
     row = with_plan_advisory(ctx, tenant_id, run, run.to_api())
+    # plans-pipeline §3.7-§3.9: the platform's reading of the plan, computed
+    # on read, outside the digest, after the tenant's read passed.
+    row["plan_risk"] = plan_risk(ctx, tenant_id, run)
+    row["expected_cost_usd"] = expected_cost_usd(ctx, run)
+    row["may_decide"] = run_may_decide(ctx, auth, tenant_id, run)
     row = with_plan_revisions(ctx, run, row)
     return {"run": with_planner_documents(ctx, tenant_id, run, row)}
 

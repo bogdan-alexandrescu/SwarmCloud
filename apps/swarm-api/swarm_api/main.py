@@ -77,6 +77,7 @@ from .routes import (
     profile,
     provider_keys,
     people,
+    plan_settings,
     platform,
     platform_switches,
     plugin_bundles,
@@ -465,6 +466,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # A workspace's visual-QA settings: how many flows one live-browser step
     # runs when a run names none (QA-FLOWS-CAP): its owner or admin, audited.
     app.include_router(qa_settings.router)
+    # A workspace's plan-review settings: diagrams in plans and the plan
+    # chat's model, the caps read-only (docs/design/plans-pipeline.md §6.4,
+    # §7.8, lane P9): any member reads, its owner or admin changes, audited.
+    app.include_router(plan_settings.router)
     # A workspace's quality gates: whether its claude-code lanes run
     # jev-belay and jev-enforce (JEV-LANES): its owner or admin, audited.
     app.include_router(quality_gates.router)

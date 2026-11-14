@@ -13,7 +13,7 @@ takes if they want it gone:
 | `firestore-database` | deleted by the uninstall, its id reusable only after Google's delay; or, when it was not deleted, kept with its data (infra abandons it) |
 | `desktop-client` | deleting the Desktop OAuth client is a console step; it is kept for reuse |
 | `github-app` | only the organisation can delete its App |
-| `dns-record` | the record is at the company's registrar, or in the project's Cloud DNS zone `edge.dns` wrote it to |
+| `dns-record` | the record is at the company's registrar, or in the Cloud DNS zone `edge.dns` wrote it to, in that zone's own project |
 | `workspace-groups` | the groups, the Groups Reader role assignment or the delegation are org-admin objects |
 
 The record also carries `left`: anything else the uninstall did not remove (a
@@ -101,10 +101,13 @@ def survivors(state: Any, found: Mapping[str, Any] | None = None) -> list[Remain
     groups = list(outputs.get("admin_groups") or ())
     delegation = str(outputs.get("groups_auth") or "") == "delegation"
     host = _text(state.hostname, "the console hostname")
-    zone = str(outputs.get("dns_zone") or "")  # edge.dns wrote the record to the project's Cloud DNS zone
+    zone = str(outputs.get("dns_zone") or "")  # edge.dns wrote the record to this Cloud DNS zone
+    # The zone may live in another project (a shared DNS project); the link
+    # opens it there. No recorded zone project means the deployment's own.
+    zone_project = str(outputs.get("dns_zone_project") or project)
     dns_record = (
-        (f"edge.dns wrote it to the project's Cloud DNS zone {zone}, whose records the uninstall leaves",
-         f"https://console.cloud.google.com/net-services/dns/zones/{zone}/details?project={project}: "
+        (f"edge.dns wrote it to Cloud DNS zone {zone} in project {zone_project}, whose records the uninstall leaves",
+         f"https://console.cloud.google.com/net-services/dns/zones/{zone}/details?project={zone_project}: "
          f"delete the A record for {host}")
         if zone else
         ("the record is at the company's DNS registrar, which the installer cannot reach",

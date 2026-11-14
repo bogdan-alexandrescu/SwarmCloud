@@ -300,6 +300,25 @@ describe('the fixture build’s moments', () => {
     expect(fixtures.fixtureMoment('?moment=arrive')).toBe('arrive')
     expect(fixtures.fixtureMoment('?moment=nowhere')).toBeNull()
   })
+
+  it('read stage 9 done once the console steps are finished, as a finished install does', async () => {
+    const { stateOf } = await load()
+    expect(stateOf('ready').engine?.stages[9]?.state).toBe('done')
+    vi.unstubAllEnvs()
+    document.cookie = 'swarm_qa_persona=platform-admin; path=/'
+    try {
+      vi.resetModules()
+      const api = await import('../api')
+      expect(api.USE_FIXTURES).toBe(true)
+      const got = await api.loadSetup()
+      if (got.status !== 'ok') throw new Error(`the fixture setup read answered ${got.status}`)
+      expect(got.data.finished).not.toBeNull()
+      // MUTATION: leave the finished demo's stage 9 at switches_on (pass 3 only) -> fails.
+      expect(got.data.engine?.stages[9]?.state).toBe('done')
+    } finally {
+      document.cookie = 'swarm_qa_persona=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/'
+    }
+  })
 })
 
 describe('the console finish on a phone', () => {

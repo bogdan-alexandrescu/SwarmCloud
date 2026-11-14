@@ -40,11 +40,22 @@ def test_there_are_exactly_the_designs_tools_and_none_takes_a_token_or_remote():
                                  "issue_view", "issue_list", "release_status", "issue_create",
                                  "issue_comment")
     every = set().union(*server.ARGUMENTS.values())
-    assert every == {"ref", "branch", "repo", "path", "pr", "number", "workflow", "head_sha",
-                     "status", "limit", "run_id", "failed_only", "labels", "state", "query",
+    assert every == {"ref", "depth", "branch", "repo", "path", "pr", "number", "workflow",
+                     "head_sha", "status", "limit", "run_id", "failed_only", "labels", "state", "query",
                      "sha", "form", "title", "sections", "dedupe_key", "body", "reopen"}
     # Only read_private names a repository (§1.2 other_repository).
     assert [name for name, args in server.ARGUMENTS.items() if "repo" in args] == ["read_private"]
+
+
+def test_git_fetch_alone_takes_an_optional_depth_of_exactly_1():
+    """#2442: a shallow fetch of the base branch for a before render."""
+    [fetch] = [tool for tool in server.TOOLS if tool["name"] == "git_fetch"]
+    schema = fetch["inputSchema"]
+    assert schema["required"] == ["ref"]
+    assert schema["properties"]["depth"]["type"] == "integer"
+    assert schema["properties"]["depth"]["enum"] == [1]
+    assert [name for name, args in server.ARGUMENTS.items() if "depth" in args] == ["git_fetch"]
+    assert "depth" not in server.REQUIRED["git_fetch"]
 
 
 def test_the_shim_imports_no_worker_machinery():
