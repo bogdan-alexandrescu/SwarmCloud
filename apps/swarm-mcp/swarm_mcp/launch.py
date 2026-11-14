@@ -92,7 +92,7 @@ attached and every single task dispatched from this project (`record`),
 append-only. It holds ids, the run's title, the Claude Code session, the
 repository as `host/owner/repo` and the time -- never a prompt, a spec body or
 anything from a URL's userinfo. `session.ownership` reads it: `/sc check` and
-`/sc attach --all` take work that is this session's AND in this record, and
+the check's attach (`new_only`) take work that is this session's AND in this record, and
 fall back to the repository filter only for this session's work the record
 does not hold (older work). A submission is recorded when SwarmCloud has
 answered it, by the workflow id it named (`server._workflow_created`,
@@ -1547,10 +1547,14 @@ def _own(entries: list[dict[str, Any]], sid: str | None, left_out: dict[str, int
 
 def _own_or_project(entries: list[dict[str, Any]], sid: str | None, repository: str | None,
                     left_out: dict[str, int]) -> list[dict[str, Any]]:
-    """The entries tagged with session `sid`, and -- `/sc attach --all
-    --project`, at session start (SC-BROWSER-FOLLOWUP, the owner 2026-10-25) --
+    """The entries tagged with session `sid`, and -- every attach-all but the
+    check's (`/sc attach --all`, and `--project` at session start;
+    SC-BROWSER-FOLLOWUP, the owner 2026-10-25, and the owner 2026-11-09) --
     those that clone `repository`, whichever session started them; each kept
-    entry marked `this_session`. The rest counted in `left_out` by why."""
+    entry marked `this_session`. The rest counted in `left_out` by why:
+    `untagged`, else -- with a `repository` to widen to, so another session's
+    work left out is another repository's -- `not_this_project`, else
+    `other_session`."""
     from . import session
     from .check import repo_key
 
@@ -1560,7 +1564,9 @@ def _own_or_project(entries: list[dict[str, Any]], sid: str | None, repository: 
         if kind == "own" or (repository is not None and repo_key(entry.get("repository_url")) == repository):
             kept.append({**entry, "this_session": kind == "own"})
         else:
-            left_out[kind] += 1
+            if kind == "other_session" and repository is not None:
+                kind = "not_this_project"
+            left_out[kind] = left_out.get(kind, 0) + 1
     return kept
 
 
@@ -1632,14 +1638,24 @@ def for_all(
     2026-10-25): what the SessionStart hook asks for in the rows layout --
     this session's work AND every workflow and single task still running that
     clones this checkout's origin repository (`repository` names another),
-    whichever Claude Code session started it. At session start only: the
-    plain attach-all, `/sc check` and the watch stay this session's. With no
-    origin naming a repository it widens to nothing and says so."""
+    whichever Claude Code session started it, each marked `this_session`.
+    THE PLAIN ATTACH-ALL IS THE SAME (the owner, 2026-11-09): with none of
+    `repository`, `new_only` and `exclude` -- `/sc attach --all`, from a
+    terminal or any session -- `project` is implied, so a project's work
+    another session started is attached, not left out as `other_session`;
+    in the pane's row mode it is not, as the pane lists that work itself.
+    `/sc check` (whose attach passes `new_only`) and the watch stay this
+    session's. With no origin naming a repository it widens to nothing and
+    says so."""
     from . import sc, session
 
     if layout.row_mode(rows) == layout.ROWS_BAND:
         # No row to start, so nothing to read: the strip lists the work itself.
         return _banded(attach="all")
+    # The pane's quiet rows stay this session's: the pane itself lists the
+    # project's work, with no model row for it (SC-BROWSER-FOLLOWUP).
+    project = project or not (repository is not None or new_only or bool(exclude)
+                              or layout.row_mode(rows) == config.ROWS_PANE)
     filtering = (repository is not None or new_only or bool(exclude)) and not project
     scope = None
     if repository is not None or project:
@@ -1676,10 +1692,11 @@ def for_all(
     record = session.project_record()
     if project:
         # Two reads the API can filter, each a page or two: this session's
-        # work, and the project's repository's.
-        listing = _merged_listings(
-            ([sc.running_workflows(client, claude_session=sid)] if sid else [])
-            + ([sc.running_workflows(client, repository=project_repo)] if project_repo else []))
+        # work, and the project's repository's. This session's read alone
+        # (no repository to widen to) keeps what the API counted out.
+        reads = (([sc.running_workflows(client, claude_session=sid)] if sid else [])
+                 + ([sc.running_workflows(client, repository=project_repo)] if project_repo else []))
+        listing = reads[0] if len(reads) == 1 and project_repo is None else _merged_listings(reads)
     else:
         listing = sc.running_workflows(
             client, **server_scope(scope and scope["key"], sid, record))
@@ -1689,11 +1706,15 @@ def for_all(
         [e for e in listing.get("workflows") or [] if isinstance(e, dict) and e.get("workflow_id")], names,
         keep_tenant=True,
     ))
-    # THIS SESSION'S OWN, AND NOTHING ELSE (SC-SESSION-SCOPE, owner
-    # 2026-10-14): another session's work in the same tenant, and untagged
+    # THIS SESSION'S OWN (SC-SESSION-SCOPE, owner 2026-10-14) -- and, for
+    # every attach-all but the check's, this project's (the owner,
+    # 2026-11-09): any other session's work in the same tenant, and untagged
     # work, is never a candidate -- before the cap, so the cap counts only
-    # this session's. `/sc attach <wf_id>` still attaches any by hand.
+    # what is kept. `/sc attach <wf_id>` still attaches any by hand.
     left_out = {"workflows": session.counts(), "single_tasks": session.counts()}
+    if project:
+        for group in left_out.values():
+            group["not_this_project"] = 0
     by_api = (listing.get("filtered_by_api") or {}).get("left_out") or {}
     for kind in ("other_session", "untagged"):
         left_out["workflows"][kind] += int(by_api.get(kind) or 0)
@@ -1759,6 +1780,10 @@ def for_all(
         )
         if workflow_id in resumed:
             forget_person_wait(resumed[workflow_id].values())
+        if "this_session" in entry:
+            # Started here or elsewhere (`_own_or_project`), on each run it is given.
+            for one in copies:
+                one["this_session"] = entry["this_session"]
         launches.extend(copies)
         budget -= used
         steps_left.extend({"workflow_id": workflow_id, "step_id": step_id,
@@ -1789,6 +1814,11 @@ def for_all(
         task_launch = for_tasks(sc.group_by_workspace(named_workspaces(singles["tasks"], names, keep_tenant=True)),
                                 client, dispatched=False, rows=mode)
         # One run per single task (for_tasks): every copy is a launch.
+        marks = {str(t.get("task_id")): t["this_session"] for t in singles["tasks"] if "this_session" in t}
+        for one in task_launch["launches"]:
+            ids = [str(i) for i in one.get("task_ids") or []]
+            if ids and all(i in marks for i in ids):
+                one["this_session"] = all(marks[i] for i in ids)
         launches.extend(task_launch["launches"])
         forget_person_wait(str(t.get("task_id")) for t in singles["tasks"] if str(t.get("task_id")) in resumed_tasks)
         out["single_tasks"] = len(singles["tasks"])
@@ -1810,8 +1840,15 @@ def for_all(
             "from_other_sessions": sum(1 for e in [*entries, *((singles or {}).get("tasks") or [])]
                                        if e.get("this_session") is False),
             "scope": ("this session's work and this project's running work, whichever session started "
-                      "it -- at session start only; /sc check and the watch stay this session's"),
+                      "it (marked this_session: false) -- the plain attach-all and the session start's "
+                      "alike; /sc check and the watch stay this session's"),
         }
+        if sid and project_repo:
+            out["session"]["scope"] = (
+                f"this Claude Code session's work (tagged `{session.METADATA_KEY}` {sid}) and every "
+                "workflow and single task still running that clones this project's repository, "
+                "whichever session started it; another repository's work from another session, and "
+                "untagged work of another repository, are left out")
         if project_repo is None:
             out["project"]["note"] = ("this checkout has no origin remote naming a repository, so "
                                       "only this session's work was attached")
