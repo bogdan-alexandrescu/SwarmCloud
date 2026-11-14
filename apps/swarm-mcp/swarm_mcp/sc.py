@@ -1346,8 +1346,8 @@ def session_start_context(
         text = (
             " ".join(parts)
             + " Named: the work this Claude Code session started, and the work still running for "
-            f"this project (repository {project}) whichever session started it -- at session start "
-            "only (the owner, 2026-10-25); another repository's work from another session, and untagged "
+            f"this project (repository {project}) whichever session started it (the owner, 2026-10-25; "
+            "the plain `/sc attach --all` takes the same, 2026-11-09); another repository's work from another session, and untagged "
             "work outside this project, is not named. `/sc check` and the watch stay scoped to "
             "this session."
         )
@@ -1609,8 +1609,9 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             lines.append(f"  {singles.get('incomplete_because')}")
     if running or (singles and singles["tasks"]):
         lines.append("  show them as live rows in Claude Code: /sc attach --all")
-        lines.append("  [this session] marks what this Claude Code session started: only those are "
-                     "attached by /sc attach --all; /sc attach <wf_id> attaches any other by hand")
+        lines.append("  [this session] marks what this Claude Code session started: /sc attach --all "
+                     "attaches those and this project's running work another session started; "
+                     "/sc attach <wf_id> attaches any other by hand")
     _emit(lines, out)
     return EXIT_OK if singles is not None else EXIT_FAIL
 
