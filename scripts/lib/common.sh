@@ -347,28 +347,32 @@ _config_path_is_private() {
   return 0
 }
 
-# _config_gcloud ARGS...: the first gcloud on PATH that is not the workspace
+# _config_tool NAME ARGS...: the first NAME on PATH that is not the workspace
 # call guard's shim (scripts/lib/guard-bin/). The guard loads this list to
 # judge every call, so reaching the bucket through its own shim would judge the
 # read by a list it has not read yet, without end. The read is this library's
 # own, of the deployment's config prefix, never an argument a job chose.
-_config_gcloud() {
-  local guard_dir dir cand
+_config_tool() {
+  local name="$1" guard_dir dir cand
   local -a dirs=()
+  shift
   if ! guard_dir="$(cd -- "${SWARM_LIB_DIR}/guard-bin" 2>/dev/null && pwd -P)"; then
     guard_dir=""
   fi
   IFS=':' read -r -a dirs <<<"${PATH}"
   for dir in ${dirs[@]+"${dirs[@]}"}; do
-    cand="${dir}/gcloud"
+    cand="${dir}/${name}"
     [[ -f "${cand}" && -x "${cand}" ]] || continue
     [[ -n "${guard_dir}" && "$(cd -- "${dir}" && pwd -P)" == "${guard_dir}" ]] && continue
     "${cand}" "$@"
     return
   done
-  printf 'gcloud is not installed\n' >&2
+  printf '%s is not installed\n' "${name}" >&2
   return 127
 }
+
+# _config_gcloud ARGS...: gcloud, past the guard's shim (_config_tool).
+_config_gcloud() { _config_tool gcloud "$@"; }
 
 # _config_list ENV -> one line per file: <name> TAB <generation> TAB <source>.
 # A local file has no generation, so it is always copied ("-").
@@ -444,6 +448,213 @@ config_fetch() {
   return 0
 }
 
+# config_fetch_one ENV NAME: copy the ONE object config/ENV/NAME into
+# config_cache_dir ENV, and nothing else. config_fetch lists config/ENV/, which
+# needs storage.objects.list on the state bucket; accept.yml's swarm-accept
+# identity and the swarm-verify job's identity hold storage.objects.get on
+# config/dev/deny-list.json alone (terraform/bootstrap/deny_list_readers.tf), so
+# the never-touch list is read by its exact name and never through a listing:
+#
+#   * SWARM_DEPLOY_CONFIG_DIR: <dir>/<env>/<name>, held to config_fetch's rules
+#     (every --self-test, through deny_list_use_example, and the first bootstrap
+#     of a project whose state bucket does not exist yet);
+#   * gcloud, the default: `storage objects describe <URL>` for the object's
+#     generation, then `storage cp <URL>#<generation>`;
+#   * REST, ONLY when SWARM_CONFIG_TRANSPORT=rest is set (the swarm-verify image
+#     has no gcloud, terraform/infra/verify.tf sets it): the metadata server's
+#     token, the object's generation from the JSON API, then that generation's
+#     media, whose x-goog-generation must be the one asked for. Never chosen
+#     because gcloud is missing: a host with neither refuses, with no network
+#     call at all.
+#
+# Returns 0 with the object cached; 2, quietly, when the source holds no such
+# object, after removing a cached copy (a deleted object reads as missing,
+# never as its last copy); 1, saying why, on anything else. A 403 says the
+# identity may not read the object -- never "log in again", which is
+# die_if_auth_failure's diagnosis of an expired session, and never "missing".
+CONFIG_METADATA_TOKEN_URL="http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+CONFIG_STORAGE_API="https://storage.googleapis.com/storage/v1"
+
+config_fetch_one() {
+  local env="${1:-}" name="${2:-}" transport="${SWARM_CONFIG_TRANSPORT:-gcloud}" dir src part work rc=0
+  [[ "${env}" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || { err "config_fetch_one: '${env}' is not an environment name"; return 1; }
+  [[ "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { err "refusing configuration file name '${name}'"; return 1; }
+  case "${transport}" in
+    gcloud|rest) ;;
+    *) err "SWARM_CONFIG_TRANSPORT is '${transport}'; it is gcloud (the default) or rest"; return 1 ;;
+  esac
+  [[ -n "${PROJECT_ID:-}" ]] || { err "PROJECT_ID is not set, so there is no configuration to fetch"; return 1; }
+  dir="$(config_cache_dir "${env}")"
+  [[ "${dir}" == */swarm/*/* ]] || { err "config_fetch_one: no cache directory for '${env}'"; return 1; }
+  ( umask 077 && mkdir -p "${dir}" ) || { err "could not create ${dir}"; return 1; }
+  _config_path_is_private "${dir}" || return 1
+  src="$(config_source "${env}")/${name}"
+  if [[ -n "${SWARM_DEPLOY_CONFIG_DIR:-}" ]]; then
+    if [[ ! -e "${src}" ]]; then
+      _config_drop "${dir}" "${name}"
+      return 2
+    fi
+    [[ -f "${src}" ]] || { err "${src} is not a file"; return 1; }
+    _config_path_is_private "${src}" || return 1
+    # One part file per fetch, renamed into place: config_fetch says why.
+    part="$(mktemp "${dir}/.${name}.part.XXXXXX")" || { err "could not create a file in ${dir}"; return 1; }
+    ( umask 077 && cp "${src}" "${part}" ) || { rm -f -- "${part}"; err "could not copy ${src}"; return 1; }
+    mv -f "${part}" "${dir}/${name}"
+    part="$(mktemp "${dir}/.${name}.part.XXXXXX")" || { err "could not create a file in ${dir}"; return 1; }
+    printf '%s' "-" >"${part}" && mv -f "${part}" "${dir}/.${name}.generation"
+  else
+    # A private scratch directory for this fetch alone: describe's stderr and,
+    # over REST, the token's header file. Removed on every return.
+    work="$(mktemp -d "${dir}/.${name}.fetch.XXXXXX")" || { err "could not create a directory in ${dir}"; return 1; }
+    _config_fetch_object "${transport}" "${dir}" "${work}" "${src}" "${name}" || rc=$?
+    rm -rf -- "${work}"
+    if (( rc == 2 )); then
+      _config_drop "${dir}" "${name}"
+      return 2
+    fi
+    (( rc == 0 )) || return 1
+  fi
+  [[ -f "${dir}/${name}" ]] || { err "${dir}/${name} was not written"; return 1; }
+  _config_path_is_private "${dir}/${name}" || return 1
+  return 0
+}
+
+# _config_drop DIR NAME: NAME's cached copy and its generation leave the cache.
+_config_drop() {
+  rm -f -- "$1/$2" "$1/.$2.generation"
+}
+
+# _config_fetch_object TRANSPORT DIR WORK SRC NAME: config_fetch_one's bucket
+# read. The generation first, then that generation alone, so the copy is the
+# object that was described and never a later or an earlier one.
+_config_fetch_object() {
+  local transport="$1" dir="$2" work="$3" src="$4" name="$5" gen part
+  if [[ "${transport}" == "rest" ]]; then
+    _config_rest_token "${work}" || return 1
+    _config_rest_generation "${work}" "${src}" || return $?
+  else
+    _config_gcloud_generation "${work}" "${src}" || return $?
+  fi
+  gen="$(cat "${work}/gen" 2>/dev/null || true)"
+  [[ "${gen}" =~ ^[0-9]+$ ]] || { err "${src}: the bucket returned no generation, so which copy to read is unknown"; return 1; }
+  if [[ -f "${dir}/${name}" && "$(cat "${dir}/.${name}.generation" 2>/dev/null || true)" == "${gen}" ]]; then
+    return 0
+  fi
+  part="$(mktemp "${dir}/.${name}.part.XXXXXX")" || { err "could not create a file in ${dir}"; return 1; }
+  if [[ "${transport}" == "rest" ]]; then
+    _config_rest_copy "${work}" "${src}" "${gen}" "${part}" || { rm -f -- "${part}"; return 1; }
+  elif ! ( umask 077 && _config_gcloud storage cp --quiet "${src}#${gen}" "${part}" >/dev/null 2>"${work}/cp.err" ); then
+    rm -f -- "${part}"
+    err "could not copy ${src}#${gen}: $(head -n 1 "${work}/cp.err" | redact)"
+    return 1
+  fi
+  mv -f "${part}" "${dir}/${name}"
+  part="$(mktemp "${dir}/.${name}.part.XXXXXX")" || { err "could not create a file in ${dir}"; return 1; }
+  printf '%s' "${gen}" >"${part}" && mv -f "${part}" "${dir}/.${name}.generation"
+}
+
+# _config_gcloud_generation WORK URL -> the object's generation in WORK/gen.
+# 2 when there is no such object; 1, saying why, on anything else.
+_config_gcloud_generation() {
+  local work="$1" url="$2" why
+  if ( umask 077 && _config_gcloud storage objects describe "${url}" --format='value(generation)' \
+         >"${work}/gen" 2>"${work}/describe.err" ); then
+    return 0
+  fi
+  why="$(cat "${work}/describe.err" 2>/dev/null || true)"
+  case "${why}" in
+    *"gcloud is not installed"*)
+      err "gcloud is not installed, so ${url} cannot be read (SWARM_CONFIG_TRANSPORT=rest reads it through the metadata server, where there is one)"
+      return 1 ;;
+    *"not found: 404"*|*"No URLs matched"*|*NotFoundException*) return 2 ;;
+    *403*)
+      err "403: this identity may not read ${url}: $(printf '%s\n' "${why}" | head -n 1 | redact)"
+      return 1 ;;
+  esac
+  if gcloud_auth_failure "${why}"; then
+    rm -rf -- "${work}"
+    die_if_auth_failure "${why}"
+  fi
+  err "could not describe ${url}: $(printf '%s\n' "${why}" | head -n 1 | redact)"
+  return 1
+}
+
+# _config_rest_call WORK URL OUT [DUMP] -> the HTTP status on stdout, curl's
+# exit status as the function's. The token goes in through WORK/auth (`-H @`),
+# never in argv, where a process listing or a shim's log would show it.
+_config_rest_call() {
+  local work="$1" url="$2" out="$3" dump="${4:-}"
+  local -a extra=()
+  [[ -z "${dump}" ]] || extra=(-D "${dump}")
+  _config_tool curl -fsS --max-time 30 -H "@${work}/auth" ${extra[@]+"${extra[@]}"} \
+    -o "${out}" -w '%{http_code}' "${url}" 2>"${work}/curl.err"
+}
+
+# _config_rest_token WORK: the metadata server's access token, into WORK/auth
+# as a header line, mode 0600, never printed.
+_config_rest_token() {
+  local work="$1" token
+  if ! ( umask 077 && _config_tool curl -fsS --max-time 10 -H 'Metadata-Flavor: Google' \
+           -o "${work}/token.json" "${CONFIG_METADATA_TOKEN_URL}" 2>"${work}/curl.err" ); then
+    err "could not get a token from the metadata server: $(head -n 1 "${work}/curl.err" | redact)"
+    return 1
+  fi
+  token="$(jq -r '.access_token // empty' "${work}/token.json" 2>/dev/null || true)"
+  rm -f -- "${work}/token.json"
+  [[ "${token}" =~ ^[A-Za-z0-9._~+/=-]+$ ]] || { err "the metadata server returned no usable token"; return 1; }
+  ( umask 077 && printf '%s: %s %s\n' Authorization Bearer "${token}" >"${work}/auth" ) \
+    || { err "could not write the token's header file"; return 1; }
+}
+
+# _config_rest_object URL -> the JSON API address of gs://<bucket>/<object>.
+_config_rest_object() {
+  local rest="${1#gs://}" bucket object
+  bucket="${rest%%/*}"
+  object="${rest#*/}"
+  [[ "${bucket}" =~ ^[a-z0-9][a-z0-9._-]*[a-z0-9]$ ]] || { err "refusing state bucket name '${bucket}'"; return 1; }
+  printf '%s/b/%s/o/%s' "${CONFIG_STORAGE_API}" "${bucket}" "${object//\//%2F}"
+}
+
+# _config_rest_refusal STATUS URL WORK: config_fetch_one's reading of a failed
+# REST call. 2 for a 404; 1, saying why, for the rest.
+_config_rest_refusal() {
+  local status="$1" url="$2" work="$3"
+  case "${status}" in
+    404) return 2 ;;
+    403) err "403: this identity may not read ${url}" ;;
+    401) err "401: the metadata server's token was refused for ${url}" ;;
+    *)   err "could not read ${url} (HTTP ${status:-none}): $(head -n 1 "${work}/curl.err" 2>/dev/null | redact)" ;;
+  esac
+  return 1
+}
+
+# _config_rest_generation WORK URL -> the object's generation in WORK/gen.
+_config_rest_generation() {
+  local work="$1" url="$2" api status rc=0
+  api="$(_config_rest_object "${url}")" || return 1
+  status="$(_config_rest_call "${work}" "${api}?fields=generation" "${work}/meta.json")" || rc=$?
+  if (( rc != 0 )) || [[ "${status}" != "200" ]]; then
+    _config_rest_refusal "${status}" "${url}" "${work}"
+    return
+  fi
+  jq -r '.generation // empty' "${work}/meta.json" >"${work}/gen" 2>/dev/null || : >"${work}/gen"
+}
+
+# _config_rest_copy WORK URL GEN PART: generation GEN's media into PART, refused
+# unless the response says it is generation GEN.
+_config_rest_copy() {
+  local work="$1" url="$2" gen="$3" part="$4" api status got rc=0
+  api="$(_config_rest_object "${url}")" || return 1
+  status="$(_config_rest_call "${work}" "${api}?alt=media&generation=${gen}" "${part}" "${work}/headers")" || rc=$?
+  if (( rc != 0 )) || [[ "${status}" != "200" ]]; then
+    _config_rest_refusal "${status}" "${url}#${gen}" "${work}" || true
+    err "could not copy ${url}#${gen}"
+    return 1
+  fi
+  got="$(tr -d '\r' <"${work}/headers" | awk 'tolower($1) == "x-goog-generation:" { g = $2 } END { print g }')"
+  [[ "${got}" == "${gen}" ]] || { err "${url}: the download is generation ${got:-<none>}, not ${gen}"; return 1; }
+}
+
 # ---------------------------------------------------------------------------
 # The never-touch list: config/<env>/deny-list.json, failing closed
 # ---------------------------------------------------------------------------
@@ -512,15 +723,20 @@ end
 # SHARED_DENY_LIST empty, when it cannot; deny_list_require turns that into a
 # refusal. Never prints the list.
 deny_list_load() {
-  local key="${PROJECT_ID:-}/${ENVIRONMENT:-}" file out line n=0
+  local key="${PROJECT_ID:-}/${ENVIRONMENT:-}" file out line n=0 rc=0
   [[ -n "${DENY_LIST_KEY}" && "${DENY_LIST_KEY}" == "${key}" ]] && return 0
   SHARED_DENY_LIST=(); DENY_LIST_KEY=""; DENY_LIST_CLASSIFY="[]"; DENY_LIST_FLOORS="{}"
   if [[ -z "${PROJECT_ID:-}" ]]; then
     DENY_LIST_ERROR="no project is named, so there is no list to read"
     return 1
   fi
-  if ! config_fetch "${ENVIRONMENT:-}"; then
-    DENY_LIST_ERROR="$(config_source "${ENVIRONMENT:-}")/ could not be read"
+  # The one object, never the folder (config_fetch_one says why).
+  config_fetch_one "${ENVIRONMENT:-}" deny-list.json || rc=$?
+  if (( rc == 2 )); then
+    DENY_LIST_ERROR="$(config_source "${ENVIRONMENT}")/deny-list.json does not exist"
+    return 1
+  elif (( rc != 0 )); then
+    DENY_LIST_ERROR="$(config_source "${ENVIRONMENT:-}")/deny-list.json could not be read"
     return 1
   fi
   file="$(config_cache_dir "${ENVIRONMENT}")/deny-list.json"
