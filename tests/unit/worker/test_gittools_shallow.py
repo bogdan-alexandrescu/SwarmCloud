@@ -43,6 +43,13 @@ class ShallowApi(FakeApi):
         super().__init__(*args, **kwargs)
         self.max_rounds = 8
         self.tamper: Any = None
+        self.too_large = False
+
+    def open(self, req, timeout=None):
+        if self.too_large and req.full_url.endswith("/git_fetch"):
+            return self._answer(req, 422, {"code": "too_large",
+                                           "message": "the bundle is over the cap"})
+        return super().open(req, timeout=timeout)
 
     def git_fetch(self, body: dict[str, Any]) -> dict[str, Any]:
         if "shallow" not in body or "depth" in body:
@@ -68,7 +75,8 @@ class PullRequest:
     by the person the task commits as. The clone is `--depth 1` of feature."""
 
     def __init__(self, tmp_path: Path, *, commits: int = 12, behind: int = 4,
-                 seed_name: str = "seed") -> None:
+                 seed_name: str = "seed",
+                 pull_base: tuple[str, str, str] | None = None) -> None:
         self.origin = tmp_path / "origin.git"
         seed = tmp_path / seed_name
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(self.origin)],
@@ -96,7 +104,7 @@ class PullRequest:
         cfg = gittools.GitToolsConfig(
             tenant_id="acme", task_id=TASK, attempt_id="att_1", lease_id="lease_1",
             generation=3, repository="acme/widgets", clone_base=self.head,
-            pushable=(OWN_BRANCH,), author=PERSON, protected=("main",))
+            pushable=(OWN_BRANCH,), author=PERSON, protected=("main",), pull_base=pull_base)
         self.tools = gittools.GitTools(
             cfg, key=key, api=client, clone=self.clone, private_dir=tmp_path / "private",
             logs_dir=_dir(tmp_path / "logs"),
@@ -255,3 +263,34 @@ def test_rebase_onto_refuses_without_a_merge_base(tmp_path: Path):
     fetched = other.spool("git_fetch", {"ref": "main"}, request_id="f2")["result"]
     assert fetched["merge_base"] is None and "no commit" in fetched["note"]
     assert _git(other.clone, "rev-parse", "origin/main") == other.main
+
+
+def test_too_large_names_origin_base_when_the_pull_base_was_recorded(tmp_path: Path):
+    """#2901 §5.8, Q3 = A: still a refusal -- the current tip was not
+    fetched -- but it names the base the clone already holds."""
+    fork = "f" * 40
+    pr = PullRequest(tmp_path, pull_base=("main", "origin/main", fork))
+    pr.api.too_large = True
+    refused = pr.spool("git_fetch", {"ref": "main"})["refused"]
+    assert refused["code"] == "too_large"
+    assert "origin/main" in refused["message"] and fork in refused["message"]
+    # Another ref is refused as it was.
+    other = pr.spool("git_fetch", {"ref": "release"}, request_id="r2")["refused"]
+    assert other["code"] == "too_large" and "origin/main" not in other["message"]
+
+
+def test_no_pull_base_record_leaves_too_large_as_it_was(tmp_path: Path):
+    pr = PullRequest(tmp_path)
+    pr.api.too_large = True
+    refused = pr.spool("git_fetch", {"ref": "main"})["refused"]
+    assert refused["code"] == "too_large" and "origin/main" not in refused["message"]
+
+
+@pytest.mark.parametrize(("record", "triple"), [
+    ({"ref": "main", "remote_ref": "origin/main", "merge_base": "a" * 40},
+     ("main", "origin/main", "a" * 40)),
+    ({"ref": "main", "merge_base": None, "error": "too far"}, None),
+    (None, None),
+])
+def test_the_pull_base_record_reaches_the_git_tools_only_with_a_merge_base(record, triple):
+    assert children_mod._pull_base_triple(record) == triple
