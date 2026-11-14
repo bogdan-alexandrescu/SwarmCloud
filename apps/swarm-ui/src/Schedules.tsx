@@ -956,7 +956,8 @@ function AnswerRow({ rows, summary, inbox }: { rows: Listed[]; summary: ListSumm
   const tripped = rows.filter((s) => s.state_word === 'paused_by_tripwire').length
   const failing = rows.filter((s) => s.state_word === 'failing').length
   const parts = [
-    pending === null ? null : pending > 0 ? pluralise(pending, 'approval') : null,
+    // An inbox that was not read is said, never left out as if none waited (visual QA).
+    pending === null ? 'approvals not read' : pending > 0 ? pluralise(pending, 'approval') : null,
     tripped > 0 ? pluralise(tripped, 'tripwire') : null,
     failing > 0 ? `${failing} failing` : null,
   ].filter((p): p is string => p !== null)

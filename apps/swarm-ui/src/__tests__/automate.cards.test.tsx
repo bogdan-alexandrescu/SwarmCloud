@@ -239,6 +239,10 @@ describe('the empty and honest states', () => {
     expect(said(within(panel).getByTestId('acd-unread'))).toBe('— the approvals inbox timed out')
     expect(within(panel).queryByTestId('acd-nothing-waiting')).toBeNull()
     expect(said(screen.getByTestId('acd-needs'))).not.toMatch(/\b0 approvals\b/)
+    // Visual QA: the tile's line still names the approvals, as not read,
+    // rather than leaving them out as if none waited.
+    // MUTATION: drop the unread approvals from the line and this fails.
+    expect(said(screen.getByTestId('acd-needs'))).toContain('approvals not read')
   })
 
   it("draws a dash with its reason when a schedule's spend is not served", async () => {
