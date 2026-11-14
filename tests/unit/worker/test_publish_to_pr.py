@@ -34,7 +34,7 @@ import pytest
 from agent_worker import lifecycle, publishpr
 from agent_worker import workspace as workspace_mod
 from agent_worker.errors import WorkerError
-from agent_worker.forge import PullHead, PullRequest
+from agent_worker.forge import PullHead
 
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
     _the_fence_holds,
@@ -89,7 +89,10 @@ class PullForge:
         self.reads = 0
         self.overrides: dict = {}
         self.frozen_head: str | None = None
-        self.updates: list[dict] = []
+        #: Comments posted on the pull request. The fake has no way to
+        #: retitle it or replace its body: a lane that tried would fail at
+        #: the forge call, which no longer exists for this path (#4101).
+        self.comments: list[dict] = []
 
     def read(self, *, ref, token, number) -> PullHead:
         self.reads += 1
@@ -102,11 +105,12 @@ class PullForge:
         fields.update(self.overrides)
         return PullHead(**fields)
 
-    def update(self, *, access, token, pull, title, body) -> PullRequest:
-        self.updates.append({"title": title, "body": body})
-        return PullRequest(number=pull.number, url=pull.url, state=pull.state, created=False,
-                           updated=title is not None or body is not None,
-                           retitled=title is not None, appended=body is not None)
+    def list_comments(self, *, ref, token, number) -> list[str]:
+        return [c["body"] for c in self.comments if c["number"] == number]
+
+    def comment(self, *, ref, token, number, body) -> int:
+        self.comments.append({"number": number, "body": body})
+        return len(self.comments)
 
 
 @pytest.fixture
@@ -114,7 +118,8 @@ def pull(monkeypatch, origin, tmp_path) -> PullForge:
     _push_commit(origin, tmp_path, PR_BRANCH, "mockup")
     fake = PullForge(origin)
     monkeypatch.setattr(lifecycle, "read_pull_request", fake.read)
-    monkeypatch.setattr(lifecycle, "update_pull_request_text", fake.update)
+    monkeypatch.setattr(lifecycle.forge_mod, "list_issue_comments", fake.list_comments)
+    monkeypatch.setattr(lifecycle.forge_mod, "create_issue_comment", fake.comment)
     return fake
 
 
@@ -156,22 +161,68 @@ def test_a_lane_fast_forwards_the_pull_requests_branch_and_opens_no_pull_request
     assert out["pull_request"]["number"] == NUMBER and out["pull_request"]["created"] is False
     assert out["publish_to_pr"] == {"number": NUMBER, "branch": PR_BRANCH, "started_head": start}
     # Wrote neither file: the pull request's title and body are left alone.
-    assert pull.updates == [{"title": None, "body": None}]
+    assert pull.comments == []
     assert out["pull_request"]["retitled"] is False
 
 
-def test_the_lanes_title_and_body_replace_the_pull_requests_only_when_written(
+def test_the_lanes_title_is_not_applied_and_its_body_becomes_a_comment(
     worker_factory, monkeypatch, origin, local_urls, forge, pull
 ):
-    _no_agent_text(monkeypatch, title="Mock-up v2 with the owner's answers",
+    """#4101: a follow-up's `pr-title.txt` retitled a feature pull request to
+    the follow-up's one-line fix, and the squash merge's subject on main with
+    it. Publishing onto an existing pull request edits neither its title nor
+    its body; a `pr-body.md` is posted as one comment. MUTATION: send the
+    agent's title or body to the pull request -- the PATCH guard raises."""
+    sent: list[dict] = []
+    monkeypatch.setattr(lifecycle.forge_mod, "_update_pull_request",
+                        lambda **kwargs: sent.append(kwargs) or pytest.fail("pull request edited"))
+    _no_agent_text(monkeypatch, title="Tests: one line fixed",
                    body="Applies the answers. part of #2183")
-    _, _, out = run_attempt(worker_factory, monkeypatch, origin, task_id="t-follow",
-                            dispatch=DIRECT, edit=_edit("followup"))
+    _, config, out = run_attempt(worker_factory, monkeypatch, origin, task_id="t-follow",
+                                 dispatch=DIRECT, edit=_edit("followup"))
     assert out["published"] is True, out
-    assert pull.updates == [{"title": "Mock-up v2 with the owner's answers",
-                             "body": "Applies the answers. part of #2183"}]
-    assert out["pull_request"]["retitled"] is True
+    assert sent == []
+    assert out["pull_request"]["retitled"] is False
+    assert out["pull_request"]["body_replaced"] is False
+    assert out["pull_request_text"]["title"] == "kept"
+    assert len(pull.comments) == 1 and pull.comments[0]["number"] == NUMBER
+    posted = pull.comments[0]["body"]
+    assert posted.startswith("Applies the answers. part of #2183")
+    assert "Tests: one line fixed" not in posted
+    assert f"task={config.task_id}" in posted
+    assert out["pull_request"]["commented"] is True
     assert forge.pulls == []
+
+
+def test_the_body_comment_is_posted_once_per_attempt(
+    worker_factory, monkeypatch, origin, local_urls, forge, pull
+):
+    """The comment's marker names the task and attempt: a comment already
+    there with it is found, and nothing more is posted."""
+    _no_agent_text(monkeypatch, body="The follow-up's notes.")
+    worker, _, _ = worker_factory(task_id="t-once")
+    access = forge.probe(url="https://github.com/acme/widgets", token=None)
+    monkeypatch.setattr(lifecycle.Worker, "_own_before_forge_write", lambda self, what: None)
+    for _ in range(2):
+        posted = worker._post_pull_body_comment(access=access, token="t", number=NUMBER,
+                                             body="The follow-up's notes.", out={})
+        assert posted is True
+    assert len(pull.comments) == 1
+
+
+def test_a_new_pull_request_still_takes_the_lanes_title_and_body(
+    worker_factory, monkeypatch, origin, local_urls, forge, pull
+):
+    _no_agent_text(monkeypatch, title="A new feature", body="What it does. part of #2183")
+    dispatch = {"strategy": "direct-pr", "carrier": "checkpoints"}
+    _, _, out = run_attempt(worker_factory, monkeypatch, origin, task_id="t-new",
+                            dispatch=dispatch, edit=_edit("new"))
+    assert out["published"] is True, out
+    assert len(forge.pulls) == 1
+    assert forge.pulls[0]["title"] == "A new feature"
+    assert forge.pulls[0]["body"].startswith("What it does. part of #2183")
+    assert out["pull_request_text"] == {"title": "agent", "body": "agent"}
+    assert pull.comments == []
 
 
 def test_without_the_field_publishing_is_unchanged(
@@ -186,7 +237,7 @@ def test_without_the_field_publishing_is_unchanged(
     assert refs(origin)[PR_BRANCH] == start, "a lane without the field moved the pull request"
     assert f"swarm/{config.task_id}" in refs(origin)
     assert len(forge.pulls) == 1 and forge.pulls[0]["head"] == f"swarm/{config.task_id}"
-    assert pull.reads == 0 and pull.updates == []
+    assert pull.reads == 0 and pull.comments == []
     assert "publish_to_pr" not in out
 
 
@@ -320,7 +371,7 @@ def test_a_head_that_moved_while_the_lane_ran_is_refused_and_never_forced(
     assert out[lifecycle.PUBLISH_FAILED_FIELD] is True
     assert "followup.txt" not in tree_at(origin, moved), "the lane's push landed"
     assert "by-hand.txt" in tree_at(origin, moved), "someone's push was replaced"
-    assert forge.pulls == [] and pull.updates == []
+    assert forge.pulls == [] and pull.comments == []
 
 
 def test_a_head_moved_between_the_read_and_the_push_is_refused_by_the_lease(
@@ -368,7 +419,7 @@ def test_a_pull_request_closed_while_the_lane_ran_is_refused_before_the_push(
     assert out["published"] is False, out
     assert words in out["publish_reason"]
     assert refs(origin)[PR_BRANCH] == start
-    assert forge.pulls == [] and pull.updates == []
+    assert forge.pulls == [] and pull.comments == []
 
 
 # -- builds_on: the fix step publishes to the same pull request ------------
@@ -528,7 +579,7 @@ def test_a_publish_to_pr_lane_on_another_fetched_branch_still_moved(
     )
     assert out["head_moved"] == "feature/elsewhere", out
     assert out["published"] is False
-    assert refs(origin)[PR_BRANCH] == start and pull.updates == []
+    assert refs(origin)[PR_BRANCH] == start and pull.comments == []
 
 
 def test_a_lane_without_publish_to_pr_on_that_branch_still_moved(
