@@ -55,7 +55,7 @@ const KEYS: Readonly<Record<string, string>> = Object.fromEntries(shortcutsIn('s
 const CAP: Readonly<Record<string, string>> = Object.fromEntries(shortcutsIn('submit').map((s) => [s.to!, s.label]))
 
 /** What sits over the page and owns the keyboard: the same list as N's. */
-const OVER_THE_PAGE = '[role="dialog"], [aria-modal="true"], aside.adm-side'
+const OVER_THE_PAGE = '[role="dialog"]:not(aside.as-sheet), [aria-modal="true"], aside.adm-side'
 
 /** The task card's icon: one agent (submit.html `i-agents`). */
 function TaskGlyph() {
