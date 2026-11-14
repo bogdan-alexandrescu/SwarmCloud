@@ -816,6 +816,7 @@ holds for schedules exactly as for agents.
 | 16 | `visual-qa` | workflow: a QA target's `:run` | R1 | no (issues) | auto · merge off | auto · merge off | a **workspace admin** of the tenant, `all` scope | 24 h | 3 |
 | 17 | `image-tool-rescan` | `task`: one `claude-code` agent | R2 | yes | **approve merge** | **approve merge** | members | 24 h (created weekly) | 2 |
 | 18 | `branch-sweep` | API | R1 | deletes merged branches (`contents: write`); not with `dry_run` | auto | auto | members | 6 h (created daily) | 2 |
+| 19 | `graph-latency-report` | API | R1 | no (an issue) | auto | auto | members; owner for the platform's own repository | 6 h | 2 |
 
 The **floor** column is the lowest gate the type allows. Between the floor and
 the default, only a platform admin may set the gate (§4.2), with one
@@ -1529,6 +1530,68 @@ Built by lane IMAGE-TOOL-RESCAN (PR 2099):
   create it, at `repos` or `all` scope; it is a write to the repository, so
   the owner needs `write` (§5.4) unless `dry_run`. Minimum interval 6 hours;
   it is created daily.
+
+
+### 3.20 `graph-latency-report`
+
+`swarm_api/schedtypes/graph_latency_report.py` and its `TYPES` entry in
+`swarm_api/scheduletypes.py` (`GraphLatencyReportParams`); the readings and
+the decision are `swarm_api/graphreports.py`. The design is
+[graph-answer-cache.md §1.2-§1.3](design/graph-answer-cache.md) (#1840, #4030).
+
+* **Why it exists.** The graph server's answer target is a cold p95 under
+  300 ms (knowledge-graph.md §6), and the CI gate holds it only on a generated
+  workload of a fixed size (`tests/unit/worker/test_graphmcp_budgets.py`). A
+  real repository grows with every merge, so a module that has become slow to
+  answer is found only by measuring that repository's own snapshots. This type
+  reads those measurements and says, in one issue, when one nears the target.
+* **What it reads, and where that comes from.** The indexer's opt-in
+  `swarm-repo-graph write --measure-latency-hours N` measures at most once per
+  N hours per registration: after the manifest, it stages the blobs it built
+  as a snapshot and runs `agent_worker.graphmcp.battery`, the CI gate's own
+  battery (its questions, a fresh `python -m agent_worker.graphmcp` on stdio
+  for each of three runs, and the `_reference_ms()` workload timed after each
+  answer). The runs go to `graph/<sha>/latency.json`, beside the manifest and
+  never in it, so a timing never changes a manifest digest. The type reads a
+  version's `index_versions/{sha}.answer_latency` when promotion recorded one,
+  else that `latency.json`. Who passes the flag (a registration setting,
+  `index.measure_latency_hours`) is the design's (§1.2, "When") and is not
+  wired yet: until it is, no version carries a measurement and every firing
+  reads "no promoted version in the window carries a measurement".
+* **The ratio, never the milliseconds.** Each reading is the run's p95 over
+  its own `reference_ms`, timed in the same process on the same node, so a
+  busy or small node slows both and the ratio holds (the owner, Q3). Because
+  the indexer and the CI gate run one battery module, the report's ratio is
+  the same measurement as the gate's `P95_BUDGET_RATIO`, on a different
+  repository. The milliseconds are printed beside it and never decide.
+* **Does.** Per repository in scope, with the schedule's tenant's forge
+  credential: reads the newest `window` promoted versions and their readings;
+  when the newest measured ratio is at or over `ratio_threshold` it opens one
+  issue (found again by the marker its body opens with) or comments on the
+  open one, once per version; after an over reading, the first one back under
+  comments "under again" once; versions promoted for `UNMEASURED_AFTER` (3
+  days) with no measurement are reported once. **It never closes the issue**;
+  a person does. It also records, on the firing and nowhere on GitHub, seven
+  days of graph delivery per repository by how the graph reached each attempt
+  and the fallbacks by reason, and the replicas' served p50/p95 against
+  300 ms (`graphreports.delivery_report`; the same counts are
+  `GET /v1/repositories/{repo_id}/graph-delivery`).
+* **Parameters.** `ratio_threshold` (default 12, over 1 and at most 100: the
+  owner's proposal, about 240 ms on a reference of about 20 ms, 80% of the
+  target, to be fixed from the first fourteen daily readings), `window`
+  (default 7 versions, 1-30) and `issue_label` (`bug`). No URL, command or
+  credential is a parameter (invariant 10).
+* **Dry run** (§2.8). The same reads, and what each repository would do; no
+  write.
+* **Produces.** One api_action per repository, `graph-latency-report:<repo_id>`,
+  ended as it is recorded; a repository GitHub refused is that repository's
+  `failed` with its code, as in `release-health`.
+* **Gate, budget, creates.** Run auto; risk R1 (one issue). `BUDGET_CAPS` in
+  the module: `per_run_usd` 0.01, `per_day_usd` 1.0, `max_concurrent` 10 -- it
+  runs no model, holds no lease and creates no infrastructure demand
+  (invariants 1-3). Members create it at `repos` or `all` scope; on the
+  platform's own repository only the owner. Needs `issues: write`. Minimum
+  interval 6 hours.
 
 ---
 
