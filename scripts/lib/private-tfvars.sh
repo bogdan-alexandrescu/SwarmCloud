@@ -54,8 +54,13 @@ fi
 
 # One part file renamed into place: a reader sees the whole file or none.
 part="$(mktemp "${OUT}.part.XXXXXX")" || die "could not create a file beside ${OUT}"
-if ! { if [[ "${#SHARED_DENY_LIST[@]}" -gt 0 ]]; then printf '%s\n' "${SHARED_DENY_LIST[@]}"; fi; } \
-    | jq -R . | jq -s --argjson private "${private_json}" '$private + {shared_deny_list: .}' >"${part}"; then
+# An empty list writes no line at all (printf with no arguments would write one
+# empty line, an entry of ""), and bash 3.2 under `set -u` dies on an empty "${arr[@]}".
+if ! {
+  if [[ "${#SHARED_DENY_LIST[@]}" -gt 0 ]]; then
+    printf '%s\n' "${SHARED_DENY_LIST[@]}"
+  fi
+} | jq -R . | jq -s --argjson private "${private_json}" '$private + {shared_deny_list: .}' >"${part}"; then
   rm -f -- "${part}"
   die "could not write ${OUT}"
 fi
