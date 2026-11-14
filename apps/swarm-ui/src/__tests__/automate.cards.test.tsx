@@ -239,6 +239,10 @@ describe('the empty and honest states', () => {
     expect(said(within(panel).getByTestId('acd-unread'))).toBe('— the approvals inbox timed out')
     expect(within(panel).queryByTestId('acd-nothing-waiting')).toBeNull()
     expect(said(screen.getByTestId('acd-needs'))).not.toMatch(/\b0 approvals\b/)
+    // Visual QA: the tile's line still names the approvals, as not read,
+    // rather than leaving them out as if none waited.
+    // MUTATION: drop the unread approvals from the line and this fails.
+    expect(said(screen.getByTestId('acd-needs'))).toContain('approvals not read')
   })
 
   it("draws a dash with its reason when a schedule's spend is not served", async () => {
@@ -268,6 +272,19 @@ describe('the empty and honest states', () => {
     expect(within(none).getByRole('heading', { name: 'No schedules' })).toBeTruthy()
     expect(within(none).getByRole('link', { name: 'New schedule' }).getAttribute('href')).toBe('/automate/schedules/new')
     expect(document.querySelector('section.acd-card')).toBeNull()
+  })
+
+  it('says what the empty state\u2019s (i) is about: Start from a type, as the mock-up draws it (visual QA)', async () => {
+    await mount(
+      routes({
+        '/v1/schedules': { status: 200, body: { schedules: [], summary: { by_state: {}, pending_approvals: 0, oldest_expires_at: null, unread: null }, tenant_id: 'eng' } },
+        '/v1/approvals': { status: 200, body: { approvals: [], tenant_id: 'eng' } },
+      }),
+    )
+    const none = await screen.findByTestId('acd-none', undefined, WAIT)
+    // A lone (i) under the heading said nothing until it was opened.
+    const empty = none.querySelector('.c-tip-host')!.parentElement!
+    expect(said(empty)).toContain('Start from a type')
   })
 
   it('draws a 404 as not served by this deployment, counting nothing', async () => {

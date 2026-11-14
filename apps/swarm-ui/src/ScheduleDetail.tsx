@@ -1195,6 +1195,13 @@ function Cadence({ s, word }: { s: Schedule; word: StateWord | undefined }) {
       sub={
         <>
           {s.words ?? 'the tick could not read this cron'} · <code>{s.cron}</code> · {s.timezone}
+          {/* The policy's rules ride behind an (i), as the cards mock-up's Next firings card draws none (visual QA). */}
+          {rules.length > 0 && (
+            <>
+              {' '}
+              <Info about="Missed and overlapping slots" tip={rules.join(' ')} />
+            </>
+          )}
         </>
       }
     >
@@ -1231,7 +1238,6 @@ function Cadence({ s, word }: { s: Schedule; word: StateWord | undefined }) {
           </ol>
         </>
       )}
-      {rules.length > 0 && <p className="as-note">{rules.join(' ')}</p>}
     </Sec>
   )
 }
@@ -1391,7 +1397,8 @@ function Gate({ s, type, onChanged, go }: { s: Schedule; type: ScheduleTypeRow |
           )}
         </Kv>
         <Kv name="Hard stops">
-          {/* The same sentence as the form's Gates card (QA1 automate-09). */}
+          {/* The same sentence as the form's Gates card (QA1 automate-09). It stays visible here: moving it
+              behind an (i) is the owner's pick for a follow-up under #2417, not this build. */}
           <HardStops />{' '}
           {failures === 1 ? 'A failed run pauses' : `${failures} failed runs in a row pause`} the schedule.
         </Kv>

@@ -286,6 +286,32 @@ describe('one approval, as a card page', () => {
     expect(painted(within(d).getByTestId('apd-expiry'), 'text-align', PHONE)).toBe('left')
   })
 
+  for (const st of ['pending', 'approved'] as const) {
+    it(`puts the ${st} decision right under the head on a phone, before the evidence (visual QA)`, async () => {
+      await mount('approval=apr_merge', routes(INBOX, detailOf(st)))
+      const d = await page()
+      const strip = await within(d).findByTestId('apd-decide', undefined, WAIT)
+      const head = within(d).getByTestId('apd-head')
+      const cols = d.querySelector<HTMLElement>('.apd-cols')!
+      const order = (el: Element, env: CascadeEnv) => Number(painted(el, 'order', env) ?? '0')
+      // On a phone: head, then the strip, then the panels.
+      expect(order(head, PHONE), st).toBeLessThan(order(strip, PHONE))
+      expect(order(strip, PHONE), st).toBeLessThan(order(cols, PHONE))
+      // On a desktop the strip stays after the evidence, pinned to the bottom.
+      expect(order(strip, WIDE), st).toBe(order(cols, WIDE))
+    })
+  }
+
+  it('names the hold\u2019s approvers in a few words, the rule behind its (i) (visual QA)', async () => {
+    await mount('approval=apr_merge', routes(INBOX, detailOf('pending')))
+    const d = await page()
+    const held = await within(d).findByRole('region', { name: 'Why it is held' }, WAIT)
+    const who = held.querySelector('dl')!
+    expect(shown(who)).toMatch(/^Approvers\s*the platform owner$/)
+    expect(within(who).getByRole('button', { name: 'About who decides' })).toBeTruthy()
+    expect(who.textContent).toContain('recorded in the audit as an owner waiver')
+  })
+
   it('keeps the page’s visible words under the cards’ ceiling', async () => {
     await mount('approval=apr_merge', routes(INBOX, detailOf('pending')))
     const d = await page()

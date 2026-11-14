@@ -214,7 +214,11 @@
   .apd-facts.is-row { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; }
   .apd-facts.is-row > .apd-pair { display: contents; }
   .apd-huge { font-size: var(--t-figure); line-height: var(--lh-figure); }
-  /* On a phone the strip follows the evidence rather than covering it. */
+  /* On a phone the strip is not pinned: it sits right under the head, before
+     the evidence, so the verbs (or the outcome) are the first thing after
+     what is asked, as the cards mock-up draws it. */
   .apd-decide { position: static; }
+  .apd-page > .apd-head { order: -2; }
+  .apd-page > .apd-decide { order: -1; }
   .apd-decide > .c-btn, .apc-card-f > .c-btn { flex: 1 1 auto; min-height: 44px; }
 }
