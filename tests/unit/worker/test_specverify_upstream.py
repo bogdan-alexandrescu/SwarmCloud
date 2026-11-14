@@ -24,7 +24,7 @@ from agent_worker.errors import ConfigError
 import spec_keys
 
 
-def _doc(workflow_id: str = "wf_1") -> dict:
+def _doc(workflow_id: str | None = "wf_1") -> dict:
     return {
         "tenant_id": "eng", "workflow_id": workflow_id, "step_id": "review",
         "runner_profile": "claude-code-review", "input": {"prompt": "review it"},
@@ -78,6 +78,50 @@ def test_a_verified_spec_of_another_workflow_is_refused(cfg):
             doc, upstream_task_id="task_review", workflow_id="wf_1", cfg=cfg
         )
     assert raised.value.reason == "upstream:task_review:workflow_mismatch"
+
+
+def test_the_single_task_mode_verifies_a_signed_null_workflow(cfg):
+    """The explicit single-task mode (`merge`'s person's lane, #4092): a
+    signed spec whose `workflow_id` is null verifies, the workflow argument
+    unconsulted."""
+    doc = spec_keys.sign_document(_doc(workflow_id=None), "task_single")
+    check = specverify.verify_upstream_spec(
+        doc, upstream_task_id="task_single", workflow_id=None, cfg=cfg, single_task=True
+    )
+    assert check.reason == "verified" and check.task_id == "task_single"
+    with pytest.raises(specverify.UpstreamSpecUnverified) as raised:
+        specverify.verify_upstream_spec(
+            doc, upstream_task_id="task_single", workflow_id=None, cfg=cfg
+        )
+    assert raised.value.why == "workflow_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "why"),
+    [
+        (lambda d: d, "unsigned"),
+        (lambda d: spec_keys.sign_document(d, "task_single", forged=True), "signature_mismatch"),
+        (lambda d: {**spec_keys.sign_document(d, "task_single"), "workflow_id": None},
+         "signature_mismatch"),
+        (lambda d: spec_keys.sign_document(d, "task_single"), "workflow_mismatch"),
+    ],
+    ids=["unsigned", "forged", "workflow-erased", "signed-workflow"],
+)
+def test_the_single_task_mode_refuses_all_but_a_signed_null_workflow(cfg, mutate, why):
+    doc = mutate(_doc(workflow_id="wf_1"))
+    with pytest.raises(specverify.UpstreamSpecUnverified) as raised:
+        specverify.verify_upstream_spec(
+            doc, upstream_task_id="task_single", workflow_id="wf_1", cfg=cfg, single_task=True
+        )
+    assert raised.value.why == why
+
+
+def test_the_bound_verifier_passes_the_single_task_mode(cfg):
+    verify = specverify.upstream_verifier(cfg, "wf_1")
+    doc = spec_keys.sign_document(_doc(workflow_id=None), "task_single")
+    assert verify("task_single", doc, single_task=True).reason == "verified"
+    with pytest.raises(specverify.UpstreamSpecUnverified):
+        verify("task_single", doc)
 
 
 def test_the_legacy_window_never_admits_an_unsigned_upstream(worker_factory):

@@ -72,7 +72,7 @@ from . import (
 )
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
-from .cifix import CI_FIX_METADATA_FIELD, stamp as stamp_ci_fix
+from .cifix import CI_FIX_METADATA_FIELD, stamp as stamp_ci_fix, stamp_task as stamp_follow_up
 from .prgate import gate_for, resolve_after
 from .continuation import (
     NamedPull,
@@ -1403,6 +1403,10 @@ class SubmissionService:
         now = self._now()
         budget_scope = self.budget_scope(tenant.tenant_id)
         try:
+            # A `publish_to_pr` task is a follow-up of that pull request, marked
+            # as a workflow one is, so the tick records the head it pushes for
+            # the merge step (`cifix.stamp_task`); a caller's own marker is refused.
+            specs = [stamp_follow_up(spec) for spec in specs]
             # Each distinct (repository, ref) asked of the forge once, before
             # any task is built (#2726). A `publish_to_pr` task's ref is the
             # pull request's head, and one beside it is refused in the build.
