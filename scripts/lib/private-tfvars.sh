@@ -8,7 +8,7 @@
 #
 # Usage: scripts/lib/private-tfvars.sh --out FILE   (PROJECT_ID, ENVIRONMENT set)
 #
-# private.tfvars.json may set only PRIVATE_KEYS. Prints counts, never a value;
+# private.tfvars.json may set only PRIVATE_FIELDS. Prints counts, never a value;
 # stops, writing nothing, when the list or the private file cannot be used.
 
 set -euo pipefail
@@ -17,7 +17,7 @@ set -euo pipefail
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 # The values a deployment keeps out of the repository, beside shared_deny_list.
-PRIVATE_KEYS='["alert_emails"]'
+PRIVATE_FIELDS='["alert_emails"]'
 
 OUT=""
 while [[ $# -gt 0 ]]; do
@@ -48,7 +48,7 @@ if (( private_rc == 1 )); then
   die "$(config_source "${ENVIRONMENT}")/private.tfvars.json could not be read"
 elif (( private_rc == 0 )); then
   # shellcheck disable=SC2016  # a jq program: its $names are jq's, not the shell's
-  private_json="$(jq -ce --argjson keys "${PRIVATE_KEYS}" '
+  private_json="$(jq -ce --argjson keys "${PRIVATE_FIELDS}" '
     if type != "object" then error("it is not a JSON object")
     elif (keys - $keys) != [] then error("it sets keys it may not: \(keys - $keys | join(", "))")
     elif has("alert_emails") and ((.alert_emails | type) != "array"
