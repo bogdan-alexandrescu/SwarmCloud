@@ -85,7 +85,7 @@ from swarm_common.states import TERMINAL_STATES
 from .. import issuesweep, scheduletypes
 from ..errors import ApiError
 from ..forge import ForgeReadError, open_work_without
-from ..issueruns import IssueRun, IssueRuns, refuse_auto_merge
+from ..issueruns import IssueRun, IssueRuns, refuse_auto_merge, run_source
 from ..repositories import Repositories, repo_id_for
 from ..routes.runs import start_run
 from ..validation import workflow_label
@@ -458,6 +458,8 @@ def start(firing: Any, selection: Selection, options: RunOptions) -> list[dict[s
                 plan_approval=options.plan_approval, auto_merge=options.auto_merge,
                 fix_rounds=options.fix_rounds, created_by=f"schedule:{schedule_id}",
                 schedule=firing.mark, merge_approval=options.merge_approval,
+                # plans-pipeline §3.1: `sweep`, or `plan_only` for issue-plan-only's firing.
+                source=run_source(firing.mark),
             )
         except ApiError as exc:
             if exc.status_code >= 500:
