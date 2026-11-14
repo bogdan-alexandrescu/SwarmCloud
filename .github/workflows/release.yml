@@ -698,6 +698,13 @@ jobs:
             echo "::error::the planning job recorded no held plan, so there is nothing to apply"
             exit 1
           fi
+          # Only a held plan, checked before any copy: this identity reads the
+          # whole state bucket, and a glob's `*` also matches `..` and `/`.
+          case "${PLAN_PATH}" in
+            *..*|*//*) echo "::error::the held plan path is not one held plan ('${PLAN_PATH}')"; exit 1 ;;
+            plans/*/plan.tfplan) ;;
+            *) echo "::error::the held plan path is not one held plan ('${PLAN_PATH}')"; exit 1 ;;
+          esac
           # The address, rebuilt here from this job's own TF_STATE_BUCKET.
           gcloud storage cp --no-user-output-enabled "gs://${TF_STATE_BUCKET}/${PLAN_PATH}" "${TF_ROOT}/plan.tfplan"
           echo "${PLAN_SHA256}  ${TF_ROOT}/plan.tfplan" | sha256sum -c -
@@ -724,6 +731,7 @@ jobs:
         run: |
           set -euo pipefail
           case "${PLAN_PATH}" in
+            *..*|*//*) echo "::error::no held plan path to drop ('${PLAN_PATH}')"; exit 1 ;;
             plans/*/plan.tfplan) gcloud storage rm --no-user-output-enabled "gs://${TF_STATE_BUCKET}/${PLAN_PATH}" ;;
             *) echo "::error::no held plan path to drop ('${PLAN_PATH}')"; exit 1 ;;
           esac
