@@ -1397,7 +1397,8 @@ function Gate({ s, type, onChanged, go }: { s: Schedule; type: ScheduleTypeRow |
           )}
         </Kv>
         <Kv name="Hard stops">
-          {/* The same sentence as the form's Gates card (QA1 automate-09). */}
+          {/* The same sentence as the form's Gates card (QA1 automate-09). It stays visible here: moving it
+              behind an (i) is the owner's pick for a follow-up under #2417, not this build. */}
           <HardStops />{' '}
           {failures === 1 ? 'A failed run pauses' : `${failures} failed runs in a row pause`} the schedule.
         </Kv>

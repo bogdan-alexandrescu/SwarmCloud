@@ -1131,6 +1131,8 @@ function SchedulesBody({ d, go, scopeSwitch, open }: { d: Landing; go: (to: stri
     return (
       <div className="acd-page" data-testid="acd-none">
         {scopeSwitch !== null && <div className="acd-bar-row">{scopeSwitch}</div>}
+        {/* The label only: the mock-up's starter cards (a type per card, each with Use) are the owner's pick
+            for a follow-up lane under #2417, not this build. */}
         <EmptyState kind="empty" heading="No schedules" action={newSchedule}>
           <span className="acd-dim">Start from a type</span>{' '}
           <Info about="Schedules" tip="A schedule fires work on a cron, from a type. Nothing runs until you make one." />
