@@ -25,9 +25,12 @@ the repository grant to: for a team the oldest team of the install record
 the installer's own personal workspace, or a stored profile default, which
 for a team has no pool account and no repository grant. Every run is `swarm
 --context <it>`, with no `SWARM_URL`, `SWARM_CONTEXT` or `SWARM_TENANT` from
-the person's shell. The repository is the first, not archived, the GitHub App
-installation covers (`swarm sc access repos <github_org>`), recorded as
-`verify_repository`. The console's two runs are started in Admin › Setup;
+the person's shell. The repository is the one Admin › Setup's smoke and
+console runs use: a platform admin's pick there (`grant.test_repository` on
+the first workspace's document), else the dedicated test repository
+`<github_org>/swarm-install-test`, while the GitHub App installation covers it
+(`swarm sc access repos <github_org>`), recorded as `verify_repository`;
+never a product repository by its place in a list. The console's two runs are started in Admin › Setup;
 swarm-api writes their ids into a console document (`verify_runs`:
 `console_task`, `console_workflow`) and the step copies them into
 state.outputs: nobody is asked for an id.
@@ -519,7 +522,7 @@ class SchedulerTargetsStep(_Base):
             detail += f" ({len(paused)} paused, not judged: {', '.join(paused)})"
         if noted:
             detail += "; binding in place, next tick past this wait: " + "; ".join(noted)
-        return Observation(MET, detail, {"scheduler_targets": judged})
+        return Observation(MET, detail)
 
     def _target(self, ctx: Any, name: str, target: Mapping[str, Any], policy: Callable[[str], dict[str, Any]],
                 inherited: Callable[[], dict[str, Any]], services: list[list[dict[str, Any]]]) -> list[str]:
@@ -592,7 +595,7 @@ class DigestsStep(_Base):
                 problems.append(f"{name} serves {digest or 'no digest'}, not one of release {ctx.state.release}'s")
         if problems:
             return Observation(UNMET, "; ".join(problems))
-        return Observation(MET, f"{len(serving)} services serve the release's digests", {"serving_digests": serving})
+        return Observation(MET, f"{len(serving)} services serve the release's digests")
 
 
 class ReconcilerJobsStep(_Base):
@@ -865,6 +868,25 @@ def first_workspace(ctx: Any, listed: Sequence[str]) -> str:
     return min(teams)[2]
 
 
+#: The dedicated test repository's name in the GitHub organisation, as
+#: swarm-api's `TEST_REPOSITORY` (routes/setup.py): verify's pull requests go
+#: there, so no product repository gets them.
+TEST_REPOSITORY = "swarm-install-test"
+
+
+def picked_test_repository(ctx: Any) -> str:
+    """A platform admin's Test repository pick in Admin › Setup, from the
+    first workspace's grant (`teams/<verify_tenant>`, or `console/personal`
+    for one person), or "" when none is recorded."""
+    env = str(getattr(ctx, "environment", "") or "")
+    if (ctx.outputs.get("sizing") or {}).get("mode") == "individual":
+        doc = _install_document(ctx, console_document(env, PERSONAL))
+    else:
+        tenant = str(ctx.outputs.get("verify_tenant") or "")
+        doc = _install_document(ctx, f"{engine_document(env)}/teams/{tenant}") if tenant else None
+    return str(((doc or {}).get("grant") or {}).get("test_repository") or "")
+
+
 @dataclass
 class SwarmCli:
     """The runs through the `swarm` CLI, as the person, signed in with the
@@ -951,10 +973,11 @@ class SwarmCli:
         remember(ctx, outputs={"verify_tenant": tenant})
 
     def repository(self, ctx: Any) -> str:
-        """The first repository, not archived, the GitHub App installation
-        covers, read on the new deployment. With no GitHub connection yet the
-        person connects once in the browser (`swarm sc setup`) and it is read
-        again."""
+        """The verification repository: Admin › Setup's pick, else
+        `<org>/swarm-install-test`, whichever the GitHub App installation
+        covers (not archived), read on the new deployment. With no GitHub
+        connection yet the person connects once in the browser (`swarm sc
+        setup`) and it is read again. `LookupError` while it covers neither."""
         name = self._context(ctx)
         org = str(ctx.outputs.get("github_org") or "")
         if not org:
@@ -967,13 +990,20 @@ class SwarmCli:
                                     f"finish connecting there (swarm install runs swarm sc setup for you)")
             self.interactive([self.cli, "sc", "setup", "--context", name], None, self._env(ctx))
             code, out, err = self.run(argv, None, self._env(ctx))
-        found = next((str(row.get("repository") or "") for row in _rows(json.loads(out or "{}") if code == 0 else {},
-                                                                          "repositories")
-                      if not row.get("archived") and str(row.get("repository") or "").count("/") == 1), "")
-        if not found:
+        covered = [str(row.get("repository") or "") for row in _rows(json.loads(out or "{}") if code == 0 else {},
+                                                                      "repositories")
+                   if not row.get("archived") and str(row.get("repository") or "").count("/") == 1]
+        if not covered:
             raise RuntimeError(f"the repositories the GitHub App installation covers in {org} could not be read "
                                f"on {name}: {err.strip()[:300] or 'none that is not archived'}")
-        return found
+        spelled = {repository.lower(): repository for repository in covered}
+        default = f"{org}/{TEST_REPOSITORY}"
+        for wanted in (picked_test_repository(ctx), default):
+            if wanted and wanted.lower() in spelled:
+                return spelled[wanted.lower()]
+        raise LookupError(f"the GitHub App installation in {org} does not cover the test repository {default}: "
+                          "create it and add it to the installation, or pick another in Admin › Setup "
+                          "(Test repository), then run swarm install again")
 
     # -- the runs ---------------------------------------------------------------------
 
@@ -1293,8 +1323,7 @@ class EndToEndStep(_Base):
         seen = self._look_for_jobs(ctx, ids)
         repository = str(ctx.outputs.get("verify_repository") or "")
         tenant = str(ctx.outputs.get("verify_tenant") or "")
-        done, problems, prs, checks, waiting = 0, [], {}, {}, []
-        kinds: dict[str, str] = {}
+        done, problems, waiting = 0, [], []
         for surface, shape in RUNS:
             key = f"{surface}-{shape}"
             run_id = ids[key]
@@ -1324,15 +1353,11 @@ class EndToEndStep(_Base):
                     problems.append(f"{key} ({run_id}) did not clone and push with {wanted} "
                                     f"(lesson 43): {said}")
                     continue
-                kinds[key] = ",".join(sorted({use.kind for use in found.credentials}))
                 if check is not None:
-                    proof, problem = check_proof(key, run_id, check, found, seen.get(key), repository, tenant)
+                    _proof, problem = check_proof(key, run_id, check, found, seen.get(key), repository, tenant)
                     if problem:
                         problems.append(problem)
                         continue
-                    checks[key] = proof
-                else:
-                    prs[key] = found.pull_request
                 done += 1
         result = "failed" if problems else ("passed" if done == len(RUNS) else None)
         write_progress(ctx, self.check_name, len(QUICK_CHECKS) + done, result=result,
@@ -1351,9 +1376,7 @@ class EndToEndStep(_Base):
         return Observation(MET, "four runs, each to a pull request, and the GKE, live-browser and "
                                 "code-intelligence checks; the console's runs cloned and pushed with a GitHub "
                                 "App installation token, the plugin's with the App's installation or the "
-                                "person's own App user token (lesson 43)",
-                           {"verify_pull_requests": prs, "verify_checks": checks,
-                            "verify_forge_credential": {key: kinds[key] for key in (*prs, *checks)}})
+                                "person's own App user token (lesson 43)")
 
     def plan(self, ctx: Any) -> Plan:
         return Plan("on the new deployment's own swarm context: a single task and a workflow from the plugin, "

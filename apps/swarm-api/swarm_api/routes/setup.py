@@ -13,6 +13,8 @@ DAYONE-SETUP-API-1, part of #2688).
     POST /v1/admin/setup/teams/{id}/invites       an invite and its Google Admin members page
     POST /v1/admin/setup/smoke                    the first team's smoke, again after a failure
     POST /v1/admin/setup/verify-runs              the console's two verify runs, as the first team
+    GET  /v1/admin/setup/test-repository          the repository the smoke and verify runs use, and the choice
+    PUT  /v1/admin/setup/test-repository          an admin's pick of it, one of the first grant's repositories
     POST /v1/admin/setup/finish                   `console/finished`, once every step is done
     PUT  /v1/admin/setup/health                   `health/latest` (swarm-doctor only)
     GET  /v1/admin/setup/health                   `health/latest`
@@ -41,6 +43,10 @@ its pool accounts. Creating it records a team-level grant over the App
 installation's repositories (`teams/<id>.grant`, decision 3). Once its first
 pool account lands, swarm-api runs its smoke, one small task on a granted
 repository, recorded as `teams/<id>.smoke`; `finish` waits for it to pass.
+That repository, and the verify runs', is the dedicated TEST REPOSITORY
+(`chosen_test_repository`): an admin's pick recorded as `grant.test_repository`,
+else `<org>/swarm-install-test`, never merely the first repository of the
+grant, so no product repository gets their pull requests.
 The smoke and the console's verify runs are submitted as swarm-api's own
 service account in the team's tenant, so they run on the team's own slot and
 never on a person's GitHub connection.
@@ -314,6 +320,11 @@ SMOKE_STRATEGY = "direct-pr"
 VERIFY_TASK_STRATEGY = "direct-pr"
 VERIFY_WORKFLOW_STRATEGY = "integrate"
 SMOKE_LABEL = "swarm-install-smoke"
+#: The dedicated test repository's name in the GitHub organisation; the smoke
+#: and verify runs open pull requests there, so no product repository gets them.
+TEST_REPOSITORY = "swarm-install-test"
+#: The smoke's state while the grant holds no test repository and no pick.
+WAITING_FOR_TEST_REPOSITORY = "waiting_for_test_repository"
 VERIFY_LABEL = "swarm-install-verify"
 
 RUNNING = "running"
@@ -443,6 +454,49 @@ def installation_repositories(flow: ManifestFlow, github: GitHubSetupApi,
             "selection": found.get("repository_selection"), "repositories": sorted(set(names))}
 
 
+def _grant_org(grant: dict[str, Any]) -> str:
+    """The organisation the grant's repositories are under: its recorded
+    `account`, else the owner part of its first repository."""
+    account = str(grant.get("account") or "")
+    if account:
+        return account
+    for name in grant.get("repositories") or []:
+        owner = str(name).partition("/")[0]
+        if owner:
+            return owner
+    return ""
+
+
+def default_test_repository(grant: dict[str, Any], org: str = "") -> str:
+    """`<org>/swarm-install-test`, `<org>` the grant's organisation (else `org`)."""
+    return f"{_grant_org(grant) or org or '<org>'}/{TEST_REPOSITORY}"
+
+
+def _granted_spelling(grant: dict[str, Any], name: Any) -> str | None:
+    """`name` as the grant spells it, when the grant covers it (any case)."""
+    if not isinstance(name, str) or not name:
+        return None
+    wanted = name.lower()
+    return next((str(r) for r in grant.get("repositories") or [] if str(r).lower() == wanted),
+                None)
+
+
+def chosen_test_repository(grant: dict[str, Any] | None) -> str | None:
+    """The repository the smoke and the console's verify runs open their pull
+    requests on: the admin's pick (`grant.test_repository`) while the grant
+    still covers it, else `<org>/swarm-install-test` when it does, as the
+    grant spells it; None when neither, and nothing is submitted then."""
+    grant = grant or {}
+    return (_granted_spelling(grant, grant.get("test_repository"))
+            or _granted_spelling(grant, default_test_repository(grant)))
+
+
+def advice_for_test_repository(grant: dict[str, Any] | None, org: str = "") -> str:
+    """What a run that waits for a test repository says."""
+    return (f"create {default_test_repository(grant or {}, org)} and add it to the GitHub App "
+            "installation, or pick another repository of the grant")
+
+
 def _grant_held(grant: dict[str, Any]) -> bool:
     """Whether a granted grant is fully on the submission path: enforced,
     and its App installation recorded for the workspace when it names one."""
@@ -482,9 +536,45 @@ def enforce_grant(db: Any, tenant: str, grant: dict[str, Any], *, now: datetime
     return grant
 
 
+def refresh_for_test_repository(grant: dict[str, Any], *, flow: ManifestFlow,
+                                github: GitHubSetupApi, org: str) -> dict[str, Any]:
+    """A granted grant that resolves no test repository, with the App
+    installation's repositories read again: a grant recorded before
+    `<org>/swarm-install-test` was created and added to the installation
+    would otherwise never hold it. A changed list replaces `repositories`
+    (every other key, the pick included, kept) and drops the enforced and
+    installation-recorded marks, so `enforce_grant` writes the workspace's
+    grants for the new list as it does for a first grant. The grant is
+    answered as it is when a test repository already resolves (no GitHub
+    call then), when the read fails (one line logged) or when nothing
+    changed."""
+    if chosen_test_repository(grant) is not None:
+        return grant
+    try:
+        found = installation_repositories(flow, github, org)
+    except ApiError as exc:
+        log.info("first workspace grant: the installation could not be read again code=%s",
+                 exc.code)
+        return grant
+    if found is None or not found["repositories"]:
+        log.info("first workspace grant: the installation could not be read again")
+        return grant
+    if found["repositories"] == list(grant.get("repositories") or []):
+        return grant
+    refreshed = {key: value for key, value in grant.items()
+                 if key not in ("enforced_at", "installation_recorded_at")}
+    refreshed.update({"repositories": found["repositories"],
+                      "installation_id": found["installation_id"],
+                      "selection": found["selection"], "owner_type": found["owner_type"]})
+    log.info("first workspace grant read again for its test repository repositories=%d",
+             len(found["repositories"]))
+    return refreshed
+
+
 def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *,
                  flow: ManifestFlow, github: GitHubSetupApi, org: str, by: str,
-                 now: datetime, db: Any, path: str | None = None) -> dict[str, Any]:
+                 now: datetime, db: Any, path: str | None = None,
+                 refresh: bool = False) -> dict[str, Any]:
     """Decision 3: the first team's team-level grant over the repositories the
     App installation covers, recorded on `teams/<id>.grant` and shown on the
     page. Written once the App is installed on at least one repository; until
@@ -493,11 +583,15 @@ def ensure_grant(record: ir.InstallRecord, team_id: str, team: dict[str, Any], *
     page tries again. A grant already recorded is kept as it is. `path` is the
     document it is recorded on: the team's, or for one person
     `console/personal`. A grant is enforced as it is recorded (`enforce_grant`):
-    its workspace holds it on the submission path, not only on the page."""
+    its workspace holds it on the submission path, not only on the page.
+    With `refresh` (the page's own read, once per read), a granted grant that
+    resolves no test repository is read again (`refresh_for_test_repository`)."""
     path = path or record.team_path(team_id)
     tenant = str(team.get("workspace") or team_id)
     grant = dict(team.get("grant") or {})
     if grant.get("state") == "granted" and grant.get("repositories"):
+        if refresh:
+            grant = refresh_for_test_repository(grant, flow=flow, github=github, org=org)
         if not _grant_held(grant):
             grant = enforce_grant(db, tenant, grant, now=now)
             record.write(path, {"grant": grant})
@@ -601,13 +695,17 @@ def advance_smoke(record: ir.InstallRecord, team_id: str, team: dict[str, Any], 
                 smoke["finished_at"] = now
             record.write(path, {"smoke": smoke})
         return smoke
-    repositories = list((team.get("grant") or {}).get("repositories") or [])
-    if not pool_accounts or not repositories:
+    grant = team.get("grant") or {}
+    if not pool_accounts or not grant.get("repositories"):
         return smoke or None
+    repository = chosen_test_repository(grant)
+    if repository is None:
+        # Nothing is submitted, and nothing recorded: once the test repository
+        # is granted or picked, the next read starts the smoke.
+        return {"state": WAITING_FOR_TEST_REPOSITORY, "message": advice_for_test_repository(grant)}
     if not app_self_checked(record):
-        return {"state": SELF_CHECK_WAITING, "repository": repositories[0],
+        return {"state": SELF_CHECK_WAITING, "repository": repository,
                 "message": PASS_3_WAIT}
-    repository = repositories[0]
     try:
         task_id = runs.submit_task(tenant_id=tenant, group=group,
                                    repository=repository, prompt=SMOKE_PROMPT,
@@ -658,8 +756,9 @@ def team_row(request: Request, ctx: AppContext, record: ir.InstallRecord, team_i
         mark_signed_in(record, pool_accounts, now=now)
         team = {**team, "grant": ensure_grant(
             record, team_id, team, flow=flow, github=github,
-            org=ctx.settings.setup_github_org, by=by, now=now, db=ctx.db)}
+            org=ctx.settings.setup_github_org, by=by, now=now, db=ctx.db, refresh=True)}
         row["grant"] = team["grant"]
+        row["test_repository"] = chosen_test_repository(team["grant"])
         row["smoke"] = advance_smoke(record, team_id, team, runs=runs,
                                      pool_accounts=pool_accounts, now=now)
     return row
@@ -790,10 +889,11 @@ class FirstWorkspace:
 def first_workspace(record: ir.InstallRecord, ctx: AppContext, people: People, *,
                     caller: SetupCaller, flow: ManifestFlow, github: GitHubSetupApi,
                     publisher: WorkspacePublisher, engine: dict[str, Any] | None = None,
-                    mode: str | None = None) -> FirstWorkspace | None:
+                    mode: str | None = None, refresh: bool = False) -> FirstWorkspace | None:
     """The first workspace for this install's mode, or None while there is
     none. For one person it is filed and granted here (`ensure_personal`,
-    `ensure_grant`), so no step waits on a page read."""
+    `ensure_grant`), so no step waits on a page read; `refresh` is the
+    page's own read (`ensure_grant`'s)."""
     if mode is None:
         engine = record.read_engine() if engine is None else engine
         mode = install_mode(engine)
@@ -815,7 +915,7 @@ def first_workspace(record: ir.InstallRecord, ctx: AppContext, people: People, *
     tenant = str(doc["workspace"])
     doc = {**doc, "grant": ensure_grant(record, tenant, doc, flow=flow, github=github,
                                         org=ctx.settings.setup_github_org, by=caller.email,
-                                        now=ctx.now(), db=ctx.db, path=path)}
+                                        now=ctx.now(), db=ctx.db, path=path, refresh=refresh)}
     return FirstWorkspace(key=tenant, doc=doc, path=path, principal=installer, personal=True)
 
 
@@ -831,7 +931,8 @@ def personal_row(request: Request, ctx: AppContext, record: ir.InstallRecord,
         log.info("setup page: the pool could not be read code=%s", exc.code)
         pool_accounts = []
     row = dict(first.doc)
-    row.update({"workspace_state": workspace.get("state"), "pool_accounts": pool_accounts})
+    row.update({"workspace_state": workspace.get("state"), "pool_accounts": pool_accounts,
+                "test_repository": chosen_test_repository(first.doc.get("grant"))})
     mark_signed_in(record, pool_accounts, now=ctx.now())
     row["smoke"] = advance_smoke(record, first.key, first.doc, runs=runs,
                                  pool_accounts=pool_accounts, now=ctx.now(), path=first.path,
@@ -1131,7 +1232,8 @@ def setup_state(
     if mode == ir.INDIVIDUAL:
         try:
             first = first_workspace(record, ctx, people, caller=caller, flow=flow,
-                                    github=github, publisher=publisher, engine=engine, mode=mode)
+                                    github=github, publisher=publisher, engine=engine, mode=mode,
+                                    refresh=True)
         except ApiError as exc:
             log.info("setup page: the personal workspace could not be filed code=%s", exc.code)
             personal = {"owner": installer_of(ctx, engine) or None, "workspace": None,
@@ -1499,8 +1601,9 @@ def invite(
 
 def _granted_repository(first: FirstWorkspace | None) -> tuple[FirstWorkspace, str]:
     """(first workspace, repository): the first team (for one person, the
-    personal workspace) and the first repository of its grant, which every
-    run Admin › Setup starts uses (decision 3)."""
+    personal workspace) and its grant's test repository (`chosen_test_repository`),
+    which every run Admin › Setup starts uses (decision 3). 409 while the
+    grant covers no repository, or covers neither a pick nor the default."""
     if first is None:
         raise Conflict("create the first team first")
     grant = first.doc.get("grant") or {}
@@ -1510,7 +1613,11 @@ def _granted_repository(first: FirstWorkspace | None) -> tuple[FirstWorkspace, s
         raise Conflict(f"{whose} has no granted repository yet: install the GitHub "
                        "App on the organisation, on at least one repository",
                        detail={"grant": grant.get("state")})
-    return first, repositories[0]
+    repository = chosen_test_repository(grant)
+    if repository is None:
+        raise Conflict(advice_for_test_repository(grant),
+                       detail={"state": WAITING_FOR_TEST_REPOSITORY})
+    return first, repository
 
 
 @router.post("/smoke", dependencies=[Depends(admin_auth)])
@@ -1540,6 +1647,74 @@ def restart_smoke(
         raise Conflict("the first workspace's smoke waits for its first pool account")
     return {"team": None if first.personal else first.key, "workspace": first.tenant,
             "smoke": smoke}
+
+
+def _recorded_first(record: ir.InstallRecord) -> tuple[str, dict[str, Any]] | None:
+    """(path, document) of the first workspace as recorded, read only: the
+    first team's, or for one person `console/personal` once it names its
+    workspace. Nothing is filed or granted here (`first_workspace` does)."""
+    if install_mode(record.read_engine()) == ir.INDIVIDUAL:
+        doc = record.read(record.personal_path()) or {}
+        return (record.personal_path(), doc) if doc.get("workspace") else None
+    first = _first_team(record)
+    return None if first is None else (record.team_path(first[0]), first[1])
+
+
+def _test_repository_view(grant: dict[str, Any], org: str) -> dict[str, Any]:
+    return {"test_repository": chosen_test_repository(grant),
+            "default": default_test_repository(grant, org),
+            "repositories": list(grant.get("repositories") or [])}
+
+
+class PickedTestRepository(StrictModel):
+    #: `owner/name`, one of the first workspace's granted repositories.
+    repository: str = Field(min_length=3, max_length=200)
+
+
+@router.get("/test-repository", dependencies=[Depends(admin_auth)])
+def get_test_repository(
+    ctx: AppContext = Depends(get_context),
+    record: ir.InstallRecord = Depends(install_record),
+) -> dict:
+    """The repository the smoke and the console's verify runs use
+    (`test_repository`, null while there is none), the default
+    `<org>/swarm-install-test`, and the grant's repositories to pick from.
+    Read only; empty until the first workspace exists."""
+    found = _recorded_first(record)
+    grant = dict((found[1] if found else {}).get("grant") or {})
+    return _test_repository_view(grant, ctx.settings.setup_github_org)
+
+
+@router.put("/test-repository", dependencies=[Depends(admin_auth)])
+def put_test_repository(
+    body: PickedTestRepository,
+    caller: SetupCaller = Depends(admin_setup_caller),
+    ctx: AppContext = Depends(get_context),
+    record: ir.InstallRecord = Depends(install_record),
+) -> dict:
+    """An admin's pick of the test repository, recorded as
+    `grant.test_repository` on the first workspace's document (the grant's
+    other keys kept). 409 before the first workspace and its grant exist, or
+    for a repository the grant does not cover. It starts nothing: a smoke
+    that failed or waits for a test repository is started again the existing
+    way (`POST /smoke`, or the page's next read for one that never started);
+    a running or passed smoke is left as it is."""
+    found = _recorded_first(record)
+    if found is None:
+        raise Conflict("create the first workspace first")
+    path, doc = found
+    grant = dict(doc.get("grant") or {})
+    if grant.get("state") != "granted" or not grant.get("repositories"):
+        raise Conflict("the first workspace has no granted repository yet",
+                       detail={"grant": grant.get("state")})
+    repository = _granted_spelling(grant, body.repository.strip())
+    if repository is None:
+        raise Conflict(f"{body.repository!r} is not one of the first workspace's granted "
+                       "repositories", detail={"repositories": list(grant["repositories"])})
+    grant["test_repository"] = repository
+    record.write(path, {"grant": grant})
+    log.info("setup test repository picked repository=%s by=%s", repository, caller.email)
+    return _test_repository_view(grant, ctx.settings.setup_github_org)
 
 
 #: The console's two verify runs, by their `verify_runs` key.
