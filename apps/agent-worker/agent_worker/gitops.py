@@ -3793,8 +3793,16 @@ def prepare_publish_repo(
     allow_unknown_base: bool = False,
     confirm_on_origin: Callable[[list[str]], list[str]] | None = None,
     carry_merge: bool = False,
+    fetch_on_origin: Callable[[Path, list[str]], list[str]] | None = None,
 ) -> Path:
     """Build the worker-owned CLEAN repository the publish decides and pushes from.
+
+    `fetch_on_origin` (#2901): the worker's own depth-1 fetch FROM THE FORGE,
+    into this repository, of the clone's shallow cut-offs that neither the
+    base's ancestry nor `confirm_on_origin` answered
+    (`fetch_shallow_lines_from_origin`). A cut-off that lands is origin's, so
+    it joins the boundary exactly as a confirmed one does, and this
+    repository holds it before the agent's work is fetched in.
 
     `carry_merge`: a merge the agent left IN PROGRESS -- `git merge
     --no-commit`, or a conflicted merge it resolved and staged but never
@@ -3992,7 +4000,8 @@ def prepare_publish_repo(
             listed=listed, git_binary=git_binary, logger=logger,
         ) if lines else []
         unproven = [sha for sha in lines if sha not in proven]
-        if confirm_on_origin is not None and len(unproven) > _SHALLOW_MAX_LINES:
+        asks = confirm_on_origin is not None or fetch_on_origin is not None
+        if asks and len(unproven) > _SHALLOW_MAX_LINES:
             # More lines than one question holds: ask only those the walk
             # from HEAD meets, so a stale cut-off (one a later, shallower
             # fetch superseded) does not crowd out one the walk needs.
@@ -4006,8 +4015,23 @@ def prepare_publish_repo(
         confirmed = _origin_confirmed_shallow(
             unproven, confirm_on_origin=confirm_on_origin, logger=logger,
         )
+        # THE CLEAN REPOSITORY FETCHES WHAT IS LEFT FROM THE FORGE ITSELF
+        # (#2901). An agent that merged its base -- a depth-1 tip, or a slice
+        # deepened to a merge base -- holds a cut-off on the base's side that
+        # is no ancestor of the recorded floor; with no relay to ask (or a
+        # relay that did not answer) the walk from the merge crossed into the
+        # parents the clone never had: "could not fetch the agent's work ...
+        # Could not read <commit>". Each cut-off still unanswered is fetched
+        # here at depth 1 from origin, with the worker's own credential, after
+        # the reap; one that lands as itself is origin's commit, so it is safe
+        # to stop the walk at, for the same reason as a confirmed one.
+        fetched = _origin_fetched_shallow(
+            [sha for sha in unproven if sha not in confirmed], publish_dir=publish_dir,
+            fetch_on_origin=fetch_on_origin, logger=logger,
+        )
         boundary = publish_dir / ".git" / "swarm-source-shallow"
-        boundary.write_text("".join(f"{sha}\n" for sha in [floor, *proven, *confirmed]))
+        boundary.write_text("".join(f"{sha}\n"
+                                    for sha in [floor, *proven, *confirmed, *fetched]))
         shallow_file = str(boundary)
     refspecs = [f"+{target}:refs/swarm/head"]
     if not empty and not unknown:
@@ -4292,6 +4316,92 @@ def _origin_confirmed_shallow(
     logger.info("clone shallow lines confirmed on origin", asked=len(asked),
                 confirmed=len(confirmed))
     return confirmed
+
+
+def _origin_fetched_shallow(
+    candidates: list[str],
+    *,
+    publish_dir: Path,
+    fetch_on_origin: Callable[[Path, list[str]], list[str]] | None,
+    logger: Any,
+) -> list[str]:
+    """Which of `candidates` the worker's own fetch from origin landed in
+    `publish_dir` (#2901): at most `_SHALLOW_MAX_LINES`, kept only where the
+    answer names a sha that was asked. A fetcher that raises lands nothing."""
+    if fetch_on_origin is None:
+        return []
+    asked = list(dict.fromkeys(candidates))[:_SHALLOW_MAX_LINES]
+    if not asked:
+        return []
+    try:
+        answer = fetch_on_origin(publish_dir, list(asked))
+    except Exception as exc:  # noqa: BLE001 - a fetch that failed widens nothing
+        logger.warning("could not fetch the clone's shallow lines from origin",
+                       asked=len(asked), error=type(exc).__name__)
+        return []
+    said = set(answer) if isinstance(answer, (list, tuple, set)) else set()
+    landed = [sha for sha in asked if sha in said]
+    logger.info("clone shallow lines fetched from origin", asked=len(asked),
+                landed=len(landed))
+    return landed
+
+
+def fetch_shallow_lines_from_origin(
+    *,
+    repo: Path,
+    url: str,
+    token: str | None,
+    shas: Sequence[str],
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> list[str]:
+    """Fetch each of `shas` from `url` into `repo` at depth 1; those that
+    landed as themselves, as commits (#2901).
+
+    `repo` MUST be a worker-owned publish repository, built after the reap,
+    as for `fetch_branch_tip`: the fetch carries the tenant token, held in a
+    0600 credential file under `private_dir` for the call and removed in
+    `finally`. One fetch per sha, so a sha origin lacks fails alone; depth 1,
+    so the cost is one snapshot each, never history. Only full 40-hex shas
+    are fetched, at most `_SHALLOW_MAX_LINES`: nothing git could read as an
+    option or a refspec."""
+    url = validate_repository_url(url)
+    asked = [sha for sha in dict.fromkeys(shas) if _FULL_SHA_RE.match(sha)][:_SHALLOW_MAX_LINES]
+    if not asked:
+        return []
+    repo = Path(repo)
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    cred_file = _write_credentials(url, token, private_dir) if token else None
+    config_args = [*_TOKEN_SAFE]
+    if cred_file is not None:
+        config_args += ["-c", f"credential.helper=store --file={cred_file}"]
+    landed: list[str] = []
+    try:
+        for index, sha in enumerate(asked):
+            code, _ = _git_text(
+                [git_binary, *config_args, *_NO_AUTO_MAINTENANCE, "fetch", "--quiet",
+                 "--no-tags", "--no-write-fetch-head", "--depth=1", "--", url, sha],
+                repo=repo, private_dir=private_dir, logs_dir=logs_dir,
+                slug=f"publish-origin-line-{index}", timeout_seconds=timeout_seconds,
+                logger=logger,
+            )
+            if code != 0:
+                continue
+            code, text = _git_text(
+                [git_binary, *_NO_HOOKS, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"],
+                repo=repo, private_dir=private_dir, logs_dir=logs_dir,
+                slug=f"publish-origin-line-{index}-check", timeout_seconds=timeout_seconds,
+                logger=logger,
+            )
+            if code == 0 and text.strip() == sha:
+                landed.append(sha)
+    finally:
+        _remove_credentials(cred_file, logger)
+    return landed
 
 
 #: The artifact a failed publish keeps the agent's branch in (#3174), beside
