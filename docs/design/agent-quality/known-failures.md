@@ -352,6 +352,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/worker/test_gittools.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_gittools_push_range.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_gittools_rebase_author.py` | `<module>` | `skipif` | git is not installed |
+| `tests/unit/worker/test_gittools_shallow.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_handoff.py` | `test_every_gate_operation_the_worker_sends_is_one_the_gate_accepts` | `importorskip` | agent_worker.livegate.ctl is not importable |
 | `tests/unit/worker/test_harvest.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_harvest_detached_start.py` | `<module>` | `skipif` | git is not installed |
