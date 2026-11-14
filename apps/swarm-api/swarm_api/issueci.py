@@ -2059,7 +2059,12 @@ def _start_round(
         context = read_fix_context(ctx, tenant_id, claimed, excerpt)
         spec = ci_fix_workflow(claimed, round_no, excerpt, head, context)
         with submitting(spec):
-            submission = ctx.submissions.submit_workflow(owner, spec)
+            # A fix round builds: the platform picks its class from the
+            # stage (contract request 135); a round's own escalated class
+            # still wins, as a step's `resource_class` does.
+            submission = ctx.submissions.submit_workflow(
+                owner, spec, step_stages={CI_FIX_STEP: "fix"},
+            )
     except PrFixInFlight as exc:
         # Another writer (the platform's CI fixer, a conflict fix) holds this
         # pull request (#2535). That is a wait, not a failure: its push moves

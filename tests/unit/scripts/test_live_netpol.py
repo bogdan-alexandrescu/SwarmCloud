@@ -250,10 +250,15 @@ PRE_L6_DIGESTS = {
 #: under the placeholder organisation's prefix; with SWARM_LABEL_PREFIX set to
 #: the prefix the manifests carried before, the render's digest is the one
 #: this constant held until then, byte for byte.
+#: Re-read for the xfs cache class (#4061, 2026-11-14): the quota's two
+#: class-scoped keys name CACHE_STORAGE_CLASS's new xfs class and its comment
+#: says so; with the retired class name and that comment swapped back, the
+#: render's digest is the one this constant held until then, byte for byte.
 #: Re-read for the never-scheduled pod follow-up (2026-11-14): the swarm-reaper
 #: Role gains `events: [get, list]` (rbac/dispatcher-rbac.yaml), so the
-#: reconciler can record a Job's FailedCreate; nothing else in the render moved.
-PRE_L6_TENANT_RENDER = "8816d6f8ac83e2fb925d28a1f6a76a21eea001fe52169a442bb51c1b4ee7fd3e"
+#: reconciler can record a Job's FailedCreate; with that rule removed, the
+#: render's digest is the one this constant held until then, byte for byte.
+PRE_L6_TENANT_RENDER = "4ce3e74e6d8f014b0e0851445f7d79877483cbad985865c5f2b2807c68c64553"
 
 
 def _tenant_values() -> dict[str, str]:

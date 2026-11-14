@@ -493,3 +493,52 @@ def test_nothing_is_sampled_without_scratch_volumes(db, worker, monkeypatch):
     assert calls == []
     (beat,) = _beats(db)
     assert "scratch" not in beat["detail"]
+
+
+def _statvfs(*, files: int, ffree: int, free_bytes: int, frsize: int = 4096):
+    """A fake `os.statvfs` reading: `free_bytes` free, `ffree` of `files` inodes free."""
+    from types import SimpleNamespace
+
+    blocks = free_bytes // frsize
+    return lambda _path: SimpleNamespace(
+        f_bsize=frsize, f_frsize=frsize, f_blocks=4 * blocks + 1, f_bfree=blocks,
+        f_bavail=blocks, f_files=files, f_ffree=ffree, f_favail=ffree)
+
+
+def test_sample_reports_each_volumes_inode_use(tmp_path: Path):
+    # #4061: a run used every inode of its volume with 14 GB free, and the
+    # reading said only bytes. MUTATION: drop the statvfs read from `sample`.
+    from agent_worker.scratchusage import sample
+
+    volume = tmp_path / "tmp"
+    _fill(volume)
+    full = _statvfs(files=1_310_720, ffree=0, free_bytes=14 * GIB)
+
+    entry = sample([("tmp", volume, 3 * GIB)], statvfs=full)["tmp"]
+
+    assert entry["inodes_used"] == 1_310_720
+    assert entry["inodes_total"] == 1_310_720
+
+
+def test_an_enospc_with_free_bytes_is_named_out_of_inodes(tmp_path: Path):
+    # MUTATION: compare free bytes instead of free inodes in `enospc_words`,
+    # and the message says space, which is what misled the issue's reader.
+    import errno
+
+    from agent_worker.scratchusage import enospc_words
+
+    exc = OSError(errno.ENOSPC, "No space left on device")
+    full = _statvfs(files=1_310_720, ffree=0, free_bytes=14 * GIB)
+
+    words = enospc_words(exc, tmp_path, statvfs=full)
+
+    assert "out of inodes" in words
+    assert "1310720" in words.replace(",", "")
+    assert "14.0 GiB" in words
+
+    # Space really gone: ENOSPC stays a space message, never "inodes".
+    spent = _statvfs(files=1_310_720, ffree=900_000, free_bytes=0)
+    assert "inodes" not in enospc_words(exc, tmp_path, statvfs=spent)
+    # Any other error is its own text.
+    other = OSError(errno.EACCES, "Permission denied")
+    assert enospc_words(other, tmp_path, statvfs=full) == str(other)

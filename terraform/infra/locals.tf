@@ -42,6 +42,7 @@ locals {
     standard = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }
     browser  = { cpu = 4, memory_gib = 8, disk_gib = 4, units = 1 }
     medium   = { cpu = 6, memory_gib = 16, disk_gib = 8, units = 2 }
+    builder  = { cpu = 8, memory_gib = 16, disk_gib = 8, units = 2 }
     large    = { cpu = 8, memory_gib = 32, disk_gib = 16, units = 4 }
   }
 
