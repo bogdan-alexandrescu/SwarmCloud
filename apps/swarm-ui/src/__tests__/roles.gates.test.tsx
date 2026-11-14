@@ -99,11 +99,19 @@ async function openApproval(role: { name: string; source: string } | null) {
     return d
   }, WAIT)
   const approve = await within(detail).findByRole('button', { name: 'Approve' }, WAIT)
-  // #2417 A5: Reject is one click, its reason box beside it; a reason is
-  // typed so only the role gate can be what disables it.
-  fireEvent.change(within(detail).getByRole('textbox', { name: /Reason/ }), { target: { value: 'not now' } })
   const reject = within(detail).getByRole('button', { name: 'Reject' })
   return { calls, detail, approve: approve as HTMLButtonElement, reject: reject as HTMLButtonElement }
+}
+
+/**
+ * The cards mock-up: pressing Reject swaps the verbs for its reason box,
+ * Reject and Cancel. A reason is typed so only the role gate can be what
+ * disables the Reject that sends it.
+ */
+function reasonFor(detail: HTMLElement, reject: HTMLButtonElement): HTMLButtonElement {
+  fireEvent.click(reject)
+  fireEvent.change(within(detail).getByRole('textbox', { name: /Reason/ }), { target: { value: 'not now' } })
+  return within(detail).getByRole('button', { name: 'Reject' }) as HTMLButtonElement
 }
 
 describe('Approvals, by role', () => {
@@ -113,6 +121,9 @@ describe('Approvals, by role', () => {
     expect(reject.disabled).toBe(true)
     expect(visible(detail.querySelector('[data-role-gate]'))).toBe(VIEWER_SENTENCE)
     fireEvent.click(approve)
+    // A disabled Reject never opens its reason box.
+    fireEvent.click(reject)
+    expect(within(detail).queryByRole('textbox', { name: /Reason/ })).toBeNull()
     expect(calls.filter((c) => c.method === 'POST')).toHaveLength(0)
   })
 
@@ -123,14 +134,16 @@ describe('Approvals, by role', () => {
     expect(approve.disabled).toBe(false)
     expect(reject.disabled).toBe(false)
     expect(detail.querySelector('[data-role-gate]')).toBeNull()
+    expect(reasonFor(detail, reject).disabled).toBe(false)
   })
 
   it('disables nothing when the API serves no role (an older API)', async () => {
-    const { detail, approve, calls } = await openApproval(null)
+    const { detail, approve, reject, calls } = await openApproval(null)
     await waitFor(() => expect(calls.some((c) => c.url.startsWith('/v1/tenants/me'))).toBe(true), WAIT)
     await new Promise((r) => setTimeout(r, 0))
     expect(approve.disabled).toBe(false)
     expect(detail.querySelector('[data-role-gate]')).toBeNull()
+    expect(reasonFor(detail, reject).disabled).toBe(false)
   })
 })
 
