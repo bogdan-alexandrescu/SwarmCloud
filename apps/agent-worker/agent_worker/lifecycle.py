@@ -252,7 +252,7 @@ from . import mergetrain as mergetrain_mod
 from . import post_verdict as post_verdict_mod
 from . import specverify
 from .forge import ForgeError, PullRequest, RepoAccess, probe_repository, open_pull_request
-from .forge import PullHead, read_pull_request, update_pull_request_text
+from .forge import PullHead, read_pull_request
 from .gitops import (
     ATTRIBUTION_MARKERS,
     DETACHED_HEAD,
@@ -17407,41 +17407,29 @@ class Worker:
     ) -> dict[str, Any]:
         """The end of a publish onto an existing pull request (#2183).
 
-        The branch is pushed; no pull request is opened. The pull request's
-        title is replaced only when the agent wrote a usable `pr-title.txt`,
-        and its body only when it wrote a usable `pr-body.md` -- otherwise
-        each is left exactly as it is. The body goes through the closing-line
-        guard (`forge._update_pull_request`, #807), and a forge that does not
-        take the edit leaves the push published, saying so.
+        The branch is pushed; no pull request is opened, and the pull
+        request's title and body are NEVER edited (part of #4101). A squash
+        merge takes the title as the commit subject on main: on 2026-11-14 a
+        one-line follow-up's `pr-title.txt` retitled a feature pull request
+        to that fix. A `pr-title.txt` the agent wrote is therefore ignored,
+        and a usable `pr-body.md` is posted as one comment instead
+        (`_post_pull_body_comment`); a forge that does not take it leaves the
+        push published, saying so.
         """
         agent_title, agent_body, refused = self._agent_pull_request_text()
         if refused:
             out["pull_request_text_refused"] = refused
         body = _neutralise_mentions(agent_body) if agent_body else None
         out["pull_request_text"] = {
-            "title": "agent" if agent_title else "kept",
-            "body": "agent" if body else "kept",
+            "title": "kept",
+            "body": "kept, the agent's posted as a comment" if body else "kept",
         }
-        pr: PullRequest
-        self._own_before_forge_write("pull request text")
-        try:
-            pr = forge_mod.retry_transient(
-                lambda: update_pull_request_text(
-                    access=access, token=token, pull=pull, title=agent_title, body=body,
-                ),
-                policy=self._forge_retry(),
-                what="the pull request's text",
-            )
-        except ForgeError as exc:
-            out["pull_request_text_error"] = str(self._scrub(str(exc)[:300]))
-            self.log.warning("the pull request's title or body was not updated",
-                             error=str(exc)[:300])
-            pr = PullRequest(number=pull.number, url=pull.url, state=pull.state, created=False)
-        if pr.body_refused:
-            out["pull_request_body_refused"] = (
-                f"{len(pr.body_refused)} closing-keyword line(s) would have been dropped; "
-                "the body was not sent"
-            )
+        if agent_title:
+            self.log.info("publish_to_pr: the agent's pr-title.txt is not applied; "
+                          "the pull request keeps its title", number=pull.number)
+        commented = bool(body) and self._post_pull_body_comment(
+            access=access, token=token, number=pull.number, body=body or "", out=out,
+        )
         out.update({
             "published": True,
             "pull_request": {
@@ -17449,20 +17437,67 @@ class Worker:
                 "url": pull.url,
                 "state": pull.state,
                 "created": False,
-                "updated": bool(pr.updated),
-                "retitled": bool(pr.retitled),
-                "body_replaced": bool(pr.appended),
+                "updated": False,
+                "retitled": False,
+                "body_replaced": False,
+                "commented": commented,
             },
             "publish_reason": (
                 f"publish_to_pr: fast-forward pushed {branch}, the head of pull request "
-                f"#{pull.number}, and opened no pull request"
-                + (", retitled" if pr.retitled else "")
-                + (", its body replaced" if pr.appended else "")
+                f"#{pull.number}, and opened no pull request; its title and body kept"
+                + (", the agent's body posted as a comment" if commented else "")
             ),
         })
         self.log.info("published onto the existing pull request", number=pull.number,
                       branch=branch)
         return out
+
+    def _post_pull_body_comment(
+        self, *, access: RepoAccess, token: str, number: int, body: str,
+        out: dict[str, Any],
+    ) -> bool:
+        """ONE comment on pull request `number` carrying the agent's
+        `pr-body.md` (part of #4101); True when it is there.
+
+        Ends with a hidden marker naming this task and attempt, so a publish
+        of the same attempt again finds it and posts nothing, as
+        `_post_territory_comment` does. The fence is read again just before
+        the POST (`_own_before_forge_write`, #2693, invariant 5). A comment
+        the forge refuses is recorded in `out["pull_request_comment_error"]`
+        and logged; the push stands.
+        """
+        marker = (
+            f"<!-- swarm:publish-to-pr-body task={self.cfg.task_id} "
+            f"attempt={self.cfg.attempt_id} -->"
+        )
+        ref = access.ref
+        try:
+            # A read is retried on an outage; the POST is not, since one whose
+            # answer was lost may have made the comment (the marker finds it).
+            existing = forge_mod.retry_transient(
+                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),
+                policy=self._forge_retry(),
+                what="the pull request's comments",
+            )
+        except ForgeError as exc:
+            # Unread is not "none there": a second copy is better than none.
+            existing = []
+            self.log.warning("the pull request's comments could not be read",
+                             error=str(self._scrub(str(exc)[:300])))
+        if any(marker in text for text in existing):
+            return True
+        self._own_before_forge_write("pull request comment")
+        try:
+            forge_mod.create_issue_comment(
+                ref=ref, token=token, number=number, body=f"{body}\n\n{marker}"
+            )
+        except ForgeError as exc:
+            error = str(self._scrub(str(exc)[:300]))
+            out["pull_request_comment_error"] = error
+            self.log.warning("the agent's pull request body was not posted as a comment",
+                             error=error)
+            return False
+        return True
 
     # -- the publish's workflow route (AU-3, agent-autonomy.md §3.3) -----------
 

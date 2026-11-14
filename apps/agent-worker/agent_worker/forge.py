@@ -1168,33 +1168,6 @@ def read_pull_request(*, ref: RepoRef, token: str, number: int) -> PullHead:
     )
 
 
-def update_pull_request_text(
-    *, access: RepoAccess, token: str, pull: PullHead, title: str | None, body: str | None
-) -> PullRequest:
-    """Retitle and/or rewrite the body of a pull request a lane published onto.
-
-    Each only when not None: a lane that wrote no `pr-title.txt` leaves the
-    title as it is, and one that wrote no `pr-body.md` the body. The body
-    goes through `_update_pull_request`'s guard (#807): one that would drop a
-    closing-keyword or `part of #N` line the current body has is not sent,
-    and `body_refused` names those lines.
-    """
-    existing = PullRequest(
-        number=pull.number, url=pull.url, state=pull.state, created=False,
-        title=pull.title, body=pull.body,
-    )
-    if title is None and body is None:
-        return existing
-    if not may_receive_forge_token(access.ref.host):
-        raise ForgeError(
-            f"refusing to send the tenant's git credential to {access.ref.host}: "
-            "it is sent only to github.com"
-        )
-    return _update_pull_request(
-        access=access, token=token, existing=existing, title=title, body=body
-    )
-
-
 # ---------------------------------------------------------------------------
 # Issue comments: a review's minor findings on the tenant's wave epic (#638)
 # ---------------------------------------------------------------------------
