@@ -475,8 +475,39 @@ def test_no_mint_is_app_installation_unavailable_and_the_worker_keeps_its_slot(
     assert store.asked == []
 
 
+class _Records(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def broker_log():
+    """The broker logger's own records, whatever configured logging before.
+
+    `caplog` reads a handler on the ROOT logger, and `create_app()` runs
+    `configure_logging`, which replaces the root's handlers unless an earlier
+    test on the worker already did; the broker's line then never reached
+    `caplog` and this test saw `[]` depending only on test order. A handler on
+    the logger itself, enabled and at DEBUG, needs none of that."""
+    logger = credbroker.log
+    saved = (logger.disabled, logger.level)
+    handler = _Records()
+    logger.disabled = False
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    try:
+        yield handler.records
+    finally:
+        logger.removeHandler(handler)
+        logger.disabled, logger.level = saved
+
+
 def test_the_token_is_in_no_log_header_event_or_document(
-        db, worker_tokens, group_map, store, caplog):
+        db, worker_tokens, group_map, store, caplog, broker_log):
     seed_tenant(db, "eng", credentials=("git",))
     minter = FakeMinter()
     client = _client(db, worker_tokens, group_map, store, minter)
@@ -488,12 +519,12 @@ def test_the_token_is_in_no_log_header_event_or_document(
     token = minter.issued[-1]
     for name, value in response.headers.items():
         assert token not in name and token not in value
-    for record in caplog.records:
+    for record in [*caplog.records, *broker_log]:
         assert token not in record.getMessage()
         assert token not in repr(record.args)
     # Every Firestore document -- tasks, leases, events, audits.
     for key, doc in db.docs.items():
         assert token not in repr(doc), key
-    released = [r.getMessage() for r in caplog.records if r.name == credbroker.log.name]
+    released = [r.getMessage() for r in broker_log]
     assert any("decision=app_installation" in m and f"{OWNER}/{REPO}" in m
                for m in released), released
