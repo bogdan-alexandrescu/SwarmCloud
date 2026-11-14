@@ -64,7 +64,8 @@ run "resource_classes_match_the_frozen_catalogue" {
   }
 
   # RESOURCE_CLASSES: standard 4/8/4, browser 4/8/4 (contract request 79),
-  # medium 6/16/8 (contract request 147), large 8/32/16.
+  # medium 6/16/8 (contract request 147), builder 8/16/8 (contract request
+  # 135), large 8/32/16.
   assert {
     condition     = output.resource_classes["standard"].cpu == 4 && output.resource_classes["standard"].memory_gib == 8 && output.resource_classes["standard"].disk_gib == 4
     error_message = "the standard class is 4 vCPU / 8 GiB / 20 GiB"
@@ -83,6 +84,11 @@ run "resource_classes_match_the_frozen_catalogue" {
   assert {
     condition     = output.resource_classes["medium"].cpu == 6 && output.resource_classes["medium"].memory_gib == 16 && output.resource_classes["medium"].disk_gib == 8 && output.resource_classes["medium"].units == 2
     error_message = "the medium class is 6 vCPU / 16 GiB / 8 GiB at 2 units (contract request 147)"
+  }
+
+  assert {
+    condition     = output.resource_classes["builder"].cpu == 8 && output.resource_classes["builder"].memory_gib == 16 && output.resource_classes["builder"].disk_gib == 8 && output.resource_classes["builder"].units == 2
+    error_message = "the builder class is 8 vCPU / 16 GiB / 8 GiB at 2 units (contract request 135)"
   }
 
   # units: 1, 1, 4 -- heavier classes cost more scheduling budget; browser
@@ -216,7 +222,7 @@ run "every_pool_name_the_contract_can_produce_is_materialised" {
 
   assert {
     condition = alltrue([
-      for c in ["resource:standard", "resource:browser", "resource:medium", "resource:large"] : contains(output.pool_names, c)
+      for c in ["resource:standard", "resource:browser", "resource:medium", "resource:builder", "resource:large"] : contains(output.pool_names, c)
     ])
     error_message = "every resource class needs a pool"
   }
@@ -449,8 +455,8 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.resource_classes) == 4
-    error_message = "expected 4 resource classes in profiles.py (standard, browser, medium, large); the parser read a different number, so it no longer matches the file's literal form"
+    condition     = length(output.resource_classes) == 5
+    error_message = "expected 5 resource classes in profiles.py (standard, browser, medium, builder, large); the parser read a different number, so it no longer matches the file's literal form"
   }
 
   assert {

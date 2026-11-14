@@ -331,6 +331,10 @@ def followers() -> dict[str, dict[str, list[str]]]:
             continue
         group = "follows" if resolve_backend(profile) is Backend.GKE_AUTOPILOT else "fixed"
         out[profile.resource_class][group].append(name)
+        # Its build stages run the build class (contract request 135), on GKE
+        # only, so a resize of that class reaches this profile's build steps.
+        if profile.build_resource_class in out:
+            out[profile.build_resource_class]["follows"].append(name)
     return out
 
 

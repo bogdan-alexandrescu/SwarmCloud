@@ -404,6 +404,10 @@ def test_the_fix_round_continues_the_runs_integrator_in_its_tenant_and_repositor
     assert task["repository_url"] == "https://github.com/example-org/widgets"
     assert task["repository_ref"] is None
     assert task["runner_profile"] == "claude-code"
+    # Contract request 135: a CI fix round builds, so the platform runs it on
+    # `builder`, as it ran the fix step the round continues.
+    assert integrator["resource_class"] == "builder"
+    assert task["resource_class"] == "builder"
     assert task["input"]["issue"] == 42
     assert task["metadata"]["dispatch"]["strategy"] == "direct-pr"
     assert task["metadata"]["dispatch"]["continues"] == integrator["id"]

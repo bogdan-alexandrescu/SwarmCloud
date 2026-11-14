@@ -93,8 +93,10 @@ def test_the_profile_is_claude_code_on_the_browser_image():
     # `inputs` is contract request 77 (BSTATUS-API): claude-code's plus `browser_tool`,
     # and `qa_identity` by contract request 106 (QI-CONTRACT).
     # `secret_slots` is contract request 117 (CF-ACCESS-CONTRACT): claude-code's
-    # plus `cf-access`.
-    assert differ == ["image", "inputs", "live_browser", "name", "resource_class", "secret_slots"], (
+    # plus `cf-access`. `build_resource_class` is contract request 135: only
+    # claude-code's build stages run `builder`; the live profile keeps `browser`.
+    assert differ == ["build_resource_class", "image", "inputs", "live_browser", "name",
+                      "resource_class", "secret_slots"], (
         f"the owner's decision was claude-code with its name, image and class changed, "
         f"live_browser set (request 71), browser_tool declared (request 77) and the "
         f"cf-access slot added (request 117); {differ} differ"
