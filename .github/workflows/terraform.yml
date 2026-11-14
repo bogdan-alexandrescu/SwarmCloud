@@ -1,7 +1,7 @@
 # Terraform checks on every pull request that touches infrastructure.
 #
 # This workflow PLANS and never applies. Applying is release.yml's job, behind a
-# GitHub Environment approval, because the project is SHARED with another team:
+# GitHub Environment approval, because saga-agents-staging is a SHARED project:
 # a plan that would delete another team's cluster must be read by a person
 # before anyone can approve it.
 #
@@ -84,7 +84,7 @@ env:
   TF_ROOT: terraform/infra
 
 # RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
-# (id-token) runs on the self-hosted runner pool's VMs through the one guarded
+# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
 # GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
@@ -362,19 +362,16 @@ jobs:
     env:
       # Read by scripts/lib/plan-guard.sh (through scripts/lib/common.sh) to
       # decide which project a resource is allowed to live in.
-      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
-      # The configuration root lives in the state bucket (gs://<bucket>/config),
-      # where scripts/lib/resolve.sh fetches this environment's tfvars from.
-      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
     steps:
       - uses: actions/checkout@v5
 
       - id: auth
         uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
@@ -383,28 +380,12 @@ jobs:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
 
-      - name: fetch this environment's tfvars
-        # THE REAL TFVARS ARE NOT IN THE CHECKOUT (docs/design/
-        # generic-repository.md, sections 2.2-2.3): they are this deployment's
-        # values, kept under config/<env>/ in the state bucket. resolve.sh
-        # fetches them through config_fetch, the read a laptop's `make tf-plan`
-        # makes, into the runner's temporary directory -- outside the checkout,
-        # so no step can upload or commit them -- and fails, naming the object,
-        # when the file is missing: never a plan with no inputs, never a
-        # tracked fallback. Only the path is passed on.
-        env:
-          ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
-        run: |
-          set -euo pipefail
-          file="$(XDG_CACHE_HOME="${RUNNER_TEMP}" ./scripts/lib/resolve.sh tfvars "${ENVIRONMENT}")"
-          echo "SWARM_TFVARS_FILE=${file}" >> "$GITHUB_ENV"
-
       - name: terraform init
         env:
           ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
         run: |
           terraform -chdir=${{ env.TF_ROOT }} init -input=false -reconfigure \
-            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
             -backend-config="prefix=infra/${ENVIRONMENT}"
 
       - name: pin the images terraform last applied
@@ -439,7 +420,7 @@ jobs:
           # so main's plan shows no change to the never-touch list or the alerts.
           ./scripts/lib/private-tfvars.sh --out "${GITHUB_WORKSPACE}/build/private.tfvars.json"
           terraform -chdir=${{ env.TF_ROOT }} plan -input=false -lock-timeout=900s \
-            -var-file="${SWARM_TFVARS_FILE}" \
+            -var-file="../environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars" \
             -var-file="${GITHUB_WORKSPACE}/build/image-refs.tfvars.json" \
             -var-file="${GITHUB_WORKSPACE}/build/private.tfvars.json" \
             -out=plan.tfplan -no-color | tee "${TF_ROOT}/plan.txt"

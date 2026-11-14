@@ -78,7 +78,7 @@ permissions:
 
 concurrency:
   # ONE GROUP FOR ALL OF MAIN, AND THE NEWEST COMMIT WINS (owner decision,
-  # 2026-10-26, #2438: "Release only the newest"). A push to main cancels
+  # BGD, 2026-10-26, #2438: "Release only the newest"). A push to main cancels
   # main's older run that has not finished, queued or in progress, and
   # release.yml ships the newest commit only.
   #
@@ -118,7 +118,7 @@ env:
   KUBECTL_VERSION: "v1.36.3"
 
 # RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
-# (id-token) runs on the self-hosted runner pool's VMs through the one guarded
+# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
 # GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
@@ -256,7 +256,7 @@ jobs:
         # `make test` ran this and CI did not, so the one guard standing between
         # a routine `kubectl` and another team's live cluster could be broken by
         # a pull request and merged green. It was written after a bare
-        # `kubectl get runtimeclass` reached the other team's cluster and returned
+        # `kubectl get runtimeclass` reached agents-staging and returned
         # resources aged 133 days; the next command in that sequence was an
         # apply. It takes no arguments and reaches no network.
         run: ./scripts/lib/kubectl-guard.sh --self-test
@@ -618,7 +618,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           # A merge train's pull request (`train/<id>` in this repository) is
-          # where the full suite runs once per change (owner pick,
+          # where the full suite runs once per change (owner pick, BGD
           # 2026-11-06, docs/ci.md "The full suite runs once per change, in
           # the merge train"), so it runs every job, as main's push did.
           HEAD_REF: ${{ github.head_ref }}
@@ -794,7 +794,7 @@ jobs:
 
       - name: a lane's pull request tests what its change reaches
         id: lane
-        # the owner's pick, 2026-11-06 (docs/ci.md "The full suite runs once per
+        # BGD's pick, 2026-11-06 (docs/ci.md "The full suite runs once per
         # change, in the merge train"). A pull request from a `swarm/**`
         # branch of this repository runs lint, format, typecheck and the
         # contract and lock checks whole, and only the tests its change
@@ -955,7 +955,7 @@ jobs:
 
       - name: skip what a green merge train tested on this exact tree
         id: train
-        # the owner's pick, 2026-11-06 (docs/ci.md "The full suite runs once per
+        # BGD's pick, 2026-11-06 (docs/ci.md "The full suite runs once per
         # change, in the merge train"). The train lands each pull request as
         # its own squash, so main's commit after the last one has the train's
         # tested tree but names the last pull request, and the `reuse` step
@@ -1395,8 +1395,8 @@ jobs:
     # faulthandler_timeout on the pytest steps dumps every thread of a test past
     # 5 minutes, so the run that times out names the test that hung.
     timeout-minutes: 30
-    # SELF-HOSTED (owner decision 2026-10-12, in the runner pool's own repository): the ephemeral
-    # self-hosted VMs, with fork PRs kept on a GitHub-hosted image. The expression is
+    # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
+    # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
     # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
@@ -1465,10 +1465,10 @@ jobs:
         # which GitHub discards when the job ends. Guarded, so an image that
         # does not have the setting simply skips the step.
         #
-        # ON THE SELF-HOSTED RUNNERS (PR 1184) the job runs as the image's
+        # ON THE bogdan-ci RUNNERS (PR 1184) the job runs as the image's
         # `runner` user, and in run 38267927535 all four shards stopped here on
         # `sudo: a password is required`. The image now grants that user
-        # passwordless sudo (the runner pool's repository, deploy/ci-runners/vm/
+        # passwordless sudo (sagaxyz/ai-studio deploy/ci-runners/vm/
         # provision-image.sh, as GitHub's own image does), and `sudo -n` makes
         # an image without it fail HERE, by name, instead of waiting on a
         # password prompt. A knob already at 0 needs no sudo at all.
@@ -1650,7 +1650,7 @@ jobs:
   # fetch its bridge. This job creates it, on the commit main was pushed to.
   #
   # AFTER `format / unit tests` (`python` above), THE EARLIEST POINT THAT
-  # PROVES THE COMMIT (owner decision, 2026-11-04: "Tag once tests
+  # PROVES THE COMMIT (owner decision, BGD, 2026-11-04: "Tag once tests
   # pass"; part of #2688). A tag is what users' installs resolve, so a commit
   # whose unit tests fail is not one to hand them. Until then the job was
   # release.yml's and, on a push, waited for its `images and scan`: on
@@ -1794,8 +1794,8 @@ jobs:
     # each: the typecheck, the node:test runners and the production build. It
     # runs beside the vitest shards rather than in front of them.
     name: swarm-ui typecheck / build
-    # SELF-HOSTED (owner decision 2026-10-12, in the runner pool's own repository): the ephemeral
-    # self-hosted VMs, with fork PRs kept on a GitHub-hosted image. The expression is
+    # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
+    # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
     # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
@@ -1918,8 +1918,8 @@ jobs:
     # that throws, so a test that forgets to stub a response fails by name
     # instead of reaching a machine.
     name: swarm-ui component tests (${{ matrix.shard }}/${{ strategy.job-total }})
-    # SELF-HOSTED (owner decision 2026-10-12, in the runner pool's own repository): the ephemeral
-    # self-hosted VMs, with fork PRs kept on a GitHub-hosted image. The expression is
+    # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
+    # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
     # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
@@ -2072,8 +2072,8 @@ jobs:
 
   integration:
     name: integration tests (emulator)
-    # SELF-HOSTED (owner decision 2026-10-12, in the runner pool's own repository): the ephemeral
-    # self-hosted VMs, with fork PRs kept on a GitHub-hosted image. The expression is
+    # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
+    # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
     # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
     # SELF_HOSTED_CI=off (a repo variable) sends it to ubuntu-24.04 as well.
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
@@ -2526,7 +2526,7 @@ jobs:
     #
     # THE REF PIN IS THE CONTROL.
     #
-    # This job authenticates as secrets.GCP_DEPLOY_SA and then runs
+    # This job authenticates as vars.GCP_DEPLOY_SA and then runs
     # ./scripts/build-images.sh from its own checkout. build-images.sh executes
     # any checked-in images/<t>/cloudbuild.yaml or apps/<t>/cloudbuild.yaml as a
     # Cloud Build config, so whoever wrote the checkout chooses what runs. The
@@ -2585,7 +2585,7 @@ jobs:
       actions: read
       id-token: write
     env:
-      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
       # dev, and only dev: swarm-ui bakes its environment into the bundle when
       # it is compiled, so this build is a DEV build. A prod release finds no
@@ -2608,8 +2608,8 @@ jobs:
       - id: auth
         uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
@@ -2795,7 +2795,7 @@ jobs:
     #
     # `if: ${{ !cancelled() }}` so it reports when something it needs failed
     # -- skipped would read as passed -- and does NOT run in a run that was
-    # cancelled (#2582, the owner, 2026-10-28). Under `always()` it ran inside push
+    # cancelled (#2582, BGD 2026-10-28). Under `always()` it ran inside push
     # runs concurrency cancelled and concluded `failure` over needs that were
     # only cancelled ("not passed: shell (cancelled), ..."), and the merge
     # step refused PR #2565 `checks_failed` on it while the newer push run

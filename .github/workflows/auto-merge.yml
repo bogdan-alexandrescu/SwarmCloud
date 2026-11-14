@@ -218,7 +218,7 @@ concurrency:
   cancel-in-progress: false
 
 # RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
-# (id-token) runs on the self-hosted runner pool's VMs through the one guarded
+# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
 # `runs-on` expression, in its SHORT form: only the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch) sends it to
 # GitHub-hosted ubuntu-24.04. The fork-PR clause the other workflows carry is
@@ -232,7 +232,7 @@ jobs:
     name: queue for auto-merge
     runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     # The merge App's key (MERGE_APP_PRIVATE_KEY) lives in environment
-    # `repo-secrets`, whose deployment branches are `main` only (the owner,
+    # `repo-secrets`, whose deployment branches are `main` only (BGD,
     # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read
     # by a workflow on ANY pushed branch, before any review or hold.
     # Every trigger here runs on main's ref -- pull_request_target (main's
@@ -601,7 +601,7 @@ jobs:
           #    Excludes this very job's own check run ("queue for
           #    auto-merge"), which is always still `in_progress` here.
           #    A check is judged by the LATEST run of EACH event that ran it
-          #    (the owner, 2026-10-22, CHECK-RULE, part of #1999 and #1778), as the
+          #    (BGD 2026-10-22, CHECK-RULE, part of #1999 and #1778), as the
           #    merge step's `latest_per_event` judges it: a re-run replaces
           #    the earlier runs of its own event, never another's, so a red
           #    push run is not outvoted by a green pull_request run
@@ -611,11 +611,11 @@ jobs:
           #    its own group, so one suite never outvotes another.
           #    A run has finished when its status is completed, OR when it
           #    carries a conclusion together with a completed_at, whatever
-          #    its status says (the owner, 2026-10-23, CHECK-STUCK, part of #2031):
+          #    its status says (BGD 2026-10-23, CHECK-STUCK, part of #2031):
           #    GitHub left PR 2006's `secret scan` at in_progress with
           #    conclusion success and a completed_at. The worker's
           #    `check_run_finished` and `merge-train.sh judge` say the same.
-          #    A latest run that was CANCELLED is not failing (#1778, the owner's
+          #    A latest run that was CANCELLED is not failing (#1778, BGD
           #    bundle H09, 2026-10-27): it is pending, and gate 6 waits on it
           #    when the check is required, as on one still running.
           runs="$(mktemp)"
@@ -692,7 +692,7 @@ jobs:
           #    classic protection's. Native auto-merge, armed below, still
           #    waits for every required check, so one not yet reported at all
           #    holds the merge there. A required check is read by its
-          #    latest run of each event, gate 5's deciding runs (the owner,
+          #    latest run of each event, gate 5's deciding runs (BGD
           #    2026-10-22, "one rule for every check", CHECK-RULE-2, part of
           #    #1999): a run still in progress that a later run of its own
           #    event replaced does not hold the merge. A run is still

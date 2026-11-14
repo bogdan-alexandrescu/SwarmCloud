@@ -111,7 +111,7 @@ jobs:
     # checks the triggers). SELF_HOSTED_CI=off sends it back to ubuntu-24.04.
     runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     # The merge App's key (MERGE_APP_PRIVATE_KEY) lives in environment
-    # `repo-secrets`, whose deployment branches are `main` only (the owner,
+    # `repo-secrets`, whose deployment branches are `main` only (BGD,
     # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read
     # by a workflow on ANY pushed branch, before any review or hold.
     # Every trigger here runs on main's ref -- schedule, workflow_run of a
@@ -131,11 +131,8 @@ jobs:
       group: merge-train
       cancel-in-progress: false
     # The three `workflow_run` clauses are WHEN's first three bullets, in order.
-    # Never in a fork: the repository is told by GitHub's own `fork` flag and
-    # named through `github.repository`, never by a literal address
-    # (docs/design/generic-repository.md, section 2.2).
     if: >-
-      github.event.repository.fork == false && (
+      github.repository == 'bogdan-alexandrescu/SwarmCloud' && (
         github.event_name == 'workflow_dispatch' ||
         (github.event_name == 'schedule' && vars.MERGE_TRAIN == 'on') ||
         (github.event_name == 'workflow_run' &&
@@ -221,7 +218,7 @@ jobs:
           MERGE_TRAIN_MIN_PRS: ${{ vars.MERGE_TRAIN_MIN_PRS }}
           MERGE_TRAIN_MAX_WAIT_MINUTES: ${{ vars.MERGE_TRAIN_MAX_WAIT_MINUTES }}
           # How long a green train waits for main's image build before it lands
-          # (deploy_hold). Unset, the script's 25 minutes; the owner picked 60 on
+          # (deploy_hold). Unset, the script's 25 minutes; BGD picked 60 on
           # 6 November 2026 so each release finishes instead of being cancelled
           # by the next landing ("deploy every hour").
           MERGE_TRAIN_DEPLOY_HOLD_MINUTES: ${{ vars.MERGE_TRAIN_DEPLOY_HOLD_MINUTES }}
