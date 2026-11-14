@@ -100,6 +100,7 @@ from quota_broker.accounts import _LABEL as _ACCOUNT_LABEL  # noqa: E402
 from scheduler.dispatch import (  # noqa: E402
     CACHE_STORAGE_CLASS,
     CACHE_VOLUME_GIB,
+    CLAIMED_CACHE_STORAGE_CLASS,
     RETIRED_CACHE_STORAGE_CLASS,
     backend_deadline_seconds,
     cpu_quantity,
@@ -1526,6 +1527,11 @@ def render_job(args: argparse.Namespace) -> str:
             "DISK": f"{gke_disk(rc).workspace_gib}Gi",
             "TMP_DISK": f"{gke_disk(rc).tmp_gib}Gi",
             "CACHE_DISK": f"{CACHE_VOLUME_GIB}Gi",
+            # The class the cache claim names: the dispatcher's own
+            # CLAIMED_CACHE_STORAGE_CLASS, so the rendered Job claims what the
+            # dispatched one does (the applied class), while the tenant quota
+            # rendered from tenant_values keeps naming CACHE_STORAGE_CLASS.
+            "CACHE_STORAGE_CLASS": CLAIMED_CACHE_STORAGE_CLASS,
             "HOME_DISK": f"{gke_disk(rc).home_gib}Gi",
             "EPHEMERAL": f"{gke_ephemeral_storage_gib(rc)}Gi",
             # The worker's local scratch volumes and their limits, the
