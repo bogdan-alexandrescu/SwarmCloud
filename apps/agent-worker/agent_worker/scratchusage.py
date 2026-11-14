@@ -35,7 +35,11 @@ volume (1,310,720 of them) with 14 GB still free, and from then on every
 create failed `No space left on device` while `df -h` showed room. So each
 entry also carries the volume's `inodes_used` and `inodes_total` (`statvfs`;
 None when it cannot be read), and `enospc_words` turns an ENOSPC on a volume
-with free bytes into a message that names inodes, not space.
+with free bytes into a message that names inodes, not space: a checkpoint
+write's error (`checkpoint._local_room`) is worded by it. The GKE pod's cache
+volume, a network disk outside `SWARM_SCRATCH_VOLUMES`, is read too
+(`cache_reading`), carried beside the reading as `detail["scratch_cache"]`,
+and warned on in the heartbeat by `cache_warnings`, inodes named apart.
 
 THE WALK IS BOUNDED, by an entry count and a wall time per volume, because it
 runs on the loop that heartbeats the lease. A walk that stopped early says so
@@ -197,7 +201,7 @@ def _inodes(mount: Path, statvfs: Callable[[Any], Any]) -> tuple[int | None, int
 
 
 def enospc_words(exc: OSError, path: str | Path, *,
-                 statvfs: Callable[[Any], Any] = os.statvfs) -> str:
+                 statvfs: Callable[[Any], Any] | None = None) -> str:
     """What an OSError at `path` means, naming inodes when they, not bytes, ran out.
 
     ENOSPC is `No space left on device` whether the filesystem ran out of
@@ -205,12 +209,14 @@ def enospc_words(exc: OSError, path: str | Path, *,
     ENOSPC on a filesystem with no inode an unprivileged process may take
     (`f_favail`) and bytes still free (`f_bavail`) reads as out of inodes,
     with both counts. Any other error, or an ENOSPC whose filesystem cannot
-    be read or has no bytes free, is the error's own text.
+    be read or has no bytes free, is the error's own text. `statvfs` is
+    `os.statvfs` as it is when called, so a test can fill a volume's inodes
+    under a caller (`checkpoint._local_room`) that passes none.
     """
     if exc.errno != errno.ENOSPC:
         return str(exc)
     try:
-        st = statvfs(path)
+        st = (statvfs or os.statvfs)(path)
     except OSError:
         return str(exc)
     free = st.f_bavail * st.f_frsize
@@ -222,6 +228,62 @@ def enospc_words(exc: OSError, path: str | Path, *,
         "(a build cache, old checkouts, a file per test case) rather than large ones."
     )
 
+
+
+def cache_reading(mount: Path | None, *,
+                  statvfs: Callable[[Any], Any] | None = None) -> dict[str, Any] | None:
+    """The GKE pod's cache volume (`SWARM_CACHE_ROOT`) as bytes and inodes, or None.
+
+    The volume #4061 ran out of inodes on. It is a network disk, not one of
+    `SWARM_SCRATCH_VOLUMES`: kubelet never evicts for it, filling it is
+    ENOSPC in the writer. So it is read by `statvfs` alone, never walked, and
+    travels BESIDE the scratch reading (`detail["scratch_cache"]`), never in
+    it: the reconciler names the fullest scratch entry as what an eviction
+    filled, and this volume never is one. None without a mount (Cloud Run) or
+    when it cannot be read.
+    """
+    if mount is None:
+        return None
+    try:
+        st = (statvfs or os.statvfs)(mount)
+    except OSError:
+        return None
+    return {
+        "used_bytes": (st.f_blocks - st.f_bfree) * st.f_frsize,
+        "total_bytes": st.f_blocks * st.f_frsize,
+        "free_bytes": st.f_bavail * st.f_frsize,
+        "inodes_used": st.f_files - st.f_ffree,
+        "inodes_total": st.f_files,
+    }
+
+
+def cache_warnings(mount: Path, reading: dict[str, Any]) -> dict[str, str]:
+    """What the cache volume is running out of, keyed `inodes` or `space`, worded once each.
+
+    Past two thirds (`warn_threshold`) of its inodes while bytes are still
+    free, the words name INODES, as `enospc_words` does for the error: `df -h`
+    shows room there and the space words would mislead. Past two thirds of its
+    bytes, they name space. Neither is an eviction: past either, every write
+    on the volume fails `No space left on device`.
+    """
+    out: dict[str, str] = {}
+    used, total = reading.get("inodes_used"), reading.get("inodes_total")
+    free = reading.get("free_bytes") or 0
+    if total and used is not None and used >= warn_threshold(total) and free > 0:
+        out["inodes"] = (
+            f"{mount} has used {used:,} of its {total:,} inodes while {size_words(free)} is "
+            "free; out of inodes, not space, every file create there fails `No space left "
+            "on device`. Delete small files (a build cache, old checkouts, a file per test "
+            "case) rather than large ones."
+        )
+    used_bytes, total_bytes = reading.get("used_bytes"), reading.get("total_bytes")
+    if total_bytes and used_bytes is not None and used_bytes >= warn_threshold(total_bytes):
+        out["space"] = (
+            f"{mount} is at {size_words(used_bytes)} of its {size_words(total_bytes)} of "
+            "space; past it every write there fails `No space left on device`. Delete large "
+            "scratch data no longer needed."
+        )
+    return out
 
 def bounded(reading: dict[str, Any], max_bytes: int = SCRATCH_DETAIL_MAX_BYTES) -> dict[str, Any]:
     """`reading` within `max_bytes` serialised: the emptiest volume's smallest path goes first.

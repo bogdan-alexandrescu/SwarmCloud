@@ -542,3 +542,105 @@ def test_an_enospc_with_free_bytes_is_named_out_of_inodes(tmp_path: Path):
     # Any other error is its own text.
     other = OSError(errno.EACCES, "Permission denied")
     assert enospc_words(other, tmp_path, statvfs=full) == str(other)
+
+
+# THE CACHE VOLUME AND THE CHECKPOINT WRITE (#4061). The pod's cache volume is
+# a network disk outside SWARM_SCRATCH_VOLUMES, so the walk above never read
+# it; and an ENOSPC writing a checkpoint's archive fell through as "checkpoint
+# failed unexpectedly", saying space whether bytes or inodes ran out.
+
+
+def test_the_cache_reading_carries_the_volumes_bytes_and_inodes(tmp_path: Path):
+    # MUTATION: drop the inode figures from `cache_reading`.
+    from agent_worker.scratchusage import cache_reading
+
+    full = _statvfs(files=1_310_720, ffree=0, free_bytes=14 * GIB)
+
+    reading = cache_reading(tmp_path, statvfs=full)
+
+    assert reading is not None
+    assert reading["inodes_used"] == 1_310_720
+    assert reading["inodes_total"] == 1_310_720
+    assert reading["free_bytes"] == 14 * GIB
+    assert cache_reading(None, statvfs=full) is None
+
+
+def _out_of_room(monkeypatch, worker, tmp_path: Path, *, inodes: bool) -> None:
+    """The cache volume full of inodes with 14 GiB free, or of bytes with inodes left;
+    and every checkpoint archive write failing ENOSPC."""
+    import dataclasses
+    import errno
+    import os
+
+    from agent_worker.checkpoint import CheckpointManager
+
+    cache = tmp_path / "cache-volume"
+    cache.mkdir()
+    monkeypatch.setattr(worker, "cfg", dataclasses.replace(worker.cfg, cache_root=cache))
+    if inodes:
+        fake = _statvfs(files=1_310_720, ffree=0, free_bytes=14 * GIB)
+    else:
+        fake = _statvfs(files=1_310_720, ffree=900_000, free_bytes=0)
+    monkeypatch.setattr(os, "statvfs", fake)
+
+    def no_room(self, source, archive_path, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device", str(archive_path))
+
+    monkeypatch.setattr(CheckpointManager, "_write_archive", no_room)
+
+
+def _logged(log_stream, word: str) -> list[dict]:
+    lines = [json.loads(line) for line in log_stream.getvalue().splitlines() if line.strip()]
+    return [line for line in lines if word in json.dumps(line)]
+
+
+def _cache_warnings(log_stream, kind: str) -> list[dict]:
+    return [w for w in _logged(log_stream, kind)
+            if w.get("volume") == "cache" and w.get("running_out_of") == kind]
+
+
+def test_an_enospc_checkpoint_write_with_free_bytes_names_inodes(
+    db, worker, monkeypatch, log_stream, tmp_path
+):
+    # MUTATION: drop `_local_room` from the checkpoint's write (the error is
+    # "checkpoint failed unexpectedly" and says space), or drop
+    # `_cache_crossed` from `Worker._heartbeat` (no warning names inodes).
+    _out_of_room(monkeypatch, worker, tmp_path, inodes=True)
+
+    assert worker._checkpoint("final") is None
+    (failed,) = _logged(log_stream, "CHECKPOINT FAILED")
+    assert "out of inodes, not space" in failed["error"]
+    assert "14.0 GiB" in failed["error"]
+
+    worker._heartbeat()
+    (warning,) = _cache_warnings(log_stream, "inodes")
+    assert "has used 1,310,720 of its 1,310,720 inodes while 14.0 GiB is free" in (
+        warning["message"]
+    )
+    (beat,) = _beats(db)
+    assert beat["detail"]["scratch_cache"]["inodes_used"] == 1_310_720
+    assert beat["detail"]["scratch_cache"]["inodes_total"] == 1_310_720
+    # Beside the scratch reading, never in it: the reconciler names its
+    # fullest entry as what an eviction filled.
+    assert "cache" not in (beat["detail"].get("scratch") or {})
+
+    worker._heartbeat()  # warned once per attempt
+    assert len(_cache_warnings(log_stream, "inodes")) == 1
+
+
+def test_an_enospc_checkpoint_write_with_no_free_bytes_names_space(
+    db, worker, monkeypatch, log_stream, tmp_path
+):
+    # MUTATION: name inodes whatever the free bytes in `cache_warnings`.
+    _out_of_room(monkeypatch, worker, tmp_path, inodes=False)
+
+    assert worker._checkpoint("final") is None
+    (failed,) = _logged(log_stream, "CHECKPOINT FAILED")
+    assert "No space left on device" in failed["error"]
+    assert "inode" not in failed["error"]
+
+    worker._heartbeat()
+    assert _cache_warnings(log_stream, "inodes") == []
+    (warning,) = _cache_warnings(log_stream, "space")
+    assert "inode" not in warning["message"]
+    assert "No space left on device" in warning["message"]
