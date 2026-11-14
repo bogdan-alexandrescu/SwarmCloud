@@ -22,8 +22,8 @@
 // `versions`; tests/unit/control_plane/test_runner_sizes_api.py). Nothing
 // here is token-shaped.
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import { serve, visible } from './repofixture'
 
@@ -143,6 +143,18 @@ async function mount(routes: Routes = {}) {
   await waitFor(() => expect(card('standard')).not.toBeNull(), WAIT)
   return { ...utils, calls }
 }
+
+// THE FIRST IMPORT OF THE SCREEN'S MODULE GRAPH IS COLD: transformed and
+// evaluated once, ~13 s alone and past 30 s beside two other files under the
+// pre-publish gate, and it landed inside whichever case mounted first. One
+// mount here, under a hook's own timeout, warms it and the first render, so each case times only itself; `mount`
+// still resets the modules, which re-evaluates from the warm cache in 1-2 s.
+beforeAll(async () => {
+  await mount()
+  cleanup()
+  vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
+}, 120_000)
 
 const card = (name: string) => document.querySelector<HTMLElement>(`.rs-class[data-class="${name}"]`)
 /** What a reader sees without opening an (i): the words, less every hidden tooltip. */
@@ -405,8 +417,24 @@ describe('visual QA pass 1 (QA1-FIX-23)', () => {
   // class, left it reading for good.
   it('says what recent use waits for while it reads', async () => {
     await mount()
-    // MUTATION: go back to the bare `Recent use: reading…`.
-    expect(visible(card('standard')!.querySelector('.rs-recent'))).toBe('Recent use: reading the last 7 days of attempts with the preview…')
+    // A QUIET PROGRESS TICK, NOT A STATIC SENTENCE (visual QA pass 1, the
+    // owner's pick of 2026-11-13): the preview takes 6-30 s on the live
+    // deployment, so the card counts the read up; what it reads is the tooltip.
+    // MUTATION: go back to the static `Recent use: reading the last 7 days…`.
+    const tick = card('standard')!.querySelector('.rs-recent [role="progressbar"]')
+    expect(tick).not.toBeNull()
+    expect(visible(card('standard')!.querySelector('.rs-recent'))).toMatch(/^Recent use: reading \d:\d\d$/)
+    // MUTATION: drop what the read waits for.
+    expect(tick!.getAttribute('title')).toMatch(/last 7 days of attempts/)
+  })
+
+  it('ticks what the pools admit while the preview reads', async () => {
+    // The preview is debounced, so at mount it has not answered yet.
+    await mount()
+    // MUTATION: put back the static `Reading what the platform-wide pools admit…`.
+    const note = document.querySelector('.rs-pools-card .rs-note')
+    expect(note!.querySelector('[role="progressbar"]')).not.toBeNull()
+    expect(visible(note)).toMatch(/^reading \d:\d\d$/)
   })
 
   it('reads a failed preview as a dash with its reason, never reading for good', async () => {
