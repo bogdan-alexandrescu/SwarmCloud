@@ -111,7 +111,7 @@ repository URL for the agent's own repository, a token, a remote or a refspec.
 
 | tool | arguments | returns |
 |---|---|---|
-| `git_fetch` | `ref`: a branch or tag name, or a 40-hex sha, in **the agent's own repository**; optional `depth`, whose one accepted value is `1` ([§1.3.1](#131-a-depth-1-fetch-the-base-branch-for-a-before-render-2442)) | the sha `ref` resolved to. The objects land in the agent's clone as `refs/remotes/origin/<ref>` (a sha lands as `refs/swarm/fetched/<sha>`). With `depth: 1` only the tip commit and its tree land, the tip is listed in `.git/shallow`, and the answer carries `depth: 1`. |
+| `git_fetch` | `ref`: a branch or tag name, or a 40-hex sha, in **the agent's own repository**; optional `depth`, whose one accepted value is `1` ([§1.3.1](#131-a-depth-1-fetch-the-base-branch-for-a-before-render-2442)) | the sha `ref` resolved to. The objects land in the agent's clone as `refs/remotes/origin/<ref>` (a sha lands as `refs/swarm/fetched/<sha>`). With `depth: 1` only the tip commit and its tree land, the tip is listed in `.git/shallow`, and the answer carries `depth: 1`. From a shallow clone with no `depth`, the worker also sends the clone's recorded shallow boundary and the fetch brings the history to a merge base with `ref`: the answer adds `shallow`, `unshallow`, `merge_base` and `deepened_to` ([§1.3.2](#132-a-shallow-clones-fetch-deepens-to-a-merge-base-2901)). |
 | `git_rebase_onto` | `ref`, as for `git_fetch` | `{onto, head, conflicts: [paths]}`. It is `git_fetch(ref)` followed by `git rebase <fetched>` in the agent's clone. On a conflict the rebase is **left in progress** with the conflicted paths listed, for the agent to resolve and `git rebase --continue` itself. |
 | `git_push_branch` | `branch`, optional. When given, it must be one of the branches this agent may push (§1.2); otherwise it is the agent's own branch. | `{branch, old_sha, new_sha}` |
 | `read_private` | `repo` (`owner/name`), `path`, `ref` (a sha is recommended; a branch or tag is resolved and the sha returned) | a file's text (at most 1 MiB), or a directory listing (names, types, sizes) |
@@ -259,6 +259,10 @@ agent ──MCP stdio──> swarm-git shim ──spool file──> worker (non-
      3. fetch `ref`; the shallow negotiation then sends only what the worker
         lacks;
      4. `git bundle create <ref> ^<haves>`.
+   * **fetch from a shallow clone** (#2901): as above, but the haves and
+     `ref` are fetched in bounded deepen rounds until they share a merge base,
+     and the bundle carries the slice the clone's boundary lacks; see
+     [§1.3.2](#132-a-shallow-clones-fetch-deepens-to-a-merge-base-2901).
    * **fetch at depth 1** (#2442): as above, but `ref` is fetched with
      `--depth=1` and nothing is bundled; see
      [§1.3.1](#131-a-depth-1-fetch-the-base-branch-for-a-before-render-2442).
@@ -361,6 +365,55 @@ any git), `tests/unit/control_plane/test_git_tools_api.py` (the route), and
 `tests/unit/worker/test_gittools.py` (into a depth-1 clone: checkout and diff
 of `origin/main`, `.git/shallow` lists the tip; a rebase and a push
 afterwards; a plain fetch unchanged).
+
+### 1.3.2 A shallow clone's fetch deepens to a merge base (#2901)
+
+**Why.** The clone is one commit deep, so a plain fetch of the pull request's
+base gave a bundle whose parents sit below the clone's shallow boundary: it
+either did not apply or was `too_large`, and the agent had no merge base to
+merge or rebase onto. The design, with the measurements and the options
+weighed, is [git-fetch-shallow-clones.md](design/git-fetch-shallow-clones.md).
+
+**What.**
+
+* The worker records the clone's shallow boundary when it clones and after
+  each fetch it applies, and sends that record as `shallow` in the
+  `git_fetch` body, never the clone's `.git/shallow`, which the agent can
+  rewrite. A `depth: 1` fetch sends none.
+* swarm-api (`gitexec.fetch_bundle(..., shallow=)`) fetches `ref` and each
+  boundary commit at a depth that starts at 64 and doubles, at most 8 rounds
+  (8,192 commits on each side), until they share a merge base. Every fetch
+  from the forge carries `--depth=`, so the whole history never lands; the
+  rounds together may add at most 512 MiB to the scratch repository,
+  counted from empty. Past that the fetch is `too_large`, naming the total.
+* The answer adds `shallow` (the lines the clone writes), `unshallow` (the
+  boundary commits whose parents the bundle now carries), `merge_base` and
+  `deepened_to`. The worker validates them (40-hex, `unshallow` within the
+  boundary it sent), refuses a `.git` that is a symlink or a gitfile, writes
+  the new set through `shallow.lock`, applies the bundle, and restores the old
+  file if the apply fails.
+* When the rounds reach no merge base, `git_fetch` still delivers the ref
+  with `merge_base: null`, which serves reading and diffing; `git_rebase_onto`
+  refuses `too_large` before it rebases, because a rebase with no merge base
+  would replay commits onto an unrelated line.
+* A `too_large` fetch of the publish_to_pr base the clone already holds
+  names `origin/<base>`, its clone-time sha and its merge base, the one next
+  step that works without a credential.
+
+**The harvest.** The worker's own clean repository
+(`gitops.prepare_publish_repo`) fetches, from origin with the worker's
+credential, at depth 1, each line of the clone's `.git/shallow` that neither
+the base's ancestry nor the relay's confirm answered, before the harvest
+fetch; a line that lands as itself is origin's commit and joins the boundary. A merge commit
+the agent made whose second parent came from such a fetch therefore
+publishes, instead of failing as "could not fetch the agent's work".
+
+Proved by `tests/unit/control_plane/test_gitexec_shallow.py`,
+`tests/unit/control_plane/test_git_tools_api.py` (the route and the audit
+row), `tests/unit/worker/test_gittools_shallow.py` (a depth-1 clone fetches
+its base, merges it and publishes) and
+`tests/unit/worker/test_harvest_shallow_merge.py` (the harvest of a
+two-parent merge from a depth-1 clone).
 
 ### 1.4 How the call is bound to this agent and this fencing generation
 
