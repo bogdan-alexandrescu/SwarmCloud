@@ -6363,8 +6363,15 @@ class Worker:
             if onto_pr is not None and not (pr_branch or continued or builds_on)
             else ""
         )
+        # A STEP'S OWN REF (#2895). swarm-api writes a step's own
+        # `repository_ref` onto its task and marks it `step_ref: true` in the
+        # signed dispatch block. Such a step clones that ref as a root step
+        # clones the workflow's: never a parent's carrier branch, and never
+        # pinned to a parent's base below -- its parents cloned another ref.
+        # The API refuses it beside `builds_on`, `pr_role` and `continues`.
+        step_ref = self._dispatch_block().get("step_ref") is True
         carried, carried_head = (
-            ("", None) if pr_branch or continued or builds_on or onto_pr
+            ("", None) if pr_branch or continued or builds_on or onto_pr or step_ref
             else self._carrier_parent(task, url)
         )
         # A resumed index run whose checkpoint left the checkout out clones
@@ -6391,9 +6398,11 @@ class Worker:
         # patch staged from them still applies. A step that starts from an
         # upstream BRANCH already starts from the upstream's work and is not
         # pinned. `_upstream_base_pin` reads nothing for a root step or a
-        # non-workflow task, which is therefore unchanged.
+        # non-workflow task, which is therefore unchanged, nor for a step that
+        # clones its own ref (`step_ref`).
         pinned_sha: str | None = None
-        if not (resumed_at or pr_branch or continued or builds_on or carried or onto_pr):
+        if not (resumed_at or pr_branch or continued or builds_on or carried or onto_pr
+                or step_ref):
             pinned_sha, self._base_pin = self._upstream_base_pin(task)
         if pr_start and not resumed_at:
             # THE HEAD THAT WAS CHECKED, NOT THE BRANCH'S TIP: whatever moved
@@ -7206,7 +7215,10 @@ class Worker:
             "reason"})`, and the branch tip is cloned as before.
 
         A base that is not a full sha is no record (a parent on an empty
-        repository records none).
+        repository records none). A parent whose own `repository_ref` is not
+        this task's (a step that cloned its own ref, #2895) is no record
+        either: it cloned another ref, so its base is not this step's base,
+        and with no other parent left the clone is `no_upstream_base`.
         """
         if not task.get("workflow_id") or self._dispatch_block().get("pr_role") is not None:
             return None, None
@@ -7225,6 +7237,12 @@ class Worker:
                 tenant_id=self.cfg.tenant_id,
                 call_options=self.control.call_options(),
             )
+            if (upstream.get("repository_ref") or None) != (task.get("repository_ref") or None):
+                self.log.info(
+                    "base pin: a parent cloned another ref; its base is not this step's",
+                    parent=parent,
+                )
+                continue
             summary = upstream.get("result_summary")
             git = summary.get("git") if isinstance(summary, dict) else None
             base = git.get("base") if isinstance(git, dict) else None

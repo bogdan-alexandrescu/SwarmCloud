@@ -52,6 +52,7 @@ costs nothing while it waits.
 | `timeout_seconds` | optional; may only shorten the profile's own default. A longer ask is lowered to the profile's cap (a child's, to its parent's) and recorded as the task field `timeout_seconds_asked`, a record the worker reports in its runner's `limits.clamped` and never a limit (contract request 131). |
 | `when` | `{"step": upstream, "verdict_in": ["NOT_YET"]}`: run this step's agent only on those verdicts; see [review before publishing](#review-before-publishing-implement-review-fix-if-needed) |
 | `builds_on` | an upstream `step_id` whose pushed branch this step's checkout starts from, instead of `repository_ref` |
+| `repository_ref` | this step's own branch, tag or full commit sha, which its checkout starts from instead of the workflow's `repository_ref`; see [a step on its own ref](#a-step-on-its-own-ref-a-steps-repository_ref) |
 | `allow_empty_diff` | `true`: an empty diff is this step's result, not its failure; see [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff) |
 | `await_input` | only on the `await-input` profile, which requires it: the step waits for a tenant member's answer; see [waiting for a person](#waiting-for-a-person-await-input) |
 | `additional_repositories` | registered repositories this step **reads** beside its own, by `owner/repo`, each pinned to a commit at submission and checked out read-only at `../repos/<name>`. Replaces the workflow's list; `[]` means none. See [reading other repositories](#reading-other-repositories-additional_repositories) |
@@ -1591,6 +1592,61 @@ running. The skip path has its own rule (PUB-SKIP). Steps that deliver no
 branch at all are unaffected: a `collect` step without a carrier, a
 `single-pr` reader, a review that edits nothing, and a step with no
 repository.
+
+## A step on its own ref: a step's `repository_ref`
+
+**Why.** A workflow on `main` sometimes has one step whose work belongs on
+another ref: a fix for an open pull request's branch, say, beside steps that
+work on `main`. Before #2895 a step could only take the workflow's
+`repository_ref`, so the step's prompt said "run `git checkout feature/x`
+first". That checkout happened after the clone, inside the agent: the
+attempt reported `main`'s head as the commit it started from, the base pin
+pinned the step to `main`, and an agent that skipped or mistyped the
+instruction worked on the wrong tree and still read SUCCEEDED.
+
+**What it is.** A step may carry its own `repository_ref`, a branch, tag or
+full commit sha:
+
+```json
+{"repository_ref": "main",
+ "steps": [{"step_id": "implement", "prompt": "..."},
+           {"step_id": "fix-pr", "prompt": "...", "repository_ref": "feature/x"}]}
+```
+
+swarm-api writes it as that step's agent's own `repository_ref` (an existing,
+signed task field) and marks the step's signed dispatch block `step_ref:
+true`. Every other step keeps the workflow's ref. The step's clone checks out
+its own ref and records that clone's start as `result_summary.git.base`, as
+every step does, so the attempt reports the head of `feature/x`. Its
+`input_from`, its staged patches and everything else about the step are
+unchanged.
+
+**What is refused at submission.**
+
+* An abbreviated sha, by the same `check_repository_ref` rule, with the same
+  message shape and field detail, as at the workflow level. A branch, tag or
+  full sha is asked about once per distinct step ref through the same forge
+  read (`_check_ref_exists`, see [a `repository_ref` the forge does not
+  have](#a-repository_ref-the-forge-does-not-have-is-refused-at-submission)).
+* A step ref beside `builds_on` or a `pr_role` on the same step: each of
+  those already says where the step's checkout starts.
+* A step ref in a workflow with `continues_task`, `merge_pr` or
+  `publish_to_pr`: those supply the ref every step works on.
+* Under `integrate`, a step ref on any step the integrator merges: its branch
+  would be cut from another tree than the integrator's pull request.
+
+**How it meets the other refs.** A step's own ref beats `carrier: branches`:
+the step clones its ref, not a parent's carried branch. It is never
+base-pinned, because the pin exists to keep a step on its parents' commit and
+this step has said which commit it wants. A downstream step's base pin ignores
+a parent that cloned a different ref than its own, so a step on `main` is not
+pinned to the head of `feature/x`.
+
+**What it does not change.** It is a repository coordinate only. The step
+clones the same `repository_url` with the same tenant credential, its
+`runner_profile` is still picked by name, and nothing about capacity,
+isolation or the step's image, command or resources is taken from the
+caller (invariant 10). Prefer it to a `git checkout` line in a prompt.
 
 ## An empty diff can succeed: `allow_empty_diff`
 
