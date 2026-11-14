@@ -250,7 +250,10 @@ PRE_L6_DIGESTS = {
 #: under the placeholder organisation's prefix; with SWARM_LABEL_PREFIX set to
 #: the prefix the manifests carried before, the render's digest is the one
 #: this constant held until then, byte for byte.
-PRE_L6_TENANT_RENDER = "26326d485285f50dc1b31fb3b8f003fc06ca3c790a8a1032c2f24382fccf0b5a"
+#: Re-read for the never-scheduled pod follow-up (2026-11-14): the swarm-reaper
+#: Role gains `events: [get, list]` (rbac/dispatcher-rbac.yaml), so the
+#: reconciler can record a Job's FailedCreate; nothing else in the render moved.
+PRE_L6_TENANT_RENDER = "8816d6f8ac83e2fb925d28a1f6a76a21eea001fe52169a442bb51c1b4ee7fd3e"
 
 
 def _tenant_values() -> dict[str, str]:
