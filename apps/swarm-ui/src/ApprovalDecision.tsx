@@ -671,7 +671,7 @@ function HoldPanel({ hold }: { hold: ServedHold }) {
             <span className="apd-strong">{rule ?? <Dash why="the hold’s approvers are not served" />}</span>
           ) : (
             <>
-              <span className="apd-strong">{short}</span> <InfoTip about="Approvers" tip={`${rule}.`} />
+              <span className="apd-strong">{short}</span> <InfoTip about="who decides" tip={`${rule}.`} />
             </>
           )}
         </Kv>

@@ -308,7 +308,7 @@ describe('one approval, as a card page', () => {
     const held = await within(d).findByRole('region', { name: 'Why it is held' }, WAIT)
     const who = held.querySelector('dl')!
     expect(shown(who)).toMatch(/^Approvers\s*the platform owner$/)
-    expect(within(who).getByRole('button', { name: 'About Approvers' })).toBeTruthy()
+    expect(within(who).getByRole('button', { name: 'About who decides' })).toBeTruthy()
     expect(who.textContent).toContain('recorded in the audit as an owner waiver')
   })
 
