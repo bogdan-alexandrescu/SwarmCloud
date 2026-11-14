@@ -230,6 +230,9 @@
   .ac-grant-acts { grid-column: 1 / -1; justify-content: flex-start; }
 }
 @media (max-width: 719px) {
+  /* An (i) in a row's prose sits mid-line: its tip, anchored left at 240 wide,
+     would run past a 390 phone. Here it spans the viewport under the line. */
+  .ob-about .c-tip { position: fixed; top: auto; left: 16px; right: 16px; width: auto; max-width: none; margin-top: 22px; }
   .ob-step { grid-template-columns: 18px minmax(0, 1fr); }
   .ob-step-act { grid-column: 2; justify-content: flex-start; }
   .ob-step-act .c-btn, .ob-step-act a { min-height: 44px; }
