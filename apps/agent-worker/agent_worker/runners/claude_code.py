@@ -799,7 +799,13 @@ LIVE_BROWSER_NOTE = (
     "stop` saves $SWARM_ARTIFACTS_DIR/flows/<name>.gif (a frame at each "
     "navigation and every second, up to 200 frames, 8 MiB or 15 minutes). "
     "`swarm-handoff serve <dir>` serves a mockup at the http://127.0.0.1:<port>/ "
-    "it prints (file:// is blocked)."
+    "it prints (file:// is blocked). "
+    # LIVE-WORKER-FLOOR (#3104, the owner's plan of 2026-11-12): the browser
+    # has a container of its own; the agent's dev server does not, and one
+    # beside `npm ci` and the CLI OOM-killed a 3 GiB worker container.
+    "A dev server you start (next dev, vite) runs in your container, not the "
+    "browser's, and shares its memory limit with you: start a Node one with "
+    "NODE_OPTIONS=--max-old-space-size=2048."
 )
 
 #: dev-browser (DEVB-INSTALL, owner decision 2026-10-14, part of #1030): the

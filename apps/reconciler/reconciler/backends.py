@@ -75,7 +75,7 @@ from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 
 from .detect import WORKER_EXIT_CANNOT_START, sanitised
 from .model import ExecutionPhase, ExecutionView, JobResourceView, Termination, as_datetime
-from .startproblem import StartProblem, pods_start_problem
+from .startproblem import StartProblem, failed_create_problem, pods_start_problem
 from .startsteps import StartRead, pods_start_steps
 
 MANAGED_LABEL = "managed-by"
@@ -1491,6 +1491,10 @@ class GkeBackend:
         self._log = logger
         self._ca_file: str | None = None
         self._gc_notice_logged = False
+        # Set once the Job's events answer 403: the `swarm-reaper` Role grants
+        # no `events` read today, so the FailedCreate read asks once and then
+        # stays quiet instead of 403-ing on every pass (#3531).
+        self._events_forbidden = False
 
     # -- client ---------------------------------------------------------
     def _configure(self) -> None:
@@ -1889,6 +1893,10 @@ class GkeBackend:
         steps (`startsteps.pods_start_steps`), so the progress bar costs the
         reconciler no second read of a starting pod. None when no pod exists
         yet or the namespace is not a tenant's; raises when the call fails.
+
+        A Job with no pod at all may have been refused one (#3531): then the
+        Job controller's `FailedCreate` event, when the Role lets it be read,
+        is the problem (`_failed_create`).
         """
         namespace = execution.namespace
         if not namespace or not namespace.startswith(self._prefix):
@@ -1901,7 +1909,40 @@ class GkeBackend:
             pods = list(getattr(listed, "items", None) or [])
             if pods:
                 return StartRead(problem=pods_start_problem(pods), steps=pods_start_steps(pods))
-        return None
+        refused = self._failed_create(execution, namespace)
+        return StartRead(problem=refused) if refused is not None else None
+
+    def _failed_create(self, execution: ExecutionView, namespace: str) -> StartProblem | None:
+        """The Job's newest `FailedCreate` event, or None (#3531).
+
+        Events are not in the `swarm-reaper` Role today
+        (kubernetes/rbac/dispatcher-rbac.yaml grants `jobs` and `pods`): a
+        403 is remembered and the read is not made again by this process, so
+        the record is simply absent until the Role grants `events` list. Any
+        other failure raises, as the pod read does.
+        """
+        if self._events_forbidden:
+            return None
+        lister = getattr(self._core, "list_namespaced_event", None)
+        if not callable(lister):
+            return None
+        try:
+            listed = lister(
+                namespace=namespace,
+                field_selector=f"involvedObject.kind=Job,involvedObject.name={execution.name}",
+            )
+        except Exception as exc:
+            if _api_status(exc) != 403:
+                raise
+            self._events_forbidden = True
+            if self._log is not None:
+                self._log.info(
+                    "the Job's events cannot be read; a refused pod create is not recorded",
+                    namespace=namespace,
+                    error=_describe(exc),
+                )
+            return None
+        return failed_create_problem(list(getattr(listed, "items", None) or []))
 
     def _job_view(self, job: Any, namespace: str) -> ExecutionView | None:
         """One Job as an ExecutionView, or None when it is not ours to judge."""

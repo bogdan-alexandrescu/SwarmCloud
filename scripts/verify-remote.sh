@@ -14,7 +14,13 @@
 #
 # The job's identity holds four grants, all read-only at the project level:
 # run.invoker on swarm-api, roles/datastore.viewer, roles/run.viewer and
-# storage.objectViewer on the artifact bucket (terraform/infra/verify.tf). The
+# storage.objectViewer on the artifact bucket (terraform/infra/verify.tf), and
+# one more on the state bucket: storage.objects.get on the one object
+# config/dev/deny-list.json, every noncurrent generation of it included, and
+# nothing else there (terraform/bootstrap/deny_list_readers.tf). The job reads
+# that never-touch list over REST, SWARM_CONFIG_TRANSPORT and TF_STATE_BUCKET
+# coming from the job's own template, never from this script's --update-env-vars,
+# so no caller chooses which bucket the list is read from. The
 # header here used to say "run.invoker and nothing else", which stopped being
 # true when the suites were found to read Firestore and Cloud Run directly --
 # and an out-of-date statement of what an identity can do is how the next

@@ -122,6 +122,8 @@ def test_it_is_claude_code_in_every_other_field():
     expected = dataclasses.replace(
         claude, name=NAME, image=IMAGE,
         inputs={k: v for k, v in claude.inputs.items() if k != "pull_request"},
+        # Contract request 135: only claude-code's build stages run `builder`.
+        build_resource_class=None,
     )
     # MUTATION: give the entry its own `inputs`, `secrets`, `runner_argv`,
     # `provider`, `timeout_seconds`, `secret_slots` or model classes and it is

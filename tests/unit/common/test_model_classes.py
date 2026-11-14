@@ -278,6 +278,8 @@ def test_the_new_fields_come_last_so_no_positional_construction_moves():
     ]
     names = [f.name for f in fields(profiles.RunnerProfile)]
     # Contract request 133 appends `supports_max_turns` and `max_turns`, and
-    # contract request 136 `runtime_capabilities`.
-    assert names[-5:] == ["model_classes", "default_model_class",
-                          "supports_max_turns", "max_turns", "runtime_capabilities"]
+    # contract request 136 `runtime_capabilities`, and contract request 135
+    # `build_resource_class`.
+    assert names[-6:] == ["model_classes", "default_model_class",
+                          "supports_max_turns", "max_turns", "runtime_capabilities",
+                          "build_resource_class"]

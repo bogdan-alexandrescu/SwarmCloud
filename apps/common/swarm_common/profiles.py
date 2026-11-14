@@ -139,10 +139,19 @@ class ResourceClass:
 # capacity unit-hours and used about a third of what they reserved; measured
 # without page cache 96% fit 6 CPU and 16 GiB. `medium` is that size, 2 units
 # (`units_for`), its workspace half its memory as `large`'s is.
+#
+# BUILDER (contract request 135, accepted by the owner 2026-11-13; request 134
+# declined in its favour): the class the platform picks for the steps that
+# build (`BUILD_STAGES`, `resource_class_for_stage`), so the pre-publish gate's
+# guard parts run on more cores. 8 CPU requested, the Cloud Run ceiling every
+# request keeps; 12 the GKE limit (1.5 x, within CPU_BURST_MAX_RATIO); 16 GiB;
+# 2 units (`units_for`). GKE only: only a GKE profile names it as its
+# `build_resource_class`, and no profile names it as its own class.
 RESOURCE_CLASSES: dict[str, ResourceClass] = {
     "standard": ResourceClass("standard", cpu=4, memory_gib=8, disk_gib=4, units=1, cpu_limit=8),
     "browser": ResourceClass("browser", cpu=4, memory_gib=8, disk_gib=4, units=1, cpu_limit=8),
     "medium": ResourceClass("medium", cpu=6, memory_gib=16, disk_gib=8, units=2, cpu_limit=12),
+    "builder": ResourceClass("builder", cpu=8, memory_gib=16, disk_gib=8, units=2, cpu_limit=12),
     "large": ResourceClass("large", cpu=8, memory_gib=32, disk_gib=16, units=4, cpu_limit=16),
 }
 
@@ -179,7 +188,8 @@ LIVE_DISPLAY_MIN = (1, 5)
 #: Smallest first. A workflow step may name a SMALLER class than its
 #: profile's (`validate_resource_class_override`), so a resize that made
 #: `standard` larger than `browser` would let a step grow by "shrinking".
-CLASS_ORDER = ("standard", "browser", "medium", "large")
+#: `builder` (contract request 135) sits between `medium` and `large`.
+CLASS_ORDER = ("standard", "browser", "medium", "builder", "large")
 
 
 def units_for(cpu_request: float, memory_gib: int) -> int:
@@ -1324,6 +1334,13 @@ class RunnerProfile:
     #: section 5, accepted by the owner 2026-11-06) fills in the five
     #: claude-code profiles with _CLAUDE_PLUGIN_CAPABILITIES.
     runtime_capabilities: tuple[str, ...] = ()
+    #: The class the platform runs this profile's steps at when the step
+    #: builds (a stage in `BUILD_STAGES`), chosen by `resource_class_for_stage`
+    #: from the stage its compiler writes, never from a caller (invariant 10).
+    #: None: every stage runs `resource_class`. GKE only, since only a GKE pod
+    #: renders the class's CPU limit. Contract request 135, accepted by the
+    #: owner 2026-11-13: `builder` on `claude-code`.
+    build_resource_class: str | None = None
 
     def __post_init__(self) -> None:
         if self.control_plane:
@@ -1420,6 +1437,14 @@ class RunnerProfile:
             )
         if self.resource_class not in RESOURCE_CLASSES:
             raise ValueError(f"runner {self.name}: unknown resource class {self.resource_class}")
+        if self.build_resource_class is not None and (
+            self.build_resource_class not in RESOURCE_CLASSES
+            or self.backend is not Backend.GKE_AUTOPILOT
+        ):
+            raise ValueError(
+                f"runner {self.name}: build_resource_class {self.build_resource_class!r} must be "
+                "a known resource class on a GKE_AUTOPILOT profile (contract request 135)"
+            )
         if self.live_browser and self.backend is not Backend.GKE_AUTOPILOT:
             raise ValueError(
                 f"runner {self.name}: live_browser needs the GKE_AUTOPILOT backend, "
@@ -1988,6 +2013,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         default_model_class="opus",
         supports_max_turns=True,   # contract request 133
         runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
+        build_resource_class="builder",   # contract request 135
     ),
     # CONTRACT REQUEST 113, accepted by the owner 2026-10-22 (Q6 of
     # docs/design/agent-autonomy.md §7, applied by lane AU-9): claude-code made
@@ -2506,6 +2532,25 @@ def step_model_class(profile: RunnerProfile, requested: str | None) -> str | Non
             f"accepts {profile.model_classes}"
         )
     return requested
+
+
+#: The stages whose steps build (contract request 135): an issue run's
+#: implement and fix steps and a lane's build step. A stage is the compiler's
+#: own argument, never read from a caller's step.
+BUILD_STAGES = ("implement", "build", "fix")
+
+
+def resource_class_for_stage(profile: RunnerProfile, stage: str | None) -> str:
+    """The class a step of `profile` at `stage` runs at (contract request 135).
+
+    The profile's `build_resource_class` for a stage in `BUILD_STAGES`, its
+    `resource_class` for every other stage, for None, and for a profile that
+    names no build class -- so reviews, checks, merges and every Cloud Run
+    profile keep their class.
+    """
+    if stage in BUILD_STAGES and profile.build_resource_class is not None:
+        return profile.build_resource_class
+    return profile.resource_class
 
 
 def resolve_backend(profile: RunnerProfile) -> Backend:

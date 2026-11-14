@@ -207,6 +207,7 @@ from ..voice import cards as vcards
 from ..voice import grant as vgrant
 from ..voice import ledger as vledger
 from ..voice import preferences as vprefs
+from ..voice import projectstate as vstate
 from ..voice import sessions as vs
 from ..voice import settings as vsettings
 from ..voice import store as vstore
@@ -411,6 +412,11 @@ async def start_session(
             tenant_id=tenant_id, person=person, session_id=body.session_id, offer=offer))
     if body.project_id is not None:
         _check_id(body.project_id, "vp_", "project_id")
+        # A session start reads its project: its merge is settled first
+        # (voice-it.md §3.13.2, settled on read).
+        project_id = body.project_id
+        await run_in_threadpool(lambda: vstate.settle_on_read(
+            ctx.db, tenant_id=tenant_id, person=person, project_id=project_id, now=ctx.now))
     # Settings' engine, read once: no engine is ever taken from the caller.
     chosen = (await run_in_threadpool(vsettings.VoiceSettings(ctx.db, now=ctx.now).read))["settings"]
     pick = await run_in_threadpool(
@@ -507,8 +513,15 @@ async def work(
     report = {k: v for k, v in (("delegation", body.delegation), ("roster", body.roster))
               if v is not None}
     at = ctx.now()
-    return await run_in_threadpool(lambda: vgrant.record_work(
+    answer = await run_in_threadpool(lambda: vgrant.record_work(
         ctx.db, session, session_id=session_id, body=report, at=at))
+    if "roster" in report:
+        # The follower's tick while the session is live reads the project's
+        # starts: its merge is settled too (voice-it.md §3.13.2).
+        await run_in_threadpool(lambda: vstate.settle_on_read(
+            ctx.db, tenant_id=session.tenant_id, person=session.person,
+            project_id=session.project_id, now=ctx.now))
+    return answer
 
 
 @router.post("/sessions/{session_id}/seen")

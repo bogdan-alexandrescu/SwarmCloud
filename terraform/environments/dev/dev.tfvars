@@ -258,6 +258,10 @@ pool_limits = {
     standard = 80
     browser  = 100
     large    = 40
+    # Contract request 135: the class claude-code's implement and fix steps
+    # run at, 2 units each. runner:claude-code's 80 binds first, so this
+    # states the pool rather than leaving it at `global`.
+    builder = 80
   }
 
   runner_profiles = {

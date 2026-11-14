@@ -60,9 +60,10 @@ def test_no_profile_sets_a_ceiling_so_no_running_agent_changes():
 def test_the_fields_default_to_none_or_false_and_come_last():
     profile = RUNNER_PROFILES["mock"]
     assert profile.supports_max_turns is False and profile.max_turns is None
-    # Contract request 136 appends `runtime_capabilities` after them.
-    assert [f.name for f in fields(type(profile))][-3:] == [
-        "supports_max_turns", "max_turns", "runtime_capabilities"]
+    # Contract request 136 appends `runtime_capabilities` after them, and
+    # contract request 135 `build_resource_class`.
+    assert [f.name for f in fields(type(profile))][-4:] == [
+        "supports_max_turns", "max_turns", "runtime_capabilities", "build_resource_class"]
     assert [f.name for f in fields(Task)][-1] == "max_turns"
     assert [f.name for f in fields(WorkflowStep)][-1] == "max_turns"
     assert WorkflowStep(step_id="a", runner_profile="mock", input={}).max_turns is None
