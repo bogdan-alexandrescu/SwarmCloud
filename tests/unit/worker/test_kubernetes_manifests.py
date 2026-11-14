@@ -278,6 +278,30 @@ def test_the_cache_storage_class_is_pd_balanced_deleted_and_bound_at_first_consu
     assert sc["metadata"]["labels"]["managed-by"] == "swarm-terraform"
 
 
+def test_the_cache_storage_class_formats_xfs_and_the_quota_counts_it(policy_docs, tenant_docs):
+    """#4061: the cache's ext4 default gave a 20 GiB disk 16 KiB per inode,
+    1,310,720 inodes, and a run of small files used every one with 14 GB
+    free. xfs allocates inodes as files are made, so the disk runs out of
+    space before it runs out of inodes. StorageClass parameters are immutable,
+    so the fix is a NEW class: the retired one is still applied, unchanged,
+    for the claims running pods already hold, and the quota and the
+    dispatcher name the new one.
+
+    MUTATION: drop the fstype line, or leave CACHE_STORAGE_CLASS on the
+    retired class, and this fails.
+    """
+    from scheduler.dispatch import CACHE_STORAGE_CLASS, RETIRED_CACHE_STORAGE_CLASS
+
+    sc = one(policy_docs, "StorageClass", CACHE_STORAGE_CLASS)
+    assert sc["parameters"]["csi.storage.k8s.io/fstype"] == "xfs"
+    assert CACHE_STORAGE_CLASS != RETIRED_CACHE_STORAGE_CLASS
+    old = one(policy_docs, "StorageClass", RETIRED_CACHE_STORAGE_CLASS)
+    assert "csi.storage.k8s.io/fstype" not in old["parameters"]
+    assert old["parameters"]["type"] == sc["parameters"]["type"]
+    hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
+    assert f"{CACHE_STORAGE_CLASS}.storageclass.storage.k8s.io/persistentvolumeclaims" in hard
+
+
 def test_the_dispatcher_needs_no_claim_permission_for_the_cache(tenant_docs):
     """The cache's PVC is created by the ephemeral-volume controller from the pod
     spec, under the controller's own identity, so the scheduler that creates
