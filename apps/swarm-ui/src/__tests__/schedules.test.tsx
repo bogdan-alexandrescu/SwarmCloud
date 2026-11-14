@@ -584,7 +584,7 @@ describe('one schedule', () => {
     expect(visible(entries[0]!)).toContain('holiday')
   })
 
-  it('shows the gate and the budget as read, with the hard stops beside them', async () => {
+  it('shows the gate and the budget as read, with the hard stops behind an (i) on a short row', async () => {
     await mountDetail({
       '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a'), firings: [] } },
     })
@@ -594,18 +594,27 @@ describe('one schedule', () => {
     const facts = [...gate.querySelectorAll('dt')].map((d) => `${visible(d)}: ${visible(d.nextElementSibling)}`)
     expect(facts).toContain('Merge: waits for an approval at the green head')
     expect(facts).toContain('Expiry: an approval nobody decides expires after 72 h')
-    expect(visible(gate)).toContain('.github/workflows/')
+    // The row is short: the failures that pause the schedule, with the hard stops behind an (i)
+    // (the owner's pick on the Automate visual check, part of #2417).
+    // MUTATION: draw `<HardStops />` in the row again and its words are back on the surface.
+    const stops = facts.find((f) => f.startsWith('Hard stops: '))!
+    const row = [...gate.querySelectorAll('dt')].find((d) => visible(d) === 'Hard stops')!.nextElementSibling as HTMLElement
+    const surface = row.cloneNode(true) as HTMLElement
+    for (const tip of surface.querySelectorAll('.c-tip-host')) tip.remove()
+    expect(visible(surface)).toBe('3 failed runs in a row pause the schedule')
+    expect(stops).toMatch(/\b3 failed runs in a row pause the schedule/)
+    // The (i)'s tip is the one shared sentence the form's Gates card draws, so the two cannot drift.
+    // MUTATION: write the sentence out again in ScheduleDetail.tsx, or tip anything else, and this fails.
+    const { HARD_STOPS } = await import('../ScheduleEdit')
+    const info = within(row).getByRole('button', { name: 'About Hard stops' })
+    expect(document.getElementById(info.getAttribute('aria-describedby')!)!.textContent).toBe(HARD_STOPS)
     // §4.4: outside a platform repository the holds are a second member's, not the owner's.
     // MUTATION: say "held for the owner" for every repository and this fails.
-    const stops = facts.find((f) => f.startsWith('Hard stops: '))!
-    expect(stops).toMatch(/\.github\/workflows\/ is refused/)
-    expect(stops).toMatch(/held for a second member, or in a platform repository for the owner/)
-    expect(stops).toMatch(/protected path/)
-    expect(stops).toMatch(/frozen contract/)
-    expect(stops).toMatch(/\b3 failed runs in a row pause/)
-    // QA1 automate-09: the sheet draws the form's own `HardStops`, so the two cannot drift apart.
-    // MUTATION: write the sentence out again in ScheduleDetail.tsx.
-    expect(SCHEDULE_DETAIL_TSX).toContain('<HardStops />')
+    expect(HARD_STOPS).toMatch(/\.github\/workflows\/ is refused/)
+    expect(HARD_STOPS).toMatch(/held for a second member, or in a platform repository for the owner/)
+    expect(HARD_STOPS).toMatch(/protected path/)
+    expect(HARD_STOPS).toMatch(/frozen contract/)
+    expect(SCHEDULE_DETAIL_TSX).toContain('tip={HARD_STOPS}')
     expect(SCHEDULE_DETAIL_TSX).not.toMatch(/held for a second member, or in a platform/)
     const budget = await screen.findByTestId('sc-budget', undefined, WAIT)
     expect(visible(budget)).toContain('$15.00')

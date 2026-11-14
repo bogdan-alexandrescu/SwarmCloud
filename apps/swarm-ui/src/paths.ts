@@ -709,6 +709,9 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     const id = q.get('schedule')
     if (id !== null && id !== '') {
       const base = `/automate/schedules/${encodeURIComponent(id)}${q.get('edit') === '1' ? '/edit' : ''}`
+      // New schedule's preselected type rides as `?type=` (a starter card's Use).
+      const type = id === 'new' ? scheduleTypeOf(q.get('type')) : null
+      if (type !== null) return `${base}?${new URLSearchParams({ type }).toString()}`
       const tab = q.get('tab')
       return tab === null || tab === '' ? base : `${base}?${new URLSearchParams({ tab }).toString()}`
     }
@@ -799,6 +802,17 @@ export interface PathRoute {
 }
 
 /**
+ * A schedule type's name as New schedule's `?type=` carries it, or null for a
+ * value that cannot be one. The catalogue's names are lower-case words joined
+ * by hyphens or underscores (`issue-sweep`); anything else is dropped here, and
+ * a well-formed name the catalogue does not serve is ignored by the form,
+ * which starts on its first usable type (ScheduleEdit.tsx).
+ */
+export function scheduleTypeOf(value: string | null): string | null {
+  return value !== null && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(value) ? value : null
+}
+
+/**
  * The address for a path, or null for a path this console does not serve
  * (the router then lands on Overview, and rewrites the bar to say so).
  */
@@ -867,6 +881,8 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
 
   if (seg[0] === 'automate' && seg[1] === 'schedules' && seg[2] !== undefined && seg[2] !== '' && (seg.length === 3 || (seg.length === 4 && seg[3] === 'edit'))) {
     const q = new URLSearchParams({ schedule: decodeURIComponent(seg[2]) })
+    const type = seg[2] === 'new' && seg.length === 3 ? scheduleTypeOf(new URLSearchParams(query).get('type')) : null
+    if (type !== null) q.set('type', type)
     const tab = new URLSearchParams(query).get('tab')
     if (tab !== null && tab !== '') q.set('tab', tab)
     if (seg.length === 4) q.set('edit', '1')

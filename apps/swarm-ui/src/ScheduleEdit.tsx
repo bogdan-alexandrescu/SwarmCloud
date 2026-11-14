@@ -72,13 +72,25 @@ export const CRON_PRESETS: readonly { label: string; cron: string }[] = [
  * wording, which is the server's: a protected change is held for a second
  * member (the owner, in a platform repository) whatever the gate, and a plan
  * touching `.github/workflows/` is refused because SwarmCloud cannot push it.
- * Both places draw this, so they cannot drift apart again.
+ * Both places draw this, so they cannot drift apart again: the form's Gates
+ * card as `<HardStops />`, the sheet's Gates card as its Hard stops row's (i)
+ * tip, which takes a plain string (the owner's pick on the Automate visual
+ * check, part of #2417).
  */
+export const HARD_STOPS =
+  'A change to IAM, the frozen contract, security, CODEOWNERS or a protected path is held for a second member, or in a platform repository for ' +
+  'the owner, whatever the gate; a change to .github/workflows/ is refused.'
+
+const WORKFLOWS_DIR = '.github/workflows/'
+
+/** `HARD_STOPS` as the form draws it, the workflows directory set as code. */
 export function HardStops() {
+  const at = HARD_STOPS.indexOf(WORKFLOWS_DIR)
   return (
     <>
-      A change to IAM, the frozen contract, security, CODEOWNERS or a protected path is held for a second member, or in a platform repository for
-      the owner, whatever the gate; a change to <code>.github/workflows/</code> is refused.
+      {HARD_STOPS.slice(0, at)}
+      <code>{WORKFLOWS_DIR}</code>
+      {HARD_STOPS.slice(at + WORKFLOWS_DIR.length)}
     </>
   )
 }
@@ -1029,17 +1041,20 @@ function ScheduleForm({
   schedule,
   onSaved,
   cancel,
+  preferType = null,
 }: {
   types: ScheduleTypeRow[]
   repos: Result<RepoRecord[]>
   schedule: Schedule | null
+  /** A new schedule's type, chosen before the form opened (a starter card's Use); ignored unless the catalogue serves it usable. */
+  preferType?: string | null
   /** The saved schedule, or null when the write took but its echo was unreadable. */
   onSaved: (s: Schedule | null) => void
   cancel: ReactNode
 }) {
   const repoList = repos.status === 'ok' || repos.status === 'stale' ? repos.data : []
   const usable = useMemo(() => types.filter((t) => t.available), [types])
-  const initialType = schedule === null ? (usable[0] ?? null) : (types.find((t) => t.name === schedule.type) ?? null)
+  const initialType = schedule === null ? (usable.find((x) => x.name === preferType) ?? usable[0] ?? null) : (types.find((t) => t.name === schedule.type) ?? null)
   const [d, setD] = useState<Draft>(() => draftFor(initialType, schedule, repoList))
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
@@ -1481,7 +1496,7 @@ function useRepositories(): Result<RepoRecord[]> {
   return repos
 }
 
-function NewScheduleBody({ types, go }: { types: ScheduleTypeRow[]; go: (to: string) => void }) {
+function NewScheduleBody({ types, go, type }: { types: ScheduleTypeRow[]; go: (to: string) => void; type: string | null }) {
   const repos = useRepositories()
   if (types.length === 0) {
     return <Absent kind="zero" heading="No type you may create" say="The catalogue was read and offers this account no schedule type." />
@@ -1496,6 +1511,7 @@ function NewScheduleBody({ types, go }: { types: ScheduleTypeRow[]; go: (to: str
         types={types}
         repos={repos}
         schedule={null}
+        preferType={type}
         onSaved={(s) => go(s === null ? SCHEDULES_ADDRESS : scheduleAddress(s.schedule_id))}
         cancel={
           <InApp go={go} to={SCHEDULES_ADDRESS} className="c-btn is-ghost">
@@ -1507,13 +1523,16 @@ function NewScheduleBody({ types, go }: { types: ScheduleTypeRow[]; go: (to: str
   )
 }
 
-/** `/automate/schedules/new`: the create form, from the served catalogue. */
-export function NewSchedule({ go }: { go: (to: string) => void }) {
+/**
+ * `/automate/schedules/new`: the create form, from the served catalogue.
+ * `?type=<name>` (a starter card's Use) opens it on that type.
+ */
+export function NewSchedule({ go, type = null }: { go: (to: string) => void; type?: string | null }) {
   return (
     <div className="sc-detail">
       <InApp go={go} to={SCHEDULES_ADDRESS} className="sc-back">‹ All schedules</InApp>
       <Screen title="New schedule" load={loadScheduleTypes}>
-        {(d) => <NewScheduleBody types={d.types} go={go} />}
+        {(d) => <NewScheduleBody types={d.types} go={go} type={type} />}
       </Screen>
     </div>
   )

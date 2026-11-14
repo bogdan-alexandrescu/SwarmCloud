@@ -46,7 +46,7 @@ import { usd } from './measure'
 import { pluralise } from './types'
 import { Absent, Mark } from './primitives'
 import { addressToPath } from './paths'
-import { dayWords, EditSchedule, HardStops, plainValue } from './ScheduleEdit'
+import { dayWords, EditSchedule, HARD_STOPS, plainValue } from './ScheduleEdit'
 import { gapWords } from './ScheduleTemplates'
 import { HistoryTimeline, workAddress } from './ScheduleHistoryTimeline'
 import {
@@ -1397,10 +1397,10 @@ function Gate({ s, type, onChanged, go }: { s: Schedule; type: ScheduleTypeRow |
           )}
         </Kv>
         <Kv name="Hard stops">
-          {/* The same sentence as the form's Gates card (QA1 automate-09). It stays visible here: moving it
-              behind an (i) is the owner's pick for a follow-up under #2417, not this build. */}
-          <HardStops />{' '}
-          {failures === 1 ? 'A failed run pauses' : `${failures} failed runs in a row pause`} the schedule.
+          {/* The failures that pause it on the row, the hard stops behind the (i): the same sentence as the
+              form's Gates card, one shared string (QA1 automate-09; the owner's pick under #2417). */}
+          {failures === 1 ? 'A failed run pauses' : `${failures} failed runs in a row pause`} the schedule{' '}
+          <Info about="Hard stops" tip={HARD_STOPS} />
         </Kv>
       </dl>
       <h4 className="as-h4">Merging</h4>

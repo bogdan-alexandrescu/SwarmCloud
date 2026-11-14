@@ -30,16 +30,18 @@ import {
   loadMe,
   loadRepositories,
   loadSchedules,
+  loadScheduleTypes,
   pauseSchedule,
   resumeSchedule,
   runSchedule,
   type ApprovalItem,
   type Schedule,
   type ScheduleFiring,
+  type ScheduleTypeRow,
 } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { usd } from './measure'
-import { addressToPath } from './paths'
+import { addressToPath, scheduleTypeOf } from './paths'
 import { Mark } from './primitives'
 import type { RepoRecord } from './RepositoriesData'
 import { Button, Dialog, EmptyState, Segmented, Tag, buttonClass } from './components'
@@ -47,6 +49,7 @@ import { Info } from './AccountsVerdict'
 import { APPROVALS_ADDRESS, APPROVAL_KIND, approvalAddress } from './Approvals'
 import { ScheduleDetail, detailTabOf } from './ScheduleDetail'
 import { NewSchedule } from './ScheduleEdit'
+import { servedTier } from './ScheduleTemplates'
 import { useRoleGate } from './Profile'
 import { PageHead, Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
@@ -62,16 +65,19 @@ import './styles/automate-cards.css'
  * (`/automate/schedules/<id>/edit`), so a reload or a link lands there (AUT-11).
  */
 export const SCHEDULES_ADDRESS = 'automate/schedules'
-export function scheduleAddress(id: string, at: { tab?: string; edit?: boolean } = {}): string {
+export function scheduleAddress(id: string, at: { tab?: string; edit?: boolean; type?: string } = {}): string {
   const q = new URLSearchParams({ schedule: id })
   if (at.tab !== undefined && at.tab !== 'history') q.set('tab', at.tab)
   if (at.edit === true) q.set('edit', '1')
+  if (at.type !== undefined) q.set('type', at.type)
   return `${SCHEDULES_ADDRESS}?${q.toString()}`
 }
 
 /**
  * The create form's address: `/automate/schedules/new`. A schedule id is `sch_`
  * and twelve hex digits (`schedules.new_schedule_id`), so `new` names none.
+ * `?type=<name>` opens it with that type chosen (`scheduleAddress(NEW_SCHEDULE,
+ * { type })`, a starter card's Use).
  */
 export const NEW_SCHEDULE = 'new'
 
@@ -1131,12 +1137,11 @@ function SchedulesBody({ d, go, scopeSwitch, open }: { d: Landing; go: (to: stri
     return (
       <div className="acd-page" data-testid="acd-none">
         {scopeSwitch !== null && <div className="acd-bar-row">{scopeSwitch}</div>}
-        {/* The label only: the mock-up's starter cards (a type per card, each with Use) are the owner's pick
-            for a follow-up lane under #2417, not this build. */}
         <EmptyState kind="empty" heading="No schedules" action={newSchedule}>
           <span className="acd-dim">Start from a type</span>{' '}
           <Info about="Schedules" tip="A schedule fires work on a cron, from a type. Nothing runs until you make one." />
         </EmptyState>
+        <StarterCards go={go} roleGate={roleGate} />
         <WaitingPanel summary={d.summary} inbox={inbox} rows={rows} go={go} />
       </div>
     )
@@ -1160,6 +1165,55 @@ function SchedulesBody({ d, go, scopeSwitch, open }: { d: Landing; go: (to: stri
 }
 
 /**
+ * THE STARTER CARDS (the cards mock-up's empty-none frame, the owner's pick
+ * under #2417): with no schedules, one card per type the catalogue serves,
+ * each with Use, which opens New schedule with that type already chosen. The
+ * catalogue is read only here, so a page with schedules makes no extra read.
+ * A type this account may not use is a card whose Use says why, as its tile
+ * in the form does; a failed read leaves New schedule, which reads it again.
+ */
+function StarterCards({ go, roleGate }: { go: (to: string) => void; roleGate: string | null }) {
+  const [types, setTypes] = useState<Result<{ types: ScheduleTypeRow[] }> | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadScheduleTypes().then((r) => {
+      if (live) setTypes(r)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  if (types === null || (types.status !== 'ok' && types.status !== 'stale') || types.data.types.length === 0) return null
+  return (
+    <div className="acd-grid" data-testid="acd-starters">
+      {types.data.types.map((t) => {
+        const tier = servedTier(t)
+        const why = roleGate ?? (t.available ? null : (t.disabled_reason ?? 'This type is not available to this account.'))
+        return (
+          <section key={t.name} className="acd-card acd-starter" aria-label={t.name}>
+            <div className="acd-card-h">
+              {tier !== null && <Tag>{tier}</Tag>}
+              <h3 className="acd-mono">{t.name}</h3>
+            </div>
+            <div className="acd-card-f">
+              {why === null ? (
+                <InApp go={go} to={scheduleAddress(NEW_SCHEDULE, { type: t.name })} className={buttonClass({ size: 'sm' })}>
+                  Use
+                </InApp>
+              ) : (
+                <Button size="sm" disabledReason={why}>
+                  Use
+                </Button>
+              )}
+            </div>
+          </section>
+        )
+      })}
+    </div>
+  )
+}
+
+/**
  * The list, its summary, the inbox and the repositories in one read, so the
  * Screen's ⟳ refreshes all of them (AUT-19). The list's own answer is the
  * screen's, except a 404, which is a deployment without the schedules routes
@@ -1178,7 +1232,7 @@ async function loadListAndRepos(): Promise<Result<Landing>> {
 
 export function SchedulesScreen({ view, go }: { view: string | null; go: (to: string) => void }) {
   const scheduleId = scheduleOf(view)
-  if (scheduleId === NEW_SCHEDULE) return <NewSchedule go={go} />
+  if (scheduleId === NEW_SCHEDULE) return <NewSchedule go={go} type={scheduleTypeOf(new URLSearchParams(view ?? '').get('type'))} />
   if (scheduleId !== null) {
     const q = new URLSearchParams(view ?? '')
     if (q.get('edit') === '1') return <ScheduleDetail scheduleId={scheduleId} go={go} tab={detailTabOf(q.get('tab'))} editing />
