@@ -10,6 +10,9 @@ WHAT IS HELD HERE
   the battery's runs (p50, p95, max, the reference, the five slowest) in the
   schema swarm-api reads, and the manifest's bytes and digest are the same as
   an unmeasured write's.
+* THE CI GATE'S BATTERY: the questions are `agent_worker.graphmcp.battery`'s,
+  asked of a fresh `python -m agent_worker.graphmcp` over the snapshot just
+  built, which the battery runs as its own child process.
 * AT MOST ONCE PER N HOURS per registration: a second write within N hours
   measures nothing and says when it last did.
 * NEVER FAILS THE WRITE: a measurement that raises is the report's reason.
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,6 +33,7 @@ from typing import Any
 
 import pytest
 
+from agent_worker.graphmcp import battery
 from swarm_api import graphreports
 
 WRITER = (Path(__file__).resolve().parents[3] / "images" / "agent-runtime-indexer" / "repo-index"
@@ -91,8 +96,11 @@ def test_the_measurement_is_written_beside_the_manifest_and_not_in_it(writer, tm
     document = json.loads(latency_path(root).read_text())
     assert document["schema"] == graphreports.LATENCY_SCHEMA == writer.LATENCY_SCHEMA
     assert document["commit_sha"] == COMMIT and document["symbols"] == 30
-    # The busiest four and an even sample of twelve, three tools each.
-    assert document["questions"] == 16 * 3 and document["tools"] == ["context", "callers", "search"]
+    # The CI gate's battery: the busiest four and an even sample of twelve,
+    # six tools each.
+    assert document["questions"] == len(battery._questions(graph_doc())) == 16 * 6
+    assert document["tools"] == ["search", "context", "impact", "tests_for", "neighbours",
+                                 "territory"]
     assert len(document["runs"]) == writer.LATENCY_RUNS
     for run in document["runs"]:
         assert run["p95_ms"] >= run["p50_ms"] >= 0 and run["max_ms"] >= run["p95_ms"]
@@ -101,24 +109,43 @@ def test_the_measurement_is_written_beside_the_manifest_and_not_in_it(writer, tm
     assert measured is not None and measured.ratio > 0
 
 
-def test_the_battery_is_timed_and_the_median_run_is_what_the_report_reads(writer) -> None:
-    ticks = iter(range(0, 10_000_000, 1))
+def test_the_shared_battery_runs_in_a_fresh_process_over_the_built_snapshot(writer) -> None:
+    built = writer.build(graph_doc(), tenant_id="eng", repo_id="repo_1")
+    seen: dict = {}
 
-    def clock() -> float:
-        # Each call advances a millisecond: every answer and reference takes 1 ms.
-        return next(ticks) / 1000.0
+    def run(argv: list[str], **kwargs: Any) -> Any:
+        snapshot = Path(argv[argv.index("--snapshot") + 1])
+        seen["argv"] = argv
+        seen["manifest"] = (snapshot / "manifest.json").read_bytes()
+        seen["blobs"] = sorted(p.name for p in (snapshot / "blobs").iterdir())
+        seen["document"] = json.loads(Path(argv[argv.index("--document") + 1]).read_text())
+        seen["timeout"] = kwargs.get("timeout")
+        out = {"questions": 96, "tools": ["search"],
+               "runs": [{"p50_ms": 1.0, "p95_ms": 2.0, "max_ms": 3.0, "reference_ms": 1.0,
+                         "slowest": []}] * 3}
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(out), stderr="")
+
+    document = writer.measure_latency(built[1], built[2], graph_doc(), runs=3, cpu_limit=2.0,
+                                      run=run)
+    argv = seen["argv"]
+    assert argv[0] == sys.executable, "the battery runs where agent_worker is importable"
+    assert argv[1:3] == ["-m", "agent_worker.graphmcp.battery"]
+    assert argv[argv.index("--runs") + 1] == "3"
+    assert seen["manifest"] == built[1]
+    assert seen["blobs"] == sorted(f"{h}{writer.BLOB_SUFFIX}" for h in built[2])
+    assert seen["document"] == graph_doc() and seen["timeout"] == writer.LATENCY_TIMEOUT_S
+    assert document["schema"] == writer.LATENCY_SCHEMA and document["cpu_limit"] == 2.0
+    assert document["commit_sha"] == COMMIT and document["questions"] == 96
+    assert [r["p95_ms"] for r in document["runs"]] == [2.0, 2.0, 2.0]
+
+
+def test_a_battery_that_fails_is_a_failed_measurement(writer, tmp_path) -> None:
+    def run(argv: list[str], **_kwargs: Any) -> Any:
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="12 of 96 answered")
 
     built = writer.build(graph_doc(), tenant_id="eng", repo_id="repo_1")
-    manifest = json.loads(built[1])
-    document = writer.measure_latency(manifest, built[2], graph_doc(), runs=3, clock=clock,
-                                      reference=lambda: None, cpu_limit=2.0)
-    assert [run["p95_ms"] for run in document["runs"]] == [1.0, 1.0, 1.0]
-    assert [run["reference_ms"] for run in document["runs"]] == [1.0, 1.0, 1.0]
-    assert document["cpu_limit"] == 2.0
-    # Every edge goes into one of the first five symbols: those are the busiest.
-    targets = {s["id"] for s in graph_doc()["symbols"][:5]}
-    questions = writer.latency_questions(graph_doc())
-    assert set(questions[:4]) <= targets and len(set(questions)) == 16
+    with pytest.raises(RuntimeError, match="12 of 96 answered"):
+        writer.measure_latency(built[1], built[2], graph_doc(), run=run)
 
 
 def test_at_most_once_per_n_hours_per_registration(writer, tmp_path) -> None:
