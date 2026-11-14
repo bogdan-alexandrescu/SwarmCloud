@@ -56,9 +56,12 @@ from .test_dispatch_manifests import NOW, make_lease, make_task
 REPO = Path(__file__).resolve().parents[3]
 REQUESTS = REPO / "docs/contract-change-requests.md"
 
-#: claude-code as a rollback of contract request 53 would leave it: one line
-#: of the catalogue back to CLOUD_RUN_JOB.
-ROLLED_BACK = dataclasses.replace(RUNNER_PROFILES["claude-code"], backend=Backend.CLOUD_RUN_JOB)
+#: claude-code as a rollback of contract request 53 would leave it: the
+#: catalogue's line back to CLOUD_RUN_JOB, and without contract request 135's
+#: `build_resource_class`, which the profile refuses off GKE Autopilot.
+ROLLED_BACK = dataclasses.replace(
+    RUNNER_PROFILES["claude-code"], backend=Backend.CLOUD_RUN_JOB, build_resource_class=None
+)
 
 
 class Recording:
