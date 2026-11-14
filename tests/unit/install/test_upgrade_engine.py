@@ -251,15 +251,17 @@ class FakeLiveWorld:
         return None
 
 
-def live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, release: str = OLD,
-         flow_run: Any = None) -> dict[str, Any]:
+def live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, release: str | None = OLD,
+         flow_run: Any = None, ready: bool = True) -> dict[str, Any]:
     from swarm_install.steps import preflight
     from swarm_install.verbs import install
 
-    seen: dict[str, Any] = {"engine": [], "flows": []}
+    seen: dict[str, Any] = {"engine": [], "flows": [], "installs": []}
     local = tmp_path / "state.json"
     real = StateStore(project=PROJECT, environment="prod", local=local)
-    real.save(InstallState(project=PROJECT, environment="prod", release=release, region="us-central1"))
+    real.save(InstallState(project=PROJECT, environment="prod", release=release, region="us-central1",
+                           ready_at=1.0 if ready else None))
+    seen["store"] = real
     monkeypatch.setattr(verb, "GcsObjectStore", FakeBucket)
     monkeypatch.setattr(verb, "StateStore", lambda **kw: StateStore(project=PROJECT, environment="prod",
                                                                     local=local))
@@ -282,6 +284,12 @@ def live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, release: str = OLD,
             return ExitCode.OK
 
     monkeypatch.setattr(verb, "Upgrade", Flow)
+
+    def resume_install(project: str, env: str) -> int:
+        seen["installs"].append((project, env, real.load().release))
+        return int(ExitCode.OK)
+
+    monkeypatch.setattr(verb, "resume_install", resume_install, raising=False)
     return seen
 
 
@@ -320,6 +328,61 @@ def test_a_downgrade_is_refused_before_any_engine_is_installed(tmp_path: Path, m
     assert seen["engine"] == [] and seen["flows"] == []
     assert verb.run(args_for("--to", OLD, "--project", PROJECT, "--allow-downgrade")) == ExitCode.OK
     assert seen["engine"][0][0] == OLD
+
+
+# -- an install that never reached READY ---------------------------------------------
+#
+# A deployment paused before READY (say in stage 0) whose release's CVE
+# acceptance expired meanwhile fails `preflight.release` on every resume: the
+# release it records is refused for good. `swarm upgrade` moves it to the new
+# release and resumes the install there, instead of refusing it or running
+# the live upgrade's drain and roll on a deployment that serves nothing yet.
+
+
+def test_an_install_short_of_ready_is_moved_to_the_target_and_resumed(tmp_path: Path,
+                                                                        monkeypatch: pytest.MonkeyPatch,
+                                                                        capsys: pytest.CaptureFixture[str]) -> None:
+    seen = live(tmp_path, monkeypatch, ready=False)
+    assert verb.run(args_for("--to", NEW, "--project", PROJECT)) == ExitCode.OK
+    assert seen["engine"][0][0] == NEW
+    assert seen["flows"] == [], "the live upgrade never runs on a deployment that is not READY"
+    assert seen["installs"] == [(PROJECT, "prod", NEW)]
+    assert seen["store"].load().release == NEW
+    assert "has not reached READY" in capsys.readouterr().out
+
+
+def test_without_to_an_install_short_of_ready_goes_to_the_channels_release(tmp_path: Path,
+                                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = live(tmp_path, monkeypatch, ready=False)
+    assert verb.run(args_for("--project", PROJECT)) == ExitCode.OK
+    assert seen["flows"] == [] and seen["installs"] == [(PROJECT, "prod", NEW)]
+
+
+def test_an_install_that_recorded_no_release_yet_is_resumed_on_the_target(tmp_path: Path,
+                                                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = live(tmp_path, monkeypatch, release=None, ready=False)
+    assert verb.run(args_for("--to", NEW, "--project", PROJECT)) == ExitCode.OK
+    assert seen["flows"] == [] and seen["installs"] == [(PROJECT, "prod", NEW)]
+
+
+def test_an_install_short_of_ready_on_the_target_already_is_resumed(tmp_path: Path,
+                                                                     monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = live(tmp_path, monkeypatch, release=NEW, ready=False)
+    assert verb.run(args_for("--project", PROJECT)) == ExitCode.OK
+    assert seen["flows"] == [] and seen["installs"] == [(PROJECT, "prod", NEW)]
+
+
+def test_a_downgrade_of_an_install_short_of_ready_is_still_refused(tmp_path: Path,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = live(tmp_path, monkeypatch, release=NEW, ready=False)
+    assert verb.run(args_for("--to", OLD, "--project", PROJECT)) == ExitCode.REFUSED
+    assert seen["installs"] == [] and seen["store"].load().release == NEW
+
+
+def test_a_ready_deployment_still_runs_the_live_upgrade(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = live(tmp_path, monkeypatch)
+    assert verb.run(args_for("--to", NEW, "--project", PROJECT)) == ExitCode.OK
+    assert seen["target"] == NEW and seen["installs"] == []
 
 
 def test_an_api_error_is_one_line_never_a_traceback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

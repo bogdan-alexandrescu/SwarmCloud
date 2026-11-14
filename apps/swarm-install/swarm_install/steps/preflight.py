@@ -1894,10 +1894,10 @@ class QuotasStep(_Base):
     def check(self, ctx: Any) -> Observation:
         problems, outputs = self.findings(ctx)
         if problems:
-            return Observation(UNMET, "; ".join(problems), outputs)
+            return Observation(UNMET, "; ".join(problems))
         read = outputs["quotas"] if isinstance(outputs["quotas"], dict) else {}
         unread = [said for said in read.values() if isinstance(said, str) and " reports no " in said]
-        return Observation(MET, "; ".join(unread), outputs)
+        return Observation(MET, "; ".join(unread))
 
     def plan(self, ctx: Any) -> Plan:
         return Plan("quota increases to request", tuple(self.findings(ctx)[0]))
@@ -2512,11 +2512,11 @@ class ReleaseStep(_Base):
     def check(self, ctx: Any) -> Observation:
         problems, outputs = self.findings(ctx)
         if problems:
-            return Observation(UNMET, "; ".join(problems), outputs)
+            return Observation(UNMET, "; ".join(problems))
         accepted = "accepted CVEs: " + ("; ".join(outputs["cve_acceptances"]) or "none")
         if not ctx.state.release:
-            return Observation(UNMET, f"release {outputs['release']} is not recorded yet; {accepted}", outputs)
-        return Observation(MET, f"release {outputs['release']}; {accepted}", outputs)
+            return Observation(UNMET, f"release {outputs['release']} is not recorded yet; {accepted}")
+        return Observation(MET, f"release {outputs['release']}; {accepted}")
 
     def plan(self, ctx: Any) -> Plan:
         problems, outputs = self.findings(ctx)
