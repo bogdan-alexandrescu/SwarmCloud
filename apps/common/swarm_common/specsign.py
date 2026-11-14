@@ -544,6 +544,182 @@ def canonical_platform_settings(fields: Mapping[str, Any]) -> bytes:
     )
 
 
+#: Per-person signed submissions (contract request 156, request E of
+#: docs/design/workspace-secrets.md section 11.9, accepted by the owner
+#: 2026-11-13). A person signs these bytes with their own key, so swarm-api,
+#: the `sc` plugin and the console must all produce the same ones: an `sc`
+#: keychain key (Ed25519) signs `"<purpose>\n" || spec_digest(bytes)` and a
+#: console passkey takes `spec_digest(bytes)` as its WebAuthn challenge
+#: (section 11.2). No key and no verification live here.
+PERSON_SUBMISSION_PURPOSE = "swarm.person-submission/v1"
+STANDING_GRANT_PURPOSE = "swarm.standing-grant/v1"
+STANDING_GRANT_REVOKE_PURPOSE = "swarm.standing-grant-revoke/v1"
+
+#: How the submitter reached the tenant (section 11.4, the owner's Q P10).
+TENANT_VIA: tuple[str, ...] = ("member", "platform_admin")
+
+#: The headless origins a standing grant may name (section 11.5).
+STANDING_GRANT_ORIGIN_KINDS: tuple[str, ...] = ("schedule", "issue_run", "issue_sweep")
+
+_STATEMENT_SPEC_KEYS = frozenset(("task_id", "spec_format", "spec_digest"))
+_HEX = frozenset("0123456789abcdef")
+
+
+def _required_text(value: Any, what: str) -> str:
+    if not (isinstance(value, str) and value):
+        raise SpecNotCanonical(f"{what} is not a non-empty string")
+    return value
+
+
+def _name_list(value: Any, what: str, *, user_slots: bool = False) -> list[str]:
+    # A set of names: one canonical order, no duplicates, and never "all",
+    # which none of a grant's lists accepts.
+    if not isinstance(value, (list, tuple)):
+        raise SpecNotCanonical(f"{what} is not a list")
+    names = [_required_text(v, f"an entry of {what}") for v in value]
+    if len(set(names)) != len(names):
+        raise SpecNotCanonical(f"{what} names an entry twice")
+    if "all" in names:
+        raise SpecNotCanonical(f"{what} names 'all', which a grant never covers")
+    if user_slots:
+        for name in names:
+            suffix = name[len("git-u-"):]
+            if not (name.startswith("git-u-") and len(suffix) == 16 and set(suffix) <= _HEX):
+                raise SpecNotCanonical(f"{what} entry {name!r} is not a user slot 'git-u-<16 hex>'")
+    return sorted(names, key=lambda n: n.encode("utf-16-be"))
+
+
+def canonical_submission_statement(
+    *,
+    prepared_id: str,
+    tenant_id: str,
+    submitted_by: str,
+    tenant_via: str,
+    issued_at: str,
+    expires_at: str,
+    specs: Any,
+) -> bytes:
+    """JCS of the statement a person signs to submit (design section 11.3).
+
+    {"purpose": "swarm.person-submission/v1", "prepared_id", "tenant_id",
+    "submitted_by", "tenant_via", "issued_at", "expires_at", "specs"}, each
+    spec `{"task_id", "spec_format", "spec_digest"}`: the step's format and
+    the lowercase hex of `spec_digest(canonical_step_spec(...))`. `specs` is
+    sorted by `task_id`, then `spec_format`, then `spec_digest`, so a
+    `browser_if_ui` step's runtime alternate (a second entry under the same
+    task id) has one place. `tenant_via` is one of TENANT_VIA. The times are
+    the strings swarm-api issued; every field is required.
+    """
+    head = {
+        "purpose": PERSON_SUBMISSION_PURPOSE,
+        "prepared_id": _required_text(prepared_id, "the statement's prepared_id"),
+        "tenant_id": _required_text(tenant_id, "the statement's tenant_id"),
+        "submitted_by": _required_text(submitted_by, "the statement's submitted_by"),
+        "tenant_via": tenant_via,
+        "issued_at": _required_text(issued_at, "the statement's issued_at"),
+        "expires_at": _required_text(expires_at, "the statement's expires_at"),
+    }
+    if tenant_via not in TENANT_VIA:
+        raise SpecNotCanonical(f"the statement's tenant_via is not one of {TENANT_VIA}")
+    if not (isinstance(specs, (list, tuple)) and specs):
+        raise SpecNotCanonical("the statement names no spec")
+    entries = []
+    for i, spec in enumerate(specs):
+        if not (isinstance(spec, Mapping) and set(spec) == _STATEMENT_SPEC_KEYS):
+            raise SpecNotCanonical(f"spec {i} is not exactly {sorted(_STATEMENT_SPEC_KEYS)}")
+        spec_format = spec["spec_format"]
+        if not isinstance(spec_format, int) or isinstance(spec_format, bool) or spec_format < 1:
+            raise SpecNotCanonical(f"spec {i}'s spec_format is not a positive integer")
+        digest = spec["spec_digest"]
+        if not (isinstance(digest, str) and len(digest) == 64 and set(digest) <= _HEX):
+            raise SpecNotCanonical(f"spec {i}'s spec_digest is not 64 lowercase hex digits")
+        entries.append(
+            {
+                "task_id": _required_text(spec["task_id"], f"spec {i}'s task_id"),
+                "spec_format": spec_format,
+                "spec_digest": digest,
+            }
+        )
+    entries.sort(key=lambda e: (e["task_id"].encode("utf-16-be"), e["spec_format"], e["spec_digest"]))
+    if any(a == b for a, b in zip(entries, entries[1:])):
+        raise SpecNotCanonical("the statement names one spec twice")
+    return jcs({**head, "specs": entries})
+
+
+def canonical_standing_grant(
+    *,
+    grant_id: str,
+    grantor: str,
+    tenant_id: str,
+    origin: Mapping[str, Any],
+    profiles: Any,
+    secrets: Any,
+    not_before: str,
+    forge: Any = None,
+    mcp_servers: Any = None,
+    expires_at: str | None = None,
+) -> bytes:
+    """JCS of a headless job's standing grant (design section 11.5).
+
+    {"purpose": "swarm.standing-grant/v1", "grant_id", "grantor",
+    "tenant_id", "origin": {"kind", "id"}, "profiles", "secrets", "forge",
+    "mcp_servers", "not_before", "expires_at"}. `origin.kind` is one of
+    STANDING_GRANT_ORIGIN_KINDS. The lists are sets of names, sorted, never
+    "all"; `profiles` names at least one profile, `secrets` may be empty, and
+    `forge` holds only user slots (`git-u-<16 hex>`).
+
+    `expires_at` is optional and absent means no expiry (the owner's Q P4),
+    so an absent one is OMITTED, never written as null. `forge` and
+    `mcp_servers` are optional and an absent or empty list covers nothing,
+    so both are omitted too: a grant has one byte form whichever way its
+    writer spelled "none".
+    """
+    if not (isinstance(origin, Mapping) and set(origin) == {"kind", "id"}):
+        raise SpecNotCanonical("the grant's origin is not exactly {kind, id}")
+    if origin["kind"] not in STANDING_GRANT_ORIGIN_KINDS:
+        raise SpecNotCanonical(f"the grant's origin kind is not one of {STANDING_GRANT_ORIGIN_KINDS}")
+    grant: dict[str, Any] = {
+        "purpose": STANDING_GRANT_PURPOSE,
+        "grant_id": _required_text(grant_id, "the grant's grant_id"),
+        "grantor": _required_text(grantor, "the grant's grantor"),
+        "tenant_id": _required_text(tenant_id, "the grant's tenant_id"),
+        "origin": {"kind": origin["kind"], "id": _required_text(origin["id"], "the grant's origin id")},
+        "profiles": _name_list(profiles, "the grant's profiles"),
+        "secrets": _name_list(secrets, "the grant's secrets"),
+        "not_before": _required_text(not_before, "the grant's not_before"),
+    }
+    if not grant["profiles"]:
+        raise SpecNotCanonical("the grant names no profile")
+    if forge:
+        grant["forge"] = _name_list(forge, "the grant's forge slots", user_slots=True)
+    elif forge is not None and not isinstance(forge, (list, tuple)):
+        raise SpecNotCanonical("the grant's forge slots are not a list")
+    if mcp_servers:
+        grant["mcp_servers"] = _name_list(mcp_servers, "the grant's MCP servers")
+    elif mcp_servers is not None and not isinstance(mcp_servers, (list, tuple)):
+        raise SpecNotCanonical("the grant's MCP servers are not a list")
+    if expires_at is not None:
+        grant["expires_at"] = _required_text(expires_at, "the grant's expires_at")
+    return jcs(grant)
+
+
+def canonical_standing_grant_revoke(*, grant_id: str, grantor: str, revoked_at: str) -> bytes:
+    """JCS of {"purpose": "swarm.standing-grant-revoke/v1", "grant_id", "grantor", "revoked_at"}.
+
+    The grantor signs it to end one grant (section 11.5). With no expiry by
+    default (Q P4), revocation is how a grant ends, so its bytes have this
+    one definition too.
+    """
+    return jcs(
+        {
+            "purpose": STANDING_GRANT_REVOKE_PURPOSE,
+            "grant_id": _required_text(grant_id, "the revoke's grant_id"),
+            "grantor": _required_text(grantor, "the revoke's grantor"),
+            "revoked_at": _required_text(revoked_at, "the revoke's revoked_at"),
+        }
+    )
+
+
 def spec_digest(canonical: bytes) -> bytes:
     """SHA-256 of the canonical bytes: what the KMS key signs."""
     return hashlib.sha256(canonical).digest()
