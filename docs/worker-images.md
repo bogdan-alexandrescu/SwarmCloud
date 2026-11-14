@@ -349,12 +349,27 @@ own state is the agent's and is checkpointed with it.
   dispatcher names it to the worker as `SWARM_CACHE_ROOT`; the attempt's
   caches are `/cache/<attempt>/`. A full cache is the cache volume's limit,
   never the workspace's. Since CACHE-PVC (owner decision 2026-10-15) it is a
-  **20 GiB pd-balanced network disk**: a generic ephemeral volume on the
-  `swarm-cache-pd-balanced` StorageClass
-  (`kubernetes/storage/cache-storage-class.yaml`), ReadWriteOnce, created by
-  the ephemeral-volume controller with the pod and deleted with it
-  (`CACHE_STORAGE_CLASS`, `CACHE_VOLUME_GIB` in
-  `apps/scheduler/scheduler/dispatch.py`). **Why:** CACHE-SCRATCH's first
+  **20 GiB pd-balanced network disk**: a generic ephemeral volume,
+  ReadWriteOnce, created by the ephemeral-volume controller with the pod and
+  deleted with it (`CACHE_VOLUME_GIB` in
+  `apps/scheduler/scheduler/dispatch.py`). Its class is
+  `swarm-cache-pd-balanced-xfs` (`CACHE_STORAGE_CLASS`,
+  `kubernetes/storage/cache-storage-class.yaml`), formatted **xfs** since
+  #4061: the first class, `swarm-cache-pd-balanced`, set no fstype, so the
+  driver made ext4 at one inode per 16 KiB, 1,310,720 on 20 GiB, and a run of
+  small files used every one with 14 GB free; xfs allocates inodes as files
+  are made, so the disk runs out of space first. **Pods do not claim the xfs
+  class yet.** They claim the older, applied ext4 `swarm-cache-pd-balanced`
+  until the operator applies the xfs class (`kubernetes/apply.sh --policies
+  --confirm`; install manifest entry `cluster-policy.cache-storage-class`):
+  the release does not apply cluster-scoped manifests, and a claim naming a
+  class not yet in the cluster left every GKE pod Unschedulable
+  (`CLAIMED_CACHE_STORAGE_CLASS` in `dispatch.py` says why, and is the one line
+  that moves the claim to xfs). Until then a run of small files can still use
+  every inode of the cache with space free; the worker then says so, naming
+  inodes, in a checkpoint write's error and in its heartbeat warning
+  (`agent_worker/scratchusage.py`), and its heartbeat carries the cache
+  volume's inode use as `scratch_cache`. **Why:** CACHE-SCRATCH's first
   cache was a 2 GiB local emptyDir, and task_247c87a8714c4977921a was evicted
   on it twice (`EmptyDir volume "cache" exceeds 2Gi`); Autopilot caps a pod's
   ephemeral storage at 10 GiB and the split was already 10. A PVC is not

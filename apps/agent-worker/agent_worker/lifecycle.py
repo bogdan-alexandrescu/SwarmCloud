@@ -13061,6 +13061,9 @@ class Worker:
         self._log_memory_guard_kills()
         scratch = self._scratch_reading()
         fresh = scratch is not None and self._scratch_crossed(scratch)
+        cache = self._cache_reading()
+        if cache is not None and self._cache_crossed(cache):
+            fresh = True
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1 or fresh:
             # OUT OF CADENCE when a scratch volume crossed a mark (#2436): kubelet
             # evicts with no grace, so the reading the reconciler reports must
@@ -13069,6 +13072,8 @@ class Worker:
             detail = self._usage_reading()
             if scratch:
                 detail["scratch"] = scratch
+            if cache:
+                detail["scratch_cache"] = cache
             self.control.emit(EventType.HEARTBEAT, detail)
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
             # THE LIVE READING DETAILS DRAWS, on the attempt itself (contract
@@ -13127,6 +13132,58 @@ class Worker:
             elif used < marks[name] + limit // 10:
                 continue
             marks[name] = used
+            crossed = True
+        return crossed
+
+    #: What the cache volume was warned of this attempt: `inodes`, `space`.
+    _cache_warned: set[str] | None = None
+
+    def _cache_reading(self) -> dict[str, Any] | None:
+        """This beat's bytes and inodes of the pod's cache volume (#4061), or None. Never raises.
+
+        None on Cloud Run, where there is no cache volume (`cfg.cache_root`).
+        """
+        from . import scratchusage as scratch_mod
+
+        root = getattr(self.cfg, "cache_root", None)
+        if root is None:
+            return None
+        try:
+            return scratch_mod.cache_reading(Path(root))
+        except Exception as exc:
+            self.log.warning(
+                "could not read the cache volume", error=f"{type(exc).__name__}: {exc}"
+            )
+            return None
+
+    def _cache_crossed(self, cache: dict[str, Any]) -> bool:
+        """Whether the cache volume newly passed two thirds of its inodes or of its space.
+
+        Each is warned once per attempt, in the worker's log, worded by
+        `scratchusage.cache_warnings`: inodes named as inodes while bytes are
+        free, which is the out-of-inodes ENOSPC a checkpoint write reports
+        (`checkpoint._local_room`). A first warning asks for an out-of-cadence
+        reading, so the HEARTBEAT that carries it is the one the warning saw.
+        """
+        from . import scratchusage as scratch_mod
+
+        warned = self._cache_warned if self._cache_warned is not None else set()
+        self._cache_warned = warned
+        root = Path(self.cfg.cache_root)
+        crossed = False
+        for kind, words in scratch_mod.cache_warnings(root, cache).items():
+            if kind in warned:
+                continue
+            warned.add(kind)
+            self.log.warning(
+                words,
+                volume="cache",
+                running_out_of=kind,
+                used_bytes=cache.get("used_bytes"),
+                total_bytes=cache.get("total_bytes"),
+                inodes_used=cache.get("inodes_used"),
+                inodes_total=cache.get("inodes_total"),
+            )
             crossed = True
         return crossed
 
