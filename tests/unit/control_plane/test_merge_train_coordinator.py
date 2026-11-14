@@ -230,10 +230,13 @@ def ctx(db, tokens, group_map, objects, github, clock):
 
 
 def _settings(db, tenant_id="eng", **values):
+    # `gather_min` 1: these tests are about composing, testing and landing,
+    # not gathering (test_merge_train_gather_platform.py), so one rider rides.
     db.docs[f"{mergesettings.COLLECTION}/{tenant_id}"] = {mergesettings.FIELD: {
         "tenant_id": tenant_id, "mode": "train",
         "train_size": mergesettings.TRAIN_SIZE_DEFAULT,
-        "max_train_age_minutes": mergesettings.MAX_TRAIN_AGE_DEFAULT, **values,
+        "max_train_age_minutes": mergesettings.MAX_TRAIN_AGE_DEFAULT, "gather_min": 1,
+        **values,
     }}
 
 
