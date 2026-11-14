@@ -17,12 +17,16 @@ no dependency, because `swarm_common` declares none. So it is held to:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import random
+import secrets
 import struct
 
 import pytest
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from swarm_common import specsign
 from swarm_common.specsign import SpecNotCanonical, canonical_step_spec, jcs, spec_digest
@@ -581,3 +585,289 @@ def test_a_model_class_added_to_an_older_format_has_no_canonical_form(spec_forma
             task_id="task_0123456789abcdef",
             spec_format=spec_format,
         )
+
+
+# ---------------------------------------------------------------------------
+# Per-person signed submissions (contract request 155, design
+# docs/design/workspace-secrets.md section 11.9, request E): the submission
+# statement, the standing grant and its revoke statement, one definition.
+# A person's `sc` key is Ed25519 and signs "<purpose>\n" || SHA-256(bytes)
+# (section 11.2); the keys below are generated per test, never literals.
+# ---------------------------------------------------------------------------
+
+def _hex_digest() -> str:
+    return hashlib.sha256(secrets.token_bytes(32)).hexdigest()
+
+
+def _statement(**overrides):
+    fields = {
+        "prepared_id": "prep_" + secrets.token_hex(8),
+        "tenant_id": "u-" + secrets.token_hex(8),
+        "submitted_by": "person@example.invalid",
+        "tenant_via": "member",
+        "issued_at": "2026-11-13T10:00:00Z",
+        "expires_at": "2026-11-13T10:10:00Z",
+        "specs": [
+            {"task_id": "task_b", "spec_format": 8, "spec_digest": _hex_digest()},
+            {"task_id": "task_a", "spec_format": 8, "spec_digest": _hex_digest()},
+        ],
+    }
+    fields.update(overrides)
+    return fields
+
+
+def _grant(**overrides):
+    fields = {
+        "grant_id": "grant_" + secrets.token_hex(8),
+        "grantor": "person@example.invalid",
+        "tenant_id": "u-" + secrets.token_hex(8),
+        "origin": {"kind": "schedule", "id": "sched_" + secrets.token_hex(4)},
+        "profiles": ["claude-code-browser"],
+        "secrets": ["typesafe-key"],
+        "forge": ["git-u-" + secrets.token_hex(8)],
+        "mcp_servers": ["docs"],
+        "not_before": "2026-11-13T10:00:00Z",
+        "expires_at": None,
+    }
+    fields.update(overrides)
+    return fields
+
+
+def _sign(key: Ed25519PrivateKey, purpose: str, canonical: bytes) -> bytes:
+    return key.sign(purpose.encode("utf-8") + b"\n" + spec_digest(canonical))
+
+
+def _verify(public_key, purpose: str, canonical: bytes, signature: bytes) -> None:
+    public_key.verify(signature, purpose.encode("utf-8") + b"\n" + spec_digest(canonical))
+
+
+def test_the_three_purposes_are_the_designs():
+    assert specsign.PERSON_SUBMISSION_PURPOSE == "swarm.person-submission/v1"
+    assert specsign.STANDING_GRANT_PURPOSE == "swarm.standing-grant/v1"
+    assert specsign.STANDING_GRANT_REVOKE_PURPOSE == "swarm.standing-grant-revoke/v1"
+
+
+def test_a_signed_submission_statement_verifies_round_trip():
+    key = Ed25519PrivateKey.generate()
+    fields = _statement()
+    canonical = specsign.canonical_submission_statement(**fields)
+    signature = _sign(key, specsign.PERSON_SUBMISSION_PURPOSE, canonical)
+    # The verifier rebuilds the bytes from the stored fields, not the signer's copy.
+    rebuilt = specsign.canonical_submission_statement(**json.loads(json.dumps(fields)))
+    assert rebuilt == canonical
+    _verify(key.public_key(), specsign.PERSON_SUBMISSION_PURPOSE, rebuilt, signature)
+    assert json.loads(canonical)["purpose"] == specsign.PERSON_SUBMISSION_PURPOSE
+
+
+def test_a_statement_whose_spec_digest_was_tampered_with_is_refused():
+    key = Ed25519PrivateKey.generate()
+    fields = _statement()
+    signature = _sign(
+        key, specsign.PERSON_SUBMISSION_PURPOSE, specsign.canonical_submission_statement(**fields)
+    )
+    tampered = json.loads(json.dumps(fields))
+    tampered["specs"][0]["spec_digest"] = _hex_digest()
+    with pytest.raises(InvalidSignature):
+        _verify(
+            key.public_key(),
+            specsign.PERSON_SUBMISSION_PURPOSE,
+            specsign.canonical_submission_statement(**tampered),
+            signature,
+        )
+
+
+def test_a_statement_signed_by_another_key_is_refused():
+    signer, other = Ed25519PrivateKey.generate(), Ed25519PrivateKey.generate()
+    canonical = specsign.canonical_submission_statement(**_statement())
+    signature = _sign(signer, specsign.PERSON_SUBMISSION_PURPOSE, canonical)
+    with pytest.raises(InvalidSignature):
+        _verify(other.public_key(), specsign.PERSON_SUBMISSION_PURPOSE, canonical, signature)
+
+
+def test_a_statement_signature_does_not_verify_as_a_standing_grant():
+    key = Ed25519PrivateKey.generate()
+    canonical = specsign.canonical_submission_statement(**_statement())
+    signature = _sign(key, specsign.PERSON_SUBMISSION_PURPOSE, canonical)
+    with pytest.raises(InvalidSignature):
+        _verify(key.public_key(), specsign.STANDING_GRANT_PURPOSE, canonical, signature)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("prepared_id", "prep_other"),
+        ("tenant_id", "g-other"),
+        ("submitted_by", "other@example.invalid"),
+        ("tenant_via", "platform_admin"),
+        ("issued_at", "2026-11-13T10:00:01Z"),
+        ("expires_at", "2026-11-13T10:10:01Z"),
+    ],
+)
+def test_a_statements_bytes_change_when_any_field_changes(field, value):
+    fields = _statement()
+    before = specsign.canonical_submission_statement(**fields)
+    after = specsign.canonical_submission_statement(**{**fields, field: value})
+    assert before != after
+
+
+def test_a_statements_bytes_change_when_a_spec_entry_changes():
+    fields = _statement()
+    before = specsign.canonical_submission_statement(**fields)
+    for key, value in (("task_id", "task_c"), ("spec_format", 7), ("spec_digest", _hex_digest())):
+        specs = [dict(s) for s in fields["specs"]]
+        specs[1][key] = value
+        assert specsign.canonical_submission_statement(**{**fields, "specs": specs}) != before
+    assert specsign.canonical_submission_statement(**{**fields, "specs": fields["specs"][:1]}) != before
+
+
+def test_the_statements_specs_order_is_canonical():
+    fields = _statement()
+    forward = specsign.canonical_submission_statement(**fields)
+    backward = specsign.canonical_submission_statement(**{**fields, "specs": fields["specs"][::-1]})
+    assert forward == backward
+    assert [s["task_id"] for s in json.loads(forward)["specs"]] == ["task_a", "task_b"]
+
+
+def test_a_runtime_alternates_second_digest_is_covered_under_the_same_task_id():
+    fields = _statement()
+    alternate = {"task_id": "task_a", "spec_format": 8, "spec_digest": _hex_digest()}
+    with_alternate = {**fields, "specs": fields["specs"] + [alternate]}
+    canonical = specsign.canonical_submission_statement(**with_alternate)
+    assert canonical != specsign.canonical_submission_statement(**fields)
+    assert len(json.loads(canonical)["specs"]) == 3
+    reordered = {**with_alternate, "specs": with_alternate["specs"][::-1]}
+    assert specsign.canonical_submission_statement(**reordered) == canonical
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"tenant_via": "admin"},
+        {"tenant_id": ""},
+        {"submitted_by": None},
+        {"expires_at": None},
+        {"specs": []},
+        {"specs": [{"task_id": "task_a", "spec_format": 8}]},
+        {"specs": [{"task_id": "task_a", "spec_format": 8, "spec_digest": "AB" * 32}]},
+        {"specs": [{"task_id": "task_a", "spec_format": True, "spec_digest": "ab" * 32}]},
+        {"specs": [{"task_id": "task_a", "spec_format": 8, "spec_digest": "ab" * 32, "x": 1}]},
+        {"specs": [{"task_id": "task_a", "spec_format": 8, "spec_digest": "ab" * 32}] * 2},
+    ],
+)
+def test_a_malformed_statement_has_no_canonical_form(overrides):
+    with pytest.raises(SpecNotCanonical):
+        specsign.canonical_submission_statement(**_statement(**overrides))
+
+
+def test_a_signed_standing_grant_and_its_revoke_verify_round_trip():
+    key = Ed25519PrivateKey.generate()
+    fields = _grant(expires_at="2027-11-13T10:00:00Z")
+    canonical = specsign.canonical_standing_grant(**fields)
+    signature = _sign(key, specsign.STANDING_GRANT_PURPOSE, canonical)
+    rebuilt = specsign.canonical_standing_grant(**json.loads(json.dumps(fields)))
+    _verify(key.public_key(), specsign.STANDING_GRANT_PURPOSE, rebuilt, signature)
+    with pytest.raises(InvalidSignature):
+        _verify(Ed25519PrivateKey.generate().public_key(), specsign.STANDING_GRANT_PURPOSE, rebuilt, signature)
+    widened = specsign.canonical_standing_grant(**{**fields, "secrets": ["typesafe-key", "forge-admin"]})
+    with pytest.raises(InvalidSignature):
+        _verify(key.public_key(), specsign.STANDING_GRANT_PURPOSE, widened, signature)
+
+    revoke = specsign.canonical_standing_grant_revoke(
+        grant_id=fields["grant_id"], grantor=fields["grantor"], revoked_at="2026-12-01T00:00:00Z"
+    )
+    assert json.loads(revoke) == {
+        "purpose": specsign.STANDING_GRANT_REVOKE_PURPOSE,
+        "grant_id": fields["grant_id"],
+        "grantor": fields["grantor"],
+        "revoked_at": "2026-12-01T00:00:00Z",
+    }
+    _verify(
+        key.public_key(),
+        specsign.STANDING_GRANT_REVOKE_PURPOSE,
+        revoke,
+        _sign(key, specsign.STANDING_GRANT_REVOKE_PURPOSE, revoke),
+    )
+
+
+def test_a_grant_with_no_expiry_omits_expires_at_rather_than_writing_null():
+    canonical = specsign.canonical_standing_grant(**_grant(expires_at=None))
+    assert "expires_at" not in json.loads(canonical)
+    assert b"null" not in canonical
+    fields = _grant()
+    del fields["expires_at"]
+    assert specsign.canonical_standing_grant(**fields) == specsign.canonical_standing_grant(
+        **{**fields, "expires_at": None}
+    )
+
+
+def test_an_absent_or_empty_forge_or_mcp_list_has_one_form():
+    fields = _grant(forge=None, mcp_servers=None)
+    absent = specsign.canonical_standing_grant(**fields)
+    assert specsign.canonical_standing_grant(**{**fields, "forge": [], "mcp_servers": []}) == absent
+    assert "forge" not in json.loads(absent) and "mcp_servers" not in json.loads(absent)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("grant_id", "grant_other"),
+        ("grantor", "other@example.invalid"),
+        ("tenant_id", "g-other"),
+        ("origin", {"kind": "issue_run", "id": "run_1"}),
+        ("origin", {"kind": "schedule", "id": "sched_other"}),
+        ("profiles", ["claude-code-browser", "jev-browser"]),
+        ("secrets", ["other-key"]),
+        ("forge", None),
+        ("mcp_servers", ["docs", "tracker"]),
+        ("not_before", "2026-11-13T10:00:01Z"),
+        ("expires_at", "2027-11-13T10:00:00Z"),
+    ],
+)
+def test_a_grants_bytes_change_when_any_field_changes(field, value):
+    fields = _grant()
+    assert specsign.canonical_standing_grant(**fields) != specsign.canonical_standing_grant(
+        **{**fields, field: value}
+    )
+
+
+def test_a_grants_lists_are_canonical_in_order():
+    fields = _grant(profiles=["jev-browser", "claude-code-browser"], secrets=["b", "a"], mcp_servers=["y", "x"])
+    reordered = {
+        **fields,
+        "profiles": fields["profiles"][::-1],
+        "secrets": fields["secrets"][::-1],
+        "mcp_servers": fields["mcp_servers"][::-1],
+    }
+    assert specsign.canonical_standing_grant(**fields) == specsign.canonical_standing_grant(**reordered)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"secrets": ["all"]},
+        {"forge": ["all"]},
+        {"mcp_servers": ["all"]},
+        {"secrets": "all"},
+        {"secrets": ["a", "a"]},
+        {"profiles": []},
+        {"forge": ["git"]},
+        {"forge": ["git-r-" + "0" * 16]},
+        {"origin": {"kind": "cron", "id": "x"}},
+        {"origin": {"kind": "schedule", "id": ""}},
+        {"origin": {"kind": "schedule", "id": "x", "extra": 1}},
+        {"not_before": None},
+        {"expires_at": ""},
+        {"grantor": ""},
+    ],
+)
+def test_a_malformed_grant_has_no_canonical_form(overrides):
+    with pytest.raises(SpecNotCanonical):
+        specsign.canonical_standing_grant(**_grant(**overrides))
+
+
+@pytest.mark.parametrize("field", ["grant_id", "grantor", "revoked_at"])
+def test_a_revoke_statement_missing_a_field_has_no_canonical_form(field):
+    fields = {"grant_id": "grant_1", "grantor": "person@example.invalid", "revoked_at": "2026-12-01T00:00:00Z"}
+    fields[field] = ""
+    with pytest.raises(SpecNotCanonical):
+        specsign.canonical_standing_grant_revoke(**fields)
