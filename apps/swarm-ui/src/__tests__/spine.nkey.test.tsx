@@ -123,6 +123,31 @@ describe('the N key while a dialog or the side editor is open', () => {
     expect(go).not.toHaveBeenCalled()
   })
 
+  it("opens /submit and help beside a schedule's non-modal side sheet, not beside a modal over it", () => {
+    // MUTATION: drop `:not(aside.as-sheet)` and N and ? do nothing while a
+    // schedule is open, though the sheet holds no draft and the list beside
+    // it stays usable.
+    const go = shell(
+      <aside className="as-sheet" role="dialog" aria-label="Sweep sch_a">
+        <button type="button">Edit</button>
+      </aside>,
+    )
+    fireEvent.keyDown(document.querySelector('aside.as-sheet button')!, { key: 'n' })
+    expect(go).toHaveBeenCalledWith('submit')
+    fireEvent.keyDown(document.body, { key: '?', shiftKey: true })
+    expect(go).toHaveBeenCalledTimes(2)
+    cleanup()
+    const held = shell(
+      <aside className="as-sheet" role="dialog" aria-label="Sweep sch_a">
+        <div role="dialog" aria-modal="true" aria-label="Merge">
+          <button type="button">Cancel</button>
+        </div>
+      </aside>,
+    )
+    fireEvent.keyDown(document.querySelector('[aria-modal="true"] button')!, { key: 'n' })
+    expect(held).not.toHaveBeenCalled()
+  })
+
   it('opens /submit again once the dialog is gone', () => {
     const go = vi.fn()
     const view = (open: boolean) => (
