@@ -2262,6 +2262,9 @@ class Worker:
         from the signed spec (`indexrun.target`). A write that fails leaves
         the index without `graph.manifest_digest`, which promotion reads as
         no graph; the write is resumable, so the next run completes it.
+        The write measures the answer latency only when the signed prompt
+        says so (`indexrun.measure_latency_hours`, #1840): opt-in per
+        registration, and a measurement never fails the write.
         """
         cfg, ws = self.cfg, self.ws
         assert ws is not None
@@ -2328,6 +2331,8 @@ class Worker:
             indexrun_mod.graph_write_argv(
                 program, work=ws.work, artifacts=ws.artifacts, where=where,
                 bucket=cfg.artifact_bucket, base_sha=self._index_base,
+                measure_latency_hours=indexrun_mod.measure_latency_hours(
+                    (self._task or {}).get("input")),
             ),
             cwd=ws.work,
             env=env,
