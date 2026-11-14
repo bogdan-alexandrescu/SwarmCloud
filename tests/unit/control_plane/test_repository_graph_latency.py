@@ -67,7 +67,10 @@ def graph_doc(symbols: int = 30) -> dict:
         "symbols": syms, "call_edges": edges, "symbol_test_map": [],
         "files": [{"path": f"src/m{i}.py"} for i in range(5)],
         "terms": [{"term": "user", "postings": {"src/m0.py": [["load_user_0", 1, 3]]}}],
-        "term_stats": {"documents": symbols, "average_length": 3.0},
+        # The extractor's whole term_stats: the graph server refuses to search
+        # a term index without the tokenizer version it was built with.
+        "term_stats": {"documents": symbols, "average_length": 3.0, "k1": 1.2, "b": 0.75,
+                       "tokenizer": "1"},
     }
 
 
