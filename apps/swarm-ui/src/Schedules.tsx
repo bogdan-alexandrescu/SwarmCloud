@@ -956,7 +956,8 @@ function AnswerRow({ rows, summary, inbox }: { rows: Listed[]; summary: ListSumm
   const tripped = rows.filter((s) => s.state_word === 'paused_by_tripwire').length
   const failing = rows.filter((s) => s.state_word === 'failing').length
   const parts = [
-    pending === null ? null : pending > 0 ? pluralise(pending, 'approval') : null,
+    // An inbox that was not read is said, never left out as if none waited (visual QA).
+    pending === null ? 'approvals not read' : pending > 0 ? pluralise(pending, 'approval') : null,
     tripped > 0 ? pluralise(tripped, 'tripwire') : null,
     failing > 0 ? `${failing} failing` : null,
   ].filter((p): p is string => p !== null)
@@ -1130,7 +1131,10 @@ function SchedulesBody({ d, go, scopeSwitch, open }: { d: Landing; go: (to: stri
     return (
       <div className="acd-page" data-testid="acd-none">
         {scopeSwitch !== null && <div className="acd-bar-row">{scopeSwitch}</div>}
+        {/* The label only: the mock-up's starter cards (a type per card, each with Use) are the owner's pick
+            for a follow-up lane under #2417, not this build. */}
         <EmptyState kind="empty" heading="No schedules" action={newSchedule}>
+          <span className="acd-dim">Start from a type</span>{' '}
           <Info about="Schedules" tip="A schedule fires work on a cron, from a type. Nothing runs until you make one." />
         </EmptyState>
         <WaitingPanel summary={d.summary} inbox={inbox} rows={rows} go={go} />
