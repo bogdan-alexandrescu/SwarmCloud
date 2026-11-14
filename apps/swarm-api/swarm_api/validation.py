@@ -1899,8 +1899,8 @@ def check_repository_ref(value: str | None) -> str | None:
 
 class RepositoryRefNotFound(ValidationFailed):
     """422 `repository_ref_not_found`: the forge has neither a branch nor a tag
-    of that name (#2726), or no commit of that full sha (#3315), in a
-    repository it can read."""
+    of that name (#2726), no commit of that full sha (#3315), or not the ref a
+    full refname names (#3566), in a repository it can read."""
 
     code = "repository_ref_not_found"
 
@@ -1990,9 +1990,47 @@ def ref_needs_lookup(value: str | None) -> bool:
     return bool(value)
 
 
+#: What `ref_kind` reads a `repository_ref` as, and the name it is asked by.
+REF_COMMIT = "commit"
+REF_BRANCH = "branch"
+REF_TAG = "tag"
+#: Any other full refname, `refs/pull/<n>/head` included: asked as that ref.
+REF_FULL = "ref"
+#: A bare name: a branch, else a tag (`git clone --branch` reads it so).
+REF_NAME = "name"
+
+_HEADS = "refs/heads/"
+_TAGS = "refs/tags/"
+
+
+def ref_kind(value: str) -> tuple[str, str]:
+    """What the forge is asked about for `repository_ref`, as (kind, name).
+
+    The worker fetches a full refname (`refs/...`) as that exact ref, the way
+    it fetches a sha (`gitops.is_full_refname`, #3347), so a full refname is
+    a ref here too (#3566): `refs/heads/<b>` is the branch <b>, `refs/tags/<t>`
+    the tag <t>, and any other `refs/...` -- a pull request's
+    `refs/pull/<n>/head` -- is asked as itself. swarm-api's report-only lines
+    of 9-11 November read both as "neither a branch nor a tag".
+    """
+    if is_full_sha(value):
+        return REF_COMMIT, value
+    if value.startswith(_HEADS) and len(value) > len(_HEADS):
+        return REF_BRANCH, value[len(_HEADS):]
+    if value.startswith(_TAGS) and len(value) > len(_TAGS):
+        return REF_TAG, value[len(_TAGS):]
+    if value.startswith("refs/"):
+        return REF_FULL, value
+    return REF_NAME, value
+
+
 def swarm_task_of_ref(value: str) -> str | None:
-    """The task id a `swarm/<task id>` branch names, else None."""
-    match = _SWARM_TASK_BRANCH_RE.match(value)
+    """The task id a `swarm/<task id>` branch names, else None: a bare name or
+    a full branch refname (`refs/heads/swarm/<task id>`)."""
+    kind, name = ref_kind(value)
+    if kind not in (REF_BRANCH, REF_NAME):
+        return None
+    match = _SWARM_TASK_BRANCH_RE.match(name)
     return match.group("task_id") if match else None
 
 
@@ -2015,12 +2053,24 @@ def repository_ref_not_found(
     base = default_branch or "the default branch"
     detail: dict[str, Any] = {"field": "repository_ref", "repository_ref": value,
                               "repository": repository}
-    if is_full_sha(value):
+    kind, name = ref_kind(value)
+    if kind == REF_COMMIT:
         # #3315: a sha names no task and no pull request.
         return RepositoryRefNotFound(
             f"repository_ref {value} is not a commit of {repository} that GitHub serves; "
             f"send a pushed commit's full sha, a branch or tag name, or no repository_ref "
             f"to start from {base}.",
+            detail=detail,
+        )
+    if task_id is None and kind != REF_NAME:
+        # #3566: a full refname was asked as the one kind of ref it names.
+        what = {REF_BRANCH: f"branch {name!r}", REF_TAG: f"tag {name!r}"}.get(
+            kind, "such ref")
+        return RepositoryRefNotFound(
+            f"repository_ref {value!r} is not a {kind} of {repository}: GitHub has no "
+            f"{what}; it may have been deleted. Send an existing ref, branch or tag, a "
+            f"full {_FULL_SHA_LENGTH}-character sha, or no repository_ref to start from "
+            f"{base}.",
             detail=detail,
         )
     if task_id is None:
