@@ -986,8 +986,11 @@ const loadFrameOnboarding = () => loadOnboarding()
  * WHAT SITS OVER THE PAGE AND OWNS THE KEYBOARD WHILE IT IS OPEN, for the N
  * key. `aside.adm-side` is Pool limits' side editor (AdminSettings.tsx), which
  * is not a dialog but holds a draft and a typed confirmation N must not drop.
+ * One schedule's side sheet (`aside.as-sheet`, ScheduleDetail.tsx) is a
+ * dialog only to be announced: it is non-modal, holds no draft and sits beside
+ * the usable list, so N and `?` still work while it is open.
  */
-const OVER_THE_PAGE = '[role="dialog"], [aria-modal="true"], aside.adm-side'
+const OVER_THE_PAGE = '[role="dialog"]:not(aside.as-sheet), [aria-modal="true"], aside.adm-side'
 /** N and `?`, as the shortcut table spells them (G1-21). */
 const SUBMIT_SHORTCUT = shortcut('anywhere', 'n')
 const HELP_SHORTCUT = shortcut('anywhere', '?')
