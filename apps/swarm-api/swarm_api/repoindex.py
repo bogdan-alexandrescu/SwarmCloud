@@ -148,6 +148,7 @@ from .repositories import (
     ON_CHANGE_PUSHED,
     Repositories,
     keep_versions_of,
+    measure_latency_hours_of,
     min_change_interval_of,
     settle_relation,
 )
@@ -287,6 +288,13 @@ LSP_COST_LINE = "swarm-index-lsp-cost: "
 #: #2991): the weekly full run (`choose_kind`). In the signed prompt for
 #: BASE_LINE's reason; `metadata.lsp_base_sha` is this service's record.
 LSP_BASE_LINE = "swarm-index-lsp-base: "
+#: The prompt line that tells the WORKER to have the graph write measure the
+#: answer latency (`agent_worker.indexrun.MEASURE_LATENCY_LINE`; part of
+#: #1840): the prefix and whole hours, from the registration's opt-in
+#: `index.measure_latency_hours` (`repositories.measure_latency_hours_of`).
+#: The worker passes it as `--measure-latency-hours`; no line, no
+#: measurement. In the signed prompt for BASE_LINE's reason.
+MEASURE_LATENCY_LINE = "swarm-index-measure-latency-hours: "
 
 #: §3.4: incremental only when the diff touches fewer than this many files.
 #: GitHub's compare lists at most 300 changed files, so a diff of 300 or more
@@ -959,6 +967,7 @@ def indexer_prompt(
     repository: str, commit_sha: str, branch: str, *, tenant_id: str, repo_id: str,
     base_sha: str | None = None, keep: Sequence[str] | None = None,
     lsp_costs: Mapping[str, int] | None = None, lsp_base_sha: str | None = None,
+    measure_latency_hours: int | None = None,
 ) -> str:
     """The indexer's instructions. Composed here from the registration; never a caller's text.
 
@@ -1041,6 +1050,9 @@ def indexer_prompt(
         + (f"\n\n{LSP_COST_LINE}"
            + " ".join(f"{name}={seconds}" for name, seconds in sorted(lsp_costs.items()))
            + "\n" if lsp_costs else "")
+        # ... and whether the graph write measures the answer latency (MEASURE_LATENCY_LINE).
+        + (f"\n\n{MEASURE_LATENCY_LINE}{measure_latency_hours}\n"
+           if measure_latency_hours is not None else "")
     )
 
 
@@ -1064,7 +1076,9 @@ def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full",
     The timeout follows the promoted index's size (`index_timeout_seconds`,
     lane INDEX-BUDGETS), and what each language server cost in the last
     promoted full run is named in `LSP_COST_LINE`; both are read from the
-    registration's own `index`, which only promotion writes.
+    registration's own `index`, which only promotion writes. The opt-in
+    `index.measure_latency_hours` setting (#1840) is named in
+    `MEASURE_LATENCY_LINE`, and only when set to a value the settings accept.
 
     `model_class` is `INDEXER_MODEL_CLASS` (#2524); `RepoIndex` passes
     `index_model_class`, None where the deployment pins no sonnet model.
@@ -1089,6 +1103,7 @@ def indexer_task(record: Mapping[str, Any], commit_sha: str, kind: str = "full",
             tenant_id=record["tenant_id"], repo_id=record["repo_id"],
             base_sha=base_sha if kind == "incremental" else None, keep=keep,
             lsp_costs=_valid_costs(index.get("lsp_costs")), lsp_base_sha=lsp_base_sha,
+            measure_latency_hours=measure_latency_hours_of(index),
         )},
         priority=INDEX_PRIORITY,
         repository_url=record["repository_url"],
@@ -3978,6 +3993,7 @@ def _claim_expired(index: Mapping[str, Any], now: datetime) -> bool:
 
 __all__ = [
     "BASE_INDEX_FILE", "BASE_LINE", "KEEP_LINE", "LSP_BASE_LINE", "LSP_COST_LINE",
+    "MEASURE_LATENCY_LINE",
     "INDEX_TIMEOUT_TABLE",
     "MAX_INDEX_TIMEOUT_SECONDS", "index_timeout_seconds", "lsp_costs_of", "source_files_of", "SWEEP_PHASE", "kept_commits", "pinned_commits", "retention_of",
     "CONFIG_DIRECTORIES", "CONFIG_FILENAMES", "CONFIG_GLOBS",

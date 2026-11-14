@@ -213,6 +213,16 @@ KEEP_VERSIONS_RANGE = (1, 100)
 #: found no index for it. A day is the longest a step's base is expected to
 #: wait for its index; at the two-hour change interval it is 12 versions.
 KEEP_VERSIONS_MIN_AGE_HOURS = 24
+#: The indexer's opt-in answer latency measurement (part of #1840): with
+#: `index.measure_latency_hours` set, every index run's graph write is given
+#: `--measure-latency-hours N` and times the answer battery over the new
+#: snapshot, at most once per N hours (repo_graph_shards.py `write_latency`),
+#: for the graph-latency-report schedule. NO DEFAULT: absent means off, and a
+#: registration that never set it stores no key (`"off"` removes it again),
+#: so turning it on is a decision per repository, never a platform-wide one.
+#: Whole hours, 1 to a week, the range of `interval_hours`.
+MEASURE_LATENCY_HOURS_RANGE = (1, 168)
+MEASURE_LATENCY_OFF = "off"
 
 # The graph settings (repo-index.md §6.2, revised 2026-10-04). Stored with
 # their defaults so lane RI9 reads a value rather than a gap; not patchable
@@ -438,6 +448,16 @@ def keep_versions_of(index: Mapping[str, Any] | None) -> int:
     return KEEP_VERSIONS_DEFAULT
 
 
+def measure_latency_hours_of(index: Mapping[str, Any] | None) -> int | None:
+    """The registration's `index.measure_latency_hours`, or None -- unmeasured --
+    when it is absent or holds anything the settings would refuse."""
+    value = (index or {}).get("measure_latency_hours")
+    low, high = MEASURE_LATENCY_HOURS_RANGE
+    if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high:
+        return value
+    return None
+
+
 def min_change_interval_of(index: Mapping[str, Any] | None) -> int:
     """The registration's `index.min_change_interval_minutes`, read literally:
     the stored value, or the default only where none (or a non-integer) is
@@ -648,6 +668,8 @@ class IndexSettings(_Body):
     keep_versions: StrictInt | None = Field(
         default=None, ge=KEEP_VERSIONS_RANGE[0], le=KEEP_VERSIONS_RANGE[1]
     )
+    #: Opt-in, no default (`MEASURE_LATENCY_HOURS_RANGE`); "off" removes it.
+    measure_latency_hours: StrictInt | Literal["off"] | None = None
     paused: StrictBool | None = None
 
     @field_validator("interval_hours")
@@ -659,8 +681,25 @@ class IndexSettings(_Body):
                 raise ValueError(f"interval_hours must be {low}-{high}, or \"off\"")
         return value
 
+    @field_validator("measure_latency_hours")
+    @classmethod
+    def _measure_latency(cls, value: int | str | None) -> int | str | None:
+        if isinstance(value, int):
+            low, high = MEASURE_LATENCY_HOURS_RANGE
+            if not low <= value <= high:
+                raise ValueError(f"measure_latency_hours must be {low}-{high}, or \"off\"")
+        return value
+
     def changes(self) -> dict[str, Any]:
         return {name: value for name, value in self.model_dump().items() if value is not None}
+
+    def apply_to(self, index: dict[str, Any]) -> None:
+        """Set what this names on a stored `index`; `measure_latency_hours: "off"`
+        removes the key, so off is stored the way a registration that never
+        set it is: absent."""
+        index.update(self.changes())
+        if index.get("measure_latency_hours") == MEASURE_LATENCY_OFF:
+            del index["measure_latency_hours"]
 
 
 class RepositoryCreate(_Body):
@@ -1129,7 +1168,7 @@ class Repositories:
                 raise self.not_found(repo_id)
             index = dict(data.get("index") or {})
             if body.index is not None:
-                index.update(body.index.changes())
+                body.index.apply_to(index)
             if body.paused is not None:
                 index["paused"] = body.paused
             changes: dict[str, Any] = {"index": index, "updated_at": self._now()}
@@ -1345,7 +1384,7 @@ def registration_record(
         ) from None
     index = _index_defaults()
     if body.index is not None:
-        index.update(body.index.changes())
+        body.index.apply_to(index)
     record: dict[str, Any] = {
         "repo_id": repo_id,
         "tenant_id": tenant.tenant_id,
@@ -1479,7 +1518,8 @@ def readable(
 __all__ = [
     "COLLECTION", "DEFAULT_ALLOWED_PROFILES", "FORGE", "MAX_READABLE_PAGES",
     "SCOPE_TENANT", "SCOPE_USER", "CredentialSource", "HeldCredential",
-    "IndexSettings", "KEEP_VERSIONS_DEFAULT", "KEEP_VERSIONS_RANGE", "Repositories",
+    "IndexSettings", "KEEP_VERSIONS_DEFAULT", "KEEP_VERSIONS_RANGE",
+    "MEASURE_LATENCY_HOURS_RANGE", "measure_latency_hours_of", "Repositories",
     "RepositoryCreate", "RepositoryNoAccess", "keep_versions_of", "min_change_interval_of",
     "RepositoryPatch", "check_branch", "check_profiles", "parse_repository",
     "read_repository", "read_repository_as", "readable", "register",
