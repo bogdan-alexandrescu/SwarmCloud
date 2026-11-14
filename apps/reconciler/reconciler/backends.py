@@ -1491,9 +1491,10 @@ class GkeBackend:
         self._log = logger
         self._ca_file: str | None = None
         self._gc_notice_logged = False
-        # Set once the Job's events answer 403: the `swarm-reaper` Role grants
-        # no `events` read today, so the FailedCreate read asks once and then
-        # stays quiet instead of 403-ing on every pass (#3531).
+        # Set once the Job's events answer 403: the `swarm-reaper` Role may
+        # read events (get, list) to name a Job's creation failure, so a 403
+        # means a tenant's Role predates that rule. The FailedCreate read then
+        # asks once and stays quiet instead of 403-ing on every pass (#3531).
         self._events_forbidden = False
 
     # -- client ---------------------------------------------------------
@@ -1915,11 +1916,13 @@ class GkeBackend:
     def _failed_create(self, execution: ExecutionView, namespace: str) -> StartProblem | None:
         """The Job's newest `FailedCreate` event, or None (#3531).
 
-        Events are not in the `swarm-reaper` Role today
-        (kubernetes/rbac/dispatcher-rbac.yaml grants `jobs` and `pods`): a
-        403 is remembered and the read is not made again by this process, so
-        the record is simply absent until the Role grants `events` list. Any
-        other failure raises, as the pod read does.
+        The `swarm-reaper` Role may read events
+        (kubernetes/rbac/dispatcher-rbac.yaml grants `events` get and list
+        beside `jobs` and `pods`): a Job refused its pod leaves no pod to
+        read, so its `FailedCreate` event names the failure. Where a Role
+        still lacks the rule, a 403 is remembered and the read is not made
+        again by this process, so the record is simply absent until the Role
+        grants `events` list. Any other failure raises, as the pod read does.
         """
         if self._events_forbidden:
             return None

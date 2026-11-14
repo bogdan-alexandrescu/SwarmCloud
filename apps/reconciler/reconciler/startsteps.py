@@ -10,8 +10,9 @@ reconciler already reads that pod for `Task.start_problem` (F1-POD,
 written once per attempt as a `startup_progress` event (contract request 74).
 
 WHAT THE STEPS ARE, AND WHERE EACH TIME COMES FROM. The pod's STATUS, never
-Kubernetes Events: the `swarm-reaper` Role this reconciler holds grants `pods`
-and `jobs`, not `events`, and the status carries times that do not depend on
+Kubernetes Events: the `swarm-reaper` Role this reconciler holds may read
+events, but only to name a Job's creation failure from its `FailedCreate`
+event (`startproblem`); the pod's status carries times that do not depend on
 when a pass happened to look. Each step's `at` is the pod's own time, so a
 pass that runs a minute late still records when the step happened.
 
