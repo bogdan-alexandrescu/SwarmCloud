@@ -271,6 +271,7 @@ from .gitops import (
     commit_dirty,
     commit_tree_onto,
     fetch_branch_tip,
+    fetch_shallow_lines_from_origin,
     fold_agent_commits,
     forge_holds_commit,
     hide_from_git,
@@ -15775,10 +15776,14 @@ class Worker:
                 # A merge the agent left in progress is concluded as a merge
                 # by `commit_dirty`, never squashed (#3359).
                 carry_merge=True,
+                # What the relay did not answer, fetched from the forge by the
+                # worker itself (#2901): a merge of the base publishes.
+                fetch_on_origin=self._origin_line_fetcher(fenced),
             )
         finally:
-            # `prepare_publish_repo` reads a confirmer that raised as "origin
-            # confirmed nothing"; a fence is still the fence (invariant 5).
+            # `prepare_publish_repo` reads a confirmer or an origin fetch that
+            # raised as "nothing answered"; a fence is still the fence
+            # (invariant 5).
             if fenced:
                 raise fenced[0]
         mirror_worktree(
@@ -15792,6 +15797,41 @@ class Worker:
         )
         self._publish_config_seals[str(publish_repo)] = _config_seal(publish_repo)
         return publish_repo
+
+    def _origin_line_fetcher(
+        self, fenced: list[Any]
+    ) -> Callable[[Path, list[str]], list[str]] | None:
+        """The worker's own depth-1 fetch from the forge of the clone's shallow
+        cut-offs nothing else answered (#2901), into the clean repository
+        `prepare_publish_repo` hands it, or None when this worker may not.
+
+        Only ever called there, after the reap, on a repository the worker
+        initialised; the token is read at the call, and only when a cut-off
+        is left over, so a publish the relay answered reads none. The gates
+        are the publish's: a repository URL, and the memory protection
+        `_git_token_refusal` asks for before any token is read. No token
+        (a public repository, a read refused) still fetches, without one. A
+        superseded attempt's `FencedError` is appended to `fenced` for the
+        caller to raise (invariant 5), as `_origin_confirmer`'s is."""
+        url = self._repo_url or self.cfg.repository_url
+        if not url or self._git_token_refusal():
+            return None
+
+        def fetch(repo: Path, shas: list[str]) -> list[str]:
+            ws = self.ws
+            assert ws is not None
+            try:
+                token = self._git_token()
+            except FencedError as exc:
+                fenced.append(exc)
+                raise
+            return fetch_shallow_lines_from_origin(
+                repo=repo, url=url, token=token, shas=shas,
+                private_dir=ws.private, logs_dir=ws.logs,
+                timeout_seconds=self.cfg.git_clone_timeout_seconds, logger=self.log,
+            )
+
+        return fetch
 
     def _origin_confirmer(
         self, fenced: list[Any]
