@@ -111,7 +111,7 @@ repository URL for the agent's own repository, a token, a remote or a refspec.
 
 | tool | arguments | returns |
 |---|---|---|
-| `git_fetch` | `ref`: a branch or tag name, or a 40-hex sha, in **the agent's own repository** | the sha `ref` resolved to. The objects land in the agent's clone as `refs/remotes/origin/<ref>` (a sha lands as `refs/swarm/fetched/<sha>`). |
+| `git_fetch` | `ref`: a branch or tag name, or a 40-hex sha, in **the agent's own repository**; optional `depth`, whose one accepted value is `1` ([§1.3.1](#131-a-depth-1-fetch-the-base-branch-for-a-before-render-2442)) | the sha `ref` resolved to. The objects land in the agent's clone as `refs/remotes/origin/<ref>` (a sha lands as `refs/swarm/fetched/<sha>`). With `depth: 1` only the tip commit and its tree land, the tip is listed in `.git/shallow`, and the answer carries `depth: 1`. |
 | `git_rebase_onto` | `ref`, as for `git_fetch` | `{onto, head, conflicts: [paths]}`. It is `git_fetch(ref)` followed by `git rebase <fetched>` in the agent's clone. On a conflict the rebase is **left in progress** with the conflicted paths listed, for the agent to resolve and `git rebase --continue` itself. |
 | `git_push_branch` | `branch`, optional. When given, it must be one of the branches this agent may push (§1.2); otherwise it is the agent's own branch. | `{branch, old_sha, new_sha}` |
 | `read_private` | `repo` (`owner/name`), `path`, `ref` (a sha is recommended; a branch or tag is resolved and the sha returned) | a file's text (at most 1 MiB), or a directory listing (names, types, sizes) |
@@ -169,6 +169,7 @@ API's check holds either way.
 | `foreign_author` | push | `gitops.py::verify_worker_authorship`'s rule, as at the end, over exactly the commits the bundle carries (`GitTools._check_authorship`): every commit must be authored AND committed by one of the agent's own identities -- `commit_identity(task)`, and the worker's `git_author_*` -- as a whole pair. One more pair is accepted, because a rebase writes it: an author that is one of the agent's own identities under the committer the agent rebases as, `commit_identity(task)`. Without it a continuation of a lane that names nobody was refused: the lane's publish folds its work as the worker's `git_author_*` (`Worker._publish_identity`), the continuation's rebase re-commits it as `BOT_GIT_IDENTITY`, and the mixed pair read as foreign. It never admits an author outside the agent's own, so a rebased commit somebody else wrote is still refused. The refusal names the commit (12 hex), the `fields` at fault (`author`, `committer`, both for a mixed pair, `signature`, `message`), the identity `found` and the emails `expected`, scrubbed of the agent's registered secrets. COMMITS ORIGIN ALREADY HAS ARE NOT THE AGENT'S TO ANSWER FOR: a step that ran `git fetch origin B && git reset --hard B` in its shell, B off its clone base A, taught the relay nothing, and the publish repository is shallow at A, so `^A` excluded A alone and old origin/main history was refused. Before refusing, the push asks swarm-api (`git_fetch` with `confirm`) about the newest foreign commit of each line, at most 16, and excludes exactly the confirmed ones and their history from this check, the leak scan and the bundle. The answer counts only for shas that were asked. A ref the agent wrote under `refs/remotes/origin/` or `refs/swarm/fetched/` is never read. The refusal also says whether origin has the commit (`on_origin`: `false` when swarm-api said no, `null` when it was not or could not be asked), and a commit origin said no to is named first. |
 | `repo_not_allowlisted` | read_private | `repo` must be on the tenant's allowlist (§2.3). A repository that does not exist, or that the credential cannot read, gets **the same answer**, so the tool cannot be used to probe which repositories exist. |
 | `other_repository` | fetch, rebase, push, pr_checks | These four act on the agent's own repository only. `read_private` is the only tool that takes a repository. |
+| `bad_depth` | fetch, rebase | A `git_fetch`'s `depth` is `1` or not given; `2`, `0`, `"1"`, `true` or `1.0` are refused, by the worker before any request and by swarm-api again. `git_rebase_onto` takes no `depth` (`request_invalid` at the worker, `bad_depth` at swarm-api): a rebase needs the history between its base and the tip. |
 | `bad_ref` / `bad_path` | all | `ref` goes through `gitops.py::validate_ref`. `path` is refused if it is absolute or contains `..`, an empty segment, a backslash or a control character (the rule `checkpoint_content.py` uses). |
 | `too_large` | fetch, push, read_private | Bundle cap (default 256 MiB, owner [Q6](#q6-limits)), file cap of 1 MiB, and in swarm-api a separate 512 MiB file cap on the scratch packs a fetch from the forge writes (the haves, the wanted ref, a push bundle's bases, the branch tip). The bundle cap holds what is delivered; a have is fetched at depth 1, so its pack is a whole snapshot, and a repository whose snapshot packed to ~276 MiB was refused every fetch while the bundle cap bounded that scratch (#2926). A have stopped by a limit is refused and named, never silently dropped. The limit that applied is said in the refusal. |
 | `fenced` (HTTP 409) | all | The attempt is no longer the lease holder (§1.4). This is not a tool error the agent can act on. The worker ends the attempt (invariant 5). |
@@ -258,6 +259,9 @@ agent ──MCP stdio──> swarm-git shim ──spool file──> worker (non-
      3. fetch `ref`; the shallow negotiation then sends only what the worker
         lacks;
      4. `git bundle create <ref> ^<haves>`.
+   * **fetch at depth 1** (#2442): as above, but `ref` is fetched with
+     `--depth=1` and nothing is bundled; see
+     [§1.3.1](#131-a-depth-1-fetch-the-base-branch-for-a-before-render-2442).
    * **confirm:** a `git_fetch` body that carries `confirm` (at most
      16 shas) instead of `ref` is the worker's push asking which of those
      commits origin has. Each is fetched at depth 1, as a have is, and the
@@ -290,6 +294,73 @@ design exists to narrow.
 What swarm-api gains is the `git` binary in its image and longer requests,
 bounded by the caps in §1.2. The owner may still prefer the isolation of a
 separate service: [Q4](#q4-which-service-executes).
+
+### 1.3.1 A depth-1 fetch: the base branch for a before render (#2442)
+
+**Why.** The worker's clone is one commit deep (`gitops.shallow_clone`), so
+the only have it can offer for the base branch is its own clone base A, and A
+hides every ancestor. A plain `git_fetch main` is then the bundle
+`main ^A`: the whole of main's history from A, and on a repository with a
+long history that is over the 256 MiB cap ([Q6](#q6-limits)) and answers
+`too_large`. A UI lane that wants a "before" render of main needs main's
+tree, not its history. (`gitops.py`'s `#2901` block, `fetch_pull_base`, is
+the same problem met at clone time for a `publish_to_pr` step.)
+
+**What.** `git_fetch {"ref": "main", "depth": 1}`. `1` is the only depth;
+anything else is `bad_depth`, and a rebase takes none.
+
+* **swarm-api** (`GitExec.fetch_bundle(depth=1)`) fetches the haves at depth 1
+  as always, then `ref` with `--depth=1`, so the scratch repository holds the
+  tip and nothing behind it. A git bundle cannot be shallow, so it builds a
+  PACK instead: the objects of `git rev-list --objects --no-walk <tip>`, less
+  every object of the haves' own trees (`rev-list --objects --no-walk
+  <haves>`; a walk would not mark a shallow have's tree when it is no parent
+  of the tip), named to `git pack-objects` by object. Not `--thin`: every
+  delta's base is in the pack. It is held to the same `MAX_BUNDLE_BYTES` and
+  delivered exactly as a bundle is: inline up to 24 MiB, else through the
+  tenant's own GCS prefix, with its sha256. When the tip is already among the
+  haves nothing is sent. The answer carries `depth: 1`; the audit row too.
+* **the worker** (`GitTools.fetch(depth=1)`) checks the payload is a pack,
+  lists the tip in the clone's `.git/shallow` (written whole through
+  `shallow.lock`, as git writes it) when the commit is not already there,
+  then feeds the pack to `git index-pack --stdin --strict` in the agent's
+  clone, every object and link checked. `index-pack --strict` refuses a
+  commit whose parent is missing and not grafted (measured, git 2.39), which
+  is why the shallow line goes first; a pack that does not apply takes it out
+  again and answers `fetch_failed`. Then `refs/remotes/origin/<ref>` (or
+  `refs/swarm/fetched/<sha>`) is set and the sha is learnt in `_Origin` as
+  any fetched sha is. The agent can then `git checkout origin/main -- .` or
+  `git diff origin/main` for its before render. No credential is near any of
+  it: the pack comes from swarm-api, and nothing the worker runs in the
+  agent's clone carries a secret.
+
+**What a shallow tip does to the later calls.**
+
+* **A plain fetch or a rebase afterwards.** The depth-1 tip is NOT offered
+  as a have to a plain fetch (`_Origin.plain_haves`): its bundle would stop at
+  the tip, and `git rebase <tip>` would find no merge base and replay the
+  clone's own base commit onto a parentless tip. So the bundle carries the
+  history from the clone base again, as before. `git fetch <bundle>` skips a
+  bundle whose tip the clone already has, so when a depth-1 tip still lacks
+  its parents the worker indexes the bundle's pack directly (`index-pack
+  --stdin --fix-thin --strict`) and takes every depth-1 tip whose parents are
+  now present out of `.git/shallow`. The base branch's history therefore
+  costs exactly what it cost before #2442, and only when the agent asks for
+  it.
+* **A push.** A depth-1 tip IS a have for the push: the agent may build on
+  it (`git reset --hard origin/main`, then commit). The bundle is then
+  `HEAD ^<tip> ^<other haves>`, whose prerequisite is the tip; the bundle
+  never needs an object behind the tip, which the clone does not have, and
+  swarm-api fetches the prerequisite at depth 1 as for any push. The publish
+  repository's boundary already takes the clone's `.git/shallow` lines that
+  origin confirms (#2559).
+
+Proved by `tests/unit/control_plane/test_gitexec.py` (a 40-commit history
+whose bundle is over a cap the depth-1 pack fits under; `bad_depth` before
+any git), `tests/unit/control_plane/test_git_tools_api.py` (the route), and
+`tests/unit/worker/test_gittools.py` (into a depth-1 clone: checkout and diff
+of `origin/main`, `.git/shallow` lists the tip; a rebase and a push
+afterwards; a plain fetch unchanged).
 
 ### 1.4 How the call is bound to this agent and this fencing generation
 
