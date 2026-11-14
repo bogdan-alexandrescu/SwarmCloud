@@ -40,7 +40,7 @@ import pytest
 from agent_worker import gitops, lifecycle
 
 from test_agent_commits_are_kept import KEY
-from test_publish_failure_uploads_patch import _cloned, _finish
+from test_publish_failure_uploads_patch import _cloned, _finish, _origin_confirms_no_cut_off
 from test_publish_scans_a_clean_repository import (
     _fetch_sibling_with_depth_and_merge,
     _key_added_then_deleted,
@@ -392,6 +392,7 @@ def _bundle_uri(summary: dict[str, Any]) -> str | None:
 def test_the_worker_keeps_and_names_the_bundle_when_the_publish_fetch_fails(
     worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
 ):
+    _origin_confirms_no_cut_off(monkeypatch)
     xs = _origin_with_a_sibling(origin, tmp_path)
     worker, repo, base = _cloned(worker_factory, monkeypatch, origin, task_id="t-3174-bundle")
     _fetch_sibling_with_depth_and_merge(origin, xs)(repo)
@@ -424,6 +425,7 @@ def test_the_worker_keeps_and_names_the_bundle_when_the_publish_fetch_fails(
 def test_the_worker_keeps_no_bundle_of_a_branch_whose_commit_adds_a_key(
     worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
 ):
+    _origin_confirms_no_cut_off(monkeypatch)
     xs = _origin_with_a_sibling(origin, tmp_path)
     worker, repo, _base = _cloned(worker_factory, monkeypatch, origin, task_id="t-3174-key")
     _fetch_sibling_with_depth_and_merge(origin, xs)(repo)

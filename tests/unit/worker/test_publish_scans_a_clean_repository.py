@@ -709,6 +709,39 @@ def test_the_final_publish_of_a_depth_fetched_merge_asks_origin_through_the_rela
     assert {"x1.txt", "x5.txt", "m3.txt"} <= files, files
 
 
+def test_with_no_relay_the_final_publish_fetches_the_cut_off_from_origin_itself(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    """#2901, the publish end: an attempt with no git tools relay (an
+    `integrate` contributor's, as reported) has nobody to confirm the clone's
+    cut-off on X. The worker's clean repository fetches it from the forge at
+    depth 1 itself, after the reap, and the merge publishes."""
+    xs = _origin_with_a_sibling(origin, tmp_path)
+    monkeypatch.setattr(lifecycle.Worker, "_workflow_broker", lambda self: None,
+                        raising=False)
+    fetched: list[list[str]] = []
+    real = lifecycle.fetch_shallow_lines_from_origin
+
+    def recording(**kwargs):
+        fetched.append(list(kwargs["shas"]))
+        return real(**kwargs)
+
+    monkeypatch.setattr(lifecycle, "fetch_shallow_lines_from_origin", recording)
+
+    _, config, out = _attempt(
+        worker_factory, monkeypatch, origin, task_id="t-2901-merge",
+        edit=_fetch_sibling_with_depth_and_merge(origin, xs),
+    )
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    # MUTATION: `_build_clean_repo` passes no `fetch_on_origin` -> the
+    # boundary is the base alone and the publish-fetch fails, as reported.
+    assert out["published"] is True, out.get("publish_reason")
+    assert xs[2] in fetched[0], fetched
+    files = tree_at(origin, branch)
+    assert {"x1.txt", "x5.txt", "m3.txt"} <= files, files
+
+
 def test_a_fence_from_the_publish_confirmer_is_raised_out_of_build_clean_repo(
     worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
 ):

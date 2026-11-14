@@ -62,7 +62,9 @@ _N = {"type": "integer", "minimum": 1}
 TOOLS: list[dict[str, Any]] = [
     {"name": "git_fetch",
      "description": "Fetch ref from the task's repository into origin/<ref> "
-                    "(a sha into refs/swarm/fetched/<sha>). Returns the sha.",
+                    "(a sha into refs/swarm/fetched/<sha>). Returns the sha. In a shallow "
+                    "clone it brings history down to a merge base (merge_base), so "
+                    "git merge works.",
      "inputSchema": {"type": "object", "required": ["ref"], "properties": {
          "ref": _REF,
          # #2442: the tip alone, so a before render of the base branch fits.
@@ -70,8 +72,9 @@ TOOLS: list[dict[str, Any]] = [
                    "description": "1: the tip commit alone (shallow), e.g. the base branch "
                                   "for a before render"}}}},
     {"name": "git_rebase_onto",
-     "description": "git_fetch ref, then rebase HEAD onto it. A conflict leaves the "
-                    "rebase in progress and lists the paths: fix, then git rebase --continue.",
+     "description": "git_fetch ref, then rebase HEAD onto it (refused with no merge base). "
+                    "A conflict leaves the rebase in progress and lists the paths: fix, then "
+                    "git rebase --continue.",
      "inputSchema": {"type": "object", "required": ["ref"], "properties": {"ref": _REF}}},
     {"name": "git_push_branch",
      "description": "Push HEAD's commits to this task's branch (default: its own). "

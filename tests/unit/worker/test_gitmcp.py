@@ -58,6 +58,15 @@ def test_git_fetch_alone_takes_an_optional_depth_of_exactly_1():
     assert "depth" not in server.REQUIRED["git_fetch"]
 
 
+def test_the_git_fetch_description_names_the_merge_base():
+    """#2901: a shallow clone's fetch brings the history to a merge base, so
+    the agent merges or rebases on what it fetched instead of reaching for a
+    plain `git fetch` with no credential."""
+    tools = {tool["name"]: tool for tool in server.TOOLS}
+    assert "merge base" in tools["git_fetch"]["description"]
+    assert "merge base" in tools["git_rebase_onto"]["description"]
+
+
 def test_the_shim_imports_no_worker_machinery():
     """It holds nothing: importing it pulls in neither the worker's lifecycle,
     its git library nor the attempt key."""

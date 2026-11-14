@@ -404,6 +404,13 @@ class FetchBody(_Body):
     #: so a before render of the base branch fits under the bundle cap. Any
     #: other value is `bad_depth`; a rebase never takes one.
     depth: StrictInt | None = None
+    #: #2901 (docs/design/git-fetch-shallow-clones.md §5.6): the clone's
+    #: shallow boundary as the worker recorded it, oldest first; the newest
+    #: `MAX_HAVES` are passed on, as with `haves`. Given, the fetch deepens in
+    #: bounded rounds to a merge base and answers `shallow`, `unshallow`,
+    #: `merge_base` and `deepened_to` beside the bundle. No caller-chosen
+    #: depth: the rounds are swarm-api's.
+    shallow: list[str] = Field(default_factory=list, max_length=MAX_HAVES_SENT)
 
 
 class PushBody(_Body):
@@ -1050,10 +1057,27 @@ class GitTools:
             return {"bundle_object": key, "bundle_sha256": digest}
 
         haves = list(dict.fromkeys(reversed(body.haves)))[:MAX_HAVES]
-        shallow = {"depth": 1} if body.depth == 1 else {}
+        shallow: dict[str, Any] = {"depth": 1} if body.depth == 1 else {}
+        boundary = list(dict.fromkeys(reversed(body.shallow)))[:MAX_HAVES]
+        if boundary and body.depth is None:
+            if not all(isinstance(sha, str) and _SHA.match(sha) for sha in boundary):
+                raise GitToolRefused("bad_ref", "shallow names 40-hex shas only")
+            boundary.reverse()
+        else:
+            boundary = []
         fetched = self.gitexec.fetch_bundle(url=self.remote_url(ref), token=token, ref=body.ref,
-                                            haves=haves, deliver=deliver, **shallow)
+                                            haves=haves, deliver=deliver, **shallow,
+                                            **({"shallow": boundary} if boundary else {}))
         call.fields.update(resolved_sha=fetched.sha, bytes=fetched.size, **shallow)
+        deepened: dict[str, Any] = {}
+        if boundary:
+            # Shas and integers only: what the clone writes before it applies
+            # the bundle, and how far the rounds went (design §5.2).
+            deepened = {"shallow": list(fetched.boundary), "unshallow": list(fetched.unshallow),
+                        "merge_base": fetched.merge_base, "deepened_to": fetched.depth}
+            call.fields.update(deepened_to=fetched.depth, rounds=fetched.rounds,
+                               fetched_bytes=fetched.fetched_bytes,
+                               merge_base=fetched.merge_base)
         # "Or the tip at the attempt's first fetch" (Q1 = A): the branch this
         # task may push, as the forge had it, when nothing is recorded yet.
         try:
@@ -1063,7 +1087,8 @@ class GitTools:
         if policy.pushes and body.ref == policy.branch \
                 and self.recorded_tip(attempt, policy.branch) is None:
             self.record_tip(attempt, policy.branch, fetched.sha)
-        answer: dict[str, Any] = {"ref": body.ref, "resolved_sha": fetched.sha, **shallow}
+        answer: dict[str, Any] = {"ref": body.ref, "resolved_sha": fetched.sha, **shallow,
+                                  **deepened}
         answer.update(fetched.delivered or {})
         return answer
 
