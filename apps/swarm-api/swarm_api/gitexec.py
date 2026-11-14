@@ -77,7 +77,7 @@ branch's tip. A have is fetched at depth 1, so its pack is a whole snapshot of
 the repository; one that packs to more than the bundle cap is still a have,
 and the bundle made against it is checked against the bundle cap as before.
 
-Codes (`GitExecError.code`): `bad_remote`, `bad_ref`, `bad_bundle`,
+Codes (`GitExecError.code`): `bad_remote`, `bad_ref`, `bad_depth`, `bad_bundle`,
 `too_large`, `non_fast_forward`, `remote_rejected`, `busy`, `timed_out`,
 `remote_unavailable`, `failed`.
 """
@@ -180,6 +180,20 @@ _LIMIT_SHIM = (
     "resource.setrlimit(resource.RLIMIT_FSIZE, (f, f))\n"
     "os.execvp(sys.argv[3], sys.argv[3:])\n"
 )
+#: The same, with stdin opened from a file the call itself wrote: run as
+#: `python -I -c _LIMIT_SHIM_STDIN <as> <fsize> <stdin file> git ...`.
+#: `git pack-objects` reads its revisions only from stdin, and the runner
+#: gives git none (`run_git`), so the depth-1 fetch's revisions go this way.
+_LIMIT_SHIM_STDIN = (
+    "import os, resource, sys\n"
+    "a, f = int(sys.argv[1]), int(sys.argv[2])\n"
+    "fd = os.open(sys.argv[3], os.O_RDONLY)\n"
+    "os.dup2(fd, 0)\n"
+    "os.close(fd)\n"
+    "resource.setrlimit(resource.RLIMIT_AS, (a, a))\n"
+    "resource.setrlimit(resource.RLIMIT_FSIZE, (f, f))\n"
+    "os.execvp(sys.argv[4], sys.argv[4:])\n"
+)
 _OVER_LIMIT = re.compile(r"File too large|[Oo]ut of memory|Cannot allocate memory")
 #: git's answer when the remote does not have a sha asked for by name: GitHub
 #: and `git upload-pack` (protocol v2) say "not our ref", a v0 server that
@@ -262,6 +276,10 @@ class FetchedBundle:
     ref: str = WANT_REF
     #: What `deliver` returned, when the caller took the bundle as a file.
     delivered: Any = None
+    #: #2442: a depth-1 fetch. `bundle` is then a PACK (no bundle header) of
+    #: the tip commit and the objects of its tree the haves do not reach; the
+    #: worker index-packs it and records `sha` in the clone's `.git/shallow`.
+    shallow: bool = False
 
 
 @dataclass(frozen=True)
@@ -482,7 +500,7 @@ class GitExec:
 
     def _git(self, scratch: Path, repo: Path, args: Sequence[str], *, token: str,
              credential: Path | None = None, extra: Sequence[str] = (),
-             fetch: bool = False) -> GitRun:
+             stdin: Path | None = None, fetch: bool = False) -> GitRun:
         config = list(_BASE_CONFIG)
         config += ["-c", "protocol.https.allow=always"]
         if self.local_remotes:
@@ -491,10 +509,10 @@ class GitExec:
         if credential is not None:
             config += ["-c", f"credential.helper=store --file={credential}"]
         return self._run(scratch, [*config, "--git-dir", str(repo), *args], token=token,
-                         fetch=fetch)
+                         stdin=stdin, fetch=fetch)
 
     def _run(self, scratch: Path, args: Sequence[str], *, token: str,
-             fetch: bool = False) -> GitRun:
+             stdin: Path | None = None, fetch: bool = False) -> GitRun:
         """git under the per-process limits, within what is left of the call's deadline.
 
         `fetch` is for a fetch from the remote only: its scratch pack is bounded
@@ -504,8 +522,13 @@ class GitExec:
         if left <= 0:
             raise GitExecError("timed_out", f"the call ran longer than {self.deadline_seconds:g}s")
         fsize = self.max_fetch_file_bytes if fetch else self.max_bundle_bytes
-        argv = [sys.executable, "-I", "-c", _LIMIT_SHIM, str(self.max_git_memory_bytes),
-                str(fsize), self.git_binary, *args]
+        if stdin is None:
+            argv = [sys.executable, "-I", "-c", _LIMIT_SHIM, str(self.max_git_memory_bytes),
+                    str(fsize), self.git_binary, *args]
+        else:
+            argv = [sys.executable, "-I", "-c", _LIMIT_SHIM_STDIN,
+                    str(self.max_git_memory_bytes), str(fsize), str(stdin),
+                    self.git_binary, *args]
         run = self.runner(argv, cwd=scratch, env=self._env(scratch),
                           timeout=min(self.timeout_seconds, left))
         return GitRun(run.code, scrub(run.stdout, (token,)), scrub(run.stderr, (token,)))
@@ -555,33 +578,47 @@ class GitExec:
     # -- fetch → bundle ----------------------------------------------------
 
     def fetch_bundle(self, *, url: str, token: str, ref: str, haves: Sequence[str] = (),
-                     deliver: Callable[[Path, int], Any] | None = None) -> FetchedBundle:
+                     deliver: Callable[[Path, int], Any] | None = None,
+                     depth: int | None = None) -> FetchedBundle:
         """Fetch `ref` from `url`; bundle what is not reachable from `haves`.
 
         `deliver(path, size)`, when given, is handed the bundle file while it
         exists -- to stream it to the tenant's GCS prefix, say -- instead of a
         copy of up to the cap in memory; what it returns is `delivered`.
+
+        `depth=1` (#2442, the one depth accepted; anything else is
+        `bad_depth`): the tip alone, for a before render of the base branch.
+        A clone made at depth 1 hands its base as its only have, which hides
+        every ancestor, so the bundle of `main ^<base>` is the base's whole
+        history and over the cap. A git bundle cannot be shallow, so this
+        delivers a PACK instead (`FetchedBundle.shallow`), under the same cap
+        and through the same `deliver`.
         """
         url, host = self._check_url(url)
         ref = _check_ref(ref)
+        if depth is not None and (type(depth) is not int or depth != 1):
+            raise GitExecError("bad_depth", "a fetch's depth is 1 or not given")
         haves = list(dict.fromkeys(haves))
         if len(haves) > MAX_HAVES or not all(isinstance(h, str) and _SHA.match(h) for h in haves):
             raise GitExecError("bad_ref", f"haves are at most {MAX_HAVES} 40-hex shas")
+        shallow = ["--depth=1"] if depth == 1 else []
         with self._call() as scratch:
             repo = self._init(scratch)
             with self._credential(scratch, host, token) as cred:
                 known = [have for have in haves
                          if self._fetch_tip(scratch, repo, url, have, token, cred)]
                 self._must(self._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
-                                                     "--no-write-fetch-head", "--", url,
-                                                     f"{ref}:{WANT_REF}"],
+                                                     "--no-write-fetch-head", *shallow, "--",
+                                                     url, f"{ref}:{WANT_REF}"],
                                      token=token, credential=cred, fetch=True),
                            f"fetch of {ref}", cap=self.max_fetch_file_bytes)
             sha = self._resolve(scratch, repo, WANT_REF, token)
             if sha is None:
                 raise GitExecError("bad_ref", f"{ref} does not name a commit")
             if sha in known:
-                return FetchedBundle(sha, None, 0)
+                return FetchedBundle(sha, None, 0, shallow=bool(shallow))
+            if shallow:
+                return self._tip_pack(scratch, repo, sha, known, token, deliver)
             out = scratch / "out.bundle"
             run = self._git(scratch, repo, ["bundle", "create", "--quiet", str(out), WANT_REF,
                                             *[f"^{h}" for h in known]], token=token)
@@ -595,6 +632,45 @@ class GitExec:
             if deliver is not None:
                 return FetchedBundle(sha, None, size, delivered=deliver(out, size))
             return FetchedBundle(sha, out.read_bytes(), size)
+
+    def _tip_pack(self, scratch: Path, repo: Path, sha: str, known: Sequence[str], token: str,
+                  deliver: Callable[[Path, int], Any] | None) -> FetchedBundle:
+        """A pack of `sha` and the objects of its tree that `known` do not reach.
+
+        `rev-list --objects --no-walk <sha>`, less every object of the haves'
+        own trees (`--no-walk` over them too: the scratch repository holds
+        each at depth 1, and a walk would not mark a shallow have's tree when
+        it is no parent of `sha`), named to `git pack-objects` by object, not
+        by revision. Not `--thin`: every delta's base is in the pack, so the
+        worker's `index-pack` needs nothing outside it but the objects it links.
+        """
+        wanted = self._must(self._git(scratch, repo, ["rev-list", "--objects", "--no-walk", sha],
+                                      token=token), "rev-list of the tip")
+        have: set[str] = set()
+        if known:
+            listed = self._must(self._git(scratch, repo, ["rev-list", "--objects", "--no-walk",
+                                                          *known], token=token),
+                                "rev-list of the haves")
+            have = {line.split(" ", 1)[0] for line in listed.stdout.splitlines()}
+        lines = [line for line in wanted.stdout.splitlines()
+                 if line and line.split(" ", 1)[0] not in have]
+        revs = scratch / "objects"
+        revs.write_text("".join(f"{line}\n" for line in lines))
+        base = scratch / "out"
+        run = self._must(self._git(scratch, repo, ["pack-objects", "--quiet", str(base)],
+                                   token=token, stdin=revs),
+                         "pack-objects")
+        name = run.stdout.strip().splitlines()[-1:] or [""]
+        out = scratch / f"out-{name[0]}.pack"
+        if not re.fullmatch(r"[0-9a-f]{40,64}", name[0]) or not out.is_file():
+            raise GitExecError("failed", "pack-objects wrote no pack")
+        size = out.stat().st_size
+        if size > self.max_bundle_bytes:
+            raise GitExecError("too_large", f"the pack is {size} bytes, over the "
+                                            f"{self.max_bundle_bytes}-byte cap")
+        if deliver is not None:
+            return FetchedBundle(sha, None, size, delivered=deliver(out, size), shallow=True)
+        return FetchedBundle(sha, out.read_bytes(), size, shallow=True)
 
     def _fetch_tip(self, scratch: Path, repo: Path, url: str, sha: str, token: str,
                    cred: Path) -> bool:

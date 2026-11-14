@@ -146,17 +146,18 @@ COPY --chmod=0444 images/agent-runtime-browser/chromium-policy.json /etc/opt/chr
 COPY --chmod=0444 images/agent-runtime-browser/chromium-policy.json /etc/chromium/policies/managed/swarm.json
 
 # The agent's `swarm-handoff` (docs/design/live-browser.md §4.1; lane L4, part
-# of #1030): it writes a request into the hand-off spool and waits for the
-# worker's answer. Files only, no socket. Root-owned, executable by every uid,
-# writable by none: the agent runs it and cannot change what it does.
-COPY --chmod=0555 images/agent-runtime-browser/swarm-handoff /usr/local/bin/swarm-handoff
+# of #1030) writes a request into the hand-off spool and waits for the
+# worker's answer: files only, no socket. Its source stays in this directory,
+# but agent-runtime-base copies it in (root-owned, 0555) since the owner's
+# 2026-11-12 comment on #2442, so `compare` and `serve` also run on claude-code
+# and claude-code-large; this image inherits it from BASE_IMAGE.
 
 # The agent's `swarm-test-browsers` (PW-TESTRUNNER, the owner, 2026-10-24, part of
 # #2253): runs ONE command -- a repository's `npx playwright test` -- with
 # PLAYWRIGHT_BROWSERS_PATH at the writable directory the claude-code runner
 # seeds in the attempt's cache, so a test process may launch its own headless
 # Chromium while the agent's own default stays the live-browser stub below.
-# Root-owned and read-only, as swarm-handoff is.
+# Root-owned and read-only, as swarm-handoff (from the base image) is.
 COPY --chmod=0555 images/agent-runtime-browser/swarm-test-browsers /usr/local/bin/swarm-test-browsers
 
 # THE AGENT'S BROWSER IS THE LIVE ONE (BROWSER-ENFORCE, part of #1030;
