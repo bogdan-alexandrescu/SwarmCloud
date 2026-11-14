@@ -42,6 +42,10 @@
 # and there the grant would be DESTROYED rather than forgotten -- only
 # example-project's infra/dev state exists (read-only `gcloud storage ls` of
 # the state bucket, 2026-09-25), so that deployment does not exist today.
+# The project in the key below is the placeholder: the deployment's releases
+# since 2026-09-25 have applied this move and its `removed`, so its state no
+# longer holds the old address and the block is a no-op there; a deployment
+# created after that never held the grant here at all.
 #
 # Terraform >= 1.7 for `removed`; CI and the owner run 1.16.2.
 
@@ -112,7 +116,7 @@ removed {
 }
 
 moved {
-  from = module.iam.google_project_iam_member.plain["swarm-quota-broker:projects/saga-agents-staging/roles/swarmSecretLister"]
+  from = module.iam.google_project_iam_member.plain["swarm-quota-broker:projects/example-project/roles/swarmSecretLister"]
   to   = module.iam.google_project_iam_member.broker_secret_lister_moved_to_bootstrap
 }
 

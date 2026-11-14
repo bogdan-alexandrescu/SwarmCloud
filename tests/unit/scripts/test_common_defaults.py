@@ -281,6 +281,9 @@ def test_a_list_on_one_line_is_read_without_a_note(tmp_path: Path) -> None:
     assert "spans several lines" not in proc.stderr, proc.stderr
 
 
+# A placeholder bucket (scripts/guards/placeholders.json) that is neither the
+# default nor the configured name, so the explicit one is the one that wins.
+_EXPLICIT_BUCKET = "swarm-artifacts-example-project"
 _BUCKET = 'printf "%s|" "${TF_STATE_BUCKET}"; unset SWARM_DEPLOY_CONFIG_DIR; config_source dev'
 
 
@@ -307,6 +310,6 @@ def test_the_state_bucket_defaults_when_no_name_is_configured(tmp_path: Path) ->
 def test_an_explicit_tf_state_bucket_still_wins(tmp_path: Path) -> None:
     _write_list(tmp_path)
     proc = _source(tmp_path, _BUCKET, PROJECT_ID=PROJECT, REGION="example-region",
-                   STATE_BUCKET_NAME="swarm-tfstate-configured", TF_STATE_BUCKET="swarm-tfstate-explicit")
+                   STATE_BUCKET_NAME="swarm-tfstate-configured", TF_STATE_BUCKET=_EXPLICIT_BUCKET)
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout == "swarm-tfstate-explicit|gs://swarm-tfstate-explicit/config/dev", proc.stdout
+    assert proc.stdout == f"{_EXPLICIT_BUCKET}|gs://{_EXPLICIT_BUCKET}/config/dev", proc.stdout

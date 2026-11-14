@@ -462,7 +462,7 @@ def test_a_reopen_of_an_ended_session_or_an_open_one_is_refused():
 
 
 async def _caller_ok(token: str) -> str:
-    return "swarm-api@example.iam"
+    return "swarm-api@example-project.iam.gserviceaccount.com"
 
 
 def test_the_internal_reopen_route_wakes_a_paused_session_and_refuses_an_ended_one():
