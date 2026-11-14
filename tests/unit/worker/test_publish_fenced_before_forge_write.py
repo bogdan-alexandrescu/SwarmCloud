@@ -165,12 +165,12 @@ def test_a_publish_onto_a_pull_request_fenced_before_its_push_changes_nothing(
 
     assert refs(origin)[PR_BRANCH] == start, "a fenced attempt pushed onto the pull request"
     assert pushes == []
-    assert pull.updates == [], "a fenced attempt updated the pull request's text"
+    assert pull.comments == [], "a fenced attempt commented on the pull request"
     assert forge.pulls == []
     _lease_untouched(db, config, lease)
 
 
-def test_a_publish_onto_a_pull_request_fenced_after_its_push_updates_no_text(
+def test_a_publish_onto_a_pull_request_fenced_after_its_push_comments_nothing(
     db, worker_factory, monkeypatch, origin, local_urls, forge, pull, pushes
 ):
     _no_agent_text(monkeypatch, title="A title the fenced lane wrote", body="part of #2693")
@@ -184,8 +184,8 @@ def test_a_publish_onto_a_pull_request_fenced_after_its_push_updates_no_text(
         worker._harvest_git(publish=True)
 
     assert refs(origin)[PR_BRANCH] != start, "the push before the fence was not made"
-    assert pull.updates == [], "a fenced attempt updated the pull request's text"
-    assert fence.reads == ["branch push", "pull request text"]
+    assert pull.comments == [], "a fenced attempt commented on the pull request"
+    assert fence.reads == ["branch push", "pull request comment"]
     _lease_untouched(db, config, lease)
 
 
