@@ -260,6 +260,10 @@ class GitToolsConfig:
     max_bundle_bytes: int = MAX_BUNDLE_BYTES
     inline_bundle_bytes: int = INLINE_BUNDLE_BYTES
     max_file_bytes: int = MAX_FILE_BYTES
+    #: #2901 §5.8: a publish_to_pr clone's base branch as `fetch_pull_base`
+    #: fetched it at clone time -- `(branch, remote_ref, merge_base)` -- or
+    #: None. Only ever named in a `too_large` refusal of that branch.
+    pull_base: tuple[str, str, str] | None = None
     calls_per_hour: int = CALLS_PER_HOUR
     pushes_per_hour: int = PUSHES_PER_HOUR
 
@@ -731,7 +735,10 @@ class GitTools:
             sent = self.origin.boundary[-MAX_BOUNDARY:]
             if sent:
                 fields["shallow"] = list(sent)
-        payload = self.call("git_fetch", fields, request_id=request_id)
+        try:
+            payload = self.call("git_fetch", fields, request_id=request_id)
+        except GitToolRefused as exc:
+            raise self._pointed_at_pull_base(exc, ref) from None
         sha = payload.get("resolved_sha")
         if not isinstance(sha, str) or not _FULL_SHA.match(sha):
             raise GitToolRefused("api_unavailable", "the platform answered without a sha",
@@ -767,6 +774,22 @@ class GitTools:
                                   "diff it, but a merge or rebase onto it would join unrelated "
                                   "histories")
         return answer
+
+    def _pointed_at_pull_base(self, refused: GitToolRefused, ref: str) -> GitToolRefused:
+        """A `too_large` for the publish_to_pr base the clone already holds,
+        with the one next step that works without a credential (#2901 §5.8,
+        Q3 = A); any other refusal as it was. Still a refusal: the platform
+        could not fetch the CURRENT tip, and the clone-time one may be older."""
+        pull = self.cfg.pull_base
+        if refused.code != "too_large" or pull is None or ref not in (pull[0], pull[1]):
+            return refused
+        branch, remote_ref, merge_base = pull
+        return GitToolRefused(
+            refused.code,
+            f"{refused.message}. The pull request's base {branch} is already in your clone "
+            f"as {remote_ref}, fetched at clone time with merge base {merge_base}: merge or "
+            f"rebase onto {remote_ref}",
+            retryable=refused.retryable, detail=refused.detail)
 
     def _received_bundle(self, payload: dict[str, Any], *, request_id: str) -> Path | None:
         inline = payload.get("bundle")

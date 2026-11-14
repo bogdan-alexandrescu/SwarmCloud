@@ -1148,6 +1148,8 @@ class Worker:
         #: The commit this attempt's clone checked out, recorded as
         #: `result_summary.git.clone_commit` (#295, merge-step.md §3).
         self._clone_commit: str | None = None
+        #: `fetch_pull_base`'s record of a publish_to_pr clone's base (#2901 §5.8).
+        self._pull_base: dict[str, Any] | None = None
         # The clone base the PUBLISH trusts, which is not always the one above.
         # `_clone_base` may come from `work/.swarm/clone-base`, a file in the
         # agent's HOME (its working directory's parent, when it starts in the
@@ -6599,6 +6601,8 @@ class Worker:
         # `result_summary.git.clone_commit` (merge-step.md §3): the only record
         # of which head a reader actually saw. Known in this process.
         self._clone_commit = clone.commit
+        # `fetch_pull_base`'s record, for the git tools' `too_large` (#2901 §5.8).
+        self._pull_base = clone.base if isinstance(clone.base, dict) else None
         # Known in this process, so trusted; and recorded in every checkpoint
         # manifest from here on, so a resumed attempt can trust it too.
         self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
@@ -11070,6 +11074,7 @@ class Worker:
             private_dir=ws.private,
             logs_dir=ws.logs,
             store=self.store,
+            pull_base=self._pull_base,
         ))
         # The hand-off spool, on a live-browser attempt (live-browser §4.1):
         # a path and the gate's loopback CDP address, never a credential.
