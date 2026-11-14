@@ -21,6 +21,7 @@ import { Routed } from './screenroute'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { addressToPath, pathToAddress } from '../paths'
+import { canonical, fromAddress } from '../App'
 
 const WAIT = { timeout: 4000 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -139,5 +140,15 @@ describe('paths.ts carries the new schedule’s type', () => {
     expect(pathToAddress('/automate/schedules/new', '?type=%3Cb%3E')?.address).toBe('automate/schedules?schedule=new')
     // A type rides only on the new-schedule address, never on one schedule's.
     expect(addressToPath('automate/schedules?schedule=sch_a&type=cost-report')).toBe('/automate/schedules/sch_a')
+  })
+})
+
+describe('App keeps the new schedule’s type on the Schedules address', () => {
+  it('carries `type` through fromAddress and canonical, so Use lands on that type', () => {
+    // MUTATION: drop `type` from App's keptKeys and the view is `schedule=new`, bare.
+    const at = fromAddress('automate/schedules?schedule=new&type=cost-report')
+    expect(at).toMatchObject({ sectionId: 'automate', tab: 'schedules', view: 'schedule=new&type=cost-report' })
+    expect(canonical(at)).toBe('automate/schedules?schedule=new&type=cost-report')
+    expect(addressToPath(canonical(at))).toBe('/automate/schedules/new?type=cost-report')
   })
 })
