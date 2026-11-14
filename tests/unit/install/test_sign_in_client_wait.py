@@ -156,7 +156,7 @@ def test_the_consoles_saved_client_is_taken_without_a_prompt(tmp_path: Path,
     assert result.exit_code == ExitCode.OK, result.message
     outputs = rig.store.load().outputs
     assert outputs["desktop_client_id"] == client_id
-    assert outputs["desktop_client_secret_version"] == 1
+    assert "desktop_client_secret_version" not in outputs, "nothing reads the version back"
     assert contexts.stored == {HOST: value}, "the secret went to the new deployment's credential store"
     assert gcp.accessed == [(edge.DESKTOP_SECRET, 1)]
     captured = capsys.readouterr()
@@ -197,7 +197,7 @@ def test_a_second_console_save_replaces_the_recorded_client(tmp_path: Path) -> N
     assert record.trigger(ctx)
     record.apply(ctx, record.plan(ctx))
     outputs = rig.store.load().outputs
-    assert outputs["desktop_client_id"] == new and outputs["desktop_client_secret_version"] == 2
+    assert outputs["desktop_client_id"] == new and "desktop_client_secret_version" not in outputs
     assert contexts.stored == {HOST: value}
     assert record.check(ctx).status == "met"
     assert not record.trigger(ctx)
