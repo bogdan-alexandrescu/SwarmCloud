@@ -372,7 +372,7 @@ spec:
       expression: >-
         {"swarm-worker": [],
         "swarm-dispatcher": [[["batch"], ["jobs"], ["create", "get", "list", "watch"]], [[""], ["pods"], ["get", "list", "watch"]], [[""], ["pods/log"], ["get"]], [[""], ["events"], ["get", "list", "watch"]]],
-        "swarm-reaper": [[["batch"], ["jobs"], ["get", "list", "watch", "delete"]], [[""], ["pods"], ["get", "list", "watch", "delete"]]]}
+        "swarm-reaper": [[["batch"], ["jobs"], ["get", "list", "watch", "delete"]], [[""], ["pods"], ["get", "list", "watch", "delete"]], [[""], ["events"], ["get", "list"]]]}
     # A rule without apiGroups, resources or verbs is an evaluation error here,
     # and so a refusal. None of the render's omits them.
     # The swarm-worker Role is intentionally empty, and an empty `rules` list

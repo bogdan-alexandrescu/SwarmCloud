@@ -630,6 +630,30 @@ def test_events_the_role_does_not_grant_are_asked_once_and_conclude_nothing():
     assert len(core.event_calls) == 1, "a 403 is remembered, not asked again every pass"
 
 
+def test_a_granted_events_read_records_failed_create_on_the_task(db, config):
+    """The Role grants `events` list (kubernetes/rbac/dispatcher-rbac.yaml): the
+    Job's `FailedCreate`, read by the real `GkeBackend`, reaches the task's
+    record, and nothing else moves (invariants 1-3)."""
+    now = utcnow()
+    core = _EventsCoreApi([_failed_create('pods "x" is forbidden: exceeded quota: tenant-quota', now)])
+    read = GkeBackend(namespace_prefix="swarm-tenant-", batch_api=object(), core_api=core)
+    seed_attempt(db, state=TaskState.DISPATCHED)
+    before_lease = dict(db.doc(f"leases/{LEASE}"))
+    before_pools = {p: dict(db.doc(f"pools/{p}")) for p in POOLS}
+
+    report, backend = reconcile(db, config, read.start_problem(dispatched_job()))
+
+    task = db.doc(f"tasks/{TASK}")
+    recorded = task["metadata"][START_PROBLEM_KEY]
+    assert recorded["reason"] == "FailedCreate"
+    assert "exceeded quota" in recorded["message"]
+    assert recorded["attempt_id"] == ATTEMPT
+    assert task["state"] == TaskState.DISPATCHED.value
+    assert db.doc(f"leases/{LEASE}") == before_lease
+    assert {p: db.doc(f"pools/{p}") for p in POOLS} == before_pools
+    assert not backend.terminated and report.outcomes == []
+
+
 def test_an_unscheduled_pod_is_recorded_on_the_task_and_nothing_else_moves(db, config):
     seed_attempt(db, state=TaskState.DISPATCHED)
     before_lease = dict(db.doc(f"leases/{LEASE}"))
