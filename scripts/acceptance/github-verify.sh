@@ -49,6 +49,11 @@
 # names a kind with none.
 
 set -euo pipefail
+
+# This script touches GitHub only, never the project: it says so, so sourcing
+# common.sh does not load the never-touch list. The sandbox jobs that run it are
+# self-hosted with no swarm-accept login, and a load there could only refuse.
+SWARM_NO_PROJECT=1
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"

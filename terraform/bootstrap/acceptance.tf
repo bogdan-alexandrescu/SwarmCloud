@@ -38,6 +38,11 @@
 #     dev runs (scripts/lib/release-order.sh `deployed`). Conditioned to that
 #     prefix: the bucket also holds every root's Terraform state, which carries
 #     sensitive values, and this account reads none of it.
+#   * READ config/dev/deny-list.json, the never-touch list, which sourcing
+#     scripts/lib/common.sh loads before "what dev runs" can be asked: objects.get
+#     (roles/storage.legacyObjectReader) on that ONE object, every noncurrent
+#     generation of it included, by an exact-name condition; dev only, no other
+#     config object, no listing (deny_list_readers.tf).
 #
 # It cannot plan, apply, promote, write a record, take the release lock or
 # touch IAM.
