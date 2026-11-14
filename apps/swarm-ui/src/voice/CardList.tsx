@@ -16,7 +16,16 @@
  *
  * ONE CARD, ONE PLACE. Cards stand in the order their first event arrived;
  * a later `card.upsert` of the same `card_id` replaces it in place, and only
- * when its `version` is newer. `card.remove` takes it away.
+ * when its `version` is newer. `card.remove` takes it away. A card is drawn on
+ * its first event, while the planner is still working: the planner writes
+ * each card when it draws it, and a mock-up frame by frame, each frame the
+ * next version of the same card (owner, 12 November 2026).
+ *
+ * A WORK CARD IS LIVE. The roster follower's `roster.update` rows (swarm_api/
+ * voice/workfeed.py `roster_row`: kind, id, state, done, total) are held by
+ * kind and id, and a Work card whose agent, workflow or run has a row shows
+ * that row's state and steps as they change, with no reload. A row changes
+ * only its own card; a row that comes before its card is used when it comes.
  *
  * ONLY THE CATALOGUE IS DRAWN (cards.ts, held to swarm-api's schema by
  * tests/unit/control_plane/test_voice_cards.py). A card of a kind the
@@ -33,7 +42,7 @@
  * three.
  */
 
-import { useEffect, useReducer, useRef, useState } from 'react'
+import { memo, useEffect, useReducer, useRef, useState } from 'react'
 
 import { USE_FIXTURES } from '../api'
 import { Button } from '../components'
@@ -94,6 +103,27 @@ export interface CardProps {
   card: VoiceCard
   spec: CardKindSpec
   body: Readonly<Record<string, unknown>>
+  /** A Work card's agent, workflow or run as the roster last reported it. */
+  live?: RosterRow | null
+}
+
+/** The roster row a Work card follows: its target, else the agent, workflow or run it references. */
+export function liveRowOf(card: VoiceCard, roster: readonly RosterRow[] = []): RosterRow | null {
+  if (card.kind !== 'work') return null
+  const body = card.body ?? {}
+  const refs = card.references ?? {}
+  const pairs: [unknown, unknown][] = [
+    [body.target_kind, body.target_id],
+    ['agent', refs.agent],
+    ['workflow', refs.workflow],
+    ['run', refs.run],
+  ]
+  for (const [kind, id] of pairs) {
+    if (typeof kind !== 'string' || typeof id !== 'string' || id === '') continue
+    const row = roster.find((r) => r.kind === kind && r.id === id)
+    if (row !== undefined) return row
+  }
+  return null
 }
 
 const BY_KIND: ReadonlyMap<string, CardKindSpec> = new Map(CARD_KINDS.map((k) => [k.kind, k]))
@@ -185,7 +215,7 @@ export function seedCards(s: CardListState, project: readonly unknown[]): CardLi
     seeded.push(drawn !== undefined && drawn.version >= card.version ? drawn : card)
   }
   const ids = new Set(seeded.map((c) => c.card_id))
-  return { lastSeq: s.lastSeq, cards: [...seeded, ...s.cards.filter((c) => !ids.has(c.card_id))] }
+  return { ...s, cards: [...seeded, ...s.cards.filter((c) => !ids.has(c.card_id))] }
 }
 
 /** One stream event as it arrives: its type, its sequence and its data. */
@@ -424,12 +454,15 @@ const RENDERERS: Readonly<Record<string, (p: CardProps) => JSX.Element | null>> 
 }
 
 /** One card, or nothing when its kind is not in the catalogue. */
-export function VoiceCardView({ card }: { card: VoiceCard }) {
+export function VoiceCardView({ card, live = null }: { card: VoiceCard; live?: RosterRow | null }) {
   const spec = specOf(card.kind)
   if (spec === null) return null
   const Draw = RENDERERS[spec.kind] ?? NamedOnly
-  return <Draw card={card} spec={spec} body={catalogueBody(card, spec)} />
+  return <Draw card={card} spec={spec} body={catalogueBody(card, spec)} live={live} />
 }
+
+/** Drawn again only when its card or its roster row changed, so a roster.update redraws its own Work card alone. */
+const ListedCard = memo(VoiceCardView)
 
 // ---- the list -------------------------------------------------------------------
 
@@ -559,7 +592,7 @@ export function CardList({
             : 'No cards in this session yet.'}
         </p>
       ) : (
-        cards.map((c) => <VoiceCardView key={c.card_id} card={c} />)
+        cards.map((c) => <ListedCard key={c.card_id} card={c} live={liveRowOf(c, s.roster)} />)
       )}
     </div>
     </NavigateTo.Provider>

@@ -156,6 +156,12 @@ class ScheduleCreate(_Body):
     budget: BudgetIn | None = None
     policy: PolicyIn | None = None
     state: Literal["enabled", "paused"] = "enabled"
+    #: Diagrams in this schedule's plans (docs/design/plans-pipeline.md §6.4):
+    #: `inherit` follows the workspace (and it the platform), `on` and `off`
+    #: override both. Resolved by `plansettings.effective_plan_settings`,
+    #: which reads the field absent as `inherit`, so a create that names no
+    #: override stores none and §1.1's document keeps its fields.
+    plan_diagrams: Literal["inherit", "on", "off"] | None = None
     #: The route's idempotency key (§7.1): a repeat within 24 h returns the
     #: schedule the first request created. Not part of the document.
     client_request_id: str | None = Field(default=None, min_length=1, max_length=128)
@@ -177,6 +183,7 @@ class SchedulePatch(_Body):
     gate: GateIn | None = None
     budget: BudgetIn | None = None
     policy: PolicyIn | None = None
+    plan_diagrams: Literal["inherit", "on", "off"] | None = None
 
 
 def parse_create(body: Mapping[str, Any]) -> ScheduleCreate:
@@ -831,6 +838,8 @@ def build_schedule(
         "spend": spend_for(None, spend_day(now, body.timezone)),
         "revision": 1,
     }
+    if body.plan_diagrams is not None:
+        doc["plan_diagrams"] = body.plan_diagrams
     if body.state == "paused":
         doc["pause"] = {"by": actor, "at": now, "reason": "created paused", "code": None}
     else:
@@ -913,6 +922,8 @@ def apply_edit(
     if patch.budget is not None:
         doc["budget"] = resolve_budget(entry, patch.budget, current=stored["budget"], root=root)
     doc["policy"] = resolve_policy(entry, patch.policy, current=stored["policy"])
+    if patch.plan_diagrams is not None:
+        doc["plan_diagrams"] = patch.plan_diagrams
     if doc["state"] == "enabled":
         doc["next_slot"], doc["next_run_at"] = next_times(doc, now)
     doc["updated_by"] = actor

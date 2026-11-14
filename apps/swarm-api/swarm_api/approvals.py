@@ -1166,6 +1166,90 @@ def history(ctx: Any, tenant_id: str, *, kind: str | None = None, states: tuple[
 
 
 # --------------------------------------------------------------------------
+# What each schedule proposed lately (plans-pipeline §3.10)
+# --------------------------------------------------------------------------
+
+#: `proposals_7d`'s window.
+PROPOSALS_DAYS = 7
+_RUN_UNDER_WAY = frozenset({RunState.APPROVED, RunState.RUNNING, RunState.CHECKING, RunState.FIXING})
+
+
+def _proposal_counts() -> dict[str, Any]:
+    return {"proposed": 0, "approved": 0, "auto_approved": 0, "rejected": 0, "expired": 0,
+            "running": 0, "merged": 0, "window_days": PROPOSALS_DAYS, "complete": True}
+
+
+def proposals_by_schedule(ctx: Any, tenant_id: str, *, limit: int | None = None) -> dict[str, dict[str, Any]]:
+    """`proposals_7d` for each of the tenant's schedules with anything in the
+    last PROPOSALS_DAYS days, by `schedule_id`: its `proposal` approvals and
+    the issue runs its firings made, each counted from its own source of
+    truth (the record's `state`; the run's `approved_by`, `rejected_by`,
+    state and pull request).
+
+    One bounded read per source, as `history` reads: the records on
+    approvals-tenant-state-requested (every state, `requested_at` in the
+    window), the runs on issue-runs-tenant-created, newest first. When a read
+    comes back full, rows may be missing and every schedule's counts say
+    `complete: false` ("at least"). Tenant-scoped in each query and again
+    here (invariant 9). Reads only."""
+    limit = HISTORY_LIMIT if limit is None else limit
+    cutoff = ctx.now() - timedelta(days=PROPOSALS_DAYS)
+    counts: dict[str, dict[str, Any]] = {}
+
+    def row(schedule_id: Any) -> dict[str, Any]:
+        return counts.setdefault(str(schedule_id), _proposal_counts())
+
+    query = (
+        ctx.db.collection(COLLECTION)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("state", "in", list(STATES)))
+        .where(filter=FieldFilter("requested_at", ">=", cutoff))
+        .order_by("requested_at")
+        .limit(limit)
+    )
+    read = [snap.to_dict() or {} for snap in query.stream()]
+    for doc in read:
+        sid = (doc.get("subject") or {}).get("schedule_id")
+        if doc.get("tenant_id") != tenant_id or doc.get("kind") != PROPOSAL or not sid:
+            continue
+        if (_aware(doc.get("requested_at")) or _EPOCH) < cutoff:
+            continue
+        counts_for = row(sid)
+        counts_for["proposed"] += 1
+        state = doc.get("state")
+        if state == APPROVED:
+            counts_for["approved"] += 1
+        elif state == REJECTED:
+            counts_for["rejected"] += 1
+        elif state == EXPIRED:
+            counts_for["expired"] += 1
+    runs, more_runs = IssueRuns(ctx.db, now=ctx.now).list(tenant_id, limit=limit)
+    for run in runs:
+        sid = (run.schedule or {}).get("schedule_id")
+        if run.tenant_id != tenant_id or not sid or (_aware(run.created_at) or _EPOCH) < cutoff:
+            continue
+        counts_for = row(sid)
+        counts_for["proposed"] += 1
+        if run.approved_by == AUTO_APPROVER:
+            counts_for["auto_approved"] += 1
+        elif run.approved_by:
+            counts_for["approved"] += 1
+        if run.state == RunState.REJECTED:
+            counts_for["expired" if run.rejected_by == EXPIRY_ACTOR else "rejected"] += 1
+        if run.state in _RUN_UNDER_WAY:
+            counts_for["running"] += 1
+        if (run.pull_request or {}).get("merged") is True:
+            counts_for["merged"] += 1
+    full = len(read) >= limit or (
+        more_runs is not None and bool(runs) and (_aware(runs[-1].created_at) or _EPOCH) >= cutoff
+    )
+    if full:
+        for counts_for in counts.values():
+            counts_for["complete"] = False
+    return counts
+
+
+# --------------------------------------------------------------------------
 # Moving the subject: a run approval's firing, a merge's run
 # --------------------------------------------------------------------------
 

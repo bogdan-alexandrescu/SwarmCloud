@@ -8,9 +8,10 @@ holds that:
 * the front's reply comes back before a slow planner ends, carrying the
   delegation's id, and `GET /delegations/{id}` serves the planner's answer;
 * `delegate` runs `Planner.delegate` with the session's person and grant;
-* a read-only question ("how many agents are running") is answered in the
-  front's own turn with a read tool, on `Planner.read` with the session's
-  grant, and starts no delegation (the owner's pick on #3954);
+* a read-only question ("how many agents are running", "which workflows are
+  running") is answered in the front's own turn with a read tool, on
+  `Planner.read` with the session's grant, and starts no delegation (the
+  owner's pick on #3954 and on the planner reads lane);
 * delegations run one at a time per session, at most two waiting;
 * no request reaches an OpenAI host;
 * one lease for the session (`holder: voice-front`), renewed, released on
@@ -133,6 +134,9 @@ class FakeConversation:
         if "how many" in text:
             answer, is_error = await self.handler("list_agents", {"state": "RUNNING", "workflow_id": None,
                                                                   "submitted_by": "me"})
+            reply = f"Read: {answer}" if not is_error else "I couldn't look."
+        elif "which" in text:
+            answer, is_error = await self.handler("list_workflows", {"state": "RUNNING", "repository": None})
             reply = f"Read: {answer}" if not is_error else "I couldn't look."
         elif "plan" in text:
             answer, is_error = await self.handler("delegate", {"request": text})
@@ -482,6 +486,31 @@ def test_a_read_only_question_is_answered_in_the_fronts_own_turn():
         # The lease's token is scrubbed from what the read hands the child.
         assert w.front.get("vs-1").lease.bearer.reveal() in read["known"]
     run(body)
+
+
+def test_a_list_question_is_answered_in_the_fronts_own_turn():
+    async def body(w: World):
+        grant = _grant()
+        await w.front.start("vs-1", person=PERSON, grant=grant)
+        answer = await w.front.turn("vs-1", "which workflows are running")
+        assert answer.delegation_id is None
+        assert "7" in answer.reply
+        assert w.planner.calls == []
+        [read] = w.planner.reads
+        assert read["name"] == "list_workflows" and read["grant"] is grant
+        assert read["args"]["state"] == "RUNNING"
+    run(body)
+
+
+def test_the_front_is_told_to_answer_counts_and_lists_itself_never_by_delegation():
+    text = claudefront.FRONT_INSTRUCTIONS
+    # Counts and lists ("which ones") are the front's own reads.
+    assert "how many agents or workflows are running, which ones" in text
+    assert "never delegate a read" in text
+    # A list is spoken: its total and a few of its rows by title, not a bulleted list.
+    assert "name at most three of its rows by title" in text
+    assert "no lists" not in text and "no bulleted lists" in text
+    assert "never count with `search`" in text
 
 
 def test_without_a_planner_a_read_is_refused_to_the_model():

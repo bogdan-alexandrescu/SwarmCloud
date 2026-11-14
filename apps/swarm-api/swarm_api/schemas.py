@@ -29,6 +29,7 @@ from pydantic import (
 from swarm_common.models import ADDITIONAL_REPOSITORIES_CEILING, ADDITIONAL_REPOSITORY_NAME
 
 from . import modelprices
+from .plansettings import PlanReviewCapsRequest, validate_chat_model_class
 from .sessiontag import PATTERN as SESSION_TAG_PATTERN
 from .validation import (
     DEFAULT_CARRIER,
@@ -345,6 +346,14 @@ class WorkflowStepCreate(StrictModel):
     #: instead of the workflow's `repository_ref` (#264). A step id, never a
     #: ref: the worker derives the branch from the upstream's task id.
     builds_on: str | None = Field(default=None, min_length=1, max_length=64)
+    #: The ref this step clones instead of the workflow's `repository_ref`
+    #: (#2895): a branch or tag name or a full sha of the workflow's own
+    #: `repository_url`. A repository coordinate, never an image or a command
+    #: (invariant 10). Stored as the step task's `repository_ref`; the rules
+    #: -- no abbreviated sha, not beside `builds_on` or `pr_role`, not under a
+    #: ref the workflow supplies or on a step `integrate` merges -- are in
+    #: `validation.check_step_repository_ref`.
+    repository_ref: str | None = Field(default=None, max_length=256)
     #: An empty diff is this step's result, not its failure (owner decision,
     #: 2026-10-05): the step ends SUCCEEDED with `result_summary.no_change`,
     #: and a later step that needs its change (its `swarm-work.patch`, its
@@ -727,6 +736,44 @@ class WorkflowCreate(StrictModel):
         return self
 
 
+#: At most this many `after_merge` entries on one held workflow
+#: (docs/design/merging-without-a-laptop.md §4.1).
+MAX_AFTER_MERGE = 8
+
+
+class AfterMergeEntry(StrictModel):
+    """One merge a held workflow waits for (§4.1): EXACTLY ONE of a workflow
+    of the same tenant, by id, or a pull request of the spec's own repository,
+    by number. Never a repository, an image or a command (invariant 10)."""
+
+    #: A workflow (`wf_...`) or a held workflow (`hwf_...`) of the same
+    #: tenant; satisfied when the pull request it opened is merged.
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=64,
+                                    pattern=r"^h?wf_[A-Za-z0-9]+$")
+    #: A pull request of the spec's own repository, a number only, as
+    #: `publish_to_pr` takes it; satisfied when GitHub reports it merged.
+    pull_request: StrictInt | None = Field(default=None, ge=1, le=10**9)
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> "AfterMergeEntry":
+        if (self.workflow_id is None) == (self.pull_request is None):
+            raise ValueError("an after_merge entry names exactly one of workflow_id "
+                             "or pull_request")
+        return self
+
+
+class HeldWorkflowCreate(WorkflowCreate):
+    """A workflow spec that starts only once other pull requests MERGE (§4).
+
+    `after_merge` is not a field of `WorkflowCreate`, so a plain submission
+    naming it is refused as an unknown field rather than started at once.
+    The spec is held in a `held_workflows` row (`heldworkflows.hold`) and
+    submitted as a `WorkflowCreate`, without `after_merge`, at release.
+    """
+
+    after_merge: list[AfterMergeEntry] = Field(min_length=1, max_length=MAX_AFTER_MERGE)
+
+
 # --------------------------------------------------------------------------
 # Issue runs (#454)
 # --------------------------------------------------------------------------
@@ -940,6 +987,21 @@ class PlatformSettingsRequest(StrictModel):
     #: Jev's per-token rate (JEV-USAGE-PAGE), replaced whole. No default:
     #: Capacity › Jev usage shows "rate not set" and no dollars until it is set.
     jev_token_rates: JevTokenRatesRequest | None = None
+    #: Whether a planner may draw diagrams, for a workspace and a schedule that
+    #: leave it to the platform (docs/design/plans-pipeline.md §6.4). On by
+    #: default; `plansettings` resolves the three levels.
+    plan_diagrams_default: StrictBool | None = None
+    #: The plan review chat's class when neither the plan nor its workspace
+    #: names one (§7.8): a class `claude-code` carries. Default `sonnet`.
+    plan_chat_model_class: str | None = Field(default=None, min_length=1, max_length=32)
+    #: The plan review caps (§7.8), the ones named replacing theirs. Defaults
+    #: 5 / 20 / 40 / 25.00; ranges `plansettings.CAPS_RANGES`.
+    plan_review_caps: PlanReviewCapsRequest | None = None
+
+    @field_validator("plan_chat_model_class")
+    @classmethod
+    def _carried_class(cls, value: str | None) -> str | None:
+        return validate_chat_model_class(value, setting="plan_chat_model_class")
 
 
 #: A runner-size change, by class then field (docs/design/runner-sizes.md
