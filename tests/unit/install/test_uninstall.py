@@ -142,6 +142,7 @@ class FakeWorld:
         self.made_by_install = False
         self.project_deleted = False
         self.reach_closed = False
+        self.dns_answer = remains_mod.DNS_DELETED
         self.tf = {
             "infra": FakeTf("infra", self.log, {
                 "google_cloud_run_v2_service.api": ("google_cloud_run_v2_service",
@@ -236,9 +237,9 @@ class FakeWorld:
         self._call("missing_permissions")
         return [p for p in permissions if p in self.missing]
 
-    def remove_project_binding(self, role, member):
-        self._call("remove_project_binding", None, role, member)
-        return True
+    def delete_dns_record(self, zone, name, address):
+        self._call("delete_dns_record", None, zone, name, address)
+        return self.dns_answer
 
     def remove_impersonation_grant(self, deployer, member):
         self._call("remove_impersonation_grant", None, deployer, member)
@@ -314,9 +315,8 @@ def install_state(*, steps: tuple[str, ...] = INSTALLED, deny: list[str] | None 
         steps={s: StepRecord(state="done", at=1.0, by="owner@example.com") for s in steps},
         outputs={"installer": "owner@example.com", "desktop_client_id": "1234-desktop.apps.googleusercontent.com",
                  "github_org": "acme-org", "github_app": {"slug": "acme-swarm", "id": 7},
-                 "admin_groups": ["swarm-admins@example.com"], "oauth_brand": "projects/42/brands/42",
-                 "global_ip": "203.0.113.7", "billing_account": "0000-1111",
-                 "engine_iam_bindings": [{"role": "roles/logging.viewer", "member": "group:ops@example.com"}]},
+                 "admin_groups": ["swarm-admins@example.com"],
+                 "global_ip": "203.0.113.7", "billing_account": "0000-1111"},
         deny_list=list(deny or []),
     )
 
@@ -341,7 +341,7 @@ def flow(tmp_path: Path, store: StateStore, world: FakeWorld, *, typed: str = PR
     clock = FakeClock()
     return un.Uninstall(store=store, world=world, confirm=confirm, clock=clock,
                         events=Events(clock.now, out=io.StringIO()), out=io.StringIO(), holder="owner@example.com",
-                        remains_dir=tmp_path / "cache")
+                        remains_dir=tmp_path / "cache", github_account_type=lambda login: "Organization")
 
 
 def test_verb_is_discovered():
@@ -390,7 +390,7 @@ def test_order_is_section_9_2(tmp_path):
         return names.index(name)
 
     order = ["pause_job", "running_executions", "delete_namespace", "delete_policies", "terraform infra apply",
-             "delete_image", "delete_secret", "remove_project_binding", "remove_impersonation_grant",
+             "delete_image", "delete_secret", "remove_member_bindings", "remove_impersonation_grant",
              "terraform bootstrap apply", "destroy_key_versions", "delete_bucket"]
     positions = [first(n) for n in order]
     assert positions == sorted(positions), [n for _, n in sorted(zip(positions, order))]
@@ -605,6 +605,149 @@ def test_remains_record_lists_the_eight(tmp_path):
     assert world.tf["bootstrap"].resources == {}
     # Printed, too.
     assert "What remains" in f.out.getvalue()
+
+
+@pytest.fixture(autouse=True)
+def opened(monkeypatch) -> list[tuple[str, str]]:
+    """Every page step 8 opens, (url, why); no browser is ever started."""
+    pages: list[tuple[str, str]] = []
+    monkeypatch.setattr("swarm_install.steps.open_page", lambda url, *, why, **kw: pages.append((url, why)))
+    return pages
+
+
+def _record(tmp_path: Path) -> dict[str, remains_mod.Remain]:
+    record = remains_mod.Record.from_bytes(remains_mod.record_path(PROJECT, tmp_path / "cache").read_bytes())
+    return {r.kind: r for r in record.remains}
+
+
+def test_iam_step_reads_no_unwritten_binding_list(tmp_path):
+    """Epic finding 57: nothing writes `engine_iam_bindings`; step 6 reports the
+    bindings it really removed, never a count of a list no step records."""
+    state = install_state()
+    state.outputs["engine_iam_bindings"] = [{"role": "roles/logging.viewer", "member": "group:ops@example.com"}]
+    store, _ = stored_store(tmp_path, state)
+    world = FakeWorld(tmp_path)
+    assert flow(tmp_path, store, world).run() == ExitCode.OK
+    assert not [e for e in world.log if "group:ops@example.com" in e]
+    detail = store.load().steps["uninstall.iam"].detail
+    assert "engine-made" not in detail and detail.startswith("1 workspace account(s) and their 2 project binding(s)")
+
+
+def test_a_cloud_dns_record_is_deleted_not_listed(tmp_path, opened):
+    """Epic finding 56: the record edge.dns wrote to the project's own zone is
+    deleted by step 8; it is no longer a manual remain."""
+    state = install_state()
+    state.outputs["dns_zone"] = "swarm-zone"
+    store, _ = stored_store(tmp_path, state)
+    world = FakeWorld(tmp_path)
+    assert flow(tmp_path, store, world).run() == ExitCode.OK
+    assert ("delete_dns_record", None, "swarm-zone", "swarm.example.com", "203.0.113.7") in world.log
+    assert world.names().index("delete_dns_record") < world.names().index("delete_bucket")
+    assert "dns-record" not in _record(tmp_path)
+    assert not [url for url, _ in opened if "net-services/dns" in url]
+
+
+def test_a_cloud_dns_record_that_moved_stays_a_remain_with_its_page(tmp_path, opened):
+    state = install_state()
+    state.outputs["dns_zone"] = "swarm-zone"
+    store, _ = stored_store(tmp_path, state)
+    world = FakeWorld(tmp_path)
+    world.dns_answer = remains_mod.DNS_CHANGED
+    assert flow(tmp_path, store, world).run() == ExitCode.OK
+    remain = _record(tmp_path)["dns-record"]
+    assert "no longer holds the install's address" in remain.why
+    assert any(url.startswith("https://console.cloud.google.com/net-services/dns/zones/swarm-zone/") for url, _ in opened)
+
+
+def test_a_record_in_another_projects_zone_is_left_and_listed(tmp_path, opened):
+    # A zone in a shared DNS project is outside the deployment's project: the
+    # uninstall never deletes there, and lists the record with that zone's page.
+    state = install_state()
+    state.outputs.update({"dns_zone": "edge-zone", "dns_zone_project": "zone-host-project"})
+    store, _ = stored_store(tmp_path, state)
+    world = FakeWorld(tmp_path)
+    assert flow(tmp_path, store, world).run() == ExitCode.OK
+    assert "delete_dns_record" not in world.names()
+    remain = _record(tmp_path)["dns-record"]
+    assert "another project's zone" in remain.why
+    assert "zones/edge-zone/details?project=zone-host-project" in remain.step
+
+
+def test_a_registrar_record_is_never_touched(tmp_path):
+    store, _ = stored_store(tmp_path, install_state())
+    world = FakeWorld(tmp_path)
+    assert flow(tmp_path, store, world).run() == ExitCode.OK
+    assert "delete_dns_record" not in world.names()
+    assert _record(tmp_path)["dns-record"].step.startswith("at your registrar")
+
+
+def test_manual_remains_open_their_pages(tmp_path, opened):
+    """Epic finding 56: the Desktop client and the GitHub App are removed by a
+    person, so step 8 opens their pages the way the install does."""
+    store, _ = stored_store(tmp_path, install_state())
+    assert flow(tmp_path, store, FakeWorld(tmp_path)).run() == ExitCode.OK
+    urls = [url for url, _ in opened]
+    assert f"https://console.cloud.google.com/auth/clients?project={PROJECT}" in urls
+    assert "https://github.com/organizations/acme-org/settings/apps/acme-swarm/advanced" in urls
+    assert all("1234-desktop" in why or "acme" in why for _, why in opened)
+
+
+def test_an_unknown_account_type_opens_both_app_pages(tmp_path, opened):
+    """When GitHub's users API cannot say who owns the App, step 8 opens both
+    of its pages, never only the organisation one (a personal account's 404s)."""
+    store, _ = stored_store(tmp_path, install_state())
+    f = flow(tmp_path, store, FakeWorld(tmp_path))
+    f.github_account_type = lambda login: ""
+    assert f.run() == ExitCode.OK
+    app = [(url, why) for url, why in opened if "github.com" in url]
+    assert [url for url, _ in app] == [
+        "https://github.com/organizations/acme-org/settings/apps/acme-swarm/advanced",
+        "https://github.com/settings/apps/acme-swarm/advanced"]
+    assert all(why.endswith(": Delete GitHub App") for _, why in app)
+    console = [url for url, _ in opened if "console.cloud.google.com" in url]
+    assert console == [f"https://console.cloud.google.com/auth/clients?project={PROJECT}"]
+
+
+@pytest.mark.parametrize(("kind", "page"), [
+    ("Organization", "https://github.com/organizations/acme-org/settings/apps/acme-swarm/advanced"),
+    ("User", "https://github.com/settings/apps/acme-swarm/advanced"),
+])
+def test_the_github_app_page_follows_the_owners_account_type(tmp_path, kind, page):
+    """Epic finding 22: a personal account's App has no organizations/ page."""
+    store, _ = stored_store(tmp_path, install_state())
+    f = flow(tmp_path, store, FakeWorld(tmp_path))
+    asked: list[str] = []
+    f.github_account_type = lambda login: asked.append(login) or kind
+    assert f.run() == ExitCode.OK
+    assert asked == ["acme-org"]
+    assert _record(tmp_path)["github-app"].step == f"{page}: Delete GitHub App"
+
+
+def test_github_account_type_reads_the_public_users_api():
+    asked: list[str] = []
+
+    def get(url: str) -> dict[str, Any]:
+        asked.append(url)
+        return {"login": "someone", "type": "User"}
+
+    assert remains_mod.github_account_type("someone", get) == "User"
+    assert asked == ["https://api.github.com/users/someone"]
+
+    def down(url: str) -> dict[str, Any]:
+        raise OSError("no network")
+
+    assert remains_mod.github_account_type("acme", down) == ""
+    assert remains_mod.github_account_type("<org>", lambda url: pytest.fail("asked for a placeholder")) == ""
+    both = remains_mod.github_app_url("acme", "app", "")
+    assert both.startswith("https://github.com/organizations/acme/settings/apps/app")
+    assert "https://github.com/settings/apps/app" in both
+
+
+def test_the_brand_is_named_by_its_console_page(tmp_path):
+    """Epic finding 46: nothing records `oauth_brand`, so the record names the page."""
+    store, _ = stored_store(tmp_path, install_state())
+    assert flow(tmp_path, store, FakeWorld(tmp_path)).run() == ExitCode.OK
+    assert _record(tmp_path)["oauth-brand"].name == f"https://console.cloud.google.com/auth/branding?project={PROJECT}"
 
 
 # -- the verb and the real world, on a fake REST client -------------------------
@@ -972,3 +1115,19 @@ def test_real_world_project_made_by_install_reads_its_label():
     teardown_on(made).delete_project()
     assert ("DELETE", url, None) in made.calls
     assert teardown_on(FakeApi({("GET", url): {"labels": {}}})).project_made_by_install() is False
+
+
+def test_real_world_deletes_only_the_installs_a_record():
+    from swarm_install.steps.edge import DNS_API
+
+    zone = f"{DNS_API}/projects/{PROJECT}/managedZones/swarm-zone"
+    record = {"name": "swarm.example.com.", "type": "A", "ttl": 300, "rrdatas": ["203.0.113.7"]}
+    api = FakeApi({("PAGES", f"{zone}/rrsets"): [record]})
+    assert teardown_on(api).delete_dns_record("swarm-zone", "swarm.example.com", "203.0.113.7") == "deleted"
+    assert ("GET", f"{zone}/rrsets", {"name": "swarm.example.com.", "type": "A"}) in api.calls
+    assert ("POST", f"{zone}/changes", {"deletions": [record]}) in api.calls
+
+    moved = FakeApi({("PAGES", f"{zone}/rrsets"): [{**record, "rrdatas": ["198.51.100.9"]}]})
+    assert teardown_on(moved).delete_dns_record("swarm-zone", "swarm.example.com", "203.0.113.7") == "changed"
+    assert not [c for c in moved.calls if c[0] == "POST"]
+    assert teardown_on(FakeApi({})).delete_dns_record("swarm-zone", "swarm.example.com", "203.0.113.7") == "absent"
