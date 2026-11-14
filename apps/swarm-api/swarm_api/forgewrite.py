@@ -792,6 +792,28 @@ class GitHubWriter:
             raise ForgeWriteError(f"GitHub's answer for {what} names no object")
         return sha
 
+    def ref_head(self, ref: IssueRef, refname: str, token: str) -> str | None:
+        """The object the full refname `refname` (`refs/...`) points at, or
+        None when GitHub has no such ref (a 404): admission's look at a
+        `repository_ref` such as a pull request's `refs/pull/<n>/head`, which
+        the worker fetches as that exact ref (#3347, #3566)."""
+        if not refname.startswith("refs/"):
+            raise ValueError("ref_head reads a full refname, refs/...")
+        what = f"the ref {refname} of {ref.repository}"
+        try:
+            data = self._call(
+                "GET",
+                self._url(ref, f"git/ref/{quote(refname.removeprefix('refs/'), safe='/')}"),
+                token, what, needs=PULLS_WRITE,
+            )
+        except ForgeWriteNotFound:
+            return None
+        target = data.get("object") if isinstance(data, dict) else None
+        sha = target.get("sha") if isinstance(target, dict) else None
+        if not isinstance(sha, str) or not sha:
+            raise ForgeWriteError(f"GitHub's answer for {what} names no object")
+        return sha
+
     def commit_head(self, ref: IssueRef, sha: str, token: str) -> str | None:
         """The commit `sha` names, or None when GitHub has no such commit (a
         404, or its 422 "No commit found for SHA"): admission's one look at a
