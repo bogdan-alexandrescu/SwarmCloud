@@ -208,6 +208,12 @@ def _project_path_allowed(m: re.Match[str], allow: Allow) -> bool:
     return m.group(1) in allow.projects or before.endswith(allow.url_paths)
 
 
+#: Google-owned service agent domains that are not a project id: Cloud
+#: Storage's agent is service-<project number>@gs-project-accounts, and the
+#: project-number rule still holds that number to the placeholder set.
+_GOOGLE_AGENT_DOMAINS = frozenset({"gs-project-accounts"})
+
+
 SHAPE_RULES: tuple[Rule, ...] = (
     Rule("project-path", "C1", re.compile(r"\bprojects/" + _PROJECT_ID + _END), _project_path_allowed),
     Rule("project-flag", "C1", re.compile(r"--project(?:=|[ \t]+)[\"']?" + _PROJECT_ID + _END),
@@ -219,7 +225,8 @@ SHAPE_RULES: tuple[Rule, ...] = (
         r"|\b(\d{10,13})-(?![a-z0-9]{32}\.)[a-z0-9]+\.apps\.googleusercontent\.com)"),
          lambda m, a: next(g for g in m.groups() if g) in a.numbers),
     Rule("service-account", "C3", re.compile(r"\b[a-z0-9-]+@([a-z0-9-]+)\.iam\.gserviceaccount\.com\b"),
-         lambda m, a: m.group(1) in a.projects or m.group(1).startswith("gcp-sa-")),
+         lambda m, a: m.group(1) in a.projects or m.group(1).startswith("gcp-sa-")
+         or m.group(1) in _GOOGLE_AGENT_DOMAINS),
     Rule("url-host", "C4", re.compile(r"\bhttps?://([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})" + _END),
          _host_allowed),
     Rule("tailnet", "C4", re.compile(r"\b([a-z0-9-]+\.ts\.net)\b"),
