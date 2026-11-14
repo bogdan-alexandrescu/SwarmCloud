@@ -221,6 +221,16 @@ def test_no_instruction_appears_twice_in_a_rendered_steps_notes(selected, search
     _assert_said_once(rendered)
 
 
+def test_the_live_browser_note_says_the_dev_server_shares_the_workers_memory():
+    # #3104: a live-browser worker running the CLI, `npm ci` and a dev server
+    # was OOM-killed, the worker with it. The browser has its own container;
+    # the dev server does not. MUTATION: drop the sentence and this fails.
+    note = claude_code.LIVE_BROWSER_NOTE
+    assert "dev server" in note
+    assert "shares its memory limit" in note
+    assert "NODE_OPTIONS=--max-old-space-size=" in note
+
+
 def test_the_live_browser_note_is_short():
     # Was 3,874 characters alone, 4,754 with its lead, strengths and test note.
     assert len(claude_code.LIVE_BROWSER_NOTE) < 3000, len(claude_code.LIVE_BROWSER_NOTE)

@@ -7715,7 +7715,7 @@ entries:
   stage: 7
   provider: engine
   check: gcloud projects get-iam-policy $P --flatten=bindings --filter='bindings.members:serviceAccount:swarm-accept@*'
-  apply: 'terraform/bootstrap/acceptance.tf: google_project_iam_custom_role.acceptance_runner + acceptance_lister (two custom roles), google_project_iam_member.acceptance_runs_jobs (UNCONDITIONED, #965) + acceptance_lists_jobs, google_project_iam_member.acceptance_reads_verify_logs (conditioned to the swarm-verify log view), google_storage_bucket_iam_member.acceptance_reads_release_records (conditioned to releases/ prefix)'
+  apply: 'terraform/bootstrap/acceptance.tf: google_project_iam_custom_role.acceptance_runner + acceptance_lister (two custom roles), google_project_iam_member.acceptance_runs_jobs (UNCONDITIONED, #965) + acceptance_lists_jobs, google_project_iam_member.acceptance_reads_verify_logs (conditioned to the swarm-verify log view), google_storage_bucket_iam_member.acceptance_reads_release_records (conditioned to releases/ prefix); terraform/bootstrap/deny_list_readers.tf: google_storage_bucket_iam_member.acceptance_reads_deny_list + verify_reads_deny_list (roles/storage.legacyObjectReader, conditioned to exactly config/dev/deny-list.json, so swarm-accept and swarm-verify read the never-touch list as one object and never list config/dev/)'
   verify: swarmAcceptanceRunner/Lister carry no create/update/delete/IAM permission
   explain: 'The run.jobs.* grant is project-wide and UNCONDITIONED by owner decision (#965): Cloud Run exposes no resource.name to IAM Conditions, so a job-name condition was tried and silently matched nothing (measured against the IAM Policy Troubleshooter). What bounds the account is that only accept.yml@main can become it, not a condition -- it can start/cancel ANY Cloud Run job in the shared project, including the other team''s.'
   guards: '#965, owner-accepted trade-off, 2026-10-09'
@@ -7724,6 +7724,7 @@ entries:
   - sa.swarm-accept
   evidence:
   - terraform/bootstrap/acceptance.tf:85-194
+  - terraform/bootstrap/deny_list_readers.tf:33-57
   step: bootstrap.pass-2
   refs:
     terraform:
@@ -7733,6 +7734,8 @@ entries:
     - bootstrap/google_project_iam_member.acceptance_lists_jobs
     - bootstrap/google_project_iam_member.acceptance_reads_verify_logs
     - bootstrap/google_storage_bucket_iam_member.acceptance_reads_release_records
+    - bootstrap/google_storage_bucket_iam_member.acceptance_reads_deny_list
+    - bootstrap/google_storage_bucket_iam_member.verify_reads_deny_list
 - id: iam-binding.ci-fix-wif-binding
   kind: iam-binding
   scope: addon:ci

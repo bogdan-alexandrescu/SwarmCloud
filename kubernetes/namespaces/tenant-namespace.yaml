@@ -111,7 +111,10 @@ spec:
     # an hour before), which is why count/jobs.batch is
     # larger than pods. Storage is that many 20 GiB claims, on the cache's
     # class alone; every other class Autopilot ships is held to none, so "we
-    # only ever make cache disks" is the API server's rule too.
+    # only ever make cache disks" is the API server's rule too. The cache's
+    # class is the xfs one since #4061 (CACHE_STORAGE_CLASS); the retired ext4
+    # class is named nowhere here, so a claim a running pod already holds on it
+    # still counts in the two totals above until its pod goes.
     count/persistentvolumeclaims: "__QUOTA_JOBS__"
     requests.storage: __QUOTA_CACHE_STORAGE__
     __CACHE_STORAGE_CLASS__.storageclass.storage.k8s.io/persistentvolumeclaims: "__QUOTA_JOBS__"
