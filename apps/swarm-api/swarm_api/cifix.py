@@ -148,8 +148,9 @@ record is an index, never the proof.
 A FOLLOW-UP'S HEAD, TOO (docs/design/merging-without-a-laptop.md §3.1-§3.2,
 lane 1). A `publish_to_pr` workflow (#2183) pushes onto a pull request a
 branch task opened, and the merge step refused that push `head_moved`:
-nothing recorded it. `stamp` marks such a workflow `FIX_HEAD_FIELD` with
-kind `FOLLOW_UP` -- unless it carries a writer's own mark, which makes it a
+nothing recorded it. `stamp` marks such a workflow, and `stamp_task` such a
+single task (`POST /v1/tasks`, the owner's "single tasks next", 2026-11-13),
+`FIX_HEAD_FIELD` with kind `FOLLOW_UP` -- unless it carries a writer's own mark, which makes it a
 round recorded as one -- and the tick records it against the branch task
 its SIGNED `publish_to_pr.task_id` names, with two narrowings a round does
 not have: only a `SUCCEEDED` follow-up is recorded (a failed one's push is
@@ -206,7 +207,7 @@ from .issueruns import RUNS_COLLECTION, TERMINAL_RUN_STATES, IssueRun
 from .refusals import refuse
 from .repositories import parse_repository
 from .rollup import SKIPPED_SUMMARY_KEY
-from .schemas import WorkflowCreate
+from .schemas import TaskCreate, WorkflowCreate
 from .validation import (
     CONFLICT_ROUND_METADATA_KEY,
     DISPATCH_METADATA_KEY,
@@ -472,7 +473,7 @@ def _fix_head_marker(metadata: Mapping[str, Any], continuation: Continuation | N
     return None
 
 
-def _follow_up_marker(spec: WorkflowCreate,
+def _follow_up_marker(spec: WorkflowCreate | TaskCreate,
                       continuation: Continuation | None) -> dict[str, Any] | None:
     """The `FIX_HEAD_FIELD` marker for a `publish_to_pr` follow-up, or None.
 
@@ -1287,6 +1288,25 @@ def _with_lane_territory(store: Any, tenant_id: str, spec: WorkflowCreate,
             given[PROMPT_INPUT_KEY] = f"{prompt.rstrip()}\n\n{brief}\n"
         steps.append(step.model_copy(update={"input": given}))
     return spec.model_copy(update={"steps": steps})
+
+
+def stamp_task(spec: TaskCreate) -> TaskCreate:
+    """A single task's `spec` (`POST /v1/tasks`, `swarm_dispatch`) marked
+    `FIX_HEAD_FIELD` kind `FOLLOW_UP` when it publishes onto a pull request,
+    as `stamp` marks a `publish_to_pr` workflow; unchanged otherwise.
+
+    The owner, 2026-11-13: "workflows now, single tasks next". That night two
+    merge steps refused `head_moved` heads that single `publish_to_pr` tasks
+    pushed: nothing marked them, so the tick never recorded them. The same
+    marker, so `_record_head` records the task against the branch task its
+    SIGNED `publish_to_pr.task_id` names, with the same narrowings. A caller
+    never sends either key (`_refuse_api_keys`), 422 before anything is read.
+    """
+    _refuse_api_keys(spec.metadata)
+    marker = _follow_up_marker(spec, None)
+    if marker is None:
+        return spec
+    return spec.model_copy(update={"metadata": {**spec.metadata, FIX_HEAD_FIELD: marker}})
 
 
 def stamp(store: Any, tenant_id: str, spec: WorkflowCreate,
