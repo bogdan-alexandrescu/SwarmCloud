@@ -87,6 +87,9 @@ const api = vi.hoisted(() => ({
     status: 'error' as const,
     error: { kind: 'admin_required' as const, httpStatus: 403, code: 'forbidden', message: 'admin group membership is required' },
   })),
+  // AN ADMIN'S SESSION (#3015): Pools' rows link to Pool limits for an
+  // admin only, so the admin's is the wordier page and the one budgeted.
+  loadMe: vi.fn(async () => ({ status: 'ok' as const, data: { principal: { is_admin: true } }, fetchedAt: 0, serverAt: '' })),
   loadRuntimeTopology: vi.fn(),
   loadAccountsBoard: vi.fn(),
   loadHolders: vi.fn(),
