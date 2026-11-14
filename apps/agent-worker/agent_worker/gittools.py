@@ -188,6 +188,11 @@ _MAX_ANSWER_LINE = 64 * 1024
 #: of each foreign line is asked -- origin having it means origin has its
 #: history -- so a pull request head is one sha, not its thousand ancestors.
 MAX_CONFIRM = 16
+#: #2901: the most of the recorded shallow boundary a fetch sends -- swarm-api
+#: deepens at most `gitexec.MAX_HAVES` boundary commits -- and the most
+#: `shallow` lines an answer may carry (design §5.7 step 1: two per commit).
+MAX_BOUNDARY = 16
+MAX_SHALLOW_ANSWER = 2 * MAX_BOUNDARY
 
 
 # --------------------------------------------------------------------------
@@ -269,6 +274,12 @@ class _Origin:
     #: offered as a have to a plain fetch: its bundle would stop at the tip and
     #: leave it parentless, and a rebase onto it would replay the clone's base.
     shallow: list[str] = field(default_factory=list)
+    #: #2901 (docs/design/git-fetch-shallow-clones.md §5.6): the clone's
+    #: shallow boundary, recorded from `.git/shallow` ONCE, before the agent
+    #: runs, and then moved only by answers swarm-api gave: their `shallow`
+    #: lines added, their `unshallow` lines removed. Never a fresh read of
+    #: the agent's file, so a forged line cannot steer swarm-api's fetches.
+    boundary: list[str] = field(default_factory=list)
 
     def plain_haves(self) -> list[str]:
         return [sha for sha in self.haves if sha not in self.shallow]
@@ -278,6 +289,38 @@ class _Origin:
             self.haves.append(sha)
         if branch and _FULL_SHA.match(sha):
             self.tips[branch] = sha
+
+
+@dataclass(frozen=True)
+class _Deepened:
+    """swarm-api's answer to a fetch that sent the boundary (#2901)."""
+
+    shallow: tuple[str, ...]
+    unshallow: tuple[str, ...]
+    merge_base: str | None
+
+
+def _deepen_answer(payload: dict[str, Any], sent: Sequence[str]) -> _Deepened | None:
+    """The deepen fields of `payload`, checked (design §5.7 step 1), or None
+    when swarm-api answered none (an older one ignores `shallow`).
+
+    Every line a 40-hex sha, `unshallow` a subset of the boundary `sent`, and
+    at most `MAX_SHALLOW_ANSWER` `shallow` lines; anything else is refused
+    before the clone is touched."""
+    if "unshallow" not in payload and "shallow" not in payload:
+        return None
+    shallow, unshallow = payload.get("shallow"), payload.get("unshallow")
+    base = payload.get("merge_base")
+    if not isinstance(shallow, list) or not isinstance(unshallow, list) \
+            or len(shallow) > MAX_SHALLOW_ANSWER \
+            or not all(isinstance(x, str) and _FULL_SHA.match(x) for x in (*shallow, *unshallow)) \
+            or (base is not None and not (isinstance(base, str) and _FULL_SHA.match(base))):
+        raise GitToolRefused("api_unavailable", "the platform's shallow lines are malformed",
+                             retryable=True)
+    if not set(unshallow) <= set(sent):
+        raise GitToolRefused("api_unavailable", "the platform unshallowed a commit outside the "
+                                                "boundary sent", retryable=True)
+    return _Deepened(tuple(dict.fromkeys(shallow)), tuple(dict.fromkeys(unshallow)), base)
 
 
 # --------------------------------------------------------------------------
@@ -447,6 +490,13 @@ class GitTools:
         self.pushed_tips: dict[str, str] = {}
         if cfg.clone_base != EMPTY_CLONE_BASE:
             self.origin.learn(cfg.clone_base)
+        # Built before the agent starts (`children._prepare_git`), so the
+        # clone's `.git/shallow` is still the worker's own work: the clone's
+        # and `fetch_pull_base`'s cut-offs (#2901 §5.6).
+        try:
+            self.origin.boundary = self._shallow_lines() if self.clone.is_dir() else []
+        except (GitToolRefused, GitError, OSError):
+            self.origin.boundary = []
 
     # -- the spool -----------------------------------------------------------
 
@@ -673,10 +723,14 @@ class GitTools:
         if depth is not None:
             validate_depth(depth)
         fields: dict[str, Any] = {"ref": ref, "haves": list(self.origin.haves)}
+        sent: list[str] = []
         if depth is not None:
             fields["depth"] = depth
         else:
             fields["haves"] = self.origin.plain_haves()
+            sent = self.origin.boundary[-MAX_BOUNDARY:]
+            if sent:
+                fields["shallow"] = list(sent)
         payload = self.call("git_fetch", fields, request_id=request_id)
         sha = payload.get("resolved_sha")
         if not isinstance(sha, str) or not _FULL_SHA.match(sha):
@@ -684,10 +738,13 @@ class GitTools:
                                  retryable=True)
         by_sha = bool(_FULL_SHA.match(ref))
         local = f"refs/swarm/fetched/{sha}" if by_sha else f"refs/remotes/origin/{ref}"
+        deepened = _deepen_answer(payload, sent) if sent else None
         bundle = self._received_bundle(payload, request_id=request_id)
         try:
             if bundle is not None and depth is not None:
                 self._apply_pack(bundle, sha, local)
+            elif bundle is not None and deepened is not None:
+                self._apply_deepened(bundle, sha, local, deepened)
             elif bundle is not None:
                 self._apply_bundle(bundle, sha, local)
                 if self.origin.shallow:
@@ -699,9 +756,16 @@ class GitTools:
             if bundle is not None:
                 bundle.unlink(missing_ok=True)
         self.origin.learn(sha, None if by_sha else ref)
-        answer = {"ref": ref, "resolved_sha": sha, "local_ref": local}
+        answer: dict[str, Any] = {"ref": ref, "resolved_sha": sha, "local_ref": local}
         if depth is not None:
             answer["depth"] = depth
+        if deepened is not None:
+            answer["merge_base"] = deepened.merge_base
+            if deepened.merge_base is None:
+                answer["note"] = (f"{local} is here, but its history reached no commit your "
+                                  "clone shares within the platform's deepen budget: read and "
+                                  "diff it, but a merge or rebase onto it would join unrelated "
+                                  "histories")
         return answer
 
     def _received_bundle(self, payload: dict[str, Any], *, request_id: str) -> Path | None:
@@ -764,6 +828,48 @@ class GitTools:
                                        "gittools-fetch-check")
         if code != 0 or landed.strip() != sha:
             raise GitToolRefused("fetch_failed", f"{local} did not land on {sha}")
+
+    def _apply_deepened(self, bundle: Path, sha: str, local: str,
+                        deepened: "_Deepened") -> None:
+        """A shallow fetch's bundle (#2901, design §5.7), applied in git's order.
+
+        The bundle carries the parents of the boundary commits swarm-api
+        unshallowed and names no prerequisite, so git's connectivity check
+        passes only once `.git/shallow` says where the history now stops
+        (measured: the fetch fails before the write and succeeds after it).
+        So: `.git` must be a real directory -- a `gitdir:` file or a link
+        would point this write wherever the agent chose -- then
+        `(old - unshallow) | shallow` is written through git's own lock
+        (`_shallow_write`), then today's object-checked fetch runs, and any
+        failure puts the old file back: a forged or stale boundary leaves
+        the clone as it was. Only shas are written; no secret is near.
+        """
+        try:
+            info = os.lstat(self.clone / ".git")
+        except OSError:
+            raise GitToolRefused("fetch_failed", "the clone has no .git directory") from None
+        if not stat.S_ISDIR(info.st_mode):
+            raise GitToolRefused("fetch_failed", "the clone's .git is not a directory (a link or "
+                                                 "a gitdir file); its shallow file is not "
+                                                 "written")
+        old = self._shallow_lines()
+        new = [line for line in old if line not in deepened.unshallow]
+        new += [line for line in deepened.shallow if line not in new]
+        if new != old:
+            self._shallow_write(new)
+        try:
+            self._apply_bundle(bundle, sha, local)
+        except BaseException:
+            if new != old:
+                self._shallow_write(old)
+            raise
+        boundary = [line for line in self.origin.boundary if line not in deepened.unshallow]
+        self.origin.boundary = boundary + [line for line in deepened.shallow
+                                           if line not in boundary]
+        # Read from the forge by swarm-api, so origin has them (§5.6).
+        for line in (*deepened.shallow, *deepened.unshallow,
+                     *([deepened.merge_base] if deepened.merge_base else [])):
+            self.origin.learn(line)
 
     def _apply_pack(self, pack: Path, sha: str, local: str) -> None:
         """A depth-1 fetch's pack (#2442), indexed into the agent's clone.
@@ -914,6 +1020,13 @@ class GitTools:
                                  "(or --abort) first")
         fetched = self.fetch(ref, request_id=request_id)
         onto = fetched["resolved_sha"]
+        if "merge_base" in fetched and fetched["merge_base"] is None:
+            # #2901 Q2 = A: the fetch delivered what fitted, but a rebase with
+            # no merge base would replay commits onto an unrelated line.
+            raise GitToolRefused("too_large", f"{ref} was fetched, but within the platform's "
+                                              "deepen budget its history reaches no commit "
+                                              "your clone shares, so it is not rebased; "
+                                              "nothing in the clone's branch was changed")
         # Recorded before the rebase runs: a conflicted one the agent then
         # continues lands on it too, and the publish checks that HEAD descends.
         self.rebased_onto = onto
