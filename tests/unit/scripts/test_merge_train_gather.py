@@ -1,12 +1,16 @@
-"""The merge train gathers before it boards (the owner's pick, 11 November
-2026: "6 ready or 20 minutes").
+"""The merge train gathers before it boards (the owner's direction, 12 November
+2026: "15 pull requests or 30 minutes, up to 40", then 13 November: "8 ready or 15
+minutes, up to 40"; it was "6 ready or 20
+minutes" from 11 November).
 
 WHY. A tick boarded every eligible `ready` pull request as soon as it was
 green, so trains were small and each one paid the whole suite; the full suite
 is moving to run only on the train and on main, so fewer, larger trains spend
-less CI time. Now a train boards once MERGE_TRAIN_MIN_PRS (6) pull requests
-are ready, or once the oldest of them has been ready for
-MERGE_TRAIN_MAX_WAIT_MINUTES (20). "Ready since" is the time the `ready` label
+less CI time -- and since 12 November a lane's pull request runs no checks at
+all, so the train's run is the only one. Now a train boards once
+MERGE_TRAIN_MIN_PRS (15) pull requests are ready, or once the oldest of them
+has been ready for MERGE_TRAIN_MAX_WAIT_MINUTES (30), and holds at most
+MERGE_TRAIN_MAX_PRS (40). "Ready since" is the time the `ready` label
 was last added, read from GitHub's issue events; one that cannot be read
 counts as the full wait, so an unreadable time never holds work. A
 `train-first` pull request boards at once and takes the rest with it; a
@@ -119,8 +123,8 @@ class Gather:
         env.update({"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "GH_REPO": GH_REPO,
                     "FAKE_GH_LOG": str(self.log), "FAKE_EVENTS": str(self.events),
                     "GITHUB_STEP_SUMMARY": str(summary),
-                    # The repository's batch size; the script's default, 4,
-                    # sits below the minimum (that case is tested on its own).
+                    # The repository's batch size, the script's default too
+                    # (a minimum above it is tested on its own).
                     "MERGE_TRAIN_MAX_PRS": "40",
                     "MERGE_TRAIN_MERGE_RETRY_WAITS": "0 0", **knobs})
         proc = subprocess.run(["bash", str(SCRIPT), "gather", "--prs", str(prs), "--chosen", str(chosen)],
@@ -138,7 +142,7 @@ def gather(tmp_path: Path) -> Gather:
 
 
 # --------------------------------------------------------------------------
-# 6 ready or 20 minutes
+# 8 ready or 15 minutes, up to 40
 # --------------------------------------------------------------------------
 
 
@@ -152,13 +156,18 @@ def test_five_ready_for_five_minutes_board_nothing_and_say_so_in_one_line(gather
     line = lines[0]
     assert "5 ready pull requests wait" in line
     assert "#101" in line and "ready 5 minutes" in line
-    # It boards at the latest when #101 has waited 20 minutes: 15 from now.
-    assert "at the latest" in line and "in 15 minutes" in line
+    # It boards at the latest when #101 has waited 15 minutes: 10 from now.
+    assert "wait for 8 to board (or 15 minutes)" in line
+    assert "at the latest" in line and "in 10 minutes" in line
     assert re.search(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", line), line
 
 
-def test_six_ready_board_without_reading_when_they_became_ready(gather):
-    for n in range(101, 107):
+def test_seven_ready_wait_and_eight_board_without_reading_when_they_became_ready(gather):
+    for n in range(101, 108):
+        gather.ready(n, [_labeled(1)])
+    assert gather.run()[0] == "wait"
+    gather.prs.clear()
+    for n in range(101, 109):
         gather.ready(n, [_labeled(1)])
     verdict, _ = gather.run()
     assert verdict == "board"
@@ -166,7 +175,12 @@ def test_six_ready_board_without_reading_when_they_became_ready(gather):
 
 
 def test_five_board_once_the_oldest_has_waited_past_the_window(gather):
-    gather.ready(101, [_labeled(21)])
+    gather.ready(101, [_labeled(14)])
+    for n in range(102, 106):
+        gather.ready(n, [_labeled(2)])
+    assert gather.run()[0] == "wait"
+    gather.prs.clear()
+    gather.ready(101, [_labeled(16)])
     for n in range(102, 106):
         gather.ready(n, [_labeled(2)])
     verdict, summary = gather.run()
@@ -279,7 +293,7 @@ def test_each_setting_is_explained_next_to_its_default():
     reads too (swarm_api.trainboard, board on time, 12 November 2026)."""
     code = SCRIPT.read_text()
     shared = json.loads(GATHER_FILE.read_text())
-    assert (shared["min_prs"], shared["max_wait_minutes"]) == (6, 20)
+    assert (shared["min_prs"], shared["max_wait_minutes"]) == (8, 15)
     assert "apps/swarm-api/swarm_api/merge_train_gather.json" in code
     for knob, key in (("MERGE_TRAIN_MIN_PRS", "min_prs"),
                       ("MERGE_TRAIN_MAX_WAIT_MINUTES", "max_wait_minutes")):
@@ -327,3 +341,13 @@ def test_the_runbook_names_both_settings_and_how_to_change_them():
         assert knob in text
     assert "gh variable set MERGE_TRAIN_MIN_PRS" in text
     assert "gh variable set MERGE_TRAIN_MAX_WAIT_MINUTES" in text
+
+
+def test_a_train_holds_at_most_forty_by_default():
+    """The owner's direction, 12 November 2026: "15 pull requests or 30
+    minutes, up to 40"; the forty stayed when the gather became "8 ready or
+    15 minutes" on 13 November. MUTATION: put MAX_PRS's default back to 4."""
+    code = SCRIPT.read_text()
+    line = next(i for i, text in enumerate(code.splitlines()) if text.startswith("MAX_PRS="))
+    assert code.splitlines()[line] == 'MAX_PRS="${MERGE_TRAIN_MAX_PRS:-40}"'
+    assert code.splitlines()[line - 1].strip().startswith("#")
