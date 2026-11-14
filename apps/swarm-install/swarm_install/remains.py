@@ -12,8 +12,8 @@ takes if they want it gone:
 | `custom-roles` | a deleted custom role's id is reserved (undeletable for 7 days) |
 | `firestore-database` | deleted by the uninstall, its id reusable only after Google's delay; or, when it was not deleted, kept with its data (infra abandons it) |
 | `desktop-client` | deleting the Desktop OAuth client is a console step; it is kept for reuse |
-| `github-app` | only the organisation can delete its App |
-| `dns-record` | the record is at the company's registrar, or in the Cloud DNS zone `edge.dns` wrote it to, in that zone's own project |
+| `github-app` | only the account that owns the App (an organisation or a personal account) can delete it |
+| `dns-record` | the record is at the company's registrar, or in a Cloud DNS zone `edge.dns` wrote it to in another project, whose records the uninstall leaves; one in the project's own zone is deleted by the uninstall, and listed only when it could not be |
 | `workspace-groups` | the groups, the Groups Reader role assignment or the delegation are org-admin objects |
 
 The record also carries `left`: anything else the uninstall did not remove (a
@@ -27,6 +27,13 @@ reinstall never depends on it: `adopt.py` re-derives every surviving name by
 probing (D24) and uses the record's values only as defaults for what cannot be
 probed (the Desktop client id, the GitHub App's slug).
 
+**The GitHub App's page follows its owner's account type.** An App owned by an
+organisation is deleted at `github.com/organizations/<org>/settings/apps/...`,
+one owned by a personal account at `github.com/settings/apps/...` (the
+organisation path 404s for a personal account). The type is GitHub's public
+`GET /users/{login}` answer (`type`: `Organization` or `User`), read without a
+credential; when it cannot be read both pages are named.
+
 **Retention windows.** This module does not settle them; it cites Google's
 pages, and run 2b (P5) is the live proof. The engine never relies on either
 window: it imports a ring if it exists and undeletes roles if it can.
@@ -35,7 +42,7 @@ window: it imports a ring if it exists and undeletes roles if it can.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -45,6 +52,12 @@ from .state import LOCAL_DIR, _write_local
 KMS_DELETE_DOCS = "https://cloud.google.com/kms/docs/delete-kms-resources"
 CUSTOM_ROLE_DOCS = "https://cloud.google.com/iam/docs/creating-custom-roles#deleting-custom-role"
 FIRESTORE_DOCS = "https://cloud.google.com/firestore/docs/manage-databases#delete_a_database"
+#: GitHub's public users API: `type` is `Organization` or `User` (no credential needed).
+GITHUB_USERS = "https://api.github.com/users/"
+ORGANIZATION, USER = "Organization", "User"
+#: What the uninstall's Cloud DNS delete answers (`uninstall._step_state`): the
+#: record is gone in the first two; it is a remain in the last two.
+DNS_DELETED, DNS_ABSENT, DNS_CHANGED, DNS_FAILED = "deleted", "absent", "changed", "failed"
 
 #: Design §10's eight rows, in its order.
 KINDS = (
@@ -79,13 +92,49 @@ def _text(value: Any, missing: str = "(not recorded)") -> str:
     return str(value) if value not in (None, "", [], {}) else missing
 
 
+def _github_get(url: str) -> Mapping[str, Any]:
+    import requests
+
+    response = requests.get(url, headers={"Accept": "application/vnd.github+json"}, timeout=10)
+    response.raise_for_status()
+    return dict(response.json())
+
+
+def github_account_type(login: str, get: Callable[[str], Mapping[str, Any]] | None = None) -> str:
+    """`Organization` or `User` for the GitHub account `login`, from GitHub's
+    public users API; "" when it cannot say (no network, rate limit, no such
+    account), which never stops an uninstall or an upgrade."""
+    if not login or login.startswith("<"):
+        return ""
+    try:
+        found = (get or _github_get)(f"{GITHUB_USERS}{login}")
+    except Exception:  # noqa: BLE001 -- a link falls back to naming both pages
+        return ""
+    kind = str(found.get("type") or "")
+    return kind if kind in (ORGANIZATION, USER) else ""
+
+
+def github_app_url(owner: str, slug: str, account_type: str, page: str = "") -> str:
+    """The App's settings page (`page`, e.g. `/advanced`) under the account
+    type that owns it; both pages when the type is not known."""
+    personal = f"https://github.com/settings/apps/{slug}{page}"
+    organisation = f"https://github.com/organizations/{owner}/settings/apps/{slug}{page}"
+    if account_type == USER or not owner:
+        return personal
+    if account_type == ORGANIZATION:
+        return organisation
+    return f"{organisation} (an App owned by a personal account: {personal})"
+
+
 def survivors(state: Any, found: Mapping[str, Any] | None = None) -> list[Remain]:
     """The eight survivors of design §10, named from the install state.
 
     `found` holds what the uninstall read from Terraform before destroying it:
     `custom_roles` (role ids) and `kms_key_ring` (the ring's id),
     `firestore_database` (the database id infra's inputs named) and
-    `firestore_deleted` (step 7 deleted it).
+    `firestore_deleted` (step 7 deleted it), `github_account_type` (the App
+    owner's, `github_account_type`) and `dns_record` (what step 8's Cloud DNS
+    delete answered, one of the `DNS_*` values).
     """
     outputs: Mapping[str, Any] = state.outputs
     found = found or {}
@@ -105,18 +154,24 @@ def survivors(state: Any, found: Mapping[str, Any] | None = None) -> list[Remain
     # The zone may live in another project (a shared DNS project); the link
     # opens it there. No recorded zone project means the deployment's own.
     zone_project = str(outputs.get("dns_zone_project") or project)
+    foreign_zone = zone_project != project  # the uninstall deletes only in its own project's zone
+    dns_done = "" if foreign_zone else str(found.get("dns_record") or "")
+    dns_why = ("the uninstall leaves records in another project's zone" if foreign_zone else
+               {DNS_CHANGED: "it no longer holds the install's address, so the uninstall left it",
+                DNS_FAILED: "the uninstall's delete was refused (see its output)"}.get(
+                   dns_done, "the uninstall has not deleted it yet"))
     dns_record = (
-        (f"edge.dns wrote it to Cloud DNS zone {zone} in project {zone_project}, whose records the uninstall leaves",
+        (f"edge.dns wrote it to Cloud DNS zone {zone} in project {zone_project}; {dns_why}",
          f"https://console.cloud.google.com/net-services/dns/zones/{zone}/details?project={zone_project}: "
          f"delete the A record for {host}")
         if zone else
         ("the record is at the company's DNS registrar, which the installer cannot reach",
          f"at your registrar, delete the A record for {host}"))
+    dns_gone = bool(zone) and dns_done in (DNS_DELETED, DNS_ABSENT)
     return [
         # No API reads a brand (the IAP OAuth Admin API was shut down on
-        # 2026-03-19): it is named by its console page, never probed.
-        Remain("oauth-brand", _text(outputs.get("oauth_brand"),
-                                    f"https://console.cloud.google.com/auth/branding?project={project}"),
+        # 2026-03-19) and nothing records it: it is named by its console page.
+        Remain("oauth-brand", f"https://console.cloud.google.com/auth/branding?project={project}",
                "an OAuth brand (consent screen) cannot be deleted; it has no delete method",
                "nothing to do: it goes with the project (a reinstall reuses it)"),
         Remain("kms-key-ring", ring,
@@ -141,10 +196,12 @@ def survivors(state: Any, found: Mapping[str, Any] | None = None) -> list[Remain
                "the Desktop OAuth client is deleted only in the console, and is kept for a reinstall to reuse",
                f"https://console.cloud.google.com/auth/clients?project={project}: delete the client with this id"),
         Remain("github-app", f"{org}/{slug}",
-               "only the GitHub organisation can delete its App",
-               f"https://github.com/organizations/{org}/settings/apps/{slug}/advanced: Delete GitHub App"),
-        Remain("dns-record", f"{_text(state.hostname, '<hostname>')} A {_text(outputs.get('global_ip'))}",
-               *dns_record),
+               "only the GitHub account that owns the App can delete it",
+               f"{github_app_url(org, slug, str(found.get('github_account_type') or ''), '/advanced')}: "
+               "Delete GitHub App"),
+        *(() if dns_gone else (
+            Remain("dns-record", f"{_text(state.hostname, '<hostname>')} A {_text(outputs.get('global_ip'))}",
+                   *dns_record),)),
         Remain("workspace-groups", ", ".join(groups) or "(none recorded)",
                "Google groups, the Groups Reader admin role assignment and domain-wide delegation are "
                "organisation-admin objects outside the project",
