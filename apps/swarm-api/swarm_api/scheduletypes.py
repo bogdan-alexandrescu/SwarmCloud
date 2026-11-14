@@ -429,6 +429,10 @@ class ScheduleType:
     platform_repository_creator: Role | None = None
     forge_permissions: tuple[str, ...] = ()
     gate_notes: str = ""
+    #: Whether its firings create issue runs or `proposal` approvals
+    #: (docs/design/plans-pipeline.md §2.4): what the Pipeline board's
+    #: "Sources" list is narrowed to, served so the list is the server's.
+    proposes: bool = False
 
     @property
     def module_name(self) -> str:
@@ -444,6 +448,7 @@ _PR_PUSH = ("contents:write", "pull_requests:write")
 TYPES: tuple[ScheduleType, ...] = (
     ScheduleType(
         name="issue-sweep",
+        proposes=True,
         description="Start an issue run for each ready open issue: plan, execute, review, and merge behind the merge gate.",
         executor="issue_runs",
         params_model=IssueSweepParams,
@@ -464,6 +469,7 @@ TYPES: tuple[ScheduleType, ...] = (
     ),
     ScheduleType(
         name="issue-plan-only",
+        proposes=True,
         description="Plan the ready open issues and wait: nothing executes until a person approves each plan.",
         executor="issue_runs",
         params_model=IssuePlanOnlyParams,
@@ -501,6 +507,7 @@ TYPES: tuple[ScheduleType, ...] = (
     ),
     ScheduleType(
         name="observer",
+        proposes=True,
         description="A read-only report over the tenant's recent work, with proposals for the inbox.",
         executor="task",
         params_model=ObserverParams,
@@ -558,6 +565,7 @@ TYPES: tuple[ScheduleType, ...] = (
     ),
     ScheduleType(
         name="ci-flake-hunter",
+        proposes=True,
         description="Find checks that failed then passed at the same sha, and file or update one issue per flaky test.",
         executor="api",
         params_model=CiFlakeHunterParams,
@@ -719,6 +727,7 @@ TYPES: tuple[ScheduleType, ...] = (
     # executor module's `BUDGET_CAPS`.
     ScheduleType(
         name="failure-review",
+        proposes=True,
         description="Every 6 hours, root-cause every agent, workflow and issue run that failed in the last 7, file one issue per cause and start its fix run; hold IAM, contract, secrets, tenancy, shared and cost fixes for the owner.",
         executor="task",
         params_model=FailureReviewParams,
@@ -923,6 +932,7 @@ def describe(entry: ScheduleType, root: Path = EXECUTOR_DIR) -> dict[str, Any]:
         "scopes": sorted(entry.creators),
         "forge_permissions": list(entry.forge_permissions),
         "gate_notes": entry.gate_notes,
+        "proposes": entry.proposes,
         "phase": entry.phase,
         "available": available,
         "disabled_reason": reason,
