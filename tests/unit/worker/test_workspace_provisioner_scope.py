@@ -57,6 +57,8 @@ DEPLOYER_POLICIES = (
     "swarm-workspace-deployer-namespaces",
     "swarm-workspace-deployer-roles",
     "swarm-workspace-deployer-rolebindings",
+    "swarm-workspace-deployer-networkpolicies",
+    "swarm-workspace-deployer-fqdnnetworkpolicies",
 )
 
 #: kind -> (API group, resource), for the kinds a tenant render holds.
@@ -135,8 +137,12 @@ def _variable(policy: dict[str, Any], name: str) -> Any:
 
 
 def _matched_users(policy: dict[str, Any]) -> list[str]:
+    """The users the policy's `workspace-deployer` condition matches. The two
+    content policies carry one more condition, on the namespace, and none
+    other may carry any."""
     conditions = policy["spec"].get("matchConditions") or []
-    assert len(conditions) == 1, policy["metadata"]["name"]
+    names = [c["name"] for c in conditions]
+    assert names in (["workspace-deployer"], ["workspace-deployer", "swarm-tenant-namespace"]), names
     match = re.fullmatch(r"request\.userInfo\.username in (\[.*\])", conditions[0]["expression"].strip())
     assert match, conditions[0]["expression"]
     return json.loads(match.group(1))
@@ -771,6 +777,11 @@ def _cel_call(node: Any, env: dict[str, Any]) -> Any:
             return _CEL_TYPES[type(_cel_eval(args[0], env))]
         if name == "size":
             return len(_cel_eval(args[0], env))
+        if name == "string":
+            value = _cel_eval(args[0], env)
+            if isinstance(value, bool) or not isinstance(value, (str, int)):
+                raise CelError(f"string() of {value!r}")
+            return str(value)
         raise CelUnsupported(f"function {name}()")
     if name in ("all", "exists", "map"):
         items = _cel_eval(target, env)
@@ -783,6 +794,10 @@ def _cel_call(node: Any, env: dict[str, Any]) -> Any:
         return all(_bool(r) for r in results) if name == "all" else any(_bool(r) for r in results)
     receiver = _cel_eval(target, env)
     values = [_cel_eval(a, env) for a in args]
+    if name == "join":
+        if not isinstance(receiver, list) or not all(isinstance(i, str) for i in receiver):
+            raise CelError("join() on a non-list of strings")
+        return values[0].join(receiver)
     if not isinstance(receiver, str):
         raise CelError(f"{name}() on a non-string")
     if name == "matches":
@@ -1191,3 +1206,358 @@ def test_apply_passes_the_workspace_id_to_the_tenant_render_alone():
     identity = text[text.index('IDENTITY="$("${PYTHON}" "${HERE}/render.py" identity'):]
     identity = identity[: identity.index(")\"")]
     assert "WORKSPACE_ARGS" not in identity, identity
+
+
+# ---------------------------------------------------------------------------
+# A network policy's content, not only its name (#3941)
+#
+# swarm-workspace-deployer-networkpolicies and -fqdnnetworkpolicies hold each
+# policy the deployer writes to the render's selector, peers and ports, as
+# CEL literals in a normal form (the policy file's header says which). These
+# tests encode the render the way the CEL encodes the object, and hold the
+# literals equal to it, so the two cannot drift.
+# ---------------------------------------------------------------------------
+
+NETPOL_POLICY = "swarm-workspace-deployer-networkpolicies"
+FQDN_CONTENT_POLICY = "swarm-workspace-deployer-fqdnnetworkpolicies"
+#: The cluster's own network, as kubernetes/apply.sh reads it from a cluster:
+#: shaped like a GKE cluster's ranges, and nobody's.
+CLUSTER_NETWORK = (
+    "--pod-cidr", "10.200.0.0/14", "--service-cidr", "10.204.0.0/20",
+    "--cluster-dns-ip", "10.204.0.10", "--node-local-dns-ip", "169.254.20.10",
+    "--network-source", "cluster",
+)
+
+
+def _cidr(value: str, fixed: list[str]) -> str:
+    """The render's own CIDRs as written; a cluster network value by shape."""
+    if value in fixed:
+        return value
+    return "~host" if value.endswith("/32") else "~range"
+
+
+def _selector(selector: dict[str, Any] | None) -> dict[str, str]:
+    if selector is None:
+        return {"~": "absent"}
+    if "matchExpressions" in selector:
+        return {"~": "matchExpressions"}
+    return selector.get("matchLabels", {})
+
+
+def _port(port: dict[str, Any]) -> dict[str, str]:
+    return {
+        "protocol": port.get("protocol", ""),
+        "port": str(port["port"]) if "port" in port else "~all",
+        "endPort": str(port["endPort"]) if "endPort" in port else "",
+    }
+
+
+def _peer_ip(peer: dict[str, Any], fixed: list[str]) -> dict[str, str]:
+    block = peer.get("ipBlock")
+    if block is None:
+        return {"~": "absent"}
+    return {"cidr": _cidr(block["cidr"], fixed),
+            "except": ",".join(_cidr(e, fixed) for e in block.get("except", []))}
+
+
+def _netpol_rules(rules: list[dict[str, Any]] | None, peers_key: str, fixed: list[str]) -> list[Any]:
+    encoded = []
+    for rule in rules or []:
+        peers = rule.get(peers_key, [])
+        encoded.append([
+            [_selector(p.get("namespaceSelector")) for p in peers],
+            [_selector(p.get("podSelector")) for p in peers],
+            [_peer_ip(p, fixed) for p in peers],
+            [_port(q) for q in rule.get("ports", [])],
+        ])
+    return encoded
+
+
+def _fqdn_port(port: dict[str, Any]) -> dict[str, str]:
+    return {"protocol": port.get("protocol", ""), "port": str(port["port"]) if "port" in port else "~all"}
+
+
+def _fqdn_rules(rules: list[dict[str, Any]] | None) -> list[Any]:
+    return [
+        [[{"name": m.get("name", ""), "pattern": m.get("pattern", "")} for m in rule.get("matches", [])],
+         [_fqdn_port(q) for q in rule.get("ports", [])]]
+        for rule in rules or []
+    ]
+
+
+def _encoded_netpols(docs: list[dict[str, Any]], fixed: list[str]) -> dict[str, dict[str, Any]]:
+    found: dict[str, dict[str, Any]] = {"selectors": {}, "types": {}, "ingress": {}, "egress": {}}
+    for doc in docs:
+        if doc["kind"] != "NetworkPolicy":
+            continue
+        name, spec = doc["metadata"]["name"], doc["spec"]
+        found["selectors"][name] = _selector(spec["podSelector"])
+        found["types"][name] = spec.get("policyTypes", [])
+        found["ingress"][name] = _netpol_rules(spec.get("ingress"), "from", fixed)
+        found["egress"][name] = _netpol_rules(spec.get("egress"), "to", fixed)
+    return found
+
+
+def _content_policy(docs: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    return _one(docs, "ValidatingAdmissionPolicy", name)
+
+
+def _fixed_cidrs(docs: list[dict[str, Any]]) -> list[str]:
+    return _variable(_content_policy(docs, NETPOL_POLICY), "fixed_cidrs")
+
+
+def _template_cidrs() -> set[str]:
+    """Every CIDR the tenant's network policy templates write literally, not
+    through a cluster network placeholder."""
+    found: set[str] = set()
+    for name in render.TENANT_FILES:
+        if not name.startswith("network-policies/"):
+            continue
+        for doc in yaml.safe_load_all((KUBERNETES / name).read_text()):
+            for rule in (doc or {}).get("spec", {}).get("egress", []) + (doc or {}).get("spec", {}).get("ingress", []):
+                for peer in rule.get("to", []) + rule.get("from", []):
+                    block = peer.get("ipBlock") or {}
+                    for value in [block.get("cidr")] + list(block.get("except", [])):
+                        if value and "__" not in value:
+                            found.add(value)
+    return found
+
+
+def test_the_fixed_cidr_list_is_every_cidr_the_templates_write_literally(policy_docs):
+    """MUTATION: add a literal CIDR to allow-egress.yaml and the content policy
+    refuses every worker egress policy; this names it first."""
+    fixed = _fixed_cidrs(policy_docs)
+    assert sorted(fixed) == sorted(_template_cidrs())
+    assert "0.0.0.0/0" in fixed, "the control: the reader found the open range"
+    for token in ("POD_CIDR", "SERVICE_CIDR"):
+        assert render.OFFLINE_NETWORK[token] not in fixed, token
+    for token in ("CLUSTER_DNS_IP", "NODE_LOCAL_DNS_IP"):
+        assert f"{render.OFFLINE_NETWORK[token]}/32" not in fixed, token
+
+
+def test_the_network_policy_literals_equal_the_render(policy_docs, tenant_docs):
+    """Selector, policy types, peers and ports, per name, are the render's.
+    MUTATION: change a port in network-policies/allow-judge-egress.yaml, or a
+    label in the policy's `egress` literal, and this names the policy."""
+    policy = _content_policy(policy_docs, NETPOL_POLICY)
+    encoded = _encoded_netpols(tenant_docs, _fixed_cidrs(policy_docs))
+    for variable in ("selectors", "types", "ingress", "egress"):
+        assert _variable(policy, variable) == encoded[variable], variable
+    scope = _content_policy(policy_docs, "swarm-workspace-deployer-scope")
+    assert sorted(encoded["selectors"]) == sorted(_variable(scope, "names")["networking.k8s.io/networkpolicies"])
+
+
+def test_the_network_policy_literals_do_not_depend_on_the_cluster_network(policy_docs):
+    """The policies render has no cluster network; the tenant render applied
+    to a cluster has one. Both encode alike, so the literal holds for both."""
+    fixed = _fixed_cidrs(policy_docs)
+    offline = _encoded_netpols(_tenant_render(PERSON), fixed)
+    live = _encoded_netpols(_tenant_render(PERSON, *CLUSTER_NETWORK), fixed)
+    assert offline == live
+    worker = _one(_tenant_render(PERSON, *CLUSTER_NETWORK), "NetworkPolicy", "swarm-allow-worker-egress")
+    assert "10.200.0.0/14" in json.dumps(worker), "the control: the render carries the cluster's range"
+
+
+def test_the_fqdn_policy_literals_equal_the_render(policy_docs, tenant_docs):
+    """The TypeSafe direct policy selects the TypeSafe direct pods only and
+    names one host, on TCP 443."""
+    policy = _content_policy(policy_docs, FQDN_CONTENT_POLICY)
+    rendered = _one(tenant_docs, "FQDNNetworkPolicy", FQDN_POLICY)
+    assert _variable(policy, "selectors") == {FQDN_POLICY: _selector(rendered["spec"].get("podSelector"))}
+    assert _variable(policy, "egress") == {FQDN_POLICY: _fqdn_rules(rendered["spec"].get("egress"))}
+    egress = _variable(policy, "egress")[FQDN_POLICY]
+    assert len(egress) == 1 and len(egress[0][0]) == 1, egress
+    assert egress[0][0][0]["pattern"] == "" and egress[0][0][0]["name"], egress
+    assert egress[0][1] == [{"protocol": "TCP", "port": "443"}], egress
+
+
+def test_the_content_policies_match_one_kind_in_the_tenant_namespaces_only(policy_docs):
+    for name, resource in ((NETPOL_POLICY, ("networking.k8s.io", "networkpolicies")),
+                           (FQDN_CONTENT_POLICY, ("networking.gke.io", "fqdnnetworkpolicies"))):
+        policy = _content_policy(policy_docs, name)
+        rules = policy["spec"]["matchConstraints"]["resourceRules"]
+        assert [(r["apiGroups"], r["resources"], r["operations"]) for r in rules] == [
+            ([resource[0]], [resource[1]], ["CREATE", "UPDATE"])
+        ], name
+        conditions = {c["name"]: c["expression"] for c in policy["spec"]["matchConditions"]}
+        assert render.NAMESPACE_PREFIX in conditions["swarm-tenant-namespace"], name
+
+
+def _tenant_namespace(docs: list[dict[str, Any]]) -> dict[str, Any]:
+    return _one(docs, "Namespace", f"{render.NAMESPACE_PREFIX}{PERSON}")
+
+
+def _content_refusals(docs: list[dict[str, Any]], obj: dict[str, Any], namespace_object: dict[str, Any],
+                      operation: str = "CREATE", user: str = DEPLOYER_GSA) -> list[str]:
+    return [r for r in _refusals(docs, operation, obj, old=obj, namespace_object=namespace_object, user=user)
+            if r.startswith((NETPOL_POLICY + ":", FQDN_CONTENT_POLICY + ":"))]
+
+
+@pytest.mark.parametrize("network", [(), CLUSTER_NETWORK], ids=["offline", "cluster"])
+@pytest.mark.parametrize("operation", ["CREATE", "UPDATE"])
+def test_every_rendered_network_policy_is_admitted(dev_policy_docs, network, operation):
+    docs = _tenant_render(PERSON, "--fqdn-network-policy", *network)
+    namespace = _tenant_namespace(docs)
+    checked = [d for d in docs if d["kind"] in ("NetworkPolicy", "FQDNNetworkPolicy")]
+    assert len(checked) == 9, "the control: eight network policies and the hostname policy"
+    for doc in checked:
+        assert _refusals(dev_policy_docs, operation, doc, old=doc, namespace_object=namespace) == [], (
+            doc["metadata"]["name"]
+        )
+
+
+def _rendered(docs: list[dict[str, Any]], kind: str, name: str) -> dict[str, Any]:
+    return json.loads(json.dumps(_one(docs, kind, name)))
+
+
+def _fqdn_mutations() -> list[tuple[str, Any]]:
+    def selector(spec: dict[str, Any]) -> None:
+        spec["podSelector"] = {"matchLabels": {"swarm-tenant": PERSON}}
+
+    def no_selector(spec: dict[str, Any]) -> None:
+        del spec["podSelector"]
+
+    def host(spec: dict[str, Any]) -> None:
+        spec["egress"][0]["matches"][0]["name"] = "exfil.example.net"
+
+    def pattern(spec: dict[str, Any]) -> None:
+        spec["egress"][0]["matches"].append({"pattern": "*.example.net"})
+
+    def port(spec: dict[str, Any]) -> None:
+        spec["egress"][0]["ports"][0]["port"] = 22
+
+    def protocol(spec: dict[str, Any]) -> None:
+        spec["egress"][0]["ports"][0]["protocol"] = "UDP"
+
+    def all_ports(spec: dict[str, Any]) -> None:
+        del spec["egress"][0]["ports"]
+
+    def second_rule(spec: dict[str, Any]) -> None:
+        spec["egress"].append({"matches": [{"name": "exfil.example.net"}], "ports": [{"protocol": "TCP", "port": 443}]})
+
+    return [(f.__name__, f) for f in (selector, no_selector, host, pattern, port, protocol, all_ports, second_rule)]
+
+
+@pytest.mark.parametrize("mutation", [m for _, m in _fqdn_mutations()], ids=[n for n, _ in _fqdn_mutations()])
+def test_the_fqdn_policy_with_other_content_is_refused(dev_policy_docs, tenant_docs, mutation):
+    namespace = _tenant_namespace(tenant_docs)
+    doc = _rendered(tenant_docs, "FQDNNetworkPolicy", FQDN_POLICY)
+    assert _content_refusals(dev_policy_docs, doc, namespace) == [], "the control"
+    mutation(doc["spec"])
+    for operation in ("CREATE", "UPDATE"):
+        refusals = _content_refusals(dev_policy_docs, doc, namespace, operation)
+        assert [r.split(":")[0] for r in refusals] == [FQDN_CONTENT_POLICY], (operation, refusals)
+
+
+def _netpol_mutations() -> list[tuple[str, str, Any]]:
+    def other_selector(spec: dict[str, Any]) -> None:
+        spec["podSelector"] = {"matchLabels": {"swarm-live": "disabled"}}
+
+    def every_pod(spec: dict[str, Any]) -> None:
+        spec["podSelector"] = {}
+
+    def selector_expression(spec: dict[str, Any]) -> None:
+        spec["podSelector"]["matchExpressions"] = [{"key": "a", "operator": "Exists"}]
+
+    def other_port(spec: dict[str, Any]) -> None:
+        spec["egress"][0]["ports"][0]["port"] = 22
+
+    def end_port(spec: dict[str, Any]) -> None:
+        spec["egress"][0]["ports"][0]["endPort"] = 65535
+
+    def all_ports(spec: dict[str, Any]) -> None:
+        del spec["egress"][0]["ports"]
+
+    def other_peer(spec: dict[str, Any]) -> None:
+        spec["egress"][0]["to"][0]["podSelector"] = {"matchLabels": {"app.kubernetes.io/name": "swarm-api"}}
+
+    def any_namespace(spec: dict[str, Any]) -> None:
+        spec["egress"][0]["to"][0]["namespaceSelector"] = {}
+
+    def no_namespace_selector(spec: dict[str, Any]) -> None:
+        del spec["egress"][0]["to"][0]["namespaceSelector"]
+
+    def extra_peer(spec: dict[str, Any]) -> None:
+        spec["egress"][0]["to"].append({"ipBlock": {"cidr": "0.0.0.0/0"}})
+
+    def extra_rule(spec: dict[str, Any]) -> None:
+        spec["egress"].append({"to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}], "ports": [{"protocol": "TCP", "port": 443}]})
+
+    def ingress(spec: dict[str, Any]) -> None:
+        spec["policyTypes"] = ["Ingress", "Egress"]
+        spec["ingress"] = [{"from": [{"namespaceSelector": {}}]}]
+
+    def no_egress_type(spec: dict[str, Any]) -> None:
+        spec["policyTypes"] = ["Ingress"]
+
+    def wider_block(spec: dict[str, Any]) -> None:
+        spec["egress"][3]["to"][0]["ipBlock"]["cidr"] = "0.0.0.0/0"
+
+    def dropped_except(spec: dict[str, Any]) -> None:
+        spec["egress"][4]["to"][0]["ipBlock"]["except"].remove("10.0.0.0/8")
+
+    def except_to_host(spec: dict[str, Any]) -> None:
+        excepts = spec["egress"][4]["to"][0]["ipBlock"]["except"]
+        excepts[excepts.index("10.0.0.0/8")] = "10.0.0.1/32"
+
+    def dns_range(spec: dict[str, Any]) -> None:
+        spec["egress"][1]["to"][0]["ipBlock"]["cidr"] = "0.0.0.0/0"
+
+    def deny_opened(spec: dict[str, Any]) -> None:
+        spec["egress"] = [{}]
+
+    return [
+        ("swarm-allow-live-egress", "other_selector", other_selector),
+        ("swarm-allow-typesafe-fwd", "every_pod", every_pod),
+        ("swarm-allow-judge-egress", "selector_expression", selector_expression),
+        ("swarm-allow-judge-egress", "other_port", other_port),
+        ("swarm-allow-egress-proxy", "end_port", end_port),
+        ("swarm-allow-graph-service", "all_ports", all_ports),
+        ("swarm-allow-typesafe-fwd", "other_peer", other_peer),
+        ("swarm-allow-live-egress", "any_namespace", any_namespace),
+        ("swarm-allow-egress-proxy", "no_namespace_selector", no_namespace_selector),
+        ("swarm-allow-graph-service", "extra_peer", extra_peer),
+        ("swarm-allow-worker-egress", "extra_rule", extra_rule),
+        ("swarm-deny-cross-tenant-ingress", "ingress", ingress),
+        ("swarm-default-deny", "no_egress_type", no_egress_type),
+        ("swarm-allow-worker-egress", "wider_block", wider_block),
+        ("swarm-allow-worker-egress", "dropped_except", dropped_except),
+        ("swarm-allow-worker-egress", "except_to_host", except_to_host),
+        ("swarm-allow-worker-egress", "dns_range", dns_range),
+        ("swarm-default-deny", "deny_opened", deny_opened),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("name", "mutation"), [(n, m) for n, _, m in _netpol_mutations()], ids=[i for _, i, _ in _netpol_mutations()]
+)
+def test_a_network_policy_with_other_content_is_refused(dev_policy_docs, tenant_docs, name, mutation):
+    namespace = _tenant_namespace(tenant_docs)
+    doc = _rendered(tenant_docs, "NetworkPolicy", name)
+    assert _content_refusals(dev_policy_docs, doc, namespace) == [], "the control"
+    mutation(doc["spec"])
+    for operation in ("CREATE", "UPDATE"):
+        refusals = _content_refusals(dev_policy_docs, doc, namespace, operation)
+        assert [r.split(":")[0] for r in refusals] == [NETPOL_POLICY], (operation, refusals)
+
+
+def test_one_policys_content_under_another_name_is_refused(dev_policy_docs, tenant_docs):
+    """The content is held per name: the worker egress spec renamed to the live
+    path's name opens the internet to the live pods."""
+    namespace = _tenant_namespace(tenant_docs)
+    doc = _rendered(tenant_docs, "NetworkPolicy", "swarm-allow-worker-egress")
+    doc["metadata"]["name"] = "swarm-allow-live-egress"
+    assert [r.split(":")[0] for r in _content_refusals(dev_policy_docs, doc, namespace)] == [NETPOL_POLICY]
+
+
+def test_the_content_policies_judge_nobody_else_and_no_other_namespace(dev_policy_docs, tenant_docs):
+    """Another caller's write is not evaluated; nor is the deployer's outside a
+    swarm-tenant-* namespace (the scope policy refuses that one by itself)."""
+    namespace = _tenant_namespace(tenant_docs)
+    doc = _rendered(tenant_docs, "NetworkPolicy", "swarm-allow-live-egress")
+    doc["spec"]["podSelector"] = {}
+    assert _content_refusals(dev_policy_docs, doc, namespace, user="system:admin") == []
+    doc["metadata"]["namespace"] = "kube-system"
+    other = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "kube-system", "labels": {}}}
+    assert _content_refusals(dev_policy_docs, doc, other) == []
+    assert _refusals(dev_policy_docs, "CREATE", doc, namespace_object=other), "the scope policy still refuses it"
