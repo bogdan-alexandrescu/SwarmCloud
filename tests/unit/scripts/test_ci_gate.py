@@ -63,6 +63,7 @@ import yaml
 
 from .application_paths import app_paths, reaches
 from .ci_fold_layout import FOLDED_HOSTS, check_steps
+from .test_fast_checks_on_lane_prs import without_lane_clause
 
 REPO = Path(__file__).resolve().parents[3]
 WORKFLOWS = REPO / ".github" / "workflows"
@@ -608,7 +609,7 @@ def test_a_name_keeper_judges_nothing_the_gate_does_not(job_id):
     needs = job["needs"]
     needs = [needs] if isinstance(needs, str) else list(needs)
     assert set(needs) <= set(gate_job()["needs"]), set(needs) - set(gate_job()["needs"])
-    assert job.get("if") == "always()", job.get("if")
+    assert without_lane_clause(job.get("if")) == "always()", job.get("if")
     (step,) = job["steps"]
     (judgement,) = [s for s in gate_job()["steps"] if s.get("env", {}).get("NEEDS")]
     assert step["run"] == judgement["run"], job_id
@@ -733,7 +734,9 @@ def _always_run_checks() -> set[str]:
         # required name; its name-keepers do (CI-FOLD, test_ci_fold.py).
         if job_id == FOLDED_HOSTS["security.yml"]:
             continue
-        condition = str(job.get("if") or "")
+        # Which events it runs on, read before the lane clause every job ends
+        # with (test_fast_checks_on_lane_prs.py), which names pull_request.
+        condition = without_lane_clause(job.get("if"), required=False)
         if "!= 'pull_request'" in condition or ("pull_request" not in condition and "schedule" in condition):
             continue
         names.add(str(job.get("name") or job_id))
