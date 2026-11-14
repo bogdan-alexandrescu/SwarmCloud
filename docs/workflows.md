@@ -1274,11 +1274,15 @@ the one `direct-pr` step, or the `integrate` integrator (so the fix step of
 an implement -> review -> fix lane) -- pushes the lane's commits onto the pull
 request's branch as a **fast-forward** and opens **no** pull request. A
 contributor still pushes its own `swarm/<task>` branch for the integrator to
-merge, exactly as without the field. If the lane wrote `pr-title.txt`, the
-pull request is retitled; if it wrote `pr-body.md`, its body is replaced
-(never when that would drop a `Closes #N` or `part of #N` line the current
-body has). A lane that wrote neither leaves both as they are, and is
-not asked for a title.
+merge, exactly as without the field. The pull request's title and body are
+**never changed**: a squash merge takes the title as the commit subject on
+main, and on 2026-11-14 a one-line follow-up's `pr-title.txt` retitled a
+feature pull request to that fix, so the feature landed under the fix's
+subject (the workflow-spec findings epic, #4101). A `pr-title.txt` the lane
+wrote is ignored; a `pr-body.md` is posted as **one comment** on the pull
+request, carrying a hidden marker naming the agent and attempt, so the same
+attempt publishing again posts nothing more. A lane that wrote neither posts
+nothing, and is not asked for a title.
 
 **What the value may be.** A positive integer: a pull request of the spec's
 own repository. `owner/repo#N` or the pull request's URL are accepted only

@@ -57,7 +57,7 @@ def _the_agent_titles_its_pull_request(monkeypatch):
 #: fence before (#2693).
 FORGE_WRITES = frozenset({
     "branch push", "workflow push", "replacing push",
-    "pull request", "pull request text", "pull request comment",
+    "pull request", "pull request comment",
 })
 
 

@@ -170,7 +170,7 @@ def test_a_head_moved_by_another_writer_is_still_refused(
     assert out[lifecycle.PUBLISH_FAILED_FIELD] is True
     assert "followup.txt" not in tree_at(origin, moved), "the lane's push landed"
     assert "other.txt" in tree_at(origin, moved), "another writer's push was replaced"
-    assert forge.pulls == [] and pull.updates == []
+    assert forge.pulls == [] and pull.comments == []
 
 
 def test_a_head_moved_by_own_commits_then_another_writer_is_refused(
@@ -192,4 +192,4 @@ def test_a_head_moved_by_own_commits_then_another_writer_is_refused(
     assert out[lifecycle.PUBLISH_FAILED_FIELD] is True
     assert "followup.txt" not in tree_at(origin, moved)
     assert "by-hand.txt" in tree_at(origin, moved)
-    assert forge.pulls == [] and pull.updates == []
+    assert forge.pulls == [] and pull.comments == []
