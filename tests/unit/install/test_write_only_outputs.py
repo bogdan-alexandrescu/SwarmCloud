@@ -30,11 +30,9 @@ WRITERS = (
     "verbs/install.py",
 )
 
-#: Written for a reader outside these steps that does not read it yet:
-#: edge.dns records the project of a Cloud DNS zone found in another visible
-#: project, and remains.py still links the zone under the install project (a
-#: question in the pull request, not a key to delete).
-NOT_READ_YET = {"dns_zone_project"}
+#: Written for a reader outside these steps that does not read it yet; an
+#: entry is dropped as soon as something reads the key.
+NOT_READ_YET: set[str] = set()
 
 
 def _trees() -> dict[str, ast.Module]:
