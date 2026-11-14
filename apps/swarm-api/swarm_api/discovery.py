@@ -14,8 +14,9 @@ backend, the one without IAP, with the invoker IAM check disabled. So:
 
 * **Exactly the public set** (plan §6.2): `schema`, `name`, `version`,
   `console_url`, `api_url`, `oauth_client_id`, `iap_audience`,
-  `plugin.min_version`. Never another secret, a tenant, a group, an email or
-  the install state. tests/unit/control_plane/test_discovery.py fails on any
+  `plugin.min_version`, and `plugin.home` (the plugin repository's
+  owner/name) only when `DISCOVERY_PLUGIN_HOME` is set. Never another secret,
+  a tenant, a group, an email or the install state. tests/unit/control_plane/test_discovery.py fails on any
   extra key.
 * **`oauth_client_secret` only when `DISCOVERY_SERVE_CLIENT_SECRET=true`**:
   The owner's Q1 decision (design §14 item 1, plan §6.3), switched on by the engine
@@ -53,6 +54,12 @@ CLIENT_SECRET_ID = "swarm-iap-desktop-client-secret"
 #: A hostname: no scheme, no path, no port. `console_url` and `api_url` are
 #: built from it, so the two can never disagree about the deployment.
 _HOST = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?\Z")
+
+#: The plugin's home, owner/name in GitHub's shapes: an owner of letters,
+#: digits and hyphens that does not start with a hyphen (at most 39), a name of
+#: letters, digits, `.`, `_` and `-` that is not `.` or `..`. terraform/infra/variables.tf refuses the
+#: same at plan time; this refuses it at start.
+_PLUGIN_HOME = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9-]{0,38}/(?!\.{1,2}\Z)[A-Za-z0-9._-]{1,100}\Z")
 
 
 class DiscoveryConfigError(RuntimeError):
@@ -118,6 +125,13 @@ def build_document(
         "iap_audience": _required(environ, "DISCOVERY_IAP_AUDIENCE"),
         "plugin": {"min_version": _required(environ, "DISCOVERY_PLUGIN_MIN_VERSION")},
     }
+    home = (environ.get("DISCOVERY_PLUGIN_HOME") or "").strip()
+    if home:
+        if not _PLUGIN_HOME.match(home):
+            raise DiscoveryConfigError(
+                f"DISCOVERY_PLUGIN_HOME must be the plugin repository's owner/name, not {home!r}"
+            )
+        document["plugin"]["home"] = home
     if _switch(environ, "DISCOVERY_SERVE_CLIENT_SECRET"):
         project = _required(environ, "PROJECT_ID")
         value = read_secret(f"projects/{project}/secrets/{CLIENT_SECRET_ID}/versions/latest").strip()

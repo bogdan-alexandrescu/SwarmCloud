@@ -361,8 +361,8 @@ run "the_rendered_relay_is_one_pod_with_the_grants_identity" {
   }
 
   assert {
-    condition     = length(regexall("__[A-Z0-9_]+__", output.swarm_live_manifest)) == 0
-    error_message = "every placeholder in swarm-live.yaml is rendered"
+    condition     = length(regexall("__[A-Z0-9_]+__", replace(output.swarm_live_manifest, "__LABEL_PREFIX__", ""))) == 0
+    error_message = "every placeholder in swarm-live.yaml is rendered but __LABEL_PREFIX__, which kubernetes/apply.sh fills"
   }
 
   # Every object is managed-by=swarm-terraform and lives in swarm-system (the

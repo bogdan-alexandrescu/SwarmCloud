@@ -1,0 +1,146 @@
+/* VOICE IT, THE COST PILL in Talk's heads-up edge (CostPill.tsx, the
+   owner's pick of 11 November 2026, "Header pill"). The pill is the mic
+   group's glass: same line, same radius, same blur, so it reads as one of the
+   pane's controls rather than a new surface. The ring's colour is the usage
+   bar's: sky while there is room, amber nearly full, red past the cap; a
+   ledger that could not be read is red with no figure. The panel under it is
+   the console's popover surface, so both themes hold. */
+
+.vcp { position: relative; display: inline-flex; min-width: 0; }
+.vcp-pill {
+  display: inline-flex; align-items: center; gap: 8px; min-width: 0; height: 30px; padding: 0 8px 0 5px;
+  border: 1px solid var(--vt-glass-line); border-radius: var(--r-pill); background: var(--vt-glass);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  color: var(--text); font: inherit; font-size: var(--t-meta); line-height: var(--lh-flush); cursor: pointer; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.vcp-pill:disabled { cursor: default; }
+.vcp-pill:hover:not(:disabled) { border-color: color-mix(in srgb, var(--text) 30%, var(--vt-glass-line)); }
+.vcp-pill:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.vcp.is-open .vcp-pill { border-color: color-mix(in srgb, var(--info) 55%, var(--vt-glass-line)); }
+.vcp[data-tone="warn"] .vcp-pill { border-color: color-mix(in srgb, var(--warn) 60%, var(--vt-glass-line));
+  background: color-mix(in srgb, var(--warn) 9%, var(--vt-glass)); }
+.vcp[data-tone="bad"] .vcp-pill { border-color: color-mix(in srgb, var(--bad) 60%, var(--vt-glass-line));
+  background: color-mix(in srgb, var(--bad) 9%, var(--vt-glass)); }
+
+.vcp-ring { width: 22px; height: 22px; flex: none; }
+.vcp-arc-track { fill: none; stroke: var(--text); stroke-opacity: 0.14; stroke-width: 2.2; }
+.vcp-arc { fill: none; stroke-width: 2.2; stroke-linecap: round; }
+.vcp-arc.is-ok { stroke: var(--info); }
+/* The arcs take the figures' inks: in light the plain amber and red are both near-black at 22px. Over a cap
+   the arc is also heavier, so it does not rest on hue alone. */
+.vcp-arc.is-warn { stroke: var(--warn-ink, var(--warn)); }
+.vcp-arc.is-bad { stroke: var(--bad-ink, var(--bad)); stroke-width: 3.2; }
+
+.vcp-fig { display: inline-flex; align-items: baseline; gap: 5px; }
+.vcp-fig b { font-weight: 600; color: var(--text); }
+.vcp-lbl { color: var(--text-dim); }
+.vcp-cap { color: var(--text-dim); }
+.vcp-fig.is-warn b { color: var(--warn-ink, var(--warn)); }
+.vcp-fig.is-bad b { color: var(--bad-ink, var(--bad)); }
+.vcp-sep { width: 1px; height: 14px; background: var(--vt-glass-line); }
+.vcp-mark { display: inline-flex; width: 12px; height: 12px; flex: none; }
+.vcp-mark svg { width: 12px; height: 12px; }
+.vcp-mark.is-warn { color: var(--warn); }
+.vcp-mark.is-bad { color: var(--bad); }
+.vcp-chev { width: 14px; height: 14px; color: var(--text-dim); transform: rotate(90deg); transition: transform 160ms ease; }
+.vcp.is-open .vcp-chev { transform: rotate(-90deg); }
+@media (prefers-reduced-motion: reduce) { .vcp-chev { transition: none; } }
+
+/* ---- the panel ------------------------------------------------------------ */
+.vcp-panel {
+  position: absolute; z-index: 30; top: calc(100% + 6px); right: 0; width: 360px; max-width: calc(100vw - 24px);
+  padding: 10px 12px 4px;
+  border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface);
+  box-shadow: var(--sk-sh, 0 8px 24px rgb(0 0 0 / 0.25)); text-align: left; white-space: normal;
+}
+.vcp-panel-h { margin: 0 0 6px; display: flex; align-items: center; gap: 2px; }
+.vcp-panel-t { margin-right: auto; font-size: var(--t-body); font-weight: 600; color: var(--text); }
+.vcp-panel .c-tip { right: 0; left: auto; }
+.vcp-panel .c-tip-host:not(.is-end) .c-tip { left: 0; right: auto; }
+.vcp-problem { margin: 0 0 8px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--bad-ink, var(--bad)); overflow-wrap: anywhere; }
+.vcp-blocks { display: flex; flex-direction: column; gap: 12px; }
+/* What the figures leave out: a label and its (i), the tip opening below the panel, over the stage. */
+.vcp-foot { margin: 6px 0 0; display: flex; align-items: center; justify-content: flex-end; gap: 4px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-faint); }
+.vcp-foot .c-tip { top: calc(100% + 2px); }
+
+.vcp-block { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.vcp-block + .vcp-block { padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.vcp-block-h { margin: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.vcp-block-t { font-weight: 600; color: var(--text); }
+.vcp-block-meta { color: var(--text-faint); }
+.vcp-block-fig { margin-left: auto; display: inline-flex; align-items: baseline; gap: 4px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.vcp-block-fig b { color: var(--text); font-weight: 600; }
+.vcp-block-fig.is-warn b { color: var(--warn-ink, var(--warn)); }
+.vcp-block-fig.is-bad b { color: var(--bad-ink, var(--bad)); }
+.vcp-block-fig .vcp-mark { align-self: center; }
+
+.vcp-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: color-mix(in srgb, var(--text) 10%, transparent); }
+.vcp-bar-spent { background: var(--info); }
+.vcp-bar-held { background: color-mix(in srgb, var(--info) 40%, transparent); }
+.vcp-bar.is-warn .vcp-bar-spent { background: var(--warn); }
+.vcp-bar.is-warn .vcp-bar-held { background: color-mix(in srgb, var(--warn) 40%, transparent); }
+.vcp-bar.is-bad .vcp-bar-spent { background: var(--bad); }
+.vcp-bar.is-bad .vcp-bar-held { background: color-mix(in srgb, var(--bad) 40%, transparent); }
+
+.vcp-lines { width: 100%; border-collapse: collapse; font-size: var(--t-meta); line-height: var(--lh-meta); font-variant-numeric: tabular-nums; }
+.vcp-lines th, .vcp-lines td { padding: 2px 0; text-align: right; font-weight: 400; }
+.vcp-lines th[scope="row"] { text-align: left; color: var(--text); }
+.vcp-lines thead th { color: var(--text-faint); font-size: var(--t-micro, var(--t-meta)); padding-bottom: 3px; }
+.vcp-lines td { color: var(--text); width: 6.5em; }
+.vcp-lines tr.is-nil th, .vcp-lines tr.is-nil td { color: var(--text-faint); }
+.vcp-lines tfoot th, .vcp-lines tfoot td { padding-top: 4px; border-top: 1px solid var(--line-soft); }
+.vcp-lines tfoot th { color: var(--text-dim) !important; }
+.vcp-lines tfoot td { font-weight: 600; }
+.vcp-lines td.is-bad { color: var(--bad-ink, var(--bad)); }
+.vcp-nil { color: var(--text-faint); }
+.vcp-key { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 2px; vertical-align: 0; }
+.vcp-key.is-spent { background: var(--info); }
+.vcp-key.is-held { background: color-mix(in srgb, var(--info) 40%, transparent); }
+.vcp-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---- phone: figures only, the panel the heads-up edge's width ------------- */
+@media (max-width: 760px) {
+  /* The pill takes the heads-up edge's second row, the whole width, so its
+     words stay: status and End above it, the panel under it. */
+  .vt-hud { position: relative; column-gap: 8px; }
+  .vt-hud-actions:has(.vcp) { display: contents; }
+  .vt-hud-actions:has(.vcp) > .vcp + * { margin-left: auto; }
+  .vcp { position: static; order: 1; flex: 1 1 100%; }
+  .vcp-pill { flex: 1; justify-content: flex-start; gap: 8px; }
+  .vcp-chev { margin-left: auto; }
+  .vcp-panel { left: 0; right: 0; width: auto; max-width: none; top: calc(100% + 2px); }
+  .vcp-panel .vcp-blocks { display: none; }
+  .vcp-panel .vcp-both { display: table; }
+  .vcp-panel .vcp-legend { display: inline-flex; }
+}
+/* The legend's keys take their block's tone, as its bar does. */
+.vcp-lines.is-warn .vcp-key.is-spent { background: var(--warn); }
+.vcp-lines.is-warn .vcp-key.is-held { background: color-mix(in srgb, var(--warn) 40%, transparent); }
+.vcp-lines.is-bad .vcp-key.is-spent { background: var(--bad); }
+.vcp-lines.is-bad .vcp-key.is-held { background: color-mix(in srgb, var(--bad) 40%, transparent); }
+
+/* ---- the phone's table: both caps side by side, so the panel is short enough to open under a read-back ---- */
+.vcp-both { display: none; width: 100%; border-collapse: collapse; table-layout: fixed;
+  font-size: var(--t-meta); line-height: var(--lh-meta); font-variant-numeric: tabular-nums; }
+.vcp-both th, .vcp-both td { padding: 2px 0 2px 2px; text-align: right; font-weight: 400; color: var(--text); white-space: nowrap; }
+.vcp-both .vcp-both-0 { width: 34%; padding-left: 0; }
+.vcp-both tbody th, .vcp-both tfoot th { text-align: left; padding-left: 0; }
+.vcp-both-cap { vertical-align: top; padding: 0 0 6px 10px !important; }
+.vcp-both-cap > span { display: block; text-align: left; }
+.vcp-both-cap .vcp-block-fig { margin: 2px 0 4px; justify-content: flex-start; white-space: nowrap; }
+.vcp-both-cap .vcp-block-meta { margin-top: 3px; font-size: var(--t-micro, var(--t-meta)); white-space: normal; }
+.vcp-both-keys th { padding-bottom: 3px; }
+.vcp-both .is-nil { color: var(--text-faint); }
+.vcp-both tfoot th, .vcp-both tfoot td { padding-top: 4px; border-top: 1px solid var(--line-soft); }
+.vcp-both tfoot th { color: var(--text-dim); }
+.vcp-both tfoot td { font-weight: 600; }
+.vcp-both td.is-bad { color: var(--bad-ink, var(--bad)); }
+.vcp-both .is-warn .vcp-key.is-spent { background: var(--warn); }
+.vcp-both .is-warn .vcp-key.is-held { background: color-mix(in srgb, var(--warn) 40%, transparent); }
+.vcp-both .is-bad .vcp-key.is-spent { background: var(--bad); }
+.vcp-both .is-bad .vcp-key.is-held { background: color-mix(in srgb, var(--bad) 40%, transparent); }
+.vcp-legend { display: none; align-items: center; gap: 2px; margin-right: auto; }
+.vcp-legend .vcp-key + * { margin-left: 0; }
+.vcp-legend .vcp-key:nth-of-type(2) { margin-left: 8px; }

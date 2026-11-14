@@ -92,8 +92,8 @@ metadata:
     # `run/<project>/<region>/<service>/<subnetwork>` when apply.sh read the
     # range from swarm-api, `offline-render-not-for-apply` for a render given
     # none (lint, CI); apply.sh refuses to apply the latter.
-    swarm.saga.xyz/network-source: __SWARM_API_EGRESS_SOURCE__
-    swarm.saga.xyz/swarm-api-egress-cidr: __SWARM_API_EGRESS_CIDR__
+    __LABEL_PREFIX__/network-source: __SWARM_API_EGRESS_SOURCE__
+    __LABEL_PREFIX__/swarm-api-egress-cidr: __SWARM_API_EGRESS_CIDR__
 spec:
   podSelector:
     matchLabels:

@@ -56,6 +56,7 @@ vi.mock('../Shell', async (importOriginal) => ({
 }))
 
 import { TalkPane } from '../voice/Talk'
+import { VoiceSessionHolder } from '../voice/session'
 import { limitResetsAt, limitSentence } from '../voice/rtc'
 import { Listener, NO_RECOGNITION, pickVoice } from '../voice/speech'
 
@@ -188,7 +189,7 @@ describe('the Talk pane in text mode (the ChatGPT plan)', () => {
   })
 
   it('opens no WebRTC: the peer is closed unanswered, and the browser listens instead', async () => {
-    const { container } = render(<TalkPane />)
+    const { container } = render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     const pc = FakePeer.last
     expect(pc.remote).toBeNull()
@@ -204,7 +205,7 @@ describe('the Talk pane in text mode (the ChatGPT plan)', () => {
   })
 
   it('draws the phrase being heard as the live caption, sends each final phrase as a turn, and speaks the reply', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     const rec = FakeRecognition.last
     await act(async () => rec.hear('Add CSV', false))
@@ -227,7 +228,7 @@ describe('the Talk pane in text mode (the ChatGPT plan)', () => {
   })
 
   it('speaks every reply in one voice, and speaking again, Stop speaking or End cancels it', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     const rec = FakeRecognition.last
     await act(async () => rec.hear('One.', true))
@@ -265,7 +266,7 @@ describe('the Talk pane in text mode (the ChatGPT plan)', () => {
   })
 
   it('mute discards what is being heard; push-to-talk listens only while held; a recogniser that pauses is restarted', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     const rec = FakeRecognition.last
 
@@ -302,7 +303,7 @@ describe('the Talk pane in text mode (the ChatGPT plan)', () => {
   })
 
   it('taps the mic for the oscilloscope and draws the spoken reply as a level', async () => {
-    const { container } = render(<TalkPane />)
+    const { container } = render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     const tapped = FakeAudioContext.all.flatMap((c) => c.sources.map((s) => s.stream.tracks[0]))
     expect(tapped).toContain(mic)
@@ -325,7 +326,7 @@ describe('the Talk pane in text mode (the ChatGPT plan)', () => {
     vi.unstubAllGlobals()
     ;({ mic } = installMedia({ audioContext: true }))
     speech = installSpeech({ recognition: false })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     expect(screen.getByText(NO_RECOGNITION)).toBeTruthy()
     const box = screen.getByRole('textbox', { name: 'Say to Voice it' })
@@ -343,7 +344,7 @@ describe('the Talk pane in text mode (the ChatGPT plan)', () => {
   })
 
   it('falls back to the text box when the browser refuses speech recognition', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     await act(async () => FakeRecognition.last.fail('not-allowed'))
     expect(screen.getByText(/not allowed to recognise speech/)).toBeTruthy()
@@ -361,7 +362,7 @@ describe('the Talk pane in text mode (the ChatGPT plan)', () => {
         },
       }),
     })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     await act(async () => FakeRecognition.last.hear('Hello.', true))
     await settle(act)
@@ -377,7 +378,7 @@ describe('the Talk pane in text mode (the ChatGPT plan)', () => {
     serve({
       turn: () => ({ status: 'error', error: { kind: status === 409 ? 'conflict' : 'invalid', httpStatus: status, code: null, message: `swarm-api says ${status}.` } }),
     })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     await act(async () => FakeRecognition.last.hear('First.', true))
     await settle(act)
@@ -395,7 +396,7 @@ describe('the Talk pane in text mode (the ChatGPT plan)', () => {
 
   it('keeps the GPT-Live call for a start answered mode "live"', async () => {
     serve({ mode: 'live' })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     expect(FakePeer.last.remote).toEqual({ type: 'answer', sdp: 'v=0 fake-answer' })
     expect(FakePeer.last.closed).toBe(false)
@@ -405,7 +406,7 @@ describe('the Talk pane in text mode (the ChatGPT plan)', () => {
 
   it('refuses a start that names a mode it does not know, and holds no mic open', async () => {
     serve({ mode: 'video' })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     expect(document.querySelector('.vt-problem')?.textContent).toMatch(/a mode this console does not know \(video\)/)
     expect(mic.stop).toHaveBeenCalled()

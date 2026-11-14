@@ -92,10 +92,11 @@ def _stored(db) -> list[dict]:
 def test_the_write_list_gains_the_answers_route_and_nothing_else(client):  # noqa: F811
     # MUTATION: drop the route from WRITE_ROUTES and the planner's answer is 403.
     # (Debug mode's trace write joined the list later: routes/voice_trace.py;
-    # so did a spent Live key's reopen: routes/voice.py.)
+    # so did a spent Live key's reopen and the work feed's write: routes/voice.py.)
     LATER = {
         ("POST", "/v1/voice/sessions/{session_id}/trace"),
         ("POST", "/v1/voice/sessions/{session_id}/reopen"),
+        ("POST", "/v1/voice/sessions/{session_id}/work"),
     }
     assert vg.WRITE_ROUTES - BEFORE - LATER == {ANSWERS}
     assert BEFORE <= vg.WRITE_ROUTES

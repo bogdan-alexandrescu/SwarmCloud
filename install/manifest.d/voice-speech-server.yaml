@@ -32,15 +32,15 @@ entries:
   verify: the image's build-time self-test imported swarm_speech.main, its engines, qwen_asr and kokoro; the
     speech machine's launcher pulls exactly this digest from its swarm-speech-image metadata
   explain: Voice it's own speech server, run by the stopped speech machine's systemd unit at its next start.
-  guards: 'null'
-  secret_entry: 'null'
+  guards: null
+  secret_entry: null
   depends_on:
   - registry.swarm
   evidence:
   - scripts/build-images.sh:185-192
   - apps/swarm-speech/Dockerfile:151
   - apps/swarm-speech/vm/swarm-speech-launch.sh:35-52
-  notes: 'null'
+  notes: null
   step: images.copy
   refs:
     image:

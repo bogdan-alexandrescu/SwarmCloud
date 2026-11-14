@@ -56,7 +56,7 @@ metadata:
     managed-by: swarm-terraform
     swarm-tenant: __TENANT_ID__
   annotations:
-    swarm.saga.xyz/rationale: >-
+    __LABEL_PREFIX__/rationale: >-
       Tenant isolation must not depend on a single policy object remaining
       unedited. No pod in any other tenant namespace may open a connection to a
       pod in this one.

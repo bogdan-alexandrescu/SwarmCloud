@@ -346,7 +346,11 @@ security: ## checkov over terraform and the RENDERED manifests, trivy over the r
 	@# The three skipped checks are the image-reference family; scripts/push-images.sh
 	@# pins the channel tag to a trivy-scanned digest, so provenance is enforced in
 	@# the image pipeline rather than in a lint artifact. Same set as security.yml.
+	@# The keys render under the configured prefix, else the placeholder
+	@# organisation's (kubernetes/label_prefix.py refuses to guess one), as
+	@# scripts/lib/validate-manifests.sh does: this render reaches no cluster.
 	@if [ -n "$(CHECKOV)" ] && [ -f kubernetes/render.py ]; then \
+	  if [ -z "$${SWARM_LABEL_PREFIX:-}" ] && [ -z "$${SWARM_ORG_DOMAIN:-}" ]; then export SWARM_LABEL_PREFIX=swarm.example.com; fi; \
 	  rm -rf build/rendered && mkdir -p build/rendered && \
 	  python3 kubernetes/render.py policies > build/rendered/policies.yaml && \
 	  python3 kubernetes/render.py tenant --tenant lint > build/rendered/tenant.yaml && \

@@ -69,7 +69,7 @@
 # Digests are agent-runtime-base's, so the bundle builds on the Python and Node
 # the release image runs.
 ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84
-ARG NODE_IMAGE=node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+ARG NODE_IMAGE=node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
 # Every base is pulled through the project's Artifact Registry mirror
 # (scripts/lib/build-mirror.sh mirror_build_args); no default, so this file
 # names no project.

@@ -1423,7 +1423,8 @@ def test_cluster_objects_from_release_bundle(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     gcp, shell = ClusterFakeGcp(), FakeShell()
     bundle, policies, *_ = cluster.build_steps(lambda: gcp, Answers(), kube=_kube(shell), run=shell)
-    ctx = _ctx()
+    # Preflight's organisation domain: every render's label-key prefix defaults from it.
+    ctx = _ctx(org_domain="example.com")
     # A dry run checks the digest and writes nothing (review minor).
     assert bundle.check(ctx).status == MET and not cluster.bundle_dir(PROJECT, VERSION).exists()
     ctx.dry_run = False

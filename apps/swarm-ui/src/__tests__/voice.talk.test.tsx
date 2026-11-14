@@ -103,6 +103,7 @@ import { RESUME_KEY } from '../voice/Projects'
 import { CardList, FIXTURE_CARDS, applyStreamEvent, EMPTY_LIST, type VoiceCard } from '../voice/CardList'
 import { CARD_KINDS } from '../voice/cards'
 import { TalkPane } from '../voice/Talk'
+import { VoiceSessionHolder } from '../voice/session'
 import { applyCaption, captionEvent, type CaptionLine } from '../voice/captions'
 import { connectTalk } from '../voice/rtc'
 
@@ -138,7 +139,7 @@ describe('the Talk pane', () => {
   })
 
   it('starts the session through swarm-api with the offer, and applies the answer', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     const pc = await start()
     expect(getUserMedia).toHaveBeenCalledWith({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -154,7 +155,7 @@ describe('the Talk pane', () => {
   })
 
   it("plays the agent from the WebRTC track and taps the analyser beside it, connected to nothing", async () => {
-    const { container } = render(<TalkPane />)
+    const { container } = render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     const pc = await start()
     const voice = new FakeStream([new FakeTrack()])
     await act(async () => pc.remoteTrack(voice))
@@ -176,7 +177,7 @@ describe('the Talk pane', () => {
   })
 
   it('lands both sides in the log, and announces only final segments', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     const pc = await start()
     const log = screen.getByRole('log', { name: 'Captions' })
     expect(log.getAttribute('aria-live')).toBe('polite')
@@ -214,7 +215,7 @@ describe('the Talk pane', () => {
   })
 
   it('ends the session through swarm-api, closes the peer and stops the mic', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     const pc = await start()
     fireEvent.click(screen.getByRole('button', { name: 'End' }))
     await settle(act)
@@ -227,7 +228,7 @@ describe('the Talk pane', () => {
 
   it('says why when swarm-api refuses the start, and holds no mic open', async () => {
     fetchMock.write.mockResolvedValue({ status: 'error', error: { kind: 'forbidden', httpStatus: 403, code: null, message: 'Voice it is for its owner only.' } })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     const pc = await start()
     expect(screen.getByRole('alert').textContent).toBe('Voice it is for its owner only.')
     expect(pc.closed).toBe(true)
@@ -237,7 +238,7 @@ describe('the Talk pane', () => {
   it('continues the resumed project at the first Start talking, and opens a new one after', async () => {
     const resumed = 'vp_' + '7'.repeat(32)
     window.sessionStorage.setItem(RESUME_KEY, resumed)
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     const starts = () => fetchMock.write.mock.calls.filter(([t]) => t.url === '/v1/voice/sessions')
     expect(starts()[0]?.[2]).toEqual({ offer_sdp: 'v=0 fake-offer', project_id: resumed })
@@ -260,7 +261,7 @@ describe('the Talk pane', () => {
     call.hangUp()
 
     apiMock.loadVoiceVisuals?.mockClear()
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     expect(apiMock.loadVoiceVisuals?.mock.calls.map(([p]) => p)).toContain(project)
   })
@@ -269,7 +270,7 @@ describe('the Talk pane', () => {
     const resumed = 'vp_' + '8'.repeat(32)
     window.sessionStorage.setItem(RESUME_KEY, resumed)
     fetchMock.write.mockResolvedValueOnce({ status: 'error', error: { kind: 'unavailable', httpStatus: 503, code: null, message: 'Voice it is not deployed.' } })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     await start()
     const starts = fetchMock.write.mock.calls.filter(([t]) => t.url === '/v1/voice/sessions')
@@ -277,7 +278,7 @@ describe('the Talk pane', () => {
   })
 
   it('draws the card area empty before a session, and says cards appear as you talk', () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     const cards = screen.getByRole('region', { name: 'Cards' })
     expect(cards.textContent).toMatch(/no cards yet/i)
     expect(cards.textContent).not.toMatch(/phase two/i)
@@ -452,7 +453,7 @@ describe('the cards beside the Talk pane', () => {
   it('reads the session stream: in order, in place by id and version, unknown kinds not drawn and logged once', async () => {
     answerStarts()
     installMedia({ audioContext: true })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     const es = FakeEventSource.last
     expect(es.url).toBe(`/v1/voice/sessions/${SESSION}/events`)
@@ -479,7 +480,7 @@ describe('the cards beside the Talk pane', () => {
   it('a resumed stream does not duplicate cards, and a reconnect asks for what comes after the last sequence', async () => {
     answerStarts()
     installMedia({ audioContext: true })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     const first = FakeEventSource.last
     const region = screen.getByRole('region', { name: 'Cards' })
@@ -528,14 +529,14 @@ describe('the cards beside the Talk pane', () => {
   it('a live session opens exactly one stream: the card list reads it and the stage is handed its events', async () => {
     installMedia({ audioContext: true })
     answerStarts()
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     expect(FakeEventSource.all.map((e) => e.url)).toEqual([`/v1/voice/sessions/${SESSION}/events`])
   })
 
   it('in fixture mode, the Talk pane draws a fixture card of each kind before a session', () => {
     apiMock.fixtures = true
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     const region = screen.getByRole('region', { name: 'Cards' })
     expect(drawn(region).map((d) => d.split(':')[0])).toEqual(LISTED)
   })
@@ -682,7 +683,7 @@ describe('the Talk pane on our own speech', () => {
 
   it('starts with no offer and no peer, and opens the audio socket on the mic', async () => {
     serveOwn({ mode: 'speech' })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
     const [target, method, body] = fetchMock.write.mock.calls[0] ?? []
     expect([target.url, method, body]).toEqual(['/v1/voice/sessions', 'POST', {}])
@@ -694,7 +695,7 @@ describe('the Talk pane on our own speech', () => {
 
   it("shows the machine's boot as phases with no prose, then the state word", async () => {
     serveOwn({ mode: 'speech' })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
     const ws = FakeSocket.last
     await ws.open()
@@ -717,7 +718,7 @@ describe('the Talk pane on our own speech', () => {
 
   it('captions both sides from the socket, the partial muted outside the log', async () => {
     serveOwn({ mode: 'speech' })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
     const ws = FakeSocket.last
     await ws.open()
@@ -740,7 +741,7 @@ describe('the Talk pane on our own speech', () => {
 
   it('sends only what voice detection lets through, as one utterance', async () => {
     serveOwn({ mode: 'speech' })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
     const ws = FakeSocket.last
     await ws.open()
@@ -761,7 +762,7 @@ describe('the Talk pane on our own speech', () => {
 
   it('mute and push-to-talk reach voice detection, and End closes the socket, the detector and the mic', async () => {
     serveOwn({ mode: 'speech' })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
     await FakeSocket.last.open()
     fireEvent.click(screen.getByRole('button', { name: 'Mute' }))
@@ -788,7 +789,7 @@ describe('the Talk pane on our own speech', () => {
 
   it('falls back to text mode when no L4 can start: one line a close button dismisses, the mic kept beside a text box', async () => {
     serveOwn({ mode: 'text', fallback: { from: 'own', reason: 'no_l4', zone: 'us-central1-a' } })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
     expect(FakeSocket.all).toHaveLength(0)
     expect(vadMock.start).not.toHaveBeenCalled()
@@ -804,7 +805,7 @@ describe('the Talk pane on our own speech', () => {
 
   it('says behind its (i) that a no-L4 fallback is text mode on the account it holds, and when to retry', async () => {
     serveOwn({ mode: 'text', fallback: { from: 'own', reason: 'no_l4', zone: null } })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
     const line = screen.getByText('No L4 free: text mode.').closest('p') as HTMLElement
     const tip = within(line).getByRole('tooltip', { hidden: true })
@@ -825,7 +826,7 @@ describe('the Talk pane on our own speech', () => {
     ['speech_not_deployed', true],
   ])('a %s fallback names the ChatGPT plan in its status line only when it runs on the plan', async (reason, plan) => {
     serveOwn({ mode: 'text', fallback: { from: 'own', reason, zone: null } })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
     const status = () => document.querySelector('.vt-status')?.textContent ?? ''
     expect(status()).toMatch(/^Live/)
@@ -852,7 +853,7 @@ describe('the Talk pane on our own speech', () => {
       ['openai_key_in_use', "Voice it's OpenAI API key is in use by another session; try again when it ends.", 'OpenAI key in use by another session.'],
     ])('%s', async (reason, sentence, line) => {
       refuseStart(reason, sentence)
-      render(<TalkPane />)
+      render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
       await startOwn()
       expect(shown()).toBe(line)
       expect(within(problem()).getByRole('tooltip', { hidden: true }).textContent).toBe(sentence)
@@ -861,14 +862,14 @@ describe('the Talk pane on our own speech', () => {
 
     it('names the OpenAI key only when a Live start found it in use', async () => {
       refuseStart('no_voice_account_available', 'No Voice it plan account is free for a text session; try again in a few minutes.')
-      render(<TalkPane />)
+      render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
       await startOwn()
       expect(problem().textContent).not.toMatch(/OpenAI|another session/)
     })
 
     it("any other refusal shows swarm-api's sentence as it is, with no (i)", async () => {
       refuseStart('voice_pool_refused', 'Voice it needs an OpenAI API key in the Voice it pool: add one on Admin › Accounts')
-      render(<TalkPane />)
+      render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
       await startOwn()
       expect(problem().textContent).toBe('Voice it needs an OpenAI API key in the Voice it pool: add one on Admin › Accounts')
       expect(within(problem()).queryByRole('tooltip', { hidden: true })).toBeNull()
@@ -877,7 +878,7 @@ describe('the Talk pane on our own speech', () => {
 
   it('carries on in text mode when the engine goes down mid-session, on the same mic', async () => {
     serveOwn({ mode: 'speech' })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
     const ws = FakeSocket.last
     await ws.open()
@@ -893,7 +894,7 @@ describe('the Talk pane on our own speech', () => {
 
   it('answers whole spoken phrases: "mute" mutes, a sentence with the word in it does not', async () => {
     serveOwn({ mode: 'speech' })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
     const ws = FakeSocket.last
     await ws.open()
@@ -909,7 +910,7 @@ describe('the Talk pane on our own speech', () => {
 
   it('in text mode, a typed Go answers the held read-back and is not sent as a turn', async () => {
     serveOwn({ mode: 'text', fallback: { from: 'own', reason: 'not_ready' } }, 'go')
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
     expect(screen.getByText('Speech machine not ready: text mode.')).toBeTruthy()
     fireEvent.change(screen.getByRole('textbox', { name: 'Say to Voice it' }), { target: { value: 'Go' } })
@@ -922,7 +923,7 @@ describe('the Talk pane on our own speech', () => {
   it('a Start before the Settings read answers sends no offer, so an own deployment boots its machine on the socket', async () => {
     fetchMock.engine = 'pending'
     serveOwn({ mode: 'speech' })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     fireEvent.click(screen.getByRole('button', { name: 'Start talking' }))
     await settle(act)
     expect(posted('/v1/voice/sessions').map(([, , b]) => b)).toEqual([{}])
@@ -933,7 +934,7 @@ describe('the Talk pane on our own speech', () => {
 
   it('a 422 for the offer is GPT-Live: the page makes the WebRTC call instead', async () => {
     serveOwn({ offer: true })
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await startOwn()
     expect(posted('/v1/voice/sessions').map(([, , b]) => b)).toEqual([{}, { offer_sdp: 'v=0 fake-offer' }])
     expect(FakePeer.all).toHaveLength(1)
@@ -980,7 +981,7 @@ describe('the Talk pane on our own speech', () => {
 
     it('draws the boot as one even row of ticks, the current step set apart by its ring', async () => {
       serveOwn({ mode: 'speech' })
-      render(<TalkPane />)
+      render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
       await startOwn()
       const ws = FakeSocket.last
       await ws.open()
@@ -1021,7 +1022,7 @@ describe('the Talk pane on our own speech', () => {
       serveOwn({ mode: 'text', fallback: { from: 'own', reason: 'no_l4', zone: 'us-central1-a' } })
       render(
         <div className="app">
-          <TalkPane />
+          <VoiceSessionHolder><TalkPane /></VoiceSessionHolder>
         </div>,
       )
       await startOwn()
@@ -1089,7 +1090,7 @@ describe("debug mode's turn line on Talk", () => {
 
   it('draws each trace.turn event as the line under the Stage while debug is on', async () => {
     fetchMock.debug = true
-    const { container } = render(<TalkPane />)
+    const { container } = render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     const es = FakeEventSource.last
     expect(FakeEventSource.all).toHaveLength(1)
@@ -1117,7 +1118,7 @@ describe("debug mode's turn line on Talk", () => {
 
   it('draws no line while debug is off, whatever the stream carries', async () => {
     fetchMock.debug = false
-    const { container } = render(<TalkPane />)
+    const { container } = render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     const es = FakeEventSource.last
     await act(async () => es.frame('trace.turn', 1, { n: 1, drawn: [{ kind: 'work', title: 'Export lane' }], refused: [], none: null }))

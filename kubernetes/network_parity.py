@@ -78,19 +78,40 @@ import argparse
 import ipaddress
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
+# The label-key prefix, configuration since 8 November 2026: label_prefix.py
+# beside this file, stdlib-only like this one, holds the one rule.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import label_prefix as _label_prefix  # noqa: E402
+
 POLICY_NAME = "swarm-allow-worker-egress"
-SOURCE_ANNOTATION = "swarm.saga.xyz/network-source"
 OFFLINE_SOURCE = "offline-render-not-for-apply"
 
-#: (live key, annotation) for each rendered value.
+#: (live key, annotation name) for each rendered value; the annotation is
+#: `<prefix>/<name>` (network_annotations).
 RENDERED = (
-    ("pod_cidr", "swarm.saga.xyz/pod-cidr"),
-    ("service_cidr", "swarm.saga.xyz/service-cidr"),
-    ("cluster_dns_ip", "swarm.saga.xyz/cluster-dns-ip"),
-    ("node_local_dns_ip", "swarm.saga.xyz/node-local-dns-ip"),
+    ("pod_cidr", "pod-cidr"),
+    ("service_cidr", "service-cidr"),
+    ("cluster_dns_ip", "cluster-dns-ip"),
+    ("node_local_dns_ip", "node-local-dns-ip"),
 )
+
+
+def source_annotation() -> str:
+    """Where the policy's network values came from, as the render recorded it."""
+    return _label_prefix.label_key("network-source")
+
+
+def network_annotations() -> list[tuple[str, str]]:
+    """(live key, annotation) for each rendered value, under the configured prefix."""
+    return [(key, _label_prefix.label_key(name)) for key, name in RENDERED]
+
+
+def api_cidr_annotation() -> str:
+    """swarm-api's egress range, as a swarm-system render recorded it."""
+    return _label_prefix.label_key("swarm-api-egress-cidr")
 
 DNS = {("UDP", 53), ("TCP", 53)}
 
@@ -107,7 +128,6 @@ SYSTEM_DENY_POLICY = "swarm-system-default-deny-ingress"
 #: manifest is applied, before apply.sh's policies follow it.
 RELAY_INGRESS_POLICY = "swarm-live-ingress"
 SYSTEM_NAMESPACE = "swarm-system"
-API_CIDR_ANNOTATION = "swarm.saga.xyz/swarm-api-egress-cidr"
 
 #: The relay's one port: plain ws on TCP 8080, fixed for both integration
 #: lanes by owner decision 2026-10-11 (b) (docs/design/live-browser.md §3.3;
@@ -231,9 +251,9 @@ def check_live_ingress(policy: dict[str, Any], api_cidr: str, what: str = LIVE_I
     problems: list[str] = []
     if metadata.get("namespace") != SYSTEM_NAMESPACE:
         problems.append(f"{what}: in namespace {metadata.get('namespace')}, not {SYSTEM_NAMESPACE}")
-    recorded = (metadata.get("annotations") or {}).get(API_CIDR_ANNOTATION)
+    recorded = (metadata.get("annotations") or {}).get(api_cidr_annotation())
     if recorded != api_cidr:
-        problems.append(f"{API_CIDR_ANNOTATION}: rendered {recorded}, swarm-api's is {api_cidr}")
+        problems.append(f"{api_cidr_annotation()}: rendered {recorded}, swarm-api's is {api_cidr}")
     if spec.get("podSelector") != RELAY_POD_SELECTOR:
         problems.append(f"{what}: selects {spec.get('podSelector')}, not {RELAY_POD_SELECTOR}")
     if spec.get("policyTypes") != ["Ingress"]:
@@ -382,7 +402,7 @@ def check_policy(policy: dict[str, Any], live: dict[str, str]) -> list[str]:
     rules = (policy.get("spec") or {}).get("egress") or []
 
     # -- what it was rendered for ---------------------------------------------
-    for key, annotation in RENDERED:
+    for key, annotation in network_annotations():
         rendered = annotations.get(annotation)
         if rendered is None:
             problems.append(
@@ -391,9 +411,9 @@ def check_policy(policy: dict[str, Any], live: dict[str, str]) -> list[str]:
             )
         elif rendered != live[key]:
             problems.append(f"{annotation}: rendered {rendered}, the cluster's is {live[key]}")
-    if annotations.get(SOURCE_ANNOTATION) == OFFLINE_SOURCE:
+    if annotations.get(source_annotation()) == OFFLINE_SOURCE:
         problems.append(
-            f"{SOURCE_ANNOTATION}: {OFFLINE_SOURCE} -- an offline render, with documentation "
+            f"{source_annotation()}: {OFFLINE_SOURCE} -- an offline render, with documentation "
             "addresses, was applied to a cluster"
         )
 
@@ -546,6 +566,13 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    try:
+        # Before anything is read: a policy's annotations are read under the
+        # configured prefix or not at all, never under a guessed one.
+        _label_prefix.label_prefix()
+    except _label_prefix.LabelPrefixError as exc:
+        print(f"network parity: {exc}", file=sys.stderr)
+        return 2
 
     with open(args.live, encoding="utf-8") as handle:
         live = json.load(handle)
@@ -587,7 +614,7 @@ def main(argv: list[str] | None = None) -> int:
     for policy in selected:
         where = f"{policy['metadata'].get('namespace')}/{POLICY_NAME}"
         rendered_for = ((policy.get("metadata") or {}).get("annotations") or {}).get(
-            SOURCE_ANNOTATION, "(not recorded)"
+            source_annotation(), "(not recorded)"
         )
         problems = check_policy(policy, live)
         if problems:

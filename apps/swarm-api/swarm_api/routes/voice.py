@@ -11,11 +11,14 @@
         -> {session_id, voice_state}: the pause and the wake, reported
     POST /v1/voice/sessions/{session_id}/reopen  {offer_sdp, cause}   (the session's person)
         -> {project_id, session_id, state, voice_state, mode, answer_sdp, cause}
+    POST /v1/voice/sessions/{session_id}/work  {delegation} | {roster}   (swarm-voice's grant only)
+        -> {session_id, seq, type}: a delegation's lifecycle or the roster's
+           changed rows on the session's stream (voice/workfeed.py)
     POST /v1/voice/sessions/{session_id}/seen  {seq}
         -> {session_id, seen_seq, changed}
     POST /v1/voice/sessions/{session_id}/turns  {text}
         -> {turn_id, reply, cards, delegation_id (speech, when delegated)}
-    POST /v1/voice/sessions/{session_id}/end
+    POST /v1/voice/sessions/{session_id}/end  {cause?: ended_by_person | tab_closed}
         -> {project_id, session_id, state, changed, voice_told}
 
     GET    /v1/voice/projects                 -> {projects: [...]}, newest first
@@ -94,7 +97,10 @@ swarm-voice, so none answers 503 for its absence.
 
 THE SHAPE is the Talk pane's (apps/swarm-ui/src/voice/rtc.ts,
 startVoiceSession and endVoiceSession): the pane sends `offer_sdp`, reads
-`answer_sdp`, and ends a session by its id alone. Ending finds the session's
+`answer_sdp`, and ends a session by its id alone, with an optional
+`{cause}`: `ended_by_person` (the default, End) or `tab_closed` (the
+holder's pagehide end); any other cause is 422, every other one being
+swarm-api's own. Ending finds the session's
 project among the caller's own projects in the selected workspace, so
 another tenant's session id, or another person's, is the same 404 as a
 missing one.
@@ -180,7 +186,7 @@ fake), else the deployment's from SWARM_VOICE_URL, else none.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Coroutine
+from typing import Any, Callable, Coroutine, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -283,6 +289,17 @@ class Reopen(BaseModel):
     cause: str | None = Field(default=None, min_length=1, max_length=32)
     #: The person's fresh offer.
     offer_sdp: str | None = Field(default=None, min_length=1, max_length=vs.MAX_SDP_BYTES)
+
+
+class WorkReport(BaseModel):
+    """`/work`'s body (voice/workfeed.py): swarm-voice's `{delegation:
+    {delegation_id, state}}` or the follower's `{roster: [rows]}`, each
+    checked field by field in `voice.grant.record_work`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    delegation: dict[str, Any] | None = None
+    roster: list[Any] | None = None
 
 
 class Seen(BaseModel):
@@ -471,6 +488,29 @@ async def _person_reopen(session_id: str, body: Reopen, auth: AuthContext, ctx: 
         tenant_id=tenant_id, person=person, session_id=session_id, offer=offer, cause=cause))
 
 
+@router.post("/sessions/{session_id}/work")
+async def work(
+    session_id: str,
+    body: WorkReport,
+    request: Request,
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """swarm-voice's report of a delegation's lifecycle or the roster's
+    changed rows (voice-it.md §3.12.5, §3.12.6), through its session's grant
+    only, for that session only (`voice.grant.record_work`)."""
+    if auth.via != vgrant.VIA:
+        raise vgrant.RouteNotGranted("only swarm-voice reports a Voice it session's work")
+    _check_id(session_id, "vs_", "session_id")
+    session = vgrant.session_of(request.headers.get(vgrant.SESSION_HEADER),
+                                tenant_id=auth.tenant_id, person=auth.email)
+    report = {k: v for k, v in (("delegation", body.delegation), ("roster", body.roster))
+              if v is not None}
+    at = ctx.now()
+    return await run_in_threadpool(lambda: vgrant.record_work(
+        ctx.db, session, session_id=session_id, body=report, at=at))
+
+
 @router.post("/sessions/{session_id}/seen")
 async def seen(
     session_id: str,
@@ -503,9 +543,19 @@ async def text_turn(
         service.turn, tenant_id=tenant_id, person=person, session_id=session_id, text=body.text)
 
 
+class EndSession(BaseModel):
+    """`/end`'s optional body: the person's own cause (sessions.PERSON_END_CAUSES).
+    None, or no body, is `ended_by_person`; any other cause is 422."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    cause: Literal["ended_by_person", "tab_closed"] = vs.END_BY_PERSON
+
+
 @router.post("/sessions/{session_id}/end")
 async def end_session(
     session_id: str,
+    body: EndSession | None = None,
     person: str = Depends(allowed_person),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
@@ -515,7 +565,8 @@ async def end_session(
     service = _service(ctx, client, machine)
     _check_id(session_id, "vs_", "session_id")
     return await run_in_threadpool(
-        service.end, tenant_id=tenant_id, person=person, session_id=session_id)
+        service.end, tenant_id=tenant_id, person=person, session_id=session_id,
+        cause=(body or EndSession()).cause)
 
 
 # --------------------------------------------------------------------------

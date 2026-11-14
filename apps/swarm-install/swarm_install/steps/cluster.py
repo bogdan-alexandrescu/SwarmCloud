@@ -82,6 +82,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -102,7 +103,7 @@ from ..terraform import Terraform, read_outputs
 from ..waits import Clock, SystemClock, WaitSpec, wait_until
 from . import Observation, Plan
 from .bootstrap import Release
-from .preflight import ASK, COMPUTE, TOOLS, Ask, Gcp, find_tool
+from .preflight import ASK, COMPUTE, LABEL_PREFIX_OUTPUT, TOOLS, Ask, Gcp, default_label_prefix, find_tool
 
 #: terraform/infra's cluster (`google_container_cluster.agents`, named
 #: `${name_prefix}-autopilot`; the engine never renders name_prefix, so its
@@ -201,6 +202,49 @@ def run_command(argv: Sequence[str], stdin: str | None = None,
     done = subprocess.run(list(argv), input=stdin, capture_output=True, text=True, timeout=600,
                           check=False, env=env)
     return done.returncode, done.stdout or "", done.stderr or ""
+
+
+#: kubernetes/label_prefix.py's token, its refusal and its prefix rule, held
+#: equal to the release's by tests/unit/install/test_cluster_step.py: the engine
+#: needs them before the bundle is fetched, so they are stated once here.
+LABEL_PREFIX_PLACEHOLDER = "__LABEL_PREFIX__"
+LABEL_PREFIX_UNSET = (
+    "the label-key prefix is not configured: set SWARM_LABEL_PREFIX, or SWARM_ORG_DOMAIN "
+    "for the default swarm.<org_domain>; no key is guessed"
+)
+_DNS_LABEL = r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
+_KEY_PREFIX = re.compile(rf"(?=.{{1,253}}$){_DNS_LABEL}(\.{_DNS_LABEL})+")
+
+
+def label_prefix(outputs: Mapping[str, Any]) -> str:
+    """The install's label-key prefix (the owner's "configurable", 8 November
+    2026): the one recorded, else `swarm.<org_domain>`, else LookupError with
+    label_prefix.py's sentence. Never a guess: the workspace deployer's scope
+    policy admits a namespace only by its key."""
+    prefix = str(outputs.get(LABEL_PREFIX_OUTPUT) or "").strip()
+    if not prefix:
+        domain = str(outputs.get("org_domain") or "").strip().lower().lstrip("@")
+        if not domain:
+            raise LookupError(LABEL_PREFIX_UNSET)
+        prefix = default_label_prefix(domain)
+    if not _KEY_PREFIX.fullmatch(prefix):
+        raise ValueError(f"the install's label prefix {prefix!r} is not a key prefix (a lower-case domain name)")
+    return prefix
+
+
+def fill_label_prefix(manifest: str, outputs: Mapping[str, Any]) -> str:
+    """A Terraform render with the prefix over the token kubernetes/apply.sh
+    fills; the engine applies those renders itself, so it fills it the same way."""
+    return manifest.replace(LABEL_PREFIX_PLACEHOLDER, label_prefix(outputs)) if LABEL_PREFIX_PLACEHOLDER in manifest else manifest
+
+
+def render_environment(outputs: Mapping[str, Any]) -> dict[str, str]:
+    """render.py's environment: the engine's, with the install's prefix as
+    SWARM_LABEL_PREFIX and no SWARM_ORG_DOMAIN, so a variable the person's
+    shell exports never chooses a key."""
+    env = {k: v for k, v in os.environ.items() if k not in ("SWARM_LABEL_PREFIX", "SWARM_ORG_DOMAIN")}
+    env["SWARM_LABEL_PREFIX"] = label_prefix(outputs)
+    return env
 
 
 def account_email(project: str, account: str) -> str:
@@ -453,8 +497,9 @@ class _Base:
 
     def render(self, ctx: Any, *args: str) -> str:
         """`render.py <args>` from the release bundle, never a checkout."""
+        env = render_environment(ctx.outputs)
         root = self._bundle.fetch(ctx)
-        code, out, err = self._run([sys.executable, str(root / "render.py"), *args], None, None)
+        code, out, err = self._run([sys.executable, str(root / "render.py"), *args], None, env)
         if code != 0:
             raise RuntimeError(f"render.py {args[0]} failed: {err.strip()[:300]}")
         return out
@@ -650,7 +695,7 @@ class WorkloadsStep(_Base):
         if ctx.project not in self._read:
             self._read[ctx.project] = self._outputs(ctx)
         found = self._read[ctx.project]
-        return [(name, output, str(found[output]) if found.get(output) else None)
+        return [(name, output, fill_label_prefix(str(found[output]), ctx.outputs) if found.get(output) else None)
                 for _, name, output in CORE_WORKLOADS]
 
     def check(self, ctx: Any) -> Observation:

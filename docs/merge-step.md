@@ -356,6 +356,25 @@ slot:
   goes to its conflict fix round, and a red check at its head to its CI-fix
   round; a round's new head is labelled `ready` afresh. Green and still not
   `ready`, which removed it decides:
+  * **A person:** FAILED `ready_removed_by_person` (`merge_refused`) at
+    once, naming them and quoting their latest comment on the pull request.
+    Who removed `ready` is read from the issue timeline's latest `unlabeled`
+    event for it (`GET /issues/{n}/timeline`), not from the comments: a
+    person who takes a pull request off the train by hand writes a comment
+    without the ejection marker, and reading only the platform's comments
+    once refused such a step `train_ejected`, quoting a stale bot comment
+    from hours before. Both platform removers -- auto-merge.yml's gate and
+    `merge-train.sh eject_pr` -- use the workflow's `github.token`, so their
+    actor is `github-actions[bot]`, a Bot; only a `User` actor is a person.
+    Why a distinct code: the owner's deliberate removal is a decision, not a
+    defect, so failure-review's `person_ready_removal` rule skips it, as
+    `person_push` skips `superseded_by_person_push`. The frozen `EndCause`
+    has no member for it, so the step still ends FAILED. Not a person's,
+    though a `User` removed it: a pull request carrying `review-not-yet`,
+    whose `ready` the platform's own NOT_YET path took off, possibly under a
+    person's forge token. That, a Bot's removal, no such event, or a
+    timeline read that fails (recorded as `removal_unread` in the step's
+    `repository_train`) falls to the comments, below, exactly as before.
   * **The gate:** FAILED `train_ejected` (`merge_refused`) at once, quoting
     the latest comment an App wrote. What the gate refused (a closing
     keyword, a dependency not landed) does not change by waiting.
@@ -507,10 +526,25 @@ while mergeability was read -- the head commit is read. The step ends
 **`superseded_by_person_push`** instead of `head_moved` when all of these
 hold:
 
-* **it is not a merge.** The decision is about a person's content commit. A
-  person's two-parent merge that `_merge_impurity` does not show clean stays
-  `head_moved`: that proof may refuse what git accepts, and a refusal there
-  is the platform's to look at;
+* **it is a single commit, or a person's refused merge of the base onto an
+  accepted head** (Revised 2026-11-12, #3601). A two-parent commit counts
+  only when its first parent is the pinned head or a head `_accept` takes,
+  its second parent is on the base, GitHub did not commit it, and
+  `_merge_impurity` refused it (a clean merge is accepted and merged long
+  before this question). Why: on 2026-11-06 at 23:25Z the owner merged main
+  into six train-parked pull requests by hand and resolved real conflicts;
+  each step ended FAILED `merge_refused`/`head_moved` with "both parents
+  change <path>", and failure-review filed all six. Until then this bullet
+  said the decision was about content commits only, since the proof may
+  refuse what git accepts. But a merge a person on the pull request made on
+  top of a head this step accepted carries nothing but the base and that
+  person's resolution: it is their content, which is what the 2026-10-27
+  decision ends without a failure. Nothing new merges -- `_accept` and
+  `_merge_impurity` did not change -- and `refusal.commit` still carries
+  `_head_record`'s `why`, so a proof that refused a merge git would take
+  clean stays visible in the record. A merge onto a head the step never
+  accepted, one whose second parent is not on the base, and a commit of
+  three or more parents still stay `head_moved`;
 * **the platform did not make it.** Not under one of the platform's own
   committer addresses (`PLATFORM_COMMITTER_EMAILS`: the worker's default and
   `BOT_GIT_IDENTITY`), and its message does not end with the worker's line,
@@ -809,7 +843,9 @@ defaulted to 0. What this lane changed, and why:
   `ci_fix_pending` until its six-hour bound. `fix_rounds: 0` spends no
   agent on red, but still gets the one free re-run per head below: red
   again at that head refuses `checks_failed`. Conflict
-  rounds keep their own cap of 2 (`MERGE_CONFLICT_ROUNDS_MAX`) whatever
+  rounds keep their own cap of 2 spent rounds (`MERGE_CONFLICT_ROUNDS_MAX`;
+  a round that moved the head is not spent, and 6 of any outcome is the
+  ceiling, `MERGE_CONFLICT_ROUNDS_TOTAL_MAX`) whatever
   `fix_rounds` says, as the conflict-fix-round design decided: a conflict nobody resolves is never
   mergeable at all, so 0 does not turn them off.
 * **A flake costs no agent.** The first red reading at a head whose every
@@ -853,9 +889,16 @@ defaulted to 0. What this lane changed, and why:
   and the re-run that later passed was run by hand. The tick asks for the
   re-run before it wakes the step `fix_round_ended`; the worker
   (`merge._red`) parks `ci_rerun_pending` while it settles and
-  `ci_rerun_due` once when none is recorded at the head, and refuses after
-  the round on its red answer. It is still one re-run per head: a head the
-  tick re-ran before the round refuses as before. A round that pushed,
+  `ci_rerun_due` when the head is due one, and refuses after the round on
+  the last one's red answer. After a `no_change` round the head may be
+  re-run up to `RERUNS_PER_HEAD_MAX` (2) accepted times, not once (#3080,
+  the owner's decision of 2026-11-12): the tick's free re-run is spent
+  before any round, and it can answer red on a *different* flake, which the
+  round then reads as a flake too and pushes nothing. With one re-run per
+  head the step then refused `checks_failed` with no re-run of that second
+  flake -- PR #3049 at dd72fa3e and PR #3055 at d82d2635 both did, and a
+  later manual re-run went green and merged both unchanged. A head with no
+  round at it is still re-run once. A round that pushed,
   failed, was cancelled or ended without `no_change` refuses as before.
   While GitHub still serves the very runs that were re-run, the tick waits,
   at most `RERUN_SETTLE_SECONDS` (10 min). A wake inside that window parks
@@ -882,10 +925,25 @@ defaulted to 0. What this lane changed, and why:
   in `runs` reads not `completed` (`GitHubWriter.read_run`, the latest
   attempt's status), bounded as every park is by `MERGE_CI_MAX_SECONDS`;
   when that status cannot be read the 10-minute window is the floor, as
-  before. This is not the wider "more re-runs per head" question the round-flake re-run change left to the
-  owner: it is still one answered re-run per head, with at most one retry of
-  a refusal, and waiting for an accepted re-run's own answer is still that
-  one re-run.
+  before. Waiting for an accepted re-run's own answer is still that one
+  re-run: a re-run is settling, not spent, while every failing check is a
+  job it re-ran.
+  The bounded rule after a `no_change` round (#3080), the same on both
+  sides -- swarm-api's tick (`mergewake._rerun_first` on the
+  `fix_round_ended` path, `cirerun.RERUNS_PER_HEAD_MAX`) and the worker
+  (`merge._rerun_due` with `after_no_change`, `merge.RERUNS_PER_HEAD_MAX`),
+  the constants held equal by `tests/unit/worker/test_merge_fix_round.py`:
+  a red reading no accepted re-run at the head is still settling on gets
+  another re-run while fewer than `RERUNS_PER_HEAD_MAX` accepted re-runs
+  are recorded there. A refused re-run does not count against it, and
+  `RERUN_REFUSALS_MAX` still bounds the refusals. At the bound the last
+  re-run's red answer refuses `checks_failed` naming the round, so a
+  persistent red costs at most one more re-run, never a loop. The worker
+  parks `ci_rerun_due` at most once per request: when its last park was
+  already `ci_rerun_due` at the head, it parks again only if the tick has
+  claimed a re-run there since (the newest record's `claimed_at` after the
+  park's `parked_at`, `merge._rerun_since_park`); a tick that found nothing
+  to re-run and woke the step red is answered with the refusal.
 * **Each round is a step of the lane's workflow.** The round is still its
   own one-step continuation workflow (it must be: it is submitted, signed and
   admitted like any other). After it is submitted the tick appends a step to
@@ -1013,14 +1071,32 @@ CI-fix round:
   `dispatch.conflict_round`, which swarm-api copies at submission from the
   `merge_conflict_round` record the tick submits the round with: the worker
   acts on no metadata the step-spec signature does not cover;
-* **at most `MERGE_CONFLICT_ROUNDS_MAX` = 2 rounds**, the PR-side CI fixer's
-  own bound (`cifix.DEFAULT_MAX_ATTEMPTS`), whatever `merge_fix_rounds` says:
-  that budget is about red CI and defaults to none, and a conflict nobody
-  resolves is never mergeable at all. A third conflict after two merges of the
-  base means the base moves faster than an agent resolves it, a person's
-  question.
+* **at most `MERGE_CONFLICT_ROUNDS_MAX` = 2 SPENT rounds**, the PR-side CI
+  fixer's own bound (`cifix.DEFAULT_MAX_ATTEMPTS`), whatever
+  `merge_fix_rounds` says: that budget is about red CI and defaults to none,
+  and a conflict nobody resolves is never mergeable at all. A round is
+  **spent** when it failed or was refused (an `error` on its entry), was never
+  submitted (no agent), or ended without pushing a head other than the one it
+  was given. A round whose agent pushed a new head **moved the head** and is
+  not spent (#3073): it resolved its conflict, and a later conflict is the
+  base moving again, a new conflict, not the round failing. Counting every
+  round refused PR #3036, #3342 and `wf_76d8600f` `merge_conflict` after two
+  rounds that both succeeded. "Moved" rests on the round agent's own record,
+  never on the tenant-writable `merge_fix` entry: the worker takes the head
+  from `_fix_round_heads` (the agent read through the tenant-gated upstream
+  read, its signed spec verified, its signed `continues` the branch's root),
+  the tick from the agent read under the merge's tenant
+  (`mergewake._conflict_rounds_spent`, as `_pushed_by` reads it); one that
+  cannot be read or verified is spent. Two rounds that could not resolve a
+  conflict will not be helped by a third, a person's question;
+* **at most `MERGE_CONFLICT_ROUNDS_TOTAL_MAX` = 6 rounds of any outcome**, the
+  cost backstop. `MERGE_CI_MAX_SECONDS` is measured per head
+  (`_ci_wait_age` starts again when a round moves the head), so it does not
+  bound rounds across a base that keeps moving; without the ceiling every
+  move of main would buy another agent run. Both constants are held equal on
+  the worker and the tick by `test_the_tick_and_the_worker_agree_on_the_conflict_rounds`.
 
-With the rounds spent, a round that ended at the conflicting head without
+With the rounds spent or the ceiling reached, a round that ended at the conflicting head without
 moving it, a round whose submission was refused, or a pull request no round
 may push to (a `merge_pr` target, or a branch that is not the root's), the
 step **fails fast with `merge_conflict`**, naming the pull request. A conflict
@@ -1031,8 +1107,10 @@ takes the same path. `merge_conflict` is a step failure code in
 
 **Invariants.** Every wait is a `CI_PENDING` park holding no lease, pool count
 or Job (1, 3, 4); a round is an ordinary admitted agent. The rounds are bounded
-twice: by `MERGE_CONFLICT_ROUNDS_MAX`, and by `MERGE_CI_MAX_SECONDS` on the
-step's park, past which a conflict wait is `merge_conflict` too. Every forge
+three times: by `MERGE_CONFLICT_ROUNDS_MAX` spent rounds, by
+`MERGE_CONFLICT_ROUNDS_TOTAL_MAX` rounds of any outcome, and by
+`MERGE_CI_MAX_SECONDS` on the step's park at each head, past which a conflict
+wait is `merge_conflict` too. Every forge
 write is still behind the fencing recheck (5). The fixer's agent is read under
 the merge's tenant only (9).
 
@@ -1281,7 +1359,7 @@ matches:
 | merged at the pinned head (another merger won) | close the issues (below); SUCCEEDED, `merged_by_this_task: false` |
 | merged at another head, or closed | MERGE_REFUSED `merged_at_other_head` / `pull_request_closed` |
 | the head moved, and the step did not move it, nor a CI-fix or conflict fix round of this workflow, nor the PR-side CI fixer for this pull request (Revised 2026-10-11) | MERGE_REFUSED `head_moved` |
-| the head is a person's non-merge commit, not the platform's, by the pull request's author or an assignee (Revised 2026-10-27) | MERGE_REFUSED `superseded_by_person_push`, skipped by failure-review; `CANCELLED` once contract request 145 (SUPERSEDED_BY_PERSON_PUSH) lands. So is a worker commit from a plain lane that person dispatched onto the branch (Revised 2026-11-05) |
+| the head is a person's commit, or their merge of the base onto an accepted head that `_merge_impurity` refused (Revised 2026-11-12, #3601), not the platform's, by the pull request's author or an assignee (Revised 2026-10-27) | MERGE_REFUSED `superseded_by_person_push`, skipped by failure-review; `CANCELLED` once contract request 145 (SUPERSEDED_BY_PERSON_PUSH) lands. So is a worker commit from a plain lane that person dispatched onto the branch (Revised 2026-11-05) |
 | `mergeable` false (`dirty`, GraphQL CONFLICTING), read BEFORE the checks (Revised 2026-10-11) | park `CI_PENDING` for a **conflict fix round**, at most 2; with them spent, MERGE_REFUSED `merge_conflict` at once. Never a wait for checks |
 | a required check **failed** | **if the workflow has CI-fix rounds left** (§6 MS7), the tick hands the red reading to the **CI-fix loop** first, so this row only runs once the rounds are spent or there were none. Otherwise MERGE_REFUSED `checks_failed`, naming every failing check and its conclusion |
 | still pending, and `first_parked_at` is older than `MERGE_CI_MAX_SECONDS` (proposed 6 h) | MERGE_REFUSED `checks_timeout`, naming the checks still pending |

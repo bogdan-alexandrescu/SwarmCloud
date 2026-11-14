@@ -56,7 +56,7 @@ metadata:
     swarm-tenant: __TENANT_ID__
     app.kubernetes.io/part-of: swarm
   annotations:
-    swarm.saga.xyz/rationale: >-
+    __LABEL_PREFIX__/rationale: >-
       The verification gate (swarm-verify) reads a Job's status to tell a task
       holding capacity against a live Job from one holding it against a Job
       that is gone or finished (scripts/e2e-test.sh [10]). Jobs only: no pod,

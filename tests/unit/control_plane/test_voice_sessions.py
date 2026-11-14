@@ -18,7 +18,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -220,6 +220,93 @@ def test_ending_marks_it_ended_and_tells_swarm_voice(client, db, voice):
     assert _docs(db, vs.LIVE_MARKERS) == {}
     actions = sorted(row["action"] for row in _docs(db, vs.AUDIT + "/").values())
     assert actions == sorted([vs.AUDIT_STARTED, vs.AUDIT_ENDED])
+
+
+def _session(db, started) -> dict:
+    return db.docs[f"{vs.PROJECTS}/{started['project_id']}/{vs.SESSIONS}/{started['session_id']}"]
+
+
+def test_a_closed_tabs_end_records_tab_closed(client, db, voice):
+    # The holder's pagehide end (apps/swarm-ui/src/voice/session.tsx `endOnLeave`).
+    started = _start(client, "alice").json()
+
+    response = client.post(f"/v1/voice/sessions/{started['session_id']}/end",
+                           json={"cause": "tab_closed"}, headers=auth_header("alice"))
+
+    assert response.status_code == 200, response.text
+    assert response.json()["changed"] is True
+    assert vs.END_TAB_CLOSED == "tab_closed"
+    session = _session(db, started)
+    assert session["state"] == vs.ENDED and session["end_cause"] == vs.END_TAB_CLOSED
+    assert voice.ends == [(started["session_id"], vs.END_TAB_CLOSED)]
+    ended = [row for row in _docs(db, vs.AUDIT + "/").values() if row["action"] == vs.AUDIT_ENDED]
+    assert [row["detail"] for row in ended] == [{"cause": vs.END_TAB_CLOSED}]
+
+
+def test_end_named_by_the_person_records_ended_by_person(client, db, voice):
+    # End, Escape on Stop and the spoken stop name their cause, or send none.
+    started = _start(client, "alice").json()
+
+    response = client.post(f"/v1/voice/sessions/{started['session_id']}/end",
+                           json={"cause": "ended_by_person"}, headers=auth_header("alice"))
+
+    assert response.status_code == 200, response.text
+    assert _session(db, started)["end_cause"] == vs.END_BY_PERSON
+    assert voice.ends == [(started["session_id"], vs.END_BY_PERSON)]
+
+
+@pytest.mark.parametrize("cause", ["abandoned", "budget_cap", "idle", "paused_idle",
+                                   "voice_unreachable", "TAB_CLOSED", "", "anything"])
+def test_a_cause_the_person_may_not_name_is_422_and_ends_nothing(client, db, voice, cause):
+    started = _start(client, "alice").json()
+
+    response = client.post(f"/v1/voice/sessions/{started['session_id']}/end",
+                           json={"cause": cause}, headers=auth_header("alice"))
+
+    assert response.status_code == 422, response.text
+    assert _session(db, started)["state"] == vs.LIVE
+    assert voice.ends == []
+
+
+def test_an_end_body_with_another_field_is_422(client, db, voice):
+    started = _start(client, "alice").json()
+
+    response = client.post(f"/v1/voice/sessions/{started['session_id']}/end",
+                           json={"cause": "tab_closed", "person": "bob@example.com"},
+                           headers=auth_header("alice"))
+
+    assert response.status_code == 422, response.text
+    assert _session(db, started)["state"] == vs.LIVE
+
+
+def test_the_service_refuses_a_cause_the_person_may_not_name(client, db, voice):
+    started = _start(client, "alice").json()
+    service = vs.VoiceSessions(db, voice, now=lambda: datetime.now(timezone.utc))
+
+    with pytest.raises(ValueError):
+        service.end(tenant_id="eng", person="alice@example.com",
+                    session_id=started["session_id"], cause=vs.END_ABANDONED)
+
+    assert vs.PERSON_END_CAUSES == (vs.END_BY_PERSON, vs.END_TAB_CLOSED)
+    assert _session(db, started)["state"] == vs.LIVE
+    assert voice.ends == []
+
+
+def test_another_persons_session_in_the_same_workspace_is_404_with_tab_closed(
+        db, tokens, group_map, objects, voice):
+    # root shares alice's workspace (eng); both are allowed.
+    client = _client(db, tokens, group_map, objects, voice,
+                     voice_url="http://voice.internal:8080",
+                     voice_people=("alice@example.com", "root@example.com"))
+    started = _start(client, "alice").json()
+
+    response = client.post(f"/v1/voice/sessions/{started['session_id']}/end",
+                           json={"cause": "tab_closed"},
+                           headers={**auth_header("root"), "X-Swarm-Tenant": "eng"})
+
+    assert response.status_code == 404, response.text
+    assert _session(db, started)["state"] == vs.LIVE
+    assert voice.ends == []
 
 
 def test_ending_twice_changes_nothing_the_second_time(client, db, voice):

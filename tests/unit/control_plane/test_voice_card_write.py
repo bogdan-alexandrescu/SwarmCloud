@@ -59,6 +59,8 @@ def test_the_write_list_is_the_card_route_alone_and_apart_from_the_reads(client)
         ("POST", "/v1/voice/sessions/{session_id}/trace"),
         # A spent Live key's next tier, held for the reopen (routes/voice.py).
         ("POST", "/v1/voice/sessions/{session_id}/reopen"),
+        # The work feed: a delegation's lifecycle and the roster (voice/workfeed.py).
+        ("POST", "/v1/voice/sessions/{session_id}/work"),
     })
     assert not vg.WRITE_ROUTES & vg.ALLOWED_ROUTES
     assert all(method == "GET" for method, _ in vg.ALLOWED_ROUTES)
@@ -82,7 +84,8 @@ def test_a_grant_draws_a_card_in_its_session_as_its_person_and_is_audited(client
     events = vstore.VoiceStore(db, now=lambda: datetime.now(timezone.utc)).events_after(
         tenant_id="eng", person="alice@example.com", project_id=call.project_id,
         session_id=call.session_id)
-    assert [e["type"] for e in events] == ["card.upsert"]
+    # The grant's masked work step (voice/workfeed.py), then the card.
+    assert [e["type"] for e in events] == ["work.step", "card.upsert"]
     rows = [r for r in _audit(db) if r["route"] == ROUTE]
     assert len(rows) == 1
     assert rows[0]["via"] == vg.VIA and rows[0]["method"] == "POST"

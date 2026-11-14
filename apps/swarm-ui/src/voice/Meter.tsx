@@ -1,30 +1,29 @@
 /**
- * VOICE IT, THE BUDGET METER beside the Talk pane (docs/design/voice-it.md
- * §3.8; section 10, phase three's ledger row).
+ * VOICE IT, THE LEDGER READ behind Talk's cost pill (docs/design/voice-it.md
+ * §3.8; section 10, phase three's ledger row; the pill: CostPill.tsx, the
+ * owner's pick of 11 November 2026).
  *
- * Two bars, the session against $100 and the day against $300, each the
+ * Two caps, the session against $100 and the day against $300, each the
  * total of what is SPENT (talk, planner, finished work at its measured cost,
  * follow-ups) and what is RESERVED (running work at its step budgets times
  * 1.2). The figures are swarm-api's ledger, which computes them on every read
- * (swarm_api/voice/ledger.py); this component sums nothing of its own.
+ * (swarm_api/voice/ledger.py); nothing here sums anything of its own.
  *
  * It reads once when a session is shown and again every LEDGER_REFRESH_MS
- * while the session is live, because talk is billed by the second. What the
- * figures leave out (pod compute, CI minutes, deploys) is said under them.
+ * while the session is live, because talk is billed by the second.
  */
 
 import { useEffect, useState } from 'react'
 
-import { UsageBar } from '../components'
 import { read, route } from '../fetch'
 
 export const VOICE_LEDGER = '/v1/voice/sessions/{id}/ledger'
 
-/** How often a live session's meter is read again. */
+/** How often a live session's ledger is read again. */
 export const LEDGER_REFRESH_MS = 30_000
 
 /** The ledger's words for its lines, in the order it serves them. */
-const LINE_WORDS: Record<string, string> = {
+export const LINE_WORDS: Record<string, string> = {
   talk: 'Talk',
   planner: 'Planner',
   speech_machine: 'Speech machine',
@@ -81,32 +80,8 @@ export function usd(n: number): string {
   return `$${n.toFixed(2)}`
 }
 
-function CapBar({ label, cap }: { label: string; cap: LedgerCap }) {
-  const lines = cap.lines.filter((l) => l.spent_usd > 0 || l.reserved_usd > 0)
-  return (
-    <div className="vt-meter-cap" aria-label={label} role="group">
-      <UsageBar
-        label={label}
-        used={Number(cap.total_usd.toFixed(2))}
-        ceiling={cap.cap_usd}
-        unit="USD"
-        note={`${usd(cap.spent_usd)} spent, ${usd(cap.reserved_usd)} reserved`}
-      />
-      {lines.length > 0 && (
-        <ul className="vt-meter-lines">
-          {lines.map((l) => (
-            <li key={l.line}>
-              {LINE_WORDS[l.line] ?? l.line}: {usd(l.spent_usd)} spent
-              {l.reserved_usd > 0 && `, ${usd(l.reserved_usd)} reserved`}
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  )
-}
-
-export function BudgetMeter({ sessionId, live }: { sessionId: string; live: boolean }) {
+/** The session's ledger as served, or the read's problem in swarm-api's words; both null while the first read is out. */
+export function useLedger(sessionId: string, live: boolean): { ledger: Ledger | null; problem: string | null } {
   const [ledger, setLedger] = useState<Ledger | null>(null)
   const [problem, setProblem] = useState<string | null>(null)
 
@@ -135,24 +110,5 @@ export function BudgetMeter({ sessionId, live }: { sessionId: string; live: bool
     }
   }, [sessionId, live])
 
-  return (
-    <section className="vt-meter" aria-label="Budget">
-      <p className="vt-cards-h">Budget</p>
-      {ledger === null && problem === null && <p className="vt-meter-note">Reading the ledger…</p>}
-      {problem !== null && (
-        <p className="vt-meter-note" role="alert">
-          The budget could not be read: {problem}
-        </p>
-      )}
-      {ledger !== null && (
-        <>
-          <CapBar label="This session" cap={ledger.session} />
-          <CapBar label={`Today (${ledger.date}, ${ledger.time_zone})`} cap={ledger.day} />
-          {ledger.not_counted.length > 0 && (
-            <p className="vt-meter-note">Not counted: {ledger.not_counted.join(', ')}.</p>
-          )}
-        </>
-      )}
-    </section>
-  )
+  return { ledger, problem }
 }

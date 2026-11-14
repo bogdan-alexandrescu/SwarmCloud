@@ -114,6 +114,16 @@ session's stream. Every other event the sink is handed -- the sideband's
 transcripts among them -- is dropped here unread: nothing else leaves, and the
 tier is a name, never a key.
 
+THE VOICE'S STATE REACHES SWARM-API (the owner, 12 November 2026). The same
+sink posts each `session.state` live.py emits -- `paused`, `waking`,
+`listening` -- to that route as `{state, cause?}` through the same grant
+(swarm-api's report_voice_state), the cause only when the event names one and
+nothing else of the event. A report never holds the voice: it is posted in the
+background, behind the session's previous report so swarm-api hears them in
+order. A refused or failed post is retried once, then dropped with a log line
+naming the session, the state and the route's status, never the grant, a token
+or anything said. The tier's post is unchanged: inline, once.
+
 THE PAUSE AND THE REOPEN (docs/design/voice-it.md §3.12.7, the design's lane
 V2; the owner picked the automatic pause on 11 November 2026). live.py pauses
 a GPT-Live session after live.PAUSE_AFTER_SECONDS of silence with a delegation
@@ -134,9 +144,11 @@ voice, and until swarm-api forwards the reopen and writes the paused state
 wake a paused session. Off, nothing pauses and nothing else changes.
 
 THE FOLLOWER HOOK. Each session's start and end runs `Followers.start` and
-`Followers.stop`, every registered pair in turn (lane V6 registers the roster's
-follower). With nothing registered they do nothing; a follower's failure is
-logged and never fails the start or the end.
+`Followers.stop`, every registered pair in turn. With nothing registered they
+do nothing; a follower's failure is logged and never fails the start or the
+end. The app built from the environment registers the roster's follower
+(follow.py, lane V6) when SWARM_API_URL is set, and stops every one at
+shutdown; it is `app.state.roster` (None without it).
 """
 
 from __future__ import annotations
@@ -153,6 +165,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from . import readback
+from .follow import build_roster
 from .accountlease import (CAPABILITY, CAPABILITY_TEXT, NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused,
                            build_broker)
 from .claudefront import (FRONT_MODELS, FrontDown, FrontRefused, FrontSessionEnded, FrontSessions,
@@ -163,11 +176,12 @@ from .credential import CredentialError
 from .grant import GrantInvalid, SessionGrant
 from . import tools_read
 from .instructions import ReopenContext
-from .live import (MAX_OFFER_BYTES, PAUSE_AFTER_SECONDS, REOPEN_EVENT, LiveApi, LiveError, LiveRefused,
-                   NotPaused, SessionEnded, SessionExists, Sessions)
+from .live import (LISTENING, MAX_OFFER_BYTES, PAUSE_AFTER_SECONDS, PAUSED, REOPEN_EVENT, SESSION_STATE, WAKING,
+                   LiveApi, LiveError, LiveRefused, NotPaused, SessionEnded, SessionExists, Sessions)
 from .planner import build_planner
 from .plannerlease import FRONT_HOLDER, PlannerAccounts
 from .textchat import MAX_TURN_CHARS, CodexApi, TextSessionEnded, TextSessions, UsageLimited
+from .worksink import build_work_sink
 
 log = logging.getLogger("swarm_voice")
 
@@ -388,10 +402,18 @@ def google_caller_check(audience: str, callers: frozenset[str]) -> CallerCheck:
 REOPEN_ROUTE = "/v1/voice/sessions/{session_id}/reopen"
 
 
+#: The voice states live.py's `session.state` reports that swarm-api takes
+#: through the grant (swarm-api's voice/sessions.py VOICE_REPORTS).
+STATE_REPORTS = (PAUSED, WAKING, LISTENING)
+#: Tries per state report: the post and one retry, then it is dropped.
+STATE_REPORT_TRIES = 2
+
+
 class ReopenSink:
     """A Live session's event sink: tells swarm-api, through the session's
-    grant, the tier a spent key's reopen holds (see THE REOPEN REACHES THE
-    CONSOLE). Any other event is dropped unread."""
+    grant, the tier a spent key's reopen holds and the voice's state as each
+    `session.state` names it (see THE REOPEN REACHES THE CONSOLE and THE VOICE'S
+    STATE REACHES SWARM-API). Any other event is dropped unread."""
 
     def __init__(self, http: Any, *, api_base: str, id_tokens: tools_read.IdTokens) -> None:
         self._http = http
@@ -399,6 +421,9 @@ class ReopenSink:
         self._id_tokens = id_tokens
         #: The sessions whose events this sink is handed (`bind`).
         self._sessions: Sessions | None = None
+        #: Each voice session's last state report in flight: the next one waits
+        #: for it, so swarm-api hears them in the order live.py emitted them.
+        self._reports: dict[str, asyncio.Task[None]] = {}
 
     def bind(self, sessions: Sessions) -> None:
         self._sessions = sessions
@@ -411,6 +436,9 @@ class ReopenSink:
         return session.grant if session is not None else None
 
     async def __call__(self, voice_id: str, event: dict[str, Any]) -> None:
+        if event.get("type") == SESSION_STATE:
+            self._report_state(voice_id, event)
+            return
         if event.get("type") != REOPEN_EVENT:
             return
         tier = event.get("tier")
@@ -427,6 +455,55 @@ class ReopenSink:
             log.warning("voice session %s: swarm-api was not told of the %s tier: %s", voice_id, tier, exc)
             return
         log.info("voice session %s: swarm-api was told of the %s tier", voice_id, tier)
+
+    def _report_state(self, voice_id: str, event: dict[str, Any]) -> None:
+        """Queue `{state, cause?}` for swarm-api behind the session's previous
+        report and return at once: the voice never waits on swarm-api."""
+        state = event.get("state")
+        if state not in STATE_REPORTS:
+            return
+        grant = self._grant(voice_id)
+        if grant is None:
+            log.info("voice session %s: no grant, so swarm-api is not told the voice is %s", voice_id, state)
+            return
+        body: dict[str, Any] = {"state": state}
+        cause = event.get("cause")
+        if isinstance(cause, str) and cause:
+            body["cause"] = cause
+        previous = self._reports.get(voice_id)
+        task = asyncio.create_task(self._post_state(voice_id, grant, body, previous))
+        self._reports[voice_id] = task
+        task.add_done_callback(lambda done: self._reports.pop(voice_id, None)
+                               if self._reports.get(voice_id) is done else None)
+
+    async def _post_state(self, voice_id: str, grant: SessionGrant, body: dict[str, Any],
+                          previous: asyncio.Task[None] | None) -> None:
+        if previous is not None:
+            # Its own failure is already logged; only its order matters here.
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await previous
+        api = tools_read.SwarmApi.for_session(self._http, base_url=self._base, id_tokens=self._id_tokens,
+                                              grant=grant)
+        path = REOPEN_ROUTE.format(session_id=grant.session_id)
+        state = body["state"]
+        for attempt in range(1, STATE_REPORT_TRIES + 1):
+            try:
+                await api._call("POST", REOPEN_ROUTE, path, json_body=body)  # noqa: SLF001
+            except tools_read.ApiRefused as exc:
+                # The route and status only: never the grant, a token or what was said.
+                if attempt < STATE_REPORT_TRIES:
+                    log.info("voice session %s: swarm-api was not told the voice is %s (%s); trying once more",
+                             voice_id, state, exc)
+                    continue
+                log.warning("voice session %s: the %s report was dropped: %s", voice_id, state, exc)
+                return
+            log.info("voice session %s: swarm-api was told the voice is %s", voice_id, state)
+            return
+
+    async def drain(self) -> None:
+        """Wait for every state report in flight."""
+        while self._reports:
+            await asyncio.gather(*list(self._reports.values()), return_exceptions=True)
 
 
 def build_reopen_sink(http: Any) -> ReopenSink | None:
@@ -464,12 +541,15 @@ def build_texts(http: Any, sessions: Sessions) -> TextSessions:
                         planner=sessions._planner)  # noqa: SLF001 -- one planner
 
 
-def build_fronts(sessions: Sessions) -> FrontSessions:
+def build_fronts(sessions: Sessions, http: Any = None) -> FrontSessions:
     """Own speech's fast fronts (claudefront.py), on the Live sessions' broker
     client, holding each session's Claude account as the front, and on their
-    planner: a front's delegation reaches the same planner."""
+    planner: a front's delegation reaches the same planner. With `http` and
+    SWARM_API_URL, each delegation's lifecycle reaches swarm-api's work route
+    through the session's grant (worksink.py); else nothing is posted."""
     return FrontSessions(accounts=PlannerAccounts(sessions._leases, holder=FRONT_HOLDER),  # noqa: SLF001
-                         planner=sessions._planner)  # noqa: SLF001 -- one planner
+                         planner=sessions._planner,  # noqa: SLF001 -- one planner
+                         work=build_work_sink(http) if http is not None else None)
 
 
 def build_caller_check() -> CallerCheck:
@@ -502,12 +582,18 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
             if app.state.texts is None:
                 app.state.texts = build_texts(http, app.state.sessions)
             if app.state.fronts is None:
-                app.state.fronts = build_fronts(app.state.sessions)
+                app.state.fronts = build_fronts(app.state.sessions, http)
+            if followers is None:
+                app.state.roster = build_roster(http)
+                if app.state.roster is not None:
+                    app.state.followers.register(app.state.roster.start, app.state.roster.stop)
         if app.state.verify_caller is None:
             app.state.verify_caller = build_caller_check()
         try:
             yield
         finally:
+            if app.state.roster is not None:
+                await app.state.roster.stop_all()
             # A shutdown closes every session: one left open would bill with no sideband.
             await app.state.sessions.end_all()
             if app.state.texts is not None:
@@ -524,6 +610,7 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
     app.state.texts = texts
     app.state.fronts = fronts
     app.state.followers = followers if followers is not None else Followers()
+    app.state.roster = None
 
     def held_elsewhere(voice_id: str, *, but: str) -> bool:
         """Whether another of the three conversations holds this voice id."""

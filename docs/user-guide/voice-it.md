@@ -10,3 +10,5 @@ Voice it lets you talk to SwarmCloud: say what you want, and it plans and starts
 5. Standing preferences are on [Voice it › Preferences](/voice/preferences).
 
 There is no Voice it command in the sc plugin.
+
+For operators: the paid voice pauses on its own while delegated work runs and reopens on the result. The switch is Terraform's `voice_pause` in `terraform/infra/voice.tf`, `"on"` by default; set it to `"off"` and apply to keep the voice open until the session ends.

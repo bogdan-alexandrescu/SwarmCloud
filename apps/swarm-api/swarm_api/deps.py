@@ -508,7 +508,8 @@ def _voice_grant_auth(request: Request, ctx: AppContext, grant: str, *,
         raise
     voice_grant.write_audit(ctx.db, voice_grant.audit_row(
         session, method=request.method.upper(), route=route[1] if route else "",
-        path_params=dict(request.path_params), at=ctx.now()))
+        path_params=dict(request.path_params), at=ctx.now(),
+        quiet=request.headers.get(voice_grant.QUIET_HEADER)))
     return auth
 
 

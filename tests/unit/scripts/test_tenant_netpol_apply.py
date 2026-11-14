@@ -290,7 +290,8 @@ class Cluster:
         }))
         (self.dir / "namespaces.json").write_text(json.dumps(namespace_list(labelled)))
 
-    def run(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def run(self, *args: str, script: Path = SCRIPT, env_extra: dict[str, str] | None = None,
+            env_drop: tuple[str, ...] = ()) -> subprocess.CompletedProcess[str]:
         env = clean_env(
             PATH=os.pathsep.join([str(self.bin), str(Path(sys.executable).parent), os.environ.get("PATH", "")]),
             SWARM_KUBECTL=str(self.bin / "kubectl"),
@@ -299,9 +300,12 @@ class Cluster:
             FAKE_CLUSTER_DIR=str(self.dir),
             FAKE_PYTHON=sys.executable,
             TMPDIR=str(self.tmp),
+            **(env_extra or {}),
         )
+        for name in env_drop:
+            env.pop(name, None)
         return subprocess.run(
-            ["bash", str(SCRIPT), *args], cwd=REPO, env=env,
+            ["bash", str(script), *args], cwd=REPO, env=env,
             capture_output=True, text=True, timeout=300, check=False,
         )
 
@@ -451,3 +455,148 @@ def test_a_policy_truly_absent_after_the_apply_is_still_not_found(tmp_path):
         if f"get networkpolicies {READBACK_POLICY} --namespace {READBACK_NS} " in line
     ]
     assert len(gets) == 1, gets
+
+
+# --- the label-key prefix, from the deployment's tfvars ----------------------
+#
+# The sweep runs on every release and hotfix deploy, and its closing parity
+# check after it, with neither SWARM_LABEL_PREFIX nor SWARM_ORG_DOMAIN set. Both
+# resolve the prefix as kubernetes/apply.sh's step 0 does (common.sh
+# require_label_prefix, owner's "Tfvars everywhere", 12 November 2026): the
+# deployment's tfvars name it, a configured prefix that differs is refused, and
+# neither is the one rule's fixed refusal -- each before any kubectl call. The
+# suite-wide SWARM_ORG_DOMAIN (tests/unit/conftest.py) is removed here: with it
+# the deploy's missing setting was invisible.
+
+PARITY = REPO / "scripts" / "lib" / "check-cluster-network-parity.sh"
+PREFIX_SETTINGS = ("SWARM_LABEL_PREFIX", "SWARM_ORG_DOMAIN")
+TFVARS_PREFIX = f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}"
+#: Another placeholder prefix: one no tfvars below names.
+OTHER_PREFIX = "labels.example.net"
+UNSET = (
+    "the label-key prefix is not configured: set SWARM_LABEL_PREFIX, or SWARM_ORG_DOMAIN "
+    "for the default swarm.<org_domain>; no key is guessed"
+)
+MISMATCH = "the configured label-key prefix is not the one this deployment's tfvars name"
+
+
+@pytest.fixture
+def no_prefix_setting(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in PREFIX_SETTINGS:
+        monkeypatch.delenv(name, raising=False)
+
+
+def prefix_env(tmp_path: Path, tfvars: dict[str, Any] | None, **configured: str) -> dict[str, str]:
+    """A deployment configuration of the test's own, served through the config
+    cache: the placeholder never-touch list and TFVARS as dev.tfvars (None: no
+    tfvars at all), and the label-key settings CONFIGURED and nothing else."""
+    config = tmp_path / "prefix-config"
+    placeholder_deployment.write_deny_list(config, PROJECT, ["dev"])
+    if tfvars is not None:
+        placeholder_deployment.write_tfvars(config, ["dev"], tfvars)
+    cache = tmp_path / "prefix-cache"
+    cache.mkdir(mode=0o700)
+    return {"SWARM_DEPLOY_CONFIG_DIR": str(config), "XDG_CACHE_HOME": str(cache), "ENVIRONMENT": "dev",
+            **configured}
+
+
+def run_with_prefix(cluster: Cluster, tfvars: dict[str, Any] | None, *args: str, script: Path = SCRIPT,
+                    **configured: str) -> subprocess.CompletedProcess[str]:
+    drop = tuple(name for name in PREFIX_SETTINGS if name not in configured)
+    return cluster.run(*args, script=script, env_extra=prefix_env(cluster.tmp, tfvars, **configured),
+                       env_drop=drop)
+
+
+def annotation_prefixes(docs: list[dict[str, Any]]) -> set[str]:
+    return {key.split("/", 1)[0] for doc in docs
+            for part in ("labels", "annotations")
+            for key in ((doc.get("metadata") or {}).get(part) or {}) if "/" in key}
+
+
+def test_the_sweep_with_nothing_configured_renders_every_namespace_under_the_tfvars_prefix(
+        tmp_path, no_prefix_setting):
+    cluster = Cluster(tmp_path, TENANTS)
+    result = run_with_prefix(cluster, {"allowed_domains": [_PLACEHOLDERS.ORG_DOMAIN]}, "--confirm")
+    assert result.returncode == 0, result.stderr
+    docs = cluster.applied()
+    assert {d["metadata"]["namespace"] for d in docs} == set(TENANTS)
+    assert annotation_prefixes(docs) == {TFVARS_PREFIX}
+    assert "apply -f " in cluster.log("kubectl")
+    # The closing parity check read the annotations back under the same prefix.
+    assert "every applied egress policy matches" in result.stderr
+
+
+def test_the_sweep_takes_the_tfvars_label_prefix_over_the_domain(tmp_path, no_prefix_setting):
+    cluster = Cluster(tmp_path, TENANTS)
+    result = run_with_prefix(cluster, {"label_prefix": OTHER_PREFIX,
+                                       "allowed_domains": [_PLACEHOLDERS.ORG_DOMAIN]}, "--confirm")
+    assert result.returncode == 0, result.stderr
+    assert annotation_prefixes(cluster.applied()) == {OTHER_PREFIX}
+
+
+@pytest.mark.parametrize("configured", [{"SWARM_LABEL_PREFIX": OTHER_PREFIX},
+                                        {"SWARM_ORG_DOMAIN": "example.net"}])
+@pytest.mark.parametrize("script", [SCRIPT, PARITY], ids=["sweep", "parity"])
+def test_a_configured_prefix_the_tfvars_do_not_name_is_refused_before_any_kubectl_call(
+        tmp_path, no_prefix_setting, configured, script):
+    cluster = Cluster(tmp_path, TENANTS)
+    args = ("--confirm",) if script == SCRIPT else ("--require-live", "--context", "swarm-dev")
+    result = run_with_prefix(cluster, {"allowed_domains": [_PLACEHOLDERS.ORG_DOMAIN]}, *args,
+                             script=script, **configured)
+    assert result.returncode != 0
+    assert MISMATCH in result.stderr, result.stderr
+    # The sentence names neither value.
+    assert OTHER_PREFIX not in result.stderr and "example.net" not in result.stderr
+    assert cluster.log("kubectl") == "", "kubectl was called"
+    assert cluster.applied() == []
+
+
+@pytest.mark.parametrize("tfvars", [None, {"platform_owner": placeholder_deployment.TFVARS["platform_owner"]}],
+                         ids=["no-tfvars", "tfvars-without-a-prefix"])
+@pytest.mark.parametrize("script", [SCRIPT, PARITY], ids=["sweep", "parity"])
+def test_neither_is_refused_with_the_fixed_sentence_before_any_kubectl_call(
+        tmp_path, no_prefix_setting, tfvars, script):
+    cluster = Cluster(tmp_path, TENANTS)
+    args = ("--confirm",) if script == SCRIPT else ("--require-live", "--context", "swarm-dev")
+    result = run_with_prefix(cluster, tfvars, *args, script=script)
+    assert result.returncode != 0
+    assert UNSET in result.stderr, result.stderr
+    assert "repository variable" not in result.stderr.lower()
+    assert cluster.log("kubectl") == "", "kubectl was called"
+    # Why there is no tfvars prefix is said too: a missing tfvars file is never
+    # reported as nothing more than "not configured".
+    if tfvars is None:
+        assert "dev.tfvars does not exist" in result.stderr, result.stderr
+    else:
+        assert "set neither label_prefix nor allowed_domains" in result.stderr, result.stderr
+    assert result.stderr.index("does not exist" if tfvars is None else "set neither") < result.stderr.index(UNSET)
+
+
+@pytest.mark.parametrize("script", [SCRIPT, PARITY], ids=["sweep", "parity"])
+def test_a_failed_tfvars_fetch_prints_its_own_error(tmp_path, no_prefix_setting, script):
+    """The tfvars cannot be read, a configured prefix is used, and the fetch's own
+    error is printed rather than swallowed."""
+    cluster = Cluster(tmp_path, TENANTS)
+    args = ("--confirm",) if script == SCRIPT else ("--require-live", "--context", "swarm-dev")
+    result = run_with_prefix(cluster, None, *args, script=script, SWARM_LABEL_PREFIX=TFVARS_PREFIX)
+    assert "dev.tfvars does not exist" in result.stderr, result.stderr
+
+
+def test_the_parity_check_reads_the_annotations_under_the_tfvars_prefix(tmp_path, no_prefix_setting):
+    cluster = Cluster(tmp_path, TENANTS)
+    manifest = subprocess.run(
+        [sys.executable, str(HELPER), "render", "--tenant", "eng", "--namespace", "swarm-tenant-eng",
+         "--project", PROJECT,
+         "--pod-cidr", NETWORK["pod_cidr"], "--service-cidr", NETWORK["service_cidr"],
+         "--cluster-dns-ip", NETWORK["cluster_dns_ip"], "--node-local-dns-ip", NETWORK["node_local_dns_ip"],
+         "--network-source", f"gke/{PROJECT}/{LOCATION}/swarm-autopilot",
+         "--summary", str(tmp_path / "eng.tsv")],
+        cwd=REPO, env={**os.environ, "SWARM_LABEL_PREFIX": TFVARS_PREFIX},
+        capture_output=True, text=True, timeout=120, check=True,
+    ).stdout
+    (cluster.dir / "applied").mkdir()
+    (cluster.dir / "applied" / "0.yaml").write_text(manifest)
+    result = run_with_prefix(cluster, {"allowed_domains": [_PLACEHOLDERS.ORG_DOMAIN]},
+                             "--require-live", "--context", "swarm-dev", script=PARITY)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "every applied egress policy matches" in result.stderr

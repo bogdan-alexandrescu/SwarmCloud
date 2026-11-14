@@ -246,7 +246,7 @@ run "on_only_swarm_egress_reads_the_credential" {
   assert {
     condition = (
       output.swarm_egress_manifest != null
-      && length(regexall("__[A-Z0-9_]+__", output.swarm_egress_manifest)) == 0
+      && length(regexall("__[A-Z0-9_]+__", replace(output.swarm_egress_manifest, "__LABEL_PREFIX__", ""))) == 0
       && strcontains(output.swarm_egress_manifest, "swarm-egress@sha256:8888")
       && strcontains(output.swarm_egress_manifest, "projects/example-project/secrets/swarm-egress-credential/versions/latest")
       && strcontains(output.swarm_egress_manifest, "projects/example-project/secrets/swarm-egress-key/versions/latest")

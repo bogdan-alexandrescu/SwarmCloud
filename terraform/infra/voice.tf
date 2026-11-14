@@ -93,6 +93,29 @@ variable "voice_it" {
   }
 }
 
+# THE PAUSE'S SWITCH. swarm-voice closes a GPT-Live session after about 15 s
+# of silence while delegated work runs, and reopens it on the result
+# (docs/design/voice-it.md §3.12.7), only with VOICE_PAUSE=on
+# (swarm_voice/main.py, PAUSE_SWITCH). This renders it into the StatefulSet.
+variable "voice_pause" {
+  description = <<-EOT
+    swarm-voice's automatic pause (VOICE_PAUSE, swarm_voice/main.py): "on"
+    (default) closes the paid GPT-Live voice after about 15 s of silence
+    while delegated work runs and reopens it on the result; "off" keeps the
+    voice open, and billed, until the session ends.
+  EOT
+  type        = string
+  # "on": the owner's answer of 11 November 2026 kept the pause off until
+  # swarm-api keeps a paused session live and the session lives above the
+  # page; both merged on 12 November 2026, so the pause is on.
+  default = "on"
+
+  validation {
+    condition     = contains(["on", "off"], var.voice_pause)
+    error_message = "voice_pause is \"on\" or \"off\"."
+  }
+}
+
 locals {
   # swarm-voice's identity, spelled once. kubernetes/swarm-system/swarm-voice.yaml
   # creates the KSA under exactly these names; the Google account's id is
@@ -351,6 +374,15 @@ output "voice" {
   }
 }
 
+# VOICE_PAUSE (`voice_pause`, above) is the container's first variable,
+# written in after the voice container's one `env:` line rather than as a
+# placeholder, so the template and its other renderers stay as they are. The
+# pause tests in tests/terraform/voice.tftest.hcl fail if that line moves.
+locals {
+  voice_pause_anchor = "\n          env:\n"
+  voice_pause_env    = "\n          env:\n            - name: VOICE_PAUSE\n              value: \"${var.voice_pause}\"\n"
+}
+
 # The two templates with their placeholders filled, as one manifest. Null
 # while swarm-voice is off or has no image, so there is never a half-rendered
 # manifest to apply.
@@ -362,7 +394,7 @@ output "voice" {
 # fable. Nothing to ask at install: the pins are Terraform's.
 output "swarm_voice_manifest" {
   description = "swarm-voice's Kubernetes objects and NetworkPolicies, rendered. Apply to swarm-autopilot only (never peer-cluster). Null until voice_it is on with an image."
-  value = local.voice_on && local.voice_image != "" ? replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
+  value = local.voice_on && local.voice_image != "" ? replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
     join("---\n", [
       file("${path.module}/../../kubernetes/swarm-system/swarm-voice.yaml"),
       file("${path.module}/../../kubernetes/network-policies/swarm-system-voice.yaml"),
@@ -379,5 +411,5 @@ output "swarm_voice_manifest" {
     "__QUOTA_BROKER_AUDIENCE__", local.voice_broker_audience),
     "__QUOTA_BROKER_HOST__", local.voice_broker_host),
     "__VOICE_FRONT_MODEL__", local.runner_models["haiku"]),
-  "__VOICE_PLANNER_MODEL__", local.runner_models["fable"]) : null
+  "__VOICE_PLANNER_MODEL__", local.runner_models["fable"]), local.voice_pause_anchor, local.voice_pause_env) : null
 }

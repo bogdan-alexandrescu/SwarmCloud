@@ -199,8 +199,8 @@ run "on_one_reader_the_deployer_and_a_rendered_manifest" {
     condition = (
       output.tailscale_egress.enabled
       && strcontains(output.tailscale_egress_manifest, "- decision-api.example-tailnet.ts.net")
-      && length(regexall("(?m)[a-z0-9.-]+/tailnet-fqdn: decision-api\\.example-tailnet\\.ts\\.net$", output.tailscale_egress_manifest)) > 0
-      && length(regexall("__[A-Z0-9_]+__", output.tailscale_egress_manifest)) == 0
+      && length(regexall("(?m)__LABEL_PREFIX__/tailnet-fqdn: decision-api\\.example-tailnet\\.ts\\.net$", output.tailscale_egress_manifest)) > 0
+      && length(regexall("__[A-Z0-9_]+__", replace(output.tailscale_egress_manifest, "__LABEL_PREFIX__", ""))) == 0
     )
     error_message = "on, the manifest is rendered with the tailnet name and no placeholder left"
   }
@@ -255,7 +255,7 @@ run "on_swarm_api_reaches_the_egress_through_an_internal_load_balancer" {
       strcontains(output.tailscale_egress_manifest, "name: decision-api-internal")
       && strcontains(output.tailscale_egress_manifest, "networking.gke.io/load-balancer-type: \"Internal\"")
       && strcontains(output.tailscale_egress_manifest, "loadBalancerIP: 10.10.0.77")
-      && length(regexall("__[A-Z0-9_]+__", output.tailscale_egress_manifest)) == 0
+      && length(regexall("__[A-Z0-9_]+__", replace(output.tailscale_egress_manifest, "__LABEL_PREFIX__", ""))) == 0
     )
     error_message = "on, the manifest puts the internal passthrough load balancer decision-api-internal on the reserved address, with no placeholder left"
   }

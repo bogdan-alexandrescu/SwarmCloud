@@ -125,6 +125,15 @@ resource "google_cloud_run_v2_service" "discovery" {
         name  = "DISCOVERY_PLUGIN_MIN_VERSION"
         value = var.discovery.plugin_min_version
       }
+      # Rendered only when set: unset, the document omits plugin.home and the
+      # guide keeps its placeholder.
+      dynamic "env" {
+        for_each = var.discovery_plugin_home == "" ? [] : [var.discovery_plugin_home]
+        content {
+          name  = "DISCOVERY_PLUGIN_HOME"
+          value = env.value
+        }
+      }
       env {
         name  = "DISCOVERY_SERVE_CLIENT_SECRET"
         value = var.discovery_serves_client_secret ? "true" : "false"

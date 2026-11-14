@@ -204,6 +204,20 @@ def test_a_route_off_the_allowlist_is_403_before_any_session_is_read(client, db,
     assert len(voice.starts) == 1 and voice.ends == []
 
 
+def test_a_grant_cannot_end_its_session_as_a_closed_tab(client, db, voice):
+    # Only the person's own route names `tab_closed`; a grant acting for them is refused.
+    call = _start(client, voice)
+
+    response = client.post(f"/v1/voice/sessions/{call.session_id}/end",
+                           json={"cause": "tab_closed"}, headers=_grant_headers(call))
+
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "forbidden"
+    assert voice.ends == []
+    sessions = [data for path, data in db.docs.items() if path.endswith(call.session_id)]
+    assert sessions and all(data["state"] != vs.ENDED for data in sessions)
+
+
 def test_a_grant_acts_only_in_its_sessions_workspace(client, db, voice):
     call = _start(client, voice)
 

@@ -13,6 +13,7 @@ test_verify_step.py::test_cluster_objects_from_release_bundle, as the plan names
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -145,8 +146,9 @@ class FakeShell:
         argv = list(argv)
         self.calls.append((argv, stdin, env))
         if argv[1].endswith("render.py"):
+            # The engine's own environment: the label prefix it hands the render is the one it renders with.
             real = subprocess.run([sys.executable, str(RENDER), *argv[2:]], capture_output=True, text=True,
-                                  check=False)
+                                  check=False, env=env)
             if real.returncode != 0:
                 return real.returncode, "", real.stderr
             return 0, POLICIES if argv[2] == "policies" else SWARM_SYSTEM, ""
@@ -252,8 +254,12 @@ def _steps(gcp: ClusterFakeGcp, shell: FakeShell, deny: Sequence[str] = (),
                                outputs=outputs or FakeOutputs())
 
 
+#: The placeholder organisation's domain, as preflight.org-domain records it.
+ORG_DOMAIN = "example.com"
+
+
 def _ctx() -> Any:
-    ctx = ctx_for(dry_run=False)
+    ctx = ctx_for(dry_run=False, outputs={"org_domain": ORG_DOMAIN})
     ctx.state.release = VERSION
     return ctx
 
@@ -264,6 +270,7 @@ def _rig(tmp_path: Path) -> Rig:
     def seed(state: Any) -> None:
         state.region = REGION
         state.release = VERSION
+        state.outputs["org_domain"] = ORG_DOMAIN
     rig.store.update(seed)
     return rig
 
@@ -353,8 +360,9 @@ def test_context_is_the_install_cluster(home: Path) -> None:
     assert acting
     for argv in acting:
         assert f"--kubeconfig={config}" in argv and f"--context={CONTEXT}" in argv
-    for _, _, env in shell.calls:
-        if env is not None:
+    for argv, _, env in shell.calls:
+        # render.py runs with the label prefix in its environment and talks to no cluster.
+        if env is not None and not argv[1].endswith("render.py"):
             assert env["KUBECONFIG"] == str(config)
     creds = [argv for argv, _, _ in shell.calls if argv[0].endswith("gcloud")]
     assert creds and len(creds) <= 2  # at most once per step, and only for the install cluster
@@ -750,3 +758,78 @@ def test_swarm_system_creates_its_namespace_before_its_policies() -> None:
     assert len(copies) >= 2
     for copy in copies:
         assert copy["metadata"] == ours["metadata"]
+
+
+# -- the label-key prefix (the owner's "configurable", 8 November 2026; part of #2688) --
+
+_LABEL_PREFIX_SPEC = importlib.util.spec_from_file_location("release_label_prefix", REPO / "kubernetes" / "label_prefix.py")
+LABEL_PREFIX = importlib.util.module_from_spec(_LABEL_PREFIX_SPEC)
+_LABEL_PREFIX_SPEC.loader.exec_module(LABEL_PREFIX)
+
+
+def _renders(shell: FakeShell) -> list[dict[str, str]]:
+    return [dict(env or {}) for argv, _, env in shell.calls if argv[1].endswith("render.py")]
+
+
+def test_every_render_reads_the_prefix_from_the_organisation_domain_preflight_recorded(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """The keys an install renders are `swarm.<org_domain>/<name>`, the ones the
+    release's admission policies match, whatever the person's shell exports."""
+    monkeypatch.setenv("SWARM_LABEL_PREFIX", "swarm.shell.example.net")
+    gcp, shell = ClusterFakeGcp(), FakeShell(namespaces=("swarm-system",))
+    _, policies, swarm_system, _ = _steps(gcp, shell)
+    ctx = _ctx()
+    policies.rendered(ctx)
+    swarm_system.rendered(ctx)
+    renders = _renders(shell)
+    assert len(renders) == 2
+    for env in renders:
+        assert env["SWARM_LABEL_PREFIX"] == f"swarm.{ORG_DOMAIN}"
+        assert "SWARM_ORG_DOMAIN" not in env
+
+
+def test_a_recorded_label_prefix_is_the_one_rendered() -> None:
+    gcp, shell = ClusterFakeGcp(), FakeShell()
+    _, policies, *_ = _steps(gcp, shell)
+    ctx = _ctx()
+    ctx.outputs["label_prefix"] = "swarm.example.org"
+    policies.rendered(ctx)
+    assert [env["SWARM_LABEL_PREFIX"] for env in _renders(shell)] == ["swarm.example.org"]
+
+
+def test_no_prefix_and_no_organisation_domain_is_the_fixed_refusal_and_nothing_renders() -> None:
+    """Never a guessed key: the scope policy admits a workspace namespace only by it."""
+    gcp, shell = ClusterFakeGcp(), FakeShell()
+    _, policies, *_ = _steps(gcp, shell)
+    ctx = _ctx()
+    del ctx.outputs["org_domain"]
+    with pytest.raises(LookupError) as refused:
+        policies.check(ctx)
+    assert str(refused.value) == LABEL_PREFIX.UNSET == cluster.LABEL_PREFIX_UNSET
+    assert _renders(shell) == [] and shell.applied == []
+
+
+@pytest.mark.parametrize("bad", ["Swarm.Example.com", "swarm", "swarm.example.com/x", "-swarm.example.com"])
+def test_a_recorded_prefix_that_is_not_a_key_prefix_is_refused(bad: str) -> None:
+    ctx = _ctx()
+    ctx.outputs["label_prefix"] = bad
+    with pytest.raises(ValueError, match="not a key prefix"):
+        cluster.label_prefix(ctx.outputs)
+
+
+def test_the_workloads_terraform_renders_carry_the_prefix_apply_sh_would_fill() -> None:
+    """Terraform leaves `__LABEL_PREFIX__` in swarm-system's renders for
+    kubernetes/apply.sh; the installer applies them itself, so it fills it."""
+    labelled = LIVE + "  labels:\n    __LABEL_PREFIX__/component: live\n"
+    gcp, shell = ClusterFakeGcp(), FakeShell(namespaces=("swarm-system",))
+    *_, workloads = _steps(gcp, shell, outputs=FakeOutputs({"swarm_live_manifest": labelled}))
+    ctx = _ctx()
+    workloads.apply(ctx, workloads.plan(ctx))
+    filled = labelled.replace("__LABEL_PREFIX__", f"swarm.{ORG_DOMAIN}")
+    assert shell.applied == [filled]
+    assert workloads.differs(ctx, workloads.manifests(ctx)[0][2]) is None
+
+
+def test_the_installers_prefix_rule_is_the_releases() -> None:
+    assert cluster.LABEL_PREFIX_PLACEHOLDER == LABEL_PREFIX.PLACEHOLDER
+    assert cluster._KEY_PREFIX.pattern == LABEL_PREFIX.PREFIX.pattern

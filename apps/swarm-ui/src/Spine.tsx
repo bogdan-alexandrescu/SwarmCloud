@@ -49,7 +49,7 @@ import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenant
 import { HELP_GROUPS, HELP, TOPIC_IDS, helpAnchor } from './help'
 import { STATE_MARK, type MarkHue, type MarkName } from './marks'
 import { addressToPath, workspacePagePathTenant } from './paths'
-import { PageHead } from './Shell'
+import { onVoiceTalk, PageHead } from './Shell'
 import { AdminRoleRefusal } from './WorkspaceRefusal'
 import { shortcut, typedIntoField } from './shortcuts'
 import { poolLabelAmong, type Capacity, type Me, type Stats, type TaskState } from './types'
@@ -66,6 +66,7 @@ import { NEAR_CEILING } from './AdminSettings'
 import { roleOf } from './roles'
 import { ConfigBadgeMark, SetupContext, SetupMeter, setupSteps, setupUnfinished, useConfigBadges, type SetupRead } from './ConfigSetup'
 import { voiceItOpen } from './voice/Section'
+import { VoiceFloatLayer, VoiceMarker } from './voice/Floating'
 import { HOME_JUMPS } from './Home'
 import { aboutOf } from './WorkflowFacts'
 
@@ -2336,6 +2337,8 @@ export function SkyShell({
             {adminPending}
           </i>
         )}
+        {/* Voice it: the items Talk has not shown, and a dot while a seen card still waits (voice/Floating.tsx). */}
+        {s.key === 'voice' && <VoiceMarker />}
       </a>
     )
   }
@@ -2750,6 +2753,7 @@ export function SkyShell({
             </>
           )}
         </div>
+        <VoiceFloatLayer onTalk={onVoiceTalk(section, tab)} go={go} />
         {dock}
       </div>
       <p className="sk-vh" role="status" aria-live="polite">

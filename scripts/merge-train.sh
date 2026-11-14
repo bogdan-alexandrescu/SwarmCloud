@@ -181,6 +181,19 @@ STATE_OPEN="<!-- merge-train-state"
 STATE_CLOSE="-->"
 # Four, the owner's brief: a red train of four is found in two more trains.
 MAX_PRS="${MERGE_TRAIN_MAX_PRS:-4}"
+# THE GATHER's defaults are stated ONCE, in GATHER_FILE, which swarm-api's
+# merge wake tick reads too (swarm_api.trainboard): past the deadline it
+# starts one run of this workflow, so a lone `ready` pull request never waits
+# on GitHub's schedule (12 November 2026: one waited from 03:15Z to 07:59Z).
+# It sits in swarm-api's package because that image installs only the package.
+GATHER_FILE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/apps/swarm-api/swarm_api/merge_train_gather.json"
+gather_default() {
+  # $1 the key in GATHER_FILE; its value, or a clear stop.
+  local value
+  value="$(jq -r --arg key "$1" '.[$key] // empty' "${GATHER_FILE}" 2>/dev/null || true)"
+  [[ -n "${value}" ]] || die "the gather's ${1} cannot be read from ${GATHER_FILE}"
+  printf '%s\n' "${value}"
+}
 # THE GATHER (gather_waits). A train boards once this many pull requests would
 # board, or once the oldest of them has been `ready` this long: the owner's
 # pick on 11 November 2026, "6 ready or 20 minutes", so fewer, larger trains
@@ -188,10 +201,13 @@ MAX_PRS="${MERGE_TRAIN_MAX_PRS:-4}"
 # trains. Twenty minutes: no `ready` pull request waits longer than about one
 # CI run before it boards. MIN_PRS 1 or MAX_WAIT_MINUTES 0 boards as soon as
 # one is green, as the train did before. A minimum above MAX_PRS counts as
-# MAX_PRS: a train never holds more.
-MIN_PRS="${MERGE_TRAIN_MIN_PRS:-6}"
+# MAX_PRS: a train never holds more. Set from MERGE_TRAIN_MIN_PRS and
+# MERGE_TRAIN_MAX_WAIT_MINUTES, else GATHER_FILE, by gather_knobs_valid: only
+# `tick` and `gather` gather, and auto-merge.yml runs `judge` from a checkout
+# of scripts/ alone, which does not hold GATHER_FILE.
+MIN_PRS=""
 # Minutes; 0 turns the gather off (see MIN_PRS above).
-MAX_WAIT_MINUTES="${MERGE_TRAIN_MAX_WAIT_MINUTES:-20}"
+MAX_WAIT_MINUTES=""
 # A pull request GitHub is still computing the mergeability of is read this
 # many times in all, this many seconds apart: GitHub computes it in a few
 # seconds once asked, and a longer wait holds the whole tick. One still
@@ -1930,6 +1946,10 @@ cmd_land() {
 }
 
 gather_knobs_valid() {
+  # The gather's minimum: the repository's setting, else the shared default.
+  MIN_PRS="${MERGE_TRAIN_MIN_PRS:-$(gather_default min_prs)}"
+  # The gather's window in minutes: the repository's setting, else the shared default.
+  MAX_WAIT_MINUTES="${MERGE_TRAIN_MAX_WAIT_MINUTES:-$(gather_default max_wait_minutes)}"
   is_number "${MIN_PRS}" || die "MERGE_TRAIN_MIN_PRS is not a positive number: ${MIN_PRS}"
   [[ "${MAX_WAIT_MINUTES}" =~ ^(0|[1-9][0-9]*)$ ]] \
     || die "MERGE_TRAIN_MAX_WAIT_MINUTES is not a number of minutes: ${MAX_WAIT_MINUTES}"

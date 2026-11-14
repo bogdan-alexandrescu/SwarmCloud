@@ -69,7 +69,7 @@ metadata:
     managed-by: swarm-terraform
     app.kubernetes.io/part-of: swarm
   annotations:
-    swarm.saga.xyz/rationale: >-
+    __LABEL_PREFIX__/rationale: >-
       Creates and patches one person's tenant namespace and the objects the
       tenant render puts in it. The scope admission policy
       swarm-workspace-deployer-scope confines every write to swarm-tenant-u-*.

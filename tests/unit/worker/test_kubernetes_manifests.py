@@ -34,6 +34,12 @@ from swarm_common.profiles import CPU_BURST_MAX_RATIO, RESOURCE_CLASSES, RUNNER_
 
 REPO = Path(__file__).resolve().parents[3]
 KUBERNETES = REPO / "kubernetes"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: The label-key prefix the suite renders with: the placeholder organisation's
+#: swarm.<org_domain> (kubernetes/label_prefix.py; tests/unit/conftest.py).
+LABEL_PREFIX = f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}"
 
 TENANT = "eng"
 PROJECT = "example-project"
@@ -933,11 +939,11 @@ def test_the_policy_records_the_network_it_was_rendered_for(network):
     annotations, and the spec, with the live cluster.
     """
     annotations = egress_policy(*network_argv(network))["metadata"].get("annotations") or {}
-    assert annotations.get("swarm.saga.xyz/network-source") == NETWORK_SOURCE
-    assert annotations.get("swarm.saga.xyz/pod-cidr") == network["pod_cidr"]
-    assert annotations.get("swarm.saga.xyz/service-cidr") == network["service_cidr"]
-    assert annotations.get("swarm.saga.xyz/cluster-dns-ip") == network["cluster_dns_ip"]
-    assert annotations.get("swarm.saga.xyz/node-local-dns-ip") == network["node_local_dns_ip"]
+    assert annotations.get(f"{LABEL_PREFIX}/network-source") == NETWORK_SOURCE
+    assert annotations.get(f"{LABEL_PREFIX}/pod-cidr") == network["pod_cidr"]
+    assert annotations.get(f"{LABEL_PREFIX}/service-cidr") == network["service_cidr"]
+    assert annotations.get(f"{LABEL_PREFIX}/cluster-dns-ip") == network["cluster_dns_ip"]
+    assert annotations.get(f"{LABEL_PREFIX}/node-local-dns-ip") == network["node_local_dns_ip"]
 
 
 def test_a_render_without_the_cluster_network_says_so(capsys):
@@ -971,7 +977,7 @@ def test_a_render_without_the_cluster_network_says_so(capsys):
         render.main(["tenant", "--tenant", TENANT])
     assert OFFLINE_SOURCE in capsys.readouterr().err, "the offline render printed no warning"
     policy = one(documents(buffer.getvalue()), "NetworkPolicy", "swarm-allow-worker-egress")
-    assert policy["metadata"]["annotations"]["swarm.saga.xyz/network-source"] == OFFLINE_SOURCE
+    assert policy["metadata"]["annotations"][f"{LABEL_PREFIX}/network-source"] == OFFLINE_SOURCE
 
 
 def test_a_partial_network_is_refused():
@@ -1495,7 +1501,7 @@ def _render_v2_job(*extra: str) -> dict[str, Any]:
 
 def _account_annotation(doc: dict[str, Any]) -> str:
     for meta in (doc["spec"]["template"]["metadata"], doc["metadata"]):
-        value = meta.get("annotations", {}).get("swarm.saga.xyz/account")
+        value = meta.get("annotations", {}).get(f"{LABEL_PREFIX}/account")
         if value is not None:
             return value
     raise AssertionError("the v2 job no longer records which account it is burning")
@@ -1747,7 +1753,9 @@ def test_every_placeholder_in_the_tenant_manifests_is_supplied_and_validated():
     an apply that reported success -- indistinguishable from the RBAC never
     having been applied at all.
     """
-    supplied = set(tenant_values())
+    # The label-key prefix is no tenant's value: render.py fills it in every
+    # manifest from the deployment's setting (kubernetes/label_prefix.py).
+    supplied = set(tenant_values()) | {"LABEL_PREFIX"}
     placeholders: dict[str, set[str]] = {}
     # EVERY file a tenant render can include, not only the unconditional ones:
     # the older KSA's file is rendered only where that KSA is bound, and a

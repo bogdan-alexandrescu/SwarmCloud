@@ -32,6 +32,7 @@ from merge_world import API, CHECK, MERGED, NUMBER, PINNED, TASK, MergeWorld
 VARIABLE = f"{API}/actions/variables/MERGE_TRAIN"
 LABELS = f"{API}/issues/{NUMBER}/labels"
 COMMENTS = f"{API}/issues/{NUMBER}/comments"
+TIMELINE = f"{API}/issues/{NUMBER}/timeline"
 EJECTION = ("**Ejected from the merge train, and `ready` removed.** Train 9-1 -- main plus "
             "this pull request alone -- failed:\n\n* ci-gate: https://example.test/run/9")
 
@@ -46,11 +47,24 @@ def _switch(world: MergeWorld, value: str | None = "on", *, status: int = 200) -
     world.github.route("POST", LABELS, (200, {}, [{"name": "ready"}]))
 
 
-def _comments(world: MergeWorld, *bodies: tuple[str, str]) -> None:
+def _comments(world: MergeWorld, *bodies: tuple[str, ...]) -> None:
+    """(login, body) or (login, body, created_at): a `[bot]` login is a Bot."""
     world.github.route("GET", COMMENTS, (200, {}, [
         {"id": i, "body": body, "user": {"login": login, "type": "Bot" if "[bot]" in login
-                                         else "User"}}
-        for i, (login, body) in enumerate(bodies, 1)]))
+                                         else "User"},
+         **({"created_at": rest[0]} if rest else {})}
+        for i, (login, body, *rest) in enumerate(bodies, 1)]))
+
+
+def _unlabeled_by(world: MergeWorld, login: str, kind: str) -> None:
+    """The issue timeline: `ready` labelled, then removed by `login` (a `kind`)."""
+    world.github.route("GET", TIMELINE, (200, {}, [
+        {"event": "labeled", "label": {"name": "ready"},
+         "actor": {"login": "swarmcloud-merge[bot]", "type": "Bot"},
+         "created_at": "2026-11-05T11:10:02Z"},
+        {"event": "commented", "actor": {"login": login, "type": kind}},
+        {"event": "unlabeled", "label": {"name": "ready"},
+         "actor": {"login": login, "type": kind}, "created_at": "2026-11-05T19:21:40Z"}]))
 
 
 def _parked_on_train(world: MergeWorld, head: str = PINNED) -> None:
@@ -390,6 +404,123 @@ def test_the_gates_removal_after_an_earlier_train_ejection_is_refused_at_once(tm
 
     assert outcome.summary["refusal"]["code"] == "train_ejected", outcome.message
     assert "#12 named in Depends on" in outcome.summary["refusal"]["message"]
+    assert _labelled(world) == [] and world.merge_calls() == []
+
+
+LEFT = "**Left to the merge train.** Green at the head, with the review's MERGE ..."
+TAKEN_OUT = ("Taken out of the merge train by the owner: two console tests fail "
+             "deterministically")
+
+
+def test_ready_removed_by_a_person_is_their_decision_quoting_their_comment(tmp_path):
+    """#3602, the incident (#3490 at 19:21:43Z, #3475 at 19:55:28Z): a person
+    took `ready` off a train-parked pull request by hand and said why in a
+    comment without the ejection marker. The timeline's `unlabeled` actor is
+    a User, so the step ends with the person code, quoting the person -- not
+    `train_ejected` with the platform's stale comment of 11:10.
+
+    MUTATION: read only the comments, as before #3602, and this refuses
+    `train_ejected` quoting "Left to the merge train"."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _parked_on_train(world)
+    _comments(world, ("swarmcloud-merge[bot]", LEFT, "2026-11-05T11:10:00Z"),
+              ("a-person", TAKEN_OUT, "2026-11-05T19:21:43Z"))
+    _unlabeled_by(world, "a-person", "User")
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.end_cause is EndCause.MERGE_REFUSED
+    assert outcome.summary["refusal"]["code"] == merge.READY_REMOVED_BY_PERSON
+    assert merge.READY_REMOVED_BY_PERSON == "ready_removed_by_person"
+    message = outcome.summary["refusal"]["message"]
+    assert "a-person" in message
+    assert TAKEN_OUT in message
+    assert "Left to the merge train" not in message
+    assert outcome.summary["repository_train"]["removed_by"] == "a-person"
+    assert _labelled(world) == [] and world.merge_calls() == []
+    assert world.closed_issues() == []
+
+
+def test_ready_removed_by_the_trains_bot_is_re_boarded_as_before(tmp_path):
+    """Control (a): merge-train.sh `eject_pr` removes `ready` with the
+    workflow's token, so its actor is github-actions[bot], a Bot: the
+    ejection is re-boarded once, as before #3602.
+
+    MUTATION: treat any unlabeled actor as a person, and this refuses."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _parked_on_train(world)
+    _comments(world, ("swarmcloud-merge[bot]", LEFT), ("github-actions[bot]", EJECTION))
+    _unlabeled_by(world, "github-actions[bot]", "Bot")
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING
+    assert outcome.ci_wait["pending"] == [merge.TRAIN_REBOARDED]
+    assert len(_labelled(world)) == 1
+    assert "removed_by" not in outcome.summary["repository_train"]
+
+
+def test_ready_removed_by_the_gates_bot_is_still_train_ejected_at_once(tmp_path):
+    """Control (b): auto-merge.yml's gate removes `ready` as the workflow's
+    bot too: refused `train_ejected` at once with the gate's comment.
+
+    MUTATION: give a Bot removal the person code, and this fails."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _parked_on_train(world)
+    _comments(world, ("swarmcloud-merge[bot]", "Refused: #12 named in Depends on is not merged."))
+    _unlabeled_by(world, "github-actions[bot]", "Bot")
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "train_ejected", outcome.message
+    assert "#12 named in Depends on" in outcome.summary["refusal"]["message"]
+    assert _labelled(world) == [] and world.merge_calls() == []
+
+
+def test_an_unreadable_timeline_keeps_the_comment_reading_and_records_why(tmp_path):
+    """Control (c): the timeline GET answers 500. The step reads the comments
+    as before #3602 -- here the train's ejection, re-boarded -- and records
+    that the removal was not read.
+
+    MUTATION: let the forge error escape, and the step fails instead."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _parked_on_train(world)
+    _comments(world, ("github-actions[bot]", EJECTION), ("a-person", TAKEN_OUT))
+    world.github.route("GET", TIMELINE, (500, {}, {"message": "Server Error"}))
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING, outcome.message
+    assert outcome.ci_wait["pending"] == [merge.TRAIN_REBOARDED]
+    record = outcome.summary["repository_train"]
+    assert record["removal_unread"]
+    assert "removed_by" not in record
+    assert len(_labelled(world)) == 1
+
+
+def test_a_person_removal_under_review_not_yet_keeps_todays_path(tmp_path):
+    """Control (d): the platform's own NOT_YET path (`_hold_not_yet`) takes
+    `ready` off, possibly under a person's forge token, so a User actor on a
+    pull request carrying `review-not-yet` is not read as a person's
+    decision: today's comment-based path, here the gate's refusal.
+
+    MUTATION: drop the `review-not-yet` exception, and this ends with the
+    person code."""
+    world = MergeWorld(tmp_path)
+    _switch(world, "on")
+    _parked_on_train(world)
+    world.pr["labels"] = [{"name": merge.REVIEW_NOT_YET_LABEL}]
+    world.github.route("DELETE", f"{LABELS}/{merge.REVIEW_NOT_YET_LABEL}", (200, {}, []))
+    _comments(world, ("swarmcloud-merge[bot]", "Refused: #12 named in Depends on is not merged."),
+              ("a-person", TAKEN_OUT))
+    _unlabeled_by(world, "a-person", "User")
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["refusal"]["code"] == "train_ejected", outcome.message
+    assert "#12 named in Depends on" in outcome.summary["refusal"]["message"]
+    assert "removed_by" not in outcome.summary["repository_train"]
     assert _labelled(world) == [] and world.merge_calls() == []
 
 

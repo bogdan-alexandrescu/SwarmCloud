@@ -85,7 +85,9 @@ def _egress_manifest() -> str:
     text = TEMPLATE.read_text()
     for key, value in values.items():
         text = text.replace(key, value)
-    assert "__" not in "".join(line for line in text.splitlines() if not line.lstrip().startswith("#")), \
+    # terraform leaves __LABEL_PREFIX__ for kubernetes/apply.sh to fill.
+    assert "__" not in "".join(line for line in text.splitlines()
+                               if not line.lstrip().startswith("#")).replace("__LABEL_PREFIX__", ""), \
         "a placeholder the test does not fill"
     return text
 

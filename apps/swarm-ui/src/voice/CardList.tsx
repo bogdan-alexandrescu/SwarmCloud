@@ -37,15 +37,23 @@ import { useEffect, useReducer, useRef, useState } from 'react'
 
 import { USE_FIXTURES } from '../api'
 import { Button } from '../components'
-import { route } from '../fetch'
+import { read, route } from '../fetch'
 import { CARD_KINDS, type CardCreator, type CardKindSpec, type CardReference, type CardState } from './cards'
 import { DetailsInputCard } from './cards/InputCards'
+import { NavigateCard, NavigateTo, pushPath } from './cards/NavigateCard'
 import { BudgetCard, PlanCard, ReviewCard, StopCard, VoiceCardFrame, WorkCard } from './cards/WorkCards'
+import { Roster } from './Roster'
 
 export const VOICE_EVENTS = '/v1/voice/sessions/{id}/events'
 
+/** The project's roster, read once when the list mounts or its stream reopens (swarm_api/routes/voice_roster.py). */
+export const VOICE_ROSTER = '/v1/voice/projects/{project_id}/roster'
+
+/** The work feed's events the main view draws (swarm_api/voice/stream.py `WORK_TYPES`, less `paused`). */
+export const WORK_EVENTS = ['work.delegation', 'work.step', 'roster.update'] as const
+
 /** The events the card list reads (swarm_api/voice/stream.py `EVENT_TYPES`, less the stage's). */
-export const STREAM_EVENTS = ['card.upsert', 'card.remove', 'session.state', 'meter.update'] as const
+export const STREAM_EVENTS = ['card.upsert', 'card.remove', 'session.state', 'meter.update', ...WORK_EVENTS] as const
 
 /** The events the Talk stage reads (swarm_api/voice/stream.py `STAGE_TYPES`). */
 export const STAGE_EVENTS = ['visual.upsert', 'note.upsert', 'focus'] as const
@@ -104,13 +112,81 @@ export function catalogueBody(card: VoiceCard, spec: CardKindSpec): Record<strin
 
 // ---- the list's state ---------------------------------------------------------
 
+/** One step of a delegation: the grant's phrase and the ids its path named, nothing else (workfeed.py `step_payload`). */
+export interface WorkStep {
+  seq: number
+  phrase: string
+  ids: Readonly<Record<string, string>>
+  at: string | null
+}
+
+/** A delegation in flight: from its start until its end, with its newest steps (at most `STEPS_KEPT`). */
+export interface Delegation {
+  delegation_id: string
+  at: string | null
+  steps: WorkStep[]
+  /** Steps older than the ones kept. */
+  folded: number
+}
+
+export const ROSTER_KINDS = ['delegation', 'agent', 'workflow', 'run'] as const
+export type RosterKind = (typeof ROSTER_KINDS)[number]
+export const ROSTER_STATES = ['queued', 'running', 'waiting', 'done', 'failed', 'cancelled'] as const
+export type RosterState = (typeof ROSTER_STATES)[number]
+
+/** One roster row (swarm_api/voice/roster.py): its kind, id, title, state and progress. */
+export interface RosterRow {
+  kind: RosterKind
+  id: string
+  title: string | null
+  state: RosterState
+  done: number | null
+  total: number | null
+  /** The sequence of the event that last moved it; 0 when it came from the route. */
+  seq: number
+}
+
+/** The most steps the working card holds; older ones are counted, not kept. */
+export const STEPS_KEPT = 50
+
 export interface CardListState {
   /** The highest sequence seen; a reconnect asks for what comes after it. */
   lastSeq: number
   cards: VoiceCard[]
+  /**
+   * The delegations in flight, oldest first: the working card follows the first.
+   * Optional so a state built as `{ lastSeq, cards }` still is one; absent reads as none.
+   */
+  work?: Delegation[]
+  /** The crew strip's rows, in the order they first appeared; absent reads as none. */
+  roster?: RosterRow[]
 }
 
-export const EMPTY_LIST: CardListState = { lastSeq: 0, cards: [] }
+export const EMPTY_LIST: CardListState = { lastSeq: 0, cards: [], work: [], roster: [] }
+
+/** The states a card is open in (swarm_api/voice/sessions.py `OPEN_CARD_STATES`); every other state is closed. */
+const OPEN_STATES: readonly string[] = ['proposed', 'acting', 'waiting']
+
+/**
+ * The list a resumed project starts from: its open cards of a known kind,
+ * read once before (or while) its new session's stream opens. A card the
+ * stream already drew at the same or a newer version stays as drawn, so the
+ * stream's later events update the project's cards in place and never draw
+ * one twice; the sequence stays the stream's.
+ */
+export function seedCards(s: CardListState, project: readonly unknown[]): CardListState {
+  const held = new Map(s.cards.map((c) => [c.card_id, c]))
+  const seeded: VoiceCard[] = []
+  for (const row of project) {
+    const card = asCard(row)
+    if (card === null || specOf(card.kind) === null || !OPEN_STATES.includes(card.state)) continue
+    if (seeded.some((c) => c.card_id === card.card_id)) continue
+    const drawn = held.get(card.card_id)
+    seeded.push(drawn !== undefined && drawn.version >= card.version ? drawn : card)
+  }
+  const ids = new Set(seeded.map((c) => c.card_id))
+  return { lastSeq: s.lastSeq, cards: [...seeded, ...s.cards.filter((c) => !ids.has(c.card_id))] }
+}
 
 /** One stream event as it arrives: its type, its sequence and its data. */
 export interface StreamEvent {
@@ -126,10 +202,91 @@ function asCard(v: unknown): VoiceCard | null {
   return { ...(c as unknown as VoiceCard), version: typeof c.version === 'number' ? c.version : 0 }
 }
 
+const text = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
+const count = (v: unknown): number | null => (typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : null)
+
+/** A roster row as served or as a `roster.update` carries it, or null when it is not one. */
+export function asRosterRow(v: unknown, seq: number): RosterRow | null {
+  if (typeof v !== 'object' || v === null) return null
+  const r = v as Record<string, unknown>
+  const kind = ROSTER_KINDS.find((k) => k === r.kind)
+  const state = ROSTER_STATES.find((k) => k === r.state)
+  const id = text(r.id)
+  if (kind === undefined || state === undefined || id === null) return null
+  return { kind, id, title: text(r.title), state, done: count(r.done), total: count(r.total), seq }
+}
+
+/** `rows` laid over the roster: a row already listed changes in place and keeps its title when the update has none. */
+function mergeRows(roster: RosterRow[], rows: readonly RosterRow[]): RosterRow[] {
+  const out = roster.slice()
+  for (const row of rows) {
+    const at = out.findIndex((r) => r.kind === row.kind && r.id === row.id)
+    const held = out[at]
+    if (held === undefined) out.push(row)
+    else out[at] = { ...row, title: row.title ?? held.title }
+  }
+  return out
+}
+
+/**
+ * The roster as the route served it, read after `since`: a row an event moved
+ * later than that keeps the event's state (and takes the route's title).
+ */
+export function seedRoster(s: CardListState, served: readonly RosterRow[], since: number): CardListState {
+  const newer = (s.roster ?? []).filter((r) => r.seq > since)
+  const rows = served.map((row) => {
+    const moved = newer.find((r) => r.kind === row.kind && r.id === row.id)
+    return moved === undefined ? row : { ...moved, title: moved.title ?? row.title }
+  })
+  return { ...s, roster: [...rows, ...newer.filter((r) => !rows.some((x) => x.kind === r.kind && x.id === r.id))] }
+}
+
+const DELEGATION_STATE: Readonly<Record<string, RosterState>> = { started: 'running', progress: 'running', done: 'done', failed: 'failed', refused: 'failed' }
+const DELEGATION_ENDS: readonly string[] = ['done', 'failed', 'refused']
+
+/** The working card and the roster after one work feed event. */
+function applyWork(s: CardListState, ev: StreamEvent): CardListState {
+  const at = text(ev.data.at)
+  const held = { work: s.work ?? [], roster: s.roster ?? [] }
+  if (ev.type === 'work.delegation') {
+    const id = text(ev.data.delegation_id)
+    const state = typeof ev.data.state === 'string' ? DELEGATION_STATE[ev.data.state] : undefined
+    if (id === null || state === undefined) return s
+    const roster = mergeRows(held.roster, [{ kind: 'delegation', id, title: null, state, done: null, total: null, seq: ev.seq }])
+    // Its end is the next output: the card goes, and its steps with it.
+    if (DELEGATION_ENDS.includes(String(ev.data.state))) return { ...s, roster, work: held.work.filter((d) => d.delegation_id !== id) }
+    if (held.work.some((d) => d.delegation_id === id)) return { ...s, roster }
+    return { ...s, roster, work: [...held.work, { delegation_id: id, at, steps: [], folded: 0 }] }
+  }
+  if (ev.type === 'work.step') {
+    const phrase = text(ev.data.phrase)
+    if (phrase === null || held.work.length === 0) return s
+    const id = text(ev.data.delegation_id)
+    // A step names its delegation; one that names none belongs to the one the card follows.
+    const which = id === null ? 0 : held.work.findIndex((d) => d.delegation_id === id)
+    const d = held.work[which]
+    if (d === undefined) return s
+    const raw = typeof ev.data.ids === 'object' && ev.data.ids !== null ? (ev.data.ids as Record<string, unknown>) : {}
+    const ids: Record<string, string> = {}
+    for (const [k, v] of Object.entries(raw)) if (typeof v === 'string') ids[k] = v
+    const steps = [...d.steps, { seq: ev.seq, phrase, ids, at }]
+    const over = Math.max(0, steps.length - STEPS_KEPT)
+    const work = held.work.slice()
+    work[which] = { ...d, steps: steps.slice(over), folded: d.folded + over }
+    return { ...s, work }
+  }
+  if (ev.type === 'roster.update') {
+    const rows = Array.isArray(ev.data.rows) ? ev.data.rows.flatMap((r) => asRosterRow(r, ev.seq) ?? []) : []
+    return rows.length === 0 ? s : { ...s, roster: mergeRows(held.roster, rows) }
+  }
+  return s
+}
+
 /**
  * The list after one event. An event at or below `lastSeq` was already
  * applied (a resumed stream repeating itself) and changes nothing. A card of
- * no known kind is never added.
+ * no known kind is never added. The work feed's events move the working card
+ * and the roster (`applyWork`).
  */
 export function applyStreamEvent(s: CardListState, ev: StreamEvent): CardListState {
   if (!Number.isInteger(ev.seq) || ev.seq <= s.lastSeq) return s
@@ -139,24 +296,33 @@ export function applyStreamEvent(s: CardListState, ev: StreamEvent): CardListSta
     if (card === null || specOf(card.kind) === null) return { ...s, lastSeq }
     const at = s.cards.findIndex((c) => c.card_id === card.card_id)
     const held = s.cards[at]
-    if (held === undefined) return { lastSeq, cards: [...s.cards, card] }
+    if (held === undefined) return { ...s, lastSeq, cards: [...s.cards, card] }
     if (card.version <= held.version) return { ...s, lastSeq }
     const cards = s.cards.slice()
     cards[at] = card
-    return { lastSeq, cards }
+    return { ...s, lastSeq, cards }
   }
   if (ev.type === 'card.remove') {
     const nested = asCard(ev.data.card)
     const id = typeof ev.data.card_id === 'string' ? ev.data.card_id : nested?.card_id ?? null
-    return { lastSeq, cards: id === null ? s.cards : s.cards.filter((c) => c.card_id !== id) }
+    return { ...s, lastSeq, cards: id === null ? s.cards : s.cards.filter((c) => c.card_id !== id) }
   }
-  return { ...s, lastSeq }
+  return { ...applyWork(s, ev), lastSeq }
 }
 
-type Action = { type: 'event'; ev: StreamEvent } | { type: 'reset' }
+type Action = { type: 'event'; ev: StreamEvent } | { type: 'reset' } | { type: 'roster'; rows: readonly RosterRow[]; since: number }
 
 function reducer(s: CardListState, a: Action): CardListState {
+  if (a.type === 'roster') return seedRoster(s, a.rows, a.since)
   return a.type === 'reset' ? EMPTY_LIST : applyStreamEvent(s, a.ev)
+}
+
+/** `GET /v1/voice/projects/{project_id}/roster`: the rows, or null when it was not read. */
+export async function loadRoster(projectId: string): Promise<RosterRow[] | null> {
+  const r = await read<unknown>(route(VOICE_ROSTER, { project_id: projectId }), () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return null
+  const rows = (r.data as { rows?: unknown } | null)?.rows
+  return Array.isArray(rows) ? rows.flatMap((row) => asRosterRow(row, 0) ?? []) : []
 }
 
 /** An SSE frame's event: the sequence is the frame's id, else the data's `seq`. */
@@ -247,13 +413,14 @@ function NamedOnly({ card, spec }: CardProps) {
   return <VoiceCardFrame card={card} spec={spec} />
 }
 
-const RENDERERS: Readonly<Record<string, (p: CardProps) => JSX.Element>> = {
+const RENDERERS: Readonly<Record<string, (p: CardProps) => JSX.Element | null>> = {
   work: WorkCard,
   review: ReviewCard,
   plan: PlanCard,
   budget: BudgetCard,
   stop: StopCard,
   details_input: DetailsInputCard,
+  navigate: NavigateCard,
 }
 
 /** One card, or nothing when its kind is not in the catalogue. */
@@ -280,6 +447,11 @@ type Link = 'off' | 'open' | 'closed' | 'unsupported'
  * (Talk.tsx), so a live session holds one stream, not two. `onTraceEvent`
  * is handed debug mode's `trace.turn` events the same way, for Talk's turn line,
  * and `onTierEvent` the `voice.tier.reopen` events, for Talk's reopen.
+ *
+ * THE CREW STRIP (Roster.tsx) heads the list: `projectId`'s roster, read once
+ * when the list mounts or its stream reopens, then kept current by the
+ * stream's `roster.update` events, which carry the changed rows only.
+ * `navigate` is the console's own, for a Navigate card's Open and a row's.
  */
 export function CardList({
   sessionId,
@@ -287,9 +459,13 @@ export function CardList({
   onStageEvent,
   onTraceEvent,
   onTierEvent,
+  projectId = null,
+  navigate = pushPath,
 }: {
   sessionId: string | null
   fixtures?: readonly VoiceCard[]
+  projectId?: string | null
+  navigate?: (to: string) => void
   onStageEvent?: (ev: StreamEvent) => void
   onTraceEvent?: (ev: StreamEvent) => void
   onTierEvent?: (ev: StreamEvent) => void
@@ -344,10 +520,25 @@ export function CardList({
     })
   }, [sessionId, round])
 
+  // The roster, read once per session and per reopened stream; the events after it keep it current.
+  useEffect(() => {
+    if (sessionId === null || projectId === null) return
+    let gone = false
+    const since = lastSeq.current
+    void loadRoster(projectId).then((rows) => {
+      if (!gone && rows !== null) dispatch({ type: 'roster', rows, since })
+    })
+    return () => {
+      gone = true
+    }
+  }, [sessionId, projectId, round])
+
   // Fixture mode (a development build with no live API) draws one card of each kind while no session is live.
   const cards = fixtures ?? (sessionId === null && s.cards.length === 0 && USE_FIXTURES ? FIXTURE_CARDS : s.cards)
   return (
+    <NavigateTo.Provider value={navigate}>
     <div className="vt-card-list">
+      <Roster rows={s.roster ?? []} navigate={navigate} />
       {link === 'closed' && sessionId !== null && (
         <p className="c-hint" role="status">
           The card stream closed.{' '}
@@ -371,6 +562,7 @@ export function CardList({
         cards.map((c) => <VoiceCardView key={c.card_id} card={c} />)
       )}
     </div>
+    </NavigateTo.Provider>
   )
 }
 

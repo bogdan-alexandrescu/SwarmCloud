@@ -638,8 +638,9 @@ def test_the_stream_serves_a_visual_a_focus_and_a_note_in_sequence_and_on_replay
 
     replay = _frames(client.get(url, headers={**auth_header("alice"),
                                               "Last-Event-ID": str(ours[0]["id"])}).text)
-    assert [(f["id"], f["event"]) for f in replay if f["id"] <= ours[-1]["id"]] == [
-        (f["id"], f["event"]) for f in ours[1:]]
+    # Each grant call also writes a masked work step (voice/workfeed.py).
+    assert [(f["id"], f["event"]) for f in replay if f["id"] <= ours[-1]["id"]
+            and f["event"] != "work.step"] == [(f["id"], f["event"]) for f in ours[1:]]
 
 
 # ---- a mock-up: frames, approval ---------------------------------------------

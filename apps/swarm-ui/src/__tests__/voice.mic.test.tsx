@@ -11,11 +11,15 @@
 //   * every final caption, from either side, while a session is live is input
 //     for the console's 15-minute idle stop (Shell.tsx `noteActivity`), so a
 //     poller stays active through twenty minutes of talk with no key or
-//     pointer; once the session ends, the rule applies again.
+//     pointer; once the session ends, the rule applies again;
+//   * so is every caption line closed without a final -- by a pause, the
+//     other side speaking, or the end of a turn -- since GPT-Live sends the
+//     browser deltas and no final; a line still open is not.
 //
 // MUTATIONS: enable the track on push-to-talk's selection rather than on the
 // hold; leave it on after keyup; take Space typed into a text box as a hold;
-// drop the noteActivity call; call it on partial lines only.
+// drop the noteActivity call; call it on partial lines only; count finals
+// only, not lines closed without one.
 
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -31,6 +35,7 @@ vi.mock('../fetch', async (importOriginal) => ({
 }))
 
 import { TalkPane } from '../voice/Talk'
+import { VoiceSessionHolder } from '../voice/session'
 
 beforeEach(() => {
   fetchMock.write.mockImplementation(async (target: { url: string }) =>
@@ -57,7 +62,7 @@ describe('the mic', () => {
   })
 
   it('is open by default, and Mute turns the track off and keeps the session', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     const pc = await start()
     expect(mic.enabled).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: 'Mute' }))
@@ -71,7 +76,7 @@ describe('the mic', () => {
   })
 
   it('on push-to-talk enables the track only while Space is held', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     fireEvent.click(screen.getByRole('button', { name: 'Push to talk' }))
     expect(mic.enabled).toBe(false)
@@ -92,7 +97,7 @@ describe('the mic', () => {
   })
 
   it('on push-to-talk enables the track only while the Hold to talk button is pressed', async () => {
-    render(<TalkPane />)
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await start()
     fireEvent.click(screen.getByRole('button', { name: 'Push to talk' }))
     const hold = screen.getByRole('button', { name: 'Hold to talk' })
@@ -110,7 +115,7 @@ describe('the mic', () => {
     render(
       <>
         <input aria-label="Elsewhere" />
-        <TalkPane />
+        <VoiceSessionHolder><TalkPane /></VoiceSessionHolder>
       </>,
     )
     await start()
@@ -135,7 +140,7 @@ describe('speech and the idle stop', () => {
     render(
       <>
         <Poller />
-        <TalkPane />
+        <VoiceSessionHolder><TalkPane /></VoiceSessionHolder>
       </>,
     )
     const pc = await start()
@@ -154,13 +159,59 @@ describe('speech and the idle stop', () => {
     expect(4 * step).toBeGreaterThan(IDLE_STOP_MS)
     expect(poller.textContent).toBe('polling')
 
-    // Partial lines alone are not proof of anyone: only final segments count.
+    // A line still being spoken is not proof of anyone: only a closed segment counts.
     await act(async () => {
-      vi.advanceTimersByTime(IDLE_STOP_MS - 1000)
+      vi.advanceTimersByTime(IDLE_STOP_MS - 500)
       pc.events.deliver({ type: 'session.input_transcript.delta', item_id: 'p', delta: 'hm' })
-      vi.advanceTimersByTime(2000)
+      vi.advanceTimersByTime(600)
     })
     expect(poller.textContent).toBe('paused')
+  })
+
+  it('counts a line closed without a final, by a pause, the other side or the end of a turn', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+    installMedia()
+    render(
+      <>
+        <Poller />
+        <VoiceSessionHolder><TalkPane /></VoiceSessionHolder>
+      </>,
+    )
+    const pc = await start()
+    const poller = screen.getByTestId('poller')
+    const step = 5 * 60_000
+    const you = (delta: string) => pc.events.deliver({ type: 'session.input_transcript.delta', delta })
+    const voice = (delta: string) => pc.events.deliver({ type: 'session.output_transcript.delta', delta })
+    // Deltas and no final, as GPT-Live sends them; each round's line closes another way.
+    const rounds: Array<() => void> = [
+      () => {
+        you('still here')
+        vi.advanceTimersByTime(1000)
+      },
+      () => {
+        voice('still here')
+        pc.events.deliver({ type: 'session.output_audio.stopped' })
+      },
+      () => {
+        you('still here')
+        voice('yes')
+      },
+      () => {
+        you('still here')
+        pc.events.deliver({ type: 'session.delegation.created' })
+      },
+    ]
+    for (const round of rounds) {
+      await act(async () => {
+        vi.advanceTimersByTime(step)
+      })
+      await act(async () => {
+        round()
+      })
+    }
+    expect(rounds.length * step).toBeGreaterThan(IDLE_STOP_MS)
+    expect(poller.textContent).toBe('polling')
+    expect(screen.getAllByText('still here').length).toBe(4)
   })
 
   it('stops counting speech once the session has ended', async () => {
@@ -169,7 +220,7 @@ describe('speech and the idle stop', () => {
     render(
       <>
         <Poller />
-        <TalkPane />
+        <VoiceSessionHolder><TalkPane /></VoiceSessionHolder>
       </>,
     )
     const pc = await start()

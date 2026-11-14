@@ -46,11 +46,23 @@ before this, is read as it was: answered is enough.
 THE SHAPE IS STRICT so the bridge can show it without guessing: a list of at
 most `MAX_QUESTIONS` objects, each with the four keys above (the last two may
 be null or absent) and, optionally, `blocking` and `built`, `options` a list of 1 to `MAX_OPTIONS` objects
-with exactly `label` and `description`, labels unique, and `recommended` one
+with `label` and `description`, labels unique, and `recommended` one
 of the labels or null, and so is `built`. Every text is bounded, and the whole file is at most
 `MAX_BYTES` -- the bridge reads it in one window. A reason never quotes the
 file: it names a position and a key, so a secret in the file cannot reach the
 summary through the reason.
+
+AN UNKNOWN KEY IS DROPPED, NOT A REJECTION (issue #3086, 2026-11-12). A key
+on a question or an option other than those above once rejected the whole
+file: a build step's one well-formed question, with one field of the
+agent's own beside `built`, was counted 0, swarm-api said the task asked
+nothing, the review could not cite it and the merge parked on it with no
+answer able to clear it. Now such a key is left out of what `validate`
+returns -- every reader that validates (the summary's digests, the review's
+staging, the merge, the question wait) sees the same rows, and swarm-api,
+which serves the uploaded file, picks the known keys itself -- and the
+summary names where in `questions_ignored_keys` (positions, never the key:
+it is the agent's text). Every other rule above still rejects the file.
 
 A BLOCKING QUESTION WAITS FOR ITS ANSWER (docs/design/agent-autonomy.md §3.9,
 owner decision Q5; lane AU-7). A question may say `"blocking": true`. An
@@ -102,6 +114,9 @@ NAME = "questions.json"
 #: `result_summary` keys: how many questions were taken, and why a file was not.
 SUMMARY_KEY = "questions"
 REJECTED_KEY = "questions_rejected"
+#: `result_summary` key: the positions ("question 2", "question 2: option 1")
+#: that carried a key `validate` dropped; absent when none did (#3086).
+IGNORED_KEYS_KEY = "questions_ignored_keys"
 #: `result_summary` key: a short digest of each counted question (`digest`),
 #: in index order. swarm-api stamps each answer with the digest at its index
 #: (`asked_digest`), so a reader of the task document alone -- the sc
@@ -156,16 +171,19 @@ def _text(value: Any, where: str, limit: int, *, required: bool) -> None:
         raise Rejected(f"{where} is longer than {limit} characters")
 
 
-def _keys(entry: dict[str, Any], allowed: frozenset[str], where: str) -> None:
+def _known(entry: dict[str, Any], allowed: frozenset[str], where: str,
+           ignored: list[str]) -> dict[str, Any]:
+    """`entry` with only the `allowed` keys; `where` is noted in `ignored` when
+    it had another. The key itself is not noted: it is the agent's text."""
     if not set(entry) <= allowed:
-        # The key itself is not quoted: it is the agent's text.
-        raise Rejected(f"{where}: a key other than {', '.join(sorted(allowed))}")
+        ignored.append(where)
+    return {key: value for key, value in entry.items() if key in allowed}
 
 
-def _question(entry: Any, where: str) -> None:
+def _question(entry: Any, where: str, ignored: list[str]) -> dict[str, Any]:
     if not isinstance(entry, dict):
         raise Rejected(f"{where} is not an object")
-    _keys(entry, QUESTION_KEYS, where)
+    entry = _known(entry, QUESTION_KEYS, where, ignored)
     _text(entry.get("question"), f"{where}: `question`", MAX_QUESTION_CHARS, required=True)
     options = entry.get("options")
     if not isinstance(options, list):
@@ -173,11 +191,13 @@ def _question(entry: Any, where: str) -> None:
     if not 1 <= len(options) <= MAX_OPTIONS:
         raise Rejected(f"{where}: `options` holds {len(options)}, not 1 to {MAX_OPTIONS}")
     labels: list[str] = []
+    kept: list[dict[str, Any]] = []
     for number, option in enumerate(options, start=1):
         at = f"{where}: option {number}"
         if not isinstance(option, dict):
             raise Rejected(f"{at} is not an object")
-        _keys(option, OPTION_KEYS, at)
+        option = _known(option, OPTION_KEYS, at, ignored)
+        kept.append(option)
         _text(option.get("label"), f"{at}: `label`", MAX_LABEL_CHARS, required=True)
         _text(option.get("description"), f"{at}: `description`", MAX_DESCRIPTION_CHARS,
               required=False)
@@ -194,10 +214,21 @@ def _question(entry: Any, where: str) -> None:
     built = entry.get("built")
     if built is not None and built not in labels:
         raise Rejected(f"{where}: `built` is not one of its options' labels")
+    entry["options"] = kept
+    return entry
 
 
 def validate(data: bytes) -> list[dict[str, Any]]:
-    """The questions in `data`, or `Rejected` saying why it is not a list of them."""
+    """The questions in `data`, or `Rejected` saying why it is not a list of them.
+
+    Each question and option holds only the keys this module knows: another
+    is dropped, not a rejection (#3086); `validated` also says where.
+    """
+    return validated(data)[0]
+
+
+def validated(data: bytes) -> tuple[list[dict[str, Any]], list[str]]:
+    """`validate`'s questions, and the positions that carried a key it dropped."""
     if len(data) > MAX_BYTES:
         raise Rejected(f"the file is {len(data)} bytes, larger than {MAX_BYTES}")
     try:
@@ -213,9 +244,10 @@ def validate(data: bytes) -> list[dict[str, Any]]:
         raise Rejected("the file is not a JSON list of questions")
     if len(value) > MAX_QUESTIONS:
         raise Rejected(f"the file holds {len(value)} questions, more than {MAX_QUESTIONS}")
-    for number, entry in enumerate(value, start=1):
-        _question(entry, f"question {number}")
-    return value
+    ignored: list[str] = []
+    taken = [_question(entry, f"question {number}", ignored)
+             for number, entry in enumerate(value, start=1)]
+    return taken, ignored
 
 
 def digest(question: Mapping[str, Any]) -> str:
@@ -307,8 +339,9 @@ def summarise(
     counted, because a reader would then be told of questions it cannot read.
     `cause` is why it was not taken, as a sentence
     (`expected_outputs.cause_text`), when the upload said. A counted file
-    also gives `DIGESTS_KEY`, one `digest` per question in order, and
-    `TEXT_DIGESTS_KEY`, one `text_digest` per question in order.
+    also gives `DIGESTS_KEY`, one `digest` per question in order,
+    `TEXT_DIGESTS_KEY`, one `text_digest` per question in order, and
+    `IGNORED_KEYS_KEY` when a question or option carried a key it dropped.
     """
     try:
         data = read(directory)
@@ -316,9 +349,12 @@ def summarise(
             return {SUMMARY_KEY: 0}
         if NAME not in uploaded:
             return {SUMMARY_KEY: 0, REJECTED_KEY: cause or "written but not uploaded"}
-        taken = validate(data)
-        return {SUMMARY_KEY: len(taken), DIGESTS_KEY: [digest(q) for q in taken],
-                TEXT_DIGESTS_KEY: [text_digest(q) for q in taken]}
+        taken, ignored = validated(data)
+        out: dict[str, Any] = {SUMMARY_KEY: len(taken), DIGESTS_KEY: [digest(q) for q in taken],
+                               TEXT_DIGESTS_KEY: [text_digest(q) for q in taken]}
+        if ignored:
+            out[IGNORED_KEYS_KEY] = ignored
+        return out
     except Rejected as exc:
         return {SUMMARY_KEY: 0, REJECTED_KEY: str(exc)}
 
@@ -343,6 +379,9 @@ ANSWERS_NAME = "answers.json"
 #: (`swarm_api.validation.OWNER_ANSWERS_METADATA_KEY`). Spelled again: the
 #: worker does not carry swarm-api.
 OWNER_ANSWERS_KEY = "owner_answers"
+#: An answer's stamp: the `digest` at its index in the `DIGESTS_KEY` of the
+#: attempt it answered (`swarm_api.agent_questions.ASKED_DIGEST_KEY`).
+ASKED_DIGEST_KEY = "asked_digest"
 #: The largest `await-release.json` read: one sha and its key.
 MAX_RELEASE_BYTES = 1024
 
@@ -407,11 +446,74 @@ def _wait_of(task: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return None
 
 
+def stored_answers(metadata: Any) -> dict[int, Mapping[str, Any]]:
+    """`metadata.owner_answers` by `question_index`, whatever is asked there now."""
+    stored = metadata.get(OWNER_ANSWERS_KEY) if isinstance(metadata, Mapping) else None
+    by_index: dict[int, Mapping[str, Any]] = {}
+    for entry in stored if isinstance(stored, list) else ():
+        index = entry.get("question_index") if isinstance(entry, Mapping) else None
+        if isinstance(index, int) and not isinstance(index, bool) and index >= 0:
+            by_index[index] = entry
+    return by_index
+
+
+def summary_digests(doc: Mapping[str, Any]) -> list[str] | None:
+    """The task's `DIGESTS_KEY`, one per counted question, else None.
+
+    None for a summary from before the worker wrote them, and for a list that
+    does not hold one non-empty string per counted question, as swarm-api
+    reads it (`agent_questions.question_digests`).
+    """
+    summary = doc.get("result_summary")
+    if not isinstance(summary, Mapping):
+        return None
+    count, raw = summary.get(SUMMARY_KEY), summary.get(DIGESTS_KEY)
+    if isinstance(count, bool) or not isinstance(count, int) or not isinstance(raw, list) \
+            or len(raw) != count or not all(isinstance(d, str) and d for d in raw):
+        return None
+    return raw
+
+
+def recorded(entry: Mapping[str, Any]) -> bool:
+    """Whether a stored answer records the question it answered (a stamp or its text)."""
+    return isinstance(entry.get(ASKED_DIGEST_KEY), str) or isinstance(entry.get("question"), str)
+
+
+def answers_question(entry: Mapping[str, Any], question: Mapping[str, Any]) -> bool:
+    """Whether the stored answer `entry` answers `question`, as its asker wrote it.
+
+    THE INDEX IS NOT THE QUESTION (#3349), by swarm-api's rules
+    (`agent_questions.answers_question`): a later attempt may ask another
+    question at an answer's index. An answer stamped `ASKED_DIGEST_KEY` is
+    compared with this question's `digest`; one stored before the stamp, by
+    the question text it records. Recorded text is the served, redacted
+    text, so a question it was redacted out of reads unanswered: that holds,
+    it never answers. An answer recording neither is kept by its index.
+    """
+    stamp = entry.get(ASKED_DIGEST_KEY)
+    if isinstance(stamp, str):
+        return stamp == digest(question)
+    text = entry.get("question")
+    if isinstance(text, str):
+        return text == question.get("question")
+    return True
+
+
+def answers_asked(asked: list[Any], metadata: Any) -> dict[int, Mapping[str, Any]]:
+    """The stored answers by index, only those that answer the question `asked` there now."""
+    return {
+        index: entry for index, entry in stored_answers(metadata).items()
+        if index < len(asked) and isinstance(asked[index], Mapping)
+        and answers_question(entry, asked[index])
+    }
+
+
 def answers_for(task: Mapping[str, Any]) -> list[dict[str, Any]]:
     """The owner's answers to the questions this task last waited on, in order.
 
     One row per question of the wait: its number, its text, whether it
-    blocked, and the answer (`choice`, `text`), None for one not answered.
+    blocked, and the answer (`choice`, `text`), None for one not answered --
+    an answer given to another question at its index included.
     Empty when the task never waited on a question.
     """
     wait = _wait_of(task)
@@ -421,13 +523,8 @@ def answers_for(task: Mapping[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(questions, list):
         return []
     waited = {i for i in wait.get("blocking") or () if isinstance(i, int)}
-    metadata = task.get("metadata")
-    stored = metadata.get(OWNER_ANSWERS_KEY) if isinstance(metadata, Mapping) else None
-    by_index: dict[int, Mapping[str, Any]] = {}
-    for entry in stored if isinstance(stored, list) else ():
-        index = entry.get("question_index") if isinstance(entry, Mapping) else None
-        if isinstance(index, int) and not isinstance(index, bool):
-            by_index[index] = entry
+    # Only an answer to the question the wait asks at its index (#3349).
+    by_index = answers_asked(questions, task.get("metadata"))
     rows: list[dict[str, Any]] = []
     for i, question in enumerate(questions):
         if not isinstance(question, Mapping):

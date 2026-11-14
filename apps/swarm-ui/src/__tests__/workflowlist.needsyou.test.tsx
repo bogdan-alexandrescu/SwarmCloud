@@ -8,7 +8,7 @@
 // `blocked_by` or `result_summary` out of `summaryTask`; list a question-wait
 // park as a hand-off; let an artifact question's Answer open blind.
 
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { summaryTask, summaryTaskById, type StepNeeds } from '../stepviews'
@@ -92,7 +92,7 @@ describe('summaryTask joins the needs block', () => {
     for (const word of ['Question', 'Merge waiting', 'Your turn in a browser', 'Approvals']) {
       expect(chip(word).textContent).toContain('not known')
     }
-    expect(screen.getByRole('button', { name: 'Failed: 1' })).toBeTruthy()
+    expect(screen.getByRole('img', { name: 'Failed: 1' })).toBeTruthy()
   })
 })
 
@@ -139,6 +139,8 @@ describe('listNeedItems', () => {
 
   it('an artifact question says its words are on its page and does not open blind', () => {
     render(<NeedsYou items={items.filter((i) => i.kind === 'question')} approvals={null} />)
+    // The strip starts collapsed: its header opens the rows.
+    fireEvent.click(screen.getByRole('button', { name: /^Needs you/, expanded: false }))
     const row = screen.getByText('Its words are on its page').closest('li')!
     const answer = within(row).getByRole('button', { name: /Answer/ })
     expect(answer.getAttribute('aria-disabled') === 'true' || (answer as HTMLButtonElement).disabled).toBe(true)

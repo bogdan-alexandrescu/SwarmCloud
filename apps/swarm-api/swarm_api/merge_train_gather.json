@@ -1,0 +1,5 @@
+{
+  "why": "THE GATHER of the repository merge train, its one statement: a train boards once min_prs pull requests would board, or once the oldest has been ready max_wait_minutes (the owner's pick on 11 November 2026, \"6 ready or 20 minutes\"). scripts/merge-train.sh reads it for its defaults (MERGE_TRAIN_MIN_PRS, MERGE_TRAIN_MAX_WAIT_MINUTES override them), and swarm-api's merge wake tick (swarm_api.trainboard) reads the same file for the deadline past which it starts one merge-train run. Here, inside swarm-api's package, because the swarm-api image installs only that package; the workflow's checkout has the whole repository.",
+  "min_prs": 6,
+  "max_wait_minutes": 20
+}

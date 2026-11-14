@@ -373,6 +373,16 @@ if [[ "${MODE}" == "swarm-voice" ]]; then
     || die "terraform/infra is not initialised for ${ENVIRONMENT} (no $(tf_data_dir)); run: $(tf_init_command)"
 fi
 
+# --- 0. the label-key prefix -------------------------------------------------
+# Every mode renders under one prefix, resolved once here, before kubectl is
+# even located (owner, 12 November 2026, "Tfvars everywhere"; common.sh
+# resolved_label_prefix): the deployment's tfvars name it, a configured
+# SWARM_LABEL_PREFIX or SWARM_ORG_DOMAIN that differs is refused, and only
+# unreadable tfvars leave the configured one. Exported (common.sh
+# require_label_prefix), so every render.py, network_parity.py read and fill of
+# terraform's renders below uses it.
+require_label_prefix "nothing was applied"
+
 # --- 1. the right kubectl ----------------------------------------------------
 # `kubectl_bin` from common.sh, not a second copy of the same search: it already
 # knows that 1.22 (EKS) and 1.25 (Docker Desktop) win $PATH on this machine and
@@ -592,6 +602,22 @@ read_swarm_api_egress() {
 # --- render ------------------------------------------------------------------
 PYTHON="${PYTHON_BIN:-python3}"
 
+# THE LABEL-KEY PREFIX IN TERRAFORM'S RENDERS. Every label and annotation key
+# is `<prefix>/<name>`, the prefix being configuration (owner, 8 November 2026),
+# resolved in step 0 from the deployment's tfvars, else SWARM_LABEL_PREFIX, else
+# swarm.<SWARM_ORG_DOMAIN>, else a refusal -- never a guessed key, which the
+# live admission policies would not match.
+# kubernetes/label_prefix.py holds the rule and render.py fills the tenant,
+# policy and swarm-system renders; terraform/infra fills its six swarm-system
+# manifests' own placeholders and leaves `__LABEL_PREFIX__`, which this fills
+# in the file each is read into, before the unrendered-placeholder check.
+# label_prefix.py is stdlib-only: the --swarm-graph, --swarm-typesafe-fwd and
+# --swarm-voice paths run on a python3 with nothing installed.
+fill_label_prefix() {
+  "${PYTHON}" "${HERE}/label_prefix.py" --fill "$1" \
+    || die "the label-key prefix is not configured (above); nothing was applied."
+}
+
 # THE CONTROL PLANE'S NUMERIC IDENTITIES, RESOLVED HERE BECAUSE THEY CANNOT BE
 # DERIVED.
 #
@@ -686,6 +712,7 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
   TF_DIR="$(tf_root)"
   if tf -chdir="${TF_DIR}" output -raw swarm_live_manifest >"${RELAY_WORK}/relay.yaml" 2>"${RELAY_WORK}/relay.err" \
       && [[ -s "${RELAY_WORK}/relay.yaml" ]]; then
+    fill_label_prefix "${RELAY_WORK}/relay.yaml"
     RELAY_MANIFEST="$(cat "${RELAY_WORK}/relay.yaml")"
   else
     # Null while enable_live_browser is off or swarm-live has no digest, and
@@ -758,6 +785,7 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
   EGRESS_MANIFEST=""
   if tf -chdir="${TF_DIR}" output -raw swarm_egress_manifest >"${RELAY_WORK}/egress.yaml" 2>"${RELAY_WORK}/egress.err" \
       && [[ -s "${RELAY_WORK}/egress.yaml" ]]; then
+    fill_label_prefix "${RELAY_WORK}/egress.yaml"
     if grep -Eo '__[A-Z0-9_]+__' "${RELAY_WORK}/egress.yaml" >"${RELAY_WORK}/egress-placeholders"; then
       PLACEHOLDER="$(head -n 1 "${RELAY_WORK}/egress-placeholders")"
       rm -rf "${RELAY_WORK}"
@@ -791,6 +819,7 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
   TAILSCALE_MANIFEST=""
   if tf -chdir="${TF_DIR}" output -raw tailscale_egress_manifest >"${RELAY_WORK}/tailscale.yaml" 2>"${RELAY_WORK}/tailscale.err" \
       && [[ -s "${RELAY_WORK}/tailscale.yaml" ]]; then
+    fill_label_prefix "${RELAY_WORK}/tailscale.yaml"
     if grep -Eo '__[A-Z0-9_]+__' "${RELAY_WORK}/tailscale.yaml" >"${RELAY_WORK}/tailscale-placeholders"; then
       PLACEHOLDER="$(head -n 1 "${RELAY_WORK}/tailscale-placeholders")"
       rm -rf "${RELAY_WORK}"
@@ -874,6 +903,7 @@ elif [[ "${MODE}" == "swarm-graph" ]]; then
   # calls no Kubernetes API), no Secret (the ticket key is read from Secret
   # Manager at run time by the pod's own identity, never shipped in a
   # manifest that is previewed and diffed), and nothing outside swarm-system.
+  fill_label_prefix "${GRAPH_WORK}/graph.yaml"
   if grep -Eo '__[A-Z0-9_]+__' "${GRAPH_WORK}/graph.yaml" >"${GRAPH_WORK}/graph-placeholders"; then
     PLACEHOLDER="$(head -n 1 "${GRAPH_WORK}/graph-placeholders")"
     die "the swarm-graph manifest carries an unrendered placeholder (${PLACEHOLDER}); nothing was applied."
@@ -933,6 +963,7 @@ elif [[ "${MODE}" == "swarm-typesafe-fwd" ]]; then
   # Secret (the key is read from Secret Manager by the pod's own identity,
   # never shipped in a manifest that is previewed and diffed), and nothing
   # outside swarm-system.
+  fill_label_prefix "${TSF_WORK}/fwd.yaml"
   if grep -Eo '__[A-Z0-9_]+__' "${TSF_WORK}/fwd.yaml" >"${TSF_WORK}/fwd-placeholders"; then
     PLACEHOLDER="$(head -n 1 "${TSF_WORK}/fwd-placeholders")"
     die "the swarm-typesafe-fwd manifest carries an unrendered placeholder (${PLACEHOLDER}); nothing was applied."
@@ -1019,6 +1050,7 @@ elif [[ "${MODE}" == "swarm-voice" ]]; then
   # (the platform owner's OpenAI credential is read from Secret Manager by the
   # pod's own identity and held in memory, never shipped in a manifest that is
   # previewed and diffed), and nothing outside swarm-system.
+  fill_label_prefix "${VOICE_WORK}/voice.yaml"
   if grep -Eo '__[A-Z0-9_]+__' "${VOICE_WORK}/voice.yaml" >"${VOICE_WORK}/voice-placeholders"; then
     PLACEHOLDER="$(head -n 1 "${VOICE_WORK}/voice-placeholders")"
     die "the swarm-voice manifest carries an unrendered placeholder (${PLACEHOLDER}); nothing was applied."
@@ -1321,16 +1353,16 @@ else
     ${WORKSPACE_ARGS[@]+"${WORKSPACE_ARGS[@]}"} \
     ${QUOTA_ARGS[@]+"${QUOTA_ARGS[@]}"} \
     "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")"
-  info "rendering tenant ${TENANT}${WORKSPACE_ID:+ (namespace labelled swarm.saga.xyz/workspace=${WORKSPACE_ID})}"
+  info "rendering tenant ${TENANT}${WORKSPACE_ID:+ (namespace labelled <prefix>/workspace=${WORKSPACE_ID})}"
 fi
 
 # Belt and braces on the property above: a render marked offline carries
 # documentation addresses, and must never reach a cluster. Matched on the
 # annotation itself -- the templates' comments are rendered too, and they
 # name the marker. Every mode: the tenant egress policy and swarm-system's
-# relay ingress both carry it.
+# relay ingress both carry it. Under any key prefix: the prefix is configuration.
 case "${MANIFEST}" in
-  *"swarm.saga.xyz/network-source: offline-render-not-for-apply"*)
+  *"/network-source: offline-render-not-for-apply"*)
     die "the render is marked offline-render-not-for-apply -- it carries no real
        cluster network. Refusing; nothing was applied." ;;
 esac

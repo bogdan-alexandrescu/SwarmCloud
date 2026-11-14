@@ -59,21 +59,13 @@ TENANT_POLICY = KUBERNETES / TENANT_POLICY_FILE
 TAILSCALE_TF = REPO / "terraform" / "infra" / "tailscale.tf"
 RELAY_TEMPLATE = KUBERNETES / "swarm-system" / "swarm-live.yaml"
 
+#: The placeholder organisation's label-key prefix, which kubernetes/apply.sh
+#: fills over the template's __LABEL_PREFIX__ (kubernetes/label_prefix.py).
+LABEL_PREFIX = f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}"
 TARGET = "decision-api.example-tailnet.ts.net"
 POD_LABEL = {"swarm-judge": "internal"}
 APP = {"app.kubernetes.io/name": "decision-api-egress"}
 FORWARD_PORT = 8443
-
-
-def _annotation_domain() -> str:
-    """The domain the manifests' swarm annotation keys carry, read from
-    kubernetes/network_parity.py's SOURCE_ANNOTATION rather than restated: the
-    lane that owns kubernetes/ owns that value."""
-    text = (REPO / "kubernetes" / "network_parity.py").read_text()
-    match = re.search(r'^SOURCE_ANNOTATION = "([^"/]+)/network-source"$', text, re.M)
-    assert match, "kubernetes/network_parity.py no longer names SOURCE_ANNOTATION"
-    return match.group(1)
-
 SERVICE_PORT = 443
 #: What the rendering fills in for swarm-api's route (jev-contract.md section
 #: 4.1): the load balancer's reserved address and swarm-api's egress range.
@@ -94,11 +86,13 @@ def _cluster_ip() -> str:
 
 
 def _rendered(text: str | None = None) -> list[dict[str, Any]]:
-    """The manifest as terraform/infra/tailscale.tf renders it."""
+    """The manifest as terraform/infra/tailscale.tf renders it, with the label
+    prefix kubernetes/apply.sh fills before the apply."""
     text = (text if text is not None else TEMPLATE.read_text()).replace("__TAILNET_FQDN__", TARGET)
     text = text.replace("__DECISION_API_CLUSTER_IP__", _cluster_ip())
     text = text.replace("__DECISION_API_ROUTE_ADDRESS__", ROUTE_ADDRESS)
     text = text.replace("__SWARM_API_EGRESS_CIDR__", API_CIDR)
+    text = text.replace("__LABEL_PREFIX__", LABEL_PREFIX)
     return [d for d in yaml.safe_load_all(text) if d]
 
 
@@ -119,9 +113,10 @@ def _containers(pod: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def test_the_template_has_four_placeholders_and_terraform_fills_every_one():
+    """And the label prefix, which kubernetes/apply.sh fills, not terraform."""
     assert set(re.findall(r"__[A-Z0-9_]+__", TEMPLATE.read_text())) == {
         "__TAILNET_FQDN__", "__DECISION_API_CLUSTER_IP__",
-        "__DECISION_API_ROUTE_ADDRESS__", "__SWARM_API_EGRESS_CIDR__"}
+        "__DECISION_API_ROUTE_ADDRESS__", "__SWARM_API_EGRESS_CIDR__", "__LABEL_PREFIX__"}
     tf = TAILSCALE_TF.read_text()
     assert '"__TAILNET_FQDN__", var.tailscale_egress_target' in tf
     assert '"__DECISION_API_CLUSTER_IP__", local.decision_api_cluster_ip' in tf
@@ -253,7 +248,7 @@ def test_one_service_decision_api_on_443_to_the_forwarder():
     assert service["spec"]["ports"] == [
         {"name": "https", "protocol": "TCP", "port": SERVICE_PORT, "targetPort": FORWARD_PORT}
     ]
-    assert service["metadata"]["annotations"][f"{_annotation_domain()}/tailnet-fqdn"] == TARGET
+    assert service["metadata"]["annotations"][f"{LABEL_PREFIX}/tailnet-fqdn"] == TARGET
     ports = [p["containerPort"] for c in _pod()["containers"] for p in c.get("ports", [])]
     assert ports == [FORWARD_PORT]
 
@@ -277,7 +272,7 @@ def test_swarm_api_reaches_the_same_forwarder_through_an_internal_passthrough_lo
     spec = service["spec"]
     assert spec["type"] == "LoadBalancer"
     assert service["metadata"]["annotations"]["networking.gke.io/load-balancer-type"] == "Internal"
-    assert service["metadata"]["annotations"][f"{_annotation_domain()}/tailnet-fqdn"] == TARGET
+    assert service["metadata"]["annotations"][f"{LABEL_PREFIX}/tailnet-fqdn"] == TARGET
     assert spec["loadBalancerIP"] == ROUTE_ADDRESS
     assert spec["externalTrafficPolicy"] == "Cluster"
     assert spec["selector"] == APP

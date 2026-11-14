@@ -156,7 +156,7 @@ spec:
       annotations:
         # A changed setting changes this, so terraform's apply also rolls the
         # pod; the in-place refresh above covers an emergency edit.
-        swarm.saga.xyz/config-sha256: __EGRESS_CONFIG_SHA256__
+        __LABEL_PREFIX__/config-sha256: __EGRESS_CONFIG_SHA256__
     spec:
       serviceAccountName: swarm-egress
       automountServiceAccountToken: false

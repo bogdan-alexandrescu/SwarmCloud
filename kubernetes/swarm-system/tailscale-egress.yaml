@@ -187,7 +187,7 @@ metadata:
     managed-by: swarm-terraform
     app.kubernetes.io/name: decision-api-egress
   annotations:
-    swarm.saga.xyz/tailnet-fqdn: __TAILNET_FQDN__
+    __LABEL_PREFIX__/tailnet-fqdn: __TAILNET_FQDN__
 spec:
   type: ClusterIP
   clusterIP: __DECISION_API_CLUSTER_IP__
@@ -218,7 +218,7 @@ metadata:
     app.kubernetes.io/name: decision-api-egress
   annotations:
     networking.gke.io/load-balancer-type: "Internal"
-    swarm.saga.xyz/tailnet-fqdn: __TAILNET_FQDN__
+    __LABEL_PREFIX__/tailnet-fqdn: __TAILNET_FQDN__
 spec:
   type: LoadBalancer
   loadBalancerIP: __DECISION_API_ROUTE_ADDRESS__

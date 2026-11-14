@@ -44,7 +44,21 @@
 #
 # Digests resolved from the registries on 2026-09-15.
 ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84
-ARG NODE_IMAGE=node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+# NODE_IMAGE re-resolved 2026-11-12 (#3929) from registry-1.docker.io: the
+# node:24-bookworm-slim image index and node:24.22.3-bookworm-slim return the
+# same digest, and both the linux/amd64 and linux/arm64 image configs carry
+# NODE_VERSION=24.22.3 (OCI source annotation: nodejs/docker-node.git
+# 1274f3ee "24/bookworm-slim"). The previous digest, 2fe369e9..., was Node
+# 24.21.0 -- below the 24.22.1 floor ContextOS's CLI startup guard enforces
+# (it exits 78 below it). Never a 25.x digest: 24 is the LTS line.
+ARG NODE_IMAGE=node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
+# The Node version NODE_IMAGE's digest carries -- stated, not inferred. The
+# runtime stage re-declares it and fails the build unless `node --version`
+# prints exactly v${NODE_VERSION}, so this line and the digest cannot drift;
+# swarm-api's GET /v1/runtimes and the sc bridge's `swarm profiles` state this
+# same version for every runner image built FROM this one, and unit tests pin
+# them to this line (tests/unit/scripts/test_runner_node_version.py).
+ARG NODE_VERSION=24.22.3
 # 0.12.15, not 0.11.7: the older uv statically links quinn-proto 0.11.14
 # and rustls-webpki 0.103.10, both with fixed HIGH advisories
 # (GHSA-4w2j-m93h-cj5j, GHSA-82j2-j2ch-gfr8) that failed the promote scan
@@ -507,18 +521,43 @@ RUN echo "apt layer of ${APT_REFRESH}" \
 # Node LTS, copied from the pinned official image rather than from a script.
 COPY --from=nodebin /usr/local/bin/node /usr/local/bin/node
 COPY --from=nodebin /usr/local/lib/node_modules /usr/local/lib/node_modules
+# NODE_VERSION is the global ARG above (bare here, so it takes that value; a
+# global ARG is only visible to FROM lines until a stage re-declares it). The
+# copied node must be exactly that version, or the image would ship a Node the
+# catalogue does not state.
+ARG NODE_VERSION
 RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
- && node --version && npm --version
+ && node --version && npm --version \
+ && if [ -z "${NODE_VERSION}" ] || [ "$(node --version)" != "v${NODE_VERSION}" ]; then \
+      echo "node is $(node --version), NODE_VERSION says v${NODE_VERSION}: re-pin NODE_IMAGE and NODE_VERSION together" >&2; \
+      exit 1; \
+    fi
 
+# RE-CHECKED 2026-11-12 for the Node 24.22.3 re-pin (#3929): Node 24.22.3
+# bundles npm 11.19.1 (https://nodejs.org/dist/index.json), and the real
+# npm-11.19.1.tgz's node_modules carries brace-expansion 5.0.9, undici 6.28.0,
+# tar 7.5.22 and ip-address 10.5.0 (no nested second copy of any of them),
+# with minimatch 10.2.5 (brace-expansion ^5.0.5), balanced-match 4.0.4,
+# node-gyp 12.4.0 (undici ^6.25.0) and socks 2.8.9 (ip-address ^10.1.1) --
+# the same consumers and ranges as npm 11.19.0. So brace-expansion 5.0.12,
+# undici 6.29.1 and ip-address 10.7.2 below are still newer than what npm
+# ships and API-compatible, and stay. tar is NOT replaced any more: npm 11.19.1
+# already bundles 7.5.22, the version this step used to install, so the build
+# now only asserts the bundled copy is not below 7.5.22 (TAR_MIN_VERSION) --
+# a later npm that ships a newer tar is kept, never downgraded. The history
+# below is what was checked for npm 11.19.0 (Node 24.21.0) and is kept for the
+# reasoning behind each replacement.
+#
 # npm bundles its own copy of brace-expansion, hoisted to
 # node_modules/npm/node_modules/brace-expansion -- not a Debian package, so
-# `apt-get upgrade` above never touches it. The copy NODE_IMAGE carries is
-# 5.0.7 (verified against the exact bundled npm: NODE_IMAGE resolves to Node
-# 24.21.0 -- read from the image's OCI source annotation, which points at
-# nodejs/docker-node.git 93a7bafc "24/bookworm-slim" -- and Node 24.21.0 bundles
-# npm 11.19.0 per https://nodejs.org/dist/index.json; npm@11.19.0's own
-# published tree carries brace-expansion 5.0.7, matching trivy exactly), which
+# `apt-get upgrade` above never touches it. The copy the previous NODE_IMAGE
+# carried was 5.0.7 (verified against the exact bundled npm: that digest
+# resolved to Node 24.21.0 -- read from the image's OCI source annotation,
+# which pointed at nodejs/docker-node.git 93a7bafc "24/bookworm-slim" -- and
+# Node 24.21.0 bundles npm 11.19.0 per https://nodejs.org/dist/index.json;
+# npm@11.19.0's own published tree carries brace-expansion 5.0.7, matching
+# trivy exactly; npm 11.19.1 now carries 5.0.9), which
 # has CVE-2026-102276 (HIGH: stack exhaustion DoS from a crafted brace
 # pattern, fixed upstream in 5.0.10) and CVE-2026-102278 (uncontrolled
 # recursion in nested patterns, fixed in 5.0.11). No published npm release
@@ -599,11 +638,9 @@ RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 #   - tar 7.5.19 (node_modules/npm/node_modules/tar): uncontrolled recursion
 #     in mapHas/filesFilter, an uncatchable stack-overflow DoS from a crafted
 #     long-path tar with member selection (GHSA-r292-9mhp-454m, fixed
-#     >7.5.20). Bumped to 7.5.22 (latest). tar's own "dependencies" are
-#     identical at 7.5.19 and 7.5.22 (chownr ^3.0.0, yallist ^5.0.0, minipass
-#     ^7.1.2, minizlib ^3.1.0, @isaacs/fs-minipass ^4.0.0), so npm's
-#     already-bundled copies of those satisfy the upgrade with nothing new
-#     vendored.
+#     >7.5.20). Was bumped to 7.5.22 here; npm 11.19.1 (Node 24.22.3) bundles
+#     7.5.22 itself, so the replacement is gone and TAR_MIN_VERSION keeps the
+#     floor.
 #   - ip-address 10.2.0 (node_modules/npm/node_modules/ip-address): the worst
 #     of eight advisories on this bundled version is HIGH
 #     (GHSA-mwp4-54f8-5fhr, leading-zero octet decoding lets Address4 admit
@@ -629,8 +666,9 @@ ARG BRACE_EXPANSION_SHA512=628bd0debce168b308ac38cd0cc90d4b4d6d79af77aa11211b9c7
 # dependencies (registry package.json), same index.js exports.
 ARG UNDICI_VERSION=6.29.1
 ARG UNDICI_SHA512=12f46552dfd0a8012f5dd41e44c6147f0390b1fce90f3b7292b1b6a3018413fac1381a18bfdb85dfd673b0d0e1e254c51e14ebd973998ca91882e783d7666618
-ARG TAR_VERSION=7.5.22
-ARG TAR_SHA512=3053bf433bed00e9896e484e6824ef6c670537d2fd6fe26e9c8b03c1a2a58d239d70b31e6b7349d64f54b33feb8dd7d25d3ab875fcdf792ed6e29e1838000778
+# The lowest tar npm's bundled copy may be (GHSA-r292-9mhp-454m is fixed
+# >7.5.20); npm 11.19.1 ships exactly this, so nothing is replaced.
+ARG TAR_MIN_VERSION=7.5.22
 ARG IP_ADDRESS_VERSION=10.7.2
 ARG IP_ADDRESS_SHA512=ec7ff68054888adc5cd211b79ce2358254bc40ba3f10704514b93cbc45235d8ff1bb401d2fc8d9f54d48cced8f526d1dd83fe87d070089f6f483a38192df14ef
 RUN BE_DIR=/usr/local/lib/node_modules/npm/node_modules/brace-expansion \
@@ -639,27 +677,22 @@ RUN BE_DIR=/usr/local/lib/node_modules/npm/node_modules/brace-expansion \
  && IPADDR_DIR=/usr/local/lib/node_modules/npm/node_modules/ip-address \
  && BE_TGZ="/tmp/brace-expansion-${BRACE_EXPANSION_VERSION}.tgz" \
  && UNDICI_TGZ="/tmp/undici-${UNDICI_VERSION}.tgz" \
- && TAR_TGZ="/tmp/tar-${TAR_VERSION}.tgz" \
  && IPADDR_TGZ="/tmp/ip-address-${IP_ADDRESS_VERSION}.tgz" \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${BE_TGZ}" \
       "https://registry.npmjs.org/brace-expansion/-/brace-expansion-${BRACE_EXPANSION_VERSION}.tgz" \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${UNDICI_TGZ}" \
       "https://registry.npmjs.org/undici/-/undici-${UNDICI_VERSION}.tgz" \
- && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${TAR_TGZ}" \
-      "https://registry.npmjs.org/tar/-/tar-${TAR_VERSION}.tgz" \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${IPADDR_TGZ}" \
       "https://registry.npmjs.org/ip-address/-/ip-address-${IP_ADDRESS_VERSION}.tgz" \
  && echo "${BRACE_EXPANSION_SHA512}  ${BE_TGZ}" | sha512sum -c - \
  && echo "${UNDICI_SHA512}  ${UNDICI_TGZ}" | sha512sum -c - \
- && echo "${TAR_SHA512}  ${TAR_TGZ}" | sha512sum -c - \
  && echo "${IP_ADDRESS_SHA512}  ${IPADDR_TGZ}" | sha512sum -c - \
- && rm -rf "${BE_DIR}" "${UNDICI_DIR}" "${TAR_DIR}" "${IPADDR_DIR}" \
- && mkdir -p "${BE_DIR}" "${UNDICI_DIR}" "${TAR_DIR}" "${IPADDR_DIR}" \
+ && rm -rf "${BE_DIR}" "${UNDICI_DIR}" "${IPADDR_DIR}" \
+ && mkdir -p "${BE_DIR}" "${UNDICI_DIR}" "${IPADDR_DIR}" \
  && tar -xzf "${BE_TGZ}" -C "${BE_DIR}" --strip-components=1 \
  && tar -xzf "${UNDICI_TGZ}" -C "${UNDICI_DIR}" --strip-components=1 \
- && tar -xzf "${TAR_TGZ}" -C "${TAR_DIR}" --strip-components=1 \
  && tar -xzf "${IPADDR_TGZ}" -C "${IPADDR_DIR}" --strip-components=1 \
- && rm -f "${BE_TGZ}" "${UNDICI_TGZ}" "${TAR_TGZ}" "${IPADDR_TGZ}" \
+ && rm -f "${BE_TGZ}" "${UNDICI_TGZ}" "${IPADDR_TGZ}" \
  && node -e "\
 const assertVersion = (dir, want) => { \
   const pkg = require(dir + '/package.json'); \
@@ -681,7 +714,13 @@ for (const [name, sym] of [['Agent', Agent], ['EnvHttpProxyAgent', EnvHttpProxyA
 const probeAgent = new Agent(); \
 probeAgent.close().catch(() => {}); \
 console.log('undici', undiciV, 'ok'); \
-const tarV = assertVersion('${TAR_DIR}', '${TAR_VERSION}'); \
+const atLeast = (have, floor) => { \
+  const h = have.split('.').map(Number), f = floor.split('.').map(Number); \
+  for (let i = 0; i < 3; i++) { if (h[i] !== f[i]) { return h[i] > f[i]; } } \
+  return true; \
+}; \
+const tarV = require('${TAR_DIR}/package.json').version; \
+if (!atLeast(tarV, '${TAR_MIN_VERSION}')) { throw new Error('npm bundles tar ' + tarV + ', below ${TAR_MIN_VERSION} (GHSA-r292-9mhp-454m)'); } \
 const tarLib = require('${TAR_DIR}'); \
 for (const name of ['c', 'x', 'create', 'extract']) { \
   if (typeof tarLib[name] !== 'function') { throw new Error('tar has no ' + name + '() export'); } \
@@ -1166,7 +1205,11 @@ ARG CHECKOV_VERSION=3.3.17
 # resolved certifi 2026.10.18, and the image scan refused the base images on
 # GHSA-6q48-6c7w-9gw2 (CRITICAL: bundled emSign root CAs with compromised keys),
 # fixed in certifi 2026.10.19, published 2026-10-20T02:24Z.
-ARG CHECKOV_EXCLUDE_NEWER=2026-10-21T00:00:00Z
+# MOVED 2026-11-13 to 2026-11-04T00:00:00Z, checkov unchanged: the 10-21 cutoff
+# resolved soupsieve 3.0.3, and the image scan refused agent-runtime-browser,
+# agent-runtime-indexer and agent-runtime-lightpanda on CVE-2026-126190 (HIGH),
+# fixed in soupsieve 4.0.0, published 2026-11-03T14:28Z.
+ARG CHECKOV_EXCLUDE_NEWER=2026-11-04T00:00:00Z
 RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_DOWNLOADS=never \
     UV_CACHE_DIR=/tmp/uv-cache \
       uv tool install --python /usr/local/bin/python3.11 \

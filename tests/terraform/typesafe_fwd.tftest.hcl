@@ -208,7 +208,7 @@ run "served_swarm_api_mints_and_the_manifest_renders" {
   assert {
     condition = (
       output.swarm_typesafe_fwd_manifest != null
-      && length(regexall("__[A-Z0-9_]+__", output.swarm_typesafe_fwd_manifest)) == 0
+      && length(regexall("__[A-Z0-9_]+__", replace(output.swarm_typesafe_fwd_manifest, "__LABEL_PREFIX__", ""))) == 0
       && strcontains(output.swarm_typesafe_fwd_manifest, "swarm-typesafe-fwd@sha256:9999")
       && strcontains(output.swarm_typesafe_fwd_manifest, "projects/example-project/secrets/swarm-typesafe-fwd-key/versions/latest")
       && strcontains(output.swarm_typesafe_fwd_manifest, "value: example-project")
@@ -387,7 +387,7 @@ run "served_on_a_cluster_with_fqdn_policy_the_manifest_carries_its_egress_policy
       && strcontains(output.swarm_typesafe_fwd_manifest, "\n  name: swarm-typesafe-fwd-egress\n")
       && strcontains(output.swarm_typesafe_fwd_manifest, "kind: FQDNNetworkPolicy")
       && strcontains(output.swarm_typesafe_fwd_manifest, "\n  name: swarm-typesafe-fwd-egress-hosts\n")
-      && length(regexall("__[A-Z0-9_]+__", output.swarm_typesafe_fwd_manifest)) == 0
+      && length(regexall("__[A-Z0-9_]+__", replace(output.swarm_typesafe_fwd_manifest, "__LABEL_PREFIX__", ""))) == 0
     )
     error_message = "with gke_enable_fqdn_network_policy the forwarder's manifest carries swarm-typesafe-fwd-egress and swarm-typesafe-fwd-egress-hosts"
   }

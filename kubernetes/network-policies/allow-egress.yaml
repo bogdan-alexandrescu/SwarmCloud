@@ -102,11 +102,11 @@ metadata:
   # cluster, and `offline-render-not-for-apply` for a render that was given
   # none (make lint, CI); apply.sh refuses to apply the latter.
   annotations:
-    swarm.saga.xyz/network-source: __NETWORK_SOURCE__
-    swarm.saga.xyz/pod-cidr: __POD_CIDR__
-    swarm.saga.xyz/service-cidr: __SERVICE_CIDR__
-    swarm.saga.xyz/cluster-dns-ip: __CLUSTER_DNS_IP__
-    swarm.saga.xyz/node-local-dns-ip: __NODE_LOCAL_DNS_IP__
+    __LABEL_PREFIX__/network-source: __NETWORK_SOURCE__
+    __LABEL_PREFIX__/pod-cidr: __POD_CIDR__
+    __LABEL_PREFIX__/service-cidr: __SERVICE_CIDR__
+    __LABEL_PREFIX__/cluster-dns-ip: __CLUSTER_DNS_IP__
+    __LABEL_PREFIX__/node-local-dns-ip: __NODE_LOCAL_DNS_IP__
 spec:
   # Every pod in the namespace, selected the same way the deny policy selects
   # them. A `matchLabels` selector here would be a trap: the GKE manifest in

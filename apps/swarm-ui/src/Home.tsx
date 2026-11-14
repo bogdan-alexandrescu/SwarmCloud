@@ -29,7 +29,7 @@
  * read and a member's refusal draw no Requests at all, since neither may
  * decide one.
  */
-import { useCallback, useEffect, useId, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useState, type MouseEvent, type ReactNode } from 'react'
 import {
   answerQuestion,
   approveApproval,
@@ -52,6 +52,7 @@ import {
 import { approvalAddress } from './Approvals'
 import { Button, ButtonLink, Card, CardLink, StatTile, type TileValue } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
+import { guidePath, openGuide } from './Guide'
 import { handoffOf, humanReady, needsYou, ownerQuestionsHold, type HeldQuestion } from './Handoff'
 import { LiveControl } from './LiveBrowser'
 import { WorkLists } from './HomeWorkLists'
@@ -919,6 +920,15 @@ function StartCard({ profile }: { profile: Profile | null }) {
   )
 }
 
+/** The user guide's page for a person with no workspace yet, opened in the console without a reload. */
+const STARTER_GUIDE = guidePath('start-here')
+
+function openInApp(e: MouseEvent<HTMLAnchorElement>) {
+  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+  e.preventDefault()
+  openGuide(e.currentTarget.getAttribute('href') ?? STARTER_GUIDE)
+}
+
 /**
  * The workspaces the person belongs to, with their role in each. Setup
  * progress is read for the acting workspace only (`GET /v1/onboarding`): a
@@ -931,7 +941,14 @@ function YourWorkspaces({ profile, round }: { profile: Profile | null; round: nu
   return (
     <Card>
       <Head title="Your workspaces" count={ws === null ? null : ws.length} />
-      {ws !== null && ws.length === 0 && <p className="hm-empty">No workspace yet.</p>}
+      {ws !== null && ws.length === 0 && (
+        <p className="hm-empty">
+          No workspace yet.{' '}
+          <ButtonLink size="sm" href={STARTER_GUIDE} onClick={openInApp}>
+            Read the starter guide
+          </ButtonLink>
+        </p>
+      )}
       <ul className="hm-wslist">
         {(ws ?? []).map((w) => {
           const total = w.is_acting && ob !== null && Array.isArray(ob.steps) ? ob.steps.filter(stepRequired).length : null

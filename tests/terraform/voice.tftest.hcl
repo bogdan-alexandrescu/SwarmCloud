@@ -231,8 +231,8 @@ run "on_every_labelled_resource_carries_managed_by" {
   }
 
   assert {
-    condition     = length(regexall("__[A-Z0-9_]+__", output.swarm_voice_manifest)) == 0
-    error_message = "every placeholder in swarm-voice.yaml and swarm-system-voice.yaml is rendered"
+    condition     = length(regexall("__[A-Z0-9_]+__", replace(output.swarm_voice_manifest, "__LABEL_PREFIX__", ""))) == 0
+    error_message = "every placeholder in swarm-voice.yaml and swarm-system-voice.yaml is rendered but __LABEL_PREFIX__, which kubernetes/apply.sh fills"
   }
 }
 
@@ -341,4 +341,69 @@ run "voice_it_runs_only_on_gke" {
   }
 
   expect_failures = [check.voice_it_needs_gke]
+}
+
+# THE PAUSE'S SWITCH (swarm_voice/main.py, PAUSE_SWITCH): swarm-voice arms the
+# automatic pause only when VOICE_PAUSE is "on", and `voice_pause` is what
+# renders it into the StatefulSet's container. On by default (the owner's
+# answer of 11 November 2026, its two conditions merged on 12 November 2026);
+# "off" keeps the paid voice open while delegated work runs; nothing else.
+run "the_pause_is_on_by_default" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    voice_it = "on"
+  }
+
+  assert {
+    condition = [
+      for e in one([
+        for d in [for s in split("\n---\n", output.swarm_voice_manifest) : yamldecode(s)] :
+        [for c in d.spec.template.spec.containers : c.env if c.name == "voice"][0] if d.kind == "StatefulSet"
+      ]) : e.value if e.name == "VOICE_PAUSE"
+    ] == ["on"]
+    error_message = "swarm-voice's container carries VOICE_PAUSE=on, once, by default"
+  }
+}
+
+run "the_pause_is_off_when_voice_pause_says_off" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    voice_it    = "on"
+    voice_pause = "off"
+  }
+
+  assert {
+    condition = [
+      for e in one([
+        for d in [for s in split("\n---\n", output.swarm_voice_manifest) : yamldecode(s)] :
+        [for c in d.spec.template.spec.containers : c.env if c.name == "voice"][0] if d.kind == "StatefulSet"
+      ]) : e.value if e.name == "VOICE_PAUSE"
+    ] == ["off"]
+    error_message = "swarm-voice's container carries VOICE_PAUSE=off, once, when voice_pause is \"off\""
+  }
+}
+
+run "voice_pause_refuses_any_other_value" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    voice_it    = "on"
+    voice_pause = "true"
+  }
+
+  expect_failures = [var.voice_pause]
 }

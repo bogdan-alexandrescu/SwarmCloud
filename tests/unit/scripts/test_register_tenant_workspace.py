@@ -26,8 +26,8 @@ from __future__ import annotations
 
 import copy
 import fcntl
-import functools
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
@@ -48,29 +48,12 @@ SHIMS = REPO / "scripts" / "lib" / "guard-bin"
 WORLD_PY = Path(__file__).resolve().parent / "fixtures" / "workspace_world.py"
 
 
-@functools.cache
-def _label_key() -> str:
-    """The workspace label key kubernetes/render.py writes on a job-made
-    Namespace (WORKSPACE_LABEL), read from the module rather than restated.
-
-    The key A7 renders and A9 and the guard (C7) read back. Read on first use,
-    not at import: render.py loads the scheduler, and every collection of
-    tests/unit/scripts would pay for it (test_collection_stays_cheap.py)."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("swarm_tests_render", REPO / "kubernetes" / "render.py")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    key = module.WORKSPACE_LABEL
-    assert key.endswith("/workspace"), key
-    return key
-
-
 def _tfvars() -> dict:
     """The placeholder deployment's tfvars, with the render's label prefix: the
     job reads its prefix from the deployment's tfvars (label_prefix)."""
-    return {**placeholder_deployment.TFVARS, "label_prefix": _label_key().rsplit("/", 1)[0]}
+    return {**placeholder_deployment.TFVARS, "label_prefix": LABEL_PREFIX}
+
+
 DEPLOYER_RBAC = REPO / "kubernetes" / "rbac" / "provisioner-rbac.yaml"
 #: Where every Python a run starts (the fake world on each of a run's ~130
 #: gcloud, kubectl and curl calls, kubernetes/render.py) keeps its bytecode.
@@ -85,6 +68,12 @@ PYCACHE = Path(tempfile.gettempdir()) / f"swarm-test-pycache-{os.getuid()}"
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
 PROJECT = "example-project"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: The label-key prefix the job's fixed environment carries (images/workspace-apply/
+#: entry.py, from its command's --label-prefix): the placeholder organisation's.
+LABEL_PREFIX = f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}"
 WORKSPACE = "w-3f9a2c"
 PRINCIPAL = "alice@example.com"
 TENANT = "u-alice"
@@ -297,6 +286,7 @@ class Job:
             GKE_LOCATION="us-central1",
             SWARM_CALL_GUARD=str(self.expect),
             SWARM_CALL_GUARD_ENFORCE="1",
+            SWARM_LABEL_PREFIX=LABEL_PREFIX,
             SWARM_WORKSPACE_RETRY_DELAYS="0 0 0",
             FAKE_WORLD=str(self.world_file),
             PYTHONPYCACHEPREFIX=str(PYCACHE),
@@ -815,6 +805,65 @@ def test_an_unreachable_cluster_fails_retryable_at_the_namespace(job: Job) -> No
     assert _field(record, "failure", "retryable") is True
     assert job.read()["k8s"] == {}
     assert job.doc(f"tenants/{TENANT}") is None, "A8 runs only after the namespace (§4.2's order)"
+
+
+#: A placeholder prefix other than the deployment's swarm.<domain>.
+OTHER_PREFIX = "labels.example.net"
+
+
+def _unconfigured(job: Job) -> dict[str, str]:
+    """The job's environment with no label-key prefix configured."""
+    return {k: v for k, v in job.env.items() if k not in ("SWARM_LABEL_PREFIX", "SWARM_ORG_DOMAIN")}
+
+
+def _key_prefixes(world: dict) -> set[str]:
+    """The prefixes of the platform's label and annotation keys on every object A7 made."""
+    found = set()
+    for obj in world["k8s"].values():
+        meta = obj.get("metadata") or {}
+        for part in ("labels", "annotations"):
+            for key in meta.get(part) or {}:
+                head = key.split("/", 1)[0] if "/" in key else ""
+                if head and not head.endswith(("kubernetes.io", "k8s.io", "googleapis.com", "gke.io")):
+                    found.add(head)
+    return found
+
+
+def test_a_personal_workspace_with_nothing_configured_renders_under_the_tfvars_prefix(job: Job) -> None:
+    """The owner's "Tfvars everywhere" (12 November 2026): a personal workspace's
+    expectation names no key, so ws_load_names takes the prefix from the
+    deployment's tfvars (deployment_label_prefix) when nothing is configured."""
+    write_placeholder_tfvars(job.config, ["dev"], {**_tfvars(), "label_prefix": OTHER_PREFIX})
+    proc = job.create(env=_unconfigured(job))
+    out = _out(proc)
+    assert proc.returncode == 0, out
+    assert _field(job.record(), "state") == "ready", out
+    assert _key_prefixes(job.read()) == {OTHER_PREFIX}, out
+
+
+def test_a_personal_workspace_whose_configured_prefix_is_not_the_tfvars_one_stops_after_a1(job: Job) -> None:
+    proc = job.create(env={**job.env, "SWARM_LABEL_PREFIX": OTHER_PREFIX})
+    out = _out(proc)
+    assert proc.returncode != 0, out
+    assert "the configured label-key prefix is not the one this deployment's tfvars name" in out, out
+    assert "nothing past A1 can run" in out, out
+    assert "== A2" not in out, out
+    assert job.read()["k8s"] == {}
+
+
+def test_no_label_prefix_anywhere_stops_the_run_after_a1_before_any_write(job: Job) -> None:
+    """Neither the job's fixed environment (a job command without --label-prefix)
+    nor the deployment's tfvars name a prefix: the run stops with the one rule's
+    fixed sentence before A2, and nothing in the cluster or IAM is made under a
+    guessed key."""
+    write_placeholder_tfvars(job.config, ["dev"], {"platform_owner": placeholder_deployment.TFVARS["platform_owner"]})
+    proc = job.create(env=_unconfigured(job))
+    out = _out(proc)
+    assert proc.returncode != 0, out
+    assert "the label-key prefix is not configured: set SWARM_LABEL_PREFIX" in out, out
+    assert "nothing past A1 can run" in out, out
+    assert "== A2" not in out, out
+    assert job.read()["k8s"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1817,7 +1866,7 @@ def test_a_service_gets_a_team_slot_with_no_twin_and_a_labelled_namespace(servic
     assert _members(world["secrets"][S_SLOT]["policy"], "roles/secretmanager.secretAccessor") == {
         f"serviceAccount:{S_WORKER}"}
     namespace = world["k8s"][f"Namespace//{S_NAMESPACE}"]
-    assert namespace["metadata"]["labels"][_label_key()] == WORKSPACE
+    assert namespace["metadata"]["labels"][f"{LABEL_PREFIX}/workspace"] == WORKSPACE
     tenant = world["firestore"][f"tenants/{S_TENANT}"]["fields"]
     assert (_field(tenant, "kind"), _field(tenant, "principal"), _field(tenant, "max_active"),
             _field(tenant, "service_account"), _field(tenant, "display_name")) == (
@@ -1984,9 +2033,9 @@ def test_a_group_create_makes_its_team_slot_label_and_group_tenant(group_created
     assert world["secrets"][twin]["policy"].get("bindings", []) == []
     # A7: the label, on the Namespace and nowhere else.
     labelled = [k for k, v in world["k8s"].items()
-                if _label_key() in ((v.get("metadata") or {}).get("labels") or {})]
+                if f"{LABEL_PREFIX}/workspace" in ((v.get("metadata") or {}).get("labels") or {})]
     assert labelled == [f"Namespace//{G_NAMESPACE}"], labelled
-    assert world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"][_label_key()] == WORKSPACE
+    assert world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"][f"{LABEL_PREFIX}/workspace"] == WORKSPACE
     # A8: a group tenant the directory resolves.
     tenant = world["firestore"][f"tenants/{G_TENANT}"]["fields"]
     assert (_field(tenant, "kind"), _field(tenant, "principal"), _field(tenant, "directory_group"),
@@ -2062,6 +2111,21 @@ def test_a1_fails_a_group_whose_directory_check_is_dated_in_the_future(job: Job)
     assert _changes(job.calls("gcloud")) == []
 
 
+def test_a_group_whose_configured_prefix_is_not_the_tfvars_one_stops_after_a1(job: Job) -> None:
+    """The guard wrote the namespace key from the deployment's tfvars; a job
+    whose fixed environment names another prefix would render A7 under a key
+    A9 and the deployer's scope policy do not read. Neither is guessed: the
+    run stops before A2, and nothing is made in the cluster."""
+    job.write(_group_world())
+    proc = job.create(env={**job.env, "SWARM_LABEL_PREFIX": "labels.example.net"})
+    out = _out(proc)
+    assert proc.returncode != 0, out
+    assert "the configured label-key prefix is not the one this deployment's tfvars name" in out, out
+    assert "== A2" not in out, out
+    assert job.read()["k8s"] == {}
+    assert _changes(job.calls("gcloud")) == []
+
+
 def test_verify_never_takes_the_migrated_shortcut_for_a_service(job: Job) -> None:
     """Only a person's record predates approval (§3.3): a service record marked
     migrated still needs the platform owner's approval."""
@@ -2077,7 +2141,7 @@ def test_verify_never_takes_the_migrated_shortcut_for_a_service(job: Job) -> Non
 def test_verify_finds_a_group_namespace_without_its_label(job: Job, group_created: dict) -> None:
     world = copy.deepcopy(group_created["world"])
     world["calls"], world["writes"] = [], []
-    del world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"][_label_key()]
+    del world["k8s"][f"Namespace//{G_NAMESPACE}"]["metadata"]["labels"][f"{LABEL_PREFIX}/workspace"]
     job.write(world)
     proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
     assert proc.returncode == 1, _out(proc)

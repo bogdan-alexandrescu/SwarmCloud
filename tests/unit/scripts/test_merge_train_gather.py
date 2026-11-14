@@ -34,6 +34,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "merge-train.sh"
 RUNBOOK = REPO / "docs" / "runbooks" / "merge-train.md"
+GATHER_FILE = REPO / "apps" / "swarm-api" / "swarm_api" / "merge_train_gather.json"
 GH_REPO = "example-org/example-repo"
 
 FAKE_GH = """#!/usr/bin/env bash
@@ -274,10 +275,50 @@ def test_the_tick_checks_the_settings_before_it_reads_anything():
 
 
 def test_each_setting_is_explained_next_to_its_default():
+    """The defaults are stated once, in the file swarm-api's merge wake tick
+    reads too (swarm_api.trainboard, board on time, 12 November 2026)."""
     code = SCRIPT.read_text()
-    for knob, default in (("MERGE_TRAIN_MIN_PRS", "6"), ("MERGE_TRAIN_MAX_WAIT_MINUTES", "20")):
-        line = next(i for i, text in enumerate(code.splitlines()) if f"${{{knob}:-{default}}}" in text)
-        assert code.splitlines()[line - 1].startswith("#"), knob
+    shared = json.loads(GATHER_FILE.read_text())
+    assert (shared["min_prs"], shared["max_wait_minutes"]) == (6, 20)
+    assert "apps/swarm-api/swarm_api/merge_train_gather.json" in code
+    for knob, key in (("MERGE_TRAIN_MIN_PRS", "min_prs"),
+                      ("MERGE_TRAIN_MAX_WAIT_MINUTES", "max_wait_minutes")):
+        line = next(i for i, text in enumerate(code.splitlines())
+                    if f"${{{knob}:-$(gather_default {key})}}" in text)
+        assert code.splitlines()[line - 1].strip().startswith("#"), knob
+
+
+def test_without_the_shared_file_the_script_stops_and_says_why(tmp_path):
+    _need("bash", "jq")
+    copy = tmp_path / "scripts"
+    shutil.copytree(REPO / "scripts", copy, ignore=shutil.ignore_patterns("__pycache__"))
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MERGE_TRAIN_")}
+    proc = subprocess.run(["bash", str(copy / "merge-train.sh"), "gather", "--prs", "x",
+                           "--chosen", "y"], capture_output=True, text=True, timeout=60,
+                          check=False, env=env)
+    assert proc.returncode != 0
+    assert "merge_train_gather.json" in proc.stderr
+
+
+def test_the_judge_needs_no_shared_file(tmp_path):
+    """auto-merge.yml runs `judge` from a checkout of scripts/ alone: only
+    `tick` and `gather` read the gather's defaults."""
+    _need("bash", "jq")
+    copy = tmp_path / "scripts"
+    shutil.copytree(REPO / "scripts", copy, ignore=shutil.ignore_patterns("__pycache__"))
+    runs = tmp_path / "check-runs.json"
+    runs.write_text(json.dumps({"check_runs": [{"id": 1, "name": "ci-gate", "status": "completed",
+                                                "conclusion": "success", "check_suite": {"id": 1}}]}))
+    statuses = tmp_path / "status.json"
+    statuses.write_text(json.dumps({"state": "success", "statuses": []}))
+    required = tmp_path / "required.txt"
+    required.write_text("ci-gate\n")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MERGE_TRAIN_")}
+    proc = subprocess.run(["bash", str(copy / "merge-train.sh"), "judge", "--check-runs", str(runs),
+                           "--statuses", str(statuses), "--required", str(required)],
+                          capture_output=True, text=True, timeout=60, check=False, env=env)
+    assert "merge_train_gather.json" not in proc.stderr, proc.stderr
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_the_runbook_names_both_settings_and_how_to_change_them():

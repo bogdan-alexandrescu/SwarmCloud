@@ -248,6 +248,7 @@ from swarm_common.admission import _snapshot
 
 from ..errors import ApiError, Conflict, Forbidden, NotFound, RateLimited, UpstreamUnavailable
 from . import speech_catalogue as cat
+from . import workfeed as vwork
 
 log = logging.getLogger(__name__)
 
@@ -287,6 +288,10 @@ LIVE_STALE_SECONDS = max(idle.seconds for idle in cat.IDLE) + LIVE_STALE_MARGIN_
 ACTIVITY_FIELDS = ("activity_at", "heartbeat_at", "live_at", "created_at")
 
 END_BY_PERSON = "ended_by_person"
+#: The holder's pagehide end (voice-it.md §3.12.2, "Closing the tab").
+END_TAB_CLOSED = "tab_closed"
+#: The causes the person's own end route may name; every other is swarm-api's own.
+PERSON_END_CAUSES = (END_BY_PERSON, END_TAB_CLOSED)
 #: Live with no activity for LIVE_STALE_SECONDS: ended by the next start or the sweep.
 END_ABANDONED = "abandoned"
 END_VOICE_UNREACHABLE = "voice_unreachable"
@@ -308,6 +313,8 @@ VOICE_PAUSED = "paused"
 VOICE_REPORTS = ("paused", "waking", "listening")
 #: What wakes a paused voice from the browser (swarm_voice.live.WAKE_CAUSES).
 REOPEN_CAUSES = ("result", "speech", "resume")
+#: A session's stream events (store.EVENTS; store imports this module).
+_EVENTS = "events"
 #: The closed pause intervals kept on the document; a session that pauses
 #: more often folds the oldest into `paused_seconds_before`, so the document
 #: stays small whatever its length.
@@ -1444,7 +1451,10 @@ class VoiceSessions:
         """swarm-voice's report through the grant (THE PAUSE): `paused`,
         `waking` or `listening`, at this service's clock. `NotFound` when the
         session is not this person's in this tenant; 409 when it is not a live
-        Live session. Repeating a report changes nothing."""
+        Live session. Repeating a report changes nothing. A change of the
+        reported state appends one `paused` stream event ({voice_state,
+        cause}, stream.py's whitelist) in the same transaction and keeps the
+        state as `voice_report`; a repeated report appends none."""
         if state not in VOICE_REPORTS:
             raise ValueError(f"no Voice it voice state {state!r}")
         session_ref = self._session_ref(project_id, session_id)
@@ -1469,6 +1479,20 @@ class VoiceSessions:
                 fields = _closed_pauses(data, now)
                 if cause == "result":
                     fields.update({"work_running": False, "work_done_at": now})
+            # The stream's `paused` event, once per change of the reported
+            # state (`voice_report`, the last one; before any, what
+            # voice_state says): its state and a known cause, nothing else.
+            last = data.get("voice_report") or ("paused" if data.get("voice_state") == VOICE_PAUSED
+                                                else "listening")
+            if state != last:
+                seq = int(data.get("event_seq") or 0) + 1
+                fields.update({"voice_report": state, "event_seq": seq})
+                event: dict[str, Any] = {"type": vwork.PAUSED, "voice_state": state}
+                if cause in REOPEN_CAUSES:
+                    event["cause"] = cause
+                txn.set(session_ref.collection(_EVENTS).document(f"{seq:012d}"), {
+                    **event, "seq": seq, "tenant_id": tenant_id, "person": data.get("person"),
+                    "at": now})
             if fields:
                 txn.update(session_ref, fields)
             return {**data, **fields}
@@ -1658,21 +1682,26 @@ class VoiceSessions:
                 return owner[snap.reference.path]
         raise NotFound(f"voice session {session_id!r} not found")
 
-    def end(self, *, tenant_id: str, person: str, session_id: str) -> dict[str, Any]:
+    def end(self, *, tenant_id: str, person: str, session_id: str,
+            cause: str = END_BY_PERSON) -> dict[str, Any]:
+        """The person's own end: End (`ended_by_person`) or the holder's
+        pagehide end (`tab_closed`), nothing else (PERSON_END_CAUSES)."""
+        if cause not in PERSON_END_CAUSES:
+            raise ValueError(f"no Voice it end cause {cause!r} a person may name")
         person = person.strip().lower()
         project_id = self._project_of(tenant_id=tenant_id, person=person, session_id=session_id)
         before = self._close(tenant_id=tenant_id, person=person, project_id=project_id,
-                             session_id=session_id, cause=END_BY_PERSON)
+                             session_id=session_id, cause=cause)
         told = None
         if before is not None:
-            told = self._client.end(session_id, cause=END_BY_PERSON)
+            told = self._client.end(session_id, cause=cause)
             if before.get("mode") == MODE_SPEECH and self._machine is not None:
                 # Stop (§4.5): the machine stops with the session, fenced by
                 # the lease's generation; none held is nothing to stop.
                 holder = self._machine.holder_of(session_id)
                 if holder is not None:
-                    self._machine.stop(holder, cause=END_BY_PERSON)
-            log.info("voice session ended tenant=%s project=%s session=%s voice_told=%s",
-                     tenant_id, project_id, session_id, told)
+                    self._machine.stop(holder, cause=cause)
+            log.info("voice session ended tenant=%s project=%s session=%s cause=%s voice_told=%s",
+                     tenant_id, project_id, session_id, cause, told)
         return {"project_id": project_id, "session_id": session_id, "state": ENDED,
                 "changed": before is not None, "voice_told": told}

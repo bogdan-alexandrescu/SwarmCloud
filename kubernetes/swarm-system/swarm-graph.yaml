@@ -249,7 +249,7 @@ spec:
       annotations:
         # A changed setting changes this, so terraform's render also rolls the
         # pods; the in-place refresh above covers an emergency edit.
-        swarm.saga.xyz/config-sha256: __GRAPH_CONFIG_SHA256__
+        __LABEL_PREFIX__/config-sha256: __GRAPH_CONFIG_SHA256__
     spec:
       serviceAccountName: swarm-graph
       automountServiceAccountToken: false

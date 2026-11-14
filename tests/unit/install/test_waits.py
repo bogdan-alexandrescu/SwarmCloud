@@ -95,3 +95,35 @@ def test_a_wait_names_the_verb_that_resumes_it() -> None:
     assert str(named.value).endswith("Run swarm upgrade again to resume.")
     assert "swarm install" not in str(named.value)
     assert named.value.resume == "swarm upgrade"
+
+
+def test_the_human_countdown_of_a_long_wait_is_not_a_line_every_poll() -> None:
+    """The hand-off waits up to 6 hours, polled every 10 s: the human view
+    prints the countdown on the first poll, when the check's detail changes,
+    and every few minutes, never ~2,160 lines; `--json-events` keeps every poll."""
+    from swarm_install.steps.handoff import CONSOLE
+
+    clock = FakeClock()
+    out = io.StringIO()
+    events = Events(clock.now, out=out)
+    polls = {"n": 0}
+
+    def unfinished():
+        polls["n"] += 1
+        detail = "the App is installed" if polls["n"] >= 100 else ""
+        return type("Seen", (), {"status": UNMET, "detail": detail})()
+
+    with pytest.raises(WaitGaveUp):
+        wait_until("handoff.console", CONSOLE, unfinished, clock=clock, events=events)
+
+    lines = [line for line in out.getvalue().splitlines() if line.startswith("  waiting on handoff.console")]
+    assert len(events.of_kind("wait_countdown")) == CONSOLE.bound_s / CONSOLE.interval_s
+    assert 1 < len(lines) <= CONSOLE.bound_s / (5 * 60) + 2, len(lines)
+    assert "      now: the App is installed" in out.getvalue(), "a changed detail is printed at once"
+
+    json_out = io.StringIO()
+    clock = FakeClock()
+    with pytest.raises(WaitGaveUp):
+        wait_until("handoff.console", CONSOLE, lambda: UNMET, clock=clock,
+                   events=Events(clock.now, json_lines=True, out=json_out))
+    assert len(json_out.getvalue().splitlines()) == CONSOLE.bound_s / CONSOLE.interval_s + 1

@@ -18,10 +18,11 @@
  * -- and they are filled here, at render time: the console address from the
  * page's own origin; the plugin's version from the deployment's public
  * discovery document (`/.well-known/swarmcloud`, `plugin.min_version`, the
- * oldest plugin it accepts, whose `sc-v<version>` tag the release pushed). No
- * read serves the plugin's home yet, so it is the marked placeholder
- * `<owner/name>` the reader replaces. A value nothing served is never an empty
- * string: `github.com/@sc-v#` reads as a command and is not one.
+ * oldest plugin it accepts, whose `sc-v<version>` tag the release pushed), and
+ * the plugin's home from the same read (`plugin.home`, a plain `owner/name`).
+ * A value nothing served, or served malformed, is the marked placeholder the
+ * reader replaces, never an empty string and never the served text:
+ * `github.com/@sc-v#` reads as a command and is not one.
  */
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import { USE_FIXTURES } from './api'
@@ -145,6 +146,9 @@ export const DISCOVERY_PATH = '/.well-known/swarmcloud'
 /** A plain release version, the shape the `sc-v<version>` tag carries. */
 const VERSION = /^\d+\.\d+\.\d+$/
 
+/** A plain `owner/name`: one slash, nothing a URL, a space or markup could carry. */
+const HOME = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/
+
 /**
  * What the deployment serves for the tokens. Never rejects: a missing,
  * refused or malformed document serves nothing, and the page draws the
@@ -157,8 +161,12 @@ export async function loadGuideServed(fetcher: (url: string, init?: RequestInit)
     const body: unknown = JSON.parse(await res.text())
     if (typeof body !== 'object' || body === null || Array.isArray(body)) return {}
     const plugin: unknown = (body as { plugin?: unknown }).plugin
-    const version: unknown = typeof plugin === 'object' && plugin !== null ? (plugin as { min_version?: unknown }).min_version : undefined
-    return typeof version === 'string' && VERSION.test(version.trim()) ? { pluginVersion: version.trim() } : {}
+    if (typeof plugin !== 'object' || plugin === null) return {}
+    const { min_version: version, home } = plugin as { min_version?: unknown; home?: unknown }
+    return {
+      ...(typeof home === 'string' && HOME.test(home) ? { pluginHome: home } : {}),
+      ...(typeof version === 'string' && VERSION.test(version.trim()) ? { pluginVersion: version.trim() } : {}),
+    }
   } catch {
     return {}
   }

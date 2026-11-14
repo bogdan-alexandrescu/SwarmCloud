@@ -297,6 +297,44 @@ rest of the page is still advanced.
 in `var.tenants`. Its runs advance on every read, and an `auto` run in one waits
 for someone to look.
 
+### An APPROVED run whose workflow was never stored (#3612)
+
+`APPROVED` lasts one submission: `_approve` commits the claim, submits the
+compiled workflow, then writes `RUNNING` with its `workflow_id`, all in one
+request. Only an exception raised in that request reaches `FAILED`, so a
+swarm-api that died or timed out between the claim and the `RUNNING` write left
+the run `APPROVED` with no workflow **for ever** -- and, because the territory
+guard counts `APPROVED` as worked, holding every later run that names one of its
+files. One dev run sat there for 24 hours until an operator wrote Firestore by
+hand.
+
+So the tick settles one (`routes/runs.py` `_settle_submission`), once its
+`approved_at` is older than `APPROVED_SUBMISSION_BOUND_SECONDS` = **1800 s**
+(`issueruns.py`). Why 1800: swarm-api's Cloud Run `request_timeout` is 660 s
+(`terraform/infra/main.tf`), so no request is still submitting past it, and
+1800 leaves room on top for the workspace gate and a slow submit. Inside the
+bound the tick leaves the run alone, because a submission may still be in flight.
+
+Past the bound, the tick **adopts before it fails**. A compiled workflow's step
+agents carry `metadata.issue_run.run_id`, so a step agent of the **run's own
+tenant** linked to the run (filtered on `tenant_id`, invariant 9) means the
+workflow *was* stored and only the `RUNNING` write was lost: the run moves to
+`RUNNING` with that workflow and follows it as usual. Failing it instead would
+leave a workflow running that no run tracks. With no such agent, the run moves
+to `FAILED`, by `swarm-api`, with an error saying its workflow submission was
+never stored. `FAILED` creates no demand (invariant 1), so the only effect is
+that the runs behind it are released. Both writes re-check, inside their
+transaction, that the run still has no `workflow_id`, so a late `RUNNING` write
+wins.
+
+**An admin can end one sooner**: `POST /v1/runs/{run_id}:end {"reason"}` (1-500
+characters). Only the selected workspace's `admin` (its own grant, a personal
+workspace's person) or a platform admin may call it; anyone else is 403
+`role_admin_required`. The run is read under the caller's tenant (another
+tenant's run is 404), and only an `APPROVED` run with no workflow is ended:
+anything else is 409 `invalid_run_transition` (a `PLANNED` plan is turned down with
+`plan:reject`). The run ends `FAILED`, its error `ended by <email>: <reason>`.
+
 ## Sweeper: SwarmCloud finds the issues to work on
 
 > **The sweep is a schedule.** Since 2026-10-11 tenant `eng`'s `issue-sweep`
@@ -412,6 +450,18 @@ of any overlapping set always goes, and two waiting runs never wait for each
 other. A `PLANNED` run waiting for a person holds nothing -- nobody knows when,
 or whether, it will be approved -- and a plan whose steps name no files cannot
 be compared and is not held.
+
+An `APPROVED` run holds its files only while its submission can still land: past
+`APPROVED_SUBMISSION_BOUND_SECONDS` with no workflow, the tick fails it (or
+adopts its lost workflow), and the run it held goes on the next tick (see
+"An APPROVED run whose workflow was never stored" above).
+
+**An auto-approval re-checks the hold inside its claim.** The tick skips a run
+whose `approval_hold` blocks (`approvals.hold_blocks`), and `_approve` checks the
+hold before the claim. The claim's transaction then asks `hold_blocks` again of
+the document it read, on **every** auto-approval, not only when the hold differs
+from the one read before. A blocking hold written at any point up to the claim
+therefore leaves the run `PLANNED`, with nothing submitted.
 
 ### The cap
 
@@ -798,6 +848,8 @@ goes green.
 | the plan is approved and the workflow submitted as soon as the plan arrives, approver `auto-approval` | `test_issue_runs.py::test_auto_approval_submits_the_workflow_as_soon_as_the_plan_arrives` |
 | with no reader at all, the tick moves it `PLANNING → PLANNED → APPROVED → RUNNING`, submitted as the run's creator in the run's tenant | `test_issue_run_tick.py::test_an_auto_run_moves_planning_to_planned_to_running_with_no_reader`, `test_issue_run_tick.py::test_the_tick_cannot_submit_into_a_tenant_other_than_the_runs_own` |
 | the tick follows the workflow to `CHECKING` | `test_issue_run_tick.py::test_a_running_run_follows_its_workflow_to_checking_on_the_tick` |
+| an `APPROVED` run whose workflow was never stored is `FAILED` by the tick past the bound, left alone inside it, and its files released to the run it held; a lost `RUNNING` write is repaired from the run's own tenant only | `test_issue_run_stuck_approved.py` |
+| an auto-approval never claims a run with a blocking hold, including one written just before the claim | `test_issue_run_stuck_approved.py::test_a_blocking_hold_written_before_the_claim_stops_the_auto_approval`, `::test_the_claim_refuses_an_auto_approval_whatever_the_hold_was_when_read` |
 
 **Not proven:** that the deployed Cloud Scheduler job fires every minute and
 its OIDC identity is admitted (the Terraform is validated in CI by

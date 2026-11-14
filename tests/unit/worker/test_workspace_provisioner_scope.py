@@ -510,7 +510,7 @@ def test_the_namespace_policy_holds_the_labels_the_worker_policies_select_on(pol
 #
 # docs/design/workspace-kinds.md §3.1 and §4.3 (lane WK-CLUSTER, Q3 (a)): the
 # deployer may now write a Namespace `swarm-tenant-<id>` for any id, but only
-# when it carries `swarm.saga.xyz/workspace: w-<6 hex>` on CREATE, only when
+# when it carries `<prefix>/workspace: w-<6 hex>` on CREATE, only when
 # the old object already carried it on UPDATE, and an object inside one only
 # when the namespace carries it. The namespaces of the tenants terraform/infra
 # declares are refused by name. The `swarm-tenant-u-*` arm is unchanged.
@@ -889,7 +889,13 @@ def _refusals(
     return found
 
 
-WORKSPACE_LABEL = "swarm.saga.xyz/workspace"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", Path(__file__).resolve().parents[2] / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: The label-key prefix the suite renders with: the placeholder organisation's
+#: swarm.<org_domain> (kubernetes/label_prefix.py; tests/unit/conftest.py).
+LABEL_PREFIX = f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}"
+WORKSPACE_LABEL = f"{LABEL_PREFIX}/workspace"
 WORKSPACE_ID = "w-000000"
 GROUP = "research"
 DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example"

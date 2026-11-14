@@ -42,6 +42,22 @@ judged on every read and write of the session's read-backs
 (`expire_due`), so a late "go" never confirms one. While one is pending it is
 activity (`pending`): the idle clock does not run.
 
+AN OPEN NAVIGATION OFFER IS HELD LIKE A READ-BACK (voice-it.md §3.12.3). The
+planner offers a console page as a `navigate` card, always new and always
+`proposed` (cards.writer_rules). The owner's next whole utterance through this
+gate answers it after any pending read-back has had its turn (a "go" confirms
+a pending read-back first): a yes (`OFFER_YES`: "yes", "open it", "go", "show
+me") accepts the newest open offer, a no (`OFFER_NO`) dismisses it, and
+anything else leaves it open and goes to the planner. `Offers` moves the card
+in one transaction, from `proposed` only, with `accepted_by: person`, and the
+person's click (routes/voice_cards.py) takes the same path. One offer is open
+a session at a time: a newer one dismisses the older on write
+(cards.write_card); one unanswered for `OFFER_SECONDS`, or outlived by the
+next turn's output (a planner card written after the utterance that followed
+it), is dismissed when the session's offers are next read (`Offers.settle`).
+Nothing here navigates: the holder does, on an accepted card of its own
+session (§3.12.3).
+
 NOTHING HERE IS A CREDENTIAL, and nothing logs what was heard: `heard` is put
 through the shared redaction rules before it is stored, and log lines name ids
 and states only.
@@ -54,7 +70,7 @@ import logging
 import re
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
 from google.cloud import firestore
@@ -65,6 +81,7 @@ from swarm_redaction import redact
 from ..errors import Conflict, NotFound, ValidationFailed
 from . import cards as vcards
 from . import sessions as vs
+from . import store as vstore
 
 #: The verbs a spoken command is read back for (§7.1, pick 3).
 READBACK_VERBS: tuple[str, ...] = ("cancel", "merge", "deploy", "delete", "approve")
@@ -133,6 +150,9 @@ AS_HEARD_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # A spent Live key's next tier (llm-providers.md §5.3): swarm-voice says
     # which tier is held for the reopen, never an act of the person's.
     ("POST", "/v1/voice/sessions/{session_id}/reopen"),
+    # The work feed (voice-it.md §3.12.5): a delegation's lifecycle and the
+    # roster's changed rows, a record of the session's work, never an act.
+    ("POST", "/v1/voice/sessions/{session_id}/work"),
 })
 
 #: A route template whose last step names a gated verb, or a DELETE: what the
@@ -223,6 +243,29 @@ def verdict(text: str) -> str | None:
         return GO
     if said in REFUSE_PHRASES:
         return REFUSE
+    return None
+
+
+#: A spoken answer to a navigation offer (§3.12.3). A bare "yes" is a yes
+#: here, unlike a read-back's Go: an offer only opens a page.
+ACCEPT = "accept"
+DISMISS = "dismiss"
+OFFER_YES: frozenset[str] = frozenset({"yes", "open it", "go", "show me", "yes please",
+                                       "yes open it", "yes show me", "go ahead"})
+OFFER_NO: frozenset[str] = frozenset({"no", "not that", "no thanks", "not now", "dont",
+                                      "nope"})
+#: An offer not answered within two minutes is dismissed.
+OFFER_SECONDS = 120
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def offer_verdict(text: str) -> str | None:
+    """ACCEPT, DISMISS, or None when the utterance is not an answer to an offer."""
+    said = normalise(text)
+    if said in OFFER_YES:
+        return ACCEPT
+    if said in OFFER_NO:
+        return DISMISS
     return None
 
 
@@ -318,10 +361,12 @@ class Readbacks:
     session's `VoiceStore` in swarm-api -- after each change of state."""
 
     def __init__(self, db: Any, *, now: Callable[[], datetime],
-                 cards: Callable[[Where, dict[str, Any]], dict[str, Any]] | None = None) -> None:
+                 cards: Callable[[Where, dict[str, Any]], dict[str, Any]] | None = None,
+                 offers: "Offers | None" = None) -> None:
         self._db = db
         self._now = now
         self._cards = cards
+        self._offers = offers if offers is not None else Offers(db, now=now)
 
     # -- paths
 
@@ -470,19 +515,26 @@ class Readbacks:
 
     def answer(self, where: Where, text: str) -> dict[str, Any]:
         """A final utterance, before the planner sees it: GO or REFUSE answers
-        the pending read-back; anything else (a bare "yes" included) is
-        recorded as heard and goes to the planner."""
+        the pending read-back; else a yes or a no answers the open navigation
+        offer (`offer`); anything else (a bare "yes" with no offer open
+        included) is recorded as heard and goes to the planner."""
         said = verdict(text)
+        doc = None
+        if said is not None:
+            doc = self._decide(where, None, CONFIRMED if said == GO else REFUSED)
+            if doc is not None and doc.get("state") != EXPIRED:
+                return {"answer": said, "readback": view(doc), "to_planner": False}
+        offered = offer_verdict(text)
+        if offered is not None:
+            card = self._offers.answer(where, accept=offered == ACCEPT)
+            if card is not None:
+                return {"answer": None, "readback": view(doc) if doc else None,
+                        "offer": {"answer": offered, "card": card}, "to_planner": False}
+        # No read-back or offer was waiting: the words are an ordinary turn.
+        self.heard(where, text)
         if said is None:
-            self.heard(where, text)
             self.expire_due(where)
-            return {"answer": None, "readback": None, "to_planner": True}
-        doc = self._decide(where, None, CONFIRMED if said == GO else REFUSED)
-        if doc is None or doc.get("state") == EXPIRED:
-            # No read-back was waiting: the words are an ordinary turn.
-            self.heard(where, text)
-            return {"answer": None, "readback": view(doc) if doc else None, "to_planner": True}
-        return {"answer": said, "readback": view(doc), "to_planner": False}
+        return {"answer": None, "readback": view(doc) if doc else None, "to_planner": True}
 
     # -- the re-sent call (§7.2 step 3)
 
@@ -578,3 +630,141 @@ class Readbacks:
         if not doc or not self._mine(doc, where):
             raise NotFound(f"voice read-back {readback_id!r} not found")
         return doc
+
+
+# ---- the navigation offer (voice-it.md §3.12.3) -----------------------------
+
+
+class Offers:
+    """A session's `navigate` cards: which one is open, and the person's
+    answer to it. Reads the cards and the gate's `heard_at` from Firestore
+    and moves a card through its stored document, so its `card.upsert`
+    reaches the page."""
+
+    def __init__(self, db: Any, *, now: Callable[[], datetime]) -> None:
+        self._db = db
+        self._now = now
+
+    def _cards_ref(self, where: Where) -> Any:
+        return self._db.collection(vs.PROJECTS).document(where.project_id) \
+            .collection(vstore.CARDS)
+
+    def _session_cards(self, where: Where) -> list[tuple[str, dict[str, Any]]]:
+        out = []
+        for snap in self._cards_ref(where).stream():
+            doc = snap.to_dict() or {}
+            if (doc.get("tenant_id") == where.tenant_id and doc.get("person") == where.person
+                    and doc.get("session_id") == where.session_id):
+                out.append((snap.id, doc))
+        return out
+
+    def _heard_at(self, where: Where) -> datetime | None:
+        ref = self._db.collection(vs.PROJECTS).document(where.project_id) \
+            .collection(vs.SESSIONS).document(where.session_id) \
+            .collection(READBACK_STATE).document(CURRENT)
+        snap = ref.get()
+        return _aware((snap.to_dict() or {}).get("heard_at")) if snap.exists else None
+
+    @staticmethod
+    def _state(doc: Mapping[str, Any]) -> Any:
+        return (doc.get("body") or {}).get("state")
+
+    def _closed(self, card_id: str, doc: Mapping[str, Any], newest: str | None,
+                cards: list[tuple[str, dict[str, Any]]], heard_at: datetime | None,
+                now: datetime) -> bool:
+        """Whether a proposed offer is no longer open: replaced, timed out, or
+        outlived by the next turn's output."""
+        if card_id != newest:
+            return True
+        made = _aware(doc.get("created_at"))
+        if made is None or now >= made + timedelta(seconds=OFFER_SECONDS):
+            return True
+        if heard_at is None or heard_at <= made:
+            return False
+        # A newer offer replaces this one on write; any other planner card is output.
+        return any(other.get("kind") != "navigate"
+                   and (other.get("body") or {}).get("created_by") == "planner"
+                   and (_aware(other.get("updated_at")) or made) > heard_at
+                   for other_id, other in cards)
+
+    def settle(self, where: Where) -> str | None:
+        """Dismiss every offer of the session that is no longer open; the id
+        of the one that is, or None."""
+        cards = self._session_cards(where)
+        offers = sorted(((cid, doc) for cid, doc in cards
+                         if doc.get("kind") == "navigate" and self._state(doc) == vcards.PROPOSED),
+                        key=lambda item: (_aware(item[1].get("created_at")) or _EPOCH, item[0]))
+        if not offers:
+            return None
+        newest = offers[-1][0]
+        heard_at = self._heard_at(where)
+        now = self._now()
+        open_id = None
+        for cid, doc in offers:
+            if self._closed(cid, doc, newest, cards, heard_at, now):
+                self._move(where, cid, vcards.DISMISSED)
+            else:
+                open_id = cid
+        return open_id
+
+    def _move(self, where: Where, card_id: str, to: str) -> dict[str, Any] | None:
+        """Move one of the session's proposed offers to `to` in one
+        transaction, then append its event; None when it is not proposed."""
+        ref = self._cards_ref(where).document(card_id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> dict[str, Any] | None:
+            snap = _snapshot(txn.get(ref))
+            doc = (snap.to_dict() or {}) if snap.exists else {}
+            if (doc.get("kind") != "navigate" or self._state(doc) != vcards.PROPOSED
+                    or doc.get("tenant_id") != where.tenant_id
+                    or doc.get("person") != where.person
+                    or doc.get("session_id") != where.session_id):
+                return None
+            stored = dict(doc.get("body") or {})
+            body = dict(stored.get("body") or {})
+            if to == vcards.ACCEPTED:
+                body["accepted_by"] = "person"
+            stored = {**stored, "state": to, "body": body}
+            # The catalogue still judges the card; only the writer's rules
+            # (cards.writer_rules) are not a person's.
+            vcards.validate({**stored, "card_id": card_id, "kind": "navigate"})
+            doc = {**doc, "body": stored, "version": int(doc.get("version") or 0) + 1,
+                   "updated_at": self._now()}
+            txn.set(ref, doc)
+            return doc
+
+        doc = _apply(self._db.transaction())
+        if doc is None:
+            return None
+        view_ = vcards.card_view(card_id, doc)
+        vstore.VoiceStore(self._db, now=self._now).append_event(
+            tenant_id=where.tenant_id, person=where.person, project_id=where.project_id,
+            session_id=where.session_id, event={"type": vcards.CARD_UPSERT, "card": view_})
+        log.info("voice session %s: navigation offer %s is %s", where.session_id, card_id, to)
+        return view_
+
+    def answer(self, where: Where, *, accept: bool) -> dict[str, Any] | None:
+        """A spoken yes or no: the newest open offer accepted or dismissed, as
+        its card; None when no offer is open."""
+        open_id = self.settle(where)
+        if open_id is None:
+            return None
+        return self._move(where, open_id, vcards.ACCEPTED if accept else vcards.DISMISSED)
+
+    def accept(self, where: Where, card_id: str) -> dict[str, Any]:
+        """The person's click on Open: `card_id` must be the session's open
+        offer. NotFound when no navigate card of this session has that id;
+        a 409 (the established `conflict`, never a new refusal code) when it
+        was answered, replaced, outlived or timed out."""
+        snap = self._cards_ref(where).document(card_id).get()
+        doc = (snap.to_dict() or {}) if snap.exists else {}
+        if (doc.get("kind") != "navigate" or doc.get("tenant_id") != where.tenant_id
+                or doc.get("person") != where.person
+                or doc.get("session_id") != where.session_id):
+            raise NotFound(f"voice card {card_id!r} not found")
+        open_id = self.settle(where)
+        moved = self._move(where, card_id, vcards.ACCEPTED) if open_id == card_id else None
+        if moved is None:
+            raise Conflict(f"voice card {card_id!r} is not an open offer; nothing was opened")
+        return moved

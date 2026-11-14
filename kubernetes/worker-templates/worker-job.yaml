@@ -60,9 +60,9 @@ metadata:
     # label value has been through name sanitisation and no longer matches the
     # Firestore document id. These annotations carry them verbatim as well, for
     # a human reading `kubectl describe`.
-    swarm.saga.xyz/task-id: __TASK_ID__
-    swarm.saga.xyz/attempt-id: __ATTEMPT_ID__
-    swarm.saga.xyz/generation: "__GENERATION__"
+    __LABEL_PREFIX__/task-id: __TASK_ID__
+    __LABEL_PREFIX__/attempt-id: __ATTEMPT_ID__
+    __LABEL_PREFIX__/generation: "__GENERATION__"
 spec:
   backoffLimit: 0
   completions: 1

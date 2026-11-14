@@ -2,7 +2,7 @@
 
 The Cloud Run job `swarm-workspace-apply` runs this file as its fixed command,
 `python3 -I /opt/swarm/entry.py --spec-verify-keys-sha256=<hex>
---spec-signing-key=<key>`, with
+--spec-signing-key=<key> [--label-prefix=<prefix>]`, with
 `<w-id> <mode>` as each execution's arguments, as swarm-workspace-deployer:
 the identity with project-wide account-IAM power Google cannot narrow (§2.4).
 Lane W6b of #847.
@@ -25,7 +25,8 @@ the job spec, so the boundary is what THIS file lets an override reach:
     that residual risk and what would close it.
   * THE ARGUMENTS, EXACTLY TWO, after the command's own. `[<pin>, <key>,
     <w-id>, <mode>]`: the pin of the verify keys and the trusted signing key
-    (below), which the command carries and no override can move, then the id
+    (below), which the command carries and no override can move, optionally
+    the deployment's `--label-prefix=` (LABEL_PREFIX_RE), then the id
     `w-<6 hex>` and the mode `create` or `limits`, or the execution ends
     here, having run nothing. Step 1
     (scripts/workspace-apply.sh) checks the id and mode again; neither check
@@ -200,6 +201,19 @@ SIGNING_KEY_RE = re.compile(
 #: (terraform/bootstrap/spec_signing.tf version_template), as p256_verify reads.
 VERIFY_KEYS_ENV = "SPEC_VERIFY_KEYS"
 VERIFY_KEYS_PIN_RE = re.compile(r"--spec-verify-keys-sha256=([0-9a-f]{64})", re.ASCII)
+#: The deployment's label-key prefix (kubernetes/label_prefix.py; the owner's
+#: "configurable", 8 November 2026): the fixed command's optional third
+#: element, `--label-prefix=<prefix>`, which terraform/bootstrap renders from
+#: the deployment's setting, passed on as SWARM_LABEL_PREFIX. A command element
+#: and never an environment variable, like the two above: an override could
+#: otherwise move the key A7 labels a group's namespace with and A9 reads back.
+#: Without it the environment carries no prefix, and register-tenant.sh stops
+#: after A1 with the one rule's fixed sentence rather than guess a key. The
+#: pattern is label_prefix.PREFIX's (a unit test holds the two equal).
+LABEL_PREFIX_RE = re.compile(
+    r"--label-prefix=((?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+)",
+    re.ASCII)
+LABEL_PREFIX_ENV = "SWARM_LABEL_PREFIX"
 
 #: The kinds whose approval is verified: the two whose steps grant beyond a
 #: person's own (a group's team slot and label, a service's front door).
@@ -635,9 +649,16 @@ def plan(
     raw_keys = environ.get(VERIFY_KEYS_ENV)
     environ.clear()
 
+    label_prefix = None
+    if len(argv) == 5:
+        label = LABEL_PREFIX_RE.fullmatch(argv[2])
+        if label is None:
+            raise Refused("the third argument is not the command's --label-prefix, a label-key prefix")
+        label_prefix = label.group(1)
+        argv = [argv[0], argv[1], argv[3], argv[4]]
     if len(argv) != 4:
         raise Refused("the job takes exactly two arguments, <w-id> <mode>, after its command's "
-                      f"verify-key pin and signing key; it was given {len(argv) - 2}")
+                      f"verify-key pin, signing key and label prefix; it was given {len(argv) - 2}")
     keys_pin, signing_arg, workspace_id, mode = argv
     if not VERIFY_KEYS_PIN_RE.fullmatch(keys_pin):
         raise Refused("the first argument is not the command's --spec-verify-keys-sha256 pin")
@@ -702,6 +723,8 @@ def plan(
         "BUILD_ID": execution,
         "NO_COLOR": "1",
     }
+    if label_prefix is not None:
+        env[LABEL_PREFIX_ENV] = label_prefix
     args = [
         TIMEOUT,
         f"--kill-after={KILL_AFTER_SECONDS}s",
