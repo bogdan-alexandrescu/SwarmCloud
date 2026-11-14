@@ -21,6 +21,10 @@ generation, extract and shard work, so everything that needs the snapshot is
 ONE test: under `pytest -n auto` a module fixture would be built once per
 worker that picks up one of its tests.
 
+The battery itself -- its questions, the timed run on a fresh server, the p95
+and the reference workload -- is `agent_worker.graphmcp.battery`, which the
+indexer's opt-in latency measurement runs too (#1840).
+
 Tokens are counted without a tokenizer, which the unit run does not have:
 at most `BYTES_PER_TOKEN` bytes a token is a conservative ratio for JSON
 (English prose runs about four), so a schema under 2,000 * 3 bytes is under
@@ -30,17 +34,14 @@ at most `BYTES_PER_TOKEN` bytes a token is a conservative ratio for JSON
 from __future__ import annotations
 
 import json
-import math
 import os
-import statistics
 import subprocess
-import time
-from collections import Counter
 from pathlib import Path
 
 import graphmcp_fixtures as gf
 
 from agent_worker.graphmcp import server, tools
+from agent_worker.graphmcp.battery import _battery, _p95, _questions, _reference_ms
 
 SCHEMA_TOKEN_BUDGET = 2000
 BYTES_PER_TOKEN = 3
@@ -94,36 +95,11 @@ def test_the_two_service_tools_fit_in_what_the_eight_left():
     assert len(json.dumps(new, separators=(",", ":"))) <= 1000
 
 
-def _p95(samples: list[float]) -> float:
-    ordered = sorted(samples)
-    return ordered[max(math.ceil(0.95 * len(ordered)) - 1, 0)]
-
-
-def _questions(document: dict) -> list[tuple[str, dict]]:
-    """A fixed battery over this repository: the busiest callees (the worst
-    case for `impact` and `context`) and an even sample of the rest."""
-    test_files = {f["path"] for f in document["files"] if f.get("test")}
-    application = sorted(s["id"] for s in document["symbols"]
-                         if s["kind"] in ("function", "method", "class")
-                         and s["path"] not in test_files and "@" not in s["id"])
-    fan_in = Counter(e["to"] for e in document["call_edges"] if e["kind"] != "import")
-    busiest = [s for s, _n in sorted(fan_in.items(), key=lambda p: (-p[1], p[0]))
-               if s in set(application)][:4]
-    step = max(len(application) // 12, 1)
-    sample = application[::step][:12]
-    questions: list[tuple[str, dict]] = []
-    for symbol in busiest + sample:
-        name = symbol.split("#", 1)[1].split(".")[-1]
-        path = symbol.split("#", 1)[0]
-        questions += [
-            ("search", {"query": name.replace("_", " ")}),
-            ("context", {"symbol": symbol}),
-            ("impact", {"symbol": symbol, "depth": 3}),
-            ("tests_for", {"files": [path]}),
-            ("neighbours", {"symbol": symbol}),
-            ("territory", {"files": [path]}),
-        ]
-    return questions
+def test_the_battery_is_the_worker_graph_packages():
+    # The CI gate and the indexer's latency.json (repo_graph_shards
+    # .measure_latency) ask one battery, so their ratios cannot drift apart.
+    for shared in (_questions, _battery, _p95, _reference_ms):
+        assert shared.__module__ == "agent_worker.graphmcp.battery", shared
 
 
 def test_a_ten_times_slower_server_fails_the_budget():
@@ -265,54 +241,3 @@ def test_answers_on_a_fixed_workload_are_under_the_p95_budget(tmp_path: Path):
     assert min(runs) < P95_BUDGET_RATIO, (
         f"answer p95 over {P95_BUDGET_RATIO}x the reference in all {len(runs)} runs: "
         f"{', '.join(f'{r:.2f}' for r in runs)}")
-
-
-def _reference_ms() -> float:
-    """A fixed interpreter-bound workload, of the kind an answer is (build,
-    serialise, parse and sort Python objects): what the runner's load does to
-    it, it does to the server's answers. Not the server's code, so a
-    regression there cannot slow it too and cancel out.
-
-    It runs in the test process while the answers come from the server's
-    child process, and under `-n auto` the two can be scheduled on different
-    cores, so the reference tracks the runner's load less tightly than a
-    trivial call to the same server would. The trade is deliberate: a call to
-    the server would slow down with a server regression and cancel it out.
-    The ratios measured under 12 busy loops (P95_BUDGET_RATIO) stayed within
-    2.95-3.65, a third of the budget."""
-    started = time.perf_counter()
-    table = {str(i): [i, str(i) * 3, {"k": i}] for i in range(3000)}
-    for _ in range(3):
-        json.loads(json.dumps(table))
-        sorted(table.items(), key=lambda p: p[1][1])
-    return (time.perf_counter() - started) * 1000.0
-
-
-def _battery(snapshot: Path, questions: list[tuple[str, dict]],
-             commit_sha: str, workdir: Path) -> tuple[list[float], float]:
-    """One timed run of `questions` on a fresh stdio server: a latency in ms
-    each, and the median of `_reference_ms()` timed after each answer."""
-    graph = gf.StdioServer(snapshot, workdir=workdir)
-    try:
-        graph.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
-                                     "clientInfo": {"name": "test", "version": "0"}})
-        graph.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        samples: list[float] = []
-        references: list[float] = []
-        answered = 0
-        for tool, arguments in questions:
-            started = time.perf_counter()
-            text, failed = graph.call(tool, arguments)
-            samples.append((time.perf_counter() - started) * 1000.0)
-            references.append(_reference_ms())
-            assert len(text.encode()) <= ANSWER_CAP_BYTES, (tool, arguments, len(text))
-            answer = json.loads(text)
-            assert next(iter(answer)) == "freshness", (tool, answer)
-            assert answer["freshness"]["index_sha"] == commit_sha
-            answered += not failed
-        # Every question is about a symbol or file the extract holds, so a
-        # battery that mostly failed would be measuring error paths.
-        assert answered >= 0.9 * len(questions), answered
-    finally:
-        graph.close()
-    return samples, statistics.median(references)
