@@ -526,3 +526,118 @@ def test_an_earlier_attempts_record_is_cleared(db, config):
     reconcile(db, config, None)
 
     assert START_PROBLEM_KEY not in db.doc(f"tasks/{TASK}")["metadata"]
+
+
+# ---------------------------------------------------------------------------
+# A pod the scheduler never placed, and a Job that made no pod (#3531)
+# ---------------------------------------------------------------------------
+
+#: The scheduler's words for a pod no node fits, as `kubectl describe` reads them.
+UNSCHEDULABLE_MESSAGE = (
+    "0/3 nodes are available: 3 node(s) didn't match Pod's node affinity/selector. "
+    "preemption: 0/3 nodes are available"
+)
+
+
+def unscheduled_pod(reason: str = "Unschedulable", message: str = UNSCHEDULABLE_MESSAGE) -> SimpleNamespace:
+    """A pod whose `PodScheduled` condition is False: no node, so no container statuses."""
+    pod = _pod(started=False)
+    pod.status.conditions = [
+        SimpleNamespace(type="PodScheduled", status="False", reason=reason, message=message,
+                        last_transition_time=utcnow())
+    ]
+    return pod
+
+
+def test_an_unschedulable_pod_is_a_start_problem_with_the_schedulers_reason():
+    # MUTATION: read only container statuses and this is None, as on 2026-11-06.
+    problem = pod_start_problem(unscheduled_pod())
+
+    assert problem is not None
+    assert problem.reason == "Unschedulable"
+    assert problem.message == UNSCHEDULABLE_MESSAGE
+    assert problem.container == ""
+    assert problem.restarts == 0 and problem.pod_started is False
+
+
+def test_a_scheduled_pod_still_creating_has_no_start_problem():
+    pod = _pod(containers=[_status("worker", waiting="ContainerCreating")], started=False)
+    pod.status.conditions = [SimpleNamespace(type="PodScheduled", status="True", reason=None,
+                                             message=None, last_transition_time=utcnow())]
+
+    assert pod_start_problem(pod) is None
+
+
+def test_the_schedulers_message_is_one_bounded_line():
+    problem = pod_start_problem(unscheduled_pod(message="first\nsecond " + "y" * 1000))
+
+    assert problem is not None
+    assert len(problem.message) <= MAX_START_MESSAGE_CHARS and problem.message.isprintable()
+
+
+class _EventsCoreApi(_CoreApi):
+    """A Job with no pod, whose events say why; or whose events the Role does not grant."""
+
+    def __init__(self, events: list[Any], *, forbidden: bool = False) -> None:
+        super().__init__([])
+        self.events = events
+        self.forbidden = forbidden
+        self.event_calls: list[tuple[str, str]] = []
+
+    def list_namespaced_event(self, *, namespace: str, field_selector: str) -> Any:
+        self.event_calls.append((namespace, field_selector))
+        if self.forbidden:
+            raise _Forbidden()
+        return SimpleNamespace(items=list(self.events))
+
+
+class _Forbidden(Exception):
+    status = 403
+    reason = "Forbidden"
+
+
+def _failed_create(message: str, at: datetime) -> SimpleNamespace:
+    return SimpleNamespace(reason="FailedCreate", message=message, last_timestamp=at,
+                           event_time=None, first_timestamp=at)
+
+
+def test_a_job_refused_its_pod_reads_the_failed_create_event():
+    now = utcnow()
+    core = _EventsCoreApi([
+        SimpleNamespace(reason="SuccessfulCreate", message="Created pod", last_timestamp=now,
+                        event_time=None, first_timestamp=now),
+        _failed_create("older refusal", now - timedelta(minutes=3)),
+        _failed_create('pods "x" is forbidden: exceeded quota: tenant-quota', now),
+    ])
+    backend = GkeBackend(namespace_prefix="swarm-tenant-", batch_api=object(), core_api=core)
+
+    # MUTATION: return None when no pod exists and the refusal is never read.
+    problem = backend.start_problem(dispatched_job())
+
+    assert problem is not None
+    assert problem.reason == "FailedCreate"
+    assert "exceeded quota" in problem.message
+    assert core.event_calls and core.event_calls[0][0] == NAMESPACE
+    assert f"involvedObject.name={JOB_NAME}" in core.event_calls[0][1]
+
+
+def test_events_the_role_does_not_grant_are_asked_once_and_conclude_nothing():
+    core = _EventsCoreApi([], forbidden=True)
+    backend = GkeBackend(namespace_prefix="swarm-tenant-", batch_api=object(), core_api=core)
+
+    assert backend.start_problem(dispatched_job()) is None
+    assert backend.start_problem(dispatched_job()) is None
+    assert len(core.event_calls) == 1, "a 403 is remembered, not asked again every pass"
+
+
+def test_an_unscheduled_pod_is_recorded_on_the_task_and_nothing_else_moves(db, config):
+    seed_attempt(db, state=TaskState.DISPATCHED)
+    before_lease = dict(db.doc(f"leases/{LEASE}"))
+
+    reconcile(db, config, pod_start_problem(unscheduled_pod()))
+
+    task = db.doc(f"tasks/{TASK}")
+    recorded = task["metadata"][START_PROBLEM_KEY]
+    assert recorded["reason"] == "Unschedulable" and recorded["container"] == ""
+    assert task["state"] == TaskState.DISPATCHED.value
+    assert db.doc(f"leases/{LEASE}") == before_lease
