@@ -32,7 +32,7 @@ from typing import Any
 import pytest
 
 from swarm_install.exitcodes import MET, UNMET, WAITING, ExitCode
-from swarm_install import record
+from swarm_install import record, waits
 from swarm_install.record import InstallRecord, engine_document
 from swarm_install import swarm_context
 from swarm_install.steps import cluster, verify
@@ -164,7 +164,8 @@ def test_scheduler_targets_judged_from_scheduler_and_invoker_bindings() -> None:
     step = verify.SchedulerTargetsStep(lambda: gcp, Answers())
     observed = step.check(_ctx())
     assert observed.status == MET, observed.detail
-    assert observed.outputs["scheduler_targets"] == ["swarm-quota-sweep", "swarm-reconcile", "swarm-doctor-hourly"]
+    # What was judged is said, never kept in the state: nothing reads it back.
+    assert observed.detail.startswith("3 Scheduler jobs enabled") and observed.outputs == {}
     assert "swarm-paused" in observed.detail
     assert step.kind == "wait" and step.wait.bound_s >= 60
     # Read only: the Scheduler list, the services, the policies; nothing else.
@@ -252,7 +253,7 @@ def test_digests_read_never_labels() -> None:
     gcp.revisions["swarm-api-00002"] = {"status": {"imageDigest": f"us-docker.pkg.dev/x/swarm-api@{DIGEST}"}}
     observed = step.check(ctx)
     assert observed.status == MET
-    assert observed.outputs["serving_digests"] == {"swarm-api": DIGEST}
+    assert observed.detail.startswith("1 services serve") and observed.outputs == {}
 
     with pytest.raises(LookupError, match="image digests"):
         step.check(_ctx())
@@ -286,7 +287,8 @@ def test_reconciler_can_list_jobs() -> None:
     assert step.check(_ctx()).status == MET
 
 
-REPO = "acme/demo"
+#: The dedicated test repository verify targets by default (`verify.TEST_REPOSITORY`).
+REPO = "acme/swarm-install-test"
 HOSTNAME = "swarm.acme.example"
 TEAM = "eng"
 #: The installer's own personal workspace, as `tenant_id_for_user` names it.
@@ -441,9 +443,8 @@ def test_four_end_to_end_runs_each_to_a_pr() -> None:
     runs.finish("t-console-workflow")
     observed = step.check(ctx)
     assert observed.status == MET, observed.detail
-    assert set(observed.outputs["verify_pull_requests"]) == {"plugin-single", "plugin-workflow", "console-single",
-                                                             "console-workflow"}
-    assert set(observed.outputs["verify_checks"]) == set(CHECK_KEYS)
+    # The pull requests, proofs and credential kinds are judged, not kept: nothing reads them back.
+    assert observed.outputs == {}
     assert "other.verify-row" in step.satisfies
 
 
@@ -473,8 +474,7 @@ def test_runs_use_installation_tokens() -> None:
     observed = step.check(ctx)
     assert observed.status == MET
     assert "lesson 43" in observed.detail and "not checked" not in observed.detail
-    assert observed.outputs["verify_forge_credential"] == {
-        f"{s}-{k}": "app_installation" for s, k in verify.RUNS}
+    assert observed.outputs == {}
     assert not hasattr(verify, "CREDENTIAL_UNRECORDED")
 
 
@@ -491,16 +491,13 @@ def test_a_plugin_run_on_the_persons_own_app_user_token_passes(key: str) -> None
     step, ctx = _all_finished({key: "app_user"})
     observed = step.check(ctx)
     assert observed.status == MET, observed.detail
-    assert observed.outputs["verify_forge_credential"][key] == "app_user"
 
 
 def test_every_plugin_run_on_the_persons_token_passes() -> None:
     step, ctx = _all_finished(dict.fromkeys(PLUGIN_RUN_KEYS, "app_user"))
     observed = step.check(ctx)
     assert observed.status == MET, observed.detail
-    assert observed.outputs["verify_forge_credential"] == {
-        **dict.fromkeys(PLUGIN_RUN_KEYS, "app_user"),
-        **dict.fromkeys(CONSOLE_RUN_KEYS, "app_installation")}
+    assert "lesson 43" in observed.detail
 
 
 @pytest.mark.parametrize("key", CONSOLE_RUN_KEYS)
@@ -593,7 +590,6 @@ def test_console_runs_read_from_the_record_never_asked() -> None:
     assert observed.status == MET, observed.detail
     assert ctx.outputs["verify_runs"]["console_task"] == "t-console-single"
     assert ctx.outputs["verify_runs"]["console_workflow"] == "t-console-workflow"
-    assert set(observed.outputs["verify_pull_requests"]) >= {"console-single", "console-workflow"}
 
     # The CLI never asks for a console run's id: it is not its to start.
     with pytest.raises(ValueError, match="Admin › Setup"):
@@ -696,11 +692,20 @@ def test_check_runs_pick_their_profiles_from_the_frozen_catalogue() -> None:
     assert verify.TOTAL == len(verify.QUICK_CHECKS) + 7
 
 
-def test_check_runs_pass_on_their_own_proof() -> None:
+def test_check_runs_pass_on_their_own_proof(monkeypatch: pytest.MonkeyPatch) -> None:
     step, ctx = _all_finished()
+    checks: dict[str, str] = {}
+    judge = verify.check_proof
+
+    def kept(key: str, *args: Any) -> tuple[str, str]:
+        proof, problem = judge(key, *args)
+        checks[key] = proof
+        return proof, problem
+
+    monkeypatch.setattr(verify, "check_proof", kept)
     observed = step.check(ctx)
     assert observed.status == MET, observed.detail
-    checks = observed.outputs["verify_checks"]
+    assert observed.outputs == {}
     assert "swarm-t-plugin-gke-1" in checks["plugin-gke"] and f"swarm-tenant-{TEAM}" in checks["plugin-gke"]
     assert "swarm-t-plugin-browser-1" in checks["plugin-browser"] and REPO in checks["plugin-browser"]
     assert INDEX_SHA[:12] in checks["plugin-code-intelligence"]
@@ -772,7 +777,7 @@ def test_a_check_run_without_its_proof_fails_naming_it(key: str, breaks: str, sa
     observed = step.check(ctx)
     assert observed.status == UNMET
     assert f"{key} ({run_id})" in observed.detail and said in observed.detail
-    assert "verify_checks" not in observed.outputs
+    assert observed.outputs == {waits.FAILED: True}
 
 
 def test_only_a_known_kind_and_a_slot_name_are_repeated_from_a_summary() -> None:
@@ -1009,6 +1014,7 @@ class FakeSwarm:
         self.calls: list[tuple[list[str], str | None, dict[str, str] | None]] = []
         self.secrets: dict[str, str] = {}
         self.repos: list[dict[str, Any]] | None = [{"repository": "acme/old", "archived": True},
+                                                   {"repository": "acme/app", "archived": False},
                                                    {"repository": REPO, "archived": False}]
         self.connect_on_setup: list[dict[str, Any]] | None = None
         self.repos_error = ""
@@ -1236,10 +1242,12 @@ def test_verify_never_needs_the_desktop_secret() -> None:
 
 
 def test_repository_from_the_app_installation_never_asked() -> None:
-    """The verification repository is the App installation's first repository
-    that is not archived, read on the new deployment; nobody types it. With
-    no GitHub connection yet, the person signs in to GitHub once (`swarm sc
-    setup`, a browser sign-in) and it is read again."""
+    """The verification repository is the dedicated test repository
+    (`<org>/swarm-install-test`) when the App installation covers it, read on
+    the new deployment; nobody types it, and an alphabetically earlier
+    product repository is never it. With no GitHub connection yet, the person
+    signs in to GitHub once (`swarm sc setup`, a browser sign-in) and it is
+    read again."""
     swarm = FakeSwarm({}, None)
     cli = verify.SwarmCli(Answers(), run=swarm, interactive=swarm)
     ctx = _target_ctx(verify_context=HOSTNAME, verify_tenant=TEAM)
@@ -1249,8 +1257,9 @@ def test_repository_from_the_app_installation_never_asked() -> None:
     assert argv == ["swarm", "sc", "access", "repos", "acme", "--json", "--context", HOSTNAME]
     assert env is not None and env["SWARM_TENANT"] == TEAM
 
-    swarm.repos, swarm.connect_on_setup = None, [{"repository": "acme/first", "archived": False}]
-    assert cli.repository(ctx) == "acme/first"
+    swarm.repos, swarm.connect_on_setup = None, [{"repository": "acme/first", "archived": False},
+                                                 {"repository": "acme/Swarm-Install-Test", "archived": False}]
+    assert cli.repository(ctx) == "acme/Swarm-Install-Test"
     assert ["swarm", "sc", "setup", "--context", HOSTNAME] in [argv for argv, _, _ in swarm.calls]
 
     swarm.repos, swarm.connect_on_setup = None, None
@@ -1269,6 +1278,42 @@ def test_repository_from_the_app_installation_never_asked() -> None:
     ctx = _ctx()
     step.apply(ctx, step.plan(ctx))
     assert runs.targeted == 1 and ctx.outputs["verify_repository"] == REPO
+
+
+def test_an_admins_pick_in_admin_setup_is_the_verify_repository() -> None:
+    """Admin › Setup's Test repository pick (`grant.test_repository` on the
+    first workspace's document, which swarm-api's smoke and console runs use)
+    is verify's repository too, while the App installation covers it."""
+    swarm = FakeSwarm({}, None)
+    _signed_in(swarm)
+    cli = verify.SwarmCli(Answers(), run=swarm, interactive=swarm)
+    ctx = _target_ctx(verify_context=HOSTNAME, verify_tenant=TEAM)
+    _with_record(ctx, teams={TEAM: {**_team_doc(TEAM), "grant": {"state": "granted",
+                                                                 "repositories": ["acme/app", REPO, "acme/zoo"],
+                                                                 "test_repository": "acme/zoo"}}})
+    swarm.repos = [{"repository": r, "archived": False} for r in ("acme/app", REPO, "acme/zoo")]
+    assert cli.repository(ctx) == "acme/zoo"
+
+    # A pick the installation no longer covers falls back to the test repository.
+    swarm.repos = [{"repository": REPO, "archived": False}]
+    assert cli.repository(ctx) == REPO
+
+    # One person: the pick is on `console/personal`.
+    solo = _target_ctx(verify_context=HOSTNAME, verify_tenant=PERSONAL_TENANT, sizing={"mode": "individual"})
+    _with_record(solo, personal={"workspace": PERSONAL_TENANT,
+                                 "grant": {"repositories": ["acme/zoo"], "test_repository": "acme/zoo"}})
+    swarm.repos = [{"repository": r, "archived": False} for r in ("acme/app", REPO, "acme/zoo")]
+    assert cli.repository(solo) == "acme/zoo"
+
+
+def test_no_test_repository_and_no_pick_is_said_never_the_first_repository() -> None:
+    swarm = FakeSwarm({}, None)
+    _signed_in(swarm)
+    swarm.repos = [{"repository": "acme/app", "archived": False}, {"repository": "acme/zoo", "archived": False}]
+    cli = verify.SwarmCli(Answers(), run=swarm, interactive=swarm)
+    ctx = _target_ctx(verify_context=HOSTNAME, verify_tenant=TEAM)
+    with pytest.raises(LookupError, match=r"acme/swarm-install-test.*Admin › Setup"):
+        cli.repository(ctx)
 
 
 def test_check_runs_launch_and_finish_as_the_real_cli_prints(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1755,8 +1800,8 @@ def test_verify_says_what_it_opens_before_each_browser_sign_in() -> None:
     cli = verify.SwarmCli(Answers(), run=swarm, interactive=swarm)
     ctx = _target_ctx(verify_context=HOSTNAME, verify_tenant=TEAM)
     _signed_in(swarm)
-    swarm.repos, swarm.connect_on_setup = None, [{"repository": "acme/first", "archived": False}]
-    assert cli.repository(ctx) == "acme/first"
+    swarm.repos, swarm.connect_on_setup = None, [{"repository": REPO, "archived": False}]
+    assert cli.repository(ctx) == REPO
     said = [e["message"] for e in ctx.events.of_kind("step_apply")]
     assert any("connect GitHub" in m and "runs swarm sc setup for you" in m for m in said)
 

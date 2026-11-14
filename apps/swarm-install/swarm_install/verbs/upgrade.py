@@ -55,6 +55,14 @@ check the upgrade itself refuses on), `off` while a built bundle is retained
 (`upgrade.retained_bundles`), and either while the install has not reached
 READY, which renders `on` (Day One).
 
+**An install that never reached READY** is not upgraded: nothing serves yet,
+so there is nothing to drain, roll or roll back. A pause before READY can
+outlive its release (a CVE acceptance that expires meanwhile fails
+`preflight.release` on every resume, and stage 0 never passes again), so
+`swarm upgrade` moves it to V instead: V's engine as above, V recorded as the
+install's release, and the install resumed there (`swarm install`), which
+re-checks every step against V. A downgrade is refused as for a running one.
+
 Exit: 0 upgraded (or nothing to do); 1 a step failed (the output names it and
 `swarm upgrade --to V` resumes there); 4 the drain passed its bound; 5 refused
 (a downgrade without `--allow-downgrade`, unapproved IAM changes, a plan that
@@ -656,6 +664,35 @@ class LiveWorld:
         return self._documents
 
 
+def resume_install(project: str, env: str) -> int:
+    """`swarm install --project P --env E`, in this process: the engine
+    re-checks every step and goes on where the install stopped."""
+    from .. import cli
+
+    return cli.main(["install", "--project", project, "--env", env])
+
+
+def short_of_ready(args: argparse.Namespace, store: StateStore, lease: Any, target: str, *, confirm: Any) -> int:
+    """An install that never reached READY, moved to `target` (this engine is
+    `target`'s by now) and resumed there. The release is recorded under the
+    lease, which is released before the install takes it again."""
+    try:
+        lease.acquire(confirm)
+    except (LeaseHeld, LeaseRefused) as exc:
+        print(f"swarm upgrade: {exc}", file=sys.stderr)
+        return int(ExitCode.PAUSED)
+    try:
+        def move(state: Any) -> None:
+            state.release = target
+
+        store.update(move)
+    finally:
+        lease.release()
+    print(f"swarm upgrade: {args.project} has not reached READY, so nothing is upgraded: its install goes on at "
+          f"release {target}")
+    return resume_install(args.project, args.env)
+
+
 def run(args: argparse.Namespace) -> int:
     from ..steps import discover as discover_steps
     from ..steps import preflight
@@ -680,7 +717,7 @@ def run(args: argparse.Namespace) -> int:
         state = store.load()
         if target is None:
             target = channel_release(world.read_public, state.release)
-            if nothing_to_do(state, target) and not args.builtins_managed:
+            if nothing_to_do(state, target) and not args.builtins_managed and state.ready_at is not None:
                 print(f"swarm upgrade: {args.project} runs {target}, the release its channel names; nothing to do")
                 return int(ExitCode.OK)
         # The switch alone: the deployment already runs `target`, so nothing is upgraded.
@@ -699,6 +736,8 @@ def run(args: argparse.Namespace) -> int:
                           confirm=_typed, confirm_plan=confirm_plan)
     except Exception as exc:  # noqa: BLE001 -- said in one line with its exit code, never a traceback
         return _failed(events, exc)
+    if state.ready_at is None and not args.builtins_managed:
+        return short_of_ready(args, store, lease, target, confirm=_typed)
     flow = Upgrade(project=args.project, world=world, store=store, events=events, clock=clock, confirm=_typed,
                    confirm_plan=confirm_plan, heartbeat=lambda: lease.renew() if lease.heartbeat_due() else None)
     try:
