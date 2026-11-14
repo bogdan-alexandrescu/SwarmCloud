@@ -2,6 +2,7 @@
 §5.2-§5.5; lane CACHE-3-ROUTE, part of #1835).
 
     GET /v1/repositories/{repo_id}/graph-cache[?shards=1&page=N]
+    GET /v1/repositories/{repo_id}/graph-delivery[?days=7]   (#4030, `graph_delivery`)
 
 One read of the shared graph service's answer cache for one of the caller's own
 registered repositories: the repository facts (§5.2's four tiles), one panel per
@@ -743,9 +744,43 @@ async def get_graph_cache(
                             reader=reader))
 
 
+def graph_delivery(ctx: AppContext, tenant_id: str, repo_id: str, *, days: int,
+                   reader: StatsReader) -> dict[str, Any]:
+    """#4030: one of the caller's own repositories' last `days` of graph
+    delivery (attempts by delivery, fallbacks by reason, from the attempts'
+    `graph_ready` marks) and the replicas' merged served p50/p95 against the
+    300 ms target. The same figures `graph-latency-report` records per firing."""
+    from ..graphreports import delivery_report, read_served_latency, window_until
+
+    index = RepoIndex.from_context(ctx)
+    record = index.registrations.get(tenant_id, repo_id)  # another tenant's: 404
+    repository = f"{record['owner']}/{record['repo']}"
+    since, until = window_until(ctx.now(), days)
+    return {"repo_id": repo_id, "repository": repository, "days": days,
+            "delivery": delivery_report(ctx.store, ctx.db, tenant_id, since, until,
+                                        repository=repository),
+            "served_latency": read_served_latency(ctx, tenant_id, repo_id, reader)}
+
+
+@router.get("/{repo_id}/graph-delivery")
+async def get_graph_delivery(
+    repo_id: str,
+    days: int = Query(default=7, ge=1, le=30),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+    reader: StatsReader = Depends(stats_reader),
+) -> dict:
+    """How the graph reached one of the caller's own repositories' attempts
+    over `days` (default 7), the fallbacks by reason, and the served answer
+    latency against 300 ms; another tenant's repo_id is a 404."""
+    return await run_in_threadpool(
+        lambda: graph_delivery(ctx, tenant_id, repo_id, days=days, reader=reader))
+
+
 __all__ = [
     "LATENCY_OUTCOMES", "MAX_STATS_BYTES", "NOT_READ", "SHARD_PAGE_ROWS",
-    "STATS_TIMEOUT_SECONDS", "TEMPERATURES", "Replicas", "StatsReader", "compare_manifests", "graph_cache", "merge_latency",
+    "STATS_TIMEOUT_SECONDS", "TEMPERATURES", "Replicas", "StatsReader", "compare_manifests", "graph_cache",
+    "graph_delivery", "merge_latency",
     "merge_summaries", "p95", "previous_version", "replica_latency",
     "router", "shard_rows", "stats_reader", "stats_url",
 ]

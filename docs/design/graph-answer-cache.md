@@ -1,7 +1,13 @@
 # swarm-graph's answer latency: a scheduled p95 report, and an answer cache that survives merges
 
-Status: **design, answered by the owner on 2026-10-27 (§4). Nothing here is
-built yet.** Written 2026-10-27 against `main` at `17d6c5a`;
+Status: **design, answered by the owner on 2026-10-27 (§4); §2 and §5 are
+built (see each), and §1.2-§1.3 are built as of 2026-11-14 (#1840): the
+indexer's opt-in `--measure-latency-hours` writes `latency.json` beside the
+manifest, and schedule type `graph-latency-report` reads it
+(`swarm_api/graphreports.py`, `schedtypes/graph_latency_report.py`). Not built
+yet: the registration setting that passes the flag, promotion's copy into
+`answer_latency`, and moving the battery into `agent_worker.graphmcp`.**
+Written 2026-10-27 against `main` at `17d6c5a`;
 the body follows the owner's answers of the same day, and §5 specifies the console's
 Cache section the owner asked for then.
 

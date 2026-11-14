@@ -1,4 +1,4 @@
-"""The schedule job-type catalogue: eighteen types, picked BY NAME (docs/schedules.md §3).
+"""The schedule job-type catalogue: nineteen types, picked BY NAME (docs/schedules.md §3).
 
 A schedule names a type from this catalogue and nothing else: no image, no
 command, no profile, no resource class, no backend parameter (invariant 10).
@@ -303,6 +303,20 @@ class BranchSweepParams(Params):
                     or {".", ".."} & set(value.split("/")):
                 raise ValueError(f"{value!r} is not owner/repo")
         return _unique([v.lower() for v in values], "repositories")
+
+
+class GraphLatencyReportParams(Params):
+    """docs/design/graph-answer-cache.md §1.3 (#1840): the report fires on the
+    newest measured version's cold answer p95 over the reference workload
+    timed in the same run, never on milliseconds (the owner, Q3)."""
+
+    #: The owner's proposal, not a decision: 12x a reference of about 20 ms is
+    #: about 240 ms, 80% of the 300 ms target (§1.3, "The threshold"). The
+    #: owner fixes it from the first fourteen daily readings.
+    ratio_threshold: float = Field(default=12.0, gt=1.0, le=100.0)
+    #: The newest promoted versions read, measured or not (§1.3 step 1).
+    window: int = Field(default=7, ge=1, le=30)
+    issue_label: str = Field(default="bug", min_length=1, max_length=50)
 
 
 class ModelPricesRefreshParams(Params):
@@ -813,6 +827,29 @@ TYPES: tuple[ScheduleType, ...] = (
         lane="BRANCH-SWEEP-SCHEDULE",
         phase=2,
         forge_permissions=("contents:write", "pull_requests:read"),
+    ),
+    # #1840, the owner's decision of 2026-10-27: a scheduled report of the
+    # indexer's cold answer p95 on each repository, as a SwarmCloud schedule
+    # rather than GitHub cron (graph-answer-cache.md §1.3). Every 6 hours (the
+    # owner, Q2); an API type built like `release-health`. Caps in its module.
+    ScheduleType(
+        name="graph-latency-report",
+        description="Read the promoted versions' graph answer measurements; open or comment one issue when the cold p95 over the reference reaches ratio_threshold.",
+        executor="api",
+        params_model=GraphLatencyReportParams,
+        min_interval=timedelta(hours=6),
+        default_gate=GateSpec(run="auto", plan="auto", merge="off"),
+        floor_gate=GateSpec(run="auto", plan="auto", merge="off"),
+        budget=None,
+        catch_up="run_once",
+        risk=_fixed("R1"),
+        pushes=_never,
+        creators={"repos": "member", "all": "member"},
+        profile=None,
+        lane="GRAPH-LATENCY-REPORT",
+        phase=2,
+        platform_repository_creator="owner",
+        forge_permissions=("issues:write",),
     ),
 )
 

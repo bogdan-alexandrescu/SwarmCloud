@@ -220,6 +220,13 @@ def test_a_silence_of_three_days_after_a_measurement_is_reported_once(db, ctx, g
     assert len(github.issues) == 1 and github.comments.get(number, []) == []
 
 
+def test_an_idle_repository_with_an_old_measurement_and_nothing_promoted_since_writes_nothing(
+        db, ctx, github, objects, repo_id) -> None:
+    version(db, objects, repo_id, 1, hours_ago=24 * 10, p95=100.0)
+    (item,) = fire(ctx, db, repo_id)
+    assert item["detail"]["action"] == graphreports.NOTHING and github.writes() == []
+
+
 def test_another_tenants_measurement_is_never_read(db, ctx, github, objects, repo_id) -> None:
     commit = version(db, objects, repo_id, 1, hours_ago=2)
     # The same repo_id's file under another tenant's prefix: not this tenant's.
@@ -372,3 +379,22 @@ def test_the_read_route_serves_the_callers_own_repository_and_404s_another_tenan
                       headers=auth_header("alice")).status_code == 404
     assert client.get(f"/v1/repositories/{repo_id}/graph-delivery?days=31",
                       headers=auth_header("alice")).status_code == 422
+
+
+def test_a_firing_reads_the_tenants_attempts_once_for_all_its_repositories(
+        db, ctx, objects, monkeypatch) -> None:
+    seed_delivery(db)
+    first = register(db)
+    second = register(db, repo="gadgets")
+    calls: list[str] = []
+    real = ctx.store.page_attempts
+
+    def counted(tenant_id: str, **kwargs: Any) -> Any:
+        calls.append(tenant_id)
+        return real(tenant_id, **kwargs)
+
+    monkeypatch.setattr(ctx.store, "page_attempts", counted)
+    work = graph_latency_report.create(firing_for(ctx, report(db, first, second)))
+    assert calls == ["eng"]
+    fallbacks = [item["detail"]["delivery"]["total"]["fallbacks"] for item in work]
+    assert fallbacks == [3, 1]

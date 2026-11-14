@@ -193,8 +193,10 @@ def test_the_first_four_types_carry_the_owners_sd4_caps():
 
 def test_catch_up_defaults_follow_sd6():
     run_once = {t.name for t in scheduletypes.TYPES if t.catch_up == "run_once"}
+    # graph-latency-report (#1840): catch-up after an outage is one of the
+    # reasons it is a schedule and not a GitHub cron (graph-answer-cache.md §1.3).
     assert run_once == {"observer", "cost-report", "release-health", "docs-drift", "repo-index-refresh",
-                        "model-prices-refresh", "model-prices-check"}
+                        "model-prices-refresh", "model-prices-check", "graph-latency-report"}
 
 
 def test_risk_tiers_follow_section_4_1():
