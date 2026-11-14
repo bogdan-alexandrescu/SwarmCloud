@@ -4810,21 +4810,53 @@ def _person_lane(ctx: ActionContext, root: str | None) -> Callable[[str], bool] 
             return False
         try:
             doc = _mapping(ctx.fetch_upstream(task_id))
-            workflow = _task_id(doc.get("workflow_id"))
-            if (workflow is None or workflow == ctx.workflow_id
-                    or doc.get("tenant_id") != ctx.tenant_id):
+            if doc.get("tenant_id") != ctx.tenant_id:
                 return False
-            ctx.verify_upstream(task_id, doc, of_workflow=workflow)
+            single = doc.get("workflow_id") is None
+            if single:
+                if not _single_task_verified(ctx, task_id, doc):
+                    return False
+            else:
+                workflow = _task_id(doc.get("workflow_id"))
+                if workflow is None or workflow == ctx.workflow_id:
+                    return False
+                ctx.verify_upstream(task_id, doc, of_workflow=workflow)
         except Exception:  # noqa: BLE001 - unread or unsigned: not a lane
             return False
         metadata = _mapping(doc.get("metadata"))
         if any(mark in metadata for mark in LANE_WRITER_MARKS):
             return False
         block = _mapping(metadata.get("dispatch"))
-        return root in (_task_id(block.get("continues")),
-                        _task_id(_mapping(block.get("publish_to_pr")).get("task_id")))
+        published = _task_id(_mapping(block.get("publish_to_pr")).get("task_id"))
+        if single:
+            # A single task continues nothing: only its signed `publish_to_pr`.
+            return published == root
+        return root in (_task_id(block.get("continues")), published)
 
     return lane
+
+
+def _single_task_verified(ctx: ActionContext, task_id: str, doc: Mapping[str, Any]) -> bool:
+    """Whether `doc`, a task whose `workflow_id` is null, is a SIGNED single task.
+
+    The owner, 2026-11-13: "workflows now, single tasks next". A single task
+    sent with `publish_to_pr` (`swarm_dispatch`) has no workflow to verify it
+    against, and `verify_upstream` refuses a null workflow -- so that night
+    two merge steps refused such a task's head `head_moved`, 'not a person's
+    plain lane'. `verify_upstream` asked `single_task=True`
+    (`specverify.verify_upstream_spec`'s explicit single-task mode, the
+    owner's pick on #4092) checks the signature over the canonical spec, which
+    covers `workflow_id`, and requires the signed `workflow_id` to be null;
+    nothing here is inferred from a refusal. Every refusal -- unsigned,
+    forged, rewritten, a foreign key, a workflow -- is not a single task.
+    """
+    if doc.get("workflow_id") is not None:
+        return False
+    try:
+        ctx.verify_upstream(task_id, doc, single_task=True)
+    except UpstreamSpecUnverified:
+        return False
+    return True
 
 
 def _superseded(run: _Run, *, number: int, head: str, was: str, person: str,
@@ -4836,21 +4868,28 @@ def _superseded(run: _Run, *, number: int, head: str, was: str, person: str,
         SUPERSEDED_BY_PERSON_PUSH,
         f"pull request #{number}'s head is {head}, a commit {person} pushed, a person on "
         f"the pull request, over {was}: the merge is theirs now, and this step merges "
-        "nothing a person pushed" + ("" if record is None else _named(record)))
+        "nothing a person pushed"
+        + ("" if record is None else _named(record, why_unnamed=False)))
     run.summary["refusal"]["person"] = person
     if record is not None:
         run.summary["refusal"]["commit"] = record
     return outcome
 
 
-def _named(record: Mapping[str, Any]) -> str:
-    """`_head_record`, as the clause a `head_moved` message ends with."""
+def _named(record: Mapping[str, Any], *, why_unnamed: bool = True) -> str:
+    """`_head_record`, as the clause a `head_moved` message ends with.
+
+    `why_unnamed` False drops `_unnamed`'s clause, for `_superseded`: a person
+    WAS named there, and 'which is not a person's plain lane' would say the
+    opposite of the code it ends (a single follow-up's superseded refusal
+    read so, 2026-11-13)."""
     if "unreadable" in record:
         return f"; {record['sha']} could not be read ({record['unreadable']})"
     parents = ", ".join(str(p)[:12] for p in record.get("parents") or []) or "none"
     signed = "signed" if record.get("verified") else "unsigned"
     return (f"; {record['sha']} was committed by {record.get('committer_email') or 'nobody named'} "
-            f"({signed}), parents {parents}: {record.get('why') or 'not taken'}" + _unnamed(record))
+            f"({signed}), parents {parents}: {record.get('why') or 'not taken'}"
+            + (_unnamed(record) if why_unnamed else ""))
 
 
 def _unnamed(record: Mapping[str, Any]) -> str:

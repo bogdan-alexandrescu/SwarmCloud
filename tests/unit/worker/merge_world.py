@@ -301,15 +301,20 @@ class MergeWorld:
         def fetch(task_id: str) -> dict[str, Any]:
             return self.docs[task_id]
 
-        def verify(task_id: str, doc: Any, *, of_workflow: str | None = None) -> None:
+        def verify(task_id: str, doc: Any, *, of_workflow: str | None = None,
+                   single_task: bool = False) -> None:
             # The real verifier's workflow rule (`specverify.verify_upstream_spec`):
             # the upstream's signed `workflow_id` is this execution's, or the
-            # one the caller names.
+            # one the caller names, or null in the single-task mode.
             self.verified.append((task_id, of_workflow))
             if task_id in self.unverified:
                 raise UpstreamSpecUnverified(task_id, self.unverified[task_id])
-            expected = of_workflow if of_workflow is not None else WORKFLOW
             recorded = doc.get("workflow_id") if isinstance(doc, dict) else None
+            if single_task:
+                if recorded is not None:
+                    raise UpstreamSpecUnverified(task_id, "workflow_mismatch")
+                return
+            expected = of_workflow if of_workflow is not None else WORKFLOW
             if recorded is not None and recorded != expected:
                 raise UpstreamSpecUnverified(task_id, "workflow_mismatch")
 
