@@ -155,10 +155,10 @@ PLUGINS_FIX = ("re-run `swarm install`: its infra passes apply terraform/infra/p
 STORAGE_API = "https://storage.googleapis.com/storage/v1"
 
 
-def plugins_bucket(project: str, outputs: Mapping[str, Any]) -> str:
-    """The bucket terraform/infra names `<project>-swarm-plugins` unless the
-    install recorded another (`plugins_bucket`, the root's output)."""
-    return str(outputs.get("plugins_bucket") or f"{project}-swarm-plugins")
+def plugins_bucket(project: str) -> str:
+    """The bucket terraform/infra names `<project>-swarm-plugins`: the install
+    never sets `plugins_bucket_name`, and records no other name."""
+    return f"{project}-swarm-plugins"
 
 
 def platform_reader(policy: Mapping[str, Any], bucket: str) -> str:
@@ -197,7 +197,7 @@ def plugins_finding(target: doctor.Target, gcp: doctor.Gcp, *, intake_released: 
     Terraform tenants and scripts/register-tenant.sh does not yet grant a
     workspace's read: either gap is then named in the detail as pending, not a
     failure that keeps the install from READY."""
-    bucket = plugins_bucket(target.project, target.outputs)
+    bucket = plugins_bucket(target.project)
     gcs = f"//storage.googleapis.com/projects/_/buckets/{bucket}"
     job = f"projects/{target.project}/locations/{target.region}/jobs/{PLUGIN_INTAKE_JOB}"
     try:
@@ -348,7 +348,7 @@ def run(args: argparse.Namespace) -> int:
     target = doctor.Target(
         project=project,
         environment=state.environment,
-        region=state.region or str(state.outputs.get("region") or ""),
+        region=state.region or "",
         outputs=dict(state.outputs),
         principal=principal(),
     )
