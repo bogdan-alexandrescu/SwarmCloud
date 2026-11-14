@@ -9,8 +9,6 @@ or a value the settings would refuse: no flag, and the write is unmeasured.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from agent_worker import indexrun
