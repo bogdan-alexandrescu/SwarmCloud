@@ -83,7 +83,7 @@ def test_the_default_gate_skips_a_small_change(db, client):
     # MUTATION: make `policy_of` return None for the default block and the
     # review is declined as unreadable.
     assert report["reviews_skipped"] == [REVIEW], report
-    assert _inline(_review_doc(db))["verdict"] == "MERGE"
+    assert _inline(_review_doc(db))["verdict"] == "SKIPPED"  # #4101: never MERGE
 
 
 def test_the_default_runs_over_the_platforms_300_lines(db, client):
@@ -205,7 +205,7 @@ def test_an_all_met_check_lets_the_skipped_review_close_the_issue(db, objects, c
         {"index": 2, "met": True, "note": "header.tsx:40 toggles"},
     ]})
     # The check's own change is not counted: 12 lines, skipped.
-    assert json.loads(text)["verdict"] == "MERGE"
+    assert json.loads(text)["verdict"] == "SKIPPED"
     # MUTATION: drop the requirements from `skip_summary` and this is part of #N.
     assert issueruns.requirements_finding(PLAN, text) == (True, [], None)
 
@@ -226,8 +226,8 @@ def test_the_check_never_writes_a_verdict(db, objects, client):
         "requirements": [{"index": 1, "met": True, "note": "a"},
                          {"index": 2, "met": True, "note": "b"}]})
     verdict = json.loads(text)
-    # Only the list is read from it: the verdict stays the gate's MERGE.
-    assert verdict["verdict"] == "MERGE" and verdict["findings"] == []
+    # Only the list is read from it: the verdict stays the gate's SKIPPED (#4101).
+    assert verdict["verdict"] == "SKIPPED" and verdict["findings"] == []
     assert reviewgate.requirements_from(json.dumps({"verdict": "MERGE"})) is None
 
 
@@ -260,7 +260,7 @@ def test_a_failed_check_still_skips_the_review_with_part_of(db, client, state):
     assert doc["state"] == "SUCCEEDED"
     (entry,) = doc["result_summary"]["artifacts"]
     text = reviewgate.inline_verdict(doc["result_summary"], entry)
-    assert json.loads(text)["verdict"] == "MERGE"
+    assert json.loads(text)["verdict"] == "SKIPPED"
     met, unmet, _ = issueruns.requirements_finding(PLAN, text)
     assert met is False and unmet == PLAN["requirements"]
 

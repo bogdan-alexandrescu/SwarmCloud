@@ -4345,7 +4345,8 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     # `outputs`, not `produced`: a workflow read already names the whole
     # of `describe_task` `produced`, and one word for two shapes misleads.
     described["outputs"] = outputs_of(task, listing, listing_error=listing_error)
-    # A REVIEW'S VERDICT (#2837): MERGE or NOT_YET and how many findings,
+    # A REVIEW'S VERDICT (#2837): MERGE or NOT_YET and how many findings, or
+    # SKIPPED and why when the size gate skipped the review (#4101),
     # from the task's own `verdict.json`. No key, and no extra read, when its
     # artifacts hold none (`_verdict_of`).
     shown_verdict = _verdict_of(client, task_id, listing)
@@ -4458,6 +4459,11 @@ def _plugins_ran(task: dict[str, Any]) -> dict[str, dict[str, Any]]:
 #: (`agent_worker.verdict.MAX_VERDICT_BYTES`).
 VERDICT_NAME = "verdict.json"
 VERDICT_MAX_BYTES = 256 * 1024
+#: The verdict of a review the size gate skipped (#4101,
+#: `agent_worker.verdict.SKIPPED_VERDICT`), shown as SKIPPED with its
+#: `skipped` reason: never as MERGE, since no review ran.
+SKIPPED_VERDICT = "SKIPPED"
+SKIPPED_REASON_KEY = "skipped"
 
 
 def _verdict_of(client: Any, task_id: str, listing: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -4502,6 +4508,10 @@ def _verdict_of(client: Any, task_id: str, listing: dict[str, Any] | None) -> di
         return unavailable("the file is not a JSON object")
     raw = document.get("verdict")
     verdict = raw.strip().upper() if isinstance(raw, str) else None
+    reason = document.get(SKIPPED_REASON_KEY)
+    if verdict == SKIPPED_VERDICT and isinstance(reason, str) and reason.strip():
+        return {"verdict": SKIPPED_VERDICT, "skipped": " ".join(reason.split()),
+                "findings": 0, "file": VERDICT_NAME}
     if verdict not in VERDICTS:
         return unavailable(f"its `verdict` is {raw!r}, not {' or '.join(VERDICTS)}")
     findings = document.get("findings")

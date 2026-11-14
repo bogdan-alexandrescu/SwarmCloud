@@ -24,8 +24,11 @@ No credentials, no network, no emulator: `runner_profile: "mock"`.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from swarm_api import validation
 from swarm_api.validation import REVIEW_VERDICTS
 
 from .conftest import auth_header
@@ -224,6 +227,38 @@ def test_a_gate_under_integrate_must_be_on_the_integrator(client, db):
     body = _assert_refused(client, db, spec, "invalid_dispatch")
     assert body["detail"]["step_id"] == "fix"
     assert body["detail"]["integrator_step_id"] == "ship"
+
+
+def test_the_integrate_when_refusal_names_its_rule_and_why(client, db):
+    """#4101: a spec author met this refusal as a surprise. It names the rule
+    (only the integrator may carry `when` under integrate), the reason (every
+    other step's output folds into the integrator's pull request), what to do
+    instead, and where the rule is documented. Not widened: still a 422."""
+    spec = _review_shape()
+    spec["steps"].append(
+        {"step_id": "ship", "runner_profile": "mock", "depends_on": ["fix"]}
+    )
+    body = _assert_refused(client, db, spec, "invalid_dispatch")
+    message = body["message"]
+
+    # MUTATION: restore the old message ("Gate the integrating step, or make
+    # the gated step the one every other step feeds") and these fail.
+    assert "only the integrator may carry `when`" in message
+    assert "(here 'ship')" in message
+    assert "every other step's output folds into the integrator's one pull request" in message
+    assert "on_merge_verdict" in message
+    assert validation.INTEGRATE_WHEN_RULE_DOC in message
+    assert body["detail"]["rule"] == validation.INTEGRATE_WHEN_RULE
+    assert body["detail"]["docs"] == validation.INTEGRATE_WHEN_RULE_DOC
+
+
+def test_the_documented_rule_is_where_the_refusal_points():
+    path, anchor = validation.INTEGRATE_WHEN_RULE_DOC.split("#")
+    text = (Path(__file__).resolve().parents[3] / path).read_text(encoding="utf-8")
+    heading = "#### Under `integrate`, only the integrator carries `when`"
+    assert heading in text
+    assert anchor == "under-integrate-only-the-integrator-carries-when"
+    assert validation.INTEGRATE_WHEN_RULE in text
 
 
 def test_a_gated_step_cannot_promise_a_file_to_a_later_step(client, db):

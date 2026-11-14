@@ -50,7 +50,7 @@ costs nothing while it waits.
 | `input_from` | `{upstream_step: artifact_filename}` staged into this step's workspace. |
 | `resource_class` | optional named class, no larger than the profile's own. |
 | `timeout_seconds` | optional; may only shorten the profile's own default. A longer ask is lowered to the profile's cap (a child's, to its parent's) and recorded as the task field `timeout_seconds_asked`, a record the worker reports in its runner's `limits.clamped` and never a limit (contract request 131). |
-| `when` | `{"step": upstream, "verdict_in": ["NOT_YET"]}`: run this step's agent only on those verdicts; see [review before publishing](#review-before-publishing-implement-review-fix-if-needed) |
+| `when` | `{"step": upstream, "verdict_in": ["NOT_YET"]}`: run this step's agent only on those verdicts; see [review before publishing](#review-before-publishing-implement-review-fix-if-needed). Under `integrate` only the integrator may carry it ([why](#under-integrate-only-the-integrator-carries-when)) |
 | `builds_on` | an upstream `step_id` whose pushed branch this step's checkout starts from, instead of `repository_ref` |
 | `repository_ref` | this step's own branch, tag or full commit sha, which its checkout starts from instead of the workflow's `repository_ref`; see [a step on its own ref](#a-step-on-its-own-ref-a-steps-repository_ref) |
 | `allow_empty_diff` | `true`: an empty diff is this step's result, not its failure; see [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff) |
@@ -2153,9 +2153,20 @@ changed paths (`own_files` when recorded, else `files`) and
   dependants are released. It holds no lease,
   no pool and no attempt at any point (invariants 1-3). Its
   `result_summary.review_skipped` is the reason, and its `verdict.json` is
-  `{"verdict": "MERGE", "findings": [], "skipped": "<reason>"}`, so the
-  integrator's `when` gate, the fix loop or re-review `on_merge_verdict`
-  appends and the merge step read it exactly as a MERGE. The decision is recorded under
+  `{"verdict": "SKIPPED", "findings": [], "skipped": "<reason>"}` -- never
+  MERGE (#4101): no review ran, so nothing was approved, and a person or a
+  script that reads `verdict` alone must not take it for an approval. What a
+  skip lets through is each reader's own rule, read from the skip: a `when`
+  gate compares it as MERGE (`agent_worker.verdict.gate_reading`; the step's
+  `result_summary.verdict_gate` records `verdict: SKIPPED` beside
+  `gate_reading: MERGE`), so a gate on `NOT_YET` stays shut and the
+  integrator publishes as before; the fix loop and the re-review
+  `on_merge_verdict` appends end on it as on a MERGE; and the merge step
+  merges it once CI is green by its own rule
+  (`agent_worker.merge.SKIPPED_REVIEW_MERGES`, the owner's 2026-10-27 rule
+  that a change under the gate needs no review), recording `verdict: SKIPPED` and
+  `skipped_review: <reason>` on its summary. A review that RAN may not write
+  SKIPPED: its verdict is refused as unreadable. The decision is recorded under
   `metadata.review_gate.resolved` and on the step's `succeeded` event.
 * **The verdict is written inline.** No attempt ran, so there is no attempt
   prefix in the bucket to put it under: the manifest entry for
@@ -2167,7 +2178,8 @@ changed paths (`own_files` when recorded, else `files`) and
   (`InspectionService.read_artifact`, `reviewgate.inline_verdict`), masked
   by the same JSON redaction with the agent's literals, because the document
   is tenant-writable. So swarm-api's own publish of the integrator reads it
-  as a MERGE and opens the pull request without a pod, and an issue run's
+  as the gate reads a skip and opens the pull request without a pod, its
+  body saying the review was SKIPPED, and an issue run's
   per-requirement read reads it. A lost wake or a swarm-api that is down
   ends the scheduler's hold, and the review is promoted and RUNS: the
   fallback spends a review, it never invents a MERGE.
@@ -2428,13 +2440,37 @@ Every refusal is a 422 before anything is created, naming the step.
 | `when.step` that this step stages no file from | `invalid_dag` | the verdict is read from that file; add `input_from` (and `depends_on`) |
 | `when.verdict_in` empty, repeated, or outside `MERGE`, `NOT_YET` | `invalid_dag`, `detail.accepted_verdicts` | a review following the convention could never write it |
 | `when` under `direct-pr` | `invalid_dispatch` | every step opens its own PR there, the implementer's included, before the review |
-| `when` under `integrate` on a step that is not the integrator | `invalid_dispatch`, `detail.integrator_step_id` | the integrator's PR is where the verdict is shown |
+| `when` under `integrate` on a step that is not the integrator | `invalid_dispatch`, `detail.integrator_step_id`, `detail.rule: integrate_when_on_integrator_only` | only the integrator may carry `when`: every other step's output folds into its one PR ([below](#under-integrate-only-the-integrator-carries-when)) |
 | a gated step that another step's `input_from` stages from | `invalid_dag`, `detail.staged_by` | when its agent does not run it writes nothing, so that step would fail |
 | `builds_on` naming a step that is not upstream, or itself | `invalid_dag` | its branch may not exist yet |
 | `builds_on` under `collect` | `invalid_dispatch` | `collect` pushes no branch to start from |
 
 `when` under `collect` is accepted: nothing publishes, and the gate only
 decides whether an agent runs.
+
+#### Under `integrate`, only the integrator carries `when`
+
+This is a rule, not an oversight, and the refusal names it
+(`detail.rule: integrate_when_on_integrator_only`, #4101). Under `integrate`
+every step but the integrator is a contributor: it pushes a branch and opens
+nothing, and its output folds into the integrator's one pull request. That
+pull request is the only place a verdict is shown -- its body carries the
+verdict, whether the fix agent ran and the findings. A `when` on a
+contributor would decide, out of sight, what lands in that pull request: a
+shut gate leaves the contributor publishing only the verdict it staged, and
+the integrator would fold in a step that did nothing without the pull
+request saying why. So swarm-api refuses it at submission rather than widen
+what `when` means.
+
+The one exception is the `re-review` that a merge step's `on_merge_verdict`
+appends: swarm-api writes it, gated on the same review as the integrator,
+so it runs only after a fix. That is also the way to say "a conditional
+review or re-review round" under `integrate`: end the workflow in a `merge`
+step with `on_merge_verdict` (see
+[`on_merge_verdict`](#on_merge_verdict-the-workflow-ends-in-a-merge-on-the-latest-review)
+and [the fix loop](#the-fix-loop-review-fix-rounds-until-a-review-says-merge)),
+rather than gating a contributor. A spec that wants a gate on a step that
+is not the integrator can use `collect`, where nothing publishes.
 
 ### What the worker refuses
 

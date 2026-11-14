@@ -286,7 +286,9 @@ def republishes(
     record = summary.get("verdict_gate") if isinstance(summary, Mapping) else None
     if not isinstance(record, Mapping) or record.get("task_id") != review_task_id:
         return None
-    verdict = _verdict(record.get("verdict"))
+    # #4101: a review the size gate skipped is recorded as `verdict`
+    # SKIPPED beside the `gate_reading` its gate compared; the gate's is read.
+    verdict = _verdict(record.get("gate_reading", record.get("verdict")))
     if verdict is None or verdict in verdict_in:
         return None
     return {"task_id": review_task_id, "verdict": verdict,
