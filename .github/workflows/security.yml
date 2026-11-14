@@ -339,7 +339,7 @@ jobs:
     name: deployment-values
     runs-on: ubuntu-24.04
     needs: checks
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
       - name: the folded check passed in `checks`
         env:

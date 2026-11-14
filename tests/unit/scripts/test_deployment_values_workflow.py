@@ -76,7 +76,13 @@ def test_it_runs_on_every_pull_request_and_on_main():
     on = yaml.safe_load(SECURITY.read_text(encoding="utf-8"))[True]
     assert "pull_request" in on and "merge_group" in on
     assert on["push"] == {"branches": ["main"]}
-    assert "if" not in _job()
+    # Every pull request but a lane's: the owner's lane rule of 12 November
+    # (tests/unit/scripts/test_fast_checks_on_lane_prs.py) skips a lane's
+    # pull request and nothing else, so the only condition is that clause.
+    assert _job()["if"] == (
+        "${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') "
+        "&& github.event.pull_request.head.repo.full_name == github.repository) }}"
+    )
 
 
 def _git(cwd: Path, *args: str) -> str:
