@@ -57,7 +57,7 @@ def _list(body: str, attribute: str) -> list[str]:
 
 
 def _channels() -> list[str]:
-    return sorted(d.name for d in ENVIRONMENTS.iterdir() if (d / f"{d.name}.tfvars").is_file())
+    return sorted(d.name for d in ENVIRONMENTS.iterdir() if (d / f"{d.name}.tfvars.example").is_file())
 
 
 def _mark_prefixes(channels: list[str]) -> list[str]:

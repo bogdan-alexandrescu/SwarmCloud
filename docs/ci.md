@@ -2418,7 +2418,7 @@ new account does not exist yet.
 | accounts the deployer administers | where the list comes from |
 |---|---|
 | `swarm-api`, `swarm-scheduler`, `swarm-quota-broker`, `swarm-reconciler`, `swarm-tick`, `swarm-verify` | [`terraform/modules/service_account_ids`](../terraform/modules/service_account_ids/main.tf), which `modules/iam`, `terraform/infra/verify.tf` and bootstrap all read |
-| `swarm-agent-worker-<tenant>`, one per tenant | the prefix from the same module; the tenant keys from the `tenants` block of [`dev.tfvars`](../terraform/environments/dev/dev.tfvars), read by bootstrap from the file (`infra_tenants_tfvars`) |
+| `swarm-agent-worker-<tenant>`, one per tenant | the prefix from the same module; the tenant keys from the `tenants` block of the deployment's `dev.tfvars` (kept in its private configuration; its shape is [`dev.tfvars.example`](../terraform/environments/dev/dev.tfvars.example)), read by bootstrap from the file (`infra_tenants_tfvars`) |
 | never `swarm-ci-fix` or `swarm-tf-deployer` | subtracted, and a precondition fails the plan if infra ever manages either |
 
 Nothing restates the list, so an account infra starts managing is an account
@@ -3497,7 +3497,7 @@ below is kept as the record of why each value is what it is, and
 `auto-merge.yml` would still count its checks if it were applied.)
 
 **3. Branch protection on `main`**, requiring only the checks that run on
-**every** pull request — `security.yml`'s four jobs. `application.yml` (until
+**every** pull request — `security.yml`'s five jobs. `application.yml` (until
 2026-10-07) and `terraform.yml` both have a `pull_request` path filter
 ([table above](#the-workflows-and-what-each-one-is-responsible-for)), so
 none of their jobs — including `shellcheck` and
@@ -3518,7 +3518,8 @@ gh api --method PUT \
       {"context": "trivy (repo)", "app_id": 15368},
       {"context": "secret scan", "app_id": 15368},
       {"context": "checkov (terraform + kubernetes)", "app_id": 15368},
-      {"context": "platform policy assertions", "app_id": 15368}
+      {"context": "platform policy assertions", "app_id": 15368},
+      {"context": "deployment-values", "app_id": 15368}
     ]
   },
   "enforce_admins": false,
@@ -3530,8 +3531,9 @@ JSON
 
 Why each value:
 
-* **The four checks are exactly `security.yml`'s jobs that run on every pull
-  request.** Its fifth job, `trivy (published images)`, runs only on a
+* **The five checks are exactly `security.yml`'s jobs that run on every pull
+  request**, `deployment-values` among them (docs/design/generic-repository.md,
+  section 4). Its sixth job, `trivy (published images)`, runs only on a
   schedule or `workflow_dispatch`, never on a pull request, so it is not
   listed for the same reason `build images` and `plan` are not: a required
   check that is never reported holds the pull request forever.
@@ -3702,8 +3704,9 @@ It is left as it is while another decision on that file is pending.
 the pull request adding it has merged and `ci-gate` has reported green on a
 pull request, the owner (or the orchestrator, with the owner's go-ahead) adds
 it to the ruleset. The PUT replaces the ruleset whole, so the body restates
-every rule it has today (read on 2026-09-29) and adds only `ci-gate`. No check
-is pinned to an `integration_id` (owner decision, 2026-09-29), the four
+every rule it has today (read on 2026-09-29) and adds `ci-gate`, plus
+`deployment-values`, security.yml's always-run guard (part of #2688). No check
+is pinned to an `integration_id` (owner decision, 2026-09-29), the five
 security checks included, as today:
 
 ```bash
@@ -3747,6 +3750,7 @@ gh api -X PUT repos/example-org/example-repo/rulesets/"$RULESET_ID" \
           {"context": "trivy (repo)"},
           {"context": "checkov (terraform + kubernetes)"},
           {"context": "platform policy assertions"},
+          {"context": "deployment-values"},
           {"context": "ci-gate"}
         ]
       }
@@ -4895,7 +4899,7 @@ gets there. Merge commits must be allowed on the repository
 ### Operator step: add the merge queue rule
 
 Apply it only once the pull request carrying this section has merged and a
-pull request has shown `ci-gate` and the four security checks green after it.
+pull request has shown `ci-gate` and the five security checks green after it.
 The PUT replaces the ruleset whole, so the body restates every rule the
 [ci-gate step](#owner-step-require-ci-gate-once-it-is-on-main) sets and adds
 only `merge_queue`. Compare it with a fresh read first
@@ -4943,6 +4947,7 @@ gh api -X PUT repos/example-org/example-repo/rulesets/"$RULESET_ID" \
           {"context": "trivy (repo)"},
           {"context": "checkov (terraform + kubernetes)"},
           {"context": "platform policy assertions"},
+          {"context": "deployment-values"},
           {"context": "ci-gate"}
         ]
       }

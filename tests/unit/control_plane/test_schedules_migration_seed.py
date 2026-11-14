@@ -136,5 +136,5 @@ def test_the_second_change_deleted_the_route_and_the_switch(deleted: str):
         assert "SWEEP_ENABLED" not in (INFRA / "locals.tf").read_text()
     else:
         assert 'variable "enable_issue_sweep"' not in (INFRA / "variables.tf").read_text()
-        for tfvars in sorted((REPO_ROOT / "terraform" / "environments").glob("*/*.tfvars")):
+        for tfvars in sorted((REPO_ROOT / "terraform" / "environments").glob("*/*.tfvars.example")):
             assert not re.search(r"^\s*enable_issue_sweep\s*=", tfvars.read_text(), re.M), tfvars

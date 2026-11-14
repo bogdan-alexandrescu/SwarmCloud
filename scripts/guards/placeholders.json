@@ -159,6 +159,19 @@
       {"slug": "u-a-browser-login-github", "why": "a one-letter person's browser-login secret stem in a unit test"},
       {"slug": "u-owner", "why": "the personal placeholder workspace the console's fixtures name; a generic test workspace"}
     ],
+    "public_app_ids": [
+      {"id": "15368", "why": "GitHub Actions' public App id; docs/ci.md's branch-protection command pins every required check to it, so a check of the same name posted by any other App cannot satisfy the rule"}
+    ],
+    "release_home": {
+      "_why": "The owner's ruling of 2026-11-08 (part of #2688): the release home is a product address, not a deployment value. It is the public bucket and project every release is published to and every install fetches from (scripts/release-home.sh, scripts/release/publish.sh).",
+      "buckets": [
+        {"bucket": "swarmcloud", "why": "the release home's public bucket: releases are uploaded to it and installs download from it"}
+      ],
+      "projects": [
+        {"project": "swarmcloud-prod", "why": "the release home's project, which holds the bucket, the image repository and the signing key"},
+        {"project": "swarmcloud-releases", "why": "the release home's alternate project id, which publish.sh also accepts as the release home"}
+      ]
+    },
     "exempt_lines": [
       {"path": "LICENSE", "line": 3, "why": "the licence holder's copyright line, kept by the owner's legal decision of 2026-11-07"}
     ]

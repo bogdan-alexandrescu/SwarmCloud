@@ -29,7 +29,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 CI = REPO / "docs" / "ci.md"
 VERIFY_LOGS = REPO / "terraform" / "bootstrap" / "verify_logs.tf"
-TFVARS = REPO / "terraform" / "bootstrap" / "terraform.tfvars"
+#: A deployment's real bootstrap terraform.tfvars is private (the state bucket's config/ prefix,
+#: docs/ci.md); a placeholder deployment's stands in (tests/fixtures/tfvars/).
+TFVARS = REPO / "tests" / "fixtures" / "tfvars" / "bootstrap.tfvars.fixture"
 VARIABLES = REPO / "terraform" / "bootstrap" / "variables.tf"
 RUNBOOK = REPO / "docs" / "runbooks" / "custom-roles-to-bootstrap.md"
 

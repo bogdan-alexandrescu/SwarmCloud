@@ -25,6 +25,7 @@ import os
 import re
 import secrets
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -604,3 +605,45 @@ def test_license_line_3_is_exempt_and_line_4_is_not(tmp_path: Path):
     })
     result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([("C9", "literal", holder)]))
     assert findings(result.stdout) == [("LICENSE", 4, "C9", "list:2"), ("docs/x.md", 3, "C9", "list:2")]
+
+
+# ---------------------------------------------------------------------------
+# The owner's rulings of 8 November 2026 (part of #2688): GitHub Actions' public
+# App id and the release home as a product address. (The third, the owner's
+# code-owner handle in .github/CODEOWNERS, is moot since main's CODEOWNERS
+# names a placeholder team.) As above, every allowed value is read from
+# placeholders.json and every listed value is built at run time.
+# ---------------------------------------------------------------------------
+
+_guard_spec = importlib.util.spec_from_file_location("deployment_values", ROOT / "scripts" / "guards" / "deployment_values.py")
+assert _guard_spec and _guard_spec.loader
+dv = importlib.util.module_from_spec(_guard_spec)
+sys.modules["deployment_values"] = dv
+_guard_spec.loader.exec_module(dv)
+
+
+def test_the_actions_app_id_and_the_release_home_are_not_reported_but_a_listed_value_beside_them_is(tmp_path: Path):
+    app_ids = [entry["id"] for entry in ALLOWLIST["public_app_ids"]]
+    home = ALLOWLIST["release_home"]
+    buckets = [entry["bucket"] for entry in home["buckets"]]
+    projects = [entry["project"] for entry in home["projects"]]
+    assert app_ids and buckets and projects and home["_why"]
+    assert all(e["why"] for e in [*ALLOWLIST["public_app_ids"], *home["buckets"], *home["projects"]])
+    lines = ([f'{{"context": "{_word("c")}", "app_id": {a}}}' for a in app_ids]
+             + [f"gsutil ls gs://{b}/releases/V/" for b in buckets]
+             + [f"publish --project {p} to projects/{p}/locations/us" for p in projects])
+    found, _ = _listed_neighbour(tmp_path, lines)
+    _only_the_listed_lines_are_reported(found, len(lines))
+
+
+def test_another_app_id_bucket_or_project_is_still_reported(tmp_path: Path):
+    bucket = ALLOWLIST["release_home"]["buckets"][0]["bucket"]
+    project = ALLOWLIST["release_home"]["projects"][0]["project"]
+    tree = make_tree(tmp_path / "repo", {"docs/x.md": "\n".join([
+        f'"app_id": {_number(6)}',
+        f"gs://{bucket}-{_word('b')}/x",
+        f"--project {project}-{_word('p')}",
+    ]) + "\n"})
+    result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([]))
+    assert findings(result.stdout) == [("docs/x.md", 1, "C6", "github-app-id"), ("docs/x.md", 2, "C7", "bucket"),
+                                       ("docs/x.md", 3, "C1", "project-flag")]

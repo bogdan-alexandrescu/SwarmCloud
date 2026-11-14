@@ -60,7 +60,7 @@ env:
   CHECKOV_VERSION: "3.3.17"
 
 # RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
-# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# (id-token) runs on the self-hosted runner pool's VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
 # GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
@@ -104,7 +104,7 @@ jobs:
         # d6a740b1 whose earlier run had passed, the job read red with no
         # finding behind it, and the merge step's free re-run often read red
         # again for the same reason. Three tries at the mirror with a short
-        # backoff, then the upstream repository the mirror copies (BGD,
+        # backoff, then the upstream repository the mirror copies (the owner,
         # 2026-10-27, "Both halves"). Both down still fails the job: a scan
         # with no DB reports no vulnerability, and that is not a pass.
         env:
@@ -125,7 +125,7 @@ jobs:
 
       - name: write the accept list for the filesystem scan
         # The gate's own filtered copy of .trivyignore.yaml: unexpired entries
-        # scoped to apps/swarm-speech/uv.lock alone (BGD, 2026-11-05, #2688),
+        # scoped to apps/swarm-speech/uv.lock alone (the owner, 2026-11-05, #2688),
         # so code scanning's alerts honour the same list and the same expiry
         # as the gate. One filter, in scripts/trivy-new-findings.sh.
         run: |
@@ -331,6 +331,29 @@ jobs:
           echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
           exit 1
 
+  deployment-values:
+    # NAME-KEEPER (CI-FOLD, #1799): the `deployment-values · ...` step of
+    # `checks` runs the check; this passes only on its verdict `success`.
+    # `!cancelled()`, not `always()`: as `secret scan` above (#2582).
+    # The ruleset requires this check by its name: keep `deployment-values`.
+    name: deployment-values
+    runs-on: ubuntu-24.04
+    needs: checks
+    if: ${{ !cancelled() }}
+    steps:
+      - name: the folded check passed in `checks`
+        env:
+          CHECK: deployment-values
+          VERDICT: ${{ needs.checks.outputs.deployment-values }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
+
   checks:
     # SUB-MINUTE CHECKS SHARE A JOB (CI-FOLD, #1799; owner approval
     # 2026-10-21; docs/ci.md "Sub-minute checks share a job"). `secret scan`
@@ -343,11 +366,13 @@ jobs:
     # `verdict` step gives each check one result, and its old job id --
     # `secrets`, `policy` -- stays as a name-keeper on
     # ubuntu-24.04 that reports it under the required name.
+    # `deployment-values` joined them as a fold from the start: a guard that
+    # reads a diff runs in seconds, so it buys no VM of its own.
     #
     # Step ids are the contract: `setup-*` is the shared setup, every step of
     # a check is `<old job id>-*`, and the last is `verdict`
     # (tests/unit/scripts/test_ci_fold.py).
-    name: sub-minute checks (secret scan, policy)
+    name: sub-minute checks (secret scan, policy, deployment-values)
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
     # Read-only (owner decision 2026-10-21 on PR 1813): these steps run
@@ -357,6 +382,7 @@ jobs:
     outputs:
       secrets: ${{ steps.verdict.outputs.secrets }}
       policy: ${{ steps.verdict.outputs.policy }}
+      deployment-values: ${{ steps.verdict.outputs.deployment-values }}
     steps:
       - name: setup · checkout
         id: setup-checkout
@@ -522,6 +548,54 @@ jobs:
             || { echo "::error::the Spot guard has been removed from profiles.py"; exit 1; }
           echo "contract present"
 
+      # --- deployment-values ---------------------------------------------------
+      # THE DEPLOYMENT-VALUES GUARD, ENFORCING (docs/design/generic-repository.md,
+      # section 4; part of #2688). Nothing in this repository may tie it to a
+      # company, a person or a live deployment. scripts/guards/deployment-values.sh
+      # finds such values by their shape (rules in the tree) and by their name
+      # (the pattern list, the DEPLOYMENT_PATTERNS secret), and prints
+      # `path:line C<n> <rule-id>`, never the value.
+      #
+      #   * a pull request or a merge-queue entry: only the lines it adds
+      #     (--diff reads the merge base; the checkout above is full history);
+      #   * main, the schedule and a dispatch: every tracked file.
+      #
+      # The list unset or altered on a same-repository run is exit 2: red, never
+      # a pass. A FORK'S PULL REQUEST gets no secrets, so it runs the shape layer
+      # alone and says so; it prints only pass or fail and a count, never a
+      # path:line or a rule id, so nobody can test guesses against the list one
+      # string at a time. The maintainer reads the per-line report from a
+      # same-repository rerun or the worker's gate.
+      - name: deployment-values · enforce
+        id: deployment-values-enforce
+        if: ${{ !cancelled() }}
+        env:
+          DEPLOYMENT_PATTERNS: ${{ secrets.DEPLOYMENT_PATTERNS }}
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          set -euo pipefail
+          case "${EVENT}" in
+            pull_request) scope=(--diff "origin/${BASE_REF}") ;;
+            merge_group)  scope=(--diff "${QUEUE_BASE}") ;;
+            *)            scope=(--tree) ;;
+          esac
+          if [ "${FORK}" = "true" ]; then
+            # No secret reaches a fork's run. Not under CI=true, which would
+            # read the missing list as exit 2: the shape layer runs, the name
+            # layer says it was skipped, and that is exit 3.
+            rc=0
+            env -u CI -u DEPLOYMENT_PATTERNS scripts/guards/deployment-values.sh "${scope[@]}" --mode summary || rc=$?
+            case "${rc}" in
+              0|3) echo "::notice title=deployment-values::a fork's pull request: the shape layer passed; the name layer needs the pattern list, which forks never get, and runs on a same-repository rerun"; exit 0 ;;
+              1) echo "::error title=deployment-values::the shape layer found deployment values in this pull request's added lines"; exit 1 ;;
+              *) echo "::error title=deployment-values::the guard exited ${rc}"; exit 1 ;;
+            esac
+          fi
+          scripts/guards/deployment-values.sh "${scope[@]}" --mode enforce
+
       - name: verdict · each folded check's own result, for its name-keeper
         # One result per check, by step id: `success` only when every shared
         # `setup-*` step succeeded, none of the check's own `<old job id>-*`
@@ -534,7 +608,7 @@ jobs:
         if: always()
         env:
           STEPS: ${{ toJSON(steps) }}
-          CHECKS: secrets policy
+          CHECKS: secrets policy deployment-values
         run: |
           set -euo pipefail
           read -r -a checks <<< "${CHECKS}"
@@ -569,14 +643,14 @@ jobs:
       - id: auth
         uses: google-github-actions/auth@v3
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SA }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
       - uses: google-github-actions/setup-gcloud@v3
 
       - name: scan the current channel images
         env:
-          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           REGION: ${{ vars.GCP_REGION }}
         run: |
           set -euo pipefail

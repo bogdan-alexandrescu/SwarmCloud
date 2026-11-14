@@ -99,8 +99,10 @@ class Allow:
         data = json.loads(path.read_text(encoding="utf-8"))
         allow = data["allowlist"]
         domains = tuple(allow["domains"])
+        home = allow["release_home"]
         return cls(
-            projects=frozenset([*data["projects"].values(), *allow["public_projects"]]),
+            projects=frozenset([*data["projects"].values(), *allow["public_projects"],
+                                *(e["project"] for e in home["projects"])]),
             numbers=frozenset(data["project_numbers"].values()),
             domains=domains,
             reserved_tlds=frozenset(allow["reserved_tlds"]),
@@ -109,9 +111,11 @@ class Allow:
                                  *(e["address"].lower() for e in allow["public_service_addresses"])]),
             hosts=domains + tuple(allow["public_hosts"]) + tuple(e["host"] for e in allow["public_product_hosts"]),
             tailnet=data["tailnet"],
-            buckets=frozenset([*data["buckets"], data["shared_project_resources"]["bucket"]]),
+            buckets=frozenset([*data["buckets"], data["shared_project_resources"]["bucket"],
+                               *(e["bucket"] for e in home["buckets"])]),
             tenants=frozenset(data["tenants"]),
-            app_ids=frozenset([data["github"]["app_id"], data["github"]["installation_id"]]),
+            app_ids=frozenset([data["github"]["app_id"], data["github"]["installation_id"],
+                               *(e["id"] for e in allow["public_app_ids"])]),
             repository=data["github"]["repository"],
             cluster_suffixes=frozenset(e["suffix"] for e in allow["cluster_dns_suffixes"]),
             url_paths=tuple(e["path"] for e in allow["public_url_paths"]),

@@ -78,7 +78,7 @@ def test_the_voice_roll_comment_names_voice_its_design_in_the_graphs_shape(name)
         comment.append(line.strip())
     assert comment and comment[0].startswith("# Lane VOICE-ROLL (part of #2688; docs/design/voice-it.md"), comment[:1]
     joined = " ".join(comment)
-    assert "kubernetes/apply.sh --swarm-voice" in joined and "agents-staging" in joined, joined
+    assert "kubernetes/apply.sh --swarm-voice" in joined and "other-team-cluster" in joined, joined
     assert "Not served is a notice, not a failure" in joined, joined
 
 

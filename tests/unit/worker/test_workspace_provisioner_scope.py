@@ -915,7 +915,7 @@ LABEL_PREFIX = f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}"
 WORKSPACE_LABEL = f"{LABEL_PREFIX}/workspace"
 WORKSPACE_ID = "w-000000"
 GROUP = "research"
-DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars"
+DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example"
 
 
 def _tfvars_tenants(path: Path) -> list[str]:
@@ -1093,17 +1093,21 @@ def test_the_rendered_terraform_list_is_the_environments_tenants(dev_policy_docs
     )
 
 
-def test_an_offline_render_refuses_every_environments_tenants(policy_docs):
+def test_an_offline_render_refuses_every_environments_tenants(monkeypatch):
     """Without --terraform-tfvars (lint, CI, the Makefile) the list is the union
     of every environment's: a render that refuses more is safe to apply
-    anywhere; one that refuses fewer is not."""
+    anywhere; one that refuses fewer is not. A deployment's real tfvars is
+    private (the state bucket's config/ prefix, docs/ci.md), so the tracked
+    placeholders stand in for the environments here."""
+    monkeypatch.setattr(render, "TFVARS_GLOB", "terraform/environments/*/*.tfvars.example")
     expected = {
         f"{render.NAMESPACE_PREFIX}{k}"
-        for path in sorted((REPO / "terraform" / "environments").glob("*/*.tfvars"))
+        for path in sorted(REPO.glob(render.TFVARS_GLOB))
         for k in _tfvars_tenants(path)
     }
     assert f"{render.NAMESPACE_PREFIX}eng" in expected
-    assert set(_terraform_namespaces(policy_docs)) == expected
+    assert f"{render.NAMESPACE_PREFIX}smoke" in expected
+    assert set(_terraform_namespaces(_policies())) == expected
 
 
 def test_each_terraform_namespace_is_refused_even_with_the_label(dev_policy_docs):

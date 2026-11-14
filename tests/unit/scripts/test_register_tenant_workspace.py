@@ -2233,11 +2233,21 @@ def test_the_terraform_tenants_pinned_in_the_image_are_each_environments() -> No
     import render
 
     pinned = json.loads(RULES_FILE.read_text()).get("terraform_tenants", {})
-    files = sorted((REPO / "terraform" / "environments").glob("*/*.tfvars"))
-    assert files, "no environment tfvars found"
+    # A deployment's real tfvars is private (the state bucket's config/ prefix,
+    # docs/ci.md); each environment's tracked placeholder names the tenants
+    # every deployment of it declares. The guard refusing more is safe, so the
+    # pin holds at least those; where a private copy sits beside the example
+    # (an operator's checkout), the pin is exactly its tenants.
+    files = sorted((REPO / "terraform" / "environments").glob("*/*.tfvars.example"))
+    assert files, "no environment tfvars.example found"
     assert set(pinned) == {f.parent.name for f in files}, sorted(pinned)
-    for tfvars in files:
-        assert sorted(pinned[tfvars.parent.name]) == sorted(render.terraform_tenants(tfvars)), tfvars
+    for example in files:
+        assert render.terraform_tenants(example), example
+        missing = set(render.terraform_tenants(example)) - set(pinned[example.parent.name])
+        assert not missing, f"{example}: the pin does not refuse {sorted(missing)}"
+        private = example.with_suffix("")
+        if private.is_file():
+            assert sorted(pinned[private.parent.name]) == sorted(render.terraform_tenants(private)), private
 
 
 @pytest.mark.parametrize("kind,principal,tenant", [

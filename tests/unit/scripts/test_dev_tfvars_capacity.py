@@ -25,7 +25,9 @@ from swarm_common.models import pool_names_for
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
 
 REPO = Path(__file__).resolve().parents[3]
-DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars"
+#: A deployment's real dev.tfvars is private (the state bucket's config/ prefix,
+#: docs/ci.md); a placeholder deployment's stands in (tests/fixtures/tfvars/).
+DEV_TFVARS = REPO / "tests" / "fixtures" / "tfvars" / "dev.tfvars.fixture"
 
 #: hard_limit of every live dev pool, read 2026-10-02 after the doubling.
 LIVE_POOLS = {
@@ -54,7 +56,7 @@ LIVE_POOLS = {
     # (~23:4xZ), setting max_active and capacity_units both to 20.
     "tenant:smoke": 20,
     "tenant:u-owner": 80,
-    "tenant:u-sw-c90291": 4,
+    "tenant:u-sw-7d8af8": 4,
 }
 
 #: Pools #628 changes in dev.tfvars, which are NOT live until an operator sets
@@ -84,7 +86,7 @@ PENDING_POOLS = {
     "provider:anthropic": 200,
     "resource:browser": 100,
     # oracle-api's tenant (#1568): min(max_active 4, capacity_units 8).
-    "tenant:u-or-9a0792": 4,
+    "tenant:u-or-ef6b39": 4,
 }
 
 #: (max_active, capacity_units) of every live dev tenant, read 2026-10-02;
@@ -94,15 +96,15 @@ LIVE_TENANTS = {
     "eng": (45, 45),
     "smoke": (20, 20),
     "u-owner": (80, 80),
-    "u-sw-c90291": (4, 8),
+    "u-sw-7d8af8": (4, 8),
 }
 
 #: Tenants dev.tfvars declares that are NOT live until the release that adds
-#: them applies. u-or-9a0792 is oracle-api's own tenant (owner decision
+#: them applies. u-or-ef6b39 is oracle-api's own tenant (owner decision
 #: 2026-10-18, #1568), at swarm-verify's 4/8. Move it into LIVE_TENANTS, and
 #: its pool into LIVE_POOLS, with the date read, once it is live.
 PENDING_TENANTS = {
-    "u-or-9a0792": (4, 8),
+    "u-or-ef6b39": (4, 8),
     # The owner, 2026-10-26: one tenant may hold the 100 browser units.
     "eng": (100, 100),
 }

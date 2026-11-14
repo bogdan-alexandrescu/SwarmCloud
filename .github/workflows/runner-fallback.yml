@@ -5,19 +5,19 @@ name: runner fallback
 # (CI-FALLBACK, part of #1483; docs/ci.md, "CI falls back to GitHub-hosted
 # runners on its own").
 #
-# Measured 2026-10-17: runner-dispatcher (project saga-ci-runners) registers
+# Measured 2026-10-17: runner-dispatcher (in the runner pool's own project) registers
 # the pool's runners as the owner's GitHub user. That user's quota ran out
 # from 02:00 UTC (generate-jitconfig 403), the dispatcher's sweep read
 # `per_target: {swarmcloud: 0}`, and every pull request's checks stayed
 # queued for hours until someone set SELF_HOSTED_CI=off by hand. This
 # workflow is that hand.
 #
-# THE JUDGE NEVER RUNS ON THE POOL IT JUDGES. A judge on bogdan-ci would be
+# THE JUDGE NEVER RUNS ON THE POOL IT JUDGES. A judge on the pool would be
 # queued behind the outage it exists to notice, so `judge` is pinned to
 # GitHub-hosted ubuntu-24.04 (free: the repository is public).
 #
 # THE PROBE IS THE ONE JOB THAT MUST RUN ON THE POOL. While the hatch is off
-# nothing else asks for a bogdan-ci runner, and the dispatcher starts a VM
+# nothing else asks for a pool runner, and the dispatcher starts a VM
 # per queued job, so an empty runner list says nothing about the pool. The
 # probe asks for one: a probe a runner picks up is the pool serving, a probe
 # still queued after QUEUED_MINUTES is the pool not serving. It runs only
@@ -25,13 +25,13 @@ name: runner fallback
 # secret, and only schedule and workflow_dispatch can start it (no fork can).
 #
 # What the judge decides, every 10 minutes:
-#   * on -> off: at least one job of another workflow has asked for bogdan-ci
-#     and been queued more than QUEUED_MINUTES, and no bogdan-ci job is
+#   * on -> off: at least one job of another workflow has asked for the pool
+#     and been queued more than QUEUED_MINUTES, and no pool job is
 #     running or has started within QUEUED_MINUTES (no runner is online).
 #     A job queued on a GitHub-hosted label does not count: hosted saturation
 #     (76 queued on 2026-10-14) is the reason the pool exists, and moving
 #     onto hosted then would make it worse.
-#   * while off: every run with a job still queued on bogdan-ci is cancelled
+#   * while off: every run with a job still queued on the pool is cancelled
 #     and its cancelled jobs re-run, so they resolve runs-on again and land on
 #     ubuntu-24.04. Once per run: a run whose latest attempt this workflow
 #     started (triggering actor github-actions[bot]) is never touched again.
@@ -66,7 +66,7 @@ env:
   VARIABLE: SELF_HOSTED_CI
   # The label runner-dispatcher registers SwarmCloud's runners under.
   POOL_LABEL: ${{ vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci' }}
-  # A bogdan-ci job queued this long with no runner serving means the pool is
+  # A pool job queued this long with no runner serving means the pool is
   # out. The dispatcher starts a VM in about two minutes; ten is five of those
   # and one schedule tick.
   QUEUED_MINUTES: "10"
@@ -82,7 +82,7 @@ jobs:
   judge:
     runs-on: ubuntu-24.04
     # The merge App's key (MERGE_APP_PRIVATE_KEY) lives in environment
-    # `repo-secrets`, whose deployment branches are `main` only (BGD,
+    # `repo-secrets`, whose deployment branches are `main` only (the owner,
     # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read
     # by a workflow on ANY pushed branch, before any review or hold.
     # Every trigger here runs on main's ref -- schedule and workflow_dispatch

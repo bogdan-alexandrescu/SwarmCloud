@@ -62,6 +62,9 @@ REQUIRED_CONTEXTS = (
     "trivy (repo)",
     "checkov (terraform + kubernetes)",
     "platform policy assertions",
+    # security.yml's always-run deployment-values job (part of #2688): the
+    # ruleset bodies require it, as test_ci_gate holds them to that file.
+    "deployment-values",
     "ci-gate",
 )
 

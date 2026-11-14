@@ -808,7 +808,8 @@ def test_the_train_never_starts_on_a_pull_request_event(train_workflow):
 #: The context paths the tick's `if:` may read. Anything else is refused by
 #: _tick_runs() rather than guessed at.
 _IF_PATH = re.compile(r"\b(?:vars|github)(?:\.[A-Za-z_][\w-]*|\[\d+\])+")
-THIS_REPO = "bogdan-alexandrescu/SwarmCloud"
+#: The placeholder repository (docs/design/generic-repository.md, section 3.1).
+THIS_REPO = "example-org/example-repo"
 
 
 def _tick_runs(
@@ -835,6 +836,8 @@ def _tick_runs(
         listed = head_repo == repository
     values = {
         "github.repository": repository,
+        # GitHub's own flag: a copy of THIS_REPO under another name is a fork.
+        "github.event.repository.fork": repository != THIS_REPO,
         "github.event_name": event,
         "vars.MERGE_TRAIN": train,
         "github.event.workflow_run.name": name if is_run else None,
@@ -855,6 +858,7 @@ def _tick_runs(
     py = _IF_PATH.sub(bind, cond.strip())
     py = py.replace("&&", " and ").replace("||", " or ").replace("startsWith(", "_starts(")
     py = re.sub(r"\bnull\b", "None", py)
+    py = re.sub(r"\bfalse\b", "False", re.sub(r"\btrue\b", "True", py))
     helpers = {"_starts": lambda value, prefix: str(value or "").lower().startswith(prefix.lower())}
     return bool(eval(py, {"__builtins__": {}}, {**names, **helpers}))  # noqa: S307
 
@@ -875,7 +879,7 @@ def _tick_runs(
         (
             "a fork's train/ branch",
             "workflow_run",
-            {"branch": "train/7", "head_repo": "someone/SwarmCloud"},
+            {"branch": "train/7", "head_repo": "someone/example-repo"},
             False,
         ),
         # Any branch's pull request run finishing green, with the train on.
@@ -894,7 +898,7 @@ def _tick_runs(
         (
             "a fork's pull request run, train on",
             "workflow_run",
-            {"train": "on", "head_repo": "someone/SwarmCloud"},
+            {"train": "on", "head_repo": "someone/example-repo"},
             False,
         ),
         # `ready` added: auto-merge.yml's pull_request_target run completes.
@@ -915,7 +919,7 @@ def _tick_runs(
                 "name": "auto-merge",
                 "run_event": "pull_request_target",
                 "branch": "main",
-                "head_repo": "someone/SwarmCloud",
+                "head_repo": "someone/example-repo",
             },
             False,
         ),
@@ -932,7 +936,7 @@ def _tick_runs(
                 "train": "on",
                 "name": "auto-merge",
                 "run_event": "pull_request_target",
-                "head_repo": "someone/SwarmCloud",
+                "head_repo": "someone/example-repo",
                 "listed": True,
             },
             False,
@@ -968,11 +972,11 @@ def _tick_runs(
             False,
         ),
         # Anywhere but this repository, nothing.
-        ("a fork of the repository", "schedule", {"train": "on", "repository": "someone/SwarmCloud"}, False),
+        ("a fork of the repository", "schedule", {"train": "on", "repository": "someone/example-repo"}, False),
         (
             "a fork of the repository, its own train",
             "workflow_run",
-            {"branch": "train/7", "repository": "someone/SwarmCloud", "head_repo": "someone/SwarmCloud"},
+            {"branch": "train/7", "repository": "someone/example-repo", "head_repo": "someone/example-repo"},
             False,
         ),
     ],
@@ -984,6 +988,20 @@ def test_when_a_tick_runs(train_workflow, why: str, event: str, kwargs: dict, ru
     clause, or its MERGE_TRAIN or conclusion guard, and a row goes red."""
     assert event in train_workflow["on"], why
     assert _tick_runs(train_workflow["jobs"]["tick"]["if"], event, **kwargs) is runs, why
+
+
+def test_the_tick_names_no_repository_by_a_literal(train_workflow):
+    """The repository is `github.repository` and GitHub's `fork` flag, never a
+    written address (docs/design/generic-repository.md, section 2.2): a literal
+    would tie the workflow to one deployment's repository, and the tick would
+    never run in a copy under another name. MUTATION: compare
+    `github.repository` with a quoted owner/name and this goes red."""
+    cond = train_workflow["jobs"]["tick"]["if"]
+    assert not re.search(r"github\.repository\s*[!=]=\s*'", cond), cond
+    assert "github.event.repository.fork == false" in cond, cond
+    # The address of a fork is irrelevant; the flag alone keeps it out.
+    assert _tick_runs(cond, "workflow_dispatch", repository="someone/example-repo") is False
+    assert _tick_runs(cond, "workflow_dispatch") is True
 
 
 def test_one_train_at_a_time_and_a_running_one_is_never_cancelled(train_workflow):

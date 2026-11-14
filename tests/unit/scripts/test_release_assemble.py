@@ -151,9 +151,12 @@ def test_module_has_no_tfvars_or_environments(bundle: Path) -> None:
     # Outside the three roots, only what they read (test below).
     outside = [n for n in names if not n.startswith(("terraform/bootstrap", "terraform/infra", "terraform/modules"))]
     assert set(outside) <= set(module_reads()), sorted(set(outside) - set(module_reads()))[:10]
-    # The live deployment's bootstrap tfvars exists in the checkout; it is the
-    # file this test is about.
-    assert (REPO / "terraform" / "bootstrap" / "terraform.tfvars").is_file()
+    # A deployment's own bootstrap tfvars is private (the state bucket's config/
+    # prefix, docs/ci.md) and is the file this test is about: it never ships,
+    # even from a checkout that holds a copy. The tracked placeholder beside the
+    # root is the control that the root is the one read above.
+    assert (REPO / "terraform" / "bootstrap" / "terraform.tfvars.example").is_file()
+    assert "terraform/bootstrap/terraform.tfvars" not in names
 
 
 MODULE_ROOTS = ("terraform/bootstrap", "terraform/infra", "terraform/modules")

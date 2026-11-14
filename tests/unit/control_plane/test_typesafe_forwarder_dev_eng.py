@@ -46,7 +46,7 @@ from .conftest import PROJECT
 from .test_dispatch_manifests import NOW, make_lease, make_task
 
 REPO = Path(__file__).resolve().parents[3]
-DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars"
+DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example"
 RUNBOOK = REPO / "docs" / "runbooks" / "typesafe-forwarder.md"
 
 LABEL = ("swarm-typesafe", "inject")
