@@ -1420,6 +1420,46 @@ def test_policies_mode_falls_back_to_the_email_before_the_deployer_exists(tmp_pa
     assert all(u == {deployer} for u in users), users
 
 
+def _deployer_cluster_cidrs(applied: str) -> list[str]:
+    """The cluster values the workspace deployer's NetworkPolicy check pins."""
+    for doc in (d for d in yaml.safe_load_all(applied) if d):
+        if doc["metadata"]["name"] == "swarm-workspace-deployer-networkpolicies" \
+                and doc["kind"] == "ValidatingAdmissionPolicy":
+            variables = {v["name"]: v["expression"] for v in doc["spec"]["variables"]}
+            return json.loads(variables["cluster_cidrs"])
+    raise AssertionError("no swarm-workspace-deployer-networkpolicies policy in the render")
+
+
+def test_policies_mode_pins_the_deployer_check_to_the_network_it_read(tmp_path):
+    """--policies reads the cluster's network as the tenant render does and
+    passes it on, so the deployer's NetworkPolicy check names exactly the
+    addresses and ranges this cluster's egress policy carries."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.signed_in()
+    result = cluster.run(APPLY, "--policies", "--confirm")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert _deployer_cluster_cidrs((cluster.dir / "applied.yaml").read_text()) == [
+        f"{FAKE['node_local_dns_ip']}/32", f"{FAKE['cluster_dns_ip']}/32", FAKE["pod_cidr"], FAKE["service_cidr"],
+    ]
+    kubectl = cluster.log("kubectl")
+    assert "-n kube-system get daemonset node-local-dns" in kubectl, kubectl
+    assert "by shape" not in output, output
+
+
+def test_policies_mode_keeps_the_shape_check_when_the_network_cannot_be_read(tmp_path):
+    """A first bootstrap may apply the policies before the cluster's DNS objects
+    can be read: the policies still apply, check by shape, and say so."""
+    cluster = Cluster(tmp_path, FAKE)
+    cluster.signed_in()
+    (cluster.dir / "node-local-dns.json").unlink()
+    result = cluster.run(APPLY, "--policies", "--confirm")
+    output = result.stdout + result.stderr
+    assert result.returncode == 0, output
+    assert _deployer_cluster_cidrs((cluster.dir / "applied.yaml").read_text()) == []
+    assert "by shape only" in output and "Re-run kubernetes/apply.sh --policies" in output, output
+
+
 @pytest.mark.parametrize(
     "args,named",
     [

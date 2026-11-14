@@ -1222,12 +1222,16 @@ def test_apply_passes_the_workspace_id_to_the_tenant_render_alone():
 
 NETPOL_POLICY = "swarm-workspace-deployer-networkpolicies"
 FQDN_CONTENT_POLICY = "swarm-workspace-deployer-fqdnnetworkpolicies"
-#: The cluster's own network, as kubernetes/apply.sh reads it from a cluster:
-#: shaped like a GKE cluster's ranges, and nobody's.
-CLUSTER_NETWORK = (
+#: The cluster's own network, as kubernetes/apply.sh reads it from a cluster
+#: and passes it to both renders: shaped like a GKE cluster's ranges, and
+#: nobody's.
+NETWORK_FLAGS = (
     "--pod-cidr", "10.200.0.0/14", "--service-cidr", "10.204.0.0/20",
     "--cluster-dns-ip", "10.204.0.10", "--node-local-dns-ip", "169.254.20.10",
     "--network-source", "operator-supplied",
+)
+CLUSTER_NETWORK = (
+    *NETWORK_FLAGS,
     # A render for a cluster carries the tenant record's quota too.
     "--quota-pods", "100", "--quota-jobs", "200", "--quota-cpu", "400",
     "--quota-memory", "800Gi", "--quota-ephemeral", "1000Gi",
@@ -1235,11 +1239,12 @@ CLUSTER_NETWORK = (
 
 
 def _cidr(value: str, fixed: list[str]) -> str:
-    """The render's own CIDRs as written; a cluster network value by shape."""
+    """A CIDR the policy knows (the templates' own, and the cluster's when the
+    policies render was given them) as written; any other by shape."""
     if value in fixed:
         return value
     # Only an IPv4 /32 is one address; an IPv6 /32 is a 2**96-address prefix.
-    return "~host" if value.endswith("/32") and ":" not in value else "~range"
+    return render.SHAPE_HOST if value.endswith("/32") and ":" not in value else render.SHAPE_RANGE
 
 
 def _selector(selector: dict[str, Any] | None) -> dict[str, str]:
@@ -1312,6 +1317,15 @@ def _fixed_cidrs(docs: list[dict[str, Any]]) -> list[str]:
     return _variable(_content_policy(docs, NETPOL_POLICY), "fixed_cidrs")
 
 
+def _cluster_cidrs(docs: list[dict[str, Any]]) -> list[str]:
+    return _variable(_content_policy(docs, NETPOL_POLICY), "cluster_cidrs")
+
+
+def _known_cidrs(docs: list[dict[str, Any]]) -> list[str]:
+    """Every CIDR the policy compares as written (the CEL's two `in` tests)."""
+    return _fixed_cidrs(docs) + _cluster_cidrs(docs)
+
+
 def _template_cidrs() -> set[str]:
     """Every CIDR the tenant's network policy templates write literally, not
     through a cluster network placeholder."""
@@ -1346,17 +1360,20 @@ def test_the_network_policy_literals_equal_the_render(policy_docs, tenant_docs):
     MUTATION: change a port in network-policies/allow-judge-egress.yaml, or a
     label in the policy's `egress` literal, and this names the policy."""
     policy = _content_policy(policy_docs, NETPOL_POLICY)
-    encoded = _encoded_netpols(tenant_docs, _fixed_cidrs(policy_docs))
+    encoded = _encoded_netpols(tenant_docs, _known_cidrs(policy_docs))
     for variable in ("selectors", "types", "ingress", "egress"):
         assert _variable(policy, variable) == encoded[variable], variable
     scope = _content_policy(policy_docs, "swarm-workspace-deployer-scope")
     assert sorted(encoded["selectors"]) == sorted(_variable(scope, "names")["networking.k8s.io/networkpolicies"])
 
 
-def test_the_network_policy_literals_do_not_depend_on_the_cluster_network(policy_docs):
-    """The policies render has no cluster network; the tenant render applied
-    to a cluster has one. Both encode alike, so the literal holds for both."""
-    fixed = _fixed_cidrs(policy_docs)
+def test_without_a_network_the_literals_do_not_depend_on_the_cluster_network(policy_docs):
+    """A policies render given no cluster network (an offline self-test, a
+    bootstrap that could not read one) checks by shape: the tenant render
+    offline and the one applied to a cluster encode alike, so the literal
+    holds for both."""
+    assert _cluster_cidrs(policy_docs) == [], "the control: this render was given no network"
+    fixed = _known_cidrs(policy_docs)
     offline = _encoded_netpols(_tenant_render(PERSON), fixed)
     live = _encoded_netpols(_tenant_render(PERSON, *CLUSTER_NETWORK), fixed)
     assert offline == live
@@ -1572,3 +1589,159 @@ def test_the_content_policies_judge_nobody_else_and_no_other_namespace(dev_polic
     other = {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "kube-system", "labels": {}}}
     assert _content_refusals(dev_policy_docs, doc, other) == []
     assert _refusals(dev_policy_docs, "CREATE", doc, namespace_object=other), "the scope policy still refuses it"
+
+
+# ---------------------------------------------------------------------------
+# The cluster's own network, pinned exactly (shape now, exact later: the exact
+# half). kubernetes/apply.sh --policies passes the four values it reads from
+# the cluster, and the deployer's check then holds swarm-allow-worker-egress's
+# two DNS addresses and two carve-outs to them, not to their shape.
+# ---------------------------------------------------------------------------
+
+
+def _policies_render(*argv: str) -> tuple[list[dict[str, Any]], str]:
+    """`render.py policies` for dev, as apply.sh --policies runs it, and its stderr."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        assert render.main([
+            "policies", "--project", PROJECT, "--scheduler-uid", SCHEDULER_UID,
+            "--reconciler-uid", RECONCILER_UID, "--workspace-deployer-uid", DEPLOYER_UID,
+            "--terraform-tfvars", str(DEV_TFVARS), *argv,
+        ]) == 0
+    return [d for d in yaml.safe_load_all(out.getvalue()) if d], err.getvalue()
+
+
+@pytest.fixture(scope="module")
+def cluster_policy_docs() -> list[dict[str, Any]]:
+    """The policies as kubernetes/apply.sh --policies renders them for a
+    cluster whose network it read."""
+    return _policies_render(*NETWORK_FLAGS)[0]
+
+
+@pytest.fixture(scope="module")
+def cluster_tenant_docs() -> list[dict[str, Any]]:
+    """A person's namespace rendered for that same cluster."""
+    return _tenant_render(PERSON, "--fqdn-network-policy", *CLUSTER_NETWORK)
+
+
+def test_given_the_network_the_policy_names_it_exactly(cluster_policy_docs):
+    """The four values as allow-egress.yaml writes them: two /32s, two ranges."""
+    assert _cluster_cidrs(cluster_policy_docs) == [
+        "169.254.20.10/32", "10.204.0.10/32", "10.200.0.0/14", "10.204.0.0/20",
+    ]
+    worker = _variable(_content_policy(cluster_policy_docs, NETPOL_POLICY), "egress")["swarm-allow-worker-egress"]
+    text = json.dumps(worker)
+    assert render.SHAPE_HOST not in text and render.SHAPE_RANGE not in text, text
+    assert worker[1][2] == [{"cidr": "169.254.20.10/32", "except": ""}, {"cidr": "10.204.0.10/32", "except": ""}]
+    assert "192.168.0.0/16,10.200.0.0/14,10.204.0.0/20,169.254.0.0/16" in worker[4][2][0]["except"]
+
+
+def test_given_the_network_the_literals_equal_that_clusters_render(cluster_policy_docs, cluster_tenant_docs):
+    """The same encoder as the shape check, fed the CIDRs the policy knows: the
+    literal is the render's for that cluster, value for value."""
+    policy = _content_policy(cluster_policy_docs, NETPOL_POLICY)
+    encoded = _encoded_netpols(cluster_tenant_docs, _known_cidrs(cluster_policy_docs))
+    for variable in ("selectors", "types", "ingress", "egress"):
+        assert _variable(policy, variable) == encoded[variable], variable
+
+
+@pytest.mark.parametrize("operation", ["CREATE", "UPDATE"])
+def test_given_the_network_every_rendered_network_policy_for_that_cluster_is_admitted(
+    cluster_policy_docs, cluster_tenant_docs, operation
+):
+    namespace = _tenant_namespace(cluster_tenant_docs)
+    checked = [d for d in cluster_tenant_docs if d["kind"] in ("NetworkPolicy", "FQDNNetworkPolicy")]
+    assert len(checked) == 9, "the control: eight network policies and the hostname policy"
+    for doc in checked:
+        assert _refusals(cluster_policy_docs, operation, doc, old=doc, namespace_object=namespace) == [], (
+            doc["metadata"]["name"]
+        )
+
+
+def _cluster_value_mutations() -> list[tuple[str, Any]]:
+    """Each of the four slots given a value of the same shape that is not this
+    cluster's, and the two DNS addresses swapped."""
+
+    def node_local_dns(spec: dict[str, Any]) -> None:
+        spec["egress"][1]["to"][0]["ipBlock"]["cidr"] = "169.254.20.11/32"
+
+    def cluster_dns(spec: dict[str, Any]) -> None:
+        spec["egress"][1]["to"][1]["ipBlock"]["cidr"] = "10.204.0.11/32"
+
+    def pod_range(spec: dict[str, Any]) -> None:
+        excepts = spec["egress"][4]["to"][0]["ipBlock"]["except"]
+        excepts[excepts.index("10.200.0.0/14")] = "10.208.0.0/14"
+
+    def service_range(spec: dict[str, Any]) -> None:
+        excepts = spec["egress"][4]["to"][0]["ipBlock"]["except"]
+        excepts[excepts.index("10.204.0.0/20")] = "10.204.0.0/24"
+
+    def dns_swapped(spec: dict[str, Any]) -> None:
+        peers = spec["egress"][1]["to"]
+        peers[0], peers[1] = peers[1], peers[0]
+
+    return [(f.__name__, f) for f in (node_local_dns, cluster_dns, pod_range, service_range, dns_swapped)]
+
+
+@pytest.mark.parametrize(
+    "mutation", [m for _, m in _cluster_value_mutations()], ids=[n for n, _ in _cluster_value_mutations()]
+)
+def test_given_the_network_another_cluster_value_is_refused(cluster_policy_docs, cluster_tenant_docs, mutation):
+    """MUTATION: have deployer_network return the shapes for a render given
+    the network, and each of these is admitted."""
+    namespace = _tenant_namespace(cluster_tenant_docs)
+    doc = _rendered(cluster_tenant_docs, "NetworkPolicy", "swarm-allow-worker-egress")
+    assert _content_refusals(cluster_policy_docs, doc, namespace) == [], "the control"
+    mutation(doc["spec"])
+    for operation in ("CREATE", "UPDATE"):
+        refusals = _content_refusals(cluster_policy_docs, doc, namespace, operation)
+        assert [r.split(":")[0] for r in refusals] == [NETPOL_POLICY], (operation, refusals)
+
+
+@pytest.mark.parametrize(
+    "mutation", [m for _, m in _cluster_value_mutations()], ids=[n for n, _ in _cluster_value_mutations()]
+)
+def test_without_the_network_the_shape_check_admits_another_cluster_value(dev_policy_docs, cluster_tenant_docs,
+                                                                          mutation):
+    """Today's behaviour, unchanged for a render given no network: a /32 for a
+    /32 and a range for a range pass. The worker policy's other content is held
+    exactly either way (test_a_network_policy_with_other_content_is_refused)."""
+    namespace = _tenant_namespace(cluster_tenant_docs)
+    doc = _rendered(cluster_tenant_docs, "NetworkPolicy", "swarm-allow-worker-egress")
+    mutation(doc["spec"])
+    for operation in ("CREATE", "UPDATE"):
+        assert _content_refusals(dev_policy_docs, doc, namespace, operation) == [], operation
+
+
+def test_given_the_network_another_clusters_render_is_refused(cluster_policy_docs, tenant_docs):
+    """The offline tenant render (documentation addresses) is not this
+    cluster's: its worker egress policy is refused, the rest admitted."""
+    namespace = _tenant_namespace(tenant_docs)
+    refused = [
+        d["metadata"]["name"] for d in tenant_docs
+        if d["kind"] == "NetworkPolicy" and _content_refusals(cluster_policy_docs, d, namespace)
+    ]
+    assert refused == ["swarm-allow-worker-egress"]
+
+
+def test_the_render_says_on_stderr_when_it_checks_by_shape():
+    """One `# ` line when no network is given; none when it is."""
+    _, without = _policies_render()
+    lines = [line for line in without.splitlines() if "by shape" in line]
+    assert len(lines) == 1 and lines[0].startswith("# render: WARNING:"), without
+    _, given = _policies_render(*NETWORK_FLAGS)
+    assert "by shape" not in given, given
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [NETWORK_FLAGS[:2], ("--network-source", "operator-supplied"),
+     ("--pod-cidr", "10.204.0.0/20", "--service-cidr", "10.200.0.0/14",
+      "--cluster-dns-ip", "10.204.0.10", "--node-local-dns-ip", "169.254.20.10")],
+    ids=["partial", "source-alone", "dns-outside-services"],
+)
+def test_the_policies_render_refuses_what_the_tenant_render_refuses(argv):
+    """One parse for both renders (render.network_values): half a network, or
+    four values that disagree, are refused here as there."""
+    with pytest.raises(render.RenderError), contextlib.redirect_stderr(io.StringIO()):
+        render.main(["policies", "--project", PROJECT, *argv])
