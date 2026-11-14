@@ -72,9 +72,13 @@ class FakeForge:
     """GitHub, as the admission check reads it: which branches, tags and
     commits exist per repository, and the pull requests it can read."""
 
-    def __init__(self, *, branches=(), tags=(), commits=(), error: Exception | None = None,
-                 readable: bool = True, pulls: dict[int, PullSnapshot] | None = None) -> None:
+    def __init__(self, *, branches=(), tags=(), commits=(), refs=(),
+                 error: Exception | None = None, readable: bool = True,
+                 pulls: dict[int, PullSnapshot] | None = None) -> None:
         self.branches = set(branches)
+        #: Full refnames outside refs/heads and refs/tags (#3566), such as a
+        #: pull request's `refs/pull/<n>/head`.
+        self.refs = set(refs)
         self.tags = set(tags)
         self.commits = set(commits)
         self.error = error
@@ -100,6 +104,10 @@ class FakeForge:
     def commit_head(self, ref, sha: str, token: str) -> str | None:
         self._record("commit", ref, sha, token)
         return sha if sha in self.commits else None
+
+    def ref_head(self, ref, refname: str, token: str) -> str | None:
+        self._record("ref", ref, refname, token)
+        return FULL if refname in self.refs else None
 
     def default_branch(self, ref, token: str) -> str:
         self._record("repository", ref, "", token)
@@ -489,6 +497,90 @@ def test_off_the_refusal_is_logged_and_the_submission_admitted(make_client, db, 
     assert response.status_code == 201, response.text
     assert "code=repository_ref_not_found" in caplog.text
     assert len(_stored(db)) == 1
+
+
+# #3566: swarm-api's report-only lines from 9-11 November reported a pull
+# request's head ref (`refs/pull/<n>/head`, cloned since #3347) and full branch
+# refnames (`refs/heads/<branch>`) as "neither a branch nor a tag". A full
+# refname is now asked as the ref it names.
+
+def test_an_existing_pull_request_head_ref_is_asked_as_that_ref_and_admitted(make_client, db):
+    forge = FakeForge(branches={"main"}, refs={"refs/pull/12/head"})
+    client = make_client(forge=forge)
+
+    response = _task(client, "refs/pull/12/head")
+
+    assert response.status_code == 201, response.text
+    assert forge.calls == [("ref", "example-org/example", "refs/pull/12/head")]
+
+
+def test_a_full_branch_refname_is_checked_as_that_branch(make_client, db):
+    forge = FakeForge(branches={"main", "feature/x"}, tags={"feature/x"})
+    client = make_client(forge=forge)
+
+    assert _task(client, "refs/heads/feature/x").status_code == 201
+    assert forge.calls == [("branch", "example-org/example", "feature/x")]
+
+    forge.calls.clear()
+    response = _task(client, "refs/heads/gone")
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "repository_ref_not_found"
+    assert body["detail"]["repository_ref"] == "refs/heads/gone"
+    assert "is not a branch of example-org/example" in body["message"]
+    assert len(_stored(db)) == 1, "the refusal wrote nothing"
+    # Only the branch is asked: a full branch refname is never a tag.
+    assert ("tag", "example-org/example", "gone") not in forge.calls
+    assert forge.calls[0] == ("branch", "example-org/example", "gone")
+
+
+def test_a_full_tag_refname_is_checked_as_that_tag(make_client, db):
+    forge = FakeForge(branches={"main", "v1.2.3"}, tags={"v2"})
+    client = make_client(forge=forge)
+
+    assert _task(client, "refs/tags/v2").status_code == 201
+    assert forge.calls == [("tag", "example-org/example", "v2")]
+
+    forge.calls.clear()
+    response = _task(client, "refs/tags/v1.2.3")
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "repository_ref_not_found"
+    assert body["detail"]["repository_ref"] == "refs/tags/v1.2.3"
+    assert "is not a tag of example-org/example" in body["message"]
+    assert len(_stored(db)) == 1, "the refusal wrote nothing"
+    assert forge.calls[0] == ("tag", "example-org/example", "v1.2.3")
+
+
+def test_an_unknown_ref_the_forge_answers_404_for_is_refused_when_on(make_client, db):
+    forge = FakeForge(branches={"main"}, refs={"refs/pull/12/head"})
+    client = make_client(forge=forge)
+
+    body = _assert_refused(_task(client, "refs/pull/99/head"), db, "refs/pull/99/head")
+
+    assert "is not a ref of example-org/example" in body["message"]
+    assert "neither a branch nor a tag" not in body["message"]
+    assert forge.calls[0] == ("ref", "example-org/example", "refs/pull/99/head")
+
+
+def test_off_an_unknown_ref_is_only_reported(make_client, db, caplog, monkeypatch):
+    monkeypatch.delenv(SWITCH, raising=False)
+    caplog.set_level(logging.WARNING, logger="swarm_api.refusals")
+    client = make_client(forge=FakeForge(branches={"main"}))
+
+    response = _task(client, "refs/pull/99/head")
+
+    assert response.status_code == 201, response.text
+    assert "code=repository_ref_not_found" in caplog.text
+    assert len(_stored(db)) == 1
+
+
+@pytest.mark.parametrize("ref", ["refs/pull/12/head", "refs/heads/feature/x"])
+def test_a_full_refname_fails_open_when_the_forge_does_not_answer(make_client, db, ref):
+    forge = FakeForge(error=ForgeUnreachable("GitHub answered HTTP 503"))
+    client = make_client(forge=forge)
+
+    assert _task(client, ref).status_code == 201
 
 
 @pytest.fixture(autouse=True)

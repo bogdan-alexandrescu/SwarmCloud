@@ -128,3 +128,12 @@ def test_the_reach_is_on_in_dev_and_unset_in_prod() -> None:
                 f"{path.relative_to(ROOT)} sets platform_admin_reach; only dev does (ROLES-ON-DEV)"
             )
     assert PROD_TFVARS in tfvars_files()
+
+
+def test_dev_turns_the_repository_ref_check_on() -> None:
+    """#3566: dev refuses a repository_ref the forge does not have, now that a
+    full refname is checked as the ref it names."""
+    block = BLOCK.search(DEV_TFVARS.read_text())
+    assert block and re.search(
+        r"^\s*repository_ref_not_found\s*=\s*true\b", block.group("body"), re.M
+    ), "dev.tfvars' api_refusals must hold repository_ref_not_found = true (#3566)"
