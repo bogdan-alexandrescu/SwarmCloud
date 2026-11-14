@@ -672,11 +672,20 @@ before `dispatched`: two clocks, the reconciler's and the scheduler's.
 **What changed after this measurement.** Since CACHE-PVC (owner decision
 2026-10-15 ~04:00 PDT) every GKE worker pod, `standard` and `browser` alike,
 has its `cache` volume on a 20 GiB pd-balanced network disk: a generic
-ephemeral volume on the `swarm-cache-pd-balanced` StorageClass
-(`kubernetes/storage/cache-storage-class.yaml`), instead of a 2 GiB local
-emptyDir. The 2 GiB emptyDir evicted task_247c87a8714c4977921a twice, and
-Autopilot's 10 GiB ephemeral-storage cap had no more local disk to give it
-(`GKE_DISK` in `apps/scheduler/scheduler/dispatch.py`).
+ephemeral volume (`kubernetes/storage/cache-storage-class.yaml`), instead of a
+2 GiB local emptyDir. The 2 GiB emptyDir evicted task_247c87a8714c4977921a
+twice, and Autopilot's 10 GiB ephemeral-storage cap had no more local disk to
+give it (`GKE_DISK` in `apps/scheduler/scheduler/dispatch.py`).
+
+**Which class: xfs named, ext4 claimed.** The dispatcher's
+`CACHE_STORAGE_CLASS` is `swarm-cache-pd-balanced-xfs`, formatted xfs since
+#4061 (the ext4 class ran out of inodes with space free). **Pods still claim
+the older, applied ext4 class, `swarm-cache-pd-balanced`,** until the operator
+applies the xfs class (`kubernetes/apply.sh --policies --confirm`): the
+release does not apply cluster-scoped manifests, and a claim on a class not
+yet in the cluster leaves the pod Unschedulable, which is why the dispatcher's
+`CLAIMED_CACHE_STORAGE_CLASS` still names the ext4 class. Both classes bind
+the same way, so the attach below is the same step on either.
 
 **Why it costs start-up time.** The class binds `WaitForFirstConsumer`, so the
 disk cannot be made until the pod is scheduled: after `pod_scheduled` the CSI

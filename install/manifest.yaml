@@ -7935,17 +7935,18 @@ entries:
   scope: core
   stage: 10
   provider: engine
-  check: kubectl --context $E get storageclass -o name | grep cache
+  check: kubectl --context $E get storageclass swarm-cache-pd-balanced-xfs swarm-cache-pd-balanced -o name
   apply: kubernetes/storage/cache-storage-class.yaml, applied by kubernetes/apply.sh --policies --confirm
-  verify: kubectl describe storageclass <name> shows the expected provisioner/params; a worker PVC using it leaves Pending only for a real capacity reason, not a missing class
-  explain: cluster-scoped StorageClass for the worker cache PVC (CACHE-PVC); applied first in POLICY_FILES because nothing else depends on it and a pod dispatched before it exists waits Pending for a class
+  verify: kubectl describe storageclass swarm-cache-pd-balanced-xfs shows provisioner pd.csi.storage.gke.io with type pd-balanced and csi.storage.k8s.io/fstype xfs; swarm-cache-pd-balanced (ext4, retired) is still listed; a worker PVC leaves Pending only for a real capacity reason, not a missing class
+  explain: 'cluster-scoped StorageClasses for the worker cache PVC (CACHE-PVC); applied first in POLICY_FILES because nothing else depends on them and a pod dispatched before its class exists waits Pending for it. Two documents: swarm-cache-pd-balanced-xfs (CACHE_STORAGE_CLASS, #4061: xfs allocates inodes as files are made, where the ext4 class ran out of its 1,310,720 inodes with 14 GB free) and the retired ext4 swarm-cache-pd-balanced, applied unchanged. PODS STILL CLAIM THE EXT4 CLASS: the dispatcher''s CLAIMED_CACHE_STORAGE_CLASS stays RETIRED_CACHE_STORAGE_CLASS until the operator has applied the xfs class, because the release does not apply cluster-scoped manifests and a claim on a class not yet in the cluster leaves every GKE pod Unschedulable. Applying this entry is that step; switching the claim to xfs is then one line in apps/scheduler/scheduler/dispatch.py.'
   guards: CACHE-PVC
   secret_entry: null
   depends_on:
   - cluster.autopilot
   evidence:
-  - kubernetes/render.py:521-533
-  - kubernetes/storage/cache-storage-class.yaml:32
+  - kubernetes/render.py:572-576
+  - kubernetes/storage/cache-storage-class.yaml:52
+  - apps/scheduler/scheduler/dispatch.py:274-286
   notes: null
   step: cluster.policies
   refs:
