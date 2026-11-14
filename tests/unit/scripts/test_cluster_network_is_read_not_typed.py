@@ -1371,7 +1371,7 @@ def test_policies_mode_runs_no_parity_check(tmp_path):
 
 def _workspace_deployer_users(applied: str) -> list[set[str]]:
     """Each place the applied render names the workspace deployer: its two
-    bindings' subjects and its four policies' matched users."""
+    bindings' subjects and its six policies' matched users."""
     found: list[set[str]] = []
     for doc in (d for d in yaml.safe_load_all(applied) if d):
         name = doc["metadata"]["name"]
@@ -1398,7 +1398,7 @@ def test_policies_mode_binds_and_scopes_the_workspace_deployer_by_uniqueid(tmp_p
     assert result.returncode == 0, output
     applied = (cluster.dir / "applied.yaml").read_text()
     users = _workspace_deployer_users(applied)
-    assert len(users) == 6, users
+    assert len(users) == 8, users
     deployer = f"swarm-workspace-deployer@{PROJECT}.iam.gserviceaccount.com"
     assert all(u == {deployer, "100000000000000000042"} for u in users), users
     assert '"117405034245659033603"' in applied and '"108023754768362642341"' in applied
@@ -1415,7 +1415,7 @@ def test_policies_mode_falls_back_to_the_email_before_the_deployer_exists(tmp_pa
     assert result.returncode == 0, output
     assert "could not resolve the uniqueId of swarm-workspace-deployer@" in output
     users = _workspace_deployer_users((cluster.dir / "applied.yaml").read_text())
-    assert len(users) == 6, users
+    assert len(users) == 8, users
     deployer = f"swarm-workspace-deployer@{PROJECT}.iam.gserviceaccount.com"
     assert all(u == {deployer} for u in users), users
 
