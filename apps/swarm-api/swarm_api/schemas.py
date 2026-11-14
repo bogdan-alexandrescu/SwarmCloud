@@ -29,6 +29,7 @@ from pydantic import (
 from swarm_common.models import ADDITIONAL_REPOSITORIES_CEILING, ADDITIONAL_REPOSITORY_NAME
 
 from . import modelprices
+from .plansettings import PlanReviewCapsRequest, validate_chat_model_class
 from .sessiontag import PATTERN as SESSION_TAG_PATTERN
 from .validation import (
     DEFAULT_CARRIER,
@@ -948,6 +949,21 @@ class PlatformSettingsRequest(StrictModel):
     #: Jev's per-token rate (JEV-USAGE-PAGE), replaced whole. No default:
     #: Capacity › Jev usage shows "rate not set" and no dollars until it is set.
     jev_token_rates: JevTokenRatesRequest | None = None
+    #: Whether a planner may draw diagrams, for a workspace and a schedule that
+    #: leave it to the platform (docs/design/plans-pipeline.md §6.4). On by
+    #: default; `plansettings` resolves the three levels.
+    plan_diagrams_default: StrictBool | None = None
+    #: The plan review chat's class when neither the plan nor its workspace
+    #: names one (§7.8): a class `claude-code` carries. Default `sonnet`.
+    plan_chat_model_class: str | None = Field(default=None, min_length=1, max_length=32)
+    #: The plan review caps (§7.8), the ones named replacing theirs. Defaults
+    #: 5 / 20 / 40 / 25.00; ranges `plansettings.CAPS_RANGES`.
+    plan_review_caps: PlanReviewCapsRequest | None = None
+
+    @field_validator("plan_chat_model_class")
+    @classmethod
+    def _carried_class(cls, value: str | None) -> str | None:
+        return validate_chat_model_class(value, setting="plan_chat_model_class")
 
 
 #: A runner-size change, by class then field (docs/design/runner-sizes.md
