@@ -389,13 +389,19 @@ SPECSIGN_ADDED = {
     "PLUGIN_RECORD_UNCOVERED", "canonical_plugin_record",
     "PLATFORM_SETTINGS_PURPOSE", "PLATFORM_SETTINGS_MAC_FIELDS", "canonical_platform_settings",
 }
+#: Contract request 155 (per-person signed submissions, accepted 2026-11-13).
+SPECSIGN_ADDED_155 = {
+    "PERSON_SUBMISSION_PURPOSE", "STANDING_GRANT_PURPOSE", "STANDING_GRANT_REVOKE_PURPOSE",
+    "TENANT_VIA", "STANDING_GRANT_ORIGIN_KINDS", "canonical_submission_statement",
+    "canonical_standing_grant", "canonical_standing_grant_revoke",
+}
 
 
 def test_specsign_gains_only_the_requests_names():
     public = {n for n, v in vars(specsign).items()
               if not n.startswith("_") and getattr(v, "__module__", specsign.__name__) == specsign.__name__
               and not isinstance(v, type(hashlib))}
-    assert public == SPECSIGN_BEFORE | SPECSIGN_ADDED
+    assert public == SPECSIGN_BEFORE | SPECSIGN_ADDED | SPECSIGN_ADDED_155
 
 
 def test_the_step_spec_format_is_unchanged():
