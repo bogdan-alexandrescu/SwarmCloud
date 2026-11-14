@@ -1415,7 +1415,14 @@ disagree, the code is quoted and this section says what changes.
   tick while a session is live), and writes the move in a transaction that
   holds only when the state is still what it read, so two readers never move
   it twice. A project nobody reads keeps its state until it is read, which is
-  the only time the state is shown.
+  the only time the state is shown. **Every one of those readers settles it**
+  (the owner's pick, 12 November 2026), through one check: Projects' list and
+  a project's read (`VoiceStore._view`), a session start on a project
+  (`POST /v1/voice/sessions` with `project_id`) and the follower's tick (its
+  `{roster}` report on `POST /v1/voice/sessions/{session}/work`) call
+  `projectstate.settle_on_read`, and so do a switch (P4) and the catch-up
+  (P6) when they land. A check that fails there is logged and does not
+  refuse the start or the report: the next read settles it.
 
 **Every move is recorded.** The project document keeps `state_history`, the
 last 50 moves, each `{from, to, by: planner | person | session_end | merge,
@@ -1790,12 +1797,12 @@ whitelist, so a lane that writes a new event lists `stream.py`.
 | Lane | Files | Needs | Red-first test | Waits for the owner |
 |---|---|---|---|---|
 | **P0. The Projects page is drawn as variants: states, filter, Resume, the current project and the switcher on Talk** | none in the repository (a mock-up lane's frames) | none | n/a | **the pick** |
-| **P1. Projects have five states, read without a migration, moved only by their movers** | `swarm_api/voice/projectstate.py` (new: states, the old names' reading, who moves what, the settle-on-read check, a person's Cancel and the list of running starts it cancels), `swarm_api/voice/store.py` (`STATUSES`, `project_view` with `state`, `last_session_at`, `open_cards`, `waiting_on_owner`, `state_history`), `swarm_api/routes/voice_projects.py` (new: `POST /v1/voice/projects/{id}/state`), `swarm_api/main.py` (its include line, after V5), `tests/unit/control_plane/test_voice_project_state.py` | V5 (`main.py`) | `active` reads `in_progress` and `shipped` `completed`; the planner cannot move a `cancelled` project or complete one with a running start; a person's Cancel cancels each queued or running start of the project through its kind's cancel route (a fake platform client records the calls) and leaves one whose cancel fails listed as running; Unarchive restores the earlier state; two readers settle a merge once | the state names and the merge rule (questions 12, 13) |
+| **P1. Projects have five states, read without a migration, moved only by their movers** | `swarm_api/voice/projectstate.py` (new: states, the old names' reading, who moves what, the settle-on-read check, a person's Cancel and the list of running starts it cancels), `swarm_api/voice/store.py` (`STATUSES`, `project_view` with `state`, `last_session_at`, `open_cards`, `waiting_on_owner`, `state_history`), `swarm_api/routes/voice_projects.py` (new: `POST /v1/voice/projects/{id}/state`), `swarm_api/routes/voice.py` (the merge settled on a session start and on the follower's `{roster}` report), `swarm_api/main.py` (its include line, after V5), `tests/unit/control_plane/test_voice_project_state.py` | V5 (`main.py`) | `active` reads `in_progress` and `shipped` `completed`; the planner cannot move a `cancelled` project or complete one with a running start; a person's Cancel cancels each queued or running start of the project through its kind's cancel route (a fake platform client records the calls) and leaves one whose cancel fails listed as running; Unarchive restores the earlier state; two readers settle a merge once; a session start on the project and the follower's roster report each settle it | the state names and the merge rule (questions 12, 13) |
 | **P2. The brief has a shape and a bound, and the session context serves it** | `swarm_api/voice/brief.py` (new: the shape, the change merge, the bounds, the old `open` items), `swarm_api/routes/voice_context.py` (new: `GET .../context`, `POST .../brief`), `swarm_api/voice/grant.py` (the two routes, after V4), `swarm_api/main.py` (its include line, after P1), `tests/unit/control_plane/test_voice_brief.py` | P1 | A change merges once per `turn_id`; past a bound `open` is 422 and `decided` drops its oldest; a fake key built at runtime in a change is refused naming the field; a follow-up's old item reads as text | the bound (question 15) |
 | **P3. The planner reads its context and saves the brief after every turn** | `swarm_voice/planner.py` (the context read; `speak`'s `brief`; the turn record), `swarm_voice/prompts.py` (the brief's rules and the kind choice table, after V5), `swarm_voice/tools_read.py` (the context read), `tests/unit/voice/test_planner_brief.py` | P2 | With a fake swarm-api: every turn posts one change with its `turn_id`; a failed turn posts none; the system prompt's bytes do not change with the brief | no |
-| **P4. One session holds several projects, and every record says which** | `swarm_api/voice/sessions.py` (`current_project_id`, `open_project_ids`, the session end's state move; after V3), `swarm_api/routes/voice.py` (card writes to the current project; after V3), `swarm_api/routes/voice_projects.py` (the session's projects routes, after P1), `swarm_api/voice/grant.py` (after P2), `swarm_api/voice/stream.py` (`project.switch` in `EVENT_TYPES` and its payload whitelist; `project_id` on every event's payload; after V4), `tests/unit/control_plane/test_voice_many_projects.py` | P1, P2 | A switch frames a `project.switch` event and every framed event carries its `project_id`; a card written after a switch lands under the new project and an update keeps its own; a seventh project closes the least used; another tenant's project is 404; a request outside every open project is stored under the session with no project, and Projects never lists it | the cap (question 17); side requests answered 12 November 2026 (question 18) |
+| **P4. One session holds several projects, and every record says which** | `swarm_api/voice/sessions.py` (`current_project_id`, `open_project_ids`, the session end's state move; after V3), `swarm_api/routes/voice.py` (card writes to the current project; after V3), `swarm_api/routes/voice_projects.py` (the session's projects routes, after P1; a switch calls `projectstate.settle_on_read` on the project it opens), `swarm_api/voice/grant.py` (after P2), `swarm_api/voice/stream.py` (`project.switch` in `EVENT_TYPES` and its payload whitelist; `project_id` on every event's payload; after V4), `tests/unit/control_plane/test_voice_many_projects.py` | P1, P2 | A switch frames a `project.switch` event and every framed event carries its `project_id`; a card written after a switch lands under the new project and an update keeps its own; a switch to a project whose last work merged reads it `completed`; a seventh project closes the least used; another tenant's project is 404; a request outside every open project is stored under the session with no project, and Projects never lists it | the cap (question 17); side requests answered 12 November 2026 (question 18) |
 | **P5. The planner switches, opens and starts projects and takes side requests by voice** | `swarm_voice/tools_projects.py` (new), `swarm_voice/planner.py` (registers them, after P3), `swarm_voice/live.py` (the switch's `thinking.append`, after V2), `tests/unit/voice/test_tools_projects.py` | P4 | Two close names draw a Details card; a switch sends the new brief to the voice under 500 tokens; a side request is taken with no project and creates none | no |
-| **P6. A resumed project opens with a catch-up from stored facts, which the owner can skip** | `swarm_api/voice/catchup.py` (new: the pack), `swarm_api/routes/voice_context.py` (`catchup` in the context, after P2), `swarm_voice/planner.py` (the first turn, after P5), `swarm_api/voice/preferences.py` (`catchup`: `always`, `changed`, `never`; default `changed`), `voice/Preferences.tsx` (its choice), `tests/unit/control_plane/test_voice_catchup.py`, `__tests__/voice.preferences.test.tsx` | P3, P5 | The pack holds only facts since the last session; `catchup: never` gives none and an unknown value is 422; Preferences draws the choice; ten minutes and nothing changed gives none; a skip still draws the card from the pack | the length (question 16) |
+| **P6. A resumed project opens with a catch-up from stored facts, which the owner can skip** | `swarm_api/voice/catchup.py` (new: the pack, read after the merge check), `swarm_api/routes/voice_context.py` (`catchup` in the context, after P2), `swarm_voice/planner.py` (the first turn, after P5), `swarm_api/voice/preferences.py` (`catchup`: `always`, `changed`, `never`; default `changed`), `voice/Preferences.tsx` (its choice), `tests/unit/control_plane/test_voice_catchup.py`, `__tests__/voice.preferences.test.tsx` | P3, P5 | The pack is read after `projectstate.settle_on_read`, so a merged project's catch-up reads `completed`; the pack holds only facts since the last session; `catchup: never` gives none and an unknown value is 422; Preferences draws the choice; ten minutes and nothing changed gives none; a skip still draws the card from the pack | the length (question 16) |
 | **C1. The catalogue names each kind's content, and the new kinds join on both sides** | `swarm_api/voice/cards.py` (`content`; `wireframe`, `code`, `diff`, `document`, `test_results`; diagram types; `mockup_ref`, `frame_ref`, `viewport`; `outcome`; `CATALOGUE_VERSION` 3; after V5), `apps/swarm-ui/src/voice/cards.ts`, `tests/unit/control_plane/test_voice_cards.py` | V5 | Red until both sides name the same kinds, contents and actions, and every content has a renderer or is `generic` | no |
 | **C2. The viewer opens any card full size, and the list draws compact cards from one registry** | `voice/viewer/registry.tsx` (new: `RENDERERS`, the generic viewer), `voice/viewer/Viewer.tsx` (new: the shell, beside, the action foot), `voice/CardList.tsx` (the compact cards, after V9), `styles/voice-viewer.css` (new), `__tests__/voice.viewer.test.tsx` | C1 | An unknown kind draws the generic viewer as text; the action foot shows only the kind's actions; Open beside keeps the first card | no (the pick is made; the code ports `mockups/voice-cards-viewer`) |
 | **C3. A person acts on a card through one route, and the action becomes the planner's next input** | `swarm_api/voice/cardactions.py` (new), `swarm_api/routes/voice_cards.py` (`/actions`; `/accept` through the shared rule; after V5), `swarm_api/voice/sessions.py` (the client's `input` call, after P4), `swarm_api/voice/grant.py` (the spoken `outcome` route, after P4), `swarm_api/voice/stream.py` (`card.action` in `EVENT_TYPES` and its payload whitelist, after P4), `tests/unit/control_plane/test_voice_card_actions.py` | C1, P4 | A grant is 403; an action frames one `card.action` event with its `project_id`; an old `card_version` is 409; a pick on a `done` proposal is 409; a retried `action_id` is one action; with no live session it stays `pending` | no; **one security review** (a person's actions and the grant) |
@@ -2294,13 +2301,17 @@ still being drawn (P0); §3.13 fixes its behaviour, not its look.
 11. **Own speech during a pause (§3.12.7):** the machine's idle rule runs from
     the pause and stops the machine, not the session (recommended); the
     machine runs for the whole pause; or it stops at once.
-12. **The project states' names (§3.13.2):** In progress, Waiting on you,
-    Completed, Cancelled, Archived (recommended); or the stored names kept as
-    they are (Active, Waiting, Shipped, Archived) with Cancelled added.
-13. **What a merge moves (§3.13.2):** the last merge of a project's work, with
-    nothing running, nothing open in the brief and no card waiting, moves it to
-    Completed (recommended); a merge never completes a project (only the
-    owner or the planner does); or every merge only moves Waiting to In
+12. **The project states' names (§3.13.2):** answered 12 November 2026: In
+    progress, Waiting on you, Completed, Cancelled and Archived, stored as
+    `in_progress`, `waiting`, `completed`, `cancelled` and `archived`, with
+    old rows read without a migration (`active` as `in_progress`, `shipped`
+    as `completed`). The other option was the stored names kept as they are
+    (Active, Waiting, Shipped, Archived) with Cancelled added.
+13. **What a merge moves (§3.13.2):** answered 12 November 2026: the last
+    merge of a project's work moves it to Completed, only when nothing of the
+    project runs, its brief has nothing open and no card waits on the owner.
+    The other options were that a merge never completes a project (only the
+    owner or the planner does), or that every merge only moves Waiting to In
     progress.
 14. **What Cancel does to running work (§3.13.2):** answered 11 November
     2026: cancelling a project also cancels its running work. The one
@@ -2308,9 +2319,9 @@ still being drawn (P0); §3.13 fixes its behaviour, not its look.
     each through the platform's own cancel for its kind (§3.13.2). The other
     option was to cancel nothing and list what still runs, each with its own
     Cancel.
-15. **The brief's size (§3.13.3):** at most 16 KiB, about 4,000 tokens (goal
-    600 characters, 40 decided, 30 open, 10 next) (recommended); 32 KiB; or
-    8 KiB.
+15. **The brief's size (§3.13.3):** answered 12 November 2026: at most
+    16 KiB, about 4,000 tokens (goal 600 characters, 40 decided, 30 open, 10
+    next). The other options were 32 KiB or 8 KiB.
 16. **How long the catch-up runs (§3.13.4):** about 30 seconds spoken (at most
     four sentences) with the rest on a Catch-up document card, when something
     changed or ten minutes passed (recommended); one sentence and the card;
