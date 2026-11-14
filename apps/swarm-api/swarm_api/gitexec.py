@@ -121,6 +121,19 @@ MAX_BUNDLE_BYTES = 256 * 1024 * 1024
 #: largest pack. RLIMIT_FSIZE is per file: a have fetched after the first is
 #: negotiated against it, so its pack is the delta, not another snapshot.
 MAX_FETCH_FILE_BYTES = 512 * 1024 * 1024
+#: A shallow clone's fetch (#2901, docs/design/git-fetch-shallow-clones.md
+#: §5.3): `ref` and each boundary commit the worker sends are fetched at a
+#: depth that starts here and doubles each round until they share a merge
+#: base. The worker's clone-time `fetch_pull_base` numbers
+#: (`agent_worker.gitops.PULL_BASE_FIRST_DEPTH` / `PULL_BASE_MAX_ROUNDS`),
+#: restated because swarm-api does not import the worker: 64 doubled seven
+#: times is 8,192 commits on each side.
+SHALLOW_FIRST_DEPTH = 64
+SHALLOW_MAX_ROUNDS = 8
+#: What a shallow fetch's rounds may add to the scratch object store, all of
+#: them, measured from the EMPTY repository so the boundary snapshots count
+#: (§5.5, Q4 = A). RLIMIT_FSIZE bounds each pack; this bounds eight of them.
+MAX_FETCH_ROUND_BYTES = 512 * 1024 * 1024
 #: How long one git command may run. A fetch of a large repository with no
 #: have is the slow case; a request that needs longer is the wrong shape.
 GIT_TIMEOUT_SECONDS = 300
@@ -209,6 +222,9 @@ _URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s@'\"]*@")
 
 #: Where a fetch lands in the scratch repository, and the ref the bundle names.
 WANT_REF = "refs/swarm/want"
+#: Where a shallow fetch names the parents of the boundary commits it
+#: unshallowed, so `bundle create` carries them (#2901).
+PARENT_REF = "refs/swarm/parent"
 _PUSH_REF = "refs/swarm/push"
 _TIP_REF = "refs/swarm/remote-tip"
 
@@ -280,6 +296,19 @@ class FetchedBundle:
     #: the tip commit and the objects of its tree the haves do not reach; the
     #: worker index-packs it and records `sha` in the clone's `.git/shallow`.
     shallow: bool = False
+    #: #2901: a fetch that named the clone's shallow boundary. `boundary` is
+    #: the scratch repository's new shallow lines the clone writes before it
+    #: applies the bundle, `unshallow` the boundary commits whose parents the
+    #: bundle now carries, `merge_base` a commit `sha` shares with the
+    #: boundary (None when the round budget reached none), `depth` and
+    #: `rounds` the deepen that got there. Empty and None for any other fetch.
+    boundary: tuple[str, ...] = ()
+    unshallow: tuple[str, ...] = ()
+    merge_base: str | None = None
+    depth: int | None = None
+    rounds: int = 0
+    #: What the rounds added to the scratch object store, from empty.
+    fetched_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -296,6 +325,27 @@ class _BundleHeader:
     prerequisites: tuple[str, ...]
     tip: str
     ref: str
+
+
+def _store_bytes(repo: Path) -> int:
+    """The bytes in a bare repository's object store: what its fetches added."""
+    total = 0
+    for root, _dirs, files in os.walk(repo / "objects"):
+        for name in files:
+            try:
+                total += (Path(root) / name).lstat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _shallow_lines(repo: Path) -> list[str]:
+    """A bare repository's `shallow` file, as full shas; [] when it has none."""
+    try:
+        text = (repo / "shallow").read_text(encoding="ascii")
+    except FileNotFoundError:
+        return []
+    return [line for line in dict.fromkeys(text.split()) if _SHA.match(line)]
 
 
 def scrub(text: str, secrets: Iterable[str]) -> str:
@@ -422,6 +472,11 @@ class GitExec:
     #: RLIMIT_FSIZE of a fetch from the remote; every other git has the bundle cap.
     max_fetch_file_bytes: int = MAX_FETCH_FILE_BYTES
     deadline_seconds: float = CALL_DEADLINE_SECONDS
+    #: A shallow clone's fetch (#2901): the first depth, the rounds, and the
+    #: fetch total of all rounds.
+    shallow_first_depth: int = SHALLOW_FIRST_DEPTH
+    shallow_max_rounds: int = SHALLOW_MAX_ROUNDS
+    max_fetch_round_bytes: int = MAX_FETCH_ROUND_BYTES
     #: Shared by every GitExec in the process unless a test passes its own.
     slots: Any = _CALL_SLOTS
 
@@ -579,7 +634,8 @@ class GitExec:
 
     def fetch_bundle(self, *, url: str, token: str, ref: str, haves: Sequence[str] = (),
                      deliver: Callable[[Path, int], Any] | None = None,
-                     depth: int | None = None) -> FetchedBundle:
+                     depth: int | None = None,
+                     shallow: Sequence[str] = ()) -> FetchedBundle:
         """Fetch `ref` from `url`; bundle what is not reachable from `haves`.
 
         `deliver(path, size)`, when given, is handed the bundle file while it
@@ -593,6 +649,12 @@ class GitExec:
         history and over the cap. A git bundle cannot be shallow, so this
         delivers a PACK instead (`FetchedBundle.shallow`), under the same cap
         and through the same `deliver`.
+
+        `shallow` (#2901, docs/design/git-fetch-shallow-clones.md): the
+        clone's shallow boundary, at most `MAX_HAVES` 40-hex shas. Given, the
+        fetch is `_shallow_bundle`'s instead: bounded deepen rounds to a merge
+        base, and a bundle the clone applies once it has written the answer's
+        shallow lines. Not given, the answer is today's, byte for byte.
         """
         url, host = self._check_url(url)
         ref = _check_ref(ref)
@@ -601,9 +663,18 @@ class GitExec:
         haves = list(dict.fromkeys(haves))
         if len(haves) > MAX_HAVES or not all(isinstance(h, str) and _SHA.match(h) for h in haves):
             raise GitExecError("bad_ref", f"haves are at most {MAX_HAVES} 40-hex shas")
+        boundary = list(dict.fromkeys(shallow))
+        if len(boundary) > MAX_HAVES or not all(isinstance(b, str) and _SHA.match(b)
+                                                for b in boundary):
+            raise GitExecError("bad_ref", f"shallow lines are at most {MAX_HAVES} 40-hex shas")
+        if boundary and depth is not None:
+            raise GitExecError("bad_depth", "a fetch for a shallow boundary takes no depth")
         shallow = ["--depth=1"] if depth == 1 else []
         with self._call() as scratch:
             repo = self._init(scratch)
+            if boundary:
+                return self._shallow_bundle(scratch, repo, url, host, token, ref, haves,
+                                            boundary, deliver)
             with self._credential(scratch, host, token) as cred:
                 known = [have for have in haves
                          if self._fetch_tip(scratch, repo, url, have, token, cred)]
@@ -632,6 +703,103 @@ class GitExec:
             if deliver is not None:
                 return FetchedBundle(sha, None, size, delivered=deliver(out, size))
             return FetchedBundle(sha, out.read_bytes(), size)
+
+    def _shallow_bundle(self, scratch: Path, repo: Path, url: str, host: str, token: str,
+                        ref: str, haves: Sequence[str], boundary: Sequence[str],
+                        deliver: Callable[[Path, int], Any] | None) -> FetchedBundle:
+        """`ref` for a shallow clone (#2901, design §3 (a), §5.3-§5.5).
+
+        Each have and boundary commit is fetched at depth 1, as a have always
+        was. Then, in rounds, `ref` and each boundary commit the remote knew
+        are fetched at a depth that starts at `shallow_first_depth` and
+        doubles, two fetches a round for `fetch_pull_base`'s reason, until
+        `git merge-base` finds a commit they share or `shallow_max_rounds` is
+        spent. EVERY fetch from the remote carries `--depth=`: `ref` with
+        none landed the whole history, which is what made this route too
+        large. What the rounds add to the object store, counted from the
+        empty repository so the snapshots count, is capped at
+        `max_fetch_round_bytes` -- RLIMIT_FSIZE bounds one pack, not eight.
+
+        The bundle is `want`, plus the parents of each boundary commit the
+        rounds unshallowed, less each boundary commit's TREE and the other
+        haves: the clone already holds that snapshot and lacks the parents.
+        The scratch repository is shallow at its own cut-offs, so the bundle
+        names no prerequisite; the clone applies it once it has written
+        `(old - unshallow) | boundary` to its `.git/shallow`. No merge base in
+        budget (Q2 = A) still delivers the ref, with `merge_base` None.
+        """
+        others = [have for have in haves if have not in boundary]
+        with self._credential(scratch, host, token) as cred:
+            known = [have for have in others
+                     if self._fetch_tip(scratch, repo, url, have, token, cred)]
+            cut = [line for line in boundary
+                   if self._fetch_tip(scratch, repo, url, line, token, cred)]
+            known += cut
+            merge_base: str | None = None
+            rounds = 0
+            fetched = 0
+            want = self.shallow_first_depth
+            for rounds in range(1, self.shallow_max_rounds + 1):
+                want = self.shallow_first_depth * 2 ** (rounds - 1)
+                for name, target in ((ref, f"{ref}:{WANT_REF}"), *[(c, c) for c in cut]):
+                    self._must(self._git(scratch, repo, ["fetch", "--quiet", "--no-tags",
+                                                         "--no-write-fetch-head",
+                                                         f"--depth={want}", "--", url, target],
+                                         token=token, credential=cred, fetch=True),
+                               f"the depth-{want} fetch of {name}", cap=self.max_fetch_file_bytes)
+                fetched = _store_bytes(repo)
+                if fetched > self.max_fetch_round_bytes:
+                    raise GitExecError("too_large", (
+                        f"the deepen of {ref} fetched {fetched} bytes from the remote in "
+                        f"{rounds} rounds, over the {self.max_fetch_round_bytes}-byte fetch "
+                        "total"))
+                merge_base = self._merge_base(scratch, repo, cut, token)
+                if merge_base is not None or not cut:
+                    break
+        sha = self._resolve(scratch, repo, WANT_REF, token)
+        if sha is None:
+            raise GitExecError("bad_ref", f"{ref} does not name a commit")
+        lines = _shallow_lines(repo)
+        unshallow = tuple(line for line in cut if line not in lines)
+        new_lines = tuple(line for line in lines if line not in others)
+        about = dict(boundary=new_lines, unshallow=unshallow, merge_base=merge_base,
+                     depth=want, rounds=rounds, fetched_bytes=fetched)
+        if sha in known:
+            return FetchedBundle(sha, None, 0, **about)
+        parents: list[str] = []
+        for line in unshallow:
+            run = self._must(self._git(scratch, repo, ["rev-parse", f"{line}^@"], token=token),
+                             "rev-parse of the boundary's parents")
+            parents += [p for p in run.stdout.split() if _SHA.match(p) and p not in parents]
+        for index, parent in enumerate(parents):
+            self._must(self._git(scratch, repo, ["update-ref", f"{PARENT_REF}/{index}", parent],
+                                 token=token), "update-ref of a boundary parent")
+        out = scratch / "out.bundle"
+        run = self._git(scratch, repo, ["bundle", "create", "--quiet", str(out), WANT_REF,
+                                        *[f"{PARENT_REF}/{i}" for i in range(len(parents))],
+                                        *[f"^{line}^{{tree}}" for line in cut],
+                                        *[f"^{have}" for have in known if have not in cut]],
+                        token=token)
+        if run.code != 0 and "empty bundle" in run.stderr:
+            return FetchedBundle(sha, None, 0, **about)
+        self._must(run, "bundle create")
+        size = out.stat().st_size
+        if size > self.max_bundle_bytes:
+            raise GitExecError("too_large", f"the bundle is {size} bytes, over the "
+                                            f"{self.max_bundle_bytes}-byte cap of what is sent")
+        if deliver is not None:
+            return FetchedBundle(sha, None, size, delivered=deliver(out, size), **about)
+        return FetchedBundle(sha, out.read_bytes(), size, **about)
+
+    def _merge_base(self, scratch: Path, repo: Path, cut: Sequence[str],
+                    token: str) -> str | None:
+        """A commit `WANT_REF` shares with any boundary commit in `cut`, or None."""
+        for line in cut:
+            run = self._git(scratch, repo, ["merge-base", WANT_REF, line], token=token)
+            sha = run.stdout.strip()
+            if run.code == 0 and _SHA.match(sha):
+                return sha
+        return None
 
     def _tip_pack(self, scratch: Path, repo: Path, sha: str, known: Sequence[str], token: str,
                   deliver: Callable[[Path, int], Any] | None) -> FetchedBundle:

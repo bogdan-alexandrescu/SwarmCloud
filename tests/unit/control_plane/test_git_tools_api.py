@@ -694,6 +694,62 @@ def test_a_depth_1_fetch_answers_a_pack_of_the_tip_alone(client, db, origin):
     assert audit_rows(db)[-1]["depth"] == 1
 
 
+def _feature_off_a(origin) -> str:
+    """A commit H on `feature` whose parent is A: a depth-1 clone of it is
+    shallow at H, and `main` (A-B) shares A with it."""
+    work = origin["work"]
+    _git(work, "checkout", "-q", "-b", "feature", origin["a"])
+    head = _commit(work, "h")
+    _git(work, "push", "-q", str(origin["remote"]), "HEAD:refs/heads/feature")
+    return head
+
+
+def test_fetch_passes_the_newest_shallow_lines(client, db, origin):
+    """#2901: the worker's recorded boundary, oldest first; the newest 16 are
+    used, as with haves, so H -- sent last -- reaches the merge base."""
+    head = _feature_off_a(origin)
+    attempt, _ = running_task(client, db)
+    stale = [secrets.token_hex(20) for _ in range(30)]
+    response = call(client, attempt, "git_fetch", {"ref": "main", "haves": [head],
+                                                   "shallow": [*stale, head]})
+    assert response.status_code == 200, response.text
+    assert response.json()["merge_base"] == origin["a"]
+
+
+def test_fetch_answer_carries_shallow_unshallow_and_merge_base(client, db, origin):
+    head = _feature_off_a(origin)
+    attempt, _ = running_task(client, db)
+    response = call(client, attempt, "git_fetch", {"ref": "main", "haves": [head],
+                                                   "shallow": [head]})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["resolved_sha"] == origin["b"]
+    assert (body["unshallow"], body["merge_base"], body["deepened_to"]) \
+        == ([head], origin["a"], 64)
+    assert body["shallow"] == []
+    raw = base64.b64decode(body["bundle"])
+    # No prerequisite line: the clone lacks H's parents, so it could meet none.
+    assert not [line for line in raw[:raw.index(b"\n\n")].decode().splitlines()
+                if line.startswith("-")]
+    row = audit_rows(db)[-1]
+    assert (row["deepened_to"], row["rounds"], row["merge_base"]) == (64, 1, origin["a"])
+
+
+def test_a_fetch_without_shallow_lines_answers_no_deepen_fields(client, db, origin):
+    attempt, _ = running_task(client, db)
+    response = call(client, attempt, "git_fetch", {"ref": "main", "haves": [origin["a"]]})
+    assert response.status_code == 200, response.text
+    assert not {"shallow", "unshallow", "merge_base", "deepened_to"} & set(response.json())
+
+
+@pytest.mark.parametrize("lines", [["abc123"], ["--upload-pack=x"]])
+def test_shallow_lines_that_are_not_full_shas_are_bad_ref(client, db, origin, lines):
+    attempt, _ = running_task(client, db)
+    response = call(client, attempt, "git_fetch", {"ref": "main", "shallow": lines})
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "bad_ref"
+
+
 @pytest.mark.parametrize(("tool", "depth"), [("git_fetch", 2), ("git_fetch", 0),
                                              ("git_rebase_onto", 1)])
 def test_a_depth_other_than_1_or_on_a_rebase_is_bad_depth(client, db, origin, tool, depth):
@@ -775,6 +831,24 @@ def test_a_large_fetch_bundle_is_created_under_the_proven_attempts_own_prefix_on
     # MUTATION: drop if_generation_match=0 from GcsBundles.upload and an
     # existing object would be overwritten (objectCreator refuses it anyway).
     assert bucket.uploads[0][1].get("if_generation_match") == 0
+
+
+def test_large_shallow_fetch_bundle_is_a_tenant_prefixed_object(client, db, origin, bucket):
+    """#2901: a shallow clone's deepened slice goes to the same proven-attempt
+    prefix as any large bundle, with the shallow lines still in the answer."""
+    head = _feature_off_a(origin)
+    attempt, _ = running_task(client, db)
+    t = attempt.tuple
+    response = call(client, attempt, "git_fetch", {"ref": "main", "haves": [head],
+                                                   "shallow": [head]},
+                    request_id="req-deep")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    key = f"tenants/{t.tenant_id}/attempts/{t.attempt_id}/git/req-deep.fetch.bundle"
+    assert body["bundle_object"] == key and "bundle" not in body
+    assert [k for k, _ in bucket.uploads] == [key]
+    assert hashlib.sha256(bucket.objects[key]).hexdigest() == body["bundle_sha256"]
+    assert (body["unshallow"], body["merge_base"]) == ([head], origin["a"])
 
 
 def test_a_bundle_the_bucket_refuses_is_a_named_audited_refusal_the_worker_does_not_retry(
