@@ -10531,8 +10531,80 @@ class Worker:
                            "as well", branch=branch)
             raise ForgeError(f"{unopened} (401 twice): {exc}; {FORGE_REFUSED_TWICE}") from None
 
-    def _emit_token_reread(self, branch: str, *, outcome: str) -> None:
-        """A `forge_token_reread` mark on the task's events (reason `pr_open_401`).
+    def _push_reading_again(
+        self, push: Callable[[str | None], str | None], token: str | None, *, branch: str
+    ) -> tuple[str | None, str | None]:
+        """`push(token)`; on a stale credential, read the slot again ONCE and push once more.
+
+        Returns the pushed sha and the token that pushed it, which the pull
+        request and any replay push then use (#3223). MEASURED: task_a4f1d69c
+        probed `can_push` true and its push then failed exit 128 "remote:
+        Invalid username or token": swarm-api's 15-minute refresh sweep ended
+        the token between the probe's read and the push.
+
+        THE SAME RE-READ AS THE PULL REQUEST'S (`_open_pull_request_reading_
+        again`), gates and all: `_forge_write_refusal` and `_git_token_
+        refusal` are asked first and a refusal is not read past, then
+        `_git_token(write=True)`, the first read's suffix through the same
+        path -- a person's slot from the broker, never the tenant's token in
+        its place. The fence is read again before the second push, so a
+        superseded attempt never pushes (invariant 5).
+
+        Exactly one re-read and one more push: a second refusal raises
+        `GitError` with `FORGE_REFUSED_TWICE`. A `PushRejected` (a moved
+        branch or a lease that no longer holds), a 403 and anything else are
+        raised as they came: the credential was accepted, or it is a
+        permission, not a stale token.
+        """
+        try:
+            return push(token), token
+        except PushRejected:
+            raise
+        except GitError as exc:
+            if not token or not self._refused_credential(exc):
+                raise
+            self.log.warning(
+                "the forge refused the credential at the push; reading its secret "
+                "again and pushing once more",
+                event="forge_token_reread", reason="push_401", branch=branch,
+            )
+        unpushed = f"branch {branch} not pushed"
+        refused = self._forge_write_refusal()
+        if refused is not None:
+            cause, reason = refused
+            self._emit_token_reread(branch, outcome=cause, reason="push_401")
+            raise GitError(f"{unpushed}: the re-read was refused: {cause}: {reason}")
+        refusal = self._git_token_refusal()
+        if refusal:
+            raise GitError(f"{unpushed} (401): the token was not read again: {refusal}")
+        fresh = self._git_token(write=True)
+        if not fresh:
+            why = getattr(self, "_git_token_error", None) or "no forge credential was read"
+            self._emit_token_reread(branch, outcome="unread", reason="push_401")
+            raise GitError(f"{unpushed} (401): the token could not be read again: {why}")
+        self.log.register_secret(fresh)
+        self._emit_token_reread(branch, outcome="read", reason="push_401")
+        self._own_before_forge_write("branch push")
+        try:
+            return push(fresh), fresh
+        except PushRejected:
+            raise
+        except GitError as exc:
+            if not forge_credential_refused(exc):
+                raise
+            self.log.error("the forge refused the re-read credential at the push as well",
+                           branch=branch)
+            # The marker first: `_publish_git` keeps 500 characters of the
+            # reason, and git's own refusal is the longer, less useful part.
+            raise GitError(
+                f"{unpushed} (401 twice): {FORGE_REFUSED_TWICE}; the push said: {str(exc)[:200]}"
+            ) from None
+
+    def _emit_token_reread(
+        self, branch: str, *, outcome: str, reason: str = "pr_open_401"
+    ) -> None:
+        """A `forge_token_reread` mark on the task's events (`reason`: `pr_open_401`,
+        or `push_401` for the publish push).
 
         RUNNING with `cause`, as `_emit_startup_mark` writes: the frozen
         `EventType` has no note-only type. The branch and the outcome, never
@@ -10542,7 +10614,7 @@ class Worker:
             return
         try:
             self.control.emit(EventType.RUNNING, {
-                "cause": "forge_token_reread", "reason": "pr_open_401",
+                "cause": "forge_token_reread", "reason": reason,
                 "branch": branch, "outcome": outcome,
             })
         except Exception as exc:  # noqa: BLE001 -- a mark is never worth a publish
@@ -15739,10 +15811,11 @@ class Worker:
         author_name: str,
         author_email: str,
         out: dict[str, Any],
-    ) -> str:
+    ) -> tuple[str, str | None]:
         """Publish onto a pull request head moved only by this task's own
         earlier generation (#2693, task_ffc37f64 on PR #2613); the sha the
-        pull request's branch holds afterwards.
+        pull request's branch holds afterwards, and the token the steps after
+        it use (`_push_reading_again`, #3223).
 
         A head whose tree is already this attempt's (the fenced generation
         pushed this same work) is published as it stands: nothing is pushed.
@@ -15770,8 +15843,8 @@ class Worker:
                 "and already holds this attempt's tree; nothing to push",
                 number=pull.number, head=pull.head_sha,
             )
-            return pull.head_sha
-        pushed = self._push_onto_base_merge(
+            return pull.head_sha, token
+        pushed, token = self._push_onto_base_merge(
             publish_repo,
             PushRejected(
                 f"{publishpr_mod.HEAD_MOVED}: pull request #{pull.number}'s branch moved "
@@ -15785,8 +15858,8 @@ class Worker:
         if pushed is None:
             # The moved head already holds every change this attempt made.
             out.pop(BASE_MERGE_NO_CHANGE_FIELD, None)
-            return pull.head_sha
-        return pushed
+            return pull.head_sha, token
+        return pushed, token
 
     def _own_before_forge_write(self, write: str) -> None:
         """Refuse, with `FencedWriteRefused`, a forge write this attempt no longer owns (#2693).
@@ -15821,8 +15894,11 @@ class Worker:
         protected: tuple[str, ...],
         author_name: str,
         author_email: str,
-    ) -> str:
+    ) -> tuple[str | None, str | None]:
         """Publish onto this task's branch when only its earlier attempt wrote it (#1438).
+
+        Returns the pushed sha and the token that pushed it
+        (`_push_reading_again`, #3223).
 
         MEASURED 2026-10-16: attempt 1 pushed `swarm/task_<id>`, then crashed
         before its terminal state landed; the reconciler reclaimed it, and
@@ -15876,18 +15952,21 @@ class Worker:
             )
             raise rejected
         self._own_before_forge_write("replacing push")
-        pushed = push_branch(
-            repo=publish_repo,
-            url=url,
-            branch=branch,
-            token=token,
-            private_dir=ws.private,
-            logs_dir=ws.logs,
-            timeout_seconds=cfg.git_clone_timeout_seconds,
-            logger=self.log,
-            branch_prefix=cfg.git_branch_prefix,
-            protected=protected,
-            lease=tip,
+        pushed, token = self._push_reading_again(
+            lambda with_token: push_branch(
+                repo=publish_repo,
+                url=url,
+                branch=branch,
+                token=with_token,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                branch_prefix=cfg.git_branch_prefix,
+                protected=protected,
+                lease=tip,
+            ),
+            token, branch=branch,
         )
         self.log.info(
             "the task's branch held only its earlier attempt's worker commits; "
@@ -15897,7 +15976,7 @@ class Worker:
             head=pushed or "unknown",
             how="force_with_lease",
         )
-        return pushed
+        return pushed, token
 
     def _push_onto_base_merge(
         self,
@@ -15913,7 +15992,7 @@ class Worker:
         author_email: str,
         out: dict[str, Any],
         expect_tip: str | None = None,
-    ) -> str | None:
+    ) -> tuple[str | None, str | None]:
         """Publish onto a continued branch moved only by merges of the default branch (#2179).
 
         MEASURED 2026-10-23 (task_045fda9399ba47289b3a): a CI-fix round for
@@ -15933,7 +16012,8 @@ class Worker:
         may not newly reach -- and the branch is pushed with no lease: a
         fast-forward over the fetched tip, so it is still never forced, and
         anything that moved it again is refused as before. Returns the
-        pushed sha; None when the moved tip already holds every change, with
+        pushed sha and the token that pushed it (`_push_reading_again`,
+        #3223); a None sha when the moved tip already holds every change, with
         `BASE_MERGE_NO_CHANGE_FIELD` set in `out` (the attempt's `no_change`,
         `_no_change_after_publish`). Any other mover re-raises `rejected`; a
         replay that conflicts, or fails a check, raises its own GitError
@@ -16066,7 +16146,7 @@ class Worker:
             self.log.info("the base merge rewrote every file this round changed; "
                           "nothing to push", branch=branch, tip=tip,
                           superseded=len(superseded))
-            return None
+            return None, token
         if head is None:
             out[BASE_MERGE_NO_CHANGE_FIELD] = (
                 f"no_change: {moved}, which already holds every change this round "
@@ -16074,7 +16154,7 @@ class Worker:
             )
             self.log.info("the moved tip already holds this round's change; nothing to push",
                           branch=branch, tip=tip)
-            return None
+            return None, token
         # The same checks the first push passed, over the span the push now
         # adds: the moved tip is the base from here on.
         verify_worker_authorship(
@@ -16125,18 +16205,21 @@ class Worker:
             # a fast-forward, and a branch moved again is refused. Onto a
             # pull request's own moved head, leased on it as every push onto
             # a pull request is (#2183).
-            pushed = push_branch(
-                repo=publish_repo,
-                url=url,
-                branch=branch,
-                token=token,
-                private_dir=ws.private,
-                logs_dir=ws.logs,
-                timeout_seconds=cfg.git_clone_timeout_seconds,
-                logger=self.log,
-                branch_prefix=cfg.git_branch_prefix,
-                protected=protected,
-                lease=expect_tip,
+            pushed, token = self._push_reading_again(
+                lambda with_token: push_branch(
+                    repo=publish_repo,
+                    url=url,
+                    branch=branch,
+                    token=with_token,
+                    private_dir=ws.private,
+                    logs_dir=ws.logs,
+                    timeout_seconds=cfg.git_clone_timeout_seconds,
+                    logger=self.log,
+                    branch_prefix=cfg.git_branch_prefix,
+                    protected=protected,
+                    lease=expect_tip,
+                ),
+                token, branch=branch,
             )
         except GitError:
             self._publish_base = base
@@ -16152,7 +16235,7 @@ class Worker:
             head=pushed or "unknown",
             how="fast_forward",
         )
-        return pushed
+        return pushed, token
 
     def _publish_git(
         self,
@@ -16870,7 +16953,7 @@ class Worker:
                     )
                 out["workflow_publish"] = "broker"
             elif onto_pull is not None and own_moved:
-                pushed = self._publish_onto_own_moved_head(
+                pushed, token = self._publish_onto_own_moved_head(
                     publish_repo, onto_pull, url=url, token=token, branch=branch,
                     protected=protected, default_branch=access.default_branch,
                     author_name=author_name, author_email=author_email, out=out,
@@ -16880,11 +16963,14 @@ class Worker:
                 # `except GitError` below must not turn it into publish_failed.
                 self._own_before_forge_write("branch push")
                 try:
-                    pushed = push_branch(
+                    # A stale credential reads the slot again once and pushes
+                    # once more; the token it pushed with goes on to the pull
+                    # request and any replay (#3223).
+                    pushed, token = self._push_reading_again(lambda with_token: push_branch(
                         repo=publish_repo,
                         url=url,
                         branch=branch,
-                        token=token,
+                        token=with_token,
                         private_dir=ws.private,
                         logs_dir=ws.logs,
                         timeout_seconds=cfg.git_clone_timeout_seconds,
@@ -16900,7 +16986,7 @@ class Worker:
                         # descend from -- so the push is a fast-forward
                         # or nothing.
                         lease=onto_pull.head_sha if onto_pull is not None else tool_tip,
-                    )
+                    ), token, branch=branch)
                 except PushRejected as rejected:
                     if onto_pull is not None:
                         raise GitError(
@@ -16918,7 +17004,7 @@ class Worker:
                         )
                         raise
                     if branch == f"{cfg.git_branch_prefix}{cfg.task_id}":
-                        pushed = self._push_over_own_earlier_attempt(
+                        pushed, token = self._push_over_own_earlier_attempt(
                             publish_repo, rejected, url=url, token=token, branch=branch,
                             protected=protected, author_name=author_name,
                             author_email=author_email,
@@ -16931,7 +17017,7 @@ class Worker:
                         # `_push_onto_base_merge`. A round whose conflicts
                         # lie only in files that merge rewrote ends no_change
                         # `superseded_by_base` when nothing else is left (#2367).
-                        pushed = self._push_onto_base_merge(
+                        pushed, token = self._push_onto_base_merge(
                             publish_repo, rejected, url=url, token=token, branch=branch,
                             protected=protected, default_branch=access.default_branch,
                             author_name=author_name, author_email=author_email,
