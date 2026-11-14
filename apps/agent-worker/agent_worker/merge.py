@@ -2068,16 +2068,47 @@ def merger_for(
     token: str,
     transport: forge_mod.Transport | None = None,
     retry: forge_mod.RetryPolicy | None = None,
+    read_again: Callable[[], str] | None = None,
 ) -> ForgeMerger:
-    """The `ForgeMerger` for the workflow's repository, or `UnsupportedForge`."""
+    """The `ForgeMerger` for the workflow's repository, or `UnsupportedForge`.
+
+    `read_again` reads the token afresh on the client's first 401
+    (`token_reader`); without it a 401 is answered as it is.
+    """
     ref = forge_mod.parse_repo(repository_url or "")
     if ref is None or ref.host not in MERGEABLE_HOSTS:
         raise UnsupportedForge(
             "the merge step merges on github.com only, and this workflow's repository "
             "is not there"
         )
-    client = forge_mod.PinnedForgeClient(token=token, transport=transport, retry=retry)
+    client = forge_mod.PinnedForgeClient(token=token, transport=transport, retry=retry,
+                                         read_again=read_again)
     return GitHubMerger(client, owner=ref.owner, repo=ref.name)
+
+
+def token_reader(ctx: ActionContext, *, call: str) -> Callable[[], str] | None:
+    """The person's token read again, for the forge client's first 401 (#3223).
+
+    swarm-api's forge refresh replaces a person's token every 15 minutes and
+    GitHub ends the replaced one, so the token this step read can be refused
+    mid-step. The value read again is registered for redaction before the
+    client sees it; a read that raises leaves the 401 standing, which
+    `_forge_outcome` refuses as `token_lacks_rights`.
+    """
+    read = ctx.read_git_token
+    if read is None:
+        return None
+
+    def again() -> str:
+        ctx.log.warning(
+            "the forge refused the credential; reading its secret again and retrying once",
+            call=call,
+        )
+        value = read()
+        ctx.register_secret(value)
+        return value
+
+    return again
 
 
 def mergeable_repository(repository_url: str | None) -> str | None:
@@ -2698,7 +2729,8 @@ def _hold_not_yet(run: _Run, opener: Mapping[str, Any], verdict: verdict_mod.Ver
     ctx.register_secret(token)
     try:
         merger = merger_for(ctx.repository_url, token=token, transport=ctx.transport,
-                            retry=forge_retry(ctx))
+                            retry=forge_retry(ctx),
+                            read_again=token_reader(ctx, call="review_not_yet"))
     finally:
         del token
     if ctx.recheck():
@@ -2977,7 +3009,8 @@ def _ended_outside(run: _Run, target: MergeTarget,
     ctx.register_secret(token)
     try:
         merger = merger_for(ctx.repository_url, token=token, transport=ctx.transport,
-                            retry=forge_retry(ctx))
+                            retry=forge_retry(ctx),
+                            read_again=token_reader(ctx, call="outside_hold"))
         pr = merger.pull_request(number)
     except Exception as exc:  # noqa: BLE001 - unread is not ended: the hold parks again
         summary["outside_unread"] = (f"pull request #{number} could not be read "
@@ -3685,7 +3718,8 @@ def _merge_with_token(run: _Run, *, number: int, pinned: str, branch: str | None
     ctx.register_secret(token)
     try:
         merger = merger_for(ctx.repository_url, token=token, transport=ctx.transport,
-                            retry=forge_retry(ctx))
+                            retry=forge_retry(ctx),
+                            read_again=token_reader(ctx, call="merge"))
     except UnsupportedForge as exc:
         return run.refuse("forge_unsupported", str(exc))
     finally:
