@@ -53,15 +53,16 @@ import tarfile
 import tempfile
 import time
 import zlib
+from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from swarm_redaction import MASK as REDACTION_MASK
 from swarm_redaction import RULES as REDACTION_RULES
 
-from . import artifact_manifest
+from . import artifact_manifest, scratchusage
 from .errors import CheckpointError
 from .objectstore import ObjectStore
 from .workspace import REPOS_DIR_NAME, Workspace, walk_tree
@@ -84,6 +85,27 @@ class RestoreResourceError(CheckpointError):
 _LOCAL_RESOURCE_ERRNOS = frozenset(
     {errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EMFILE, errno.ENFILE, errno.ENOMEM}
 )
+
+@contextmanager
+def _local_room(checkpoint_id: str) -> Iterator[None]:
+    """An ENOSPC writing a checkpoint's archive, as a CheckpointError that says what ran out.
+
+    The archive is written under the worker's temporary directory before it
+    is uploaded. ENOSPC there reads `No space left on device` whether the
+    volume ran out of bytes or of inodes (#4061), so the error is worded by
+    `scratchusage.enospc_words`: out of inodes, with both counts, when bytes
+    are still free; the error's own space text when they are not. The
+    lifecycle logs it as CHECKPOINT FAILED and tries again at the next
+    interval, as any refused checkpoint. Every other error passes unchanged.
+    """
+    try:
+        yield
+    except OSError as exc:
+        if exc.errno != errno.ENOSPC:
+            raise
+        words = scratchusage.enospc_words(exc, tempfile.gettempdir())
+        raise CheckpointError(f"checkpoint {checkpoint_id} could not be written: {words}") from exc
+
 
 #: How many folders deep a checkpoint archives. The archive walk holds one
 #: open descriptor per level (it opens each child relative to its parent so
@@ -1216,7 +1238,9 @@ class CheckpointManager:
                 sort_keys=True,
             ).encode("ascii")
 
-        with tempfile.TemporaryDirectory(prefix="swarm-ckpt-") as tmpdir:
+        with _local_room(checkpoint_id), tempfile.TemporaryDirectory(
+            prefix="swarm-ckpt-"
+        ) as tmpdir:
             archive_path = Path(tmpdir) / ARCHIVE_NAME
             archived: dict[str, tuple[Any, ...]] = {}
             started = time.monotonic()
