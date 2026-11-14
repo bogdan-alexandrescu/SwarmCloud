@@ -873,7 +873,7 @@ class StateBucketStep(_Base):
             problems.append(f"gs://{name}/{STATE_OBJECT} does not exist")
         if problems:
             return Observation(UNMET, f"gs://{name}: " + "; ".join(problems))
-        return Observation(MET, f"gs://{name} holds the install state", {"state_bucket": name})
+        return Observation(MET, f"gs://{name} holds the install state")
 
     def plan(self, ctx: Any) -> Plan:
         name = state_bucket(ctx.project)
