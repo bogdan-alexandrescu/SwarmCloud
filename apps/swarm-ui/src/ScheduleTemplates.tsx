@@ -77,7 +77,7 @@ function budgetWords(t: ScheduleTypeRow): string {
 }
 
 /** The catalogue's tier for a type, where an API serves one; the list does not yet. */
-function servedTier(t: ScheduleTypeRow): string | null {
+export function servedTier(t: ScheduleTypeRow): string | null {
   const tier = (t as ScheduleTypeRow & { tier?: unknown }).tier
   return typeof tier === 'string' && tier !== '' ? tier : null
 }
