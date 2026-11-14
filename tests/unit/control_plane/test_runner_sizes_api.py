@@ -136,11 +136,20 @@ def test_the_table_lists_the_medium_class_between_browser_and_large(client):
     """Contract request 147 (the owner, 6 November 2026): the middle size."""
     body = client.get(ROUTE, headers=auth_header("root")).json()
     # MUTATION: leave `medium` out of CLASS_ORDER and the table has no row for it.
-    assert list(body["classes"]) == ["standard", "browser", "medium", "large"]
+    assert list(body["classes"]) == ["standard", "browser", "medium", "builder", "large"]
     medium = body["classes"]["medium"]
     assert (medium["cpu_request"], medium["cpu_limit"], medium["memory_gib"], medium["units"]) == (6, 12, 16, 2)
     # A GKE profile on the class follows a resize, as claude-code-large does.
     assert "claude-code-medium" in body["followers"]["medium"]["follows"]
+
+
+def test_the_table_lists_the_builder_class_followed_by_claude_codes_build_steps(client):
+    """Contract request 135 (the owner, 13 November 2026)."""
+    body = client.get(ROUTE, headers=auth_header("root")).json()
+    builder = body["classes"]["builder"]
+    assert (builder["cpu_request"], builder["cpu_limit"], builder["memory_gib"], builder["units"]) == (8, 12, 16, 2)
+    # MUTATION: list only each profile's own class and builder has no follower.
+    assert body["followers"]["builder"] == {"follows": ["claude-code"], "fixed": []}
 
 def test_a_malformed_stored_version_reads_as_the_code_defaults(client, db):
     db.docs[POINTER] = {"current_version": 1, "updated_by": "someone@example.com"}

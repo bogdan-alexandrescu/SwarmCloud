@@ -461,10 +461,14 @@ class GkeDisk:
 #: medium: 5 + 3 + 2 = 10, standard's layout (contract request 147, owner
 #: 2026-11-06): claude-code-medium runs claude-code's work, and 10 is
 #: Autopilot's maximum whatever the class.
+#:
+#: builder: 5 + 3 + 2 = 10, standard's layout (contract request 135, owner
+#: 2026-11-13): claude-code's implement and fix steps run on it.
 GKE_DISK: dict[str, GkeDisk] = {
     "standard": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
     "browser": GkeDisk(workspace_gib=4, tmp_gib=3, home_gib=3),
     "medium": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
+    "builder": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
     "large": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
 }
 
@@ -819,10 +823,13 @@ class LiveDisplayShare:
 #:   browser's was until contract request 79), the rest to the worker.
 #: medium: as large, no live profile reaches it (contract request 147); the
 #:   browser class's display, the rest (4 / 11 GiB) to the worker.
+#: builder: as medium, no live profile reaches it (contract request 135); the
+#:   browser class's display, the rest (6 / 11 GiB) to the worker.
 LIVE_DISPLAY_SHARE: dict[str, LiveDisplayShare] = {
     "browser": LiveDisplayShare(cpu=2, memory_gib=5, cpu_limit=3),
     "standard": LiveDisplayShare(cpu=2, memory_gib=4, cpu_limit=3),
     "medium": LiveDisplayShare(cpu=2, memory_gib=5, cpu_limit=3),
+    "builder": LiveDisplayShare(cpu=2, memory_gib=5, cpu_limit=3),
     "large": LiveDisplayShare(cpu=5, memory_gib=10),
 }
 

@@ -49,7 +49,14 @@ from swarm_common.models import (
     reserved_pool_units,
     utcnow,
 )
-from swarm_common.profiles import RUNNER_PROFILES, effective_size, resolve_backend
+from swarm_common.profiles import (
+    RUNNER_PROFILES,
+    ResourceSize,
+    RunnerProfile,
+    effective_size,
+    resolve_backend,
+    resource_class_for_stage,
+)
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
 from . import budget as budget_mod
@@ -278,6 +285,24 @@ class McpInheritance:
     servers: tuple[str, ...]
     owners: tuple[str, ...]
 
+
+
+def _step_resource_class(
+    profile: RunnerProfile, requested: str | None, stage: str | None, *,
+    sizes: Mapping[str, ResourceSize] | None,
+) -> str:
+    """The class a step is stored with (contract request 135).
+
+    A caller's own `resource_class` goes through
+    `validate_resource_class_override` as before: it may only shrink, judged
+    against the profile's own class, so a caller never reaches `builder`. With
+    none, the platform's choice from the stage its compiler wrote
+    (`resource_class_for_stage`); `stage` is a parameter no route fills from a
+    request (invariant 10).
+    """
+    if requested is not None:
+        return validate_resource_class_override(profile, requested, sizes=sizes)
+    return resource_class_for_stage(profile, stage)
 
 
 def refuse_long_names(metadata: Mapping[str, Any]) -> None:
@@ -845,6 +870,7 @@ class SubmissionService:
         mcp_whole_submission: bool = True,
         mcp_inherited: McpInheritance | None = None,
         budget_scope: tuple[budget_mod.Limits, budget_mod.Limits] | None = None,
+        stage: str | None = None,
     ) -> Task:
         # `submitted_by` is set only by the child route (swarm_api.children),
         # which has no person on the call: a child's submitter is its parent's,
@@ -971,8 +997,8 @@ class SubmissionService:
         validate_storable(spec.metadata, label="metadata")
         # "Larger" is judged at the CURRENT runner sizes (design §4.8), read
         # only when a step names a class: most submissions name none.
-        resource_class = validate_resource_class_override(
-            profile, resource_class_override,
+        resource_class = _step_resource_class(
+            profile, resource_class_override, stage,
             sizes=(runnersizes.current_sizes(self._store.db)
                    if resource_class_override is not None else None),
         )
@@ -1052,7 +1078,7 @@ class SubmissionService:
         if runtime is not None:
             alternate = self._runtime_alternate(
                 runtime, spec, tenant=tenant, step_id=step_id,
-                resource_class_override=resource_class_override,
+                resource_class_override=resource_class_override, stage=stage,
                 repository_url=repository_url, mcp_credentials=mcp_credentials,
                 mcp_whole_submission=mcp_whole_submission, mcp_inherited=mcp_inherited,
             )
@@ -1136,7 +1162,7 @@ class SubmissionService:
 
     def _runtime_alternate(
         self, runtime: Mapping[str, str], spec: TaskCreate, *, tenant: Tenant,
-        step_id: str | None, resource_class_override: str | None,
+        step_id: str | None, resource_class_override: str | None, stage: str | None,
         repository_url: str | None, mcp_credentials: Mapping[str, Any] | None,
         mcp_whole_submission: bool, mcp_inherited: McpInheritance | None,
     ) -> dict[str, Any]:
@@ -1158,8 +1184,8 @@ class SubmissionService:
             credentials=mcp_credentials if mcp_credentials is not None else spec.mcp_credentials,
             whole_submission=mcp_whole_submission, inherited=mcp_inherited, step_id=step_id,
         )
-        resource_class = validate_resource_class_override(
-            code, resource_class_override,
+        resource_class = _step_resource_class(
+            code, resource_class_override, stage,
             sizes=(runnersizes.current_sizes(self._store.db)
                    if resource_class_override is not None else None),
         )
@@ -1460,7 +1486,11 @@ class SubmissionService:
             return None
 
     def submit_workflow(self, ctx: AuthContext, spec: WorkflowCreate, *,
-                        fix_loop_round: Mapping[str, Any] | None = None) -> WorkflowSubmission:
+                        fix_loop_round: Mapping[str, Any] | None = None,
+                        step_stages: Mapping[str, str] | None = None) -> WorkflowSubmission:
+        # `step_stages` is the compiler's step id -> stage map (contract
+        # request 135): only the issue-run compilers pass it, no route
+        # builds it from a request, so the class it picks is the platform's.
         # `fix_loop_round` is a fix loop's round record (FL-DRIVE,
         # docs/design/fix-loop.md §4.3), signed into every step's dispatch
         # block. Only `fixloop` passes it; no route does, so no caller can.
@@ -1908,6 +1938,7 @@ class SubmissionService:
                 step_id=step_id,
                 depends_on=parent_task_ids,
                 resource_class_override=source.resource_class,
+                stage=(step_stages or {}).get(step_id),
                 priority=spec.priority,
                 repository_url=repository_url,
                 repository_ref=spec.repository_ref,

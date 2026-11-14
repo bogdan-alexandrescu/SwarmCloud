@@ -352,6 +352,7 @@ from swarm_common.states import ParkReason, TaskState
 
 from swarm_common.identity import Principal
 from swarm_common.models import utcnow
+from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import TERMINAL_STATES
 from swarm_rollup import is_fix_round_step
 
@@ -1271,6 +1272,11 @@ def _round_resource_class(ctx: Any, tenant_id: str, target: str) -> str | None:
     if getattr(task, "runner_profile", None) != STEP_PROFILE:
         return None
     value = getattr(task, "resource_class", None)
+    # The build class is the platform's choice from a build stage (contract
+    # request 135), not the profile's own: as a round's `resource_class` it
+    # would be refused as larger, so the round runs the profile's class.
+    if value == RUNNER_PROFILES[STEP_PROFILE].build_resource_class:
+        return None
     return value if isinstance(value, str) and value else None
 
 
