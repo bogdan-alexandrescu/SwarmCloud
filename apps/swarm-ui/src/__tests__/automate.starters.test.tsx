@@ -18,9 +18,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve } from './repofixture'
 import { Routed } from './screenroute'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
 import { addressToPath, pathToAddress } from '../paths'
 
 const WAIT = { timeout: 4000 }
+const PHONE: CascadeEnv = { width: 390 }
+const DESK: CascadeEnv = { width: 1440 }
 
 type Json = Record<string, unknown>
 
@@ -99,6 +103,14 @@ describe('the empty Schedules page: a starter card per type', () => {
     expect(use.getAttribute('href')).toBe('/automate/schedules/new?type=cost-report')
     fireEvent.click(use)
     expect(go).toHaveBeenCalledWith('automate/schedules?schedule=new&type=cost-report')
+  })
+
+  it('lays the starter cards out in one column at 390 and a grid at 1440', async () => {
+    await mount(null)
+    const grid = await screen.findByTestId('acd-starters', undefined, WAIT)
+    expect(painted(grid, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+    expect(painted(grid, 'grid-template-columns', DESK)).toBe('repeat(auto-fill, minmax(300px, 1fr))')
+    for (const card of grid.querySelectorAll<HTMLElement>('section.acd-starter')) expect(painted(card, 'min-width', PHONE)).toBe('0')
   })
 
   it('opens New schedule with the type the address names already chosen', async () => {
