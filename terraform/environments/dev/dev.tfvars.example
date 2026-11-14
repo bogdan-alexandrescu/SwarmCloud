@@ -102,9 +102,13 @@ platform_admin_reach = true
 # `code = true` per line). Dev turns the viewer gate, role_member_required, on
 # and leaves role_admin_required off until every group workspace that manages
 # secrets has a named admin (docs/design/workspace-roles.md section 4.9).
+# repository_ref_not_found refuses a submission whose repository_ref the forge
+# does not have, before it takes a lease (#3566); it fails open when the forge
+# does not answer.
 api_refusals = {
-  index_refresh_failed = true
-  role_member_required = true
+  index_refresh_failed     = true
+  role_member_required     = true
+  repository_ref_not_found = true
 }
 
 # Repository grants (#780): a person's task is refused without a grant for its

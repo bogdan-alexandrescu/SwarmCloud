@@ -57,6 +57,9 @@ pool_limits = {
     standard = 100
     browser  = 20
     large    = 8
+    # The class claude-code's build steps run at, 2 units each (contract
+    # request 135); runner:claude-code binds first.
+    builder  = 60
   }
   runner_profiles = {
     mock        = 10
