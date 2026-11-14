@@ -6,7 +6,9 @@ indexer's opt-in `--measure-latency-hours` writes `latency.json` beside the
 manifest, and schedule type `graph-latency-report` reads it
 (`swarm_api/graphreports.py`, `schedtypes/graph_latency_report.py`). Not built
 yet: the registration setting that passes the flag, promotion's copy into
-`answer_latency`, and moving the battery into `agent_worker.graphmcp`.**
+`answer_latency`, and moving the battery into `agent_worker.graphmcp`, which
+the owner deferred on 2026-11-14 (§4, Q9): the indexer keeps its in-process
+battery until that move is built.**
 Written 2026-10-27 against `main` at `17d6c5a`;
 the body follows the owner's answers of the same day, and §5 specifies the console's
 Cache section the owner asked for then.
@@ -151,6 +153,16 @@ it (`measure_latency: true`; see "when" below):
 `test_graphmcp_budgets.py` imports them from there. The CI gate (on its
 generated workload) and the report (on this repository) then ask the same
 questions, measured the same way, and cannot drift apart.
+
+**Built first in-process, the move later (the owner 2026-11-14, Q9).** The
+first build (#1840) answers the battery inside the indexer, from the blobs it
+still holds in memory (`repo_graph_shards.measure_latency`): the same symbols
+(§1.1's four busiest callees and an even sample of twelve) but three questions
+each (`context`, `callers`, `search`) rather than the six tools, so its
+milliseconds are not yet the CI gate's. The move into
+`agent_worker/graphmcp/battery.py` above is still the design and is built as
+its own later change; until then a report's figures compare with each other,
+not with the CI gate's.
 
 **When** (the owner, Q1: opt-in, at most once per 24 h). Measuring every promotion
 would add up to 40 s to every incremental run of a busy repository. So
@@ -717,6 +729,16 @@ the body above follows them.
    list it carries names the modules to split.
 
    **The owner 2026-10-27: (a) wait for the report.**
+9. **Should the battery move into `agent_worker.graphmcp` (`battery.py`) now,
+   so the CI gate and the indexer ask the same questions?** (asked on #1840's
+   first build)
+   * (a) Move it now, with the indexer's measurement.
+   * (b) Keep the indexer's in-process battery, and drop the move.
+   * (c) Keep the in-process battery now and move it later, as its own change.
+
+   **The owner 2026-11-14: (c) move later: the indexer's in-process battery
+   ships first; the move into `battery.py` (§1.2) stays the design and is built
+   as its own change.**
 
 ---
 

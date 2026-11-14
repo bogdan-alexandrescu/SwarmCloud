@@ -1937,6 +1937,10 @@ def resolve_target(*, tenant: str | None, store: str | None, repo_id: str,
 # every re-index of one commit and churn every answer-cache key (§1.2, step 4).
 # A measurement that fails is reported and never fails the write: the report
 # measures the index and must never gate it.
+#
+# This battery is in-process for now: the owner (2026-11-14, design §4 Q9) chose
+# to move it into `agent_worker/graphmcp/battery.py`, shared with the CI gate
+# (`test_graphmcp_budgets.py`), later and as its own change (§1.2).
 
 LATENCY_FILE = "latency.json"
 LATENCY_SCHEMA = "swarm.repo-graph-latency/v1"
