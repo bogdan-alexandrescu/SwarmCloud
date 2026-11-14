@@ -234,6 +234,29 @@ def test_the_placeholder_file_itself_passes(tmp_path: Path):
     assert (result.returncode, findings(result.stdout)) == (0, []), result.stdout + result.stderr
 
 
+def test_google_service_agents_and_the_rulings_test_values_pass(tmp_path: Path):
+    """Cloud Storage's service agent is Google's domain, not a project id (its
+    number is still held by the project-number rule); the browser-login secret
+    stems and the URL refusal test's look-alike host are generic test values."""
+    lines = [
+        f"service-{ph.PROJECT_NUMBER}@gs-project-accounts.iam.gserviceaccount.com",
+        "swarm-tenant-u-alice-browser-login-openai swarm-tenant-u-alice-browser-anthropic",
+        "http://notmetadata.goog/",
+    ]
+    tree = make_tree(tmp_path / "repo", {"docs/agents.md": "\n".join(lines) + "\n"})
+    result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([]))
+    assert (result.returncode, findings(result.stdout)) == (0, []), result.stdout + result.stderr
+
+
+def test_a_storage_service_agent_of_another_project_number_is_still_found(tmp_path: Path):
+    other = _number()
+    tree = make_tree(tmp_path / "repo", {
+        "docs/agents.md": f"service-{other}@gs-project-accounts.iam.gserviceaccount.com\n",
+    })
+    result = run(tree, "--tree", "--mode", "enforce", DEPLOYMENT_PATTERNS=pattern_list([]))
+    assert findings(result.stdout) == [("docs/agents.md", 1, "C2", "project-number")], result.stdout
+
+
 # ---------------------------------------------------------------------------
 # Failing closed (section 4.2)
 # ---------------------------------------------------------------------------
