@@ -219,6 +219,18 @@ describe('one schedule in the side sheet (frame A2)', () => {
     await waitFor(() => expect(sheet()).toBeNull(), WAIT)
   })
 
+  it('is announced as a dialog named by its title, the list beside it left usable', async () => {
+    await open(schedule('sch_a'), [NEWEST])
+    // MUTATION: drop the role and a screen reader hears a complementary
+    // landmark, not that a schedule opened over the list.
+    const dlg = screen.getByRole('dialog', { name: 'Sweep sch_a' })
+    expect(dlg).toBe(sheet())
+    // The list stays drawn and usable beside the sheet (frame A2), so the
+    // sheet is not modal: no aria-modal, and nothing behind it is inert.
+    expect(dlg.hasAttribute('aria-modal')).toBe(false)
+    expect(document.querySelector('.as-under')!.hasAttribute('inert')).toBe(false)
+  })
+
   it('says the state word only where the schedule asks for something', async () => {
     // The cards pick (2026-11-12): active, paused and never fired carry no word.
     const cases: [Json, string | null][] = [

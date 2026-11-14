@@ -37,6 +37,14 @@ import type { ScheduleTypeRow } from '../api'
 import SCHEDULES_TSX from '../Schedules.tsx?raw'
 
 const WAIT = { timeout: 4000 }
+/** The open modal dialog (Overlay's `.c-dlg`): the schedule sheet is a dialog too, not a modal one. */
+const modal = () => document.querySelector<HTMLElement>('.c-dlg')
+const findModal = () =>
+  waitFor(() => {
+    const d = modal()
+    expect(d).not.toBeNull()
+    return d!
+  }, WAIT)
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
 
@@ -205,7 +213,7 @@ describe('automate-12: Pause asks for an optional reason and sends it', () => {
     const { calls } = await open(schedule('sch_a'), paused)
     fireEvent.click(within(screen.getByTestId('sc-acts-head')).getByRole('button', { name: 'Pause' }))
     // MUTATION: Pause sends at once again and there is no dialog to write a reason in.
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await findModal()
     expect(posts(calls, '/v1/schedules/sch_a:pause')).toHaveLength(0)
     const box = within(dialog).getByRole('textbox')
     expect(box.getAttribute('maxlength')).toBe('500')
@@ -213,15 +221,15 @@ describe('automate-12: Pause asks for an optional reason and sends it', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Pause' }))
     await waitFor(() => expect(posts(calls, '/v1/schedules/sch_a:pause')).toHaveLength(1), WAIT)
     expect(posts(calls, '/v1/schedules/sch_a:pause')[0]!.body).toEqual({ reason: 'holiday week' })
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    await waitFor(() => expect(modal()).toBeNull(), WAIT)
   })
 
   it('sends nothing on Keep it running', async () => {
     const { calls } = await open(schedule('sch_a'), paused)
     fireEvent.click(within(screen.getByTestId('sc-acts-head')).getByRole('button', { name: 'Pause' }))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const dialog = await findModal()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Keep it running' }))
-    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(modal()).toBeNull()
     expect(posts(calls, '/v1/schedules/sch_a:pause')).toHaveLength(0)
   })
 })

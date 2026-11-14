@@ -56,7 +56,9 @@ from scheduler.dispatch import (
     CACHE_MOUNT,
     CACHE_STORAGE_CLASS,
     CACHE_VOLUME_GIB,
+    CLAIMED_CACHE_STORAGE_CLASS,
     GKE_DISK,
+    RETIRED_CACHE_STORAGE_CLASS,
     WORKSPACE_MOUNT,
     CloudRunJobDispatcher,
     GkeJobDispatcher,
@@ -140,7 +142,7 @@ def test_a_gke_pod_has_a_network_disk_cache_mounted_where_the_worker_is_told(
     volumes = {v["name"]: v for v in pod["volumes"]}
     assert "cache" in volumes, f"{profile_name}: the pod has no cache volume"
     claim = _claim_spec(volumes["cache"])
-    assert claim["storageClassName"] == CACHE_STORAGE_CLASS, claim
+    assert claim["storageClassName"] == CLAIMED_CACHE_STORAGE_CLASS, claim
     assert claim["accessModes"] == ["ReadWriteOnce"], claim
     assert claim["resources"] == {"requests": {"storage": f"{CACHE_VOLUME_GIB}Gi"}}, claim
 
@@ -228,3 +230,17 @@ def test_cloud_run_workers_are_not_given_a_cache_root(settings, tenant):
             if CACHE_ROOT_ENV in names:
                 leaked[f"{profile_name}: {where}"] = CACHE_ROOT_ENV
     assert not leaked, f"a Cloud Run worker was told of a cache volume it does not have: {leaked}"
+
+
+def test_the_pod_claims_a_class_the_cluster_has_applied_today():
+    """The release applies no cluster-scoped manifest, so a class a pod claims
+    must already be applied by the operator, or every GKE pod sits
+    Unschedulable ("pod has unbound immediate PersistentVolumeClaims. not
+    found"). Until the operator applies the xfs class, the claim names the
+    retired ext4 class that is applied.
+
+    MUTATION: set CLAIMED_CACHE_STORAGE_CLASS to CACHE_STORAGE_CLASS before the
+    xfs class is applied, and this fails.
+    """
+    assert CLAIMED_CACHE_STORAGE_CLASS == RETIRED_CACHE_STORAGE_CLASS
+    assert CLAIMED_CACHE_STORAGE_CLASS != CACHE_STORAGE_CLASS

@@ -107,7 +107,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
 
 from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
@@ -263,7 +263,27 @@ SCRATCH_VOLUMES_ENV = "SWARM_SCRATCH_VOLUMES"
 #: reclaimPolicy Delete, WaitForFirstConsumer; none existed in terraform/ or
 #: kubernetes/); the size is the owner's, ten times the 2 GiB emptyDir that
 #: evicted (GKE_DISK says why). ReadWriteOnce: one pod, one disk.
-CACHE_STORAGE_CLASS = "swarm-cache-pd-balanced"
+#:
+#: XFS (#4061). The first class set no fstype, so the CSI driver made ext4,
+#: one inode per 16 KiB: 1,310,720 on 20 GiB, and a run of small files used
+#: every one with 14 GB free (ENOSPC on every create). xfs allocates inodes
+#: as files are made, so the disk runs out of space before inodes. A class's
+#: parameters are immutable, so this is a NEW class: RETIRED_CACHE_STORAGE_CLASS
+#: is still applied, unchanged, for the claims of pods already running on it,
+#: and every new claim and the tenant quota name this one.
+CACHE_STORAGE_CLASS = "swarm-cache-pd-balanced-xfs"
+#: The ext4 class every claim used before #4061. Kept, never edited, until no
+#: running pod holds a claim on it; nothing new is created on it.
+RETIRED_CACHE_STORAGE_CLASS = "swarm-cache-pd-balanced"
+#: The class every pod's cache claim names TODAY. The release does not apply
+#: cluster-scoped manifests (kubernetes/storage/ is an operator step through
+#: the policies apply), so CACHE_STORAGE_CLASS did not exist in the cluster
+#: when the dispatcher that names it deployed, and every GKE pod sat
+#: Unschedulable ("pod has unbound immediate PersistentVolumeClaims. not
+#: found") until the reconciler failed it as never started. The claim stays
+#: on the applied ext4 class until the operator has applied the xfs class;
+#: then this becomes CACHE_STORAGE_CLASS in one line.
+CLAIMED_CACHE_STORAGE_CLASS = RETIRED_CACHE_STORAGE_CLASS
 CACHE_VOLUME_GIB = 20
 
 #: THE CLOUD RUN WORKSPACE IS A TMPFS, sized as terraform sizes it.
@@ -461,10 +481,14 @@ class GkeDisk:
 #: medium: 5 + 3 + 2 = 10, standard's layout (contract request 147, owner
 #: 2026-11-06): claude-code-medium runs claude-code's work, and 10 is
 #: Autopilot's maximum whatever the class.
+#:
+#: builder: 5 + 3 + 2 = 10, standard's layout (contract request 135, owner
+#: 2026-11-13): claude-code's implement and fix steps run on it.
 GKE_DISK: dict[str, GkeDisk] = {
     "standard": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
     "browser": GkeDisk(workspace_gib=4, tmp_gib=3, home_gib=3),
     "medium": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
+    "builder": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
     "large": GkeDisk(workspace_gib=5, tmp_gib=3, home_gib=2),
 }
 
@@ -819,12 +843,31 @@ class LiveDisplayShare:
 #:   browser's was until contract request 79), the rest to the worker.
 #: medium: as large, no live profile reaches it (contract request 147); the
 #:   browser class's display, the rest (4 / 11 GiB) to the worker.
+#: builder: as medium, no live profile reaches it (contract request 135); the
+#:   browser class's display, the rest (6 / 11 GiB) to the worker.
 LIVE_DISPLAY_SHARE: dict[str, LiveDisplayShare] = {
     "browser": LiveDisplayShare(cpu=2, memory_gib=5, cpu_limit=3),
     "standard": LiveDisplayShare(cpu=2, memory_gib=4, cpu_limit=3),
     "medium": LiveDisplayShare(cpu=2, memory_gib=5, cpu_limit=3),
+    "builder": LiveDisplayShare(cpu=2, memory_gib=5, cpu_limit=3),
     "large": LiveDisplayShare(cpu=5, memory_gib=10),
 }
+
+#: THE LIVE-BROWSER WORKER'S MEMORY FLOOR, in GiB (#3104, the owner's plan of
+#: 2026-11-12). BROWSER-SPLIT left the worker 3 GiB of the browser class's 8,
+#: measured when the worker and the CLI were all it ran (a 0.37 GiB peak). A
+#: browser agent also runs `npm ci` and a dev server (Next, Vite) in that
+#: container, beside the CLI, and at 3 GiB the kernel OOM-killed the whole
+#: container, the worker with it. So a live pod's worker container gets at
+#: least this much, request == limit (invariant 7). The display keeps its row
+#: (its 5 GiB is its resident tmpfs plus its measured peak), so the POD grows:
+#: the browser class's live pod is 8 + 5 = 13 GiB, two capacity units
+#: (`units_for`) instead of one. `live_size` puts the grown pod into the size
+#: `sizes.for_task` pins before the lease, so the units the transaction
+#: charges, the attempt's record and the pod are one size (invariants 2, 3).
+#: A worker already above it (a large class, an admin's bigger split) keeps
+#: its own. 0 disables the floor: every live pod is its split as before.
+LIVE_WORKER_MEMORY_FLOOR_GIB = 8
 
 #: The display container's hardening: CONTAINER_SECURITY_CONTEXT's every
 #: field, under DISPLAY_UID and a primary group of its own.
@@ -886,7 +929,7 @@ def live_split_for(rc: Any, size: ResourceSize | None = None) -> tuple[LiveShare
     """
     size = size if size is not None else size_of(rc)
     if size.live_split is not None:
-        return size.live_split
+        return _with_worker_floor(size.live_split)
     share = live_display_share(rc)
     if share.cpu >= size.cpu_request or share.memory_gib >= size.memory_gib:
         raise ValueError(f"LIVE_DISPLAY_SHARE[{rc.name!r}] leaves a {size.cpu_request:g}-core, "
@@ -896,12 +939,35 @@ def live_split_for(rc: Any, size: ResourceSize | None = None) -> tuple[LiveShare
     display_cpu_limit = share.cpu * ratio
     if share.cpu_limit is not None:
         display_cpu_limit = min(share.cpu_limit, display_cpu_limit)
-    return (
+    return _with_worker_floor((
         LiveShare(cpu_request=worker_cpu, cpu_limit=worker_cpu * ratio,
                   memory_gib=size.memory_gib - share.memory_gib),
         LiveShare(cpu_request=share.cpu, cpu_limit=display_cpu_limit,
                   memory_gib=share.memory_gib),
-    )
+    ))
+
+
+def _with_worker_floor(split: tuple[LiveShare, LiveShare]) -> tuple[LiveShare, LiveShare]:
+    """`split` with the worker's memory raised to LIVE_WORKER_MEMORY_FLOOR_GIB."""
+    worker, display = split
+    if worker.memory_gib < LIVE_WORKER_MEMORY_FLOOR_GIB:
+        worker = replace(worker, memory_gib=LIVE_WORKER_MEMORY_FLOOR_GIB)
+    return worker, display
+
+
+def live_size(rc: Any, size: ResourceSize | None = None) -> ResourceSize:
+    """`size` as a live pod of class `rc` is charged, recorded and rendered.
+
+    Its split (`live_split_for`, the worker's memory floor applied) is stored
+    on it, and its memory is the two containers' sum, which the floor may
+    raise above the size's own: what `units_for` charges is then the pod
+    Autopilot bills (invariant 2). CPU and disk are the size's. Refused, as
+    `live_split_for` is, when the split leaves the worker nothing.
+    """
+    size = size if size is not None else size_of(rc)
+    worker, display = live_split_for(rc, size)
+    return replace(size, memory_gib=worker.memory_gib + display.memory_gib,
+                   live_split=(worker, display))
 
 
 def with_live_display(job: dict[str, Any], *, rc: Any,
@@ -3652,11 +3718,11 @@ class GkeJobDispatcher:
                             # volume controller creates the claim with the pod
                             # and deletes it with the pod, under its own
                             # identity, so the dispatcher's Role needs nothing
-                            # new. Not ephemeral-storage. See CACHE_STORAGE_CLASS.
+                            # new. Not ephemeral-storage. See CLAIMED_CACHE_STORAGE_CLASS.
                             {"name": "cache", "ephemeral": {"volumeClaimTemplate": {
                                 "spec": {
                                     "accessModes": ["ReadWriteOnce"],
-                                    "storageClassName": CACHE_STORAGE_CLASS,
+                                    "storageClassName": CLAIMED_CACHE_STORAGE_CLASS,
                                     "resources": {"requests": {
                                         "storage": f"{CACHE_VOLUME_GIB}Gi"}},
                                 }}}},

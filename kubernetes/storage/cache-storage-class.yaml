@@ -25,9 +25,20 @@
 #                             chase. It is also why the attach is on the
 #                             start-up path: docs/browser-startup-speed.md.
 #
+#   csi.storage.k8s.io/fstype: xfs
+#                          -- #4061. Without it the driver formats ext4 at one
+#                             inode per 16 KiB: 1,310,720 on a 20 GiB disk, and a
+#                             run of small files used every one with 14 GB
+#                             free, so every create failed ENOSPC while `df -h`
+#                             showed room. xfs allocates inodes as files are
+#                             made, so the disk runs out of space first.
+#
 # Cluster-scoped, applied by `kubernetes/apply.sh --policies` (render.py
 # POLICY_FILES). Its parameters are immutable once created: a change is a new
-# class name in CACHE_STORAGE_CLASS, never an edit here.
+# class name in CACHE_STORAGE_CLASS, never an edit to an applied class. So the
+# xfs class is a new name, and the ext4 one it replaced is the second document,
+# unchanged, applied until no running pod holds a claim on it
+# (RETIRED_CACHE_STORAGE_CLASS); nothing new is created on it.
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
@@ -38,8 +49,26 @@ metadata:
 provisioner: pd.csi.storage.gke.io
 parameters:
   type: pd-balanced
+  csi.storage.k8s.io/fstype: xfs
   # GCE labels on each disk the class provisions, so a leaked one is
   # attributable in the project's disk list.
+  labels: managed-by=swarm-scheduler,swarm-volume=agent-cache
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: false
+---
+# The retired ext4 class, exactly as it was first applied (an apply of
+# different parameters under its name is refused).
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: __RETIRED_CACHE_STORAGE_CLASS__
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: pd-balanced
   labels: managed-by=swarm-scheduler,swarm-volume=agent-cache
 reclaimPolicy: Delete
 volumeBindingMode: WaitForFirstConsumer

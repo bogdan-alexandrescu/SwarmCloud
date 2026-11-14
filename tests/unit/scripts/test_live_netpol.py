@@ -250,7 +250,11 @@ PRE_L6_DIGESTS = {
 #: under the placeholder organisation's prefix; with SWARM_LABEL_PREFIX set to
 #: the prefix the manifests carried before, the render's digest is the one
 #: this constant held until then, byte for byte.
-PRE_L6_TENANT_RENDER = "26326d485285f50dc1b31fb3b8f003fc06ca3c790a8a1032c2f24382fccf0b5a"
+#: Re-read for the xfs cache class (#4061, 2026-11-14): the quota's two
+#: class-scoped keys name CACHE_STORAGE_CLASS's new xfs class and its comment
+#: says so; with the retired class name and that comment swapped back, the
+#: render's digest is the one this constant held until then, byte for byte.
+PRE_L6_TENANT_RENDER = "4860e54244a260cabfbc5235463ef8a818ef30eb611fb5bc6009299d58f06c7e"
 
 
 def _tenant_values() -> dict[str, str]:

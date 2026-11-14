@@ -28,6 +28,14 @@ import { Routed } from './screenroute'
 import { painted } from './marks'
 
 const WAIT = { timeout: 4000 }
+/** The open modal dialog (Overlay's `.c-dlg`): the schedule sheet is a dialog too, not a modal one. */
+const modal = () => document.querySelector<HTMLElement>('.c-dlg')
+const findModal = () =>
+  waitFor(() => {
+    const d = modal()
+    expect(d).not.toBeNull()
+    return d!
+  }, WAIT)
 
 type Json = Record<string, unknown>
 type Reply = { status: number; body: unknown } | null
@@ -107,7 +115,7 @@ async function gateDialog(viewer: Json, current: Json = schedule(), extra: Handl
   // Frame A2 draws the gate as a section of the sheet, not a tab to open.
   await waitFor(() => expect(document.querySelector('aside.as-sheet [data-sec="gate"]')).not.toBeNull(), WAIT)
   fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
-  const dialog = await screen.findByRole('dialog', undefined, WAIT)
+  const dialog = await findModal()
   // Let the viewer and audit reads land before reading what the dialog says.
   await waitFor(() => expect(calls.some((c) => c.url.startsWith('/v1/schedules/sch_a/audit'))).toBe(true), WAIT)
   await new Promise((r) => setTimeout(r, 20))
@@ -208,7 +216,7 @@ describe('the merge switch dialog, for the gate’s last editor', () => {
     // The sheet's cadence asks `:preview` for the next firings, a read sent as a POST; nothing else is sent.
     expect(calls.filter((c) => c.method === 'POST' && !c.url.startsWith('/v1/schedules:preview'))).toHaveLength(0)
     fireEvent.click(close!)
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    await waitFor(() => expect(modal()).toBeNull(), WAIT)
   })
 
   it('blocks a non-admin in a platform repository, and says a platform admin must switch it', async () => {

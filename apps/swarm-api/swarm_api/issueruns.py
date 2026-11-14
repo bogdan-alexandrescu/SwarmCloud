@@ -3253,6 +3253,27 @@ def _review_rounds_compiled(steps: list[dict[str, Any]]) -> int:
     return COMPILED_REVIEW_ROUNDS
 
 
+def build_step_stages(workflow: WorkflowCreate) -> dict[str, str]:
+    """The stage of each step `compile_plan` wrote that builds (contract request 135).
+
+    Its implementer steps are "implement" and its fix step "fix"; every other
+    step (the review, the requirements check, the re-review, the security
+    review) has no build stage and keeps its profile's class. Read from this
+    compiler's own output, never from a caller's workflow, and passed to
+    `submit_workflow(step_stages=...)`, which picks the class from it
+    (`resource_class_for_stage`).
+    """
+    stages: dict[str, str] = {}
+    for step in workflow.steps:
+        if step.runner_profile != STEP_PROFILE:
+            continue
+        if step.step_id == FIX_STEP:
+            stages[step.step_id] = "fix"
+        elif step.step_id.startswith(IMPLEMENT_PREFIX):
+            stages[step.step_id] = "implement"
+    return stages
+
+
 def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
     """The signed workflow around compiled steps: the same for a chain and for stages."""
     ref = run.issue
