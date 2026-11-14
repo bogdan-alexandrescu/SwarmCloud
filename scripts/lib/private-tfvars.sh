@@ -36,11 +36,17 @@ done
 deny_list_require
 mkdir -p "$(dirname -- "${OUT}")" || die "could not create the directory of ${OUT}"
 
-# deny_list_require fetched config/<env>/ into this cache, private.tfvars.json
-# with it when it exists.
+# deny_list_require fetches deny-list.json alone, so private.tfvars.json is
+# fetched here, the same way: from this run's configured source, never a copy a
+# past run left in the cache (config_fetch_one drops it when the source holds
+# none, and says why on anything but "missing").
 private_file="$(config_cache_dir "${ENVIRONMENT}")/private.tfvars.json"
 private_json='{}'
-if [[ -f "${private_file}" ]]; then
+private_rc=0
+config_fetch_one "${ENVIRONMENT}" private.tfvars.json || private_rc=$?
+if (( private_rc == 1 )); then
+  die "$(config_source "${ENVIRONMENT}")/private.tfvars.json could not be read"
+elif (( private_rc == 0 )); then
   # shellcheck disable=SC2016  # a jq program: its $names are jq's, not the shell's
   private_json="$(jq -ce --argjson keys "${PRIVATE_FIELDS}" '
     if type != "object" then error("it is not a JSON object")
