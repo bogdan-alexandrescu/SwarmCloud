@@ -165,7 +165,13 @@ def test_dev_iam_rebuilds_the_address_and_applies_exactly_the_held_plan(box):
     assert f"gs://{bucket}/{outputs['path']}" in log
 
 
-@pytest.mark.parametrize("plan_path", ["", "plans/", "../plan.tfplan"])
+#: Paths that are not one held plan: empty, the folder, outside it, and the
+#: glob's `*` reaching through `..` or an empty segment to another object.
+NOT_A_HELD_PLAN = ["", "plans/", "../plan.tfplan", "plans/../infra/dev/plan.tfplan",
+                   "plans/dev/../../infra/plan.tfplan", "plans//plan.tfplan", "infra/dev/default.tfstate"]
+
+
+@pytest.mark.parametrize("plan_path", NOT_A_HELD_PLAN)
 def test_dev_iam_never_drops_anything_but_a_held_plan(box, plan_path: str):
     """An empty path must not become the bucket's root."""
     steps = _load(RELEASE)["jobs"]["infrastructure-iam"]["steps"]
@@ -173,6 +179,18 @@ def test_dev_iam_never_drops_anything_but_a_held_plan(box, plan_path: str):
     drop = _run(_step(steps, name="drop the held plan")["run"], env, box["tmp"])
     assert drop.returncode != 0
     assert not Path(box["env"]["FAKE_GCLOUD_LOG"]).exists()
+
+
+@pytest.mark.parametrize("plan_path", NOT_A_HELD_PLAN[1:])
+def test_dev_iam_never_fetches_anything_but_a_held_plan(box, plan_path: str):
+    """The deploy identity reads the whole state bucket: a path that is not a
+    held plan is refused before any copy, not after the sha256 check."""
+    steps = _load(RELEASE)["jobs"]["infrastructure-iam"]["steps"]
+    env = {**box["env"], "PLAN_PATH": plan_path, "PLAN_SHA256": "0" * 64}
+    fetch = _run(_step(steps, name="fetch the plan the owner reviewed")["run"], env, box["tmp"])
+    assert fetch.returncode != 0
+    assert not Path(box["env"]["FAKE_GCLOUD_LOG"]).exists()
+    assert box["env"]["TF_STATE_BUCKET"] not in fetch.stdout + fetch.stderr
 
 
 def _conditions(node: object):
