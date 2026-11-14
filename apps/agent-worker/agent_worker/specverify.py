@@ -585,6 +585,7 @@ def verify_upstream_spec(
     upstream_task_id: str,
     workflow_id: str | None,
     cfg: "WorkerConfig",
+    single_task: bool = False,
 ) -> SpecCheck:
     """Checks 1 to 4 over an UPSTREAM task's document, and its workflow.
 
@@ -601,6 +602,11 @@ def verify_upstream_spec(
       `workflow_id` a fact, and an upstream of another workflow -- a
       verified spec, honestly signed, of a step this chain never ran -- is
       `workflow_mismatch`.
+    * `single_task` True is the explicit single-task mode (`merge`'s
+      `_person_lane`, the owner's pick on #4092): the upstream must be a task
+      sent with no workflow, its signed `workflow_id` null, and `workflow_id`
+      is not consulted. A signed spec of any workflow is `workflow_mismatch`,
+      so a caller never infers a single task from a refusal.
 
     A worker with no keys is `ConfigError` (CANNOT_START), as for its own
     spec: its configuration, never a tenant's attack.
@@ -618,7 +624,11 @@ def verify_upstream_spec(
         raise UpstreamSpecUnverified(
             upstream_task_id, exc.reason, key_version=exc.key_version
         ) from None
-    if not workflow_id or doc.get("workflow_id") != workflow_id:
+    if single_task:
+        mismatch = doc.get("workflow_id") is not None
+    else:
+        mismatch = not workflow_id or doc.get("workflow_id") != workflow_id
+    if mismatch:
         raise UpstreamSpecUnverified(upstream_task_id, "workflow_mismatch", key_version=version)
     return SpecCheck(
         reason="verified", task_id=upstream_task_id, key_version=version, digest=hexdigest
@@ -636,15 +646,18 @@ def upstream_verifier(
     a merge-only continuation, and only with the workflow its OWN signed
     `merge_target` names (#900). Naming a workflow changes what the
     upstream's signed `workflow_id` must equal, never whether its signature
-    is checked.
+    is checked. `single_task` (only `merge`, for a person's lane) asks for an
+    upstream with no workflow at all (`verify_upstream_spec`).
     """
 
     def verify(
-        upstream_task_id: str, doc: Mapping[str, Any], *, of_workflow: str | None = None
+        upstream_task_id: str, doc: Mapping[str, Any], *, of_workflow: str | None = None,
+        single_task: bool = False,
     ) -> SpecCheck:
         return verify_upstream_spec(
             doc, upstream_task_id=upstream_task_id,
             workflow_id=of_workflow if of_workflow is not None else workflow_id, cfg=cfg,
+            single_task=single_task,
         )
 
     return verify
