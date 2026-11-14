@@ -1060,7 +1060,7 @@ describe('Admin › Setup follows the engine', () => {
 //   * F6: no link is made before the workspace it signs into is `ready`.
 
 describe('the App self-check runs by itself once infra pass 3 has run (audit 4d, F7)', () => {
-  const PASS_3 = (state().engine as Json & { stages: unknown[] }).stages.map((s, i) => (i === 9 ? { state: 'switches_on', at: '2026-10-29T14:55:00Z', by: 'ana@example.com' } : s))
+  const PASS_3 = (state().engine as Json & { stages: unknown[] }).stages.map((s, i) => (i === 9 ? { state: 'done', at: '2026-10-29T14:55:00Z', by: 'ana@example.com' } : s))
   const installed = (self_check: Json | null): Json => ({ github_app: { ...(state().github_app as Json), self_check } })
   const selfChecks = (calls: { method: string; url: string }[]) => calls.filter((c) => c.method === 'POST' && c.url === '/v1/admin/setup/github-app/self-check')
 
@@ -1245,5 +1245,77 @@ describe('the first workspace waits for workspace publishing', () => {
     // MUTATION: show the bare code, leaving the person to guess what it waits for.
     expect(visible(row)).toContain('infra pass 3')
     expect(visible(row)).not.toContain('publishing_off')
+  })
+})
+
+describe('epic findings: the console setup page', () => {
+  it('a failed verify shows the check’s own cause, not a pointer to the terminal', async () => {
+    await mountSteps(state({}, { verify: { ...VERIFYING, check: 'digests', done: 1, result: 'failed', detail: 'swarm-api serves sha256:abc, not one of the release’s' } }))
+    const row = document.querySelector('[data-step="verify"]') as HTMLElement
+    // MUTATION: show only "The digests check failed" -> the cause lives only in a terminal.
+    expect(visible(row)).toContain('swarm-api serves sha256:abc')
+    expect(visible(row)).not.toContain('swarm install printed')
+  })
+
+  it('the First team row is not done before its workspace is ready', async () => {
+    await mountSteps(state(teamWith({ progress: { workspace_state: 'applying' }, smoke: { state: 'succeeded' } })))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    // MUTATION: drop the WORKSPACE_READY check -> "done" while the workspace is still applying.
+    expect(row.className).toContain('is-in_progress')
+    expect(row.className).not.toContain('is-done')
+  })
+
+  it('the Team git slot is done once the App serves the team, or once its token is written', async () => {
+    const slot = () => within(document.querySelector('[data-step="team"]') as HTMLElement).getByText('Team git slot').closest('li') as HTMLElement
+    await mountSteps(state(teamWith({ grant: GRANTED })))
+    // MUTATION: `git === null ? 'todo' : 'in_progress'` -> an open item that nothing on the page closes.
+    expect(slot().className).toContain('is-done')
+    cleanup()
+    await mountSteps(state(teamWith({ progress: { workspace_state: 'ready', git_link: { owner: 'lea@example.com', expires_at: '2026-10-30T15:00:00Z', written_at: '2026-10-29T15:01:00Z', written_by: 'lea@example.com' } } })))
+    expect(slot().className).toContain('is-done')
+    expect(visible(slot())).toContain('lea@example.com')
+    cleanup()
+    await mountSteps(state(teamWith({ grant: { state: 'waiting_for_app', account: null } })))
+    expect(slot().className).toContain('is-todo')
+  })
+
+  it('the first admin has their own line and is not counted among the invitees', async () => {
+    const members = [
+      { email: 'ana@example.com', member: false, is_first_admin: true },
+      { email: 'ravi@example.com', member: true, is_first_admin: false },
+    ]
+    await mountSteps(state(teamWith({ members })))
+    const row = document.querySelector('[data-step="team"]') as HTMLElement
+    const invited = within(row).getByRole('list', { name: 'Invited' })
+    // MUTATION: list the first admin under Invited -> counted as an invitee.
+    expect(visible(invited)).not.toContain('ana@example.com')
+    expect(visible(invited)).toContain('ravi@example.com')
+    const admin = within(row).getByText('First admin').closest('li') as HTMLElement
+    expect(visible(admin)).toContain('waiting for ana@example.com to join')
+    expect(visible(row)).toContain('1 of 1 in the group')
+  })
+
+  it('an installation that covers no repository links to its settings page on GitHub', async () => {
+    await mountSteps(state(teamWith({ grant: { state: 'waiting_for_repositories', account: 'example-org', installation_id: 7 } })))
+    const fact = within(document.querySelector('[data-step="team"]') as HTMLElement).getByText('Repository grant').closest('li') as HTMLElement
+    // MUTATION: plain text with no link -> the person hunts for the installation on GitHub.
+    const link = within(fact).getByRole('link', { name: 'Choose repositories on GitHub' })
+    expect(link.getAttribute('href')).toBe('https://github.com/organizations/example-org/settings/installations/7')
+  })
+
+  it('one signed-in account is enough: the accounts row says the rest are optional', async () => {
+    await mountSteps(state({ accounts: { ...(state().accounts as Json), lea: { owner: 'lea@example.com', link_expires: '2026-10-30T14:54:00Z', signed_in_at: null } } }))
+    const row = document.querySelector('[data-step="accounts"]') as HTMLElement
+    expect(row.className).toContain('is-done')
+    // MUTATION: "Pool: 1 of 2 signed in" alone -> reads as every account being required.
+    expect(visible(row)).toContain('enough; more optional')
+  })
+
+  it('stage 9 counts as run only in the engine’s own words', async () => {
+    const { pass3Ran, normSetupState } = { ...(await import('../AdminSetupSteps')), ...(await import('../api')) }
+    const stages = (s: string) => state({ github_app: { ...(state().github_app as Json), self_check: null } }, { stages: Array.from({ length: 16 }, (_, i) => (i === 9 ? { state: s, at: null, by: null } : null)) })
+    // MUTATION: keep 'switches_on', a state swarm install never writes.
+    expect(pass3Ran(normSetupState(stages('switches_on')))).toBe(false)
+    expect(pass3Ran(normSetupState(stages('done')))).toBe(true)
   })
 })

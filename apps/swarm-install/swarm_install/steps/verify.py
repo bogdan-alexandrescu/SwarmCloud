@@ -165,6 +165,18 @@ def _runs_look_at(ctx: Any) -> str:
             "countdown above named the ones still running")
 
 
+#: The first tenant namespace comes from Admin › Setup's first team or
+#: personal workspace, which a person may still be finishing in the console.
+NAMESPACE_WAIT = WaitSpec(
+    reason="the first tenant namespace, made by Admin › Setup's first team or personal workspace",
+    expected="at once, or a few minutes while the first workspace is made",
+    expected_s=5 * 60,
+    bound_s=30 * 60,
+    look_at="Admin › Setup's First team or Personal workspace row",
+    interval_s=30,
+)
+
+
 #: Seven runs, four of them to a pull request: an agent's run takes minutes.
 RUNS_WAIT = WaitSpec(
     reason="four verification runs each opening a pull request, and the GKE, live-browser and "
@@ -416,8 +428,15 @@ class _Base:
         """A verify check repairs nothing: its detail names what failed and where."""
 
     def _done(self, ctx: Any, observed: Observation) -> Observation:
-        if observed.status == MET and self.check_name in QUICK_CHECKS:
-            write_progress(ctx, self.check_name, QUICK_CHECKS.index(self.check_name) + 1)
+        if self.check_name not in QUICK_CHECKS:
+            return observed
+        index = QUICK_CHECKS.index(self.check_name)
+        if observed.status == MET:
+            write_progress(ctx, self.check_name, index + 1)
+        elif observed.status == UNMET and (self.kind != "wait" or (observed.outputs or {}).get(FAILED)):
+            # A definite failure: the console's verify row says failed, and why,
+            # instead of reading as still running while only the terminal says so.
+            write_progress(ctx, self.check_name, index, result="failed", detail=observed.detail)
         return observed
 
     def check(self, ctx: Any) -> Observation:
@@ -581,6 +600,8 @@ class DigestsStep(_Base):
 
 class ReconcilerJobsStep(_Base):
     id = "verify.reconciler-jobs"
+    kind = "wait"
+    wait = NAMESPACE_WAIT
     check_name = "reconciler-jobs"
     _explain = (
         "The reconciler releases a dead GKE lease only if it can see the Job; it once listed Jobs at "
@@ -603,7 +624,8 @@ class ReconcilerJobsStep(_Base):
             raise RuntimeError(f"kubectl get namespaces failed: {err.strip()[:300]}")
         namespaces = [n.split("/", 1)[-1] for n in out.split() if n.split("/", 1)[-1].startswith("swarm-tenant-")]
         if not namespaces:
-            return Observation(UNMET, "no tenant namespace exists yet (the first team's, stage 11)")
+            return Observation(WAITING, "no tenant namespace exists yet: Admin › Setup's first team or personal "
+                                        "workspace makes the first")
         refused = []
         for namespace in namespaces:
             for who in (email, uid):
@@ -612,7 +634,7 @@ class ReconcilerJobsStep(_Base):
                 if answer.strip() != "yes":
                     refused.append(f"{namespace} as {who}")
         if refused:
-            return Observation(UNMET, "the reconciler may not list Jobs in " + "; ".join(refused))
+            return Observation(UNMET, "the reconciler may not list Jobs in " + "; ".join(refused), {FAILED: True})
         return Observation(MET, f"the reconciler lists Jobs in {len(namespaces)} tenant namespaces")
 
 
@@ -937,7 +959,8 @@ class SwarmCli:
                               "swarm install")
         if row.get("signed_in") is not True:
             ctx.events.emit("step_apply", step="verify.end-to-end",
-                            message=f"sign in to {url} in the browser that opens (swarm --context {name} login)")
+                            message=f"opening a browser to sign in to {url}; finish signing in there "
+                                    f"(swarm install runs swarm --context {name} login for you)")
             code, _, err = self.interactive([self.cli, "--context", name, "login"], None, self._env(ctx))
             if code != 0:
                 raise RuntimeError(f"swarm --context {name} login failed: {err.strip()[:300]}")
@@ -962,6 +985,9 @@ class SwarmCli:
         argv = [self.cli, "sc", "access", "repos", org, "--json", "--context", name]
         code, out, err = self.run(argv, None, self._env(ctx))
         if code != 0 and _NOT_CONNECTED.search(err):
+            ctx.events.emit("step_apply", step="verify.end-to-end",
+                            message=f"{name} has no GitHub connection yet: opening a browser to connect GitHub; "
+                                    f"finish connecting there (swarm install runs swarm sc setup for you)")
             self.interactive([self.cli, "sc", "setup", "--context", name], None, self._env(ctx))
             code, out, err = self.run(argv, None, self._env(ctx))
         covered = [str(row.get("repository") or "") for row in _rows(json.loads(out or "{}") if code == 0 else {},

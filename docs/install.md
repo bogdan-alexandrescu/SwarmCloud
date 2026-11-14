@@ -105,11 +105,15 @@ curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | sh
 
 The script installs the release that `channels/stable` names in
 `gs://swarmcloud`. To install the current release candidate instead, which
-`channels/rc` names:
+`channels/rc` names, fetch the candidate's own script:
 
 ```bash
-curl -fsSL https://storage.googleapis.com/swarmcloud/install.sh | SWARM_CHANNEL=rc sh
+curl -fsSL https://storage.googleapis.com/swarmcloud/channels/rc.install.sh | SWARM_CHANNEL=rc sh
 ```
+
+A candidate's publish writes its script there and never to the root
+`install.sh`, which is what every stable install runs: only a final release
+and its promotion replace that one.
 
 To pin one release, set `SWARMCLOUD_VERSION=<version>` (for example
 `2026.10.1`). The script refuses any channel other than `stable` or `rc`, and

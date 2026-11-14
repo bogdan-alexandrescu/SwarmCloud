@@ -118,6 +118,8 @@ export function PlatformOverTime({
   const [breakdown, setBreakdown] = useState<Breakdown>('none')
   const [reads, setReads] = useState<Record<string, Result<PlatformTime>>>(() => ({ ...kept }))
   const [busy, setBusy] = useState(false)
+  // When the read in flight started: the progress tick counts from it.
+  const [since, setSince] = useState(0)
   const reading = useRef(false)
   const now = useNow(AGE_TICK_MS)
   const tz = useMemo(() => viewerZone(), [])
@@ -152,6 +154,7 @@ export function PlatformOverTime({
     if (reading.current) return
     reading.current = true
     setBusy(true)
+    setSince(Date.now())
     const at = key
     loadPlatformTime(platformTimeQuery(bucket, tz)).then((r) => {
       reading.current = false
@@ -174,9 +177,9 @@ export function PlatformOverTime({
     // `go` reads the bucket of this render, which is the one the press is for.
   }, [pressed])
 
-  const provenance = busy
-    ? 'reading now…'
-    : run === null
+  const provenance = busy ? (
+    <ReadTick since={since} about="Reading the platform's agents over this span." />
+  ) : run === null
       ? 'not read yet'
       : data === null
         ? 'last read failed'
@@ -242,7 +245,7 @@ export function PlatformOverTime({
 
       <div className="pot-body" aria-busy={busy || undefined}>
         {run === null ? (
-          <NotRun busy={busy} />
+          <NotRun busy={busy} since={since} />
         ) : run.status === 'error' ? (
           <Failed error={run.error} />
         ) : run.status === 'empty' || data === null ? (
@@ -317,12 +320,30 @@ function BreakdownMenu({ value, onPick }: { value: Breakdown; onPick: (b: Breakd
 const TILE_NAMES = ['Agents', 'Retries', 'Run hours', 'Tokens, input + output', 'Estimated cost'] as const
 
 /**
+ * A LONG READ'S QUIET PROGRESS TICK (visual QA pass 1, the owner's pick of
+ * 2026-11-13). This Run and the runner sizes preview each take 6-30 s on the
+ * live deployment, and a static `reading…` meanwhile could not be told from a
+ * read that had hung. The tick is `reading m:ss`, counting up once a second
+ * from `since` (the read's start); what the read is for is its tooltip, never
+ * words on the surface. An indeterminate progress bar to a screen reader: no
+ * value, since nobody knows how far a read has got, only how long it has run.
+ */
+export function ReadTick({ since, about }: { since: number; about: string }) {
+  const seconds = Math.max(0, Math.floor((useNow(1000) - since) / 1000))
+  return (
+    <span role="progressbar" aria-label="Reading" aria-valuetext={`reading, ${seconds} s so far`} title={about} data-read-tick="">
+      reading <span style={{ fontVariantNumeric: 'tabular-nums' }}>{`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`}</span>
+    </span>
+  )
+}
+
+/**
  * NOTHING HAS BEEN READ (F1). Every tile keeps its place with a dash and the
  * neutral not-measured mark, and the charts are one card that names what Run
  * will read and what it costs: no empty axes, so an unread page is never
  * mistaken for a quiet platform.
  */
-function NotRun({ busy }: { busy: boolean }) {
+function NotRun({ busy, since }: { busy: boolean; since: number }) {
   return (
     <>
       <div className="pot-tiles">
@@ -346,7 +367,7 @@ function NotRun({ busy }: { busy: boolean }) {
             its action is the bar's Run, and what Run reads and draws is the
             title's tooltip (`notRunWords`). */}
         <p>
-          <b>{busy ? 'Reading now.' : 'Nothing has been read yet.'}</b>
+          {busy ? <ReadTick since={since} about="Reading now. Nothing has come back yet." /> : <b>Nothing has been read yet.</b>}
         </p>
       </div>
     </>

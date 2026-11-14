@@ -307,14 +307,16 @@ ADMIN_GROUPS = "https://admin.google.com/ac/groups"
 MAX_REPOSITORY_PAGES = 10
 
 SMOKE_PROMPT = ("Add a file SMOKE.md saying this deployment's first team ran its smoke task, "
-                "and commit it. Do not open a pull request.")
+                "and open a pull request titled 'swarm install smoke'.")
 VERIFY_TASK_PROMPT = ("Add a file VERIFY.md saying this deployment ran a single task from the "
                       "console, and open a pull request titled 'swarm install verify'.")
 RUN_PROFILE = "claude-code"
-#: The dispatch strategies of the runs this module submits: the smoke only
-#: has to finish, the console's verify task and workflow must each end in a
-#: pull request (`verify.end-to-end` reports a run without one as a problem).
-SMOKE_STRATEGY = "collect"
+#: The dispatch strategies of the runs this module submits. The smoke is
+#: `direct-pr`, so it succeeds only once the team's credential has cloned AND
+#: pushed (a `collect` task pushes nothing: a credential that could clone but
+#: not push passed it); the console's verify task and workflow must each end
+#: in a pull request (`verify.end-to-end` reports a run without one as a problem).
+SMOKE_STRATEGY = "direct-pr"
 VERIFY_TASK_STRATEGY = "direct-pr"
 VERIFY_WORKFLOW_STRATEGY = "integrate"
 SMOKE_LABEL = "swarm-install-smoke"
@@ -366,10 +368,9 @@ class TeamRuns:
 
     def submit_task(self, *, tenant_id: str, group: str, repository: str, prompt: str,
                     label: str, strategy: str = SMOKE_STRATEGY) -> str:
-        """One task. The smoke keeps `collect` (it opens nothing); the
-        console's verify task is `direct-pr`, because verify needs its pull
-        request and a `collect` task's git tools refuse every push (audit 4d,
-        F2)."""
+        """One task. The smoke and the console's verify task are both
+        `direct-pr`: a `collect` task's git tools refuse every push (audit 4d,
+        F2), so neither would prove the team's credential can push."""
         from ..schemas import TaskCreate
 
         spec = TaskCreate(runner_profile=RUN_PROFILE, input={"prompt": prompt},
@@ -729,8 +730,8 @@ def team_row(request: Request, ctx: AppContext, record: ir.InstallRecord, team_i
     tenant = str(team.get("workspace") or team_id)
     group = str(team.get("group") or "")
     workspace = ctx.submissions.workspaces.get(tenant) or {}
-    people = sorted({str(e) for e in team.get("invites") or []}
-                    | ({str(team["first_admin"])} if team.get("first_admin") else set()))
+    first_admin = str(team["first_admin"]) if team.get("first_admin") else None
+    people = sorted({str(e) for e in team.get("invites") or []} | ({first_admin} if first_admin else set()))
     members = {email: _membership(directory, email, group) for email in people}
     try:
         pool_accounts = _pool_labels(request, ctx, tenant)
@@ -746,7 +747,9 @@ def team_row(request: Request, ctx: AppContext, record: ir.InstallRecord, team_i
                 # The group's members page on every row, so the invites made
                 # with the team keep their link (audit 5b, M5).
                 "add_members_url": admin_members_url(directory, group) if group else None,
-                "members": [{"email": e, "member": m} for e, m in members.items()],
+                # The first admin is flagged, so the page shows them apart from the invitees.
+                "members": [{"email": e, "member": m, "is_first_admin": e == first_admin}
+                            for e, m in members.items()],
                 "pool_accounts": pool_accounts, "first": first})
     if first:
         now = ctx.now()
@@ -1269,6 +1272,9 @@ def setup_state(
         "verify_runs": record.read(record.console_path(ir.VERIFY_RUNS)),
         "accounts": _accounts_view(record.read(record.console_path(ir.ACCOUNTS))),
         "finished": finished,
+        # Add-ons are enabled from the CLI by design: `swarm addon enable`
+        # runs the add-on's own Terraform and Helm steps with the operator's
+        # credentials, which swarm-api never holds. The page serves the command.
         "addons": [{"name": name, "enable": f"swarm addon enable {name}",
                     "secret_link": name in sl.ADDON_SECRETS} for name in ADDONS],
         "hostname": ctx.settings.install_hostname or None,
@@ -1344,6 +1350,22 @@ def save_sign_in_client(
 # --------------------------------------------------------------------------
 
 
+#: GitHub caps an App's display name at 34 characters.
+APP_NAME_MAX = 34
+
+
+def default_app_name(org: str | None, hostname: str | None, environment: str) -> str:
+    """The GitHub App's default display name. App names are global on GitHub,
+    so the environment alone ("SwarmCloud prod") collides across separate
+    installs: the name carries the org (else the hostname's first label),
+    shortened to fit GitHub's cap."""
+    owner = (org or "").strip() or (hostname or "").strip().split(".", 1)[0]
+    head, tail = "SwarmCloud ", f" {environment}"
+    room = APP_NAME_MAX - len(head) - len(tail)
+    owner = owner[:max(room, 0)].rstrip("-. ")
+    return f"{head}{owner}{tail}"[:APP_NAME_MAX] if owner else f"{head.rstrip()}{tail}"[:APP_NAME_MAX]
+
+
 class ManifestStart(StrictModel):
     #: The App's display name; GitHub caps App names at 34 characters.
     name: str | None = Field(default=None, min_length=1, max_length=34)
@@ -1362,7 +1384,9 @@ def github_app_manifest(
     flow: ManifestFlow = Depends(manifest_flow),
 ) -> dict:
     settings = ctx.settings
-    name = (body.name if body and body.name else f"SwarmCloud {settings.core.environment}")
+    name = (body.name if body and body.name
+            else default_app_name(settings.setup_github_org, settings.install_hostname,
+                                  settings.core.environment))
     return flow.start(org=settings.setup_github_org, hostname=settings.install_hostname,
                       hooks_url=settings.setup_github_hooks_url, name=name)
 
@@ -1838,7 +1862,10 @@ class LinkCreate(StrictModel):
     #: The pool account's label, the add-on's name; for `team-git`, the team;
     #: for `voice-api-key`, the label the key's account gets in the Voice it pool;
     #: for `api-key`, the label the key's account gets in the account pool.
-    label: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    #: The quota broker's own rule (`quota_broker.accounts._LABEL`): at most 40
+    #: characters, starting and ending alphanumeric, so no label minted here is
+    #: one the broker then refuses.
+    label: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$")
     #: The person the link is for: their verified email opens it.
     owner: str = Field(min_length=3, max_length=320)
     #: `api-key` only, and required there: the vendor (`sl.API_KEY_PROVIDERS`).
@@ -2174,8 +2201,22 @@ def redeem_link(
         secret_id = sl.ADDON_SECRETS[str(peeked.get("label"))]
     secrets_.add_version(secret_id, body.value, create_labels=labels)
     link = links.redeem(body.token, email=auth.email)
+    if kind == sl.TEAM_GIT and peeked.get("team_id"):
+        _mark_team_git_written(install_record(ctx), str(peeked["team_id"]), at=ctx.now(), by=auth.email)
     log.info("a setup link wrote its secret kind=%s label=%s", kind, link.get("label"))
     return {"kind": kind, "label": link.get("label"), "secret": secret_id, "written": True}
+
+
+def _mark_team_git_written(record: ir.InstallRecord, team_id: str, *, at: Any, by: str) -> None:
+    """The team's `progress.git_link` says its secret is written, so the
+    console's Team git slot row reads done; the value itself is never recorded."""
+    path = record.team_path(team_id)
+    team = record.read(path)
+    if team is None:
+        return
+    progress = dict(team.get("progress") or {})
+    progress["git_link"] = {**dict(progress.get("git_link") or {}), "written_at": at, "written_by": by}
+    record.write(path, {"progress": progress})
 
 
 def _redeem_voice_key(body: LinkRedeem, auth: AuthContext, *, links: sl.SetupLinks,

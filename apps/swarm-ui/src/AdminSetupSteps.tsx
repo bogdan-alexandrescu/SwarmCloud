@@ -238,7 +238,7 @@ export function smokeHold(smoke: SetupSmoke | null, signedIn: boolean): StepStat
  */
 export function pass3Ran(state: SetupState): boolean {
   const s = state.engine?.stages[9]?.state
-  return s === 'done' || s === 'switches_on' || s === 'drift' || state.github_app?.self_check?.ok === true
+  return s === 'done' || s === 'drift' || state.github_app?.self_check?.ok === true
 }
 
 /** The cloud stages swarm install finishes before the hand-off (§5.1: 0-8, 10, 13). */
@@ -977,7 +977,23 @@ function grantFact(g: SetupGrant | null, org: string, whose: string = 'the team'
     }
   }
   if (g.state === 'waiting_for_repositories') {
-    return { state: 'in_progress', name: 'Repository grant', text: `the App is installed${g.account === null ? '' : ` on ${g.account}`} on no repository yet: add one to the installation on GitHub, and the grant follows on the next refresh` }
+    return {
+      state: 'in_progress',
+      name: 'Repository grant',
+      text: (
+        <>
+          the App is installed{g.account === null ? '' : ` on ${g.account}`} on no repository yet: add one to the installation on GitHub
+          {g.installation_url !== null && (
+            <>
+              {' '}
+              <ButtonLink size="sm" href={g.installation_url} target="_blank" rel="noreferrer">
+                Choose repositories on GitHub
+              </ButtonLink>
+            </>
+          )}
+        </>
+      ),
+    }
   }
   return { state: 'in_progress', name: 'Repository grant', text: `waits for the GitHub App to be installed on ${org}` }
 }
@@ -1125,6 +1141,13 @@ function SmokeRetry({ smoke, onChanged }: { smoke: SetupSmoke | null; onChanged:
   )
 }
 
+/** The team git slot: done once the GitHub App's grant serves the team, or once a one-time link's token is written. */
+export function gitSlotState(git: Record<string, unknown> | null, grant: SetupGrant | null): StepState {
+  if (git !== null && typeof git.written_at === 'string') return 'done'
+  if (git !== null) return 'in_progress'
+  return grant?.state === 'granted' ? 'done' : 'todo'
+}
+
 function teamFacts(team: SetupTeam, signedIn: boolean, nowMs: number, org: string): Fact[] {
   const ws = typeof team.progress.workspace_state === 'string' ? team.progress.workspace_state : null
   const git = typeof team.progress.git_link === 'object' && team.progress.git_link !== null ? (team.progress.git_link as Record<string, unknown>) : null
@@ -1135,18 +1158,28 @@ function teamFacts(team: SetupTeam, signedIn: boolean, nowMs: number, org: strin
       name: 'Namespace, quota, verify-keys and worker identity',
       text: ws === null ? 'swarm-workspace-apply has not reported yet' : `swarm-workspace-apply: ${ws}`,
     },
-    { state: team.first_admin === null ? 'todo' : 'done', name: 'First admin', text: team.first_admin ?? 'not named' },
+    firstAdminFact(team),
     grantFact(team.grant, org),
     {
-      state: git === null ? 'todo' : 'in_progress',
+      state: gitSlotState(git, team.grant),
       name: 'Team git slot',
       text:
-        git === null
+        git !== null && typeof git.written_at === 'string'
+          ? `token entered by ${String(git.written_by ?? git.owner ?? 'its owner')}`
+          : git === null
           ? 'served by the GitHub App; a one-time link lets its owner enter a token instead'
           : `one-time link for ${String(git.owner ?? 'its owner')}, ${untilWords(typeof git.expires_at === 'string' ? git.expires_at : null, nowMs) ?? 'open'}`,
     },
     smokeFact(team.smoke, signedIn),
   ]
+}
+
+/** The first admin on their own line, with their membership when the route flags them (never counted as invited). */
+function firstAdminFact(team: SetupTeam): Fact {
+  if (team.first_admin === null) return { state: 'todo', name: 'First admin', text: 'not named' }
+  const self = team.members.find((m) => m.is_first_admin === true)
+  if (self === undefined || self.member === true) return { state: 'done', name: 'First admin', text: team.first_admin }
+  return { state: 'in_progress', name: 'First admin', text: `waiting for ${team.first_admin} to join` }
 }
 
 /** One fact per invitee: joined once the Groups API says so, waiting until then. */
@@ -1168,11 +1201,12 @@ function InviteControl({ team, onChanged }: { team: SetupTeam; onChanged: () => 
   const [email, setEmail] = useState('')
   const [asked, setAsked] = useState<SetupInvite[]>([])
   const known = new Set(teamPeople(team).map((p) => p.email))
+  // The first admin has their own line in the team's facts; only invitees are listed here.
+  const people = teamPeople(team).filter((p) => p.is_first_admin !== true)
   const pending = asked.filter((a) => !known.has(a.email))
   // The row's own members page first: the invites made with the team have no
   // answer in this session, and still need it (audit 5b, M5).
   const page = team.add_members_url ?? asked.map((a) => a.add_members_url).filter((u): u is string => u !== null).pop() ?? null
-  const people = teamPeople(team)
   const waiting = [...people, ...pending].some((p) => p.member !== true)
   return (
     <>
@@ -1288,12 +1322,12 @@ export function teamRow(state: SetupState, onChanged: () => void, nowMs: number)
   const ws = typeof team.progress.workspace_state === 'string' ? team.progress.workspace_state : null
   const signedIn = signedInCount(state) > 0
   const failed = ws !== null && FAILED_WORKSPACE.has(ws)
-  const people = teamPeople(team)
+  const people = teamPeople(team).filter((p) => p.is_first_admin !== true)
   const joined = people.filter((p) => p.member === true).length
   return {
     key: 'team',
     title: 'First team',
-    state: failed ? 'failed' : smokeHold(team.smoke, signedIn) ?? 'done',
+    state: failed ? 'failed' : ws === WORKSPACE_READY ? smokeHold(team.smoke, signedIn) ?? 'done' : 'in_progress',
     by: 'this page',
     line: `${team.workspace} from ${team.group}${team.first_admin === null ? '' : ` · admin ${team.first_admin}`} · ${joined} of ${people.length} in the group`,
     body: (
@@ -1511,7 +1545,9 @@ export function accountsRow(state: SetupState, onChanged: () => void, nowMs: num
     line:
       state.accounts.length === 0
         ? `Each subscription’s owner signs in once, through a one-time link this page makes, into ${pool}`
-        : `Pool: ${signed} of ${state.accounts.length} signed in`,
+        : signed > 0
+          ? `Pool: ${signed} of ${state.accounts.length} signed in · enough; more optional`
+          : `Pool: ${signed} of ${state.accounts.length} signed in`,
     body: (
       <>
         {state.accounts.length > 0 && <Facts items={state.accounts.map((a) => accountFact(a, accountSignedIn(state, a), nowMs, pool))} label="Pool accounts" />}
@@ -1835,7 +1871,7 @@ export function verifyRow(state: SetupState, onChanged: () => void, nowMs: numbe
       line: `Verify failed at ${w.progress}`,
       body: (
         <>
-          <StepFailure cause={`The ${v.check ?? 'current'} check failed`} fix={<>swarm install printed which part failed and why; fix it, then run <code>swarm install</code> again: it re-runs verify from the failed check.</>} />
+          <StepFailure cause={`The ${v.check ?? 'current'} check failed${v.detail === null ? '' : `: ${v.detail}`}`} fix={<>Fix it, then run <code>swarm install</code> again: it re-runs verify from the failed check.</>} />
           {checks}
         </>
       ),

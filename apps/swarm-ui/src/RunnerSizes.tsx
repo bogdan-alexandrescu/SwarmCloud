@@ -40,6 +40,7 @@ import { Banner, Button, Card, Dialog, ToneMark, TypedConfirm } from './componen
 import type { ApiError, Result } from './fetch'
 import { InfoTip } from './People'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
+import { ReadTick } from './PlatformOverTime'
 import { PageHead } from './Shell'
 import { poolLabel } from './types'
 import type {
@@ -513,6 +514,8 @@ function RunnerSizesBody({
   // Whether any preview has answered, and the last failure while none has: a
   // class with no recent use is then a dash with its reason, not `reading…`.
   const [recentRead, setRecentRead] = useState<{ read: boolean; failed: string | null }>({ read: false, failed: null })
+  // The first preview is asked for at mount: the reading tick counts from here.
+  const [since] = useState(() => Date.now())
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const [saved, setSaved] = useState<number | null>(null)
@@ -650,7 +653,7 @@ function RunnerSizesBody({
             refusals={refusals.filter((r) => r.class === name)}
             preview={fresh?.classes?.[name] ?? null}
             changes={changes[name]}
-            use={recent[name] ?? (recentRead.read ? { kind: 'none' } : recentRead.failed !== null ? { kind: 'failed', message: recentRead.failed } : { kind: 'reading' })}
+            use={recent[name] ?? (recentRead.read ? { kind: 'none' } : recentRead.failed !== null ? { kind: 'failed', message: recentRead.failed } : { kind: 'reading', since })}
           />
         ))}
       </div>
@@ -662,7 +665,7 @@ function RunnerSizesBody({
         </ul>
       )}
       <Card title="What the pools admit" className="rs-pools-card">
-        <PoolsTable pools={fresh?.pools ?? null} classes={fresh?.classes ?? null} />
+        <PoolsTable pools={fresh?.pools ?? null} classes={fresh?.classes ?? null} since={since} />
         {previewError !== null && <p className="rs-note">The preview could not be read ({previewError.message}); the sizes are checked against the served bounds only, and the save is judged again by the API.</p>}
       </Card>
       <div className="rs-save">
@@ -849,11 +852,18 @@ const READINGS: readonly { key: keyof RunnerRecentUse; label: string }[] = [
  * for; a failed read and a class with no record are each a dash with its
  * reason (never 0 attempts).
  */
-type NoRecentUse = { kind: 'reading' } | { kind: 'none' } | { kind: 'failed'; message: string }
+type NoRecentUse = { kind: 'reading'; since: number } | { kind: 'none' } | { kind: 'failed'; message: string }
 
 function RecentUse({ name, use, size, ratio }: { name: string; use: RunnerRecentUse | NoRecentUse; size: RunnerSize; ratio: number }) {
   if ('kind' in use) {
-    if (use.kind === 'reading') return <p className="rs-recent">Recent use: reading the last 7 days of attempts with the preview…</p>
+    // A QUIET PROGRESS TICK (visual QA pass 1, the owner's pick of 2026-11-13):
+    // what it reads is the tick's tooltip; the surface only counts the wait.
+    if (use.kind === 'reading')
+      return (
+        <p className="rs-recent">
+          Recent use: <ReadTick since={use.since} about="Reading the last 7 days of attempts with the preview." />
+        </p>
+      )
     if (use.kind === 'failed') return <p className="rs-recent">Recent use: — could not be read ({use.message}).</p>
     return <p className="rs-recent">Recent use: — the preview returned no record for {name}.</p>
   }
@@ -924,13 +934,23 @@ function unitsAfter(classes: RunnerSizesPreview['classes'] | null, cls: string):
 export function PoolsTable({
   pools,
   classes = null,
+  since: asked,
 }: {
   pools: RunnerSizesPreview['pools'] | null
   /** The preview's per-class units; without it a class is judged by the figure the pool admits. */
   classes?: RunnerSizesPreview['classes'] | null
+  /** When the preview was first asked for; the reading tick counts from it (else from this mount). */
+  since?: number
 }) {
   const phone = usePhoneTables()
-  if (pools === null) return <p className="rs-note">Reading what the platform-wide pools admit…</p>
+  const [mounted] = useState(() => Date.now())
+  const since = asked ?? mounted
+  if (pools === null)
+    return (
+      <p className="rs-note">
+        <ReadTick since={since} about="Reading what the platform-wide pools admit, with the preview." />
+      </p>
+    )
   if (pools.length === 0) return <p className="rs-note">No platform-wide pool has a ceiling set, so a resize moves no ceiling.</p>
   // admin2-05: where every row is a class's own pool admitting that class, the
   // Class column only repeats the Pool column's name, so it is not drawn.

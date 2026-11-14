@@ -7,6 +7,8 @@
     POST /v1/approvals/{id}:approve            {digest, confirm?}
     POST /v1/approvals/{id}:reject             {reason}
     POST /v1/schedules/{id}:merge-mode         {mode: "approve" | "auto", revision, confirm?}
+    GET  /v1/pipeline[?source=&state=&waits=]  the Pipeline board, each card in its one stage
+                                               (`pipeline.pipeline`, plans-pipeline §3.2)
 
 A projected issue run's id is `run:<run_id>`; its approve is the run's own
 `routes.runs._approve`, the one function every approval goes through, and its
@@ -93,7 +95,7 @@ from google.cloud import firestore
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 from swarm_common.admission import _snapshot
 
-from .. import approvals, refusals, roles, schedaudit, schedules, scheduletypes
+from .. import approvals, issueruns, pipeline, refusals, roles, schedaudit, schedules, scheduletypes
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import ApiError, NotFound
@@ -243,7 +245,7 @@ def _still_open(item: Mapping[str, Any], now: Any) -> str | None:
 
 def may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping[str, Any], *,
                run: IssueRun | None, schedule: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """`{approve, reject, why, deciders}` for the reader (#2417 A4, A5f).
+    """`{approve, reject, why, deciders, edit, comment}` for the reader (#2417 A4, A5f).
 
     `approve`: whether `:approve` would pass its who-checks for this reader
     now -- the role floor, the platform-scope rule, and `_who_refusal`. A
@@ -252,6 +254,9 @@ def may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping
     `reject_approver_required` switch is on (the owner 2026-10-26); off, any
     member past the role floor and the platform-scope rule. `why`: one
     sentence when either is false, else None. `deciders`: `approvals.deciders`.
+    `edit` and `comment` (plans-pipeline §3.9), on a `plan` or `hold` item
+    only: whether `plan:edit` would pass its role floor on this open plan,
+    and whether a comment would.
 
     None (absent) for an await-input step, which is answered on its own
     route and never decided here, and when the reader's role cannot be read.
@@ -262,6 +267,12 @@ def may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping
     readable, why = _role_floor(ctx, auth)
     if not readable:
         return None
+    # plans-pipeline §3.9: the comment and edit levels of §3, a plan's only.
+    # Comment is the role floor alone; edit is the floor `plan:edit` asks,
+    # while the plan is still open to an edit.
+    plan_item = item.get("kind") in (approvals.PLAN, approvals.HOLD)
+    comment = why is None
+    edit = comment and _still_open(item, ctx.now()) is None
     platform = schedule is not None and schedule_routes._platform_scope(schedule)
     if why is None and platform and not (auth.is_admin or auth.is_owner):
         why = "Only a platform admin may decide a platform-scope schedule's items."
@@ -276,7 +287,7 @@ def may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping
     # The approvers `approve` asks: a projected run's and a merge's are its
     # schedule's gate (the hold is asked beside them); a record's are its own.
     by_gate = item.get("projected") or item.get("kind") == approvals.MERGE
-    return {
+    out = {
         "approve": approve,
         "reject": reject,
         "why": redact_detail(why, limit=approvals.SUMMARY_CHARS) if why else None,
@@ -288,6 +299,11 @@ def may_decide(ctx: AppContext, auth: AuthContext, tenant_id: str, item: Mapping
             platform_scope=platform, run=run,
         ),
     }
+    if plan_item:
+        # Only a plan has an edit or a comment level; every other kind's
+        # `may_decide` keeps the four keys it served before §3.9.
+        out.update(edit=edit, comment=comment)
+    return out
 
 
 def _record_run(ctx: AppContext, tenant_id: str, doc: Mapping[str, Any]) -> IssueRun | None:
@@ -401,6 +417,36 @@ def list_approvals(
         out["history_truncated"] = truncated
     add_names(name_lookup(ctx), items, NAMED_FIELDS)
     return out
+
+
+def pipeline_sources() -> tuple[str, ...]:
+    """`?source=` on the board: a run's kinds, and the types whose proposals
+    are cards (their source kind is their schedule's type, §3.1)."""
+    return tuple(dict.fromkeys([
+        *issueruns.SOURCE_KINDS, *(entry.name for entry in scheduletypes.TYPES if entry.proposes),
+        approvals.PROPOSAL,
+    ]))
+
+
+@router.get("/v1/pipeline")
+def get_pipeline(
+    source: str | None = Query(default=None, max_length=40),
+    state: str | None = Query(default=None, max_length=20),
+    waits: str | None = Query(default=None, max_length=20),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The Pipeline board (plans-pipeline §3.2): every card in its one stage,
+    the counts each column hides, and which read failed. Read only; any
+    member of the tenant, as `GET /v1/approvals` (invariant 9: the tenant is
+    `tenant_scope`'s)."""
+    if source is not None and source not in pipeline_sources():
+        raise ScheduleInvalid("unknown_source", f"source is one of {', '.join(pipeline_sources())}")
+    if state is not None and state not in pipeline.STATE_FILTERS:
+        raise ScheduleInvalid("unknown_state", f"state is one of {', '.join(pipeline.STATE_FILTERS)}")
+    if waits is not None and waits != pipeline.WAITS_PERSON:
+        raise ScheduleInvalid("unknown_waits", f"waits is {pipeline.WAITS_PERSON}")
+    return {**pipeline.pipeline(ctx, tenant_id, source=source, state=state, waits=waits), "tenant_id": tenant_id}
 
 
 @router.get("/v1/approvals/{item_id}")
