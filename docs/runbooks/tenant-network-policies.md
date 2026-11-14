@@ -35,3 +35,22 @@ until someone deletes it.
 then on the release applies it everywhere. It also has to be added to the
 workspace deployer's allowed names in
 `kubernetes/policies/workspace-provisioner-scope.yaml`.
+
+**What the deployer may write in them** is held to the render, policy by
+policy, by `swarm-workspace-deployer-networkpolicies` in the same file (#3941):
+selector, policy types, peers and ports. `swarm-allow-worker-egress` also
+carries four values that belong to the cluster -- the node-local DNS address,
+the kube-dns Service IP, the pod range and the service range -- so the check
+was built in two halves, shape now and exact later. Both are built.
+`kubernetes/apply.sh --policies` reads the four from the cluster it targets
+with the same `kubernetes/cluster-network.sh` the tenant render uses and passes
+them to `render.py policies`, which writes them into the check as exact
+literals: another /32 or another range in any of the four places is refused,
+even one of the right shape. The shape check, any one IPv4 address for each
+DNS peer and any range for each carve-out, is the fallback only for a render
+given no network: an offline self-test (`make lint`, CI), or a first bootstrap
+whose apply could not read the cluster's DNS objects yet. The render says so in
+one `# render: WARNING` line, apply.sh warns too, and re-running
+`kubernetes/apply.sh --policies --confirm` once the network can be read pins
+the values. Every other content is compared exactly either way, so the
+fallback is no wider than the check was before the exact half.

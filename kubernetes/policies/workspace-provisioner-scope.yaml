@@ -512,14 +512,19 @@ spec:
 #
 # THE CLUSTER'S OWN NETWORK. swarm-allow-worker-egress carries four values
 # read from the cluster (render.py NETWORK_INPUTS: the two DNS addresses and
-# the pod and service ranges), and `render.py policies` is given none of them.
-# A CIDR in `fixed_cidrs` -- every one the templates write literally -- is
-# compared as written; any other is compared by shape, "~host" for an IPv4 /32
-# (an IPv6 /32 is a 2^96-address prefix, so it is a "~range") and
-# "~range" otherwise, and the positions where the render puts a cluster value
-# are the only ones that expect a shape. So the two DNS peers may name any one
-# IPv4 address on port 53, and the two cluster carve-outs any range; every other
-# selector, peer, CIDR and port is the render's exactly.
+# the pod and service ranges). kubernetes/apply.sh --policies reads them from
+# the cluster it targets, as it does for a tenant, and passes them to
+# `render.py policies`, which writes them below as `cluster_cidrs` and in their
+# four positions in the `egress` literal: a CIDR in `fixed_cidrs` (every one
+# the templates write literally) or `cluster_cidrs` is compared as written, so
+# each of the four is pinned exactly. Any other CIDR is encoded by shape,
+# "~host" for an IPv4 /32 (an IPv6 /32 is a 2^96-address prefix, so it is a
+# "~range") and "~range" otherwise, which no exact literal equals.
+# A render given no network (an offline self-test, or a bootstrap whose apply
+# could not read the cluster's, which both say on stderr) writes `cluster_cidrs`
+# empty and "~host"/"~range" in the four positions: then the two DNS peers may
+# name any one IPv4 address on port 53, and the two carve-outs any range. Every
+# other selector, peer, CIDR and port is the render's exactly either way.
 #
 # tests/unit/worker/test_workspace_provisioner_scope.py encodes the tenant
 # render the same way and holds every literal here equal to it.
@@ -549,6 +554,9 @@ spec:
     - name: fixed_cidrs
       expression: >-
         ["169.254.169.254/32", "199.36.153.4/30", "199.36.153.8/30", "0.0.0.0/0", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10"]
+    - name: cluster_cidrs
+      expression: >-
+        __DEPLOYER_CLUSTER_CIDRS__
     - name: selectors
       expression: >-
         {"swarm-default-deny": {},
@@ -583,7 +591,7 @@ spec:
       expression: >-
         {"swarm-default-deny": [],
         "swarm-deny-cross-tenant-ingress": [],
-        "swarm-allow-worker-egress": [[[{"kubernetes.io/metadata.name": "kube-system"}], [{"k8s-app": "kube-dns"}], [{"~": "absent"}], [{"protocol": "UDP", "port": "53", "endPort": ""}, {"protocol": "TCP", "port": "53", "endPort": ""}]], [[{"~": "absent"}, {"~": "absent"}], [{"~": "absent"}, {"~": "absent"}], [{"cidr": "~host", "except": ""}, {"cidr": "~host", "except": ""}], [{"protocol": "UDP", "port": "53", "endPort": ""}, {"protocol": "TCP", "port": "53", "endPort": ""}]], [[{"~": "absent"}], [{"~": "absent"}], [{"cidr": "169.254.169.254/32", "except": ""}], [{"protocol": "TCP", "port": "80", "endPort": ""}, {"protocol": "TCP", "port": "8080", "endPort": ""}]], [[{"~": "absent"}, {"~": "absent"}], [{"~": "absent"}, {"~": "absent"}], [{"cidr": "199.36.153.4/30", "except": ""}, {"cidr": "199.36.153.8/30", "except": ""}], [{"protocol": "TCP", "port": "443", "endPort": ""}]], [[{"~": "absent"}], [{"~": "absent"}], [{"cidr": "0.0.0.0/0", "except": "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,~range,~range,169.254.0.0/16,100.64.0.0/10"}], [{"protocol": "TCP", "port": "443", "endPort": ""}, {"protocol": "TCP", "port": "80", "endPort": ""}, {"protocol": "TCP", "port": "22", "endPort": ""}]]],
+        "swarm-allow-worker-egress": [[[{"kubernetes.io/metadata.name": "kube-system"}], [{"k8s-app": "kube-dns"}], [{"~": "absent"}], [{"protocol": "UDP", "port": "53", "endPort": ""}, {"protocol": "TCP", "port": "53", "endPort": ""}]], [[{"~": "absent"}, {"~": "absent"}], [{"~": "absent"}, {"~": "absent"}], [{"cidr": "__DEPLOYER_NODE_LOCAL_DNS_CIDR__", "except": ""}, {"cidr": "__DEPLOYER_CLUSTER_DNS_CIDR__", "except": ""}], [{"protocol": "UDP", "port": "53", "endPort": ""}, {"protocol": "TCP", "port": "53", "endPort": ""}]], [[{"~": "absent"}], [{"~": "absent"}], [{"cidr": "169.254.169.254/32", "except": ""}], [{"protocol": "TCP", "port": "80", "endPort": ""}, {"protocol": "TCP", "port": "8080", "endPort": ""}]], [[{"~": "absent"}, {"~": "absent"}], [{"~": "absent"}, {"~": "absent"}], [{"cidr": "199.36.153.4/30", "except": ""}, {"cidr": "199.36.153.8/30", "except": ""}], [{"protocol": "TCP", "port": "443", "endPort": ""}]], [[{"~": "absent"}], [{"~": "absent"}], [{"cidr": "0.0.0.0/0", "except": "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,__DEPLOYER_POD_CIDR__,__DEPLOYER_SERVICE_CIDR__,169.254.0.0/16,100.64.0.0/10"}], [{"protocol": "TCP", "port": "443", "endPort": ""}, {"protocol": "TCP", "port": "80", "endPort": ""}, {"protocol": "TCP", "port": "22", "endPort": ""}]]],
         "swarm-allow-live-egress": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "swarm-live"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "8080", "endPort": ""}]]],
         "swarm-allow-egress-proxy": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "swarm-egress"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "3128", "endPort": ""}]]],
         "swarm-allow-judge-egress": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "decision-api-egress"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "8443", "endPort": ""}]]],
@@ -604,14 +612,14 @@ spec:
         has(object.spec.ingress) ? object.spec.ingress.map(r, [
           has(r.from) ? r.from.map(p, !has(p.namespaceSelector) ? {"~": "absent"} : has(p.namespaceSelector.matchExpressions) ? {"~": "matchExpressions"} : has(p.namespaceSelector.matchLabels) ? p.namespaceSelector.matchLabels : {}) : [],
           has(r.from) ? r.from.map(p, !has(p.podSelector) ? {"~": "absent"} : has(p.podSelector.matchExpressions) ? {"~": "matchExpressions"} : has(p.podSelector.matchLabels) ? p.podSelector.matchLabels : {}) : [],
-          has(r.from) ? r.from.map(p, !has(p.ipBlock) ? {"~": "absent"} : {"cidr": p.ipBlock.cidr in variables.fixed_cidrs ? p.ipBlock.cidr : (p.ipBlock.cidr.endsWith('/32') && !p.ipBlock.cidr.contains(':') ? "~host" : "~range"), "except": has(p.ipBlock.except) ? p.ipBlock.except.map(e, e in variables.fixed_cidrs ? e : (e.endsWith('/32') && !e.contains(':') ? "~host" : "~range")).join(",") : ""}) : [],
+          has(r.from) ? r.from.map(p, !has(p.ipBlock) ? {"~": "absent"} : {"cidr": p.ipBlock.cidr in variables.fixed_cidrs || p.ipBlock.cidr in variables.cluster_cidrs ? p.ipBlock.cidr : (p.ipBlock.cidr.endsWith('/32') && !p.ipBlock.cidr.contains(':') ? "~host" : "~range"), "except": has(p.ipBlock.except) ? p.ipBlock.except.map(e, e in variables.fixed_cidrs || e in variables.cluster_cidrs ? e : (e.endsWith('/32') && !e.contains(':') ? "~host" : "~range")).join(",") : ""}) : [],
           has(r.ports) ? r.ports.map(q, {"protocol": has(q.protocol) ? q.protocol : "", "port": has(q.port) ? string(q.port) : "~all", "endPort": has(q.endPort) ? string(q.endPort) : ""}) : []]) : []
     - name: actual_egress
       expression: >-
         has(object.spec.egress) ? object.spec.egress.map(r, [
           has(r.to) ? r.to.map(p, !has(p.namespaceSelector) ? {"~": "absent"} : has(p.namespaceSelector.matchExpressions) ? {"~": "matchExpressions"} : has(p.namespaceSelector.matchLabels) ? p.namespaceSelector.matchLabels : {}) : [],
           has(r.to) ? r.to.map(p, !has(p.podSelector) ? {"~": "absent"} : has(p.podSelector.matchExpressions) ? {"~": "matchExpressions"} : has(p.podSelector.matchLabels) ? p.podSelector.matchLabels : {}) : [],
-          has(r.to) ? r.to.map(p, !has(p.ipBlock) ? {"~": "absent"} : {"cidr": p.ipBlock.cidr in variables.fixed_cidrs ? p.ipBlock.cidr : (p.ipBlock.cidr.endsWith('/32') && !p.ipBlock.cidr.contains(':') ? "~host" : "~range"), "except": has(p.ipBlock.except) ? p.ipBlock.except.map(e, e in variables.fixed_cidrs ? e : (e.endsWith('/32') && !e.contains(':') ? "~host" : "~range")).join(",") : ""}) : [],
+          has(r.to) ? r.to.map(p, !has(p.ipBlock) ? {"~": "absent"} : {"cidr": p.ipBlock.cidr in variables.fixed_cidrs || p.ipBlock.cidr in variables.cluster_cidrs ? p.ipBlock.cidr : (p.ipBlock.cidr.endsWith('/32') && !p.ipBlock.cidr.contains(':') ? "~host" : "~range"), "except": has(p.ipBlock.except) ? p.ipBlock.except.map(e, e in variables.fixed_cidrs || e in variables.cluster_cidrs ? e : (e.endsWith('/32') && !e.contains(':') ? "~host" : "~range")).join(",") : ""}) : [],
           has(r.ports) ? r.ports.map(q, {"protocol": has(q.protocol) ? q.protocol : "", "port": has(q.port) ? string(q.port) : "~all", "endPort": has(q.endPort) ? string(q.endPort) : ""}) : []]) : []
   validations:
     - expression: "object.metadata.name in variables.selectors"
@@ -635,8 +643,9 @@ spec:
           variables.actual_egress == variables.egress[object.metadata.name])
       message: >-
         a NetworkPolicy the workspace deployer writes allows exactly the peers
-        and ports kubernetes/render.py renders for it; only the cluster's own
-        DNS addresses and pod and service ranges may differ, and only in shape.
+        and ports kubernetes/render.py renders for it, and the cluster's own
+        DNS addresses and pod and service ranges as kubernetes/apply.sh read
+        them (by shape only in a render that was given none).
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1

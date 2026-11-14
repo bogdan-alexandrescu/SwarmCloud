@@ -313,6 +313,15 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
     "SERVICE_CIDR": re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$"),
     "CLUSTER_DNS_IP": re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}$"),
     "NODE_LOCAL_DNS_IP": re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}$"),
+    # The same four as the deployer's NetworkPolicy check expects them
+    # (deployer_network): a CIDR, or the shape it compares when not given one.
+    "DEPLOYER_NODE_LOCAL_DNS_CIDR": re.compile(r"^(~host|[0-9]{1,3}(\.[0-9]{1,3}){3}/32)$"),
+    "DEPLOYER_CLUSTER_DNS_CIDR": re.compile(r"^(~host|[0-9]{1,3}(\.[0-9]{1,3}){3}/32)$"),
+    "DEPLOYER_POD_CIDR": re.compile(r"^(~range|[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2})$"),
+    "DEPLOYER_SERVICE_CIDR": re.compile(r"^(~range|[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2})$"),
+    "DEPLOYER_CLUSTER_CIDRS": re.compile(
+        r'^\[("[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}"(, "[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}"){3})?\]$'
+    ),
     "NETWORK_SOURCE": re.compile(
         r"^(offline-render-not-for-apply|operator-supplied"
         r"|gke/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z0-9-]{1,63}/[a-z0-9-]{1,63})$"
@@ -1028,6 +1037,9 @@ def add_policy_arguments(parser: argparse.ArgumentParser) -> None:
             "kubernetes/apply.sh --policies passes its own environment's."
         ),
     )
+    # The cluster's network, so the deployer's NetworkPolicy check pins the
+    # worker egress policy's four cluster values exactly (deployer_network).
+    add_network_arguments(parser)
 
 
 def policy_values(args: argparse.Namespace) -> dict[str, str]:
@@ -1060,8 +1072,55 @@ def policy_values(args: argparse.Namespace) -> dict[str, str]:
             # The Terraform tenants' namespaces, which the deployer's scope
             # policy refuses by name (workspace-kinds §3.1).
             "TERRAFORM_NAMESPACES": terraform_namespaces(args.terraform_tfvars),
+            **deployer_network(args),
         }
     )
+
+
+#: How swarm-workspace-deployer-networkpolicies encodes a CIDR it was not told:
+#: an IPv4 /32 is "~host", anything else "~range" (an IPv6 /32 is a 2^96-address
+#: prefix). `~` is in no CIDR the API server accepts, so nothing written can
+#: forge either. The policy's CEL spells them too, and
+#: test_workspace_provisioner_scope.py encodes the tenant render with these.
+SHAPE_HOST = "~host"
+SHAPE_RANGE = "~range"
+
+
+def deployer_network(args: argparse.Namespace) -> dict[str, str]:
+    """The four cluster values the deployer's NetworkPolicy check expects in
+    swarm-allow-worker-egress: exactly, when this render was given the
+    cluster's network (kubernetes/apply.sh --policies reads it, as it does for
+    a tenant); by shape, when it was not (an offline render, or a bootstrap
+    that could not read the cluster), which it says in one `# ` line on stderr.
+
+    One parse for both renders: `network_values`, so the policy pins exactly
+    what the tenant render writes from the same four flags.
+    """
+    network = network_values(args)
+    if network["NETWORK_SOURCE"] == OFFLINE_NETWORK_SOURCE:
+        print(
+            "# render: WARNING: no cluster network was given, so the workspace deployer's "
+            "NetworkPolicy check holds swarm-allow-worker-egress's DNS addresses and pod and "
+            "service ranges by shape, not exactly. Fine for lint; kubernetes/apply.sh "
+            "--policies passes the cluster's.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return {
+            "DEPLOYER_NODE_LOCAL_DNS_CIDR": SHAPE_HOST,
+            "DEPLOYER_CLUSTER_DNS_CIDR": SHAPE_HOST,
+            "DEPLOYER_POD_CIDR": SHAPE_RANGE,
+            "DEPLOYER_SERVICE_CIDR": SHAPE_RANGE,
+            "DEPLOYER_CLUSTER_CIDRS": "[]",
+        }
+    # Spelled as network-policies/allow-egress.yaml writes them.
+    exact = {
+        "DEPLOYER_NODE_LOCAL_DNS_CIDR": f"{network['NODE_LOCAL_DNS_IP']}/32",
+        "DEPLOYER_CLUSTER_DNS_CIDR": f"{network['CLUSTER_DNS_IP']}/32",
+        "DEPLOYER_POD_CIDR": network["POD_CIDR"],
+        "DEPLOYER_SERVICE_CIDR": network["SERVICE_CIDR"],
+    }
+    return {**exact, "DEPLOYER_CLUSTER_CIDRS": "[" + ", ".join(f'"{v}"' for v in exact.values()) + "]"}
 
 
 #: The prefix an OFFLINE render's keys carry when none is configured: the
@@ -1586,6 +1645,65 @@ def render_job(args: argparse.Namespace) -> str:
     return substitute((HERE / template).read_text(), values)
 
 
+def add_network_arguments(parser: argparse.ArgumentParser) -> None:
+    """The four cluster network flags and their source, for `tenant` (the
+    egress policy) and `policies` (the deployer's check of that policy)."""
+    # NO DEFAULTS, deliberately -- see NETWORK_INPUTS for what the defaults
+    # cost. Each help names where kubernetes/apply.sh reads the value; that
+    # script is the supported way to render for a cluster, and it refuses these
+    # flags from its own command line, in full or abbreviated, so a hand-typed
+    # value cannot override the one it read. main() turns abbreviation off for
+    # the same reason.
+    parser.add_argument(
+        "--pod-cidr",
+        default="",
+        help=(
+            "the cluster's pod range: `gcloud container clusters describe` "
+            ".clusterIpv4Cidr (= .ipAllocationPolicy.clusterIpv4CidrBlock). "
+            "Pass all four network values or none; none renders offline: "
+            "placeholders marked not-for-apply in a tenant render, the shape "
+            "check in the policies render."
+        ),
+    )
+    parser.add_argument(
+        "--service-cidr",
+        default="",
+        help=(
+            "the cluster's service range: `gcloud container clusters describe` "
+            ".servicesIpv4Cidr. GKE Autopilot's DEFAULT (34.118.224.0/20) is public "
+            "space, so the value matters and is never assumed."
+        ),
+    )
+    parser.add_argument(
+        "--cluster-dns-ip",
+        default="",
+        help=(
+            "the kube-dns Service's ClusterIP: `kubectl -n kube-system get service "
+            "kube-dns -o jsonpath={.spec.clusterIP}`. Not in `clusters describe`. "
+            "node-local-dns also answers on it."
+        ),
+    )
+    parser.add_argument(
+        "--node-local-dns-ip",
+        default="",
+        help=(
+            "the NodeLocal DNSCache address a pod's resolver uses: the first "
+            "entry of `-localip` on the node-cache container of "
+            "`kubectl -n kube-system get daemonset node-local-dns`. Not in "
+            "`clusters describe`, which only says whether the cache is on."
+        ),
+    )
+    parser.add_argument(
+        "--network-source",
+        default="",
+        help=(
+            "where the four network values came from, recorded on the egress "
+            "policy: gke/<project>/<location>/<cluster> from apply.sh. Defaults to "
+            "`operator-supplied` when the values are given by hand."
+        ),
+    )
+
+
 def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tenant", required=True, help="tenant id, e.g. eng or u-alice")
     parser.add_argument(
@@ -1714,59 +1832,7 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
             "`chromium_sandbox=False` depends on being true."
         ),
     )
-    # NO DEFAULTS, deliberately -- see NETWORK_INPUTS for what the defaults
-    # cost. Each help names where kubernetes/apply.sh reads the value; that
-    # script is the supported way to render for a cluster, and it refuses these
-    # flags from its own command line, in full or abbreviated, so a hand-typed
-    # value cannot override the one it read. main() turns abbreviation off for
-    # the same reason.
-    parser.add_argument(
-        "--pod-cidr",
-        default="",
-        help=(
-            "the cluster's pod range: `gcloud container clusters describe` "
-            ".clusterIpv4Cidr (= .ipAllocationPolicy.clusterIpv4CidrBlock). "
-            "Pass all four network values or none; none renders offline "
-            "placeholders marked not-for-apply."
-        ),
-    )
-    parser.add_argument(
-        "--service-cidr",
-        default="",
-        help=(
-            "the cluster's service range: `gcloud container clusters describe` "
-            ".servicesIpv4Cidr. GKE Autopilot's DEFAULT (34.118.224.0/20) is public "
-            "space, so the value matters and is never assumed."
-        ),
-    )
-    parser.add_argument(
-        "--cluster-dns-ip",
-        default="",
-        help=(
-            "the kube-dns Service's ClusterIP: `kubectl -n kube-system get service "
-            "kube-dns -o jsonpath={.spec.clusterIP}`. Not in `clusters describe`. "
-            "node-local-dns also answers on it."
-        ),
-    )
-    parser.add_argument(
-        "--node-local-dns-ip",
-        default="",
-        help=(
-            "the NodeLocal DNSCache address a pod's resolver uses: the first "
-            "entry of `-localip` on the node-cache container of "
-            "`kubectl -n kube-system get daemonset node-local-dns`. Not in "
-            "`clusters describe`, which only says whether the cache is on."
-        ),
-    )
-    parser.add_argument(
-        "--network-source",
-        default="",
-        help=(
-            "where the four network values came from, recorded on the egress "
-            "policy: gke/<project>/<location>/<cluster> from apply.sh. Defaults to "
-            "`operator-supplied` when the values are given by hand."
-        ),
-    )
+    add_network_arguments(parser)
     parser.add_argument(
         "--spec-verify-keys-file",
         default="",
