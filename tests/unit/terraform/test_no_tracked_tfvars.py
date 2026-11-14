@@ -62,3 +62,38 @@ def test_every_root_has_a_tracked_placeholder_example() -> None:
     }
     tracked = set(_tracked("*.tfvars.example"))
     assert sorted(expected - tracked) == []
+
+
+# The three real files the workflows lane untracked: a deployment's copy that
+# an operator fetches into the checkout must stay out of `git add`.
+REAL_TFVARS = (
+    "terraform/bootstrap/terraform.tfvars",
+    "terraform/environments/dev/dev.tfvars",
+    "terraform/environments/prod/prod.tfvars",
+)
+
+
+def test_the_real_tfvars_paths_are_ignored() -> None:
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--", *REAL_TFVARS],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    ignored = set(result.stdout.split())
+    assert sorted(set(REAL_TFVARS) - ignored) == [], (
+        ".gitignore must ignore every real tfvars path, so a fetched copy cannot be committed"
+    )
+
+
+def test_the_examples_are_not_ignored() -> None:
+    examples = [f"{p}.example" for p in REAL_TFVARS]
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", "--", *examples],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.stdout.split() == []
