@@ -806,6 +806,8 @@ def _cel_call(node: Any, env: dict[str, Any]) -> Any:
         return receiver.startswith(values[0])
     if name == "endsWith":
         return receiver.endswith(values[0])
+    if name == "contains":
+        return values[0] in receiver
     raise CelUnsupported(f"method {name}()")
 
 
@@ -1236,7 +1238,8 @@ def _cidr(value: str, fixed: list[str]) -> str:
     """The render's own CIDRs as written; a cluster network value by shape."""
     if value in fixed:
         return value
-    return "~host" if value.endswith("/32") else "~range"
+    # Only an IPv4 /32 is one address; an IPv6 /32 is a 2**96-address prefix.
+    return "~host" if value.endswith("/32") and ":" not in value else "~range"
 
 
 def _selector(selector: dict[str, Any] | None) -> dict[str, str]:
@@ -1506,6 +1509,10 @@ def _netpol_mutations() -> list[tuple[str, str, Any]]:
     def dns_range(spec: dict[str, Any]) -> None:
         spec["egress"][1]["to"][0]["ipBlock"]["cidr"] = "0.0.0.0/0"
 
+    def dns_ipv6_slash_32(spec: dict[str, Any]) -> None:
+        # An IPv6 /32 is a prefix of 2**96 addresses, not one host.
+        spec["egress"][1]["to"][0]["ipBlock"]["cidr"] = "2001:db8::/32"
+
     def deny_opened(spec: dict[str, Any]) -> None:
         spec["egress"] = [{}]
 
@@ -1527,6 +1534,7 @@ def _netpol_mutations() -> list[tuple[str, str, Any]]:
         ("swarm-allow-worker-egress", "dropped_except", dropped_except),
         ("swarm-allow-worker-egress", "except_to_host", except_to_host),
         ("swarm-allow-worker-egress", "dns_range", dns_range),
+        ("swarm-allow-worker-egress", "dns_ipv6_slash_32", dns_ipv6_slash_32),
         ("swarm-default-deny", "deny_opened", deny_opened),
     ]
 
