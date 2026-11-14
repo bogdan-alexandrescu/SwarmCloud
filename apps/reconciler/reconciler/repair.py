@@ -96,7 +96,7 @@ from .model import (
 from .plugingc import PluginCollector
 from .memory import OutOfMemory, out_of_memory_killed, stalled_at_memory_limit
 from .progress import assess
-from .startproblem import START_PROBLEM_STATES
+from .startproblem import START_PROBLEM_STATES, start_problem_words
 from .startsteps import POD_STARTUP_STEPS, RUNNING_STEPS_WINDOW_SECONDS, StartRead
 from .store import NEVER_STARTED_STATES, ControlStore, RepairPlan
 
@@ -2172,6 +2172,17 @@ class Reconciler:
         if ended_why:
             finding = replace(finding, reason=f"{finding.reason}; {ended_why}")
             outcome.reason = finding.reason
+        # Why the attempt's pod never started -- the scheduler's
+        # `Unschedulable`, the Job's `FailedCreate`, a crash-looping sidecar --
+        # as `_watch_starts` recorded it on the task on an earlier pass
+        # (#3531). Before this a never-scheduled pod was reclaimed as "lease
+        # silent for 485s" and nothing said why. Words only, like the two
+        # above: the kind, the lease, the generation and the refund are
+        # decided exactly as before.
+        start_why = self._why_not_started(finding, snapshot)
+        if start_why:
+            finding = replace(finding, reason=f"{finding.reason}; {start_why}")
+            outcome.reason = finding.reason
         # An attempt that ran out of memory at its own limit FAILS its task
         # the first time (#1926): the retry is the same step at the same
         # size. Its words lead the reason, so the attempt, the task and the
@@ -2492,6 +2503,22 @@ class Reconciler:
             return False
         attempt = snapshot.attempts.get(finding.attempt_id or "")
         return attempt is None or attempt.started_at is None
+
+    @staticmethod
+    def _why_not_started(finding: Finding, snapshot: ControlSnapshot) -> str | None:
+        """The start problem recorded for this silence finding's own attempt, in words, or None (#3531).
+
+        Only a silent lease or a dead worker -- the findings that reclaim a
+        pod that never started -- and only the record of the finding's own
+        attempt: an earlier attempt's pod says nothing about this one.
+        """
+        if finding.kind not in _NEVER_STARTED_KINDS or not finding.attempt_id or not finding.task_id:
+            return None
+        task = snapshot.tasks.get(finding.task_id)
+        recorded = task.start_problem if task is not None else None
+        if not recorded or recorded.get("attempt_id") != finding.attempt_id:
+            return None
+        return start_problem_words(recorded)
 
     def _out_of_memory(self, finding: Finding, snapshot: ControlSnapshot) -> OutOfMemory | None:
         """Whether this finding's attempt ran out of memory at its own limit (#1926), or None.
