@@ -148,8 +148,9 @@ record is an index, never the proof.
 A FOLLOW-UP'S HEAD, TOO (docs/design/merging-without-a-laptop.md §3.1-§3.2,
 lane 1). A `publish_to_pr` workflow (#2183) pushes onto a pull request a
 branch task opened, and the merge step refused that push `head_moved`:
-nothing recorded it. `stamp` marks such a workflow `FIX_HEAD_FIELD` with
-kind `FOLLOW_UP` -- unless it carries a writer's own mark, which makes it a
+nothing recorded it. `stamp` marks such a workflow, and `stamp_task` such a
+single task (`POST /v1/tasks`, the owner's "single tasks next", 2026-11-13),
+`FIX_HEAD_FIELD` with kind `FOLLOW_UP` -- unless it carries a writer's own mark, which makes it a
 round recorded as one -- and the tick records it against the branch task
 its SIGNED `publish_to_pr.task_id` names, with two narrowings a round does
 not have: only a `SUCCEEDED` follow-up is recorded (a failed one's push is
