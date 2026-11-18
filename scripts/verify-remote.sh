@@ -121,6 +121,22 @@ for setting in "${FORWARDED_SETTINGS[@]}"; do
   EXECUTION_ENV+=",${setting}=${value}"
 done
 
+# THE GENERIC SMOKE FIXTURE IS THIS REPOSITORY, AND THE JOB CANNOT READ IT.
+#
+# scripts/lib/testlib.sh resolves it from GITHUB_REPOSITORY or the checkout's
+# origin; the swarm-verify job has neither, so scripts/smoke-test.sh stopped on
+# "set SWARM_SMOKE_FIXTURE_REPOSITORY" (dev acceptance, 2026-11-18). Inside CI
+# the repository is known here, so it goes in with the execution, unless the
+# caller already chose a fixture (a fork). testlib uses the value as the clone
+# URL as it stands, so it is the anonymous https URL of owner/repo, built from a
+# slug checked to hold nothing else: no userinfo can reach the job. The ref is
+# not known to this script, so SWARM_SMOKE_FIXTURE_REF stays testlib's `main`.
+if [[ -n "${GITHUB_REPOSITORY:-}" && -z "${SWARM_SMOKE_FIXTURE_REPOSITORY:-}" ]]; then
+  [[ "${GITHUB_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+    || die "GITHUB_REPOSITORY must be owner/repo, letters, digits, '.', '_' and '-' only"
+  EXECUTION_ENV+=",SWARM_SMOKE_FIXTURE_REPOSITORY=https://github.com/${GITHUB_REPOSITORY%.git}.git"
+fi
+
 step "Verification gate, inside the VPC"
 info "job     ${JOB} (${REGION}/${PROJECT_ID})"
 info "targets ${TARGETS[*]}"
