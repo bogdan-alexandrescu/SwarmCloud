@@ -315,11 +315,27 @@ gate, step 5b). The step reads it with the tenant's `-git` token through
 `GET /repos/{owner}/{repo}/actions/variables/MERGE_TRAIN`
 (`merge.repository_train`), once per green reading. Unset (404), or anything
 but `on`, is the train off. A token without the *Variables: Read* permission
-(401/403) cannot see it: the train is then on only when the base's required
-checks include `merge-train` -- the runbook's ruleset change -- because a
-direct merge into such a base is refused whatever the variable says. The
-switch is read nowhere else: the step stores no copy, so turning the variable
-off takes effect at every step's next green reading.
+(401/403) cannot see it -- the merge App is not granted it, so for the App
+this read always fails -- and an unreadable switch the step has seen on is not
+read as off. The train is then on when the base's required checks include
+`merge-train` -- the runbook's ruleset change -- because a direct merge into
+such a base is refused whatever the variable says (`on_by: required_check`);
+when this step's own last park was on the repository's train
+(`TRAIN_WAITING`, at any head: it boarded on a switch it read on,
+`own_train_park`); or when the pull request already carries `ready`, the
+train's boarding label (`ready_label`). With none of these the train is off
+and the step merges directly, as before. Issue 16 is why: a step that had
+parked on the train twice, then gone through a fix round to a new head, read
+its base's rules as none (the plan answer below, on a public repository) and
+the unreadable switch as off, called the direct merge, and GitHub refused it
+403 while the train was on. Treating every unreadable switch on a base with no
+readable rules as on would stop every unprotected and every private
+plan-limited base from ever merging, since the read always fails; the step's
+own park and the label are evidence the train is on there, the bare 403 is
+not. Granting the App *Variables: Read* would make the switch readable, and is
+the owner's separate IAM decision. The switch is read nowhere else: the step
+stores no copy, so turning the variable off takes effect at every step's next
+green reading.
 
 **With the train on** (`merge._board`). Everything up to the green reading
 runs as before: the verdict, the head walk, conflicts and their fix rounds,
@@ -2083,8 +2099,16 @@ What the built step checks, and how this differs from §4-§5:
   answers the rules read 403 "Upgrade to GitHub Pro or make this repository
   public to enable this feature." (example-org/peer-app, 2026-10-10). That is
   not a missing right, so it reads as "no rules", exactly as a 404 does, and
-  the same every-check-green rule applies; it never merges on nothing. Any
-  other 403 is still `token_lacks_rights`. The step records which rule it used
+  the same every-check-green rule applies; it never merges on nothing. It is
+  read that way **only on a repository whose own document says
+  `private: true`**: a public repository has rulesets on every plan, so there
+  the same answer cannot be the plan's truth, and reading it as "no rules"
+  drops every required check -- the train's `merge-train` with them, which
+  sent a step into a direct merge GitHub refused 403 (issue 16). On a
+  repository that is not private (or does not say) it is an outage
+  (`ForgeUnavailable`): the attempt fails retryably as `forge_unavailable`
+  and reads the rules again, and nothing is merged. Any other 403 is still
+  `token_lacks_rights`. The step records which rule it used
   as `required_checks_source`: `rulesets`, `classic`, `none_all_checks`, or
   `none_plan_limited_all_checks`.
 * **Waiting for CI (invariants 1 and 4).** A required check still running, no
