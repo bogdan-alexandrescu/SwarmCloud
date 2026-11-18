@@ -1,0 +1,310 @@
+"""dev.tfvars states the capacity the live dev environment runs (owner decision 2026-10-02).
+
+The owner doubled every capacity setting across all tenants and all runtimes on
+2026-10-02. The live values were changed at ~05:20Z through
+`scripts/pool-limit.sh` (pools) and `PUT /v1/admin/tenants/{id}/limits`
+(tenants). The pool documents are under `ignore_changes`, so dev.tfvars is the
+ceiling a NEW environment is born with and the `expected` side of
+`scripts/pool-limit.sh --check`: if it does not state the live values, `--check`
+reports drift and a rebuilt environment comes up at half the capacity.
+
+This derives every pool the way terraform/infra/locals.tf does -- `global`,
+`tenant:<t>` as min(max_active, capacity_units), `resource:`, `runner:`,
+`backend:` and `provider:` by lookup falling back to `global`, and
+`provider:<p>:tenant:<t>` from the one `provider_tenant` for every provider a
+tenant declares -- over the catalogue in swarm_common.profiles, which
+tests/terraform/catalogue.tftest.hcl holds terraform's mirror to.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+from swarm_common.models import pool_names_for
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
+
+REPO = Path(__file__).resolve().parents[3]
+#: A deployment's real dev.tfvars is private (the state bucket's config/ prefix,
+#: docs/ci.md); a placeholder deployment's stands in (tests/fixtures/tfvars/).
+DEV_TFVARS = REPO / "tests" / "fixtures" / "tfvars" / "dev.tfvars.fixture"
+
+#: hard_limit of every live dev pool, read 2026-10-02 after the doubling.
+LIVE_POOLS = {
+    "global": 100,
+    "backend:CLOUD_RUN_JOB": 100,
+    "backend:GKE_AUTOPILOT": 40,
+    "provider:anthropic": 100,
+    "provider:anthropic:tenant:eng": 40,
+    "provider:anthropic:tenant:u-owner": 40,
+    "provider:mock-provider": 100,
+    "provider:mock-provider:tenant:eng": 100,
+    "provider:openai": 40,
+    "provider:openai:tenant:eng": 40,
+    "resource:browser": 20,
+    "resource:large": 40,
+    "resource:standard": 80,
+    "runner:browser": 20,
+    "runner:claude-code": 80,
+    "runner:codex": 20,
+    "runner:generic": 20,
+    "runner:mock": 40,
+    # 40 until the owner raised eng's capacity_units to 45 through the admin
+    # API on 2026-10-07 (max_active was already 45; dev.tfvars says why).
+    "tenant:eng": 45,
+    # 8 until the owner raised it to 20 through the admin API on 2026-10-07
+    # (~23:4xZ), setting max_active and capacity_units both to 20.
+    "tenant:smoke": 20,
+    "tenant:u-owner": 80,
+    "tenant:u-sw-7d8af8": 4,
+}
+
+#: Pools archived issue 628 changes in dev.tfvars, which are NOT live until an operator sets
+#: them (`scripts/pool-limit.sh --pool provider:anthropic --limit 120`; the new
+#: per-tenant pool is created by the apply that adds smoke's provider). smoke
+#: declares anthropic so release acceptance can run its claude-code checks in
+#: smoke, which lifts the provider floor to 3 x provider_tenant = 120. Move
+#: these into LIVE_POOLS, with the date read, once they are live.
+PENDING_POOLS = {
+    # provider:anthropic was 120 here (archived issue 628); BROWSER-POOL-100 below raises it.
+    # provider_tenant 40 -> 100 (the owner, 2026-10-26, BROWSER-POOL-100's question):
+    # every per-tenant provider pool, and the platform-wide pools its floor
+    # forces (anthropic 2 x 100, openai 1 x 100).
+    "provider:anthropic:tenant:smoke": 100,
+    "provider:anthropic:tenant:eng": 100,
+    "provider:openai:tenant:eng": 100,
+    "provider:openai": 100,
+    # eng 45 -> 100 (the owner, 2026-10-26): min(max_active, capacity_units).
+    "tenant:eng": 100,
+    # BROWSER-POOL-100 (the owner, 2026-10-26, part of archived issue 2136): 100 browser units
+    # beside claude-code's 80 standard, so every pool both draw on is 180
+    # (dev.tfvars says why). This supersedes archived issue 628's provider:anthropic 120 and
+    # contract request 53's backend:GKE_AUTOPILOT 100. Live once an operator
+    # runs `scripts/pool-limit.sh --pool <pool> --limit <n>` for each.
+    "global": 180,
+    "backend:GKE_AUTOPILOT": 180,
+    "provider:anthropic": 200,
+    "resource:browser": 100,
+    # oracle-api's tenant (archived issue 1568): min(max_active 4, capacity_units 8).
+    "tenant:u-or-ef6b39": 4,
+}
+
+#: (max_active, capacity_units) of every live dev tenant, read 2026-10-02;
+#: smoke's as the owner set it on 2026-10-07 (it was (20, 8)), and eng's as
+#: the owner set it on 2026-10-07 (it was (40, 40)).
+LIVE_TENANTS = {
+    "eng": (45, 45),
+    "smoke": (20, 20),
+    "u-owner": (80, 80),
+    "u-sw-7d8af8": (4, 8),
+}
+
+#: Tenants dev.tfvars declares that are NOT live until the release that adds
+#: them applies. u-or-ef6b39 is oracle-api's own tenant (owner decision
+#: 2026-10-18, archived issue 1568), at swarm-verify's 4/8. Move it into LIVE_TENANTS, and
+#: its pool into LIVE_POOLS, with the date read, once it is live.
+PENDING_TENANTS = {
+    "u-or-ef6b39": (4, 8),
+    # The owner, 2026-10-26: one tenant may hold the 100 browser units.
+    "eng": (100, 100),
+}
+
+#: Live pools no tfvars key can create. `mock-provider` is the provider the mock
+#: runner reports at runtime (agent_worker.runners.mock); it is in no catalogue
+#: profile, so terraform materialises neither pool and `--check`, which compares
+#: only the names terraform derives, does not look at them.
+NOT_DERIVED_BY_TERRAFORM = {"provider:mock-provider", "provider:mock-provider:tenant:eng"}
+
+#: Live tenants that left dev.tfvars for a workspace record, and their pools.
+#: u-owner moved out of Terraform with lane W9 of archived issue 847 on 2026-10-09
+#: (terraform/infra forgot its documents with `removed` blocks, deleted on
+#: 2026-11-11 once the state held none of their addresses; docs/workspaces.md
+#: §3.3): its tenant and pool documents stay live at the values above, but no
+#: tfvars key states them any more, so they are recorded and not compared.
+MOVED_TO_WORKSPACES = {"u-owner"}
+WORKSPACE_POOLS = {"tenant:u-owner", "provider:anthropic:tenant:u-owner"}
+
+
+def _strip_comments(text: str) -> str:
+    return re.sub(r"(?m)#.*$", "", text)
+
+
+def _block(text: str, name: str) -> str:
+    """The body between the braces of the top-level `name = { ... }`."""
+    match = re.search(rf"(?m)^{re.escape(name)}\s*=\s*\{{", text)
+    assert match, f"no top-level `{name}` block in dev.tfvars"
+    depth, start = 1, match.end()
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i]
+    raise AssertionError(f"`{name}` block in dev.tfvars is not closed")
+
+
+def _entries(body: str) -> dict[str, str]:
+    """Top-level `key = value` entries of a block; nested blocks keep their body."""
+    out: dict[str, str] = {}
+    pos = 0
+    entry = re.compile(r'\s*"?([A-Za-z0-9_-]+)"?\s*=\s*')
+    while pos < len(body):
+        match = entry.match(body, pos)
+        if not match:
+            pos += 1
+            continue
+        key, pos = match.group(1), match.end()
+        if body[pos] == "{":
+            depth, start = 1, pos + 1
+            pos += 1
+            while depth:
+                depth += {"{": 1, "}": -1}.get(body[pos], 0)
+                pos += 1
+            out[key] = body[start : pos - 1]
+        else:
+            end = body.find("\n", pos)
+            end = len(body) if end == -1 else end
+            out[key] = body[pos:end].strip()
+            pos = end
+    return out
+
+
+def _numbers(body: str) -> dict[str, int]:
+    return {k: int(v) for k, v in _entries(body).items()}
+
+
+def _dev():
+    text = _strip_comments(DEV_TFVARS.read_text())
+    limits = _entries(_block(text, "pool_limits"))
+    tenants = {}
+    for name, body in _entries(_block(text, "tenants")).items():
+        cfg = _entries(body)
+        tenants[name] = {
+            "max_active": int(cfg["max_active"]) if "max_active" in cfg else None,
+            "capacity_units": int(cfg["capacity_units"]),
+            "providers": re.findall(r'"([^"]+)"', cfg.get("providers", "[]")),
+        }
+    return limits, tenants
+
+
+def _derived_pools() -> dict[str, int]:
+    limits, tenants = _dev()
+    glob = int(limits["global"])
+    default_tenant = int(limits["default_tenant"])
+    provider_tenant = int(limits["provider_tenant"])
+
+    def lookup(key: str, name: str) -> int:
+        return _numbers(limits.get(key, "")).get(name, glob)
+
+    pools = {"global": glob}
+    for t, cfg in tenants.items():
+        max_active = cfg["max_active"] if cfg["max_active"] is not None else default_tenant
+        pools[f"tenant:{t}"] = min(max_active, cfg["capacity_units"])
+    for name in RESOURCE_CLASSES:
+        pools[f"resource:{name}"] = lookup("resource_classes", name)
+    for name in RUNNER_PROFILES:
+        pools[f"runner:{name}"] = lookup("runner_profiles", name)
+    for backend in ("CLOUD_RUN_JOB", "GKE_AUTOPILOT"):
+        pools[f"backend:{backend}"] = lookup("backends", backend)
+    providers = {str(p.provider) for p in RUNNER_PROFILES.values() if p.provider}
+    for p in providers:
+        pools[f"provider:{p}"] = lookup("providers", p)
+    for t, cfg in tenants.items():
+        for p in cfg["providers"]:
+            pools[f"provider:{p}:tenant:{t}"] = provider_tenant
+    return pools
+
+
+def test_the_backends_in_the_catalogue_are_the_two_terraform_derives():
+    assert {getattr(resolve_backend(p), "value", resolve_backend(p)) for p in RUNNER_PROFILES.values()} <= {
+        "CLOUD_RUN_JOB",
+        "GKE_AUTOPILOT",
+    }
+
+
+def test_every_live_pool_terraform_derives_is_stated_at_its_live_value():
+    derived = _derived_pools()
+    drift = {
+        name: {"live": live, "tfvars": derived.get(name)}
+        for name, live in {**LIVE_POOLS, **PENDING_POOLS}.items()
+        if name not in NOT_DERIVED_BY_TERRAFORM | WORKSPACE_POOLS and derived.get(name) != live
+    }
+    assert not drift, f"dev.tfvars disagrees with the live pools: {drift}"
+
+
+def test_the_pools_tfvars_cannot_state_are_still_not_derived():
+    # If a catalogue profile ever names mock-provider, terraform starts creating
+    # these pools and they belong in the comparison above instead.
+    assert not NOT_DERIVED_BY_TERRAFORM & set(_derived_pools())
+
+
+def test_a_workspace_s_pools_and_limits_are_not_terraform_s():
+    # W9: a person's workspace is never in dev.tfvars, so terraform derives
+    # none of its pools. Each of these is in LIVE_POOLS, so the set is not
+    # empty by accident.
+    _, tenants = _dev()
+    assert WORKSPACE_POOLS <= set(LIVE_POOLS)
+    assert not WORKSPACE_POOLS & set(_derived_pools())
+    assert not MOVED_TO_WORKSPACES & set(tenants)
+    assert MOVED_TO_WORKSPACES <= set(LIVE_TENANTS)
+
+
+def test_every_live_tenant_limit_is_stated_at_its_live_value():
+    _, tenants = _dev()
+    stated = {t: (cfg["max_active"], cfg["capacity_units"]) for t, cfg in tenants.items()}
+    assert stated == {
+        **{t: v for t, v in LIVE_TENANTS.items() if t not in MOVED_TO_WORKSPACES},
+        **PENDING_TENANTS,
+    }
+
+
+def test_the_doubled_provider_pools_still_satisfy_the_provider_tenant_floor():
+    # variables.tf's pool_limits validation: a provider-wide pool below
+    # (tenants holding it) x provider_tenant fails the plan.
+    limits, tenants = _dev()
+    providers = _numbers(limits["providers"])
+    for p in {p for cfg in tenants.values() for p in cfg["providers"]}:
+        holders = sum(1 for cfg in tenants.values() if p in cfg["providers"])
+        floor = holders * int(limits["provider_tenant"])
+        assert providers.get(p, int(limits["global"])) >= floor, p
+
+
+#: BROWSER-POOL-100 (the owner, 2026-10-26, part of archived issue 2136): the browser pool
+#: provides 100 units, and they run BESIDE claude-code's 80 standard ones.
+BROWSER_UNITS = 100
+STANDARD_BESIDE = ("claude-code", 80)
+BROWSER_PROFILE = "claude-code-browser"
+
+
+def test_the_browser_class_provides_100_units():
+    limits, _ = _dev()
+    assert _numbers(limits["resource_classes"])["browser"] == BROWSER_UNITS
+
+
+def test_no_pool_a_browser_task_needs_binds_before_100_browser_units_beside_80_standard():
+    # Admission is all-or-nothing across pool_names_for() (invariant 2), so a
+    # browser ceiling of 100 means nothing if any other pool on the same list
+    # is smaller than what both workloads draw from it together. The tenant
+    # pools are left out: each is ONE tenant's ceiling, and no single tenant
+    # is meant to hold the whole fleet (dev.tfvars, beside pool_limits).
+    derived = _derived_pools()
+    demand: dict[str, int] = {}
+    for name, units in ((BROWSER_PROFILE, BROWSER_UNITS), (STANDARD_BESIDE[0], STANDARD_BESIDE[1])):
+        profile = RUNNER_PROFILES[name]
+        for pool in pool_names_for(
+            tenant_id="eng",
+            provider=profile.provider,
+            resource_class=profile.resource_class,
+            runner_profile=name,
+            backend=getattr(resolve_backend(profile), "value", resolve_backend(profile)),
+        ):
+            if pool.startswith("tenant:") or pool.endswith(":tenant:eng"):
+                continue
+            demand[pool] = demand.get(pool, 0) + units
+    # The browser profile's pools are all present, so the loop did run.
+    assert {"global", "resource:browser", f"runner:{BROWSER_PROFILE}", "backend:GKE_AUTOPILOT",
+            "provider:anthropic"} <= set(demand)
+    short = {pool: {"needs": need, "tfvars": derived[pool]} for pool, need in demand.items()
+             if derived[pool] < need}
+    assert not short, f"these pools bind before 100 browser units beside 80 standard: {short}"

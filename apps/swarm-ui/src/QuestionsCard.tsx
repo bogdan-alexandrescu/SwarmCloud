@@ -1,0 +1,661 @@
+/**
+ * "QUESTIONS FOR YOU": what the task's agent asked its owner (owner report
+ * 2026-10-13, part of archived issue 1206: "what does it mean 'your agent asked a
+ * question' as a notification, there is nothing on the agent page about
+ * questions").
+ *
+ * An agent that meets a decision that is the owner's writes it into
+ * `questions.json` instead of guessing; the worker validates the file and
+ * counts it in `result_summary.questions`, and the bell says "Your agent
+ * asked N question(s)". This card is where that notification lands: the
+ * top of the task's Details (`/agents/<list>/<id>#questions`), each question
+ * with its context, its options with their descriptions, and the
+ * recommended one marked -- read from `GET /v1/tasks/{id}/questions`, the
+ * file the worker validated, redacted by the artifact read.
+ *
+ * THE OWNER ANSWERS HERE (owner decision 2026-10-13, "Yes, pick an option on
+ * the task"; lane TASK-ANSWERS). Each question's options are radio buttons,
+ * the recommended one marked, with "Other…" for the person's own words, and
+ * Answer posts `POST /v1/tasks/{id}/answers`. The answer is stored ON THE
+ * TASK, where whoever launched the agent reads it beside the questions
+ * (`swarm_result`'s `owner_answers`), and once every question is answered the
+ * bell stops asking. A saved answer is drawn with who gave it and when, and
+ * "Change" reopens the options with it picked; the API keeps the replaced one.
+ * An answer given in Claude Code says so: see `AnsweredInClaudeCode`.
+ * Only the task's submitter or an admin may answer: the API says whether this
+ * viewer may (`may_answer`) and why not, and the card draws the buttons
+ * disabled with that reason rather than guessing the rule itself.
+ *
+ * OPENING IT READS THE NOTIFICATION. When the card is drawn with questions,
+ * the bell's `task:questions:<id>` item is marked read through the feed's own
+ * `markRead`, once, and only while the feed lists it unread.
+ *
+ * NOTHING IS READ FOR A TASK THAT ASKED NONE: the count is on the task
+ * document already, so a task without questions costs no request.
+ *
+ * A BLOCKING QUESTION HOLDS THE AGENT (lane AU-7, docs/design/agent-autonomy.md
+ * §3.9). An agent that asked with `"blocking": true` is parked until the owner
+ * answers, holding no capacity. Its questions are in the park's
+ * `question_wait` record (`blocked_by`, then `metadata` once swarm-api has
+ * adopted it), not in a result summary, so they are counted from there. The
+ * read says so in `waiting`: while it is open the card leads with "this agent
+ * is waiting for you", how many blocking questions are left and when it is
+ * ended unanswered (72 hours), marks each blocking question, and says the
+ * same answer can be given by `/answer <n> <option>` on the agent's issue,
+ * linked when it was posted. The last blocking answer resumes the agent; the
+ * card then says it resumed.
+ */
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+
+import { answerQuestion, loadQuestions, type AgentQuestion, type OwnerAnswer, type TaskQuestions } from './api'
+import { Button, buttonClass, Chip, Tooltip } from './components'
+import { errorHeading, type ApiError, type Result } from './fetch'
+import { humanReady, ownerQuestionsHold, type HeldQuestion } from './Handoff'
+import { feedData, markRead, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
+import { addressToPath } from './paths'
+import { useRoleGate } from './Profile'
+import { useRead } from './RunFiles'
+import { timeAgo, type Task } from './types'
+
+/** The "Other…" pick: the person's own words instead of one of the options. */
+const OTHER = '\u0000other'
+
+/** The longest free-text answer the API takes (`agent_questions.MAX_ANSWER_CHARS`). */
+const MAX_ANSWER_CHARS = 2000
+
+/** A served question, with whether it holds the agent (AU-7). */
+type WaitedQuestion = AgentQuestion & { blocking?: boolean }
+
+/** `waiting` on the read of a question wait (`agent_questions._serve_wait`). */
+interface QuestionWait {
+  open: boolean
+  blocking: number[]
+  unanswered: number[]
+  asked_at: string | null
+  expires_at: string | null
+  issue_comment_url: string | null
+  /**
+   * The skill that asked a plugin step's bridged question
+   * (`agent_questions.asked_by_skill`); null when not known (a read from
+   * before it was served omits it, and is drawn the same).
+   */
+  skill: string | null
+}
+
+type QuestionsRead = TaskQuestions & { waiting?: QuestionWait }
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/** The question wait the task is parked on, else the one it last had, else null. */
+function questionWaitOf(task: Partial<Pick<Task, 'blocked_by' | 'metadata'>> | null): { questions: unknown[] } | null {
+  for (const b of task?.blocked_by ?? []) {
+    const w = (b as Record<string, unknown>).question_wait
+    if (isRecord(w) && Array.isArray(w.questions) && w.questions.length > 0) return { questions: w.questions }
+  }
+  const m = task?.metadata?.question_wait
+  return isRecord(m) && Array.isArray(m.questions) && m.questions.length > 0 ? { questions: m.questions } : null
+}
+
+/**
+ * How many questions the worker validated in the task's `questions.json`, else
+ * how many its question wait holds (AU-7), else 0.
+ */
+export function questionCount(task: Partial<Pick<Task, 'result_summary' | 'blocked_by' | 'metadata'>> | null): number {
+  const n = (task?.result_summary as Record<string, unknown> | null | undefined)?.questions
+  if (typeof n === 'number' && Number.isInteger(n) && n > 0) return n
+  return questionWaitOf(task)?.questions.length ?? 0
+}
+
+/**
+ * The worker's reason for not taking the task's `questions.json`
+ * (`questions: 0` with `questions_rejected`, archived issue 3086), or null when it took the
+ * file or there was none.
+ */
+export function questionsRejected(task: Partial<Pick<Task, 'result_summary'>> | null): string | null {
+  const why = (task?.result_summary as Record<string, unknown> | null | undefined)?.questions_rejected
+  return typeof why === 'string' && why.trim() !== '' ? why : null
+}
+
+/**
+ * Who asked a plugin step's question: the skill's name in a chip, the way
+ * Needs you says it; nothing at all when the read served none (no new visible
+ * prose, the console rule of 5 November 2026).
+ */
+function AskingSkill({ skill }: { skill: string | null | undefined }) {
+  const name = typeof skill === 'string' ? skill.trim() : ''
+  if (name === '') return null
+  return (
+    <>
+      <Chip title={`The plugin skill ${name} asked these questions`}>asked by {name}</Chip>{' '}
+    </>
+  )
+}
+
+/** The lead of a card whose agent is parked on its blocking questions, or says it resumed. */
+function WaitingNote({ wait, taskId }: { wait: QuestionWait; taskId: string }) {
+  if (!wait.open) {
+    return (
+      <p className="dt-note qc-waiting" data-waiting="resumed">
+        <AskingSkill skill={wait.skill} />
+        This agent waited on these and was resumed when its blocking questions were answered.
+      </p>
+    )
+  }
+  const left = wait.unanswered.length
+  return (
+    <div className="dt-note qc-waiting" role="status" data-waiting="open">
+      <p>
+        <AskingSkill skill={wait.skill} />
+        <b>This agent is waiting for you.</b> It is parked, holding no capacity, until{' '}
+        {left === 1 ? 'the blocking question below is' : `the ${left} blocking questions below are`} answered; the last
+        answer resumes it.
+        {wait.expires_at ? ` Unanswered, it is ended ${new Date(wait.expires_at).toLocaleString()}.` : ''}
+      </p>
+      <p>
+        You can also answer on its issue: reply <code>/answer &lt;n&gt; &lt;option&gt;</code>
+        {wait.issue_comment_url ? (
+          <>
+            {' '}
+            to{' '}
+            <a href={wait.issue_comment_url} target="_blank" rel="noreferrer">
+              the questions SwarmCloud posted for {taskId}
+            </a>
+          </>
+        ) : null}
+        .
+      </p>
+    </div>
+  )
+}
+
+/** The bell's item for this task's questions (`notifications.agent_questions`). */
+export function questionsNotificationId(taskId: string): string {
+  return `task:questions:${taskId}`
+}
+
+/** `1 question`, `2 questions`. */
+function questionsWord(n: number): string {
+  return `${n} question${n === 1 ? '' : 's'}`
+}
+
+/** Who started the agent, as the card names them: the workflow, then the person. */
+function launcher(task: Task): string {
+  const by = task.submitted_by ? ` (${task.submitted_by})` : ''
+  return task.workflow_id ? `whoever launched workflow ${task.workflow_id}${by}` : `whoever launched this agent${by}`
+}
+
+/** Mark the bell's item read once the card is on screen, while the feed lists it unread. */
+function useReadsNotification(taskId: string, shown: boolean): void {
+  const feed = useSyncExternalStore(subscribeNotifications, notificationsSnapshot, notificationsSnapshot)
+  const done = useRef<string | null>(null)
+  const id = questionsNotificationId(taskId)
+  const unread = feedData(feed)?.items.some((i) => i.id === id && !i.read) ?? false
+  useEffect(() => {
+    if (!shown || !unread || done.current === id) return
+    done.current = id
+    void markRead([id])
+  }, [shown, unread, id])
+}
+
+/** The option row's content: its label, the recommended chip, its description. */
+function OptionBody({ q, label, description }: { q: AgentQuestion; label: string | null; description: string | null }) {
+  const rec = q.recommended !== null && label === q.recommended
+  return (
+    <>
+      <b className="qc-label">{label ?? '—'}</b>
+      {rec && <span className="dt-chip qc-rec">recommended</span>}
+      {description && <span className="qc-desc">{description}</span>}
+    </>
+  )
+}
+
+/** The saved answer: what, who and when, and "Change" for a viewer who may answer. */
+function SavedAnswer({ a, name, onChange }: { a: OwnerAnswer; name: string; onChange: (() => void) | null }) {
+  return (
+    <>
+      <div className="qc-saved" role="group" aria-label={`Your answer to ${name}`}>
+        <span className="qc-saved-what">
+          Answered: {a.choice && <b>{a.choice}</b>}
+          {a.choice && a.text && ' — '}
+          {a.text && <span className="qc-saved-text">{a.text}</span>}
+        </span>
+        <span className="dt-note qc-saved-who">
+          {a.by ?? 'someone'}
+          {a.at ? `, ${timeAgo(a.at)}` : ''}
+          {a.history.length > 0 ? ` · changed ${a.history.length}×` : ''}
+        </span>
+        {onChange && (
+          <Button size="sm" kind="ghost" onClick={onChange}>
+            Change
+          </Button>
+        )}
+      </div>
+      {a.via === 'claude-code' && <AnsweredInClaudeCode a={a} />}
+    </>
+  )
+}
+
+/**
+ * AN ANSWER GIVEN IN CLAUDE CODE SAYS SO (ANSWER-SYNC-UI, part of archived issue 1644; owner
+ * decision 2026-10-19, "Plugin records it, marked as from Claude Code"). The
+ * plugin's swarm_task_answer posts the person's own pick from a question the
+ * orchestrating session asked them, with `via: 'claude-code'` and the session
+ * id; under that answer the card writes "answered in Claude Code (session
+ * ce05454f), 3h ago", so whoever reads it here can find the conversation it
+ * was settled in. A console answer, or one stored before `via` was, has no
+ * line and looks as it did.
+ *
+ * It sits in the question's column (`qc-q`, `min-width: 0`), and
+ * `qc-saved-text` is the saved answer's own wrapping rule (`overflow-wrap:
+ * anywhere`), so nothing in it runs past the card at 390 px.
+ */
+function AnsweredInClaudeCode({ a }: { a: OwnerAnswer }) {
+  const session = a.session ? ` (session ${a.session.slice(0, 8)})` : ''
+  return (
+    <p className="dt-note qc-saved-text qc-via">
+      answered in Claude Code{session}
+      {a.at ? `, ${timeAgo(a.at)}` : ''}
+    </p>
+  )
+}
+
+function Question({
+  q,
+  n,
+  taskId,
+  mayAnswer,
+  onSaved,
+  name = `question ${n}`,
+}: {
+  q: WaitedQuestion
+  /** Its number in its own task's file: the answer is posted for index `n - 1`. */
+  n: number
+  taskId: string
+  mayAnswer: boolean
+  onSaved: (fresh: TaskQuestions) => void
+  /** How its controls are named; a held question names its asking step (archived issue 2313). */
+  name?: string
+}) {
+  const saved = q.answer ?? null
+  const [editing, setEditing] = useState(saved === null)
+  const [pick, setPick] = useState<string | null>(saved?.choice ?? (saved?.text ? OTHER : null))
+  const [text, setText] = useState(saved?.choice ? '' : (saved?.text ?? ''))
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<ApiError | null>(null)
+  const ownWords = text.trim()
+  const ready = mayAnswer && !busy && (pick === OTHER ? ownWords.length > 0 && ownWords.length <= MAX_ANSWER_CHARS : pick !== null)
+
+  const submit = async (): Promise<void> => {
+    if (!ready || pick === null) return
+    setBusy(true)
+    setFailed(null)
+    const r = await answerQuestion(taskId, {
+      question_index: n - 1,
+      choice: pick === OTHER ? null : pick,
+      text: pick === OTHER ? ownWords : null,
+    })
+    setBusy(false)
+    if (r.status === 'ok' || r.status === 'stale') {
+      setEditing(false)
+      onSaved(r.data)
+    } else if (r.status === 'error') {
+      setFailed(r.error)
+    }
+  }
+
+  return (
+    <li className="qc-q">
+      <p className="qc-text">
+        <span className="qc-n">{n}.</span> {q.question ?? '—'}
+        {q.blocking === true && (
+          <>
+            {' '}
+            <span className="dt-chip qc-blocking">blocking</span>
+          </>
+        )}
+      </p>
+      {q.context && <p className="dt-note qc-context">{q.context}</p>}
+      {!editing && saved !== null ? (
+        <>
+          <ul className="qc-options" aria-label={`Options for ${name}`}>
+            {q.options.map((o, i) => {
+              const rec = q.recommended !== null && o.label === q.recommended
+              const chosen = saved.choice !== null && o.label === saved.choice
+              return (
+                <li key={`${i}:${o.label ?? ''}`} className={`qc-option${rec ? ' is-recommended' : ''}${chosen ? ' is-chosen' : ''}`}>
+                  <OptionBody q={q} label={o.label} description={o.description} />
+                </li>
+              )
+            })}
+          </ul>
+          <SavedAnswer a={saved} name={name} onChange={mayAnswer ? () => setEditing(true) : null} />
+        </>
+      ) : (
+        <div className="qc-pickset" role="radiogroup" aria-label={`Answer ${name}`}>
+          <ul className="qc-options" aria-label={`Options for ${name}`}>
+            {q.options.map((o, i) => {
+              const rec = q.recommended !== null && o.label === q.recommended
+              const on = o.label !== null && pick === o.label
+              return (
+                <li key={`${i}:${o.label ?? ''}`} className={`qc-option${rec ? ' is-recommended' : ''}${on ? ' is-chosen' : ''}`}>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    className="qc-pick"
+                    disabled={!mayAnswer || busy || o.label === null}
+                    onClick={() => setPick(o.label)}
+                  >
+                    <OptionBody q={q} label={o.label} description={o.description} />
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+          <div className={`qc-option qc-other${pick === OTHER ? ' is-chosen' : ''}`}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={pick === OTHER}
+              className="qc-pick"
+              disabled={!mayAnswer || busy}
+              onClick={() => setPick(OTHER)}
+            >
+              <b className="qc-label">Other…</b>
+              <span className="qc-desc">your own answer</span>
+            </button>
+            {pick === OTHER && (
+              <textarea
+                className="qc-own"
+                aria-label={`Your own answer to ${name}`}
+                maxLength={MAX_ANSWER_CHARS}
+                rows={3}
+                value={text}
+                disabled={!mayAnswer || busy}
+                onChange={(e) => setText(e.target.value)}
+              />
+            )}
+          </div>
+          <div className="qc-actions">
+            <Button size="sm" kind="primary" disabled={!ready} busy={busy ? 'Saving…' : false} onClick={() => void submit()}>
+              Answer
+            </Button>
+            {saved !== null && mayAnswer && (
+              <Button size="sm" kind="ghost" disabled={busy} onClick={() => setEditing(false)}>
+                Keep the saved answer
+              </Button>
+            )}
+          </div>
+          {failed && <p className="dt-note qc-failed">The answer was not saved: {errorHeading(failed)}</p>}
+        </div>
+      )}
+    </li>
+  )
+}
+
+/**
+ * The card, at the top of Details; nothing when the agent asked none. `id` is
+ * the section's id, `questions` by default (the agent page's `#questions`); a
+ * page that mounts one card per step passes its own, so ids never repeat.
+ * A `questions.json` the worker did not take counts 0 and is still drawn
+ * (archived issue 3086): the read answers `unavailable` with the reason, never "none".
+ */
+export function QuestionsCard({ task, id = 'questions' }: { task: Task; id?: string }) {
+  const count = questionCount(task)
+  if (count === 0 && questionsRejected(task) === null) return null
+  return <AskedCard task={task} count={count} id={id} />
+}
+
+function AskedCard({ task, count, id }: { task: Task; count: number; id: string }) {
+  // Keyed on the attempt count and the state, so a re-run's file is read once
+  // it ends and a parked agent's questions are read again once it resumes.
+  const { state } = useRead<QuestionsRead>(
+    () => loadQuestions(task.id) as Promise<Result<QuestionsRead>>,
+    task.id,
+    `${task.attempt_count}:${task.state}`,
+    null,
+  )
+  // What the last saved answer returned, until the next read of the questions.
+  const [fresh, setFresh] = useState<QuestionsRead | null>(null)
+  const read = state.status === 'ok' || state.status === 'stale' ? state.data : null
+  const data = fresh ?? read
+  // A VIEWER ANSWERS NOTHING (docs/design/workspace-roles.md §4.8): the
+  // submitter's own rule stays, and `member` is required on top of it. The
+  // server still decides (`role_member_required`).
+  const roleGate = useRoleGate('member', 'answer')
+  // Absent from an API older than answers: nobody may answer there.
+  const mayAnswer = data?.may_answer === true && roleGate === null
+  const questions = data?.status === 'ok' ? data.questions : []
+  useReadsNotification(task.id, questions.length > 0)
+  const who = task.step_id ? `This agent (step ${task.step_id})` : 'This agent'
+
+  return (
+    <section id={id} className="dt-card qc" aria-label="Questions for you">
+      <div className="dt-card-head">
+        {/* AN h2, AS EVERY DETAILS CARD'S TITLE IS (DtCardHead), so the pane's
+            headings outline lists it; `.dt-card-head > h2` draws it as the `<b>` was. */}
+        <h2>Questions for you</h2>
+        <span className="dt-card-r">
+          <span className="dt-chip">{questionsWord(count)}</span>
+        </span>
+      </div>
+      {data?.status === 'ok' && data.waiting && <WaitingNote wait={data.waiting} taskId={task.id} />}
+      {count === 0 ? (
+        <p className="dt-note" data-questions-rejected="">
+          {who} wrote questions.json and the platform did not take it, so nothing in it can be answered here.
+        </p>
+      ) : (
+        <p className="dt-note">
+          {who} asked you {count === 1 ? 'this' : 'these'} instead of guessing. Pick an option or write your own: the
+          answer is stored on this agent, where {launcher(task)} reads it with swarm_result.
+        </p>
+      )}
+      {data !== null && data.status === 'ok' && roleGate !== null && (
+        <p className="dt-note qc-why-not" data-role-gate="member">
+          {roleGate}
+        </p>
+      )}
+      {data !== null && data.status === 'ok' && data.may_answer !== true && (
+        <p className="dt-note qc-why-not">
+          You can read these but not answer them: {data.may_answer_because ?? 'the API did not say you may answer'}.
+        </p>
+      )}
+      {state.status === 'loading' ? (
+        <p className="dt-note">Reading the questions…</p>
+      ) : state.status === 'error' ? (
+        <p className="dt-note">The questions could not be read: {errorHeading(state.error)}</p>
+      ) : data === null || data.status === 'none' ? (
+        <p className="dt-note">
+          The questions could not be read: {count === 0 ? questionsRejected(task) : 'the API served none'}.
+        </p>
+      ) : data.status === 'unavailable' ? (
+        <p className="dt-note">The questions could not be read: {data.unavailable_because ?? 'the API did not say why'}.</p>
+      ) : (
+        <ol className="qc-list">
+          {questions.map((q, i) => (
+            <Question
+              key={`${i}:${q.answer?.at ?? ''}`}
+              q={q}
+              n={i + 1}
+              taskId={task.id}
+              mayAnswer={mayAnswer}
+              onSaved={setFresh}
+            />
+          ))}
+        </ol>
+      )}
+      {data !== null && data.redacted && (
+        <p className="dt-note">{data.redaction_count} value(s) that looked like a credential are masked.</p>
+      )}
+    </section>
+  )
+}
+
+/**
+ * "QUESTIONS HOLDING THIS MERGE" (MERGE-PARK-QUESTIONS, archived issue 2313). A merge step
+ * whose review named unanswered owner questions parks PARKED(HUMAN_REQUIRED)
+ * on them (`ownerQuestionsHold`); the console drew a browser hand-off for it,
+ * and the owner asked why a merge needs a browser and their input (2026-10-25). It
+ * needs neither a browser nor a Ready press: the answer that clears the last
+ * named question resumes it on its own (QUESTION-WAKE).
+ *
+ * So the questions are drawn here, each under the step that asked it and
+ * linked to that task, with THE SAME answer control as "Questions for you"
+ * (`Question`): the asking task's own questions are read
+ * (`GET /v1/tasks/{asking}/questions`), only the named indices are drawn, and
+ * an answer is posted to the ASKING task -- where the answer route stores it
+ * and wakes this merge in the same transaction. Who may answer is the API's
+ * `may_answer` on that read, never a guess here.
+ *
+ * A hold the answer route cannot read whole (an `unreadable` entry) fails
+ * closed there and wakes nothing; only then does this card offer the
+ * re-run (`human-ready`), saying why.
+ */
+export function HeldQuestionsCard({ task, id = 'held-questions' }: { task: Task; id?: string }) {
+  const hold = ownerQuestionsHold(task)
+  if (hold === null) return null
+  return <HeldCard task={task} questions={hold.questions} unreadable={hold.unreadable} id={id} />
+}
+
+function HeldCard({ task, questions, unreadable, id }: { task: Task; questions: HeldQuestion[]; unreadable: number; id: string }) {
+  const roleGate = useRoleGate('member', 'answer')
+  const asking = [...new Set(questions.map((q) => q.task_id))]
+  const n = questions.length
+  return (
+    <section id={id} className="dt-card qc qc-held" aria-label="Questions holding this merge">
+      <div className="dt-card-head">
+        <h2>Questions holding this merge</h2>
+        <span className="dt-card-r">
+          <span className="dt-chip">{questionsWord(n)}</span>
+        </span>
+      </div>
+      <p className="dt-note qc-waiting" role="status">
+        <b>This merge is waiting for your answers.</b> It is parked, holding no capacity, until{' '}
+        {n === 1 ? 'the question below is' : `the ${n} questions below are`} answered.{' '}
+        {unreadable > 0
+          ? 'It needs no browser, and it reads every answer again before it merges.'
+          : 'It needs no browser and no Ready: the last answer resumes it on its own, and it reads every answer again before it merges.'}
+      </p>
+      {roleGate !== null && (
+        <p className="dt-note qc-why-not" data-role-gate="member">
+          {roleGate}
+        </p>
+      )}
+      {asking.map((id) => (
+        <AskedBy key={id} taskId={id} rows={questions.filter((q) => q.task_id === id)} roleGate={roleGate} />
+      ))}
+      {unreadable > 0 && <UnreadableHold task={task} unreadable={unreadable} />}
+    </section>
+  )
+}
+
+/** One asking task's held questions: a link to it, and each named question with the answer control. */
+function AskedBy({ taskId, rows, roleGate }: { taskId: string; rows: HeldQuestion[]; roleGate: string | null }) {
+  const { state } = useRead<TaskQuestions>(() => loadQuestions(taskId), taskId, taskId, null)
+  const [fresh, setFresh] = useState<TaskQuestions | null>(null)
+  const read = state.status === 'ok' || state.status === 'stale' ? state.data : null
+  const data = fresh ?? read
+  const mayAnswer = data?.may_answer === true && roleGate === null
+  const step = rows.find((r) => r.step_id !== null)?.step_id ?? null
+  const served = data?.status === 'ok' ? data.questions : null
+  return (
+    <div className="qc-asker" data-asking={taskId}>
+      <p className="qc-asker-head">
+        Asked by {step !== null ? <>step <b>{step}</b> · </> : null}
+        <a className="ctl-link qc-asker-link" href={addressToPath(`work/task/${encodeURIComponent(taskId)}`, 'recent')}>
+          {taskId}
+        </a>
+      </p>
+      {data !== null && data.status === 'ok' && data.may_answer !== true && (
+        <p className="dt-note qc-why-not">
+          You can read these but not answer them: {data.may_answer_because ?? 'the API did not say you may answer'}.
+        </p>
+      )}
+      {state.status === 'loading' && data === null ? (
+        <p className="dt-note">Reading its questions…</p>
+      ) : (
+        <ol className="qc-list">
+          {rows.map((r) => {
+            const q = served?.[r.question_index]
+            const name = `${step ?? taskId} question ${r.question_index + 1}`
+            if (q === undefined) {
+              const why =
+                state.status === 'error'
+                  ? errorHeading(state.error)
+                  : data?.status === 'unavailable'
+                    ? (data.unavailable_because ?? 'the API did not say why')
+                    : 'its task serves no question at that number'
+              return (
+                <li key={r.question_index} className="qc-q">
+                  <p className="qc-text">
+                    <span className="qc-n">{r.question_index + 1}.</span> {r.question ?? '—'}
+                  </p>
+                  <p className="dt-note qc-failed">This question could not be read to answer here: {why}.</p>
+                </li>
+              )
+            }
+            return (
+              <Question
+                key={`${r.question_index}:${q.answer?.at ?? ''}`}
+                q={q}
+                n={r.question_index + 1}
+                taskId={taskId}
+                mayAnswer={mayAnswer}
+                onSaved={setFresh}
+                name={name}
+              />
+            )
+          })}
+        </ol>
+      )}
+    </div>
+  )
+}
+
+/** What the re-run below does, behind the (i) (10 November 2026): the ready is recorded, and the merge goes on. */
+const UNREADABLE_READY_TIP =
+  'No answer can clear an entry the merge cannot read, so the re-run is the way on. It is recorded as your ready for ' +
+  "this review's verdict at this head, and the merge goes on past those entries. It still waits for every question it " +
+  "can read, checks the owner's picks were built, and waits for the checks. A newer review or a new head holds it " +
+  'again until someone says ready again.'
+
+/** The one case a person's re-run is the way back: a hold the answer route cannot read whole. */
+function UnreadableHold({ task, unreadable }: { task: Task; unreadable: number }) {
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<ApiError | null>(null)
+  const [done, setDone] = useState(false)
+  const press = async (): Promise<void> => {
+    setBusy(true)
+    setFailed(null)
+    const r = await humanReady(task.id)
+    setBusy(false)
+    if (r.status === 'error') setFailed(r.error)
+    else setDone(true)
+  }
+  return (
+    <div className="dt-note qc-unreadable">
+      <p>
+        {unreadable === 1 ? 'One entry' : `${unreadable} entries`} the review named could not be read: a ready from a member
+        lets the merge go on past {unreadable === 1 ? 'it' : 'them'}.{' '}
+        <Tooltip tip={UNREADABLE_READY_TIP}>
+          <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label="About going on past entries the merge cannot read">
+            <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <circle cx="12" cy="12" r="8.5" />
+              <path d="M12 11v5.5M12 7.75v.01" />
+            </svg>
+          </button>
+        </Tooltip>
+      </p>
+      {done ? (
+        <p>Re-run asked for: the merge reads the answers again when it next starts.</p>
+      ) : (
+        <Button size="sm" kind="secondary" disabled={busy} busy={busy ? 'Asking…' : false} onClick={() => void press()}>
+          Re-run the merge
+        </Button>
+      )}
+      {failed && <p className="qc-failed">The re-run was not asked for: {errorHeading(failed)}</p>}
+    </div>
+  )
+}

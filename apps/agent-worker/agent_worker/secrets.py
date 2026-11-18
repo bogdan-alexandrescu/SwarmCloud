@@ -1,0 +1,658 @@
+"""Tenant provider credentials.
+
+Invariant 9: a tenant's provider key must never be reachable from another
+tenant's pod. Three things enforce it, and this module is the last of them:
+
+1. the secret is named `swarm-tenant-<tenant>-<provider>` -- the name comes from
+   the frozen `Tenant.secret_name()`, never from anything a caller supplied;
+2. IAM grants the tenant's own service account access to exactly that secret,
+   and the worker runs as that service account, so a worker that asked for
+   another tenant's secret would be denied by Google rather than by this code;
+3. the value is registered with the logger for redaction the moment it is read,
+   and is passed to the child through its environment only -- never through
+   argv, never written to the workspace, never included in an artifact.
+
+A tenant that has not registered a key for the provider its runner needs is not
+an error: the task parks as CREDENTIAL_MISSING, which costs nothing, and starts
+again by itself once an admin adds the key.
+
+**Only the variables the frozen profile declares are exported.** The secret
+payload may be a JSON object, and an earlier version of this module copied every
+upper-case key in it into the child's environment. That turned
+`roles/secretmanager.secretVersionAdder` -- which per-tenant admins hold, and
+which deliberately does NOT allow reading the key back -- into arbitrary process
+execution, because the runner reads `CLAUDE_CODE_BIN`, `CLAUDE_CODE_ARGS`,
+`PATH` and `HTTPS_PROXY` from that same environment. The allowlist is
+`RunnerProfile.secrets`, which comes from the frozen catalogue; anything else in
+the payload is ignored and named in a warning so a misnamed key is diagnosable
+without being obeyed.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from dataclasses import dataclass
+from typing import Any, Callable, Mapping, TypeVar
+
+from swarm_common.models import FORGE_CREDENTIAL, Tenant, utcnow
+
+from . import indexrun
+
+
+class SecretError(RuntimeError):
+    pass
+
+
+class CredentialMissing(RuntimeError):
+    """The tenant has no key registered for this provider."""
+
+    def __init__(self, tenant_id: str, provider: str) -> None:
+        super().__init__(f"tenant {tenant_id} has no {provider} credential registered")
+        self.tenant_id = tenant_id
+        self.provider = provider
+
+
+class ForgeWriteRefused(RuntimeError):
+    """The task's forge credential does not allow this write (docs/onboarding.md §3.3).
+
+    `cause` is the worker's word for why (a read grant, a revoked grant, an
+    unreadable one); `reason` says it in a sentence. Neither holds a value.
+    """
+
+    def __init__(self, cause: str, reason: str) -> None:
+        super().__init__(f"{cause}: {reason}")
+        self.cause = cause
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class ResolvedCredentials:
+    env: dict[str, str]
+    secret_names: tuple[str, ...]
+
+
+def load_tenant(
+    db: Any, tenant_id: str, *, call_options: dict[str, Any] | None = None
+) -> Tenant:
+    """Read this worker's OWN tenant document.
+
+    `tenant_id` is the worker's admitted tenant, never anything a caller
+    supplied, and the document is rejected if it carries a different id: a
+    `tenants/{id}` document whose `tenant_id` field says something else is
+    either corruption or another tenant writing into this one's record, and
+    trusting it would pick the wrong secret name two lines later.
+
+    `call_options` is the read's `retry` and `timeout`. The lifecycle passes
+    its startup budget before the runner starts (`ControlPlane.call_options`),
+    and the mid-run `tenant` budget for a credential reload
+    (`control.MID_RUN_BUDGETS`, archived issue 70).
+
+    A tenant switched to the state routes passes its attempt's state client
+    as `db` (`indexrun.state_routes`): the document is `GET state/context`'s
+    `tenant`, the id derived by swarm-api from the attempt's tuple, and no
+    Firestore call is made. The checks below are the same on both paths.
+    """
+    state = indexrun.state_routes(db)
+    if state is not None:
+        from .statecall import StateRefused  # lazy: statecall -> children -> inputs
+
+        try:
+            found = indexrun.route_context(state).get("tenant")
+        except StateRefused as refused:
+            if refused.code != "state_conflict":
+                raise
+            # swarm-api's own refusal of a `tenants/<id>` naming another tenant.
+            raise SecretError(
+                f"tenants/{tenant_id} declares another tenant_id; refusing to resolve "
+                "credentials against a document that belongs to another tenant"
+            ) from None
+        if not isinstance(found, Mapping):
+            raise SecretError(f"tenant {tenant_id} does not exist")
+        data: Mapping[str, Any] = found
+    else:
+        snap = db.collection("tenants").document(tenant_id).get(**dict(call_options or {}))
+        if not snap.exists:
+            raise SecretError(f"tenant {tenant_id} does not exist")
+        data = snap.to_dict() or {}
+    stored = data.get("tenant_id")
+    if stored is not None and stored != tenant_id:
+        raise SecretError(
+            f"tenants/{tenant_id} declares tenant_id {stored!r}; refusing to resolve "
+            "credentials against a document that belongs to another tenant"
+        )
+    return Tenant(
+        tenant_id=tenant_id,
+        kind=data.get("kind", "group"),
+        principal=data.get("principal", ""),
+        created_at=data.get("created_at") or utcnow(),
+        display_name=data.get("display_name"),
+        max_active=int(data.get("max_active", 20)),
+        capacity_units=int(data.get("capacity_units", 40)),
+        monthly_budget_usd=data.get("monthly_budget_usd"),
+        enabled=bool(data.get("enabled", True)),
+        credentials=list(data.get("credentials", [])),
+        service_account=data.get("service_account"),
+        gcs_prefix=data.get("gcs_prefix"),
+        namespace=data.get("namespace"),
+    )
+
+
+class SecretManagerClient:
+    """Thin wrapper so the lifecycle can be tested without Secret Manager."""
+
+    def __init__(self, project_id: str, client: Any | None = None) -> None:
+        self._project_id = project_id
+        self._client = client
+
+    def _get(self) -> Any:
+        if self._client is None:
+            from google.cloud import secretmanager  # lazy import
+
+            self._client = secretmanager.SecretManagerServiceClient()
+        return self._client
+
+    def access(self, secret_name: str, version: str = "latest") -> str:
+        name = f"projects/{self._project_id}/secrets/{secret_name}/versions/{version}"
+        response = self._get().access_secret_version(request={"name": name})
+        return response.payload.data.decode("utf-8")
+
+
+def resolve_credentials(
+    *,
+    tenant: Tenant,
+    provider: str | None,
+    secret_env_names: tuple[str, ...],
+    any_of: bool = False,
+    client: SecretManagerClient,
+    logger: Any,
+) -> ResolvedCredentials:
+    """Fetch the tenant's key for `provider` and shape it into child env vars.
+
+    The secret payload is either a bare key or a JSON object mapping env var
+    names to values, which is what lets a runner that needs two variables (a key
+    and a base URL, say) keep using one per-tenant-per-provider secret.
+
+    Exactly the names in `secret_env_names` -- the frozen profile's `secrets`
+    tuple -- are exported. Every other key in the payload is dropped, because
+    the child's environment also decides which binary the runner starts and how
+    its libraries are loaded, and whoever can add a secret version is explicitly
+    not trusted with that.
+    """
+    if not provider or not secret_env_names:
+        return ResolvedCredentials(env={}, secret_names=())
+    if provider not in tenant.credentials:
+        raise CredentialMissing(tenant.tenant_id, provider)
+
+    secret_name = tenant.secret_name(provider)
+    payload = client.access(secret_name)
+    env: dict[str, str] = {}
+    ignored: list[str] = []
+    parsed: Any = None
+    stripped = payload.strip()
+    if stripped.startswith("{"):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            parsed = None
+    if isinstance(parsed, dict):
+        for key, value in parsed.items():
+            if key in secret_env_names:
+                if isinstance(value, (str, int, float)):
+                    env[key] = str(value)
+                continue
+            ignored.append(str(key))
+    else:
+        for name in secret_env_names:
+            env[name] = stripped
+
+    if ignored:
+        logger.warning(
+            "ignoring secret payload keys the runner profile does not declare",
+            secret=secret_name,
+            provider=provider,
+            ignored=sorted(ignored)[:20],
+            declared=sorted(secret_env_names),
+        )
+
+    missing = [name for name in secret_env_names if name not in env]
+    if any_of:
+        # The declared names are INTERCHANGEABLE, not a set that must all be
+        # present: claude-code takes either metered API access or a Claude
+        # subscription token, and a tenant has exactly one. Requiring all of
+        # them would refuse a JSON secret that supplies precisely the credential
+        # the tenant pays for, with "does not supply CLAUDE_CODE_OAUTH_TOKEN"
+        # for an API-key tenant and the mirror image for a subscription one.
+        if not env:
+            raise SecretError(
+                f"secret {secret_name} supplies none of "
+                f"{', '.join(secret_env_names)} for provider {provider}"
+            )
+    elif missing:
+        raise SecretError(
+            f"secret {secret_name} does not supply {', '.join(missing)} for provider {provider}"
+        )
+    for value in env.values():
+        logger.register_secret(value)
+    logger.info("tenant credentials resolved", provider=provider, secret=secret_name,
+                variables=sorted(env))
+    return ResolvedCredentials(env=env, secret_names=(secret_name,))
+
+
+#: The provider name under which a tenant registers the token used to clone its
+#: repositories. It is a tenant credential like any other -- same naming rule,
+#: same IAM scoping -- and deliberately NOT a platform-wide token: one token
+#: that can clone every tenant's repositories would make a single malicious
+#: repository in one tenant a credential compromise for all of them.
+GIT_PROVIDER = "git"
+GIT_TOKEN_ENV = "GIT_TOKEN"
+
+
+def resolve_git_token(
+    *,
+    tenant: Tenant,
+    client: SecretManagerClient | None,
+    logger: Any,
+    provider: str = GIT_PROVIDER,
+    broker: Any | None = None,
+    write: bool = False,
+    app_installation: bool = False,
+) -> str | None:
+    """The task's forge token, or None when the tenant has not registered one.
+
+    `app_installation` (DAYONE-SERVICE-APP-TOKEN): the task's SIGNED
+    submitter is a platform service account (`Worker._service_run`), so the
+    broker is asked first, whatever FORGE_BROKER says, for an App
+    installation token minted for this run alone. Its refusal `app_installation_unavailable`, or this
+    worker's own `forge_broker_unconfigured` / `attempt_key_unregistered`
+    (nothing was asked), falls through to the slot read below: today's
+    service rule. Any other refusal -- a superseded attempt, a write on a task
+    signed for read -- raises as it would for a person's slot. swarm-api
+    decides from the same signed fields, and a rewritten one fails its
+    signature check.
+
+    `provider` is the suffix `forge_suffix` read from the task's SIGNED
+    `forge_credential` (contract request 54): `git`, the tenant's own token,
+    by default; `git-u-<hex>`, a member's user slot, or `git-r-<hex>`, a
+    repository's. Whichever it is, the name is `Tenant.secret_name` under this
+    worker's OWN tenant, and the value is the `latest` version, which swarm-api's
+    refresher keeps at least two hours from expiry (docs/onboarding.md §3.3
+    step 3). Nothing caches it: a caller that reads again gets the version
+    current at that moment, which is how an attempt outlives an 8-hour user
+    token.
+
+    A PERSON'S SLOT IS NEVER READ FROM SECRET MANAGER (archived issue 1041,
+    docs/design/user-scoped-secrets.md §3.2). A group's workers share one
+    service account, so IAM cannot keep Alice's slot from Bob's attempt, and
+    that account no longer holds the read. A `git-u-` suffix is asked of
+    swarm-api's broker (`broker`, a `forgebroker.ForgeBroker`), which releases
+    it only to this task's current attempt, proven with its attempt key, when
+    the signed submitter owns the slot and still holds the grant -- `write`
+    asks for a push's grant. Without a broker, or refused by it, this raises
+    a `forgebroker.ForgeCredentialRefused` (a `SecretError`) naming the secret,
+    and NEVER falls back to the tenant token: that would run the task as
+    somebody it was not resolved to. The tenant token and a repository token
+    are team credentials, read directly as before.
+
+    WHERE THE BROKER IS SWITCHED OFF (`broker.deployed` is False: FORGE_BROKER
+    is off, the default and every environment's setting until the owner turns
+    it on), the slot is read with this worker's own account, exactly as
+    before archived issue 1041. That adds nothing an agent could not already do while
+    `forge_slot_reader` stands, and were that binding removed first the read
+    would be refused by IAM and raised as a `SecretError` naming the secret --
+    still never the tenant token. docs/design/user-scoped-secrets.md §5 is the
+    rollout order: the binding goes only after the switch has been on in dev
+    and a live run passed.
+
+    None is not an error for the tenant token: a public repository clones
+    without a credential, and a private one fails with git's own message, which
+    is the right diagnosis. A user or repository slot is not listed in
+    `tenant.credentials` (swarm-api creates it, not the tenant document), so a
+    repository slot is read directly, and a read that fails is a `SecretError`
+    naming the secret, never its value. The value is registered with the logger
+    before it is returned so that every path that might echo it is already
+    scrubbing it.
+    """
+    if not FORGE_CREDENTIAL.fullmatch(provider or ""):
+        raise SecretError(f"{provider!r} is not a forge credential suffix")
+    if app_installation and broker is not None:
+        from .forgebroker import (
+            APP_INSTALLATION_UNAVAILABLE, NO_ATTEMPT_KEY, NO_BROKER, ForgeCredentialRefused,
+        )
+
+        try:
+            return broker.fetch(tenant, provider, write=write)
+        except ForgeCredentialRefused as exc:
+            if exc.code not in (APP_INSTALLATION_UNAVAILABLE, NO_BROKER, NO_ATTEMPT_KEY):
+                raise
+            logger.info("no installation token minted for this run; reading its slot",
+                        secret=tenant.secret_name(provider), decision=exc.code)
+    if user_slot_hash(provider) is not None:
+        from .forgebroker import ForgeCredentialRefused, NO_BROKER
+
+        if broker is None:
+            raise ForgeCredentialRefused(
+                NO_BROKER, tenant.secret_name(provider),
+                "this worker has no forge broker, and a person's slot is never read "
+                "from Secret Manager",
+            )
+        if broker.deployed:
+            return broker.fetch(tenant, provider, write=write)
+        if client is None:
+            raise SecretError(
+                f"secret {tenant.secret_name(provider)} could not be read (no client)")
+        logger.info("the forge broker is switched off (FORGE_BROKER); a person's slot "
+                    "is read with the worker's own account", secret=tenant.secret_name(provider))
+    if client is None:
+        return None
+    if provider == GIT_PROVIDER and GIT_PROVIDER not in tenant.credentials:
+        return None
+    secret_name = tenant.secret_name(provider)
+    if provider == GIT_PROVIDER:
+        payload = client.access(secret_name).strip()
+    else:
+        try:
+            payload = client.access(secret_name).strip()
+        except Exception as exc:  # noqa: BLE001 -- the type is enough; never the value
+            raise SecretError(
+                f"secret {secret_name} could not be read ({type(exc).__name__})"
+            ) from None
+    token = git_token_from_payload(payload, secret_name)
+    if not token:
+        return None
+    logger.register_secret(token)
+    logger.info("tenant git credential resolved", secret=secret_name)
+    return token
+
+
+#: What `result_summary.forge_credential.kind` may say (lesson 43, stage 14 of
+#: `swarm install`): the KIND of GitHub credential a run cloned and pushed
+#: with. `unknown` is a value of no shape GitHub documents a prefix for (never
+#: taken for an App token); `mixed` is an attempt whose reads were of two
+#: kinds (`kinds` lists them).
+FORGE_CREDENTIAL_KINDS = frozenset({"app_installation", "app_user", "pat", "none", "unknown", "mixed"})
+
+#: GitHub's documented token prefixes (as `swarm_api.gittokens.token_kind`
+#: reads them), to this record's coarser kinds: `ghs_` an App installation
+#: token, `ghu_` an App user access token, `github_pat_` a fine-grained PAT,
+#: `ghp_` a classic one and `gho_` an OAuth app's, which carries classic scopes.
+_KIND_BY_PREFIX = (
+    ("ghs_", "app_installation"),
+    ("ghu_", "app_user"),
+    ("github_pat_", "pat"),
+    ("ghp_", "pat"),
+    ("gho_", "pat"),
+)
+
+
+def forge_credential_kind(token: str | None) -> str:
+    """The token's kind, read in memory from its prefix: one of
+    `FORGE_CREDENTIAL_KINDS` and nothing else. The value, its prefix and any
+    piece or hash of it are never returned, stored or logged."""
+    value = (token or "").strip()
+    if not value:
+        return "none"
+    for prefix, kind in _KIND_BY_PREFIX:
+        if value.startswith(prefix):
+            return kind
+    return "unknown"
+
+
+def git_token_from_payload(payload: str, secret_name: str) -> str:
+    """A git secret's token: the payload, or its `GIT_TOKEN` when it is a JSON object.
+
+    `secret_name` is for the error only; neither the error nor anything else
+    here carries the value.
+    """
+    payload = (payload or "").strip()
+    token = payload
+    if payload.startswith("{"):
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            value = parsed.get(GIT_TOKEN_ENV)
+            if not isinstance(value, (str, int, float)):
+                raise SecretError(
+                    f"secret {secret_name} is a JSON object without a {GIT_TOKEN_ENV} string"
+                )
+            token = str(value).strip()
+    return token
+
+
+# --------------------------------------------------------------------------
+# A forge 401: read the slot again and retry once (owner decision 2026-10-08)
+# --------------------------------------------------------------------------
+#
+# MEASURED 2026-10-08 08:20Z: a claude-code task failed "could not fetch issue
+# archived issue 780: the forge refused the credential (401: Bad credentials)" while the
+# owner's user slot gained 35 versions within minutes. Every refresh makes
+# GitHub end the access token it replaces, so a version this worker read a
+# moment ago can be dead by the time it is used. swarm-api now reuses the
+# current token rather than refreshing per call, but the sweep still
+# refreshes: the worker reads the slot's latest version again and retries the
+# call ONCE. A second refusal is the token being dead, not stale.
+
+#: What the forge says when it refuses the credential itself: the HTTP 401 of
+#: an API call -- as the issue fetch ("(401: Bad credentials)") and the push
+#: probe ("the token was rejected (401)") word it -- and git's own words for a
+#: refused https credential. Not a 403 or a 404: a token that cannot see or
+#: push to a repository is not fixed by reading it again.
+_FORGE_UNAUTHORIZED = re.compile(
+    r"\(401\b|returned error: 401\b|authentication failed|invalid username or "
+    r"(?:password|token)|bad credentials",
+    re.IGNORECASE,
+)
+
+#: Appended to the error of a call refused twice. Constant text: no value.
+FORGE_REFUSED_TWICE = (
+    "the forge refused the credential again after the worker re-read the latest "
+    "version of the task's forge secret, so the token itself has ended, not just "
+    "the copy this attempt held; reconnect GitHub in SwarmCloud's onboarding "
+    "page (or replace the tenant's git token) and run the step again"
+)
+
+_T = TypeVar("_T")
+
+
+def forge_credential_refused(error: BaseException | str) -> bool:
+    """True when `error` is the forge refusing the credential (a 401)."""
+    return bool(_FORGE_UNAUTHORIZED.search(str(error or "")))
+
+
+def call_reading_again(
+    call: Callable[[bool], _T],
+    *,
+    logger: Any,
+    what: str,
+    twice: Callable[[BaseException], BaseException],
+    refused: Callable[[BaseException], bool] = forge_credential_refused,
+) -> _T:
+    """`call(False)`; on a refused credential, `call(True)` once.
+
+    `call` reads the task's forge token itself -- `again` tells it this is the
+    retry, so it reads the secret's latest version afresh and drops anything
+    it held from the first try. Anything `refused` does not recognise is
+    raised at once. A second refusal raises `twice(error)`, which the caller
+    builds in its own exception type so its existing handling applies, with
+    FORGE_REFUSED_TWICE in the message.
+    """
+    try:
+        return call(False)
+    except Exception as exc:  # noqa: BLE001 -- re-raised unless it is a 401
+        if not refused(exc):
+            raise
+        logger.warning(
+            "the forge refused the credential; reading its secret again and retrying once",
+            call=what,
+        )
+    try:
+        return call(True)
+    except Exception as exc:  # noqa: BLE001 -- re-raised unless it is a 401
+        if not refused(exc):
+            raise
+        logger.error("the forge refused the re-read credential as well", call=what)
+        raise twice(exc) from None
+
+
+# --------------------------------------------------------------------------
+# The task's forge credential and its grant (docs/onboarding.md §3.3, OB5)
+# --------------------------------------------------------------------------
+
+#: `swarm_api.forgeapp.GRANTS`: one document per person x repository, id
+#: `{tenant_id}__{user_hash}__{repo_id}`, written and deleted by swarm-api's
+#: Access routes (`swarm_api.access.AccessService.grant` / `revoke` /
+#: `remove_org`). RESTATED, because the worker's image does not carry
+#: swarm-api; tests/unit/worker/test_forge_credential.py holds it, and the
+#: id recipe, to swarm-api's own.
+FORGE_GRANTS = "forge_grants"
+#: The values of a grant's `mode` and of `Task.forge_access`.
+WRITE, READ = "write", "read"
+#: A user slot's suffix. Its 16 hex are the person's `user_hash`, the same
+#: hex that sits in the middle of their grant ids (`swarm_api.gittokens.
+#: provider_suffix`, `swarm_api.forgeapp.user_hash`).
+_USER_SLOT = re.compile(r"git-u-([0-9a-f]{16})")
+
+
+def forge_suffix(task: Mapping[str, Any]) -> str:
+    """The provider suffix of the task's forge secret, `git` when it names none.
+
+    CALL ONLY ON THE VERIFIED DOCUMENT. `forge_credential` is covered by the
+    spec signature (`specsign.canonical_step_spec`, format 3), and the worker
+    reads it only after the generation check and the signature check have both
+    passed, in that order (invariant 5; docs/onboarding.md §3.6 item 5). A value
+    of another shape is refused rather than defaulted: it was signed, so it is
+    a platform bug, and reading the tenant token instead would run the task as
+    somebody it was not resolved to.
+    """
+    value = task.get("forge_credential")
+    if value is None:
+        return GIT_PROVIDER
+    if not isinstance(value, str) or not FORGE_CREDENTIAL.fullmatch(value):
+        raise SecretError("the task's forge_credential is not a forge credential suffix")
+    return value
+
+
+def forge_read_only(task: Mapping[str, Any]) -> bool:
+    """True when the task's signed `forge_access` is `read` (D9). None is `write`."""
+    return task.get("forge_access") == READ
+
+
+def user_slot_hash(suffix: str) -> str | None:
+    """The `user_hash` a `git-u-<hex>` suffix names, else None."""
+    match = _USER_SLOT.fullmatch(suffix or "")
+    return match.group(1) if match else None
+
+
+def _hex16(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _user_key(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def owner_slot_hash(email: str, owner: str) -> str:
+    """`swarm_api.gittokens.owner_suffix`'s hex (D5): 16 hex of sha256 of
+    `lower(email) + "|" + lower(owner)`. RESTATED, as the grant id is;
+    tests/unit/control_plane/test_fallback_pat.py holds it to swarm-api's."""
+    return _hex16(_user_key(email) + "|" + (owner or "").strip().lower())
+
+
+def _grant_user_hash(hashed: str, submitted_by: str | None,
+                     repository_url: str | None) -> str:
+    """The `user_hash` whose grant stands behind a `git-u-<hex>` slot.
+
+    A person's App slot's hex IS their user_hash. Their token for one owner
+    (D5) is a second user slot whose hex is `owner_slot_hash(email, owner)`:
+    recomputed here from the SIGNED `submitted_by` and the owner of the
+    SIGNED repository URL, it is the submitter's own, and their grant is the
+    one read. Anything else keeps the slot's hex, which names no grant of
+    anyone's, so the task reads as ungranted."""
+    if not submitted_by:
+        return hashed
+    person = _hex16(_user_key(submitted_by))
+    if hashed == person:
+        return hashed
+    match = indexrun._GITHUB_URL.match(repository_url or "")
+    if match is not None and hashed == owner_slot_hash(submitted_by, match.group(1)):
+        return person
+    return hashed
+
+
+def grant_refusal(
+    db: Any,
+    *,
+    tenant_id: str,
+    suffix: str,
+    repository_url: str | None,
+    write: bool,
+    call_options: dict[str, Any] | None = None,
+    submitted_by: str | None = None,
+) -> str | None:
+    """Why the task's grant no longer covers what it is about to do, or None.
+
+    docs/onboarding.md §3.3 step 4: before cloning, and again before each push
+    or pull request, the worker re-reads the person's grant for the task's
+    repository by id. Only for a user slot: the tenant token and a repository
+    token are not a person's, and no grant stands behind them.
+
+    TENANT-SCOPED (invariant 9). The id is built from this worker's OWN tenant
+    (`tenant_id`, the admitted one, never a document's), the hex of the signed
+    suffix, and the repo_id of the signed repository URL by the registration's
+    recipe (`indexrun.repo_id_for`). A document there that names another
+    tenant, another person or another repository is not this task's grant,
+    and reads as no grant.
+
+    `write` asks for a push or a pull request: a grant changed to `read` since
+    submission refuses it, as a deleted one does. A grant is not cached: each
+    call reads the document again.
+    """
+    hashed = user_slot_hash(suffix)
+    if hashed is None:
+        return None
+    # `submitted_by` is the verified document's: a token for one owner (D5)
+    # resolves to its person here, and to nobody else.
+    hashed = _grant_user_hash(hashed, submitted_by, repository_url)
+    where = indexrun.target(tenant_id, repository_url)
+    if isinstance(where, str):
+        return f"no grant can cover this repository: {where}"
+    doc_id = f"{tenant_id}__{hashed}__{where.repo_id}"
+    state = indexrun.state_routes(db)
+    if state is not None:
+        # A switched tenant: `GET state/context` serves the grant swarm-api
+        # derives from the signed `submitted_by` and `repository_url`, and
+        # beside it, keyed by id, the one on each of the task's signed
+        # `additional_repositories`. Any other id is no grant it serves, so it
+        # reads as removed, as an absent document does here; so does every
+        # additional repository's against an older swarm-api that serves no
+        # map. The checks below hold either one to this task as they hold a
+        # document read directly.
+        context = indexrun.route_context(state)
+        served = context.get("forge_grant")
+        if not (isinstance(served, Mapping) and served.get("id") == doc_id):
+            extra = context.get("additional_forge_grants")
+            served = extra.get(doc_id) if isinstance(extra, Mapping) else None
+        data = dict(served) if isinstance(served, Mapping) and served.get("id") == doc_id \
+            else None
+    else:
+        snap = db.collection(FORGE_GRANTS).document(doc_id).get(**dict(call_options or {}))
+        data = (snap.to_dict() or {}) if snap.exists else None
+    if (
+        data is None
+        or data.get("tenant_id") != tenant_id
+        or data.get("user_hash") != hashed
+        or data.get("repo_id") != where.repo_id
+    ):
+        return (
+            f"the submitter's grant on {where.repo_id} has been removed since the "
+            "task was submitted"
+        )
+    if write and data.get("mode") != WRITE:
+        return (
+            f"the submitter's grant on {where.repo_id} is now {data.get('mode')!r}, "
+            "not 'write'"
+        )
+    return None

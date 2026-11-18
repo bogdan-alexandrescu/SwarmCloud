@@ -1,0 +1,1632 @@
+"""The worker's state routes (docs/design/tenant-settings-integrity.md §4, lane ISO-STATE-API).
+
+Drives the real routes over the in-memory Firestore. The worker identity is a
+token the static verifier maps to the tenant's worker service account; the
+attempt key is generated here as the worker generates one, registered through
+`state/open` with the scheduler's nonce, and every later request is signed
+with it. The message signed is RESTATED here (`_state_message`), as the
+worker will restate it, so a drift in `childkey.state_request_message` fails
+these tests rather than every live worker.
+
+Each test names the rule of §6's ISO-STATE-API row it holds. Offline: no
+credentials, no emulator.
+"""
+
+from __future__ import annotations
+
+import base64
+import copy
+import hashlib
+import json
+import secrets
+import time
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from fastapi.testclient import TestClient
+from google.api_core import exceptions as gexc
+
+from swarm_api.auth import StaticTokenVerifier
+from swarm_api.childkey import AttemptTuple, nonce, request_message
+from swarm_api.credentials import InMemoryCredentials
+from swarm_api.deps import build_context
+from swarm_api.groups import StaticGroups
+from swarm_api.main import create_app
+from swarm_api.metrics import ApiMetrics
+from swarm_api.waker import NullWaker
+
+from .conftest import PROJECT, api_settings, seed_pool, seed_task, seed_tenant
+from .fakes import FakeTransaction
+from .spec_signer import KEY_VERSION, LocalSpecSigner
+
+#: Every attempt's task is signed as submission signs it: the child route
+#: builds a child only from a parent whose signature verifies (archived issue 1041).
+SIGNER = LocalSpecSigner()
+
+#: Built at runtime, never one literal (CLAUDE.md, "Nothing you add may look
+#: like a credential").
+KEY = "test-" + secrets.token_hex(16)
+WORKER = "tok-worker-eng-" + secrets.token_hex(4)
+OTHER_WORKER = "tok-worker-research-" + secrets.token_hex(4)
+TASK = "task_state_1"
+ATTEMPT = "att_state_1"
+LEASE = "lease_state_1"
+REPO_URL = "https://github.com/acme/widgets.git"
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _state_message(method: str, path: str, body: bytes, timestamp: str) -> bytes:
+    """The worker's restatement of `childkey.state_request_message` (§4.1)."""
+    digest = hashlib.sha256(body).hexdigest()
+    return f"swarm-state-req/v1\n{method.upper()}\n{path}\n{digest}\n{timestamp}".encode()
+
+
+class Worker:
+    """One attempt's worker: its tuple and the key it generated."""
+
+    def __init__(self, tenant: str = "eng", task: str = TASK, attempt: str = ATTEMPT,
+                 lease: str = LEASE, generation: int = 1, token: str = WORKER) -> None:
+        self.tuple = AttemptTuple(tenant, task, attempt, lease, generation)
+        self.token = token
+        self.private = Ed25519PrivateKey.generate()
+        self.public = _b64url(self.private.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw))
+
+    def fields(self) -> dict[str, Any]:
+        t = self.tuple
+        return {"tenant_id": t.tenant_id, "task_id": t.task_id, "lease_id": t.lease_id,
+                "generation": t.generation}
+
+    def query(self) -> str:
+        t = self.tuple
+        return (f"tenant_id={t.tenant_id}&task_id={t.task_id}&lease_id={t.lease_id}"
+                f"&generation={t.generation}")
+
+    def sign(self, method: str, path: str, body: bytes, *, child: bool = False) -> dict[str, str]:
+        timestamp = str(int(time.time()))
+        message = (request_message(method, path, body, timestamp) if child
+                   else _state_message(method, path, body, timestamp))
+        return {"X-Swarm-Attempt-Proof": _b64url(self.private.sign(message)),
+                "X-Swarm-Attempt-Timestamp": timestamp}
+
+    def post(self, client: TestClient, op: str, extra: dict[str, Any] | None = None, *,
+             token: str | None = None, sign: bool = True, child_proof: bool = False,
+             body: dict[str, Any] | None = None) -> Any:
+        path = f"/v1/attempts/{self.tuple.attempt_id}/state/{op}"
+        raw = json.dumps(body if body is not None else {**self.fields(), **(extra or {})},
+                         default=str).encode()
+        headers = {"Authorization": f"Bearer {token or self.token}",
+                   "Content-Type": "application/json"}
+        if sign:
+            headers.update(self.sign("POST", path, raw, child=child_proof))
+        return client.post(path, content=raw, headers=headers)
+
+    def get(self, client: TestClient, op: str, extra: str = "", *, token: str | None = None,
+            sign: bool = True) -> Any:
+        path = f"/v1/attempts/{self.tuple.attempt_id}/state/{op}"
+        query = self.query() + (f"&{extra}" if extra else "")
+        headers = {"Authorization": f"Bearer {token or self.token}"}
+        if sign:
+            headers.update(self.sign("GET", f"{path}?{query}", b""))
+        return client.get(f"{path}?{query}", headers=headers)
+
+    def open(self, client: TestClient, *, unprotected: bool = False,
+             public: str | None = None, token: str | None = None) -> Any:
+        path = f"/v1/attempts/{self.tuple.attempt_id}/state/open"
+        raw = json.dumps({**self.fields(), "nonce": nonce(KEY, self.tuple),
+                          "public_key": public or self.public,
+                          "unprotected": unprotected}).encode()
+        return client.post(path, content=raw, headers={
+            "Authorization": f"Bearer {token or self.token}", "Content-Type": "application/json"})
+
+
+@pytest.fixture
+def worker_tokens(tokens) -> dict[str, dict[str, Any]]:
+    return {
+        **tokens,
+        WORKER: {"email": f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com",
+                 "email_verified": True, "sub": "1000000000000000000001"},
+        OTHER_WORKER: {"email": f"swarm-agent-worker-research@{PROJECT}.iam.gserviceaccount.com",
+                       "email_verified": True, "sub": "1000000000000000000002"},
+    }
+
+
+@pytest.fixture
+def client(db, worker_tokens, group_map, objects) -> TestClient:
+    ctx = build_context(
+        settings=api_settings(
+            child_key=KEY, spec_signing_key_version=KEY_VERSION,
+            spec_verify_keys=json.dumps({KEY_VERSION: SIGNER.public_pem()}),
+        ),
+        signer=SIGNER,
+        db=db,
+        verifier=StaticTokenVerifier(worker_tokens),
+        groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(),
+        waker=NullWaker(),
+        metrics=ApiMetrics(),
+        objects=objects,
+    )
+    return TestClient(create_app(ctx), raise_server_exceptions=False)
+
+
+def seed_attempt(db, worker: Worker, *, state: str = "STARTING", pools=("global", "tenant:eng"),
+                 **extra: Any) -> dict[str, Any]:
+    """A task under this attempt's live lease, holding one unit of `pools`."""
+    t = worker.tuple
+    seed_tenant(db, t.tenant_id)
+    now = datetime.now(timezone.utc)
+    for name in pools:
+        if f"pools/{name}" not in db.docs:
+            seed_pool(db, name, hard_limit=10, active=0)
+        db.docs[f"pools/{name}"]["active"] += 1
+    doc = seed_task(db, task_id=t.task_id, tenant_id=t.tenant_id, state=state)
+    doc.update({"current_lease_id": t.lease_id, "current_generation": t.generation,
+                "submitted_by": "alice@example.com", "repository_url": REPO_URL,
+                "attempt_count": 1, **extra})
+    db.docs[f"leases/{t.lease_id}"] = {
+        "lease_id": t.lease_id, "task_id": t.task_id, "attempt_id": t.attempt_id,
+        "tenant_id": t.tenant_id, "generation": t.generation, "pools": list(pools),
+        "units": 1, "state": state, "created_at": now, "heartbeat_at": None,
+        "dispatch_deadline": now + timedelta(minutes=10),
+        "expires_at": now + timedelta(minutes=10), "released_at": None,
+    }
+    SIGNER.sign_document(doc, t.task_id)
+    return doc
+
+
+def opened(client, db, worker: Worker, *, state: str = "RUNNING", **extra: Any) -> dict[str, Any]:
+    """A worker that opened its attempt while STARTING, now at `state`."""
+    doc = seed_attempt(db, worker, **extra)
+    response = worker.open(client)
+    assert response.status_code == 200, response.text
+    doc["state"] = state
+    db.docs[f"leases/{worker.tuple.lease_id}"]["state"] = state
+    return doc
+
+
+def _events(db, kind: str | None = None) -> list[dict[str, Any]]:
+    return [d for p, d in db.docs.items()
+            if p.startswith(f"tasks/{TASK}/events/") and (kind is None or d.get("type") == kind)]
+
+
+#: One well-formed body per POST route, as a worker would send it.
+POST_BODIES: dict[str, dict[str, Any]] = {
+    "transition": {"request_id": "t-1", "to": "RUNNING"},
+    "attempt-start": {"backend": "cloud_run", "execution_name": "exec-1"},
+    "checkpoint": {"checkpoint_id": "ckpt-00001",
+                   "uri": f"gs://swarm-artifacts-example-project/tenants/eng/tasks/{TASK}/attempts/{ATTEMPT}/c.tar",
+                   "size_bytes": 10, "seq": 1, "archive_sha256": "a" * 64},
+    "usage": {"kind": "spend", "fields": {"input_tokens": 3}},
+    "heartbeat": {},
+    "park": {"request_id": "p-1", "reason": "PROVIDER_QUOTA_EXHAUSTED",
+             "next_eligible_at": "2030-01-01T00:00:00+00:00"},
+    "finish": {"request_id": "f-1", "state": "SUCCEEDED", "exit_code": 0},
+    "retry": {"request_id": "r-1", "error": "boom", "cause": "crash"},
+    "attempt-end": {"exit_code": 0},
+    "release": {"reason": "terminal:SUCCEEDED"},
+    "event": {"event_id": "evt_" + "0" * 20, "type": "heartbeat"},
+    "merge-slot": {"op": "acquire", "base": "main", "updates": 0},
+    "merge-train": {"op": "register", "base": "main", "number": 7, "head": "b" * 40,
+                    "title": "t", "message": "m"},
+    "ci-fix-tasks": {"pull_request": 7, "root_task_id": TASK},
+}
+GET_ROUTES = {"poll": "provider=anthropic", "context": "", "upstream": "upstream_task_id=task_up",
+              "repository": ""}
+#: The routes that write a task, a lease, a slot or an entry: each fenced.
+FENCED_WRITES = ("transition", "attempt-start", "checkpoint", "heartbeat", "park", "finish",
+                 "retry", "merge-slot", "merge-train")
+
+
+def test_every_route_in_the_row_is_mounted(client):
+    """The app answers each route with a refusal of its own, never a 404."""
+    for op in [*POST_BODIES, "open"]:
+        response = client.post(f"/v1/attempts/{ATTEMPT}/state/{op}", content=b"{}")
+        assert response.status_code == 422, (op, response.status_code)
+    for op in GET_ROUTES:
+        response = client.get(f"/v1/attempts/{ATTEMPT}/state/{op}")
+        assert response.status_code == 422, (op, response.status_code)
+
+
+# --------------------------------------------------------------------------
+# 401: another tenant's token, on every route
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("op", sorted(POST_BODIES))
+def test_another_tenants_token_is_401_on_every_post_route(client, db, op):
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, op, POST_BODIES[op], token=OTHER_WORKER)
+    assert response.status_code == 401, response.text
+    assert response.json()["code"] == "attempt_unauthenticated"
+    assert db.docs == before
+
+
+@pytest.mark.parametrize("op", sorted(GET_ROUTES))
+def test_another_tenants_token_is_401_on_every_get_route(client, db, op):
+    worker = Worker()
+    opened(client, db, worker)
+    response = worker.get(client, op, GET_ROUTES[op], token=OTHER_WORKER)
+    assert response.status_code == 401, response.text
+
+
+def test_another_tenants_token_cannot_open_this_attempt(client, db):
+    worker = Worker()
+    seed_attempt(db, worker)
+    response = worker.open(client, token=OTHER_WORKER)
+    assert response.status_code == 401, response.text
+    assert not db.paths("child_keys/")
+
+
+# --------------------------------------------------------------------------
+# 403: the token alone proves the tenant, not the worker
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("op", sorted(POST_BODIES))
+def test_a_token_without_a_proof_is_403_on_every_post_route(client, db, op):
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, op, POST_BODIES[op], sign=False)
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "attempt_unproven"
+    assert db.docs == before
+
+
+@pytest.mark.parametrize("op", sorted(GET_ROUTES))
+def test_a_token_without_a_proof_is_403_on_every_get_route(client, db, op):
+    worker = Worker()
+    opened(client, db, worker)
+    assert worker.get(client, op, GET_ROUTES[op], sign=False).status_code == 403
+
+
+def test_a_key_the_agent_made_is_403(client, db):
+    """The agent can mint the token, never sign with the registered key."""
+    worker = Worker()
+    opened(client, db, worker)
+    agent = Worker()  # same tuple, its own key
+    response = agent.post(client, "heartbeat", {})
+    assert response.status_code == 403, response.text
+
+
+def test_a_child_proof_is_not_a_state_proof(client, db):
+    """Domain separation (§4.1): `swarm-child-req/v1` is never a state write."""
+    worker = Worker()
+    opened(client, db, worker)
+    response = worker.post(client, "heartbeat", {}, child_proof=True)
+    assert response.status_code == 403, response.text
+
+
+def test_a_proof_signed_for_another_tuple_is_403(client, db):
+    """The proof covers the body, and the body names the tuple."""
+    worker = Worker()
+    opened(client, db, worker)
+    path = f"/v1/attempts/{ATTEMPT}/state/heartbeat"
+    signed = json.dumps(worker.fields()).encode()
+    sent = json.dumps({**worker.fields(), "generation": 2}).encode()
+    headers = {"Authorization": f"Bearer {WORKER}", "Content-Type": "application/json",
+               **worker.sign("POST", path, signed)}
+    assert client.post(path, content=sent, headers=headers).status_code == 403
+
+
+# --------------------------------------------------------------------------
+# 409: a stale generation writes nothing
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("op", FENCED_WRITES)
+def test_a_stale_generation_is_409_and_writes_nothing(client, db, op):
+    worker = Worker()
+    opened(client, db, worker)
+    # The reconciler fenced this attempt: the task is at generation 2 now,
+    # under a newer lease. This attempt's lease is left unreleased, so only the
+    # task-level fence can refuse the write.
+    db.docs[f"tasks/{TASK}"].update({"current_generation": 2, "current_lease_id": "lease_new"})
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, op, POST_BODIES[op])
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "attempt_fenced"
+    assert db.docs == before
+
+
+def test_a_released_lease_is_409_on_heartbeat(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    db.docs[f"leases/{LEASE}"]["released_at"] = datetime.now(timezone.utc)
+    before = copy.deepcopy(db.docs)
+    assert worker.post(client, "heartbeat", {}).status_code == 409
+    assert db.docs == before
+
+
+# --------------------------------------------------------------------------
+# 422: invariant 10, and only the worker's transitions
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("op", sorted(POST_BODIES))
+def test_a_runner_profile_in_any_body_is_422(client, db, op):
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, op, {**POST_BODIES[op], "runner_profile": "claude-code"})
+    assert response.status_code == 422, response.text
+    assert db.docs == before
+
+
+def test_a_runner_profile_in_the_open_body_is_422(client, db):
+    worker = Worker()
+    seed_attempt(db, worker)
+    path = f"/v1/attempts/{ATTEMPT}/state/open"
+    raw = json.dumps({**worker.fields(), "nonce": nonce(KEY, worker.tuple),
+                      "public_key": worker.public, "runner_profile": "x"}).encode()
+    response = client.post(path, content=raw, headers={"Authorization": f"Bearer {WORKER}"})
+    assert response.status_code == 422
+    assert not db.paths("child_keys/")
+
+
+def test_running_to_leased_is_422(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "transition", {"request_id": "back", "to": "LEASED"})
+    assert response.status_code == 422, response.text
+    assert db.docs == before
+
+
+def test_a_worker_cannot_dead_letter_its_task(client, db):
+    """DEAD_LETTERED is not in `WORKER_TRANSITIONS` (contract request 85)."""
+    worker = Worker()
+    opened(client, db, worker)
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "finish", {"request_id": "dl", "state": "DEAD_LETTERED"})
+    assert response.status_code == 422, response.text
+    assert db.docs == before
+
+
+def test_the_walk_to_running_is_the_workers(client, db):
+    worker = Worker()
+    opened(client, db, worker, state="LEASED")
+    for step, to in enumerate(("DISPATCHED", "STARTING", "RUNNING")):
+        response = worker.post(client, "transition", {"request_id": f"walk-{step}", "to": to})
+        assert response.status_code == 200, response.text
+        assert response.json()["task"]["state"] == to
+    assert db.docs[f"tasks/{TASK}"]["state"] == "RUNNING"
+    assert db.docs[f"tasks/{TASK}"]["started_at"] is not None
+
+
+# --------------------------------------------------------------------------
+# park: PARKED and the release in ONE transaction
+# --------------------------------------------------------------------------
+
+
+def test_park_writes_parked_and_releases_the_lease_in_one_transaction(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    committed = db.transactions_committed
+    response = worker.post(client, "park", POST_BODIES["park"])
+    assert response.status_code == 200, response.text
+    assert db.transactions_committed == committed + 1
+    task = db.docs[f"tasks/{TASK}"]
+    assert task["state"] == "PARKED" and task["current_lease_id"] is None
+    assert task["park_reason"] == "PROVIDER_QUOTA_EXHAUSTED"
+    assert db.docs[f"leases/{LEASE}"]["released_at"] is not None
+    assert db.docs["pools/global"]["active"] == 0
+    assert db.docs["pools/tenant:eng"]["active"] == 0
+    assert db.docs[f"attempts/{ATTEMPT}"]["exit_code"] == 75
+    assert len(_events(db, "parked")) == 1 and len(_events(db, "lease_released")) == 1
+
+
+def test_an_injected_failure_in_a_park_leaves_neither(client, db, monkeypatch):
+    worker = Worker()
+    opened(client, db, worker)
+    real = FakeTransaction.update
+
+    def failing(self, ref, data):
+        if ref.path.startswith("pools/"):
+            raise gexc.ServiceUnavailable("injected")
+        return real(self, ref, data)
+
+    monkeypatch.setattr(FakeTransaction, "update", failing)
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "park", POST_BODIES["park"])
+    assert response.status_code == 503, response.text
+    assert response.json()["code"] == "state_unavailable"
+    assert db.docs == before
+
+
+def test_an_await_park_refunds_by_the_servers_bound(client, db):
+    worker = Worker()
+    opened(client, db, worker, attempt_count=2)
+    response = worker.post(client, "park", {"request_id": "await", "reason": "CHILDREN_INCOMPLETE"})
+    assert response.status_code == 200, response.text
+    task = db.docs[f"tasks/{TASK}"]
+    assert task["attempt_count"] == 1
+    assert task["metadata"]["child_await_resumes"] == 1
+
+
+def _release_wait_park(request_id: str) -> dict[str, Any]:
+    """The worker's release-wait park (AU7-REFUND): no number in it."""
+    return {"request_id": request_id, "reason": "DEPENDENCY_INCOMPLETE",
+            "next_eligible_at": datetime.now(timezone.utc).isoformat(),
+            "detail": {"park_phase": "release_wait",
+                       "release_wait": {"sha": "a" * 40, "attempt_id": ATTEMPT,
+                                        "asked_at": "2026-10-22T00:00:00+00:00"}}}
+
+
+def test_a_release_wait_park_refunds_by_the_servers_bound_and_not_past_it(client, db):
+    from swarm_api.attemptstate import RELEASE_WAIT_MAX_RESUMES
+
+    worker = Worker()
+    opened(client, db, worker, attempt_count=2,
+           metadata={"release_wait_resumes": RELEASE_WAIT_MAX_RESUMES - 1})
+    response = worker.post(client, "park", _release_wait_park("rw-1"))
+    assert response.status_code == 200, response.text
+    task = db.docs[f"tasks/{TASK}"]
+    # MUTATION: drop the release-wait branch from `_park_payload` and nothing is refunded.
+    assert response.json()["refunded"] is True
+    assert task["attempt_count"] == 1
+    assert task["metadata"]["release_wait_resumes"] == RELEASE_WAIT_MAX_RESUMES
+    assert task["park_reason"] == "DEPENDENCY_INCOMPLETE"
+    (parked,) = _events(db, "parked")
+    assert parked["detail"]["attempt_refunded"] is True
+
+
+def test_a_release_wait_park_past_the_bound_refunds_nothing(client, db):
+    from swarm_api.attemptstate import RELEASE_WAIT_MAX_RESUMES
+
+    worker = Worker()
+    opened(client, db, worker, attempt_count=2,
+           metadata={"release_wait_resumes": RELEASE_WAIT_MAX_RESUMES})
+    response = worker.post(client, "park", _release_wait_park("rw-2"))
+    assert response.status_code == 200, response.text
+    task = db.docs[f"tasks/{TASK}"]
+    # MUTATION: refund without the bound (`refund = attempt_count > 0`) and this is red.
+    assert response.json()["refunded"] is False
+    assert task["attempt_count"] == 2
+    assert task["metadata"]["release_wait_resumes"] == RELEASE_WAIT_MAX_RESUMES
+    assert task["state"] == "PARKED"
+
+
+def test_a_stale_generations_release_wait_park_is_409_and_writes_nothing(client, db):
+    worker = Worker()
+    opened(client, db, worker, attempt_count=2)
+    db.docs[f"tasks/{TASK}"].update({"current_generation": 2, "current_lease_id": "lease_new"})
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "park", _release_wait_park("rw-3"))
+    # MUTATION: apply the refund before `_fenced` reads the task and the stale park refunds.
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "attempt_fenced"
+    assert db.docs == before
+
+
+# --------------------------------------------------------------------------
+# release: this tuple's lease, whatever the body names
+# --------------------------------------------------------------------------
+
+
+def test_release_releases_only_this_tuples_lease(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    seed_pool(db, "tenant:research", hard_limit=5, active=3)
+    seed_pool(db, "provider:anthropic", hard_limit=5, active=2)
+    db.docs["leases/lease_other"] = {**db.docs[f"leases/{LEASE}"], "lease_id": "lease_other",
+                                     "task_id": "task_other", "attempt_id": "att_other",
+                                     "pools": ["provider:anthropic"]}
+    before = copy.deepcopy(db.docs)
+    named = worker.post(client, "release", {"reason": "terminal:SUCCEEDED",
+                                            "pools": ["tenant:research", "provider:anthropic"],
+                                            "lease": "lease_other"})
+    assert named.status_code == 422, named.text
+    assert db.docs == before
+
+    response = worker.post(client, "release", {"reason": "terminal:SUCCEEDED"})
+    assert response.status_code == 200, response.text
+    assert response.json()["released"] is True
+    assert db.docs["pools/global"]["active"] == 0
+    assert db.docs["pools/tenant:eng"]["active"] == 0
+    assert db.docs["pools/tenant:research"]["active"] == 3
+    assert db.docs["pools/provider:anthropic"]["active"] == 2
+    assert db.docs["leases/lease_other"]["released_at"] is None
+
+    again = worker.post(client, "release", {"reason": "terminal:SUCCEEDED"})
+    assert again.json()["released"] is False
+    assert db.docs["pools/global"]["active"] == 0
+
+
+# --------------------------------------------------------------------------
+# idempotency
+# --------------------------------------------------------------------------
+
+
+def test_a_repeated_finish_with_one_request_id_writes_once(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    db.docs["pools/global"]["active"] = 4  # other tasks' slots, which a second release would take
+    first = worker.post(client, "finish", POST_BODIES["finish"])
+    assert first.status_code == 200, first.text
+    after_first = copy.deepcopy(db.docs)
+    second = worker.post(client, "finish", POST_BODIES["finish"])
+    assert second.status_code == 200, second.text
+    assert second.json()["repeat"] is True
+    assert db.docs == after_first
+    assert db.docs["pools/global"]["active"] == 3
+    assert len(_events(db, "succeeded")) == 1
+    assert db.docs[f"tasks/{TASK}"]["state"] == "SUCCEEDED"
+
+
+def test_a_finish_with_a_new_request_id_after_the_end_is_fenced(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    assert worker.post(client, "finish", POST_BODIES["finish"]).status_code == 200
+    after = copy.deepcopy(db.docs)
+    response = worker.post(client, "finish", {**POST_BODIES["finish"], "request_id": "f-2"})
+    assert response.status_code == 409
+    assert db.docs == after
+
+
+# --------------------------------------------------------------------------
+# upstream: only what the signed spec declares
+# --------------------------------------------------------------------------
+
+
+def test_upstream_refuses_an_id_outside_depends_on(client, db):
+    worker = Worker()
+    opened(client, db, worker, depends_on=["task_up"])
+    seed_task(db, task_id="task_up", tenant_id="eng", state="SUCCEEDED")
+    seed_task(db, task_id="task_sibling", tenant_id="eng", state="SUCCEEDED")
+    ok = worker.get(client, "upstream", "upstream_task_id=task_up")
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["task"]["state"] == "SUCCEEDED"
+    refused = worker.get(client, "upstream", "upstream_task_id=task_sibling")
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["code"] == "upstream_not_declared"
+
+
+def test_upstream_refuses_a_declared_id_of_another_tenant(client, db):
+    worker = Worker()
+    opened(client, db, worker, depends_on=["task_theirs"])
+    seed_task(db, task_id="task_theirs", tenant_id="research", state="SUCCEEDED")
+    response = worker.get(client, "upstream", "upstream_task_id=task_theirs")
+    assert response.status_code == 403
+    assert "research" not in response.text
+
+
+# --------------------------------------------------------------------------
+# upstream: the three reads past the declared set, each id derived server-side
+# (ISO-UPSTREAM, part of archived issue 1457)
+# --------------------------------------------------------------------------
+
+WORKFLOW = "wf_state_1"
+BASE_SHA = "b" * 40
+
+
+def _refused(response) -> bool:
+    return response.status_code == 403 and response.json()["code"] == "upstream_not_declared"
+
+
+def _index_run(client, db, worker: Worker, *, version_task: str, registered_by: str = "eng",
+               prompt: str | None = None) -> None:
+    from swarm_api.repoindex import BASE_LINE
+    from swarm_api.repositories import repo_id_for
+
+    opened(client, db, worker,
+           input={"prompt": prompt if prompt is not None else f"index\n{BASE_LINE}{BASE_SHA}\n"})
+    repo_id = repo_id_for("eng", "acme", "widgets")
+    db.docs[f"repositories/{repo_id}"] = {"tenant_id": registered_by, "repo_id": repo_id}
+    db.docs[f"repositories/{repo_id}/index_versions/{BASE_SHA}"] = {"task_id": version_task}
+    db.docs[f"repositories/{repo_id}/index_versions/{'c' * 40}"] = {"task_id": "task_older"}
+
+
+def _index_task(db, task_id: str, *, sha: str = BASE_SHA, repo: str = REPO_URL) -> dict[str, Any]:
+    """The index run that built `sha`, signed as `repoindex.indexer_task` is at submission."""
+    from swarm_api.repoindex import INDEXER_PROFILE
+
+    doc = seed_task(db, task_id=task_id, tenant_id="eng", state="SUCCEEDED",
+                    runner_profile=INDEXER_PROFILE)
+    doc.update({"repository_url": repo, "repository_ref": sha})
+    return SIGNER.sign_document(doc, task_id)
+
+
+def test_upstream_serves_the_index_runs_base_version_task(client, db):
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base")
+    _index_task(db, "task_base")
+    response = worker.get(client, "upstream", "upstream_task_id=task_base")
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["id"] == "task_base"
+
+
+def test_upstream_refuses_a_task_of_a_version_the_prompt_does_not_name(client, db):
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base")
+    seed_task(db, task_id="task_older", tenant_id="eng", state="SUCCEEDED")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_older"))
+
+
+def test_upstream_refuses_the_base_task_with_no_base_line_or_two(client, db):
+    from swarm_api.repoindex import BASE_LINE
+
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base",
+               prompt=f"{BASE_LINE}{BASE_SHA}\n{BASE_LINE}{'c' * 40}\n")
+    seed_task(db, task_id="task_base", tenant_id="eng", state="SUCCEEDED")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_base"))
+
+
+def test_upstream_refuses_a_base_task_of_another_tenant(client, db):
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_theirs")
+    seed_task(db, task_id="task_theirs", tenant_id="research", state="SUCCEEDED")
+    response = worker.get(client, "upstream", "upstream_task_id=task_theirs")
+    assert _refused(response)
+    assert "research" not in response.text
+
+
+def test_upstream_refuses_a_base_under_another_tenants_registration(client, db):
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base", registered_by="research")
+    seed_task(db, task_id="task_base", tenant_id="eng", state="SUCCEEDED")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_base"))
+
+
+def _step(db, task_id: str, *, builds_on: str | None, tenant: str = "eng",
+          workflow: str = WORKFLOW) -> None:
+    doc = seed_task(db, task_id=task_id, tenant_id=tenant, state="SUCCEEDED")
+    doc["workflow_id"] = workflow
+    doc["metadata"] = {"dispatch": {"builds_on": builds_on} if builds_on else {}}
+    SIGNER.sign_document(doc, task_id)
+
+
+def _chain(client, db, worker: Worker, length: int) -> list[str]:
+    """This task builds on `task_b0`, which builds on `task_b1`, ... `length` steps back."""
+    ids = [f"task_b{i}" for i in range(length)]
+    opened(client, db, worker, workflow_id=WORKFLOW,
+           metadata={"dispatch": {"builds_on": ids[0]}})
+    for i, task_id in enumerate(ids):
+        _step(db, task_id, builds_on=ids[i + 1] if i + 1 < length else None)
+    return ids
+
+
+def test_upstream_serves_every_ancestor_along_builds_on(client, db):
+    worker = Worker()
+    ids = _chain(client, db, worker, 3)
+    for task_id in ids:
+        response = worker.get(client, "upstream", f"upstream_task_id={task_id}")
+        assert response.status_code == 200, (task_id, response.text)
+        assert response.json()["task"]["id"] == task_id
+
+
+def test_upstream_refuses_a_task_off_the_builds_on_chain(client, db):
+    worker = Worker()
+    _chain(client, db, worker, 3)
+    _step(db, "task_sibling", builds_on=None)
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_sibling"))
+
+
+def test_upstream_does_not_follow_builds_on_through_another_tenant(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW,
+           metadata={"dispatch": {"builds_on": "task_b0"}})
+    _step(db, "task_b0", builds_on="task_b1", tenant="research")
+    _step(db, "task_b1", builds_on=None)
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_b0"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_b1"))
+
+
+def test_upstream_does_not_follow_builds_on_out_of_this_workflow(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW,
+           metadata={"dispatch": {"builds_on": "task_b0"}})
+    _step(db, "task_b0", builds_on="task_b1", workflow="wf_other")
+    _step(db, "task_b1", builds_on=None)
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_b1"))
+
+
+def test_upstream_follows_builds_on_to_the_depth_bound_and_no_further(client, db):
+    from swarm_api.attemptstate import BUILDS_ON_MAX_DEPTH
+
+    worker = Worker()
+    ids = _chain(client, db, worker, BUILDS_ON_MAX_DEPTH + 1)
+    last = worker.get(client, "upstream", f"upstream_task_id={ids[BUILDS_ON_MAX_DEPTH - 1]}")
+    assert last.status_code == 200, last.text
+    assert _refused(
+        worker.get(client, "upstream", f"upstream_task_id={ids[BUILDS_ON_MAX_DEPTH]}"))
+
+
+def _gated(client, db, worker: Worker, review: str) -> None:
+    opened(client, db, worker, workflow_id=WORKFLOW, metadata={"dispatch": {
+        "verdict_gate": {"task_id": review, "verdict_in": ["NOT_YET"]}}})
+
+
+def test_upstream_serves_the_verdict_gates_review_task(client, db):
+    worker = Worker()
+    _gated(client, db, worker, "task_review")
+    _step(db, "task_review", builds_on=None)
+    response = worker.get(client, "upstream", "upstream_task_id=task_review")
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["id"] == "task_review"
+
+
+def test_upstream_refuses_a_gate_review_of_another_workflow(client, db):
+    worker = Worker()
+    _gated(client, db, worker, "task_review")
+    _step(db, "task_review", builds_on=None, workflow="wf_other")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_review"))
+
+
+def test_upstream_refuses_a_gate_review_of_another_tenant(client, db):
+    worker = Worker()
+    _gated(client, db, worker, "task_review")
+    _step(db, "task_review", builds_on=None, tenant="research")
+    response = worker.get(client, "upstream", "upstream_task_id=task_review")
+    assert _refused(response)
+    assert "research" not in response.text
+
+
+def test_upstream_refuses_a_task_the_gate_does_not_name(client, db):
+    worker = Worker()
+    _gated(client, db, worker, "task_review")
+    _step(db, "task_review", builds_on=None)
+    _step(db, "task_other_review", builds_on=None)
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_other_review"))
+
+
+def _ancestor(db, task_id: str, *, depends_on: tuple[str, ...] = (), tenant: str = "eng",
+              workflow: str = WORKFLOW) -> dict[str, Any]:
+    doc = seed_task(db, task_id=task_id, tenant_id=tenant, state="SUCCEEDED",
+                    depends_on=depends_on)
+    doc["workflow_id"] = workflow
+    return SIGNER.sign_document(doc, task_id)
+
+
+def test_upstream_serves_a_workflow_ancestor_along_depends_on(client, db):
+    """A re-review (or the merge) reads the implement step's questions and answers (archived issue 2070)."""
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix", depends_on=("task_review",))
+    _ancestor(db, "task_review", depends_on=("task_impl",))
+    _ancestor(db, "task_impl")
+    response = worker.get(client, "upstream", "upstream_task_id=task_impl")
+    # MUTATION: serve only the declared depends_on and this is the 403.
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["id"] == "task_impl"
+
+
+def test_upstream_does_not_follow_depends_on_out_of_this_workflow_or_tenant(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix", depends_on=("task_theirs", "task_elsewhere"))
+    _ancestor(db, "task_theirs", depends_on=("task_beyond",), tenant="research")
+    _ancestor(db, "task_elsewhere", depends_on=("task_beyond",), workflow="wf_other")
+    _ancestor(db, "task_beyond")
+    # MUTATION: walk through another tenant's or workflow's task and these are 200s.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_theirs"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_elsewhere"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_beyond"))
+
+
+def test_upstream_refuses_a_step_of_this_workflow_that_is_no_ancestor(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix")
+    _ancestor(db, "task_sibling")
+    # MUTATION: serve any step of the workflow and this is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_sibling"))
+
+
+def _merge_step(client, db, worker: Worker, *, opener_dispatch: dict[str, Any] | None = None,
+                opener_tenant: str = "eng") -> dict[str, Any]:
+    """A merge step whose signed target is the fix step `task_fix`, which opened the
+    pull request from its own branch (archived issue 2373: strategy `integrate`, the integrator).
+    Both specs are signed, as submission signs them; the opener is returned."""
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_review"],
+           metadata={"dispatch": {"strategy": "integrate", "carrier": "checkpoints",
+                                  "merge_target": {"pull_request": "task_fix"}},
+                     "merge_fix": {"conflict_rounds": [
+                         {"round": 1, "task_id": "task_round", "workflow_id": "wf_round"}]}})
+    opener = seed_task(db, task_id="task_fix", tenant_id=opener_tenant, state="SUCCEEDED",
+                       workflow_id=WORKFLOW)
+    opener["metadata"] = {"dispatch": opener_dispatch or {"strategy": "integrate",
+                                                          "role": "integrator"}}
+    SIGNER.sign_document(opener, "task_fix")
+    return opener
+
+
+def _continuation(db, task_id: str, continues: str, *, tenant: str = "eng") -> dict[str, Any]:
+    doc = seed_task(db, task_id=task_id, tenant_id=tenant, state="SUCCEEDED",
+                    workflow_id="wf_round")
+    doc["metadata"] = {"dispatch": {"strategy": "direct-pr", "continues": continues}}
+    return SIGNER.sign_document(doc, task_id)
+
+
+def test_upstream_serves_a_merge_its_own_task_and_its_rounds(client, db):
+    """archived issue 2373: on the state routes the merge read neither the `merge_fix` record on
+    its own task nor the round's task, and refused the round's head `head_moved`."""
+    worker = Worker()
+    _merge_step(client, db, worker)
+    _continuation(db, "task_round", "task_fix")
+    # MUTATION: drop `_is_merge_fix_record` and both are the 403.
+    own = worker.get(client, "upstream", f"upstream_task_id={worker.tuple.task_id}")
+    assert own.status_code == 200, own.text
+    assert own.json()["task"]["metadata"]["merge_fix"]["conflict_rounds"][0]["task_id"] == (
+        "task_round")
+    found = worker.get(client, "upstream", "upstream_task_id=task_round")
+    assert found.status_code == 200, found.text
+    assert found.json()["task"]["id"] == "task_round"
+
+
+def test_upstream_serves_a_continued_openers_branch_task_and_its_rounds(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker, opener_dispatch={"strategy": "direct-pr",
+                                                     "continues": "task_branch"})
+    _continuation(db, "task_branch", "task_none")
+    _continuation(db, "task_round", "task_branch")
+    for upstream in ("task_branch", "task_round"):
+        response = worker.get(client, "upstream", f"upstream_task_id={upstream}")
+        assert response.status_code == 200, (upstream, response.text)
+
+
+def test_upstream_refuses_a_merge_a_task_of_another_branch_or_tenant(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker)
+    _continuation(db, "task_round", "task_other_branch")
+    _continuation(db, "task_theirs", "task_fix", tenant="research")
+    seed_task(db, task_id="task_sibling", tenant_id="eng", state="SUCCEEDED")
+    # MUTATION: serve any task the `merge_fix` record names and the first is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_round"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_theirs"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_sibling"))
+
+
+def test_upstream_serves_no_round_to_a_step_that_merges_nothing(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    seed_task(db, task_id="task_fix", tenant_id="eng", state="SUCCEEDED")
+    _continuation(db, "task_round", "task_fix")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_round"))
+
+
+def test_upstream_follows_no_merge_target_of_another_tenant(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker, opener_tenant="research")
+    _continuation(db, "task_round", "task_fix")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_round"))
+
+
+# Every fact the merge rule follows is a `metadata.dispatch` field, and a task
+# document is tenant-writable after signing (docs/design/tenant-settings-
+# integrity.md §1.1: every worker still holding swarmTenantWorkerFirestore can
+# update any document). So each is the SIGNED copy or nothing: a rewrite of any
+# one would otherwise hand a merge step any same-tenant task it names.
+
+
+def _victim(db) -> None:
+    """A task of this tenant that has nothing to do with the merge's pull request."""
+    _continuation(db, "task_victim", "task_elsewhere")
+
+
+def test_upstream_follows_no_merge_target_rewritten_after_signing(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker)
+    _victim(db)
+    own = db.docs[f"tasks/{worker.tuple.task_id}"]
+    own["metadata"]["dispatch"]["merge_target"] = {"pull_request": "task_victim"}
+    # MUTATION: read the target without verifying the merge step's own spec
+    # and the victim is the target, so the root, so a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    # Its own document stays readable: that id is the tuple's, not a field.
+    assert worker.get(client, "upstream",
+                      f"upstream_task_id={worker.tuple.task_id}").status_code == 200
+
+
+def test_upstream_follows_no_openers_continues_rewritten_after_signing(client, db):
+    worker = Worker()
+    opener = _merge_step(client, db, worker)
+    _victim(db)
+    opener["metadata"]["dispatch"]["continues"] = "task_victim"
+    # MUTATION: take the opener's `continues` unverified and the victim is the root.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+
+
+def test_upstream_serves_no_candidate_whose_continues_was_rewritten(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker)
+    victim = _continuation(db, "task_victim", "task_elsewhere")
+    victim["metadata"]["dispatch"]["continues"] = "task_fix"
+    # MUTATION: take the candidate's `continues` unverified and it is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+
+
+def test_upstream_serves_no_unsigned_candidate_or_one_signed_as_another_task(client, db):
+    worker = Worker()
+    _merge_step(client, db, worker)
+    unsigned = seed_task(db, task_id="task_unsigned", tenant_id="eng", state="SUCCEEDED")
+    unsigned["metadata"] = {"dispatch": {"strategy": "direct-pr", "continues": "task_fix"}}
+    copied = _continuation(db, "task_round", "task_fix")
+    db.docs["tasks/task_copied"] = copy.deepcopy(copied)
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_unsigned"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_copied"))
+    assert worker.get(client, "upstream", "upstream_task_id=task_round").status_code == 200
+
+
+def test_upstream_serves_a_merge_its_recorded_fixer_and_its_conflict_round_state(client, db):
+    """archived issue 2373's other readers: `_recorded_fix_heads` reads the branch task
+    and every fixer it records, `_ended` the conflict round's state -- each a
+    task that continues the branch, so each is served on the state routes."""
+    worker = Worker()
+    _merge_step(client, db, worker, opener_dispatch={"strategy": "direct-pr",
+                                                     "continues": "task_branch"})
+    branch = _continuation(db, "task_branch", "task_none")
+    branch["metadata"]["pull_request_fix_heads"] = [{"task_id": "task_fixer", "pull_request": 7}]
+    _continuation(db, "task_fixer", "task_branch")
+    _continuation(db, "task_round", "task_branch")
+    found = worker.get(client, "upstream", "upstream_task_id=task_branch")
+    assert found.status_code == 200, found.text
+    assert found.json()["task"]["metadata"]["pull_request_fix_heads"][0]["task_id"] == "task_fixer"
+    for upstream in ("task_fixer", "task_round", "task_fix"):
+        response = worker.get(client, "upstream", f"upstream_task_id={upstream}")
+        assert response.status_code == 200, (upstream, response.text)
+        assert response.json()["task"]["state"] == "SUCCEEDED"
+
+
+# --------------------------------------------------------------------------
+# upstream: a merge step's fix loop's re-review (FIX-LOOP-REREVIEW-READ)
+#
+# On dev a merge-on-verdict workflow's loop ran one round (`re-review:1`, its
+# own one-step workflow, MERGE) and the merge step FAILED: `_loop_review`
+# reads the loop's `final_review` through the state route, which refused it
+# `upstream_not_declared`. The re-review is named only by the loop's
+# tenant-writable summary; what may be trusted is its own SIGNED
+# `fix_loop_round`, which names the loop.
+# --------------------------------------------------------------------------
+
+LOOP_TASK = "task_loop"
+REREVIEW = "task_rereview_1"
+
+
+def _loop_merge_step(client, db, worker: Worker, *, loop_profile: str = "fix-loop",
+                     loop_workflow: str = WORKFLOW, loop_tenant: str = "eng",
+                     declares_loop: bool = True, merges: bool = True) -> dict[str, Any]:
+    """A merge step behind a fix loop, as `merge_step_for` signs it: it depends on
+    the opener `task_fix` and the loop, and its target names the loop. The loop
+    ran one round; its summary names the re-review. Every spec is signed."""
+    dispatch: dict[str, Any] = {"strategy": "integrate", "carrier": "checkpoints"}
+    if merges:
+        dispatch["merge_target"] = {"pull_request": "task_fix", "review_loop": LOOP_TASK}
+    opened(client, db, worker, workflow_id=WORKFLOW,
+           depends_on=["task_fix"] + ([LOOP_TASK] if declares_loop else []),
+           metadata={"dispatch": dispatch})
+    _ancestor(db, "task_fix")
+    loop = seed_task(db, task_id=LOOP_TASK, tenant_id=loop_tenant, state="SUCCEEDED",
+                     runner_profile=loop_profile, workflow_id=loop_workflow)
+    loop["metadata"] = {"dispatch": {"fix_loop": {
+        "review": "review", "review_task_id": "task_review", "max_rounds": 3}}}
+    SIGNER.sign_document(loop, LOOP_TASK)
+    # Unsigned and tenant-writable, as the loop driver writes it.
+    loop["result_summary"] = {"fix_loop": {"rounds": [{"round": 1}],
+                                           "final_review": REREVIEW, "verdict": "MERGE"}}
+    return loop
+
+
+def _rereview(db, task_id: str = REREVIEW, *, loop: str = LOOP_TASK, kind: str = "review",
+              tenant: str = "eng", signed_round: bool = True) -> dict[str, Any]:
+    """A `re-review:<k>`: its own one-step workflow, its round record signed in
+    its dispatch (`submit_workflow(fix_loop_round=...)`) and copied, unsigned,
+    into its metadata."""
+    doc = seed_task(db, task_id=task_id, tenant_id=tenant, state="SUCCEEDED",
+                    workflow_id=f"wf_{task_id}")
+    record = {"loop_task": loop, "round": 1, "kind": kind, "head": "f" * 40}
+    dispatch: dict[str, Any] = {"strategy": "collect"}
+    if signed_round:
+        dispatch["fix_loop_round"] = record
+    doc["metadata"] = {"dispatch": dispatch}
+    SIGNER.sign_document(doc, task_id)
+    if not signed_round:
+        doc["metadata"]["fix_loop_round"] = record
+    return doc
+
+
+def test_upstream_serves_a_merge_step_its_one_round_loops_rereview(client, db):
+    """The live finding: the merge's reads, in `_loop_review`'s order, all served."""
+    worker = Worker()
+    _loop_merge_step(client, db, worker)
+    _rereview(db)
+    loop = worker.get(client, "upstream", f"upstream_task_id={LOOP_TASK}")
+    assert loop.status_code == 200, loop.text
+    final = loop.json()["task"]["result_summary"]["fix_loop"]["final_review"]
+    # MUTATION: drop `_is_fix_loop_rereview` and this is the live 403.
+    review = worker.get(client, "upstream", f"upstream_task_id={final}")
+    assert review.status_code == 200, review.text
+    assert review.json()["task"]["metadata"]["dispatch"]["fix_loop_round"]["loop_task"] == (
+        LOOP_TASK)
+
+
+def test_upstream_refuses_a_rereview_of_another_loop(client, db):
+    worker = Worker()
+    _loop_merge_step(client, db, worker)
+    other = seed_task(db, task_id="task_other_loop", tenant_id="eng", state="SUCCEEDED",
+                      runner_profile="fix-loop", workflow_id=WORKFLOW)
+    SIGNER.sign_document(other, "task_other_loop")
+    _rereview(db, "task_rereview_other", loop="task_other_loop")
+    # MUTATION: serve any signed re-review of a loop of this workflow and this is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_rereview_other"))
+
+
+def test_upstream_refuses_a_task_only_the_loops_summary_names(client, db):
+    """The loop's `final_review` is tenant-writable: it serves nothing by itself."""
+    worker = Worker()
+    _loop_merge_step(client, db, worker)
+    _rereview(db, signed_round=False)
+    _bystander(db)
+    # An unsigned round record (the metadata copy) is no proof...
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={REREVIEW}"))
+    # ...nor is a summary rewritten to name any other task of this tenant.
+    db.docs[f"tasks/{LOOP_TASK}"]["result_summary"]["fix_loop"]["final_review"] = "task_victim"
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+
+
+def test_upstream_refuses_a_rereview_whose_round_was_rewritten_after_signing(client, db):
+    worker = Worker()
+    _loop_merge_step(client, db, worker)
+    doc = _rereview(db, loop="task_elsewhere")
+    doc["metadata"]["dispatch"]["fix_loop_round"]["loop_task"] = LOOP_TASK
+    # MUTATION: read the round record without verifying the spec and this is a 200.
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={REREVIEW}"))
+
+
+def test_upstream_refuses_a_fix_round_as_a_rereview(client, db):
+    worker = Worker()
+    _loop_merge_step(client, db, worker)
+    _rereview(db, kind="fix")
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={REREVIEW}"))
+
+
+@pytest.mark.parametrize("variant", [
+    pytest.param({"declares_loop": False}, id="loop-not-declared"),
+    pytest.param({"merges": False}, id="not-a-merge-step"),
+    pytest.param({"loop_profile": "claude-code"}, id="loop-not-on-fix-loop"),
+    pytest.param({"loop_workflow": "wf_other"}, id="loop-of-another-workflow"),
+    pytest.param({"loop_tenant": "research"}, id="loop-of-another-tenant"),
+])
+def test_upstream_refuses_a_rereview_unless_the_loop_holds(client, db, variant):
+    worker = Worker()
+    _loop_merge_step(client, db, worker, **variant)
+    _rereview(db)
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={REREVIEW}"))
+
+
+def test_upstream_refuses_a_rereview_of_another_tenant(client, db):
+    worker = Worker()
+    _loop_merge_step(client, db, worker)
+    _rereview(db, tenant="research")
+    response = worker.get(client, "upstream", f"upstream_task_id={REREVIEW}")
+    assert _refused(response)
+    assert "research" not in response.text
+
+
+# --------------------------------------------------------------------------
+# upstream: a merge-only continuation's target (FIX-MERGE-CONTINUATION-READ,
+# part of archived issue 2379)
+#
+# `issueci.merge_workflow` submits ONE merge step that `continues_task` the
+# task that pushed the green head: `MergeSources(continued=True).depends_on()`
+# is [], so the task it merges -- in another workflow -- is named only by the
+# signed `dispatch.merge_target.pull_request`, and the merge's first read
+# (`agent_worker.merge`, `ctx.fetch_upstream(target.pull_request)`) is of it.
+# F01 and F02 of archived issue 2379 ended `inputs_unavailable` on exactly that read.
+# --------------------------------------------------------------------------
+
+MERGE_WORKFLOW = "wf_merge_only"
+PR_WORKFLOW = "wf_pull_request"
+
+
+def _merge_only(client, db, worker: Worker, *, target: str, root: str,
+                target_tenant: str = "eng",
+                target_dispatch: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A merge-only continuation of `target`, which pushed the head in
+    `PR_WORKFLOW`, on the branch of `root`; shaped as `merge_workflow` signs it:
+    no `depends_on`, `continues` the branch's root, and the target named only
+    by `merge_target`. The target, signed as submission signs it, is returned."""
+    opened(client, db, worker, workflow_id=MERGE_WORKFLOW, depends_on=[],
+           metadata={"dispatch": {"strategy": "direct-pr", "carrier": "checkpoints",
+                                  "continues": root,
+                                  "merge_target": {"pull_request": target,
+                                                   "pull_request_workflow": PR_WORKFLOW}}})
+    doc = seed_task(db, task_id=target, tenant_id=target_tenant, state="SUCCEEDED",
+                    workflow_id=PR_WORKFLOW)
+    doc["metadata"] = {"dispatch": target_dispatch or {"strategy": "integrate",
+                                                       "role": "integrator"}}
+    return SIGNER.sign_document(doc, target)
+
+
+def test_upstream_serves_a_merge_only_continuations_target(client, db):
+    """F01: the target opened the pull request and continues nothing."""
+    worker = Worker()
+    _merge_only(client, db, worker, target="task_pr", root="task_pr")
+    # MUTATION: leave `merge_target.pull_request` out of the declared set and
+    # take the merge-round rule out of it, and this is the F01 403.
+    response = worker.get(client, "upstream", "upstream_task_id=task_pr")
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["id"] == "task_pr"
+    assert response.json()["task"]["workflow_id"] == PR_WORKFLOW
+
+
+def test_upstream_serves_a_merge_only_continuations_target_that_continues_a_task(client, db):
+    """F02: the head was pushed by a task that itself continues the branch's
+    root (a CI-fix round), so the target is not the root."""
+    worker = Worker()
+    _merge_only(client, db, worker, target="task_cifix", root="task_root",
+                target_dispatch={"strategy": "direct-pr", "continues": "task_root"})
+    _continuation(db, "task_root", "task_none")
+    for upstream in ("task_cifix", "task_root"):
+        response = worker.get(client, "upstream", f"upstream_task_id={upstream}")
+        assert response.status_code == 200, (upstream, response.text)
+        assert response.json()["task"]["id"] == upstream
+
+
+def test_upstream_serves_a_merge_only_target_whose_own_spec_fails(client, db):
+    """The target is DECLARED, by the merge's own signed spec, as a
+    `depends_on` id is: the route serves it as stored and the worker holds it
+    to its signed spec (`merge._verify_opener`), so a target rewritten after
+    signing ends `spec_unverified`, naming the check, not `inputs_unavailable`
+    as if it could not be read. The merge-round rule alone verifies the
+    opener before following it, and refuses it."""
+    worker = Worker()
+    target = _merge_only(client, db, worker, target="task_pr", root="task_pr")
+    target["metadata"]["dispatch"]["role"] = "rewritten"
+    # MUTATION: serve the target only through `_is_merge_fix_record` and this
+    # is the 403.
+    response = worker.get(client, "upstream", "upstream_task_id=task_pr")
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["metadata"]["dispatch"]["role"] == "rewritten"
+
+
+def test_upstream_refuses_a_merge_only_target_of_another_tenant(client, db):
+    worker = Worker()
+    _merge_only(client, db, worker, target="task_pr", root="task_pr",
+                target_tenant="research")
+    response = worker.get(client, "upstream", "upstream_task_id=task_pr")
+    # MUTATION: drop the caller's tenant check on a declared id and this is a 200.
+    assert _refused(response)
+    assert "research" not in response.text
+
+
+def test_upstream_refuses_a_merge_only_continuation_a_task_its_target_does_not_name(client, db):
+    worker = Worker()
+    _merge_only(client, db, worker, target="task_pr", root="task_pr")
+    _bystander(db, "task_victim", workflow=PR_WORKFLOW)
+    _bystander(db, "task_sibling", workflow=MERGE_WORKFLOW)
+    # MUTATION: serve any task of the target's workflow, or of the merge's, and
+    # one of these is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_sibling"))
+
+
+def test_upstream_follows_no_merge_only_target_rewritten_after_signing(client, db):
+    """The declared target is the SIGNED copy's: a rewrite of the merge's own
+    `merge_target` after signing names nothing."""
+    worker = Worker()
+    _merge_only(client, db, worker, target="task_pr", root="task_pr")
+    _bystander(db, "task_victim", workflow=PR_WORKFLOW)
+    own = db.docs[f"tasks/{worker.tuple.task_id}"]
+    own["metadata"]["dispatch"]["merge_target"]["pull_request"] = "task_victim"
+    # MUTATION: read `merge_target` from the stored document without the
+    # signature check and this is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_pr"))
+
+
+# --------------------------------------------------------------------------
+# upstream: every id from the SIGNED copy (SIGNED-UPSTREAM, part of archived issue 2373)
+#
+# The merge rule above was the first; the owner chose on 2026-10-26 that every
+# declared and derived read is held so. A worker still holding the Firestore
+# write role (docs/design/tenant-settings-integrity.md §1.1) can rewrite its
+# own task, or an ancestor, after signing: each test rewrites one field the
+# rules read and asks for a same-tenant task it now names.
+# --------------------------------------------------------------------------
+
+
+def _bystander(db, task_id: str = "task_victim", *, workflow: str = WORKFLOW) -> dict[str, Any]:
+    """A signed task of this tenant (and workflow) that nothing signed names."""
+    return _ancestor(db, task_id, workflow=workflow)
+
+
+@pytest.mark.parametrize("rewrite", [
+    pytest.param(lambda doc: doc["depends_on"].append("task_victim"), id="depends_on"),
+    pytest.param(lambda doc: doc["metadata"].setdefault("input_from", {}).update(
+        {"task_victim": {"artifacts": ["*"]}}), id="input_from"),
+    pytest.param(lambda doc: doc["metadata"]["dispatch"].setdefault("input_parents", {}).update(
+        {"task_victim": ["*"]}), id="input_parents"),
+    pytest.param(lambda doc: doc["metadata"]["dispatch"].update(
+        {"builds_on": "task_victim"}), id="builds_on"),
+    pytest.param(lambda doc: doc["metadata"]["dispatch"].update(
+        {"verdict_gate": {"task_id": "task_victim", "verdict_in": ["NOT_YET"]}}),
+        id="verdict_gate"),
+])
+def test_upstream_serves_nothing_a_field_rewritten_after_signing_names(client, db, rewrite):
+    worker = Worker()
+    own = opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_up"],
+                 metadata={"dispatch": {"strategy": "direct-pr"}})
+    _ancestor(db, "task_up")
+    _bystander(db)
+    signed = worker.get(client, "upstream", "upstream_task_id=task_up")
+    assert signed.status_code == 200, signed.text
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    rewrite(own)
+    # MUTATION: read the ids from the stored task without verifying its spec
+    # and the rewritten field serves the bystander: a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    # A spec that no longer verifies declares nothing, its signed ids included...
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_up"))
+    # ...but the tuple's own task id is not a field: it stays readable.
+    assert worker.get(client, "upstream",
+                      f"upstream_task_id={worker.tuple.task_id}").status_code == 200
+
+
+def test_upstream_serves_no_index_base_a_rewritten_prompt_or_repository_names(client, db):
+    from swarm_api.repoindex import BASE_LINE
+    from swarm_api.repositories import repo_id_for
+
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base")
+    _index_task(db, "task_base")
+    _index_task(db, "task_older", sha="c" * 40)
+    assert worker.get(client, "upstream", "upstream_task_id=task_base").status_code == 200
+    own = db.docs[f"tasks/{worker.tuple.task_id}"]
+    own["input"] = {"prompt": f"index\n{BASE_LINE}{'c' * 40}\n"}
+    # MUTATION: take the prompt unverified and the older version's task is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_older"))
+    own["input"] = {"prompt": f"index\n{BASE_LINE}{BASE_SHA}\n"}
+    other = repo_id_for("eng", "acme", "gadgets")
+    db.docs[f"repositories/{other}"] = {"tenant_id": "eng", "repo_id": other}
+    db.docs[f"repositories/{other}/index_versions/{BASE_SHA}"] = {"task_id": "task_victim"}
+    _bystander(db)
+    own["repository_url"] = "https://github.com/acme/gadgets.git"
+    # MUTATION: take the repository unverified and the other registration's task is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+
+
+@pytest.mark.parametrize("named", [
+    pytest.param(lambda db: _bystander(db), id="not-an-index-run"),
+    pytest.param(lambda db: _index_task(db, "task_victim", sha="c" * 40), id="another-commit"),
+    pytest.param(lambda db: _index_task(db, "task_victim",
+                                        repo="https://github.com/acme/gadgets.git"),
+                 id="another-repository"),
+    pytest.param(lambda db: _index_task(db, "task_victim")["metadata"].update(
+        {"dispatch": {"role": "rewritten"}}), id="unsigned-index-run"),
+])
+def test_upstream_serves_no_task_a_rewritten_index_version_names(client, db, named):
+    """`index_versions/<sha>` is no signed document: its `task_id` is held to
+    the named task's own signed spec, an index run of this repository at
+    exactly that commit (`repoindex.indexer_task`)."""
+    worker = Worker()
+    _index_run(client, db, worker, version_task="task_base")
+    _index_task(db, "task_base")
+    named(db)
+    from swarm_api.repositories import repo_id_for
+
+    db.docs[f"repositories/{repo_id_for('eng', 'acme', 'widgets')}/index_versions/{BASE_SHA}"][
+        "task_id"] = "task_victim"
+    # MUTATION: take the version's `task_id` as it is stored and this is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+
+
+def test_upstream_breaks_a_builds_on_walk_at_an_ancestor_rewritten_after_signing(client, db):
+    worker = Worker()
+    ids = _chain(client, db, worker, 3)
+    _bystander(db)
+    db.docs[f"tasks/{ids[0]}"]["metadata"]["dispatch"]["builds_on"] = "task_victim"
+    # MUTATION: follow the ancestor's `builds_on` unverified and the bystander is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    # The walk breaks THERE: what the signed chain named past it is not reached...
+    assert _refused(worker.get(client, "upstream", f"upstream_task_id={ids[1]}"))
+    # ...and the id this task's own signed spec names still is.
+    assert worker.get(client, "upstream", f"upstream_task_id={ids[0]}").status_code == 200
+
+
+def test_upstream_breaks_a_depends_on_walk_at_an_ancestor_rewritten_after_signing(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix", depends_on=("task_review",))
+    _ancestor(db, "task_review", depends_on=("task_impl",))
+    _ancestor(db, "task_impl")
+    _bystander(db)
+    assert worker.get(client, "upstream", "upstream_task_id=task_impl").status_code == 200
+    db.docs["tasks/task_fix"]["depends_on"] = ["task_review", "task_victim"]
+    # MUTATION: follow the ancestor's `depends_on` unverified and the bystander is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_impl"))
+    assert worker.get(client, "upstream", "upstream_task_id=task_fix").status_code == 200
+
+
+def test_upstream_walks_through_no_task_whose_workflow_was_rewritten(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix", depends_on=("task_elsewhere",))
+    _ancestor(db, "task_elsewhere", depends_on=("task_beyond",), workflow="wf_other")
+    _ancestor(db, "task_beyond", workflow="wf_other")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_elsewhere"))
+    db.docs["tasks/task_elsewhere"]["workflow_id"] = WORKFLOW
+    db.docs["tasks/task_beyond"]["workflow_id"] = WORKFLOW
+    # MUTATION: trust an ancestor's `workflow_id` unverified and both are 200s.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_elsewhere"))
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_beyond"))
+
+
+def test_upstream_serves_no_gate_review_whose_workflow_was_rewritten(client, db):
+    worker = Worker()
+    _gated(client, db, worker, "task_review")
+    _step(db, "task_review", builds_on=None, workflow="wf_other")
+    db.docs["tasks/task_review"]["workflow_id"] = WORKFLOW
+    # MUTATION: trust the review's `workflow_id` unverified and it is a 200.
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_review"))
+
+
+def test_upstream_still_refuses_another_tenants_task_a_signed_field_names(client, db):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_theirs"],
+           metadata={"dispatch": {"builds_on": "task_theirs_too"}})
+    _ancestor(db, "task_theirs", tenant="research")
+    _step(db, "task_theirs_too", builds_on=None, tenant="research")
+    for upstream in ("task_theirs", "task_theirs_too"):
+        response = worker.get(client, "upstream", f"upstream_task_id={upstream}")
+        assert _refused(response), upstream
+        assert "research" not in response.text
+
+
+def test_upstream_counts_every_document_that_failed_verification(client, db, caplog):
+    worker = Worker()
+    own = opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_fix"])
+    _ancestor(db, "task_fix", depends_on=("task_review",))
+    _ancestor(db, "task_review")
+    db.docs["tasks/task_fix"]["depends_on"] = ["task_review", "task_victim"]
+    caplog.set_level("WARNING", logger="swarm_api.attemptstate")
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    # MUTATION: skip the rewritten ancestor as if it were absent and nothing is logged.
+    counted = [r.getMessage() for r in caplog.records if "unverified" in r.getMessage()]
+    assert counted and "unverified=1" in counted[-1], counted
+    assert worker.tuple.task_id in counted[-1]
+    caplog.clear()
+    own["depends_on"] = ["task_fix", "task_victim"]
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    counted = [r.getMessage() for r in caplog.records if "unverified" in r.getMessage()]
+    assert counted and "own task" in counted[-1], counted
+
+
+def test_upstream_reads_each_level_of_a_depends_on_walk_in_one_batch(client, db, monkeypatch):
+    worker = Worker()
+    opened(client, db, worker, workflow_id=WORKFLOW, depends_on=["task_a", "task_b", "task_c"])
+    _ancestor(db, "task_a", depends_on=("task_root",))
+    _ancestor(db, "task_b", depends_on=("task_root",))
+    _ancestor(db, "task_c")
+    _ancestor(db, "task_root")
+    _bystander(db)
+    batches: list[list[str]] = []
+    original = type(db).get_all
+
+    def counting(self, references, *args, **kwargs):
+        references = list(references)
+        batches.append(sorted(ref.path for ref in references))
+        return original(self, references, *args, **kwargs)
+
+    monkeypatch.setattr(type(db), "get_all", counting)
+    assert _refused(worker.get(client, "upstream", "upstream_task_id=task_victim"))
+    # MUTATION: read the walk one document at a time and there is no batch.
+    walk = [b for b in batches if any(p.startswith("tasks/") for p in b)]
+    assert walk == [["tasks/task_a", "tasks/task_b", "tasks/task_c"], ["tasks/task_root"]], batches
+
+
+# --------------------------------------------------------------------------
+# merge slot: a wake only for this tenant's listed waiter
+# --------------------------------------------------------------------------
+
+
+def _slot_waiting_on(db, waiter: str) -> str:
+    from swarm_api.attemptstate import slot_id
+
+    slot = slot_id("eng", "acme/widgets", "main")
+    now = datetime.now(timezone.utc)
+    db.docs[f"merge_slots/{slot}"] = {
+        "tenant_id": "eng", "repository": "acme/widgets", "base": "main", "generation": 3,
+        "holder": {"task_id": TASK, "attempt_id": ATTEMPT, "submitted_at": now,
+                   "generation": 3, "expires_at": now + timedelta(minutes=30)},
+        "waiters": [{"task_id": waiter, "submitted_at": now, "seen_at": now}],
+    }
+    return slot
+
+
+def _parked_on_slot(db, task_id: str, tenant: str) -> None:
+    doc = seed_task(db, task_id=task_id, tenant_id=tenant, state="PARKED",
+                    park_reason="CI_PENDING")
+    doc["metadata"] = {"merge_wait": {"code": "merge_slot_wait"}}
+
+
+def test_merge_slot_wake_refuses_another_tenants_waiter(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    _slot_waiting_on(db, "task_theirs")
+    _parked_on_slot(db, "task_theirs", "research")
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "merge-slot", {"op": "wake", "base": "main",
+                                                  "wake_task_id": "task_theirs"})
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "merge_wake_refused"
+    assert db.docs == before
+
+
+def test_merge_slot_wake_refuses_a_task_the_slot_does_not_list(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    _slot_waiting_on(db, "task_listed")
+    _parked_on_slot(db, "task_unlisted", "eng")
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "merge-slot", {"op": "wake", "base": "main",
+                                                  "wake_task_id": "task_unlisted"})
+    assert response.status_code == 403
+    assert db.docs == before
+
+
+def test_merge_slot_wake_marks_this_tenants_listed_waiter(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    _slot_waiting_on(db, "task_listed")
+    _parked_on_slot(db, "task_listed", "eng")
+    response = worker.post(client, "merge-slot", {"op": "wake", "base": "main",
+                                                  "wake_task_id": "task_listed"})
+    assert response.status_code == 200, response.text
+    assert response.json()["woken"] is True
+    assert db.docs["tasks/task_listed"]["metadata"]["merge_wait"]["wake_requested_at"]
+
+
+# --------------------------------------------------------------------------
+# registrations: v1 is child-only; v2 is what state/open writes
+# --------------------------------------------------------------------------
+
+
+def _register_v1(client, worker: Worker) -> Any:
+    t = worker.tuple
+    raw = json.dumps({"tenant_id": t.tenant_id, "task_id": t.task_id, "lease_id": t.lease_id,
+                      "generation": t.generation, "nonce": nonce(KEY, t),
+                      "public_key": worker.public}).encode()
+    return client.post(f"/v1/attempts/{t.attempt_id}/child-key", content=raw,
+                       headers={"Authorization": f"Bearer {WORKER}"})
+
+
+def _submit_child(client, worker: Worker) -> Any:
+    body = json.dumps({"tenant_id": "eng", "attempt_id": ATTEMPT, "lease_id": LEASE,
+                       "generation": 1, "request_id": "c-1",
+                       "child": {"runner_profile": "mock", "input": {"prompt": "x"}}}).encode()
+    path = f"/v1/tasks/{TASK}/children"
+    return client.post(path, content=body, headers={
+        "Authorization": f"Bearer {WORKER}", "Content-Type": "application/json",
+        **worker.sign("POST", path, body, child=True)})
+
+
+def test_a_v1_child_attestation_verifies_for_child_routes_and_not_for_state(client, db):
+    worker = Worker()
+    seed_attempt(db, worker, state="STARTING")
+    assert _register_v1(client, worker).status_code == 201
+    db.docs[f"tasks/{TASK}"]["state"] = "RUNNING"
+    assert _submit_child(client, worker).status_code == 201
+    before = copy.deepcopy(db.docs)
+    response = worker.post(client, "heartbeat", {})
+    assert response.status_code == 403, response.text
+    assert db.docs == before
+
+
+def test_a_key_state_open_registered_signs_children_too(client, db):
+    worker = Worker()
+    opened(client, db, worker)
+    assert _submit_child(client, worker).status_code == 201
+    assert worker.post(client, "heartbeat", {}).status_code == 200
+
+
+def test_an_unprotected_heap_registers_flagged_and_writes_state_only(client, db):
+    """Owner decision Q4: flagged and accepted. Its key signs state; a child
+    route refuses it, as a tombstone's worker has run without children."""
+    worker = Worker()
+    seed_attempt(db, worker)
+    response = worker.open(client, unprotected=True)
+    assert response.status_code == 200, response.text
+    assert response.json()["registration"]["unprotected"] is True
+    (reg,) = [d for p, d in db.docs.items() if p.startswith("child_keys/")]
+    assert reg["unprotected"] is True and reg["purpose"] == ["state"]
+    db.docs[f"tasks/{TASK}"]["state"] = "RUNNING"
+    assert worker.post(client, "heartbeat", {}).status_code == 200
+    assert _submit_child(client, worker).status_code == 403
+
+
+def test_widening_a_stored_registration_breaks_it(client, db):
+    """A v1 document given `purpose` by a tenant identity is a denial, never a widened key."""
+    worker = Worker()
+    seed_attempt(db, worker, state="STARTING")
+    assert _register_v1(client, worker).status_code == 201
+    db.docs[f"tasks/{TASK}"]["state"] = "RUNNING"
+    (path,) = [p for p in db.docs if p.startswith("child_keys/")]
+    db.docs[path].update({"purpose": ["child", "state"], "version": 2, "unprotected": False})
+    assert worker.post(client, "heartbeat", {}).status_code == 403
+    assert _submit_child(client, worker).status_code == 403
+
+
+def test_open_spends_the_nonce_once_per_generation(client, db):
+    worker = Worker()
+    seed_attempt(db, worker, state="LEASED")
+    first = worker.open(client)
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["registration"]["created"] is True
+    assert body["task"]["id"] == TASK and body["lease"]["lease_id"] == LEASE
+    retry = worker.open(client)
+    assert retry.status_code == 200 and retry.json()["registration"]["created"] is False
+    other_key = Worker()
+    taken = worker.open(client, public=other_key.public)
+    assert taken.status_code == 409, taken.text
+
+
+def test_open_refuses_a_bad_nonce(client, db):
+    worker = Worker()
+    seed_attempt(db, worker)
+    path = f"/v1/attempts/{ATTEMPT}/state/open"
+    raw = json.dumps({**worker.fields(), "nonce": secrets.token_hex(32),
+                      "public_key": worker.public}).encode()
+    response = client.post(path, content=raw, headers={"Authorization": f"Bearer {WORKER}"})
+    assert response.status_code == 403
+    assert not db.paths("child_keys/")
+
+
+def _search_client(db, worker_tokens, group_map, objects, *, enabled: bool) -> TestClient:
+    ctx = build_context(
+        settings=api_settings(child_key=KEY, search_tool_enabled=enabled),
+        db=db,
+        verifier=StaticTokenVerifier(worker_tokens),
+        groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(),
+        waker=NullWaker(),
+        metrics=ApiMetrics(),
+        objects=objects,
+    )
+    return TestClient(create_app(ctx), raise_server_exceptions=False)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_open_answers_the_search_flag_as_the_child_key_registration_does(
+        db, worker_tokens, group_map, objects, enabled):
+    """Lane ISO-SEARCH: a switched worker never calls `child-key`, so
+    `state/open`'s registration carries `search_tool` from the same setting,
+    or the tenant's claude-code agents silently lose the search tool."""
+    client = _search_client(db, worker_tokens, group_map, objects, enabled=enabled)
+    worker = Worker()
+    seed_attempt(db, worker)
+    response = worker.open(client)
+    assert response.status_code == 200, response.text
+    assert response.json()["registration"]["search_tool"] is enabled
+
+
+def test_open_offers_no_search_tool_to_an_unprotected_heap(db, worker_tokens, group_map, objects):
+    """A state-only key is no child path, so it signs no search call either:
+    as the tombstone's `child-key` answer, `search_tool` is False."""
+    client = _search_client(db, worker_tokens, group_map, objects, enabled=True)
+    worker = Worker()
+    seed_attempt(db, worker)
+    response = worker.open(client, unprotected=True)
+    assert response.status_code == 200, response.text
+    assert response.json()["registration"]["search_tool"] is False
+
+
+def test_open_refuses_once_the_task_is_running(client, db):
+    """The window is LEASED, DISPATCHED or STARTING (§4.3): the agent exists
+    only after RUNNING, so it can never be the one that registers."""
+    worker = Worker()
+    seed_attempt(db, worker, state="RUNNING")
+    assert worker.open(client).status_code == 409
+    assert not db.paths("child_keys/")

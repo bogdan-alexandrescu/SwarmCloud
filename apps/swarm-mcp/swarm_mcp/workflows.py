@@ -1,0 +1,1722 @@
+"""Workflows, reachable from a Claude Code session.
+
+WHY THIS FILE EXISTS. `server.py` contained the string "workflow" zero times, so
+fan-out, `depends_on`, `input_from` artifact staging, the rollup and
+`on_step_failure` -- every multi-step feature this platform was built for --
+could not be reached from the place a developer actually works. A session could
+dispatch N independent agents and join them by hand, which is precisely the
+bookkeeping the platform exists to remove.
+
+THE SERVER SIDE IS PROVEN, so this is wiring rather than invention.
+`wf_5e5ad3b6f7da4299a839`, submitted 2026-09-22: five independent `claude-code`
+steps and a sixth joining all five through `input_from`. All six SUCCEEDED. The
+five parallel steps each waited 153s -- admitted in ONE all-or-nothing
+transaction, invariant 2 -- and ran 68-92s; the join waited 431s, ran 38s, and
+its attempt recorded `cache_read_input_tokens=109629`, which is the proof that
+the five staged artifacts really did reach the agent's context.
+
+THE ONE RULE THIS MODULE ADDS, and the reason it is a module rather than four
+more branches in `server._call`: a workflow has TWO states and only one of them
+is true. `Workflow.state` in Firestore is a cache written once at submission;
+`swarm_api.rollup` derives the real one from the step tasks and
+`swarm_api.codec.workflow_to_api` serves THAT as `state`, with
+`state_source: "derived"` and the cache as `stored_state` beside it. Before that
+landed, `wf_bcdc9180e4fb4a209f31` read QUEUED while its three steps were
+SUCCEEDED, FAILED and CANCELLED.
+
+THIS PACKAGE DOES NOT DERIVE, and that refusal is deliberate. The derivation is a
+precedence table over the frozen state vocabulary and it lives in
+`swarm_api.rollup`, which ships inside the API image; `apps/swarm-mcp` depends on
+`swarm-common` and on nothing else, on purpose, so it cannot import it -- and
+copying the table here would be the restatement this repository keeps deleting.
+Worse than usual in this case: the thing the copy would be compared against is
+the drift check itself, so the two copies drifting would be reported as the DATA
+drifting.
+
+So when the server says it derived, the bridge serves what the server derived.
+When the server does not say so, the bridge reports NO workflow state and says
+why, naming the route that has to be fixed. It never falls back to
+`stored_state`. A bridge that did would print QUEUED into a developer's terminal
+directly above six steps that had all finished -- the same contradiction the web
+UI was written up for, in a worse place, because a terminal has no second panel
+to disagree with it.
+"""
+
+from __future__ import annotations
+
+import copy
+import dataclasses
+import json
+import re
+import threading
+from typing import Any, Callable
+
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
+from swarm_common.workcontract import SCHEMA_VERSION as WORK_CONTRACT_SCHEMA
+from swarm_common.workcontract import Requirement, WorkContract
+
+from . import awaitinput
+from . import profiles as catalogue
+from .client import SwarmClient, SwarmError, check_additional_repositories, session_tag
+from .follow import follow_command
+from .patches import masked_counts
+from .progress import FIX_LOOP_PROFILE, browser_unused_line, questions_count
+
+#: What `codec.workflow_to_api` sets on a read that actually looked at the step
+#: tasks. Any other value -- including the absence of the field -- means the
+#: `state` beside it is the Firestore cache.
+DERIVED = "derived"
+
+#: `swarm_api.rollup.UNKNOWN`. Recognised here, never produced here. It is
+#: deliberately not a member of the frozen state vocabulary, so it can neither be
+#: written to Firestore nor mistaken for a state the platform can be in.
+UNKNOWN = "UNKNOWN"
+
+#: The keys one step object may carry. An unknown key is refused rather than
+#: dropped: a caller that passed `input` or `image` believing it would be
+#: honoured needs to be told it was not, and silently ignoring a key is how
+#: invariant 10 would get quietly tested.
+#:
+#: `inputs` is the runner's DECLARED inputs (archived issue 142) -- `sleep_seconds` for the
+#: mock, say -- checked per profile by `profiles.check_inputs`. It is not the
+#: API's raw `input` object, which stays refused: that would let a caller set
+#: any key a runner reads. (`input.model` was one, until archived issue 226 made the model the
+#: Job's `MODEL`.)
+_STEP_KEYS = frozenset(
+    {
+        "step_id",
+        "prompt",
+        "runner_profile",
+        "inputs",
+        "depends_on",
+        "input_from",
+        "resource_class",
+        "timeout_seconds",
+        "stage",
+        # The review shape (archived issue 264): run this step's agent only on an upstream
+        # review's verdict, and start its checkout from an upstream's branch.
+        "when",
+        "builds_on",
+        # A step that starts from its own ref (archived issue 2895): a branch, tag or full
+        # sha, written as the step task's `repository_ref`. Sent as given;
+        # swarm-api refuses an abbreviated sha and a ref the forge lacks, and
+        # the combinations it conflicts with (`builds_on`, `pr_role`, ...).
+        "repository_ref",
+        # A step that may end SUCCEEDED with no change (archived pull request 644): the API has taken
+        # it since then; until 2026-10-07 this list refused it at the keyboard.
+        "allow_empty_diff",
+        # A step that waits for a person (docs/design/human-steps.md §4.1):
+        # sent as given; swarm-api checks the block and its profile, and
+        # refuses it while `await-input` is unavailable.
+        "await_input",
+        # A step that runs review-fix rounds until a review says MERGE
+        # (docs/design/fix-loop.md §4.1): sent as given; swarm-api checks the
+        # block and its profile (`resolve_fix_loop`), and refuses it while
+        # `fix-loop` is unavailable.
+        "fix_loop",
+        # The registered repositories this step reads beside its own (archived issue 1434),
+        # by name. It REPLACES the spec's top-level list, and `[]` means none.
+        "additional_repositories",
+        # "browser only if the change is UI" (archived issue 2322): `"browser_if_ui"`, sent
+        # as the step's `metadata.runtime` naming both profiles it may run.
+        "runtime",
+        # A review's gate (2026-11-05): `false` switches it off for this step,
+        # a block sets `min_lines`, `risk_paths` (and `requirements_check`).
+        # Sent as the step's `metadata.review_gate`, the one metadata key a
+        # spec may set: `metadata` itself stays refused (invariant 10).
+        "review_gate",
+        # The step's work contract (the owner's choice, 10 November 2026), so
+        # a spec can submit steps contract review runs on. Sent as the step's
+        # `metadata.work_contract`, which swarm-api decodes, compiles and
+        # signs (`workcontract.prepare`); checked for shape first by
+        # `check_work_contract`. `metadata` itself stays refused.
+        "work_contract",
+        # The step's plugins and the workspace defaults it turns off
+        # (docs/design/managed-plugins.md section 7): `{install_id:
+        # {overrides?}}` or `{name: {mode, skills}}`, and a list of names.
+        # Sent top-level as `WorkflowStepCreate.plugins` and `.plugins_off`;
+        # checked for shape only by `check_step_plugins` and
+        # `check_plugins_off`, and for everything else by swarm-api.
+        "plugins",
+        "plugins_off",
+    }
+)
+
+#: The one runtime policy (archived issue 2322) and the pair it resolves between, by name.
+#: swarm-api's `validation.RUNTIME_POLICY_PROFILES` is the authority and
+#: refuses any other pair; this only spells the block, so a spec need not.
+RUNTIME_BROWSER_IF_UI = "browser_if_ui"
+RUNTIME_PROFILES = {"browser": "claude-code-browser", "code": "claude-code"}
+
+#: The keys a step's `review_gate` block may carry, and their bounds: a copy
+#: of swarm-api's `validation.REVIEW_GATE_KEYS` and `REVIEW_GATE_MAX_*`, which
+#: this package cannot import; tests/unit/mcp/test_spec_review_gate.py holds
+#: them equal and runs every shape through swarm-api's own check.
+REVIEW_GATE_KEYS = ("min_lines", "risk_paths", "requirements_check")
+REVIEW_GATE_MAX_MIN_LINES = 1_000_000
+REVIEW_GATE_MAX_RISK_PATHS = 100
+REVIEW_GATE_MAX_PATH_CHARS = 200
+
+
+def check_review_gate(value: Any, *, where: str) -> bool | dict[str, Any]:
+    """A step's `review_gate`, as its `metadata.review_gate`: `False` or the block.
+
+    The rules are swarm-api's (`validation.resolve_review_gate`), restated so
+    a malformed block is refused before the workflow is submitted rather than
+    as a 422 after: `false`, or an object with only `REVIEW_GATE_KEYS`; a
+    `min_lines` that is a whole number in 0..`REVIEW_GATE_MAX_MIN_LINES` (a
+    bool is not); a `requirements_check` that is true or false; a `risk_paths`
+    that is a list of 1..`REVIEW_GATE_MAX_RISK_PATHS` non-empty, printable,
+    repository-relative globs of at most `REVIEW_GATE_MAX_PATH_CHARS`. The
+    block is sent as given: swarm-api normalises it and applies the defaults.
+    """
+    if value is False:
+        return False
+    shape = (
+        f"{where}: review_gate must be false, which switches this review's gate off, "
+        f"or an object with only {list(REVIEW_GATE_KEYS)}, e.g. "
+        '{"min_lines": 300, "risk_paths": ["apps/redaction/**"]}'
+    )
+    if not isinstance(value, dict) or not set(value) <= set(REVIEW_GATE_KEYS):
+        raise SwarmError(shape)
+    if "min_lines" in value:
+        min_lines = value["min_lines"]
+        if (isinstance(min_lines, bool) or not isinstance(min_lines, int)
+                or not 0 <= min_lines <= REVIEW_GATE_MAX_MIN_LINES):
+            raise SwarmError(
+                f"{where}: review_gate.min_lines must be a whole number from 0 to "
+                f"{REVIEW_GATE_MAX_MIN_LINES} -- the changed lines below which the "
+                "review is skipped"
+            )
+    if "requirements_check" in value and not isinstance(value["requirements_check"], bool):
+        raise SwarmError(f"{where}: review_gate.requirements_check must be true or false")
+    if "risk_paths" in value:
+        paths = value["risk_paths"]
+        if (not isinstance(paths, list) or not paths
+                or len(paths) > REVIEW_GATE_MAX_RISK_PATHS
+                or not all(isinstance(p, str) and p.strip() and len(p) <= REVIEW_GATE_MAX_PATH_CHARS
+                           and not p.startswith("/") and p.isprintable() for p in paths)):
+            raise SwarmError(
+                f"{where}: review_gate.risk_paths must be a list of 1 to "
+                f"{REVIEW_GATE_MAX_RISK_PATHS} repository-relative globs of at most "
+                f"{REVIEW_GATE_MAX_PATH_CHARS} characters -- a change touching one "
+                "always runs the review"
+            )
+        return {**value, "risk_paths": list(paths)}
+    return dict(value)
+
+
+def check_step_plugins(value: Any, *, where: str) -> dict[str, dict[str, Any]]:
+    """A step's or task's `plugins`, as given: a map of plugin names (a
+    built-in's name or a managed install's id) to objects.
+
+    THE SHAPE ONLY. Which names exist, what a block may hold (`mode` and
+    `skills` for a built-in, `overrides` for a managed install), the caps and
+    whether the profile and workspace allow it are swarm-api's
+    (`schemas.StepPluginCreate`, `plugins.merge_step_plugins`), and its 422 is
+    reported in its own words. A plugin is named, never a path, an image, a
+    command or a URL (invariant 10): swarm-api resolves the name and nothing
+    here fetches or runs it."""
+    if not isinstance(value, dict) or not all(
+        isinstance(name, str) and name.strip() and isinstance(block, dict)
+        for name, block in value.items()
+    ):
+        raise SwarmError(
+            f"{where}: plugins must map a plugin's name or install id to an object -- "
+            '{"<install_id>": {"overrides": {...}}} for a managed install, '
+            '{"<name>": {"mode": "...", "skills": [...]}} for a built-in. Nothing was sent'
+        )
+    return copy.deepcopy(value)
+
+
+def check_plugins_off(value: Any, *, where: str) -> list[str]:
+    """A step's or task's `plugins_off`, as given: a list of names (install
+    ids or built-in names) of workspace defaults it turns off. The shape only,
+    as for `check_step_plugins`; `[]` is sent as given."""
+    if not isinstance(value, list) or not all(isinstance(name, str) and name.strip() for name in value):
+        raise SwarmError(
+            f"{where}: plugins_off must be a list of names -- the install ids or built-in "
+            'names of workspace defaults this step does not load, e.g. ["<install_id>"]. '
+            "Nothing was sent"
+        )
+    return list(value)
+
+
+def _contract_skeleton() -> dict[str, Any]:
+    """The frozen contract's canonical projection of an empty contract: its
+    keys at every level are the closed sets a contract document may carry.
+    Each field is given the empty value of its declared type."""
+    empty = {"int": 0, "str": ""}
+    fields = {
+        f.name: () if str(f.type).startswith("tuple") else
+        {} if str(f.type).startswith("Mapping") else empty.get(str(f.type))
+        for f in dataclasses.fields(WorkContract)
+    }
+    return WorkContract(**fields).to_document()
+
+
+_CONTRACT_SKELETON = _contract_skeleton()
+
+#: The top-level keys a step's `work_contract` may carry: the frozen
+#: projection's (`swarm_common.workcontract.WorkContract.to_document`) plus
+#: `acceptance`, the one key swarm-api's subclass adds to it (written only
+#: when it is not the default, so it is absent from the empty projection).
+#: Read off the frozen type, never restated; tests/unit/mcp/
+#: test_spec_work_contract.py holds it equal to swarm-api's and runs every
+#: shape through swarm-api's own `workcontract.decode`.
+WORK_CONTRACT_KEYS = frozenset(_CONTRACT_SKELETON) | {"acceptance"}
+
+#: The nested maps, each closed to the projection's keys, and the lists.
+_CONTRACT_MAPS = {k: frozenset(v) for k, v in _CONTRACT_SKELETON.items()
+                  if isinstance(v, dict)}
+_CONTRACT_LISTS = frozenset(k for k, v in _CONTRACT_SKELETON.items() if isinstance(v, list))
+_REQUIREMENT_KEYS = frozenset(f.name for f in dataclasses.fields(Requirement))
+
+
+def check_work_contract(value: Any, *, where: str) -> dict[str, Any]:
+    """A step's `work_contract`, as its `metadata.work_contract`: a copy.
+
+    THE SHAPE ONLY, read off the frozen contract (`swarm_common.workcontract`):
+    an object, `schema` equal to its `SCHEMA_VERSION`, each level closed to
+    the keys its canonical projection carries, maps and lists where it has
+    them, and each requirement closed to `Requirement`'s fields. Every value
+    rule -- the id patterns, the catalogues, the limits against the step's,
+    the tenant -- is swarm-api's (`workcontract.decode` and `prepare`), which
+    this package cannot import (it reads Firestore) and does not restate;
+    a contract that passes here can still be refused there, by name."""
+
+    def refuse(field: str, why: str) -> SwarmError:
+        return SwarmError(f"{where}: `{field}` {why}. Nothing was sent")
+
+    if not isinstance(value, dict):
+        raise refuse("work_contract", "must be an object -- the step's work contract, "
+                     f'e.g. {{"schema": {WORK_CONTRACT_SCHEMA}, "contract_id": "wc-<name>", ...}}')
+    unknown = sorted(map(str, set(value) - WORK_CONTRACT_KEYS))
+    if unknown:
+        raise refuse("work_contract", f"carries {unknown}; a contract carries only "
+                     f"{sorted(WORK_CONTRACT_KEYS)}")
+    schema = value.get("schema")
+    if isinstance(schema, bool) or schema != WORK_CONTRACT_SCHEMA:
+        raise refuse("work_contract.schema", f"must be {WORK_CONTRACT_SCHEMA}")
+    for key, allowed in sorted(_CONTRACT_MAPS.items()):
+        block = value.get(key)
+        if block is None:
+            continue
+        if not isinstance(block, dict):
+            raise refuse(f"work_contract.{key}", "must be an object")
+        extra = sorted(map(str, set(block) - allowed))
+        if extra:
+            raise refuse(f"work_contract.{key}", f"carries {extra}; it carries only "
+                         f"{sorted(allowed)}")
+        for inner, shape in sorted(_CONTRACT_SKELETON[key].items()):
+            item = block.get(inner)
+            if item is None:
+                continue
+            if isinstance(shape, list) and not isinstance(item, list):
+                raise refuse(f"work_contract.{key}.{inner}", "must be a list")
+            if isinstance(shape, dict) and not isinstance(item, dict):
+                raise refuse(f"work_contract.{key}.{inner}", "must be an object")
+    for key in sorted(_CONTRACT_LISTS):
+        items = value.get(key)
+        if items is not None and not isinstance(items, list):
+            raise refuse(f"work_contract.{key}", "must be a list")
+        for i, item in enumerate(items or ()):
+            if not isinstance(item, dict):
+                raise refuse(f"work_contract.{key}[{i}]", "must be an object")
+            if key == "requirements":
+                extra = sorted(map(str, set(item) - _REQUIREMENT_KEYS))
+                if extra:
+                    raise refuse(f"work_contract.{key}[{i}]", f"carries {extra}; a "
+                                 f"requirement carries only {sorted(_REQUIREMENT_KEYS)}")
+    return copy.deepcopy(value)
+
+
+#: A step key that is READ HERE AND NEVER SENT. `stage` was the group a step was
+#: shown under in Claude Code's `/workflows` when the spec ran with
+#: `/sc:swarmcloud`; since 2026-10-04 those rows show the console's stage
+#: instead -- the step's level in the DAG -- because the console never sees
+#: this key and the owner asked that both read the same. It stays a note for
+#: the spec's reader: the platform has no such field (`WorkflowStepCreate`
+#: forbids extras) and nothing executes from it. Accepted rather than refused
+#: so existing spec files keep working with `/sc:swarmcloud` and `swarm
+#: workflow` alike -- and named here, so it is the one key this module drops
+#: knowingly.
+DISPLAY_ONLY_STEP_KEYS = frozenset({"stage"})
+
+#: The request field a per-run MCP credential map travels in
+#: (docs/design/registered-mcp-servers.md §4.3): beside a spec, never in one.
+PER_RUN_FIELD = "mcp_credentials"
+
+#: The top-level keys a `swarm workflow` spec may carry -- the file the
+#: terminal command reads and the object `swarm_workflow`'s `spec` takes. One
+#: reader for both (`read_spec`), so the two cannot come to disagree about what
+#: a spec is. An unknown key is refused, as a step's is: a spec carrying
+#: `image` or `model` at the top must be told it was not honoured.
+SPEC_KEYS = frozenset(
+    {
+        "steps",
+        "strategy",
+        "carrier",
+        # The workflow switches (the owner's experiment, 2026-11-01):
+        # `{code_intelligence, quality_gates, jev_judgments}`, each `on` or
+        # `off`, which every step obeys. Sent as the top-level `dispatch`
+        # field; swarm-api checks the switches and their values
+        # (`validation.resolve_dispatch_switches`) and names the accepted ones.
+        "dispatch",
+        "repository_url",
+        "repository_ref",
+        "on_step_failure",
+        "priority",
+        "label",
+        # A short NAME for the workflow (owner, 2026-10-04): what Claude Code
+        # titles its run (`SC · <title> · N steps`) and what the
+        # console can show beside it. Sent as `metadata.title`, the way `label`
+        # goes as `metadata.unit`: WorkflowCreate forbids extra top-level
+        # fields, so it never travels as one.
+        "title",
+        # Whether the workflow ends in a merge (WF-MERGE-API, part of archived issue 295):
+        # "on" | "on_merge_verdict" | "off", or absent for the repository's
+        # registered merge_policy, else the platform default. Sent as
+        # `metadata.merge`, for the reason `title` is; swarm-api checks the
+        # value (`validation.MERGE_CHOICES`) and derives the steps.
+        "merge",
+        # The pull requests of the workflow's own repository that must merge
+        # before any step starts (SPEED-D3): `{"pr": 41}` or a list of them.
+        # Sent as the top-level `after` WorkflowCreate takes; checked for
+        # shape by `check_after`, and for everything else by swarm-api.
+        "after",
+        # The registered repositories every step reads beside its own (archived issue 1434),
+        # by name: sent as the top-level `additional_repositories`
+        # WorkflowCreate takes, the default a step's own list replaces.
+        "additional_repositories",
+        # An existing pull request of the spec's repository the lane's commits
+        # are pushed onto, instead of opening a replacement (archived issue 2183, PTP-PLUGIN):
+        # sent as the top-level `publish_to_pr` WorkflowCreate takes, in the
+        # form `check_publish_to_pr` returns. swarm-api reads the pull request
+        # and refuses it beside any merge, so `read_spec` refuses that first.
+        "publish_to_pr",
+        # What the workflow delivers, in two or three sentences of plain text,
+        # and the feature it belongs to, `{title, url?}` (the owner, 2026-11-04):
+        # the console's workflow page heads with both. Sent as
+        # `metadata.description` and `metadata.feature`, for the reason
+        # `title` is; checked for shape by `check_description` and
+        # `check_feature` before anything is sent.
+        "description",
+        "feature",
+        # The description in three labelled parts (the owner, 2026-11-06):
+        # `{purpose?, goals?, output?}`, why the work exists, up to three
+        # things it must achieve, and what lands. Sent as `metadata.about`,
+        # for the reason `title` is; checked by `check_about` first.
+        "about",
+    }
+)
+
+#: swarm-api's `schemas.DESCRIPTION_MAX_CHARS` and
+#: `schemas.FEATURE_TITLE_MAX_CHARS`, which this package cannot import;
+#: tests/unit/mcp/test_spec_description_feature.py holds them equal.
+DESCRIPTION_MAX_CHARS = 600
+FEATURE_TITLE_MAX_CHARS = 120
+#: swarm-api's `schemas.NAME_MAX_CHARS`, held equal by
+#: tests/unit/mcp/test_name_cap.py: the most characters a workflow's `title`
+#: or `label`, or a single task's `label`, holds, so it fits one row of the
+#: console (owner, 2026-11-07, part of archived issue 2688; measured at 1440 pixels, the
+#: Workflows list's name column holds 34). Refused, never cut (`check_name`).
+NAME_MAX_CHARS = 30
+#: swarm-api's `schemas.ABOUT_*` caps, held equal by
+#: tests/unit/mcp/test_spec_about.py.
+ABOUT_PURPOSE_MAX_CHARS = 300
+ABOUT_GOAL_MAX_CHARS = 120
+ABOUT_GOALS_MAX = 3
+ABOUT_OUTPUT_MAX_CHARS = 300
+#: The markup swarm-api refuses in a description (`schemas._MARKUP`):
+#: an HTML tag, a Markdown link, a code fence, a heading, doubled bold markers.
+_DESCRIPTION_MARKUP = re.compile(
+    r"<\s*/?\s*[A-Za-z!][^>]*>|\]\(|```|~~~|^\s{0,3}#{1,6}\s|\*\*|__", re.MULTILINE)
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+#: An issue or pull request page of one GitHub repository (`schemas._FEATURE_URL`).
+_FEATURE_URL = re.compile(
+    r"^https://github\.com/(?P<owner>[A-Za-z0-9-]+)/(?P<repo>[A-Za-z0-9._-]+)/(?:issues|pull)/[1-9][0-9]{0,9}/?$")
+_GITHUB_REPOSITORY = re.compile(
+    r"^(?:https://|ssh://git@|git@)github\.com[/:](?P<owner>[A-Za-z0-9-]+)/(?P<repo>[A-Za-z0-9._-]+?)"
+    r"(?:\.git)?/?$", re.IGNORECASE)
+
+
+def check_name(value: Any, *, field: str, where: str) -> Any:
+    """`value` as given, refused when it is text over NAME_MAX_CHARS once
+    trimmed: a name fits one row of the console, and the detail belongs in
+    `description`. Refused, never cut, before anything is sent."""
+    if isinstance(value, str) and len(value.strip()) > NAME_MAX_CHARS:
+        raise SwarmError(f"{where}: {field} is {len(value.strip())} characters and a name holds at most "
+                         f"{NAME_MAX_CHARS}, so it fits one row of the console; put the detail in "
+                         "`description`. Nothing was sent")
+    return value
+
+
+def check_description(value: Any, *, where: str) -> str | None:
+    """A spec's optional `description`, trimmed, or None when absent: plain
+    text of at most DESCRIPTION_MAX_CHARS, refused -- never cut -- otherwise,
+    by the rule swarm-api applies, so a bad one costs no request."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise SwarmError(f"{where}: description must be non-empty text -- two or three sentences saying "
+                         "what the work delivers. Nothing was sent")
+    text = value.strip()
+    if len(text) > DESCRIPTION_MAX_CHARS:
+        raise SwarmError(f"{where}: description is {len(text)} characters and holds at most "
+                         f"{DESCRIPTION_MAX_CHARS}. Nothing was sent")
+    if _CONTROL.search(text) or _DESCRIPTION_MARKUP.search(text):
+        raise SwarmError(f"{where}: description must be plain text, with no HTML, Markdown link, heading, "
+                         "code fence, bold or control character. Nothing was sent")
+    return text
+
+
+def _about_line(value: Any, *, field: str, cap: int, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SwarmError(f"{where}: {field} must be non-empty text, or left out. Nothing was sent")
+    text = value.strip()
+    if len(text) > cap:
+        raise SwarmError(f"{where}: {field} is {len(text)} characters and holds at most {cap}. Nothing was sent")
+    if "\n" in text or _CONTROL.search(text):
+        raise SwarmError(f"{where}: {field} must be one line of plain text. Nothing was sent")
+    if _DESCRIPTION_MARKUP.search(text):
+        raise SwarmError(f"{where}: {field} holds markup (HTML, a Markdown link, heading, code fence or "
+                         "bold): send plain text. Nothing was sent")
+    return text
+
+
+def check_about(value: Any, *, where: str) -> dict[str, Any] | None:
+    """A spec's optional `about`, `{purpose?, goals?, output?}`, tidied, or
+    None when absent: by the rule swarm-api applies (`schemas.check_about`),
+    each refusal naming the part (`about.goals[1]`), so a bad one costs no
+    request."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not value or not set(value) <= {"purpose", "goals", "output"}:
+        raise SwarmError(f"{where}: about must be {{purpose?, goals?, output?}} with at least one of them. "
+                         "Nothing was sent")
+    about: dict[str, Any] = {}
+    if "purpose" in value:
+        about["purpose"] = _about_line(value["purpose"], field="about.purpose",
+                                       cap=ABOUT_PURPOSE_MAX_CHARS, where=where)
+    if "goals" in value:
+        goals = value["goals"]
+        if not isinstance(goals, list) or not goals or len(goals) > ABOUT_GOALS_MAX:
+            raise SwarmError(f"{where}: about.goals must be a list of 1 to {ABOUT_GOALS_MAX} short items. "
+                             "Nothing was sent")
+        about["goals"] = [_about_line(goal, field=f"about.goals[{n}]", cap=ABOUT_GOAL_MAX_CHARS, where=where)
+                          for n, goal in enumerate(goals)]
+    if "output" in value:
+        about["output"] = _about_line(value["output"], field="about.output",
+                                      cap=ABOUT_OUTPUT_MAX_CHARS, where=where)
+    return about
+
+
+def check_feature(value: Any, *, where: str, repository_url: str | None = None) -> dict[str, str] | None:
+    """A spec's optional `feature`, `{title, url?}`, tidied, or None when
+    absent. The title is one line of at most FEATURE_TITLE_MAX_CHARS; the url
+    an https github.com issue or pull request, of `repository_url` when that
+    names a GitHub repository (swarm-api holds it to the workflow's own
+    repository either way, inferred ones included)."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not set(value) <= {"title", "url"} or "title" not in value:
+        raise SwarmError(f"{where}: feature must be {{title, url?}} -- the feature the work belongs to. "
+                         "Nothing was sent")
+    title = value["title"]
+    if not isinstance(title, str) or not title.strip() or "\n" in title.strip() or _CONTROL.search(title):
+        raise SwarmError(f"{where}: feature.title must be one line of non-empty text. Nothing was sent")
+    title = title.strip()
+    if len(title) > FEATURE_TITLE_MAX_CHARS:
+        raise SwarmError(f"{where}: feature.title is {len(title)} characters and holds at most "
+                         f"{FEATURE_TITLE_MAX_CHARS}. Nothing was sent")
+    feature = {"title": title}
+    url = value.get("url")
+    if url is None:
+        return feature
+    found = _FEATURE_URL.match(url.strip()) if isinstance(url, str) else None
+    if found is None:
+        raise SwarmError(f"{where}: feature.url must be an https://github.com/<owner>/<repo>/issues/<n> or "
+                         ".../pull/<n> URL. Nothing was sent")
+    own = _GITHUB_REPOSITORY.match(repository_url or "")
+    named = f"{found['owner']}/{found['repo']}".lower()
+    if own and f"{own['owner']}/{own['repo']}".lower() != named:
+        raise SwarmError(f"{where}: feature.url names {named}, and the workflow's repository is "
+                         f"{own['owner']}/{own['repo']}: a feature link names the workflow's own repository. "
+                         "Nothing was sent")
+    feature["url"] = url.strip()
+    return feature
+
+#: The most pull requests `after` may name: swarm-api's
+#: `schemas.MAX_AFTER_PRS`, which this package cannot import;
+#: tests/unit/mcp/test_spec_after_pr.py holds the two equal.
+MAX_AFTER_PRS = 10
+
+
+def check_after(value: Any, *, where: str = "the workflow spec") -> list[dict[str, int]] | None:
+    """A spec's `after`, as the list the API takes; None when it names none.
+
+    THE SHAPE ONLY: one `{"pr": <integer >= 1>}` or a non-empty list of them,
+    at most MAX_AFTER_PRS. Whether the workflow has a GitHub repository for
+    the numbers to be pull requests of is swarm-api's rule
+    (`prgate.resolve_after`) and is not restated here.
+    """
+    if value is None:
+        return None
+    entries = [value] if isinstance(value, dict) else value
+    shape = (
+        f'{where}: after must be {{"pr": <pull request number>}} or a list of them, '
+        f"at most {MAX_AFTER_PRS} -- the pull requests of the workflow's own repository "
+        "that must merge before any of its steps starts"
+    )
+    if not isinstance(entries, list) or not entries or len(entries) > MAX_AFTER_PRS:
+        raise SwarmError(shape)
+    out: list[dict[str, int]] = []
+    for entry in entries:
+        number = entry.get("pr") if isinstance(entry, dict) else None
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"pr"}
+            or not isinstance(number, int)
+            or isinstance(number, bool)
+            or number < 1
+        ):
+            raise SwarmError(shape)
+        out.append({"pr": number})
+    return out
+
+DEFAULT_PROFILE = "claude-code"
+
+#: What a workflow's `strategy` and `carrier` may be, for `swarm workflow
+#: --strategy/--carrier` to offer as choices. They are the API's
+#: (`swarm_api.validation.DISPATCH_STRATEGIES` / `DISPATCH_CARRIERS`), which
+#: this package cannot import -- it depends on swarm-common alone -- so this is
+#: a copy, and a copy is only safe while something compares it:
+#: `test_the_workflow_choices_are_the_apis` fails the moment they differ.
+STRATEGIES = ("collect", "direct-pr", "integrate")
+CARRIERS = ("checkpoints", "branches")
+
+
+# --------------------------------------------------------------------------
+# Submission
+# --------------------------------------------------------------------------
+
+def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
+    """`WorkflowStepCreate` bodies from the tool's step objects.
+
+    THE PROMPT IS REQUIRED HERE, and that is the whole of this function's
+    opinion. `WorkflowStepCreate.input` is `Field(default_factory=dict)`, so the
+    API accepts a step with no input at all and every CLI-agent profile then
+    fails at runtime -- `runners/cliagent.py` raises "requires a non-empty string
+    input.prompt" once the agent has already been admitted, scheduled and
+    started. The web UI's New Workflow screen submits exactly that shape, which
+    is why every workflow built on that screen fails at every step, totally and
+    deterministically, having spent real capacity to get there. A refusal at the
+    keyboard costs nothing; the same refusal four minutes later costs a dispatch,
+    a lease and a pod.
+
+    INPUT IS THE PROMPT, PLUS WHAT THE PROFILE DECLARES, and nothing else --
+    for the same reason `swarm_dispatch` has no raw `input` parameter:
+    invariant 10 says a caller names a runner profile and supplies DATA, never
+    an image, a command or a resource spec. `prompt` becomes `input.prompt`,
+    and a step's `inputs` becomes the rest of `input` only where the frozen
+    catalogue's `RunnerProfile.inputs` names them for its profile (archived issue 142,
+    contract request 25) -- the mock's `sleep_seconds`, for one. swarm-api
+    applies the same declaration to every caller. Nothing here reaches the
+    runner's argv.
+
+    Everything else about the DAG -- cycles, a dependency naming a step that is
+    not in the workflow, an `input_from` whose source is not also a `depends_on`,
+    two parents of one step staging the same filename, an absolute or
+    traversing filename, the step ceiling -- is checked by
+    `swarm_api.validation` and is NOT restated here. That validator is the one with the tests; a second opinion in this file
+    would be a second thing to keep in step with it.
+    """
+    if not isinstance(raw_steps, list) or not raw_steps:
+        raise SwarmError("a workflow needs a non-empty list of steps")
+
+    steps: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_steps):
+        where = f"step[{index}]"
+        if not isinstance(raw, dict):
+            raise SwarmError(f"{where} is not an object")
+        unknown = sorted(set(raw) - _STEP_KEYS)
+        if unknown:
+            # THE WORDING HAS TO AGREE WITH THE LIST BESIDE IT. This said "a
+            # resource spec cannot be supplied at all" directly after listing
+            # `resource_class` as accepted (archived issue 88, SC-F6). What is refused is a
+            # spec -- cpu, memory, an image, a command, a backend; what is
+            # accepted is a NAME, from the catalogue, which is invariant 10.
+            raise SwarmError(
+                f"{where} carries {unknown}, which this tool does not send. "
+                f"Accepted: {sorted(_STEP_KEYS)}. A step's data goes in `prompt`, "
+                "which becomes its `input.prompt`, and in `inputs`, for the inputs "
+                "its runner profile declares (`swarm_profiles` lists them); a runner "
+                "is chosen by naming a `runner_profile` and a size by naming a "
+                "`resource_class`. An image, a command, a backend or cpu and memory "
+                "figures are never sent."
+            )
+
+        step_id = str(raw.get("step_id") or "").strip()
+        if not step_id:
+            raise SwarmError(f"{where} has no step_id; every step needs one")
+        where = f"step {step_id!r}"
+
+        prompt = raw.get("prompt")
+        # A `fix-loop` step may leave its prompt out (§4.1's example does): no
+        # agent runs it, its rounds take the review's and the fix's prompts,
+        # and swarm-api takes its empty `input`. One it gives is still sent.
+        loop_without_prompt = raw.get("runner_profile") == FIX_LOOP_PROFILE and prompt is None
+        if not loop_without_prompt and (not isinstance(prompt, str) or not prompt.strip()):
+            raise SwarmError(
+                f"{where} has no prompt. A step with an empty input reaches the "
+                "agent and fails there -- `claude-code requires a non-empty "
+                "string input.prompt` -- after the workflow has already been "
+                "admitted and dispatched. Give every step its instructions."
+            )
+
+        # THE PROFILE NAME IS CHECKED BEFORE THE WHOLE WORKFLOW IS SUBMITTED,
+        # and the reason is on the record. On 2026-09-23 a twenty-step run
+        # dispatched four `codex` steps and all four failed at the provider,
+        # each having been admitted, leased and dispatched first. A workflow is
+        # all-or-nothing on admission (invariant 2) but not on validity: the
+        # sixteen good steps still ran, so the bad four cost real capacity to
+        # learn something the catalogue already knew. Refusing here refuses the
+        # SUBMISSION, before any of it is scheduled.
+        runtime = raw.get("runtime")
+        if runtime is not None and runtime != RUNTIME_BROWSER_IF_UI:
+            raise SwarmError(
+                f"{where}: runtime must be {RUNTIME_BROWSER_IF_UI!r} -- run this step on "
+                f"{RUNTIME_PROFILES['browser']} only when an upstream step's change touches "
+                f"UI, and on {RUNTIME_PROFILES['code']} otherwise"
+            )
+        if runtime is not None and raw.get("runner_profile") not in (
+            None, RUNTIME_PROFILES["browser"]
+        ):
+            raise SwarmError(
+                f"{where}: a runtime {RUNTIME_BROWSER_IF_UI!r} step names no runner_profile, "
+                f"or {RUNTIME_PROFILES['browser']!r}: the platform picks between "
+                f"{RUNTIME_PROFILES['browser']} and {RUNTIME_PROFILES['code']} from the diff"
+            )
+        default = RUNTIME_PROFILES["browser"] if runtime is not None else DEFAULT_PROFILE
+        profile = catalogue.check(str(raw.get("runner_profile") or default), where=where)
+        step: dict[str, Any] = {
+            "step_id": step_id,
+            "runner_profile": profile,
+            # The prompt, and whatever the profile DECLARES and the step asked
+            # for -- checked by name and kind, and refused otherwise (archived issue 142).
+            # `check_inputs` refuses a `prompt` key, so it cannot replace this one.
+            "input": {
+                **({} if loop_without_prompt else {"prompt": prompt}),
+                **catalogue.check_inputs(profile, raw.get("inputs"), where=where),
+            },
+        }
+
+        depends_on = raw.get("depends_on") or []
+        if not isinstance(depends_on, list) or not all(
+            isinstance(d, str) for d in depends_on
+        ):
+            raise SwarmError(f"{where}: depends_on must be a list of step ids")
+        step["depends_on"] = list(depends_on)
+
+        input_from = raw.get("input_from") or {}
+        if not isinstance(input_from, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in input_from.items()
+        ):
+            raise SwarmError(
+                f"{where}: input_from must map an upstream step id to one "
+                'artifact filename, e.g. {"research": "research.md"}'
+            )
+        step["input_from"] = dict(input_from)
+
+        if raw.get("resource_class"):
+            # THE NAME ONLY. That it is a class the catalogue holds is checkable
+            # here from the frozen contract; that it is no LARGER than the
+            # profile's own is `swarm_api.validation`'s rule and is deliberately
+            # not restated -- a second opinion about the ceiling is how the two
+            # would start disagreeing about which submissions are legal.
+            step["resource_class"] = catalogue.check_resource_class(
+                str(raw["resource_class"]), where=where
+            )
+        if raw.get("timeout_seconds") is not None:
+            step["timeout_seconds"] = int(raw["timeout_seconds"])
+        if raw.get("when") is not None:
+            # THE SHAPE ONLY. Which verdicts exist, and whether the gate is
+            # legal for this DAG and strategy, is `swarm_api.validation`'s
+            # rule (`validate_step_routing`) and is not restated here.
+            when = raw["when"]
+            if (
+                not isinstance(when, dict)
+                or set(when) != {"step", "verdict_in"}
+                or not isinstance(when.get("step"), str)
+                or not isinstance(when.get("verdict_in"), list)
+                or not all(isinstance(v, str) for v in when["verdict_in"])
+            ):
+                raise SwarmError(
+                    f"{where}: when must be "
+                    '{"step": <upstream step id>, "verdict_in": ["NOT_YET"]} -- '
+                    "the step whose verdict file this step stages, and the "
+                    "verdicts that run this step's agent"
+                )
+            step["when"] = {"step": when["step"], "verdict_in": list(when["verdict_in"])}
+        if raw.get("builds_on") is not None:
+            if not isinstance(raw["builds_on"], str):
+                raise SwarmError(
+                    f"{where}: builds_on must be one upstream step id, whose "
+                    "pushed branch this step's checkout starts from"
+                )
+            step["builds_on"] = raw["builds_on"]
+        if raw.get("repository_ref") is not None:
+            # THE SHAPE ONLY: a non-empty string, sent as given. An abbreviated
+            # sha, a ref the forge does not have and the keys it may not sit
+            # beside are swarm-api's rules (`check_repository_ref`,
+            # `_check_ref_exists`) and are not restated here.
+            if not isinstance(raw["repository_ref"], str) or not raw["repository_ref"]:
+                raise SwarmError(
+                    f"{where}: repository_ref must be a non-empty branch, tag or full "
+                    "commit sha -- the ref this step's checkout starts from"
+                )
+            step["repository_ref"] = raw["repository_ref"]
+        if raw.get("allow_empty_diff") is not None:
+            # A real boolean only: `"true"` or 1 reaching the API as a 422 is a
+            # worse place to learn it. Sent only when set, so every other
+            # step's body reads exactly as it did before the key existed.
+            # Under direct-pr the API sets it itself for a reader step (one a
+            # dependant depends on and no step builds_on), so an author need
+            # not; this parser does not decide that.
+            if not isinstance(raw["allow_empty_diff"], bool):
+                raise SwarmError(
+                    f"{where}: allow_empty_diff must be true or false -- whether "
+                    "this step may end SUCCEEDED having changed nothing"
+                )
+            if raw["allow_empty_diff"]:
+                step["allow_empty_diff"] = True
+        if raw.get("await_input") is not None:
+            # THE SHAPE ONLY: an object. Its fields, their bounds and which
+            # profile may carry it are `swarm_api.validation`'s rules
+            # (`resolve_await_input`) and are not restated here.
+            if not isinstance(raw["await_input"], dict):
+                raise SwarmError(
+                    f"{where}: await_input must be an object -- the form a person answers, "
+                    'e.g. {"form": "verdict", "expires_after_seconds": 86400, "on_expire": "fail"}'
+                )
+            step["await_input"] = dict(raw["await_input"])
+        if raw.get("fix_loop") is not None:
+            # THE SHAPE ONLY, as for await_input: the review, the fix, the
+            # rounds and the overrides are `swarm_api.validation`'s rules
+            # (`resolve_fix_loop`) and are not restated here. Sent unchanged.
+            if not isinstance(raw["fix_loop"], dict):
+                raise SwarmError(
+                    f"{where}: fix_loop must be an object -- the loop's review, its fix and "
+                    'its rounds, e.g. {"review": "review", "fix": "fix", "max_rounds": 3}'
+                )
+            step["fix_loop"] = copy.deepcopy(raw["fix_loop"])
+        if raw.get("additional_repositories") is not None:
+            # Sent even when `[]`: a step's empty list replaces the workflow's
+            # with none, which leaving the key out would not (§7 Q6).
+            step["additional_repositories"] = check_additional_repositories(
+                raw["additional_repositories"], where=where)
+        if "plugins" in raw:
+            # `None` is refused with the rest: a step naming none leaves the key out.
+            step["plugins"] = check_step_plugins(raw["plugins"], where=where)
+        if "plugins_off" in raw:
+            step["plugins_off"] = check_plugins_off(raw["plugins_off"], where=where)
+        metadata: dict[str, Any] = {}
+        if runtime is not None:
+            metadata["runtime"] = {"policy": RUNTIME_BROWSER_IF_UI, **RUNTIME_PROFILES}
+        if "review_gate" in raw:
+            # `None` is refused with the rest: `false` is how a spec says "no gate".
+            metadata["review_gate"] = check_review_gate(raw["review_gate"], where=where)
+        if "work_contract" in raw:
+            # `None` is refused with the rest: a step with no contract leaves the key out.
+            metadata["work_contract"] = check_work_contract(raw["work_contract"], where=where)
+        if metadata:
+            step["metadata"] = metadata
+        if raw.get("stage") is not None and not isinstance(raw.get("stage"), str):
+            raise SwarmError(f"{where}: stage must be a string -- a note for the spec's reader, never sent")
+        steps.append(step)
+    return steps
+
+
+def _canonical_numbers(value: Any) -> Any:
+    """`value` with every integral float made an int, recursively.
+
+    JavaScript has one number type, so `JSON.stringify(3.0)` is `3`, while
+    Python's `json.dumps(3.0)` is `3.0`. A relay that writes `3.0` for the 3 a
+    spec holds has not changed the spec, and must not fail its digest.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {key: _canonical_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_canonical_numbers(item) for item in value]
+    return value
+
+
+def spec_digest(spec: Any) -> str:
+    """`fnv1a32:<8 hex>` of a spec, the digest `/sc:swarmcloud` computes in its script.
+
+    WHY A DIGEST. `/sc:swarmcloud` cannot call a tool: it hands the spec to an agent
+    (`sc:workflow`, haiku) that RETYPES it into `swarm_workflow`. A dropped
+    step, two swapped prompts or a "tidied" instruction would be submitted and
+    run with no layer noticing. The script computes this digest over the spec
+    it was given, the agent passes it beside the spec, and `swarm_workflow`
+    refuses before sending anything when the spec it received digests
+    differently.
+
+    WHY THIS ONE. It must be computed identically by `plugin/workflows/run.js`,
+    which has no crypto, no imports and no `TextEncoder` guarantee: FNV-1a over
+    32 bits is a few lines of `Math.imul`. It detects accidents, not an
+    adversary, which is the job -- the relay is careless, not hostile.
+
+    THE CANONICAL FORM, which both sides must produce byte for byte: JSON with
+    keys sorted, no whitespace (`,` and `:`), non-ASCII characters as
+    themselves, encoded as UTF-8 -- `JSON.stringify` of each scalar in
+    JavaScript, which escapes exactly what `json.dumps(ensure_ascii=False)`
+    escapes. Integral floats are ints (`_canonical_numbers`). Keys sort by code
+    point here and by UTF-16 unit in JavaScript, which agree for every key a
+    spec has (ASCII). `tests/unit/mcp/test_plugin_agents_and_workflows.py`
+    runs run.js's implementation and holds the two equal.
+    """
+    text = json.dumps(
+        _canonical_numbers(spec), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return f"fnv1a32:{fnv1a32(text.encode('utf-8', 'surrogatepass')):08x}"
+
+
+def fnv1a32(data: bytes) -> int:
+    """32-bit FNV-1a: offset basis 0x811C9DC5, prime 0x01000193."""
+    value = 0x811C9DC5
+    for byte in data:
+        value ^= byte
+        value = (value * 0x01000193) & 0xFFFFFFFF
+    return value
+
+
+def check_title(value: Any, *, where: str) -> str | None:
+    """A spec's optional `title`, trimmed, or None when absent. Anything but
+    non-empty text is refused: a title is a name a person reads."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise SwarmError(f"{where}: title must be a non-empty string -- the workflow's short name")
+    return check_name(value.strip(), field="title", where=where)
+
+
+def check_dispatch(value: Any, *, where: str) -> dict[str, Any] | None:
+    """A spec's `dispatch` map as given, or None. Only its shape is checked
+    here; swarm-api refuses a switch or a value it does not accept and names
+    the accepted ones, so the two cannot come to disagree."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise SwarmError(
+            f"{where}'s `dispatch` is a map of workflow switches, e.g. "
+            '{"code_intelligence": "on", "quality_gates": "off", "jev_judgments": "off"}. '
+            "Nothing was sent"
+        )
+    return dict(value)
+
+
+def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, Any]:
+    """A whole `swarm workflow` spec, checked, as `submit`'s keyword arguments.
+
+    Returns `steps` built by `build_steps`, and the spec's `strategy`,
+    `carrier`, `repository_url`, `repository_ref`, `on_step_failure`,
+    `priority`, `label`, `title` and `merge` as given, `description`,
+    `about` and `feature` checked (`check_description`, `check_about`,
+    `check_feature`), and
+    `additional_repositories` checked for shape (None when absent). The caller decides what
+    overrides them -- the terminal's flags, or the repository the bridge infers
+    from a checkout.
+    """
+    if not isinstance(document, dict):
+        raise SwarmError(f"{where} must be an object with a `steps` list")
+    if PER_RUN_FIELD in document:
+        # Named, because the generic refusal below would read as "not yet
+        # supported". A spec is a file: it is digested, held by `spec_ref`,
+        # copied into a run script and reread, and a credential in it would
+        # be in every one of those (docs/design/registered-mcp-servers.md
+        # §4.11). The value is never repeated.
+        raise SwarmError(
+            f"{where} carries `{PER_RUN_FIELD}`, and a per-run credential is never part of a "
+            "spec, which is written to disk, held and copied into a run script. Pass the "
+            f"spec without it and give `{PER_RUN_FIELD}` to swarm_workflow beside the spec. "
+            "Nothing was sent"
+        )
+    unknown = sorted(set(document) - SPEC_KEYS)
+    if unknown:
+        raise SwarmError(
+            f"{where} carries {unknown}, which a workflow spec does not have. "
+            f"Accepted: {sorted(SPEC_KEYS)}. A step's runner is chosen by naming its "
+            "`runner_profile`; an image, a command, a backend, a model or a resource "
+            "spec is never sent."
+        )
+    title = check_title(document.get("title"), where=where)
+    description = check_description(document.get("description"), where=where)
+    about = check_about(document.get("about"), where=where)
+    feature = check_feature(document.get("feature"), where=where,
+                            repository_url=document.get("repository_url"))
+    return {
+        "steps": build_steps(document.get("steps")),
+        "strategy": document.get("strategy"),
+        "carrier": document.get("carrier"),
+        "dispatch": check_dispatch(document.get("dispatch"), where=where),
+        "repository_url": document.get("repository_url"),
+        "repository_ref": document.get("repository_ref"),
+        "on_step_failure": document.get("on_step_failure"),
+        "priority": document.get("priority"),
+        "label": check_name(document.get("label"), field="label", where=where),
+        "title": title,
+        "description": description,
+        "about": about,
+        "feature": feature,
+        "merge": document.get("merge"),
+        "after": check_after(document.get("after"), where=where),
+        "additional_repositories": check_additional_repositories(
+            document.get("additional_repositories"), where=where),
+        "publish_to_pr": check_publish_merge(
+            check_publish_to_pr(document.get("publish_to_pr"), where=where),
+            merge=document.get("merge"), steps=document.get("steps"), where=where),
+    }
+
+
+def submit(
+    client: SwarmClient,
+    *,
+    steps: list[dict[str, Any]],
+    strategy: str | None = None,
+    carrier: str | None = None,
+    repository_url: str | None = None,
+    repository_ref: str | None = None,
+    on_step_failure: str | None = None,
+    priority: int | None = None,
+    label: str | None = None,
+    title: str | None = None,
+    merge_pr: dict[str, Any] | None = None,
+    merge: str | None = None,
+    after: list[dict[str, int]] | None = None,
+    mcp_credentials: dict[str, Any] | None = None,
+    additional_repositories: list[dict[str, str]] | None = None,
+    publish_to_pr: int | str | None = None,
+    dispatch: dict[str, str] | None = None,
+    description: str | None = None,
+    feature: dict[str, str] | None = None,
+    about: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
+
+    `description`, `about` and `feature` go as `metadata.description`,
+    `metadata.about` and `metadata.feature`, only when given, checked again
+    here (`check_description`, `check_about`, `check_feature`) so no caller
+    sends one unchecked.
+
+    `dispatch` is the spec's workflow switches (`check_dispatch`), sent
+    top-level only when given, so a spec without them sends what it sent.
+
+    `publish_to_pr` (archived issue 2183) is sent top-level, only when given, as `merge_pr`
+    is, in the form `check_publish_to_pr` returns. A merge beside it is
+    refused here, before anything is sent (`check_publish_merge`), and a
+    `merge: "off"` beside it is not sent: such a lane opens no pull request,
+    so it has no merge to choose.
+
+    `mcp_credentials` is the caller's per-run credential map for the
+    registered MCP servers its steps name (`server.check_mcp_credentials` has
+    checked its shape): ONE map for the whole submission, top-level beside
+    `steps` as `WorkflowCreate` takes it, never inside a step's `input`.
+    Sent only when given, so a workflow naming none sends what it always
+    did; the envelope comes back through `server.without_credentials`.
+
+    The envelope is kept whole because its second half is the part a caller
+    cannot get anywhere else: `dispatch` echoes the strategy and carrier that
+    were ACCEPTED -- a submission that named neither gets the defaults back --
+    and names which step will open the one pull request under `integrate`.
+    Dropping it would make the tool's answer smaller than the server's.
+
+    `additional_repositories` is the workflow's default list (archived issue 1434), names
+    as `check_additional_repositories` returned them; a step's own list,
+    already in `steps`, replaces it. Neither is touched by `infer`, which
+    only ever chooses the primary `repository_url`.
+    """
+    if publish_to_pr is not None:
+        publish_to_pr = check_publish_merge(
+            check_publish_to_pr(publish_to_pr, where="submit"), merge=merge, steps=steps,
+            where="submit")
+        if merge_pr is not None:
+            raise SwarmError(
+                "publish_to_pr names the pull request to push onto and merge_pr one to "
+                "merge: two pull requests. Send one or the other. Nothing was sent"
+            )
+        merge = None
+    check_name(label, field="label", where="submit")
+    check_name(title, field="title", where="submit")
+    description = check_description(description, where="submit")
+    about = check_about(about, where="submit")
+    feature = check_feature(feature, where="submit", repository_url=repository_url)
+    body: dict[str, Any] = {
+        "steps": steps,
+        "metadata": {
+            "origin": "swarm-mcp",
+            # The Claude Code session that sent it (SC-SESSION-SCOPE); swarm-api
+            # writes the workflow's metadata onto every step task.
+            **session_tag(),
+            **({"unit": label} if label else {}),
+            **({"title": title} if title else {}),
+            **({"description": description} if description else {}),
+            **({"about": about} if about else {}),
+            **({"feature": feature} if feature else {}),
+            **({"merge": merge} if merge is not None else {}),
+        },
+    }
+    if strategy:
+        body["strategy"] = strategy
+    if carrier:
+        body["carrier"] = carrier
+    if dispatch is not None:
+        body["dispatch"] = dict(dispatch)
+    if repository_url:
+        body["repository_url"] = repository_url
+    if repository_ref:
+        body["repository_ref"] = repository_ref
+    if on_step_failure:
+        body["on_step_failure"] = on_step_failure
+    if priority is not None:
+        body["priority"] = int(priority)
+    if merge_pr is not None:
+        body["merge_pr"] = merge_pr
+    if publish_to_pr is not None:
+        body["publish_to_pr"] = publish_to_pr
+    if after:
+        body["after"] = after
+    if additional_repositories is not None:
+        body["additional_repositories"] = additional_repositories
+    if mcp_credentials:
+        body[PER_RUN_FIELD] = mcp_credentials
+    envelope = _envelope(client.request("POST", "/v1/workflows", payload=body), "submitting")
+    _remember_launch(envelope["workflow"])
+    return envelope
+
+
+# --------------------------------------------------------------------------
+# A pull request no workflow opened (archived issue 352, owner decision 2026-10-07)
+# --------------------------------------------------------------------------
+
+#: The one step a `merge_pr` workflow is: swarm-api refuses any other.
+MERGE_PR_STEP = {"step_id": "merge", "runner_profile": "merge"}
+
+#: A `merge_pr` workflow's name when its caller gave none (owner report
+#: 2026-10-11): with no title, Claude Code titled the run and the console
+#: listed it by its bare `wf_` id. No "#" before the number, because GitHub can
+#: read "#N" in some places as a reference. swarm-api stores the same words
+#: (`continuation.MERGE_PR_LABEL`) for a client that sends neither.
+MERGE_PR_TITLE = "Merge PR {number}"
+
+_SHA = re.compile(r"^[0-9a-f]{40}$")
+_NUMBER = re.compile(r"^#?([1-9][0-9]{0,8})$")
+_SHORT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)#([1-9][0-9]{0,8})$")
+_PULL_URL = re.compile(
+    r"^https://github\.com/([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)/pull/([1-9][0-9]{0,8})(?:/.*)?$"
+)
+
+
+def parse_pull_request(text: Any) -> tuple[str | None, int]:
+    """`(repository URL or None, number)` from `41`, `#41`, `owner/repo#41` or the PR's URL.
+
+    A bare number names no repository: swarm-api then takes the tenant's only
+    registered one, and refuses when it has several. github.com only,
+    because the merge step merges nowhere else.
+    """
+    value = str(text or "").strip()
+    matched = _NUMBER.match(value)
+    if matched:
+        return None, int(matched.group(1))
+    matched = _SHORT.match(value) or _PULL_URL.match(value)
+    if matched:
+        owner, repo, number = matched.groups()
+        return f"https://github.com/{owner}/{repo}", int(number)
+    raise SwarmError(
+        f"{value!r} is not a pull request: pass its number (41), owner/repo#41, or its "
+        "https://github.com/<owner>/<repo>/pull/<n> URL. Nothing was sent"
+    )
+
+
+#: The profile of a merge step (`swarm_api.validation.is_merge_step`).
+_MERGE_PROFILE = "merge"
+
+#: The API's own reason for refusing a merge beside `publish_to_pr`
+#: (`swarm_api.publishtopr.check_workflow_shape`), repeated so the caller
+#: reads here what swarm-api would have answered.
+PUBLISH_MERGE_REFUSAL = (
+    "publish_to_pr opens no pull request, and a merge step merges the pull "
+    "request a step of its workflow opened. Remove the merge step (and "
+    "metadata.merge)."
+)
+
+
+def check_publish_to_pr(value: Any, *, where: str = "the workflow spec") -> int | str | None:
+    """`publish_to_pr` in the form it is sent, or None when it names none (archived issue 2183).
+
+    Accepts what the API accepts -- `41`, `"#41"`, `"owner/repo#41"` and the
+    pull request's URL -- read by `parse_pull_request`. A number travels as
+    the integer; a form naming a repository travels as `owner/repo#N`, which
+    swarm-api holds to the spec's own repository. A URL is sent in that short
+    form because the API reads `/pull/N` only at its end, so a copied
+    `.../pull/41/files` would be refused there and is read here.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise SwarmError(
+            f"{where}: publish_to_pr is a pull request: its number (41), owner/repo#41 or "
+            "its https://github.com/<owner>/<repo>/pull/<n> URL. Nothing was sent"
+        )
+    try:
+        repository, number = parse_pull_request(value)
+    except SwarmError as exc:
+        raise SwarmError(f"{where}: publish_to_pr: {exc}") from None
+    if repository is None:
+        return number
+    return f"{repository.removeprefix('https://github.com/')}#{number}"
+
+
+def check_publish_merge(publish_to_pr: int | str | None, *, merge: Any, steps: Any,
+                        where: str = "the workflow spec") -> int | str | None:
+    """Refuse `publish_to_pr` beside a merge, before anything is sent.
+
+    swarm-api refuses it beside a merge step or a `metadata.merge` that
+    appends one (PR 2197, and the owner 2026-10-24: "a publish_to_pr lane still may
+    not end in a merge step"). The bridge never drops a merge the caller
+    asked for to make the submission pass: it refuses, with the API's reason.
+    `merge: "off"` asks for none and is not refused. Returns `publish_to_pr`.
+    """
+    if publish_to_pr is None:
+        return None
+    merges = [
+        str(step.get("step_id")) for step in (steps if isinstance(steps, list) else [])
+        if isinstance(step, dict) and step.get("runner_profile") == _MERGE_PROFILE
+    ]
+    # Anything but absent or "off" is a merge asked for, or a value swarm-api
+    # would refuse anyway: never dropped to make the submission pass.
+    if merges or merge not in (None, "off"):
+        named = f"merge steps {merges}" if merges else f"merge {merge!r}"
+        raise SwarmError(
+            f"{where} names publish_to_pr {publish_to_pr!r} and {named}. "
+            f"{PUBLISH_MERGE_REFUSAL} Nothing was sent"
+        )
+    return publish_to_pr
+
+
+def submit_merge_pr(
+    client: SwarmClient,
+    *,
+    number: int,
+    head_sha: str,
+    repository_url: str | None = None,
+    title: str | None = None,
+) -> dict[str, Any]:
+    """Merge a pull request no workflow opened, at `head_sha` (archived issue 352).
+
+    One `merge` step, `direct-pr`, and `merge_pr: {number, head_sha}`. The
+    API checks everything about the pull request -- registered repository,
+    open, not a fork, `head_sha` its head now -- and the merge step merges
+    only once the required checks are green at that head. Nothing here reads
+    the forge. With no `title` the run is named "Merge PR <number>"
+    (`MERGE_PR_TITLE`), never left to fall back to its workflow id.
+    """
+    sha = str(head_sha or "").strip()
+    if not _SHA.fullmatch(sha):
+        raise SwarmError(
+            f"the head sha {sha!r} is not a full 40-character lowercase commit sha; name "
+            "the exact head you mean to merge. Nothing was sent"
+        )
+    return submit(
+        client,
+        steps=[dict(MERGE_PR_STEP)],
+        strategy="direct-pr",
+        repository_url=repository_url,
+        title=title or MERGE_PR_TITLE.format(number=int(number)),
+        merge_pr={"number": int(number), "head_sha": sha},
+    )
+
+
+# --------------------------------------------------------------------------
+# The workflow's name in Claude Code
+# --------------------------------------------------------------------------
+
+#: The most characters a SwarmCloud workflow's run title has in Claude Code
+#: `SC ∴ <name> · N steps`, whole, never longer. Owner 2026-10-04: SwarmCloud
+#: prefix, at most 100; owner 2026-10-05: prefix `SC · ` because Claude Code's
+#: task panel shows ~28 characters of a name, and at most 150 because Enter
+#: shows the full name. Since 2026-11-04 the mark after `SC` is the run's kind
+#: (launch.TASK_MARK, launch.WORKFLOW_MARK): a workflow's run is `SC ∴ ...`
+#: (launch.workflow_run_title), a single task's `SC · <label>`. TITLE_PREFIX
+#: stays the one dot: workflow_title's output is the submission's record
+#: title, and launch.record turns its prefix into the workflow mark.
+#: plugin/workflows/run.js cuts the same way (`workflowTitle`), and
+#: test_plugin_rows_match_console holds the two equal.
+TITLE_CHARS = 150
+TITLE_PREFIX = "SC · "
+
+
+def _flat(text: Any) -> str | None:
+    if not isinstance(text, str):
+        return None
+    flat = " ".join(text.split())
+    return flat or None
+
+
+def title_name(
+    *,
+    title: Any = None,
+    label: Any = None,
+    stored: Any = None,
+    workflow_id: Any = None,
+) -> str:
+    """The NAME a workflow's run is titled with, in the owner's order: the
+    spec's `title`, else its `label`, else (an attach) the title or label
+    SwarmCloud stored, else the workflow id. Never a model-written summary --
+    every source is text a person wrote or the API minted."""
+    for candidate in (title, label, stored, workflow_id):
+        flat = _flat(candidate)
+        if flat:
+            return flat
+    return "workflow"
+
+
+def _steps_text(steps: int) -> str:
+    return f"{steps} step" if steps == 1 else f"{steps} steps"
+
+
+# THE WORKSPACE ON EVERY ROW (SC-ROWS, owner request 2026-10-14: "include
+# the workspace where the workflow or task is running in the info that is
+# easily displayed"). A row names the workspace -- the tenant -- its workflow
+# or task RUNS in, read from the API's own document (`tenant_id` on the
+# workflow or task, else the `tenant_id` the listing page answered for), never
+# from the tenant this session is configured with: `/sc attach --all` may one
+# day cover several workspaces, and a guessed name on a row is worse than none.
+
+#: A display name longer than this is not shown: the tenant id is. The
+#: workspace is never cut (a cut name could be another workspace's), so it has
+#: to be short enough to leave the title room for the workflow's own name.
+WORKSPACE_NAME_CHARS = 40
+
+
+def workspace_of(
+    document: Any,
+    names: dict[str, str] | None = None,
+    *,
+    fallback: Any = None,
+) -> str | None:
+    """The workspace `document` (a workflow or a task as the API served it)
+    runs in: its tenant's display name when `names` -- the API's
+    `GET /v1/tenants/mine` -- gives one that fits, else its `tenant_id`, else
+    `fallback` (the tenant the listing page answered for). None when neither
+    names one."""
+    tenant = _flat(document.get("tenant_id")) if isinstance(document, dict) else None
+    tenant = tenant or _flat(fallback)
+    if not tenant:
+        return None
+    shown = _flat((names or {}).get(tenant))
+    return shown if shown and len(shown) <= WORKSPACE_NAME_CHARS else tenant
+
+
+def workspace_names(client: Any) -> dict[str, str]:
+    """`{tenant_id: display_name}` from `GET /v1/tenants/mine`, for the rows'
+    workspace. Best effort: a caller whose tenant is personal has no entries,
+    and a deployment that cannot answer costs the rows their display names,
+    never their workspace -- the tenant id is shown instead."""
+    try:
+        listing = client.tenants_mine()
+    except Exception:  # noqa: BLE001 - a display name is never worth a failed launch
+        return {}
+    names: dict[str, str] = {}
+    for entry in listing if isinstance(listing, list) else []:
+        tenant, shown = _flat(entry.get("tenant_id")), _flat(entry.get("display_name"))
+        if tenant and shown:
+            names[tenant] = shown
+    return names
+
+
+def workspace_tag(workspace: Any) -> str:
+    """`[<workspace>] `, or "" when no workspace is known."""
+    flat = _flat(workspace)
+    return f"[{flat}] " if flat else ""
+
+
+def workflow_title(name: str, steps: int) -> str:
+    """`SC · <name> · N steps`, at most TITLE_CHARS characters: the
+    submission's record title, which launch.record writes as `SC ∴ <name> ·
+    N steps`, the run's own title (launch.workflow_run_title).
+
+    No workspace: SC-ROWS put `[<workspace>] ` after the prefix, SC-WS-DESC
+    moved it to the run's description, and SC-DESC-DETAILS (owner 2026-10-14:
+    no `[Engineering]` or `[eng@example.com]` in front of any name) took the
+    parameter away, so no caller can put it back.
+
+    The NAME is cut, never the step count: at NAME_MAX_CHARS, the cap a name
+    is refused over (archived issue 2688), so only a name stored before it is cut, at the
+    last word boundary that fits, with `…`; a single word longer than the
+    room is cut inside it."""
+    tail = " · " + _steps_text(steps)
+    room = max(1, min(NAME_MAX_CHARS, TITLE_CHARS - len(TITLE_PREFIX) - len(tail)))
+    flat = _flat(name) or "workflow"
+    if len(flat) > room:
+        head = flat[: room - 1]
+        if flat[room - 1] != " " and " " in head:
+            head = head[: head.rindex(" ")]
+        flat = head.rstrip() + "…"
+    return TITLE_PREFIX + flat + tail
+
+
+def stored_names(envelope: dict[str, Any]) -> dict[str, str | None]:
+    """The `title` and `label` SwarmCloud stored for a workflow.
+
+    The frozen `Workflow` has no metadata field; `submit` puts the metadata on
+    every step task, so both are read back from the first task carrying each:
+    `metadata.title`, and the label as `metadata.unit`."""
+    found: dict[str, str | None] = {"title": None, "label": None}
+    for task in envelope.get("tasks") or []:
+        metadata = (task.get("metadata") or {}) if isinstance(task, dict) else {}
+        for key, field in (("title", "title"), ("label", "unit")):
+            value = _flat(metadata.get(field))
+            if found[key] is None and value:
+                found[key] = value
+    return found
+
+
+#: The tenant each workflow THIS BRIDGE launched was stored under, from the
+#: launch response's `workflow.tenant_id`. Bounded, oldest dropped first: a
+#: bridge lives for a session, and a workflow launched that long ago is read
+#: through the tenant switcher like any other.
+_LAUNCHED: dict[str, str] = {}
+_LAUNCHED_CAP = 512
+_LAUNCHED_LOCK = threading.Lock()
+
+
+def _remember_launch(workflow: dict[str, Any]) -> None:
+    workflow_id, tenant_id = workflow.get("workflow_id"), workflow.get("tenant_id")
+    if not (isinstance(workflow_id, str) and workflow_id
+            and isinstance(tenant_id, str) and tenant_id):
+        return
+    with _LAUNCHED_LOCK:
+        _LAUNCHED.pop(workflow_id, None)
+        _LAUNCHED[workflow_id] = tenant_id
+        while len(_LAUNCHED) > _LAUNCHED_CAP:
+            del _LAUNCHED[next(iter(_LAUNCHED))]
+
+
+def launch_tenant(workflow_id: str) -> str | None:
+    """The tenant this bridge launched `workflow_id` in, or None if it did not."""
+    with _LAUNCHED_LOCK:
+        return _LAUNCHED.get(workflow_id)
+
+
+def fetch(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
+    """`GET /v1/workflows/{id}`; a workflow this bridge launched is re-read with
+    the launch's tenant when the first read answers 404.
+
+    WHY (docs/runner-git-tools.md §6.3). Three coordinator status reads answered
+    404 while the workflows' steps kept running, and the coordinator re-ran the
+    review locally, opening duplicate pull requests. The tenant a request
+    resolves to can move under a running bridge: with no `X-Swarm-Tenant` the
+    API picks the personal workspace once it is ready (archived pull request 1204), and before that
+    the first group. A 404 for a workflow this process launched therefore means
+    "look in the launch's tenant", not "gone" -- the API now says so with
+    `workflow_not_in_tenant`; an older API's bare `not_found` is treated the
+    same, since the launch is the evidence the workflow exists.
+
+    The re-read goes through a COPY of the client naming that tenant, never by
+    setting `client.tenant`: the bridge serves tool calls on several threads,
+    and every other call on this client must keep the tenant it was given. The
+    header only selects among the caller's verified memberships, so the re-read
+    can reach nothing the caller could not name themselves. A workflow this
+    bridge did not launch is not re-read anywhere: it has no tenant of record.
+    """
+    try:
+        return _envelope(
+            client.request("GET", f"/v1/workflows/{workflow_id}"), f"reading {workflow_id}"
+        )
+    except SwarmError as exc:
+        launched_in = launch_tenant(workflow_id)
+        if exc.status != 404 or exc.edge or launched_in is None or launched_in == client.tenant:
+            raise
+    # A SHALLOW copy on purpose: it keeps the bridge's rate gate and shared
+    # reads (`_gate`, `_shared`), so this tenant is paced as the same
+    # principal, and the read cache is keyed by tenant (BRIDGE-PACING).
+    reader = copy.copy(client)
+    reader.tenant = launched_in
+    return _envelope(
+        reader.request("GET", f"/v1/workflows/{workflow_id}"),
+        f"reading {workflow_id} in tenant {launched_in}",
+    )
+
+
+def cancel(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
+    """`POST /v1/workflows/{id}/cancel`. Answers a plain report, not a workflow.
+
+    `Store.cancel_workflow` sets `cancel_requested` on the workflow and then
+    requests cancellation of every step task that has one, sorting them into
+    `tasks_cancelled` and `tasks_already_terminal`. Passed through unchanged: a
+    step that had already finished is not a failure of the cancel and must not be
+    reported as one.
+    """
+    data = client.request("POST", f"/v1/workflows/{workflow_id}/cancel", payload={})
+    if not isinstance(data, dict):
+        raise SwarmError(
+            f"cancelling {workflow_id}: the route answered "
+            f"{type(data).__name__}, not an object"
+        )
+    return data
+
+
+def _envelope(payload: Any, what: str) -> dict[str, Any]:
+    """The route's body, checked for the one key everything below reads.
+
+    Named rather than assumed for the reason `unwrap_task` exists: reading an
+    envelope that does not contain what you think does not raise -- every field
+    comes back absent -- so a workflow with no state, no steps and no tasks looks
+    exactly like a workflow that has not started.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("workflow"), dict):
+        seen = sorted(payload) if isinstance(payload, dict) else type(payload).__name__
+        raise SwarmError(f"{what}: the response carried no `workflow` object (saw {seen})")
+    return payload
+
+
+# --------------------------------------------------------------------------
+# Reading: the derived state, or none at all
+# --------------------------------------------------------------------------
+
+def state_of(workflow: dict[str, Any]) -> dict[str, Any]:
+    """The workflow's state as a reader may be given it -- three outcomes.
+
+    1. The server derived and reached an answer: that answer, marked derived.
+    2. The server derived and could NOT complete the read (a step task missing,
+       or the per-request read budget spent): `UNKNOWN`, with the rollup's own
+       reason and the steps it could not read. Not an error -- a partial read
+       honestly reported -- but never rounded up to a state.
+    3. The server did not derive: NO state, and a sentence naming the defect.
+       See this module's docstring for why there is no fallback.
+    """
+    stored = workflow.get("stored_state")
+    source = workflow.get("state_source")
+    out: dict[str, Any] = {"stored_state": stored, "state_source": source}
+
+    if source != DERIVED:
+        out["state"] = None
+        out["state_unavailable_because"] = (
+            f"this read did not derive the workflow state (state_source={source!r}), "
+            "so the value the response carries is the Firestore cache. That cache "
+            "is written once at submission and a workflow whose steps had all "
+            "SUCCEEDED still read QUEUED, so the bridge will not report it as a "
+            "state. The per-step states below came from the step TASKS and are "
+            "live -- read those. To fix the server: GET /v1/workflows/{workflow_id} "
+            "must apply swarm_api.rollup and codec.workflow_to_api must set "
+            "state_source."
+        )
+        return out
+
+    rollup = workflow.get("rollup") if isinstance(workflow.get("rollup"), dict) else {}
+    out["state"] = workflow.get("state")
+    if rollup:
+        out["counts"] = rollup.get("counts") or {}
+        out["steps_read"] = rollup.get("steps_read")
+    if out["state"] == UNKNOWN or (rollup and rollup.get("complete") is False):
+        out["state"] = UNKNOWN
+        out["state_incomplete_because"] = (
+            f"{rollup.get('reason') or 'the derivation did not complete'}. "
+            f"unreadable steps: {rollup.get('unreadable_steps') or 'none'}; "
+            f"steps with no task: {rollup.get('unstarted_steps') or 'none'}. "
+            "This is a partial read, not a workflow in a state called UNKNOWN."
+        )
+    drift = workflow.get("drift")
+    if isinstance(drift, dict) and drift.get("agrees") is False:
+        # Reported, never smoothed over. The cache WAS wrong at the moment of
+        # this read even though the route repaired it, and that is the fact a
+        # caller needs in order to distrust anything that read it earlier.
+        out["stored_state_was_wrong"] = True
+    return out
+
+
+def step_rows(
+    envelope: dict[str, Any],
+    *,
+    describe: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """One row per step, joined to the task document the same read returned.
+
+    The join is `step.task_id -> task.id`, which is data rather than policy, so
+    doing it here restates nothing. What the row says when the join FAILS is the
+    part that matters: a step with no task_id and a step whose task was not in
+    the response are two different facts, and neither of them is "this step has
+    not started". `describe`, when given, adds what the step's task produced --
+    commits, patch, pull request, and the reason when there is none.
+    """
+    tasks: dict[str, dict[str, Any]] = {}
+    for task in envelope.get("tasks") or []:
+        if isinstance(task, dict) and task.get("id"):
+            tasks[str(task["id"])] = task
+
+    rows: list[dict[str, Any]] = []
+    for step in envelope["workflow"].get("steps") or []:
+        task_id = step.get("task_id")
+        row: dict[str, Any] = {
+            "step_id": step.get("step_id"),
+            "task_id": task_id,
+            "runner_profile": step.get("runner_profile"),
+            "depends_on": step.get("depends_on") or [],
+            "input_from": step.get("input_from") or {},
+        }
+        if not task_id:
+            row["state"] = None
+            row["state_unavailable_because"] = (
+                "this step carries no task id. Every step created by the current "
+                "submission path gets one, so this is malformed data, not a phase "
+                "a healthy step passes through."
+            )
+            rows.append(row)
+            continue
+        task = tasks.get(str(task_id))
+        if task is None:
+            row["state"] = None
+            row["state_unavailable_because"] = (
+                "the workflow read returned no task document for this step. The "
+                "step exists and names a task; that task was not in the page this "
+                "read loaded, so its state was NOT read -- it is not absent and it "
+                "is not queued."
+            )
+            rows.append(row)
+            continue
+
+        row["state"] = task.get("state")
+        # How many credential-shaped strings the API masked in the step task's
+        # input and metadata (owner decision, 2026-09-26: masked everywhere).
+        # None for a count the API did not send, never 0.
+        row["masked"] = masked_counts(task)
+        # How many questions the worker validated in the step's questions.json
+        # (owner decision 2026-10-06, observer P15): its count, never a read of
+        # the file, so a workflow says which step waits on the owner without
+        # a result read per step. `swarm_result` serves the questions.
+        row["questions"] = questions_count(task)
+        if task.get("cancel_requested"):
+            # The step's own flag, which the state does NOT carry: a step
+            # holding capacity stays DISPATCHED or RUNNING, flagged, until its
+            # worker releases it. Without this a cancelled workflow showed its
+            # steps as plainly RUNNING (archived issue 88, SC-F2).
+            row["cancel_requested"] = True
+        if task.get("park_reason"):
+            row["park_reason"] = task["park_reason"]
+        # A step waiting for a person: its window, or once answered who
+        # answered (docs/design/human-steps.md §4.5). Nothing for any other.
+        row.update(awaitinput.row_fields(task, envelope.get("tenant_id")))
+        if task.get("blocked_by"):
+            row["blocked_by"] = task["blocked_by"]
+        if task.get("last_error"):
+            row["error"] = task["last_error"]
+        if describe is not None:
+            produced = describe(task)
+            produced.pop("task_id", None)
+            produced.pop("state", None)
+            row["produced"] = produced
+        rows.append(row)
+    return rows
+
+
+# --------------------------------------------------------------------------
+# A step that asks for claude-code-large (the owner, 2026-11-06, part of archived issue 2688)
+# --------------------------------------------------------------------------
+
+LARGE_PROFILE = "claude-code-large"
+#: Contract request 147's middle size, the one the warning names instead.
+MEDIUM_PROFILE = "claude-code-medium"
+#: The 7 days to 2026-11-06, measured without page cache: 96% of the large
+#: attempts fit 6 CPU and 16 GiB, and every large request came from a spec
+#: sent through this plugin. A measured share, so it is stated, not derived.
+LARGE_FIT_MEDIUM_SHARE = "96%"
+
+
+def _size(profile: str) -> str:
+    rc = RESOURCE_CLASSES[RUNNER_PROFILES[profile].resource_class]
+    return f"{rc.cpu:g} CPU, {rc.memory_gib} GiB, {rc.units} units"
+
+
+def large_step_warnings(steps: list[dict[str, Any]]) -> list[str]:
+    """One line per step that names claude-code-large, in the steps' order.
+
+    A warning, never a refusal: the step is submitted as written. It names
+    the medium profile and the measured share, so the next spec can start
+    smaller (plugin/README.md: start at `claude-code`, the standard class).
+    """
+    return [
+        f"step {step.get('step_id')} asks for {LARGE_PROFILE} ({_size(LARGE_PROFILE)}); "
+        f"{LARGE_FIT_MEDIUM_SHARE} of large attempts over 7 days fit {MEDIUM_PROFILE} "
+        f"({_size(MEDIUM_PROFILE)}): name it unless this step was OOM-killed on it"
+        for step in steps
+        if step.get("runner_profile") == LARGE_PROFILE
+    ]
+
+
+def browser_unused_steps(envelope: dict[str, Any]) -> list[str]:
+    """One line per step whose task ran on a live browser and never used it,
+    once each, in the steps' order (`progress.browser_unused_line`).
+
+    The join is `step_rows`' own, `step.task_id -> task.id`; a step whose task
+    the read did not return says nothing, because nothing was measured.
+    """
+    tasks = {
+        str(task["id"]): task
+        for task in envelope.get("tasks") or []
+        if isinstance(task, dict) and task.get("id")
+    }
+    lines: list[str] = []
+    seen: set[str] = set()
+    for step in envelope["workflow"].get("steps") or []:
+        step_id = str(step.get("step_id"))
+        task = tasks.get(str(step.get("task_id")))
+        if task is None or step_id in seen:
+            continue
+        line = browser_unused_line(task, label=f"step {step_id} ({step.get('task_id')})")
+        if line is not None:
+            seen.add(step_id)
+            lines.append(line)
+    return lines
+
+
+def report(
+    envelope: dict[str, Any],
+    *,
+    describe: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """What both read tools answer: the state rule first, then the steps."""
+    workflow = envelope["workflow"]
+    rows = step_rows(envelope, describe=describe)
+    out: dict[str, Any] = {"workflow_id": workflow.get("workflow_id")}
+    # The workspace it runs in, from its own document (SC-ROWS): every row
+    # /sc:swarmcloud starts for it is labelled with this.
+    out["workspace"] = workspace_of(workflow, fallback=envelope.get("tenant_id"))
+    # The workflow's names as stored, for /sc:swarmcloud's attach to title
+    # its rows the way the run that submitted it did.
+    out.update(stored_names(envelope))
+    out.update(state_of(workflow))
+    out["steps_total"] = len(rows)
+    out["cancel_requested"] = workflow.get("cancel_requested")
+    out["on_step_failure"] = workflow.get("on_step_failure")
+    if isinstance(envelope.get("dispatch"), dict):
+        out["dispatch"] = envelope["dispatch"]
+    out["steps"] = rows
+
+    followable = [str(r["task_id"]) for r in rows if r.get("task_id")]
+    if followable:
+        # The same answer `swarm_dispatch` gives, for the same reason: an MCP
+        # tool returns once and cannot stream, so the honest thing to hand back
+        # is the command that can. `tail` takes several ids precisely so one
+        # background shell follows a whole fan-out.
+        #
+        # Spelled by `follow.follow_command`, not here. This file used to build
+        # the string itself and got `swarm tail`, which is not a command anyone
+        # has on their PATH.
+        out["follow_live_with"] = follow_command(followable)
+    return out

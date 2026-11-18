@@ -1,0 +1,2807 @@
+"""The worker's state, through swarm-api (docs/design/tenant-settings-integrity.md §3.2, §4).
+
+WHY. Every tenant worker's service account can create, get and update any
+document in the `swarm` database whose id it can name (§1.1), and its agent
+can mint that account's token. So one tenant's agent can stop, redirect or
+over-admit every other tenant (§1.3, archived issue 1457). Design B moves every read and
+write the worker makes behind these routes, then removes the role. Each call
+proves three things before anything is read for it (§4.1):
+
+  * the ID token is the TENANT's worker account (`children.worker_email`),
+    which closes every cross-tenant row: `401 attempt_unauthenticated`;
+  * the attempt proof -- Ed25519 over `swarm-state-req/v1`, by the key the
+    worker registered at `state/open` -- is the WORKER of this attempt, not
+    its agent: `403 attempt_unproven`. A v1 (child-only) registration never
+    signs a state request (§4.5);
+  * then ONE Firestore transaction re-reads the task and the lease and
+    applies the fence (invariant 5): `409 attempt_fenced`, nothing written.
+
+The worker names only its tuple, `(tenant_id, task_id, attempt_id, lease_id,
+generation)`. Every document written is derived from the tuple, never from a
+name in the body: a release releases this tuple's lease and the pools THAT
+LEASE names, through `swarm_common.admission.release_lease_in_transaction`,
+the one release function (invariant 2). Transitions are only the worker's
+(`states.worker_may_transition`, contract request 85), so an agent holding
+the token cannot admit, requeue or dead-letter anything: `422`.
+
+UNUSED UNTIL A TENANT IS SWITCHED. The routes are mounted, and nothing calls
+them until lane ISO-WORKER-CORE's `SWARM_STATE_VIA_API` is on for a tenant
+(§6, owner decision Q7). They write the documents and fields the worker
+writes today, with the same names and types (§4.5), so the scheduler,
+reconciler, broker and console read them unchanged and a tenant can be
+switched back. Where a route is stricter than the direct path it says so at
+the call.
+
+Nothing here logs, stores or serves the token, the nonce, the proof or a
+registration.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+import json
+import logging
+import re
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any, Callable, Literal, Mapping
+
+from google.api_core import exceptions as gexc
+from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
+from pydantic import AwareDatetime, Field
+
+from swarm_common.admission import AdmissionConfig, _snapshot, release_lease_in_transaction
+from swarm_common.config import Settings
+from swarm_common.models import (
+    CREDENTIAL_TIERS,
+    Attempt,
+    EndCause,
+    Tenant,
+    check_additional_repositories,
+    new_id,
+    retries_exhausted,
+    utcnow,
+)
+from swarm_common.states import (
+    CONCURRENCY_STATES,
+    TERMINAL_STATES,
+    EventType,
+    ParkReason,
+    TaskState,
+    worker_may_transition,
+)
+
+from . import contractevidence as ce
+from . import contractjudge as cj
+from . import contractreask as cr
+from . import workcontract as wc
+from .access import grant_id_for
+from .attempt_totals import stored_totals, task_attempt_docs
+from .childkey import PURPOSE_STATE, AttemptTuple, state_request_message, verify_proof
+from .children import (
+    ChildService,
+    ChildUnauthenticated,
+    ChildUnavailable,
+    _Strict,
+    parse_body,
+)
+from .errors import ApiError, ValidationFailed
+from .forgeapp import GRANTS
+from .mergesettings import COLLECTION as WORKSPACE_SETTINGS
+from .provider_keys import KEYS_COLLECTION as PROVIDER_KEYS
+from .repositories import parse_repository, repo_id_for
+from .repoindex import BASE_LINE, INDEXER_PROFILE, KEPT_VERSIONS, VERSIONS_COLLECTION
+from .rollup import derived_state_write
+from .task_accounts import account_after
+from .store import CONTROL, EVENTS, LEASES, SETTINGS_DOC, TASKS
+from .validation import FIX_LOOP_PROFILE, FIX_LOOP_ROUND_FIELD, HUMAN_READY_METADATA_KEY
+from .verdictpublish import spec_refusal
+from .workspaces import personal_tenant_id
+
+log = logging.getLogger(__name__)
+
+ATTEMPTS = "attempts"
+QUOTA = "quota"
+TENANTS = "tenants"
+REPOSITORIES = "repositories"
+#: swarm-api's own graph-context document (`graphstage.SETTINGS_COLLECTION`).
+TENANT_SETTINGS = "tenant_settings"
+#: The park's upload carry (archived issue 166), `control.CARRY_COLLECTION` / `CARRY_INDEX_ID`.
+CARRY = "carry"
+#: The fields of `control/settings` (`store.SETTINGS_DOC`) `state/context`
+#: serves. A worker switched to the state routes builds no Firestore client,
+#: so the admin's extra-repository size budget reaches its clone check only
+#: this way (owner's pick, 3 November 2026; `agent_worker.extrarepos.
+#: BUDGET_SETTING`). The platform's other settings -- prices, the budget
+#: ceiling -- are the control plane's, so none is served.
+PLATFORM_SETTINGS_SERVED = ("additional_repositories_budget_gib",)
+CARRY_INDEX = "parks"
+MERGE_SLOTS = "merge_slots"
+MERGE_TRAIN_ENTRIES = "merge_train_entries"
+
+#: The metadata keys the parks write, as the worker spells them
+#: (`control.CHILD_AWAIT_RESUMES_METADATA_KEY`, `MERGE_WAIT_METADATA_KEY`,
+#: `handoff.HUMAN_*`). Restated: the worker's image is not this package.
+CHILD_AWAIT_RESUMES = "child_await_resumes"
+MERGE_WAIT = "merge_wait"
+HUMAN_WAIT_RESUMES = "human_wait_resumes"
+#: An agent's release wait (AU7-REFUND): the block its park's detail carries
+#: (`questions.RELEASE_WAIT_KEY`, what `mergewake.release_wait_of` reads) and
+#: the waits refunded so far (`control.RELEASE_WAIT_RESUMES_METADATA_KEY`).
+RELEASE_WAIT = "release_wait"
+RELEASE_WAIT_RESUMES = "release_wait_resumes"
+HUMAN_RETURNED = "human_returned"
+HUMAN_READY = "human_ready"
+CHILD_CASCADE = "child_cascade"
+
+#: THE REFUND BOUNDS ARE THE SERVER'S. A worker sends no number (§4.4): an
+#: agent that could send one would refund its task for ever. Each is the
+#: worker's own today: `config.max_child_await_resumes` (4),
+#: `handoff.MAX_HUMAN_RESUMES` (2), `merge.MERGE_CI_MAX_WAKES` (60),
+#: `mergeslot.MERGE_SLOT_MAX_WAITS` and `mergetrain.TRAIN_MAX_WAITS` (200),
+#: and `merge.MERGE_CI_FALLBACK_SECONDS` (900).
+CHILD_AWAIT_MAX_RESUMES = 4
+HUMAN_MAX_RESUMES = 2
+CI_MAX_WAKES = 60
+SLOT_MAX_WAITS = 200
+TRAIN_MAX_WAITS = 200
+CI_FALLBACK_SECONDS = 900
+#: `control.RELEASE_WAIT_MAX_RESUMES` (4), which says why it is not the CI
+#: wait's 60: a release wait is woken once per release, so each refund is a
+#: whole release, the child await's shape and its bound.
+RELEASE_WAIT_MAX_RESUMES = 4
+#: A PROVIDER_QUOTA_EXHAUSTED park-and-exit (archived issue 2350, the owner 2026-10-27, "Refund,
+#: bounded"): invariant 4's designed path, not a failed attempt, so it is
+#: refunded like a CI wait, counted in `metadata.quota_park_resumes`
+#: (`control.QUOTA_PARK_RESUMES_METADATA_KEY`, reserved by `validation`).
+#: 5 BECAUSE four 24-31 s `accounts_full` parks took task_c61ee787 to
+#: attempt_count 5 of 3, and its first real loss was then final: five rides
+#: out a full account pool's churn, and past it a task that only ever parks
+#: still ends at `max_attempts`. The worker restates it
+#: (`control.QUOTA_MAX_RESUMES`) for its direct path and sends no number here.
+QUOTA_PARK_RESUMES = "quota_park_resumes"
+QUOTA_MAX_RESUMES = 5
+#: A step stopped at its time limit with its checkpoint uploaded (the owner,
+#: 2026-11-02, "continue at the time limit"): a SCHEDULED_RETRY park whose
+#: detail carries a `time_limit` block is a CONTINUATION, not a failure: its
+#: attempt is refunded, and counted in `metadata.time_limit_continuations`,
+#: while fewer than TIME_LIMIT_MAX_CONTINUATIONS were, so a step with
+#: `max_attempts` 1 still continues; past the bound it spends an attempt. 2 BECAUSE the 14 days to 2026-11-02 lost
+#: 75 hours to 46 tasks killed at a 1 or 2 hour limit: two more limits give a
+#: step three times the time it asked for, and a step that needs a fourth is
+#: looping, not finishing. The worker restates it
+#: (`control.TIME_LIMIT_MAX_CONTINUATIONS`), stops continuing at it and fails
+#: the task saying it ran out of continuations; it sends no number here.
+TIME_LIMIT = "time_limit"
+TIME_LIMIT_CONTINUATIONS = "time_limit_continuations"
+TIME_LIMIT_MAX_CONTINUATIONS = 2
+#: `mergeslot.MERGE_SLOT_WAIT` and `mergetrain.TRAIN_WAITING`: the CI-park
+#: codes counted on their own counters and off the CI clock.
+MERGE_SLOT_WAIT = "merge_slot_wait"
+TRAIN_WAITING = "merge_train_waiting"
+
+#: A checkpoint archive's digest (`control.ARCHIVE_DIGEST_RE`, archived issue 346).
+_DIGEST = re.compile(r"^[0-9a-f]{64}$")
+#: An event id the worker chooses for an idempotent event: `new_id("evt")`.
+_EVENT_ID = re.compile(r"^evt_[0-9a-f]{20}$")
+#: A lease release's reason, `parked:<reason>`, `terminal:<state>`, `retry:<cause>`.
+_SHA40 = re.compile(r"^[0-9a-f]{40}$")
+_REASON = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
+_PROVIDER = re.compile(r"^[a-z0-9-]{1,64}$")
+_GITHUB_URL = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+#: A task id as the worker accepts one in `builds_on` (`lifecycle._TASK_ID_RE`).
+_TASK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,127}$")
+#: An incremental index run's base line in its SIGNED prompt
+#: (`indexrun.requested_base`): exactly one, or no base at all.
+_BASE_SHA_LINE = re.compile(r"^" + re.escape(BASE_LINE) + r"([0-9a-f]{40})$", re.MULTILINE)
+#: How far `upstream` follows `builds_on` back from this task's own: the
+#: worker's own bound (`lifecycle._MAX_WORKFLOW_STEPS`, archived issue 978), read from the
+#: FROZEN `Settings` default as the worker reads it. Every link is a distinct
+#: step of one workflow, so a longer chain is one no control plane wrote.
+BUILDS_ON_MAX_DEPTH: int = next(
+    f.default for f in dataclasses.fields(Settings) if f.name == "max_workflow_steps"
+)
+#: How many task documents `upstream` reads walking `depends_on` back through
+#: this task's workflow (archived issue 2070): every ancestor is a distinct step of it, so
+#: the same bound. The worker's walk (`owner_questions.MAX_ANCESTORS`) reads
+#: no more than this.
+WORKFLOW_ANCESTORS_MAX: int = BUILDS_ON_MAX_DEPTH
+
+#: The attempt document's usage fields a worker may write, by `kind` (§4.2):
+#: the frozen `Attempt`'s names, nothing else. `cpu_limit_source` takes the
+#: worker's `metrics.CPU_LIMIT_SOURCES`. `credential` is request 152's three
+#: fields, as the worker's `control.credential_fields` sends them.
+USAGE_FIELDS: dict[str, tuple[str, ...]] = {
+    "resource": ("peak_rss_bytes", "peak_disk_bytes", "oom_near_miss"),
+    "cpu": ("cpu_seconds", "peak_cpu_cores", "mean_cpu_cores", "cpu_limit_cores",
+            "cpu_limit_source"),
+    "spend": ("input_tokens", "output_tokens", "cache_read_input_tokens",
+              "cache_creation_input_tokens", "cost_usd"),
+    "credential": ("account_id", "credential_source", "credential_tier"),
+}
+CPU_LIMIT_SOURCES = ("cgroup", "resource_class")
+#: `Attempt.credential_source`'s values (request 152; the worker's
+#: `control.CREDENTIAL_SOURCES`). Only `account_pool` names an account.
+CREDENTIAL_SOURCES = ("account_pool", "tenant_secret")
+#: The longest `Attempt.account_id` taken: the broker's `<tenant>:<label>`
+#: document id is far shorter, and Firestore's own field bound is not a
+#: reason to store a megabyte.
+ACCOUNT_ID_MAX = 256
+assert all(
+    name in Attempt.__dataclass_fields__ for names in USAGE_FIELDS.values() for name in names
+)
+
+#: The largest free-form JSON a body may carry in one field (a result summary,
+#: an event's detail, an upload manifest). Firestore's document limit is 1 MiB.
+MAX_FREE_FORM_BYTES = 256 * 1024
+#: How many waiters a release reads the state of before handing the slot on
+#: (`mergeslot.HANDOFF_READS`).
+HANDOFF_READS = 8
+#: `inputs.find_ci_fix_tasks`'s callers ask for a handful.
+MAX_CI_FIX_TASKS = 50
+
+
+# --------------------------------------------------------------------------
+# Refusals (§4.2): the child routes' shapes, under their own codes
+# --------------------------------------------------------------------------
+
+
+class AttemptUnauthenticated(ApiError):
+    status_code = 401
+    code = "attempt_unauthenticated"
+
+
+class AttemptUnproven(ApiError):
+    status_code = 403
+    code = "attempt_unproven"
+
+
+class AttemptFenced(ApiError):
+    status_code = 409
+    code = "attempt_fenced"
+
+
+class TransitionRefused(ValidationFailed):
+    code = "transition_refused"
+
+
+class StateUnavailable(ApiError):
+    status_code = 503
+    code = "state_unavailable"
+
+
+class UpstreamNotDeclared(ApiError):
+    status_code = 403
+    code = "upstream_not_declared"
+
+
+class MergeWakeRefused(ApiError):
+    status_code = 403
+    code = "merge_wake_refused"
+
+
+class StateConflict(ApiError):
+    status_code = 409
+    code = "state_conflict"
+
+
+class ContractVerdictStale(StateConflict):
+    """Section 9: a verdict about another revision, another commit, or one
+    this attempt already recorded. Nothing is written. It answers with the
+    state routes' own `state_conflict` (a write over a document that changed
+    under it), so it adds no new refusal code to switch (refusals.SWITCHES)."""
+
+
+# --------------------------------------------------------------------------
+# Bodies. Strict: an unknown key -- a `runner_profile`, an image, a pool
+# name -- is a 422 (invariant 10). The tuple is in every one.
+# --------------------------------------------------------------------------
+
+
+class _Tuple(_Strict):
+    tenant_id: str = Field(min_length=1, max_length=64)
+    task_id: str = Field(min_length=1, max_length=128)
+    lease_id: str = Field(min_length=1, max_length=128)
+    generation: int = Field(ge=1)
+
+
+class _Requested(_Tuple):
+    #: Idempotency (§4.2): a repeat of a seen id is answered without a write.
+    request_id: str = Field(pattern=r"^[a-z0-9-]{1,64}$")
+
+
+class EventIn(_Strict):
+    type: str = Field(min_length=1, max_length=64)
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class OpenBody(_Tuple):
+    nonce: str = Field(min_length=1, max_length=128)
+    public_key: str = Field(min_length=1, max_length=64)
+    #: Owner decision Q4: a heap `make_non_dumpable` could not protect registers
+    #: anyway, flagged, and its key signs state only.
+    unprotected: bool = False
+    #: The attempt whose checkpoint the worker restores, for its digest binding.
+    restore_attempt_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class TransitionBody(_Requested):
+    to: str = Field(min_length=1, max_length=32)
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class AttemptStartBody(_Tuple):
+    backend: str = Field(min_length=1, max_length=32)
+    execution_name: str | None = Field(default=None, max_length=256)
+
+
+class CheckpointBody(_Tuple):
+    checkpoint_id: str = Field(pattern=r"^[A-Za-z0-9_.-]{1,128}$")
+    uri: str = Field(min_length=1, max_length=1024)
+    size_bytes: int = Field(ge=0)
+    seq: int = Field(ge=0)
+    archive_sha256: str
+
+
+class UsageBody(_Tuple):
+    kind: Literal["resource", "cpu", "spend", "credential"]
+    fields: dict[str, Any]
+
+
+class CiWait(_Strict):
+    code: str = Field(min_length=1, max_length=64)
+    head: str = Field(default="", max_length=64)
+    pull_request: int = Field(ge=0)
+    pending: list[str] = Field(default_factory=list, max_length=200)
+
+
+class ParkBody(_Requested):
+    reason: str = Field(min_length=1, max_length=64)
+    next_eligible_at: AwareDatetime | None = None
+    detail: dict[str, Any] = Field(default_factory=dict)
+    uploads: list[Any] | None = None
+    announce: list[EventIn] = Field(default_factory=list, max_length=4)
+    ci: CiWait | None = None
+
+
+class FinishBody(_Requested):
+    state: str = Field(min_length=1, max_length=32)
+    exit_code: int | None = None
+    error: str | None = Field(default=None, max_length=8192)
+    end_cause: str | None = Field(default=None, max_length=64)
+    result_summary: dict[str, Any] | None = None
+
+
+class RetryBody(_Requested):
+    exit_code: int | None = None
+    error: str = Field(max_length=8192)
+    cause: str = Field(min_length=1, max_length=64)
+    result_summary: dict[str, Any] | None = None
+    retry_delay_seconds: int = Field(default=0, ge=0, le=86_400)
+    detail: dict[str, Any] = Field(default_factory=dict)
+    end_cause: str | None = Field(default=None, max_length=64)
+
+
+class AttemptEndBody(_Tuple):
+    exit_code: int | None = None
+    error: str | None = Field(default=None, max_length=8192)
+
+
+class HeartbeatBody(_Tuple):
+    pass
+
+
+class ReleaseBody(_Tuple):
+    reason: str
+
+
+class EventBody(_Tuple):
+    event_id: str
+    type: str = Field(min_length=1, max_length=64)
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class MergeSlotBody(_Tuple):
+    op: Literal["peek", "acquire", "renew", "confirm", "release", "wake"]
+    base: str = Field(min_length=1, max_length=256)
+    updates: int | None = Field(default=None, ge=0)
+    reason: str | None = None
+    #: The SLOT's generation the caller holds (not the attempt's).
+    slot_generation: int | None = Field(default=None, ge=0)
+    wake_task_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class MergeTrainBody(_Tuple):
+    op: Literal["peek", "register"]
+    base: str | None = Field(default=None, max_length=256)
+    number: int | None = Field(default=None, ge=1)
+    head: str | None = Field(default=None, max_length=64)
+    title: str | None = Field(default=None, max_length=1024)
+    message: str | None = Field(default=None, max_length=65_536)
+
+
+class MechanicalIn(_Strict):
+    kind: str = Field(min_length=1, max_length=32)
+    passed: bool | None = None
+    named: list[str] = Field(default_factory=list, max_length=32)
+
+
+class VerdictIn(_Strict):
+    requirement_id: str = Field(min_length=1, max_length=32)
+    verdict: str = Field(min_length=1, max_length=32)
+    reason: str | None = Field(default=None, max_length=64)
+    evidence_item: str | None = Field(default=None, max_length=16)
+    p: float
+
+
+class ContractVerdictBody(_Requested):
+    """JC2's verdict (docs/design/agent-quality/jev-contract.md sections 5 and
+    9): what the worker's post-step judged -- the contract digest it was
+    given, the commit it read and its base, what it sent (the changed paths in
+    item order, the mechanical results, the state's sha256) and Jev's typed
+    verdicts -- or `not_run` with why. Every value is a closed one or a
+    bounded name; nothing here is acted on but through `contract_verdict`'s
+    checks."""
+
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    commit: str = Field(pattern=r"^[0-9a-f]{40}$")
+    base: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
+    outcome: Literal["judged", "not_run"]
+    reason: str | None = Field(default=None, max_length=64)
+    call_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    state_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    changed: list[str] = Field(default_factory=list, max_length=cj.MAX_CHANGED)
+    #: Each changed item's hunk text as the state sent it, in `changed`'s
+    #: order; None for an item the state sent by path alone. The record keeps
+    #: the text of the cited ones (`contractreask.cited_hunks`).
+    hunks: list[str | None] = Field(default_factory=list, max_length=cj.MAX_CHANGED)
+    mechanical: list[MechanicalIn] = Field(default_factory=list, max_length=cj.MAX_MECHANICAL)
+    verdicts: list[VerdictIn] = Field(default_factory=list, max_length=cj.MAX_QUESTIONS)
+
+
+class CiFixBody(_Tuple):
+    pull_request: int = Field(ge=1)
+    root_task_id: str = Field(min_length=1, max_length=128)
+    limit: int = Field(default=20, ge=1, le=MAX_CI_FIX_TASKS)
+
+
+# --------------------------------------------------------------------------
+# Pure helpers
+# --------------------------------------------------------------------------
+
+
+def jsonable(value: Any) -> Any:
+    """A Firestore value as JSON: instants as ISO 8601, everything else as is."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {str(k): jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [jsonable(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _bounded(value: Any, what: str) -> Any:
+    try:
+        size = len(json.dumps(value, default=str))
+    except (TypeError, ValueError):
+        raise ValidationFailed(f"{what} is not JSON") from None
+    if size > MAX_FREE_FORM_BYTES:
+        raise ValidationFailed(f"{what} is larger than {MAX_FREE_FORM_BYTES} bytes")
+    return value
+
+
+def fence_view(task: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """What every writing answer carries (§4.2), enough for `ControlSignals`."""
+    if task is None:
+        return None
+    return {
+        "state": task.get("state"),
+        "current_generation": task.get("current_generation"),
+        "current_lease_id": task.get("current_lease_id"),
+        "cancel_requested": bool(task.get("cancel_requested")),
+        "next_eligible_at": jsonable(task.get("next_eligible_at")),
+    }
+
+
+def fence_reason(
+    task: Mapping[str, Any] | None, lease: Mapping[str, Any] | None, attempt: AttemptTuple
+) -> str | None:
+    """Why `attempt` no longer owns its task, or None. The worker's fence
+    (`control._task_fence` and `_lease_fence`), plus the tenant and attempt
+    checks a server must make because the tuple is the caller's.
+
+    NOT `children._lease_is_live`: that refuses a lease whose `expires_at` has
+    passed, and the direct path's writes do not. A swarm-api outage longer
+    than one lease timeout would then fence every running attempt for good,
+    where today the next beat extends the lease the reconciler has not yet
+    reclaimed. The registration window (`state/open`) does use it.
+    """
+    if task is None:
+        return "task document no longer exists"
+    if task.get("tenant_id") != attempt.tenant_id:
+        return "task belongs to another tenant"
+    if task.get("current_generation") != attempt.generation:
+        return "task has moved to a newer generation"
+    state = task.get("state")
+    if state in {s.value for s in TERMINAL_STATES}:
+        return f"task is already terminal ({state})"
+    if state not in {s.value for s in CONCURRENCY_STATES}:
+        return f"task no longer holds capacity (state={state})"
+    if lease is None:
+        return "lease document is gone"
+    if lease.get("tenant_id") != attempt.tenant_id:
+        return "lease belongs to another tenant"
+    if lease.get("released_at") is not None:
+        return "lease has already been released"
+    if lease.get("generation") != attempt.generation:
+        return "lease belongs to a different generation"
+    if lease.get("task_id") != attempt.task_id or lease.get("attempt_id") != attempt.attempt_id:
+        return "lease belongs to a different attempt"
+    if task.get("current_lease_id") not in (None, attempt.lease_id):
+        return "task points at a different lease"
+    return None
+
+
+def _credential_doc(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """Request 152's three fields as the worker's direct path merges them
+    (`control.credential_fields`): all three, always, the absent ones None.
+
+    Held to the frozen `Attempt`'s shape and refused otherwise rather than
+    written wrong: a source of `CREDENTIAL_SOURCES`; an account only under
+    `account_pool`, a non-empty id of at most `ACCOUNT_ID_MAX`; a tier of
+    `CREDENTIAL_TIERS` and only beside an account. An account id and two
+    words: nothing here can hold a key, a secret's name or a token.
+    """
+    source = fields.get("credential_source")
+    if source not in CREDENTIAL_SOURCES:
+        raise ValidationFailed(f"credential_source is one of {', '.join(CREDENTIAL_SOURCES)}")
+    account_id = fields.get("account_id")
+    if account_id is not None:
+        if (not isinstance(account_id, str) or not account_id
+                or len(account_id) > ACCOUNT_ID_MAX):
+            raise ValidationFailed(
+                f"account_id is null or a string of 1 to {ACCOUNT_ID_MAX} characters")
+        if source != "account_pool":
+            raise ValidationFailed("account_id is written only under account_pool")
+    tier = fields.get("credential_tier")
+    if tier is not None:
+        if tier not in CREDENTIAL_TIERS:
+            raise ValidationFailed(f"credential_tier is null or one of {', '.join(CREDENTIAL_TIERS)}")
+        if account_id is None:
+            raise ValidationFailed("credential_tier is written only beside an account_id")
+    return {"account_id": account_id, "credential_source": source, "credential_tier": tier}
+
+
+def _lease_is_this_tuples(lease: Mapping[str, Any] | None, attempt: AttemptTuple) -> bool:
+    return (
+        lease is not None
+        and lease.get("tenant_id") == attempt.tenant_id
+        and lease.get("task_id") == attempt.task_id
+        and lease.get("attempt_id") == attempt.attempt_id
+        and lease.get("generation") == attempt.generation
+    )
+
+
+def request_event_id(attempt: AttemptTuple, op: str, request_id: str) -> str:
+    """The event a requested write announces itself with: its id IS the
+    idempotency record (§4.2, "no new collection"). A repeat finds it."""
+    digest = hashlib.sha256(
+        f"swarm-state-request/v1\n{attempt.encode()}\n{op}\n{request_id}".encode("utf-8")
+    ).hexdigest()
+    return f"evt_{digest[:20]}"
+
+
+def _event_type(value: str) -> EventType:
+    try:
+        return EventType(value)
+    except ValueError:
+        raise ValidationFailed("type must be an EventType value") from None
+
+
+def _end_cause(value: str | None) -> EndCause | None:
+    if value is None:
+        return None
+    try:
+        return EndCause(value)
+    except ValueError:
+        raise ValidationFailed("end_cause must be an EndCause value") from None
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+#: Bounds on `merge_wait.failed_heads`, as the direct path's
+#: (`agent_worker.control.FAILED_HEADS_MAX_NAMES`/`_PER_NAME`).
+FAILED_HEADS_MAX_NAMES = 40
+FAILED_HEADS_MAX_PER_NAME = 10
+
+
+def _wait_instant(value: Any) -> datetime | None:
+    """An aware instant from `merge_wait`: a stored datetime or ISO text."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return value if isinstance(value, datetime) and value.tzinfo is not None else None
+
+
+def _round_heads(metadata: Mapping[str, Any]) -> set[str]:
+    fix = _mapping(metadata.get("merge_fix"))
+    heads: set[str] = set()
+    for kind in ("rounds", "conflict_rounds"):
+        rounds = fix.get(kind)
+        for entry in rounds if isinstance(rounds, list) else []:
+            if isinstance(entry, Mapping) and isinstance(entry.get("head"), str) and entry["head"]:
+                heads.add(entry["head"])
+    return heads
+
+
+def ci_wait_span(metadata: Mapping[str, Any], last: Mapping[str, Any], head: str,
+                 failed: Any, now: datetime) -> dict[str, Any]:
+    """The whole CI wait a merge step's park continues, as the direct path
+    keeps it (`agent_worker.control.ci_wait_span`, part of archived issue 2688):
+    `wait_started_at` carried at this head or across a head a repair round
+    was claimed at, restarted by any other head move or a person's "I'm
+    ready" after it; `rechecks` this wait's parks; `failed_heads` each check
+    failed in the wait and the heads it failed at."""
+    started = _wait_instant(last.get("wait_started_at"))
+    previous = last.get("head")
+    if started is not None and previous and previous != head and previous not in _round_heads(metadata):
+        started = None
+    returned = _wait_instant(_mapping(metadata.get(HUMAN_READY_METADATA_KEY)).get("at"))
+    if started is not None and returned is not None and returned > started:
+        started = None
+    carried = started is not None
+    heads: dict[str, list[str]] = {}
+    old = last.get("failed_heads") if carried else None
+    for name, seen in (old.items() if isinstance(old, Mapping) else []):
+        if isinstance(seen, list) and len(heads) < FAILED_HEADS_MAX_NAMES:
+            heads[str(name)[:256]] = [str(h)[:64] for h in seen if isinstance(h, str)][-FAILED_HEADS_MAX_PER_NAME:]
+    for name in failed if isinstance(failed, list) else []:
+        key = str(name)[:256]
+        if key not in heads and len(heads) >= FAILED_HEADS_MAX_NAMES:
+            continue
+        seen = heads.setdefault(key, [])
+        if head not in seen:
+            seen.append(head)
+            del seen[:-FAILED_HEADS_MAX_PER_NAME]
+    return {"wait_started_at": started if started is not None else now,
+            "rechecks": (_count(last.get("rechecks")) if carried else 0) + 1,
+            "failed_heads": heads,
+            "main_red": dict(last["main_red"]) if carried and isinstance(last.get("main_red"), Mapping) else None}
+
+
+def park_attempt_error(reason: ParkReason, event_detail: Mapping[str, Any]) -> str:
+    """The parked attempt's `error`: the park reason, and for a continuation
+    at the time limit what the attempt list says of it (the owner, 2026-11-02)."""
+    count = event_detail.get(TIME_LIMIT_CONTINUATIONS)
+    if (reason is ParkReason.SCHEDULED_RETRY and isinstance(event_detail.get(TIME_LIMIT), Mapping)
+            and isinstance(count, int)):
+        return (f"{reason.value}: continued at the time limit "
+                f"({count} of {TIME_LIMIT_MAX_CONTINUATIONS})")
+    return reason.value
+
+
+def cancel_end_cause(task: Mapping[str, Any]) -> EndCause:
+    """The worker's `control.cancel_end_cause`: CHILD_CASCADE when the parent's
+    cascade flagged the task (contract request 41), else CANCEL_REQUESTED."""
+    metadata = task.get("metadata")
+    if isinstance(metadata, Mapping) and metadata.get(CHILD_CASCADE):
+        return EndCause.CHILD_CASCADE
+    return EndCause.CANCEL_REQUESTED
+
+
+def owner_repo(repository_url: Any) -> tuple[str, str] | None:
+    """`(owner, repo)` of a signed `https://github.com/owner/repo(.git)`, else None."""
+    if not isinstance(repository_url, str):
+        return None
+    matched = _GITHUB_URL.match(repository_url.strip())
+    if matched is None:
+        return None
+    try:
+        return parse_repository(f"{matched.group(1)}/{matched.group(2)}")
+    except ValueError:
+        return None
+
+
+def slot_id(tenant_id: str, repository: str, base: str) -> str:
+    """`mergeslot.slot_id`: the tenant, then a digest of `owner/repo` and the base."""
+    digest = hashlib.sha256(f"{repository.lower()}\n{base}".encode()).hexdigest()[:40]
+    return f"{tenant_id}--{digest}"
+
+
+def entry_id_for(tenant_id: str, task_id: str) -> str:
+    """`mergetrain.entry_id_for`."""
+    digest = hashlib.sha256(f"{tenant_id}\n{task_id}".encode("utf-8")).hexdigest()
+    return "mte_" + digest[:32]
+
+
+# --------------------------------------------------------------------------
+# The merge slot's transitions (`agent_worker.mergeslot`), run here
+# --------------------------------------------------------------------------
+#
+# Moved, not redesigned: these are the worker's pure functions over the slot
+# document, so a tenant switched to the routes and one still on the direct
+# path take turns on the same document by the same rules. They run here
+# because a function cannot be sent over HTTP, and because the `ended` set --
+# which holder or waiter has finished -- is now read by swarm-api inside the
+# tenant, not claimed by the caller.
+
+MERGE_SLOT_LEASE_SECONDS = 45 * 60
+MERGE_SLOT_WAITER_STALE_SECONDS = 2 * MERGE_SLOT_LEASE_SECONDS
+MERGE_SLOT_MAX_WAITERS = 500
+SLOT_WAKE_REASON = "merge_slot_granted"
+_WAKE_MARKER = "wake_requested_at"
+
+
+@dataclass(frozen=True)
+class Claimant:
+    task_id: str
+    attempt_id: str
+    submitted_at: datetime
+
+
+@dataclass
+class _Walk:
+    """One `state/upstream` request's tally of task documents of this tenant
+    whose spec signature did not verify: each stops the rule that read it,
+    and the count is logged, so a rewrite is never mistaken for an absence."""
+    unverified: int = 0
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+#: A fix loop's re-review round, as `fixloop.REVIEW_KIND` signs it in the
+#: round's `fix_loop_round` record.
+FIX_LOOP_REVIEW_KIND = "review"
+
+
+def _declared_parents(task: Mapping[str, Any]) -> set[str]:
+    """The ids a task's spec declares as its parents: its `depends_on`, its
+    `metadata.input_from` and its dispatch block's `input_parents`."""
+    declared: set[str] = {d for d in task.get("depends_on") or [] if isinstance(d, str)}
+    metadata = _mapping(task.get("metadata"))
+    declared |= {k for k in _mapping(metadata.get("input_from")) if isinstance(k, str)}
+    dispatch = _mapping(metadata.get("dispatch"))
+    declared |= {k for k in _mapping(dispatch.get("input_parents")) if isinstance(k, str)}
+    return declared
+
+
+def _builds_on(metadata: Mapping[str, Any]) -> str | None:
+    """The task id a dispatch block's `builds_on` names, or None."""
+    raw = _mapping(metadata.get("dispatch")).get("builds_on")
+    if not isinstance(raw, str) or not _TASK_ID.match(raw.strip()):
+        return None
+    return raw.strip()
+
+
+def _instant(value: Any) -> datetime | None:
+    return value if isinstance(value, datetime) else None
+
+
+def _holder(doc: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    holder = doc.get("holder")
+    return holder if isinstance(holder, Mapping) and isinstance(holder.get("task_id"), str) else None
+
+
+def _waiters(doc: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw = doc.get("waiters")
+    if not isinstance(raw, list):
+        return []
+    return [dict(w) for w in raw
+            if isinstance(w, Mapping) and isinstance(w.get("task_id"), str)
+            and isinstance(w.get("submitted_at"), datetime)]
+
+
+def _order(entry: Mapping[str, Any]) -> tuple[datetime, str]:
+    return entry["submitted_at"], entry["task_id"]
+
+
+def holder_expired(holder: Mapping[str, Any], now: datetime) -> bool:
+    expires = _instant(holder.get("expires_at"))
+    return expires is None or expires <= now
+
+
+def _grant(entry: Mapping[str, Any], *, generation: int, now: datetime, how: str,
+           attempt_id: str | None = None, updates: int | None = None) -> dict[str, Any]:
+    return {
+        "task_id": entry["task_id"],
+        "attempt_id": attempt_id,
+        "submitted_at": entry["submitted_at"],
+        "generation": generation,
+        "granted_at": now,
+        "granted_by": how,
+        "renewed_at": now,
+        "expires_at": now + timedelta(seconds=MERGE_SLOT_LEASE_SECONDS),
+        "updates_at_acquire": updates,
+    }
+
+
+def _live_waiters(doc: Mapping[str, Any], *, now: datetime, ended: set[str],
+                  drop: str | None = None) -> list[dict[str, Any]]:
+    stale = now - timedelta(seconds=MERGE_SLOT_WAITER_STALE_SECONDS)
+    kept = []
+    for entry in _waiters(doc):
+        if entry["task_id"] == drop or entry["task_id"] in ended:
+            continue
+        seen = _instant(entry.get("seen_at"))
+        if seen is not None and seen < stale:
+            continue
+        kept.append(entry)
+    return sorted(kept, key=_order)
+
+
+def _renewed(out: dict[str, Any], holder: Mapping[str, Any], me: Claimant, *, now: datetime,
+             updates: int | None) -> dict[str, Any]:
+    renewed = dict(holder)
+    renewed["attempt_id"] = me.attempt_id
+    renewed["renewed_at"] = now
+    renewed["expires_at"] = now + timedelta(seconds=MERGE_SLOT_LEASE_SECONDS)
+    if not isinstance(renewed.get("updates_at_acquire"), int) and updates is not None:
+        renewed["updates_at_acquire"] = updates
+    out["holder"] = renewed
+    out["updated_at"] = now
+    return out
+
+
+def _held(holder: Mapping[str, Any]) -> dict[str, int]:
+    return {"generation": _count(holder.get("generation")),
+            "updates_at_acquire": _count(holder.get("updates_at_acquire"))}
+
+
+def slot_acquire(doc: Mapping[str, Any] | None, me: Claimant, *, tenant_id: str,
+                 repository: str, base: str, now: datetime, updates: int,
+                 ended: set[str]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """`mergeslot.acquire`: `(document, {"held": ...} or {"waiting": ...})`."""
+    out = dict(doc or {})
+    out.update(tenant_id=tenant_id, repository=repository, base=base)
+    out["generation"] = _count(out.get("generation"))
+    holder = _holder(out)
+    if holder is not None and holder["task_id"] == me.task_id:
+        out = _renewed(out, holder, me, now=now, updates=updates)
+        out["waiters"] = _live_waiters(out, now=now, ended=ended, drop=me.task_id)
+        return out, {"held": _held(out["holder"])}
+    waiters = _live_waiters(out, now=now, ended=ended, drop=me.task_id)
+    mine = {"task_id": me.task_id, "submitted_at": me.submitted_at, "seen_at": now}
+    previous = next((w for w in _waiters(out) if w["task_id"] == me.task_id), None)
+    mine["queued_at"] = _instant((previous or {}).get("queued_at")) or now
+    free = holder is None or holder_expired(holder, now) or holder["task_id"] in ended
+    if not free:
+        assert holder is not None
+        queue = sorted([*waiters, mine], key=_order)[:MERGE_SLOT_MAX_WAITERS]
+        out["waiters"] = queue
+        position = next((i for i, w in enumerate(queue, 1) if w["task_id"] == me.task_id),
+                        len(queue) + 1)
+        return out, {"waiting": {"holder": holder["task_id"], "position": position,
+                                 "waiters": len(queue), "wake": None}}
+    if holder is not None:
+        out["last_release"] = {"task_id": holder["task_id"], "generation": holder.get("generation"),
+                               "reason": "ended" if holder["task_id"] in ended else "expired",
+                               "at": now, "by": me.task_id}
+    queue = sorted([*waiters, mine], key=_order)
+    first = queue[0]
+    out["generation"] += 1
+    if first["task_id"] == me.task_id:
+        out["holder"] = _grant(mine, generation=out["generation"], now=now, how="acquire",
+                               attempt_id=me.attempt_id, updates=updates)
+        out["waiters"] = queue[1:MERGE_SLOT_MAX_WAITERS + 1]
+        out["updated_at"] = now
+        return out, {"held": {"generation": out["generation"], "updates_at_acquire": updates}}
+    out["holder"] = _grant(first, generation=out["generation"], now=now, how="handoff")
+    rest = queue[1:MERGE_SLOT_MAX_WAITERS + 1]
+    out["waiters"] = rest
+    out["updated_at"] = now
+    position = next((i for i, w in enumerate(rest, 1) if w["task_id"] == me.task_id), len(rest))
+    return out, {"waiting": {"holder": first["task_id"], "position": position,
+                             "waiters": len(rest), "wake": first["task_id"]}}
+
+
+def slot_renew(doc: Mapping[str, Any] | None, me: Claimant, *, now: datetime,
+               updates: int | None) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """`mergeslot.renew`: extend the slot's lease if this step holds it."""
+    if doc is None:
+        return None, None
+    holder = _holder(doc)
+    if holder is None or holder["task_id"] != me.task_id:
+        return None, None
+    out = _renewed(dict(doc), holder, me, now=now, updates=updates)
+    return out, _held(out["holder"])
+
+
+def slot_release(doc: Mapping[str, Any] | None, me: Claimant, *, now: datetime, reason: str,
+                 ended: set[str], generation: int | None = None
+                 ) -> tuple[dict[str, Any] | None, str | None]:
+    """`mergeslot.release`: give the slot up and leave the queue; who it went to."""
+    if doc is None:
+        return None, None
+    out = dict(doc)
+    holder = _holder(out)
+    listed = any(w["task_id"] == me.task_id for w in _waiters(out))
+    mine = holder is not None and holder["task_id"] == me.task_id and (
+        generation is None or _count(holder.get("generation")) == generation)
+    if not mine and not listed:
+        return None, None
+    waiters = _live_waiters(out, now=now, ended=ended, drop=me.task_id)
+    out["waiters"] = waiters
+    out["updated_at"] = now
+    if not mine:
+        return out, None
+    assert holder is not None
+    out["last_release"] = {"task_id": me.task_id, "generation": holder.get("generation"),
+                           "reason": reason, "at": now, "by": me.task_id}
+    if not waiters:
+        out["holder"] = None
+        return out, None
+    out["generation"] = _count(out.get("generation")) + 1
+    first = waiters[0]
+    out["holder"] = _grant(first, generation=out["generation"], now=now, how="handoff")
+    out["waiters"] = waiters[1:]
+    out["last_release"]["handed_to"] = first["task_id"]
+    return out, first["task_id"]
+
+
+def register_entry(existing: Mapping[str, Any] | None, *, fields: Mapping[str, Any],
+                   now: Any) -> tuple[dict[str, Any] | None, Mapping[str, Any]]:
+    """`mergetrain.register_entry`: queue the step's entry, or keep it."""
+    if existing is not None and existing.get("tenant_id") != fields.get("tenant_id"):
+        raise StateConflict("the merge train entry under this step's id is another tenant's")
+    if existing is None:
+        new = {**fields, "state": "queued", "returns": 0, "enqueued_at": now, "updated_at": now}
+        return new, new
+    same_head = existing.get("head") == fields.get("head")
+    if same_head and existing.get("state") in ("queued", "riding", "landed", "ejected"):
+        return None, existing
+    new = {**fields, "state": "queued", "returns": int(existing.get("returns") or 0),
+           "enqueued_at": existing.get("enqueued_at", now), "updated_at": now}
+    return new, new
+
+
+# --------------------------------------------------------------------------
+# The service
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Call:
+    """One authenticated, proven call: its tuple and its parsed body."""
+
+    attempt: AttemptTuple
+    body: Any
+
+
+class AttemptState:
+    """The state routes' logic. Built per request from the app context."""
+
+    def __init__(
+        self,
+        *,
+        settings: Any,
+        db: Any,
+        verifier: Any,
+        now: Callable[[], datetime] = utcnow,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._settings = settings
+        self._db = db
+        self._now = now
+        self._clock = clock
+        # The child service holds the worker-token check, the registrations and
+        # the nonce; this module adds the STATE purpose to each. No rate
+        # limiter: a refused heartbeat costs a running attempt its lease, and
+        # every call past the token still needs the attempt key.
+        self.children = ChildService(
+            settings=settings, db=db, store=None, submissions=None, verifier=verifier,
+            limiter=None, now=now, clock=clock,
+        )
+        self._lease_extension = AdmissionConfig().lease_timeout_seconds
+
+    @classmethod
+    def from_context(cls, ctx: Any, *, verifier: Any) -> "AttemptState":
+        return cls(settings=ctx.settings, db=ctx.db, verifier=verifier, now=ctx.now)
+
+    # -- the three proofs (§4.1) -------------------------------------------
+
+    def _authenticate(self, authorization: str | None, tenant_id: str) -> None:
+        try:
+            self.children._require_configured()
+        except ChildUnavailable as exc:
+            raise StateUnavailable(exc.message) from None
+        try:
+            self.children.authenticate_worker(authorization, tenant_id)
+        except ChildUnauthenticated:
+            raise AttemptUnauthenticated(
+                "only this tenant's worker service account may call this route"
+            ) from None
+
+    def _prove(self, attempt: AttemptTuple, *, method: str, path: str, body: bytes,
+               proof: str | None, timestamp: str | None) -> None:
+        """Every failure is the same 403, so none is an oracle."""
+        unproven = AttemptUnproven("the attempt proof did not verify for this attempt")
+        if not proof or not timestamp or not re.fullmatch(r"\d{1,12}", timestamp):
+            raise unproven
+        skew = int(getattr(self._settings, "child_proof_skew_seconds", 120))
+        if abs(self._clock() - int(timestamp)) > skew:
+            raise unproven
+        registration = self.children._registration(attempt, PURPOSE_STATE)
+        if registration is None:
+            raise unproven
+        message = state_request_message(method, path, body, timestamp)
+        if not verify_proof(registration["public_key"], proof, message):
+            raise unproven
+
+    def call(self, model: type[_Tuple], attempt_id: str, raw: bytes, *,
+             authorization: str | None, proof: str | None, timestamp: str | None,
+             path: str, method: str = "POST") -> Call:
+        """Parse, authenticate, prove: what every route but `open` does first."""
+        body = parse_body(model, raw)
+        self._authenticate(authorization, body.tenant_id)
+        attempt = AttemptTuple(body.tenant_id, body.task_id, attempt_id, body.lease_id,
+                               body.generation)
+        self._prove(attempt, method=method, path=path, body=raw, proof=proof,
+                    timestamp=timestamp)
+        return Call(attempt, body)
+
+    def call_get(self, attempt_id: str, *, tenant_id: str, task_id: str, lease_id: str,
+                 generation: int, authorization: str | None, proof: str | None,
+                 timestamp: str | None, signed_path: str) -> AttemptTuple:
+        """A GET's proof covers the path WITH its query, so the tuple cannot be
+        swapped under a captured proof (as `children.list_children`)."""
+        self._authenticate(authorization, tenant_id)
+        attempt = AttemptTuple(tenant_id, task_id, attempt_id, lease_id, generation)
+        self._prove(attempt, method="GET", path=signed_path, body=b"", proof=proof,
+                    timestamp=timestamp)
+        return attempt
+
+    # -- Firestore ------------------------------------------------------------
+
+    def _ref(self, collection: str, doc_id: str) -> Any:
+        return self._db.collection(collection).document(doc_id)
+
+    def _task_ref(self, attempt: AttemptTuple) -> Any:
+        return self._ref(TASKS, attempt.task_id)
+
+    def _event_ref(self, attempt: AttemptTuple, event_id: str) -> Any:
+        return self._task_ref(attempt).collection(EVENTS).document(event_id)
+
+    def _run(self, body: Callable[[Any], Any]) -> Any:
+        """`body` in one transaction. A Firestore fault is a retryable 503."""
+        try:
+            return firestore.transactional(body)(self._db.transaction())
+        except ApiError:
+            raise
+        except (gexc.GoogleAPIError, ValueError) as exc:
+            # ValueError: `firestore.transactional` gives up on contention so.
+            raise StateUnavailable(
+                f"the state store did not answer ({type(exc).__name__}); retry"
+            ) from None
+
+    def _read(self, ref: Any) -> dict[str, Any] | None:
+        try:
+            snap = ref.get()
+        except gexc.GoogleAPIError as exc:
+            raise StateUnavailable(
+                f"the state store did not answer ({type(exc).__name__}); retry"
+            ) from None
+        return (snap.to_dict() or {}) if snap.exists else None
+
+    def _fenced(self, txn: Any, attempt: AttemptTuple) -> dict[str, Any]:
+        """Read the task and the lease THROUGH `txn`; 409 unless this attempt
+        still owns its task. Every read the caller makes after this is still
+        before its first write (Firestore forbids a read after one)."""
+        task_snap = _snapshot(txn.get(self._task_ref(attempt)))
+        task = (task_snap.to_dict() or {}) if task_snap.exists else None
+        lease_snap = _snapshot(txn.get(self._ref(LEASES, attempt.lease_id)))
+        lease = (lease_snap.to_dict() or {}) if lease_snap.exists else None
+        reason = fence_reason(task, lease, attempt)
+        if reason is not None:
+            raise AttemptFenced(f"this attempt no longer owns its task: {reason}")
+        assert task is not None
+        return task
+
+    def _seen(self, txn: Any, attempt: AttemptTuple, event_id: str) -> dict[str, Any] | None:
+        """A repeat of a requested write: the task as it now stands, or None."""
+        if not _snapshot(txn.get(self._event_ref(attempt, event_id))).exists:
+            return None
+        task_snap = _snapshot(txn.get(self._task_ref(attempt)))
+        task = (task_snap.to_dict() or {}) if task_snap.exists else {}
+        if task.get("tenant_id") != attempt.tenant_id:
+            raise AttemptFenced("this attempt no longer owns its task")
+        return task
+
+    def _event(self, attempt: AttemptTuple, kind: EventType, detail: Mapping[str, Any],
+               *, at: datetime, event_id: str | None = None) -> tuple[Any, dict[str, Any]]:
+        """`control._event_write`'s document, for this tuple."""
+        event_id = event_id or new_id("evt")
+        return self._event_ref(attempt, event_id), {
+            "event_id": event_id,
+            "task_id": attempt.task_id,
+            "tenant_id": attempt.tenant_id,
+            "type": kind.value,
+            "at": at,
+            "attempt_id": attempt.attempt_id,
+            "lease_id": attempt.lease_id,
+            "generation": attempt.generation,
+            "detail": dict(detail),
+        }
+
+    def _release(self, txn: Any, attempt: AttemptTuple, reason: str, *, now: datetime,
+                 events: list[tuple[Any, dict[str, Any]]]) -> bool:
+        """THIS TUPLE'S lease, through the one release function (invariant 2).
+
+        It reads the lease and its pools and then writes them, so a caller
+        calls it after every read of its own and before any write.
+        """
+        released = release_lease_in_transaction(
+            txn, db=self._db, lease_id=attempt.lease_id, reason=reason, now=now
+        )
+        if released:
+            events.append(self._event(attempt, EventType.LEASE_RELEASED, {"reason": reason},
+                                      at=now))
+        return released
+
+    @staticmethod
+    def _answer(task: Mapping[str, Any] | None, **extra: Any) -> dict[str, Any]:
+        return {"ok": True, "task": fence_view(task), **extra}
+
+    # -- the task's read-side views (contract request 132) -------------------
+
+    def _totals(self, attempt: AttemptTuple, own: Mapping[str, Any]) -> dict[str, Any] | None:
+        """`Task.attempt_totals` with `own` -- what this write puts on its own
+        attempt document -- counted, or None when the attempts cannot be read.
+
+        A READ-SIDE VIEW ONLY: the read is outside the transaction (only this
+        attempt's document changes under a live fence, and `own` carries that
+        change), and a failed read writes no copy rather than failing the end:
+        `GET /v1/tasks` then derives the row as it always has."""
+        try:
+            docs = task_attempt_docs(self._db, attempt.tenant_id, attempt.task_id)
+        except Exception as exc:  # a view never fails the write it rides on
+            log.warning("attempt totals not stored: %s", type(exc).__name__)
+            return None
+        return stored_totals(docs, attempt_id=attempt.attempt_id,
+                             generation=attempt.generation, own=own)
+
+    def _current_task(self, txn: Any, attempt: AttemptTuple) -> dict[str, Any] | None:
+        """The task through `txn` when this attempt is still its current one,
+        else None: an unfenced write (an end, a spend) stores no view for a
+        task a newer attempt now owns."""
+        snap = _snapshot(txn.get(self._task_ref(attempt)))
+        task = (snap.to_dict() or {}) if snap.exists else None
+        if (task is None or task.get("tenant_id") != attempt.tenant_id
+                or task.get("current_generation") != attempt.generation):
+            return None
+        return task
+
+    # -- state/open (§4.3) -------------------------------------------------
+
+    def open(self, attempt_id: str, raw: bytes, *, authorization: str | None) -> dict[str, Any]:
+        """The worker's FIRST call: spend the nonce on a v2 key, then hand back
+        what `validate_generation`, `fetch_task`, `fetch_lease`,
+        `fetch_attempt` and `parked_uploads` read today."""
+        body: OpenBody = parse_body(OpenBody, raw)
+        self._authenticate(authorization, body.tenant_id)
+        attempt = AttemptTuple(body.tenant_id, body.task_id, attempt_id, body.lease_id,
+                               body.generation)
+        registered = self.children.register_state_key(
+            attempt, nonce=body.nonce, public_key=body.public_key, unprotected=body.unprotected
+        )
+        # `search_tool`, from the setting the `child-key` answer reads
+        # (children.py): a switched worker never calls that route, so without
+        # it here the tenant's agents silently lose the search tool. A
+        # state-only key is no child path, as the tombstone there is not.
+        registered = {**registered, "search_tool": not body.unprotected and bool(
+            getattr(self._settings, "search_tool_enabled", False))}
+        task = self._read(self._task_ref(attempt))
+        lease = self._read(self._ref(LEASES, attempt.lease_id))
+        reason = fence_reason(task, lease, attempt)
+        if reason is not None:
+            raise AttemptFenced(f"this attempt no longer owns its task: {reason}")
+        assert task is not None and lease is not None
+        own = self._own_attempt(attempt, attempt.attempt_id)
+        restore = (
+            self._own_attempt(attempt, body.restore_attempt_id)
+            if body.restore_attempt_id else None
+        )
+        return {
+            "ok": True,
+            "registration": registered,
+            "task": jsonable(task),
+            "fence": fence_view(task),
+            "lease": jsonable(lease),
+            "attempt": jsonable(own),
+            "restore_attempt": jsonable(restore),
+            "parked_uploads": self._parked_uploads(attempt),
+        }
+
+    def _own_attempt(self, attempt: AttemptTuple, attempt_id: str) -> dict[str, Any] | None:
+        """An attempt document of THIS task, or None. Another task's is never served."""
+        doc = self._read(self._ref(ATTEMPTS, attempt_id))
+        if doc is None or doc.get("tenant_id") != attempt.tenant_id:
+            return None
+        if doc.get("task_id") not in (None, attempt.task_id):
+            return None
+        return doc
+
+    def _parked_uploads(self, attempt: AttemptTuple) -> list[dict[str, Any]]:
+        """`ControlPlane.parked_uploads`, read by id under this task (archived issue 166)."""
+        carry = self._task_ref(attempt).collection(CARRY)
+        index = self._read(carry.document(CARRY_INDEX))
+        if index is None or index.get("tenant_id") != attempt.tenant_id:
+            return []
+        found: list[tuple[Any, str, list[Any]]] = []
+        seen: set[str] = set()
+        for item in index.get("attempts") if isinstance(index.get("attempts"), list) else []:
+            attempt_id = item.get("attempt_id") if isinstance(item, Mapping) else None
+            if (not isinstance(attempt_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}",
+                                                                    attempt_id)
+                    or attempt_id == attempt.attempt_id or attempt_id in seen):
+                continue
+            seen.add(attempt_id)
+            record = self._read(carry.document(attempt_id))
+            if (record is None or record.get("tenant_id") != attempt.tenant_id
+                    or record.get("task_id") != attempt.task_id
+                    or record.get("attempt_id") != attempt_id
+                    or not isinstance(record.get("artifacts"), list)):
+                continue
+            found.append((record.get("at"), attempt_id, record["artifacts"]))
+        # Oldest first; a record with no instant last, as the direct path orders them.
+        found.sort(key=lambda r: (0, r[0].timestamp()) if isinstance(r[0], datetime) else (1, 0.0))
+        return [{"attempt_id": a, "artifacts": jsonable(arts)} for _, a, arts in found]
+
+    # -- state/transition --------------------------------------------------
+
+    def transition(self, call: Call) -> dict[str, Any]:
+        body: TransitionBody = call.body
+        attempt = call.attempt
+        try:
+            to = TaskState(body.to)
+        except ValueError:
+            raise TransitionRefused("to must be a task state") from None
+        if to not in (TaskState.DISPATCHED, TaskState.STARTING, TaskState.RUNNING):
+            raise TransitionRefused(
+                "this route walks LEASED -> DISPATCHED -> STARTING -> RUNNING; a park, a "
+                "finish or a retry has its own route"
+            )
+        detail = _bounded(dict(body.detail), "detail")
+        event_id = request_event_id(attempt, "transition", body.request_id)
+        now = self._now()
+        kind = {TaskState.DISPATCHED: EventType.DISPATCHED, TaskState.STARTING: EventType.STARTING,
+                TaskState.RUNNING: EventType.RUNNING}[to]
+        event = self._event(attempt, kind, {**detail, "request_id": body.request_id}, at=now,
+                            event_id=event_id)
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            seen = self._seen(txn, attempt, event_id)
+            if seen is not None:
+                return self._answer(seen, repeat=True)
+            task = self._fenced(txn, attempt)
+            current = TaskState(task["state"])
+            if current is to:
+                return self._answer(task, repeat=True)
+            if not worker_may_transition(current, to):
+                raise TransitionRefused(
+                    f"a worker may not move a task from {current.value} to {to.value}"
+                )
+            payload: dict[str, Any] = {"state": to.value, "updated_at": now}
+            if to is TaskState.STARTING:
+                payload["started_at"] = now
+            workflow = self._workflow_write(txn, attempt, task, payload, now)
+            txn.set(*event)
+            txn.update(self._task_ref(attempt), payload)
+            if workflow is not None:
+                txn.update(*workflow)
+            return self._answer({**task, **payload})
+
+        return self._run(_apply)
+
+    def _workflow_write(self, txn: Any, attempt: AttemptTuple, task: Mapping[str, Any],
+                        payload: Mapping[str, Any], now: datetime) -> tuple[Any, dict[str, Any]] | None:
+        """The step's workflow's derived state, written in this transaction (archived issue 2838).
+
+        Reads only, so a caller calls it before its first write; the caller
+        applies the returned update beside the task's own."""
+        return derived_state_write(
+            txn, self._db, tenant_id=attempt.tenant_id, workflow_id=task.get("workflow_id"),
+            now=now, changed={attempt.task_id: {**task, **payload}},
+        )
+
+    # -- the attempt document ----------------------------------------------
+
+    def _attempt_doc_ok(self, txn: Any, attempt: AttemptTuple) -> dict[str, Any] | None:
+        """This attempt's own document as `txn` reads it; 409 if it names
+        another tuple. Not fenced on the task: a superseded attempt still
+        records its own end and usage, as the direct path does
+        (`record_cpu_usage`'s docstring), and its lease being released is the
+        normal state after a park or a finish."""
+        snap = _snapshot(txn.get(self._ref(ATTEMPTS, attempt.attempt_id)))
+        doc = (snap.to_dict() or {}) if snap.exists else None
+        if doc is None:
+            lease = _snapshot(txn.get(self._ref(LEASES, attempt.lease_id)))
+            if not lease.exists or not _lease_is_this_tuples(lease.to_dict() or {}, attempt):
+                raise AttemptFenced("this attempt's lease is not this tuple's")
+            return None
+        if (doc.get("tenant_id") != attempt.tenant_id
+                or doc.get("task_id") not in (None, attempt.task_id)
+                or doc.get("generation") not in (None, attempt.generation)):
+            raise AttemptFenced("this attempt's document names another attempt")
+        return doc
+
+    def attempt_start(self, call: Call) -> dict[str, Any]:
+        body: AttemptStartBody = call.body
+        attempt = call.attempt
+        now = self._now()
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            task = self._fenced(txn, attempt)
+            record = {
+                "attempt_id": attempt.attempt_id,
+                "task_id": attempt.task_id,
+                "tenant_id": attempt.tenant_id,
+                "generation": attempt.generation,
+                "lease_id": attempt.lease_id,
+                "backend": body.backend,
+                "created_at": now,
+                "execution_name": body.execution_name,
+                "started_at": now,
+                "completed_at": None,
+                "exit_code": None,
+                "error": None,
+                "peak_rss_bytes": None,
+                "peak_disk_bytes": None,
+                "oom_near_miss": False,
+                "checkpoints": [],
+            }
+            # Contract request 132: the running attempt counted, so a running
+            # row is served from the task document too.
+            totals = self._totals(attempt, record)
+            txn.set(self._ref(ATTEMPTS, attempt.attempt_id), record)
+            if totals is not None:
+                txn.update(self._task_ref(attempt), {"attempt_totals": totals})
+            return self._answer(task)
+
+        return self._run(_apply)
+
+    def checkpoint(self, call: Call) -> dict[str, Any]:
+        """`record_checkpoint`: the attempt's record and the task's pointer, in
+        ONE fenced transaction. Stricter than the direct path, which merges
+        the record before its fenced pointer write: a stale attempt here
+        records nothing, since a record no pointer names restores nothing."""
+        body: CheckpointBody = call.body
+        attempt = call.attempt
+        if not _DIGEST.fullmatch(body.archive_sha256):
+            raise ValidationFailed("archive_sha256 must be a SHA-256 hex digest (#346)")
+        if body.uri.startswith("gs://"):
+            # Anchored at the object path, `gs://<bucket>/tenants/<t>/tasks/<task>/`
+            # (`checkpoint.py`'s layout). The bucket is not pinned -- swarm-api
+            # is not told it -- and restore reads with the tenant's own account,
+            # whose bucket grant is prefix-conditioned.
+            prefix = re.escape(f"/tenants/{attempt.tenant_id}/tasks/{attempt.task_id}/")
+            if not re.match(rf"^gs://[a-z0-9][a-z0-9._-]{{1,221}}[a-z0-9]{prefix}", body.uri):
+                raise ValidationFailed("uri must be under this task's own prefix")
+        elif not body.uri.startswith("file:///"):
+            raise ValidationFailed("uri must be a gs:// or file:/// URI")
+        now = self._now()
+        event = self._event(attempt, EventType.CHECKPOINT_COMPLETED, {
+            "checkpoint_id": body.checkpoint_id, "uri": body.uri,
+            "size_bytes": body.size_bytes, "seq": body.seq}, at=now)
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            task = self._fenced(txn, attempt)
+            doc = self._attempt_doc_ok(txn, attempt) or {}
+            existing = [c for c in doc.get("checkpoints") or [] if isinstance(c, str)]
+            if body.checkpoint_id not in existing:
+                existing.append(body.checkpoint_id)
+            stored = doc.get("checkpoint_sha256")
+            digests = {k: v for k, v in (stored.items() if isinstance(stored, Mapping) else ())
+                       if isinstance(k, str) and isinstance(v, str)}
+            digests[body.checkpoint_id] = body.archive_sha256
+            txn.set(self._ref(ATTEMPTS, attempt.attempt_id), {
+                "checkpoints": existing,
+                "checkpoint_sha256": digests,
+                "tenant_id": attempt.tenant_id,
+                "task_id": attempt.task_id,
+                "attempt_id": attempt.attempt_id,
+            }, merge=True)
+            txn.update(self._task_ref(attempt), {"latest_checkpoint": body.uri, "updated_at": now})
+            txn.set(*event)
+            return self._answer(task)
+
+        return self._run(_apply)
+
+    def usage(self, call: Call) -> dict[str, Any]:
+        """`record_resource_usage`, `record_cpu_usage`, `record_spend` and the
+        credential `record_spend` sends after it (request 152): named
+        fields only, typed as the frozen `Attempt` types them. `cost_usd` is
+        the runner's figure, as the direct path stores it: swarm-api holds no
+        price table to recompute it from (§4.2 asked for one "where a price
+        is known"; none is)."""
+        body: UsageBody = call.body
+        attempt = call.attempt
+        allowed = USAGE_FIELDS[body.kind]
+        unknown = sorted(set(body.fields) - set(allowed))
+        if unknown:
+            raise ValidationFailed(f"{body.kind} usage takes only {', '.join(allowed)}")
+        doc: dict[str, Any] = {}
+        if body.kind == "credential":
+            doc = _credential_doc(body.fields)
+        else:
+            for key, value in body.fields.items():
+                if key == "oom_near_miss":
+                    if not isinstance(value, bool):
+                        raise ValidationFailed("oom_near_miss must be a boolean")
+                    doc[key] = value
+                elif key == "cpu_limit_source":
+                    if value not in CPU_LIMIT_SOURCES:
+                        raise ValidationFailed("cpu_limit_source must be cgroup or resource_class")
+                    doc[key] = value
+                elif key in ("cost_usd", "cpu_seconds", "peak_cpu_cores", "mean_cpu_cores",
+                             "cpu_limit_cores"):
+                    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+                        raise ValidationFailed(f"{key} must be a non-negative number")
+                    doc[key] = float(value)
+                else:
+                    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                        raise ValidationFailed(f"{key} must be a non-negative integer")
+                    doc[key] = value
+        if body.kind == "cpu":
+            if "cpu_limit_source" in doc and "cpu_limit_cores" not in doc:
+                raise ValidationFailed("cpu_limit_source is written only beside cpu_limit_cores")
+            if not any(k not in ("cpu_limit_cores", "cpu_limit_source") for k in doc):
+                raise ValidationFailed("cpu usage needs a measured figure, not a limit alone")
+            doc["cpu_measured_at"] = self._now()
+        if not doc:
+            raise ValidationFailed("fields is empty")
+        doc["tenant_id"] = attempt.tenant_id
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            self._attempt_doc_ok(txn, attempt)
+            # Contract request 132: spend lands after the end's commit (the
+            # worker's teardown), so the stored totals follow it.
+            task = self._current_task(txn, attempt) if body.kind == "spend" else None
+            totals = self._totals(attempt, doc) if task is not None else None
+            txn.set(self._ref(ATTEMPTS, attempt.attempt_id), doc, merge=True)
+            if totals is not None:
+                txn.update(self._task_ref(attempt), {"attempt_totals": totals})
+            return {"ok": True}
+
+        return self._run(_apply)
+
+    def attempt_end(self, call: Call) -> dict[str, Any]:
+        body: AttemptEndBody = call.body
+        attempt = call.attempt
+        now = self._now()
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            self._attempt_doc_ok(txn, attempt)
+            end = {"completed_at": now, "exit_code": body.exit_code, "error": body.error,
+                   "tenant_id": attempt.tenant_id}
+            # Contract request 132: the end counted in the task's totals.
+            task = self._current_task(txn, attempt)
+            totals = self._totals(attempt, end) if task is not None else None
+            txn.set(self._ref(ATTEMPTS, attempt.attempt_id), end, merge=True)
+            if totals is not None:
+                txn.update(self._task_ref(attempt), {"attempt_totals": totals})
+            return {"ok": True}
+
+        return self._run(_apply)
+
+    # -- the lease -----------------------------------------------------------
+
+    def heartbeat(self, call: Call) -> dict[str, Any]:
+        """`ControlPlane.heartbeat`: extend THIS tuple's lease, by the lease
+        timeout, only while this attempt owns its task; 409, nothing written,
+        otherwise. Stricter than the direct beat, which checks the lease alone:
+        a lease the reconciler has not yet released under a task that moved
+        to a newer generation is not extended here (invariant 5)."""
+        attempt = call.attempt
+        now = self._now()
+        payload = {"heartbeat_at": now,
+                   "expires_at": now + timedelta(seconds=self._lease_extension)}
+        lease_ref = self._ref(LEASES, attempt.lease_id)
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            task = self._fenced(txn, attempt)
+            txn.update(lease_ref, payload)
+            return self._answer(task, expires_at=payload["expires_at"].isoformat())
+
+        return self._run(_apply)
+
+    def release(self, call: Call) -> dict[str, Any]:
+        """`ControlPlane.release_lease`: THIS tuple's lease and the pools IT
+        names. The body can name no pool and no other lease (the strict model,
+        and the proof binds the tuple). Not fenced on the task, as the direct
+        path is not: a release is how an attempt gives back what it holds."""
+        body: ReleaseBody = call.body
+        attempt = call.attempt
+        if not _REASON.fullmatch(body.reason):
+            raise ValidationFailed("reason must be a short release reason")
+        now = self._now()
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            snap = _snapshot(txn.get(self._ref(LEASES, attempt.lease_id)))
+            if not snap.exists or not _lease_is_this_tuples(snap.to_dict() or {}, attempt):
+                raise AttemptFenced("the lease is not this attempt's")
+            events: list[tuple[Any, dict[str, Any]]] = []
+            released = self._release(txn, attempt, body.reason, now=now, events=events)
+            for event in events:
+                txn.set(*event)
+            return {"ok": True, "released": released}
+
+        return self._run(_apply)
+
+    # -- parks, finishes, retries --------------------------------------------
+
+    def park(self, call: Call) -> dict[str, Any]:
+        """Every park the worker makes, in ONE fenced transaction (§4.2):
+        PARKED (or READY, a person's return), the refund where the reason
+        refunds, the carry, the attempt's end, the events and the lease
+        release through the one release function. An injected failure
+        anywhere leaves none of it.
+
+        The refund rule is the reason's, with the server's bound (§4.4):
+        CHILDREN_INCOMPLETE is `park_awaiting_children`, CI_PENDING is
+        `park_ci_pending` (which needs `ci`), HUMAN_REQUIRED is `handoff`'s
+        human park, and DEPENDENCY_INCOMPLETE whose detail carries a
+        `release_wait` block is `park_release_wait` (AU7-REFUND),
+        PROVIDER_QUOTA_EXHAUSTED is `ControlPlane.park`'s quota refund
+        (archived issue 2350); any other reason is `ControlPlane.park`, no refund.
+        """
+        body: ParkBody = call.body
+        attempt = call.attempt
+        try:
+            reason = ParkReason(body.reason)
+        except ValueError:
+            raise ValidationFailed("reason must be a ParkReason value") from None
+        if (reason is ParkReason.CI_PENDING) != (body.ci is not None):
+            raise ValidationFailed("ci is sent with a CI_PENDING park, and only with one")
+        detail = _bounded(dict(body.detail), "detail")
+        uploads = _bounded(list(body.uploads), "uploads") if body.uploads else None
+        announced = [self._event(attempt, _event_type(e.type), _bounded(dict(e.detail), "detail"),
+                                 at=self._now()) for e in body.announce]
+        event_id = request_event_id(attempt, "park", body.request_id)
+        now = self._now()
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            seen = self._seen(txn, attempt, event_id)
+            if seen is not None:
+                return self._answer(seen, repeat=True)
+            task = self._fenced(txn, attempt)
+            current = TaskState(task["state"])
+            if not worker_may_transition(current, TaskState.PARKED):
+                raise TransitionRefused(f"a worker may not park a task that is {current.value}")
+            index_ref = self._task_ref(attempt).collection(CARRY).document(CARRY_INDEX)
+            index = None
+            if uploads:
+                isnap = _snapshot(txn.get(index_ref))
+                index = (isnap.to_dict() or {}) if isnap.exists else None
+                if index is not None and index.get("tenant_id") != attempt.tenant_id:
+                    raise StateConflict("the task's carry index is another tenant's")
+            payload, event_kind, event_detail, release_reason = self._park_payload(
+                task, reason, body, detail, attempt, now)
+            # Contract request 132: the end counted, in the end's own commit.
+            error = park_attempt_error(reason, event_detail)
+            totals = self._totals(attempt, {"completed_at": now, "exit_code": 75,
+                                            "error": error})
+            if totals is not None:
+                payload["attempt_totals"] = totals
+            if event_kind is EventType.READY and not worker_may_transition(current,
+                                                                           TaskState.READY):
+                raise TransitionRefused(f"a worker may not requeue a task that is {current.value}")
+            workflow = self._workflow_write(txn, attempt, task, payload, now)
+            # Every read above; the release reads the lease and its pools, then writes.
+            events: list[tuple[Any, dict[str, Any]]] = list(announced)
+            events.append(self._event(attempt, event_kind, event_detail, at=now,
+                                      event_id=event_id))
+            self._release(txn, attempt, release_reason, now=now, events=events)
+            txn.update(self._task_ref(attempt), payload)
+            if workflow is not None:
+                txn.update(*workflow)
+            if uploads:
+                self._record_carry(txn, attempt, index_ref, index, uploads, now)
+            txn.set(self._ref(ATTEMPTS, attempt.attempt_id), {
+                "completed_at": now, "exit_code": 75, "error": error,
+                "tenant_id": attempt.tenant_id}, merge=True)
+            for event in events:
+                txn.set(*event)
+            return self._answer({**task, **payload},
+                                refunded=event_detail.get("attempt_refunded", False))
+
+        return self._run(_apply)
+
+    @staticmethod
+    def _park_payload(task: Mapping[str, Any], reason: ParkReason, body: ParkBody,
+                      detail: dict[str, Any], attempt: AttemptTuple, now: datetime
+                      ) -> tuple[dict[str, Any], EventType, dict[str, Any], str]:
+        metadata = dict(task.get("metadata") or {})
+        attempt_count = _count(task.get("attempt_count"))
+        payload: dict[str, Any] = {
+            "state": TaskState.PARKED.value,
+            "park_reason": reason.value,
+            "current_lease_id": None,
+            "blocked_by": [{"reason": reason.value, **detail}],
+            "updated_at": now,
+        }
+        extra: dict[str, Any] = {}
+        refund = False
+        release_wait = (reason is ParkReason.DEPENDENCY_INCOMPLETE
+                        and isinstance(detail.get(RELEASE_WAIT), Mapping))
+        time_limit = (reason is ParkReason.SCHEDULED_RETRY
+                      and isinstance(detail.get(TIME_LIMIT), Mapping))
+        if reason is ParkReason.CHILDREN_INCOMPLETE:
+            used = _count(metadata.get(CHILD_AWAIT_RESUMES))
+            refund = used < CHILD_AWAIT_MAX_RESUMES and attempt_count > 0
+            payload["next_eligible_at"] = now
+            if refund:
+                metadata[CHILD_AWAIT_RESUMES] = used + 1
+                payload["metadata"] = metadata
+            extra = {CHILD_AWAIT_RESUMES: used + (1 if refund else 0)}
+        elif reason is ParkReason.HUMAN_REQUIRED:
+            used = _count(metadata.get(HUMAN_WAIT_RESUMES))
+            refund = used < HUMAN_MAX_RESUMES and attempt_count > 0
+            payload["next_eligible_at"] = now
+            if refund:
+                metadata[HUMAN_WAIT_RESUMES] = used + 1
+                payload["metadata"] = metadata
+            extra = {HUMAN_WAIT_RESUMES: used + (1 if refund else 0)}
+        elif release_wait:
+            # An agent's release wait (AU7-REFUND): refunded within the
+            # server's bound. Its instant is the park's, as the direct path
+            # writes it; only the merge-wake tick ends the wait.
+            used = _count(metadata.get(RELEASE_WAIT_RESUMES))
+            refund = used < RELEASE_WAIT_MAX_RESUMES and attempt_count > 0
+            payload["next_eligible_at"] = now
+            if refund:
+                metadata[RELEASE_WAIT_RESUMES] = used + 1
+                payload["metadata"] = metadata
+            extra = {RELEASE_WAIT_RESUMES: used + (1 if refund else 0)}
+        elif reason is ParkReason.CI_PENDING:
+            ci = body.ci
+            assert ci is not None
+            counter = ("slot_waits" if ci.code == MERGE_SLOT_WAIT
+                       else "train_waits" if ci.code == TRAIN_WAITING else "wakes")
+            bound = {"slot_waits": SLOT_MAX_WAITS, "train_waits": TRAIN_MAX_WAITS,
+                     "wakes": CI_MAX_WAKES}[counter]
+            ci_clock = counter == "wakes"
+            last = _mapping(metadata.get(MERGE_WAIT))
+            counts = {name: _count(last.get(name)) for name in ("wakes", "slot_waits",
+                                                                "train_waits")}
+            refund = counts[counter] < bound and attempt_count > 0
+            if refund:
+                counts[counter] += 1
+            # The CI clock, as the direct path keeps it
+            # (`control.ControlPlane.park_ci_pending`, archived issue 3033): started by the
+            # first CI park of a wait, carried at the same head, restarted
+            # only once the head moved; a slot or train wait PAUSES it
+            # (`ci_paused_at`) rather than clearing it, so neither a queue
+            # reads as `checks_timeout` nor a queue between two CI parks
+            # restarts the 6 h.
+            first = last.get("first_parked_at")
+            paused = last.get("ci_paused_at")
+            if not isinstance(first, datetime) or (last.get("head") or ci.head) != ci.head:
+                first, paused = None, None
+            if not isinstance(paused, datetime):
+                paused = None
+            if not ci_clock:
+                paused = (paused or now) if first is not None else None
+            elif first is None:
+                first = now
+            elif paused is not None:
+                first, paused = first + max(now - paused, timedelta(0)), None
+            # The train's start, as the direct path keeps it (part of archived issue 2688):
+            # set by the first train park of an unbroken run, carried by the
+            # next ones, cleared by any other park. `waiting_detail` serves it
+            # as `train_since`, the start `/sc check` ages a train wait from.
+            train = None
+            if counter == "train_waits":
+                train = last.get("train_entered_at") if last.get("code") == TRAIN_WAITING else None
+                train = train if isinstance(train, datetime) else now
+            names = [str(n)[:256] for n in ci.pending]
+            metadata[MERGE_WAIT] = {
+                "code": ci.code, "head": ci.head, "pull_request": ci.pull_request,
+                "pending": names, **counts, "updates": _count(last.get("updates")),
+                "first_parked_at": first, "ci_paused_at": paused,
+                "train_entered_at": train, "parked_at": now,
+                **ci_wait_span(metadata, last, ci.head, body.detail.get("failed"), now),
+            }
+            payload["metadata"] = metadata
+            payload["next_eligible_at"] = now + timedelta(seconds=CI_FALLBACK_SECONDS)
+            payload["blocked_by"] = [{"reason": reason.value, "code": ci.code, "head": ci.head,
+                                      "pending": names}]
+            extra = {"wakes": counts[counter], "code": ci.code, "head": ci.head,
+                     "pending": names}
+        else:
+            if body.next_eligible_at is None:
+                raise ValidationFailed(f"a {reason.value} park needs next_eligible_at")
+            payload["next_eligible_at"] = body.next_eligible_at
+            if reason is ParkReason.PROVIDER_QUOTA_EXHAUSTED:
+                # archived issue 2350: refunded within the server's bound; past it the
+                # park spends an attempt, as every quota park did before.
+                used = _count(metadata.get(QUOTA_PARK_RESUMES))
+                refund = used < QUOTA_MAX_RESUMES and attempt_count > 0
+                if refund:
+                    metadata[QUOTA_PARK_RESUMES] = used + 1
+                    payload["metadata"] = metadata
+                extra = {QUOTA_PARK_RESUMES: used + (1 if refund else 0)}
+            elif time_limit:
+                # A continuation at the time limit: counted on every park,
+                # refunded within the server's bound.
+                used = _count(metadata.get(TIME_LIMIT_CONTINUATIONS))
+                refund = used < TIME_LIMIT_MAX_CONTINUATIONS and attempt_count > 0
+                if refund:
+                    metadata[TIME_LIMIT_CONTINUATIONS] = used + 1
+                    payload["metadata"] = metadata
+                extra = {TIME_LIMIT_CONTINUATIONS: used + (1 if refund else 0),
+                         "max_continuations": TIME_LIMIT_MAX_CONTINUATIONS}
+        if refund:
+            payload["attempt_count"] = attempt_count - 1
+        kind = EventType.PARKED
+        event_detail: dict[str, Any] = {
+            "reason": reason.value, "next_eligible_at": payload["next_eligible_at"],
+            **({"attempt_refunded": refund} if release_wait or time_limit or reason in (
+                ParkReason.CHILDREN_INCOMPLETE, ParkReason.CI_PENDING,
+                ParkReason.HUMAN_REQUIRED, ParkReason.PROVIDER_QUOTA_EXHAUSTED) else {}),
+            **extra, **detail}
+        release_reason = f"parked:{reason.value}"
+        if reason is ParkReason.HUMAN_REQUIRED:
+            mark = metadata.get(HUMAN_RETURNED)
+            left = _count(task.get("max_attempts") or 1) - _count(
+                payload.get("attempt_count", attempt_count))
+            if (isinstance(mark, Mapping) and mark.get("attempt_id") == attempt.attempt_id
+                    and mark.get("generation") == attempt.generation and left > 0):
+                # LB-RETURN: a person returned control while this attempt parked.
+                by = str(mark.get("by") or "")
+                metadata.pop(HUMAN_RETURNED, None)
+                metadata[HUMAN_READY] = {"by": by, "at": now.isoformat()}
+                payload.update({"state": TaskState.READY.value, "park_reason": None,
+                                "next_eligible_at": None, "blocked_by": [],
+                                "metadata": metadata})
+                kind = EventType.READY
+                event_detail = {"reason": "human_returned", "park_reason": reason.value,
+                                "by": by, "attempt_refunded": refund, **extra, **detail}
+                release_reason = "requeued:human_returned"
+        return payload, kind, event_detail, release_reason
+
+    def _record_carry(self, txn: Any, attempt: AttemptTuple, index_ref: Any,
+                      index: Mapping[str, Any] | None, uploads: list[Any], now: datetime) -> None:
+        """`control._record_parked_uploads`: the manifest and the index, by id."""
+        carry = self._task_ref(attempt).collection(CARRY)
+        txn.set(carry.document(attempt.attempt_id), {
+            "tenant_id": attempt.tenant_id, "task_id": attempt.task_id,
+            "attempt_id": attempt.attempt_id, "at": now, "artifacts": list(uploads)})
+        listed = (index or {}).get("attempts")
+        attempts = [item for item in (listed if isinstance(listed, list) else [])
+                    if isinstance(item, Mapping) and item.get("attempt_id") != attempt.attempt_id]
+        attempts.append({"attempt_id": attempt.attempt_id, "at": now})
+        txn.set(index_ref, {"tenant_id": attempt.tenant_id, "task_id": attempt.task_id,
+                            "attempts": attempts, "updated_at": now})
+
+    def finish(self, call: Call) -> dict[str, Any]:
+        """`ControlPlane.finish`: the terminal state, the attempt's end, the
+        event and the release, in ONE fenced transaction."""
+        body: FinishBody = call.body
+        attempt = call.attempt
+        try:
+            to = TaskState(body.state)
+        except ValueError:
+            raise TransitionRefused("state must be a task state") from None
+        if to not in TERMINAL_STATES:
+            raise TransitionRefused(f"{to.value} is not terminal; finish ends the task")
+        cause = _end_cause(body.end_cause)
+        summary = (_bounded(dict(body.result_summary), "result_summary")
+                   if body.result_summary is not None else None)
+        event_id = request_event_id(attempt, "finish", body.request_id)
+        now = self._now()
+        kind = {TaskState.SUCCEEDED: EventType.SUCCEEDED, TaskState.FAILED: EventType.FAILED,
+                TaskState.CANCELLED: EventType.CANCELLED,
+                TaskState.DEAD_LETTERED: EventType.DEAD_LETTERED}[to]
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            seen = self._seen(txn, attempt, event_id)
+            if seen is not None:
+                return self._answer(seen, repeat=True)
+            task = self._fenced(txn, attempt)
+            current = TaskState(task["state"])
+            if not worker_may_transition(current, to):
+                raise TransitionRefused(
+                    f"a worker may not move a task from {current.value} to {to.value}"
+                )
+            payload: dict[str, Any] = {
+                "state": to.value, "updated_at": now, "completed_at": now,
+                "current_lease_id": None, "last_error": body.error,
+                "end_cause": cause.value if cause is not None else None,
+            }
+            if summary is not None:
+                payload["result_summary"] = summary
+            # Contract request 132: the end counted, in the end's own commit.
+            totals = self._totals(attempt, {"completed_at": now, "exit_code": body.exit_code,
+                                            "error": body.error})
+            if totals is not None:
+                payload["attempt_totals"] = totals
+            events = [self._event(attempt, kind, {"exit_code": body.exit_code,
+                                                  "error": body.error,
+                                                  "request_id": body.request_id},
+                                  at=now, event_id=event_id)]
+            workflow = self._workflow_write(txn, attempt, task, payload, now)
+            self._release(txn, attempt, f"terminal:{to.value}", now=now, events=events)
+            txn.update(self._task_ref(attempt), payload)
+            if workflow is not None:
+                txn.update(*workflow)
+            txn.set(self._ref(ATTEMPTS, attempt.attempt_id), {
+                "completed_at": now, "exit_code": body.exit_code, "error": body.error,
+                "tenant_id": attempt.tenant_id}, merge=True)
+            for event in events:
+                txn.set(*event)
+            return self._answer({**task, **payload})
+
+        return self._run(_apply)
+
+    def retry(self, call: Call) -> dict[str, Any]:
+        """`ControlPlane.fail_retryably`: CANCELLED on a requested cancel,
+        FAILED once retries are exhausted (`models.retries_exhausted`, the
+        scheduler's own predicate), READY otherwise -- decided from the
+        document, with `max_attempts` the stored (signed) value -- then the
+        attempt's end, the event and the release, in ONE fenced transaction."""
+        body: RetryBody = call.body
+        attempt = call.attempt
+        cause = _end_cause(body.end_cause)
+        if not _REASON.fullmatch(body.cause):
+            raise ValidationFailed("cause must be a short cause name")
+        summary = (_bounded(dict(body.result_summary), "result_summary")
+                   if body.result_summary is not None else None)
+        detail = _bounded(dict(body.detail), "detail")
+        event_id = request_event_id(attempt, "retry", body.request_id)
+        now = self._now()
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            seen = self._seen(txn, attempt, event_id)
+            if seen is not None:
+                return self._answer(seen, repeat=True)
+            task = self._fenced(txn, attempt)
+            return self._retry_writes(
+                txn, attempt, task, error=body.error, cause=body.cause, end_cause=cause,
+                exit_code=body.exit_code, summary=summary, detail=detail,
+                retry_delay_seconds=body.retry_delay_seconds, request_id=body.request_id,
+                event_id=event_id, now=now)
+
+        return self._run(_apply)
+
+    def _retry_writes(self, txn: Any, attempt: AttemptTuple, task: Mapping[str, Any], *,
+                      error: str, cause: str, end_cause: EndCause | None,
+                      exit_code: int | None, summary: dict[str, Any] | None,
+                      detail: Mapping[str, Any], retry_delay_seconds: int, request_id: str,
+                      event_id: str, now: datetime,
+                      extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """The retry transition's reads and writes for a FENCED `task`: the
+        one place READY, FAILED or CANCELLED is decided after an attempt. Its
+        reads come first, so a caller calls it after every read of its own and
+        writes nothing before it; `extra` rides on the task's own update."""
+        current = TaskState(task["state"])
+        attempt_count = _count(task.get("attempt_count"))
+        max_attempts = _count(task.get("max_attempts", 3))
+        if task.get("cancel_requested"):
+            target = TaskState.CANCELLED
+        elif retries_exhausted(attempt_count, max_attempts):
+            target = TaskState.FAILED
+        else:
+            target = TaskState.READY
+        if not worker_may_transition(current, target):
+            raise TransitionRefused(
+                f"a worker may not move a task from {current.value} to {target.value}"
+            )
+        payload: dict[str, Any] = {
+            "state": target.value, "updated_at": now, "current_lease_id": None,
+            "last_error": (f"cancelled on request; {error}"
+                           if target is TaskState.CANCELLED else error),
+        }
+        if summary is not None:
+            payload["result_summary"] = summary
+        if target is TaskState.READY:
+            payload["next_eligible_at"] = now + timedelta(seconds=retry_delay_seconds)
+            release_reason = f"retry:{cause}"
+        else:
+            payload["completed_at"] = now
+            payload["next_eligible_at"] = None
+            ended = cancel_end_cause(task) if target is TaskState.CANCELLED else end_cause
+            payload["end_cause"] = ended.value if ended is not None else None
+            release_reason = f"terminal:{target.value}"
+        payload.update(extra or {})
+        kind = {TaskState.READY: EventType.RETRYING, TaskState.FAILED: EventType.FAILED,
+                TaskState.CANCELLED: EventType.CANCELLED}[target]
+        # Contract request 132: the end counted, in the end's own commit.
+        totals = self._totals(attempt, {"completed_at": now, "exit_code": exit_code,
+                                        "error": error})
+        if totals is not None:
+            payload["attempt_totals"] = totals
+        events = [self._event(attempt, kind, {
+            "exit_code": exit_code, "error": error, "cause": cause,
+            **detail, "to_state": target.value, "attempt_count": attempt_count,
+            "max_attempts": max_attempts, "retries_exhausted": target is TaskState.FAILED,
+            "request_id": request_id}, at=now, event_id=event_id)]
+        workflow = self._workflow_write(txn, attempt, task, payload, now)
+        self._release(txn, attempt, release_reason, now=now, events=events)
+        txn.update(self._task_ref(attempt), payload)
+        if workflow is not None:
+            txn.update(*workflow)
+        txn.set(self._ref(ATTEMPTS, attempt.attempt_id), {
+            "completed_at": now, "exit_code": exit_code, "error": error,
+            "tenant_id": attempt.tenant_id}, merge=True)
+        for event in events:
+            txn.set(*event)
+        return self._answer({**task, **payload})
+
+    # -- JC2: the contract verdict (jev-contract.md sections 5.4 and 9) -----
+
+    def _published_head(self, attempt: AttemptTuple) -> str | None:
+        """The head THIS attempt reported publishing: the `head` of its latest
+        `published` mark (`lifecycle._emit_published`, a RUNNING event with
+        `detail.cause = "published"`, written through the proven `event`
+        route), or None when it published nothing. Read before the verdict's
+        transaction, outside it: an event is an append-only record of its own
+        tuple, so a read here can only miss a mark posted after it. A verdict
+        on a head published between this read and the transaction is therefore
+        refused (`ContractVerdictStale`, nothing written; the worker re-posts),
+        never accepted against a head this read did not see."""
+        query = self._task_ref(attempt).collection(EVENTS).where(
+            filter=FieldFilter("attempt_id", "==", attempt.attempt_id))
+        try:
+            rows = [snap.to_dict() or {} for snap in query.stream()]
+        except gexc.GoogleAPIError as exc:
+            raise StateUnavailable(
+                f"the state store did not answer ({type(exc).__name__}); retry") from None
+        marks = [r for r in rows
+                 if r.get("tenant_id") == attempt.tenant_id
+                 and r.get("generation") == attempt.generation
+                 and r.get("type") == EventType.RUNNING.value
+                 and _mapping(r.get("detail")).get("cause") == "published"
+                 and isinstance(r.get("at"), datetime)]
+        if not marks:
+            return None
+        head = _mapping(max(marks, key=lambda r: r["at"]).get("detail")).get("head")
+        return head if isinstance(head, str) and _SHA40.fullmatch(head) else None
+
+    def contract_verdict(self, call: Call) -> dict[str, Any]:
+        """JC2's verdict on this attempt's step, checked and written in ONE
+        fenced transaction (section 9), or refused with NOTHING written:
+
+        1. the attempt proof (`call`), as every state route;
+        2. the fence: this attempt is the task's current one at this
+           generation (`_fenced`, 409 `attempt_fenced`);
+        3. the digest is the one the task's SIGNED dispatch reference names,
+           whose body is stored beside it (409 `state_conflict`, `ContractVerdictStale`);
+        4. the commit is the head this attempt reported publishing (409);
+        5. every verdict names a requirement of this revision that names
+           `judgment`, in the closed lists, citing only items the state sent
+           (422); and this attempt has not already recorded one (409).
+
+        Then (section 5.4): `met` everywhere writes passed evidence; any
+        `unmet` writes failed evidence and sends the step back through the
+        retry transition to READY, cause `contract_unmet` (invariant 1: READY
+        costs nothing), until the cap of `contractjudge.MAX_SEND_BACKS` or the
+        last of `max_attempts`, past which it goes to the owner; `not_run` or
+        any `cannot_judge` leaves it `judgment_pending`, waiting on the
+        control plane's re-ask (`contractreask`, the owner's answer 5)."""
+        body: ContractVerdictBody = call.body
+        attempt = call.attempt
+        if body.reason is not None and not _REASON.fullmatch(body.reason):
+            raise ValidationFailed("reason must be a short reason code")
+        if body.outcome == cr.OUTCOME_NOT_RUN:
+            if body.verdicts:
+                raise ValidationFailed("a not_run verdict carries no verdicts")
+            if body.reason is None:
+                raise ValidationFailed("a not_run verdict names why it did not run")
+        elif not body.verdicts:
+            raise ValidationFailed("a judged verdict carries its verdicts")
+        if any(not path or len(path) > 512 for path in body.changed):
+            raise ValidationFailed("a changed path is empty or too long")
+        if len(body.hunks) > len(body.changed):
+            raise ValidationFailed("a hunk names no changed item")
+        if any(h is not None and len(h) > cj.HUNK_CHARS for h in body.hunks):
+            raise ValidationFailed("a hunk is longer than the state cuts one")
+        if any(m.kind not in wc.VERIFICATION_KINDS or m.kind == wc.VERIFICATION_JUDGMENT
+               for m in body.mechanical):
+            raise ValidationFailed("a mechanical entry is not a mechanical proof kind")
+        paths = cr.item_paths(body.changed)
+        items = set(paths) | {f"m{n}" for n in range(len(body.mechanical))}
+        event_id = request_event_id(attempt, "contract-verdict", body.request_id)
+        now = self._now()
+        published = self._published_head(attempt)
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            seen = self._seen(txn, attempt, event_id)
+            if seen is not None:
+                return self._answer(seen, repeat=True)
+            task = self._fenced(txn, attempt)
+            contract = cr.signed_contract(self._settings, task, attempt.task_id)
+            if isinstance(contract, str):
+                raise ContractVerdictStale(contract)
+            if wc.digest(contract) != body.digest:
+                raise ContractVerdictStale(
+                    "the verdict judged another revision of the contract than the signed one")
+            if published is None or published != body.commit:
+                raise ContractVerdictStale(
+                    "the verdict judged a commit this attempt did not report publishing")
+            prior = _mapping(task.get(cr.ACCEPTANCE_FIELD))
+            if prior.get("attempt_id") == attempt.attempt_id \
+                    and prior.get("generation") == attempt.generation:
+                raise ContractVerdictStale("this attempt's verdict is already recorded")
+            if not cj.judged_requirements(contract):
+                raise ValidationFailed("this revision has no requirement that names judgment")
+            posted: list[cj.Verdict] = []
+            for raw in body.verdicts:
+                verdict = cr.checked_verdict(contract, raw.model_dump(), items=items)
+                if isinstance(verdict, str):
+                    raise ValidationFailed(verdict)
+                if any(v.requirement_id == verdict.requirement_id for v in posted):
+                    raise ValidationFailed("a requirement is judged twice")
+                posted.append(verdict)
+            verdicts = cr.complete(contract, posted)
+            judged = body.outcome == cr.OUTCOME_JUDGED
+            outcome = cj.judgment_outcome(verdicts) if judged else cj.JUDGMENT_PENDING
+            evidence = ce.writes(
+                self._db, contract, verdicts if judged else (), tenant_id=attempt.tenant_id,
+                task_id=attempt.task_id, commit=body.commit, attempt_id=attempt.attempt_id,
+                generation=attempt.generation, call_id=body.call_id, source=ce.SOURCE_WORKER,
+                paths=paths, state_sha256=body.state_sha256, at=now)
+            record: dict[str, Any] = {
+                "status": outcome, "waiting_on": None, "owner_reason": None,
+                "attempt_id": attempt.attempt_id, "lease_id": attempt.lease_id,
+                "generation": attempt.generation, "contract_id": contract.contract_id,
+                "revision": contract.revision, "digest": body.digest, "commit": body.commit,
+                "base": body.base, "outcome": body.outcome, "reason": body.reason,
+                "call_id": body.call_id, "state_sha256": body.state_sha256,
+                "verdicts": [v.to_document() for v in verdicts] if judged else [],
+                "changed": list(body.changed),
+                cr.HUNKS_FIELD: cr.cited_hunks(verdicts, body.hunks, body.changed) if judged else {},
+                "mechanical": [m.model_dump() for m in body.mechanical],
+                "reask": None, "at": now,
+            }
+            send_backs = _count(task.get(cr.SEND_BACKS_FIELD))
+            if outcome == cj.SENT_BACK:
+                retries_left = (_count(task.get("max_attempts", 3))
+                                - _count(task.get("attempt_count")))
+                if cj.after_send_back(send_backs=send_backs,
+                                      retries_left=retries_left) == cj.SENT_BACK:
+                    unmet = [v.requirement_id for v in verdicts if v.verdict == cj.UNMET]
+                    answer = self._retry_writes(
+                        txn, attempt, task,
+                        error=f"Jev judged {', '.join(unmet)} unmet at commit {body.commit}",
+                        cause="contract_unmet", end_cause=None, exit_code=None, summary=None,
+                        detail={"contract_digest": body.digest, "commit": body.commit,
+                                "unmet": unmet, "send_backs": send_backs + 1},
+                        retry_delay_seconds=0, request_id=body.request_id,
+                        event_id=event_id, now=now,
+                        extra={cr.ACCEPTANCE_FIELD: record,
+                               cr.SEND_BACKS_FIELD: send_backs + 1,
+                               cr.SEND_BACK_FIELD: cr.send_back_blocks(
+                                   contract, verdicts, commit=body.commit, paths=paths)})
+                    for write in evidence:
+                        txn.set(*write)
+                    return {**answer, "outcome": cj.SENT_BACK, "waiting_on": None,
+                            "sent_back": True}
+                # Past the cap, or on the last attempt: a step that did its
+                # work and was judged short reaches a person, never FAILED.
+                record.update(status=cj.JUDGMENT_PENDING, waiting_on=cr.WAITING_OWNER,
+                              owner_reason=(cr.OWNER_SEND_BACK_CAP
+                                            if send_backs >= cj.MAX_SEND_BACKS
+                                            else cr.OWNER_ATTEMPTS_EXHAUSTED))
+            elif outcome == cj.JUDGMENT_PENDING:
+                record.update(waiting_on=cr.WAITING_REASK, reask=cr.pending_schedule(now))
+            txn.update(self._task_ref(attempt), {cr.ACCEPTANCE_FIELD: record,
+                                                 "updated_at": now})
+            txn.set(*self._event(attempt, EventType.RUNNING, {
+                "cause": "contract_verdict", "outcome": record["status"],
+                "waiting_on": record["waiting_on"], "contract_digest": body.digest,
+                "commit": body.commit, "request_id": body.request_id}, at=now,
+                event_id=event_id))
+            for write in evidence:
+                txn.set(*write)
+            return self._answer(task, outcome=record["status"],
+                                waiting_on=record["waiting_on"], sent_back=False)
+
+        return self._run(_apply)
+
+    def event(self, call: Call) -> dict[str, Any]:
+        """`ControlPlane.emit`: one event in this task's stream, stamped with
+        this tuple. Its id is the caller's, so a retry writes it once. Not
+        fenced, as `emit` is not: it is an audit record, carrying its own
+        generation."""
+        body: EventBody = call.body
+        attempt = call.attempt
+        if not _EVENT_ID.fullmatch(body.event_id):
+            raise ValidationFailed("event_id must be an evt_ id")
+        kind = _event_type(body.type)
+        detail = _bounded(dict(body.detail), "detail")
+        ref, document = self._event(attempt, kind, detail, at=self._now(),
+                                    event_id=body.event_id)
+
+        def _apply(txn: Any) -> dict[str, Any]:
+            task_snap = _snapshot(txn.get(self._task_ref(attempt)))
+            task = (task_snap.to_dict() or {}) if task_snap.exists else None
+            if task is None or task.get("tenant_id") != attempt.tenant_id:
+                raise AttemptFenced("the task is not this attempt's")
+            if _snapshot(txn.get(ref)).exists:
+                return {"ok": True, "repeat": True}
+            txn.set(ref, document)
+            # Contract request 132: an account event moves the task's stored
+            # current account in the same write, while this attempt is the
+            # task's current one; a READ-SIDE VIEW ONLY.
+            account = account_after(task.get("current_account"), document)
+            if account is not None and task.get("current_generation") == attempt.generation:
+                txn.update(self._task_ref(attempt), {"current_account": account})
+            return {"ok": True}
+
+        return self._run(_apply)
+
+    # -- reads ----------------------------------------------------------------
+
+    def _own_task(self, attempt: AttemptTuple) -> dict[str, Any]:
+        task = self._read(self._task_ref(attempt))
+        if task is None or task.get("tenant_id") != attempt.tenant_id:
+            raise AttemptFenced("the task is not this attempt's")
+        return task
+
+    def poll(self, attempt: AttemptTuple, provider: str | None) -> dict[str, Any]:
+        """`ControlPlane.poll`: the fence view, the lease, and this tenant's quota."""
+        task = self._read(self._task_ref(attempt))
+        if task is not None and task.get("tenant_id") != attempt.tenant_id:
+            task = None
+        lease = self._read(self._ref(LEASES, attempt.lease_id))
+        if lease is not None and not _lease_is_this_tuples(lease, attempt):
+            lease = None
+        quota = None
+        if provider is not None:
+            if not _PROVIDER.fullmatch(provider):
+                raise ValidationFailed("provider must be a provider name")
+            quota = self._read(self._ref(QUOTA, f"{provider}:{attempt.tenant_id}"))
+        return {
+            "ok": True,
+            "task": fence_view(task),
+            "fenced": fence_reason(task, lease, attempt),
+            "lease": None if lease is None else {
+                "released": lease.get("released_at") is not None,
+                "expires_at": jsonable(lease.get("expires_at")),
+            },
+            "quota": jsonable(quota),
+        }
+
+    def context(self, attempt: AttemptTuple) -> dict[str, Any]:
+        """What the worker reads of its OWN tenant's settings, keys and grants
+        (`secrets.load_tenant`, `secrets.grant_refusal`, `jevkey`,
+        `judge/attempt.py`, `graphstage.py`),
+        and of the platform's settings only `PLATFORM_SETTINGS_SERVED`
+        (`extrarepos.budget_bytes`). Every id is derived from the tuple and
+        the task's signed fields."""
+        task = self._own_task(attempt)
+        tenant_id = attempt.tenant_id
+        tenant = self._read(self._ref(TENANTS, tenant_id))
+        if tenant is not None and tenant.get("tenant_id") not in (None, tenant_id):
+            raise StateConflict("tenants/<id> declares another tenant")
+        keys: dict[str, Any] = {}
+        own_key = _typesafe_secret(tenant_id)
+        keys[own_key] = jsonable(self._read(self._ref(PROVIDER_KEYS, own_key)))
+        submitted_by = task.get("submitted_by")
+        personal: str | None = None
+        if isinstance(submitted_by, str) and "@" in submitted_by:
+            email = submitted_by.strip().lower()
+            candidate = personal_tenant_id(email)
+            doc = self._read(self._ref(TENANTS, candidate))
+            principal = (doc or {}).get("principal")
+            if ((doc or {}).get("kind") == "user" and isinstance(principal, str)
+                    and principal.strip().lower() == email):
+                personal = candidate
+                key = _typesafe_secret(candidate)
+                keys[key] = jsonable(self._read(self._ref(PROVIDER_KEYS, key)))
+        grant = None
+        repo = owner_repo(task.get("repository_url"))
+        if repo is not None and isinstance(submitted_by, str) and "@" in submitted_by:
+            grant = self._grant(tenant_id, submitted_by, repo_id_for(tenant_id, *repo))
+        return {
+            "ok": True,
+            "tenant": jsonable(tenant),
+            "workspace_settings": jsonable(self._read(self._ref(WORKSPACE_SETTINGS, tenant_id))),
+            "tenant_settings": jsonable(self._read(self._ref(TENANT_SETTINGS, tenant_id))),
+            "provider_keys": keys,
+            "personal_tenant_id": personal,
+            "forge_grant": jsonable(grant),
+            "additional_forge_grants": jsonable(
+                self._additional_grants(attempt, task, submitted_by)),
+            "platform_settings": self._platform_settings(),
+        }
+
+    def _grant(self, tenant_id: str, submitted_by: str, repo_id: str) -> dict[str, Any] | None:
+        """The submitter's grant on `repo_id`, with its `id`, when the
+        document exists and names no other tenant; else None."""
+        grant_id = grant_id_for(tenant_id, submitted_by, repo_id)
+        found = self._read(self._ref(GRANTS, grant_id))
+        if found is None or found.get("tenant_id") not in (None, tenant_id):
+            return None
+        return {"id": grant_id, **found}
+
+    def _additional_grants(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                           submitted_by: Any) -> dict[str, dict[str, Any]]:
+        """The submitter's grant on each of the task's SIGNED
+        `additional_repositories`, keyed by grant id: the worker re-reads it
+        before cloning the entry (`secrets.grant_refusal`), and `forge_grant`
+        is the primary's alone, so without these a switched workspace read
+        every additional grant as removed (live finding, 11 November 2026).
+
+        Each id is derived as the primary's is, from the tuple's tenant, the
+        signed `submitted_by` and the entry's `repo_id` RECOMPUTED from its
+        `repository` (a list naming one repository under another's id serves
+        nothing). The list is read only from a task whose spec verifies: the
+        worker checks a person's grant on an entry only then
+        (`_additional_suffix`), and the list is tenant-writable after signing.
+        An entry with no grant, or one naming another tenant, is absent, so
+        the worker still reads it as removed. A task with no list reads
+        nothing more."""
+        entries = task.get("additional_repositories")
+        if not entries or not isinstance(submitted_by, str) or "@" not in submitted_by:
+            return {}
+        try:
+            check_additional_repositories(entries)
+        except ValueError:
+            return {}
+        refusal = spec_refusal(self._settings, task, attempt.task_id)
+        if refusal is not None:
+            # The reason names the check, never a value from the document.
+            log.warning("state context unverified own task tenant=%s task=%s attempt=%s: %s; "
+                        "no additional repository's grant is served", attempt.tenant_id,
+                        attempt.task_id, attempt.attempt_id, refusal)
+            return {}
+        grants: dict[str, dict[str, Any]] = {}
+        for entry in entries:
+            try:
+                owner, name = parse_repository(entry["repository"])
+            except ValueError:
+                continue
+            repo_id = repo_id_for(attempt.tenant_id, owner, name)
+            if repo_id != entry["repo_id"]:
+                continue
+            found = self._grant(attempt.tenant_id, submitted_by, repo_id)
+            if found is not None:
+                grants[found["id"]] = found
+        return grants
+
+    def _platform_settings(self) -> dict[str, Any]:
+        """`control/settings`, cut to `PLATFORM_SETTINGS_SERVED`, each field as
+        stored and left out when absent: the worker keeps its own default for
+        a field it is not given and checks the value's shape itself."""
+        stored = self._read(self._ref(CONTROL, SETTINGS_DOC)) or {}
+        return {key: jsonable(stored[key]) for key in PLATFORM_SETTINGS_SERVED if key in stored}
+
+    def upstream(self, attempt: AttemptTuple, upstream_task_id: str) -> dict[str, Any]:
+        """`fetch_parent_states` and `inputs.fetch_upstream_task`: ONLY an id
+        this task declares -- its `depends_on`, its `metadata.input_from`,
+        its dispatch block's `input_parents` or its merge step's
+        `merge_target.pull_request`, all covered by the spec signature --
+        or one `_derived_upstream` derives, and only one of this
+        tenant. Anything else is the same 403, whether or not it exists.
+
+        Every id is taken from the SIGNED copy of the document it is read
+        from (SIGNED-UPSTREAM, the owner 2026-10-26, part of archived issue 2373): a task document
+        is tenant-writable after signing (docs/design/tenant-settings-
+        integrity.md §1.1), so a field rewritten then would otherwise widen
+        what this attempt's reads may name to any task of its tenant
+        (invariant 9). The attempt's own task is verified once, here, under
+        the tuple's id; one whose spec does not verify declares nothing and
+        serves only itself, whose id is the tuple's rather than a field. Each
+        document a walk follows is verified before its fields are; one that
+        fails is counted in the log, never skipped as if absent.
+        swarm-api rewrites none of the signed fields once a task is stored:
+        it signs at submission (`specsigning`), and every later write to a
+        task (`transition`, `park`, `finish`, `handoff`) touches unsigned
+        keys only."""
+        task = self._own_task(attempt)
+        if upstream_task_id == attempt.task_id:
+            return {"ok": True, "task": jsonable(task)}
+        refusal = spec_refusal(self._settings, task, attempt.task_id)
+        if refusal is not None:
+            # The reason names the check, never a value from the document.
+            log.warning("state upstream unverified own task tenant=%s task=%s attempt=%s: %s",
+                        attempt.tenant_id, attempt.task_id, attempt.attempt_id, refusal)
+            raise UpstreamNotDeclared(
+                "this task's spec does not verify, so it declares no upstream")
+        declared = _declared_parents(task)
+        dispatch = _mapping(_mapping(task.get("metadata")).get("dispatch"))
+        # A merge-only continuation (`issueci.merge_workflow`,
+        # `MergeSources(continued=True)`) depends on nothing: the task it
+        # merges, in another workflow, is named only here, and is the
+        # merge's first read (archived issue 2379 F01, F02). Signed like the rest; the
+        # tenant check below still holds it to this tenant.
+        target = _mapping(dispatch.get("merge_target")).get("pull_request")
+        if isinstance(target, str) and target:
+            declared.add(target)
+        refused = UpstreamNotDeclared("that task is not one this task declares as upstream")
+        walk = _Walk()
+        if upstream_task_id not in declared and not self._derived_upstream(
+                attempt, task, upstream_task_id, walk):
+            if walk.unverified:
+                log.warning("state upstream unverified=%d tenant=%s task=%s attempt=%s: a "
+                            "document the rules followed failed its spec signature",
+                            walk.unverified, attempt.tenant_id, attempt.task_id,
+                            attempt.attempt_id)
+            raise refused
+        doc = self._read(self._ref(TASKS, upstream_task_id))
+        if doc is None:
+            return {"ok": True, "task": None}
+        if doc.get("tenant_id") != attempt.tenant_id:
+            raise refused
+        return {"ok": True, "task": jsonable(doc)}
+
+    def _derived_upstream(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                          upstream_task_id: str, walk: "_Walk") -> bool:
+        """The reads a worker makes past its declared set (archived issue 1457, owner
+        decision 2026-10-17), each id derived HERE from documents this
+        service reads, never taken from the request. `task` is the
+        attempt's own, already verified by `upstream`; every other task
+        document whose fields a rule follows is verified by the id it was
+        read by (`_verified`) before it is, and one that fails stops that
+        rule there and is counted in `walk`:
+
+          * an index run's base version's task: the `task_id` of the
+            `index_versions/<sha>` entry, under this tenant's registration of
+            the signed repository, for the one base line of the signed prompt
+            (`lifecycle._stage_base`), when that task's own signed spec is an
+            index run of this repository at that commit;
+          * an ancestor along `builds_on` (`lifecycle._builds_on_base`): from
+            this task's own signed `dispatch.builds_on`, following each
+            verified ancestor's `builds_on` only through this tenant's tasks
+            of this workflow, at most `BUILDS_ON_MAX_DEPTH` tasks deep;
+          * the verdict gate's review task (`lifecycle._reviewed_patches`):
+            the signed `dispatch.verdict_gate.task_id`, when that task's
+            signed `workflow_id` is this task's workflow;
+          * a workflow ancestor along `depends_on` (archived issue 2070,
+            `owner_questions.workflow_ancestors` and the merge's re-read of
+            the answers to `needs_owner`): from this task's own signed
+            `depends_on`, following each verified ancestor's `depends_on`
+            only through this tenant's tasks of this workflow, one batched
+            read per level, at most `WORKFLOW_ANCESTORS_MAX` documents read;
+          * a merge step's own task and the branch it merges (archived issue 2373,
+            `agent_worker.merge._own_doc`, `_fix_round_heads`,
+            `_recorded_fix_heads`): the attempt's own task id, from the
+            tuple (served by `upstream` before any rule); the root whose
+            `swarm/<root>` branch the pull request is on, from this task's
+            signed `dispatch.merge_target.pull_request` and that task's own
+            signed `dispatch.continues`; and any task of this tenant whose
+            signed dispatch block `continues` that root -- a merge's CI-fix
+            or conflict fix round, or a PR-side fixer of the same branch.
+            Every task document is tenant-writable after signing
+            (docs/design/tenant-settings-integrity.md §1.1), so each of the
+            three `metadata.dispatch` fields followed is read only from a
+            document whose spec signature verifies HERE, by the id it was
+            read by (`verdictpublish.spec_refusal`): the merge step's own
+            (in `upstream`), the opener's and the candidate's. Unverified, a
+            rewrite of any one would serve any same-tenant task it named.
+            The worker still holds each one to its signed spec as well.
+          * a merge step's fix loop's re-review (`agent_worker.merge.
+            _loop_review`): a task of this tenant whose own signed
+            `fix_loop_round` is of kind "review" and names a loop this merge
+            step declares, of its workflow and on `fix-loop`
+            (`_is_fix_loop_rereview`).
+
+        The caller still refuses a task of another tenant, so a derived id
+        serves only this tenant's document.
+        """
+        return (self._is_index_base(attempt, task, upstream_task_id, walk)
+                or self._is_builds_on_ancestor(attempt, task, upstream_task_id, walk)
+                or self._is_gate_review(attempt, task, upstream_task_id, walk)
+                or self._is_workflow_ancestor(attempt, task, upstream_task_id, walk)
+                or self._is_merge_fix_record(attempt, task, upstream_task_id, walk)
+                or self._is_fix_loop_rereview(attempt, task, upstream_task_id, walk))
+
+    def _is_fix_loop_rereview(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                              upstream_task_id: str, walk: "_Walk") -> bool:
+        """A merge step's read of a `re-review:<k>` its fix loop ran
+        (`agent_worker.merge._loop_review`, docs/design/fix-loop.md §4.6).
+
+        A re-review is a one-step workflow of its own, named only by the
+        loop's tenant-writable `result_summary.fix_loop.final_review`, so
+        nothing the merge declares names it. It is served when ALL hold,
+        each read from a document verified HERE by the id it was read by:
+        this task's signed dispatch carries a `merge_target` (it is a merge
+        step); the re-review, of this tenant, carries a signed
+        `fix_loop_round` of kind "review" whose `loop_task` is one this
+        task declares (`_declared_parents`); and that loop is this tenant's,
+        of this task's workflow, on the `fix-loop` profile. A task the
+        loop's summary names without that signed round record, or a
+        re-review of another loop, stays the 403."""
+        dispatch = _mapping(_mapping(task.get("metadata")).get("dispatch"))
+        workflow_id = task.get("workflow_id")
+        if (not _mapping(dispatch.get("merge_target")) or not isinstance(workflow_id, str)
+                or not workflow_id):
+            return False
+        doc = self._read(self._ref(TASKS, upstream_task_id))
+        if doc is None or not self._verified(attempt, doc, upstream_task_id, walk):
+            return False
+        record = _mapping(_mapping(_mapping(doc.get("metadata")).get("dispatch"))
+                          .get(FIX_LOOP_ROUND_FIELD))
+        loop_id = record.get("loop_task")
+        if (record.get("kind") != FIX_LOOP_REVIEW_KIND or not isinstance(loop_id, str)
+                or loop_id not in _declared_parents(task)):
+            return False
+        loop = self._read(self._ref(TASKS, loop_id))
+        return (loop is not None and self._verified(attempt, loop, loop_id, walk)
+                and loop.get("workflow_id") == workflow_id
+                and loop.get("runner_profile") == FIX_LOOP_PROFILE)
+
+    def _is_merge_fix_record(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                             upstream_task_id: str, walk: "_Walk") -> bool:
+        target = _mapping(_mapping(_mapping(task.get("metadata")).get("dispatch"))
+                          .get("merge_target")).get("pull_request")
+        if not isinstance(target, str) or not target:
+            return False
+        opener = self._read(self._ref(TASKS, target))
+        if opener is None or not self._verified(attempt, opener, target, walk):
+            return False
+        continued = _mapping(_mapping(opener.get("metadata")).get("dispatch")).get("continues")
+        root = continued if isinstance(continued, str) and continued else target
+        if upstream_task_id == root:
+            return True
+        doc = self._read(self._ref(TASKS, upstream_task_id))
+        if doc is None or not self._verified(attempt, doc, upstream_task_id, walk):
+            return False
+        return _mapping(_mapping(doc.get("metadata")).get("dispatch")).get("continues") == root
+
+    def _signed(self, attempt: AttemptTuple, doc: Mapping[str, Any], task_id: str) -> bool:
+        """`doc`, read by `task_id`, is this tenant's and its spec signature verifies:
+        its `tenant_id` and `metadata.dispatch` are the ones swarm-api signed."""
+        return (doc.get("tenant_id") == attempt.tenant_id
+                and spec_refusal(self._settings, doc, task_id) is None)
+
+    def _verified(self, attempt: AttemptTuple, doc: Mapping[str, Any], task_id: str,
+                  walk: "_Walk") -> bool:
+        """`_signed`, counting in `walk` a document of this tenant that failed:
+        another tenant's is refused, as it always was, and is not this tenant's
+        rewrite to count."""
+        if self._signed(attempt, doc, task_id):
+            return True
+        if doc.get("tenant_id") == attempt.tenant_id:
+            walk.unverified += 1
+        return False
+
+    def _read_tasks(self, task_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """The task documents of `task_ids` that exist, by id, in ONE batched read."""
+        if not task_ids:
+            return {}
+        refs = [self._ref(TASKS, task_id) for task_id in task_ids]
+        try:
+            snaps = list(self._db.get_all(refs))
+        except gexc.GoogleAPIError as exc:
+            raise StateUnavailable(
+                f"the state store did not answer ({type(exc).__name__}); retry"
+            ) from None
+        return {snap.id: snap.to_dict() or {} for snap in snaps if snap.exists}
+
+    def _is_index_base(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                       upstream_task_id: str, walk: "_Walk") -> bool:
+        prompt = _mapping(task.get("input")).get("prompt")
+        bases = set(_BASE_SHA_LINE.findall(prompt)) if isinstance(prompt, str) else set()
+        repo = owner_repo(task.get("repository_url"))
+        if len(bases) != 1 or repo is None:
+            return False
+        ref = self._ref(REPOSITORIES, repo_id_for(attempt.tenant_id, *repo))
+        registration = self._read(ref)
+        if registration is None or registration.get("tenant_id") != attempt.tenant_id:
+            return False
+        base = bases.pop()
+        version = self._read(ref.collection(VERSIONS_COLLECTION).document(base))
+        if version is None or version.get("task_id") != upstream_task_id:
+            return False
+        # `index_versions/<sha>` carries no signature, so the id it names is
+        # held to that task's own signed spec: an index run
+        # (`repoindex.indexer_task`) of this repository at exactly this commit.
+        doc = self._read(self._ref(TASKS, upstream_task_id))
+        return (doc is not None and self._verified(attempt, doc, upstream_task_id, walk)
+                and doc.get("runner_profile") == INDEXER_PROFILE
+                and doc.get("repository_ref") == base
+                and owner_repo(doc.get("repository_url")) == repo)
+
+    def _is_builds_on_ancestor(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                               upstream_task_id: str, walk: "_Walk") -> bool:
+        workflow_id = task.get("workflow_id")
+        current = _builds_on(_mapping(task.get("metadata")))
+        seen: set[str] = {attempt.task_id}
+        for _ in range(BUILDS_ON_MAX_DEPTH):
+            if current is None or current in seen:
+                return False
+            if current == upstream_task_id:
+                return True
+            seen.add(current)
+            doc = self._read(self._ref(TASKS, current))
+            if (doc is None or not self._verified(attempt, doc, current, walk)
+                    or not isinstance(workflow_id, str) or not workflow_id
+                    or doc.get("workflow_id") != workflow_id):
+                return False
+            current = _builds_on(_mapping(doc.get("metadata")))
+        return False
+
+    def _is_workflow_ancestor(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                              upstream_task_id: str, walk: "_Walk") -> bool:
+        workflow_id = task.get("workflow_id")
+        if not isinstance(workflow_id, str) or not workflow_id:
+            return False
+        level = {d for d in task.get("depends_on") or [] if isinstance(d, str)}
+        seen: set[str] = {attempt.task_id}
+        while level and len(seen) <= WORKFLOW_ANCESTORS_MAX:
+            pending = sorted(level - seen)
+            # The same bound as one read at a time: at most
+            # WORKFLOW_ANCESTORS_MAX documents across the walk.
+            batch = pending[:WORKFLOW_ANCESTORS_MAX + 1 - len(seen)]
+            seen.update(batch)
+            docs = self._read_tasks(batch)
+            following: set[str] = set()
+            for current in batch:
+                doc = docs.get(current)
+                if (doc is None or not self._verified(attempt, doc, current, walk)
+                        or doc.get("workflow_id") != workflow_id):
+                    continue
+                if current == upstream_task_id:
+                    return True
+                following |= {d for d in doc.get("depends_on") or [] if isinstance(d, str)}
+            if len(batch) < len(pending):
+                return False
+            level = following - seen
+        return False
+
+    def _is_gate_review(self, attempt: AttemptTuple, task: Mapping[str, Any],
+                        upstream_task_id: str, walk: "_Walk") -> bool:
+        gate = _mapping(_mapping(_mapping(task.get("metadata")).get("dispatch"))
+                        .get("verdict_gate"))
+        review = gate.get("task_id")
+        workflow_id = task.get("workflow_id")
+        if (not isinstance(review, str) or review.strip() != upstream_task_id
+                or not isinstance(workflow_id, str) or not workflow_id):
+            return False
+        doc = self._read(self._ref(TASKS, upstream_task_id))
+        return doc is None or (self._verified(attempt, doc, upstream_task_id, walk)
+                               and doc.get("workflow_id") == workflow_id)
+
+    def repository(self, attempt: AttemptTuple) -> dict[str, Any]:
+        """`indexrun.resolve_base` and `graphstage`'s reads: the registration
+        of the task's signed repository and its kept index versions, read
+        server-side (the worker role could never run that query, §1.3).
+
+        At most KEPT_VERSIONS + 1 of them, and always the promoted one: a
+        repository may keep up to 100 (`index.keep_versions`, lane
+        INDEX-RETENTION), and the promoted version is the base an incremental
+        run builds on, wherever its id sorts."""
+        task = self._own_task(attempt)
+        repo = owner_repo(task.get("repository_url"))
+        if repo is None:
+            return {"ok": True, "repo_id": None, "registration": None, "versions": []}
+        repo_id = repo_id_for(attempt.tenant_id, *repo)
+        ref = self._ref(REPOSITORIES, repo_id)
+        registration = self._read(ref)
+        if registration is None or registration.get("tenant_id") != attempt.tenant_id:
+            return {"ok": True, "repo_id": repo_id, "registration": None, "versions": []}
+        try:
+            rows = list(ref.collection(VERSIONS_COLLECTION).limit(KEPT_VERSIONS + 1).stream())
+            current = (registration.get("index") or {}).get("current_sha")
+            if isinstance(current, str) and current and all(row.id != current for row in rows):
+                promoted = ref.collection(VERSIONS_COLLECTION).document(current).get()
+                if promoted.exists:
+                    rows = [promoted, *rows[:KEPT_VERSIONS]]
+        except gexc.GoogleAPIError as exc:
+            raise StateUnavailable(f"the state store did not answer ({type(exc).__name__})") \
+                from None
+        versions = [{"id": row.id, **(row.to_dict() or {})} for row in rows]
+        return {"ok": True, "repo_id": repo_id, "registration": jsonable(registration),
+                "versions": jsonable(versions)}
+
+    def ci_fix_tasks(self, call: Call) -> dict[str, Any]:
+        """`inputs.find_ci_fix_tasks`, run here, tenant-restricted twice."""
+        body: CiFixBody = call.body
+        attempt = call.attempt
+        self._own_task(attempt)
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", attempt.tenant_id))
+            .where(filter=FieldFilter("metadata.ci_fix.pull_request", "==", body.pull_request))
+            .where(filter=FieldFilter("metadata.dispatch.continues", "==", body.root_task_id))
+            .limit(body.limit)
+        )
+        try:
+            rows = list(query.stream())
+        except gexc.GoogleAPIError as exc:
+            raise StateUnavailable(f"the state store did not answer ({type(exc).__name__})") \
+                from None
+        found = [{"id": row.id, "task": jsonable(row.to_dict() or {})} for row in rows
+                 if (row.to_dict() or {}).get("tenant_id") == attempt.tenant_id]
+        return {"ok": True, "tasks": found}
+
+    # -- the merge slot and the merge train --------------------------------
+
+    def _state_of(self, tenant_id: str, task_id: str) -> str | None:
+        doc = self._read(self._ref(TASKS, task_id))
+        if doc is None or doc.get("tenant_id") != tenant_id:
+            return None  # never read as ended: a read that fails takes no live holder's slot
+        return doc.get("state")
+
+    def _ended(self, tenant_id: str, task_id: str) -> bool:
+        return self._state_of(tenant_id, task_id) in {s.value for s in TERMINAL_STATES}
+
+    def _wake(self, attempt: AttemptTuple, slot: str, task_id: str, now: datetime) -> bool:
+        """`FirestoreMergeSlots.wake`, guarded on the waiter being LISTED in
+        this tenant's slot -- its holder or one of its waiters -- and of this
+        tenant. Fenced like every slot write."""
+        slot_ref = self._ref(MERGE_SLOTS, slot)
+        ref = self._ref(TASKS, task_id)
+        refused = MergeWakeRefused("only a waiter of this tenant listed in this slot is woken")
+
+        def _apply(txn: Any) -> bool:
+            slot_snap = _snapshot(txn.get(slot_ref))
+            doc = (slot_snap.to_dict() or {}) if slot_snap.exists else {}
+            snap = _snapshot(txn.get(ref))
+            self._fenced(txn, attempt)
+            if doc.get("tenant_id") != attempt.tenant_id:
+                raise refused
+            holder = _holder(doc)
+            listed = (holder is not None and holder["task_id"] == task_id) or any(
+                w["task_id"] == task_id for w in _waiters(doc))
+            data = (snap.to_dict() or {}) if snap.exists else None
+            if not listed or data is None or data.get("tenant_id") != attempt.tenant_id:
+                raise refused
+            if (data.get("state") != TaskState.PARKED.value
+                    or data.get("park_reason") != ParkReason.CI_PENDING.value):
+                return False
+            metadata = dict(_mapping(data.get("metadata")))
+            wait = dict(_mapping(metadata.get(MERGE_WAIT)))
+            if wait.get("code") != MERGE_SLOT_WAIT or wait.get(_WAKE_MARKER):
+                return False
+            wait[_WAKE_MARKER] = now
+            wait["wake_reason"] = SLOT_WAKE_REASON
+            metadata[MERGE_WAIT] = wait
+            txn.update(ref, {"metadata": metadata, "updated_at": now})
+            return True
+
+        return bool(self._run(_apply))
+
+    def merge_slot(self, call: Call) -> dict[str, Any]:
+        body: MergeSlotBody = call.body
+        attempt = call.attempt
+        task = self._own_task(attempt)
+        repo = owner_repo(task.get("repository_url"))
+        if repo is None:
+            raise ValidationFailed("this task names no GitHub repository, so it has no merge slot")
+        repository = f"{repo[0]}/{repo[1]}"
+        slot = slot_id(attempt.tenant_id, repository, body.base)
+        slot_ref = self._ref(MERGE_SLOTS, slot)
+        submitted = task.get("created_at")
+        now = self._now()
+        if not isinstance(submitted, datetime) or submitted.tzinfo is None:
+            submitted = now
+        me = Claimant(attempt.task_id, attempt.attempt_id, submitted)
+
+        def _mine(doc: dict[str, Any] | None) -> dict[str, Any] | None:
+            if doc is not None and doc.get("tenant_id") != attempt.tenant_id:
+                raise StateConflict("the merge slot under this id is another tenant's")
+            return doc
+
+        def _transact(fn: Callable[[dict[str, Any] | None], tuple[Any, Any]]) -> Any:
+            def _apply(txn: Any) -> Any:
+                snap = _snapshot(txn.get(slot_ref))
+                self._fenced(txn, attempt)
+                new, result = fn(_mine((snap.to_dict() or {}) if snap.exists else None))
+                if new is not None:
+                    txn.set(slot_ref, new)
+                return result
+            return self._run(_apply)
+
+        if body.op == "peek":
+            return {"ok": True, "slot": slot, "document": jsonable(_mine(self._read(slot_ref)))}
+        if body.op == "wake":
+            if body.wake_task_id is None:
+                raise ValidationFailed("wake names wake_task_id")
+            return {"ok": True, "slot": slot,
+                    "woken": self._wake(attempt, slot, body.wake_task_id, now)}
+        if body.op == "confirm":
+            holder = _holder(_mine(self._read(slot_ref)) or {})
+            held = (holder is not None and holder["task_id"] == attempt.task_id
+                    and body.slot_generation is not None
+                    and _count(holder.get("generation")) == body.slot_generation)
+            return {"ok": True, "slot": slot, "held": held}
+        if body.op == "renew":
+            if body.updates is None:
+                raise ValidationFailed("renew names updates")
+            held = _transact(lambda doc: slot_renew(doc, me, now=now, updates=body.updates))
+            return {"ok": True, "slot": slot, "held": held}
+        if body.op == "acquire":
+            if body.updates is None:
+                raise ValidationFailed("acquire names updates")
+            peek = _mine(self._read(slot_ref)) or {}
+            holder = _holder(peek)
+            ended: set[str] = set()
+            if (holder is not None and holder["task_id"] != attempt.task_id
+                    and not holder_expired(holder, now)
+                    and self._ended(attempt.tenant_id, holder["task_id"])):
+                ended.add(holder["task_id"])
+            result = _transact(lambda doc: slot_acquire(
+                doc, me, tenant_id=attempt.tenant_id, repository=repository, base=body.base,
+                now=now, updates=body.updates or 0, ended=ended))
+            woke = None
+            waiting = result.get("waiting")
+            if waiting and waiting.get("wake"):
+                woke = self._wake_quietly(attempt, slot, waiting["wake"], now)
+            return {"ok": True, "slot": slot, **result, "woke": woke}
+        # release
+        reason = body.reason or "released"
+        if not _REASON.fullmatch(reason):
+            raise ValidationFailed("reason must be a short release reason")
+        peek = _mine(self._read(slot_ref)) or {}
+        ended = set()
+        for entry in _live_waiters(peek, now=now, ended=set(), drop=attempt.task_id)[
+                :HANDOFF_READS]:
+            if not self._ended(attempt.tenant_id, entry["task_id"]):
+                break
+            ended.add(entry["task_id"])
+        handed = _transact(lambda doc: slot_release(
+            doc, me, now=now, reason=reason, ended=ended, generation=body.slot_generation))
+        woke = self._wake_quietly(attempt, slot, handed, now) if handed else None
+        return {"ok": True, "slot": slot, "handed_to": handed, "woke": woke}
+
+    def _wake_quietly(self, attempt: AttemptTuple, slot: str, task_id: str,
+                      now: datetime) -> bool:
+        """A handoff's wake, as `SlotUse._wake`: the park's fallback instant wakes
+        it anyway, so only a fence is raised."""
+        try:
+            return self._wake(attempt, slot, task_id, now)
+        except AttemptFenced:
+            raise
+        except ApiError:
+            return False
+
+    def merge_train(self, call: Call) -> dict[str, Any]:
+        """`mergetrain.FirestoreTrainEntries`: the entry of THIS tenant's THIS
+        task, its repository the task's signed one. Fenced."""
+        body: MergeTrainBody = call.body
+        attempt = call.attempt
+        task = self._own_task(attempt)
+        entry_id = entry_id_for(attempt.tenant_id, attempt.task_id)
+        ref = self._ref(MERGE_TRAIN_ENTRIES, entry_id)
+        if body.op == "peek":
+            doc = self._read(ref)
+            if doc is not None and doc.get("tenant_id") != attempt.tenant_id:
+                raise StateConflict("the merge train entry under this id is another tenant's")
+            return {"ok": True, "entry": jsonable(doc)}
+        repo = owner_repo(task.get("repository_url"))
+        if repo is None:
+            raise ValidationFailed("this task names no GitHub repository")
+        missing = [n for n in ("base", "number", "head", "title", "message")
+                   if getattr(body, n) is None]
+        if missing:
+            raise ValidationFailed(f"register names {', '.join(missing)}")
+        fields = {"tenant_id": attempt.tenant_id, "task_id": attempt.task_id,
+                  "repository": f"{repo[0]}/{repo[1]}",
+                  "repository_url": task.get("repository_url"), "base": body.base,
+                  "number": body.number, "head": body.head, "title": body.title,
+                  "message": body.message}
+        now = self._now()
+
+        def _apply(txn: Any) -> Any:
+            snap = _snapshot(txn.get(ref))
+            self._fenced(txn, attempt)
+            new, entry = register_entry((snap.to_dict() or {}) if snap.exists else None,
+                                        fields=fields, now=now)
+            if new is not None:
+                new = {**new, "entry_id": entry_id}
+                txn.set(ref, new)
+                return new
+            return entry
+
+        return {"ok": True, "entry": jsonable(self._run(_apply))}
+
+
+def _typesafe_secret(tenant_id: str) -> str:
+    """`swarm-tenant-<tenant>-typesafe`, through the frozen spelling (`jevkey.secret_id`)."""
+    return Tenant(tenant_id=tenant_id, kind="group", principal="",
+                  created_at=utcnow()).secret_name("typesafe")

@@ -1,0 +1,322 @@
+"""Independent rehearsal of the destroy guard, driving the real jq filter.
+
+`scripts/destroy.sh --self-test` already covers deny-listed neighbours, unlabelled
+resources, unlabelable types and foreign projects. This file exists to cover what that
+fixture does NOT: a near-miss label value, and failing closed on unusable input.
+
+Why bother: the deploy runs unattended against a project another team may share,
+holding their cluster, VPC, buckets and service accounts. The guard is the only thing
+between a bad plan and another team's production.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from destroy_plan_recording import deny_list_project  # noqa: E402
+
+REPO = Path(__file__).resolve().parents[2]
+GUARD_JQ = REPO / "scripts" / "lib" / "destroy-guard.jq"
+DESTROY = REPO / "scripts" / "destroy.sh"
+
+_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_P)
+
+COMMON_SH = REPO / "scripts" / "lib" / "common.sh"
+TYPES_JSON = REPO / "scripts" / "lib" / "unlabelable-types.json"
+DENY_LIST_EXAMPLE = REPO / "scripts" / "lib" / "deny-list.example.json"
+
+#: The project the placeholder deployment serves the never-touch list for, the
+#: one the recorded plan is rendered for (destroy_plan_recording.py).
+PROJECT = deny_list_project()
+
+
+def _shared_deny_list() -> list[str]:
+    """Every entry of the never-touch list the guard is given in tests.
+
+    DERIVED, NOT RESTATED: a hand-written copy here once covered fewer entries
+    than the real list, and held service accounts by short name where the guard
+    is given full emails. A deployment's list lives in config/<env>/deny-list.json
+    (read by `deny_list_load` in scripts/lib/common.sh); the repository holds only
+    scripts/lib/deny-list.example.json, which is what the placeholder deployment
+    serves every test, so that is the list judged here, entry by entry, as written.
+    """
+    entries = json.loads(DENY_LIST_EXAMPLE.read_text())["entries"]
+    assert isinstance(entries, list) and all(isinstance(e, str) for e in entries), (
+        f"{DENY_LIST_EXAMPLE} no longer holds an `entries` list of strings; this suite "
+        f"would otherwise judge by nothing"
+    )
+    return entries
+
+
+#: The deny-list in the exact form the guard is given it. The two
+#: transformations are `guard_deny_json` in common.sh, which is what
+#: scripts/destroy.sh and scripts/lib/plan-guard.sh both call: the bare
+#: `default` comes OUT (too common a string to compare against every token --
+#: destroy-guard.jq matches the shared default network on the network field
+#: instead) and Firestore's `(default)` goes IN. Asserted structurally below
+#: rather than taken on trust.
+SHARED = _shared_deny_list()
+DENY = [entry for entry in SHARED if entry != "default"] + ["(default)"]
+
+#: Read from the file that three other things read, for the reason that file
+#: states in its own header: it was restated in awk in the workflows, the copies
+#: drifted, and the awk version exempted only `google_project_iam*` -- so a plan
+#: deleting a `google_storage_bucket_iam_member` was blocked from production by a
+#: rule nobody had decided. This file restated it too, as seven of the forty
+#: types, so the exemption logic was proved over a sixth of its input.
+UNLABELABLE = json.loads(TYPES_JSON.read_text())["types"]
+
+
+def _name_prefix() -> str:
+    """`guard_name_prefix` from common.sh -- ASKED FOR, never restated.
+
+    `destroy-guard.jq`'s `is_ours` references `$prefix`, and jq refuses to
+    COMPILE a filter with an undefined variable. So a caller that omits the
+    argument does not get a lenient default; it gets exit 3 and no verdict at
+    all. On 2026-09-23 `$prefix` was added to the filter and to
+    `scripts/lib/plan-guard.sh`, and `scripts/destroy.sh` (twice) and this file
+    (twice) were not taught to pass it: CI run 35959558515 failed 56 cases with
+
+        jq: error: $prefix is not defined at <top-level>, line 217
+
+    and `make destroy` could not reach a safety assertion at all. (main later
+    fixed the same outage inside the filter, reading `$ARGS.named.prefix` with a
+    default; the callers still pass this value so nobody is judged by the
+    fallback, and test_destroy_guard_real_plan.py asserts the two agree.)
+
+    Reading the value from the shell function production calls is the point: a
+    literal "swarm-" here would keep passing after somebody changed the real
+    one, which is the fixture-drift failure this whole pair of files exists
+    about.
+
+    This runs at import, before any fixture, so no placeholder deployment is
+    active yet and common.sh (which names no default project and fails closed
+    without a never-touch list) is sourced under a placeholder deployment of
+    its own, built for this one call.
+    """
+    with tempfile.TemporaryDirectory() as root:
+        deployment = _P.deployment().PlaceholderDeployment(Path(root))
+        proc = subprocess.run(
+            ["bash", "-c", 'source "$1"; guard_name_prefix', "_", str(COMMON_SH)],
+            capture_output=True, text=True, timeout=60,
+            env={**os.environ, **deployment.env()},
+        )
+    assert proc.returncode == 0, (
+        f"guard_name_prefix is not callable in {COMMON_SH}: {proc.stderr}"
+    )
+    prefix = proc.stdout.strip()
+    assert prefix, (
+        "guard_name_prefix printed nothing, so `is_ours` would judge EVERY name "
+        "as ours -- startswith(\"\") is true for every string"
+    )
+    return prefix
+
+
+#: The ownership prefix the guard judges by, in the one spelling that exists.
+PREFIX = _name_prefix()
+
+#: Every argument `destroy-guard.jq` declares, in the shape jq takes them. Both
+#: this file and its sibling build their invocations from this list, so a fifth
+#: argument added to the filter is added here once rather than in four places
+#: that each fail with a compile error the day they are missed.
+GUARD_ARGS = [
+    "--argjson", "deny", json.dumps(DENY),
+    "--argjson", "allow_types", json.dumps(UNLABELABLE),
+    "--arg", "project", PROJECT,
+    "--arg", "prefix", PREFIX,
+]
+
+pytestmark = pytest.mark.skipif(
+    not GUARD_JQ.exists(), reason="scripts/lib/destroy-guard.jq not built yet"
+)
+
+
+def run_guard(resource_changes: list[dict], tmp_path: Path) -> dict:
+    fixture = tmp_path / "plan.json"
+    fixture.write_text(json.dumps({"resource_changes": resource_changes}))
+    proc = subprocess.run(
+        ["jq", "-f", str(GUARD_JQ), *GUARD_ARGS, str(fixture)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, f"guard jq failed: {proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+def deletion(address: str, type_: str, **before) -> dict:
+    before.setdefault("project", PROJECT)
+    return {"address": address, "type": type_,
+            "change": {"actions": ["delete"], "before": before, "after": None}}
+
+
+def addresses(verdict: dict, key: str) -> set[str]:
+    return {e["address"] for e in verdict.get(key, [])}
+
+
+def test_near_miss_label_value_is_an_offender(tmp_path):
+    """`managed-by=other-terraform` must NOT pass.
+
+    A substring or truthiness check on the label would let this through and delete
+    another team's resource. The self-test fixture never exercises a wrong VALUE.
+    """
+    verdict = run_guard([
+        deletion("ours", "google_storage_bucket",
+                 name=f"{PROJECT}-swarm-artifacts",
+                 labels={"managed-by": "swarm-terraform"}),
+        deletion("near_miss", "google_storage_bucket",
+                 name="someone-elses-bucket",
+                 labels={"managed-by": "other-terraform"}),
+    ], tmp_path)
+    assert "near_miss" in addresses(verdict, "offenders"), (
+        "GUARD FAILED OPEN on managed-by=other-terraform — a wrong label value was "
+        f"treated as ours. Verdict: {json.dumps(verdict)[:400]}"
+    )
+    assert "ours" not in addresses(verdict, "offenders")
+
+
+def test_label_key_present_but_empty_is_an_offender(tmp_path):
+    verdict = run_guard([
+        deletion("empty_label", "google_storage_bucket", name="x", labels={"managed-by": ""}),
+    ], tmp_path)
+    assert "empty_label" in addresses(verdict, "offenders")
+
+
+def test_no_labels_key_at_all_is_an_offender(tmp_path):
+    verdict = run_guard([
+        deletion("no_labels", "google_storage_bucket", name="x"),
+    ], tmp_path)
+    assert "no_labels" in addresses(verdict, "offenders")
+
+
+def test_the_derived_deny_list_is_the_one_production_passes_the_guard():
+    """The derivation, asserted, so a silent parse failure cannot read as a pass.
+
+    A derivation that stopped finding the entries would yield `[]`, every
+    parametrised case below would collapse to nothing, and the suite would go
+    green having checked no resource at all -- the failure mode CLAUDE.md calls
+    out by name ("Empty output is not success").
+
+    MUTATION: delete an entry from scripts/lib/deny-list.example.json and this
+    fails on its own floor. Drop the `grep -vx default` from `guard_deny_json`
+    and the third assertion fails.
+    """
+    # The list's own `floors.total` is the fewest entries it may hold; a list
+    # below it is truncated, and deny_list_load refuses it for the same reason.
+    floor = json.loads(DENY_LIST_EXAMPLE.read_text())["floors"]["total"]
+    assert floor > 0 and len(SHARED) >= floor, (
+        f"read only {len(SHARED)} never-touch entries out of {DENY_LIST_EXAMPLE.name}, "
+        f"below its floor of {floor}, so the read broke or an entry was lost"
+    )
+    assert len(UNLABELABLE) >= 35, (
+        f"parsed only {len(UNLABELABLE)} unlabelable types out of {TYPES_JSON.name}"
+    )
+    # The two transformations `guard_deny_json` applies, checked by their effect
+    # rather than by a second copy of the pipeline.
+    assert "default" not in DENY, (
+        "the bare `default` must not reach the token comparison -- it appears inside "
+        "too many unrelated resource ids; destroy-guard.jq matches the shared "
+        "default network on the network/subnetwork field instead"
+    )
+    assert "(default)" in DENY, (
+        "Firestore's `(default)` database must be on the list the guard judges by; "
+        "CONTRACT.md reserves it for the other teams in this shared project"
+    )
+    # And both callers build it with the shared function rather than their own
+    # pipeline, which is how the two copies of it drifted apart in the first place.
+    for script in ("scripts/destroy.sh", "scripts/lib/plan-guard.sh"):
+        source = (REPO / script).read_text()
+        assert "guard_deny_json" in source, (
+            f"{script} no longer calls guard_deny_json; a second implementation of "
+            f"the list a destroy guard judges by is how `make destroy` and the CI "
+            f"plan guard come to disagree about what belongs to another team"
+        )
+
+
+@pytest.mark.parametrize("protected", DENY)
+def test_every_real_neighbour_is_caught_even_if_mislabelled(protected, tmp_path):
+    """A neighbour must be caught by the deny-list even when it carries OUR label.
+
+    Defence in depth: if a bad import ever pulled a foreign resource into our state
+    and it inherited our label, the deny-list is the remaining backstop.
+
+    EVERY ENTRY, not a chosen four. `destroy-guard.jq`'s `deny_hits` is
+    type-agnostic -- it compares `$deny` against `tokens_of(before)`, which reads
+    `.name`, `.id`, `.email`, `.bucket`, `.cluster`, `.network` and friends -- so
+    one case per protected resource costs nothing and is the only way to say that
+    all of them are covered. The four that were here proved four.
+
+    The entry is fed AS IT IS WRITTEN, never rebuilt: a service account goes in as
+    its own full email, because a shared project's accounts (a Compute Engine
+    default account, say) need not be on this project's service-account domain,
+    and no `f"{name}@{PROJECT}..."` could produce them.
+    """
+    before = {"name": protected}
+    if "@" in protected:
+        before["email"] = protected
+    verdict = run_guard([
+        deletion("intruder", "google_service_account",
+                 labels={"managed-by": "swarm-terraform"}, **before),
+    ], tmp_path)
+    caught = addresses(verdict, "denylist_hits")
+    assert "intruder" in caught, (
+        f"GUARD FAILED OPEN: {protected} carried our label and slipped past the "
+        f"deny-list. Verdict: {json.dumps(verdict)[:400]}"
+    )
+
+
+def test_guard_fails_closed_on_unparseable_plan(tmp_path):
+    """Invalid JSON must be a refusal -- and must be refused for THAT reason.
+
+    This case used to assert only `returncode != 0`, and on 2026-09-24 it was
+    green while the guard was refusing everything: the invocation had no
+    `--arg prefix`, so jq exited 3 on a compile error before it ever looked at
+    the file. "Non-zero" and "rejected the input" are not the same statement,
+    and a guard that cannot compile refuses a GOOD plan too -- `make destroy`
+    was dead for exactly that reason.
+
+    MUTATION: drop `--arg project` from GUARD_ARGS and the second assertion
+    fails, naming the compile error, instead of this passing for the wrong
+    reason. (It used to say `--arg prefix`; since the merge with main's archived pull request 17 the
+    filter reads that one as `$ARGS.named.prefix` with a default, so dropping it
+    no longer stops the filter compiling. `$project` is still a compile-time
+    binding.)
+    """
+    bad = tmp_path / "bad.json"
+    bad.write_text("{ not valid json")
+    proc = subprocess.run(
+        ["jq", "-f", str(GUARD_JQ), *GUARD_ARGS, str(bad)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode != 0, "guard parsed invalid JSON as a safe plan"
+    assert "is not defined" not in proc.stderr, (
+        f"the guard failed to COMPILE rather than rejecting the input, so this "
+        f"case proves nothing about bad input and every good plan is refused "
+        f"too:\n{proc.stderr}"
+    )
+    assert "parse error" in proc.stderr, (
+        f"the refusal came from somewhere other than the plan being unreadable:"
+        f"\n{proc.stderr}"
+    )
+    # The exit CODE is deliberately not asserted: jq 1.6 exits 2 on a parse
+    # error and jq 1.7.1 exits 5, and this suite runs on whichever the runner
+    # has. The message is the stable half, and "which failure" is the whole
+    # point of the case.
+
+
+@pytest.mark.skipif(not DESTROY.exists(), reason="destroy.sh not built yet")
+def test_shipped_self_test_passes(tmp_path):
+    """The guard's own self-test must pass, or we do not deploy at all."""
+    proc = subprocess.run(
+        ["bash", str(DESTROY), "--self-test"],
+        capture_output=True, text=True, cwd=REPO, timeout=180,
+        env={**os.environ, "PROJECT_ID": PROJECT, "ENVIRONMENT": "dev"},
+    )
+    assert proc.returncode == 0, f"destroy.sh --self-test FAILED:\n{proc.stdout}\n{proc.stderr}"

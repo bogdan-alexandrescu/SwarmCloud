@@ -1,0 +1,7 @@
+{
+  "why": "The deployment versions this release's plugin supports (docs/design/day-one-plan.md section 6.5), copied into the release's plugin as compat.json by scripts/release/marketplace.py. min is inclusive, max_exclusive exclusive, and an empty bound is open. Both are open because no earlier release exists: the first public release has no deployment older than itself to exclude. Raise min in the release whose plugin first calls a route or field an older deployment lacks; the manual pre-release test (section 7.3) runs the new plugin against the previous release, which is how that is found. A range that leaves out the release's own deployment is refused when the release is assembled.",
+  "deployments": {
+    "min": "",
+    "max_exclusive": ""
+  }
+}

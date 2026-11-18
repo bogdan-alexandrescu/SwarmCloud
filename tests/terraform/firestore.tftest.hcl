@@ -1,0 +1,762 @@
+# Firestore is the control plane's only durable state, and in a SHARED project
+# the database name is a safety property: `(default)` belongs to whoever asks
+# for it next, and a project gets exactly one.
+
+mock_provider "google" {}
+
+variables {
+  project_id = "example-project"
+}
+
+run "named_database_in_region" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition     = google_firestore_database.this.name == "swarm"
+    error_message = "the control plane uses the NAMED `swarm` database"
+  }
+
+  assert {
+    condition     = google_firestore_database.this.name != "(default)"
+    error_message = "(default) must stay free for other teams in this shared project"
+  }
+
+  assert {
+    condition     = google_firestore_database.this.location_id == "us-central1"
+    error_message = "the database must be co-located with the workloads"
+  }
+
+  assert {
+    condition     = google_firestore_database.this.type == "FIRESTORE_NATIVE"
+    error_message = "Datastore mode has no transactions of the shape admission needs"
+  }
+
+  assert {
+    condition     = google_firestore_database.this.concurrency_mode == "PESSIMISTIC"
+    error_message = "admission relies on the losing transaction being aborted and retried, not on a client-visible contention error"
+  }
+
+  assert {
+    condition     = google_firestore_database.this.delete_protection_state == "DELETE_PROTECTION_ENABLED"
+    error_message = "delete protection defaults on: this database is the whole control plane"
+  }
+}
+
+run "default_database_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    database_id = "(default)"
+  }
+
+  expect_failures = [var.database_id]
+}
+
+run "scheduler_drain_index_is_state_priority_desc_created_asc" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # The scheduler's hot path is exactly one query:
+  #   tasks where state == READY order by priority DESC, created_at ASC
+  # Firestore has no query planner: without this index the query does not run
+  # slowly, it fails.
+  assert {
+    condition     = length(output.scheduler_index_fields) == 3
+    error_message = "the drain-loop index must have exactly three fields"
+  }
+
+  assert {
+    condition     = output.scheduler_index_fields[0].field_path == "state" && output.scheduler_index_fields[0].order == "ASCENDING"
+    error_message = "state must lead the drain-loop index: it is the equality filter"
+  }
+
+  assert {
+    condition     = output.scheduler_index_fields[1].field_path == "priority" && output.scheduler_index_fields[1].order == "DESCENDING"
+    error_message = "priority must be DESCENDING, or high-priority work sorts last"
+  }
+
+  assert {
+    condition     = output.scheduler_index_fields[2].field_path == "created_at" && output.scheduler_index_fields[2].order == "ASCENDING"
+    error_message = "created_at ASCENDING is what makes the queue FIFO within a priority band, so nothing starves"
+  }
+
+  assert {
+    condition     = contains(output.index_names, "tasks-tenant-state-priority-created")
+    error_message = "the tenant-scoped variant must exist: the API may never return another tenant's task"
+  }
+
+  assert {
+    condition     = contains(output.index_names, "tasks-state-next-eligible")
+    error_message = "parked work is woken by a state + next_eligible_at query"
+  }
+
+  assert {
+    condition     = contains(output.index_names, "leases-state-dispatch-deadline")
+    error_message = "the reconciler finds leases admitted but never dispatched by state + dispatch_deadline"
+  }
+}
+
+run "the_place_in_line_count_has_an_index_for_every_pool_kind" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # GET /v1/tasks/{id} counts a READY task's place in line (archived issue 1782) as
+  # `<pool filter> AND state == READY ORDER BY priority DESC, created_at ASC`.
+  # Without the index for a pool kind the count is refused, and every task
+  # behind that kind of pool serves place_in_line null.
+  assert {
+    condition = alltrue([
+      for name in ["tasks-resource-state-priority-created", "tasks-runner-state-priority-created", "tasks-provider-state-priority-created", "tasks-tenant-provider-state-priority-created"] :
+      google_firestore_index.this[name].collection == "tasks" &&
+      google_firestore_index.this[name].fields[length(google_firestore_index.this[name].fields) - 3].field_path == "state" &&
+      google_firestore_index.this[name].fields[length(google_firestore_index.this[name].fields) - 2].field_path == "priority" &&
+      google_firestore_index.this[name].fields[length(google_firestore_index.this[name].fields) - 2].order == "DESCENDING" &&
+      google_firestore_index.this[name].fields[length(google_firestore_index.this[name].fields) - 1].field_path == "created_at" &&
+      google_firestore_index.this[name].fields[length(google_firestore_index.this[name].fields) - 1].order == "ASCENDING"
+    ])
+    error_message = "each place-in-line index must end state, priority DESC, created_at ASC: the drain order"
+  }
+
+  assert {
+    condition     = google_firestore_index.this["tasks-tenant-provider-state-priority-created"].fields[0].field_path == "tenant_id"
+    error_message = "a per-tenant provider pool is counted inside the task's own tenant (invariant 9)"
+  }
+}
+
+run "every_tenant_scoped_collection_has_a_tenant_leading_index" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # Firestore cannot filter a result set after the fact. A listing that is meant
+  # to be tenant-scoped needs tenant_id INSIDE the index, or the only way to
+  # honour the boundary is to over-read and drop rows in the app.
+  assert {
+    condition = alltrue([
+      for name in ["tasks-tenant-created", "tasks-tenant-state-updated", "leases-tenant-created", "attempts-tenant-created", "events-tenant-at", "workflows-tenant-state-created"] :
+      contains(output.index_names, name)
+    ])
+    error_message = "a tenant-scoped index is missing; some list endpoint would have to filter in the application"
+  }
+}
+
+run "the_outcome_ledger_has_its_index_and_its_exemptions" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # GET /v1/outcomes derives each tenant-day from
+  #   tasks where tenant_id == T and D <= completed_at < D+1 order by completed_at
+  # Without this index that query does not run slowly; it fails, and every day
+  # comes back unread with read_failed.
+  assert {
+    condition     = contains(output.index_names, "tasks-tenant-completed")
+    error_message = "the outcome ledger's ended-tasks query needs tasks-tenant-completed"
+  }
+
+  assert {
+    condition = (
+      google_firestore_index.this["tasks-tenant-completed"].collection == "tasks" &&
+      google_firestore_index.this["tasks-tenant-completed"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["tasks-tenant-completed"].fields[1].field_path == "completed_at" &&
+      google_firestore_index.this["tasks-tenant-completed"].fields[1].order == "ASCENDING"
+    )
+    error_message = "tenant_id must lead (the equality filter, and the tenant boundary), then completed_at ASCENDING"
+  }
+
+  # The rollup's two payload fields are ~700 KB JSON strings that are only ever
+  # read by document id; indexing them is pure write amplification.
+  assert {
+    condition = alltrue([
+      for f in ["ended", "arrived"] :
+      google_firestore_field.outcome_days_unindexed[f].collection == "outcome_days" &&
+      google_firestore_field.outcome_days_unindexed[f].field == f
+    ])
+    error_message = "outcome_days.ended and outcome_days.arrived must be exempt from single-field indexing"
+  }
+}
+
+run "account_hold_records_have_their_index_and_their_ttl" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # The quota broker's history route runs exactly one query:
+  #   account_holds where account_id == A and assigned_at in [F, T)
+  #   order by assigned_at DESC
+  # Without this index it fails rather than running slowly.
+  assert {
+    condition = (
+      google_firestore_index.this["account-holds-account-assigned"].collection == "account_holds" &&
+      google_firestore_index.this["account-holds-account-assigned"].fields[0].field_path == "account_id" &&
+      google_firestore_index.this["account-holds-account-assigned"].fields[1].field_path == "assigned_at" &&
+      google_firestore_index.this["account-holds-account-assigned"].fields[1].order == "DESCENDING"
+    )
+    error_message = "account_holds needs (account_id, assigned_at DESC): account_id is the equality filter, assigned_at the window and the order"
+  }
+
+  # Records name tasks; they are kept 90 days, not for ever.
+  assert {
+    condition = (
+      google_firestore_field.account_holds_ttl.collection == "account_holds" &&
+      google_firestore_field.account_holds_ttl.field == "expires_at"
+    )
+    error_message = "account_holds must expire on expires_at, the field quota_broker.accounts.hold_log_entry writes"
+  }
+}
+
+# Contract request 152 (accepted 9 November 2026) records on an attempt the
+# pool account it kept last, and the console lists an account's attempts:
+#   attempts where account_id == A order by created_at DESC
+# docs/design/llm-providers.md §8.3 names this index; without it that query
+# fails rather than running slowly.
+run "an_accounts_attempts_have_their_index" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition = (
+      google_firestore_index.this["attempts-account-created"].collection == "attempts" &&
+      google_firestore_index.this["attempts-account-created"].query_scope == "COLLECTION" &&
+      length(google_firestore_index.this["attempts-account-created"].fields) == 2 &&
+      google_firestore_index.this["attempts-account-created"].fields[0].field_path == "account_id" &&
+      google_firestore_index.this["attempts-account-created"].fields[0].order == "ASCENDING" &&
+      google_firestore_index.this["attempts-account-created"].fields[1].field_path == "created_at" &&
+      google_firestore_index.this["attempts-account-created"].fields[1].order == "DESCENDING"
+    )
+    error_message = "attempts needs (account_id ASC, created_at DESC): account_id is the equality filter, created_at the newest-first order (request 152)"
+  }
+}
+
+run "account_hold_ttl_survives_turning_the_audit_ttls_off" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    event_ttl_field = ""
+  }
+
+  assert {
+    condition     = google_firestore_field.account_holds_ttl.field == "expires_at"
+    error_message = "disabling the audit-trail TTLs must not make hold records, which name tasks, permanent"
+  }
+}
+
+# The reconciler's record of a Cloud Run execution that refuses cancellation
+# while no lease names it (archived issue 1822). repair.Reconciler._back_off_wedged stamps
+# `expires_at` (next try plus 7 days) on every write and deletes the record
+# once a stop is confirmed, so the only records a TTL ever removes are ones
+# whose execution was never confirmed stopped and has not been retried for a
+# week. Without the policy that field is inert and the collection keeps them.
+run "wedged_execution_records_expire_on_expires_at" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition = (
+      google_firestore_field.reconciler_wedged_executions_ttl.collection == "reconciler_wedged_executions" &&
+      google_firestore_field.reconciler_wedged_executions_ttl.field == "expires_at" &&
+      length(google_firestore_field.reconciler_wedged_executions_ttl.ttl_config) == 1
+    )
+    error_message = "reconciler_wedged_executions must expire on expires_at, the field repair.Reconciler._back_off_wedged writes"
+  }
+}
+
+run "wedged_execution_ttl_survives_turning_the_audit_ttls_off" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    event_ttl_field = ""
+  }
+
+  # The reconciler writes the literal field `expires_at`, not var.event_ttl_field,
+  # so switching the audit-trail TTLs off must not make wedged records permanent.
+  assert {
+    condition     = google_firestore_field.reconciler_wedged_executions_ttl.field == "expires_at"
+    error_message = "disabling the audit-trail TTLs must not make wedged execution records permanent"
+  }
+}
+
+run "pools_and_tenants_are_materialised_at_provisioning_time" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    pools = {
+      "global"      = { hard_limit = 20 }
+      "tenant:eng"  = { hard_limit = 10 }
+      "runner:mock" = { hard_limit = 20 }
+    }
+    tenant_documents = {
+      eng = {
+        kind      = "group"
+        principal = "eng@example.com"
+        credentials = [
+          "anthropic",
+        ]
+      }
+    }
+  }
+
+  # evaluate_capacity() treats a MISSING pool document as unlimited. The global
+  # pool must therefore exist before the first scheduler pass, or that pass
+  # admits with no ceiling at all.
+  assert {
+    condition     = contains(output.pool_names, "global")
+    error_message = "the global pool document must exist before the first scheduler pass"
+  }
+
+  assert {
+    condition     = google_firestore_document.pool["global"].collection == "pools"
+    error_message = "pool documents live in the pools collection"
+  }
+
+  assert {
+    condition     = strcontains(google_firestore_document.pool["global"].fields, "\"active\":{\"integerValue\":\"0\"}")
+    error_message = "a freshly created pool starts with zero active leases"
+  }
+
+  assert {
+    condition     = contains(output.tenant_document_ids, "eng")
+    error_message = "tenants declared in tfvars must exist in Firestore before the API resolves anyone into them"
+  }
+}
+
+run "global_pool_may_not_be_omitted" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    pools = {
+      "tenant:eng" = { hard_limit = 10 }
+    }
+  }
+
+  expect_failures = [var.pools]
+}
+
+# The contention bench database (S32, OD-B17-1). Off unless an environment
+# names it, a copy of the live database's locking model when on, and carrying
+# managed-by the only way a google_firestore_database can (it has no labels).
+run "no_bench_database_by_default" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition     = length(google_firestore_database.bench) == 0 && length(google_firestore_document.bench_managed_by) == 0
+    error_message = "the bench database is opt-in: an environment that does not name one must get none"
+  }
+
+  assert {
+    condition     = output.bench_database_name == null
+    error_message = "no bench database means no bench database name"
+  }
+}
+
+run "bench_database_matches_the_live_locking_model" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    bench_database_id = "swarm-bench"
+  }
+
+  assert {
+    condition     = google_firestore_database.bench[0].name == "swarm-bench"
+    error_message = "the bench database must carry the name the harness accepts"
+  }
+
+  assert {
+    condition     = google_firestore_database.bench[0].concurrency_mode == google_firestore_database.this.concurrency_mode
+    error_message = "a bench on a different concurrency mode measures a different locking model"
+  }
+
+  assert {
+    condition     = google_firestore_database.bench[0].type == "FIRESTORE_NATIVE" && google_firestore_database.bench[0].location_id == google_firestore_database.this.location_id
+    error_message = "the bench database must have the live database's type and location"
+  }
+
+  assert {
+    condition     = google_firestore_database.bench[0].delete_protection_state == "DELETE_PROTECTION_DISABLED"
+    error_message = "the bench database is disposable"
+  }
+
+  assert {
+    condition     = google_firestore_document.bench_managed_by[0].database == "swarm-bench" && strcontains(google_firestore_document.bench_managed_by[0].fields, "\"managed_by\":{\"stringValue\":\"swarm-terraform\"}")
+    error_message = "the bench database must carry managed-by=swarm-terraform (as a document: the type has no labels)"
+  }
+}
+
+run "a_bench_database_with_a_live_name_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    bench_database_id = "swarm"
+  }
+
+  expect_failures = [var.bench_database_id]
+}
+
+run "the_owner_filter_and_the_failures_listing_have_their_indexes" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # GET /v1/tasks?submitted_by=... (U5):
+  #   tasks where tenant_id == T and submitted_by == S order by created_at DESC
+  # tenant_id leads, so the owner filter narrows a tenant and never crosses one.
+  assert {
+    condition = (
+      google_firestore_index.this["tasks-tenant-submitter-created"].collection == "tasks" &&
+      google_firestore_index.this["tasks-tenant-submitter-created"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["tasks-tenant-submitter-created"].fields[1].field_path == "submitted_by" &&
+      google_firestore_index.this["tasks-tenant-submitter-created"].fields[2].field_path == "created_at" &&
+      google_firestore_index.this["tasks-tenant-submitter-created"].fields[2].order == "DESCENDING"
+    )
+    error_message = "GET /v1/tasks?submitted_by needs (tenant_id, submitted_by, created_at DESC)"
+  }
+
+  # GET /v1/admin/failures (U19):
+  #   tasks where state == FAILED order by created_at DESC, across tenants
+  assert {
+    condition = (
+      google_firestore_index.this["tasks-state-created"].collection == "tasks" &&
+      google_firestore_index.this["tasks-state-created"].query_scope == "COLLECTION" &&
+      google_firestore_index.this["tasks-state-created"].fields[0].field_path == "state" &&
+      google_firestore_index.this["tasks-state-created"].fields[1].field_path == "created_at" &&
+      google_firestore_index.this["tasks-state-created"].fields[1].order == "DESCENDING"
+    )
+    error_message = "GET /v1/admin/failures needs (state, created_at DESC) at collection scope"
+  }
+}
+
+# GET /v1/runs (archived issue 454) lists the caller's tenant's issue runs newest first
+# (swarm_api.issueruns.IssueRuns.list). Without this index the query fails.
+run "issue_runs_have_a_tenant_leading_index" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition = (
+      google_firestore_index.this["issue-runs-tenant-created"].collection == "issue_runs" &&
+      google_firestore_index.this["issue-runs-tenant-created"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["issue-runs-tenant-created"].fields[1].field_path == "created_at" &&
+      google_firestore_index.this["issue-runs-tenant-created"].fields[1].order == "DESCENDING"
+    )
+    error_message = "issue runs are listed by tenant_id ASC, created_at DESC"
+  }
+}
+
+# POST /v1/admin/runs/advance (archived issue 454), the per-tenant tick, reads the tenant's
+# movable runs oldest first (swarm_api.issueruns.IssueRuns.tickable) in two
+# queries. Without these indexes the tick fails on every call.
+run "the_issue_run_tick_has_its_indexes" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition = (
+      google_firestore_index.this["issue-runs-tenant-state-created"].collection == "issue_runs" &&
+      google_firestore_index.this["issue-runs-tenant-state-created"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["issue-runs-tenant-state-created"].fields[1].field_path == "state" &&
+      google_firestore_index.this["issue-runs-tenant-state-created"].fields[2].field_path == "created_at" &&
+      google_firestore_index.this["issue-runs-tenant-state-created"].fields[2].order == "ASCENDING"
+    )
+    error_message = "the tick reads issue runs by tenant_id, state, created_at ASC"
+  }
+
+  assert {
+    condition = (
+      google_firestore_index.this["issue-runs-tenant-state-approval-created"].collection == "issue_runs" &&
+      google_firestore_index.this["issue-runs-tenant-state-approval-created"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["issue-runs-tenant-state-approval-created"].fields[1].field_path == "state" &&
+      google_firestore_index.this["issue-runs-tenant-state-approval-created"].fields[2].field_path == "plan_approval" &&
+      google_firestore_index.this["issue-runs-tenant-state-approval-created"].fields[3].field_path == "created_at" &&
+      google_firestore_index.this["issue-runs-tenant-state-approval-created"].fields[3].order == "ASCENDING"
+    )
+    error_message = "the tick reads PLANNED auto runs by tenant_id, state, plan_approval, created_at ASC"
+  }
+}
+
+run "the_mcp_last_attach_read_has_its_index" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # GET /v1/mcp-servers reads each server's last attach with one query:
+  #   mcp_attach_releases where tenant_id == T order by at DESC limit N
+  # Without this index it fails, and the whole MCP servers list is a 500.
+  assert {
+    condition = (
+      google_firestore_index.this["mcp-attach-releases-tenant-at"].collection == "mcp_attach_releases" &&
+      google_firestore_index.this["mcp-attach-releases-tenant-at"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["mcp-attach-releases-tenant-at"].fields[1].field_path == "at" &&
+      google_firestore_index.this["mcp-attach-releases-tenant-at"].fields[1].order == "DESCENDING"
+    )
+    error_message = "mcp_attach_releases needs (tenant_id, at DESC): tenant_id is the equality filter and the tenant boundary, at the order"
+  }
+}
+
+run "workspace_roles_have_their_indexes" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # docs/design/workspace-roles.md §4.4: a person's role is the newest valid
+  # grant, read in pages of 20 with one query:
+  #   workspace_role_grants where tenant_id == T and subject in (E, "*")
+  #     order by granted_at DESC
+  # Without this index the read fails, and every role check that reads a
+  # grant answers role_unavailable.
+  assert {
+    condition = (
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].collection == "workspace_role_grants" &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].query_scope == "COLLECTION" &&
+      length(google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields) == 3 &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields[0].order == "ASCENDING" &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields[1].field_path == "subject" &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields[1].order == "ASCENDING" &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields[2].field_path == "granted_at" &&
+      google_firestore_index.this["workspace-role-grants-tenant-subject-granted"].fields[2].order == "DESCENDING"
+    )
+    error_message = "workspace_role_grants needs (tenant_id, subject, granted_at DESC): the newest grant per (tenant, subject) is the role"
+  }
+
+  # The workspace audit list:
+  #   admin_audit where target_tenant_id == T order by at DESC limit N
+  assert {
+    condition = (
+      google_firestore_index.this["admin-audit-target-tenant-at"].collection == "admin_audit" &&
+      google_firestore_index.this["admin-audit-target-tenant-at"].query_scope == "COLLECTION" &&
+      length(google_firestore_index.this["admin-audit-target-tenant-at"].fields) == 2 &&
+      google_firestore_index.this["admin-audit-target-tenant-at"].fields[0].field_path == "target_tenant_id" &&
+      google_firestore_index.this["admin-audit-target-tenant-at"].fields[0].order == "ASCENDING" &&
+      google_firestore_index.this["admin-audit-target-tenant-at"].fields[1].field_path == "at" &&
+      google_firestore_index.this["admin-audit-target-tenant-at"].fields[1].order == "DESCENDING"
+    )
+    error_message = "admin_audit needs (target_tenant_id, at DESC) for a workspace's audit list, newest first"
+  }
+}
+
+run "join_requests_and_memberships_have_their_indexes" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # docs/design/join-requests.md §4.4: the resolver reads every workspace a
+  # person joined with one query across tenants, in pages of 20:
+  #   workspace_memberships where subject == E order by at DESC
+  # Without this index the read fails, and every person reachable only by a
+  # platform membership answers membership_unavailable.
+  assert {
+    condition = (
+      google_firestore_index.this["workspace-memberships-subject-at"].collection == "workspace_memberships" &&
+      google_firestore_index.this["workspace-memberships-subject-at"].query_scope == "COLLECTION" &&
+      length(google_firestore_index.this["workspace-memberships-subject-at"].fields) == 2 &&
+      google_firestore_index.this["workspace-memberships-subject-at"].fields[0].field_path == "subject" &&
+      google_firestore_index.this["workspace-memberships-subject-at"].fields[0].order == "ASCENDING" &&
+      google_firestore_index.this["workspace-memberships-subject-at"].fields[1].field_path == "at" &&
+      google_firestore_index.this["workspace-memberships-subject-at"].fields[1].order == "DESCENDING"
+    )
+    error_message = "workspace_memberships needs (subject, at DESC): the newest valid grant per tenant is the membership (join-requests.md §4.4)"
+  }
+
+  # §4.1 and §4.6: a workspace's requests, newest first, for its admins'
+  # page and the per-workspace open limit:
+  #   join_requests where tenant_id == T order by requested_at DESC
+  assert {
+    condition = (
+      google_firestore_index.this["join-requests-tenant-requested"].collection == "join_requests" &&
+      google_firestore_index.this["join-requests-tenant-requested"].query_scope == "COLLECTION" &&
+      length(google_firestore_index.this["join-requests-tenant-requested"].fields) == 2 &&
+      google_firestore_index.this["join-requests-tenant-requested"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["join-requests-tenant-requested"].fields[0].order == "ASCENDING" &&
+      google_firestore_index.this["join-requests-tenant-requested"].fields[1].field_path == "requested_at" &&
+      google_firestore_index.this["join-requests-tenant-requested"].fields[1].order == "DESCENDING"
+    )
+    error_message = "join_requests needs (tenant_id, requested_at DESC): a workspace's requests for its admins, tenant_id leading (invariant 9)"
+  }
+
+  # §4.1: a person's own requests, newest first, for their list and the
+  # per-person open and daily limits:
+  #   join_requests where requester == E order by requested_at DESC
+  assert {
+    condition = (
+      google_firestore_index.this["join-requests-requester-requested"].collection == "join_requests" &&
+      google_firestore_index.this["join-requests-requester-requested"].query_scope == "COLLECTION" &&
+      length(google_firestore_index.this["join-requests-requester-requested"].fields) == 2 &&
+      google_firestore_index.this["join-requests-requester-requested"].fields[0].field_path == "requester" &&
+      google_firestore_index.this["join-requests-requester-requested"].fields[0].order == "ASCENDING" &&
+      google_firestore_index.this["join-requests-requester-requested"].fields[1].field_path == "requested_at" &&
+      google_firestore_index.this["join-requests-requester-requested"].fields[1].order == "DESCENDING"
+    )
+    error_message = "join_requests needs (requester, requested_at DESC): a person's own requests and their rate limits (join-requests.md §4.1)"
+  }
+}
+
+# The platform-membership switch ships off (join-requests.md §3.4, §6 row 5):
+# prod's tfvars never names it, so prod keeps swarm-api's default, off, even
+# once the index its read needs exists. dev turns it on in a separate commit,
+# only after JOIN-DOCS-ACCEPT is green.
+run "prod_leaves_platform_memberships_off" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition     = contains(output.index_names, "workspace-memberships-subject-at") && length(regexall("(?i)platform_memberships", file("../../terraform/environments/prod/prod.tfvars.example"))) == 0
+    error_message = "the membership read has its index, and terraform/environments/prod/prod.tfvars.example names no platform_memberships switch, so prod keeps it off (join-requests.md §6 row 5)"
+  }
+}
+
+# archived issue 1818 (owner's option b, 2026-10-21): the platform database gets Firestore's
+# managed daily backup, kept 7 days -- the point-in-time window, so an
+# offboarded tenant's documents outlive it no longer than they already did. A
+# backup outlives a deleted database; point-in-time versions do not. The
+# disposable bench database gets none.
+run "the_platform_database_has_a_daily_backup_kept_7_days" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    bench_database_id = "swarm-bench"
+  }
+
+  # MUTATION: delete backups.tf, or set daily_backup's default to false -> red.
+  assert {
+    condition     = length(google_firestore_backup_schedule.daily) == 1
+    error_message = "the platform database must have exactly one daily backup schedule (#1818)"
+  }
+
+  # MUTATION: point the schedule at google_firestore_database.bench[0].name -> red.
+  assert {
+    condition     = google_firestore_backup_schedule.daily[0].database == google_firestore_database.this.name && google_firestore_backup_schedule.daily[0].database == "swarm"
+    error_message = "the schedule belongs to the platform database `swarm`"
+  }
+
+  # MUTATION: add a schedule on the bench database -> red.
+  assert {
+    condition     = alltrue([for s in google_firestore_backup_schedule.daily : s.database != "swarm-bench"])
+    error_message = "the bench database is disposable and gets no backup"
+  }
+
+  # MUTATION: default backup_retention to "8467200s" (14 weeks) -> red.
+  assert {
+    condition     = google_firestore_backup_schedule.daily[0].retention == "604800s"
+    error_message = "backups are kept 7 days, the point-in-time window (#1818 option b)"
+  }
+
+  # MUTATION: replace daily_recurrence {} with weekly_recurrence -> red.
+  assert {
+    condition     = length(google_firestore_backup_schedule.daily[0].daily_recurrence) == 1 && length(google_firestore_backup_schedule.daily[0].weekly_recurrence) == 0
+    error_message = "the schedule is daily, so a deleted database loses at most 24 h"
+  }
+
+  # MUTATION: default delete_protection to false -> red.
+  assert {
+    condition     = google_firestore_database.this.delete_protection_state == "DELETE_PROTECTION_ENABLED"
+    error_message = "delete protection is on for the platform database (#1818)"
+  }
+}
+
+run "a_module_instance_with_backups_off_gets_no_schedule" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    daily_backup = false
+  }
+
+  # MUTATION: drop the count on google_firestore_backup_schedule.daily -> red.
+  assert {
+    condition     = length(google_firestore_backup_schedule.daily) == 0
+    error_message = "daily_backup = false must create no schedule"
+  }
+}
+
+run "a_backup_retention_over_14_weeks_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    backup_retention = "8467201s"
+  }
+
+  # MUTATION: drop the <= 8467200s validation -> red (Firestore's maximum, 14 weeks).
+  expect_failures = [var.backup_retention]
+}

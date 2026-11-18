@@ -1,0 +1,1473 @@
+/* ==========================================================================
+   AGENTS: the list, the split detail, the Logs tab (lane U1, 2026-10-02)
+   --------------------------------------------------------------------------
+   agents.html V1, agent-detail-2.html A and viewers.html A, styled to
+   components.html A as built: 32px rows and controls, radius 8 on controls
+   and 12 on cards, pill chips, 12px type floor, no all-caps, no letter
+   spacing. Every colour is a token from styles.css's :root (lane U0's), so
+   light and dark follow the theme toggle; nothing here declares a token.
+   The local pieces are named `ag-*` so a later pass can swap each for the
+   canonical component it stands in for.
+
+   RADII ARE THE SHEET'S TOKENS, NOT components.html's NUMBERS. A pick says
+   8px controls and 12px cards; the radius scale main holds today (and that
+   spacing.test.tsx enforces) is 0/2/6/10/14/999, and the scale is lane U0's
+   to move. `--ctl-radius-sm` and `--radius` are used, so these follow when
+   it does.
+   ========================================================================== */
+
+/* --- the list: the section's pages as a strip ---------------------------- */
+.ag-list-tabs {
+  display: flex;
+  gap: var(--ctl-s3);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--ctl-s2);
+  background: var(--bg);
+}
+.ag-list-tabs > button {
+  min-height: 32px;
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: none;
+  color: var(--text-dim);
+  font: 500 var(--t-body)/var(--lh-body) var(--font);
+  cursor: pointer;
+}
+.ag-list-tabs > button[aria-selected='true'] { color: var(--text); border-bottom-color: var(--sk-ac); font-weight: 600; }
+.ag-list-tabs > button:hover { color: var(--text); }
+.ag-list-tabs > button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.ag-list-tabs .badge { color: var(--text-faint); font-variant-numeric: tabular-nums; margin-inline-start: 2px; }
+
+/* --- the list header: « [, find, profile -------------------------------- */
+.ag-list-head { flex-wrap: wrap; gap: var(--ctl-s2); }
+.ag-collapse,
+.ag-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--ctl-bd);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  cursor: pointer;
+}
+.ag-collapse:hover,
+.ag-sort:hover { background: var(--surface-2); }
+.ag-collapse:focus-visible,
+.ag-sort:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-sort[aria-pressed='true'] { border-color: var(--sk-ac); }
+.ag-collapse kbd,
+.ag-logs kbd {
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  border: 1px solid var(--line-soft);
+  border-radius: 2px;
+  padding: 0 4px;
+  color: var(--text-dim);
+}
+/* THE SCOPE AT THE SEARCH BOX'S END (V147): `26 loaded` was the toolbar's
+   last item and, on any wrap, a line of its own. Inside the find group it
+   stays on the line that takes the slack. */
+.ag-find { flex: 1 1 200px; min-width: 0; display: flex; align-items: center; gap: var(--ctl-s2); }
+/* THE SEARCH BOX KEEPS ITS WIDTH; THE CONTROLS WRAP (live QA WA-10, 1440x900).
+   With every control on one line the box shrank to "Find by name or t", the
+   scope was cut to `200 loaded · mo…` and Started dropped alone to a second
+   row. The find group now asks for 22em and gives way only to 16em, the
+   scope is whole, and the controls after it are never squeezed: when they do
+   not fit they go to the next line together. Beside an open agent the list is
+   380px, so the find group takes the first line to itself. */
+.ag-list-head > .ag-find { flex: 1 1 22em; min-width: min(100%, 16em); }
+/* THE CONTROLS ARE ONE FLEX ITEM (V147, VQA2-R13). The rule above sized the
+   find group, but every control after it was still its own item, so at 1440
+   on Recent (and with Group by workflow) `Started` dropped alone to a second
+   row all the same. `.ag-tools` is one item whose size is all its controls:
+   it shares the find group's line when they all fit and goes to the next
+   line whole when they do not. Inside it the checkboxes and `Started` are
+   `.ag-tools-tail`, which never breaks, so a list too narrow for the group
+   still ends its last line with company. */
+.ag-tools { flex: 0 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+.ag-tools-tail { flex: none; display: flex; align-items: center; gap: var(--ctl-s2); white-space: nowrap; }
+/* The profile and owner filters are one pair (`.ag-pickers`), no box of its
+   own here: its filters are the group's items, as they were. The phone gives
+   it a line (below). */
+.ag-pickers { display: contents; }
+.ag-tools > .ag-filter,
+.ag-pickers > .ag-filter,
+.ag-tools-tail > .ag-filter,
+.ag-tools-tail > .ag-sort,
+.ag-tools > .c-seg { flex: none; }
+/* BESIDE AN OPEN AGENT the list is 380px: `«` and the find group share the
+   first line and the controls take the next. The find group used to be
+   `flex-basis: 100%`, which left `«` on a row of its own above it (V147). */
+.app.has-inspector > .work .ag-list-head > .ag-tools { flex-basis: 100%; }
+.ag-find > input {
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--ctl-bd);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-body)/var(--lh-body) var(--font);
+}
+.ag-find > input:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.ag-filter-k { color: var(--text-dim); font-size: var(--t-meta); }
+.ag-find > .ag-scope { flex: none; white-space: nowrap; }
+/* THE PROFILE SELECT IS CAPPED (V061, visual QA archived issue 1038). A native select is as
+   wide as its longest option, so one long profile name made it ~450px and
+   pushed every other control down a line. The chosen value ellipsises; the
+   whole of it is the select's title and the open list's own width. */
+.ag-list-head .ag-filter select { max-width: 16em; min-width: 0; text-overflow: ellipsis; }
+
+/* --- the compact row, at every width ------------------------------------- */
+/* LINE ONE is the mark, the name and the elapsed time; LINE TWO profile ·
+   owner · try; then the reason. It was only drawn beside an open agent; it is
+   the list now (archived issue 503), so the template is unscoped. */
+.row.is-compact {
+  grid-template-columns: [state] auto [name] minmax(0, 1fr) [age] auto;
+  column-gap: var(--ctl-s2);
+  row-gap: 2px;
+  align-items: baseline;
+  min-height: 32px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+/* THE ROW'S OPENER (visual QA QA-032, 2026-10-20): an empty button over the
+   whole row, so the row is not a button around the copy-id button (axe
+   nested-interactive). It draws nothing but the focus ring the row drew; the
+   id line is raised above it, so the copy and a drag-select of the id are
+   theirs. The row is its containing block. */
+.row.is-compact { position: relative; }
+.row.is-compact > .cr-open {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.row.is-compact > .cr-open:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.row.is-compact .tid { position: relative; z-index: 1; }
+.row.is-compact > .sk-st > .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.row.is-compact > .cr-name { grid-column: name; min-width: 0; }
+/* THE NAME CELL STACKS (archived issue 94): the name, then the id line UNDER it. Without
+   this the cell is styles.css's `.row .agent`, a one-line flex ROW, and the
+   id sat beside the name, so a long step name and the id cut each other and
+   a phone squeezed both. `stretch` gives the id line the cell's full width to
+   cut at its start; the shared reason stays absolutely positioned. */
+.row.is-compact > .cr-name { flex-direction: column; align-items: stretch; gap: 0; }
+.row.is-compact > .cr-name b {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  font-weight: 600;
+  color: var(--text);
+}
+/* A STEP NAMED BY ITS WORKFLOW (VQ-009): `<title> · <step>` on the one line.
+   The title gives way to an ellipsis first; the step, which tells one
+   workflow's rows apart, keeps up to 70% of the line. The whole name and the
+   id are the name's title. */
+.row.is-compact > .cr-name b.is-titled { display: flex; min-width: 0; }
+.row.is-compact > .cr-name b > .cr-wf { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row.is-compact > .cr-name b > .cr-step { flex: none; max-width: 70%; overflow: hidden; text-overflow: ellipsis; }
+.row.is-compact > .when { grid-column: age; white-space: nowrap; }
+/* A ROW WITH NO TIME TO GIVE KEEPS ITS COLUMN (QA-079): blank, not collapsed. */
+.row.is-compact > .when:empty { min-width: 1px; }
+.row.is-compact > .cr-sub,
+.row.is-compact > .why { grid-column: name / -1; }
+/* TWO LINES, AT EVERY WIDTH (V061, visual QA archived issue 1038). The clamp was the
+   phone's alone (styles.css), so on a wide list a failed row printed its
+   whole multi-line error. The sentence is whole in the span's title and on
+   the agent's own panel, one click away. `.is-same` is one line already. */
+.row.is-compact > .why:not(.is-same) {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  /* AND IT SAYS IT WAS CUT (BT-017, archived issue 2423): the walk measured a failed row's
+     reason 42 of 63px with its second line ending mid-sentence and no mark.
+     The ellipsis is asked for, not left to the clamp's default. */
+  text-overflow: ellipsis;
+}
+/* A FAILED ROW'S REASON IS RED (V146), in the text-safe red its mark's word
+   uses; it was --warn amber beside a red mark and a red rule. */
+.row.is-compact > .why.is-bad { color: var(--bad-ink); }
+.cr-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+}
+/* AT 390 THE LINE WRAPS BETWEEN ITS FACTS (visual QA run 2 work-a-007, still
+   seen in run 5b as QA-040): one line cut at its end lost a live row's
+   profile, model and owner (`dispatched · attempt 1 of 3 · claude-code ·
+   claude-opus…`), and leading with the try (QAFIX2) only chose what was cut.
+   On a phone the line wraps at its ` · ` separators instead, each fact kept
+   whole on its line; a fact longer than the row is still cut by the line's
+   `overflow: hidden`. The wide list keeps one line: it has the room. */
+@media (max-width: 560px) {
+  .row.is-compact > .cr-sub { white-space: normal; }
+  .row.is-compact > .cr-sub > * { white-space: nowrap; }
+}
+/* THE STRIP ROW'S NAME (owner QA R7): folded to 64px the row shows only its
+   mark, so its accessible name was the state word ('running'). These words --
+   the agent's name and id -- are drawn only in the strip, for a screen
+   reader; a pointer gets them from the strip's hover card. */
+.row.is-compact > .cr-vh { display: none; }
+.cr-try.is-over { color: var(--bad); font-weight: 600; }
+/* THE TASK ID LINE (archived issue 94): the whole id, printed in mono under the agent's
+   name -- a list row's and the split header's (`TaskIdLine`) -- with its copy
+   button. It was a hover title and a tooltip, so an id had to be hovered to
+   be read. 12px (--t-micro) is the floor; every colour is a theme token, so
+   light and dark both carry it.
+   ONE LINE AT EVERY WIDTH, CUT AT ITS START (`.tid-text`, below): ids share
+   their `task_` prefix and differ along their length, so an end-ellipsis
+   would hide the part that tells two apart. The copy is always the whole id.
+   NOT `.id`, and weight 400 at line two's size: styles.css's `.row .id`
+   (500 at --t-body) drew a row's id bold and larger than the line it sits
+   in (owner QA R13, 2026-10-04). */
+.tid {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text-dim);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+}
+/* ONE TEXT NODE, CUT AT ITS START (visual QA run 2, task-017). The middle
+   cut was two flex items, so the halves were two blocks: read as two words,
+   copied with a break. One run of text can only be cut at an end, and the
+   end that tells two ids apart is the last, so the line runs right-to-left
+   for the ellipsis alone: it lands on the `task_` every id shares. An id is
+   `task_` and hex, all strong left-to-right characters, so `rtl` moves the
+   ellipsis and not one character; `text-align: left` keeps a short id where
+   it was. */
+.tid-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  font-weight: 400;
+  color: var(--text-dim);
+  user-select: text;
+}
+.tid-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  margin: -4px 0;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--ctl-radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.tid-copy:hover { border-color: var(--line); background: var(--surface-2); color: var(--text); }
+.tid-copy:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.tid-copy > .c-ic { width: 13px; height: 13px; }
+.tid-said { flex: none; white-space: nowrap; font-family: var(--font); color: var(--text-dim); }
+.tid-said:empty { display: none; }
+
+/* --- the 64px strip: the list folded by «, [ or the divider --------------- */
+/* BY CLASS, NOT BY DOM SHAPE. The rule this replaces hid every child of
+   `.work` but `.rows`, and the list's rows sit inside the screen's body
+   wrapper, a child of `.work`; naming what goes is what keeps the marks and
+   the » that brings the list back. */
+@media (min-width: 1100px) {
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.sk-st):not(.cr-vh):not(.cr-open) { display: none; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > .cr-vh {
+    display: block; position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+  }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact { grid-template-columns: 1fr; justify-items: center; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-tabs,
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-head > :not(.ag-collapse),
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-wait-group > h2,
+  :root[data-agent-list='strip'] .app.has-inspector > .work .section.group > h2,
+  :root[data-agent-list='strip'] .app.has-inspector > .work .group-why,
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-more,
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-idfound-say,
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ctl-empty { display: none; }
+  /* THE STRIP SHOWS ITS ONE CONTROL, CLEANLY (U11a D28, owner QA
+     2026-10-04). At 64px the list's head scrolled away with the rows,
+     leaving no way to bring the list back without scrolling up, and the
+     breadcrumb was squeezed into the strip and drawn half off its top. The
+     breadcrumb steps aside (kept for a screen reader, as the page head is);
+     the head, which holds only », sticks to the top of the scrollport on the
+     page's own ground, and » fits the strip without its key hint (its title
+     says `[`). */
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    justify-content: center;
+    margin: 0;
+    padding: var(--ctl-s2) 0;
+    background: var(--bg);
+  }
+  :root[data-agent-list='strip'] .app.has-inspector > .work > .ctl-head {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    min-height: 0;
+    margin: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-collapse { padding: 0 8px; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-collapse > kbd { display: none; }
+  /* THE PROVENANCE LINE STEPS ASIDE TOO (V059, visual QA archived issue 1038). Opening
+     Changes folds the list to this strip, and `26 loaded · 3 live · <tenant>`
+     (`Screen`'s count note) was squeezed into its 64px over four lines. It
+     goes the way the page head went: hidden, kept for a screen reader. */
+  :root[data-agent-list='strip'] .app.has-inspector > .work .c-count-note {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  /* AND THE WAY BACK MOVES INTO THE AGENT (V059). With the breadcrumb and the
+     page title out of the strip, nothing on screen named the list or led back
+     to it but the » that unfolds it. The agent's own back link -- drawn only
+     where the agent covers the list -- is drawn over its header while the
+     list is folded: `‹ Agents`, the section the breadcrumb named. */
+  :root[data-agent-list='strip'] .app.has-inspector > .ag-split > .ctl-agent-back { display: inline-flex; }
+}
+
+/* THE DIVIDER HAS A HANDLE YOU CAN SEE (archived issue 503: a transparent 6px grip). The
+   grip keeps its 6px target and its z-index from styles.css; this draws the
+   pill on it, and the three stops while it is dragged. */
+.ag-divider::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  top: 50%;
+  width: 4px;
+  height: 40px;
+  margin-top: -20px;
+  border-radius: 999px;
+  background: var(--line);
+}
+.ag-divider:hover::after,
+.ag-divider.is-dragging::after,
+.ag-divider:focus-visible::after { background: var(--sk-ac); }
+.ag-snaps {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--dock-h, 28px) + 16px);
+  transform: translateX(-50%);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--ctl-shadow-pop);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+}
+.ag-snap { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+.ag-snap.is-on { border-color: var(--sk-ac); color: var(--text); background: var(--sk-acs); font-weight: 600; }
+.ag-snap-say { color: var(--text-faint); }
+
+/* --- the header: two lines (agent-details-v3.html A, picked 2026-10-04) --- */
+/* LINE 1: the state pill, the name, `elapsed · attempt n of N` and the
+   actions. The title takes the slack and clamps at two lines (its whole name
+   is its title); the pill, the headline and the actions keep their width, so
+   no control is ever drawn over another -- the defect (lane U9 item 2: the ✕
+   over Stop) that once gave the actions a row of their own. An opened Stop
+   confirm takes a line of its own inside the actions (`flex-basis: 100%`).
+   LINE 2: one sans meta line. agent.header.actions.test.tsx,
+   details.v3.test.tsx. */
+.ag-head { display: flex; flex-direction: column; gap: 6px; padding: var(--ctl-s2) 0 0; min-width: 0; }
+/* THE ROW WRAPS rather than run out of the column: the column is
+   `overflow: hidden`, so a row that did not fit clipped the ✕ (the U9 item 2
+   defect again). Measured on a running agent, 2026-10-04: line 1 needs about
+   552-559px; the column is 527px at 1440 on the 50% snap and 547px at 1280 on
+   the 380px snap. Under 640px the title and the headline take lines of their
+   own (below); above it a row that still does not fit drops its actions to
+   the next line, never past the edge. */
+.ag-head-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.ag-head-row > :first-child { flex: none; }
+.ag-head-title {
+  flex: 1 1 0;
+  min-width: 120px;
+  margin: 0;
+  font: 650 var(--t-lead)/var(--lh-lead) var(--font);
+  /* TWO LINES, THEN AN ELLIPSIS (walkthrough C): the whole name is its title. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.ag-head-state { color: var(--text-faint); font-size: var(--t-meta); }
+.ag-head-hl { flex: none; color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ag-head-hl > b { color: var(--text); font-weight: 600; }
+.ag-head-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-inline-start: auto; flex: none; min-width: 0; max-width: 100%; }
+.ag-head-actions > *, .ag-head-stop > .c-btn { flex: none; }
+/* An opened Stop confirm is never wider than the column: it wraps inside it. */
+.ag-head-actions > .ag-head-stop { max-width: 100%; }
+/* THE ✕ IS AN ITEM OF THE ACTION ROW, after Copy link (walkthrough B): the
+   column's sticky band drew it over Copy link. */
+.ag-head-actions > .drawer-close { position: static; margin: 0; flex: none; }
+/* THE COPY'S ANSWER IS THE BUTTON'S OWN LABEL (live QA WA-14); this region
+   is always mounted and says it to a screen reader, drawn nowhere. */
+.ag-head-copied { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.ag-head-stop .stop-confirm { flex-basis: 100%; }
+/* AN OPEN STOP CONFIRM HANGS FROM THE TOP OF THE ROW (live QA WA-13a). The
+   row centres its items, so the confirm's height pushed the title down and
+   left Copy link and ✕ floating halfway down the box. With it open, the row
+   and the actions align to the top: the title stays on line 1 and the
+   buttons stay level with it. */
+.ag-head-row:has(.stop-confirm),
+.ag-head-actions:has(.stop-confirm) { align-items: flex-start; }
+/* THE META LINE: profile · class · workflow · account, then the dispatch
+   chips. Sans; a `·` between facts, none before the copy
+   button or the chips. */
+.ag-head-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0; padding: 0; list-style: none; min-width: 0; overflow-x: clip; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.ag-head-facts > li { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+/* A SEPARATOR ONLY BETWEEN TWO FACTS ON ONE LINE (QA1-FIX-32,
+   overview-agents-27). As each fact's `::after` (G2-20) every wrapped line
+   ended on a dot (`account not read ·`); as a plain `::before` every wrapped
+   line began with one (`· workflow wf_…`). The dot opens every fact but the
+   first (`AgHeadMeta` marks them `data-sep`) and is hung in the 8px gap
+   before it: its width is that gap, and its margins take back the gap and
+   the fact's own 5px. A fact that opens a line has that gap outside the list,
+   which clips its inline overflow (`overflow-x: clip` above), so that dot is
+   not drawn and no line starts or ends with one. */
+.ag-head-facts > li[data-sep]::before { content: "·"; flex: none; width: 8px; margin-inline: -8px -5px; text-align: center; color: var(--text-dim); }
+/* The dispatch chips wrap as chips, and the `?` stays with the last one. */
+.ag-head-facts > li.ag-head-dispatch { flex-wrap: wrap; }
+.ag-head-dlast { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.ag-head-facts > li.is-absent { color: var(--text-faint); }
+/* A FACT THAT WAS NOT READ SAYS WHY ON HOVER, AND SHOWS THAT IT DOES (visual
+   QA run 3, ff-007, archived issue 1680): `account not read` gave no hint that its title
+   held what was not read and why. A dotted underline and the help pointer are
+   the platform's own mark for "hover for the explanation". */
+.ag-head-facts > li.ag-head-why { text-decoration: underline dotted; text-decoration-color: var(--line); text-underline-offset: 3px; cursor: help; }
+.ag-head-facts b { color: var(--text); font-weight: 550; }
+.ag-head-facts .ctl-link { font-weight: 550; }
+.ag-head-dchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 4px 1px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+}
+.ag-head-dchip.is-absent { color: var(--text-faint); }
+/* A NARROW COLUMN (a phone, or a pane under 640px -- the width the Details
+   tab's two columns also switch at): line 1 keeps the pill and the actions,
+   the title takes its own line and the headline the next, as
+   agent-details-v3.html A5 draws it. 480px was too low: see `.ag-head-row`. */
+@container ctl-inspector (max-width: 639px) {
+  .ag-head-title { order: 3; flex-basis: 100%; }
+  /* ON ITS OWN LINE IT WRAPS AT ITS SPACES (TZ-CLOCKTIME, part of archived issue 2391):
+     `ended` is now the person's zone, labelled -- `1h 3m · attempt 10 of 10
+     · ended Oct 24 14:05 GMT+5:30` is about 380px of 13px sans, past a 390
+     phone's 358px column, which clips. Beside the title it stays one line. */
+  .ag-head-hl { order: 4; flex-basis: 100%; white-space: normal; }
+}
+/* NO STICKY HEADER BAND IN THE SPLIT. `.drawer::before` is a 50px strip of
+   `--bg` at z-index 3, there to seat a sticky ✕ over a drawer whose content
+   scrolls under it. In this column only the tab strip sticks (AGENT-HEAD-B,
+   below) and its ✕ is in the actions row, which scrolls away with the head,
+   so the band would only cover the header's top. */
+.ag-split.ctl-drawer::before { display: none; }
+.ag-parent { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* ONE TITLE, IN THE HEADER ROW (archived issue 503: "the title is the task id", and a band
+   of empty space under the tabs). Each pane is a `Screen`, which heads itself
+   with an <h1> of the agent's name or id; under the split's header row that
+   is the same fact a second time. The pane keeps its sub-line -- when it was
+   read and how often -- which no header carries. */
+.ag-split-pane .head { display: none; }
+
+/* --- underline tabs with counts ------------------------------------------ */
+/* The canonical `Tabs` in its tablist form (components.html A). It scrolls
+   sideways when it does not fit the split (Q4), rather than wrapping or being
+   cut ("Details Children 0 Att…"); here it only takes its place in the column. */
+/* IT SCROLLS SIDEWAYS ONLY (QA-020, QA-024, QA-089, visual QA archived issue 1680). Each
+   tab reaches 1px under the strip (`margin-bottom: -1px`, components.css) so
+   its underline lies on the hairline, and `overflow-x: auto` alone makes
+   `overflow-y` auto too: that pixel was a vertical scroll range, and at 390
+   a classic-scrollbar browser drew a scrollbar with its arrows in the middle
+   of the row, over `Attempts 3`. The overlap was already clipped at the
+   padding edge by `auto`; `hidden` clips it the same way and cannot scroll. */
+.ag-split-tabs { margin: var(--ctl-s2) 0 var(--ctl-s3); scrollbar-width: thin; overflow-y: hidden; }
+
+/* --- the column: header, tabs, and the open tab -------------------------- */
+/* ON A PHONE'S LOGS TAB THE COLUMN DOES NOT SCROLL; ITS PANE DOES
+   (walkthrough B, owner 2026-10-03; everywhere else the column scrolls as one
+   since G2-01 and AGENT-HEAD-B, below). The header and tabs keep their height
+   and the pane takes the slack and scrolls inside it. Nothing is drawn under or over the pane: the
+   log that used to dock at the column's foot is the Logs tab (U11a, owner
+   decision 2026-10-04). */
+.ag-split.ctl-drawer { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
+.ag-split > * { flex: none; }
+.ag-split > .ag-split-pane { flex: 1 1 0; min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; }
+/* THE PANE IS ALSO THE SIZE CONTAINER the Details tab's columns ask
+   (details.css): two columns from a 640px PANE, not a 640px window. Named,
+   so the drawer's own `ctl-inspector` queries keep asking the drawer. */
+.ag-split > .ag-split-pane { container: ag-pane / inline-size; }
+.ag-split > .ctl-agent-back { align-self: flex-start; }
+/* THE HEAD SCROLLS AWAY ON DESKTOP TOO; THE TAB STRIP STICKS (AGENT-HEAD-B,
+   the owner's pick AH1 B, 2026-10-28; QA pass 1 overview-agents-30, part of archived issue 2596).
+   Held still above the pane, the head -- state, title, facts, Copy link,
+   Take control, Stop -- and the strip left 569px of tab at 1440x900 and 445
+   at 1280x800 (the AGENT-HEAD-MOCKS measures). G2-01's phone rule (below)
+   now holds above the phone: the COLUMN is the one scroller, the head goes
+   up with the tab, and the strip sticks at the column's edge (-18px, the
+   drawer's top padding, as QA-019 measured on the phone). Measured on the
+   mock, once the head has gone: 750px of tab at 1440x900, 650 at 1280x800.
+   The strip's layer is over the log's bar (`.ag-logs-bar`, 5), so More's
+   menu drops over it and nothing in the pane paints over the strip.
+   Logs, Changes and Browser keep their own scroller, one column less the
+   stuck strip tall: once the head has scrolled away they fill the column,
+   and the log's Follow moves only the log's body. The strip's height is
+   measured into `--ag-tabs-h` (AgentSplit.tsx); 57px, a one-row strip, is
+   the fallback until it is. The phone keeps G2-01 as it was, Logs and all. */
+@media (min-width: 561px) {
+  .ag-split.ctl-drawer { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+  .ag-split > .ag-split-pane { flex: none; overflow: visible; }
+  .ag-split > .ag-tabs-edge { position: sticky; top: -18px; z-index: 6; background: var(--bg); }
+  .ag-split > .ag-split-pane.is-logs,
+  .ag-split > .ag-split-pane.is-changes,
+  .ag-split > .ag-split-pane.is-browser { height: calc(100% + 18px - var(--ag-tabs-h, 57px)); }
+}
+/* THE COLUMN FITS THE SCROLLPORT, NOT THE VIEWPORT (U10a D7, owner QA
+   2026-10-04). It was `100vh - dock-h` tall and sticky at top 0, but the
+   page's `.app` has 16px of top padding (styles.css, `.sk-main > .ctl-scroll
+   > .app`), so at scroll top the column started 16px down and its last 16px
+   -- the foot of whatever it held -- was under the API-reads line, and
+   focusing a control there scrolled the page 16px to reach it. It
+   sticks 16px down and is 16px shorter, so at every scroll offset its foot is
+   the scrollport's foot. qa.u11a.logs.test.tsx holds the two 16px together.
+   AND UNDER THE TRAIL BAR, NOT UNDER THE SCROLLPORT'S TOP (visual QA run 3,
+   task-010, archived issue 1680). Inside an open object `.ctl-bar` (notifications.css) is
+   sticky at the scroller's top, 48px tall at z-index 20, over the page AND
+   this column; the column stuck at 16px, so after a 48px scroll the bar was
+   drawn over Copy link, Stop and Close. It sticks `--ctl-bar-h` lower -- 0
+   where no bar is drawn, so every other page is unchanged -- and is that much
+   shorter, so its foot is still the scrollport's. At scroll top it is where
+   it always was (the bar is in flow above `.app`), so nothing moves when the
+   page starts to scroll. qafix3.agenthead.test.tsx. */
+@media (min-width: 1100px) {
+  .app.has-inspector > .ctl-drawer.ag-split {
+    top: calc(var(--ctl-bar-h, 0px) + 16px);
+    height: calc(100vh - var(--dock-h, 28px) - var(--ctl-bar-h, 0px) - 16px);
+    max-height: calc(100vh - var(--dock-h, 28px) - var(--ctl-bar-h, 0px) - 16px);
+  }
+  /* THE HEADER STAYS IN VIEW AT THE FOOT OF A LONG LIST (owner QA R4,
+     2026-10-04). At the bottom of Live and Recent (12,499px) the column
+     moved from top 16 to -32 and cut off Copy link, Stop and Close: a sticky
+     box may not leave its grid area, and the area ended at `.app`'s content
+     edge, 48px above the scrollport's foot, where `.app`'s bottom padding
+     begins. The padding moves onto the list, so the grid area runs to the
+     scrollport's foot and the column can stay 16px down to the last pixel. */
+  .sk-main > .ctl-scroll > .app.has-inspector { padding-bottom: 0; }
+  .app.has-inspector > .work { padding-bottom: 48px; }
+  /* ONE SCROLLER PER COLUMN (visual QA pass 2, ovag2-11 and overview-agents-55).
+     The list ran on down the page, so with an agent open the page scrolled
+     the list while the agent scrolled itself: two scrollbars side by side at
+     the right edge, 47px apart, each moving a different column, and a scrolled
+     list put the `Agents` heading under the sticky breadcrumb with its glyph
+     tops cut. The list is the agent's height and scrolls in its own column,
+     so the page has nothing to scroll and the heading leaves at the list's
+     top edge, below the breadcrumb, never under it. It scrolls one way only:
+     `overflow-y: auto` alone computes `overflow-x` as auto too, and a row's
+     `.when-note` 11px past the list's edge drew a horizontal bar along the
+     column's foot, a second scroller in the column (QA2-FIX-12 review). */
+  .app.has-inspector > .work {
+    max-height: calc(100vh - var(--dock-h, 28px) - var(--ctl-bar-h, 0px) - 16px);
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
+/* --- the Logs tab (U11a, owner decision 2026-10-04) ---------------------- */
+/* THE WHOLE DETAIL AREA UNDER THE HEADER, AND NOTHING BENEATH IT. The pane
+   that holds it does not scroll; the log's own body does, so the page and
+   the column never move when the log follows its tail. AgentLogs.tsx. */
+.ag-split > .ag-split-pane.is-logs { display: flex; flex-direction: column; overflow: hidden; }
+/* WHERE THE AGENT COVERS THE LIST (below 1100px, a phone's full screen) the
+   column ends above the API-reads line, as it does in the grid (D7): the
+   log's foot is its last line, never under that line. */
+@media (max-width: 1099px) {
+  .ag-split.ctl-drawer { bottom: var(--dock-h, 28px); }
+}
+/* THE LIST UNDER AN OPEN AGENT IS DIMMED (BT-017, archived issue 2423). From 760px to
+   1099px the agent is an overlay on the right of the list (`.drawer`,
+   z-index 40), and with nothing behind it the list ran on under its edge,
+   cut mid-word (`…NOT_YET, not`), as if both were one page. The scrim is the
+   menu's (`.sk-scrim`, styles.css) at a lighter step: the agent is not a
+   modal here, so the list is dimmed, not hidden, and the scrim takes no
+   pointer. Under the spine and panel (`.sk-side`, 10) and the trail bar
+   (`.ctl-bar`, 20), so the way out stays lit; it stops at the Reads line, as
+   the agent does. Above 1099px the agent is a column beside the list and on
+   a phone it is the whole screen: neither has a list to cover. Agents.tsx
+   draws the element only while an agent is open. */
+.ag-scrim { display: none; }
+@media (min-width: 760px) and (max-width: 1099px) {
+  .ag-scrim { display: block; position: fixed; inset: 0 0 var(--dock-h, 28px) 0; z-index: 9; background: rgba(6, 16, 30, .35); pointer-events: none; }
+}
+/* ON A PHONE THE OPEN TASK STARTS UNDER THE APP HEADER (QA-116, owner
+   2026-10-20: "Start under the header"). Fixed at `top: 0` and z-index 40
+   (`.drawer`, styles.css) it covered the phone header and its menu, so the
+   only way anywhere was back to the list first. Its top is the header's foot,
+   read from the header's own height (`--sk-pbar-h`, styles.css), so it moves
+   with the header when it compacts to 36px; the fallback is the overlay's
+   own 0, for a reader of this sheet alone. Under the menu's scrim (25) and
+   drawer (26), so the opened menu covers the task; above the page's sticky
+   bars (`.ctl-bar`, 20), which it still covers. The pane tabs stick at the
+   column's own top (QA-019, below), so they need no change. Under the
+   header the task is not modal: `useSplitFocus` reads this `top`. */
+@media (max-width: 759px) {
+  .ag-split.ctl-drawer { top: var(--sk-pbar-h, 0px); z-index: 24; }
+}
+.ag-logs {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  margin-bottom: var(--ctl-s3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+/* THE LOG'S OWN BODY SCROLLS WHEREVER THE LOG IS (BT-001, archived issue 2423). The Logs
+   tab lays the log out in a flex column, so the body is the scroller and
+   Follow keeps its newest line in view. Beside the live browser
+   (`.live-logs`, LiveBrowser.tsx) and in the theater's Logs panel
+   (`.th-left-body`, Theater.tsx) its parent is a plain scrolling block: the
+   log grew to its content, the parent scrolled instead, and Follow set the
+   body's `scrollTop` to no effect -- the log opened at its top (scrollTop 0
+   of 1632) and stayed put as steps arrived. There it is the parent's
+   height, border included, and its body scrolls. Not in the phone theater
+   (theater.css `max-width: 640px`): there the Logs panel is a strip of about
+   51px, so the log at its height left its body 8px -- unreadable -- and
+   `.th-left-body` scrolls the whole log instead, as it did before. */
+.live-logs > .ag-logs {
+  box-sizing: border-box;
+  height: 100%;
+  margin-bottom: 0;
+}
+/* Beside the browser on a phone (under 760px, as `.ag-split.ctl-drawer`
+   above) the `.live-body` row grows to its content, so `100%` is the log's
+   own 2777px and the drawer scrolled instead of its body: Follow showed
+   pressed over the oldest step. A bounded height makes the body the
+   scroller again (measured on the review render: clientHeight 385, followed
+   to its end). */
+@media (max-width: 759px) {
+  .live-logs > .ag-logs { height: min(70vh, 560px); }
+}
+@media (min-width: 641px) {
+  .th-left-body > .ag-logs {
+    box-sizing: border-box;
+    height: 100%;
+    margin-bottom: 0;
+  }
+}
+/* ONE ROW OF CONTROLS (U10a D13; U11a N11 at the 380px split). The four
+   streams are a segmented control that never scrolls or spills; the search
+   gives way to its floor; everything else keeps its width. The bar is a size
+   container: under 720px the labels take their short forms (the streams drop
+   `Agent`, their whole name stays their title) and the key hints go. While the row still overflows,
+   AgentLogs.tsx moves controls into More (`BAR_SPILL`); past the last of them
+   it wraps (`.is-wrap`) rather than leave a control past the edge. The bar is
+   its own stacking layer at 5, for its More menu. */
+.ag-logs-bar {
+  container: ag-logbar / inline-size;
+  position: relative;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: var(--ctl-s2);
+  min-width: 0;
+  min-height: 40px;
+  padding: 4px var(--ctl-s3);
+  flex: none;
+}
+.ag-logs-bar.is-wrap { flex-wrap: wrap; }
+.ag-logs-bar > * { flex: none; }
+.ag-logs-short { display: none; }
+@container ag-logbar (max-width: 720px) {
+  .ag-logs-bar > * > .ag-logs-long,
+  .ag-logs-bar .ag-logs-attempt-k {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .ag-logs-bar > * > .ag-logs-short { display: inline; }
+  .ag-logs-bar > .c-btn > kbd,
+  .ag-logs-search > kbd { display: none; }
+  .ag-logs-streams > button > .ag-logs-long {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .ag-logs-streams > button > .ag-logs-short { display: inline; }
+}
+.ag-logs-bar > .ag-logs-streams { align-self: center; }
+/* ONE SELECTED STYLE UNDER THE POINTER (QA1 overview-agents-35, 2026-10-28).
+   `.c-seg > button:hover:not(:disabled)` outranks the pressed rule, so the
+   stream just clicked, still under the pointer, lost its accent colour:
+   Transcript selected read blue, stderr selected read as bold body text.
+   The pressed button keeps its colour while hovered. */
+.ag-logs-streams.c-seg > button[aria-pressed='true']:hover:not(:disabled) { color: var(--sk-ac); }
+/* THE STREAMS IN TWO ROWS UNDER 260px (BT-009, archived issue 2423). Beside the live
+   browser and in the theater's Logs panel the bar is 213px at 1440 and 180px
+   at 1024; the four short labels need 238px in a row, and the segmented
+   control's `overflow: hidden` cut `Runner` to `Run` at 1440 and dropped it
+   at 1024, so that stream could not be chosen there. Under 260px they are a
+   two-by-two grid as wide as the bar: every stream whole, none scrolled. */
+@container ag-logbar (max-width: 259px) {
+  .ag-logs-bar > .ag-logs-streams.c-seg {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    flex: 1 0 100%;
+    height: auto;
+  }
+  .ag-logs-bar > .ag-logs-streams.c-seg > button {
+    min-height: var(--h-sm);
+    padding: 0 6px;
+    justify-content: center;
+  }
+  .ag-logs-bar > .ag-logs-streams.c-seg > button:nth-child(2n) { border-right: 0; }
+  .ag-logs-bar > .ag-logs-streams.c-seg > button:nth-child(1),
+  .ag-logs-bar > .ag-logs-streams.c-seg > button:nth-child(2) { border-bottom: 1px solid var(--line); }
+}
+/* ON A PHONE THE STREAMS ARE A LINE OF THEIR OWN (390px): the four of them
+   are the width of the screen, and the controls are one row under them. */
+@container ag-logbar (max-width: 480px) {
+  .ag-logs-bar { flex-wrap: wrap; }
+  .ag-logs-bar > .ag-logs-streams { flex: 1 0 100%; }
+  .ag-logs-bar > .ag-logs-streams > button { flex: 1 1 auto; justify-content: center; }
+}
+/* A TOUCH-SIZED CONTROL ON A PHONE (owner QA R6, 2026-10-04): the stream
+   buttons took the phone's 44px target (components.css) inside the small
+   control's fixed 28px, so every label was cut in half. The control grows
+   with its buttons. */
+@media (max-width: 560px) {
+  .ag-logs-bar > .ag-logs-streams.c-seg.is-sm { height: auto; }
+  /* ONE HEIGHT ACROSS THE FILTER ROW (visual QA QA-080, 2026-10-20): the
+     profile select takes the phone's 44px target (styles.css, `.ag-filter
+     select`), and the search field and `Started` stayed at their 32px base,
+     so the row's three controls stood at three heights. They take the same
+     target. After their base rules above, which they must beat. */
+  .ag-find > input,
+  .ag-sort { min-height: 44px; }
+}
+.ag-logs-attempt { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-meta); }
+.ag-logs-attempt select {
+  max-width: 220px;
+  min-height: 28px;
+  border: 1px solid var(--ctl-bd);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+}
+.ag-logs-search { display: inline-flex; align-items: center; gap: 4px; flex: 1 1 180px; min-width: 0; }
+.ag-logs-bar > .ag-logs-search { flex: 1 1 160px; min-width: 56px; }
+/* ROOM TO SEARCH (owner QA R9, 2026-10-04): in a wide bar the search was
+   85-130px and cut its own placeholder ('Search this wi…') and what was
+   typed ('repositor×'). A bar with room for long labels gives the search a
+   floor that holds its placeholder and a typed word; the controls past it
+   spill into More first (`BAR_SPILL`). At the 380px split the bar keeps
+   Follow and Error in the row (U11a), so the narrow floor stays. */
+@container ag-logbar (min-width: 721px) {
+  .ag-logs-bar > .ag-logs-search { min-width: 200px; }
+}
+.ag-logs-search > input {
+  flex: 1;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--ctl-bd);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+}
+.ag-logs-count { font-size: var(--t-micro); color: var(--text-dim); white-space: nowrap; }
+.ag-logs-maskchip { font-size: var(--t-micro); white-space: nowrap; }
+/* A FINISHED AGENT HAS NOTHING TO FOLLOW: a chip that says so, not a control. */
+.ag-logs-final {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  white-space: nowrap;
+}
+/* MORE: what spilled from the row, and the read's facts. A popover under its
+   summary, so opening it moves nothing in the row. */
+.ag-logs-more { position: relative; }
+.ag-logs-more > summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--ctl-bd);
+  border-radius: var(--ctl-radius-sm);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  cursor: pointer;
+  list-style: none;
+}
+.ag-logs-more > summary::-webkit-details-marker { display: none; }
+.ag-logs-more > summary::after { content: '▾'; margin-inline-start: 6px; color: var(--text-faint); }
+.ag-logs-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-logs-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--ctl-s2);
+  width: max-content;
+  /* NEVER PAST THE WINDOW (G2-16, QA 2026-10-07): an attempt id ran to
+     x 1410, past the popover's edge, and the attempt select was cut. */
+  max-width: min(420px, calc(100vw - 32px));
+  padding: var(--ctl-s2) var(--ctl-s3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--ctl-shadow-pop);
+}
+.ag-logs-menu > .ag-logs-facts { margin: 0; min-width: 0; max-width: 100%; }
+.ag-logs-menu .ctl-fact { overflow-wrap: anywhere; }
+.ag-logs-menu .ag-logs-attempt { max-width: 100%; }
+.ag-logs-menu .ag-logs-attempt select { min-width: 0; max-width: 100%; }
+.ag-logs-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 0 var(--ctl-s3) var(--ctl-s2);
+  border-top: 1px solid var(--line);
+}
+.ag-logs-arrived {
+  align-self: center;
+  margin: 4px 0;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--sk-ac);
+  border-radius: 999px;
+  background: var(--sk-acs);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  cursor: pointer;
+}
+/* THE STREAM'S METADATA IS FOLDED (D13): stdout and stderr opened on a card
+   of gs paths and sizes with no line in view. Artifacts.tsx `StreamsFrom`
+   folds it under a one-line summary when every stream has lines to show, and
+   the window below is flush with the log's body. */
+.ag-logmeta { margin: var(--ctl-s2) 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ag-logmeta > summary { cursor: pointer; padding: 2px 0; }
+/* NOTHING WRITTEN, SAID ABOVE THE FOLD (QA1 overview-agents-36): the body has
+   no top padding, so the sentence `Nothing on agent stderr yet.` sat on the
+   menu's rule. It takes the step the folded card under it takes. */
+.ag-logs-body .rf-empty { margin-top: var(--ctl-s2); }
+.ag-logs-body .logwin-body { max-height: none; }
+/* THE STREAM TABLE FITS THE LOG (owner QA R7, 2026-10-04): beside the 64px
+   strip the detail is wide, the table is not stacked, and the row header's
+   uri ran it to 2049px in an 899px log with Size and Age 1100px off to the
+   right. Fixed columns: the stream takes what Size and Age leave, and its uri
+   is one line, cut, whole in its title and in `copy gsutil`. */
+.ag-logs-body .ctl-table > table { table-layout: fixed; width: 100%; }
+.ag-logs-body .ctl-table > table > thead th:nth-child(2) { width: 112px; }
+.ag-logs-body .ctl-table > table > thead th:nth-child(3) { width: 128px; }
+.ag-logs-body .ctl-table > table > tbody > tr > th > .uri {
+  display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* THE DETAILS TAB'S ONE LOG LINE: the newest line and `Open logs`, which
+   switches to the Logs tab. In the pane's flow, at its top: nothing is drawn
+   over the details. AgentLogs.tsx `LogLastLine`. */
+.ag-loglast {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  width: 100%;
+  min-height: 32px;
+  margin: 0 0 var(--ctl-s3);
+  padding: 0 var(--ctl-s3);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+.ag-loglast:hover { background: var(--surface-2); }
+.ag-loglast:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-loglast > b { flex: none; font-weight: 600; }
+.ag-loglast-line { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+.ag-loglast-line.is-absent { color: var(--text-faint); }
+.ag-loglast-open { flex: none; color: var(--info); }
+
+/* THE LINES. Numbered, the server's mask in amber, a search hit marked, an
+   error line tinted, the jump target outlined. No wrap unless asked. */
+.ag-logtext { white-space: pre; overflow-x: auto; }
+.ag-logtext.is-wrap,
+.ag-logs-body.is-wrap .ag-logtext { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ag-logline { display: block; }
+.ag-logno { display: inline-block; min-width: 4ch; margin-inline-end: 1ch; color: var(--text-faint); text-align: right; user-select: none; }
+/* WRAPPED, THE NUMBER HANGS IN A GUTTER (QA1-FIX-06 re-review, 2026-10-28).
+   A phone opens the log wrapped (overview-agents-38), and a stream-json line
+   has no space to break at: the break after the inline-block number won, so
+   `1` and `3` sat alone on a row with their JSON pushed under them. Floated
+   into the line's padding the number leaves no break of its own, the text
+   starts beside it, and its wrapped rows stay clear of the gutter. */
+.ag-logtext.is-wrap .ag-logline,
+.ag-logs-body.is-wrap .ag-logtext .ag-logline { padding-inline-start: 5ch; }
+.ag-logtext.is-wrap .ag-logno,
+.ag-logs-body.is-wrap .ag-logtext .ag-logno { float: inline-start; margin-inline-start: -5ch; }
+.ag-logline.is-err { background: var(--s-badb); }
+.ag-logline.is-current,
+.arts-step.is-current { outline: 2px solid var(--sk-ac); outline-offset: -1px; }
+.arts-step.is-err { border-inline-start: 3px solid var(--s-bad); }
+.arts-step.is-hit,
+.ag-logline mark { background: var(--sk-acs); color: inherit; }
+.ag-mask { color: var(--s-warn); background: var(--s-warnb); border-radius: 2px; }
+/* THE GAP: amber and dashed, never merged into the lines around it. */
+.ag-gap {
+  margin: var(--ctl-s2) 0;
+  padding: 6px 10px;
+  border: 1px dashed var(--s-warn);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--s-warnb);
+  color: var(--text);
+  font-size: var(--t-meta);
+  line-height: var(--lh-meta);
+}
+.ag-gap.is-unknown { border-color: var(--line); background: none; color: var(--text-dim); }
+/* A FAILED TASK'S SUCCESS LINE, EXPLAINED (QA-115): the gap's box, solid and
+   on the failure rule -- a fact about this task, not output that went missing. */
+.ag-gap.ag-failnote { border-style: solid; border-color: var(--s-bad); background: var(--s-badb); }
+.ag-gap.ag-failnote code { overflow-wrap: anywhere; }
+
+/* --- children ------------------------------------------------------------- */
+.ag-children-await {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--s-park) 45%, var(--line));
+  border-radius: var(--radius);
+  background: var(--s-parkb);
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+}
+.ag-children-await > p { margin: 0 0 4px; }
+.ag-children-head { flex-wrap: wrap; }
+.ag-children-facts { color: var(--text-dim); font-size: var(--t-meta); }
+.ag-children-mix { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); font-size: var(--t-meta); }
+.ag-children-mixpart { display: inline-flex; align-items: center; gap: 4px; }
+
+/* --- the Code card: lead, base pin, diff (agent-detail-2.html A4) -------- */
+.ag-code-lead { margin: 0 0 var(--ctl-s2); }
+.ag-code-sentence { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+.ag-refusals { margin: var(--ctl-s2) 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--ctl-s1); }
+.ag-refusal {
+  padding: 6px 10px;
+  border-inline-start: 3px solid var(--s-bad);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--s-badb);
+  font-size: var(--t-meta);
+  line-height: var(--lh-meta);
+  overflow-wrap: anywhere;
+}
+.ag-basepin { margin: 0 0 var(--ctl-s2); font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.ag-basepin > b { color: var(--text); font-weight: 600; margin-inline-end: 4px; }
+.ag-diff-open { margin: 0 0 var(--ctl-s2); }
+
+/* --- moved from styles.css with the screen (lane U1) --------------------- */
+/* THE STRIP'S HOVER CARD: the agent a bare mark stands for, beside it. Fixed,
+   in a portal on <body>, because the list column clips; never a pointer
+   target, so it cannot steal the hover from the row that drew it. */
+.ag-hovcard {
+  position: fixed;
+  z-index: 40;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  box-shadow: var(--ctl-shadow-pop);
+  pointer-events: none;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+}
+.ag-hovcard > b { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; overflow-wrap: anywhere; }
+.ag-hovcard > small { color: var(--text-dim); }
+.ag-hovcard-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ctl-s2); }
+.ag-hovcard-when { font-family: var(--mono); color: var(--text-dim); }
+.ag-hovcard-hint { color: var(--text-faint); }
+
+/* THE AGENT PAGE'S BACK LINK (App.tsx `AgentDrawer`). Wherever the agent
+   covers the list -- below 1100px -- it is the way back; beside the list
+   there is nothing to go back to. */
+.ctl-agent-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--info);
+  cursor: pointer;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+}
+.ctl-agent-back:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+@media (min-width: 1100px) {
+  .ctl-agent-back { display: none; }
+}
+/* NOR A DIVIDER TO DRAG (V148, visual QA archived issue 1038). Where the agent covers the
+   list there is no list beside it to resize, and the grip's handle showed as
+   a sliver down the drawer's left edge on a phone. */
+@media (max-width: 1099px) {
+  .ag-split > .ag-divider { display: none; }
+}
+/* ON A PHONE THE LIST AND THE AGENT ARE TWO PAGES (agents.html V1): with an
+   agent open the list is not drawn behind it, and the back link replaces the
+   close cross. */
+@media (max-width: 560px) {
+  .app.has-inspector > .work { display: none; }
+}
+
+/* --- the phone ------------------------------------------------------------ */
+@media (max-width: 560px) {
+  /* THE SECTION'S PAGES STICK UNDER THE PHONE HEADER (archived issue 503 at 390x844), AT
+     THE SCROLLER'S TOP EDGE (archived issue 139). The header (`.sk-pbar`, styles.css) is a
+     row of the frame ABOVE the page's scroller (`.ctl-scroll`), not inside
+     it, and `top` is measured from the scroller -- whose top edge already is
+     the header's foot, at 44px and at the compacted 36px alike. The strip
+     stuck at `top: 44px` (36px when compacted), which pinned it a whole
+     header-height below the header, with rows scrolling through the gap,
+     and moved it 16px when the header compacted. At 0 it sits flush under
+     the header in both heights and moves only with the scroller's edge. */
+  .ag-list-tabs { position: sticky; top: 0; z-index: 2; padding-top: 4px; }
+  /* NOTHING SHOWS THROUGH UNDER THE STUCK STRIP (visual QA run 6,
+     6:work-a-007, part of archived issue 1680). Its `margin-bottom` is a transparent band
+     under its rule, and the search field's rounded bottom border scrolled
+     through it as a stray line. A shadow in the page's own colour, offset by
+     exactly that margin, paints the band opaque; it is not padding because
+     padding would lift the rule off the tabs' underlines. Unstuck, the band
+     lies over the empty margin, so nothing it covers is drawn there. */
+  .ag-list-tabs { box-shadow: 0 var(--ctl-s2) 0 var(--bg); }
+  /* THE SORT SAYS ITS DIRECTION IN WORDS (run 6, 6:flow-find-failure-
+     desktop-03): `Ended, newest first` beside `Failed first` and `Group by
+     workflow` is wider than a 390 screen, so on a phone the tail that never
+     breaks at 1440 (V147, `.ag-tools-tail` above) wraps between its controls,
+     each kept whole, rather than run off the edge. The tail is no box of its
+     own here at all now (VQ-012, below), so its controls wrap as the tools
+     group's own items. */
+  /* THE PROFILE AND THE SORT SHARE A ROW (VQ-012, the owner's visual QA
+     2026-10-26). At 390 the filters stacked three high -- search, profile,
+     sort -- and pushed the first agent below the fold: the select asked for
+     its 16em cap and the sort for its words, more than the 358px line. Here
+     the tail's controls are items of the tools group itself (`contents`),
+     the profile and the sort lead it, and the select gives way to the sort
+     down to 7em (still capped at 16em, V061), its value whole in its title; Recent's state filter and the
+     checkboxes follow on the next row.
+     THE PROFILE AND THE OWNER SHARE A ROW NOW (archived issue 139 at 390, archived pull request 3146). The Work
+     redesign's owner filter was a 44px line of its own, and with the
+     Needs-you row it put the first agent past the midpoint. The two pickers
+     are one unbreakable line (`.ag-pickers`), each select giving way to the
+     other down to 7em, its value whole in its title (V061); the sort leads
+     the next line with the checkboxes. */
+  .ag-list-head .ag-tools-tail { display: contents; }
+  .ag-list-head .ag-tools > .ag-pickers { order: -2; flex: 1 1 100%; min-width: 0; display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s2); }
+  .ag-list-head .ag-pickers > .ag-filter { flex: 1 1 7em; min-width: 0; }
+  .ag-list-head .ag-pickers > .ag-filter > select { flex: 1 1 auto; width: 100%; }
+  .ag-list-head .ag-tools-tail > .ag-sort { order: -1; }
+  /* THE NEEDS-YOU ROW AT REST IS ONE LINE on every Work screen now, so its
+     phone rule is in work/needs-you.css (the owner's pick, 4 November 2026). */
+  .ag-head-actions { margin-inline-start: 0; }
+  /* The back link replaces the ✕ on a phone, as it did on the column. */
+  .ag-head-actions > .drawer-close { display: none; }
+  /* THE AGENT'S TABS ARE ONE ROW (V148, visual QA archived issue 1038). They wrapped
+     (U11a D39) because a strip cut at `Chi` with a missed fade hid tabs; on
+     two ragged rows they read as two strips, with the open tab's underline
+     floating mid-block. One row, packed tighter, scrolls sideways where it
+     must: the edge says `›` where more lies beyond (`AgTabsEdge`), and the
+     open tab is scrolled into view, so no tab is ever chosen and unseen. */
+  .c-tabs.ag-split-tabs { flex-wrap: nowrap; overflow-x: auto; gap: 0; }
+  .c-tabs.ag-split-tabs > a,
+  .c-tabs.ag-split-tabs > button,
+  .ag-tabs-more { padding-inline: 8px; gap: 4px; }
+  /* THE HEADER SCROLLS AWAY ON A PHONE (G2-01, QA 2026-10-07). At 390x844
+     the header -- state, title, id, facts, chips -- and the two rows of
+     tabs held y 0-373 and never moved, so with the stat strip stuck under
+     them only about 150px of the screen scrolled. Here the COLUMN is the one
+     scroller, so the header goes up with the content and only the tabs stay
+     in view, stuck at the top. Not on Logs: the log keeps its own body as
+     the scroller, under a column that does not move (qa.u11a.logs). */
+  .ag-split.ctl-drawer:not(.on-logs) { overflow-y: auto; overscroll-behavior: contain; }
+  .ag-split:not(.on-logs) > .ag-split-pane { flex: none; overflow: visible; }
+  /* AT THE COLUMN'S EDGE, NOT 18px INSIDE IT (QA-019, visual QA archived issue 1680). A
+     sticky inset is measured from the scroller's CONTENT edge, inside the
+     drawer's 18px of top padding (`.drawer`, styles.css -- the AG-31
+     correction `.drawer::before` carries). At `top: 0` the strip stuck 18px
+     down and the scrolled content (`Attempt 2 · gen 2`, `model not
+     measured`) showed in the gap above the tabs. The two 18s are held equal
+     by qa.tasktabs.test.tsx. */
+  .ag-split:not(.on-logs) > .ag-tabs-edge { position: sticky; top: -18px; z-index: 3; background: var(--bg); }
+}
+
+/* --- U10a (owner QA, 2026-10-04) ----------------------------------------- */
+/* THE TABS SAY THERE ARE MORE (D39, 390px): the strip was cut at `Che…` with
+   nothing to say it scrolls. AgentSplit `AgTabsEdge` marks which end has more
+   beyond it; that edge fades into the page with a chevron. Not a control: the
+   strip itself scrolls, and a pointer passes through. */
+.ag-tabs-edge { position: relative; min-width: 0; display: flex; align-items: stretch; }
+.ag-tabs-edge > .ag-split-tabs { flex: 1 1 auto; min-width: 0; }
+
+/* THE BAR FITS (QA12-18, live-browser QA p12): at 1440 with the list open
+   the strip was cut at `C ›`. AgentSplit `AgTabsEdge` keeps the tabs that fit
+   on the bar and puts the rest under More, at its end, on the bar's own
+   underline; More opens the shared `.c-menu` under it. */
+/* MORE GIVES WAY, THE OPEN TAB NEVER DOES (BT-004, archived issue 2423; VQ-008, the owner's
+   visual QA, 2026-10-26): at 390 a 448 px More that would not shrink
+   squeezed the strip, and the open tab in it, to 0 px, and ran past the
+   drawer's edge. More is a short `More 7` now. A fitted strip (`is-fitted`,
+   `AgTabsEdge`: More is drawn) holds only tabs measured to fit, so it keeps
+   its width, and no strip is narrower than its open tab (its min-width, set
+   by `AgTabsEdge`); if even `More 7` does not fit beside it, More shrinks and
+   its label ends in an ellipsis, its chevron whole. `AgTabsEdge` fits More
+   from its label and chevron, not from this shrinking box (VQ-008 review: at
+   390 it was squeezed to `2 m`). The names it holds are in its name and
+   title, not drawn. */
+.ag-tabs-edge > .ag-split-tabs.is-fitted { flex: none; }
+.ag-tabs-more-host { flex: 0 1 auto; min-width: 0; margin: var(--ctl-s2) 0 var(--ctl-s3); border-bottom: 1px solid var(--line); }
+.ag-tabs-more { display: flex; gap: 6px; align-items: center; max-width: 100%; min-width: 0; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; cursor: pointer; }
+.ag-tabs-more-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ag-tabs-more > [aria-hidden] { flex: none; }
+.ag-tabs-more-names { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.ag-tabs-more[aria-expanded='true'] { color: var(--text); }
+.ag-tabs-more:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ag-tabs-menu { min-width: 180px; }
+.ag-tabs-menu > .c-menu-item { justify-content: space-between; flex-wrap: nowrap; white-space: nowrap; }
+.ag-tabs-menu > .c-menu-item em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+/* THE COUNT IS A BADGE, NOT A WORD OF THE NAME (visual QA run 4, N15):
+   `Changes not counted` read as a sentence, or as a tab that is switched off,
+   because the count's words were set in the same line as the name with only
+   a face to tell them apart. Every count -- a number and the words alike, one
+   style for both -- sits in a pill of its own, on the bar and in More.
+   In More the count also gives up `.c-menu-item > em`'s line of its own
+   (`flex-basis: 100%`, `white-space: normal`, components.css): at 390 that
+   dropped `not counted` under `Artifacts`. */
+.c-tabs.ag-split-tabs > button > em,
+.ag-tabs-menu > .c-menu-item > em {
+  flex: none;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+/* MORE OPENS UPWARD ON LOGS (visual QA run 4, flow-find-failure-phone-390-P4):
+   dropped under the bar, the menu covered the Logs toolbar -- the streams,
+   search and Follow it was opened beside. On Logs the column does not scroll
+   (`.on-logs`), so the agent's head is always above the bar, and the menu
+   opens over it instead. Off Logs it still drops: on a phone the strip is
+   stuck at the column's top there, with nothing above it to open into. */
+/* ONLY ON A PHONE (AGENT-HEAD-B): above it the column scrolls on Logs too, so
+   the head may be gone from above the stuck strip and an upward menu would
+   open past the column's top, cut off. There it drops, over the log's bar. */
+@media (max-width: 560px) {
+  .ag-split.on-logs > .ag-tabs-edge .ag-tabs-menu { top: auto; bottom: calc(100% + 4px); }
+}
+.ag-tabs-edge[data-more~='end']::after,
+.ag-tabs-edge[data-more~='start']::before {
+  position: absolute;
+  top: 0;
+  bottom: var(--ctl-s3);
+  width: 32px;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  color: var(--text-dim);
+  font: 600 var(--t-body)/var(--lh-body) var(--font);
+}
+/* The strip's `›` is at the STRIP's end (BT-004): drawn at the box's end it
+   sat over More's text. `--ag-more-w` is More's width, set by `AgTabsEdge`. */
+.ag-tabs-edge[data-more~='end']::after {
+  content: '›';
+  right: var(--ag-more-w, 0px);
+  justify-content: flex-end;
+  background: linear-gradient(90deg, transparent, var(--bg) 70%);
+}
+.ag-tabs-edge[data-more~='start']::before {
+  content: '‹';
+  left: 0;
+  justify-content: flex-start;
+  background: linear-gradient(270deg, transparent, var(--bg) 70%);
+  z-index: 1;
+}
+
+/* THE CHECKPOINTS TAB'S STACKED RECORD (D21): Size and Age were each a
+   full-width row, label left and value right, and the `2 objects` button
+   was a grid row of its own under the size. In this tab a record is the
+   checkpoint's line, then Size and Age side by side, the objects button
+   beside the size. Only where the column stacks the table. */
+@container ctl-inspector (max-width: 899px) {
+  .ag-ckpts .is-stacked > table > tbody > tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    column-gap: var(--ctl-s5);
+  }
+  .ag-ckpts .is-stacked > table > tbody > tr > th { flex: 1 0 100%; }
+  .ag-ckpts .is-stacked > table > tbody > tr > td {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 2px var(--ctl-s2);
+    flex: none;
+  }
+  .ag-ckpts .is-stacked > table > tbody > tr > td > .ctl-sub { display: inline; margin: 0; }
+}
+
+/* THE INPUT'S SECOND BLOCK HAS A LABEL AND ITS OWN ROOM (D33): the rest of
+   the input under a prompt touched the prompt's box and said nothing of
+   what it was. Artifacts.tsx `Prompt`. */
+.arts-rest { margin-top: var(--ctl-s3); }
+.arts-rest > .ctl-eyebrow { display: block; margin-bottom: var(--ctl-s1); }
+
+/* THE PAGE TITLE BESIDE AN OPEN AGENT (D6): with the list at 380px the
+   title block shrank to ~60px and `Agents` wrapped as `Agent / s`. Beside
+   the split the title keeps its whole width and never breaks; the head's
+   actions give way, the refresh's words with an ellipsis. */
+.app.has-inspector > .work .c-phead { flex-wrap: nowrap; }
+.app.has-inspector > .work .c-phead > div.head { flex: none; max-width: 100%; }
+.app.has-inspector > .work .c-phead > div.head > h1 {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  -webkit-line-clamp: none;
+  line-clamp: none;
+}
+.app.has-inspector > .work .c-phead > .c-acts { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
+
+/* AT THE 64px STRIP THE PAGE HEAD IS NOT DRAWN (D28): its fragments --
+   `? 2 read just` -- stayed in the strip and the `?` lay over the meta. It
+   is hidden visually and kept for a screen reader: the page still has its
+   title. » brings the list and its head back. */
+@media (min-width: 1100px) {
+  :root[data-agent-list='strip'] .app.has-inspector > .work .c-phead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/* THE REFRESH GIVES WAY, NOT THE TITLE (U11a N10, owner QA 2026-10-04;
+   archived issue 138). Beside an open agent the list head has ~150px for its actions; the
+   refresh control (`.c-refresh`, Shell.tsx `RefreshControl`) is the one that
+   shrinks, its words cut with an ellipsis and whole in its title and its
+   accessible name. It is one button, so cutting it can never cut the press
+   off its age. */
+.app.has-inspector > .work .c-phead .c-acts > .c-refresh { flex: 0 1 auto; }
+
+/* A CANCELLED RUN'S SPAN IS A NOTE WITH ITS SENTENCE AS ITS TITLE (D20).
+   NOT UNDERLINED (live QA WA-22): `mock · owner · to cancel`, dotted, read
+   as an action, a link to cancel something. It is a qualifier of the elapsed
+   figure, so it is drawn as one: muted and plain. */
+.cr-sub .when-note { color: var(--text-faint); }
+
+/* `SAME REASON` (G2-24, dev QA 2026-10-07): a row whose reason is the row
+   above's, in the same workflow, says so in place of a blank. Muted and at
+   the 12px floor -- it is a pointer to the line above, not a reason -- and
+   on the reason's own line, where the reader looks for one. */
+.row.is-compact > .why.is-same {
+  margin-top: 2px;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+}
+
+/* --- load more, and a task found by its id (live QA WA-1, WA-2) ---------- */
+.ag-more { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); padding: var(--ctl-s3) 0; }
+.ag-more-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--ctl-bd);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  cursor: pointer;
+}
+.ag-more-btn:hover { background: var(--surface-2); }
+.ag-more-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-more-btn:disabled { cursor: progress; color: var(--text-dim); }
+.ag-more-note { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.ag-more-note.is-bad { color: var(--s-bad); }
+.ag-idfound-say { margin: var(--ctl-s2) 0; color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); }
+/* A CANCEL ON REQUEST, IN THE LEADING CARD (live QA WA-6): what the task
+   recorded is a note under who asked, not an error in the red-ruled box. */
+.dt-cancel-note { margin: 0; color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.dt-who .is-absent { color: var(--text-faint); }
+.dt-err.is-neu { border-color: var(--line); }
+
+/* --- the live-browser hand-off (live-browser.md §6, lane LB-L12) -------- */
+/* A row waiting for a person is yellow, as the banner is: the warning's own
+   tokens, so light and dark follow the theme. The rule at its left edge says
+   it without the colour. */
+.row.is-compact.is-needs-you {
+  background: var(--s-warnb);
+  box-shadow: inset 3px 0 0 var(--s-warn);
+}
+.ho-strip { padding: var(--ctl-s2) 0; }
+.ho-facts, .ho-starting, .ho-refused { display: block; }
+.ho-refused { color: var(--bad); }
+
+/* --- a live-browser task's recordings (§7) ------------------------------ */
+/* BT-012 (2026-10-26, part of archived issue 2423): `.ctl-card` draws a border and no
+   padding, so the panel's text sat 1 px off its box (x 782 vs 781). One row
+   per attempt, a grid with the Play button in its own column: inline after
+   the text, the button sat on the line of a short row and wrapped under a
+   long one, so no two rows lined up. The player and the parts span both
+   columns. The player's cap is the pane's height less room for the row
+   (`--rec-fit`, set by Recordings.tsx from the pane's clientHeight), never
+   more than 60vh: at 60vh (454 px) it overran a 407 px pane, and the frame
+   and its controls never showed together. */
+.rec-panel { margin-top: var(--ctl-s3); padding: var(--ctl-s2) var(--ctl-s3); }
+.rec-note, .rec-absent, .rec-dropped, .rec-status { color: var(--text-dim); }
+.rec-list { list-style: none; margin: 0; padding: 0; }
+.rec-list > li.rec-take {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: var(--ctl-s2);
+  row-gap: var(--ctl-s1);
+  padding: var(--ctl-s2) 0;
+  border-top: 1px solid var(--line);
+}
+.rec-take > .rec-what { grid-column: 1; min-width: 0; overflow-wrap: anywhere; }
+.rec-take > .rec-act { grid-column: 2; grid-row: 1; justify-self: end; }
+.rec-take > .rec-play, .rec-take > .rec-parts { grid-column: 1 / -1; min-width: 0; }
+.rec-parts > ol { margin: var(--ctl-s1) 0 0; padding-left: var(--ctl-s5); color: var(--text-dim); overflow-wrap: anywhere; }
+.rec-status { margin: var(--ctl-s1) 0 0; }
+.rec-player {
+  display: block;
+  width: 100%;
+  max-height: min(60vh, var(--rec-fit, 60vh));
+  object-fit: contain;
+  background: var(--bg);
+}
+
+/* A LIVE BROWSER ROW'S DEVICE OUTLINE (live-browser.md §6; LB-UX3): a static
+   phone, tablet or desktop shape in the session's orientation, at the start of
+   line two. Not a stream: see `DeviceThumb`. `unknown` is dashed -- the gate
+   has not reported the device -- rather than a guessed desktop. */
+.ag-device {
+  display: inline-block; vertical-align: -2px; margin-right: 6px; box-sizing: border-box;
+  border: 1.5px solid var(--text-dim); border-radius: 2px;
+}
+.ag-device.is-phone.is-portrait { width: 8px; height: 13px; border-radius: 2px; }
+.ag-device.is-phone.is-landscape { width: 13px; height: 8px; border-radius: 2px; }
+.ag-device.is-tablet.is-portrait { width: 10px; height: 13px; }
+.ag-device.is-tablet.is-landscape { width: 13px; height: 10px; }
+/* 2px, not 1px: the spacing sweep holds every corner to the radius scale
+   (spacing.work.test.tsx), and the fixture's live-browser agent renders this. */
+.ag-device.is-desktop { width: 15px; height: 10px; border-bottom-width: 3px; border-radius: 2px; }
+.ag-device.is-desktop.is-portrait { width: 10px; height: 14px; }
+.ag-device.is-unknown { width: 12px; height: 10px; border-style: dashed; }
+
+.ag-theater-all { white-space: nowrap; font-size: var(--t-meta); }
+
+/* WHETHER A BROWSER RUNTIME USED ITS BROWSER (BROWSER-USE-UI, archived issue 2322;
+   BrowserUse.tsx). The mark carries the tone -- warning for "not used", the
+   ring for a dash -- so the words stay the line's own colour and greyscale
+   still tells them apart. In the inspector the fact is a disclosure: a plain
+   button that looks like the line's words, its counts after it when open. */
+.bu-mark { white-space: nowrap; }
+/* A ROW CARRYING THE MARK WRAPS BETWEEN ITS FACTS, AS AT 390, ON EVERY WIDTH
+   (review, dark-desktop-02-inspector-used): in the split list beside the
+   inspector the mark pushed the owner and the run time past the one line's
+   ellipsis, which a row without it still shows. Each fact stays whole. */
+.row.is-compact > .cr-sub.has-bu { white-space: normal; }
+.row.is-compact > .cr-sub.has-bu > * { white-space: nowrap; }
+.bu-mark.is-unused { color: var(--warn-ink); }
+.bu-fact { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1); min-width: 0; }
+.bu-toggle {
+  display: inline-flex; align-items: center; padding: 0; border: 0; background: none;
+  color: inherit; font: inherit; cursor: pointer;
+}
+.bu-toggle[aria-expanded='true'] { text-decoration: underline; text-underline-offset: 2px; }
+.bu-fact.is-unused .bu-toggle { color: var(--warn-ink); }
+.bu-detail { color: var(--text-dim); }
+.bu-filter { display: inline-flex; align-items: center; gap: var(--ctl-s1); white-space: nowrap; font-size: var(--t-meta); }
+.bu-filter-clear {
+  padding: 0 var(--ctl-s1); border: 0; background: none; color: var(--text-dim);
+  font: inherit; cursor: pointer;
+}
+.bu-filter-clear:hover { color: var(--text); }
+@media (max-width: 560px) {
+  /* The phone's touch target (styles.css holds the rest of the list to it). */
+  .bu-filter-clear { min-width: 44px; min-height: 44px; }
+}

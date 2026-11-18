@@ -1,0 +1,441 @@
+import { loadAdminQuota } from './api'
+import { QUOTA_POLL_MS, capacityPoll, poolHref, tableMode, usePhoneTables } from './capacityPoll'
+import type { TopicId } from './help'
+import { WarnMark } from './marks'
+import { Screen, timeAgo } from './Shell'
+import './styles/capacity.css'
+import { AGE_TICK_MS, useNow } from './useNow'
+import {
+  ageSpan,
+  pluralise,
+  poolLabel,
+  providerTenantPool,
+  providerTone,
+  quotaReadingAge,
+  setBy,
+  type QuotaState,
+} from './types'
+
+/**
+ * The column names that are said twice -- in the header a desktop shows, and
+ * as the `data-label` a stacked row shows in its place -- written once, as
+ * `COULD_START` is on Pools, so the two cannot drift apart.
+ *
+ * `Quota cap` (CP-8, archived issue 85). It was `Limit`, and read as the tenant's limit for
+ * the provider: 50 here beside 20 on Pools, with nothing saying which binds.
+ * It is the document's `effective_limit` -- the lowest of its configured hard
+ * max, the AIMD target and the cap derived from the provider, forced to 0 by
+ * EXHAUSTED, DISABLED and COOLDOWN -- and that figure is ONE input to the
+ * pool named beside it, whose own ceiling may be lower. The column name
+ * carries the basis; no `?` goes inside the table. `(units)` (QA G5-23): it
+ * is counted in the weighted units the fed pool's ceiling is, and Pools'
+ * `Ceiling (units)` says so; a bare `Quota cap 50` named no unit at all.
+ *
+ * `429s (this run)` (CP-10). The count is reset when the run ends -- a clean
+ * run reports the provider available, or the broker's refresh retires the
+ * cooldown and the reset window -- while `Last 429` keeps its time, so `0`
+ * beside `25h ago` is correct and was drawn as a contradiction. The column
+ * name carries the window (B7.4 route 2); `#help/quota-row-fields`, in the
+ * screen's index behind the title's `?`, defines the run (route 3).
+ */
+const QUOTA_CAP = 'Quota cap (units)'
+const FEEDS_POOL = 'Feeds pool'
+const RATE_LIMITS = '429s (this run)'
+
+/**
+ * Provider quota, across every tenant. Admin.
+ *
+ * QUOTA IS PER PROVIDER PER TENANT, on purpose: tenants bring their own keys,
+ * so one tenant's 429 is not a platform outage. Rows are therefore grouped by
+ * provider with the tenants inside, never summed into a per-provider figure --
+ * a sum across tenants would describe a thing that does not exist.
+ *
+ * THAT RULE IS NOW DRAWN RATHER THAN STATED. The paragraph above used to sit
+ * on the screen; what replaces it is the absence of a per-provider figure
+ * anywhere on it. The provider is an eyebrow with a tenant count beside it and
+ * no number of its own, so there is nothing for a reader to mistake for a
+ * platform total, which is the thing the sentence was guarding against.
+ */
+export function QuotaDetailScreen() {
+  return (
+    <Screen
+      title="Provider quota"
+      // THE PAGE'S ONE `?` OPENS THE SCREEN'S TOPICS (VQ-033, owner 2026-10-26),
+      // which were the `Reading this screen:` footer under the tables.
+      help={QUOTA_TOPICS}
+      load={loadAdminQuota}
+      pollMs={capacityPoll(QUOTA_POLL_MS)}
+      summary={(d) => {
+        const providers = new Set(d.quota.map((q) => q.provider)).size
+        const tenants = new Set(d.quota.map((q) => q.tenant_id)).size
+        // All three pluralised, not only the one that happened to be plural
+        // in the fixture: the live console said `1 providers` (CP-22).
+        return `${pluralise(d.quota.length, 'document')} · ${pluralise(providers, 'provider')} · ${pluralise(tenants, 'tenant')}`
+      }}
+      empty={{
+        heading: 'No quota documents',
+        // One sentence, and it is the one that says what WRITES a document --
+        // which is the only thing that makes this particular emptiness mean
+        // anything. The rest is at #help/quota-document-absent.
+        body: 'A document is written the first time a worker reports on a provider.',
+      }}
+    >
+      {/* `quota-page`: this view's scope for the squared `partial` mark it
+          shares with Accounts (styles/capacity.css; QA-049, owner 2026-10-20). */}
+      {(d) => (
+        <div className="quota-page">
+          <Grouped rows={d.quota} />
+        </div>
+      )}
+    </Screen>
+  )
+}
+
+function Grouped({ rows }: { rows: QuotaState[] }) {
+  // THE CLOCK THE STALE MARK IS JUDGED BY (CP-9). The five-second age tick the
+  // head moves on, so a reading crosses the threshold on screen while the page
+  // is open rather than only when it is reloaded.
+  const now = useNow(AGE_TICK_MS)
+  // A RECORD PER TENANT ON A PHONE (QA G5-08): the table was 822px in 356.
+  const phone = usePhoneTables()
+  const byProvider = new Map<string, QuotaState[]>()
+  for (const q of rows) {
+    const list = byProvider.get(q.provider)
+    if (list) list.push(q)
+    else byProvider.set(q.provider, [q])
+  }
+
+  return (
+    <>
+      {Array.from(byProvider.entries())
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([provider, list]) => (
+          <section className="section" key={provider}>
+            {/* A title and a count. NOT a figure: see the note at the top of
+                this file -- the provider row deliberately has no number of its
+                own to be read as a per-provider total.
+
+                NOT `.ctl-eyebrow`, deliberately. The eyebrow uppercases, and a
+                provider name is DATA -- the same B17 reason `.id` exists. An
+                eyebrow is for a category word the product chose (`BINDING`,
+                `CEILINGS`); a value that came off a response keeps its case. */}
+            {/* THE COUNT IS THE QUALIFIER SLOT (CP-22). It was a `.count-chip`
+                -- body-size mono beside the title -- where every sibling
+                capacity screen puts a fact about the section in
+                `.ctl-card-note`, right-aligned and muted. Same fact, the slot
+                the design system has for it. */}
+            <div className="ctl-toolbar">
+              <h2 className="ctl-card-title">{provider}</h2>
+              <span className="ctl-card-note is-end">{pluralise(list.length, 'tenant')}</span>
+            </div>
+            {/* EIGHT COLUMNS THAT FIT (archived issue 503): "Reported" was clipped at the
+                card's right edge at 1440, because every column sized itself
+                to its content and the pool name is long. Fixed widths, and
+                the pool name ellipsizes with its whole name in its title. */}
+            <div className={`ctl-table ${tableMode(phone)} quota-table`}>
+              {/* NAMED (visual QA run 3, a11y-keyboard-003): one table per
+                  provider, and a screen reader's table list read them all
+                  as unnamed tables. */}
+              <table role="table" aria-label={`${provider} quota, by tenant`}>
+                <colgroup>
+                  <col className="quota-c-tenant" />
+                  <col className="quota-c-state" />
+                  <col className="quota-c-cap" />
+                  <col className="quota-c-feeds" />
+                  <col className="quota-c-left" />
+                  <col className="quota-c-429s" />
+                  <col className="quota-c-last" />
+                  <col className="quota-c-rep" />
+                </colgroup>
+                <thead role="rowgroup">
+                  <tr role="row">
+                    <th role="columnheader" scope="col">Tenant</th>
+                    <th role="columnheader" scope="col">State</th>
+                    {/* The unit rides on the column name: these are the two
+                        columns where a 0 and a blank mean different things and
+                        the heading is where that is cheapest to say. */}
+                    <th role="columnheader" scope="col" className="is-num quota-nowrap">{QUOTA_CAP}</th>
+                    {/* WHAT THE CAP FEEDS, right after it (CP-8). */}
+                    <th role="columnheader" scope="col">{FEEDS_POOL}</th>
+                    <th role="columnheader" scope="col" className="is-num quota-nowrap">Requests left</th>
+                    {/* ONE LINE (QA G5-23): the head wrapped `429s (this` /
+                        `run)`, splitting the window from the count it names. */}
+                    <th role="columnheader" scope="col" className="is-num quota-nowrap">{RATE_LIMITS}</th>
+                    <th role="columnheader" scope="col">Last 429</th>
+                    <th role="columnheader" scope="col">Reported</th>
+                  </tr>
+                </thead>
+                <tbody role="rowgroup">
+                  {list
+                    .sort((a, b) => a.tenant_id.localeCompare(b.tenant_id))
+                    .map((q) => (
+                      <Row key={`${q.provider}:${q.tenant_id}`} q={q} now={now} />
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ))}
+    </>
+  )
+}
+
+/**
+ * A provider state, drawn ONE WAY whatever the reading's age (archived issue 503).
+ *
+ * `available` was a filled grey dot on a fresh row and a hollow ring on a
+ * stale one -- the same word in two pictures, and the ring is QUEUED's mark.
+ * Now the word is the document's, lowercased, and the mark is the brand's
+ * condition vocabulary (brand §3): `available` is neutral grey with no mark at
+ * all; throttled, cooldown, exhausted and disabled are the amber warning
+ * triangle, because each is a standing condition that lowers the cap, not a
+ * task state. How OLD the reading is, is the stale mark beside it -- the one
+ * place age is drawn -- so a stale `available` is never drawn as current and
+ * never drawn as something else.
+ */
+function QuotaStateMark({ state }: { state: string }) {
+  const tone = providerTone(state)
+  const word = state.toLowerCase()
+  if (tone === 'ok') {
+    return (
+      <span className="quota-state" data-tone="neu">
+        {word}
+      </span>
+    )
+  }
+  if (tone === 'unknown') {
+    return (
+      <span className="quota-state" data-tone="unknown" title="A state this console does not know. It is shown as the document wrote it.">
+        {word}
+      </span>
+    )
+  }
+  return (
+    <span className="quota-state" data-tone={tone}>
+      <WarnMark label={word} />
+    </span>
+  )
+}
+
+function Row({ q, now }: { q: QuotaState; now: number }) {
+  const tone = providerTone(q.state)
+  // EXHAUSTED, DISABLED and COOLDOWN all admit nothing, and the reason differs.
+  const admitsNothing = q.effective_limit === 0
+  // CP-9 (archived issue 85): A READING OLDER THAN TWICE THE BROKER'S SWEEP IS NOT A
+  // CURRENT VERDICT. The live console drew a document last reported five days
+  // earlier as a green `available`, the same mark as one reported a minute
+  // ago. `quotaReadingAge` (types.ts) states the interval once, and says why
+  // it is the sweep's and not a report's.
+  const age = quotaReadingAge(q, now)
+  const pool = providerTenantPool(q.provider, q.tenant_id)
+
+  // AN UNKNOWN STATE IS NOT EXHAUSTION (visual QA run 3, capacity-004). A
+  // cap of 0 alone washed the row red, so the fixture's `UNKNOWN` u-owner
+  // row carried the same shading as `EXHAUSTED` eng above it -- a verdict
+  // the document does not give. Unknown is not healthy either, so it takes
+  // the amber a reader is asked to look at; its cap of 0 is still the figure.
+  const rowTone = tone === 'unknown' ? 'is-warn' : admitsNothing ? 'is-bad' : tone === 'wait' ? 'is-warn' : undefined
+
+  return (
+    <tr role="row" className={rowTone}>
+      {/* No text-transform here. Tenant ids are opaque and a displayed id that
+          differs from the real one is unusable. */}
+      <th role="rowheader" scope="row" className="mono quota-tenant" title={q.tenant_id} aria-label={q.tenant_id}>
+        <MiddleCut text={q.tenant_id} tail={tenantTail(q.tenant_id)} />
+      </th>
+      {/* ONE VALUE, ONE ELEMENT (visual QA V180, 2026-10-16): as two grid
+          items a phone record put `14m old` on a keyless row of its own,
+          stretched across the value column like a bar. */}
+      <td role="cell" data-label="State">
+        <span className="quota-val">
+          <QuotaStateMark state={q.state} />
+          {age.stale && (
+            <span
+              className="ctl-stale-mark"
+              title={`Reported ${q.updated_at ? timeAgo(q.updated_at, now) : 'at an unknown time'}. A reading older than twice the quota broker's sweep is not drawn as current.`}
+            >
+              {age.ageMs === null ? 'age unknown' : `${ageSpan(age.ageMs)} old`}
+            </span>
+          )}
+        </span>
+      </td>
+      {/* THE ONE ZERO ON THIS SCREEN THAT IS A FACT. effective_limit returns 0
+          deliberately when the state is EXHAUSTED, DISABLED or COOLDOWN, so it
+          renders as 0 with the state chip beside it doing the explaining --
+          not as an em dash, which would read as "not measured". */}
+      <td role="cell" data-label={QUOTA_CAP} className="is-num">{q.effective_limit}</td>
+      {/* THE POOL THAT FIGURE FEEDS (CP-8), AND ITS CEILING (G5-02). Only
+          admins read this screen, and `service.capacity()` lists every
+          tenant's provider pool to them, so the row this links to exists on
+          Pools. The link lands on THAT pool's row, outlined (archived issue 128).
+
+          The ceiling was left off because it would have been a second read
+          with its own freshness -- and QA (2026-10-07) found the cost of
+          leaving it off: `Quota cap 50` beside a pool Pools showed at 40,
+          read as "this tenant can run 50". `/v1/admin/quota` now serves the
+          pool in the same response (`feeds_pool`), so the ceiling is the one
+          admission enforces, of the same age as the cap. */}
+      {/* THE POOL'S NAME, ITS ID IN THE TITLE (QA1 capacity-18). The link
+          printed the raw id, `provider:anthropic:tenant:eng`, broken over two
+          lines mid-id in its column; Pools and Holders already name the same
+          pool `anthropic · eng` (`poolLabel`), so this row says it the same
+          way and keeps the id one hover away. A provider-tenant pool's label
+          is its provider and tenant, so two rows never share one.
+          ONE ELEMENT (V180): as two grid items a 390 record put its row gap
+          between the link and its ceiling note, an empty line under the
+          name. Wrapped, the note sits directly under it. */}
+      <td role="cell" data-label={FEEDS_POOL} className="quota-feeds">
+        <div className="quota-feeds-val">
+          <a className="ctl-link" href={poolHref('capacity/pools', pool)} title={pool}>
+            {poolLabel(pool)}
+          </a>
+          <PoolCeiling q={q} />
+        </div>
+      </td>
+      {/* These genuinely can be absent, and absent is not zero. The em dash
+          carries `.ctl-em`, which is this sheet's one mark for "nothing was
+          ever recorded" -- dimmed, non-tabular and unselectable, so it cannot
+          be copied out of the table as if it were a value. */}
+      <td role="cell" data-label="Requests left" className="is-num">
+        {q.requests_remaining === null ? <Em what="requests remaining" /> : q.requests_remaining}
+      </td>
+      {/* "THIS RUN" ONLY OF A CURRENT READING (G5-03). A count on a document
+          older than twice the sweep is what the last report said, which on a
+          document 17 days old is not this run of anything. */}
+      {/* ONE ELEMENT (V180): the count and its basis stay on one line of a
+          phone record. The basis is the text face, not the figures' mono
+          (V156): in mono `9 (at last report)` was wider than the column and
+          printed into Last 429. */}
+      <td role="cell" data-label={RATE_LIMITS} className="is-num">
+        <span className="quota-val">
+          {q.rate_limit_count}
+          {age.stale && <span className="quota-basis"> (at last report)</span>}
+        </span>
+      </td>
+      {/* A COUNTED 429 WITH NO TIME IS A TIME NOBODY RECORDED (G5-03), not an
+          absence: the dash says "never recorded" beside a count that says one
+          was. The mark says which of the two facts is missing. */}
+      <td role="cell" data-label="Last 429">
+        {q.last_429_at ? (
+          timeAgo(q.last_429_at, now)
+        ) : q.rate_limit_count > 0 ? (
+          <span
+            className="ctl-mark is-unread"
+            title={`The document counts ${pluralise(q.rate_limit_count, '429')} and records no time for any of them.`}
+          >
+            time not recorded
+          </span>
+        ) : (
+          <Em what="last 429" />
+        )}
+      </td>
+      <td role="cell" data-label="Reported">
+        {q.updated_at ? timeAgo(q.updated_at, now) : <Em what="reported" />}
+      </td>
+    </tr>
+  )
+}
+
+/**
+ * AN ID CUT IN THE MIDDLE, NEVER AT ITS END (visual QA V005, V020;
+ * 2026-10-11): the tenant row head. A long tenant id printed over State;
+ * here the head shrinks first and the tail -- the id's last eight, as
+ * TaskRef keeps a task's -- does not, as two boxes of one line, so only a
+ * tail wider than the whole column is cut itself. The whole id is the
+ * cell's title, and the text is unchanged for a copy. The two boxes are flex
+ * items, which an accessible-name walk joins with a space (`u-owner-
+ * research`), so the element that holds a cut id names itself with the
+ * whole id (`aria-label`).
+ */
+function MiddleCut({ text, tail }: { text: string; tail: number }) {
+  const cut = Math.max(0, text.length - tail)
+  return (
+    <span className="quota-cut">
+      {cut > 0 && (
+        <span className="quota-cut-head">
+          <span>{text.slice(0, cut)}</span>
+        </span>
+      )}
+      <span className="quota-cut-tail">{text.slice(cut)}</span>
+    </span>
+  )
+}
+
+/** A tenant id keeps its last eight, as a task reference does. */
+function tenantTail(id: string): number {
+  return Math.min(id.length, 8)
+}
+
+/**
+ * The ceiling of the pool the row's cap feeds, what sets it, and where it
+ * sits against the cap -- `ceiling 40 (configured, below cap)`. The pool's
+ * `effective_limit` is what admission enforces; the cap is one input to it.
+ * Nothing at all beside an API that does not serve `feeds_pool`: absent is
+ * not "no pool".
+ */
+function PoolCeiling({ q }: { q: QuotaState }) {
+  if (q.feeds_pool === undefined) return null
+  const p = q.feeds_pool
+  if (p === null) {
+    return (
+      <span className="quota-ceiling" title="No pool document by this name exists.">
+        <span className="quota-sep"> · </span>no pool document
+      </span>
+    )
+  }
+  const by = setBy(p)
+  if (p.effective_limit === null) {
+    return (
+      <span className="quota-ceiling" title={by.detail}>
+        <span className="quota-sep"> · </span>
+        {by.term}
+      </span>
+    )
+  }
+  const against =
+    p.effective_limit < q.effective_limit ? 'below cap' : p.effective_limit > q.effective_limit ? 'above cap' : 'at cap'
+  return (
+    <span className="quota-ceiling" title={by.detail}>
+      <span className="quota-sep"> · </span>ceiling {p.effective_limit} ({by.term}, {against})
+    </span>
+  )
+}
+
+/**
+ * The em dash, with the sentence attached to it rather than beside it.
+ *
+ * `aria-label` is the accessible route the brief requires: the mark is the
+ * visible anchor and this is the words. A `title=` would have neither a
+ * keyboard route nor a screen-reader one, which is the mistake that turned
+ * the honesty suite red the last time this migration was attempted.
+ */
+function Em({ what }: { what: string }) {
+  return (
+    <i className="ctl-em" aria-label={`No ${what} was recorded. That is an absence, not a zero.`}>
+      —
+    </i>
+  )
+}
+
+/**
+ * Four `<dt>`/`<dd>` pairs, as three topics -- and a fourth for the row's own
+ * fields.
+ *
+ * "Six states, not five", "unknown is not healthy" and "a quota cap of 0 is a
+ * fact" were three statements of one thing: which state a row is in is the
+ * measurement, and only one kind of zero on this screen means anything.
+ * They are one topic now. The others are the ones that make an ABSENCE here
+ * mean something specific.
+ *
+ * `quota-row-fields` (CP-8, CP-10, archived issue 85) is what the two renamed columns name
+ * and cannot finish saying: that the cap is one input to the pool beside it,
+ * and where a rate-limit run starts and ends. It is in the screen's index
+ * rather than a `?` in the table, which is route 3 of B7.4 -- the index the
+ * title's `?` opens since VQ-033 (owner 2026-10-26), where the footer was.
+ */
+const QUOTA_TOPICS: readonly TopicId[] = [
+  'provider-quota-states',
+  'quota-row-fields',
+  'quota-document-absent',
+  'absent-vs-zero',
+]

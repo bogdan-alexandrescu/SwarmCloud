@@ -1,0 +1,599 @@
+# Provider quota management
+
+The expensive mistake this subsystem exists to prevent:
+
+> A provider rate-limits you, and 40 workers sit in `time.sleep()` waiting for
+> the window to reopen — each holding 4 vCPU, 8 GiB and a concurrency slot, all
+> billed, all doing nothing.
+
+The rule instead (`CONTRACT.md` invariant 4):
+
+```
+wait <= max_in_worker_retry_delay_seconds (45s)  ->  sleep and retry in place
+wait >  max_in_worker_retry_delay_seconds        ->  checkpoint, upload, publish
+                                                     quota state, PARK with
+                                                     next_eligible_at, release
+                                                     the lease, EXIT
+```
+
+A `PARKED` agent is a Firestore document. It costs nothing, for as long as it
+takes. When `next_eligible_at` passes, the scheduler promotes it to `READY` and
+it competes for capacity again, resuming from its last checkpoint.
+
+**An unknown wait is treated as a long one.** Guessing "probably short" costs a
+slot for as long as the guess is wrong; guessing "probably long" costs one
+requeue.
+
+---
+
+## 1. Quota state
+
+`quota/{provider}:{tenant_id}` — keyed by both, because tenants bring their own
+API keys. One tenant's exhausted Anthropic quota says nothing about another's,
+and throttling the provider globally on one tenant's 429 would let any tenant
+halt the platform.
+
+| Field | Meaning |
+|---|---|
+| `state` | `AVAILABLE` / `THROTTLED` / `EXHAUSTED` / `COOLDOWN` / `UNKNOWN` / `DISABLED` |
+| `configured_hard_max` | admin ceiling. AIMD may only go **below** it |
+| `adaptive_target` | what AIMD currently believes is safe |
+| `quota_derived_limit` | derived from the provider's own reported headroom |
+| `requests_remaining`, `tokens_remaining`, `reset_at` | as reported by the provider |
+| `cooldown_until`, `retry_after_seconds`, `last_429_at` | backoff bookkeeping |
+| `success_count`, `rate_limit_count` | AIMD's inputs |
+
+`effective_limit` is `min(hard_max, adaptive_target?, quota_derived_limit?)`, and
+is **0** whenever the state is `EXHAUSTED`, `DISABLED` or `COOLDOWN`. Zero
+effective limit means the matching slot pool admits nothing, which means the
+work stays `READY`/`PARKED` and free.
+
+---
+
+## 2. AIMD
+
+Additive increase, multiplicative decrease — the shape of TCP congestion
+control, for the same reason: the safe operating point is unknown, it changes
+without warning, and the only feedback is failure.
+
+The asymmetry is the design:
+
+**Increase is slow and conditional.** The target rises by `additive_increase`
+(1) only after `success_threshold` (20) consecutive successes with no
+intervening 429, and the success run resets on every rate limit. One success
+proves nothing. Being wrong in this direction produces a burst of 429s and a
+provider that starts throttling everything — far more expensive than a few
+minutes of under-use.
+
+**Decrease is fast and unconditional.** A single 429 multiplies the target by
+`multiplicative_decrease` (0.5) immediately — a 429 that is the *tenant's*:
+one pool account's window is that account's, below. Waiting for a second data point
+means the second data point arrives as a wall of 429s.
+
+**Recovery also runs on the clock, up to the pool's ceiling (owner,
+2026-11-02).** Counting successes alone, a workspace halved from 40 to 7 needed
+about 660 clean agent finishes to climb back, which is days. So, on top of the
+success-based climb, the target rises by one for every
+`AIMD_RECOVERY_INTERVAL_SECONDS` (300) without a workspace-wide refusal. No
+timer does it: the climb is worked out whenever the target is read, from the
+time of the last cut or the last climb, kept on the quota document as
+`recovery_clock_at`, and the quota sweep's existing five-minute tick is the
+read that commits it for a quiet workspace; each time-based climb is recorded in
+`quota_audit` as `adaptive_target_recovered`. A refusal still halves at once and
+restarts the clock, so 5 back to 40 takes 35 quiet intervals, just under three
+hours. The ceiling every target is clamped to is the LOWER of the quota
+document's `configured_hard_max` and the per-tenant pool's own `hard_limit`
+(`provider:<p>:tenant:<t>`, the number the console shows), so halving starts
+from that number; setting the hard max (`PUT /v1/quota/<p>/<t>/hard-max`) moves
+the pool's `hard_limit` to the same value in the same transaction.
+
+```
+       target
+         |          .-'|        .-'|
+         |      .-'    |    .-'    |
+         |  .-'        |.-'        |
+         |-'           v           v          <- one 429 each time
+         +----------------------------> time
+```
+
+### A pool account's 429 is the account's, not the tenant's
+
+**Built 2026-10-25.** A 429 that names the subscription account it came from
+no longer halves the tenant. The worker's `rate-limit` report carries the pool
+account its attempt holds, with the hold's proof (assignment id, the agent's
+id and attempt: `quota_broker.main.ReportAccount`), and the broker
+(`_account_scope`) then:
+
+| The report | The tenant's `adaptive_target` | The account's health record |
+|---|---|---|
+| names no account (API-key traffic) | halved, as before | — |
+| names an account the caller cannot prove it holds | halved (`scope: not_held`) | nothing written |
+| names a held account, and another account the tenant may use has room | **unchanged**: no halving, no cooldown, no step toward `EXHAUSTED`, the success run goes on (`scope: account`) | one `rate_limit` event, with the refusing window and its reset |
+| names a held account, and **every** account the tenant may draw from is limited | halved (`scope: pool_exhausted`) | one `rate_limit` event |
+
+*Why.* On 2026-10-25 one eng account's 429 at 04:40:57Z took the tenant from
+26 to 14, and the pool sat full with 100+ agents queued while the other
+accounts had room (example-team 7-day 61%, aieng-claude1 59%). Climbing back is
++1 per 20 clean calls, 720 of them, so one account's 5-hour window cost the
+tenant half its concurrency for hours; [the owner] reset it by hand at 06:25Z
+([runbook](runbooks/quota-throttled-tenant.md)). The account that was refused
+does not need the tenant halved to be kept from new work: its own window
+readings already withhold it (S15, `Account.assignable`), and the hold
+machinery does the rest. So no second hold was added.
+
+*"Every account the tenant may draw from"* is the set `choose()` draws from —
+owned **and** lent-to (`accounts_serving`), of the provider, in a state that
+takes new agents, and neither a withheld duplicate nor one this tenant found
+unreadable, since `choose()` would never hand it either (a full account and
+one awaiting its first reading are room: a hold ends, a reading arrives) — and
+an account is *limited* while a recorded 429 has not
+reached its reset or its readings block it
+(`AccountStore.every_account_limited`). When all of them are, the pool itself
+is spent, and that is the tenant's limit: AIMD halves exactly as before. Two
+accounts' 429s committing at the same instant may each see the other as not
+yet limited; the next report then halves, a lag of one report. A health read
+that fails counts the 429 against the tenant, as before.
+
+Naming an account costs the same proof a reading or a swap does, so a tenant
+cannot name somebody else's account — or one it does not hold — to dodge its
+own halving; such a report is counted against the tenant and writes nothing on
+the account. Admission's arithmetic is untouched: this changes only how far
+the tenant's ceiling falls on a 429. Capacity is still reserved all-or-nothing
+and counted from `LEASED`, and the worker still checkpoints, parks and exits
+on a 429 whatever the report says.
+
+Each account also keeps a **health record** — rate-limit and exhausted
+reports, provider errors by kind (auth, overloaded 529, 5xx, network),
+refusals at assignment, re-auth marks and failed credential refreshes, each
+with its time, tenant, agent id and a short redacted message — bounded to hourly
+counts for 7 days and the last 50 events
+(`accounts/{id}/health/record`, `quota_broker.accountstore`). It is served by
+`GET /v1/accounts/{id}/health` and summarised (24 h counts, one-word status)
+on every row of `GET /v1/accounts`.
+
+**The whole pool's records are one read**, `GET /v1/accounts/health`
+(ACCOUNT-HEALTH-PAGE): every account the caller's tenant may run on, owned or
+lent, each record the per-account read's, shown by the same viewer rule (owner,
+borrower, or a platform admin with `scope=platform`) and redacted again on the
+way out. Capacity › Account health polls it every minute. It is one broker call
+and one swarm-api call, not one per account, because proposal B's per-account
+reads would have been 30 a minute on a pool of 30; and swarm-api drops a record
+for an account the tenant neither owns nor borrows even if the broker sent it.
+
+#### Incidents: how the console groups an account's events
+
+At phone width the page lists **incidents**, not events ([the owner]'s pick of proposal
+D for the phone, 2026-10-25). The grouping is the console's, not the broker's:
+the broker serves events, and `incidentsOf` in
+`apps/swarm-ui/src/accountHealth.ts` groups each account's served events (the
+page's `incidents()` and the side sheet both call it, so there is one rule),
+oldest first, by one fixed rule:
+
+1. **The family.** Limits (rate-limit hit, exhausted report, refusal at
+   assignment), provider errors (529, 5xx, network) and credential (401,
+   failed refresh, re-auth mark). A **refusal that names no window** is the
+   broker withholding an account that needs re-auth, so it joins the
+   **credential** incident, not the limits.
+2. **Joining.** An event joins the newest incident of its family when:
+   - *limits:* that incident has a reset and the event comes at or before it.
+     A rate-limit hit opens a limit incident that later limit events join until
+     its window resets; a later reset extends it. A limit incident with no
+     reset (an exhausted report on its own) is joined by nothing.
+   - *errors and credential:* the event comes within **45 minutes** of that
+     incident's last event. A burst of one kind is one incident; **two storms
+     50 minutes apart are two incidents**, and a test holds that
+     (`accounthealth.incidents.test.ts`).
+3. Otherwise the event **opens a new incident**.
+
+**Open or closed.** A limit incident is open until its reset passes. An error
+incident is open while it is the account's newest error incident, the
+account's status is `erroring` and its last event is under an hour old. A
+credential incident is open while it is the newest and the account is
+`reauth_needed`. Open incidents come first, credential then errors then limits,
+each with its fix (Sign in again; when the limit clears).
+
+**What it cannot see.** Only the last 50 events per account are served, so an
+incident older than those is in the counts and the hourly series and in no
+incident. 45 minutes is a judgement, not a measurement: it is short enough that
+a morning's two separate provider incidents read as two, and long enough that a
+retrying worker's errors a few minutes apart read as one.
+
+### The invariant that must never break
+
+```
+adaptive_target <= configured_hard_max, always.
+```
+
+`configured_hard_max` is an admin's statement about what the platform is allowed
+to do to a provider — a contractual or budget ceiling, not a guess. AIMD may only
+ever propose a number below it. All arithmetic goes through one clamping helper
+so a new signal cannot be added that forgets to clamp.
+
+### Tuning
+
+| Env var | Default | Effect |
+|---|---|---|
+| `AIMD_ADDITIVE_INCREASE` | 1 | slots added per successful run |
+| `AIMD_MULTIPLICATIVE_DECREASE` | 0.5 | factor applied on a 429 |
+| `AIMD_SUCCESS_THRESHOLD` | 20 | successes required before an increase |
+| `AIMD_RECOVERY_INTERVAL_SECONDS` | 300 | quiet seconds per time-based +1; 0 turns it off |
+| `AIMD_MIN_TARGET` | 1 | never throttle to zero on 429s alone |
+| `AIMD_DEFAULT_COOLDOWN_SECONDS` | 30 | when the provider gives no `Retry-After` |
+| `AIMD_MAX_COOLDOWN_SECONDS` | 900 | ceiling on backoff |
+| `AIMD_EXHAUSTION_THRESHOLD` | 5 | consecutive 429s that mean `EXHAUSTED` |
+| `QUOTA_DEFAULT_HARD_MAX` | 50 | ceiling for an unseen (provider, tenant) pair |
+
+---
+
+## 3. How a 429 travels
+
+```
+runner child sees 429 (it is the only thing that sees the provider's headers)
+    -> writes quota.json into the workspace
+        -> worker reads it, decides short-wait vs park
+            -> worker POSTs the observation to the quota broker
+               (naming the pool account it holds, if any: section 2)
+                -> broker applies AIMD to quota/{provider}:{tenant}
+                   (or, for a held account with room elsewhere, records it
+                    on that account's health and leaves the tenant alone)
+                    -> broker writes quota_derived_limit on provider:{p}:tenant:{t}
+                        -> scheduler reads the pool and admits fewer tasks
+```
+
+**The worker never calls `/exhausted`.** A runner's 429 reaches the broker as
+`/rate-limit` whether the runner labelled it `THROTTLED` or `EXHAUSTED`
+(`control.QUOTA_REPORT_ROUTES`), because every runner labels its 429 `EXHAUSTED`
+and posting each one to `/exhausted` would stop the tenant on the first 429. The
+cost: a genuine quota-spent answer with a reset hours away reaches `EXHAUSTED`
+only through `AIMD_EXHAUSTION_THRESHOLD` consecutive 429s, not at once. The
+worker is also no longer a writer of `quota/{provider}:{tenant}`; a document the
+worker wrote beside the broker bypassed AIMD and was undone by the sweep.
+
+The scheduler never asks a provider how it feels. It reads a pool, and the pool
+already carries the answer. That separation is what keeps the admission path a
+single Firestore transaction with no network calls in it.
+
+### The pool a tenant's 429 may write to
+
+```
+A tenant-attributed observation may ONLY lower provider:<p>:tenant:<id>.
+The shared provider:<p> pool is capped only when EVERY enabled tenant is stopped.
+```
+
+This is an invariant, not a preference, and it is the difference between a
+throttle and a denial of service. `pool_names_for` puts `provider:<p>` in
+*every* tenant's admission list, so a tenant-derived limit written there halts
+tenants that have never touched the provider — and a tenant can reach its own
+429 threshold deliberately, by burning its own key into rate limits. That would
+be a cheap, deniable cross-tenant outage.
+
+`QuotaService._recompute_provider_pool` enforces it, and two details matter:
+
+* the shared pool is capped only when every state in the roster is a stop state,
+  **and** every *enabled tenant* has reported. A tenant with no quota document
+  for that provider has never touched it, so the evidence is incomplete and the
+  shared pool stays uncapped;
+* the condition is also self-sustaining if it fires wrongly. With the shared pool
+  at zero nothing runs, so no success can arrive to clear it, and the only way
+  out is the platform-only sweep.
+
+Tested by `tests/unit/control_plane/test_aimd.py` under
+"the shared provider pool is not a cross-tenant lever" — the same way the
+`adaptive_target <= configured_hard_max` clamp is tested rather than asserted.
+
+A worker also learns from this: the control plane publishes aggregated provider
+state, so one worker discovers that *another* worker on the same tenant key has
+already exhausted the quota — and parks instead of finding out the hard way.
+
+---
+
+## 4. Park reasons
+
+From `swarm_common.states.ParkReason`. None of these cost compute, and every
+reason something writes has an un-parker below. The two scheduler sweeps added
+for `SCHEDULED_RETRY` and `MANUAL_PAUSE` page through their parks with a cursor
+kept across drains (`Scheduler._parked_window`), so parks that must stay parked
+never hide one that is due: each is examined within ceil(parks /
+`DEPENDENCY_SWEEP_SIZE`) drains. A promotion writes PARKED -> READY alone, in
+the guarded transaction every promotion uses; only admission, later, takes
+capacity (invariant 1).
+
+| Reason | Meaning | Unparked by |
+|---|---|---|
+| `PROVIDER_QUOTA_EXHAUSTED` | quota spent | `next_eligible_at` / reset |
+| `PROVIDER_COOLDOWN` | backing off after 429s | cooldown expiry |
+| `PROVIDER_OUTAGE` | provider unreachable | broker marking it available |
+| `SCHEDULED_RETRY` | the worker was interrupted (SIGTERM) and wrote `next_eligible_at=now` | the scheduler's `_promote_scheduled_retries`, once `next_eligible_at` has passed (a null instant is due). An agent that has used its last attempt is ended `DEAD_LETTERED` instead (`end_cause` null), because admission does not check `max_attempts` |
+| `DEPENDENCY_INCOMPLETE` | upstream workflow step unfinished | dependency sweep |
+| `MANUAL_PAUSE` | its tenant is missing or disabled, or its runner profile left the catalogue | the scheduler's `_promote_manual_pauses`, once the tenant is enabled, the profile is back, and no pool it needs is `enabled == false` (`resume-swarm.sh` writes it back) |
+| `BUDGET_EXHAUSTED` | **never written**: there are no per-tenant budgets, built or planned (owner, 2026-10-01); `monthly_budget_usd` is refused at `apps/swarm-api/swarm_api/routes/admin.py::set_tenant_limits` | no sweep reads it (`apps/scheduler/scheduler/loop.py::Scheduler._stop_for_failed_workflow`); the frozen enum keeps the value (`apps/common/swarm_common/states.py::ParkReason.BUDGET_EXHAUSTED`) and [contract request 39](contract-change-requests.md) asks about removing it |
+| `CREDENTIAL_MISSING` | tenant has no key for this provider, and no pool account can run the profile for it; or a workspace-secret slot the profile, or a tool it launches, declares `required` has no enabled grant | admin adds the key, or lends the tenant an account, or ticks the grant. A worker's park on an agent the pool serves also waits for its `next_eligible_at` (below) |
+
+`CREDENTIAL_MISSING` is worth calling out: a tenant that has not registered a key
+is **not** an error. The agent parks, costs nothing, and starts by itself once an
+admin adds the key. The alternative — failing at runtime — burns an attempt, a
+container start and a slot to discover something the control plane already knew.
+
+**A key is not the only credential.** A tenant with no key of its own is
+admitted when an account in the pool can run the profile for it, and parks only
+when none can. One function decides this,
+`apps/scheduler/scheduler/credentials.py`. Admission asks it, and so do the
+credential sweep that re-readies these parks and the Cloud Run Job's secret
+mount. The API no longer judges it at submission. An account can run a profile
+for a tenant only when all four of these hold:
+
+* the deployment has a quota broker (`QUOTA_BROKER_URL`);
+* the profile takes a subscription token (`CLAUDE_CODE_OAUTH_TOKEN` in its
+  `secrets`). `claude-code` does. **`browser` does not**, so no account can run
+  it, and a keyless tenant's browser work always needs a key;
+* the account is of the profile's provider;
+* the account is **owned by or lent to** that tenant. Having a pool does not
+  mean the pool serves everyone. A personal tenant nobody has lent an account to
+  is served by nothing (`quota_broker.accounts.accounts_serving`, invariant 9).
+
+The park's `parked` event records which of these failed, as
+`detail.account_pool`: `no_broker_configured`, `profile_takes_no_subscription`
+or `no_accounts_registered`. A spent or paused account is not one of them. That
+is the pool's own wait. The worker parks on it as `PROVIDER_QUOTA_EXHAUSTED`,
+with `next_eligible_at` set to the broker's reset time, or to a fallback when
+the broker has none: 300 seconds for an account nobody has read lately, 900 for
+a paused one (`lifecycle._park_no_account`).
+
+**An account is withheld as a duplicate only on the provider's own identity**
+. Two pool accounts are one subscription only when both have a recorded
+organisation **and** seat and the two match
+(`quota_broker.accounts.subscription_identity`). These are opaque digests of
+what the provider's token or profile answer named, and they do not change while
+the sign-in is valid. Of such a pair, the broker hands out only the older
+registration. A label, an owner, a loan or a usage reading never makes two
+accounts one subscription. An account with no recorded identity is never
+withheld: identical readings only flag it as a `possible_duplicate`, which is
+advisory, and a stored mark on it does not count. On the night of 24 to 25
+October 2026, the rule then in force keyed on the organisation alone. It held
+four seats of one Team organisation as duplicates of a seat that was 97% spent,
+while 46 steps waited. Two of those seats ran 15 agents each a few hours later.
+A withheld account's entry in the park's `accounts` block reads
+`withheld: {same_subscription_as, reason, matched_on: "organisation_and_seat"}`,
+and Capacity › Accounts gives the same reason and kind. Neither ever shows the
+identity's value.
+
+**Every quota window binds every attempt, whatever its model class** (owner's answer to Q5 of [model-per-step.md](design/model-per-step.md#47-accounts-and-quota-windows-windows-unchanged-classes-served-per-account),
+2026-10-17). An account's headroom is the minimum over all its windows
+(`apps/quota-broker/quota_broker/accounts.py::Account._binding_remaining`), and
+no window is filtered by the step's class. An account whose `seven_day_opus`
+window is spent is therefore refused to a `haiku` or `sonnet` step too: that is
+the stated cost of the decision. A class shares its profile's `runner:` pool,
+so classes change no admission arithmetic either. The one thing a class does
+change is which accounts may take the step (owner decision R5):
+`accounts/{id}.model_classes` lists the classes an account's plan serves, empty
+meaning every class, and `apps/quota-broker/quota_broker/accounts.py::Account.serves_class`
+is the rule the broker's choice applies. When no account serves a keyless
+tenant's class, admission parks the step `CREDENTIAL_MISSING` with
+`detail.account_pool` `no_account_serves_class` and the class, before any lease,
+and the credential sweep promotes it once an account serves the class or the
+tenant registers a key, which serves every class.
+
+**What ends those waits, for a tenant served by a pool account.** Such a tenant
+usually has no `provider:{p}:tenant:{t}` pool. Terraform creates that pool only
+from a tenant's declared `providers`, and declaring one also creates a Job that
+mounts a secret the tenant does not have. Two sweeps handle this case:
+
+* **The prewarm sweep** (section 5) is the only code that returns a
+  `PROVIDER_QUOTA_EXHAUSTED`, `PROVIDER_COOLDOWN` or `PROVIDER_OUTAGE` park to
+  `READY`. The reconciler has no rule for parked agents. Without the guard pool,
+  the sweep does not promote the agent early. It promotes it once
+  `next_eligible_at` has passed. Until the prewarm-sweep review it did not promote it at
+  all, so the wait never ended.
+* **The credential sweep** handles a `CREDENTIAL_MISSING` park that a worker
+  wrote on an agent the pool serves. That happens when the worker cannot reach
+  the broker, falls back to the tenant's key, and finds none (+1 hour), or when
+  the broker refuses the worker or the worker can read no account (the 900-second
+  fallback). The sweep waits for that park's `next_eligible_at`. Firestore's
+  account list still says the pool serves the tenant, and promoting on that
+  alone started a container that could only park, once per drain, for as long
+  as the outage lasted. A key registered in the meantime makes the answer the
+  tenant's own key, and the sweep promotes that at once. Admission's own parks
+  carry no `next_eligible_at`, so this wait does not delay them.
+
+**A required workspace secret is part of the same answer** (lane
+SEC-ADMIT-PARK, docs/design/workspace-secrets.md §4.2). When the key and the
+GitHub connection say yes, `credential_for` also asks
+`apps/scheduler/scheduler/secret_slots.py` whether the profile, or a tool its
+`browser_tool` launches, declares a `required` slot with no enabled grant in
+the agent's workspace (or, on a group agent, the submitter's own opted-in
+personal secret, owner decision Q3). If one is missing, admission parks the agent
+`CREDENTIAL_MISSING` before the capacity transaction, so nothing is leased and
+no pool counter moves. The `parked` event keeps the `provider` and
+`account_pool` fields and adds `workspace_secrets: [{consumer, slot}]`. It
+holds names only, never a secret id. The credential sweep asks the same
+question of every `CREDENTIAL_MISSING` park, including the worker's backstop
+park (`provider: workspace-secret:<slots>`). It promotes a park once every
+required slot has an enabled grant, and only when the key and the connection
+still say yes. The grants are read in one query per admission pass, and only
+when some agent in it requires a slot. No catalogue slot is required yet
+(contract request 80), so today that query never runs.
+
+---
+
+## 5. Prewarm
+
+`PARKED` agents whose cooldown expires within `prewarm_lead_seconds` (120) are
+promoted to `READY` early, bounded by `prewarm_max_agents`.
+
+This is free, because `READY` costs nothing (invariant 1). The agent is simply
+already in the rotation when the window reopens, instead of waiting for the next
+scheduler wake to notice.
+
+**Do not disable it.** `ENABLE_QUOTA_PREWARM=false` was documented here as
+"strictly no early promotion", but it does more than that. This sweep is also
+the only code that returns these parks to `READY` once their instant has passed,
+so with it disabled, or with `PREWARM_MAX_AGENTS=0`, a quota-parked agent is
+never returned. That was found in the prewarm-sweep review and is not fixed there.
+
+Early promotion needs the agent's `provider:{p}:tenant:{t}` pool. That pool's
+quota cap is what stops admission until the window actually reopens. An agent
+without one is promoted only once its `next_eligible_at` has passed, and a park
+with no `next_eligible_at` at all is left where it is. See section 4 for why a
+tenant that runs on a pool account usually has no such pool.
+
+**A released account wakes the agents parked on a full pool**. An agent
+that found no free pool account parks for up to five minutes, because no clock
+says when another agent will give an account back. Every release closes the
+broker's hold record in `account_holds` with `released_at`, whether the agent
+that let go ended, parked or failed back to `READY`. Each scheduler
+pass (the one-minute tick and every wake) reads the records closed since the
+last pass (`apps/scheduler/scheduler/loop.py::Scheduler._wake_on_releases`). It
+returns to `READY` the oldest parks of the tenants the freed account serves,
+for its provider, as many as the pool has free slots (each one claims the
+account it would get, so the next is asked about one slot fewer), and only
+when the broker's own `choose()` would hand that agent an account. The finish event does the same for
+the account of an agent that ended. Only the pool's own reasons wake this way:
+`accounts_full`, `no_recent_reading` and `no_account_available`. A paused pool,
+or a grant an administrator has to fix, waits for a person. The wake changes
+eligibility only: the admission pass that follows reserves capacity in its one
+all-or-nothing transaction, as it does for any `READY` agent. So the wait after
+a release is now one scheduler pass, at most the one-minute tick, where it was
+up to five minutes (or three, when the prewarm sweep reached the park first).
+
+---
+
+## 6. Operating it
+
+```bash
+# Provider health, per tenant, with pool effect
+./scripts/status.sh
+
+# Or through the API
+./scripts/api.sh GET /providers
+
+# Stop admitting anything for one provider; running work continues
+./scripts/pause-swarm.sh --provider anthropic
+./scripts/resume-swarm.sh --provider anthropic
+
+# Drain a provider gracefully (limit -> 0, no kills)
+./scripts/api.sh POST /admin/providers/anthropic/drain
+
+# Disable/enable a provider entirely
+./scripts/api.sh POST /admin/providers/anthropic/enabled '{"enabled": false}'
+
+# Raise the ceiling AIMD is allowed to approach
+./scripts/api.sh PUT /admin/limits/provider/anthropic '{"hard_limit": 80}'
+```
+
+A tenant held low by AIMD after a 429 -- target far below both its pool's
+`hard_limit` and its `configured_hard_max` -- does not rise when either ceiling
+is raised: AIMD only ever climbs by +1 per 20 consecutive successes. A platform
+admin can reset the target, clamped to `configured_hard_max` and audited in
+`quota_audit`; the next 429 halves it again.
+[runbooks/quota-throttled-tenant.md](runbooks/quota-throttled-tenant.md).
+
+```bash
+./scripts/api.sh PUT /admin/quota/anthropic/example-tenant/adaptive-target \
+  '{"target": 40, "reason": "lent two more accounts"}'
+```
+
+Verify the behaviour end to end without waiting for a real rate limit:
+
+```bash
+make quota-test
+```
+
+It drives the quota document directly — the same document the broker owns —
+asserts that work parks rather than sleeping, that no compute is held while
+parked, and that the agent resumes when the window reopens. It restores the
+original state on every exit path.
+
+---
+
+## 6a. Pools: the workspace pool and the Voice it pool
+
+An account's `pools` is a set (owner, 2026-11-02, "A separate Voice it
+pool"; 2026-11-03, "We should allow accounts to be in more than one pool at
+a time"). A document without the field is in `workspace` alone, so nothing
+changed for an existing account.
+
+* **`workspace`.** Agents of the owner's workspace and of the workspaces in
+  `lend_to` lease it through `/v1/accounts/assign`, as before.
+* **`voice-it`.** Only swarm-voice leases it, through `/v1/voice/lease`,
+  for a Voice it session of a person in `voice_it_people`. Version one lists
+  the platform owner only (`VOICE_IT_PEOPLE`, else `PLATFORM_OWNER`).
+* **In `voice-it` only, the account is reserved.** `Account.may_serve` (and
+  `_raw_may_serve`, where a hold commits) refuses it to every tenant. So
+  `accounts_serving` never lists it, admission never counts it as a
+  workspace's pool, no agent of any workspace or profile is handed it,
+  and the lending route refuses to lend it.
+* **In both, the account is shared.** Both sides lease it. Its `max_agents`,
+  its one-agent-before-a-reading rule and its window floors hold across both,
+  because a Voice it hold is one more entry in the same `holds`. A Voice it
+  hold carries `pool: voice-it`, its person and its session, and no tenant.
+  It is therefore no workspace's capacity, and it makes no demand on any
+  capacity pool (`pool_limits`). The capacity invariants are unchanged: only
+  leased or running work creates demand, and every lease is counted on its
+  account.
+* **Moving an account between pools.** `PUT /v1/accounts/{id}/pools`
+  `{pools, confirm_label}` is for platform callers only. The label must be
+  typed back, at least one pool stays, and the change is audited in the log
+  with the caller (swarm-api also writes an `admin_audit` row). It is refused
+  with 409 `pool_in_use` while the account holds a live lease of a pool being
+  removed, and with 409 `pool_lent` when the move would leave the account in
+  `voice-it` only while it is still lent. A borrower's worker can read a
+  lent account's secret until the loan ends, so a reserved account must not
+  be lent: end the loan first, which revokes the borrowers' read, then move
+  it. The broker is still the only writer of the account document and
+  keeps refreshing the plan whichever pool it is in.
+* **Who sees a reserved account.** The default scoped `GET /v1/accounts`
+  leaves a `voice-it`-only account out, because it serves no tenant. Every
+  count of a workspace's capacity reads that default listing (admission,
+  setup, the profile). Capacity › Accounts and the pool move ask with
+  `include_reserved=true`, and see the scope's own reserved accounts only,
+  never another workspace's. Without that, a reserved account could never be
+  shown or moved back. The page's verdict, rule line and forecast still
+  count only accounts in `workspace`.
+
+
+
+**Every refusal on a limit says which value it applied, and why.** On
+24 October 2026 admission refused up to 48 steps on the provider concurrency
+limit while 6 or 7 agents ran against a configured ceiling of 40, and nothing
+recorded the limit applied: the adaptive target and the quota-derived limit are
+current values only, so "about 7" had to be inferred from the agents running.
+Now the scheduler writes, on each refused agent's `blocked_by` entry, the
+limit's name (`limit_name`, the pool), the value admission applied (`applied`,
+the transaction's own `effective_limit`), the configured ceiling (`ceiling`,
+the pool's `hard_limit`), the units in use (`in_use`), and, when `applied` is
+below `ceiling`, `lowered_by`: each input that holds it there (`adaptive_target`,
+`quota_derived_limit`, or `override` for a target an admin set after the last
+rate limit) with its value and what dates it. The broker writes
+`target_changed_at` on the quota document only when `adaptive_target` changes
+(a cut, a +1-per-successes step, a time-based recovery, an admin override or a
+max's clamp), never on a success that leaves the target alone, so
+`set_at` for the adaptive target is that instant, and `set_by` says what made
+the change: `override` when an override still holds the value, `rate_limit`
+when the change was the last cut (a cut stamps both with one instant), and
+`climb` for a target that rose after the last cut. A quota document written
+before the broker kept `target_changed_at` has none, and its target falls back
+to the override's audit instant when an override still holds the value, else
+the 429 that last cut it (`last_rate_limited_at`). It is never the quota
+document's `updated_at`: the broker rewrites that on every success and refresh,
+so for a target that has held 7 for hours it reads minutes ago; it is kept
+apart as `quota_written_at`.
+The ceiling and inputs are read just after the refusal, outside the admission
+transaction, so recording them cannot change who is admitted. The `drain
+finished` log line sums the same per limit (`limits`: refusals, the lowest
+value applied, the most units in use, the ceiling and what lowered it), so a
+busy period can be read back from Cloud Logging. Capacity › Pools draws the
+applied value with `/ceiling` beside it, its title naming the input and when it
+was set (`since the rate limit at <at>`, `raised <at>` for a climb, `set <at>`
+for an override); `sc capacity` prints a CEILING column (`40 adaptive`). Note that AIMD
+clamps to the quota document's `configured_hard_max` (default 50), not to the
+pool's `hard_limit`: three tenant-scoped 429s take a target 50 -> 25 -> 12 ->
+6, and one more slot needs `AIMD_SUCCESS_THRESHOLD` (20) successful agents.
+
+| Symptom | Likely cause | Check |
+|---|---|---|
+| Agents park on their first drain after submit | tenant has no key for the profile's provider, and no pool account can run the profile for it | `park_reason: CREDENTIAL_MISSING`; the `parked` event's `detail.account_pool` says which condition in section 4 failed; `scripts/create-secrets.sh --list` |
+| An agent that ran on a lent account parks `CREDENTIAL_MISSING` and stays parked for up to an hour | the worker wrote that park, not admission. Either it could not reach the broker and the tenant has no key to fall back to (the event has `provider` and no `account_pool_reason`), or the broker refused it (`account_pool_reason: broker_refused`, usually a missing `run.invoker` grant), or it could read no account's secret (`account_unreadable`) | the credential sweep waits for the park's `next_eligible_at` on purpose (section 4). Fix the cause, or register a key: a key promotes the agent on the next drain |
+| Provider stuck at a low target | AIMD is still climbing after a 429 storm | `quota/{provider}:{tenant}.success_count` vs `AIMD_SUCCESS_THRESHOLD`; once the cause is fixed, a platform admin may reset it ([runbooks/quota-throttled-tenant.md](runbooks/quota-throttled-tenant.md)) |
+| Provider never recovers | `state=EXHAUSTED` and nothing clears it | `reset_at` in the future, or the broker tick is not running |
+| One tenant's 429s throttle everyone | **a regression, not an expected mode** — section 3 forbids a tenant-derived limit on `provider:X`. Compare `provider:X` and `provider:X:tenant:Y` in `status.sh`; if `provider:X` carries a `quota_derived_limit` while any enabled tenant is healthy, `_recompute_provider_pool` has broken and the AIMD test that covers it should be failing |
+| Workers burning CPU while rate-limited | `max_in_worker_retry_delay_seconds` set too high | it should stay well under a typical provider window |

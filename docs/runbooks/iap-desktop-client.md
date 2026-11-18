@@ -1,0 +1,243 @@
+# One Desktop OAuth client, so developers sign in to IAP as themselves
+
+**Who:** the deployment's owner, once per deployment. **Takes:** about fifteen
+minutes, plus up to ten for IAM to propagate. **Changes:** one OAuth client in
+the project, and one IAP setting on each of the platform's own two backend
+services. Nothing on the other team's backends.
+
+The worked values below are this repository's `dev` deployment (`example-project`,
+project number `123456789012`, `https://swarm.example.com`, backends
+`swarm-ui-backend` and `swarm-ui-ui-backend`). Another deployment substitutes
+its own.
+
+## Why this is needed
+
+A gcloud user token is refused at the front door: measured on 2026-09-24,
+IAP answers **401 with error code 900**. The deployment's IAP uses a
+Google-managed OAuth client (`terraform/modules/frontend` sets no
+`oauth2_client_id`, on purpose, so no client secret sits in Terraform state),
+and Google's documentation says what that means:
+
+> Google-managed OAuth clients cannot programmatically access IAP-protected
+> applications. However, IAP-protected applications that use the
+> Google-managed OAuth client can still be accessed programmatically using a
+> separate OAuth client configured through the `programmatic_clients` setting
+> or a service account JWT.
+> — [Use custom OAuth clients with IAP](https://cloud.google.com/iap/docs/custom-oauth-configuration)
+
+Until now the only way through from a laptop was impersonating a service
+account, so every developer reached the API as `swarm-verify` rather than as
+themselves. Google's documented path for a person at a command line is
+[Authenticate from a desktop app](https://cloud.google.com/iap/docs/authentication-howto):
+create a **Desktop app** OAuth client, add it to the application's allowlist
+for programmatic access, and have each developer sign in with it. `sc login`
+is that sign-in. One client serves every developer on the deployment; nobody
+else creates anything.
+
+The allowlist is set **per backend service**, not per project. That is the
+line this runbook must not cross: nine of the ten IAP backends in
+`example-project` are another team's (their Keycloak and ArgoCD among them),
+and a project-level IAP setting would change what they accept.
+
+## Step 1 — look before touching anything (read-only)
+
+```bash
+gcloud iap oauth-brands list --project=example-project \
+  --format='table(name,applicationTitle,orgInternalOnly)'
+```
+
+Expected, as measured on 2026-09-25:
+
+```text
+NAME                                       APPLICATION_TITLE  ORG_INTERNAL_ONLY
+projects/123456789012/brands/123456789012  AI Agents          True
+```
+
+**The consent screen already exists and is Internal. Do not edit it.** It is the
+project's, shared with the other team, and "Internal" is the setting this needs:
+only accounts in the organisation can sign in with a client under it. Developers
+will see **"AI Agents"** as the application name when they sign in; that is this
+brand's title, not a mistake. (A fresh project with no brand configures one in
+the console: **Google Auth Platform → Branding**, then **Audience → Internal**.)
+
+```bash
+gcloud compute backend-services describe swarm-ui-backend --global \
+  --project=example-project --format='value(iap.enabled,iap.oauth2ClientId)'
+```
+
+Expected: `True` and nothing after it — IAP on, Google-managed client. If a
+client id is printed, this deployment has its own IAP client and this runbook
+does not apply; `SWARM_IAP_CLIENT_ID` with `SWARM_IMPERSONATE_SA` is that shape.
+
+## Step 2 — create the Desktop OAuth client (console)
+
+1. Open <https://console.cloud.google.com/auth/clients?project=example-project>
+   (**Google Auth Platform → Clients**; older consoles call it **APIs &
+   Services → Credentials → Create credentials → OAuth client ID**).
+2. **Create client**.
+3. **Application type: Desktop app.** Not "Web application": the sign-in
+   redirects to a listener on `127.0.0.1`, which only a Desktop client allows
+   without registering redirect URIs.
+4. **Name:** `SwarmCloud sc CLI`. Only you see it.
+5. **Create.** The dialog shows two values. Copy both now:
+   * **Client ID** — `123456789012-….apps.googleusercontent.com`. Not secret;
+     it goes into Terraform in step 4 and into every developer's plugin.
+   * **Client secret** — `GOCSPX-…`. Keep it in the team's password manager.
+     Google documents that an installed app's secret is not treated as
+     confidential, but it is still not something to paste into a public
+     channel or a repository — and it never goes into Terraform.
+
+Nothing is live yet: until step 4, IAP refuses tokens minted for this client.
+
+## Step 3 — the permission to write IAP settings on our backends
+
+Writing IAP settings needs `iap.webServices.updateSettings`, and every plan
+reads them with `iap.webServices.getSettings`. Both are in
+`roles/iap.settingsAdmin` and in `roles/owner`, and **not** in `roles/iap.admin`
+(`gcloud iam roles describe` on each).
+
+**The applier needs one of those roles on the PROJECT.** A binding on the two
+backend services does not work, and that is measured, not assumed. On
+2026-09-25 `roles/iap.settingsAdmin` was bound on `swarm-ui-backend` and
+`swarm-ui-ui-backend` with `gcloud iap web add-iam-policy-binding
+--resource-type=backend-services`. Ten minutes later `gcloud iap settings get`
+on the same backend still answered `PERMISSION_DENIED`. That was the second
+time: earlier the same day, `roles/iap.admin` bound on the backends left the
+deployer's `getIamPolicy` refused nine and a half minutes later
+(`terraform/modules/frontend/main.tf`, "Who may pass IAP"). IAP bindings on a
+backend decide who may **pass** it (`httpsResourceAccessor`). They do not grant
+administration of it. The failed grants were removed, and the backends were
+back to their accessor bindings only.
+
+So check whether you already hold it before asking anyone:
+
+```bash
+gcloud iap settings get --project=example-project \
+  --resource-type=compute --service=swarm-ui-backend
+```
+
+It must print settings, which may be just a `name:` line, not
+`PERMISSION_DENIED`. The name it prints ends in the backend's numeric ID, not
+its name. That is how IAP names resources; see step 5.
+
+**Do not decide who holds it from `gcloud projects get-iam-policy`.** That shows
+only direct project bindings. On 2026-09-25 it showed the owner holding
+`roles/iap.admin` and no IAM-admin role, and this runbook concluded that only
+someone else could grant the right. That was wrong: the owner could grant
+themselves `roles/owner`, and `settings get` worked the moment they did. Rights
+also arrive through groups, folders and the organisation, and those only show
+up when you try the call.
+
+A project-level role covers IAP settings on **every** backend in the project,
+the other team's included. `terraform/bootstrap` still writes only our two, and
+step 4's plan check is what holds it to that.
+
+## Step 4 — allowlist the client (Terraform, bootstrap root)
+
+Add the client ID from step 2 to `terraform/bootstrap/terraform.tfvars`:
+
+```hcl
+# Desktop OAuth client that `sc login` signs developers in with
+# (terraform/bootstrap/iap_programmatic_clients.tf).
+frontend_iap_programmatic_clients = [
+  "123456789012-XXXXXXXX.apps.googleusercontent.com",
+]
+```
+
+The variable refuses anything that is not a client ID — a pasted secret
+(`GOCSPX-…`) or a URL fails the plan. Then apply only these two resources,
+because `make bootstrap` applies everything pending in the root
+([docs/ci.md](../ci.md) says why that matters):
+
+```bash
+scripts/bootstrap.sh \
+  --target 'google_iap_settings.frontend_programmatic_clients["swarm-ui-backend"]' \
+  --target 'google_iap_settings.frontend_programmatic_clients["swarm-ui-ui-backend"]'
+```
+
+Before typing `apply`, the plan must show exactly these two creates and nothing
+else, each named at the **service** level:
+
+```text
++ google_iap_settings.frontend_programmatic_clients["swarm-ui-backend"]
+    name = "projects/123456789012/iap_web/compute/services/swarm-ui-backend"
++ google_iap_settings.frontend_programmatic_clients["swarm-ui-ui-backend"]
+    name = "projects/123456789012/iap_web/compute/services/swarm-ui-ui-backend"
+```
+
+A `name` ending anywhere other than `/services/swarm-…` is the project-wide
+change this runbook exists to avoid. Do not apply it.
+
+## Step 5 — verify
+
+```bash
+gcloud iap settings get --project=example-project \
+  --resource-type=compute --service=swarm-ui-backend
+```
+
+Expected:
+
+```yaml
+accessSettings:
+  oauthSettings:
+    programmaticClients:
+    - 123456789012-XXXXXXXX.apps.googleusercontent.com
+```
+
+Run the same `scripts/bootstrap.sh` targets again and require **no changes**.
+Terraform names each backend by its name (`…/services/swarm-ui-backend`), while
+IAP answers with the numeric backend ID (`…/services/817602226733443034`). If
+the provider stored IAP's form, the second plan wants to replace both settings,
+and every later bootstrap apply would repeat it. Treat that as a defect to fix
+in `terraform/bootstrap/iap_programmatic_clients.tf`, not a plan to accept.
+Measured on 2026-09-25, the first apply for this deployment: `No changes`. The
+provider keeps the name Terraform wrote, so the check passed.
+
+Then sign in as a developer would, with the values from step 2 (the
+[plugin setup guide](../plugin-setup.md) has the full flow):
+
+```bash
+printf '%s\n' 'GOCSPX-…' | uv run sc context add example-dev \
+  --url https://swarm.example.com \
+  --client-id 123456789012-XXXXXXXX.apps.googleusercontent.com \
+  --client-secret-stdin
+uv run sc login      # a browser opens; pick your example.com account
+uv run sc whoami     # principal is YOU, and your tenant
+```
+
+`sc login` ends by calling the API once, **with the ID token it just minted** —
+not with whatever else this machine has — so its answer is about the
+allowlist. (Until review caught it, that call went through the ordinary tier
+detection, and with `SWARM_IMPERSONATE_SA` exported it tested the service
+account instead and printed success whatever IAP thought of the Desktop
+client.) If `sc login` prints a `warning … not as you` line, the check above is
+still valid, but every other command on this machine will act as the identity
+it names until you unset it.
+
+If it prints `did not accept it: ... 401`, IAP is refusing the token: step 4 is
+not applied, or has not propagated.
+A **403 that names you** is the other gate — `roles/iap.httpsResourceAccessor`,
+granted through `frontend_iap_members` in `terraform/bootstrap/terraform.tfvars`
+(`domain:example.com` already covers every account in that domain).
+
+## Step 6 — tell developers
+
+Three values, and where to put them: the plugin asks for all three at
+`/plugin install sc@swarmcloud`. The plugin's MCP server fetches the bridge at
+the tag `sc-v<version>`, so push that tag for the plugin version you hand out
+before anyone installs it, or their server cannot start
+([the plugin setup guide](../plugin-setup.md) says what they see).
+
+| Prompt | Value |
+|---|---|
+| SwarmCloud deployment URL | `https://swarm.example.com` |
+| OAuth client ID (Desktop app) | the client ID from step 2 |
+| OAuth client secret (Desktop app) | from the password manager |
+
+## Undoing it
+
+Set `frontend_iap_programmatic_clients = []` and apply the same two targets:
+the provider clears the IAP settings on those two backends when the resources
+are destroyed. Deleting the OAuth client in the console (step 2's page) also
+invalidates every developer's refresh token at once, which is the fast way to
+cut everyone off; `sc logout` does the same for one person.

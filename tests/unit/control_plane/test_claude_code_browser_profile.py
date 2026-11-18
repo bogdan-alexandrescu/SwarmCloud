@@ -1,0 +1,490 @@
+"""`claude-code-browser` is claude-code on agent-runtime-browser (contract
+request 67, accepted by the owner 2026-10-11).
+
+An agent could not render or screenshot a page: `browser` is a scripted runner
+that needs input.url or actions, and claude-code's image has no Chromium. The
+owner's decision: a profile that is claude-code in every field but its name,
+its image and -- because of the image -- the `browser` resource class, on GKE
+Autopilot, named by callers like any other. These hold that:
+
+  * the catalogue entry is claude-code with only `name`, `image` and
+    `resource_class` changed, and it resolves to GKE Autopilot;
+  * it takes claude-code's `issue` input and refuses anything else, an image
+    included, and a task cannot carry an image at all (invariant 10);
+  * its GKE pod runs the browser image's pinned digest with the browser
+    class's memory (requests == limits) and the memory-backed /dev/shm;
+  * the claude-code runner hands the CLI `PLAYWRIGHT_BROWSERS_PATH` and tells
+    the agent to launch Chromium with its sandbox off -- only on the image
+    that sets it;
+  * every restatement of the catalogue carries it: the Terraform mirror and
+    model table, both agent-stream tables, the Submit form and the UI's
+    fixtures, which scripts/lib/check-contract-parity.sh reads;
+  * request 67 records the owner's acceptance and the rollback.
+
+MUTATION: set its resource_class to "standard" in profiles.py and
+`test_the_profile_is_claude_code_on_the_browser_image` and the pod test fail;
+drop it from `cli_agent_spec` and the stream test fails; drop the
+PLAYWRIGHT_BROWSERS_PATH pass-through in claude_code.body and
+`test_the_runner_hands_the_agent_the_browser` fails.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+import pytest
+from pydantic import ValidationError
+
+from swarm_common.models import Tenant
+from swarm_common.profiles import (
+    RESOURCE_CLASSES,
+    RUNNER_PROFILES,
+    Backend,
+    InputRefused,
+    check_inputs,
+    resolve_backend,
+)
+
+from scheduler.dispatch import BackendRouter, GkeJobDispatcher, GkeTarget
+from swarm_api.schemas import TaskCreate
+from swarm_api.validation import FORBIDDEN_CALLER_FIELDS, validate_runner_profile
+
+from .conftest import PROJECT, scheduler_settings
+from .test_dispatch_manifests import NOW, FakeBatchApi, make_lease, make_task
+
+REPO = Path(__file__).resolve().parents[3]
+PROFILE = "claude-code-browser"
+LOCALS = REPO / "terraform/infra/locals.tf"
+REQUESTS = REPO / "docs/contract-change-requests.md"
+SUBMIT = REPO / "apps/swarm-ui/src/Submit.tsx"
+UI_API = REPO / "apps/swarm-ui/src/api.ts"
+DOCKERFILE = REPO / "images/agent-runtime-browser/Dockerfile"
+
+
+@pytest.fixture
+def tenant() -> Tenant:
+    return Tenant(
+        tenant_id="eng",
+        kind="group",
+        principal="eng@example.com",
+        created_at=NOW,
+        service_account=f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com",
+        gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/eng",
+        namespace="swarm-tenant-eng",
+    )
+
+
+# --- the catalogue ------------------------------------------------------------
+
+
+def test_the_profile_is_claude_code_on_the_browser_image():
+    assert PROFILE in RUNNER_PROFILES, "contract request 67's profile is missing"
+    profile = RUNNER_PROFILES[PROFILE]
+    claude = RUNNER_PROFILES["claude-code"]
+    differ = sorted(
+        f.name for f in dataclasses.fields(profile)
+        if getattr(profile, f.name) != getattr(claude, f.name)
+    )
+    # `live_browser` is contract request 71 (LB-D, archived issue 1030): the one live profile.
+    # `inputs` is contract request 77 (BSTATUS-API): claude-code's plus `browser_tool`,
+    # and `qa_identity` by contract request 106 (QI-CONTRACT).
+    # `secret_slots` is contract request 117 (CF-ACCESS-CONTRACT): claude-code's
+    # plus `cf-access`. `build_resource_class` is contract request 135: only
+    # claude-code's build stages run `builder`; the live profile keeps `browser`.
+    assert differ == ["build_resource_class", "image", "inputs", "live_browser", "name",
+                      "resource_class", "secret_slots"], (
+        f"the owner's decision was claude-code with its name, image and class changed, "
+        f"live_browser set (request 71), browser_tool declared (request 77) and the "
+        f"cf-access slot added (request 117); {differ} differ"
+    )
+    slots = dict(profile.secret_slots)
+    assert slots.pop("cf-access").kinds == ("oauth_client",)
+    assert slots == dict(claude.secret_slots)
+    extra = dict(profile.inputs)
+    assert extra.pop("browser_tool").choices == ("auto", "playwright", "dev-browser", "jev")
+    assert extra.pop("qa_identity").choices == ("console",)
+    # pull_request is the owner's pick on archived pull request 3470 for claude-code, codex and
+    # claude-code-review alone.
+    assert extra == {k: v for k, v in claude.inputs.items() if k != "pull_request"}
+    assert profile.live_browser is True
+    assert profile.image == "agent-runtime-browser"
+    assert profile.image == RUNNER_PROFILES["browser"].image
+    assert profile.resource_class == "browser"
+    assert RESOURCE_CLASSES["browser"].units == 1  # contract request 79
+    assert profile.runner_argv == ("python", "-m", "agent_worker.runners.claude_code")
+    assert profile.available
+    assert DOCKERFILE.is_file()
+
+
+def test_it_resolves_to_gke_autopilot_and_the_router_sends_it_there():
+    profile = RUNNER_PROFILES[PROFILE]
+    assert profile.backend is Backend.GKE_AUTOPILOT
+    assert resolve_backend(profile) is Backend.GKE_AUTOPILOT
+    settings = scheduler_settings()
+    gke = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"), batch_api=FakeBatchApi())
+    router = BackendRouter(cloud_run=None, gke=gke, settings=settings)
+    assert router.for_backend(resolve_backend(profile)) is gke
+
+
+def test_it_is_selectable_by_name():
+    assert validate_runner_profile(PROFILE) is RUNNER_PROFILES[PROFILE]
+
+
+# --- inputs, and invariant 10 -------------------------------------------------
+
+
+def test_it_accepts_the_issue_input_like_claude_code():
+    # And `browser_tool` besides, by contract request 77 (BSTATUS-API), and
+    # `mcp_servers`, by contract request 88 (MCP-CONTRACT), and `qa_identity`,
+    # by contract request 106 (QI-CONTRACT).
+    assert set(RUNNER_PROFILES[PROFILE].inputs) == {"issue", "browser_tool", "mcp_servers", "qa_identity"}
+    assert RUNNER_PROFILES[PROFILE].inputs["issue"] == RUNNER_PROFILES["claude-code"].inputs["issue"]
+    assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42}) == {"issue": 42}
+    assert check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 42.0}) == {"issue": 42}
+    with pytest.raises(InputRefused):
+        check_inputs(RUNNER_PROFILES[PROFILE], {"issue": 0})
+
+
+@pytest.mark.parametrize("key", ["image", "model", "command", "resources"])
+def test_an_execution_detail_sent_as_an_input_is_refused(key):
+    with pytest.raises(InputRefused) as refused:
+        check_inputs(RUNNER_PROFILES[PROFILE], {key: "agent-runtime-browser"})
+    assert refused.value.key == key
+
+
+def test_a_task_naming_it_with_an_image_is_refused():
+    body = {"runner_profile": PROFILE, "input": {"prompt": "screenshot the login page"}}
+    assert TaskCreate.model_validate(body).runner_profile == PROFILE
+    assert "image" in FORBIDDEN_CALLER_FIELDS
+    for field in ("image", "backend", "resources"):
+        with pytest.raises(ValidationError) as refused:
+            TaskCreate.model_validate({**body, field: "agent-runtime-browser"})
+        assert any(e["type"] == "extra_forbidden" for e in refused.value.errors()), field
+
+
+# --- the GKE pod --------------------------------------------------------------
+
+
+def test_the_pod_carries_what_the_browser_image_needs(tenant):
+    image = RUNNER_PROFILES[PROFILE].image
+    base = scheduler_settings(worker_models={PROFILE: "claude-opus-5-5"})
+    digest = f"{base.artifact_registry_host}/{image}@sha256:{'d' * 64}"
+    settings = scheduler_settings(worker_models={PROFILE: "claude-opus-5-5"}, worker_image_refs={image: digest})
+    api = FakeBatchApi()
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"), batch_api=api)
+    task = make_task(PROFILE)
+    dispatcher.dispatch(task=task, lease=make_lease(task), profile=RUNNER_PROFILES[PROFILE], tenant=tenant)
+    spec = api.created[0][1]["spec"]["template"]["spec"]
+    worker = next(c for c in spec["containers"] if c["name"] == "worker")
+    env = {e["name"]: e["value"] for e in worker["env"]}
+
+    assert worker["image"] == digest, "the pod must run the browser image's pinned digest"
+    assert "command" not in worker and "args" not in worker
+    assert env["RUNNER_PROFILE"] == PROFILE
+    assert env.get("MODEL") == "claude-opus-5-5"
+    resources = worker["resources"]
+    # Invariant 7 as amended by contract request RS-1 (SIZES-SCHED-1): memory
+    # never bursts; CPU requests the class and may burst to its limit.
+    assert resources["requests"]["memory"] == resources["limits"]["memory"], "invariant 7"
+    assert resources["limits"]["memory"] == f"{RESOURCE_CLASSES['browser'].memory_gib}Gi"
+    assert resources["requests"]["cpu"] == f"{int(RESOURCE_CLASSES['browser'].cpu * 1000)}m"
+    assert resources["limits"]["cpu"] == f"{int(RESOURCE_CLASSES['browser'].cpu_limit_cores * 1000)}m"
+    mounts = {m["name"]: m["mountPath"] for m in worker["volumeMounts"]}
+    assert mounts.get("dshm") == "/dev/shm"
+    dshm = next(v for v in spec["volumes"] if v["name"] == "dshm")
+    assert dshm["emptyDir"]["medium"] == "Memory"
+    assert worker["securityContext"]["capabilities"] == {"drop": ["ALL"]}
+
+
+# --- the runner ---------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_live_browser_from_the_host(monkeypatch):
+    """Each test starts from no live browser, whatever machine runs it; a test
+    that wants one sets it.
+
+    `claude_code.body` reads `SWARM_CDP_ENDPOINT` and `SWARM_HANDOFF` from the
+    process environment, and a SwarmCloud browser runner -- where an agent runs
+    these tests (CLAUDE.md) -- sets both. Inherited, they sent the
+    no-live-browser tests down the live branch: `PLAYWRIGHT_BROWSERS_PATH`
+    became the stub `/opt/swarm/live-browser-only`, and a base-image run was
+    refused as `live_browser_unavailable` (2026-10-25, POOL-LIMITS-QUOTA).
+    The rest of a live-browser container's variables go too, so no case is a
+    live attempt unless it sets its variables itself, after this has run.
+
+    `SWARM_CHILDREN` goes too: a SwarmCloud container sets it, and inherited
+    it appended the exploration note to the prompt these tests compare
+    exactly (2026-11-01, LOAD-SPEED-WORKFLOWS-LIST's pre-publish gate).
+    """
+    from agent_worker import handoff
+    from agent_worker.children import CHILDREN_ENV
+    from agent_worker.runners import claude_code
+
+    monkeypatch.delenv(claude_code.CDP_ENDPOINT_ENV, raising=False)
+    monkeypatch.delenv(handoff.HANDOFF_ENV, raising=False)
+    monkeypatch.delenv(CHILDREN_ENV, raising=False)
+    for name in ("SWARM_BROWSER_UPLOADS", "SWARM_TEST_BROWSERS_PATH", "SWARM_JEV_BACKEND"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def _run_body(monkeypatch, tmp_path, browsers: str | None) -> dict[str, Any]:
+    from agent_worker.runners import claude_code
+    from agent_worker.runners.base import RunnerContext
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(ctx, spec, *, extra_args=(), extra_env=None):
+        seen["prompt"] = ctx.payload["prompt"]
+        seen["env"] = dict(extra_env or {})
+        return {}
+
+    monkeypatch.setattr(claude_code, "run_cli_agent", fake_run)
+    if browsers is None:
+        monkeypatch.delenv(claude_code.BROWSERS_PATH_ENV, raising=False)
+    else:
+        monkeypatch.setenv(claude_code.BROWSERS_PATH_ENV, browsers)
+    ctx = RunnerContext(
+        work_dir=tmp_path,
+        artifacts_dir=tmp_path / "artifacts",
+        input_path=tmp_path / "input.json",
+        result_path=tmp_path / "result.json",
+        quota_path=tmp_path / "quota.json",
+        payload={"prompt": "Screenshot the settings page."},
+    )
+    claude_code.body(ctx)
+    return seen
+
+
+def _no_live_browser(monkeypatch) -> None:
+    """The runner reads the live browser's spool and endpoint from the process
+    environment, and seeds a test-browsers directory from whatever is at the
+    browsers path on THIS machine, so a run on SwarmCloud's own browser
+    container (which sets both and has /opt/playwright) took the live-browser
+    path and appended PW-TESTRUNNER's note here. These tests are of an attempt
+    with no live browser and no test-browsers directory: say so, rather than
+    inherit the machine's."""
+    from agent_worker.runners import claude_code
+
+    monkeypatch.delenv(claude_code.HANDOFF_ENV, raising=False)
+    monkeypatch.delenv(claude_code.CDP_ENDPOINT_ENV, raising=False)
+    monkeypatch.setattr(claude_code, "prepare_test_browsers", lambda *_: None)
+
+
+def test_the_runner_hands_the_agent_the_browser(monkeypatch, tmp_path):
+    from agent_worker.runners import claude_code
+    from agent_worker.runners.claude_code import BROWSER_NOTE
+
+    _no_live_browser(monkeypatch)
+    # A path under tmp_path, not the image's `/opt/playwright`: where that
+    # directory exists (a SwarmCloud browser runner), the runner seeds a test
+    # browsers directory from it and names it after BROWSER_NOTE (PW-TESTRUNNER).
+    # The browser note alone: `prepare_test_browsers` seeds no test-runner
+    # directory here (its own cases cover TEST_RUNNER_NOTE).
+    monkeypatch.setattr(claude_code, "prepare_test_browsers", lambda *a, **k: None)
+    browsers = str(tmp_path / "playwright")
+    seen = _run_body(monkeypatch, tmp_path, browsers)
+    assert seen["env"]["PLAYWRIGHT_BROWSERS_PATH"] == browsers
+    assert seen["prompt"].startswith("Screenshot the settings page.")
+    assert seen["prompt"].endswith(BROWSER_NOTE)
+    assert "chromium_sandbox=False" in BROWSER_NOTE
+
+
+def test_the_runner_says_nothing_of_a_browser_on_the_base_image(monkeypatch, tmp_path):
+    _no_live_browser(monkeypatch)
+    seen = _run_body(monkeypatch, tmp_path, None)
+    assert "PLAYWRIGHT_BROWSERS_PATH" not in seen["env"]
+    assert seen["prompt"] == "Screenshot the settings page."
+
+
+def test_the_agents_bash_tool_inherits_swarm_handoff_and_the_cdp_endpoint(monkeypatch, tmp_path):
+    """LB-POLISH (part of archived issue 1030). MEASURED 2026-10-13 on
+    task_1f28d5bfa5a14f618f83: the agent had to `export SWARM_HANDOFF=...`
+    itself -- the lifecycle sets it for the runner (`handoff.prepare`), but
+    the CLI's environment is built from scratch and did not carry it, so
+    `swarm-handoff` in the Bash tool found no spool. The CLI's environment is
+    what its Bash tool inherits; the hand-off's variables are now in it."""
+    from agent_worker import handoff
+
+    spool = tmp_path / ".swarm-handoff"
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
+    monkeypatch.setenv("SWARM_BROWSER_UPLOADS", "/run/swarm/uploads")
+    # JUDGE-SELECT's two, so every name the hand-off passes is present.
+    monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-laya")
+    monkeypatch.setenv("JEV_API_URL", "https://decision-api.example-tailnet.ts.net/laya/v1/decide")
+    monkeypatch.setenv("SWARM_DECISION_API_TAILNET_NAME", "decision-api.example-tailnet.ts.net")
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["env"]["SWARM_HANDOFF"] == str(spool)
+    assert seen["env"]["SWARM_CDP_ENDPOINT"] == "http://127.0.0.1:9223"
+    assert seen["env"]["SWARM_BROWSER_UPLOADS"] == "/run/swarm/uploads"
+    # Exactly the hand-off's own names: what the worker hands the agent.
+    assert {handoff.HANDOFF_ENV, *handoff.AGENT_PASSTHROUGH_ENV} <= set(seen["env"])
+
+
+def test_the_judgment_backend_and_its_url_reach_the_cli_and_no_typesafe_key(monkeypatch, tmp_path):
+    """JUDGE-SELECT (owner decision 2026-10-14). The dispatcher names the
+    workspace's judgment backend (SWARM_JEV_BACKEND) and, for an internal one,
+    the decision API's tailnet JEV_API_URL; the CLI's environment is what its MCP servers
+    inherit, so jev-browser-mcp reads both there. Nothing here hands the CLI a
+    TypeSafe key: an internal backend needs none."""
+    from agent_worker import handoff
+
+    name = "decision-api.example-tailnet.ts.net"
+    url = f"https://{name}/jev/v1/decide"
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(tmp_path / ".swarm-handoff"))
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
+    monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-jev")
+    monkeypatch.setenv("JEV_API_URL", url)
+    monkeypatch.setenv("SWARM_DECISION_API_TAILNET_NAME", name)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["env"]["SWARM_JEV_BACKEND"] == "internal-jev"
+    assert seen["env"]["JEV_API_URL"] == url
+    # The wrapper reads the name from the CLI's environment (no default).
+    assert seen["env"]["SWARM_DECISION_API_TAILNET_NAME"] == name
+    assert "TYPESAFE_API_KEY" not in seen["env"]
+    assert {"SWARM_JEV_BACKEND", "JEV_API_URL", "SWARM_DECISION_API_TAILNET_NAME"} <= set(
+        handoff.AGENT_PASSTHROUGH_ENV)
+
+
+def test_the_launch_env_built_by_the_cli_runner_carries_swarm_handoff(monkeypatch, tmp_path):
+    """The same, one layer down: the env `run_cli_agent` hands the CLI process
+    (and so its Bash tool) names the attempt's spool, which `prepare` made."""
+    from agent_worker import handoff
+    from agent_worker.runners import claude_code, cliagent
+
+    spool = tmp_path / ".swarm-handoff"
+    spool.mkdir()
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
+    # A live-browser attempt reaches the runner only with its browser
+    # (BROWSER-START, part of archived issue 1366): without one the runner refuses.
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
+    monkeypatch.setenv(claude_code.BROWSERS_PATH_ENV, "/opt/playwright")
+    monkeypatch.delenv("SWARM_BROWSER_UPLOADS", raising=False)
+    monkeypatch.setenv(claude_code.SPEC.key_env, "sk-ant-" + "x" * 40)
+    launched: dict[str, Any] = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_child(argv, *, env, **kwargs):
+        launched.update(env)
+        raise Stop
+
+    monkeypatch.setattr(cliagent, "run_child", fake_child)
+    # claude-code reads its stream as it is written, for the context ceiling
+    # (archived issue 2524), so its start goes through the watched loop.
+    monkeypatch.setattr(cliagent, "_run_watched", fake_child)
+    binary = tmp_path / "claude"
+    binary.write_text("")
+    monkeypatch.setenv(claude_code.SPEC.binary_env, str(binary))
+    from agent_worker.runners.base import RunnerContext
+
+    ctx = RunnerContext(
+        work_dir=tmp_path,
+        artifacts_dir=tmp_path / "artifacts",
+        input_path=tmp_path / "input.json",
+        result_path=tmp_path / "result.json",
+        quota_path=tmp_path / "quota.json",
+        payload={"prompt": "Sign in, then hand off."},
+    )
+    (tmp_path / "artifacts").mkdir()
+    with pytest.raises(Stop):
+        claude_code.body(ctx)
+    assert launched.get("SWARM_HANDOFF") == str(spool)
+
+
+def test_a_resumed_attempt_is_told_in_its_prompt_what_the_earlier_one_did(monkeypatch, tmp_path):
+    """RESUME-PROGRESS (QA12-14, part of archived issue 1030). The CLI has no conversation
+    to resume across a park, so the worker's summary of the earlier attempts'
+    hand-offs (`handoff.HandoffPath.prepare`, written into the spool) is the
+    resumed agent's prompt: after the caller's, before the platform's notes."""
+    from agent_worker import handoff
+    from agent_worker.runners.claude_code import LIVE_BROWSER_NOTE
+
+    spool = tmp_path / handoff.SPOOL_DIR_NAME
+    spool.mkdir()
+    summary = f"{handoff.RESUME_HEADLINE}\n\n1. \"QA1\": {handoff.MARK_DONE}"
+    (spool / handoff.RESUME_NAME).write_text(summary)
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
+    # A live-browser attempt reaches the runner only with its browser
+    # (BROWSER-START, part of archived issue 1366): without one the runner refuses.
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["prompt"].startswith("Screenshot the settings page.")
+    assert summary in seen["prompt"]
+    assert seen["prompt"].index(summary) < seen["prompt"].index(LIVE_BROWSER_NOTE)
+
+    # No summary in the spool: a first attempt is told nothing of earlier ones.
+    (spool / handoff.RESUME_NAME).unlink()
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["prompt"].startswith("Screenshot the settings page.")
+    assert handoff.RESUME_HEADLINE not in seen["prompt"]
+
+
+def test_the_browser_image_sets_the_path_the_runner_reads():
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert re.search(r"^ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright", text, re.M)
+
+
+# --- the restatements ---------------------------------------------------------
+
+
+def test_it_writes_claude_codes_agent_streams():
+    from agent_worker.runners.streams import cli_agent_spec
+    from swarm_api.agent_streams import AGENT_STREAM_FILES
+
+    assert cli_agent_spec(PROFILE) is cli_agent_spec("claude-code")
+    assert AGENT_STREAM_FILES[PROFILE] == AGENT_STREAM_FILES["claude-code"]
+
+
+def test_the_terraform_mirror_carries_it_and_its_model():
+    text = LOCALS.read_text(encoding="utf-8")
+    block = re.search(r'^    "claude-code-browser" = \{\n(.*?)^    \}\n', text, re.M | re.S)
+    assert block, 'terraform/infra/locals.tf runner_profiles has no "claude-code-browser" entry'
+    body = block.group(1)
+    assert re.search(r'^\s*image\s*=\s*"agent-runtime-browser"$', body, re.M), body
+    assert re.search(r'^\s*resource_class\s*=\s*"browser"$', body, re.M), body
+    assert re.search(r'^\s*backend\s*=\s*"GKE_AUTOPILOT"$', body, re.M), body
+    assert re.search(r'^\s*provider\s*=\s*"anthropic"$', body, re.M), body
+    assert re.search(r"^\s*timeout_seconds\s*=\s*7200$", body, re.M), body
+    # runner_models is keyed by model class (archived issue 1435); a profile's model is the
+    # pin of its default_model_class, so it runs claude-code's model when the
+    # two name the same default class.
+    claude_code = re.search(r'^    "claude-code" = \{\n(.*?)^    \}\n', text, re.M | re.S)
+    assert claude_code, 'terraform/infra/locals.tf runner_profiles has no "claude-code" entry'
+    default = r'^\s*default_model_class\s*=\s*"([a-z]+)"$'
+    classes = [re.search(default, b, re.M) for b in (body, claude_code.group(1))]
+    assert all(classes), classes
+    assert classes[0].group(1) == classes[1].group(1), classes
+
+
+def test_the_parity_checked_ui_tables_carry_it():
+    """check-contract-parity.sh reads Submit.tsx's SUGGESTED for every profile
+    in the catalogue; the UI fixtures are held to the catalogue by
+    test_capacity_serves_availability.py and test_ui_fixture_input_contract.py."""
+    submit = SUBMIT.read_text(encoding="utf-8")
+    table = re.search(r"const SUGGESTED\b[^=]*=\s*[{]\n(.*?)\n[}]\n", submit, re.S)
+    assert table and f"'{PROFILE}': [" in table.group(1)
+    ui = UI_API.read_text(encoding="utf-8")
+    for declaration in ("FIXTURE_INPUT_CONTRACTS", "FIXTURE_AVAILABILITY"):
+        literal = re.search(declaration + r"\b[^=]*=\s*(\{.*?\n\})", ui, re.S)
+        assert literal, declaration
+        assert PROFILE in json.loads(literal.group(1)), declaration
+
+
+def test_request_67_records_the_owners_acceptance_and_the_rollback():
+    text = REQUESTS.read_text(encoding="utf-8")
+    start = text.index("## 67. ")
+    end = text.find("\n## 68. ", start)
+    section = text[start:end if end != -1 else len(text)]
+    # scripts/lib/check-frozen-contract.sh passes a diff under
+    # apps/common/swarm_common/ only beside an added line holding this phrase.
+    assert "accepted by the owner" in section.lower()
+    assert "**Status:** open" not in section
+    assert "### Rollback" in section and "Delete the entry" in section

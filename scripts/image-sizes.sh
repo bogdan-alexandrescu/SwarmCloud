@@ -1,0 +1,466 @@
+#!/usr/bin/env bash
+# image-sizes: every released digest of a worker image, with its compressed
+# size, its layers and the change from the release before it, read from this
+# environment's Artifact Registry. READ-ONLY.
+#
+#   scripts/image-sizes.sh [--image NAME] [--since YYYY-MM-DD] [--layers]
+#   scripts/image-sizes.sh [--image NAME] --diff OLD NEW
+#   scripts/image-sizes.sh --manifest build/deployed-images-<env>.json
+#   scripts/image-sizes.sh --duplicate-layers build/images-<env>.json
+#
+#   --image NAME   the image (default agent-runtime-base); one path segment of
+#                  ${IMAGE_REPO}, e.g. agent-runtime-indexer
+#   --since DATE   only releases created on or after DATE (UTC, as the
+#                  registry's createTime compares)
+#   --layers       under each release, every layer: its size, its digest and
+#                  the Dockerfile instruction that made it (the image config's
+#                  history), so a jump reads as the instruction behind it
+#   --diff OLD NEW the bisect step: the layers NEW has that OLD has not (+),
+#                  the ones it dropped (-), and the net change. Each of OLD
+#                  and NEW is a tag (a commit sha, `dev`) or a sha256 digest
+#   --manifest FILE  what one release promoted, as a markdown table for a job
+#                  summary: each runner image (agent-runtime-*) in FILE, the
+#                  deployed-images record push-images.sh writes, with the
+#                  promoted digest, its compressed_mb and its delta_mb from the
+#                  newest EARLIER release of that image in the registry. A
+#                  first release says "no earlier release", never +0.0. A row
+#                  that cannot be measured says so, and the script exits 1
+#                  after the other rows. Not combined with the options above.
+#                  An image that repeats a layer is named under the table, with
+#                  the layer, and the script exits 1 after every row too
+#   --duplicate-layers FILE  the release's gate: every image FILE names (a
+#                  build record, build/images-<env>.json, or a deployed-images
+#                  record), not only the runners, checked for a layer digest
+#                  its linux/amd64 manifest lists twice. Exits 1 naming each
+#                  image and layer, or any image it could not read: it fails
+#                  closed. Reads one manifest per image, nothing else. Not
+#                  combined with any other option
+#
+# WHY IT EXISTS (archived issue 625). Claude-code container start on Cloud Run Jobs went from
+# a 71 s p50 on 2026-09-24 to ~115 s on 09-30..10-02 and 166-168 s on
+# 10-04/10-05, while GKE pods start in 17 s. The suspect was agent-runtime-base
+# growing, and nothing listed what each release weighed, so the suspicion
+# could not be checked against a release. The default output is that list, one
+# row per release, oldest first; the row whose delta_mb jumps is the release a
+# growth arrived in, and `--diff` on it and the row before names the layers.
+# `--manifest` is the same measurement taken by every promote
+# (.github/actions/release-promote), so each release records its own size and
+# a jump is visible without anyone running the bisect.
+#
+# WHY A REPEATED LAYER FAILS IT (IMG-STREAM, owner decision 2026-10-13,
+# docs/browser-startup-speed.md §2.4 and §9). GKE image streaming, which
+# Autopilot uses for every eligible image, does not support an image with a
+# duplicate layer, and such an image is pulled whole before its pod starts. The
+# browser image repeated the empty layer sha256:4f4fb700ef54... (its own
+# `WORKDIR /workspace` restated the base's) and its cold pull took 42 s of an
+# 88 s start. Two check-only RUNs that finish in the same second write the
+# same tiny layer too (BuildKit leaves the etc/ directory entry, mtime and
+# all): 2 of the 30 newest base digests and 7 of 30 indexer digests did, read
+# 2026-10-13. Nothing in a Dockerfile review sees either, so the registry is
+# read: `--duplicate-layers` runs in .github/actions/release-images before the
+# scanned record reaches the promotion, and refuses the release.
+#
+# WHAT IT MEASURES. compressed_mb is the sum of the linux/amd64 manifest's
+# layer sizes: the gzip bytes a node pulls, which is what an image's pull time
+# follows. A multi-platform index is resolved to its linux/amd64 manifest --
+# the one Cloud Run and GKE run -- never summed across platforms. registry_mb
+# is Artifact Registry's own imageSizeBytes for the same digest, printed beside
+# it as a cross-check. Two releases share a layer when they share its DIGEST;
+# a layer rebuilt with identical content but a new digest shows as dropped and
+# re-added, which `--diff` prints as such rather than hiding.
+#
+# READ-ONLY. One `gcloud artifacts docker images list`, one access token, and
+# GETs on the Docker Registry v2 API (a manifest, and an image config for
+# --layers and --diff). Nothing is written, tagged or deleted. It needs
+# roles/artifactregistry.reader on the repository and nothing more; the
+# SwarmCloud worker account does not hold it (measured 2026-10-05:
+# PERMISSION_DENIED on artifactregistry.versions.list), so this runs from an
+# operator's shell or a CI job that already reads the registry.
+#
+# The token reaches curl on stdin (`-K -`, common.sh's auth_config), never on
+# its argv, and nothing here prints it. Error bodies pass through redact.
+
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/common.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+IMAGE="agent-runtime-base"
+SINCE=""
+LAYERS=0
+DIFF_OLD=""
+DIFF_NEW=""
+MANIFEST=""
+DUPLICATES=""
+SINGLE_IMAGE_OPTION=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --image)  [[ $# -ge 2 ]] || die "--image needs a name"; IMAGE="$2"; SINGLE_IMAGE_OPTION=1; shift 2 ;;
+    --since)  [[ $# -ge 2 ]] || die "--since needs a date"; SINCE="$2"; SINGLE_IMAGE_OPTION=1; shift 2 ;;
+    --layers) LAYERS=1; SINGLE_IMAGE_OPTION=1; shift ;;
+    --diff)   [[ $# -ge 3 ]] || die "--diff needs OLD and NEW (a tag or a sha256 digest each)"
+              DIFF_OLD="$2"; DIFF_NEW="$3"; SINGLE_IMAGE_OPTION=1; shift 3 ;;
+    --manifest) [[ $# -ge 2 ]] || die "--manifest needs a deployed-images record"; MANIFEST="$2"; shift 2 ;;
+    --duplicate-layers) [[ $# -ge 2 ]] || die "--duplicate-layers needs a build or deployed-images record"
+                        DUPLICATES="$2"; shift 2 ;;
+    -h|--help) sed -n "2,$(awk '!/^#/ { print NR - 1; exit }' "$0")p" "$0"; exit 0 ;;
+    *) die "unknown argument: $1 (see --help)" ;;
+  esac
+done
+if [[ -n "${MANIFEST}" && "${SINGLE_IMAGE_OPTION}" -eq 1 ]]; then
+  die "--manifest measures every runner image the record names; it takes no --image, --since, --layers or --diff"
+fi
+if [[ -n "${DUPLICATES}" && ( "${SINGLE_IMAGE_OPTION}" -eq 1 || -n "${MANIFEST}" ) ]]; then
+  die "--duplicate-layers checks every image the record names; it takes no other option"
+fi
+
+# One path segment of this environment's repository, so nothing here can be
+# pointed at another repository or project through the name.
+[[ "${IMAGE}" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "--image must be one image name such as agent-runtime-base, not ${IMAGE}"
+if [[ -n "${SINCE}" && ! "${SINCE}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+  die "--since must be YYYY-MM-DD, not ${SINCE}"
+fi
+
+require_cmd gcloud curl jq awk
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-image-sizes.XXXXXX")"
+trap 'rm -rf "${WORK}"' EXIT INT TERM
+
+REGISTRY_URL="https://${IMAGE_HOST}/v2/${PROJECT_ID}/${ARTIFACT_REGISTRY}/${IMAGE}"
+MANIFEST_ACCEPT="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+
+mb() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1000000 }'; }
+signed_mb() { awk -v b="$1" 'BEGIN { printf "%+.1f", b / 1000000 }'; }
+
+# --- the listing -----------------------------------------------------------
+#
+# Normalised to one entry per digest, oldest first. `version` is the digest
+# (its last path segment, in case a gcloud release spells the full resource
+# name, as `tags list` does -- see lib/image-refs.sh); `tags` arrives as a list
+# or as a ", "-joined string depending on the gcloud release, and both read
+# the same here.
+#
+# list_releases -- ${WORK}/releases.json for ${IMAGE}.
+list_releases() {
+  if ! gcloud artifacts docker images list "${IMAGE_REPO}/${IMAGE}" --include-tags --format=json \
+      >"${WORK}/listing.raw" 2>"${WORK}/listing.err"; then
+    redact <"${WORK}/listing.err" | head -n 5 >&2
+    die "could not list ${IMAGE_REPO}/${IMAGE}; reading it needs roles/artifactregistry.reader on ${ARTIFACT_REGISTRY}"
+  fi
+  jq --arg since "${SINCE}" '
+    [ .[]
+      | { digest: (.version | split("/") | last),
+          created: (.createTime // ""),
+          tags: ((.tags // []) | if type == "string" then (split(",") | map(gsub("^\\s+|\\s+$"; ""))) else . end
+                 | map(split("/") | last) | map(select(. != ""))),
+          registry_bytes: ((.metadata.imageSizeBytes // "") | tostring) } ]
+    | group_by(.digest)
+    | map(.[0] + { tags: (map(.tags) | add | unique) })
+    | map(select($since == "" or .created >= $since))
+    | sort_by(.created, .digest)' "${WORK}/listing.raw" >"${WORK}/releases.json" \
+    || die "the registry listing for ${IMAGE} is not the JSON array gcloud documents"
+}
+
+# registry_get PATH ACCEPT OUT -- GET ${REGISTRY_URL}/PATH into OUT, or die
+# naming PATH and the status. -L for blobs: Artifact Registry answers a blob
+# with a redirect to storage, and curl does not carry a -K header to another
+# host.
+registry_get() {
+  local path="$1" accept="$2" out="$3" code
+  code="$(auth_config "${_ACCESS_TOKEN}" \
+    | curl -sS -L -m 60 -K - -H "Accept: ${accept}" -o "${out}" -w '%{http_code}' \
+        "${REGISTRY_URL}/${path}" 2>"${WORK}/curl.err")" || code="000"
+  if [[ "${code}" != "200" ]]; then
+    { redact <"${WORK}/curl.err"; head -c 300 "${out}" 2>/dev/null | redact; echo; } | head -n 5 >&2
+    die "the registry answered ${code} for ${IMAGE}/${path}"
+  fi
+}
+
+# manifest_of DIGEST OUT -- the linux/amd64 image manifest of DIGEST.
+manifest_of() {
+  local digest="$1" out="$2" platform
+  registry_get "manifests/${digest}" "${MANIFEST_ACCEPT}" "${out}"
+  if jq -e 'has("manifests")' "${out}" >/dev/null; then
+    platform="$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest][0] // empty' "${out}")"
+    [[ -n "${platform}" ]] || die "${IMAGE}@${digest} is an index with no linux/amd64 manifest"
+    registry_get "manifests/${platform}" "${MANIFEST_ACCEPT}" "${out}"
+  fi
+  jq -e '(.layers | type) == "array"' "${out}" >/dev/null \
+    || die "${IMAGE}@${digest} has no layer list; it is not an image manifest"
+}
+
+# layers_of DIGEST OUT -- one JSON array of {digest, size, created_by}: the
+# manifest's layers paired, in order, with the config history entries that are
+# not empty_layer. A history that does not pair one-to-one is reported as such
+# rather than mislabelled.
+layers_of() {
+  local digest="$1" out="$2" config
+  manifest_of "${digest}" "${WORK}/manifest.json"
+  config="$(jq -r '.config.digest' "${WORK}/manifest.json")"
+  registry_get "blobs/${config}" "application/vnd.oci.image.config.v1+json, application/vnd.docker.container.image.v1+json" "${WORK}/config.json"
+  jq --slurpfile config "${WORK}/config.json" '
+    .layers as $layers
+    | [ ($config[0].history // [])[] | select(.empty_layer != true) | (.created_by // "") ] as $made
+    | [ range(0; $layers | length) as $i
+        | { digest: $layers[$i].digest, size: $layers[$i].size,
+            created_by: (if ($made | length) == ($layers | length)
+                         then ($made[$i] | gsub("[\\t\\n\\r]+"; " ") | .[0:160])
+                         else "(the image history does not pair with its layers)" end) } ]' \
+    "${WORK}/manifest.json" >"${out}"
+}
+
+print_layers() {
+  jq -r '.[] | "\(.size)\t\(.digest[0:19])\t\(.created_by)"' "$1" \
+    | while IFS=$'\t' read -r size digest made; do
+        printf '    %8s  %s  %s\n' "$(mb "${size}")" "${digest}" "${made}"
+      done
+}
+
+# repeated_layers NAME DIGEST MANIFEST -- one line per layer digest MANIFEST
+# lists more than once: NAME, DIGEST, the layer and its positions (counted from
+# 0, as `--layers` and a manifest's .layers[] count). Nothing when none repeats.
+repeated_layers() {
+  jq -r --arg name "$1" --arg digest "$2" '
+    .layers | length as $count
+    | [ to_entries[] | { layer: .value.digest, at: .key } ] | group_by(.layer) | map(select(length > 1))
+    | .[] | [$name, $digest, .[0].layer, (map(.at | tostring) | join(", ")), ($count | tostring)] | @tsv' "$3"
+}
+
+# say_repeated FILE -- each repeated_layers line of FILE as one sentence on
+# stdout and one `fail` line on stderr, so the summary and the log both name
+# the image and the layer.
+say_repeated() {
+  local name digest layer at count
+  while IFS=$'\t' read -r name digest layer at count; do
+    printf "**%s repeats a layer**: \`%s\` is \`%s\` at layers %s of %s, so GKE image streaming does not stream it.\n" \
+      "${name}" "${digest}" "${layer}" "${at}" "${count}"
+    err "${name}@${digest} repeats layer ${layer} at layers ${at} of ${count}: GKE image streaming does not stream an image with a duplicate layer, so its pods pull it whole"
+  done <"$1"
+}
+
+# resolve REF -- the digest a tag or digest names among the listed releases.
+resolve() {
+  local ref="$1" digest
+  digest="$(jq -r --arg ref "${ref}" '[.[] | select(.digest == $ref or (.tags | index($ref)))][0].digest // empty' \
+    "${WORK}/releases.json")"
+  [[ -n "${digest}" ]] || die "${ref} is neither a tag nor a digest of a listed ${IMAGE} release"
+  printf '%s' "${digest}"
+}
+
+# --- --manifest: what one release promoted ------------------------------------
+#
+# measure_row NAME IMAGE DIGEST -- one markdown row, or die naming the cause.
+# Run in a subshell per image, so a row that cannot be measured costs only that
+# row. The delta is from the newest release created BEFORE the promoted digest,
+# which is the default mode's delta_mb for that row: a hotfix or redeploy that
+# promotes an older digest is compared with the release before it, not with
+# the newest one in the registry.
+measure_row() {
+  local name="$1" image="$2" digest="$3" created previous previous_created total previous_total
+  [[ "${name}" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "${name}: not one image name"
+  [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || die "${name}: the record's digest is not a sha256 digest"
+  # This environment's repository only, as push-images.sh --manifest refuses a
+  # record built for another one: nothing in a file reaches another project.
+  [[ "${image}" == "${IMAGE_REPO}/${name}" ]] \
+    || die "${name}: the record names ${image}, not ${IMAGE_REPO}/${name}"
+  IMAGE="${name}"
+  REGISTRY_URL="https://${IMAGE_HOST}/v2/${PROJECT_ID}/${ARTIFACT_REGISTRY}/${IMAGE}"
+  list_releases
+  created="$(jq -r --arg d "${digest}" '[.[] | select(.digest == $d)][0].created // empty' "${WORK}/releases.json")"
+  [[ -n "${created}" ]] || die "${name}: ${digest} is not a listed release of ${IMAGE_REPO}/${name}"
+  jq -r --arg d "${digest}" --arg c "${created}" \
+    '[.[] | select(.digest != $d and .created < $c)] | last // empty | [.digest, .created] | @tsv' \
+    "${WORK}/releases.json" >"${WORK}/previous.tsv"
+  IFS=$'\t' read -r previous previous_created <"${WORK}/previous.tsv" || true
+  manifest_of "${digest}" "${WORK}/manifest.json"
+  total="$(jq '[.layers[].size] | add // 0' "${WORK}/manifest.json")"
+  # A file, not a variable: this runs in a subshell per row.
+  repeated_layers "${name}" "${digest}" "${WORK}/manifest.json" >>"${WORK}/repeated.tsv"
+  if [[ -n "${previous:-}" ]]; then
+    manifest_of "${previous}" "${WORK}/manifest.json"
+    previous_total="$(jq '[.layers[].size] | add // 0' "${WORK}/manifest.json")"
+    printf "| %s | \`%s\` | %s | %s | \`%s\` (%s, %s MB) |\n" "${name}" "${digest}" "$(mb "${total}")" \
+      "$(signed_mb "$((total - previous_total))")" "${previous:0:19}" "${previous_created}" "$(mb "${previous_total}")"
+  else
+    printf "| %s | \`%s\` | %s | no earlier release | the first %s in %s |\n" "${name}" "${digest}" \
+      "$(mb "${total}")" "${name}" "${IMAGE_REPO}"
+  fi
+}
+
+# --- --duplicate-layers: the release's gate -----------------------------------
+#
+# check_image NAME IMAGE DIGEST -- repeated_layers for one image of the record,
+# or die naming why it could not be read. Run in a subshell per image, so one
+# unreadable image does not stop the others from being checked.
+check_image() {
+  local name="$1" image="$2" digest="$3"
+  [[ "${name}" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "${name}: not one image name"
+  [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || die "${name}: the record's digest is not a sha256 digest"
+  [[ "${image}" == "${IMAGE_REPO}/${name}" ]] \
+    || die "${name}: the record names ${image}, not ${IMAGE_REPO}/${name}"
+  IMAGE="${name}"
+  REGISTRY_URL="https://${IMAGE_HOST}/v2/${PROJECT_ID}/${ARTIFACT_REGISTRY}/${IMAGE}"
+  manifest_of "${digest}" "${WORK}/manifest.json"
+  repeated_layers "${name}" "${digest}" "${WORK}/manifest.json"
+}
+
+if [[ -n "${DUPLICATES}" ]]; then
+  [[ -r "${DUPLICATES}" ]] || die "cannot read ${DUPLICATES}"
+  jq -r '.images | if type == "array" then . else error("no images list") end
+         | .[] | [(.name // ""), (.image // ""), (.digest // "")] | @tsv' "${DUPLICATES}" >"${WORK}/images.tsv" 2>/dev/null \
+    || die "${DUPLICATES} is not a build or deployed-images record (no images list)"
+  images="$(wc -l <"${WORK}/images.tsv" | tr -d ' ')"
+  # A gate over nothing has passed nothing.
+  [[ "${images}" -gt 0 ]] || die "${DUPLICATES} names no image, so no image was checked"
+  access_token >/dev/null
+  : >"${WORK}/repeated.tsv"
+  visited=0
+  unread=0
+  unread_names=""
+  while IFS=$'\t' read -r name image digest; do
+    visited=$((visited + 1))
+    # </dev/null: nothing in the check reads the record this loop is reading.
+    if ( check_image "${name}" "${image}" "${digest}" ) </dev/null >"${WORK}/image.tsv" 2>"${WORK}/image.err"; then
+      redact <"${WORK}/image.err" >&2
+      if [[ -s "${WORK}/image.tsv" ]]; then
+        cat "${WORK}/image.tsv" >>"${WORK}/repeated.tsv"
+      else
+        ok "${name}: no layer repeated"
+      fi
+      continue
+    fi
+    redact <"${WORK}/image.err" >&2
+    unread=$((unread + 1))
+    unread_names="${unread_names:+${unread_names}, }${name:-?}"
+  done <"${WORK}/images.tsv"
+  [[ "${visited}" -eq "${images}" ]] || die "the record names ${images} images but ${visited} were visited"
+  say_repeated "${WORK}/repeated.tsv" >/dev/null
+  repeated_names="$(cut -f1 "${WORK}/repeated.tsv" | uniq | paste -sd, - | sed 's/,/, /g')"
+  repeated="$(cut -f1 "${WORK}/repeated.tsv" | uniq | wc -l | tr -d ' ')"
+  [[ "${unread}" -eq 0 ]] || err "${unread} of ${images} images not checked (unreadable, so not passed): ${unread_names}"
+  [[ "${repeated}" -eq 0 ]] || err "${repeated} of ${images} images repeat a layer: ${repeated_names}"
+  if [[ "${unread}" -gt 0 || "${repeated}" -gt 0 ]]; then
+    die "refused: GKE streams only an image with no duplicate layer, and every image is checked (docs/browser-startup-speed.md §2.4)"
+  fi
+  info "${visited} of ${images} images checked in ${IMAGE_REPO}: no layer repeated"
+  exit 0
+fi
+
+if [[ -n "${MANIFEST}" ]]; then
+  [[ -r "${MANIFEST}" ]] || die "cannot read ${MANIFEST}"
+  # Runner images only: the ones a task's container starts from, which is the
+  # start time archived issue 625 is about. The control-plane images are promoted too.
+  jq -r '.images | if type == "array" then . else error("no images list") end
+         | .[] | select((.name // "") | startswith("agent-runtime-"))
+         | [.name, (.image // ""), (.digest // "")] | @tsv' "${MANIFEST}" >"${WORK}/runners.tsv" 2>/dev/null \
+    || die "${MANIFEST} is not the deployed-images record push-images.sh writes"
+  label="$(jq -r '"\(.environment // "?") release \(.tag // "?")"' "${MANIFEST}")"
+  runners="$(wc -l <"${WORK}/runners.tsv" | tr -d ' ')"
+  printf '### Runner image sizes: %s\n\n' "${label}"
+  if [[ "${runners}" -eq 0 ]]; then
+    printf 'This release promoted no runner image (agent-runtime-*), so there is no size to record.\n'
+    info "no runner image in ${MANIFEST}; nothing measured"
+    exit 0
+  fi
+  printf 'compressed_mb is the linux/amd64 manifest'"'"'s layer sum, the bytes a node pulls; delta_mb is from the newest earlier release of the image (#625, scripts/image-sizes.sh).\n\n'
+  printf '| image | digest | compressed_mb | delta_mb | against |\n|---|---|---|---|---|\n'
+  access_token >/dev/null
+  : >"${WORK}/repeated.tsv"
+  visited=0
+  failed=0
+  failed_names=""
+  while IFS=$'\t' read -r name image digest; do
+    visited=$((visited + 1))
+    # </dev/null: nothing in the row reads the record this loop is reading.
+    if ( measure_row "${name}" "${image}" "${digest}" ) </dev/null 2>"${WORK}/row.err"; then
+      redact <"${WORK}/row.err" >&2
+      continue
+    fi
+    redact <"${WORK}/row.err" >&2
+    failed=$((failed + 1))
+    failed_names="${failed_names:+${failed_names}, }${name}"
+    # The row's cause, from the die above it; a markdown cell holds no pipe.
+    # row.err is a file, not a terminal, so common.sh wrote it uncoloured.
+    reason="$(redact <"${WORK}/row.err" | { grep '^ fail ' || true; } | tail -n 1 | sed -e 's/^ fail //' -e 's/|/\\|/g')"
+    printf "| %s | \`%s\` | **not measured** | - | %s |\n" "${name}" "${digest:--}" "${reason:-${name}: see the job log}"
+  done <"${WORK}/runners.tsv"
+  # The count, so a table of one row cannot read as all of them.
+  [[ "${visited}" -eq "${runners}" ]] || die "the record names ${runners} runner images but ${visited} were visited"
+  repeated="$(cut -f1 "${WORK}/repeated.tsv" | uniq | wc -l | tr -d ' ')"
+  if [[ "${repeated}" -gt 0 ]]; then
+    printf '\n'
+    say_repeated "${WORK}/repeated.tsv"
+    err "${repeated} of ${runners} runner images repeat a layer: $(cut -f1 "${WORK}/repeated.tsv" | uniq | paste -sd, - | sed 's/,/, /g')"
+  fi
+  if [[ "${failed}" -gt 0 ]]; then
+    die "${failed} of ${runners} runner images not measured: ${failed_names}"
+  fi
+  [[ "${repeated}" -eq 0 ]] || die "a runner image GKE cannot stream was promoted (docs/browser-startup-speed.md §2.4)"
+  info "${runners} runner images measured from ${IMAGE_REPO}"
+  exit 0
+fi
+
+list_releases
+RELEASES="$(jq 'length' "${WORK}/releases.json")"
+[[ "${RELEASES}" -gt 0 ]] || die "no released digest of ${IMAGE} in ${IMAGE_REPO}${SINCE:+ since ${SINCE}}"
+
+# One token for the whole run, minted in THIS shell: access_token caches it in
+# _ACCESS_TOKEN, which a command substitution would throw away and re-mint.
+access_token >/dev/null
+
+# --- --diff: the bisect step -------------------------------------------------
+if [[ -n "${DIFF_OLD}" ]]; then
+  old="$(resolve "${DIFF_OLD}")"
+  new="$(resolve "${DIFF_NEW}")"
+  layers_of "${old}" "${WORK}/old.json"
+  layers_of "${new}" "${WORK}/new.json"
+  printf 'diff %s %s (%s) to %s (%s)\n' "${IMAGE}" "${DIFF_OLD}" "${old}" "${DIFF_NEW}" "${new}"
+  jq -r --slurpfile old "${WORK}/old.json" '
+      ($old[0] | map(.digest)) as $had
+      | .[] | select(.digest as $d | $had | index($d) | not)
+      | "+\t\(.size)\t\(.digest[0:19])\t\(.created_by)"' "${WORK}/new.json" >"${WORK}/delta.tsv"
+  jq -r --slurpfile new "${WORK}/new.json" '
+      ($new[0] | map(.digest)) as $has
+      | .[] | select(.digest as $d | $has | index($d) | not)
+      | "-\t\(.size)\t\(.digest[0:19])\t\(.created_by)"' "${WORK}/old.json" >>"${WORK}/delta.tsv"
+  while IFS=$'\t' read -r sign size digest made; do
+    printf '%s %8s MB  %s  %s\n' "${sign}" "$(mb "${size}")" "${digest}" "${made}"
+  done <"${WORK}/delta.tsv"
+  old_total="$(jq '[.[].size] | add // 0' "${WORK}/old.json")"
+  new_total="$(jq '[.[].size] | add // 0' "${WORK}/new.json")"
+  printf 'net  %s MB (%s MB -> %s MB)\n' "$(signed_mb "$((new_total - old_total))")" \
+    "$(mb "${old_total}")" "$(mb "${new_total}")"
+  info "$(wc -l <"${WORK}/delta.tsv" | tr -d ' ') layers differ between ${DIFF_OLD} and ${DIFF_NEW}"
+  exit 0
+fi
+
+# --- the list ------------------------------------------------------------------
+printf 'created\tdigest\ttags\tcompressed_mb\tlayers\tdelta_mb\tregistry_mb\n'
+previous=""
+visited=0
+jq -r '.[] | [.created, .digest, (.tags | join(",")), .registry_bytes] | @tsv' "${WORK}/releases.json" \
+  >"${WORK}/releases.tsv"
+while IFS=$'\t' read -r created digest tags registry_bytes; do
+  layers_file="${WORK}/layers-${visited}.json"
+  if [[ "${LAYERS}" -eq 1 ]]; then
+    layers_of "${digest}" "${layers_file}"
+  else
+    manifest_of "${digest}" "${WORK}/manifest.json"
+    jq '[.layers[] | {digest, size}]' "${WORK}/manifest.json" >"${layers_file}"
+  fi
+  total="$(jq '[.[].size] | add // 0' "${layers_file}")"
+  count="$(jq 'length' "${layers_file}")"
+  delta="$(signed_mb "$((total - ${previous:-${total}}))")"
+  registry_mb="-"
+  [[ "${registry_bytes}" =~ ^[0-9]+$ ]] && registry_mb="$(mb "${registry_bytes}")"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${created}" "${digest}" "${tags:--}" "$(mb "${total}")" \
+    "${count}" "${delta}" "${registry_mb}"
+  [[ "${LAYERS}" -eq 1 ]] && print_layers "${layers_file}"
+  previous="${total}"
+  visited=$((visited + 1))
+done <"${WORK}/releases.tsv"
+
+# The count, so a run that visited one release cannot read as a sweep of all.
+[[ "${visited}" -eq "${RELEASES}" ]] || die "listed ${RELEASES} releases of ${IMAGE} but measured ${visited}"
+info "${visited} releases of ${IMAGE} measured from ${IMAGE_REPO}"

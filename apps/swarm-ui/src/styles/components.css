@@ -1,0 +1,497 @@
+/* =========================================================================
+   THE CANONICAL COMPONENTS (components.html Variant A, "as built", the
+   owner's pick of 2026-10-02). One set for every screen, replacing the
+   twelve button, eleven chip, seven bar, four table, six card, four empty,
+   four skeleton and three tooltip styles the live console had.
+
+   The React side is src/components/; a screen uses those components and
+   never restyles a button, chip, pill, table or banner locally. The tokens
+   are on :root in styles.css (THE CANONICAL COMPONENT TOKENS), so this file
+   holds rules only.
+
+   Held to the same gates as styles.css (typescale, letter-spacing, the
+   stylesheet gate): the 12px floor, sentence case, no tracking, every size
+   and leading a token.
+   ========================================================================= */
+
+/* ---- focus: one 2px sky ring; 2px outside a control, inset in a row ---- */
+.c-btn:focus-visible,
+.c-chip:focus-visible,
+.c-x:focus-visible,
+.c-tabs a:focus-visible,
+.c-tabs button:focus-visible,
+.c-seg button:focus-visible,
+.c-menu-item:focus-visible,
+.c-link:focus-visible,
+.c-car:focus-visible,
+.c-th:focus-visible,
+.c-inp:focus-visible {
+  outline: 2px solid var(--sk-ac);
+  outline-offset: 2px;
+}
+.c-tbl tr:focus-visible > td { box-shadow: inset 0 2px 0 var(--sk-ac), inset 0 -2px 0 var(--sk-ac); }
+
+/* ---- buttons: five kinds, three sizes, one disabled treatment ---------- */
+.c-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: var(--h-ctl);
+  padding: 0 12px;
+  border: 1px solid var(--ctl-bd);
+  border-radius: var(--r-ctl);
+  background: var(--surface);
+  color: var(--text);
+  font: 550 var(--t-meta)/var(--lh-flush) var(--font);
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+  flex: none;
+}
+.c-btn:hover { background: var(--surface-2); }
+.c-btn .c-ic { width: 15px; height: 15px; }
+.c-btn.is-sm { height: var(--h-sm); padding: 0 10px; font-size: var(--t-micro); }
+.c-btn.is-lg { height: var(--h-lg); padding: 0 16px; font-size: var(--t-body); }
+.c-btn.is-full { width: 100%; }
+.c-btn.is-primary { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--ctl-onac); }
+.c-btn.is-primary:hover { background: color-mix(in srgb, var(--sk-ac) 88%, var(--text)); }
+.c-btn.is-ghost { background: none; border-color: transparent; color: var(--text-dim); }
+.c-btn.is-ghost:hover { background: var(--surface-2); color: var(--text); }
+.c-btn.is-danger { color: var(--s-bad); border-color: color-mix(in srgb, var(--s-bad) 55%, transparent); }
+.c-btn.is-danger-filled { background: var(--s-bad); border-color: var(--s-bad); color: var(--ctl-onac); }
+.c-btn.is-icon { width: var(--h-ctl); padding: 0; }
+.c-btn.is-icon.is-sm { width: var(--h-sm); }
+.c-btn.is-icon.is-lg { width: var(--h-lg); }
+/* ONE disabled treatment (a token pair, and the reason beside it), replacing
+   five opacities. `aria-disabled` as well as `:disabled`, for a link-button.
+   DRAWN, NOT FADED (V256, archived issue 1427). It was `opacity: .45`, which composited a
+   secondary "Read" to 2.95:1 in light and 4.13:1 in dark, beside a disabled
+   primary drawn from tokens at >=5.6:1: two disabled styles on one form. Now
+   every kind is the same pale ground with its label in `--text-dim`, the
+   pairing `.sc-switch-go` (schedules.css) already used, so off reads as off
+   and the words still clear AA (vqa2.r14.test.tsx). After every `:hover`
+   above, so a hover cannot relight it. */
+.c-btn:disabled,
+.c-btn[aria-disabled='true'] { opacity: 1; background: var(--surface-2); border-color: var(--line); color: var(--text-dim); cursor: not-allowed; }
+/* A ghost has no ground or edge to pale, so it keeps having none. */
+.c-btn.is-ghost:disabled,
+.c-btn.is-ghost[aria-disabled='true'] { background: none; border-color: transparent; color: var(--text-dim); }
+/* A FILLED BUTTON PALES IN ITS OWN HUE, WHOSE LABEL SAYS WHAT THE CLICK
+   WOULD DO (V138, archived issue 1038). At the old 45% the white-on-accent label of a
+   disabled "Submit" sank into the panel in both themes: WCAG exempts a
+   disabled control, but this one's label is still the thing being explained
+   by the reason beside it. So a disabled primary (or filled-danger) button
+   is drawn PALE rather than faded -- the pale accent tint (`--sk-acs`, the
+   pressed toggle's ground), solid, with the label in `--text-dim` -- so it
+   is still the pale accent components.html A asks for, still reads as off,
+   and its words clear AA (vqa.l09.test.tsx). After `:hover` so a hover
+   cannot relight it. */
+.c-btn.is-primary:disabled,
+.c-btn.is-primary[aria-disabled='true'] { opacity: 1; background: var(--sk-acs); border-color: var(--sk-acl); color: var(--text-dim); }
+/* The filled danger button the same way, in its own hue's pale tint. */
+.c-btn.is-danger-filled:disabled,
+.c-btn.is-danger-filled[aria-disabled='true'] { opacity: 1; background: var(--s-badb); border-color: color-mix(in srgb, var(--s-bad) 45%, transparent); color: var(--text-dim); }
+.c-btn.is-busy { cursor: progress; }
+/* A TOGGLE (follow, wrap): `aria-pressed`, drawn as the segmented control's
+   on state, so pressed reads the same wherever it is. */
+.c-btn[aria-pressed='true'] { background: var(--sk-acs); border-color: var(--sk-ac); color: var(--sk-ac); }
+.c-spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: c-spin .8s linear infinite; opacity: .9; flex: none; }
+@keyframes c-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .c-spin { animation: none; } }
+.c-btn-wrap { display: inline-flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap; }
+.c-why { display: inline-flex; gap: 5px; align-items: center; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.c-why svg { width: 12px; height: 12px; color: var(--s-warn); flex: none; }
+.c-btn kbd,
+.c-menu-item kbd { font: var(--t-micro)/var(--lh-micro) var(--mono); border: 1px solid var(--line); border-radius: var(--r-xs); padding: 0 5px; color: var(--text-dim); background: var(--bg); }
+.c-ic { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+/* Phone: controls grow to 36px. */
+@media (max-width: 759px) {
+  .c-btn { height: var(--h-lg); }
+  /* The full-width commit control of a form (Submit, Plan this issue) keeps
+     the 44px phone target the form's own button had (CH-8). */
+  .c-btn.is-full { height: auto; min-height: 44px; }
+  .c-btn.is-icon { width: var(--h-lg); }
+}
+
+/* ---- links: sky, sans, underlined in prose; a card's link is not ----- */
+.c-link {
+  color: var(--sk-ac);
+  font-family: var(--font);
+  text-decoration: underline;
+  text-decoration-color: var(--sk-ac);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+}
+.c-link:hover { text-decoration-color: currentColor; }
+/* The small text control beside a field or a list ("remove", "one more"):
+   Submit's `.sbf-mini` and the ledger's zoom controls since the archived issue 503 swap. */
+.c-link.is-sm { font-size: var(--t-micro); line-height: var(--lh-micro); }
+.c-link:disabled { opacity: .45; cursor: not-allowed; }
+.c-link.is-card { text-decoration: none; font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
+.c-link.is-card:hover { text-decoration: underline; }
+.c-idl { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); text-decoration: underline dotted; text-underline-offset: 3px; }
+
+/* ---- state marks and pills (brand §3; marks.tsx) ---------------------- */
+.c-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 500 var(--t-micro)/var(--lh-flush) var(--font);
+  padding: 4px 9px 4px 7px;
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+}
+.c-pill svg { width: 12px; height: 12px; flex: none; }
+.c-pill.is-live { color: var(--s-live); background: var(--s-liveb); }
+.c-pill.is-park { color: var(--s-park); background: var(--s-parkb); }
+.c-pill.is-bad { color: var(--s-bad); background: var(--s-badb); }
+.c-pill.is-warn { color: var(--s-warn); background: var(--s-warnb); }
+.c-pill.is-neu { color: var(--s-neu); background: var(--s-neub); }
+.c-pill.is-sm { padding: 3px 7px 3px 6px; }
+/* The pill's second half: the park reason, in ink, behind a hairline. */
+.c-pr { color: var(--text); font-weight: 400; padding-left: 6px; margin-left: 1px; border-left: 1px solid color-mix(in srgb, currentColor 30%, transparent); }
+.c-flag { display: inline-flex; color: var(--s-warn); }
+.c-flag svg { width: 12px; height: 12px; }
+.c-park { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.c-until { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
+/* THE ABSENT MARK'S HATCH CLEARS THE CORNER, NOT ONLY THE BORDER (V108,
+   archived issue 1427). styles.css insets the band 2px from the mark's border (archived issue 1038), but
+   the mark is 6px round: inside its 1px border that is a 5px curve, and a
+   band corner at (2px, 2px) sits 0.76px from it, so in dark the first stripe
+   still started on the rounded edge. 4px in and 3px down puts the corner
+   2.8px clear of the curve, and 6px of width shows the hatch as a swatch of
+   strokes rather than one. The mark itself is styles.css's (`.ctl-mark`);
+   only this inset is set here, by the shared-primitives lane, and since
+   styles.css loads after this sheet the `:root` raises it one step over
+   `.ctl-mark.is-absent::before` there (vqa2.r14.test.tsx measures it). */
+:root .ctl-mark.is-absent::before { width: 6px; margin: 3px 0 3px 4px; }
+
+/* ---- chips and tags: one chip shape ----------------------------------- */
+.c-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: 500 var(--t-micro)/var(--lh-flush) var(--mono);
+  padding: 4px 8px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  white-space: nowrap;
+  border: 1px solid transparent;
+  text-decoration: none;
+}
+.c-chip.is-dash { color: var(--ctl-absent); cursor: help; }
+.c-chip.is-filter { background: var(--sk-acs); color: var(--sk-ac); padding-right: 3px; }
+.c-chip.is-link { color: var(--sk-ac); border-color: var(--sk-acl); background: none; text-decoration: underline; text-decoration-color: var(--sk-acl); text-underline-offset: 2px; }
+/* A pick chip is a toggle button in the chip's shape; the picked one takes the
+   text-ink edge, so the pick is not carried by colour alone. */
+.c-chip.is-pick { font: 500 var(--t-micro)/var(--lh-flush) var(--mono); margin: 0; cursor: pointer; }
+.c-chip.is-pick[aria-pressed='true'] { border-color: var(--text); }
+/* A chip naming a step in a state: the state's tint and a 45% edge (brand §3). */
+.c-chip.t-live { background: var(--s-liveb); border-color: color-mix(in srgb, var(--s-live) 45%, transparent); color: var(--text); }
+.c-chip.t-park { background: var(--s-parkb); border-color: color-mix(in srgb, var(--s-park) 45%, transparent); color: var(--text); }
+.c-chip.t-bad { background: var(--s-badb); border-color: color-mix(in srgb, var(--s-bad) 45%, transparent); color: var(--text); }
+.c-chip.is-faint { background: none; color: var(--text-faint); }
+/* A bare count is a measured figure: tabular, so a column of them aligns. */
+.c-chip.is-n { font-variant-numeric: tabular-nums; }
+.c-x { border: 0; background: none; color: inherit; display: inline-flex; padding: 1px; border-radius: 50%; cursor: pointer; }
+.c-x .c-ic { width: 12px; height: 12px; }
+.c-tag { font: 500 var(--t-micro)/var(--lh-flush) var(--font); padding: 3px 6px; border-radius: var(--r-xs); border: 1px solid var(--line); color: var(--text-dim); white-space: nowrap; }
+.c-live { display: inline-flex; gap: 6px; align-items: center; font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--s-live); background: var(--s-liveb); padding: 3px 9px; border-radius: var(--r-pill); }
+.c-live > i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; animation: c-pulse 2s ease-in-out infinite; }
+@keyframes c-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .c-live > i { animation: none; } }
+/* An unknown figure: a dash, and the reason on hover and to a screen reader. */
+.c-dash { color: var(--ctl-absent); cursor: help; }
+
+/* ---- cards and stat tiles --------------------------------------------- */
+.c-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.c-card-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.c-card-h > h2,
+.c-card-h > h3 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
+.c-card-h > .c-link { margin-left: auto; }
+.c-card-foot { margin: 0; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); border-top: 1px solid var(--line); padding-top: 8px; }
+.c-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.c-tile { background: var(--surface-2); border-radius: var(--r-tile); padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; border: 1px solid transparent; }
+.c-tile > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.c-tile > b { font: 650 var(--t-figure)/var(--lh-figure) var(--font); font-variant-numeric: tabular-nums; min-height: 24px; display: flex; align-items: center; gap: 6px; }
+.c-tile > i { font-style: normal; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.c-tile.is-unknown { background: none; border: 1px dashed var(--ctl-absent); }
+.c-tile.is-unknown > b,
+.c-tile.is-unknown > i { color: var(--ctl-absent); }
+.c-tile.is-partial { border: 1px solid color-mix(in srgb, var(--s-warn) 45%, transparent); }
+.c-tile.is-partial > i { color: var(--s-warn); }
+.c-tile.is-failed { background: var(--s-badb); }
+.c-tile.is-failed > b { font-size: var(--t-body); line-height: var(--lh-body); color: var(--s-bad); }
+.c-tile.is-failed > b svg { width: 12px; height: 12px; }
+
+/* ---- skeletons: a bar at the real size, never a spinner over a box ---- */
+.c-sk { display: inline-block; height: 12px; border-radius: var(--r-xs); background: color-mix(in srgb, var(--text-dim) 22%, var(--surface-2)); vertical-align: middle; }
+.c-sk.is-title { height: 16px; }
+.c-sk.is-figure { width: 60%; height: 18px; }
+.c-sk-lines { display: flex; flex-direction: column; gap: 8px; }
+
+/* ---- tables: 32px rows, sticky head, sortable, one row open ------------ */
+.c-tbl { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); overflow: auto; max-width: 100%; }
+.c-tbl.is-sticky { max-height: var(--c-tbl-max, 480px); }
+.c-tbl > table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: var(--t-meta); line-height: var(--lh-meta); font-variant-numeric: tabular-nums; color: inherit; }
+.c-tbl th { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); text-align: left; padding: 0 12px; height: var(--row); background: var(--surface-2); border-bottom: 1px solid var(--line); white-space: nowrap; position: sticky; top: 0; z-index: 1; }
+.c-tbl td { padding: 0 12px; height: var(--row); border-bottom: 1px solid var(--line-soft); white-space: nowrap; vertical-align: middle; }
+.c-tbl tr:last-child > td { border-bottom: 0; }
+.c-tbl .is-num { text-align: right; }
+.c-th { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; border: 0; background: none; padding: 0; color: inherit; font: inherit; }
+.c-th.is-on { color: var(--sk-ac); font-weight: 600; }
+.c-th svg { width: 13px; height: 13px; }
+.c-tbl tr.is-sel > td { background: var(--sk-acs); }
+.c-tbl tr.is-sel > td:first-child { box-shadow: inset 3px 0 0 var(--sk-ac); }
+.c-tbl td.c-cc,
+.c-tbl th.c-cc { width: 32px; padding: 0 0 0 8px; }
+.c-car { border: 0; background: none; color: var(--text-dim); display: inline-flex; padding: 3px; border-radius: 5px; cursor: pointer; }
+.c-car .c-ic { width: 14px; height: 14px; transition: transform .15s; }
+.c-car[aria-expanded='true'] .c-ic { transform: rotate(90deg); }
+.c-tbl tr.c-xrow > td { height: auto; padding: 4px 12px 12px; white-space: normal; background: var(--bg); }
+.c-tfoot { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); flex-wrap: wrap; }
+
+/* ---- tabs, segmented controls, breadcrumbs ----------------------------- */
+/* NO VERTICAL SCROLL ON A TAB STRIP (archived issue 2391, VQ-WORKFLOWS-REVIEW 2026-10-26). A
+   tab's underline sits on the strip's border with `margin-bottom: -1px`, so the
+   strip's content is 1px taller than its box (scrollHeight 37, clientHeight 36),
+   and `overflow-x: auto` makes the other axis `auto` too: the workflow page drew
+   up/down scroll arrows at the strip's right end in every theme and width.
+   Config's strips already clipped it (`.cfg-parts`, `.ag-split-tabs`); this does
+   it once, here, for every strip. */
+.c-tabs { display: flex; flex-wrap: nowrap; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; scroll-padding-inline: 24px; }
+/* A STRIP THAT SCROLLS SAYS SO (V119, archived issue 1038). At 400px the repository's eight
+   tabs ran off the right edge and the last visible one stopped mid-word
+   ("Hot-spo") with nothing to say there was more. Each edge with tabs behind
+   it now carries an inset shade, driven by the strip's OWN scroll position,
+   so it needs no script and no knowledge of the backdrop: the right shade at
+   rest, both mid-way, the left one at the end. A strip that fits has no
+   scroll range, its timeline is inactive and the animation draws nothing.
+   An inset shadow is used rather than a mask because `.ur-tabs[data-fade]`
+   (repositories.css) already masks that strip from script, and a second
+   mask would fight it on specificity; the two now add up. Without
+   scroll-driven animations the strip is as before. `scroll-padding-inline`
+   keeps a tab reached by keyboard clear of the shade. */
+@supports (animation-timeline: scroll()) {
+  .c-tabs { animation: c-tabs-edge linear both; animation-timeline: scroll(self inline); }
+}
+@keyframes c-tabs-edge {
+  0% { box-shadow: inset 0 0 0 0 transparent, inset -24px 0 16px -16px color-mix(in srgb, var(--text) 30%, transparent); }
+  8%, 92% { box-shadow: inset 24px 0 16px -16px color-mix(in srgb, var(--text) 30%, transparent), inset -24px 0 16px -16px color-mix(in srgb, var(--text) 30%, transparent); }
+  100% { box-shadow: inset 24px 0 16px -16px color-mix(in srgb, var(--text) 30%, transparent), inset 0 0 0 0 transparent; }
+}
+.c-tabs > a,
+.c-tabs > button { flex: none; padding: 8px 12px; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; display: flex; gap: 6px; align-items: center; white-space: nowrap; background: none; text-decoration: none; cursor: pointer; }
+.c-tabs > [aria-selected='true'],
+.c-tabs > [aria-current='page'] { color: var(--sk-ac); border-bottom-color: var(--sk-ac); font-weight: 600; }
+.c-tabs em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+/* ON A PHONE THE STRIP WRAPS, SO NO LABEL IS CUT (V119, archived issue 1427). The shade
+   above says there is more, but at 400px the repository's eight tabs still
+   stopped mid-word under it ("Hot-sp", "Se"): a scrolling row ends wherever
+   the viewport does, and no shade makes half a word read as a tab. Below
+   561px the strip wraps instead, every label whole. V148's objection to a
+   wrap -- two ragged rows, the open tab's underline floating between them --
+   is met by each tab drawing its own hairline, with no gap between tabs, so
+   each row sits on a line and the underline lies on its own row's. The
+   agent split keeps its one row and "More" menu (owner decision Q2 of
+   2026-10-16): `.c-tabs.ag-split-tabs` in agents.css outranks this. A strip
+   that wraps has no scroll range, so the shade above draws nothing. */
+@media (max-width: 560px) {
+  .c-tabs { flex-wrap: wrap; gap: 0; }
+  .c-tabs > a,
+  .c-tabs > button { box-shadow: inset 0 -1px 0 var(--line); }
+  /* A STRIP THAT DOES NOT WRAP NEEDS NO PER-TAB LINE (visual QA run 2,
+     task-016). The split's strip stays one row, so the hairline above only
+     drew each inactive tab as a half-box on a line of its own, a chain of
+     them over the strip's own rule. The strip's `border-bottom` (and More's,
+     agents.css `.ag-tabs-more-host`) is its one baseline. */
+  .c-tabs.ag-split-tabs > a,
+  .c-tabs.ag-split-tabs > button { box-shadow: none; }
+}
+.c-seg { display: inline-flex; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); overflow: hidden; background: var(--surface); height: var(--h-ctl); flex: none; align-self: flex-start; }
+/* SQUARE CELLS IN A ROUNDED CONTROL, IN EVERY SEGMENTED CONTROL AT EVERY
+   WIDTH (visual QA run 4, box comment 6298216578; owner decision 2026-10-22,
+   "Everywhere"). A cell otherwise takes `:where(.app button)`'s radius
+   (styles.css), so its hairlines curve off at their ends and every inner join
+   is notched. The cells -- in a row, wrapped, or stacked in a column
+   (`is-stack`) -- are square; the control's own radius, with its
+   `overflow: hidden`, rounds the four outer corners. */
+.c-seg > button { padding: 0 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border: 0; border-radius: 0; border-right: 1px solid var(--line); display: flex; gap: 6px; align-items: center; white-space: nowrap; background: none; cursor: pointer; }
+.c-seg > button:last-child { border-right: 0; }
+/* The link form: the same segment, for views that each have an address. */
+.c-seg > a { padding: 0 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border-right: 1px solid var(--line); display: flex; gap: 6px; align-items: center; white-space: nowrap; text-decoration: none; }
+.c-seg > a:last-child { border-right: 0; }
+.c-seg > a[aria-current='page'] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
+.c-seg > a:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+.c-seg > button:hover:not(:disabled) { color: var(--text); }
+.c-seg > button:disabled { opacity: .45; cursor: not-allowed; }
+.c-seg > button[aria-pressed='true'],
+.c-seg > button[aria-selected='true'],
+.c-seg > button[aria-checked='true'] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
+.c-seg em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); }
+.c-crumb { display: flex; align-items: center; gap: 6px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); flex-wrap: wrap; margin: 0; padding: 0; list-style: none; }
+.c-crumb a { color: var(--text-dim); text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; }
+.c-crumb a:hover { color: var(--text); }
+.c-crumb [aria-current='page'] { color: var(--text); font-weight: 600; }
+.c-crumb .c-crumb-id { font-family: var(--mono); }
+
+/* ---- tooltip, menu ---------------------------------------------------- */
+.c-tip-host { position: relative; display: inline-flex; }
+.c-tip { position: absolute; z-index: 40; top: calc(100% + 8px); left: 0; background: var(--ctl-tip); color: var(--ctl-tip-ink); font-size: var(--t-micro); line-height: var(--lh-micro); padding: 7px 10px; border-radius: var(--r-ctl); width: max-content; max-width: 240px; box-shadow: var(--sk-sh); pointer-events: none; }
+.c-menu-host { position: relative; display: inline-flex; }
+.c-menu { position: absolute; z-index: 40; top: calc(100% + 4px); right: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--sk-sh); padding: 5px; display: flex; flex-direction: column; min-width: 200px; max-width: 280px; }
+.c-menu-item { display: flex; align-items: center; gap: 9px; padding: 0 9px; min-height: 32px; border: 0; border-radius: var(--r-ctl); background: none; color: var(--text); font: var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; text-align: left; text-decoration: none; cursor: pointer; flex-wrap: wrap; }
+.c-menu-item:hover { background: var(--surface-2); }
+.c-menu-item .c-ic { width: 15px; height: 15px; color: var(--text-dim); }
+.c-menu-item kbd { margin-left: auto; }
+.c-menu-item.is-bad,
+.c-menu-item.is-bad .c-ic { color: var(--s-bad); }
+.c-menu-item:disabled { opacity: .55; cursor: not-allowed; padding-top: 6px; padding-bottom: 6px; }
+.c-menu-item > em { font-style: normal; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); flex-basis: 100%; padding-left: 24px; white-space: normal; }
+.c-menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; }
+
+/* ---- dialogs, including the typed confirm ----------------------------- */
+/* THE SCRIM DIMS IN BOTH THEMES (visual QA overview-agents-86, 2026-10-28).
+   It was the navy #06101e at 42% everywhere -- and #06101e IS the dark
+   `--bg`, so in dark it left the page exactly as it was and only faintly
+   darkened the cards. Dark takes black at 60% (`--bg` to ~#02060c, a card
+   from #0c1a2e to ~#050a12), so the page reads as behind the dialog; light
+   keeps the navy wash, which over a white page always did. */
+.c-scrim { position: fixed; inset: 0; z-index: 50; background: rgb(0 0 0 / .6); display: flex; align-items: center; justify-content: center; padding: 16px; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) .c-scrim { background: color-mix(in srgb, #06101e 42%, transparent); }
+}
+:root[data-theme='light'] .c-scrim { background: color-mix(in srgb, #06101e 42%, transparent); }
+.c-dlg { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-dlg); box-shadow: var(--sk-sh); padding: 16px; display: flex; flex-direction: column; gap: 10px; width: min(460px, 100%); max-height: calc(100vh - 32px); overflow: auto; }
+.c-dlg > h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); }
+.c-dlg p { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.c-facts { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); margin: 0; padding: 0; list-style: none; }
+.c-facts b { color: var(--text); font-weight: 500; margin-left: 5px; }
+.c-acts { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 4px; }
+.c-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.c-lbl { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); font-weight: 500; }
+.c-lbl code { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); }
+.c-inp { min-height: var(--h-ctl); padding: 0 10px; border: 1px solid var(--ctl-bd); background: var(--surface); border-radius: var(--r-ctl); font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); min-width: 0; }
+.c-inp.is-mono { font-family: var(--mono); }
+.c-hint { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); margin: 0; }
+
+/* ---- banners and toasts ----------------------------------------------- */
+.c-banner { display: flex; gap: 10px; align-items: flex-start; padding: 9px 12px; border-radius: var(--r-card); font-size: var(--t-meta); line-height: var(--lh-meta); border: 1px solid; flex-wrap: wrap; }
+.c-banner > svg { width: 12px; height: 12px; flex: none; margin-top: 4px; }
+.c-banner-body { display: flex; flex-direction: column; gap: 2px; color: var(--text); flex: 1 1 260px; min-width: 0; }
+.c-banner-body > b { font-weight: 600; }
+.c-banner-body > span { color: var(--text-dim); }
+.c-banner-acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.c-banner.is-warn { background: var(--s-warnb); border-color: color-mix(in srgb, var(--s-warn) 35%, transparent); color: var(--s-warn); }
+.c-banner.is-bad { background: var(--s-badb); border-color: color-mix(in srgb, var(--s-bad) 35%, transparent); color: var(--s-bad); }
+.c-banner.is-info { background: var(--sk-acs); border-color: var(--sk-acl); color: var(--sk-ac); }
+.c-banner.is-neu { background: var(--surface-2); border-color: var(--line); color: var(--text-dim); }
+.c-toasts { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; max-width: calc(100vw - 32px); }
+.c-toast { display: flex; align-items: center; gap: 10px; background: var(--ctl-tip); color: var(--ctl-tip-ink); border-radius: var(--r-card); padding: 8px 10px 8px 12px; font-size: var(--t-meta); line-height: var(--lh-meta); box-shadow: var(--sk-sh); max-width: 100%; flex-wrap: wrap; }
+.c-toast .c-ic { width: 15px; height: 15px; color: var(--s-live); }
+.c-toast .c-link { color: var(--ctl-tip-ink); text-decoration-color: currentColor; }
+.c-toast .c-x { color: var(--ctl-tip-ink); }
+@media (max-width: 759px) { .c-toasts { left: 12px; right: 12px; bottom: 12px; align-items: stretch; } }
+
+/* ---- usage bars: one 6px track; hatch means "not measured" ------------ */
+.c-ub { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.c-ubh { display: flex; justify-content: space-between; gap: 10px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); flex-wrap: wrap; }
+.c-ubh b { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+.c-ubh .c-abs { color: var(--ctl-absent); font-weight: 400; }
+.c-ubh .is-warn,
+.c-ubh .is-bad { display: inline-flex; gap: 5px; align-items: center; }
+.c-ubh .is-warn { color: var(--s-warn); }
+.c-ubh .is-bad { color: var(--s-bad); }
+.c-ubh svg { width: 12px; height: 12px; }
+.c-bar { height: var(--track-h); border-radius: var(--track-radius); background: var(--line); position: relative; overflow: hidden; display: flex; }
+.c-bar > i { display: block; height: 100%; }
+.c-bar > .c-f { background: var(--sk-ac); }
+.c-bar.is-warn > .c-f,
+.c-bar.is-nearly-full > .c-f,
+.c-bar.is-full > .c-f { background: var(--s-warn); }
+.c-bar.is-over { overflow: visible; }
+.c-bar.is-over > .c-f { background: var(--s-bad); }
+.c-bar > .c-ov { position: absolute; top: 0; bottom: 0; background: var(--ctl-hatch-bad); border-radius: 0 var(--track-radius) var(--track-radius) 0; }
+.c-bar > .c-tk { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text); margin-left: -1px; }
+/* NOT MEASURED, and only that: the hatch, dashed, never an empty track. */
+.c-bar.is-unmeasured { background: var(--ctl-hatch); border: 1px dashed var(--ctl-absent); }
+.c-bar.is-unknown-ceiling > .c-h { position: absolute; top: 0; bottom: 0; background: var(--ctl-hatch); }
+/* Progress: done of total in a state's hue, unread steps hatched after it. */
+.c-bar.is-progress { display: inline-flex; width: 96px; flex: none; vertical-align: middle; }
+.c-bar.is-progress.is-live > .c-f { background: var(--s-live); }
+.c-bar.is-progress.is-park > .c-f { background: var(--s-park); }
+.c-bar.is-progress.is-bad > .c-f { background: var(--s-bad); }
+.c-bar.is-progress.is-neu > .c-f { background: var(--s-neu); }
+.c-bar.is-progress > .c-h { position: absolute; top: 0; bottom: 0; background: var(--ctl-hatch); }
+
+/* ---- empty, partial, failed, loading: four different things ------------ */
+.c-emp { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.c-emp > h3, .c-emp > h1 { margin: 0; display: flex; align-items: center; gap: 8px; font-size: var(--t-lead); line-height: var(--lh-lead); }
+.c-emp > p { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.c-emp.is-partial { border-color: color-mix(in srgb, var(--s-warn) 40%, transparent); }
+.c-emp.is-failed { border-color: color-mix(in srgb, var(--s-bad) 40%, transparent); background: var(--s-badb); }
+.c-emp.is-loading { width: 100%; }
+.c-emp.is-loading .c-sk-lines { width: 100%; }
+.c-emp-mark { display: inline-flex; color: var(--text-dim); }
+.c-emp.is-partial .c-emp-mark { color: var(--s-warn); }
+.c-emp.is-failed .c-emp-mark { color: var(--s-bad); }
+.c-emp-mark svg { width: 12px; height: 12px; }
+
+/* ---- code and diff ---------------------------------------------------- */
+.c-code { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); overflow: hidden; min-width: 0; }
+.c-codeh { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 12px; height: 36px; border-bottom: 1px solid var(--line); font-size: var(--t-micro); line-height: var(--lh-micro); background: var(--surface-2); }
+.c-codeh > b { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); }
+.c-code pre { margin: 0; padding: 8px 0; font: var(--t-micro)/var(--lh-micro) var(--mono); overflow-x: auto; color: var(--text); white-space: pre; }
+.c-code .c-ln { display: inline-block; width: 40px; padding-right: 12px; text-align: right; color: var(--text-dim); user-select: none; }
+.c-code .c-dl { display: block; }
+.c-code .c-dl.is-add { background: var(--s-liveb); }
+.c-code .c-dl.is-del { background: var(--s-badb); }
+.c-code .c-hk { display: block; color: var(--text-dim); background: var(--sk-acs); padding-left: 52px; }
+.c-ds { font: var(--t-micro)/var(--lh-micro) var(--mono); }
+.c-ds .is-add { color: var(--s-live); }
+.c-ds .is-del { color: var(--s-bad); }
+.c-seg.is-sm { height: var(--h-sm); }
+.c-seg.is-sm > button { padding: 0 10px; }
+/* THE PHONE TARGET (CH-8), at the foot of the sheet so no base rule after it
+   wins: below 561px a segment is 44px tall, its type unchanged. It is what the
+   local `.ctl-seg` carried before every segmented control became this one. */
+@media (max-width: 560px) {
+  /* A SEGMENTED CONTROL WRAPS RATHER THAN WIDEN THE PAGE (live QA CH-2,
+     2026-10-11). Unwrapped, Runs' six states with their counts were 439px at
+     a 400px phone and the whole page scrolled sideways. Never wider than its
+     container; a segment that does not fit starts a second row, and each
+     row's top hairline is drawn by its segments, the first row's hidden
+     under the control's own border (`overflow: hidden`). */
+  /* `.c-seg.is-sm` AS WELL (V172, archived issue 1427): its `height: var(--h-sm)` is
+     0,2,0 and beat a bare `.c-seg` here, so a small control on a phone drew
+     its 44px segments inside 28px and cut the labels at the foot (Schedules'
+     admin "Mine | All tenants"). */
+  .c-seg,
+  .c-seg.is-sm { height: auto; flex-wrap: wrap; max-width: 100%; }
+  .c-seg > button,
+  .c-seg > a { min-height: 44px; flex: 1 0 auto; border-top: 1px solid var(--line); margin-top: -1px; }
+  /* NO SEGMENT ALONE ON THE LAST ROW (V207, archived issue 1427). Packed by content, Runs'
+     six states put five on the first row and "rejected 0" alone across the
+     second, which reads as a separate control. A control of five or six
+     segments is laid out three to a row (5 = 3+2, 6 = 3+3) and one of seven
+     or eight four to a row (4+3, 4+4): the basis caps the row, the grow
+     fills it, and a label wider than its basis still widens its segment
+     (a flex item never shrinks below its content here). Two to four
+     segments keep packing by content, so a control that fits on one row
+     stays one row. Counted with `:nth-last-child` on the first segment, so
+     no script and no class says how many there are. */
+  .c-seg > :first-child:nth-last-child(n+5),
+  .c-seg > :first-child:nth-last-child(n+5) ~ * { flex-basis: 30%; }
+  .c-seg > :first-child:nth-last-child(n+7),
+  .c-seg > :first-child:nth-last-child(n+7) ~ * { flex-basis: 23%; }
+}

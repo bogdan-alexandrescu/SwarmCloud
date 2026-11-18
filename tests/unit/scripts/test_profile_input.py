@@ -1,0 +1,328 @@
+"""Every suite submits an input its runner can COMPLETE, per profile.
+
+THE DEFECT THIS PINS. `agent_worker/runners/browser.py` refuses an input with
+neither `url` nor `actions`: "browser runner needs input.url or at least one
+action". `scripts/smoke-test.sh` submitted `{message, run_id}` to every profile
+in its backend matrix -- and `browser` is the matrix's only GKE_AUTOPILOT row --
+so that row could not pass even with GKE dispatch working perfectly. So could
+`smoke-test.sh --profile browser`, which is the exact command
+docs/incidents/2026-09-24-gke-dispatch.md section 5 names as "the cheapest
+proof".
+
+`profile_input` in scripts/lib/testlib.sh is now the one place a suite's
+per-profile input is written, and both the smoke suite and
+scripts/prove-gke-dispatch.sh submit through it. The function is run for real
+(sourced by bash, as the suites source it), for every AVAILABLE profile in the
+frozen catalogue, so a new profile is covered the day it is added.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import secrets
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from swarm_common.profiles import RUNNER_PROFILES
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def profile_input(profile: str, run_id: str = "test-run") -> dict:
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    env.pop("SWARM_ENV_FILE", None)
+    script = (
+        f'source "{ROOT}/scripts/lib/common.sh"; '
+        f'source "{ROOT}/scripts/lib/testlib.sh"; '
+        f'profile_input "$1" "$2"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "profile-input", profile, run_id],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+AVAILABLE = sorted(n for n, p in RUNNER_PROFILES.items() if getattr(p, "available", True))
+
+
+@pytest.mark.parametrize("profile", AVAILABLE)
+def test_every_profile_gets_an_object_carrying_the_run_id(profile):
+    """In the PROMPT. It used to be a key of its own, `run_id`, beside a
+    `message` no runner read; since contract request 25 the API refuses a key
+    the profile does not declare, and `prompt` is the one every profile takes."""
+    body = profile_input(profile, "run-123")
+    assert isinstance(body, dict)
+    assert "run-123" in str(body.get("prompt", "")), (
+        "the run id is how test traffic is found again, and the prompt is the "
+        f"one place every profile accepts it: {body!r}"
+    )
+
+
+@pytest.mark.parametrize("profile", AVAILABLE)
+def test_every_profile_input_is_one_its_profile_declares(profile):
+    """The suites submit through this against a live platform, where a key the
+    catalogue does not declare is a 422 `invalid_input` and the run proves
+    nothing. Checked with the rule the API applies, not a copy of it, and for
+    every profile: every one declares its inputs since contract request 32
+    (archived issue 218), `generic`'s required `command` included, so what each takes is
+    that rule's to say, not a special case here."""
+    from swarm_common.profiles import check_inputs
+
+    body = profile_input(profile, "run-123")
+    check_inputs(RUNNER_PROFILES[profile], {k: v for k, v in body.items() if k != "prompt"})
+
+
+def test_the_browser_input_is_one_the_browser_runner_accepts():
+    body = profile_input("browser")
+    actions = body.get("actions")
+    # The runner's own gate, restated as the property: a url, or a non-empty
+    # list of actions.
+    assert body.get("url") or (isinstance(actions, list) and actions), (
+        f"{body!r} carries neither url nor actions; the browser runner refuses it "
+        "before Chromium starts, so the task fails with dispatch working"
+    )
+    for action in actions or []:
+        assert action.get("type") in {
+            "goto", "click", "fill", "press", "wait_for", "wait", "screenshot", "extract",
+        }, f"{action!r} is not an action the browser runner implements"
+        if action.get("type") == "goto":
+            assert re.match(r"^https?://", action.get("url", "")), action
+
+
+def test_the_browser_input_needs_no_site_outside_the_platform():
+    # A proof that depends on a third-party page being up fails for reasons
+    # that are not the platform's. --url exists for proving egress on purpose.
+    body = profile_input("browser")
+    assert not body.get("url")
+    assert all(a.get("type") != "goto" for a in body.get("actions") or [])
+
+
+def profile_extra(profile: str) -> dict:
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    env.pop("SWARM_ENV_FILE", None)
+    env.pop("SWARM_SMOKE_FIXTURE_REPOSITORY", None)
+    env.pop("SWARM_SMOKE_FIXTURE_REF", None)
+    env["GITHUB_REPOSITORY"] = FIXTURE_SLUG
+    script = (
+        f'source "{ROOT}/scripts/lib/common.sh"; '
+        f'source "{ROOT}/scripts/lib/testlib.sh"; '
+        f'profile_extra "$1"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "profile-extra", profile],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+# -- generic runs a command that PASSES, on a fixture the smoke clones ------------
+#
+# The owner's decision on archived pull request 345 (2026-09-29): the generic smoke row sends
+# `command=pytest` and asserts exit 0, rather than proving dispatch alone. On
+# an empty workspace pytest exits 5, "no tests collected", so the row clones
+# this repository and runs pytest in a directory that holds one passing test.
+
+#: The public repository the smoke clones for the fixture: this one, read from
+#: GITHUB_REPOSITORY (or the checkout's origin), never named in testlib.sh.
+#: Public, so the clone needs no tenant credential (`Worker._git_token`
+#: returns None and the clone runs anonymously).
+FIXTURE_SLUG = "example-org/example-repo"
+FIXTURE_REPOSITORY = f"https://github.com/{FIXTURE_SLUG}.git"
+
+
+def _fixture_dir() -> Path:
+    body = profile_input("generic")
+    working = body.get("working_directory")
+    assert isinstance(working, str) and working.startswith("repo/"), (
+        "the generic input must run pytest inside the clone (`work/repo`), in the "
+        f"fixture directory, not the bare workspace: {body!r}"
+    )
+    return ROOT / working[len("repo/"):]
+
+
+def test_the_generic_input_runs_pytest_in_the_fixture_directory():
+    body = profile_input("generic")
+    assert body.get("command") == "pytest", body
+    fixture = _fixture_dir()
+    assert fixture.is_dir(), f"{fixture} is not a directory in this repository"
+    assert (fixture / "pytest.ini").is_file(), (
+        "the fixture needs its own pytest.ini, so pytest takes it as the rootdir "
+        "and reads neither this repository's pyproject.toml nor a conftest above it"
+    )
+    assert "paths" not in body, (
+        "input.paths resolves against the workspace but reaches pytest's argv as "
+        "written, beside a working_directory -- pytest would look for it twice deep"
+    )
+
+
+def test_the_fixture_has_a_test_that_passes():
+    """Run it the way the generic runner does: `python -m pytest -q --color=no`,
+    in the fixture directory. Exit 0 with exactly one test passed -- not 5,
+    "no tests collected", which is what the row got on an empty workspace."""
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--color=no", "-p", "no:cacheprovider"],
+        cwd=_fixture_dir(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.search(r"\b1 passed\b", result.stdout), result.stdout
+
+
+def test_generic_is_submitted_with_the_fixture_repository_and_nothing_else_is():
+    extra = profile_extra("generic")
+    assert extra.get("repository_url") == FIXTURE_REPOSITORY, extra
+    # An anonymous HTTPS clone from GitHub, no userinfo: no tenant credential.
+    assert re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git", FIXTURE_REPOSITORY), (
+        FIXTURE_REPOSITORY
+    )
+    assert extra.get("repository_ref") == "main", extra
+    from swarm_api.validation import check_repository_url
+
+    assert check_repository_url(extra["repository_url"]) == extra["repository_url"]
+    for profile in AVAILABLE:
+        if profile != "generic":
+            assert profile_extra(profile) == {}, profile
+
+
+def _profile_extra_run(profile: str, **overrides: str) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    env.pop("SWARM_ENV_FILE", None)
+    env.pop("SWARM_SMOKE_FIXTURE_REPOSITORY", None)
+    env.pop("SWARM_SMOKE_FIXTURE_REF", None)
+    env["GITHUB_REPOSITORY"] = FIXTURE_SLUG
+    env.update(overrides)
+    script = (
+        f'source "{ROOT}/scripts/lib/common.sh"; '
+        f'source "{ROOT}/scripts/lib/testlib.sh"; '
+        f'profile_extra "$1"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "profile-extra", profile],
+        cwd=ROOT, env=env, capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return result
+
+
+def test_an_overridden_generic_fixture_is_echoed_with_where_it_came_from():
+    """archived issue 346 (archived pull request 345 review): SWARM_SMOKE_FIXTURE_REPOSITORY and _REF were followed
+    without a word, so an override left in an operator's shell made the smoke
+    clone a stale fork or branch and nobody reading the run could tell. The
+    fixture is echoed on stderr -- stdout stays the JSON the caller merges --
+    naming each value and that it came from the environment."""
+    fork = "https://github.com/example/SwarmCloud-fork.git"
+    result = _profile_extra_run(
+        "generic",
+        SWARM_SMOKE_FIXTURE_REPOSITORY=fork,
+        SWARM_SMOKE_FIXTURE_REF="stale-branch",
+    )
+    assert json.loads(result.stdout) == {"repository_url": fork, "repository_ref": "stale-branch"}
+    assert fork in result.stderr, result.stderr
+    assert "stale-branch" in result.stderr, result.stderr
+    assert "from SWARM_SMOKE_FIXTURE_REPOSITORY" in result.stderr, result.stderr
+    assert "from SWARM_SMOKE_FIXTURE_REF" in result.stderr, result.stderr
+
+
+def test_the_default_generic_fixture_is_echoed_as_the_default():
+    """The control: with no override the echo names the default repository and
+    `main`, and says no override is set, so the two cases read differently."""
+    result = _profile_extra_run("generic")
+    assert FIXTURE_REPOSITORY in result.stderr, result.stderr
+    assert "main" in result.stderr, result.stderr
+    assert "default" in result.stderr, result.stderr
+    assert "from SWARM_SMOKE_FIXTURE" not in result.stderr, result.stderr
+    # Every other profile clones nothing, so says nothing.
+    assert _profile_extra_run("mock").stderr == "", "a profile with no fixture echoed one"
+
+
+def _generic_from_a_checkout(tmp_path: Path, origin: str | None) -> subprocess.CompletedProcess:
+    """profile_extra generic from a copy of scripts/ in a checkout whose origin is
+    ORIGIN (none when None), with no GITHUB_REPOSITORY and no override."""
+    root = tmp_path / "checkout"
+    shutil.copytree(ROOT / "scripts", root / "scripts")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    if origin is not None:
+        subprocess.run(["git", "-C", str(root), "remote", "add", "origin", origin], check=True)
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("SWARM_ENV_FILE", "SWARM_SMOKE_FIXTURE_REPOSITORY", "SWARM_SMOKE_FIXTURE_REF",
+                        "GITHUB_REPOSITORY")}
+    env["NO_COLOR"] = "1"
+    script = (f'source "{root}/scripts/lib/common.sh"; source "{root}/scripts/lib/testlib.sh"; '
+              'profile_extra generic')
+    return subprocess.run(["bash", "-c", script], cwd=root, env=env, capture_output=True, text=True,
+                          timeout=60, check=False)
+
+
+def test_the_default_fixture_is_this_checkouts_origin_without_its_userinfo(tmp_path):
+    # Outside CI the repository is read from the checkout's origin, kept to its
+    # owner/repo: whatever userinfo the origin URL carries never reaches a task.
+    userinfo = f"x-access-token:{secrets.token_hex(8)}"
+    result = _generic_from_a_checkout(tmp_path, f"https://{userinfo}@github.com/{FIXTURE_SLUG}.git")
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"repository_url": FIXTURE_REPOSITORY, "repository_ref": "main"}
+    assert userinfo not in result.stdout + result.stderr
+
+
+def test_no_repository_to_read_stops_and_names_the_setting(tmp_path):
+    result = _generic_from_a_checkout(tmp_path, None)
+    assert result.returncode != 0, result.stdout
+    assert "set SWARM_SMOKE_FIXTURE_REPOSITORY" in result.stderr, result.stderr
+    assert result.stdout == "", result.stdout
+
+
+def test_the_smoke_asserts_the_generic_command_exited_zero():
+    """SUCCEEDED alone is the worker's reading; the row names the command and
+    its exit code from the runner's own result, so a pass is pytest's."""
+    text = (ROOT / "scripts" / "smoke-test.sh").read_text()
+    assert ".result_summary.runner.output.exit_code" in text, (
+        "smoke-test.sh no longer reads the generic runner's exit code"
+    )
+    assert ".result_summary.runner.output.command" in text
+
+
+@pytest.mark.parametrize("script", ["scripts/smoke-test.sh", "scripts/prove-gke-dispatch.sh"])
+def test_the_suites_submit_with_profile_extra(script):
+    """The generic row cannot pass without its clone, so every suite that
+    submits through `profile_input` merges `profile_extra` into the body."""
+    text = (ROOT / script).read_text()
+    assert "profile_extra" in text, f"{script} submits through profile_input without profile_extra"
+
+
+@pytest.mark.parametrize("script", ["scripts/smoke-test.sh", "scripts/prove-gke-dispatch.sh"])
+def test_the_suites_submit_through_it(script):
+    """The call sites, because a helper nothing calls fixes nothing."""
+    text = (ROOT / script).read_text()
+    submissions = re.findall(r"submit_task\s+[^\n]*", text)
+    assert submissions, f"{script} submits nothing"
+    for line in submissions:
+        assert "profile_input" in line, (
+            f"{script} submits a task without profile_input: {line.strip()!r}"
+        )

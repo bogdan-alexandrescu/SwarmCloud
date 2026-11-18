@@ -1,0 +1,84 @@
+# What a worker may do to the Kubernetes API: nothing.
+#
+# The Role below has no `rules` key, and that is not an oversight and not a
+# placeholder. Every question of the form "what does a worker need from the API
+# server?" has the same answer, and it is none:
+#
+#   * it does not read its own pod -- its identifiers arrive as environment
+#     variables that the dispatcher set, and the authority on its task is the
+#     Firestore document, not a Kubernetes object;
+#   * it does not create anything -- invariant 10 says a caller never influences
+#     what runs, and an identity that could create a Job would be a way around
+#     that for anyone who could influence the agent;
+#   * it does not delete anything -- terminating an execution is the
+#     reconciler's job, in a strict order (invalidate, terminate, release) that a
+#     worker deleting its own Job would sidestep;
+#   * it does not read Secrets through the API -- provider keys reach the
+#     container as environment variables projected from the tenant's own Secret
+#     Manager secret, so `get secrets` would widen the blast radius of a
+#     compromised agent from one key to the namespace's whole set.
+#
+# The Role exists at all, rather than simply not binding anything, so that the
+# absence is explicit and greppable: `kubectl describe role` in a tenant
+# namespace prints an empty rule set, which is a statement. A namespace with no
+# Role at all looks like a namespace somebody forgot.
+#
+# The token is not mounted either (see service-accounts/), so this Role is the
+# second of two independent reasons a worker cannot call the API. Either alone
+# would do; both together mean a mistake in one does not become an escalation.
+#
+# WHY NO `rules: []`. This file said `rules: []` until 2026-09-25, and every
+# `kubectl apply` reported `role.rbac.authorization.k8s.io/swarm-worker
+# configured` although nothing changed. The API server stores the Role as
+# protobuf, where an empty list and no list are the same bytes, and serves it
+# back as `rules: null`. Client-side apply patches from the LIVE object to this
+# manifest, so null -> [] was a change on every run; the server then found
+# nothing to write (the live Role's resourceVersion and managedFields time were
+# still those of its creation), and `kubectl diff` showed nothing. Omitting the
+# key is the same empty rule set, spelled the way the server stores it, so an
+# unchanged Role now applies as `unchanged`. The first apply after this edit
+# still says `configured` once: it removes `rules` from the last-applied
+# annotation. tests/unit/worker/test_kubernetes_manifests.py
+# (test_nothing_apply_sends_carries_an_empty_list_the_api_server_drops) keeps
+# every empty list out of what apply.sh sends.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: swarm-worker
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+    app.kubernetes.io/part-of: swarm
+  annotations:
+    __LABEL_PREFIX__/rationale: >-
+      Intentionally empty. A worker needs no Kubernetes API access; its state is
+      in Firestore, its artifacts are in GCS and its credentials arrive as
+      projected environment variables.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: swarm-worker
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+    app.kubernetes.io/part-of: swarm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: swarm-worker
+# The account the dispatcher's pods run as. The older `swarm-worker` account is
+# bound by its own RoleBinding, `swarm-worker-legacy`, in
+# service-accounts/legacy-worker-serviceaccount.yaml -- rendered only where
+# that account is Workload Identity-bound, so this binding never names an
+# account the render did not create.
+subjects:
+  - kind: ServiceAccount
+    name: __KSA_NAME__
+    namespace: __NAMESPACE__
+# No ClusterRole and no ClusterRoleBinding appear anywhere in this directory.
+# A cluster-scoped grant would cross the namespace boundary that every other
+# control in this repository is built to hold, and there is no worker use case
+# that needs one.

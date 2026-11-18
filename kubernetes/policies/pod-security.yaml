@@ -1,0 +1,373 @@
+# Cluster-scoped admission policy for tenant namespaces.
+#
+# Pod Security Admission covers the generic container-escape surface, and
+# Autopilot already refuses privileged pods, hostPath and the Docker socket on
+# its own. What neither of them knows about are this platform's own invariants,
+# and those are what this file enforces:
+#
+#   invariant 6   Spot is disabled platform-wide. Spot Pods cannot use Autopilot
+#                 extended run time, so a Spot pod is a pod that can be
+#                 preempted mid-agent-run -- which is the one thing the whole
+#                 checkpoint-and-lease design exists to avoid paying for.
+#   invariant 7   requests == limits. A container that requests less than its
+#                 limit is a container that gets OOM-killed under node pressure
+#                 at ninety minutes into a two-hour run.
+#   fencing       a retry is a NEW attempt with a new generation, minted by the
+#                 scheduler. A Kubernetes-level retry re-runs the agent under
+#                 the OLD generation, so `backoffLimit` must be 0.
+#
+# THREE policies rather than one, and the split is not stylistic. A
+# ValidatingAdmissionPolicy compiles its CEL against the schema of the resources
+# it matches, so an expression that reaches `spec.template.spec` cannot also
+# type-check against a Pod, whose spec has no `template`. Matching both kinds in
+# one policy would leave that resolution up to the API server's type inference.
+# One policy per kind removes the question:
+#
+#   swarm-worker-pod-constraints    pods, Deny.   The real enforcement point:
+#                                                 this is what the kubelet is
+#                                                 about to run.
+#   swarm-worker-job-constraints    jobs, Deny.   Fails fast, at the object a
+#                                                 person or the dispatcher
+#                                                 actually creates, where the
+#                                                 error is visible rather than
+#                                                 buried in a controller event.
+#   swarm-worker-pod-hardening      pods, Deny.   The fields PSA `restricted`
+#                                                 requires, checked here as well
+#                                                 so the failure names the field
+#                                                 rather than the level.
+#
+# Every binding is scoped by namespace label, so nothing here can affect the
+# other teams' workloads in this shared cluster.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-worker-pod-constraints
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  # If the policy cannot be evaluated, refuse the pod. A constraint about
+  # preemptible capacity must not fail open.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  variables:
+    - name: containers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : [])
+  validations:
+    - expression: >-
+        !has(object.spec.tolerations) ||
+        !object.spec.tolerations.exists(t,
+          has(t.key) && (
+            t.key.startsWith('cloud.google.com/gke-spot') ||
+            t.key.startsWith('cloud.google.com/gke-preemptible')))
+      message: >-
+        Spot is disabled platform-wide: a Spot Pod cannot use Autopilot extended
+        run time, so it can be preempted in the middle of an agent run. Remove
+        the gke-spot / gke-preemptible toleration.
+      reason: Forbidden
+
+    - expression: >-
+        !has(object.spec.nodeSelector) || (
+          !('cloud.google.com/gke-spot' in object.spec.nodeSelector) &&
+          !('cloud.google.com/gke-preemptible' in object.spec.nodeSelector))
+      message: >-
+        Spot is disabled platform-wide; a nodeSelector requesting Spot or
+        preemptible capacity is refused for the same reason as the toleration.
+      reason: Forbidden
+
+    # `quantity()` rather than string equality: "4" and "4000m" are the same
+    # amount of CPU and different strings, and rejecting a correct pod because
+    # it spelled its CPU in millicores would be a bug wearing a policy.
+    - expression: >-
+        variables.containers.all(c,
+          !has(c.resources) || !has(c.resources.limits) || !has(c.resources.requests) || (
+            (!('cpu' in c.resources.limits) || !('cpu' in c.resources.requests) || (
+              quantity(c.resources.limits['cpu'])
+                .compareTo(quantity(c.resources.requests['cpu'])) >= 0 &&
+              quantity(c.resources.limits['cpu'])
+                .compareTo(quantity(c.resources.requests['cpu'])
+                  .add(quantity(c.resources.requests['cpu']))) <= 0)) &&
+            (!('memory' in c.resources.limits) || !('memory' in c.resources.requests) ||
+              quantity(c.resources.requests['memory'])
+                .compareTo(quantity(c.resources.limits['memory'])) == 0)))
+      message: >-
+        memory requests must equal limits, and a cpu limit must be at least its
+        request and at most twice it (invariant 7 as amended by contract request
+        RS-1, 2026-10-20). Memory past a request is what gets a long-running
+        agent container OOM-killed under node pressure; CPU past it is only
+        throttled, never killed.
+      reason: Forbidden
+
+    # By the time a policy sees a Pod, LimitRanger has already applied the
+    # namespace defaults, so a container with no limits has bypassed them -- and
+    # a container with no limits is unbounded demand from a tenant with a bounded
+    # quota.
+    - expression: >-
+        variables.containers.all(c,
+          has(c.resources) && has(c.resources.limits) &&
+          'cpu' in c.resources.limits && 'memory' in c.resources.limits)
+      message: >-
+        every container must declare cpu and memory limits; the namespace
+        LimitRange supplies defaults, so a pod without them has bypassed it.
+      reason: Forbidden
+
+    # One field per validation, each guarded by its own `has()`. Combining them
+    # into a single expression looks tidier and is a trap: CEL short-circuits
+    # `||`, so a pod that sets hostPID but not hostNetwork would fall through to
+    # a clause reading a field that is not there, raise an evaluation error, and
+    # -- with failurePolicy Fail -- be refused with a message about nothing.
+    - expression: "!has(object.spec.hostNetwork) || object.spec.hostNetwork != true"
+      message: >-
+        hostNetwork is refused: it puts the pod on the node's network namespace,
+        where the NetworkPolicy that separates tenants does not apply.
+      reason: Forbidden
+
+    - expression: "!has(object.spec.hostPID) || object.spec.hostPID != true"
+      message: "hostPID is refused: it exposes every other workload's processes."
+      reason: Forbidden
+
+    - expression: "!has(object.spec.hostIPC) || object.spec.hostIPC != true"
+      message: "hostIPC is refused."
+      reason: Forbidden
+
+    - expression: >-
+        !has(object.spec.volumes) || !object.spec.volumes.exists(v, has(v.hostPath))
+      message: >-
+        hostPath volumes are refused. This is also how the container runtime
+        socket would be reached, and an agent that can reach the Docker socket
+        has escaped every boundary this platform builds.
+      reason: Forbidden
+
+    - expression: >-
+        variables.containers.all(c,
+          !has(c.securityContext) || !has(c.securityContext.privileged) ||
+          c.securityContext.privileged != true)
+      message: "privileged containers are refused."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-worker-pod-constraints
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-worker-pod-constraints
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        app.kubernetes.io/part-of: swarm
+---
+# The same invariants, checked at the object the dispatcher actually creates.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-worker-job-constraints
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs"]
+  variables:
+    - name: podSpec
+      expression: "object.spec.template.spec"
+    - name: containers
+      expression: >-
+        variables.podSpec.containers +
+        (has(variables.podSpec.initContainers) ? variables.podSpec.initContainers : [])
+  validations:
+    - expression: >-
+        !has(variables.podSpec.tolerations) ||
+        !variables.podSpec.tolerations.exists(t,
+          has(t.key) && (
+            t.key.startsWith('cloud.google.com/gke-spot') ||
+            t.key.startsWith('cloud.google.com/gke-preemptible')))
+      message: >-
+        Spot is disabled platform-wide; remove the gke-spot / gke-preemptible
+        toleration from the Job's pod template.
+      reason: Forbidden
+
+    - expression: >-
+        !has(variables.podSpec.nodeSelector) || (
+          !('cloud.google.com/gke-spot' in variables.podSpec.nodeSelector) &&
+          !('cloud.google.com/gke-preemptible' in variables.podSpec.nodeSelector))
+      message: "Spot is disabled platform-wide; remove the Spot nodeSelector."
+      reason: Forbidden
+
+    - expression: >-
+        variables.containers.all(c,
+          !has(c.resources) || !has(c.resources.limits) || !has(c.resources.requests) || (
+            (!('cpu' in c.resources.limits) || !('cpu' in c.resources.requests) || (
+              quantity(c.resources.limits['cpu'])
+                .compareTo(quantity(c.resources.requests['cpu'])) >= 0 &&
+              quantity(c.resources.limits['cpu'])
+                .compareTo(quantity(c.resources.requests['cpu'])
+                  .add(quantity(c.resources.requests['cpu']))) <= 0)) &&
+            (!('memory' in c.resources.limits) || !('memory' in c.resources.requests) ||
+              quantity(c.resources.requests['memory'])
+                .compareTo(quantity(c.resources.limits['memory'])) == 0)))
+      message: "memory requests must equal limits; a cpu limit must be between its request and twice it (invariant 7, RS-1)."
+      reason: Forbidden
+
+    # The one check that only makes sense on a Job, and the one whose absence is
+    # most dangerous: a Kubernetes retry re-runs the agent under the generation
+    # the first pod was given. That generation may already have been invalidated
+    # and its lease reissued to a replacement attempt, so the retry is a second
+    # agent on the same task, with the same credentials, on the same repository.
+    # The platform owns retries; Kubernetes must not.
+    - expression: "has(object.spec.backoffLimit) && object.spec.backoffLimit == 0"
+      message: >-
+        backoffLimit must be 0. A retry is a new attempt with a new fencing
+        generation, minted by the scheduler inside the admission transaction; a
+        Kubernetes-level retry would re-run the agent under the old generation.
+      reason: Forbidden
+
+    - expression: >-
+        !has(variables.podSpec.hostNetwork) || variables.podSpec.hostNetwork != true
+      message: "hostNetwork is refused."
+      reason: Forbidden
+
+    - expression: >-
+        !has(variables.podSpec.volumes) ||
+        !variables.podSpec.volumes.exists(v, has(v.hostPath))
+      message: "hostPath volumes are refused."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-worker-job-constraints
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-worker-job-constraints
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        app.kubernetes.io/part-of: swarm
+---
+# The pod-hardening fields, ENFORCED.
+#
+# These are exactly what `worker-templates/worker-job.yaml` sets, exactly what
+# `apps/scheduler/scheduler/dispatch.py` now builds, and exactly what Pod
+# Security Admission's `restricted` level requires. The namespace enforces
+# `restricted` too, so strictly this is a second check of the same properties --
+# and it is worth having twice, because PSA reports "violates PodSecurity
+# restricted:latest" while this names the field and says why it matters at 3am.
+#
+# RENAMED from `swarm-worker-hardening-advisories`, which warned rather than
+# denied while the dispatcher's manifest could not satisfy it. `kubectl apply`
+# does not remove a renamed object, so a cluster that has the old pair still has
+# it; delete them once:
+#
+#     kubectl delete validatingadmissionpolicybinding swarm-worker-hardening-advisories
+#     kubectl delete validatingadmissionpolicy        swarm-worker-hardening-advisories
+#
+# Leaving them costs nothing but a duplicate warning, which is why this is a
+# note rather than a step in apply.sh: a script that deletes admission policies
+# is a worse thing to own than a stale warning.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-worker-pod-hardening
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  # Fail, like the other two enforcing policies: a constraint about whether a
+  # container can gain privilege must not fail open. This was `Ignore` while the
+  # policy was advisory, where failing open was the right default.
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  variables:
+    - name: containers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : [])
+  validations:
+    - expression: >-
+        has(object.spec.automountServiceAccountToken) &&
+        object.spec.automountServiceAccountToken == false
+      message: >-
+        automountServiceAccountToken must be false. A worker never calls the
+        Kubernetes API -- it authenticates to Google APIs through Workload
+        Identity -- so a mounted token is a credential with no use to the pod and
+        real use to anything that can read its filesystem.
+      reason: Forbidden
+
+    - expression: >-
+        variables.containers.all(c,
+          has(c.securityContext) && has(c.securityContext.allowPrivilegeEscalation) &&
+          c.securityContext.allowPrivilegeEscalation == false)
+      message: "allowPrivilegeEscalation must be explicitly false on every container."
+      reason: Forbidden
+
+    - expression: >-
+        variables.containers.all(c,
+          has(c.securityContext) && has(c.securityContext.capabilities) &&
+          has(c.securityContext.capabilities.drop) &&
+          c.securityContext.capabilities.drop.exists(d, d == 'ALL'))
+      message: "every container must drop ALL capabilities."
+      reason: Forbidden
+
+    - expression: >-
+        (has(object.spec.securityContext) &&
+         has(object.spec.securityContext.runAsNonRoot) &&
+         object.spec.securityContext.runAsNonRoot == true) ||
+        variables.containers.all(c,
+          has(c.securityContext) && has(c.securityContext.runAsNonRoot) &&
+          c.securityContext.runAsNonRoot == true)
+      message: >-
+        runAsNonRoot must be true. The runtime images already run as uid 10001,
+        so declaring it costs nothing and makes the kubelet enforce it.
+      reason: Forbidden
+
+    - expression: >-
+        (has(object.spec.securityContext) &&
+         has(object.spec.securityContext.seccompProfile) &&
+         object.spec.securityContext.seccompProfile.type == 'RuntimeDefault') ||
+        variables.containers.all(c,
+          has(c.securityContext) && has(c.securityContext.seccompProfile) &&
+          c.securityContext.seccompProfile.type == 'RuntimeDefault')
+      message: "seccompProfile must be RuntimeDefault."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-worker-pod-hardening
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-worker-pod-hardening
+  # Audit alongside Deny: a refusal reaches whoever ran kubectl, but a pod
+  # created by a controller rather than by a person only shows up in the API
+  # server's audit log.
+  validationActions: ["Deny", "Audit"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        app.kubernetes.io/part-of: swarm

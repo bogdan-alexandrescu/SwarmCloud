@@ -1,0 +1,287 @@
+// WHO HOLDS AN ACCOUNT, AND WHO HELD IT (archived issue 379 parts 2 and 3).
+//
+// swarm-api decides what each viewer may see (swarm_api/accountholds.py); this
+// screen renders what arrives and must not blur the cases it is handed:
+//
+//   * a hold whose worker named NO task reads "agent not recorded" -- not as an
+//     unverified one, and not as a blank;
+//   * a hold that named a task its tenant does not own reads "unverified",
+//     with no id to show;
+//   * other tenants' holds are a count ("+1 held by other tenants") for a
+//     borrower and "N agents · tenant" for the owner -- never a task;
+//   * an empty history says so, rather than rendering an empty list that
+//     looks like a load that never finished.
+//
+// Nothing is read until an account is OPENED: the table costs no holders
+// read. Opening one is asking for it (archived issue 2222, mock-up A F4: the side sheet
+// shows who holds it at once), and History waits behind its own control.
+// Both are asserted.
+
+import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+
+import type { Result } from '../fetch'
+import type { AccountsBoard } from '../api'
+import type { Account, AccountsPage } from '../types'
+import type { AccountHolders, HoldHistory } from '../Accounts'
+
+const api = vi.hoisted(() => ({
+  loadAccountsBoard: vi.fn(),
+  beginAccountSignIn: vi.fn(),
+  finishAccountSignIn: vi.fn(),
+  refreshAccount: vi.fn(),
+  removeAccount: vi.fn(),
+  setAccountLending: vi.fn(),
+  setAccountState: vi.fn(),
+  // Holding now names each agent from its task read (G5-16). Refused here, so
+  // these cases read the id as the name, which is what they assert on.
+  loadTask: vi.fn(async () => ({
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: 'not read in this test' },
+  })),
+}))
+vi.mock('../api', () => api)
+
+const reads = vi.hoisted(() => ({ read: vi.fn() }))
+vi.mock('../fetch', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../fetch')>()),
+  read: reads.read,
+}))
+
+const { AccountsScreen } = await import('../Accounts')
+
+const WAIT = { timeout: 5000 } as const
+
+function ok<T>(data: T): Result<T> {
+  return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-10-01T10:00:00Z' }
+}
+
+function account(over: Partial<Account> = {}): Account {
+  return {
+    account_id: 'eng:laptop',
+    owner_tenant: 'eng',
+    label: 'laptop',
+    provider: 'anthropic',
+    state: 'AVAILABLE',
+    reason: '',
+    lend_to: ['research'],
+    assigned: 3,
+    windows: {},
+    observed_at: null,
+    stale: false,
+    unreadable_by: [],
+    unreadable_now: [],
+    last_assigned_at: null,
+    ...over,
+  }
+}
+
+function board(a: Account, tenant = 'eng'): AccountsBoard {
+  return {
+    page: {
+      accounts: [a],
+      tenant_id: tenant,
+      unreadable_documents: [],
+      unreadable_document_count: 0,
+    } as AccountsPage,
+    tenants: [],
+    tenantsDetail: null,
+    readAt: Date.now(),
+  } as AccountsBoard
+}
+
+const MINUTES = 60_000
+
+function holders(over: Partial<AccountHolders>): AccountHolders {
+  return { account_id: 'eng:laptop', viewer: 'owner', total: 0, holders: [], others: 0, ...over }
+}
+
+/** Answer each read by its URL, so the test says which route got what. */
+function serve(byPath: { holders?: AccountHolders; history?: HoldHistory }) {
+  reads.read.mockImplementation(async (target: { url: string }) => {
+    if (target.url.includes('/holders')) return ok(byPath.holders ?? holders({}))
+    if (target.url.includes('/history')) return ok(byPath.history)
+    throw new Error(`unexpected read ${target.url}`)
+  })
+}
+
+async function openRow(a: Account, tenant = 'eng') {
+  api.loadAccountsBoard.mockResolvedValue(ok(board(a, tenant)))
+  render(<AccountsScreen />)
+  // The row's name, not any button naming the account: the sheet's controls
+  // name it too. Nothing is open until it is clicked (archived issue 2222).
+  await screen.findByText('Subscription accounts', undefined, WAIT)
+  const open = document.querySelector<HTMLButtonElement>('button.acct-open')!
+  if (open.getAttribute('aria-current') !== 'true') fireEvent.click(open)
+}
+
+beforeEach(() => {
+  reads.read.mockReset()
+})
+
+describe('holding now', () => {
+  it('reads nothing for the table, the holders once an account is opened, and History only when asked', async () => {
+    serve({ holders: holders({}) })
+    api.loadAccountsBoard.mockResolvedValue(ok(board(account())))
+    render(<AccountsScreen />)
+    await screen.findByText('Subscription accounts', undefined, WAIT)
+    expect(reads.read).not.toHaveBeenCalled()
+
+    fireEvent.click(document.querySelector<HTMLButtonElement>('button.acct-open')!)
+    expect(await screen.findByText('Nobody holds it.', undefined, WAIT)).toBeTruthy()
+    const urls = () => reads.read.mock.calls.map((c) => (c[0] as { url: string }).url)
+    expect(urls().every((u) => u.includes('/holders'))).toBe(true)
+    expect(screen.getByRole('button', { name: 'History' }).getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('links the own task, its attempt and since when, and says "agent not recorded" apart from it', async () => {
+    const since = new Date(Date.now() - 38 * MINUTES).toISOString()
+    serve({
+      holders: holders({
+        total: 2,
+        holders: [
+          { since, task_id: 'task_abc', attempt: 2, recorded: true, verified: true },
+          { since, recorded: false, verified: false },
+        ],
+      }),
+    })
+    await openRow(account())
+
+    const link = await screen.findByRole('link', { name: 'task_abc' }, WAIT)
+    expect(link.getAttribute('href')).toBe('#work/task/task_abc')
+    // Agent · Attempt · Since, the mock-up's table (G5-16).
+    const rows = [...document.querySelectorAll('.acct-holding-now tbody tr')]
+    expect(rows[0]!.querySelectorAll('td')[1]!.textContent).toBe('2')
+    expect(screen.getAllByText(/^\d\d:\d\dZ \(38m\)$/).length).toBe(2)
+    expect(screen.getByText('agent not recorded')).toBeTruthy()
+    // NOT RECORDED IS NOT UNVERIFIED. A regression that folds the two would
+    // tell the reader a worker lied when it merely did not say.
+    expect(screen.queryByText('unverified')).toBeNull()
+  })
+
+  it('marks a task its tenant does not own as unverified, with no id to show', async () => {
+    serve({
+      holders: holders({
+        total: 1,
+        holders: [{ since: new Date().toISOString(), recorded: true, verified: false }],
+      }),
+    })
+    await openRow(account())
+
+    expect(await screen.findByText('unverified', undefined, WAIT)).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /task/ })).toBeNull()
+    expect(screen.queryByText('agent not recorded')).toBeNull()
+  })
+
+  it('gives a borrower a count of other tenants and no tenant name', async () => {
+    serve({ holders: holders({ viewer: 'borrower', total: 1, others: 1 }) })
+    await openRow(account({ owner_tenant: 'eng' }), 'research')
+
+    expect(await screen.findByText('+1 held by other tenants', undefined, WAIT)).toBeTruthy()
+  })
+
+  it('gives the owner its borrowers by tenant and count', async () => {
+    serve({
+      holders: holders({ total: 2, others: 2, by_tenant: [{ tenant: 'research', n: 2 }] }),
+    })
+    await openRow(account())
+
+    const row = await screen.findByText(/2 agents ·/, undefined, WAIT)
+    expect(row.textContent).toContain('research')
+    // The owner's loans in use, named as that (archived issue 2222, the sheet's Agents on it).
+    expect(screen.getByText('Loans in use')).toBeTruthy()
+    // The by-tenant line replaces the anonymous count; both would double it.
+    expect(screen.queryByText(/held by other tenants/)).toBeNull()
+  })
+})
+
+describe('history', () => {
+  it('says an empty window is empty', async () => {
+    serve({
+      history: {
+        account_id: 'eng:laptop', viewer: 'owner', from: null, to: null,
+        spans: [], next_cursor: null,
+      },
+    })
+    await openRow(account())
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }, WAIT))
+
+    expect(await screen.findByText('No holds recorded in this window.', undefined, WAIT)).toBeTruthy()
+  })
+
+  it('links own spans and counts everyone else, with no other tenant span', async () => {
+    const at = new Date(Date.now() - 120 * MINUTES).toISOString()
+    const until = new Date(Date.now() - 90 * MINUTES).toISOString()
+    serve({
+      history: {
+        account_id: 'eng:laptop', viewer: 'borrower',
+        from: new Date(Date.now() - 7 * 1440 * MINUTES).toISOString(),
+        to: new Date().toISOString(),
+        spans: [
+          { since: at, until, end: 'released', mine: true, task_id: 'task_mine', attempt: 1, recorded: true, verified: true },
+          { since: at, until: null, end: null, mine: true, recorded: false, verified: false },
+        ],
+        others: 3,
+        next_cursor: '2026-09-30T12:00:00+00:00|1',
+      },
+    })
+    await openRow(account(), 'research')
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }, WAIT))
+
+    expect(await screen.findByRole('link', { name: 'task_mine' }, WAIT)).toBeTruthy()
+    expect(screen.getByText('3 other agents in this window')).toBeTruthy()
+    expect(screen.queryByText('another tenant')).toBeNull()
+    expect(screen.getByText('agent not recorded')).toBeTruthy()
+    // One table row per hold since browser QA D24: held for, then how it ended.
+    const first = document.querySelector('.acct-hist tbody tr')!
+    expect(first.textContent).toMatch(/30m/)
+    expect(first.textContent).toMatch(/released/)
+    // Exactly the two own spans are listed; the others are a count, not rows.
+    expect(document.querySelectorAll('.acct-hist tbody tr').length).toBe(2)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }))
+    await screen.findByText('3 other agents in this window', undefined, WAIT)
+    const urls = reads.read.mock.calls.map((c) => (c[0] as { url: string }).url)
+    expect(urls.some((u) => u.includes('cursor=2026-09-30T12'))).toBe(true)
+  })
+
+  it('never shows another tenant\'s times to a borrower, only the count', async () => {
+    const at = new Date(Date.now() - 120 * MINUTES).toISOString()
+    const until = new Date(Date.now() - 90 * MINUTES).toISOString()
+    serve({
+      history: {
+        account_id: 'eng:laptop', viewer: 'borrower',
+        from: new Date(Date.now() - 7 * 1440 * MINUTES).toISOString(),
+        to: new Date().toISOString(),
+        spans: [
+          { since: at, until, end: 'released', mine: true, task_id: 'task_mine', attempt: 1, recorded: true, verified: true },
+        ],
+        others: 1,
+      },
+    })
+    await openRow(account(), 'research')
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }, WAIT))
+
+    expect(await screen.findByText('1 other agent in this window', undefined, WAIT)).toBeTruthy()
+    expect(document.querySelectorAll('.acct-hist tbody tr').length).toBe(1)
+    expect(screen.queryByRole('button', { name: 'Older' })).toBeNull()
+  })
+
+  it('says a borrower scan was limited, with no Older button', async () => {
+    serve({
+      history: {
+        account_id: 'eng:laptop', viewer: 'borrower',
+        from: null, to: null,
+        // Five pages searched, none of this tenant's: no count is served for a
+        // partial scan, since it would not be over the hour-aligned window.
+        spans: [], scan_limited: true,
+      },
+    })
+    await openRow(account(), 'research')
+    fireEvent.click(await screen.findByRole('button', { name: 'History' }, WAIT))
+
+    expect(await screen.findByText(/Older history was not searched further/, undefined, WAIT)).toBeTruthy()
+    expect(screen.queryByText(/other agents? in this window/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Older' })).toBeNull()
+  })
+})

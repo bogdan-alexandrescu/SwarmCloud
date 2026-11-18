@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# The call guard's gcloud (docs/workspaces.md §2.5). The workspace job puts this
+# directory first on PATH, and scripts/lib/common.sh's kubectl_bin and
+# prefer_local_bin return these shims while SWARM_CALL_GUARD is set, so every
+# gcloud the job runs is judged by scripts/lib/workspace-guard.sh against
+# scripts/lib/workspace-calls.json first. The guard runs the real gcloud, by
+# absolute path, only on an allow; a refusal exits 86 with nothing done.
+#
+# Nothing else belongs in this file: a shim that decides anything is a second
+# guard nobody reviews.
+set -euo pipefail
+exec "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/workspace-guard.sh" run gcloud "$@"

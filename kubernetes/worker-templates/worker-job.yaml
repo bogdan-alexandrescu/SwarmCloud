@@ -1,0 +1,297 @@
+# The canonical worker Job. One attempt, one Job, one pod, one generation.
+#
+# This is the reference shape for anything that creates a worker on GKE. Render
+# it with `kubernetes/render.py tenant --tenant <id>` for a manual run or an
+# incident repro; the dispatcher builds the same object in code.
+#
+# The parts that are load-bearing, and why:
+#
+# `command` is ABSENT, deliberately. The image's ENTRYPOINT is
+# `tini -- python -m agent_worker`, which starts the WORKER. The worker then
+# validates its fencing generation, creates an isolated workspace, restores the
+# latest checkpoint and only then starts the runner named by the frozen
+# catalogue as a supervised child. Overriding `command` with
+# `RUNNER_PROFILES[...].runner_argv` would start the runner DIRECTLY -- no
+# fencing check, no checkpointing, no heartbeat, no lease release -- which is
+# every safety property in this platform switched off at once. The profile's
+# runner_argv is the lifecycle's child, not the container's command (it was
+# called `command` until 2026-09-24, and that name is how both dispatchers came
+# to set it here; contract request 18).
+#
+# `backoffLimit: 0`. A retry is a new attempt with a new fencing generation,
+# minted by the scheduler inside the admission transaction. A Kubernetes-level
+# retry would re-run the agent under the OLD generation, against a lease that
+# may already have been released and reissued: two agents, one task.
+#
+# `safe-to-evict: "false"`. Autopilot extended run time. Without it the cluster
+# autoscaler may evict a perfectly healthy pod during a scale-down, mid-run.
+# This annotation is only honoured on on-demand capacity, which is the concrete
+# reason Spot is disabled platform-wide rather than merely discouraged.
+#
+# `requests == limits` for memory and ephemeral-storage. No memory bursting:
+# that is what gets a two-hour agent container OOM-killed at minute ninety.
+# CPU alone may burst past its request, to the class's limit (invariant 7 as
+# amended by contract request RS-1): a CPU burst is throttled, never killed,
+# and Autopilot bills the request. ephemeral-storage is the WHOLE pod's local
+# disk -- workspace, /tmp and HOME together, which kubelet sums -- not the
+# workspace volume's sizeLimit. It is the sum of the three volumes' sizeLimits; the cache is a
+# network-disk claim kubelet does not count (CACHE-PVC). All of these numbers
+# are the dispatcher's, per resource class: see GkeDisk in
+# apps/scheduler/scheduler/dispatch.py.
+#
+# No `tolerations` and no `nodeSelector`. Adding either is how a pod ends up on
+# Spot capacity; the admission policy in `policies/pod-security.yaml` refuses
+# both, and their absence here is the positive form of the same rule.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-scheduler
+    swarm-tenant: __TENANT_ID__
+    swarm-profile: __RUNNER_PROFILE__
+    swarm-task: __TASK_LABEL__
+    app.kubernetes.io/part-of: swarm
+    app.kubernetes.io/component: agent-worker
+  annotations:
+    cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    # The reconciler reads identifiers from the container environment, because a
+    # label value has been through name sanitisation and no longer matches the
+    # Firestore document id. These annotations carry them verbatim as well, for
+    # a human reading `kubectl describe`.
+    __LABEL_PREFIX__/task-id: __TASK_ID__
+    __LABEL_PREFIX__/attempt-id: __ATTEMPT_ID__
+    __LABEL_PREFIX__/generation: "__GENERATION__"
+spec:
+  backoffLimit: 0
+  completions: 1
+  parallelism: 1
+  # LATER than the worker's own TASK_TIMEOUT_SECONDS, never equal to it. This
+  # counts from Job creation (node provisioning and image pull included), the
+  # worker's from its own start; when they were the same number the Job always
+  # SIGTERMed the pod first and the worker PARKED the task instead of failing
+  # it. render.py computes it with the dispatcher's own function
+  # (backend_deadline_seconds in apps/scheduler/scheduler/dispatch.py).
+  activeDeadlineSeconds: __ACTIVE_DEADLINE_SECONDS__
+  # Keep the finished Job around long enough for the reconciler's next pass and
+  # for a person to read the logs, then let the cluster clean it up.
+  # Ten minutes (the owner, 2026-10-28): a finished Job holds a count/jobs.batch
+  # slot until this expires. Same value as dispatch.FINISHED_JOB_TTL_SECONDS.
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-scheduler
+        swarm-tenant: __TENANT_ID__
+        swarm-task: __TASK_LABEL__
+        app.kubernetes.io/part-of: swarm
+        app.kubernetes.io/component: agent-worker
+      annotations:
+        cluster-autoscaler.kubernetes.io/safe-to-evict: "false"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: __KSA_NAME__
+      # The worker never calls the Kubernetes API. See rbac/worker-rbac.yaml.
+      automountServiceAccountToken: false
+      # The worker terminates its own child on SIGTERM, escalating to SIGKILL
+      # after the grace period, then checkpoints and parks. This must be longer
+      # than the worker's own termination grace or the kubelet kills the pod
+      # while it is still uploading the checkpoint that makes the interruption
+      # cheap.
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: "__CPU__"
+              memory: __MEMORY__
+              ephemeral-storage: __EPHEMERAL__
+            limits:
+              cpu: "__CPU_LIMIT__"
+              memory: __MEMORY__
+              ephemeral-storage: __EPHEMERAL__
+          env:
+            # INERT UNDER THE WORKER LIFECYCLE, and kept only as a fallback.
+            #
+            # On 2026-09-24 the first browser pod ever started died with
+            # `OSError: [Errno 30] Read-only file system: '/artifacts'`, because
+            # `runners/base.py` defaults `artifacts_dir` to `work.parent /
+            # "artifacts"` when this is unset.
+            #
+            # CORRECTED (incident wf_ebb3ab2d65664707a559). This note used to
+            # say Cloud Run never showed the crash because it ran "the identical
+            # `python -m agent_worker.runners.<x>` command" on a writable root.
+            # It did not run the same command. Cloud Run ran the image
+            # ENTRYPOINT -- the worker lifecycle, exactly as the `command is
+            # ABSENT` paragraph at the top of this file requires -- and the
+            # lifecycle gives its runner child SWARM_ARTIFACTS_DIR itself, per
+            # attempt, from an allowlist that never passes this value through.
+            # The scheduler's GKE Job had overridden `command` with the runner,
+            # so no lifecycle ran and nothing set the variable. That override is
+            # gone and tests/unit/worker/test_kubernetes_manifests.py now holds
+            # the dispatcher's Job and this template to the same spec.
+            #
+            # It stays because it is harmless and because a runner started BY
+            # HAND in this container, during an incident, then writes inside the
+            # `workspace` volume -- whose size limit already derives from
+            # `__DISK__` -- instead of failing on the read-only root.
+            - name: SWARM_ARTIFACTS_DIR
+              value: /workspace/artifacts
+            # Identifiers only. No image, no command, no resource spec: the
+            # worker reads what to run from the frozen catalogue keyed by
+            # RUNNER_PROFILE, so a doctored environment cannot change it.
+            - name: TASK_ID
+              value: __TASK_ID__
+            - name: ATTEMPT_ID
+              value: __ATTEMPT_ID__
+            - name: LEASE_ID
+              value: __LEASE_ID__
+            - name: GENERATION
+              value: "__GENERATION__"
+            - name: TENANT_ID
+              value: __TENANT_ID__
+            - name: RUNNER_PROFILE
+              value: __RUNNER_PROFILE__
+            - name: PROJECT_ID
+              value: __PROJECT_ID__
+            - name: REGION
+              value: __REGION__
+            - name: FIRESTORE_DATABASE
+              value: __FIRESTORE_DATABASE__
+            - name: ARTIFACT_BUCKET
+              value: __ARTIFACT_BUCKET__
+            - name: WORKSPACE_ROOT
+              value: /workspace
+            # The pod's `cache` volume (CACHE-SCRATCH): where the worker puts
+            # the agent's tool caches and TMPDIR, off the workspace volume.
+            # GkeJobDispatcher's CACHE_MOUNT / CACHE_ROOT_ENV.
+            - name: SWARM_CACHE_ROOT
+              value: /cache
+            # The pod's local disk emptyDirs, `<volume>=<mountPath>:<sizeLimit GiB>`,
+            # so the worker can say what filled one before kubelet evicts the pod
+            # (#2436). render.py fills it from the dispatcher's
+            # scratch_volumes_value; the cache and dshm are not in it.
+            - name: SWARM_SCRATCH_VOLUMES
+              value: "__SCRATCH_VOLUMES__"
+            - name: CHECKPOINT_INTERVAL_SECONDS
+              value: "__CHECKPOINT_INTERVAL_SECONDS__"
+            - name: MAX_IN_WORKER_RETRY_DELAY_SECONDS
+              value: "__MAX_IN_WORKER_RETRY_DELAY_SECONDS__"
+            - name: TASK_TIMEOUT_SECONDS
+              value: "__TIMEOUT_SECONDS__"
+            # The metadata server BY ADDRESS, so google-auth's project-id and
+            # token requests need no DNS lookup. That is ALL these do: Firestore,
+            # the provider APIs and every other Google API are still reached by
+            # name and still need the egress policy's DNS rule. The reason and
+            # the limits are in `gke_worker_env` (apps/scheduler/scheduler/
+            # dispatch.py), whose values these must equal; tests/unit/worker/
+            # test_worker_templates_name_the_metadata_server.py holds them.
+            - name: GCE_METADATA_HOST
+              value: "169.254.169.254"
+            - name: GCE_METADATA_IP
+              value: "169.254.169.254"
+            # NO PROVIDER KEY IS PROJECTED HERE, deliberately.
+            #
+            # Every process in this container runs as uid 10001, so anything in
+            # the worker's own environment is readable at /proc/1/environ by the
+            # runner child, by anything the agent spawns, and by a `cat`. A
+            # `secretKeyRef` entry would hand the tenant's provider key to every
+            # one of them, and the env allowlist in `workspace.child_env` cannot
+            # take back what the container was started with.
+            #
+            # The worker reads the key from Secret Manager itself, as the
+            # tenant's own GSA through Workload Identity (that GSA holds
+            # secretAccessor on exactly `swarm-tenant-<tenant>-<provider>` and
+            # nothing else), and puts it only into the environment of the single
+            # child that needs it. A `secretKeyRef` would also have named a
+            # KUBERNETES Secret, and nothing in this repository creates one.
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            # readOnlyRootFilesystem means every writable path must be declared.
+            # These four are the only ones the worker and its toolchain need:
+            # the workspace (the checkout and the agent's HOME), the cache (the
+            # agent's npm, uv, pip, terraform and XDG caches and its TMPDIR,
+            # CACHE-SCRATCH), the worker's own temp dir (checkpoint archives,
+            # and any literal /tmp an agent writes), and the worker's HOME.
+            # Their sizes, and what each holds, are GKE_DISK's; the cache's
+            # is CACHE_VOLUME_GIB, on its own network disk (CACHE-PVC).
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /cache
+            - name: home
+              mountPath: /home/swarm
+            # /dev/shm and the spec-verify keys: `GkeJobDispatcher._manifest`
+            # mounts both on EVERY GKE pod, not only browser's, and this
+            # template is the reference for what it sends. Unread while browser
+            # was the only GKE profile; claude-code joined it (contract request
+            # 55's canary, then request 53 itself, 2026-10-08), and
+            # test_kubernetes_manifests.py compares the two. Shared memory
+            # counts against the memory limit only when something writes to it.
+            - name: dshm
+              mountPath: /dev/shm
+            # The step-spec public keys (contract request 34): terraform's
+            # swarm-spec-verify-keys ConfigMap in this namespace, READ-ONLY, the
+            # fallback behind the scheduler's SPEC_* values in the dispatched
+            # Job's `env:` (2026-10-08), as in worker-job-browser.yaml.
+            - name: spec-verify-keys
+              mountPath: /etc/swarm/spec-verify-keys
+              readOnly: true
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: __DISK__
+        # The agent's tool caches and TMPDIR, on a NETWORK DISK of their own
+        # (CACHE-PVC, owner decision 2026-10-15): a generic ephemeral volume,
+        # created with the pod and deleted with it by the ephemeral-volume
+        # controller. The 2 GiB emptyDir it replaces evicted
+        # task_247c87a8714c4977921a twice, and Autopilot's 10 GiB had no more
+        # to give it. NOT counted in __EPHEMERAL__; never checkpointed.
+        - name: cache
+          ephemeral:
+            volumeClaimTemplate:
+              spec:
+                accessModes: ["ReadWriteOnce"]
+                storageClassName: __CACHE_STORAGE_CLASS__
+                resources:
+                  requests:
+                    storage: __CACHE_DISK__
+        - name: tmp
+          emptyDir:
+            sizeLimit: __TMP_DISK__
+        - name: home
+          emptyDir:
+            sizeLimit: __HOME_DISK__
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+        # `optional`: a namespace whose ConfigMap has not been applied yet
+        # still starts its pod, and verifies with the keys in `env:`. Only
+        # with keys in neither does the worker exit CANNOT_START for every
+        # task, signed or not -- loud, and never an unverified run.
+        - name: spec-verify-keys
+          configMap:
+            name: swarm-spec-verify-keys
+            optional: true

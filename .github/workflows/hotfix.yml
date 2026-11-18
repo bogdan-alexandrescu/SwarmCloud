@@ -1,0 +1,580 @@
+# The hotfix lane: a release to dev that does not queue behind a normal one.
+#
+# Owner decision 2026-10-08 (observer proposal H; docs/ci.md, "Hotfix
+# releases"). Measured that day over 22 successful release.yml runs: new
+# digests are live 43 min p50 / 97 min p90 after the run is created, and the
+# `release-dev` concurrency lock is held 100 min p50 (verify 26, deploy and
+# smoke 24, acceptance 45). The queue in front of it waits 10 min p50 / 56 p90,
+# and 78 of the last 100 runs were cancelled while pending, superseded by a
+# newer push. A hotfix (archived pull request 857) waited about 1 h 45 min.
+#
+# WHY A WORKFLOW OF ITS OWN. GitHub evaluates `concurrency:` before any job,
+# so nothing a run learns -- a label -- can move it out of `release-dev`. This
+# file is in `hotfix-dev` instead, and it runs on EVERY push to main that
+# would start a release; its first job reads the label and every later job
+# runs only on that answer. A commit without the label ends here, green, in
+# seconds.
+#
+# WHY ON MAIN, NEVER ON A PULL REQUEST. Workload identity admits only
+# refs/heads/main (application.yml, the comment on `build images`' auth step):
+# a pull request's ref is refused by the pool's attribute condition. So the
+# lane runs on the push the merge makes (or by dispatch on main), and reads
+# the label from the pull request that push merged.
+#
+# WHAT IT RUNS: .github/actions/release-*, the very steps release.yml runs --
+#   CI's image record for this SHA (`--reuse-ci only`) -> scan-only ->
+#   promote -> plan -> shared-project guard -> IAM classification -> apply ->
+#   deploy.sh --verify-only -> smoke.
+#
+# WHAT IT SKIPS, AND WHY THAT IS SAFE:
+#   * `verify`: CI's record for this SHA cannot exist unless its unit tests,
+#     shellcheck and manifests passed -- application.yml's `build images`
+#     needs [python, shell, manifests] -- and the images stage refuses to
+#     build anything of its own.
+#   * warming the worker jobs, acceptance and the GKE proof: the SAME push
+#     still starts the normal release, whose completion starts accept.yml,
+#     which warms, proves GKE and accepts what dev then runs. Acceptance is
+#     delayed, not dropped. (The plugin tag is not skipped: application.yml's
+#     plugin-tag job makes it on the same push once the unit tests pass.)
+#   * any change to IAM: a plan that changes IAM FAILS this lane, which never
+#     applies it, so the owner's dev-iam gate is untouched. The normal release
+#     holds that plan for dev-iam as it always has.
+#   * prod: never. Dev only, in name and in every input below.
+#
+# IT AUTHENTICATES AS THE DEPLOYER IN ITS OWN NAME. The deployer trusts
+# workflow files by `job_workflow_ref` (terraform/bootstrap/wif.tf,
+# `deployer_workflows`, archived issue 457), so hotfix.yml is on that list. The bootstrap
+# layer is applied by the owner, not by CI: until it is, the first job here
+# that authenticates fails with `Permission 'iam.serviceAccounts.
+# getAccessToken' denied`, and nothing is changed.
+#
+# THE TWO LANES NEVER MOVE DEV BACKWARDS. They share one release lock and two
+# records in the state bucket (scripts/lib/release-order.sh): the hotfix
+# usually lands first, and the normal release of an OLDER commit that reaches
+# its promote or apply afterwards stops there, green, superseded.
+
+name: hotfix
+
+on:
+  push:
+    branches: [main]
+    # release.yml's paths, so a hotfix is possible exactly where a release is.
+    paths:
+      - "apps/**"
+      - "images/**"
+      - "terraform/**"
+      - "kubernetes/**"
+      - "scripts/**"
+      - ".trivyignore.yaml"
+      - ".github/workflows/release.yml"
+      - ".github/actions/release-*/**"
+      - ".github/workflows/hotfix.yml"
+  # Re-running the lane for a labelled commit whose push run was lost. Only on
+  # main does anything after the gate run (and only main can authenticate).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The same pins as release.yml (tests/unit/scripts/test_hotfix_release.py
+# holds them equal): the stages read them from the job's environment.
+env:
+  TERRAFORM_VERSION: "1.16.2"
+  PYTHON_VERSION: "3.11"
+  TF_ROOT: terraform/infra
+  TRIVY_VERSION: "0.74.0"
+
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted runner pool's VMs through the one guarded
+# `runs-on` expression: a fork's pull request, or the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
+# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
+jobs:
+  # -------------------------------------------------------------------------
+  # THE GATE. Proceeds only when this commit is a pull request merged into
+  # main with the `hotfix` label (scripts/lib/hotfix-gate.sh). Reads, and
+  # nothing else: no Google identity.
+  # -------------------------------------------------------------------------
+  gate:
+    name: is this a hotfix
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      proceed: ${{ steps.label.outputs.proceed }}
+      pr: ${{ steps.label.outputs.pr }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: read the merged pull request's labels
+        id: label
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/lib/hotfix-gate.sh --sha "${GITHUB_SHA}" --repo "${GITHUB_REPOSITORY}" --label hotfix >> "$GITHUB_OUTPUT"
+
+      - name: say which lane ships this commit
+        env:
+          PROCEED: ${{ steps.label.outputs.proceed }}
+          PR: ${{ steps.label.outputs.pr }}
+        run: |
+          {
+            if [ "${PROCEED}" = "true" ]; then
+              echo "### Hotfix: #${PR} ships to dev on this lane"
+              echo
+              echo "The normal release of the same push still runs, and accept.yml accepts what it leaves dev running."
+            else
+              echo "### Not a hotfix"
+              echo
+              echo "No pull request merged into main with the \`hotfix\` label. The normal release ships this commit."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # The stages, each one of .github/actions/release-*: the very steps
+  # release.yml runs. Each job checks out, authenticates as the deployer and
+  # runs one stage. Every job after the gate is dev only, by its env.
+  # -------------------------------------------------------------------------
+  images:
+    name: images and scan (dev, hotfix)
+    runs-on: ubuntu-24.04
+    needs: [gate]
+    # Its own group, so it never waits for `release-dev`. It is on the WORK
+    # jobs only, never on the workflow and never on `gate`: this workflow runs
+    # on every push to main that touches the release paths, GitHub keeps one
+    # running plus one pending run per group, and a newer arrival cancels the
+    # older pending one. An ordinary push that joined the group would displace
+    # a queued hotfix, which would then never run. A job that `gate` skips
+    # never enters the group. Never cancelled in progress: a lane half-way
+    # through an apply is not one to stop. What keeps two hotfixes from
+    # interleaving or rolling dev back between jobs is the lock and the
+    # applied record of scripts/lib/release-order.sh (the older commit ends
+    # green, superseded), not this group.
+    concurrency:
+      group: hotfix-dev
+      cancel-in-progress: false
+    if: needs.gate.outputs.proceed == 'true'
+    # actions: read lets the stage find application.yml's run of this commit
+    # and download its record (scripts/lib/ci-built-images.sh).
+    permissions:
+      contents: read
+      id-token: write
+      actions: read
+    outputs:
+      tag: ${{ steps.stage.outputs.tag }}
+      # true when a newer push cancelled this commit's build (`after`):
+      # promote, and so apply and deploy, then run nothing.
+      superseded: ${{ steps.after.outputs.superseded == 'true' }}
+    env:
+      ENVIRONMENT: dev
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      # release-images fetches this environment's tfvars from the state bucket.
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: the images CI built for this commit, scanned (nothing is promoted yet)
+        id: stage
+        uses: ./.github/actions/release-images
+        with:
+          environment: ${{ env.ENVIRONMENT }}
+          lane: hotfix
+          # Never a build of its own: CI's record is what proves the commit
+          # passed its unit tests, shellcheck and manifests.
+          reuse_ci: only
+        # On a push a failure here is judged by `after`, which fails the job
+        # unless a newer push superseded this commit's build. A dispatch
+        # ships main's head and fails here as it always did.
+        continue-on-error: ${{ github.event_name == 'push' }}
+
+      # A BUILD A NEWER PUSH CANCELLED ENDS THE HOTFIX GREEN (the owner, 2026-10-26,
+      # part of archived issue 2441). Since #2438 application.yml runs all of main in one
+      # group with cancel-in-progress, so a newer push can cancel this
+      # commit's `build images` before it records anything, and the stage
+      # above fails "never built". The newer commit's build carries this
+      # one's change and its own release (and its own hotfix, if labelled)
+      # ships it, so that case is superseded: green, a summary naming main's
+      # newest commit, and promote, apply and deploy skipped. Any other
+      # failure stays red. This is release.yml's `after` step on its failure
+      # path, plus one call it does not make: the read of main's head, so the
+      # summary names the commit that ships the change (the brief asks for
+      # it; it is not drift from release.yml).
+      #
+      # NO `newest` CHECK, unlike release.yml, and NO supersession after a
+      # successful stage. A hotfix exists to beat the normal release to dev;
+      # one that was built ships, even when main moved on meanwhile, because
+      # the newer commit's normal release is still behind the release-dev
+      # lock. Superseding a built hotfix whenever anything merged after it
+      # would drop most hotfixes for nothing. What keeps it from rolling dev
+      # back is release-order.sh's lock and applied record: if the newer
+      # commit reached dev first, promote and deploy already end green,
+      # superseded.
+      - name: superseded while it waited?
+        id: after
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGE: ${{ steps.stage.outcome }}
+        run: |
+          set -euo pipefail
+          if [ "${STAGE}" = success ]; then
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          superseded() {
+            echo "::notice title=Superseded::$1"
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Superseded: a newer push cancelled this commit's build"
+              echo
+              echo "$1"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          # The stage failed. Superseded only when main has moved on AND the
+          # newer push cancelled this commit's build: its application push
+          # run concluded `cancelled` and `build images` neither succeeded nor
+          # failed in it. scripts/lib/build-superseded.sh judges, and waits
+          # (bounded) for the run to conclude first: the stage fails the
+          # moment `build images` is cancelled, seconds before the run
+          # concludes `cancelled` (archived issue 2664).
+          if run_id="$(./scripts/lib/build-superseded.sh --sha "${GITHUB_SHA}" --repo "${GITHUB_REPOSITORY}")"; then
+            newer="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha' 2>/dev/null)" || newer=""
+            if [ -n "${newer}" ]; then
+              ships="main's newest commit \`${newer}\`, whose build includes this commit's change, ships it in its own release"
+            else
+              ships="main's newest commit (unreadable just now: see main's history) includes this commit's change and its release ships it"
+            fi
+            superseded "A newer push to main cancelled application run ${run_id}, the build of \`${GITHUB_SHA}\`, before it built. ${ships}; this hotfix promoted, applied and deployed nothing."
+          fi
+          echo "::error title=images and scan failed::the images stage failed for ${GITHUB_SHA} (its error is above) and no newer push superseded its build, so this hotfix ships nothing"
+          exit 1
+
+  promote:
+    name: promote (dev, hotfix)
+    runs-on: ubuntu-24.04
+    needs: [images]
+    # Never for a hotfix whose build a newer push superseded (`after` in
+    # `images`); `infrastructure` and `deploy` need this job, so they skip too.
+    if: needs.images.outputs.superseded != 'true'
+    concurrency:
+      group: hotfix-dev  # why: see the comment on `images`
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: dev
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+    steps:
+      # Full history: the order guard asks git whether the commit already out
+      # is an ancestor of this one.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: scan and promote the recorded digests
+        uses: ./.github/actions/release-promote
+        with:
+          environment: ${{ env.ENVIRONMENT }}
+
+  infrastructure:
+    name: terraform apply (dev, hotfix)
+    runs-on: ubuntu-24.04
+    needs: [promote]
+    concurrency:
+      group: hotfix-dev  # why: see the comment on `images`
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: dev
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: pin, plan, guard, classify and apply
+        # A plan that changes IAM FAILS here, before anything is applied
+        # (lane: hotfix): the change goes through release.yml and dev-iam.
+        uses: ./.github/actions/release-apply
+        with:
+          environment: ${{ env.ENVIRONMENT }}
+          lane: hotfix
+          promoted: "true"
+          # A normal release's apply may hold Terraform's state lock; wait it
+          # out (15 minutes) rather than fail the one lane that exists to be
+          # quick.
+          lock_timeout: 900s
+
+  deploy:
+    name: deploy and smoke (dev, hotfix)
+    runs-on: ubuntu-24.04
+    needs: [images, infrastructure]
+    concurrency:
+      group: hotfix-dev  # why: see the comment on `images`
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: dev
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # No ID token, as in release.yml's deploy: the suites run INSIDE the VPC.
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: verify every service, job and worker image runs the pinned digests
+        id: verify
+        uses: ./.github/actions/release-verify
+        with:
+          environment: ${{ env.ENVIRONMENT }}
+
+      # No warm step: accept.yml, after the normal release of the same push,
+      # warms the same digests.
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - uses: astral-sh/setup-uv@v7
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' && vars.APPLY_TENANT_NAMESPACES == 'true' }}
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: sync the project's Python for kubernetes/render.py
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' && vars.APPLY_TENANT_NAMESPACES == 'true' }}
+        run: uv sync --frozen --all-extras
+
+      - name: apply each tenant namespace with its step-spec public keys
+        # Both lanes: a hotfix that rotates a key must not leave GKE behind.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        uses: ./.github/actions/release-namespaces
+        with:
+          environment: ${{ env.ENVIRONMENT }}
+          apply_tenant_namespaces: ${{ vars.APPLY_TENANT_NAMESPACES }}
+
+      - name: apply the tenant network policies to every tenant namespace
+        # Lane H1-NETPOL (PR 1160). Every namespace labelled swarm-tenant --
+        # terraform's tenants AND workspace tenants, which the step above never
+        # names -- gets the full tenant NetworkPolicy set (kubernetes/render.py
+        # TENANT_FILES' network-policies/), and ONLY that: no quota, account or
+        # RBAC is re-rendered. NOT switched by vars.APPLY_TENANT_NAMESPACES: on
+        # 2026-10-11 swarm-allow-live-egress reached no tenant until the
+        # operator applied it by hand.
+        # Fails the release (owner decision 2026-10-12 06:45 PDT). It was
+        # warn-only from 01:35 PDT until a release showed a clean apply; three
+        # did (38236837776, 38241799140, 38245452412: 4 of 4 namespaces, every
+        # policy read back, parity 0 differ), so a missing policy now fails it.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        run: ./scripts/apply-tenant-network-policies.sh --get-credentials --confirm
+
+      # LANE OPS-RELAY (part of archived issue 1030). The relay -- StatefulSet
+      # swarm-system/swarm-live -- runs the swarm-live digest terraform
+      # rendered into `swarm_live_manifest`, but until this step no release
+      # applied that manifest: on 2026-10-12 the relay ran a pre-change image
+      # twice until the operator ran `kubernetes/apply.sh --swarm-system
+      # --confirm` by hand. scripts/roll-live-relay.sh applies it through that
+      # same apply.sh path (its manifest checks and the live-ingress parity
+      # check), waits for `rollout status`, and fails unless the relay's pods
+      # run the rendered digest. It refuses the other team's cluster in the shared project.
+      # With enable_live_browser off it notices and exits 0.
+      #
+      # Its own uv setup and sync, NOT switched by vars.APPLY_TENANT_NAMESPACES:
+      # apply.sh runs render.py and network_parity.py on PYTHON_BIN, and the
+      # relay rolls whether or not tenant namespaces are applied.
+      - uses: astral-sh/setup-uv@v7
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: sync the project's Python for the relay rollout
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        run: uv sync --frozen --all-extras
+
+      - name: roll the live relay to this release's image
+        # Fails the release (owner decision 2026-10-12 06:45 PDT): warn-only
+        # until one release showed a clean roll, which release 38277873760
+        # did (2026-10-12 17:06Z: e9c282f1 -> 7e4d6b6e, parity 0 differ). A
+        # relay left on the old image now fails the release.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        env:
+          PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
+        run: ./scripts/roll-live-relay.sh --tf-init --get-credentials --confirm
+
+      # The relay's apply runs render.py and network_parity.py on every
+      # release, so its Python is NOT switched by vars.APPLY_TENANT_NAMESPACES
+      # as the tenant-namespace setup above is (that one stays off until the
+      # owner turns the namespaces on). A second sync is a no-op when the first
+      # ran.
+      - uses: astral-sh/setup-uv@v7
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: sync the project's Python for the relay's apply
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        run: uv sync --frozen --all-extras
+
+      - name: roll the live relay to this release's image
+        # Lane OPS-RELAY (part of archived issue 1030). swarm-live, the StatefulSet
+        # swarm-system/swarm-live on swarm-autopilot, was applied only by hand
+        # (`kubernetes/apply.sh --swarm-system --confirm`): measured 2026-10-12,
+        # twice that day the relay ran a pre-change image until the operator
+        # applied it. scripts/roll-live-relay.sh applies through apply.sh (so
+        # the relay manifest checks and the live-ingress parity check run),
+        # waits for the rollout and proves the relay's pods run the digest the
+        # manifest names. No continue-on-error: a relay that did not roll is
+        # the defect this step exists to catch. A relay switched off
+        # (enable_live_browser false) is a notice, not a failure.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        env:
+          # apply.sh runs render.py and network_parity.py on ${PYTHON_BIN}.
+          PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
+        run: ./scripts/roll-live-relay.sh --tf-init --get-credentials --confirm
+      - name: roll swarm-egress to this release's image
+        # Lane EGRESS-BUILD (part of archived issue 1030; docs/browser-egress.md §9.3).
+        # swarm-egress, the StatefulSet swarm-system/swarm-egress on
+        # swarm-autopilot, is applied by the relay step's apply.sh (after the
+        # relay, in the same stream), but nothing waited for it to roll or
+        # read back what it runs. scripts/roll-egress.sh is
+        # roll-live-relay.sh --component egress: the same apply.sh path, the
+        # same other-team-cluster refusal, then `rollout status` and the digest
+        # check for swarm-egress. Its Python is the relay's, synced above.
+        # No continue-on-error: a forwarder left on the old image fails every
+        # proxied browser attempt closed. enable_browser_egress false is a
+        # notice, not a failure.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        env:
+          PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
+        run: ./scripts/roll-egress.sh --tf-init --get-credentials --confirm
+      - name: roll swarm-graph to this release's image
+        # Lane GS-ROLL (part of archived issue 1384; docs/design/graph-service.md §2.1, §8.2).
+        # swarm-graph, the Deployment swarm-system/swarm-graph on
+        # swarm-autopilot, is rendered by terraform/infra/graph_service.tf as
+        # `swarm_graph_manifest`, null until graph_service.serve. This applies
+        # it through kubernetes/apply.sh --swarm-graph (the same other-team-cluster
+        # refusal), waits for `rollout status deploy/swarm-graph` and checks
+        # its pods run the manifest's digest. Not served is a notice, not a
+        # failure, and then gcloud and the cluster are asked nothing.
+        # No continue-on-error: a graph service left on the old image or
+        # crash-looping fails every agent's graph tools. No PYTHON_BIN: the
+        # --swarm-graph path runs neither render.py nor network_parity.py.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        run: ./scripts/roll-graph.sh --tf-init --get-credentials --confirm
+      - name: roll swarm-typesafe-fwd to this release's image
+        # Lane TS-ROLL (part of archived issue 1347; docs/design/workspace-secrets.md §3.5).
+        # swarm-typesafe-fwd, the Deployment swarm-system/swarm-typesafe-fwd
+        # on swarm-autopilot, is rendered by terraform/infra/typesafe_fwd.tf
+        # as `swarm_typesafe_fwd_manifest`, null until
+        # typesafe_forwarder.serve. This applies it through
+        # kubernetes/apply.sh --swarm-typesafe-fwd (the same other-team-cluster
+        # refusal), waits for `rollout status deploy/swarm-typesafe-fwd` and
+        # checks its pod runs the manifest's digest. Not served is a notice,
+        # not a failure, and then gcloud and the cluster are asked nothing.
+        # No continue-on-error: a forwarder left on the old image or
+        # crash-looping fails every TypeSafe-backed attempt. No PYTHON_BIN:
+        # the --swarm-typesafe-fwd path runs neither render.py nor
+        # network_parity.py.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        run: ./scripts/roll-typesafe-fwd.sh --tf-init --get-credentials --confirm
+      - name: roll swarm-voice to this release's image
+        # Lane VOICE-ROLL (part of #2688; docs/design/voice-it.md §3.4, phase one).
+        # swarm-voice, the one-replica StatefulSet swarm-system/swarm-voice on
+        # swarm-autopilot, is rendered by terraform/infra/voice.tf as
+        # `swarm_voice_manifest`, null until voice_it = "on". This applies it
+        # through kubernetes/apply.sh --swarm-voice (the same other-team-cluster
+        # refusal, and swarm-autopilot only), waits for `rollout status
+        # statefulset/swarm-voice` and checks its pod runs the manifest's
+        # digest. Not served is a notice, not a failure, and then gcloud and
+        # the cluster are asked nothing.
+        # No continue-on-error: a swarm-voice left on the old image or
+        # crash-looping fails the platform owner's next voice session. No
+        # PYTHON_BIN: the --swarm-voice path runs neither render.py nor
+        # network_parity.py.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        run: ./scripts/roll-voice.sh --tf-init --get-credentials --confirm
+
+      - name: smoke test (inside the VPC)
+        id: smoke
+        if: steps.verify.outputs.superseded != 'true'
+        run: ./scripts/lib/release-order.sh unless-superseded --environment "${ENVIRONMENT}" -- ./scripts/verify-remote.sh smoke-test
+
+      # No GKE proof: the normal release of the same push runs it.
+
+      - name: status
+        if: always()
+        run: ./scripts/status.sh || true
+
+      - name: report
+        if: always()
+        env:
+          RELEASE_TAG: ${{ needs.images.outputs.tag }}
+        run: |
+          {
+            echo "### Hotfix ${RELEASE_TAG:-(no tag)} -> ${ENVIRONMENT}"
+            echo
+            echo "| image | digest |"
+            echo "|---|---|"
+            jq -r '.images[] | "| \(.name) | `\(.digest)` |"' \
+              "build/deployed-images-${ENVIRONMENT}.json" 2>/dev/null || echo "| (no manifest: superseded, or nothing pinned) |  |"
+          } >> "$GITHUB_STEP_SUMMARY"

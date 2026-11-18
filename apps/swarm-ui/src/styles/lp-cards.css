@@ -1,0 +1,93 @@
+/* CAPACITY › LLM PROVIDERS, THE CARDS (LlmApiKeys.tsx; the owner's ask of
+   11 November 2026, the direction on mockups/llm-providers-cards, built for
+   real). The cards' shared sheet: API Keys draws its key cards with it, and
+   the Plans lane reuses it for plan cards.
+
+   READABLE TYPE: nothing on a card is below the body step. The page sets
+   --t-body; a card's name is --t-lead and its headline figure --t-title. The
+   console's controls (.c-btn, .c-inp, the (i) glyph) default to the meta and
+   micro steps, so on these cards they are raised to the body step here.
+   Tokens only, so light and dark follow the console; at phone width the grid
+   is one column and nothing is wider than the viewport. */
+
+.lpc-page { display: flex; flex-direction: column; gap: 14px; min-width: 0; max-width: 1180px; font-size: var(--t-body); line-height: var(--lh-body); }
+.lpc-page .c-btn { font-size: var(--t-body); line-height: var(--lh-flush); }
+.lpc-page .c-inp { font-size: var(--t-body); line-height: var(--lh-body); }
+.lpc-page .acct-i { width: 18px; min-width: 18px; height: 18px; min-height: 18px; max-height: 18px; font-size: var(--t-body); line-height: var(--lh-flush); }
+.lpc-page .c-tip { font-size: var(--t-body); line-height: var(--lh-body); }
+.lpc-num { font-variant-numeric: tabular-nums; }
+.lpc-mono { font-family: var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lpc-dim { color: var(--text-dim); font-weight: 400; }
+.lpc-grow { flex: 1 1 auto; }
+
+.lpc-bar-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+
+/* vendor groups */
+.lpc-group { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.lpc-group-h { display: flex; align-items: center; gap: 8px; margin: 6px 0 0; font: 650 var(--t-lead)/var(--lh-lead) var(--font); color: var(--text); }
+.lpc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); gap: 12px; align-items: start; min-width: 0; }
+
+/* a card */
+.lpc-card { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 14px 16px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); }
+.lpc-card.is-bad { border-left: 3px solid var(--s-bad); }
+.lpc-card.is-park { background: color-mix(in srgb, var(--s-park) 4%, var(--surface)); }
+.lpc-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.lpc-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.lpc-title { margin: 0; font: 650 var(--t-lead)/var(--lh-lead) var(--font); color: var(--text); overflow-wrap: anywhere; }
+.lpc-state { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; white-space: nowrap; flex: none; }
+.lpc-state > i { width: 9px; height: 9px; border-radius: 50%; background: currentColor; flex: none; }
+.lpc-state.is-ok { color: var(--s-live); }
+.lpc-state.is-warn { color: var(--s-warn); }
+.lpc-state.is-bad { color: var(--s-bad); }
+.lpc-state.is-park { color: var(--s-park); }
+.lpc-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.lpc-tag { padding: 2px 9px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-dim); font-weight: 600; overflow-wrap: anywhere; }
+
+/* the figures: the headline at the title step, its label at the body step */
+.lpc-figs { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px 16px; }
+.lpc-fig { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.lpc-fl { display: flex; align-items: center; color: var(--text-dim); }
+.lpc-figline { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; min-width: 0; }
+.lpc-big { font: 650 var(--t-title)/var(--lh-title) var(--font); color: var(--text); font-variant-numeric: tabular-nums; }
+.lpc-big.is-warn { color: var(--s-warn); }
+.lpc-big.is-bad { color: var(--s-bad); }
+.lpc-of { color: var(--text-dim); font-weight: 400; }
+.lpc-bar { display: block; height: 8px; border-radius: 4px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--line-soft); overflow: hidden; }
+.lpc-bar > i { display: block; height: 100%; background: var(--sk-ac); border-radius: 4px; }
+.lpc-bar.is-warn > i { background: var(--s-warn); }
+.lpc-bar.is-bad > i { background: var(--s-bad); }
+.lpc-bar.is-off { background: repeating-linear-gradient(135deg, var(--surface-2) 0 4px, var(--line-soft) 4px 6px); }
+
+/* lends: one line each */
+.lpc-lends { list-style: none; margin: 0; padding: 8px 0 0; border-top: 1px dashed var(--line); display: flex; flex-direction: column; gap: 4px; }
+.lpc-lend { display: grid; grid-template-columns: minmax(0, 1.2fr) auto auto; align-items: center; gap: 10px; color: var(--text-dim); min-width: 0; }
+.lpc-lend-ws { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* a failed control, the reason and delete panels, and the actions */
+.lpc-err { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--s-badb); color: var(--s-bad); overflow-wrap: anywhere; }
+.lpc-panel { display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); min-width: 0; }
+.lpc-panel.is-bad { border-color: color-mix(in srgb, var(--s-bad) 45%, var(--line)); }
+.lpc-ptitle { display: flex; align-items: center; flex-wrap: wrap; margin: 0; font: 650 var(--t-body)/var(--lh-body) var(--font); color: var(--text); overflow-wrap: anywhere; }
+.lpc-pline { color: var(--text); }
+.lpc-input { width: 100%; box-sizing: border-box; }
+.lpc-prow { display: flex; gap: 8px; flex-wrap: wrap; }
+.lpc-acts { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+
+/* add */
+.lpc-add { border-color: color-mix(in srgb, var(--sk-ac) 50%, var(--line)); max-width: 560px; }
+.lpc-seg { display: inline-flex; align-self: flex-start; max-width: 100%; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); overflow: hidden; background: var(--surface); }
+.lpc-seg > button { border: 0; background: none; color: var(--text-dim); font: 600 var(--t-body)/var(--lh-flush) var(--font); padding: 0 14px; height: var(--h-ctl); cursor: pointer; white-space: nowrap; }
+.lpc-seg > button + button { border-left: 1px solid var(--line); }
+.lpc-seg > button.is-on { background: var(--sk-acs); color: var(--sk-ac); }
+
+/* empty: a short line and Add key */
+.lpc-empty { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 18px 16px; border: 1px dashed var(--line); border-radius: var(--radius); background: var(--surface); }
+.lpc-empty > .lpc-title { display: flex; align-items: center; }
+
+/* phone */
+@media (max-width: 759px) {
+  .lpc-card { padding: 12px; }
+  .lpc-figs { grid-template-columns: minmax(0, 1fr); }
+  .lpc-lend { grid-template-columns: minmax(0, 1fr) auto; }
+  .lpc-lend > :last-child { grid-column: 1 / -1; }
+}

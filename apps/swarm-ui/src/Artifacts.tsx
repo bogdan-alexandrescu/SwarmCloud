@@ -1,0 +1,2628 @@
+import {
+  cloneElement,
+  createContext,
+  Fragment,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from 'react'
+import { DRAWER_SETTLE_MS, Em, Mark, MaskedNote } from './AgentDetail'
+import { Button, ButtonLink, Count, ToneMark } from './components'
+import {
+  ARTIFACT_PAGE_LIMIT,
+  artifactRawUrl,
+  loadAnswer,
+  loadArtifactListing,
+  loadMe,
+  loadTask,
+  loadTaskInputOnce,
+  loadTaskLogs,
+  loadTranscript,
+  loadWorkflow,
+  type WorkflowRead,
+} from './api'
+import { ArtifactViewer, Markdown, offersRawPatch, RawPatchDownload } from './ArtifactViewer'
+import { workflowHref } from './agentlist'
+import { DECLARED_WORDS, taskInputsOf, type TaskInputRow } from './dag'
+import { SkippedArtifactsNote } from './DecisionCard'
+import { errorHeading, num, type ApiError, type Result } from './fetch'
+import { Absent } from './primitives'
+import { GapNotice, LogText, NO_MARKS, stepMarks, useLogMarks } from './logMarks'
+import { foldProgress } from './logLines'
+import { servedAge, Stream, streamLabel, useRead } from './RunFiles'
+import { Id, Screen, type ScreenReading } from './Shell'
+import {
+  ageSpan,
+  artifactsOverCapOf,
+  bytesLabel,
+  TERMINAL_STATES,
+  type ArtifactEntry,
+  type ArtifactRef,
+  type ArtifactKindName,
+  type ArtifactListing,
+  type LogStreamName,
+  type ResultSummary,
+  type SkippedArtifact,
+  type Task,
+  type TaskAnswer,
+  type TaskInputCopy,
+  type TaskLogs,
+  type TaskTranscript,
+  type TranscriptStep,
+  workdirNotUploadedOf,
+} from './types'
+
+/**
+ * THE ARTIFACTS PANE (#184): WHAT AN AGENT TOOK IN AND WHAT IT PRODUCED.
+ *
+ * WHY IT EXISTS. On `task_73b5f4d9ca3641fbb914` the agent's 7,124-character
+ * answer sat inside `claude-code.stdout.log`, and the drawer showed it as a
+ * file name beside `copy gsutil`. The panel headed "Output, as the agent
+ * wrote it" showed the RUNNER's streams -- an empty stdout and one `child
+ * started` line. Nothing rendered an image. The owner's decisions of
+ * 2026-09-25 are what this pane is built to:
+ *
+ *   Inputs   the prompt as the API masked it, with its count, the repository
+ *            and ref and the commit
+ *            actually cloned, and every file staged from an upstream step,
+ *            each linking to the run that produced it;
+ *   Outputs  the agent's final answer, rendered as Markdown, FIRST; then
+ *            every file with an inline viewer chosen by the server's kind, a
+ *            download and a `copy gsutil`;
+ *   Logs     the agent's transcript as readable steps, its stdout and stderr,
+ *            and the runner's own log, which is the platform's.
+ *
+ * LIVE. While the task has not finished, the pane re-reads every
+ * `ARTIFACTS_POLL_MS`, which is the worker's own publish interval: a faster
+ * poll re-reads the same object, a slower one shows a tail a whole interval
+ * behind. Every live read says how old the object was when the SERVER read
+ * it -- `published Ns ago` -- and that age moves on the shared clock between
+ * reads. Polling stops once the task is terminal and its finish is in: the
+ * answer is settled and the final objects are what was read, or
+ * `DRAWER_SETTLE_MS` after `completed_at`, the rule the Details pane uses.
+ *
+ * THROUGH THE API, EVERY BYTE. Text is read through the content, log and
+ * transcript routes, redacted at read time; an image, a download and `open
+ * full` are the raw route, which the browser fetches with the session every
+ * read already carries. No signed URL, no object key, no `gs://` uri is ever
+ * sent: a file is named by the name its manifest spells, on the task that
+ * owns it.
+ *
+ * NO HTML IS BUILT FROM AGENT BYTES. The answer and every text step go
+ * through `Markdown`, which builds React elements; everything else is a
+ * `<pre>`.
+ *
+ * THE HONESTY RULES, as this pane applies them. `absent`, `unreadable`,
+ * `not_applicable` and a measured-empty `''` are four different marks. A
+ * window that is not the whole object says so. A read that FAILED is a fifth
+ * thing, drawn with the error it came back with, and a route this API does not
+ * serve yet is a sixth -- `not served`, never "none".
+ */
+/**
+ * WHICH OUTPUT IS OPEN, WHEN THE ADDRESS SAYS (owner decision 2026-10-01): the
+ * drawer's route names the artifact -- `/agents/<tab>/<id>/artifacts/<name>`
+ * -- and the pane opens it from there and writes it there on open and close.
+ * Null where no route is wired (a test rendering the pane alone), and the
+ * file list keeps its own state. Only the artifact is in the address, never
+ * which file of a patch is open: that stays the diff viewer's.
+ */
+const RoutedArtifact = createContext<{ name: string | null; open: (name: string | null) => void } | null>(null)
+
+export function ArtifactsScreen({
+  taskId,
+  open,
+  onOpen,
+}: {
+  taskId: string
+  /** The output the address names, or null for none. */
+  open?: string | null
+  /** Write an opened (or closed: null) output into the address. */
+  onOpen?: (name: string | null) => void
+}) {
+  // The previous poll's answers, so a read whose object cannot change any
+  // more -- a complete listing, a settled answer, a final transcript -- is not
+  // asked for again on every tick. Keyed on the task: a drawer that stays
+  // mounted while another agent is opened must not carry this one's answers.
+  const previous = useRef<ArtifactsView | null>(null)
+  const load = useCallback(async (): Promise<Result<ArtifactsView>> => {
+    const prev = previous.current !== null && previous.current.task.id === taskId ? previous.current : null
+    const next = await loadView(taskId, prev)
+    if (next.status === 'ok') previous.current = next.data
+    return next
+  }, [taskId])
+
+  const routed = useMemo(() => (onOpen === undefined ? null : { name: open ?? null, open: onOpen }), [open, onOpen])
+
+  return (
+    <RoutedArtifact.Provider value={routed}>
+    <Screen
+      // KEYED ON THE TASK for the reason AgentDetailScreen's is: `Screen`
+      // re-runs its load on its own nonce only, so a changed task id would
+      // otherwise keep drawing the previous task's files under this id.
+      key={taskId}
+      title={taskId}
+      load={load}
+      pollMs={artifactsPoll}
+      summary={(v) => (
+        <>
+          {v.task.runner_profile} · {v.task.state.toLowerCase()}
+        </>
+      )}
+    >
+      {(v, reading) => <Body v={v} reading={reading} />}
+    </Screen>
+    </RoutedArtifact.Provider>
+  )
+}
+
+/**
+ * HOW OFTEN THE PANE RE-READS WHILE ITS TASK RUNS: every 5 s, which is the
+ * worker's `live_log_interval_seconds` -- the cadence the live tails are
+ * republished at. One poll is the task, the transcript and one log read (the
+ * answer, the listing and the workflow only when something can have changed),
+ * about 0.6 requests a second against the 20 per second per-principal budget.
+ */
+export const ARTIFACTS_POLL_MS = 5_000
+
+/** What one poll of the pane read. Each part keeps its own answer, never another's. */
+interface ArtifactsView {
+  task: Task
+  /**
+   * NULL: not read, because the task has no result summary yet. The listing
+   * route serves the manifest out of that summary, so it would answer an
+   * empty, incomplete list -- "uploaded when the attempt ends" is known
+   * without asking.
+   */
+  listing: Result<ArtifactListing> | null
+  answer: Result<TaskAnswer>
+  /** NULL: the task is not a workflow step, so there is no workflow to read. */
+  workflow: Result<WorkflowRead> | null
+}
+
+/**
+ * The streams the Logs tab reads in one `/logs` call. The agent's stdout is
+ * read only while its view is open: it is the one stream that can be large,
+ * and the transcript already serves it parsed.
+ */
+export const POLLED_STREAMS: readonly LogStreamName[] = ['agent_stderr', 'stdout', 'stderr']
+
+/** A 404 with no error envelope: FastAPI's own, for a path this deployment does not serve. */
+function routeMissing(e: ApiError): boolean {
+  return e.kind === 'not_found' && e.code === null
+}
+
+function ok<T>(r: Result<T> | null | undefined): r is { status: 'ok'; data: T; fetchedAt: number; serverAt?: string } {
+  return r !== null && r !== undefined && r.status === 'ok'
+}
+
+/** A terminal task's answer that no later read can change. */
+function answerSettled(v: ArtifactsView): boolean {
+  return (
+    TERMINAL_STATES.has(v.task.state) &&
+    ok(v.answer) &&
+    (v.answer.data.status === 'ok' || v.answer.data.status === 'absent')
+  )
+}
+
+/** A terminal task's transcript read from an object that no longer changes. */
+export function transcriptSettled(v: LogFeed): boolean {
+  if (!TERMINAL_STATES.has(v.task.state) || !ok(v.transcript)) return false
+  const s = v.transcript.data.stream
+  return s.status === 'not_applicable' || (s.status === 'ok' && (s.source === 'final' || s.source === 'artifact'))
+}
+
+/** A terminal task's logs read from objects that no longer change. */
+export function logsSettled(v: LogFeed): boolean {
+  if (!TERMINAL_STATES.has(v.task.state) || !ok(v.logs)) return false
+  if (v.logs.data.attempt.completed_at === null) return false
+  return v.logs.data.streams.every((s) => s.source !== 'live')
+}
+
+/**
+ * ONE POLL. The task decides whether there is a pane at all; every other read
+ * degrades to its own failure inside the view, because a failed transcript
+ * read must not blank the answer and must not be drawn as "no transcript".
+ */
+async function loadView(taskId: string, prev: ArtifactsView | null): Promise<Result<ArtifactsView>> {
+  const task = await loadTask(taskId)
+  if (task.status === 'error') return task
+  if (task.status !== 'ok' && task.status !== 'stale') {
+    return {
+      status: 'error',
+      error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The agent read did not complete.' },
+    }
+  }
+  const t = task.data
+  const terminal = TERMINAL_STATES.has(t.state)
+
+  // THE LISTING: only once there is a summary to list, and not again once a
+  // complete one is in hand -- the manifest is written once.
+  const prevListing = prev?.listing ?? null
+  const listing: Promise<Result<ArtifactListing> | null> =
+    t.result_summary === null
+      ? Promise.resolve(null)
+      : ok(prevListing) && prevListing.data.complete
+        ? Promise.resolve(prevListing)
+        : loadArtifactListing(taskId)
+
+  // THE ANSWER: read at open; while running, again on each poll until one is
+  // in, or while the last read failed; after the end, until it is settled.
+  //
+  // IT USED TO WAIT FOR THE TRANSCRIPT. This pane read the transcript every
+  // poll and asked for the answer only once a `result` step had shown up in
+  // it. The transcript and the logs live in the agent's Logs tab now
+  // (AgentLogs.tsx, owner decision 2026-10-04), which reads them for the attempt the
+  // reader picked; reading them here as well was the same two requests twice
+  // per poll. So the answer is asked for in the transcript's place -- one
+  // request per poll either way -- and stops once it is in.
+  const prevAnswer = prev?.answer ?? null
+  const answerIn = prevAnswer !== null && ok(prevAnswer) && prevAnswer.data.status === 'ok'
+  const retry = prevAnswer !== null && prevAnswer.status === 'error' && !routeMissing(prevAnswer.error)
+  const askAnswer = prev === null || prevAnswer === null || retry || (terminal ? !answerSettled(prev) : !answerIn)
+  const answer: Promise<Result<TaskAnswer>> =
+    askAnswer || prevAnswer === null ? loadAnswer(taskId) : Promise.resolve(prevAnswer)
+
+  // THE WORKFLOW, once: it names the step behind each staged file and says
+  // whether that run still lists it, and neither changes while this is open.
+  const prevWorkflow = prev?.workflow ?? null
+  const workflow: Promise<Result<WorkflowRead> | null> =
+    t.workflow_id === null
+      ? Promise.resolve(null)
+      : ok(prevWorkflow)
+        ? Promise.resolve(prevWorkflow)
+        : loadWorkflow(t.workflow_id)
+
+  const [l, a, w] = await Promise.all([listing, answer, workflow])
+  return {
+    status: 'ok',
+    data: { task: t, listing: l, answer: a, workflow: w },
+    fetchedAt: task.fetchedAt,
+  }
+}
+
+/**
+ * The pane's cadence: `ARTIFACTS_POLL_MS` until the task is terminal, then
+ * until its finish is in -- the answer settled and every object final -- or
+ * `DRAWER_SETTLE_MS` after `completed_at`, whichever is first. The age is
+ * taken either way round, as the Details pane takes it: the server's clock
+ * against this browser's.
+ */
+export function artifactsPoll(v: ArtifactsView | null, now: number = Date.now()): number | null {
+  if (v === null || !TERMINAL_STATES.has(v.task.state)) return ARTIFACTS_POLL_MS
+  if (answerSettled(v)) return null
+  const done = v.task.completed_at === null ? Number.NaN : Date.parse(v.task.completed_at)
+  return Number.isFinite(done) && Math.abs(now - done) <= DRAWER_SETTLE_MS ? ARTIFACTS_POLL_MS : null
+}
+
+function Body({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
+  // NO LOGS SECTION (viewers.html A, picked 2026-10-02). The transcript and
+  // the agent's and runner's streams are the agent's Logs tab (AgentLogs.tsx,
+  // owner decision 2026-10-04), which reads the attempt the reader picks; a
+  // second copy here read the latest attempt only.
+  return (
+    <div className="run-stack arts">
+      <Inputs v={v} reading={reading} />
+      <Outputs v={v} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Inputs
+// ---------------------------------------------------------------------------
+
+/**
+ * A VALUE DUE AT FINISH, NOT A READ IN FLIGHT (task-019, visual QA run 3,
+ * archived issue 1680). The answer, the file list and the commit cloned are written when the
+ * attempt ends; `<Mark kind="pending">` drew the word `reading` before them,
+ * and no read was in flight. The mark keeps the pending kind's dotted
+ * silhouette -- it is the temporary one of the six -- and its word is the
+ * not-yet itself; `say` is its accessible name, as a Mark's is.
+ */
+function NotYet({ say, children }: { say: string; children: string }) {
+  return (
+    <i className="ctl-mark is-pending" role="img" aria-label={say}>
+      {children}
+    </i>
+  )
+}
+
+function Inputs({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
+  return (
+    <section className="section arts-inputs">
+      <h2>Inputs</h2>
+      <Prompt
+        taskId={v.task.id}
+        readAt={reading.fetchedAt}
+        step={(v.task.workflow_id ?? null) !== null && (v.task.step_id ?? null) !== null}
+        workflowId={v.task.workflow_id ?? null}
+        stepPrompt={stepPromptOf(v)}
+      />
+      <Repository task={v.task} />
+      <StagedFiles v={v} />
+    </section>
+  )
+}
+
+/**
+ * THE PROMPT THIS STEP'S WORKFLOW GAVE IT (visual QA pass 2,
+ * overview-agents-50): the step's `input.prompt` off the workflow read the
+ * pane already holds for its staged files. The route serves each step's input
+ * masked by that step's task's masker, as the task's own copy is. Null: not a
+ * step, the workflow not read, or no prompt there.
+ */
+function stepPromptOf(v: ArtifactsView): string | null {
+  const w = v.workflow
+  if (w === null || !ok(w) || (v.task.step_id ?? null) === null) return null
+  const input = w.data.workflow.steps?.find((s) => s.step_id === v.task.step_id)?.input
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return null
+  const prompt = (input as Record<string, unknown>)['prompt']
+  return typeof prompt === 'string' && prompt !== '' ? prompt : null
+}
+
+/**
+ * THE INPUT, AS THE API MASKED IT (#184, owner decision of 2026-09-25): the
+ * prompt wrapped, and the rest of the input as JSON below it, when the input
+ * carries a prompt; the whole input as JSON when it does not. `no prompt` is
+ * drawn only when the KEY is missing -- an empty string is a prompt somebody
+ * sent, and an empty input is a task sent without one.
+ *
+ * NEVER THE TASK DOCUMENT. This read `task.input` and said `as submitted · not
+ * masked`, which was true: every byte this pane read from the bucket was
+ * redacted at read time and the input was not. The owner decided the input is
+ * masked too, "with 'masked N', like every other output", so it is read from
+ * `GET /v1/tasks/{id}/input` -- the same redactor, the same count -- and the
+ * count beside the eyebrow is over what this block draws. A copy that could
+ * not be read, or an API that does not serve one, is said as that; the raw
+ * input is never drawn in its place.
+ *
+ * ITS OWN READ, NOT THE POLL'S. The input never changes, so it is read once
+ * per task (and shared with the Details pane, `loadTaskInputOnce`), and a
+ * slow or failed copy holds up nothing else on the pane.
+ *
+ * A FAILED COPY IS ASKED AGAIN WITH THE PANE'S POLL (archived pull request 210 review). The key
+ * was the constant `input`, so one failed read said `the masked input not
+ * read` for as long as the pane stayed open. The key now follows the pane's
+ * read (`readAt`): a copy already read is answered from memory without a
+ * request, and one that failed is asked for again. A pane that has stopped
+ * polling -- a settled finish -- stops asking with it.
+ */
+export function Prompt({
+  taskId,
+  readAt,
+  step = false,
+  workflowId = null,
+  stepPrompt = null,
+}: {
+  taskId: string
+  readAt: number
+  step?: boolean
+  /** The step's workflow, for the way to its page when no prompt is recorded. */
+  workflowId?: string | null
+  /** The prompt the step's workflow gave it (`stepPromptOf`); null when there is none to show. */
+  stepPrompt?: string | null
+}) {
+  const { state } = useRead<TaskInputCopy>(() => loadTaskInputOnce(taskId), taskId, `input:${readAt}`, null)
+  const copy = state.status === 'ok' || state.status === 'stale' ? state.data : null
+  // What this block draws, masked: the prompt and the rest, or the whole input.
+  const masked =
+    copy === null
+      ? null
+      : copy.prompt !== null
+        ? copy.prompt.redaction_count + (copy.rest?.redaction_count ?? 0)
+        : copy.full.redaction_count
+  return (
+    <div className="arts-block">
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">prompt</span>
+        {/* `MASKED 0` IS NOT SAID (visual QA pass 1, overview-agents-50): a
+            count of nothing masked beside the prompt read as jargon. A
+            count above zero is the fact worth its words, and stays. */}
+        {masked !== null && masked > 0 && <MaskedNote count={masked} />}
+      </div>
+      {state.status === 'loading' ? (
+        <p className="art-loading">
+          <Mark kind="pending" say="Reading the masked copy of the input. The read is in flight." />
+          <span className="ctl-pending art-loading-bar" />
+        </p>
+      ) : copy === null ? (
+        <ReadFailed error={state.status === 'error' ? state.error : null} what="the masked input" />
+      ) : copy.prompt !== null ? (
+        <>
+          {copy.prompt.text === '' ? (
+            <p className="att-none">
+              <Mark kind="zero" say="The prompt was submitted as an empty string. A real, empty prompt, not a missing one." />{' '}
+              empty prompt
+            </p>
+          ) : (
+            <PromptText text={copy.prompt.text} />
+          )}
+          {/* THE REST OF THE INPUT, LABELLED AND APART (U10a D33): it was a
+              second unlabelled box touching the prompt's. */}
+          {copy.rest !== null && (
+            <div className="arts-rest">
+              <span className="ctl-eyebrow">rest of the input</span>
+              <pre className="art-text">{copy.rest.text}</pre>
+            </div>
+          )}
+        </>
+      ) : copy.prompt_key === 'missing' && copy.full.text === '{}' && step && stepPrompt !== null ? (
+        // THE WORKFLOW'S PROMPT, SAID AS ITS (visual QA pass 2,
+        // overview-agents-50). The step's own copy is empty and its workflow
+        // served the prompt it gave the step, so that is drawn, labelled.
+        <>
+          <p className="ctl-card-note">from its workflow</p>
+          <PromptText text={stepPrompt} />
+        </>
+      ) : copy.prompt_key === 'missing' && copy.full.text === '{}' && step ? (
+        // A WORKFLOW STEP RAN A PROMPT (visual QA pass 1, overview-agents-50):
+        // `none · no input` said nothing was sent to a step whose workflow
+        // gave it one. Its input copy is empty, so the prompt it ran is not
+        // in the record, which is what is said. NOT `not measured` (pass 2):
+        // a prompt is a record, not a measurement -- the hatched absence
+        // with the word that is true, as the attempt card's model says it,
+        // and the way to the page that holds its workflow's steps.
+        <p className="att-none">
+          <span
+            className="ctl-mark is-absent"
+            role="img"
+            aria-label="This workflow step ran the prompt its workflow gave it, and neither its stored input nor its workflow's read holds it, so the prompt it ran was not recorded here."
+          >
+            not recorded
+          </span>
+          {workflowId !== null && (
+            <>
+              {' · '}
+              <a className="ctl-link" href={workflowHref(workflowId)}>
+                the workflow’s steps
+              </a>
+            </>
+          )}
+        </p>
+      ) : copy.prompt_key === 'missing' && copy.full.text === '{}' ? (
+        <p className="att-none">
+          <Mark kind="zero" say="This agent was submitted with no input at all. Nothing is missing: nothing was sent." /> no
+          input
+        </p>
+      ) : (
+        <>
+          {copy.prompt_key === 'missing' && (
+            <p className="att-none">
+              <Mark
+                kind="zero"
+                say="This input has no prompt key. The runner takes its input as the object below, shown as the API masked it."
+              />{' '}
+              no prompt
+            </p>
+          )}
+          <pre className="art-text">{copy.full.text}</pre>
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * THE REPOSITORY, THE REF, AND THE COMMIT ACTUALLY CLONED. The URL and ref
+ * are what was asked for; `git.base` is what the worker landed on, reported
+ * in the result summary when the attempt finishes -- so a running task's is
+ * pending, not missing. Nothing at all when no repository was asked for.
+ */
+function Repository({ task }: { task: Task }) {
+  const url = task.repository_url
+  if (url === null) return null
+  const summary = task.result_summary as ResultSummary | null
+  const base = summary?.git?.base
+  const terminal = TERMINAL_STATES.has(task.state)
+  return (
+    <div className="arts-block">
+      <span className="ctl-eyebrow">repository</span>
+      <ul className="ctl-facts">
+        <li className="ctl-fact">
+          <b>url</b>
+          <span className="mono uri" title={url}>
+            {url}
+          </span>
+        </li>
+        <li className={`ctl-fact${task.repository_ref === null ? ' is-absent' : ''}`}>
+          <b>ref</b>
+          {task.repository_ref === null ? (
+            <>
+              <Em /> <Mark kind="zero" say="No ref was submitted with this agent." />
+            </>
+          ) : (
+            <span className="mono">{task.repository_ref}</span>
+          )}
+        </li>
+        <li className={`ctl-fact${typeof base === 'string' && base !== '' ? '' : ' is-absent'}`}>
+          <b>cloned</b>
+          {typeof base === 'string' && base !== '' ? (
+            <code title={base}>{base.slice(0, 12)}</code>
+          ) : !terminal ? (
+            <>
+              <NotYet say="The commit actually cloned is reported when the attempt finishes.">reported at finish</NotYet>
+            </>
+          ) : (
+            <>
+              <Em />{' '}
+              <Mark
+                kind="absent"
+                say="This run finished and its result names no cloned commit: the summary was never written, or the worker lost its marker on a resumed attempt."
+              />
+            </>
+          )}
+        </li>
+      </ul>
+    </div>
+  )
+}
+
+/** Twelve lines, the `-webkit-line-clamp` in details.css. */
+const PROMPT_LINES = 12
+/** Characters a line of the prompt box holds before it wraps, generously: a longer prompt may be over twelve lines. */
+const PROMPT_LINE_CHARS = 60
+
+/**
+ * THE PROMPT, TWELVE LINES AND `Show all` (G2-34, QA 2026-10-07). It was a
+ * 40vh box with a scroll of its own, which took the wheel inside the pane:
+ * reaching Outputs under it needed a scroll outside the box. Clamped, it
+ * scrolls nowhere; `Show all` lets it wrap in full, in the pane's one scroll.
+ * The button is offered only when the text can be longer than the clamp.
+ */
+export function PromptText({ text }: { text: string }) {
+  const [all, setAll] = useState(false)
+  const long = text.split('\n').reduce((n, l) => n + Math.max(1, Math.ceil(l.length / PROMPT_LINE_CHARS)), 0) > PROMPT_LINES
+  return (
+    <>
+      <pre className={`arts-prompt ${all || !long ? 'is-all' : 'is-clamped'}`}>{text}</pre>
+      {long && (
+        <Button size="sm" aria-expanded={all} onClick={() => setAll((a) => !a)}>
+          {all ? 'Show less' : 'Show all'}
+        </Button>
+      )}
+    </>
+  )
+}
+
+/**
+ * EVERY FILE STAGED FROM AN UPSTREAM STEP: `metadata.input_from` joined with
+ * what the result reports arrived (`taskInputsOf`, the same join and the same
+ * not-yet words the graph uses). Each row links to the run that produced it,
+ * labelled with its step, and the file is read -- viewed or downloaded -- from
+ * THAT run's artifact routes: the copy staged into this run's workspace is not
+ * uploaded again, so the upstream artifact is the source.
+ *
+ * An upstream object removed since -- by the bucket's retention, usually -- is
+ * `removed from the upstream run` when read, and the size shown stays the size
+ * that was staged, never `0 B`.
+ */
+function StagedFiles({ v }: { v: ArtifactsView }) {
+  const { rows, malformed } = taskInputsOf(v.task)
+  const [open, setOpen] = useState<string | null>(null)
+  if (rows.length === 0 && malformed === 0) return null
+  const shown = open === null ? null : rows.find((r) => rowKey(r) === open) ?? null
+  const upstreamTaskOf = (r: TaskInputRow): string | null => (r.from.kind === 'task' ? r.from.taskId : null)
+  const shownFrom = shown === null ? null : upstreamTaskOf(shown)
+  return (
+    <div className="arts-block">
+      <span className="ctl-eyebrow">staged files</span>
+      {rows.length > 0 && (
+        <div className="ctl-table is-stacked">
+          <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">File</th>
+                <th role="columnheader" scope="col">From</th>
+                <th role="columnheader" scope="col" className="is-num">Size</th>
+              </tr>
+            </thead>
+            <tbody role="rowgroup">
+              {rows.map((r) => {
+                const up = upstreamTaskOf(r)
+                return (
+                  <tr role="row" key={rowKey(r)} className={rowKey(r) === open ? 'is-open' : undefined}>
+                    <th role="rowheader" scope="row">
+                      {up === null ? (
+                        <span className="mono">{r.file}</span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="art-open"
+                          aria-expanded={rowKey(r) === open}
+                          onClick={() => setOpen((cur) => (cur === rowKey(r) ? null : rowKey(r)))}
+                        >
+                          {r.file}
+                        </button>
+                      )}
+                      {up !== null && (
+                        <span className="ctl-sub">
+                          <ButtonLink size="sm" className="copy" href={artifactRawUrl(up, r.file, 'attachment')} download={fileName(r.file)}>
+                            download
+                          </ButtonLink>
+                        </span>
+                      )}
+                    </th>
+                    <td role="cell" data-label="From">
+                      <StagedFrom row={r} workflow={v.workflow} />
+                    </td>
+                    <td role="cell" data-label="Size" className="is-num">
+                      <StagedSize row={r} workflow={v.workflow} />
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {malformed > 0 && (
+        <span
+          className="ctl-mark is-unread"
+          aria-label={`${malformed} entr${malformed === 1 ? 'y' : 'ies'} in this run's staged-input report could not be read as a file. Counted here rather than dropped.`}
+        >
+          {malformed} unreadable
+        </span>
+      )}
+      {shown !== null && shownFrom !== null && (
+        <ArtifactViewer
+          key={rowKey(shown)}
+          // THE UPSTREAM TASK'S ROUTE, by the file's name there. The staged
+          // copy in this run's workspace was never uploaded on its own.
+          taskId={shownFrom}
+          artifact={{ name: shown.file, bytes: shown.arrival.kind === 'staged' ? (shown.arrival.bytes ?? 0) : 0, uri: '' }}
+          onClose={() => setOpen(null)}
+          absent={{
+            heading: 'removed from the upstream run',
+            say: 'The upstream run still lists this file and its object is gone -- removed by the bucket’s retention, most likely, or an upload that never completed. The size in the table is what was staged into this run.',
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function rowKey(r: TaskInputRow): string {
+  return `${r.from.kind === 'task' ? r.from.taskId : 'submission'}:${r.file}`
+}
+
+/** The run that produced a staged file, by its step name when the workflow read gave one. */
+function StagedFrom({ row, workflow }: { row: TaskInputRow; workflow: Result<WorkflowRead> | null }) {
+  if (row.from.kind === 'submission') return <>submission</>
+  const taskId = row.from.taskId
+  const step = ok(workflow) ? (workflow.data.workflow.steps.find((s) => s.task_id === taskId)?.step_id ?? null) : null
+  return (
+    <>
+      {/* To the upstream run's OWN Artifacts pane: its outputs are this run's inputs. */}
+      <a className="ctl-link" href={`#work/task/${encodeURIComponent(taskId)}/artifacts`}>
+        {step !== null ? step : <Id title={taskId}>{taskId}</Id>}
+      </a>
+      {step === null && workflow !== null && !ok(workflow) && (
+        <>
+          {' '}
+          <Mark
+            kind="unread"
+            say="The workflow read did not complete, so the step that produced this file is shown by its task id."
+          />
+        </>
+      )}
+      {!row.declared && <span className="ctl-sub">not declared</span>}
+    </>
+  )
+}
+
+/**
+ * Its size when a report says it arrived; otherwise which kind of not-yet it
+ * is -- and whether the upstream run still lists it, when the workflow read
+ * says.
+ */
+function StagedSize({ row, workflow }: { row: TaskInputRow; workflow: Result<WorkflowRead> | null }) {
+  const a = row.arrival
+  const upstream =
+    row.from.kind === 'task' && ok(workflow) ? upstreamEntry(workflow.data, row.from.taskId, row.file) : undefined
+  return (
+    <>
+      {a.kind === 'declared' ? (
+        <span className="ctl-mark is-absent" aria-label={DECLARED_WORDS[a.why].note}>
+          {DECLARED_WORDS[a.why].text}
+        </span>
+      ) : a.bytes === null ? (
+        <span className="ctl-mark is-absent" aria-label="The report names this file but carries no size for it. Not a zero.">
+          size not reported
+        </span>
+      ) : (
+        bytesLabel(a.bytes)
+      )}
+      {a.kind === 'staged' && a.fromCheckpoint && <span className="ctl-sub">from checkpoint</span>}
+      {upstream === null && (
+        <span className="ctl-sub">
+          <Mark
+            kind="absent"
+            say="The upstream run's manifest does not list this file, so there is nothing there to read it from."
+          />{' '}
+          not listed upstream
+        </span>
+      )}
+    </>
+  )
+}
+
+/**
+ * The upstream run's manifest entry for one file: the entry, null when that
+ * run's manifest is readable and does not list it, undefined when this read
+ * cannot tell (the task is not in the workflow read, or it has no manifest).
+ */
+function upstreamEntry(w: WorkflowRead, taskId: string, file: string): ArtifactEntry | null | undefined {
+  const up = w.tasks.find((t) => t.id === taskId)
+  const artifacts = (up?.result_summary as ResultSummary | null | undefined)?.artifacts
+  if (!Array.isArray(artifacts)) return undefined
+  return (artifacts as ArtifactEntry[]).find((e) => e !== null && typeof e === 'object' && e.name === file) ?? null
+}
+
+// ---------------------------------------------------------------------------
+// Outputs
+// ---------------------------------------------------------------------------
+
+function Outputs({ v }: { v: ArtifactsView }) {
+  return (
+    <section className="section arts-outputs">
+      <h2>Outputs</h2>
+      {/* A step its review's verdict kept from running holds only the PR text
+          the worker copied to title its pull request; say so rather than
+          look empty (owner request 2026-10-07). */}
+      <SkippedArtifactsNote task={v.task} tasks={ok(v.workflow) ? v.workflow.data.tasks : []} />
+      <Answer v={v} />
+      <Files v={v} />
+      <OverCap v={v} />
+      <NotUploaded v={v} />
+    </section>
+  )
+}
+
+/**
+ * WHAT A TASK WITH NO REPOSITORY LEFT IN ITS WORKING FOLDER AND DID NOT GET
+ * UPLOADED, and why (archived pull request 225 review). The worker uploads what the agent created
+ * there within 50 files and 25 MiB (#184, owner decision of 2026-09-26), and
+ * records each file it did not upload with its reason: over the cap, a core
+ * dump, a name that is not UTF-8 or is too long to be an object's, a key it
+ * could not take out. None of it was drawn. These are not rows of the file
+ * list, because none of them can be downloaded, and not the file list's
+ * "skipped" note, which is the artifacts folder's own. The summary
+ * lists the first 50; the worker's log names every one, and the line under
+ * the table says so rather than implying the list is whole.
+ */
+function NotUploaded({ v }: { v: ArtifactsView }) {
+  const record = workdirNotUploadedOf(v.task.result_summary as ResultSummary | null)
+  if (record === null || record.total === 0) return null
+  const { listed, total } = record
+  const rest = total - listed.length
+  return (
+    <div className="arts-block arts-unuploaded">
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">not uploaded from the working folder</span>
+        <Count n={total} label="not uploaded" bare />
+      </div>
+      {listed.length > 0 && (
+        <div className="ctl-table is-stacked">
+          <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">File</th>
+                <th role="columnheader" scope="col" className="is-num">Size</th>
+                <th role="columnheader" scope="col">Why</th>
+              </tr>
+            </thead>
+            <tbody role="rowgroup">
+              {listed.map((e, i) => (
+                <tr role="row" key={`${i}:${e.name}`}>
+                  <th role="rowheader" scope="row">
+                    <span className="mono">{e.name}</span>
+                  </th>
+                  <td role="cell" data-label="Size" className="is-num">
+                    {bytesLabel(e.bytes)}
+                  </td>
+                  <td role="cell" data-label="Why">
+                    {e.reason}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {rest > 0 && (
+        <InWorkerLog
+          say={`The attempt's result lists the first ${listed.length} of the ${total} files the worker did not upload from the working folder. The worker's log names every one.`}
+        >
+          {rest} more, named in the worker log
+        </InWorkerLog>
+      )}
+    </div>
+  )
+}
+
+/**
+ * THE FILES IN $SWARM_ARTIFACTS_DIR PAST THE PER-ATTEMPT FILE CAP (archived issue 228, owner
+ * decision of 2026-09-26). The worker uploads at most 500 files from the
+ * folder, because each is an entry in the task's Firestore document and a
+ * document holds 1 MiB; about 6,000 small files would have cost the task its
+ * result. The rest are not uploaded, the summary COUNTS them
+ * (`artifacts_over_cap`) and lists none, and the worker's log names every
+ * one, 100 to a line. So this is a count and archived pull request 225's count line, not a table:
+ * there are no names here to draw. Without it the file list would read as
+ * the whole of what the agent wrote. The cap is read from the summary
+ * (`artifacts_cap_files`), never restated here.
+ */
+function OverCap({ v }: { v: ArtifactsView }) {
+  const over = artifactsOverCapOf(v.task.result_summary as ResultSummary | null)
+  if (over === null) return null
+  const cap = over.cap === null ? 'file cap' : `${over.cap}-file cap`
+  return (
+    <div className="arts-block arts-overcap">
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">not uploaded from $SWARM_ARTIFACTS_DIR</span>
+        <Count n={over.count} label="not uploaded" bare />
+      </div>
+      <InWorkerLog
+        say={`The worker uploads at most ${over.cap === null ? 'a fixed number of' : over.cap} files from $SWARM_ARTIFACTS_DIR per attempt, because each is an entry in the agent's record, which has a size limit. ${over.count} more ${over.count === 1 ? 'was' : 'were'} there and ${over.count === 1 ? 'was' : 'were'} not uploaded. The worker's log names every one.`}
+      >
+        {over.count} over the {cap}, named in the worker log
+      </InWorkerLog>
+    </div>
+  )
+}
+
+/**
+ * THE LINE UNDER A NOT-UPLOADED BLOCK: a mark that says what is drawn is not
+ * the whole, and where the rest are named. archived pull request 225 drew it for the working
+ * folder's files past the first 50; archived issue 228's artifacts-folder cap draws the
+ * same line, so the two read alike.
+ */
+function InWorkerLog({ say, children }: { say: string; children: ReactNode }) {
+  return (
+    <p className="att-none">
+      <Mark kind="partial" say={say} /> {children}
+    </p>
+  )
+}
+
+/**
+ * THE ANSWER, FIRST. The `result` of the agent's last result event, as
+ * Markdown -- the thing a person opens a finished claude-code run for, and
+ * which the drawer never showed. When the run has no result event, the
+ * runner's summary stands in and says it may be cut: it is capped at 2,000
+ * characters, and the reference task's answer is 7,124.
+ */
+function Answer({ v }: { v: ArtifactsView }) {
+  const r = v.answer
+  return (
+    <div className="arts-block arts-answer">
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">answer</span>
+        {ok(r) && r.data.status === 'ok' && <AnswerNote a={r.data} />}
+      </div>
+      {r.status === 'error' || r.status === 'stale' ? (
+        <ReadFailed error={r.error} what="the answer" />
+      ) : r.status !== 'ok' ? (
+        <ReadFailed error={null} what="the answer" />
+      ) : r.data.status === 'not_yet' ? (
+        <p className="att-none">
+          <NotYet say="The attempt is still running and the agent has not written its result yet. It appears here when it does.">
+            not yet
+          </NotYet>
+        </p>
+      ) : r.data.status === 'absent' ? (
+        <p className="att-none">
+          {/* A FAILED AGENT SAYS IT FAILED (visual QA pass 1,
+              overview-agents-51): `not measured · no answer recorded` read
+              as a gap in the record of a run that ended well. */}
+          {failedRun(v.task) ? (
+            <ToneMark tone="bad">failed</ToneMark>
+          ) : (
+            <Mark
+              kind="absent"
+              say="The attempt ended and wrote no result event, and there is no runner summary to stand in for one."
+            />
+          )}{' '}
+          {failedRun(v.task) ? 'no output recorded' : 'no answer recorded'}
+          {/* A CUT CAPTURE IS A REASON, and the server's sentence names it:
+              the run's middle was not kept, so "no result event" is about
+              what was kept. Said only then; otherwise the mark says it all. */}
+          {r.data.capture_truncated === true && r.data.detail !== null && (
+            <span className="ctl-sub">{r.data.detail}</span>
+          )}
+        </p>
+      ) : r.data.status === 'unreadable' ? (
+        <p className="att-none">
+          <Mark
+            kind="unread"
+            say="An object holding the answer could not be read. Nothing may be concluded about the answer: it is not missing and it is not empty."
+          />{' '}
+          answer not read
+          {r.data.detail !== null && <span className="ctl-sub">{r.data.detail}</span>}
+        </p>
+      ) : r.data.content === null ? (
+        <p className="att-none">
+          <Mark kind="unread" say="The read reported an answer and returned no content, so it cannot be shown." /> answer
+          not read
+        </p>
+      ) : r.data.content === '' ? (
+        <p className="att-none">
+          <Mark kind="zero" say="The agent's result is an empty string: a real, empty answer." /> empty answer
+        </p>
+      ) : r.data.format === 'markdown' ? (
+        <Markdown source={r.data.content} />
+      ) : (
+        <pre className="arts-prompt">{r.data.content}</pre>
+      )}
+    </div>
+  )
+}
+
+function AnswerNote({ a }: { a: TaskAnswer }) {
+  return (
+    <span className="is-end ctl-card-note">
+      {a.capture_truncated === true && (
+        <>
+          <Mark
+            kind="partial"
+            say="The agent's output passed the worker's capture size cap, so the middle of the run was not kept. The capture keeps the end of the run, where the result is, so this answer can still be whole; the rest of the run is not."
+          />{' '}
+          capture cut ·{' '}
+        </>
+      )}
+      {a.is_error === true && (
+        <>
+          <ToneMark tone="bad">the agent reported an error</ToneMark>{' '}
+        </>
+      )}
+      {a.source === 'runner_summary' && (
+        <>
+          <Mark
+            kind={a.complete === false ? 'partial' : 'absent'}
+            say={
+              a.complete === false
+                ? 'The agent wrote no result event, so this is the runner’s summary, which is capped at 2,000 characters and is at that cap: the answer is cut.'
+                : 'The agent wrote no result event, so this is the runner’s summary, which is capped at 2,000 characters. Nothing here says whether it was cut.'
+            }
+          />{' '}
+          runner summary ·{' '}
+        </>
+      )}
+      {a.subtype !== null && `${a.subtype} · `}
+      {a.num_turns !== null && `${a.num_turns} turns · `}
+      masked <span className={`art-masked${a.redacted && a.redaction_count > 0 ? ' is-warn' : ''}`}>{a.redaction_count}</span>
+    </span>
+  )
+}
+
+/** The biggest image drawn inline. Past it, `open full` and `download`. */
+const INLINE_IMAGE_MAX_BYTES = 20 * 1024 * 1024
+
+/**
+ * The task's own manifest, `result_summary.artifacts`, which is the record the
+ * listing route serves. Null when the summary carries nothing that reads as a
+ * list. An entry with no name is dropped, because there would be nothing to
+ * ask the API for.
+ */
+function manifestOf(summary: ResultSummary | null): ArtifactRef[] | null {
+  const raw: unknown = summary?.artifacts
+  if (!Array.isArray(raw)) return null
+  return raw.filter(
+    (e): e is ArtifactRef => e !== null && typeof e === 'object' && typeof (e as { name?: unknown }).name === 'string',
+  )
+}
+
+/**
+ * How much of the run's file list the listing route returned. `total` is null
+ * when there is no manifest to count against.
+ */
+interface ListingCut {
+  listed: number
+  total: number | null
+}
+
+/**
+ * EVERY FILE THE LAST ATTEMPT UPLOADED, with a way to read each one. The
+ * viewer is chosen by the server's `kind`; an image is drawn from the raw
+ * route below the table, a binary file is described and downloaded, and the
+ * rest open in the text viewer. Each row downloads through the API -- the raw
+ * route redacts text on the way out -- and copies a `gsutil` line for reading
+ * the stored object with your own credentials.
+ *
+ * EVERY FILE, NOT ONE PAGE OF THEM. The listing route returns one page, at
+ * most `ARTIFACT_PAGE_LIMIT` entries, and it cannot be paged past that. Until
+ * archived pull request 187's fix-up it also returned the server's default of 50, because no
+ * `limit` was sent, and the pane drew those 50 as the whole run. A file past
+ * the route's page is listed from the task's own manifest, which is the same
+ * record the route serves. The pane says how many the route listed. The
+ * server names no kind for a file it did not list, so that row opens by its
+ * name and has `open full`, and the raw route decides what the bytes are. The
+ * pane counts against the manifest and not against the page limit, so a
+ * deployment that clamps the page lower is caught too.
+ */
+// The cause the worker recorded for a skipped file (archived issue 165), in its words. A
+// name with none predates causes and is shown bare, never as the cap.
+const SKIP_CAUSE: Record<string, string> = {
+  cap: 'over the size cap',
+  upload_error: 'the upload failed',
+  refused: 'a link, not a regular file, or a name no object can carry',
+}
+
+function skippedWithCause(entry: SkippedArtifact): string {
+  const { name, cause } = entry
+  return cause ? `${name} (${SKIP_CAUSE[cause] ?? cause})` : name
+}
+
+/**
+ * One served `artifacts_skipped` entry, read defensively: the route serves
+ * `{name, cause}` (archived issue 165), and a bare string -- an API from before the shape
+ * changed -- is a name with no recorded cause. Anything else is dropped
+ * rather than stringified into a fake name.
+ */
+function skippedEntry(raw: unknown): SkippedArtifact | null {
+  if (typeof raw === 'string') return { name: raw, cause: null }
+  if (raw !== null && typeof raw === 'object') {
+    const { name, cause } = raw as { name?: unknown; cause?: unknown }
+    if (typeof name !== 'string') return null
+    return { name, cause: typeof cause === 'string' && cause !== '' ? cause : null }
+  }
+  return null
+}
+
+/**
+ * THE SIGNED-IN EMAIL, read once per mount, or null until it is known (and
+ * when it cannot be read). The frame's read, as every pane that only needs to
+ * know who is looking marks it; the pane's 5 s poll does not repeat it.
+ */
+function useSignedInEmail(): string | null {
+  const [email, setEmail] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadMe({ frame: true }).then((r) => {
+      if (live && (r.status === 'ok' || r.status === 'stale')) setEmail(r.data.principal.email)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  return email
+}
+
+/**
+ * WHETHER THE CALLER SUBMITTED THIS TASK, compared exactly as the server
+ * compares it for the raw patch (archived issue 1857: `Task.submitted_by`, as
+ * `submission_scope` resolves the caller). Unknown is no: the control is
+ * drawn only once the read says so, and the server decides again.
+ */
+export function isSubmitter(email: string | null, submittedBy: string | null | undefined): boolean {
+  return email !== null && email !== '' && typeof submittedBy === 'string' && submittedBy === email
+}
+
+/** A run that ended in failure: the Outputs say `failed`, not a missing record's mark. */
+function failedRun(task: Pick<Task, 'state'>): boolean {
+  return task.state === 'FAILED' || task.state === 'DEAD_LETTERED'
+}
+
+function Files({ v }: { v: ArtifactsView }) {
+  const { task, listing } = v
+  const submitter = isSubmitter(useSignedInEmail(), task.submitted_by)
+  const routed = useContext(RoutedArtifact)
+  const [local, setLocal] = useState<string | null>(null)
+  const open = routed !== null ? routed.name : local
+  const setOpen = routed !== null ? routed.open : setLocal
+  const terminal = TERMINAL_STATES.has(task.state)
+  const summary = task.result_summary as ResultSummary | null
+  // `redaction_skipped`: files that left the pod neither rewritten nor scanned
+  // clean (`_upload_outputs`), capped at 50 like `artifacts_skipped`.
+  const scrub: unknown = summary === null ? undefined : summary.redaction_skipped
+  const unmasked: unknown[] = Array.isArray(scrub) ? scrub : []
+
+  let body: ReactNode
+  let entries: ArtifactEntry[] = []
+  let skipped: SkippedArtifact[] = []
+  let cut: ListingCut | null = null
+  // Names of the rows that came from the manifest because the route did not
+  // list them.
+  const unlisted = new Set<string>()
+  if (listing === null || (ok(listing) && !listing.data.complete)) {
+    body = !terminal ? (
+      <p className="att-none">
+        <NotYet say="Artifacts are uploaded when the attempt ends, never while it runs, so this list is empty because it is not written yet -- not because the agent produced nothing.">
+          uploaded when the attempt ends
+        </NotYet>
+      </p>
+    ) : task.started_at === null ? (
+      <p className="att-none">
+        <Mark kind="zero" say="No attempt of this agent ever started, so no file was ever going to be uploaded." /> nothing
+        ran
+      </p>
+    ) : failedRun(task) ? (
+      // FAILED, NOT `PARTIAL` (visual QA pass 1, overview-agents-51): the
+      // partial mark beside `finished with no summary` read as a partial
+      // success on an agent that failed.
+      <p className="att-none" title="This agent failed without a result summary, which is where the file list is written. The attempt may have produced files; this is a missing record, not an empty one.">
+        <ToneMark tone="bad">failed</ToneMark> no output recorded
+      </p>
+    ) : (
+      <p className="att-none">
+        <Mark
+          kind="partial"
+          say="This agent finished without a result summary, which is where the file list is written. The attempt may well have produced files; this is a missing record, not an empty one."
+        />{' '}
+        finished with no summary
+      </p>
+    )
+  } else if (!ok(listing)) {
+    body = listing.status === 'error' || listing.status === 'stale' ? <ReadFailed error={listing.error} what="the file list" /> : <ReadFailed error={null} what="the file list" />
+  } else {
+    const listed = listing.data.artifacts
+    const manifest = manifestOf(summary)
+    const names = new Set(listed.map((e) => e.name))
+    const rest = manifest === null ? [] : manifest.filter((e) => !names.has(e.name))
+    for (const e of rest) unlisted.add(e.name)
+    // Past the page, no kind and no role: the server named neither, and a
+    // name rule here would be a second copy of the server's one table.
+    entries = [...listed, ...rest.map((e): ArtifactEntry => ({ name: e.name, bytes: e.bytes, uri: e.uri, kind: null, role: null }))]
+    cut = { listed: listed.length, total: manifest === null ? null : listed.length + rest.length }
+    const served: unknown = listing.data.artifacts_skipped
+    skipped = Array.isArray(served)
+      ? served.map(skippedEntry).filter((e): e is SkippedArtifact => e !== null)
+      : []
+    body =
+      entries.length === 0 ? (
+        <p className="att-none">
+          <Mark kind="zero" say="The last attempt uploaded no files. The list is complete and empty, not missing." /> nothing
+          uploaded
+        </p>
+      ) : null
+  }
+
+  const showing = open === null ? null : (entries.find((e) => e.name === open) ?? null)
+  const images = entries.filter((e) => e.kind === 'image')
+
+  // THE NOTE BESIDE THE COUNT: each thing that makes this list less than a
+  // plain answer, as a mark and a few words.
+  const notes: ReactNode[] = []
+  if (cut !== null && cut.total !== null && cut.total > cut.listed) {
+    notes.push(
+      <span key="cut">
+        <Mark
+          kind="partial"
+          say={`The listing route returned ${cut.listed} of this run's ${cut.total} files: it answers one page and cannot be paged past it. The other ${cut.total - cut.listed} are listed from the agent's own manifest, the record the route serves. The server named no kind for them, so each opens by its name, and open full lets the raw route decide what the bytes are.`}
+        />{' '}
+        {cut.listed} of {cut.total} listed
+      </span>,
+    )
+  } else if (cut !== null && cut.total === null && cut.listed >= ARTIFACT_PAGE_LIMIT) {
+    notes.push(
+      <span key="full">
+        <Mark
+          kind="partial"
+          say={`The listing route returned a full page of ${cut.listed} files, and this agent's summary carries no manifest to check it against, so the run may have more files than are shown.`}
+        />{' '}
+        first {cut.listed} listed
+      </span>,
+    )
+  }
+  // `artifacts_skipped` names files written to $SWARM_ARTIFACTS_DIR and not
+  // uploaded for more than the size cap: an upload that failed, a name that
+  // is not UTF-8 (archived pull request 225 review), and a name longer than a manifest entry may
+  // carry (archived issue 228), which is listed cut short. So the note says "skipped", not
+  // "over cap", and its words name every reason. The files past the FILE cap
+  // are not here; they are counted under Outputs (`OverCap`).
+  if (skipped.length > 0) {
+    notes.push(
+      <span key="skipped">
+        <Mark
+          kind="partial"
+          say={`At least ${skipped.length} file${skipped.length === 1 ? ' was' : 's were'} written and not uploaded -- over the size cap, a name too long or not valid UTF-8, or an upload that failed -- so this list is incomplete: ${skipped.map(skippedWithCause).join(', ')}`}
+        />{' '}
+        {skipped.length} skipped
+      </span>,
+    )
+  }
+  if (unmasked.length > 0) {
+    notes.push(
+      <span key="unmasked">
+        <span className="art-masked is-warn">{unmasked.length}</span> not scrubbed before upload
+      </span>,
+    )
+  }
+  return (
+    <div className="arts-block arts-files">
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">files</span>
+        {entries.length > 0 && <Count n={entries.length} label="files" bare />}
+        {notes.length > 0 && (
+          <span className="is-end ctl-card-note">
+            {notes.map((n, i) => (
+              <Fragment key={i}>
+                {i > 0 && ' · '}
+                {n}
+              </Fragment>
+            ))}
+          </span>
+        )}
+      </div>
+      {body}
+      {entries.length > 0 && (
+        // `is-roomy` (G2-33): a table in a pane 480px and wider, a stacked
+        // record per file below that (details.css).
+        <div className="ctl-table is-stacked is-roomy">
+          <table role="table">
+            <thead role="rowgroup">
+              <tr role="row">
+                <th role="columnheader" scope="col">File</th>
+                <th role="columnheader" scope="col" className="is-num">Size</th>
+                <th role="columnheader" scope="col">Get</th>
+              </tr>
+            </thead>
+            <tbody role="rowgroup">
+              {entries.map((e) => (
+                <FileRow
+                  key={e.uri || e.name}
+                  task={task.id}
+                  entry={e}
+                  unlisted={unlisted.has(e.name)}
+                  rawPatch={submitter}
+                  open={e.name === open}
+                  onOpen={() => setOpen(open === e.name ? null : e.name)}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {showing !== null && showing.kind !== 'image' && showing.kind !== 'binary' && (
+        <ArtifactViewer
+          // One viewer per file: a window paged in one must not carry its offset to the next.
+          key={showing.name}
+          taskId={task.id}
+          artifact={showing}
+          kind={showing.kind ?? null}
+          rawPatch={submitter}
+          onClose={() => setOpen(null)}
+        />
+      )}
+      {showing !== null && showing.kind === 'binary' && (
+        <div className="art-viewer" role="region" aria-label={`Artifact ${showing.name}`}>
+          <p className="art-binary-head">binary · {bytesLabel(showing.bytes)}</p>
+        </div>
+      )}
+      {images.length > 0 && (
+        <div className="arts-gallery">
+          {images.map((e) => (
+            <ImageFigure key={e.uri || e.name} task={task.id} entry={e} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** The words for a kind, as a reader says them. */
+const KIND_WORD: Readonly<Record<ArtifactKindName, string>> = {
+  markdown: 'markdown',
+  json: 'json',
+  ndjson: 'ndjson',
+  log: 'log',
+  text: 'text',
+  image: 'image',
+  binary: 'binary',
+}
+
+const ROLE_WORD: Readonly<Record<string, string>> = {
+  agent_stdout: 'agent stdout',
+  agent_stderr: 'agent stderr',
+  agent_transcript: 'agent transcript',
+}
+
+function FileRow({
+  task,
+  entry,
+  unlisted,
+  rawPatch,
+  open,
+  onOpen,
+}: {
+  task: string
+  entry: ArtifactEntry
+  /** True when the listing route did not return this file and the row comes from the task's manifest. */
+  unlisted: boolean
+  /** The caller submitted this task: a `.patch` row also offers it unredacted (archived issue 1857). */
+  rawPatch: boolean
+  open: boolean
+  onOpen: () => void
+}) {
+  const kind = entry.kind ?? null
+  const role = entry.role ?? null
+  return (
+    <tr role="row" className={open ? 'is-open' : undefined}>
+      <th role="rowheader" scope="row">
+        {kind === 'image' ? (
+          // Drawn in the gallery below; the row is how to get the file.
+          <span className="mono">{entry.name}</span>
+        ) : (
+          <button type="button" className="art-open" aria-expanded={open} onClick={onOpen}>
+            {entry.name}
+          </button>
+        )}
+        {unlisted ? (
+          <span className="ctl-sub">from the agent’s manifest · kind not served</span>
+        ) : (
+          (kind !== null || role !== null) && (
+            <span className="ctl-sub">
+              {kind !== null ? KIND_WORD[kind] : ''}
+              {kind !== null && role !== null ? ' · ' : ''}
+              {role !== null ? `${ROLE_WORD[role] ?? role} · under Logs` : ''}
+            </span>
+          )
+        )}
+      </th>
+      <td role="cell" data-label="Size" className="is-num">
+        {bytesLabel(entry.bytes)}
+      </td>
+      <td role="cell" data-label="Get">
+        <span className="arts-get">
+          {/* THROUGH THE API, as an attachment: the raw route redacts text
+              window by window and sends an image as stored. Never `read()`,
+              which would call a byte stream an expired session. */}
+          <ButtonLink size="sm" className="copy" href={artifactRawUrl(task, entry.name, 'attachment')} download={fileName(entry.name)}>
+            download
+          </ButtonLink>
+          {/* OPEN FULL for an image, and for any file the server named no
+              kind for: the raw route sniffs the bytes and serves an image as
+              an image, text as text/plain and anything else as a download,
+              so no name rule here has to guess. */}
+          {(kind === 'image' || kind === null) && (
+            <ButtonLink size="sm" className="copy" href={artifactRawUrl(task, entry.name, 'inline')} target="_blank" rel="noreferrer">
+              open full
+            </ButtonLink>
+          )}
+          <Button
+            size="sm"
+            className="copy"
+            title={entry.uri}
+            onClick={() => navigator.clipboard?.writeText(`gsutil cp ${entry.uri} .`)}
+          >
+            copy gsutil
+          </Button>
+        </span>
+        {/* THE SUBMITTER'S RAW PATCH (archived issue 1857), beside the redacted download
+            above, with its one-line note. Nobody else is offered it. */}
+        {rawPatch && offersRawPatch(entry.name) && <RawPatchDownload taskId={task} name={entry.name} />}
+      </td>
+    </tr>
+  )
+}
+
+/**
+ * ONE IMAGE, INLINE, FROM THE RAW ROUTE. `onError` is the honesty rule here:
+ * an expired sign-in arrives as a page, not an image, and fails to decode --
+ * without the mark that would be a blank box that reads as a blank screenshot.
+ */
+function ImageFigure({ task, entry }: { task: string; entry: ArtifactEntry }) {
+  const [failed, setFailed] = useState(false)
+  const inline = entry.bytes <= INLINE_IMAGE_MAX_BYTES
+  const src = artifactRawUrl(task, entry.name, 'inline')
+  return (
+    <figure className="arts-figure">
+      {!inline ? (
+        <p className="att-none">
+          <Mark
+            kind="partial"
+            say={`This image is ${bytesLabel(entry.bytes)}, over the ${bytesLabel(INLINE_IMAGE_MAX_BYTES)} drawn inline. Open it full size or download it.`}
+          />{' '}
+          too large to draw inline
+        </p>
+      ) : failed ? (
+        <p className="att-none">
+          <Mark
+            kind="unread"
+            say="The browser could not decode what the API returned for this image. An expired sign-in arrives as a page rather than an image, and a file named as an image may not be one; download it to see what it is."
+          />{' '}
+          image could not be loaded
+        </p>
+      ) : (
+        <img src={src} alt={entry.name} loading="lazy" onError={() => setFailed(true)} />
+      )}
+      <figcaption>
+        <span className="mono">{entry.name}</span>{' '}
+        <ButtonLink size="sm" className="copy" href={src} target="_blank" rel="noreferrer">
+          open full
+        </ButtonLink>{' '}
+        {/* THE RAW ROUTE'S OWN WORDS (viewers.html A): an image is served as
+            stored, and no redaction rule can scan one. */}
+        <span className="ctl-sub">served as stored · not redacted (an image cannot be scanned)</span>
+      </figcaption>
+    </figure>
+  )
+}
+
+/** The last path segment, for a download's suggested file name. The server sets its own too. */
+function fileName(name: string): string {
+  return name.split('/').pop() || name
+}
+
+/**
+ * A READ THAT DID NOT COMPLETE, drawn as that and never as an absence. A path
+ * this deployment does not serve -- an API older than #184 -- is said
+ * separately, because the fix is a deploy, not a retry.
+ */
+function ReadFailed({ error, what }: { error: ApiError | null; what: string }) {
+  if (error !== null && routeMissing(error)) {
+    return (
+      <p className="att-none">
+        <Mark
+          kind="absent"
+          say={`The deployment answering this UI does not serve ${what} yet. That says nothing about the run; it is an API older than this screen.`}
+        />{' '}
+        not served by this API
+      </p>
+    )
+  }
+  return (
+    <p className="att-none">
+      <Mark
+        kind="unread"
+        say={`${error === null ? 'The read did not complete' : errorHeading(error)}. Nothing may be concluded about ${what}: it is not empty and it is not missing.`}
+      />{' '}
+      {what} not read
+      {/* A separator before the server's words: the flex gap parts them on
+          screen, and nothing parted them in the text (archived pull request 210 review). */}
+      {error !== null && <span className="ctl-sub">{` · ${error.message}`}</span>}
+    </p>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Logs
+// ---------------------------------------------------------------------------
+
+export type LogView = 'transcript' | 'stdout' | 'stderr' | 'runner'
+
+/** The dock's streams, in the frames' words and order (viewers.html A). */
+export const LOG_VIEWS: readonly { id: LogView; label: string }[] = [
+  { id: 'transcript', label: 'Transcript' },
+  { id: 'stdout', label: 'Agent stdout' },
+  { id: 'stderr', label: 'Agent stderr' },
+  { id: 'runner', label: 'Runner' },
+]
+
+/**
+ * ONE ATTEMPT'S LOGS, AS THE LOG DOCK READ THEM: the transcript and the
+ * polled streams, each with its own answer, never another's. `attemptId` is
+ * the attempt the reader picked, or null for the latest -- the API takes
+ * `attempt_id` on every log read, and each read below passes it, so a picked
+ * attempt's stdout and records are that attempt's and not the newest one's.
+ */
+export interface LogFeed {
+  task: Task
+  attemptId: string | null
+  transcript: Result<TaskTranscript>
+  /** The agent's stderr and the runner's stdout and stderr, in one read. */
+  logs: Result<TaskLogs>
+}
+
+/**
+ * THE AGENT'S LOGS: its transcript as steps, its own stdout and stderr, and
+ * -- behind the last choice, because it is the platform's and not the agent's
+ * -- the runner process's streams, which the Details pane used to present as
+ * the agent's output. The Logs tab (AgentLogs.tsx) picks the view; this draws it.
+ *
+ * EACH LOG'S OBJECT LOCATION IS HERE, beside its view (owner decision,
+ * 2026-09-26, on #184): every stream row carries its object's `gs://` uri and
+ * `copy gsutil`, and the transcript's facts carry the agent stdout object it
+ * is parsed from.
+ */
+export function LogBody({ v, view, reading, now }: { v: LogFeed; view: LogView; reading: ScreenReading; now: number }) {
+  const logs = v.logs
+  return (
+    <>
+      {view === 'transcript' && <TranscriptView v={v} reading={reading} now={now} />}
+      {view === 'stdout' && <AgentStdout v={v} reading={reading} now={now} />}
+      {view === 'stderr' && <StreamsFrom logs={logs} names={['agent_stderr']} task={v.task} now={now} />}
+      {view === 'runner' && <StreamsFrom logs={logs} names={['stdout', 'stderr']} task={v.task} now={now} />}
+    </>
+  )
+}
+
+/**
+ * THE AGENT'S RAW STDOUT, READ ONLY WHILE THIS VIEW IS OPEN. It is the one
+ * stream that can be large -- a whole stream-json transcript -- and the
+ * transcript view already serves it parsed, so the pane's poll leaves it out
+ * and this view reads it itself, again with every poll while it is open.
+ */
+function AgentStdout({ v, reading, now }: { v: LogFeed; reading: ScreenReading; now: number }) {
+  const attempt = v.attemptId === null ? {} : { attemptId: v.attemptId }
+  const held = useRead<TaskLogs>(
+    () => loadTaskLogs(v.task.id, { ...attempt, stream: 'agent_stdout', source: 'auto' }),
+    v.task.id,
+    `${v.attemptId ?? 'latest'}:${reading.fetchedAt}`,
+    null,
+  )
+  return <StreamsFrom logs={held.state} names={['agent_stdout']} task={v.task} now={now} />
+}
+
+/**
+ * Some of a log read's streams: one table -- stream, size, age, with the four
+ * answers as marks -- and each stream's window below it. A stream the read
+ * did not return at all is `not served`: an API older than #184 answers only
+ * the runner's two.
+ *
+ * THE ONE PLACE A LOG IS DRAWN. The Details pane drew the runner's two streams
+ * in a panel of its own with these same rows; the owner's decision of
+ * 2026-09-25 (#184) put the runner (platform) log in Artifacts › Logs only.
+ * EXPORTED so `runfiles.flat.test.tsx` holds the rows' encodings here, where
+ * the runner's log now lives.
+ */
+export function StreamsFrom({
+  logs,
+  names,
+  task,
+  now,
+}: {
+  logs: Result<TaskLogs>
+  names: readonly LogStreamName[]
+  task: Task
+  now: number
+}) {
+  // INSIDE THE DOCK, whose provider is the only one there is (logMarks.tsx):
+  // everywhere else the context is the shared `NO_MARKS`.
+  const docked = useLogMarks() !== NO_MARKS
+  if (logs.status === 'loading') {
+    return (
+      <p className="art-loading">
+        <Mark kind="pending" say="Reading the stream. The read is in flight." />
+        <span className="ctl-pending art-loading-bar" />
+      </p>
+    )
+  }
+  if (logs.status === 'error' || logs.status === 'stale') return <ReadFailed error={logs.error} what="the log" />
+  if (logs.status === 'empty') return <ReadFailed error={null} what="the log" />
+  const data = logs.data
+  if (data.attempt.status === 'no_attempt_yet') {
+    return <Absent kind="zero" heading="No attempt yet" say="This agent has no attempt yet, so nothing has written a log." />
+  }
+  if (data.attempt.status === 'unknown_attempt') {
+    return (
+      <Absent
+        kind="failed"
+        heading="No such attempt"
+        say="The attempt asked for is not one this agent has, so there is no log of it to read."
+      />
+    )
+  }
+  const rows = names.map((n) => ({ name: n, stream: data.streams.find((s) => s.stream === n) ?? null }))
+  // The read's own receipt time, for the served ages: the pane's for the
+  // polled read, this view's own for the stdout read -- `fetchedAt` either way.
+  const fetchedAt = logs.fetchedAt
+  const table = (
+      <div className="ctl-table is-stacked">
+        <table role="table">
+          <thead role="rowgroup">
+            <tr role="row">
+              <th role="columnheader" scope="col">Stream</th>
+              <th role="columnheader" scope="col" className="is-num">Size</th>
+              <th role="columnheader" scope="col">Age</th>
+            </tr>
+          </thead>
+          <tbody role="rowgroup">
+            {rows.map((r) =>
+              r.stream === null ? (
+                <tr role="row" key={r.name}>
+                  <th role="rowheader" scope="row">
+                    <span className="mono">{streamLabel(r.name)}</span>
+                  </th>
+                  <td role="cell" data-label="Size" className="is-num">
+                    <Em />{' '}
+                    <Mark
+                      kind="absent"
+                      say={`The log read did not return ${r.name} at all. The deployment answering this UI is older than the agent streams; nothing here says the stream is empty.`}
+                    />{' '}
+                    not served
+                  </td>
+                  <td role="cell" data-label="Age">
+                    <Em />
+                  </td>
+                </tr>
+              ) : (
+                <Stream key={r.name} stream={r.stream} logs={data} task={task} now={now} fetchedAt={fetchedAt} />
+              ),
+            )}
+          </tbody>
+        </table>
+      </div>
+  )
+  const drawn = (r: (typeof rows)[number]) => r.stream !== null && r.stream.status === 'ok' && r.stream.content !== null && r.stream.content !== ''
+  // NOTHING WRITTEN IS A SENTENCE, NOT A CARD (QA1 overview-agents-36,
+  // 2026-10-28): an empty agent stderr in the Logs tab drew the gs:// object
+  // card, `0 B real zero · live`, where a reader wanted to be told there is
+  // nothing on it. In the dock, when every stream is a measured empty object,
+  // the sentence leads and the card folds under it, as a stream with lines does.
+  const empty = (r: (typeof rows)[number]) => r.stream !== null && r.stream.status === 'ok' && r.stream.content === ''
+  if (docked && rows.every(empty)) {
+    const live = rows.some((r) => r.stream?.source === 'live')
+    return (
+      <>
+        <p className="art-fallback rf-empty">
+          {`Nothing on ${rows.map((r) => streamLabel(r.name)).join(' or ')}${live ? ' yet' : ''}.`}
+        </p>
+        <details className="ag-logmeta">
+          <summary>
+            {rows.map((r) => streamLabel(r.name)).join(' · ')} · size, age and location
+          </summary>
+          {table}
+        </details>
+      </>
+    )
+  }
+  return (
+    <>
+      {/* IN THE LOG DOCK THE TABLE IS FOLDED when every stream has lines to
+          show (U10a D13, owner QA 2026-10-04): stdout and stderr opened on a
+          card of gs paths and sizes with no line in view. A stream that is
+          absent, not served, empty or unread keeps the table open, because
+          then the table is the only thing that says why there is no line. */}
+      {docked && rows.every(drawn) ? (
+        <details className="ag-logmeta">
+          <summary>
+            {rows.map((r) => streamLabel(r.name)).join(' · ')} · size, age and location
+          </summary>
+          {table}
+        </details>
+      ) : (
+        table
+      )}
+      {rows.map((r) =>
+        drawn(r) && r.stream !== null && r.stream.content !== null ? (
+          <div key={r.name} className="rf-window">
+            <span className="ctl-eyebrow">{streamLabel(r.name)}</span>
+            {/* THE LOGS TAB'S MARKS (logMarks.tsx): numbered lines, search hits,
+                error lines and the server's mask, and a gap in the tail at
+                the top of the window it precedes. Outside the tab nothing
+                is marked and this is the window as written. */}
+            <GapNotice name={r.name} />
+            <LogText name={r.name} content={r.stream.content} />
+          </div>
+        ) : null,
+      )}
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The transcript
+// ---------------------------------------------------------------------------
+
+/**
+ * THE TRANSCRIPT AS STEPS: text, thinking, every tool call with its input
+ * and its result collapsed, and the final result. Parsed and redacted by the
+ * server, never here; this draws what it was given and says what it was not.
+ *
+ * THE WINDOW IS SAID BEFORE THE FIRST ROW. A live tail that starts past the
+ * first line has earlier steps nobody drew, and a final transcript longer than
+ * one window has later ones: both are said, and the second has `next window`.
+ * A run made with `--output-format json` recorded only its final result --
+ * that is one step, and it is labelled as that rather than drawn as a short
+ * transcript.
+ */
+function TranscriptView({ v, reading, now }: { v: LogFeed; reading: ScreenReading; now: number }) {
+  const [records, setRecords] = useState(false)
+  return records ? (
+    <WithRecords v={v} reading={reading} now={now} onHide={() => setRecords(false)} />
+  ) : (
+    <TranscriptBody
+      read={v.transcript}
+      v={v}
+      reading={reading}
+      now={now}
+      records={false}
+      onRecords={() => setRecords(true)}
+    />
+  )
+}
+
+/** The same transcript with each step's redacted source record: a read of its own, with `include_raw`. */
+function WithRecords({
+  v,
+  reading,
+  now,
+  onHide,
+}: {
+  v: LogFeed
+  reading: ScreenReading
+  now: number
+  onHide: () => void
+}) {
+  const attempt = v.attemptId === null ? {} : { attemptId: v.attemptId }
+  // THE WINDOW THE STEPS WERE SHOWN FROM (BT-018): a finished transcript
+  // opens on its newest window, so records read from byte 0 swapped the
+  // reader's steps for the first window's. A final or artifact window past
+  // byte 0 is read again at its offset, as `readTranscriptWindow` read it;
+  // a live tail is the newest part on any read.
+  const s = v.transcript.status === 'ok' ? v.transcript.data.stream : null
+  const at = s !== null && s.status === 'ok' && s.source !== 'live' && s.offset > 0 ? s : null
+  const source: 'auto' | 'final' = at === null || at.source === 'artifact' ? 'auto' : 'final'
+  const held = useRead<TaskTranscript>(
+    () => loadTranscript(v.task.id, { ...attempt, source, ...(at === null ? {} : { offset: at.offset }), includeRaw: true }),
+    v.task.id,
+    `${v.attemptId ?? 'latest'}:${at?.offset ?? 0}:${reading.fetchedAt}`,
+    null,
+  )
+  if (held.state.status === 'loading') {
+    return (
+      <p className="art-loading">
+        <Mark kind="pending" say="Reading the transcript with its records. The read is in flight." />
+        <span className="ctl-pending art-loading-bar" />
+      </p>
+    )
+  }
+  return <TranscriptBody read={held.state} v={v} reading={reading} now={now} records onRecords={onHide} />
+}
+
+function TranscriptBody({
+  read,
+  v,
+  reading,
+  now,
+  records,
+  onRecords,
+}: {
+  read: Result<TaskTranscript>
+  v: LogFeed
+  reading: ScreenReading
+  now: number
+  records: boolean
+  onRecords: () => void
+}) {
+  // Later windows of a FINAL transcript, read on request and kept in order.
+  // Keyed by the first window's identity, so a new attempt or a switch from
+  // the live tail to the final object starts over rather than appending one
+  // object's steps to another's.
+  const [more, setMore] = useState<{ key: string; windows: TaskTranscript[]; failed: ApiError | null }>({
+    key: '',
+    windows: [],
+    failed: null,
+  })
+  const [reading2, setReading2] = useState(false)
+  // Inside the Logs tab, whose provider is the only one there is (logMarks.tsx).
+  const docked = useLogMarks() !== NO_MARKS
+
+  if (read.status === 'error' || read.status === 'stale') return <ReadFailed error={read.error} what="the transcript" />
+  if (read.status !== 'ok') return <ReadFailed error={null} what="the transcript" />
+  const t = read.data
+  const key = `${t.attempt_id ?? ''}:${t.stream.source ?? ''}:${t.stream.uri ?? ''}:${records}`
+  const extra = more.key === key ? more.windows : []
+  const last = extra.length > 0 ? extra[extra.length - 1]! : t
+  const next = t.stream.source === 'live' ? null : last.stream.next_offset
+  const fetchedAt = read.fetchedAt
+  const age = servedAge(t.stream, fetchedAt, now)
+  const steps = [...(t.steps ?? []), ...extra.flatMap((w) => w.steps ?? [])]
+  const skipped = t.skipped_lines + extra.reduce((n, w) => n + w.skipped_lines, 0)
+  const masked = t.redaction_count + extra.reduce((n, w) => n + w.redaction_count, 0)
+
+  const readNext = async () => {
+    if (next === null) return
+    setReading2(true)
+    const got = await loadTranscript(v.task.id, {
+      ...(v.attemptId === null ? {} : { attemptId: v.attemptId }),
+      source: t.stream.source === 'artifact' ? 'auto' : 'final',
+      offset: next,
+      includeRaw: records,
+    })
+    setReading2(false)
+    setMore((cur) => {
+      const base = cur.key === key ? cur : { key, windows: [], failed: null }
+      return got.status === 'ok'
+        ? { key, windows: [...base.windows, got.data], failed: null }
+        : { key, windows: base.windows, failed: got.status === 'error' || got.status === 'stale' ? got.error : null }
+    })
+  }
+
+  // FACTS ONLY FOR A PUBLISHED STREAM (archived issue 222, post-deploy QA of 2026-09-26).
+  // They were drawn whatever the stream's status, so a task that had published
+  // nothing read `source live [not measured] · masked 0` above `nothing
+  // published yet`, and a browser task `source — · masked 0`: a source for an
+  // object that does not exist and a masking count over bytes nobody read.
+  // The absent, unreadable and not-applicable answers say what they are below.
+  const published = t.stream.status === 'ok'
+  const facts = published && (
+      <ul className="ctl-facts">
+        <li className="ctl-fact">
+          <b>source</b>
+          {t.stream.source === 'live' ? (
+            <>
+              live
+              {age !== null ? (
+                <span className="ctl-sub">published {ageSpan(age)} ago</span>
+              ) : (
+                <>
+                  {' '}
+                  <Mark kind="absent" say="The server did not say how old this live object is." />
+                </>
+              )}
+            </>
+          ) : t.stream.source === 'final' ? (
+            'final'
+          ) : t.stream.source === 'artifact' ? (
+            'the artifact'
+          ) : (
+            <Em />
+          )}
+        </li>
+        {t.format !== null && (
+          <li className="ctl-fact">
+            <b>format</b>
+            {t.format}
+          </li>
+        )}
+        {t.capture_truncated === true && (
+          <li className="ctl-fact is-absent">
+            <b>capture</b>
+            cut at its cap{' '}
+            <Mark
+              kind="partial"
+              say="The agent's output passed the worker's capture size cap. The capture kept the start and the end of the run and dropped the middle, with a notice where, so this transcript is not the whole run."
+            />
+          </li>
+        )}
+        {skipped > 0 && (
+          <li className="ctl-fact is-absent">
+            <b>skipped</b>
+            {num(skipped)}{' '}
+            <Mark kind="partial" say={`${skipped} line${skipped === 1 ? '' : 's'} of the stream did not parse and are not drawn as steps. Counted, never dropped silently.`} />
+          </li>
+        )}
+        <li className="ctl-fact">
+          <b>masked</b>
+          <span className={`art-masked${masked > 0 ? ' is-warn' : ''}`}>{masked}</span>
+        </li>
+        {/* THE OBJECT'S LOCATION, BESIDE ITS LIVE VIEW (owner decision,
+            2026-09-26, on #184). Details listed the log objects' locations
+            with `copy gsutil`; they moved here, beside the logs they point
+            to. The stream rows below the other views carry theirs; this is
+            the transcript's, the agent's stdout object it is parsed from.
+            Whole in the title and in the copy: a cut uri is a different uri. */}
+        {t.stream.uri !== null && (
+          <li className="ctl-fact arts-object">
+            <b>object</b>
+            <span className="mono uri" title={t.stream.uri}>
+              {t.stream.uri}
+            </span>
+            <Button
+              size="sm"
+              className="copy"
+              onClick={() => navigator.clipboard?.writeText(`gsutil cat ${t.stream.uri}`)}
+            >
+              copy gsutil
+            </Button>
+          </li>
+        )}
+        <li className="ctl-fact">
+          <Button size="sm" className="copy" onClick={onRecords}>
+            {records ? 'hide records' : 'show records'}
+          </Button>
+        </li>
+      </ul>
+  )
+  return (
+    <div className="arts-transcript">
+      {/* IN THE LOGS TAB THE TRANSCRIPT'S FACTS ARE FOLDED, as stdout's are
+          (owner QA R9, 2026-10-04): source, format, masked and the object's
+          location opened above the first step. A masked count over 0 is
+          also the bar's own chip, so folding it hides no warning. */}
+      {facts !== false && docked ? (
+        <details className="ag-logmeta">
+          <summary>transcript · source, format, masked and location</summary>
+          {facts}
+        </details>
+      ) : (
+        facts
+      )}
+      {/* THE SERVER'S OWN SENTENCE ABOUT THIS WINDOW, when it read one: a
+          capture cut at its cap, a line longer than the window, a window that
+          began inside such a line. The absent and unreadable answers draw it
+          beside their own mark; an `ok` read that carries one is saying the
+          window is less than it looks. */}
+      {t.stream.status === 'ok' && t.stream.detail !== null && (
+        <p className="arts-window-note">
+          <Mark kind="partial" say="The server says this window is less than it looks, in the words beside this mark." />{' '}
+          {t.stream.detail}
+        </p>
+      )}
+      <TranscriptSteps t={t} steps={steps} v={v} reading={reading} now={now} />
+      {next !== null && (
+        <p className="arts-window-note">
+          <Mark
+            kind="partial"
+            say={`The transcript continues past this window, from byte ${next}. Later steps are not drawn until the next window is read.`}
+          />{' '}
+          later steps are in the next window{' '}
+          <Button size="sm" className="copy" onClick={() => void readNext()} disabled={reading2}>
+            {reading2 ? 'reading…' : 'next window'}
+          </Button>
+        </p>
+      )}
+      {more.key === key && more.failed !== null && <ReadFailed error={more.failed} what="the next window" />}
+    </div>
+  )
+}
+
+function TranscriptSteps({
+  t,
+  steps,
+  v,
+  reading,
+  now,
+}: {
+  t: TaskTranscript
+  steps: TranscriptStep[]
+  v: LogFeed
+  reading: ScreenReading
+  now: number
+}) {
+  const s = t.stream
+  if (s.status === 'not_applicable') {
+    return (
+      <p className="att-none">
+        <Mark kind="zero" say="This runner has no agent CLI, so it writes no transcript. Nothing is missing." /> no agent CLI
+      </p>
+    )
+  }
+  if (s.status === 'absent') {
+    return TERMINAL_STATES.has(v.task.state) ? (
+      <p className="att-none">
+        <Mark
+          kind="absent"
+          say="No transcript object exists for this attempt: nothing was uploaded, and no live tail was published."
+        />{' '}
+        no transcript recorded
+        {s.detail !== null && <span className="ctl-sub">{s.detail}</span>}
+      </p>
+    ) : (
+      <p className="att-none">
+        <Mark
+          kind="pending"
+          say="Nothing has been published for this attempt yet. The agent's output is published every few seconds while it runs."
+        />{' '}
+        nothing published yet
+      </p>
+    )
+  }
+  if (s.status === 'unreadable') {
+    return (
+      <p className="att-none">
+        <Mark kind="unread" say="The transcript object exists and could not be read. Nothing here says it is empty." />{' '}
+        transcript not read
+        {s.detail !== null && <span className="ctl-sub">{s.detail}</span>}
+      </p>
+    )
+  }
+  if (t.steps === null) {
+    // PLAIN TEXT, OR NOT PARSED: the stream is shown as it was written.
+    return (
+      <>
+        <p className="att-none">
+          <Mark
+            kind="partial"
+            say={
+              t.format === 'text'
+                ? 'This agent writes plain text, not a stream of events, so there are no steps to draw. Its stdout is below, as written.'
+                : 'This stream did not parse into steps, so it is shown below as written.'
+            }
+          />{' '}
+          {t.format === 'text' ? 'plain text · no steps' : 'not parsed · shown as written'}
+        </p>
+        <AgentStdout v={v} reading={reading} now={now} />
+      </>
+    )
+  }
+  return (
+    <>
+      {t.format === 'claude-json' && (
+        <p className="arts-window-note">
+          <Mark
+            kind="partial"
+            say="This run printed one JSON document at the end, so its turns were never recorded. Turn-by-turn steps need the agent to run with --output-format stream-json."
+          />{' '}
+          this run recorded only its final result; turn-by-turn steps need stream-json
+        </p>
+      )}
+      {t.window_starts_mid_stream && (
+        <p className="arts-window-note">
+          <Mark
+            kind="partial"
+            say={
+              t.stream.source === 'live'
+                ? 'This window starts part-way through the stream: a live tail holds only the newest part. The whole transcript is read when the attempt ends.'
+                : // A FINISHED TRANSCRIPT OPENS ON ITS NEWEST WINDOW (BT-018,
+                  // AgentLogs.tsx `readTranscriptWindow`): this is no live
+                  // tail, and nothing more is coming.
+                  'This is the newest window of the finished transcript: it ends at the last step, and earlier steps are in the windows before it.'
+            }
+          />{' '}
+          earlier steps are not in this window
+        </p>
+      )}
+      {steps.length === 0 ? (
+        <p className="att-none">
+          <Mark kind="zero" say="The stream was read and parsed, and this window holds no step." /> no steps in this window
+        </p>
+      ) : (
+        <Steps steps={steps} />
+      )}
+    </>
+  )
+}
+
+/**
+ * THE STEPS, IN ORDER, with two joins the flat list cannot show: a tool call
+ * and its result are ONE row (by `tool.id` and `tool_result.tool_use_id`),
+ * and a sub-agent's steps sit under the tool call that spawned it (by
+ * `parent_tool_use_id`). A result whose call is not in this window, and a
+ * step whose parent is not, are drawn at the top level rather than dropped.
+ */
+function Steps({ steps }: { steps: TranscriptStep[] }) {
+  // A NULL ID JOINS NOTHING. The server sends `tool.id` and
+  // `tool_result.tool_use_id` as null when the event carried no string there;
+  // two nulls are two unknowns, not a call and its result, so neither side is
+  // entered into the join and each is drawn on its own.
+  const calls = new Set<string>()
+  for (const s of steps) if (s.kind === 'tool_call' && s.tool !== null && s.tool.id !== null) calls.add(s.tool.id)
+  const results = new Map<string, TranscriptStep>()
+  for (const s of steps) {
+    const use = s.kind === 'tool_result' && s.tool_result !== null ? s.tool_result.tool_use_id : null
+    if (use !== null && calls.has(use)) results.set(use, s)
+  }
+  const children = new Map<string, TranscriptStep[]>()
+  const top: TranscriptStep[] = []
+  for (const s of steps) {
+    const use = s.kind === 'tool_result' && s.tool_result !== null ? s.tool_result.tool_use_id : null
+    if (use !== null && results.get(use) === s) continue
+    const parent = s.parent_tool_use_id
+    if (parent !== null && calls.has(parent) && !(s.kind === 'tool_call' && s.tool?.id === parent)) {
+      const list = children.get(parent)
+      if (list) list.push(s)
+      else children.set(parent, [s])
+    } else {
+      top.push(s)
+    }
+  }
+  return <StepList steps={top} results={results} nested={children} seen={new Set<string>()} />
+}
+
+function StepList({
+  steps,
+  results,
+  nested,
+  seen,
+}: {
+  steps: TranscriptStep[]
+  results: Map<string, TranscriptStep>
+  /** Sub-agent steps, by the id of the tool call that spawned them. */
+  nested: Map<string, TranscriptStep[]>
+  /** Tool calls already drawn above this list: a cycle in the parent ids stops here. */
+  seen: Set<string>
+}) {
+  // RUNS OF PROGRESS NOTICES ARE ONE ROW (QA G2-26, 2026-10-07): `other ·
+  // tool_progress` and `system · thinking_tokens` were most of a running
+  // agent's transcript. Two or more in a row fold into `N progress events`,
+  // which opens onto every one of them; a lone one is drawn as itself.
+  return (
+    <ol className="arts-steps">
+      {foldProgress(steps).map((r) =>
+        r.kind === 'step' ? (
+          <StepRow key={r.step.id} step={r.step} results={results} nested={nested} seen={seen} />
+        ) : (
+          <li key={`fold:${r.steps[0]!.id}`} className="arts-step is-meta is-fold">
+            <details className="arts-more">
+              <summary>{r.steps.length} progress events</summary>
+              <ol className="arts-steps">
+                {r.steps.map((s) => (
+                  <StepRow key={s.id} step={s} results={results} nested={nested} seen={seen} />
+                ))}
+              </ol>
+            </details>
+          </li>
+        ),
+      )}
+    </ol>
+  )
+}
+
+/**
+ * ONE STEP, MARKED FOR THE LOG DOCK (logMarks.tsx): a search hit, an error --
+ * a tool result's own `is_error`, or the console-side pattern -- and the step
+ * the reader jumped to. A call and its paired result are one row, so they are
+ * one mark and one jump target.
+ */
+function StepRow(props: {
+  step: TranscriptStep
+  results: Map<string, TranscriptStep>
+  nested: Map<string, TranscriptStep[]>
+  seen: Set<string>
+}) {
+  const marks = useLogMarks()
+  const el = StepRowBody(props)
+  const { step, results } = props
+  const paired = step.kind === 'tool_call' && step.tool?.id ? (results.get(step.tool.id) ?? null) : null
+  const mk = stepMarks(marks, step, paired)
+  return cloneElement(el, {
+    className: [...new Set(`${el.props.className ?? ''} ${mk.className}`.split(' ').filter(Boolean))].join(' '),
+    'data-log-key': mk['data-log-key'],
+  })
+}
+
+/** How much of a tool's input or result a closed row shows: one line, cut. */
+const GIST_CHARS = 100
+
+function cut(text: string): string {
+  return text.length > GIST_CHARS ? `${text.slice(0, GIST_CHARS - 1)}…` : text
+}
+
+/** The first non-blank line of a tool result, cut to `GIST_CHARS`; null when it has none. */
+export function firstLine(content: string | null): string | null {
+  const line = content?.split('\n').find((l) => l.trim() !== '')
+  return line === undefined ? null : cut(line.trim())
+}
+
+/**
+ * A CLOSED TOOL ROW SAYS WHAT IT RAN (visual QA pass 1, chrome-C07): every
+ * row read `tool · Bash` over `result`, dozens alike, so the transcript could
+ * not be scanned without opening each. The input's telling field -- the
+ * command, the file, the pattern, the address -- or else its first string,
+ * one line and cut. Null when the input is absent or not an object.
+ */
+export function toolGist(input: string | null): string | null {
+  if (input === null) return null
+  let o: unknown
+  try {
+    o = JSON.parse(input)
+  } catch {
+    return firstLine(input)
+  }
+  if (o === null || typeof o !== 'object' || Array.isArray(o)) return null
+  const rec = o as Record<string, unknown>
+  const keys = ['command', 'file_path', 'path', 'pattern', 'url', 'query', 'description', 'prompt']
+  const first = [...keys.map((k) => rec[k]), ...Object.values(rec)].find((x): x is string => typeof x === 'string' && x.trim() !== '')
+  return first === undefined ? null : firstLine(first)
+}
+
+function StepRowBody({
+  step,
+  results,
+  nested,
+  seen,
+}: {
+  step: TranscriptStep
+  results: Map<string, TranscriptStep>
+  nested: Map<string, TranscriptStep[]>
+  seen: Set<string>
+}): ReactElement<{ className?: string; 'data-log-key'?: string }> {
+  const m: Record<string, unknown> = step.meta ?? {}
+  const capped = step.truncated_fields.length > 0 && (
+    <Mark
+      kind="partial"
+      say={`Capped at 16 KiB by the server: ${step.truncated_fields.join(', ')}. The rest of ${step.truncated_fields.length === 1 ? 'that field' : 'those fields'} is not shown.`}
+    />
+  )
+  const record = step.raw !== null && (
+    <details className="arts-more">
+      <summary>record</summary>
+      <pre className="art-code">{step.raw}</pre>
+    </details>
+  )
+  const text = (t: string | null): ReactNode =>
+    t === null ? null : t === '' ? (
+      <p className="art-fallback">
+        <Mark kind="zero" say="This step carries an empty text." /> no text
+      </p>
+    ) : (
+      <Markdown source={t} />
+    )
+
+  switch (step.kind) {
+    case 'text':
+      return (
+        <li className="arts-step is-text">
+          <span className="arts-step-kind">{step.role ?? 'assistant'}</span> {capped}
+          {text(step.text)}
+          {record}
+        </li>
+      )
+    case 'thinking':
+      // AN EMPTY THINKING TEXT IS NOT AN EXPANDABLE (archived issue 222, post-deploy QA of
+      // 2026-09-26). `text: ""` passed the null check and drew `▸ thinking`
+      // that opened onto nothing. It is drawn as words, like a null or a
+      // redacted one.
+      return (
+        <li className="arts-step is-thinking">
+          {/* NOT SHOWN, NEVER `real zero` (QA G2-27, 2026-10-07). That mark
+              says a measured zero; an empty or redacted thinking block
+              measured nothing, it only carries no text to open. Both are the
+              same muted words, and which one it was is the title. */}
+          {m.redacted === true || step.text === null || step.text === '' ? (
+            <span
+              className="arts-step-kind is-muted"
+              title={
+                m.redacted === true || step.text === null
+                  ? 'The provider redacted this thinking block, so there is no text to show.'
+                  : 'This thinking block carries an empty text: there is nothing to open.'
+              }
+            >
+              thinking · not shown
+            </span>
+          ) : (
+            <details className="arts-more">
+              <summary>thinking</summary>
+              <pre className="art-code">{step.text}</pre>
+            </details>
+          )}{' '}
+          {capped}
+          {record}
+        </li>
+      )
+    case 'tool_call': {
+      const id = step.tool?.id ?? null
+      const input = step.tool?.input ?? null
+      // Both gists landed at once (archived pull request 2634 and chrome-C07): a browser tool's
+      // element or address first, else the command, file or first line.
+      const gist = inputGist(input) ?? toolGist(input)
+      const result = id === null ? undefined : results.get(id)
+      const kids = id === null || seen.has(id) ? [] : (nested.get(id) ?? [])
+      const nextSeen = id === null ? seen : new Set([...seen, id])
+      const r = result?.tool_result ?? null
+      return (
+        <li className="arts-step is-tool">
+          <details className="arts-more">
+            <summary>
+              tool · <b>{step.tool?.name ?? 'unnamed'}</b>
+              {gist !== null && <span className="ctl-sub mono arts-tool-gist"> {gist}</span>}
+            </summary>
+            {input === null ? (
+              <p className="art-fallback">
+                <Mark kind="absent" say="This tool call carries no input." /> no input
+              </p>
+            ) : (
+              <pre className="art-code">{input}</pre>
+            )}
+          </details>{' '}
+          {capped}
+          {r !== null ? (
+            <details className={`arts-more${r.is_error ? ' is-bad' : ''}`}>
+              <summary>
+                result{r.is_error ? ' · error' : ''}
+                {r.images > 0 ? ` · ${r.images} image${r.images === 1 ? '' : 's'} not shown` : ''}
+                {firstLine(r.content) !== null && <span className="ctl-sub"> {firstLine(r.content)}</span>}
+              </summary>
+              {r.content === null ? (
+                <p className="art-fallback">
+                  <Mark kind="absent" say="This tool result carries no text." /> no text
+                </p>
+              ) : (
+                <pre className="art-code">{r.content}</pre>
+              )}
+            </details>
+          ) : (
+            <span className="ctl-sub">no result in this window</span>
+          )}
+          {record}
+          {kids.length > 0 && <StepList steps={kids} results={results} nested={nested} seen={nextSeen} />}
+        </li>
+      )
+    }
+    case 'tool_result': {
+      const r = step.tool_result
+      return (
+        <li className="arts-step is-tool">
+          <details className={`arts-more${r?.is_error ? ' is-bad' : ''}`}>
+            <summary>
+              tool result{r?.is_error ? ' · error' : ''}
+              <span className="ctl-sub">its call is not in this window</span>
+            </summary>
+            {r === null || r.content === null ? (
+              <p className="art-fallback">
+                <Mark kind="absent" say="This tool result carries no text." /> no text
+              </p>
+            ) : (
+              <pre className="art-code">{r.content}</pre>
+            )}
+          </details>{' '}
+          {capped}
+          {record}
+        </li>
+      )
+    }
+    case 'result': {
+      const turns = typeof m.num_turns === 'number' ? m.num_turns : null
+      return (
+        <li className="arts-step is-result">
+          <span className="arts-step-kind">
+            {resultWords(m.subtype)}
+            {turns !== null ? ` · ${turns} turns` : ''}
+          </span>{' '}
+          {m.is_error === true && <ToneMark tone="bad">the agent reported an error</ToneMark>} {capped}
+          {text(step.text)}
+          {record}
+        </li>
+      )
+    }
+    case 'init': {
+      return (
+        <li className="arts-step is-meta">
+          <span className="arts-step-kind">
+            init
+            {typeof m.model === 'string' ? ` · ${m.model}` : ''}
+            {typeof m.tool_count === 'number' ? ` · ${m.tool_count} tools` : ''}
+          </span>
+          {record}
+        </li>
+      )
+    }
+    case 'rate_limit':
+      return (
+        <li className="arts-step is-meta">
+          <span className="arts-step-kind">rate limit</span> <RateLimitFacts meta={step.meta} />
+          {record}
+        </li>
+      )
+    case 'system':
+      // THE CAPTURE'S OWN NOTICE is a system step (`meta.subtype:
+      // "capture_truncated"`) whose text is the line the worker wrote where it
+      // dropped the middle of the run: what was cut is in those words, so they
+      // are drawn, with the mark that says this is where the run is not whole.
+      return (
+        <li className="arts-step is-meta">
+          <span className="arts-step-kind">system{typeof m.subtype === 'string' ? ` · ${m.subtype}` : ''}</span>
+          {m.subtype === 'capture_truncated' && (
+            <>
+              {' '}
+              <Mark
+                kind="partial"
+                say="The worker's capture of the agent's output was cut at its size cap here: the steps before and after this line are the run's start and its end, and the middle between them was not kept."
+              />
+            </>
+          )}
+          {step.text !== null && step.text !== '' && <pre className="art-code">{step.text}</pre>}
+          {record}
+        </li>
+      )
+    case 'usage': {
+      // A CODEX TURN'S USAGE AS LABELLED FIGURES (CODEX-ROWS, part of archived issue 2459;
+      // owner, 2026-10-28, proposal B "New kinds in the drawer"). Tabular
+      // figures, so the rows of a long run line up; a figure the server did
+      // not send is left out, never drawn as 0, because codex not reporting
+      // it is not a measured zero. With no figure at all the server's words
+      // are drawn instead.
+      const figures = usageFigures(m)
+      return (
+        <li className="arts-step is-meta is-usage">
+          <span className="arts-step-kind">usage</span>{' '}
+          {figures.length > 0 ? (
+            <span className="arts-usage" style={{ fontVariantNumeric: 'tabular-nums' }}>
+              {figures.map((f, i) => (
+                <span key={f.label} data-figure={f.label}>
+                  {/* The separator rides with the figure after it, unbroken,
+                      so a narrow drawer wraps before a ` · `, never after it
+                      (a dangling dot, or "turn" split from its number). */}
+                  {i > 0 ? ' ' : ''}
+                  <span style={{ whiteSpace: 'nowrap' }}>
+                    {i > 0 ? '· ' : ''}
+                    {f.label === 'turn' ? `turn ${f.value}` : `${f.value} ${f.label}`}
+                  </span>
+                </span>
+              ))}
+            </span>
+          ) : (
+            step.text !== null && step.text !== '' && <span className="ctl-sub">{step.text}</span>
+          )}{' '}
+          {capped}
+          {record}
+        </li>
+      )
+    }
+    case 'error': {
+      // A CODEX ERROR IN THE DRAWER'S BAD TONE (CODEX-ROWS): the row takes
+      // `is-err`, the class a failed tool result's row takes, so it is tinted
+      // the same and "jump to error" reaches it; the label is the bad mark a
+      // failed result already wears. The message comes first; codex's retry
+      // counter, lifted out of it by the server, follows it, muted.
+      const attempt = typeof m.retry_attempt === 'number' ? m.retry_attempt : null
+      const limit = typeof m.retry_limit === 'number' ? m.retry_limit : null
+      return (
+        <li className="arts-step is-meta is-error is-err">
+          <ToneMark tone="bad">{m.subtype === 'turn_failed' ? 'error · turn failed' : 'error'}</ToneMark> {capped}
+          {step.text !== null && step.text !== '' && <pre className="art-code">{step.text}</pre>}
+          {/* Muted by its own colour: `.ctl-sub` is styled only inside a
+              table and a few panels, so in a log row it drew at full ink. */}
+          {attempt !== null && (
+            <span className="arts-retry" data-retry="" style={{ color: 'var(--text-faint)' }}>
+              (retrying, {attempt}
+              {limit !== null ? ` of ${limit}` : ''})
+            </span>
+          )}
+          {record}
+        </li>
+      )
+    }
+    case 'other':
+      // `meta.oversize`: ONE LINE LONGER THAN THE WINDOW, which the server
+      // does not decode and says so in the window's `stream.detail` (drawn
+      // above the steps). The step carries no text, so without its own words
+      // it is an empty `other` row that reads as an event with nothing in it.
+      if (m.oversize === true) {
+        return (
+          <li className="arts-step is-meta">
+            <span className="arts-step-kind">
+              line longer than this window{' '}
+              <Mark
+                kind="partial"
+                say="One line of the agent's output is longer than the window the server reads, so it was not decoded into a step and nothing of it is shown here. Its bytes are in the agent's stdout."
+              />
+            </span>
+            {record}
+          </li>
+        )
+      }
+      return (
+        <li className="arts-step is-meta">
+          <span className="arts-step-kind">other{typeof m.raw_type === 'string' ? ` · ${m.raw_type}` : ''}</span>{' '}
+          {capped}
+          {step.text !== null && <pre className="art-code">{step.text}</pre>}
+          {typeof m.detail === 'string' && <span className="ctl-sub">{m.detail}</span>}
+          {record}
+        </li>
+      )
+    default: {
+      // A KIND THIS CONSOLE DOES NOT KNOW YET (CODEX-ROWS): a server newer
+      // than the console can serve one. Without this case the switch
+      // returned nothing and `StepRow`'s `cloneElement` threw, blanking the
+      // whole Logs tab. It draws as an `other` row, named by its kind.
+      const kind: string = (step as { kind: string }).kind
+      return (
+        <li className="arts-step is-meta">
+          <span className="arts-step-kind">other · {kind}</span> {capped}
+          {step.text !== null && <pre className="art-code">{step.text}</pre>}
+          {record}
+        </li>
+      )
+    }
+  }
+}
+
+/**
+ * A `usage` step's figures in the order the drawer says them, each one only
+ * when the server sent it as a number: "48,210 input · 41,900 cached · 2,316
+ * output · turn 3".
+ */
+function usageFigures(m: Record<string, unknown>): { label: string; value: string }[] {
+  const out: { label: string; value: string }[] = []
+  for (const [key, label] of [
+    ['input_tokens', 'input'],
+    ['cached_input_tokens', 'cached'],
+    ['output_tokens', 'output'],
+    ['turn', 'turn'],
+  ] as const) {
+    const v = m[key]
+    if (typeof v === 'number' && Number.isFinite(v)) out.push({ label, value: v.toLocaleString('en-US') })
+  }
+  return out
+}
+
+/**
+ * A RATE-LIMIT READING IN WORDS, AND ITS RESET IN LOCAL TIME (archived issue 222,
+ * post-deploy QA of 2026-09-26). The step printed the server's flattened keys
+ * and an epoch -- `rate_limit_info.resetsAt 1790401200` -- which a reader has
+ * to decode before it says anything. Each known reading is worded; a reset is
+ * this browser's local time, said to be local; a key this screen does not
+ * know is its name in words, and a value it cannot word is printed as sent,
+ * never dropped.
+ */
+function RateLimitFacts({ meta }: { meta: Record<string, unknown> | null }) {
+  const words = Object.entries(meta ?? {})
+    .filter(([, x]) => typeof x === 'string' || typeof x === 'number' || typeof x === 'boolean')
+    .map(([k, x]) => rateLimitWords(k.replace(/^rate_limit_info\./, ''), x as string | number | boolean))
+  if (words.length === 0) return null
+  return <span className="ctl-sub">{words.join(' · ')}</span>
+}
+
+const RATE_LIMIT_STATUS: Record<string, string> = {
+  allowed: 'allowed',
+  allowed_warning: 'allowed, near the limit',
+  rejected: 'rejected',
+}
+
+const RATE_LIMIT_WINDOW: Record<string, string> = {
+  five_hour: '5-hour window',
+  seven_day: '7-day window',
+  seven_day_opus: '7-day Opus window',
+  seven_day_sonnet: '7-day Sonnet window',
+  overage: 'overage',
+}
+
+/** A moment from a reading's epoch (seconds, or milliseconds when that large), in local time. */
+function localMoment(epoch: number): string {
+  const ms = epoch > 1e12 ? epoch : epoch * 1000
+  const d = new Date(ms)
+  if (!Number.isFinite(d.getTime())) return String(epoch)
+  return `${d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })} local`
+}
+
+function rateLimitWords(key: string, value: string | number | boolean): string {
+  switch (key) {
+    case 'status':
+      return typeof value === 'string' ? (RATE_LIMIT_STATUS[value] ?? value.replace(/_/g, ' ')) : `status ${String(value)}`
+    case 'rateLimitType':
+      return typeof value === 'string' ? (RATE_LIMIT_WINDOW[value] ?? `${value.replace(/_/g, ' ')} window`) : `window ${String(value)}`
+    case 'resetsAt':
+      return typeof value === 'number' ? `resets ${localMoment(value)}` : `resets ${String(value)}`
+    case 'overageResetsAt':
+      return typeof value === 'number' ? `overage resets ${localMoment(value)}` : `overage resets ${String(value)}`
+    case 'utilization':
+      return typeof value === 'number' ? `${value <= 1 ? Math.round(value * 100) : value}% used` : `used ${String(value)}`
+    case 'surpassedThreshold':
+      return typeof value === 'number' ? `past ${value <= 1 ? Math.round(value * 100) : value}%` : `past ${String(value)}`
+    case 'isUsingOverage':
+      return value === true ? 'using overage' : value === false ? 'not using overage' : `overage ${String(value)}`
+    case 'overageStatus':
+      return `overage ${typeof value === 'string' ? value.replace(/_/g, ' ') : String(value)}`
+    default: {
+      // A key this screen does not know: its name in words, and a moment
+      // (a key ending in `At` or `_at` holding an epoch) in local time.
+      const name = key
+        .replace(/\./g, ' ')
+        .replace(/_/g, ' ')
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .toLowerCase()
+      const moment = typeof value === 'number' && /(At|_at)$/.test(key)
+      return `${name} ${moment ? localMoment(value as number) : String(value)}`
+    }
+  }
+}
+
+/**
+ * A TOOL CALL'S ONE-LINE GIST (QA1 overview-agents-31, 2026-10-28): forty
+ * rows of `tool · browser_click` could not be told apart without opening
+ * each. The first field a reader looks for -- where it went or what it
+ * touched -- else the first text field, on one line and cut at 80
+ * characters. Null for an input that is not a JSON object or holds no text.
+ */
+const GIST_KEYS = ['url', 'element', 'selector', 'ref', 'file_path', 'path', 'command', 'pattern', 'query', 'text'] as const
+
+export function inputGist(input: string | null): string | null {
+  if (input === null) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(input)
+  } catch {
+    return null
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  const o = parsed as Record<string, unknown>
+  const key = GIST_KEYS.find((k) => typeof o[k] === 'string' && (o[k] as string).trim() !== '') ?? Object.keys(o).find((k) => typeof o[k] === 'string' && (o[k] as string).trim() !== '')
+  if (key === undefined) return null
+  const line = (o[key] as string).replace(/\s+/g, ' ').trim()
+  return line.length > 80 ? `${line.slice(0, 79)}…` : line
+}
+
+/**
+ * A RESULT STEP IN WORDS (QA1 overview-agents-37, 2026-10-28): the row read
+ * `result · error_during_execution · 7 turns`, the CLI's enum. A subtype the
+ * console has no words for keeps its name after `result`.
+ */
+const RESULT_WORDS: Readonly<Record<string, string>> = {
+  error_during_execution: 'Stopped on an error',
+  error_max_turns: 'Stopped at its turn limit',
+  error_max_budget_usd: 'Stopped at its budget',
+}
+
+export function resultWords(subtype: unknown): string {
+  if (typeof subtype !== 'string') return 'result'
+  return RESULT_WORDS[subtype] ?? `result · ${subtype}`
+}

@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "plugins": {
+    "gstack": {
+      "install_id": "builtin:gstack",
+      "install_path": "/opt/swarm/plugins/gstack",
+      "version": "1.92.55.0",
+      "source": {
+        "object": "github.com/garrytan/gstack/archive/refs/tags/v1.92.55.0.tar.gz",
+        "sha256": "63c118f13ccf0d72d06d7bff56231dc08ce3da29ce405ed567224dd303cf5bd2",
+        "commit": "2512dd7624a474fee036326989ea0c6bb8470e69"
+      },
+      "toolchain": {
+        "bun": {
+          "version": "1.4.2",
+          "object": "github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64.zip",
+          "sha256": "36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913"
+        }
+      }
+    },
+    "security-audit": {
+      "install_id": "builtin:security-audit",
+      "install_path": "/opt/swarm/plugins/security-audit",
+      "version": "c1c8a8c1471069fb0e188eeaff69b8e8db6564a8",
+      "source": {
+        "object": "github.com/cloudflare/security-audit-skill/archive/c1c8a8c1471069fb0e188eeaff69b8e8db6564a8.tar.gz",
+        "sha256": "53e708ebf770dfe35b57df0586a5058707081a870cd149ce30a2d57c51ed29b6",
+        "commit": "c1c8a8c1471069fb0e188eeaff69b8e8db6564a8"
+      }
+    }
+  }
+}

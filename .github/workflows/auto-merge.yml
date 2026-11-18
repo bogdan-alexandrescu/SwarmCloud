@@ -1,0 +1,1607 @@
+# The `ready` label queues a pull request for GitHub's native auto-merge (archived issue 262).
+#
+# WHY THIS EXISTS. A green pull request labelled `ready` used to wait for a
+# merge watcher running in an operator's session: no session, no merge. Owner
+# decision, 2026-09-28: GitHub merges it. Adding the label enables auto-merge;
+# GitHub itself performs the merge once the base branch's required checks pass
+# at the pull request's head. Nothing here waits for CI or polls.
+#
+# THE MERGE MUST STILL START THE RELEASE. A merge performed with the default
+# GITHUB_TOKEN starts no workflow: GitHub drops every event that token causes
+# except workflow_dispatch and repository_dispatch. So the push to main would
+# run neither application.yml -- whose `build images` job is the one build of
+# the commit -- nor release.yml, which waits for that build. Nothing would go
+# red; main would just stop being built and deployed. A `workflow_run` or a
+# second `push` workflow does not rescue it: both hang off an event the
+# GITHUB_TOKEN merge never raised, and this workflow's own run ends when
+# auto-merge is ENABLED, long before GitHub merges. So auto-merge is enabled
+# with a GitHub App's installation token. GitHub attributes the eventual merge
+# to whoever enabled auto-merge, and an App's push starts workflows like a
+# person's does. The App (vars.MERGE_APP_ID, secrets.MERGE_APP_PRIVATE_KEY) is
+# something only the owner can create; docs/ci.md says how. Without it this
+# workflow refuses and says so -- it never falls back to the GITHUB_TOKEN.
+#
+# pull_request_target, BECAUSE a `pull_request` run from a fork gets a
+# read-only token and no secrets. The price is that this job runs with a write
+# token on an event the pull request's author can influence, so:
+#
+#   * it never checks out and never runs the pull request's code. It reads
+#     three event fields and calls `gh`, and runs one script from the
+#     DEFAULT branch's scripts/ (sparse, no credentials); that is all;
+#   * the title reaches the shell through `env:` only. A `${{ }}` expansion of
+#     the title inside `run:` would be the title executed as bash;
+#   * its GITHUB_TOKEN reads the base branch, the head commit's check runs and
+#     comments, nothing more. The App token is minted after the gate, scoped
+#     to this repository and to contents + pull-requests + workflows -- the
+#     last one so that a pull request touching .github/workflows also
+#     auto-merges (owner decision, 2026-09-28). Requesting it here grants
+#     nothing until the owner creates the App with that permission;
+#     docs/ci.md says so.
+#
+# `READY` IS BOUND TO THE COMMIT IT WAS PUT ON, NOT TO THE NUMBER. Both `gh pr
+# merge` calls below carry `--match-head-commit`, so a push after the label --
+# including the SwarmCloud worker's own push, or a fork push in the seconds
+# between the label and this job -- makes GitHub refuse the merge rather than
+# squash a commit nobody reviewed. The `disable` job below is the other half:
+# on `synchronize`, `reopened`, or an `edited` that changes the base, it turns
+# auto-merge off and removes `ready`, because a still-armed auto-merge on an
+# old head would otherwise merge the next time the required checks go green.
+#
+# EXCEPT A PURE BASE MERGE, AND THE DISABLE IS REAL (archived issue 795, owner decision
+# 2026-10-07). A push that only merges the base into the labelled head -- a
+# merge commit whose parents are that head and a commit on the base, whose
+# tree is exactly their merge: GitHub's "Update branch" -- keeps `ready` and
+# auto-merge, and an `enable` run that GitHub refused because the head moved
+# that way while it waited for a runner arms once more at the new head. Any
+# other push turns auto-merge off with the merge App's token, reads it back,
+# and fails the job if it is still on: the GITHUB_TOKEN's `--disable-auto`
+# got "Resource not accessible by integration" and an `|| true` hid it, so 17
+# of 24 merges on 2026-10-07 landed with no label at a head nobody labelled.
+#
+# A MERGE CLOSES THE ISSUES ITS KEYWORDS NAME (archived issue 621). GitHub parsed the
+# closing keywords of the pull requests this App merged and left 28 of their
+# 33 issues open (history analysis, 2026-10-05). Owner decision, 2026-10-05:
+# the `close-issues` job below closes them on the `closed` event of a merged
+# pull request, with the GITHUB_TOKEN's issues: write -- on that job only --
+# and no change to the App's permissions. It runs main's
+# scripts/close-merged-issues.sh, which closes exactly GitHub's
+# closingIssuesReferences: `part of #N` is never one.
+#
+# A LABEL THAT LANDS WHILE CHECKS STILL RUN IS LOOKED AT AGAIN (archived pull request 697). The
+# gate used to refuse a pull request whose checks were still running and
+# never looked again, so archived pull request 697 -- labelled while its CI ran, like every pull
+# request SwarmCloud opens with pr_label ready -- sat unmerged after going
+# green (observer P13, 2026-10-06). Owner decision, 2026-10-06: it is merged
+# once its checks are green at head. So the gate WAITS on a running check
+# (one comment, nothing armed), and the `requeue` job, on every
+# `workflow_run: completed` of a workflow that runs on pull requests,
+# dispatches this workflow for each open `ready` pull request at that run's
+# head. The dispatched run is the `enable` job again: the same gate, the
+# same refusals, the same App-token merge. `workflow_run` cannot merge by
+# itself -- see above -- and `check_suite` never fires for a suite GitHub
+# Actions created; a `workflow_dispatch` sent with the GITHUB_TOKEN is one of
+# the two events that token still starts. Nothing here waits or polls: the
+# last run to finish on the head is what merges it.
+#
+# ONLY A REQUIRED CHECK STILL RUNNING HOLDS IT (archived issue 815). archived pull request 811 got `ready` while
+# code scanning's `Trivy` -- a check ruleset 24160219 does not require, and
+# no application or security run reports -- was still running. The gate
+# waited on it, nothing re-evaluated when it finished, and the merge queue
+# stalled for five hours until an operator dispatched this by hand. So the
+# wait reads gate item 3's required names, and only one of those still
+# running waits; the rest is native auto-merge's to wait for, which it does
+# for exactly the required checks. A check that already FAILED still refuses,
+# required or not (item 5). And `check_suite: completed` -- a suite another
+# App created, which code scanning's is -- dispatches the same re-evaluation,
+# as a backstop for a required check no workflow run reports.
+#
+# A BASE THAT REQUIRES A MERGE QUEUE IS ENQUEUED, NEVER MERGED DIRECTLY
+# (owner decision 2026-10-06, docs/ci.md "Merging through the merge queue").
+# The gate reads whether `main`'s effective rules carry a `merge_queue` rule
+# from the same read as its item 3, and says `queue`. Then `gh pr merge
+# --auto` arms auto-merge, which on a queued base enqueues the pull request
+# once its required checks pass; the queue's own merge method decides how it
+# lands, so no `--squash` and no `--subject` there. The already-green
+# fallback enqueues through GraphQL `enqueuePullRequest`, pinned to the head
+# like every merge here -- never a direct merge, which would be the queue
+# bypassed. Without the rule, everything below is exactly what it was.
+#
+# A CLOSING KEYWORD MUST NOT NAME AN OPEN PULL REQUEST (owner decision
+# 2026-10-08). 857's text named the open, unmerged 840 with a closing keyword,
+# and GitHub itself closed 840 two seconds after the App merged 857. Before
+# the gate, the enable job runs main's scripts/check-closing-references.sh;
+# an open pull request named that way is refused on the label and on a
+# re-evaluation alike: `ready` removed, a comment saying what to reword, and
+# nothing armed. A check that cannot tell fails the job: fail closed.
+#
+# A PULL REQUEST WAITS FOR WHAT IT SAYS IT DEPENDS ON (owner decision
+# 2026-10-08, observer proposal I part 2). A body line `depends on PR <N>` or
+# `depends on #<N>`, any case, names something that must land first. The
+# enable job runs main's scripts/check-pr-dependencies.sh beside the closing-
+# references check; while a pull request named that way is not merged, or an
+# issue not closed, the gate refuses: a comment, and `ready` removed on the
+# label as on a re-evaluation (archived issue 888 box 99). Editing the body of an open
+# `ready` pull request dispatches a re-evaluation (`requeue-edited`, archived issue 888 box
+# 97), so adding or removing the line is looked at then, not at the next CI
+# finish. docs/ci.md, "Saying what a pull request depends on". A check that
+# cannot tell fails the job: fail closed.
+#
+# WITH THE MERGE TRAIN ON, `READY` IS THE TRAIN'S (owner decision 2026-10-14,
+# "A1 Merge train"). vars.MERGE_TRAIN = `on` makes the gate say `train` where
+# it would have said `merge` or `wait`: every refusal still applies, nothing
+# is armed, and .github/workflows/merge-train.yml boards the pull request once
+# it is green at head, tests it with others on main and lands it. With the
+# variable unset (the default) or anything but `on`, this workflow is exactly
+# what it was. docs/runbooks/merge-train.md says when to turn it on.
+# tests/unit/scripts/test_merge_train.py holds both halves.
+#
+# `READY-ON-GREEN` BECOMES `READY` HERE, NOT IN A SESSION (owner decision
+# 2026-10-17). The `ready-on-green` job judges each pull request carrying that
+# label at its head with main's scripts/merge-train.sh judge -- on a finishing
+# run or check suite for the pull requests at its head, and every 15 minutes
+# for all of them -- and, green, swaps the label for `ready` with the merge
+# App's token, so the `labeled` event starts `enable`. A red head gets one
+# comment per head. docs/ci.md; test_auto_merge_ready_on_green.py.
+#
+# tests/unit/scripts/test_auto_merge_workflow.py holds every point above and
+# runs the enable, requeue, requeue-edited and disable jobs' shells against a
+# fake `gh`;
+# test_auto_merge_base_merge.py runs the base-merge classifier against a real
+# git history, and the disable and the retry against a fake `gh`;
+# test_close_merged_issues.py runs the close script the same way.
+
+name: auto-merge
+
+on:
+  pull_request_target:
+    types: [labeled, synchronize, reopened, edited, closed]
+  # Every workflow whose completion can be the LAST on a pull request's head,
+  # by `name:`. One left out is a check whose completion never re-evaluates:
+  # if it finishes last, the pull request sits, which is archived pull request 697 again. That is
+  # application (ci-gate is its last job, since 2026-10-07 not a workflow of
+  # its own) and every `pull_request` workflow ci-gate does not wait for --
+  # today security. terraform is not here (archived issue 795): application's ci-gate job
+  # waits for terraform's run at its head (CI_GATE_WORKFLOWS=terraform.yml),
+  # so terraform's completion was never the last one and each started a run
+  # of this workflow for nothing -- 294+ runs in one night. If ci-gate gives
+  # up before it it is a failing check, which refuses on any re-evaluation
+  # anyway. The test derives this list from the workflow files.
+  workflow_run:
+    workflows: [application, security]
+    types: [completed]
+  # The backstop for every check NOT reported by a workflow run (archived issue 815): code
+  # scanning's `Trivy` was the last check on archived pull request 811 and nothing re-evaluated it.
+  # GitHub runs no workflow on `check_suite` for a suite GitHub Actions
+  # created, so this never fires for application or security -- `workflow_run`
+  # above stays the way in for those -- only for another App's suite.
+  check_suite:
+    types: [completed]
+  # The `ready-on-green` job's backstop, and the only job it starts: every
+  # other job's `if` names its own event. Fifteen minutes, the owner's brief
+  # (2026-10-17): a run that finished without re-evaluating costs at most that.
+  schedule:
+    - cron: "*/15 * * * *"
+  # Sent by `requeue` below; an operator may send it too, to make this look at
+  # a `ready` pull request again. It is a request to look, not a `ready`: the
+  # `pr` step does nothing unless the pull request is open and carries it.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Number of an open pull request labelled ready, to re-evaluate"
+        required: true
+        type: number
+
+permissions: {}
+
+concurrency:
+  # Two `ready` labels in a row on one pull request: the second run is a no-op.
+  # A re-evaluation queues in its own group: a queued run cancels the one
+  # queued before it in its group, so a burst of finishing CI runs must not
+  # cancel a queued `synchronize` (the disable job) on the same pull request.
+  # A `workflow_run` or a `check_suite` has no pull request; its run id keeps
+  # each one alone.
+  #
+  # Every pull_request_target run but `labeled` is alone in its group too, so
+  # no later event can cancel it before it runs (archived issue 795 review). The pure-base-
+  # merge exemption classifies a push against `before`, the head just before
+  # it -- which is the labelled head only if every push in between had its
+  # own run. Label L, push a foreign commit A, click Update branch (B merges
+  # main into A): sharing one group, B's pending run cancelled A's, B's run
+  # saw a pure merge over A, and auto-merge stayed armed with `ready` on an
+  # unreviewed A. Alone, A's run always disarms and strips, in whichever
+  # order the two run. Running beside a `labeled` run is safe: every arming
+  # is pinned with --match-head-commit, so GitHub refuses an arming at a head
+  # that moved, and the enable job re-arms only over a pure base merge of the
+  # head it was labelled at. `closed` is alone for the same reason: a later
+  # label must not cancel close-issues.
+  group: auto-merge-${{ github.event_name == 'workflow_dispatch' && 'requeue-' || '' }}${{ github.event.pull_request.number || inputs.pr || github.run_id }}${{ github.event_name == 'pull_request_target' && github.event.action != 'labeled' && format('-{0}', github.run_id) || '' }}
+  cancel-in-progress: false
+
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted runner pool's VMs through the one guarded
+# `runs-on` expression, in its SHORT form: only the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch) sends it to
+# GitHub-hosted ubuntu-24.04. The fork-PR clause the other workflows carry is
+# left out on purpose: this workflow runs on pull_request_target (the base
+# branch's workflow file), workflow_run, check_suite and dispatch, and never
+# checks out or runs a pull request's code (test_auto_merge_workflow.py holds
+# that; test_fork_prs_off_self_hosted.py holds that it has no `pull_request`
+# trigger). Every job that stays hosted is listed, with why, in that test.
+jobs:
+  enable:
+    name: queue for auto-merge
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    # The merge App's key (MERGE_APP_PRIVATE_KEY) lives in environment
+    # `repo-secrets`, whose deployment branches are `main` only (the owner,
+    # 2026-10-23, REPO-SECRETS-ENV; docs/ci.md): a repository secret is read
+    # by a workflow on ANY pushed branch, before any review or hold.
+    # Every trigger here runs on main's ref -- pull_request_target (main's
+    # ref whatever the base, since GitHub's 2025-12-08 change), workflow_run,
+    # check_suite, schedule, and the requeue's dispatch with --ref main -- so
+    # the rule admits them; a workflow_dispatch
+    # from another branch is refused, and that is the point. `deployment:
+    # false` (GitHub Actions, March 2026) reads the secrets without a
+    # deployment record on the pull request. test_repo_secrets_environment.py.
+    environment:
+      name: repo-secrets
+      deployment: false
+    # The label event itself, or a re-evaluation dispatched by `requeue`.
+    if: >-
+      (github.event_name == 'pull_request_target' &&
+       github.event.action == 'labeled' &&
+       github.event.label.name == 'ready' &&
+       github.event.pull_request.state == 'open') ||
+      github.event_name == 'workflow_dispatch'
+    permissions:
+      # contents: read -- the base branch's classic protection summary
+      #   (`branches/{branch}`, the gate, item 3). The same item's effective
+      #   rules (`rules/branches/{branch}`, rulesets included) need only
+      #   repository Metadata read, which every GITHUB_TOKEN carries whatever
+      #   `permissions:` says, and the endpoint is public on a public repo.
+      # checks: read -- the head commit's check runs (the gate, items 5 and
+      #   6): a check that ran and is failing holds the merge whether or not
+      #   it is required; one still running holds it only when it is
+      #   required (archived issue 815).
+      # actions: read -- the Actions runs at the head commit (item 5): the
+      #   event that made each check suite, which a check's runs are grouped
+      #   by (CHECK-RULE). Read only when a check has more than one run.
+      # pull-requests: write -- the comment that explains a refusal.
+      contents: read
+      checks: read
+      actions: read
+      pull-requests: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      EVENT_NAME: ${{ github.event_name }}
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+    steps:
+      # On a label, the pull request is the event's. On a re-evaluation it is
+      # read back from the API -- title and head as they are NOW -- and only
+      # an open pull request still carrying `ready` is evaluated: a push since
+      # (the disable job dropped the label), a refusal, or a merge ends it.
+      - name: read the pull request this run is about
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_TITLE: ${{ github.event.pull_request.title }}
+          EVENT_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
+            if [[ ! "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::the pr input is not a pull request number: ${PR_NUMBER}"
+              exit 1
+            fi
+            view="$(mktemp)"
+            gh pr view "${PR_NUMBER}" --json state,title,baseRefName,headRefOid,labels >"${view}"
+            if ! jq -e '.state == "OPEN" and any(.labels[]; .name == "ready")' "${view}" >/dev/null; then
+              echo "evaluate=false" >>"${GITHUB_OUTPUT}"
+              echo "#${PR_NUMBER} is not an open pull request labelled \`ready\`: nothing to re-evaluate." >>"${GITHUB_STEP_SUMMARY}"
+              exit 0
+            fi
+            title="$(jq -r .title "${view}")"
+            base_ref="$(jq -r .baseRefName "${view}")"
+            head_sha="$(jq -r .headRefOid "${view}")"
+          else
+            title="${EVENT_TITLE}"
+            base_ref="${EVENT_BASE_REF}"
+            head_sha="${EVENT_HEAD_SHA}"
+          fi
+          # The title is the author's text: written as a delimited block with
+          # a random delimiter, so no line of it can set another output.
+          delimiter="TITLE_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            echo "evaluate=true"
+            echo "title<<${delimiter}"
+            printf '%s\n' "${title}"
+            echo "${delimiter}"
+            echo "base_ref=${base_ref}"
+            echo "head_sha=${head_sha}"
+          } >>"${GITHUB_OUTPUT}"
+
+      # The DEFAULT branch's scripts/, for the closing-references check below:
+      # main's reviewed code, never the pull request's head or fork, and no
+      # credentials left in the checkout. Nothing of the pull request runs.
+      - name: check out the default branch's scripts
+        id: main-scripts
+        if: steps.pr.outputs.evaluate == 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      # A CLOSING KEYWORD BEFORE AN OPEN PULL REQUEST (owner decision
+      # 2026-10-08). 857's text named the open, unmerged 840 with a closing
+      # keyword, and GitHub closed 840 two seconds after the App merged 857.
+      # The script reads GitHub's closing references and the keywords in the
+      # title, body and commit messages (closingIssuesReferences never lists a
+      # pull request), and asks of each whether it is an open pull request.
+      # Exit 2 hands the gate its refusal comment; any other failure fails this
+      # step, so the gate never runs and nothing is armed: fail closed.
+      - name: find open pull requests this one's closing keywords would close
+        id: closing-references
+        if: steps.pr.outputs.evaluate == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out="$(mktemp)"
+          rc=0
+          scripts/check-closing-references.sh --pr "${PR_NUMBER}" >"${out}" || rc=$?
+          if [[ "${rc}" -eq 0 ]]; then
+            echo "refusal=" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ "${rc}" -ne 2 || ! -s "${out}" ]]; then
+            echo "::error::could not tell whether #${PR_NUMBER}'s closing keywords name an open pull request (exit ${rc}): not merged"
+            exit 1
+          fi
+          delimiter="REFUSAL_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            echo "refusal<<${delimiter}"
+            cat "${out}"
+            echo "${delimiter}"
+          } >>"${GITHUB_OUTPUT}"
+
+      # WHAT THIS ONE DEPENDS ON MUST HAVE LANDED (owner decision 2026-10-08,
+      # observer proposal I part 2). The body's `depends on PR <N>` and
+      # `depends on #<N>` lines; a pull request named so must be merged, an
+      # issue closed. Main's script, like the step above: exit 2 hands the
+      # gate its refusal, any other failure fails this step, so the gate never
+      # runs and nothing is armed: fail closed.
+      - name: find what this pull request depends on that has not landed
+        id: dependencies
+        if: steps.pr.outputs.evaluate == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out="$(mktemp)"
+          rc=0
+          scripts/check-pr-dependencies.sh --pr "${PR_NUMBER}" >"${out}" || rc=$?
+          if [[ "${rc}" -eq 0 ]]; then
+            echo "refusal=" >>"${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          if [[ "${rc}" -ne 2 || ! -s "${out}" ]]; then
+            echo "::error::could not tell whether what #${PR_NUMBER} depends on has landed (exit ${rc}): not merged"
+            exit 1
+          fi
+          delimiter="REFUSAL_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            echo "refusal<<${delimiter}"
+            cat "${out}"
+            echo "${delimiter}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: refuse what must not be queued, and say why on the pull request
+        id: gate
+        if: steps.pr.outputs.evaluate == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          MERGE_APP_ID: ${{ vars.MERGE_APP_ID }}
+          HAS_MERGE_APP_KEY: ${{ secrets.MERGE_APP_PRIVATE_KEY != '' }}
+          CLOSING_REFUSAL: ${{ steps.closing-references.outputs.refusal }}
+          DEPENDENCY_REFUSAL: ${{ steps.dependencies.outputs.refusal }}
+          # `on` hands a `ready` pull request to the merge train instead of
+          # arming auto-merge (item 5b). Unset or anything else: unchanged.
+          MERGE_TRAIN: ${{ vars.MERGE_TRAIN }}
+        # Says `decision` = merge, wait, train or refused; only `merge` runs the
+        # steps after it. A refusal on the label fails the run, as it always
+        # has. A refusal on a re-evaluation runs on main's head commit, so it
+        # does not fail; it drops `ready` and says `disarm`, for the `disarm`
+        # step to turn auto-merge off with the App token (archived issue 795: the
+        # GITHUB_TOKEN cannot), so the next finishing run does not say it
+        # again -- except a refusal
+        # only the owner can fix (`owner`: no required checks, no merge App),
+        # which keeps `ready` for the operator's merge watcher and says
+        # nothing more on the pull request than the label run already did.
+        run: |
+          set -euo pipefail
+          reevaluation=false
+          if [[ "${EVENT_NAME:-}" == "workflow_dispatch" ]]; then
+            reevaluation=true
+          fi
+          refuse() {
+            local body
+            body="$(mktemp)"
+            echo "decision=refused" >>"${GITHUB_OUTPUT}"
+            if [[ "${reevaluation}" == "true" ]]; then
+              if [[ "${2:-}" != "owner" ]]; then
+                echo "disarm=true" >>"${GITHUB_OUTPUT}"
+                gh pr edit "${PR_NUMBER}" --remove-label ready
+                {
+                  echo "**Not merged, and \`ready\` removed.** $1"
+                  echo
+                  echo "Found when a CI run finished on the head commit. Fix that, then add the \`ready\` label again."
+                  echo "(.github/workflows/auto-merge.yml)"
+                } >"${body}"
+                gh pr comment "${PR_NUMBER}" --body-file "${body}"
+              fi
+              {
+                echo "### Not merged on re-evaluation"
+                echo
+                echo "$1"
+              } >>"${GITHUB_STEP_SUMMARY}"
+              echo "::warning::not merged on re-evaluation: $1"
+              exit 0
+            fi
+            {
+              echo "**Not queued for auto-merge.** $1"
+              echo
+              echo "Fix that, then remove and re-add the \`ready\` label."
+              echo "(.github/workflows/auto-merge.yml)"
+            } >"${body}"
+            gh pr comment "${PR_NUMBER}" --body-file "${body}"
+            {
+              echo "### Not queued for auto-merge"
+              echo
+              cat "${body}"
+            } >>"${GITHUB_STEP_SUMMARY}"
+            echo "::error::not queued for auto-merge: $1"
+            exit 1
+          }
+
+          # 0. A closing keyword names an OPEN pull request (the step before
+          #    found it; owner decision 2026-10-08). Unlike the refusals
+          #    below, `ready` comes off on the label too, and the comment is
+          #    the check's own: it says what to reword. On a re-evaluation it
+          #    also says `disarm`, for an auto-merge an earlier run armed.
+          if [[ -n "${CLOSING_REFUSAL:-}" ]]; then
+            echo "decision=refused" >>"${GITHUB_OUTPUT}"
+            gh pr edit "${PR_NUMBER}" --remove-label ready
+            body="$(mktemp)"
+            {
+              printf '%s\n' "${CLOSING_REFUSAL}"
+              echo
+              echo "(.github/workflows/auto-merge.yml, scripts/check-closing-references.sh)"
+            } >"${body}"
+            gh pr comment "${PR_NUMBER}" --body-file "${body}"
+            {
+              echo "### Not merged: a closing keyword names an open pull request"
+              echo
+              cat "${body}"
+            } >>"${GITHUB_STEP_SUMMARY}"
+            if [[ "${reevaluation}" == "true" ]]; then
+              echo "disarm=true" >>"${GITHUB_OUTPUT}"
+              echo "::warning::not merged on re-evaluation: a closing keyword names an open pull request"
+              exit 0
+            fi
+            echo "::error::not queued for auto-merge: a closing keyword names an open pull request"
+            exit 1
+          fi
+
+          # 0b. What the body says this depends on has not landed (the step
+          #    before found it; owner decision 2026-10-08). `ready` comes off
+          #    on the label too, as in item 0, and the comment says so (archived issue 888
+          #    box 99): kept, the next CI-finish re-evaluation removed it with
+          #    a second comment long after this one. On a re-evaluation it is
+          #    `refuse`'s, which also disarms. Nothing re-evaluates when the
+          #    dependency merges, so the author adds `ready` again then; an
+          #    edit of the body re-evaluates (the `requeue-edited` job).
+          if [[ -n "${DEPENDENCY_REFUSAL:-}" ]]; then
+            if [[ "${reevaluation}" == "true" ]]; then
+              refuse "${DEPENDENCY_REFUSAL}"
+            fi
+            echo "decision=refused" >>"${GITHUB_OUTPUT}"
+            gh pr edit "${PR_NUMBER}" --remove-label ready
+            body="$(mktemp)"
+            {
+              printf '%s\n' "**Not queued for auto-merge, and \`ready\` removed.** ${DEPENDENCY_REFUSAL}"
+              echo
+              echo "Once it has landed, or the line is gone, add the \`ready\` label again."
+              echo "(.github/workflows/auto-merge.yml, scripts/check-pr-dependencies.sh)"
+            } >"${body}"
+            gh pr comment "${PR_NUMBER}" --body-file "${body}"
+            {
+              echo "### Not queued for auto-merge: a dependency has not landed"
+              echo
+              cat "${body}"
+            } >>"${GITHUB_STEP_SUMMARY}"
+            echo "::error::not queued for auto-merge: a dependency has not landed"
+            exit 1
+          fi
+
+          # 1. A worker's placeholder title. The squash subject below IS the
+          #    title (and through a merge queue, the merge commit's message
+          #    carries it), so queuing this would put "[swarm] task_..." on
+          #    main -- the archived pull request 238 defect with a different string. Quoted, so
+          #    the prefix is literal: an unquoted [swarm] is a glob bracket
+          #    expression matching one character. Case- and leading-whitespace-
+          #    insensitive: "[Swarm] task_" or "  [swarm] task_" is still the
+          #    placeholder, not a fact-style headline that happens to differ in
+          #    case.
+          no_leading_space="${PR_TITLE#"${PR_TITLE%%[![:space:]]*}"}"
+          lower_title="$(printf '%s' "${no_leading_space}" | tr '[:upper:]' '[:lower:]')"
+          if [[ "${lower_title}" == "[swarm] task_"* ]]; then
+            refuse "The title starts \`[swarm] task_\`: it is the worker's placeholder, and the pull request's title is what main's history records for it -- the squash commit's headline, or the merge queue's merge commit message. Retitle it as a fact-style headline that says what the change does."
+          fi
+
+          # 2. Only main is protected and only main's push starts the release
+          #    (see the top of this file). A pull request based on anything
+          #    else has no required checks for auto-merge to gate on and no
+          #    release for the merge to start.
+          if [[ "${BASE_REF}" != "main" ]]; then
+            refuse "The base branch is \`${BASE_REF}\`, not \`main\`. Auto-merge only ever targets main."
+          fi
+
+          # 3. Nothing to wait for. With no required check on the base branch,
+          #    auto-merge has no condition to hold on, and the pull request
+          #    merges at once, red or not.
+          #    main is protected by a repository RULESET (main-protection,
+          #    24160219; owner decision 2026-09-29), not classic branch
+          #    protection, whose `.protection` block on `branches/main` is off
+          #    and empty. Reading only that block refused every `ready` label
+          #    (2026-10-01, archived pull request 412, archived pull request 403). So the count is the union of the
+          #    branch's EFFECTIVE rules -- every ruleset that applies, via
+          #    `rules/branches/{branch}` -- and classic protection's checks,
+          #    unique by name, so a repository that moves back to classic
+          #    protection still counts. Paginated: the rules list is a page of
+          #    rules, and `jq -s add` joins however many pages come back.
+          branch="$(mktemp)"
+          gh api "repos/${GH_REPO}/branches/${BASE_REF}" >"${branch}"
+          rules="$(mktemp)"
+          gh api --paginate "repos/${GH_REPO}/rules/branches/${BASE_REF}?per_page=100" >"${rules}"
+          required_names="$(mktemp)"
+          {
+            jq -r '(.protection.required_status_checks.contexts // [])[],
+                   ((.protection.required_status_checks.checks // [])[] | .context)' "${branch}"
+            jq -rs 'add // [] | .[]
+                    | select(.type == "required_status_checks")
+                    | (.parameters.required_status_checks // [])[] | .context' "${rules}"
+          } >"${required_names}"
+          required="$(jq -Rs 'split("\n") | map(select(length > 0)) | unique | length' "${required_names}")"
+          if [[ "${required}" -eq 0 ]]; then
+            refuse "\`${BASE_REF}\` has no required status checks in its rulesets or its branch protection, so auto-merge would merge this now whether CI is green or not. The owner sets them on the \`main-protection\` ruleset with the command in docs/ci.md." owner
+          fi
+          # Whether the base merges only through a merge queue: the merge
+          #    step enqueues there instead of squashing (docs/ci.md "Merging
+          #    through the merge queue"). Same rules read as above.
+          queue="$(jq -rs 'add // [] | any(.[]; .type == "merge_queue")' "${rules}")"
+
+          # 4. No App, no merge. Merging with the GITHUB_TOKEN instead would
+          #    land the commit and start no build and no release.
+          if [[ -z "${MERGE_APP_ID}" || "${HAS_MERGE_APP_KEY}" != "true" ]]; then
+            refuse "The merge App is not configured (vars.MERGE_APP_ID and secrets.MERGE_APP_PRIVATE_KEY). A merge made with the workflow's own GITHUB_TOKEN would start no build and no release on main, so this does not fall back to it. See docs/ci.md." owner
+          fi
+
+          # 5. A check that already ran on this head and is failing must hold
+          #    the merge too, even when it is not one of the required checks
+          #    above. The ruleset requires only the checks that run on EVERY
+          #    pull request (docs/ci.md); a path-filtered workflow such as
+          #    application.yml or terraform.yml is not required, but when a
+          #    pull request's changes DO trigger it, its result is still real
+          #    signal auto-merge must not ignore. A failing check refuses at
+          #    once, even beside running ones: waiting cannot make it green.
+          #    Excludes this very job's own check run ("queue for
+          #    auto-merge"), which is always still `in_progress` here.
+          #    A check is judged by the LATEST run of EACH event that ran it
+          #    (the owner, 2026-10-22, CHECK-RULE, part of archived issue 1999 and archived issue 1778), as the
+          #    merge step's `latest_per_event` judges it: a re-run replaces
+          #    the earlier runs of its own event, never another's, so a red
+          #    push run is not outvoted by a green pull_request run
+          #    (CI-EARLY). The event is the one that made the run's check
+          #    suite, read from the Actions runs at the head only when some
+          #    check has more than one run; a suite with no known event is
+          #    its own group, so one suite never outvotes another.
+          #    A run has finished when its status is completed, OR when it
+          #    carries a conclusion together with a completed_at, whatever
+          #    its status says (the owner, 2026-10-23, CHECK-STUCK, part of archived issue 2031):
+          #    GitHub left PR 2006's `secret scan` at in_progress with
+          #    conclusion success and a completed_at. The worker's
+          #    `check_run_finished` and `merge-train.sh judge` say the same.
+          #    A latest run that was CANCELLED is not failing (archived issue 1778, the owner's
+          #    bundle H09, 2026-10-27): it is pending, and gate 6 waits on it
+          #    when the check is required, as on one still running.
+          runs="$(mktemp)"
+          gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" >"${runs}"
+          wf_runs="$(mktemp)"
+          printf '{"workflow_runs": []}\n' >"${wf_runs}"
+          if jq -e '[.check_runs[].name] | group_by(.) | any(length > 1)' "${runs}" >/dev/null; then
+            gh api "repos/${GH_REPO}/actions/runs?head_sha=${HEAD_SHA}&per_page=100" >"${wf_runs}"
+          fi
+          # Each check's deciding runs, written once: gate 5 reads them
+          # here and gate 6 below (CHECK-RULE-2, part of archived issue 1999).
+          latest="$(mktemp)"
+          jq --slurpfile wf "${wf_runs}" '
+              ([ $wf[0].workflow_runs[]?
+                 | select(.check_suite_id != null and (.event // "") != "")
+                 | {key: (.check_suite_id | tostring), value: .event} ]
+               | from_entries) as $events
+              | [ .check_runs[]
+                  | select(.name != "queue for auto-merge")
+                  | . + {group: ($events[(.check_suite.id // "" | tostring)]
+                                // "check suite \(.check_suite.id // "")")} ]
+              | group_by([.name, .group])
+              | map(max_by(.id))' "${runs}" >"${latest}"
+          failing="$(jq -r '
+              def finished: .status == "completed"
+                            or ((.conclusion // "") != "" and (.completed_at // "") != "");
+              [ .[]
+                | select(finished)
+                | select((.conclusion // "") as $c |
+                         $c == "failure" or $c == "timed_out" or
+                         $c == "action_required")
+                | .name
+              ] | unique | join(", ")' "${latest}")"
+          if [[ -n "${failing}" ]]; then
+            refuse "This check already ran on the head commit and is failing: ${failing}. A failed check holds the merge, required or not."
+          fi
+
+          # 5b. THE MERGE TRAIN HAS IT (owner decision 2026-10-14, "A1 Merge
+          #    train"). With vars.MERGE_TRAIN `on`, .github/workflows/
+          #    merge-train.yml boards `ready` pull requests that are green at
+          #    head, tests them together on main and lands each as its own
+          #    squash; arming native auto-merge as well would merge them one
+          #    at a time, untested together, around it. So after every refusal
+          #    above (a failing check still drops `ready` on a re-evaluation,
+          #    and the train boards none that fails), nothing is armed: said
+          #    once, on the label. A re-evaluation says nothing more. Exactly
+          #    `on`: anything else is the train off, and this gate unchanged.
+          if [[ "${MERGE_TRAIN:-}" == "on" ]]; then
+            echo "decision=train" >>"${GITHUB_OUTPUT}"
+            body="$(mktemp)"
+            {
+              echo "**Left to the merge train.** Auto-merge is not armed: once this pull request is green at its head, \`.github/workflows/merge-train.yml\` boards it with other \`ready\` pull requests, tests them together on main, and squash-merges each under its title. A push drops \`ready\` unless it only merges the base branch in."
+              echo "(.github/workflows/auto-merge.yml; docs/runbooks/merge-train.md)"
+            } >"${body}"
+            if [[ "${reevaluation}" != "true" ]]; then
+              gh pr comment "${PR_NUMBER}" --body-file "${body}"
+            fi
+            {
+              echo "### Left to the merge train"
+              echo
+              cat "${body}"
+            } >>"${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          # 6. A REQUIRED check still running WAITS (archived pull request 697). Nothing is armed:
+          #    the `requeue` job re-evaluates when each run or check suite
+          #    finishes on this head, and the last one merges it. Said once,
+          #    on the label; a re-evaluation that still waits says nothing.
+          #    Only a required one (archived issue 815): a non-required check still running
+          #    -- code scanning's `Trivy` held archived pull request 811 for five hours -- is not
+          #    something the ruleset waits for, so it does not hold the
+          #    merge either. Required means item 3's names, the ruleset's and
+          #    classic protection's. Native auto-merge, armed below, still
+          #    waits for every required check, so one not yet reported at all
+          #    holds the merge there. A required check is read by its
+          #    latest run of each event, gate 5's deciding runs (the owner,
+          #    2026-10-22, "one rule for every check", CHECK-RULE-2, part of
+          #    archived issue 1999): a run still in progress that a later run of its own
+          #    event replaced does not hold the merge. A run is still
+          #    running until it has finished as gate 5 reads it (CHECK-STUCK,
+          #    part of archived issue 2031) AND carries a conclusion: one `completed` with
+          #    none is not green, so it waits too, and so does one whose
+          #    latest run was cancelled (archived issue 1778): a re-run, not a fix, is what
+          #    it is waiting for.
+          required_json="$(jq -Rs 'split("\n") | map(select(length > 0)) | unique' "${required_names}")"
+          unfinished="$(jq -r --argjson required "${required_json}" '
+              def finished: .status == "completed"
+                            or ((.conclusion // "") != "" and (.completed_at // "") != "");
+              [ .[]
+                | select((finished | not) or (.conclusion // "") == ""
+                         or .conclusion == "cancelled")
+                | .name
+                | select(. as $name | $required | index($name))
+              ] | unique | join(", ")' "${latest}")"
+          if [[ -n "${unfinished}" ]]; then
+            echo "decision=wait" >>"${GITHUB_OUTPUT}"
+            body="$(mktemp)"
+            {
+              echo "**Queued for auto-merge, waiting for required checks still running on the head commit:** ${unfinished}."
+              echo
+              echo "It is re-evaluated each time an application or security run, or another App's check suite, finishes on this head (application's last job, ci-gate, waits for terraform), and merged once every required check is green and no check that ran has failed. A push drops \`ready\` unless it only merges the base branch in."
+              echo "(.github/workflows/auto-merge.yml)"
+            } >"${body}"
+            if [[ "${reevaluation}" != "true" ]]; then
+              gh pr comment "${PR_NUMBER}" --body-file "${body}"
+            fi
+            {
+              echo "### Waiting"
+              echo
+              cat "${body}"
+            } >>"${GITHUB_STEP_SUMMARY}"
+            echo "waiting for: ${unfinished}"
+            exit 0
+          fi
+
+          echo "queue=${queue}" >>"${GITHUB_OUTPUT}"
+          echo "decision=merge" >>"${GITHUB_OUTPUT}"
+          echo "gate passed: ${required} required check(s) on ${BASE_REF}; merge queue: ${queue}"
+
+      - name: mint the merge App's token for this repository
+        id: app-token
+        if: steps.gate.outputs.decision == 'merge' || steps.gate.outputs.disarm == 'true'
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.MERGE_APP_ID }}
+          private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      # The same script as the disable job's `disarm` (a test holds the two
+      # equal): after a refusal on re-evaluation, auto-merge armed by an
+      # earlier run is turned off with the App's token and read back.
+      - name: turn off auto-merge after a refusal on re-evaluation
+        id: disarm
+        if: steps.gate.outputs.disarm == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # Read with the GITHUB_TOKEN, turned off with the App's (archived issue 795).
+          view="$(mktemp)"
+          gh pr view "${PR_NUMBER}" --json autoMergeRequest >"${view}"
+          if jq -e '.autoMergeRequest == null' "${view}" >/dev/null; then
+            echo "auto-merge is not enabled on #${PR_NUMBER}: nothing to turn off."
+            exit 0
+          fi
+          if [[ -z "${APP_TOKEN:-}" ]]; then
+            echo "::error::auto-merge is enabled on #${PR_NUMBER} and stays enabled: only the merge App's token can turn it off, and vars.MERGE_APP_ID is not set (docs/runbooks/merge-app.md)."
+            exit 1
+          fi
+          err="$(mktemp)"
+          if ! GH_TOKEN="${APP_TOKEN}" gh pr merge "${PR_NUMBER}" --disable-auto 2>"${err}"; then
+            cat "${err}" >&2
+            echo "::error::auto-merge is enabled on #${PR_NUMBER} and stays enabled: the merge App could not turn it off (above)."
+            exit 1
+          fi
+          gh pr view "${PR_NUMBER}" --json autoMergeRequest >"${view}"
+          if ! jq -e '.autoMergeRequest == null' "${view}" >/dev/null; then
+            echo "::error::auto-merge was turned off on #${PR_NUMBER}, but GitHub still reports it enabled."
+            exit 1
+          fi
+          echo "turned off auto-merge on #${PR_NUMBER}."
+
+      - name: enable auto-merge, squashed under the pull request's title
+        id: merge
+        if: steps.gate.outputs.decision == 'merge'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          QUEUE: ${{ steps.gate.outputs.queue }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          REMOTE_URL: ${{ github.server_url }}/${{ github.repository }}.git
+        # --subject: a one-commit squash otherwise takes that commit's own
+        # message as its headline, which is how archived pull request 238 put "swarm: work from
+        # task_..." on main. --auto: GitHub merges when the required checks
+        # pass at the head, and re-evaluates after every push.
+        #
+        # ALREADY GREEN. The usual order is CI green, then the label -- and
+        # GitHub refuses to ENABLE auto-merge on a pull request that is already
+        # mergeable (merge state CLEAN; UNSTABLE when a check that is not
+        # required is still running or red, which since archived issue 815 the gate lets
+        # through while it runs; HAS_HOOKS). Then there is nothing to wait
+        # for, so it is merged now, same token, method and subject. The branch
+        # protection still decides: the App cannot bypass it, so a merge the
+        # required checks do not allow is refused by GitHub, not by this step.
+        #
+        # ALREADY ARMED, OR ALREADY MERGED. A re-evaluation can find auto-merge
+        # already enabled (a label that landed before any check existed
+        # passed the gate and armed it) or the pull request merged by it in
+        # the meantime. Both are the outcome wanted, not an error; neither
+        # merges directly.
+        #
+        # A MERGE QUEUE ON THE BASE (QUEUE=true from the gate): the same three
+        # outcomes, enqueued rather than merged. `--auto` with no method arms
+        # auto-merge, which enqueues once the required checks pass; the
+        # already-green fallback is GraphQL `enqueuePullRequest`, pinned to
+        # the head, and one already in the queue is left there.
+        #
+        # A HEAD THAT MOVED WHILE THIS RUN WAITED FOR A RUNNER (archived issue 795: queues
+        # of 400-600 s, and "expected head oid does not match" every time
+        # the branch was updated meanwhile). Moved by a pure base merge of
+        # the labelled head: armed once more, at the new head, which the
+        # disable job leaves labelled. Moved by anything else: not armed.
+        run: |
+          set -euo pipefail
+          err="$(mktemp)"
+
+          # Merge states GitHub will merge now and will not arm auto-merge on:
+          # every required check passed (see ALREADY GREEN above). UNSTABLE
+          # also covers a non-required check that FAILED after the gate read
+          # the checks; the direct merge then goes through, as native
+          # auto-merge would have. Accepted under archived issue 815.
+          mergeable_now() {
+            case "$1" in
+              CLEAN | UNSTABLE | HAS_HOOKS) return 0 ;;
+            esac
+            return 1
+          }
+
+          # A PURE BASE MERGE (archived issue 795, owner decision 2026-10-07): NEW is a merge
+          # commit whose first parent is OLD -- the head that carried `ready` --
+          # whose second parent is already on the base branch, and whose tree is
+          # exactly the merge of the two. That is what GitHub's "Update branch"
+          # makes, and nothing in it is a change anybody has to review again.
+          # Read in a scratch bare repository: commits and trees fetched by sha,
+          # the blobs merge-tree needs fetched on demand, nothing checked out and
+          # nothing run. 0: pure. 1: anything else. 2: could not tell.
+          is_pure_base_merge() {
+            local old="$1" new="$2" repo line second merged tree rc=0
+            local -a parents
+            [[ "${old}" =~ ^[0-9a-f]{40}$ && "${new}" =~ ^[0-9a-f]{40}$ ]] || return 2
+            repo="$(mktemp -d)"
+            git init -q --bare "${repo}" || return 2
+            git -C "${repo}" config credential.helper '!gh auth git-credential' || return 2
+            git -C "${repo}" remote add origin "${REMOTE_URL}" || return 2
+            git -C "${repo}" fetch -q --no-tags --filter=blob:none origin \
+              "${new}" "+refs/heads/${BASE_REF}:refs/remotes/origin/base" || return 2
+            line="$(git -C "${repo}" rev-list --parents -n 1 "${new}")" || return 2
+            read -r -a parents <<<"${line}"
+            [[ "${#parents[@]}" -eq 3 && "${parents[1]}" == "${old}" ]] || return 1
+            second="${parents[2]}"
+            git -C "${repo}" merge-base --is-ancestor "${second}" refs/remotes/origin/base || return 1
+            merged="$(git -C "${repo}" merge-tree --write-tree "${old}" "${second}")" || rc=$?
+            if [[ "${rc}" -eq 1 ]]; then
+              return 1
+            elif [[ "${rc}" -ne 0 ]]; then
+              return 2
+            fi
+            tree="$(git -C "${repo}" rev-parse "${new}^{tree}")" || return 2
+            [[ "${merged%%$'\n'*}" == "${tree}" ]] || return 1
+          }
+
+          # GitHub refused the pin: did the head move while this run was queued
+          # (archived issue 795)? Not moved: 1, and the refusal is judged below as before.
+          # Moved by a pure base merge of the labelled head: HEAD_SHA becomes the
+          # new head and 0, so it is armed once more there. Moved by anything
+          # else: that head was never labelled, so nothing is armed and the run
+          # ends (the disable job removes `ready` for it).
+          follow_base_merge() {
+            local view moved verdict=0
+            view="$(mktemp)"
+            gh pr view "${PR_NUMBER}" --json headRefOid >"${view}"
+            moved="$(jq -r .headRefOid "${view}")"
+            [[ "${moved}" != "${HEAD_SHA}" ]] || return 1
+            is_pure_base_merge "${HEAD_SHA}" "${moved}" || verdict=$?
+            if [[ "${verdict}" -eq 0 ]]; then
+              echo "the head moved from ${HEAD_SHA} to ${moved} by a merge of ${BASE_REF} alone: arming at ${moved}"
+              HEAD_SHA="${moved}"
+              return 0
+            fi
+            if [[ "${verdict}" -eq 1 ]]; then
+              {
+                echo "### Not queued for auto-merge"
+                echo
+                echo "#${PR_NUMBER}'s head moved from ${HEAD_SHA} to ${moved} after \`ready\`, by a push that is not a merge of ${BASE_REF} alone. That head was never labelled: it needs a new \`ready\`."
+              } >>"${GITHUB_STEP_SUMMARY}"
+              echo "::warning::not queued: the head moved to ${moved} by a push that is not a merge of ${BASE_REF} alone"
+              exit 0
+            fi
+            cat "${err}" >&2
+            echo "::error::the head moved from ${HEAD_SHA} to ${moved}, and whether that only merged ${BASE_REF} could not be read"
+            exit 1
+          }
+
+          # One retry, never a loop: a head that moves again is judged below.
+          armed=false
+          retried=false
+          if [[ "${QUEUE:-false}" != "true" ]]; then
+            while true; do
+              if gh pr merge "${PR_NUMBER}" --auto --squash \
+                  --match-head-commit "${HEAD_SHA}" \
+                  --subject "${PR_TITLE} (#${PR_NUMBER})" 2>"${err}"; then
+                armed=true
+                break
+              fi
+              if [[ "${retried}" == "true" ]] || ! follow_base_merge; then
+                break
+              fi
+              retried=true
+            done
+            if [[ "${armed}" == "true" ]]; then
+              outcome="squash-merges when its required checks pass"
+            else
+              view="$(mktemp)"
+              gh pr view "${PR_NUMBER}" --json state,mergeStateStatus,autoMergeRequest >"${view}"
+              state="$(jq -r .mergeStateStatus "${view}")"
+              if jq -e '.state == "MERGED"' "${view}" >/dev/null; then
+                outcome="had already been merged"
+              elif jq -e '.autoMergeRequest != null' "${view}" >/dev/null; then
+                outcome="already had auto-merge enabled, and squash-merges when its required checks pass"
+              else
+                if ! mergeable_now "${state}"; then
+                  cat "${err}" >&2
+                  echo "::error::auto-merge was not enabled (merge state ${state})"
+                  exit 1
+                fi
+                gh pr merge "${PR_NUMBER}" --squash \
+                  --match-head-commit "${HEAD_SHA}" \
+                  --subject "${PR_TITLE} (#${PR_NUMBER})"
+                outcome="was already green and was merged now"
+              fi
+            fi
+          else
+            while true; do
+              if gh pr merge "${PR_NUMBER}" --auto \
+                  --match-head-commit "${HEAD_SHA}" 2>"${err}"; then
+                armed=true
+                break
+              fi
+              if [[ "${retried}" == "true" ]] || ! follow_base_merge; then
+                break
+              fi
+              retried=true
+            done
+            if [[ "${armed}" == "true" ]]; then
+              outcome="joins main's merge queue when its required checks pass"
+            else
+              view="$(mktemp)"
+              gh pr view "${PR_NUMBER}" --json id,state,mergeStateStatus,autoMergeRequest >"${view}"
+              state="$(jq -r .mergeStateStatus "${view}")"
+              in_queue="$(gh api graphql \
+                -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { isInMergeQueue } } }' \
+                -f owner="${GH_REPO%%/*}" -f name="${GH_REPO#*/}" -F number="${PR_NUMBER}" \
+                --jq .data.repository.pullRequest.isInMergeQueue)"
+              if jq -e '.state == "MERGED"' "${view}" >/dev/null; then
+                outcome="had already been merged"
+              elif [[ "${in_queue}" == "true" ]]; then
+                outcome="was already in main's merge queue"
+              elif jq -e '.autoMergeRequest != null' "${view}" >/dev/null; then
+                outcome="already had auto-merge enabled, and joins main's merge queue when its required checks pass"
+              else
+                if ! mergeable_now "${state}"; then
+                  cat "${err}" >&2
+                  echo "::error::auto-merge was not enabled and the pull request was not enqueued (merge state ${state})"
+                  exit 1
+                fi
+                gh api graphql \
+                  -f query='mutation($id: ID!, $head: GitObjectID!) { enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $head}) { mergeQueueEntry { position } } }' \
+                  -f id="$(jq -r .id "${view}")" -f head="${HEAD_SHA}" >/dev/null
+                outcome="was already green and was added to main's merge queue now"
+              fi
+            fi
+          fi
+          {
+            echo "### Queued for auto-merge"
+            echo
+            echo "#${PR_NUMBER} ${outcome}, under:"
+            echo
+            echo "    ${PR_TITLE} (#${PR_NUMBER})"
+            if [[ "${retried}" == "true" ]]; then
+              echo
+              echo "Pinned to ${HEAD_SHA}: the labelled head with ${BASE_REF} merged into it, and nothing else."
+            fi
+          } >>"${GITHUB_STEP_SUMMARY}"
+
+  requeue:
+    name: re-evaluate ready pull requests when a run finishes
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    # A pull request's run only: a push to main has no `ready` pull request
+    # at its head. Or any check suite's completion (archived issue 815) -- not filtered by
+    # branch, because a fork's pull request may come from a branch named
+    # like the base; a suite at a head no `ready` pull request carries
+    # dispatches nothing. Not without the merge App: every re-evaluation
+    # would end in the same "not configured" the label run already said.
+    if: >-
+      ((github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'pull_request') ||
+       github.event_name == 'check_suite') &&
+      vars.MERGE_APP_ID != ''
+    permissions:
+      # actions: write -- dispatch this workflow, one run per pull request.
+      #   A dispatch is one of the two events a GITHUB_TOKEN still starts.
+      # pull-requests: read -- list the open `ready` pull requests.
+      # No App token: this merges nothing; the dispatched run's gate decides.
+      actions: write
+      pull-requests: read
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      # The finished workflow run's head, or the finished check suite's.
+      RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      # By head sha, not `workflow_run.pull_requests` (or the check
+      # suite's): GitHub leaves that list empty for a pull request from a
+      # fork. A run for a head the pull request has since moved past matches
+      # nothing.
+      - name: dispatch a re-evaluation for each open ready pull request at the run's head
+        run: |
+          set -euo pipefail
+          prs="$(mktemp)"
+          gh pr list --state open --label ready --limit 200 --json number,headRefOid >"${prs}"
+          numbers="$(mktemp)"
+          jq -r --arg sha "${RUN_HEAD_SHA}" '.[] | select(.headRefOid == $sha) | .number' "${prs}" >"${numbers}"
+          count=0
+          while read -r number; do
+            [[ -n "${number}" ]] || continue
+            gh workflow run auto-merge.yml --ref "${DEFAULT_BRANCH}" -f pr="${number}"
+            count=$((count + 1))
+          done <"${numbers}"
+          echo "dispatched ${count} re-evaluation(s) for ${RUN_HEAD_SHA}" | tee -a "${GITHUB_STEP_SUMMARY}"
+
+  requeue-edited:
+    name: re-evaluate a ready pull request whose body was edited
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    # archived issue 888 box 97: adding or removing `depends on` changes the gate's answer,
+    # and nothing looked again until the next label or finishing CI run --
+    # an armed auto-merge merged past a dependency added after the label.
+    # The body only (`changes.body`): a body edit moves no head, so `disable`
+    # ignores it and `ready` stays; the dispatched run is the `enable` job's
+    # re-evaluation, whose refusal drops `ready` and disarms. Not without the
+    # merge App, for the reason `requeue` gives.
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.action == 'edited' &&
+      github.event.changes.body != null &&
+      github.event.pull_request.state == 'open' &&
+      contains(github.event.pull_request.labels.*.name, 'ready') &&
+      vars.MERGE_APP_ID != ''
+    permissions:
+      # actions: write -- dispatch this workflow for this pull request. It
+      #   reads nothing: the dispatched run reads the pull request back.
+      actions: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: dispatch a re-evaluation of this pull request
+        run: |
+          set -euo pipefail
+          if [[ ! "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::not a pull request number: ${PR_NUMBER}"
+            exit 1
+          fi
+          gh workflow run auto-merge.yml --ref "${DEFAULT_BRANCH}" -f pr="${PR_NUMBER}"
+          echo "dispatched a re-evaluation of #${PR_NUMBER}: its body was edited" | tee -a "${GITHUB_STEP_SUMMARY}"
+
+  disable:
+    name: disable auto-merge on a new head
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    # The main-only environment that holds the secret: see the comment on
+    # `enable` above (REPO-SECRETS-ENV).
+    environment:
+      name: repo-secrets
+      deployment: false
+    # Only a pull request that is (or was) queued: `ready` still on it. Never
+    # for the `labeled` action itself -- GitHub already lists the just-added
+    # label in `github.event.pull_request.labels`, so without excluding that
+    # action this job would disable the auto-merge the `enable` job just
+    # turned on. `edited` only when the base branch changed: a title or body
+    # edit does not move the head and does not need a fresh `ready`. Never
+    # for `closed`: a merged pull request still carries `ready`, and its head
+    # did not change -- `close-issues` handles that event.
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.action != 'labeled' &&
+      github.event.action != 'closed' &&
+      contains(github.event.pull_request.labels.*.name, 'ready') &&
+      (github.event.action != 'edited' || github.event.changes.base.ref.from != null)
+    permissions:
+      # contents: read -- the classifier's fetch of the new head's commits and
+      #   trees, by sha, into a scratch bare repository. Never a checkout and
+      #   never run: nothing of the pull request's executes here.
+      # pull-requests: write -- read whether auto-merge is armed, remove the
+      #   label, comment.
+      # Turning auto-merge OFF is the merge App's (archived issue 795): with this
+      # GITHUB_TOKEN, `gh pr merge --disable-auto` got "Resource not
+      # accessible by integration" on every push of 2026-10-07, hidden by an
+      # `|| true`. The mutation evidently needs more than pull-requests:
+      # write -- most likely contents: write, which the App's token has always
+      # carried to enable it -- and widening a pull_request_target job's
+      # GITHUB_TOKEN to contents: write is the larger grant. The App armed
+      # it; the App, with only contents and pull-requests, turns it off
+      # (docs/runbooks/merge-app.md).
+      contents: read
+      pull-requests: write
+      # actions: read -- this run's own `created_at`, the time GitHub took
+      #   the push in (`one-event` below). actions: write -- dispatch the
+      #   re-evaluation that step asks for, as `requeue` does.
+      actions: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      # A PURE BASE MERGE keeps `ready` and auto-merge (owner decision,
+      # 2026-10-07): "Update branch" adds no change anybody has to review
+      # again. Anything else -- another commit, a merge with a change of its
+      # own or of a branch not on the base, a force-push, a reopen, a new base
+      # -- is a head nobody labelled. Could-not-tell is treated as anything
+      # else, and says so: losing `ready` costs a relabel, keeping it wrongly
+      # costs an unreviewed merge.
+      - name: tell a merge of the base apart from any other push
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ github.event.action }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          REMOTE_URL: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+
+          # A PURE BASE MERGE (archived issue 795, owner decision 2026-10-07): NEW is a merge
+          # commit whose first parent is OLD -- the head that carried `ready` --
+          # whose second parent is already on the base branch, and whose tree is
+          # exactly the merge of the two. That is what GitHub's "Update branch"
+          # makes, and nothing in it is a change anybody has to review again.
+          # Read in a scratch bare repository: commits and trees fetched by sha,
+          # the blobs merge-tree needs fetched on demand, nothing checked out and
+          # nothing run. 0: pure. 1: anything else. 2: could not tell.
+          is_pure_base_merge() {
+            local old="$1" new="$2" repo line second merged tree rc=0
+            local -a parents
+            [[ "${old}" =~ ^[0-9a-f]{40}$ && "${new}" =~ ^[0-9a-f]{40}$ ]] || return 2
+            repo="$(mktemp -d)"
+            git init -q --bare "${repo}" || return 2
+            git -C "${repo}" config credential.helper '!gh auth git-credential' || return 2
+            git -C "${repo}" remote add origin "${REMOTE_URL}" || return 2
+            git -C "${repo}" fetch -q --no-tags --filter=blob:none origin \
+              "${new}" "+refs/heads/${BASE_REF}:refs/remotes/origin/base" || return 2
+            line="$(git -C "${repo}" rev-list --parents -n 1 "${new}")" || return 2
+            read -r -a parents <<<"${line}"
+            [[ "${#parents[@]}" -eq 3 && "${parents[1]}" == "${old}" ]] || return 1
+            second="${parents[2]}"
+            git -C "${repo}" merge-base --is-ancestor "${second}" refs/remotes/origin/base || return 1
+            merged="$(git -C "${repo}" merge-tree --write-tree "${old}" "${second}")" || rc=$?
+            if [[ "${rc}" -eq 1 ]]; then
+              return 1
+            elif [[ "${rc}" -ne 0 ]]; then
+              return 2
+            fi
+            tree="$(git -C "${repo}" rev-parse "${new}^{tree}")" || return 2
+            [[ "${merged%%$'\n'*}" == "${tree}" ]] || return 1
+          }
+
+          pure=false
+          if [[ "${ACTION}" == "synchronize" ]]; then
+            verdict=0
+            is_pure_base_merge "${BEFORE}" "${AFTER}" || verdict=$?
+            if [[ "${verdict}" -eq 0 ]]; then
+              pure=true
+            elif [[ "${verdict}" -ne 1 ]]; then
+              echo "::warning::could not tell whether ${AFTER} only merges ${BASE_REF} into ${BEFORE}: treated as any other push"
+            fi
+          fi
+          echo "pure_base_merge=${pure}" >>"${GITHUB_OUTPUT}"
+          if [[ "${pure}" == "true" ]]; then
+            echo "${AFTER} merges ${BASE_REF} into the labelled head ${BEFORE} and changes nothing else: \`ready\` and auto-merge stay." | tee -a "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "${ACTION}: not a merge of ${BASE_REF} alone into the labelled head, so auto-merge is turned off and \`ready\` removed." | tee -a "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      # A PUSH AND A LABEL BY THE AUTHOR, SECONDS APART, ARE ONE EVENT (epic
+      # archived issue 1334, PRs 1371, 1369 and 1373 on 2026-10-15). `git push` returns
+      # before GitHub moves the pull request's head, so a `ready` put on
+      # right after it is handled first -- at the OLD head -- and this
+      # job's `synchronize` then read "head changed after the label" and
+      # stripped it. When the pusher is the pull request's author, the
+      # latest `ready` label is that same account's, and GitHub took the
+      # push in (this run's `created_at`) within ONE_EVENT_SECONDS of the
+      # label, the label was meant for this head: auto-merge is still
+      # turned off below -- anything armed was armed at the old head -- but
+      # `ready` stays, and the enable job is dispatched to evaluate THIS
+      # head with its whole gate, pinned to it with --match-head-commit.
+      # Anyone else's push, a later push, could-not-tell, or no merge App
+      # (no re-evaluation would arm) is any other push.
+      - name: tell the author's push-and-label from a push after the label
+        id: one-event
+        if: ${{ !cancelled() && steps.classify.outputs.pure_base_merge != 'true' && github.event.action == 'synchronize' && vars.MERGE_APP_ID != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SENDER: ${{ github.event.sender.login }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          ONE_EVENT_SECONDS: "60"
+        run: |
+          set -euo pipefail
+          one=false
+          if [[ -n "${SENDER}" && "${SENDER}" == "${AUTHOR}" ]]; then
+            labels="$(mktemp)"
+            run="$(mktemp)"
+            if gh api graphql \
+                -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { timelineItems(itemTypes: [LABELED_EVENT], last: 50) { nodes { ... on LabeledEvent { createdAt label { name } actor { login } } } } } } }' \
+                -f owner="${GH_REPO%%/*}" -f name="${GH_REPO#*/}" -F number="${PR_NUMBER}" >"${labels}" \
+              && gh api "repos/${GH_REPO}/actions/runs/${GITHUB_RUN_ID}" >"${run}"; then
+              # Compared explicitly, never with `//` (CLAUDE.md): a missing
+              # label or time is "not one event", not a default.
+              if jq -e -n --slurpfile l "${labels}" --slurpfile r "${run}" \
+                  --arg who "${SENDER}" --argjson window "${ONE_EVENT_SECONDS}" '
+                  ([$l[0].data.repository.pullRequest.timelineItems.nodes[]
+                    | select(.label.name == "ready")] | last) as $ready
+                  | $ready != null and $ready.actor.login == $who
+                    and ($r[0].created_at | type) == "string"
+                    and ((($r[0].created_at | fromdateiso8601) - ($ready.createdAt | fromdateiso8601))
+                         | (if . < 0 then -. else . end)) <= $window' >/dev/null; then
+                one=true
+              fi
+            else
+              echo "::warning::could not read the label's time or this run's: treated as a push after the label"
+            fi
+          fi
+          echo "one_event=${one}" >>"${GITHUB_OUTPUT}"
+          if [[ "${one}" == "true" ]]; then
+            echo "${SENDER} pushed and labelled \`ready\` within ${ONE_EVENT_SECONDS}s: one event. \`ready\` stays; the new head is evaluated afresh." | tee -a "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      # Every step below runs unless the push was a pure base merge -- also
+      # after a step before it failed, so a failed disable still leaves no
+      # stale `ready` behind it, and still fails the job.
+      - name: mint the merge App's token for this repository
+        id: app-token
+        if: ${{ !cancelled() && steps.classify.outputs.pure_base_merge != 'true' && vars.MERGE_APP_ID != '' }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.MERGE_APP_ID }}
+          private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      # The same script as the enable job's `disarm` (a test holds the two
+      # equal). Nothing armed is nothing to turn off -- a push that raced the
+      # enable job, or a label whose gate still waits. Armed: turned off with
+      # the App's token and READ BACK; a failure, or GitHub still reporting it
+      # armed, fails the job.
+      - name: turn off auto-merge
+        id: disarm
+        if: ${{ !cancelled() && steps.classify.outputs.pure_base_merge != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # Read with the GITHUB_TOKEN, turned off with the App's (archived issue 795).
+          view="$(mktemp)"
+          gh pr view "${PR_NUMBER}" --json autoMergeRequest >"${view}"
+          if jq -e '.autoMergeRequest == null' "${view}" >/dev/null; then
+            echo "auto-merge is not enabled on #${PR_NUMBER}: nothing to turn off."
+            exit 0
+          fi
+          if [[ -z "${APP_TOKEN:-}" ]]; then
+            echo "::error::auto-merge is enabled on #${PR_NUMBER} and stays enabled: only the merge App's token can turn it off, and vars.MERGE_APP_ID is not set (docs/runbooks/merge-app.md)."
+            exit 1
+          fi
+          err="$(mktemp)"
+          if ! GH_TOKEN="${APP_TOKEN}" gh pr merge "${PR_NUMBER}" --disable-auto 2>"${err}"; then
+            cat "${err}" >&2
+            echo "::error::auto-merge is enabled on #${PR_NUMBER} and stays enabled: the merge App could not turn it off (above)."
+            exit 1
+          fi
+          gh pr view "${PR_NUMBER}" --json autoMergeRequest >"${view}"
+          if ! jq -e '.autoMergeRequest == null' "${view}" >/dev/null; then
+            echo "::error::auto-merge was turned off on #${PR_NUMBER}, but GitHub still reports it enabled."
+            exit 1
+          fi
+          echo "turned off auto-merge on #${PR_NUMBER}."
+
+      # The author's push-and-label (`one-event`): `ready` stays, and the
+      # enable job evaluates the new head. Only once the disarm succeeded:
+      # a failed disarm strips the label as any other push does.
+      - name: evaluate the new head the author labelled
+        id: reevaluate
+        if: ${{ !cancelled() && steps.one-event.outputs.one_event == 'true' && steps.disarm.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::not a pull request number: ${PR_NUMBER}"
+            exit 1
+          fi
+          gh workflow run auto-merge.yml --ref "${DEFAULT_BRANCH}" -f pr="${PR_NUMBER}"
+          echo "dispatched a re-evaluation of #${PR_NUMBER} at its new head" | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: drop the stale ready label and say why
+        id: strip
+        if: ${{ !cancelled() && steps.classify.outputs.pure_base_merge != 'true' && steps.reevaluate.outcome != 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISARM_OUTCOME: ${{ steps.disarm.outcome }}
+        run: |
+          set -euo pipefail
+          gh pr edit "${PR_NUMBER}" --remove-label ready
+          body="$(mktemp)"
+          {
+            if [[ "${DISARM_OUTCOME}" == "failure" ]]; then
+              echo "Removed \`ready\`: this pull request's head changed after the label was applied. **Auto-merge could not be turned off** -- see this run's log; until it is, GitHub may still merge this head."
+            else
+              echo "Removed \`ready\` and turned off auto-merge: this pull request's head changed after the label was applied."
+            fi
+            echo
+            echo "A new head needs a new \`ready\` label to queue auto-merge again. A push that only merges the base branch in (Update branch) keeps it."
+          } >"${body}"
+          gh pr comment "${PR_NUMBER}" --body-file "${body}"
+
+  close-issues:
+    name: close the merged pull request's issues
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    # Every merge into the default branch, not only the App's: the event does
+    # not reliably say who merged, an owner merge's issues are already closed
+    # by the time this reads them (the script leaves a closed issue alone),
+    # and a merge the worker's `merge` step made (archived pull request 581) is covered the same
+    # way. Unmerged closes and other bases do nothing: closing keywords act
+    # only on a merge into the default branch.
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch
+    permissions:
+      # contents: read -- check out the default branch's scripts/.
+      # pull-requests: read -- the pull request's closingIssuesReferences.
+      # issues: write -- comment on and close each issue. This job only.
+      contents: read
+      pull-requests: read
+      issues: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      # The default branch, which the merge has just made: reviewed code, the
+      # same main the release builds. Never the pull request's head or fork.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: close each open issue its closing keywords name
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/close-merged-issues.sh --pr "${PR_NUMBER}"
+
+  ready-on-green:
+    name: mark ready-on-green pull requests ready once green
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    # The main-only environment that holds the secret: see the comment on
+    # `enable` above (REPO-SECRETS-ENV).
+    environment:
+      name: repo-secrets
+      deployment: false
+    # Owner decision, 2026-10-17: an operator's laptop ran ~20 watcher loops
+    # only to add `ready` once a pull request went green. This does it. The
+    # events `requeue` runs on, for the `ready-on-green` pull requests at that
+    # head, and the 15-minute schedule for all of them as the backstop. Not
+    # without the merge App: the label must be the App's (below).
+    if: >-
+      ((github.event_name == 'workflow_run' &&
+        github.event.workflow_run.event == 'pull_request') ||
+       github.event_name == 'check_suite' ||
+       github.event_name == 'schedule') &&
+      vars.MERGE_APP_ID != ''
+    permissions:
+      # contents: read -- the base branch's classic protection (its required
+      #   checks), and the checkout of the default branch's scripts/.
+      # checks: read -- the head commit's check runs.
+      # statuses: read -- the head commit's combined status.
+      # actions: read -- the Actions runs at a head where some check ran
+      #   more than once: the event each check suite was made by, which the
+      #   judge groups a check's runs by (CHECK-RULE-2, part of archived issue 1999).
+      # pull-requests: write -- list the pull requests, and the one comment
+      #   on a red head. The labels are the App token's, never this one's.
+      contents: read
+      checks: read
+      statuses: read
+      actions: read
+      pull-requests: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      EVENT_NAME: ${{ github.event_name }}
+      # The finished workflow run's head, or the finished check suite's;
+      # empty on the schedule, which judges every one.
+      RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha }}
+    steps:
+      # The DEFAULT branch's scripts/ for the judge: main's reviewed
+      # merge-train.sh, never a pull request's code, no credentials kept.
+      - name: check out the default branch's scripts
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      # Each pull request is judged at the head GitHub reports for it, with
+      # the merge train's judge: every required check finished well and
+      # nothing that ran failed. The gate's own check run is left out: a
+      # `queue for auto-merge` that refused an earlier label would otherwise
+      # hold the head red for good. A red head is commented on once per head;
+      # the hidden marker is how the next run knows it already said so.
+      - name: judge each ready-on-green pull request
+        id: judge
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          prs="${work}/prs.json"
+          gh pr list --state open --label ready-on-green --limit 200 \
+            --json number,title,headRefOid,baseRefName >"${prs}"
+          candidates="${work}/candidates.tsv"
+          case "${EVENT_NAME}" in
+            schedule) only_sha="" ;;
+            *)
+              if [[ -z "${RUN_HEAD_SHA}" ]]; then
+                echo "no head sha on this ${EVENT_NAME} event: nothing to judge" | tee -a "${GITHUB_STEP_SUMMARY}"
+                echo "promote=" >>"${GITHUB_OUTPUT}"
+                exit 0
+              fi
+              only_sha="${RUN_HEAD_SHA}"
+              ;;
+          esac
+          jq -r --arg sha "${only_sha}" '
+            .[] | select($sha == "" or .headRefOid == $sha)
+            | "\(.number)\t\(.headRefOid)\t\(.baseRefName)\t\(.title | gsub("[\\t\\r\\n]"; " "))"
+          ' "${prs}" >"${candidates}"
+          promote="${work}/promote.txt"
+          : >"${promote}"
+          judged=0
+          green=0
+          while IFS=$'\t' read -r number head base title; do
+            [[ -n "${number}" ]] || continue
+            if [[ ! "${number}" =~ ^[1-9][0-9]*$ || ! "${head}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::gh pr list returned a malformed pull request: ${number} ${head}"
+              exit 1
+            fi
+            if grep -Eiq '^[[:space:]]*\[swarm\] task_' <<<"${title}"; then
+              echo "- #${number} skipped: its title is a \`[swarm] task_\` placeholder, which the gate refuses; retitle it" >>"${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            # The base's required checks, the way the gate reads them:
+            # classic protection and the effective rules, each name once.
+            required="${work}/required-${base//[^A-Za-z0-9._-]/_}.txt"
+            if [[ ! -f "${required}" ]]; then
+              gh api "repos/${GH_REPO}/branches/${base}" >"${work}/branch.json"
+              gh api --paginate "repos/${GH_REPO}/rules/branches/${base}" >"${work}/rules.json"
+              {
+                jq -r '(.protection.required_status_checks.contexts // [])[],
+                       ((.protection.required_status_checks.checks // [])[] | .context)' "${work}/branch.json"
+                jq -rs 'add // [] | .[]
+                        | select(.type == "required_status_checks")
+                        | (.parameters.required_status_checks // [])[] | .context' "${work}/rules.json"
+              } | awk 'length' | sort -u >"${required}"
+            fi
+            if [[ ! -s "${required}" ]]; then
+              echo "- #${number} not promoted: \`${base}\` has no required checks, so \"every required check passed\" says nothing" >>"${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            judged=$((judged + 1))
+            gh api "repos/${GH_REPO}/commits/${head}/check-runs?per_page=100" >"${work}/check-runs-raw.json"
+            jq '.check_runs = [(.check_runs // [])[] | select(.name != "queue for auto-merge")]' \
+              "${work}/check-runs-raw.json" >"${work}/check-runs.json"
+            gh api "repos/${GH_REPO}/commits/${head}/status?per_page=100" >"${work}/status.json"
+            # The event of each check suite, read only when some check ran
+            # more than once at this head (gate 5's shape): the judge decides
+            # a check by the latest run of each event (CHECK-RULE-2).
+            printf '{"workflow_runs": []}\n' >"${work}/workflow-runs.json"
+            if jq -e '[.check_runs[].name] | group_by(.) | any(length > 1)' "${work}/check-runs.json" >/dev/null; then
+              gh api "repos/${GH_REPO}/actions/runs?head_sha=${head}&per_page=100" >"${work}/workflow-runs.json"
+            fi
+            scripts/merge-train.sh judge --check-runs "${work}/check-runs.json" \
+              --statuses "${work}/status.json" --workflow-runs "${work}/workflow-runs.json" \
+              --required "${required}" >"${work}/verdict.tsv"
+            verdict="$(awk -F'\t' '$1 == "verdict" { print $2 }' "${work}/verdict.tsv")"
+            case "${verdict}" in
+              green)
+                green=$((green + 1))
+                echo "${number} ${head}" >>"${promote}"
+                echo "- #${number} is green at \`${head}\`: marking it \`ready\`" >>"${GITHUB_STEP_SUMMARY}"
+                ;;
+              pending)
+                echo "- #${number} at \`${head}\`: still waiting on its checks" >>"${GITHUB_STEP_SUMMARY}"
+                ;;
+              red)
+                names="$(awk -F'\t' '$1 == "failed" { print $2 }' "${work}/verdict.tsv" | sort -u | awk 'NR > 1 { printf ", " } { printf "%s", $0 }')"
+                echo "- #${number} is red at \`${head}\`: ${names}" >>"${GITHUB_STEP_SUMMARY}"
+                marker="<!-- ready-on-green: red at ${head} -->"
+                comments="${work}/comments-${number}.txt"
+                gh api --paginate "repos/${GH_REPO}/issues/${number}/comments" --jq '.[].body' >"${comments}"
+                if ! grep -qF -- "${marker}" "${comments}"; then
+                  body="${work}/comment-${number}.md"
+                  {
+                    echo "${marker}"
+                    echo "\`ready-on-green\`: this pull request is red at \`${head}\`, so it was not marked \`ready\`. Failing: ${names}."
+                    echo
+                    awk -F'\t' '$1 == "failed" { printf "- [%s](%s)\n", $2, $3 }' "${work}/verdict.tsv"
+                    echo
+                    echo "A new head is judged again; the label stays on."
+                  } >"${body}"
+                  gh pr comment "${number}" --body-file "${body}"
+                fi
+                ;;
+              *)
+                echo "::error::the judge said '${verdict}' for #${number}"
+                exit 1
+                ;;
+            esac
+          done <"${candidates}"
+          echo "judged ${judged} ready-on-green pull request(s); ${green} green" | tee -a "${GITHUB_STEP_SUMMARY}"
+          {
+            echo "promote<<PROMOTE_EOF"
+            cat "${promote}"
+            echo "PROMOTE_EOF"
+          } >>"${GITHUB_OUTPUT}"
+
+      # Pull requests only: a `ready` this token adds starts the `enable`
+      # job, and so auto-merge, as one the GITHUB_TOKEN adds would not.
+      - name: mint the merge App's token for this repository
+        id: app-token
+        if: steps.judge.outputs.promote != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.MERGE_APP_ID }}
+          private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
+
+      # The head is read again first: `ready` names the head judged green,
+      # so a pull request pushed to, closed or unlabelled since is left alone.
+      - name: swap ready-on-green for ready
+        id: label
+        if: steps.judge.outputs.promote != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          PROMOTE: ${{ steps.judge.outputs.promote }}
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          lines="${work}/promote.txt"
+          printf '%s\n' "${PROMOTE}" >"${lines}"
+          while read -r number head extra; do
+            [[ -n "${number}${head:-}" ]] || continue
+            if [[ ! "${number}" =~ ^[1-9][0-9]*$ || ! "${head:-}" =~ ^[0-9a-f]{40}$ || -n "${extra:-}" ]]; then
+              echo "::error::not a pull request number and head sha: ${number} ${head:-} ${extra:-}"
+              exit 1
+            fi
+          done <"${lines}"
+          while read -r number head _; do
+            [[ -n "${number}" ]] || continue
+            pull="${work}/pull-${number}.json"
+            gh api "repos/${GH_REPO}/pulls/${number}" >"${pull}"
+            state="$(jq -r '.state' "${pull}")"
+            now="$(jq -r '.head.sha' "${pull}")"
+            if [[ "${state}" != "open" ]]; then
+              echo "- #${number} is ${state} now: left alone" | tee -a "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            if [[ "${now}" != "${head}" ]]; then
+              echo "- #${number} moved from \`${head}\` to \`${now}\` since it was judged: left alone" | tee -a "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            if ! jq -e 'any(.labels[]?; .name == "ready-on-green")' "${pull}" >/dev/null; then
+              echo "- #${number} no longer carries ready-on-green: left alone" | tee -a "${GITHUB_STEP_SUMMARY}"
+              continue
+            fi
+            GH_TOKEN="${APP_TOKEN}" gh api -X POST "repos/${GH_REPO}/issues/${number}/labels" -f "labels[]=ready" >/dev/null
+            GH_TOKEN="${APP_TOKEN}" gh api -X DELETE "repos/${GH_REPO}/issues/${number}/labels/ready-on-green" >/dev/null
+            echo "- #${number} marked \`ready\` at \`${head}\`" | tee -a "${GITHUB_STEP_SUMMARY}"
+          done <"${lines}"

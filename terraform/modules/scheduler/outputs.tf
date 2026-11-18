@@ -1,0 +1,69 @@
+output "wake_topic" {
+  value = google_pubsub_topic.wake.name
+}
+
+output "wake_topic_id" {
+  value = google_pubsub_topic.wake.id
+}
+
+output "wake_subscription" {
+  value = google_pubsub_subscription.wake.name
+}
+
+output "dead_letter_topic" {
+  value = google_pubsub_topic.dead_letter.name
+}
+
+output "scheduler_job_names" {
+  value = concat(
+    compact([
+      google_cloud_scheduler_job.safety_tick.name,
+      google_cloud_scheduler_job.reconciler.name,
+      try(google_cloud_scheduler_job.quota_refresh[0].name, ""),
+      try(google_cloud_scheduler_job.forge_refresh[0].name, ""),
+      try(google_cloud_scheduler_job.workspace_sweep[0].name, ""),
+      try(google_cloud_scheduler_job.secrets_rotation_sweep[0].name, ""),
+      try(google_cloud_scheduler_job.mcp_credentials_sweep[0].name, ""),
+    ]),
+    [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.workflow_rollup[t].name],
+    [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.issue_run_advance[t].name],
+    [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.repo_index_poll[t].name],
+    [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.merge_wake[t].name],
+    [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.stranded_pr_sweep[t].name],
+  )
+}
+
+output "rollup_sweeper_email" {
+  description = "The identity the workflow-rollup, issue-run-advance, stranded-pr-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep and workspace-secrets-rotation-sweep jobs and the task_finished push subscription present. The root sets swarm-api's ROLLUP_SWEEPER_USERS to it, which is what lets it call POST /v1/admin/workflows/rollup, POST /v1/admin/runs/advance, POST /v1/admin/stranded-prs/sweep, POST /v1/admin/repositories/poll, POST /v1/admin/merges/wake, POST /v1/admin/forge/refresh, POST /v1/admin/workspaces/sweep, POST /v1/admin/tasks/finished and POST /v1/admin/workspace-secrets/rotation-sweep and nothing else."
+  value       = local.rollup_sweeper_email
+}
+
+output "schedule_tick_email" {
+  description = "The identity the schedule tick presents (docs/schedules.md SD10). The root sets swarm-api's SCHEDULE_TICK_USERS to it, which is what lets it call POST /v1/admin/schedules/tick and nothing else, and grants it run.invoker on swarm-api and nothing else."
+  value       = local.schedule_tick_email
+}
+
+output "safety_tick_schedule" {
+  description = "Exposed so a test can assert the safety tick really is every minute."
+  value       = google_cloud_scheduler_job.safety_tick.schedule
+}
+
+output "issue_run_advance_schedule" {
+  description = "Exposed so a test can assert how often issue runs advance without a reader (#454)."
+  value       = var.issue_run_advance_schedule
+}
+
+output "stranded_pr_sweep_schedule" {
+  description = "Exposed so a test can assert how often each tenant's SwarmCloud pull requests are swept for stranded ones (part of #295)."
+  value       = var.stranded_pr_sweep_schedule
+}
+
+output "repo_index_poll_schedule" {
+  description = "Exposed so a test can assert how often registered repositories are polled (docs/repo-index.md §3.3)."
+  value       = var.repo_index_poll_schedule
+}
+
+output "execution_cancel_topic" {
+  description = "Where swarm-api publishes a cancelled task's attempt for the reconciler to stop (#627)."
+  value       = google_pubsub_topic.execution_cancel.name
+}

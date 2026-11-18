@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# Put this commit's acceptance fixtures, and the fixture issue, on the private
+# sandbox repository the acceptance suite's tasks clone.
+#
+# Usage: SWARM_ACCEPTANCE_GITHUB_TOKEN=... scripts/acceptance/sandbox-sync.sh
+#
+# WHY (archived issue 628). Acceptance used to clone this platform's own public repository,
+# where tests/acceptance/fixtures/ already was. It now clones the private
+# sandbox (scripts/acceptance/config.sh), which holds nothing of this
+# repository unless something puts it there. So accept.yml, in a job of its own,
+# runs this BEFORE the suite, with the sandbox's own token (the repository
+# secret SWARM_SANDBOX_GITHUB_TOKEN), and the fixtures a release's tasks clone
+# are the ones of the commit it deployed -- the same property cloning `main`
+# here used to give.
+#
+# WHAT IT WRITES, and nothing else:
+#
+#   * tests/acceptance/fixtures/ on the sandbox's ACC_REF (main), replaced
+#     wholesale by this checkout's copy, in one commit, pushed only when it
+#     differs. No other path of the sandbox is read or written. An EMPTY
+#     sandbox gets ACC_REF as its first commit.
+#   * the fixture issue the claude-code `issue` check reads: #ACC_ISSUE must
+#     carry ACC_ISSUE_EXPECT. A sandbox with no issue and no pull request at
+#     all gets it opened -- as #1, the first number GitHub hands out, which is
+#     config.sh's default. Any other mismatch is refused, naming what to
+#     change: a renumbered issue would make that check read the wrong text.
+#   * the git-tools group's base branch, acceptance/git-tools-base: pointed
+#     (force-updated: a fixture ref outside swarm/, which no task can push)
+#     at the parent of the newest commit on ACC_REF that ADDED
+#     tests/acceptance/fixtures/git-tools/planted.txt. A lane cut from it adds
+#     its own planted.txt, so its pull request conflicts with main -- the
+#     conflict the rebase check resolves (docs/acceptance.md, "git-tools").
+#     No commit is made for it: the base is main's own history.
+#   * the claude-code group's test-services branches (TS-ACCEPT, archived issue 1627):
+#     acceptance/test-services, one parentless commit whose root IS
+#     tests/acceptance/fixtures/test-services, and
+#     acceptance/test-services-undeclared, the same tree without .swarm/.
+#     The pre-publish gate reads .swarm/test-services.toml at the clone's
+#     root only, so a fixture under main's tests/ cannot declare anything.
+#     Force-updated (refs outside swarm/, which no task can push) only when
+#     the tree differs.
+#
+# THE TOKEN never reaches argv, a URL or a log: git asks for it through
+# GIT_ASKPASS, which reads it from the environment, and curl reads its header
+# on stdin (-K -). Error text is passed through `redact`.
+
+set -euo pipefail
+
+# This script touches GitHub only, never the project: it says so, so sourcing
+# common.sh does not load the never-touch list. The sandbox jobs that run it are
+# self-hosted with no swarm-accept login, and a load there could only refuse.
+SWARM_NO_PROJECT=1
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=../lib/common.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=config.sh
+source "${REPO_ROOT}/scripts/acceptance/config.sh"
+acc_config_problem || die "refusing to sync: see above"
+
+case "${1:-}" in
+  "") ;;
+  -h|--help) sed -n '2,5p' "$0"; exit 0 ;;
+  *) die "unknown argument: $1" ;;
+esac
+
+require_cmd git jq curl
+TOKEN="${SWARM_ACCEPTANCE_GITHUB_TOKEN:-}"
+[[ -n "${TOKEN}" ]] || die "no token for ${ACC_GITHUB_REPO}: set SWARM_ACCEPTANCE_GITHUB_TOKEN (the release passes the SWARM_SANDBOX_GITHUB_TOKEN secret)"
+FIXTURES="tests/acceptance/fixtures"
+[[ -d "${REPO_ROOT}/${FIXTURES}" ]] || die "no ${FIXTURES}/ in this checkout to sync"
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-acc-sync.XXXXXX")"
+trap 'rm -rf "${WORK}"' EXIT
+
+# gh_api METHOD PATH [BODY] -> body on stdout, HTTP status in ${WORK}/status;
+# non-zero on a non-2xx. The status goes to a file, not a variable: callers
+# redirect this function's output, and a status set in a $(...) subshell
+# would be lost (CLAUDE.md).
+gh_api() {
+  local method="$1" path="$2" body="${3:-}" out="${WORK}/resp" code
+  local args=(-sS -m 30 -o "${out}" -w '%{http_code}' -X "${method}"
+    -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+  [[ -z "${body}" ]] || args+=(-H "Content-Type: application/json" --data-binary "${body}")
+  code="$(auth_config "${TOKEN}" | curl -K - "${args[@]}" "${ACC_GITHUB_API}${path}")" || code="000"
+  printf '%s' "${code}" >"${WORK}/status"
+  cat "${out}" 2>/dev/null || true
+  [[ "${code}" =~ ^2 ]]
+}
+
+step "Acceptance sandbox: ${ACC_GITHUB_REPO} @ ${ACC_REF}"
+
+# --- 1. The fixture issue -----------------------------------------------------
+issue_title="${ACC_ISSUE_EXPECT} is the acceptance suite's fixture issue"
+issue_body="$(printf '%s\n\n%s\n' \
+  "The script this issue is about is ${ACC_ISSUE_EXPECT}. The claude-code acceptance check asks an agent which file this issue names, with this issue as its input, and expects that name: nothing else in this repository says it." \
+  "Opened by scripts/acceptance/sandbox-sync.sh. Leave it open and do not edit it.")"
+
+if gh_api GET "/repos/${ACC_GITHUB_REPO}/issues/${ACC_ISSUE}" >"${WORK}/issue.json"; then
+  jq -e --arg x "${ACC_ISSUE_EXPECT}" \
+      '(has("pull_request") | not) and (((.title // "") + "\n" + (.body // "")) | contains($x))' \
+      "${WORK}/issue.json" >/dev/null \
+    || die "#${ACC_ISSUE} on ${ACC_GITHUB_REPO} is a pull request or does not say '${ACC_ISSUE_EXPECT}': the claude-code issue check would read the wrong text. Point SWARM_ACCEPTANCE_ISSUE in scripts/acceptance/config.sh at the fixture issue."
+  ok "fixture issue #${ACC_ISSUE} names ${ACC_ISSUE_EXPECT}"
+elif [[ "$(cat "${WORK}/status")" == "404" ]]; then
+  gh_api GET "/repos/${ACC_GITHUB_REPO}/issues?state=all&per_page=1" >"${WORK}/any.json" \
+    || die "could not list ${ACC_GITHUB_REPO}'s issues (HTTP $(cat "${WORK}/status")): $(redact <"${WORK}/any.json" | head -c 200)"
+  [[ "$(jq 'length' "${WORK}/any.json")" == "0" && "${ACC_ISSUE}" == "1" ]] \
+    || die "${ACC_GITHUB_REPO} has no issue #${ACC_ISSUE}, and opening one now would not get that number. Open an issue whose title says '${ACC_ISSUE_EXPECT}' and set SWARM_ACCEPTANCE_ISSUE in scripts/acceptance/config.sh to its number."
+  gh_api POST "/repos/${ACC_GITHUB_REPO}/issues" \
+      "$(jq -nc --arg t "${issue_title}" --arg b "${issue_body}" '{title: $t, body: $b}')" >"${WORK}/created.json" \
+    || die "could not open the fixture issue on ${ACC_GITHUB_REPO} (HTTP $(cat "${WORK}/status")): $(redact <"${WORK}/created.json" | head -c 200)"
+  created="$(jq -r '.number // empty' "${WORK}/created.json")"
+  [[ "${created}" == "${ACC_ISSUE}" ]] \
+    || die "opened the fixture issue as #${created:-?}, not #${ACC_ISSUE}: set SWARM_ACCEPTANCE_ISSUE in scripts/acceptance/config.sh to ${created:-its number}"
+  ok "opened fixture issue #${created}"
+else
+  die "could not read issue #${ACC_ISSUE} on ${ACC_GITHUB_REPO} (HTTP $(cat "${WORK}/status")): $(redact <"${WORK}/issue.json" | head -c 200)"
+fi
+
+# --- 2. The fixtures ------------------------------------------------------------
+# git asks GIT_ASKPASS for the password; the URL names only the user, which
+# is not a secret.
+askpass="${WORK}/askpass.sh"
+# shellcheck disable=SC2016  # expanded by the askpass process, from its environment
+printf '#!/bin/sh\nprintf "%%s\\n" "${SWARM_ACCEPTANCE_GITHUB_TOKEN}"\n' >"${askpass}"
+chmod 700 "${askpass}"
+export GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 SWARM_ACCEPTANCE_GITHUB_TOKEN="${TOKEN}"
+url="https://x-access-token@github.com/${ACC_GITHUB_REPO}.git"
+clone="${WORK}/sandbox"
+
+if git clone --quiet --depth 1 --branch "${ACC_REF}" "${url}" "${clone}" 2>"${WORK}/git.err"; then
+  :
+elif rm -rf "${clone}" && git clone --quiet "${url}" "${clone}" 2>"${WORK}/git.err" \
+    && [[ -z "$(git -C "${clone}" rev-parse --verify -q HEAD 2>/dev/null || true)" ]]; then
+  # An empty repository: this commit creates ACC_REF.
+  git -C "${clone}" checkout --quiet --orphan "${ACC_REF}"
+  info "${ACC_GITHUB_REPO} is empty: creating ${ACC_REF}"
+else
+  die "could not clone ${ACC_GITHUB_REPO} at ${ACC_REF}: $(redact <"${WORK}/git.err" | head -n 3 | tr '\n' ' ')"
+fi
+
+rm -rf "${clone:?}/${FIXTURES}"
+mkdir -p "${clone}/$(dirname "${FIXTURES}")"
+cp -R "${REPO_ROOT}/${FIXTURES}" "${clone}/${FIXTURES}"
+git -C "${clone}" add -A -- "${FIXTURES}"
+if git -C "${clone}" diff --cached --quiet; then
+  ok "${FIXTURES}/ on ${ACC_GITHUB_REPO}@${ACC_REF} already matches this commit"
+else
+  source_sha="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
+  git -C "${clone}" -c user.name="swarm-acceptance" -c user.email="swarm-acceptance@users.noreply.github.com" \
+    commit --quiet -m "Acceptance fixtures as of ${source_sha}"
+  git -C "${clone}" push --quiet origin "HEAD:refs/heads/${ACC_REF}" 2>"${WORK}/git.err" \
+    || die "could not push ${FIXTURES}/ to ${ACC_GITHUB_REPO}@${ACC_REF}: $(redact <"${WORK}/git.err" | head -n 3 | tr '\n' ' ')"
+  if git -C "${clone}" rev-parse -q --verify HEAD~1 >/dev/null; then
+    pushed="$(git -C "${clone}" diff --stat HEAD~1 HEAD | tail -n 1)"
+  else
+    pushed="the sandbox's first commit"
+  fi
+  ok "pushed ${FIXTURES}/ as of ${source_sha} to ${ACC_GITHUB_REPO}@${ACC_REF} (${pushed})"
+fi
+
+# --- 2b. The test-services branches -------------------------------------------
+# Built from the tree just pushed to ACC_REF, with git's plumbing: no working
+# tree is touched. The undeclared tree is the declared one with its .swarm
+# entry left out, so the two differ by the declaration and nothing else.
+TS_FIXTURE="${FIXTURES}/test-services"
+ts_declared="$(git -C "${clone}" rev-parse -q --verify "HEAD:${TS_FIXTURE}" 2>/dev/null)" \
+  || die "${TS_FIXTURE} is not on ${ACC_GITHUB_REPO}@${ACC_REF} after the sync: the test-services fixture is missing from this checkout"
+git -C "${clone}" ls-tree "${ts_declared}" >"${WORK}/ts-tree.out" 2>"${WORK}/git.err" \
+  || die "could not list ${TS_FIXTURE} (git ls-tree): $(redact <"${WORK}/git.err" | tail -n 1)"
+grep -q $'\t.swarm$' "${WORK}/ts-tree.out" \
+  || die "${TS_FIXTURE} has no .swarm/ on ${ACC_GITHUB_REPO}@${ACC_REF}: the declared branch would declare nothing"
+ts_undeclared="$(grep -v $'\t.swarm$' "${WORK}/ts-tree.out" | git -C "${clone}" mktree 2>"${WORK}/git.err")" \
+  || die "could not build the undeclared test-services tree (git mktree): $(redact <"${WORK}/git.err" | tail -n 1)"
+
+# What the sandbox holds now, both branches in one fetch: a glob refspec
+# fetches the ones that exist and fails only when git cannot reach the
+# sandbox. Each branch is one parentless commit, so no --depth is needed.
+git -C "${clone}" fetch --quiet --prune origin "+refs/heads/acceptance/test-services*:refs/remotes/origin/acceptance/test-services*" 2>"${WORK}/git.err" \
+  || die "could not read the test-services branches on ${ACC_GITHUB_REPO} (git fetch): $(redact <"${WORK}/git.err" | tail -n 1)"
+
+# ts_branch BRANCH TREE -> BRANCH on the sandbox is one commit of TREE.
+ts_branch() {
+  local branch="$1" tree="$2" current commit
+  current="$(git -C "${clone}" rev-parse -q --verify "refs/remotes/origin/${branch}^{tree}" 2>/dev/null || true)"
+  if [[ "${current}" == "${tree}" ]]; then
+    ok "${branch} on ${ACC_GITHUB_REPO} already holds ${TS_FIXTURE} as of this commit"
+    return 0
+  fi
+  commit="$(git -C "${clone}" -c user.name="swarm-acceptance" -c user.email="swarm-acceptance@users.noreply.github.com" \
+    commit-tree "${tree}" -m "Acceptance test-services fixture (${branch}) as of $(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')" 2>"${WORK}/git.err")" \
+    || die "could not commit the ${branch} tree (git commit-tree): $(redact <"${WORK}/git.err" | tail -n 1)"
+  git -C "${clone}" push --quiet --force origin "${commit}:refs/heads/${branch}" 2>"${WORK}/git.err" \
+    || die "could not point ${branch} at ${commit:0:12} on ${ACC_GITHUB_REPO}: $(redact <"${WORK}/git.err" | head -n 3 | tr '\n' ' ')"
+  ok "pointed ${branch} on ${ACC_GITHUB_REPO} at ${commit:0:12}: ${TS_FIXTURE} at its root"
+}
+ts_branch "acceptance/test-services" "${ts_declared}"
+ts_branch "acceptance/test-services-undeclared" "${ts_undeclared}"
+
+# --- 3. The git-tools base branch ---------------------------------------------
+# The parent of the newest commit that ADDED planted.txt has no planted.txt,
+# so a lane cut from it that adds its own conflicts with main's. Found in
+# main's history, so the clone is deepened first (the sandbox holds fixtures
+# only; its history is small). A sandbox whose first commit already held the
+# file has no such parent: said, and the git-tools rebase check FAILs naming
+# this branch, rather than a conflict being planted some other way.
+GIT_TOOLS_BASE="acceptance/git-tools-base"
+planted="${FIXTURES}/git-tools/planted.txt"
+git -C "${clone}" fetch --quiet --unshallow origin "${ACC_REF}" 2>/dev/null \
+  || git -C "${clone}" fetch --quiet origin "${ACC_REF}" 2>"${WORK}/git.err" \
+  || die "could not read ${ACC_GITHUB_REPO}@${ACC_REF}'s history: $(redact <"${WORK}/git.err" | head -n 3 | tr '\n' ' ')"
+# Every git call below goes through `|| die`, with git's own last stderr line
+# through `redact`. Accept run 39682791678 (2026-10-21) ended at exit 128 with
+# no message: this `log` ran bare inside $(...) and the `ls-remote` sent its
+# stderr to /dev/null into a pipe, so under set -e and pipefail the run could
+# not say which call failed or why (archived issue 1822).
+added="$(git -C "${clone}" log --format=%H --diff-filter=A -n 1 HEAD -- "${planted}" 2>"${WORK}/git.err")" \
+  || die "could not find the commit that added ${planted} on ${ACC_GITHUB_REPO}@${ACC_REF} (git log): $(redact <"${WORK}/git.err" | tail -n 1)"
+[[ -n "${added}" ]] || die "${planted} is not on ${ACC_GITHUB_REPO}@${ACC_REF} after the sync: the git-tools fixture is missing from this checkout"
+base="$(git -C "${clone}" rev-parse -q --verify "${added}^" 2>/dev/null || true)"
+if [[ -z "${base}" ]]; then
+  warn "${planted} arrived in ${ACC_GITHUB_REPO}'s first commit: no commit lacks it for ${GIT_TOOLS_BASE}, so the git-tools rebase check will FAIL"
+  exit 0
+fi
+# To a file, not a pipe: under pipefail a failed ls-remote piped into awk ends
+# the script with git's status and no message.
+git -C "${clone}" ls-remote origin "refs/heads/${GIT_TOOLS_BASE}" >"${WORK}/ls-remote.out" 2>"${WORK}/git.err" \
+  || die "could not read ${GIT_TOOLS_BASE} on ${ACC_GITHUB_REPO} (git ls-remote): $(redact <"${WORK}/git.err" | tail -n 1)"
+current="$(awk '{print $1}' "${WORK}/ls-remote.out")"
+if [[ "${current}" == "${base}" ]]; then
+  ok "${GIT_TOOLS_BASE} on ${ACC_GITHUB_REPO} is ${base:0:12}, the commit before ${planted} was added"
+  exit 0
+fi
+git -C "${clone}" push --quiet --force origin "${base}:refs/heads/${GIT_TOOLS_BASE}" 2>"${WORK}/git.err" \
+  || die "could not point ${GIT_TOOLS_BASE} at ${base:0:12} on ${ACC_GITHUB_REPO}: $(redact <"${WORK}/git.err" | head -n 3 | tr '\n' ' ')"
+ok "pointed ${GIT_TOOLS_BASE} on ${ACC_GITHUB_REPO} at ${base:0:12} (was ${current:-absent}), the commit before ${planted} was added"

@@ -1,0 +1,221 @@
+/* ==========================================================================
+   CONFIG (CONFIG-NAV; part of archived issue 2157, proposal E "Guided setup",
+   docs/web-ui/mockups/config-e.html S1-S6): the setup strip across every
+   Config page, Workspace Settings' parts, and the Config panel's meter.
+   Every colour is a token, so light and dark come from the theme.
+   ========================================================================== */
+
+.cfg-page { display: flex; flex-direction: column; gap: var(--ctl-s3, 12px); min-width: 0; }
+
+/* TITLE AND TABS, THEN THE STRIP, THEN THE LEAD (VQ-040; config-e.html's
+   desk(): head(), stripD(), body). `ConfigPage` (App.tsx) mounts the strip
+   once, before the page, so it drew above the h1 and read as part of the page
+   before. Every Config page's own box is a 12px flex column like this one
+   (.pk-page, .ur-page, .ws-page), so it dissolves into this column with no
+   spacing change, and its head and tab strip are ordered ahead of the strip.
+   Only the head and the tabs move; the rest keeps its order under the strip.
+   A page whose head is not its box's own child keeps the strip on top.
+   The phone draws the compact strip over the head (S2d: phone()), so this
+   is the wider screens' alone, from where the compact strip stops. */
+@media (min-width: 760px) {
+  .cfg-page > :is(.pk-page, .ur-page, .ws-page) { display: contents; }
+  .cfg-page > :is(.pk-page, .ur-page, .ws-page) > .c-phead { order: -3; }
+  .cfg-page > :is(.pk-page, .ur-page, .ws-page) > .cfg-parts { order: -2; }
+  .cfg-page > .cfg-strip { order: -1; }
+}
+
+/* ---- the strip ------------------------------------------------------------ */
+.cfg-strip { display: grid; grid-template-columns: minmax(0, 1fr) auto; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; }
+.cfg-steps { list-style: none; margin: 0; padding: var(--ctl-s1); display: grid; grid-template-columns: repeat(var(--cfg-n, 4), minmax(0, 1fr)); gap: var(--ctl-s1); min-width: 0; }
+/* Cells held apart by the grid's gap rather than touching rules (the spacing
+   sweep's surfaces-touch floor); the next step is the one with a ground. */
+.cfg-step { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: var(--r-ctl); min-width: 0; }
+.cfg-step.is-next { background: var(--sk-acs); box-shadow: inset 0 -3px 0 var(--sk-ac, var(--s-live)); }
+.cfg-step-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; color: inherit; text-decoration: none; }
+.cfg-step-main:hover b { text-decoration: underline; }
+.cfg-step-main b { font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.cfg-step-main small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.cfg-step.is-done .cfg-step-main b,
+.cfg-step.is-unknown .cfg-step-main b { font-weight: 500; }
+.cfg-step.is-unknown .cfg-step-main b { color: var(--text-dim); }
+.cfg-step.is-failed .cfg-step-main small { color: var(--s-bad); }
+.cfg-step.is-stale .cfg-step-main small { color: var(--s-warn); }
+
+.cfg-mark { flex: none; width: 20px; height: 20px; margin-top: 1px; fill: none; stroke: var(--text-dim); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.cfg-step.is-done .cfg-mark circle { fill: var(--s-live); stroke: var(--s-live); }
+.cfg-step.is-done .cfg-mark path { stroke: var(--surface); stroke-width: 2; }
+.cfg-step.is-next .cfg-mark,
+.cfg-step.is-in_progress .cfg-mark { stroke: var(--sk-ac, var(--s-live)); stroke-width: 2; }
+.cfg-step.is-failed .cfg-mark { stroke: var(--s-bad); }
+.cfg-step.is-stale .cfg-mark { stroke: var(--s-warn); }
+.cfg-step.is-unknown .cfg-mark { stroke-dasharray: 3 2.4; }
+.cfg-step.is-unknown .cfg-mark path { stroke-dasharray: none; }
+
+.cfg-count { display: flex; flex-direction: column; align-items: flex-end; justify-content: center; gap: 1px; padding: 8px 14px; text-align: right; white-space: nowrap; }
+.cfg-count b { font: 650 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.cfg-count small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.cfg-count .ctl-link { font-size: var(--t-micro); line-height: var(--lh-micro); }
+
+/* Finished (config-e.html `stripD`): one line on every width, the tick, the
+   words, the count and its age, and Show steps at the far end. The row never
+   wraps: at phone-390 a wrapped row put Show steps on a second line and drew
+   a 71px strip, as tall as the unfinished compact one. The count and its age
+   give way first, to an ellipsis; the words and the link keep their width. */
+.cfg-done { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: nowrap; gap: 10px; padding: 8px 14px; min-width: 0; }
+.cfg-done .cfg-mark { margin-top: 0; flex-shrink: 0; }
+.cfg-done .cfg-mark circle { fill: var(--s-live); stroke: var(--s-live); }
+.cfg-done .cfg-mark path { stroke: var(--surface); stroke-width: 2; }
+.cfg-done b { font: 650 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); white-space: nowrap; flex-shrink: 0; }
+.cfg-done small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cfg-done .ctl-link { margin-left: auto; font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; flex-shrink: 0; }
+/* Show steps and Hide steps are buttons that draw as the mock-up's <a>: the
+   `:where(.app button)` floor's box (1px border, 5px 12px padding, 28px
+   height, the surface fill) made Show steps 88px wide on the fold. The size
+   stays the container's `.ctl-link` rule's; the colour and underline are
+   `.ctl-link`'s own. */
+.cfg-strip button.ctl-link { min-height: 0; padding: 0; border: 0; background: none; font-weight: inherit; cursor: pointer; }
+
+/* Tablet: the steps go two by two, the count under them. */
+@media (max-width: 1100px) {
+  .cfg-strip { grid-template-columns: minmax(0, 1fr); }
+  .cfg-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cfg-count { flex-direction: row; flex-wrap: wrap; align-items: baseline; justify-content: flex-start; gap: 4px 12px; text-align: left; white-space: normal; }
+  .cfg-count .ctl-link { margin-left: auto; }
+}
+/* Phone (S2d): the compact strip alone, a count, the segments and the next
+   step; the four steps and the count beside them are the wider screens'. */
+.cfg-compact { display: none; }
+@media (max-width: 759px) {
+  .cfg-strip { grid-template-columns: minmax(0, 1fr); }
+  .cfg-steps,
+  .cfg-count { display: none; }
+  .cfg-compact { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; min-width: 0; }
+  .cfg-compact-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+  .cfg-compact-h b { font: 650 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+  .cfg-compact-h .ctl-link { font-size: var(--t-meta); line-height: var(--lh-meta); text-align: right; }
+  .cfg-compact small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+  /* The fold's three gaps and two sides come out of its count: at 10px and
+     14px the phone-390 count had 124px and cut '4 of 4 · checked 2m ago'
+     (125px) to 'checked 2m a…'. At 6px and 12px (the compact strip's side)
+     it has about 140px, and a three-character age ('12m', 129px) fits. */
+  .cfg-done { gap: 6px; padding: 8px 12px; }
+}
+
+/* ---- Workspace Settings' parts ---------------------------------------------- */
+/* Never shrunk by the page's column, and never a vertical scroller: the
+   tabs' 2px underline sits 1px past the strip's foot (margin-bottom: -1px),
+   which an `overflow-x: auto` strip turned into a scroll arrow (CONFIG-NAV
+   review, light-desktop Workspace setup). */
+.cfg-parts { margin: 0; flex: none; overflow-y: hidden; }
+
+/* ---- the panel's meter (S1a) ------------------------------------------------ */
+.cfg-meter { margin: 0 10px 8px; }
+.cfg-meter-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.cfg-meter-h b { color: var(--text); font-weight: 650; }
+.cfg-meter-bar { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; }
+.cfg-meter-bar > i { display: block; height: 5px; border-radius: 3px; background: var(--line); }
+.cfg-meter-bar > i.is-done { background: var(--s-live); }
+.cfg-meter-bar > i.is-next { background: var(--sk-ac, var(--s-live)); }
+.cfg-meter-bar > i.is-failed { background: var(--s-bad); }
+.cfg-meter-bar > i.is-stale { background: var(--s-warn); }
+/* A STEP NOTHING MEASURED IS NOT A STEP TO DO (QA1-FIX-32, admin-shell-10):
+   Workspaces you admin said `Setup 2 of 4 · 2 not measured` over four bars
+   of which the two unmeasured were the same solid grey as a step not done.
+   An unknown is hollow and dashed, the mark an unknown tile wears
+   (`.c-tile.is-unknown`), on every meter that draws the steps. */
+.cfg-meter-bar > i.is-unknown { box-sizing: border-box; background: none; border: 1px dashed var(--ctl-absent); }
+
+/* ---- the pages under the strip ------------------------------------------------ */
+/* A box or a radio on a Config page wore the browser's 0.5ex side margins, a
+   length off the spacing scale that the sweep cannot turn into px; every one
+   of them sits in a row whose gap already holds it apart from its word. Seen
+   once the sweep reached these pages as Config tabs (CONFIG-NAV).
+   The longhands and plain selectors are capacity.css's form for the same
+   fix: the sweep's cascade read `margin-inline` under `:where()` as nothing. */
+.cfg-page input[type='checkbox'],
+.cfg-page input[type='radio'] { margin-left: 0; margin-right: 0; }
+
+/* ---- the lead (CONFIG-LEAD-TINT; part of archived issue 2157) ------------------------------ */
+/* EVERY CONFIG PAGE'S LEAD: one next-step sentence and a button, on the info
+   tint (proposal E's `.lead`, config-e.html). One rule for every Config page:
+   a page's lead is a `section.ac-lead` around its card (Access.tsx `Lead`).
+   ITS BUTTONS' BORDERS ARE IN styles.css, after the `:where(.app button)`
+   floor. `--ctl-bd` measured 2.89:1 on this tint in dark and 2.96:1 in light,
+   under the 3:1 a control boundary is held to (WCAG 2.1 SC 1.4.11,
+   spaceprobe.ts `dividerContrast`), which is why GITHUB-ACCESS-PAGE drew the
+   lead on the plain card. The stronger border sits there rather than here
+   because jsdom's source-order cascade lets the floor out-rank any section
+   sheet, so a rule here would be invisible to the spacing sweep (the
+   `.ob-step.is-next` precedent beside it says the same). */
+.ac-lead > .c-card { background: var(--sk-acs); border-color: var(--sk-acl); }
+
+/* ---- the Config panel's row badges (S1a; CONFIG-PANEL-E) -------------------- */
+/* Each row's state from the strip's read: a tick when done, a dim count, what
+   is missing in the warning tone, or a dash for a source nobody could read. */
+.cfg-badge { flex: none; font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cfg-badge.is-done { color: var(--s-live); font-weight: 650; }
+.cfg-badge.is-count { font-family: var(--mono); }
+.cfg-badge.is-missing { color: var(--s-warn); font-weight: 600; }
+.cfg-badge.is-unknown { color: var(--ctl-absent, var(--text-dim)); cursor: help; }
+
+/* ---- the Admin panel's groups (S1b, S1c) ------------------------------------ */
+.sk-pgrp + .sk-pgrp { margin-top: 6px; }
+.sk-pg { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); padding: 6px 19px 4px; }
+.sk-pnote { margin: 6px 19px 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); white-space: normal; }
+.sk-pk-sub { flex: none; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+
+/* ---- one workspace's setup progress (S10a) ---------------------------------- */
+.cfg-progress { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.cfg-progress-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.cfg-progress-h b { font: 650 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.cfg-progress-h b.is-done { color: var(--s-live); }
+.cfg-progress-h small,
+.cfg-progress-next { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.cfg-progress .cfg-meter-bar { max-width: 360px; }
+/* ADMIN › WORKSPACES, THE FRAME'S COLUMNS (HOME-ADMIN, part of archived issue 2688; the
+   owner picked adding the grid here, 2026-11-03): each group workspace's row
+   is one grid line -- name, setup progress, roster facts, what waits, the
+   caller's role -- with its Config links on a line of their own under it. The
+   personal row keeps styles.css's flex line: it has a name and a sentence.
+   The counts over the list are tiles, their figure large. */
+.wya-row:not(.is-personal) {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.2fr) minmax(180px, 1.4fr) minmax(0, 1.4fr) minmax(0, 1.2fr) minmax(110px, 0.7fr);
+  grid-template-areas: "name setup facts waits role" "links links links links links";
+  align-items: start;
+  gap: 6px var(--ctl-s3, 12px);
+}
+.wya-row:not(.is-personal) .wya-name { grid-area: name; }
+.wya-row:not(.is-personal) .wya-setup { grid-area: setup; }
+.wya-row:not(.is-personal) .wya-facts { grid-area: facts; }
+.wya-row:not(.is-personal) .wya-waits { grid-area: waits; }
+.wya-row:not(.is-personal) .wya-role { grid-area: role; text-align: right; }
+.wya-row:not(.is-personal) .wya-links { grid-area: links; }
+.wya-setup { min-width: 0; }
+.wya-facts,
+.wya-waits { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.wya-role { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.wya-reading,
+.wya-facts-note { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.wya-counts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--ctl-s2, 8px); margin: 0 0 var(--ctl-s3, 12px); }
+.wya-counts > [role="listitem"] { display: flex; min-width: 0; }
+.wya-counts .c-chip { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; height: auto; padding: 10px 14px; border-radius: var(--r-ctl); white-space: normal; text-align: left; }
+.wya-counts .c-chip b { font: 650 var(--t-figure)/var(--lh-figure) var(--font); color: var(--text); }
+/* Tablet: name and progress on one line, facts and what waits under them. */
+@media (max-width: 1100px) {
+  .wya-row:not(.is-personal) {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: "name role" "setup setup" "facts waits" "links links";
+  }
+}
+/* Phone: one column, in the row's reading order. */
+@media (max-width: 759px) {
+  .wya-row:not(.is-personal) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "name" "role" "setup" "facts" "waits" "links";
+  }
+  .wya-row:not(.is-personal) .wya-role { text-align: left; }
+  .wya-counts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.wya-behind { margin: 0 0 var(--ctl-s2, 8px); font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.cfg-badge.is-note { color: var(--text-dim); }

@@ -1,0 +1,2612 @@
+#!/usr/bin/env bash
+# Assert that every shell, jq or TypeScript restatement of the frozen contract
+# still matches it.
+#
+# CONTRACT.md says "Import from it; do not redefine its types". A bash script
+# cannot import Python, so a handful of properties are necessarily restated in
+# jq -- and a restatement with nothing asserting it is just a copy waiting to
+# drift. It already had: `scripts/status.sh` carried its own inline copy of
+# SlotPool.effective_limit that had lost the `max(0, ...)` floor the model and
+# the common.sh copy both apply, so a pool with a negative cap would have been
+# printed with a negative limit while the scheduler computed zero.
+#
+# docs/architecture.md permits exactly one other restatement -- Terraform's copy
+# of the runner catalogue -- and permits it *because* a test asserts the copy
+# still matches. This is the equivalent test for the other two surfaces: the
+# shell and jq copies in scripts/lib/common.sh (sections 1-4), and the copies
+# apps/swarm-ui/src/types.ts has to keep because a browser cannot import
+# Python (section 5). The TypeScript side reads the .ts as text and needs no
+# node toolchain, here or in CI. Section 12 holds the shell redaction filter to
+# the API's, over one fixture file both are run on.
+#
+# Run by `make test` and by the `shell` job in .github/workflows/application.yml.
+# It needs no cloud credentials and no emulator.
+#
+# Usage: scripts/lib/check-contract-parity.sh
+
+set -euo pipefail
+# This script touches no project: it reads the tree. It says so, so
+# common.sh (no default project, the Day One project-defaults lane) does not stop on an unset
+# PROJECT_ID.
+SWARM_NO_PROJECT=1
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=common.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+
+require_cmd jq python3
+
+FAILED=0
+
+step "Frozen-contract parity"
+
+# --------------------------------------------------------------------------
+# 1. SlotPool.effective_limit, restated as `effective_limit` in FS_JQ.
+# --------------------------------------------------------------------------
+# The matrix deliberately includes the cases that separate a correct copy from a
+# plausible one: an absent adaptive target, an absent quota cap, a quota cap
+# below the hard limit, and the negative inputs that need the max(0, ...) floor.
+# The null hard_limit rows are contract request 38 (archived issue 374): an unset ceiling is
+# None in the model and must be null here -- never 0, which an operator chose,
+# and never the adaptive or quota cap standing in for it.
+CASES='[
+  {"hard_limit": null, "adaptive_target": null, "quota_derived_limit": null},
+  {"hard_limit": null, "adaptive_target": 4,    "quota_derived_limit": null},
+  {"hard_limit": null, "adaptive_target": null, "quota_derived_limit": 3},
+  {"hard_limit": 10, "adaptive_target": null, "quota_derived_limit": null},
+  {"hard_limit": 10, "adaptive_target": 4,    "quota_derived_limit": null},
+  {"hard_limit": 10, "adaptive_target": null, "quota_derived_limit": 3},
+  {"hard_limit": 10, "adaptive_target": 4,    "quota_derived_limit": 7},
+  {"hard_limit": 10, "adaptive_target": 7,    "quota_derived_limit": 4},
+  {"hard_limit": 0,  "adaptive_target": 0,    "quota_derived_limit": 0},
+  {"hard_limit": 10, "adaptive_target": 0,    "quota_derived_limit": null},
+  {"hard_limit": -1, "adaptive_target": null, "quota_derived_limit": null},
+  {"hard_limit": 10, "adaptive_target": -5,   "quota_derived_limit": null},
+  {"hard_limit": 10, "adaptive_target": null, "quota_derived_limit": -3}
+]'
+
+FROM_JQ="$(jq -c "${FS_JQ} [ .[] | effective_limit ]" <<<"${CASES}")"
+FROM_PY="$(python3 - "${REPO_ROOT}" "${CASES}" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.models import SlotPool
+
+cases = json.loads(sys.argv[2])
+print(json.dumps([
+    SlotPool(
+        name="parity",
+        hard_limit=c["hard_limit"],
+        adaptive_target=c["adaptive_target"],
+        quota_derived_limit=c["quota_derived_limit"],
+    ).effective_limit
+    for c in cases
+], separators=(",", ":")))
+PY
+)"
+
+if [[ "${FROM_JQ}" == "${FROM_PY}" ]]; then
+  ok "SlotPool.effective_limit: jq restatement matches the frozen model on $(jq 'length' <<<"${CASES}") cases"
+else
+  err "SlotPool.effective_limit has DRIFTED from swarm_common.models:"
+  err "    frozen model : ${FROM_PY}"
+  err "    FS_JQ in common.sh : ${FROM_JQ}"
+  err "Fix the jq in scripts/lib/common.sh; the frozen module is the authority."
+  FAILED=1
+fi
+
+# --------------------------------------------------------------------------
+# 2. Tenant.secret_name(), restated in create-secrets.sh and register-tenant.sh.
+# --------------------------------------------------------------------------
+# A mismatch here is silent and total: the worker asks Secret Manager for the
+# frozen spelling, finds nothing, and every task of that tenant parks as
+# CREDENTIAL_MISSING while the operator can see the secret they just created.
+SHELL_SECRET_NAME="swarm-tenant-eng-anthropic"
+FROZEN_SECRET_NAME="$(python3 - "${REPO_ROOT}" <<'PY'
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.models import Tenant
+print(Tenant(tenant_id="eng", kind="group", principal="eng@example.com",
+             created_at=datetime.now(timezone.utc)).secret_name("anthropic"))
+PY
+)"
+
+if [[ "${SHELL_SECRET_NAME}" == "${FROZEN_SECRET_NAME}" ]]; then
+  ok "Tenant.secret_name(): scripts spell it '${FROZEN_SECRET_NAME}', same as the frozen model"
+else
+  err "the scripts build '${SHELL_SECRET_NAME}' but Tenant.secret_name() returns '${FROZEN_SECRET_NAME}'"
+  err "Every task of that tenant would park as CREDENTIAL_MISSING. Fix the scripts."
+  FAILED=1
+fi
+
+# Both scripts must build that name the same way; a fixed-string grep for the
+# exact expression is enough to catch one of them being edited without the other.
+# shellcheck disable=SC2016  # the ${...} here is the literal text being searched for
+check_secret_shape() {
+  local file="$1" literal="$2"
+  if grep -qF "${literal}" "${file}"; then
+    ok "$(basename "${file}") uses the frozen secret-name shape"
+  else
+    err "$(basename "${file}") no longer builds swarm-tenant-<tenant>-<provider>"
+    FAILED=1
+  fi
+}
+# shellcheck disable=SC2016  # literal, not an expansion
+check_secret_shape "${REPO_ROOT}/scripts/create-secrets.sh"   'swarm-tenant-${TENANT}-${PROVIDER}'
+# shellcheck disable=SC2016  # literal, not an expansion
+check_secret_shape "${REPO_ROOT}/scripts/register-tenant.sh"  'swarm-tenant-${TENANT_ID}-${provider}'
+
+# --------------------------------------------------------------------------
+# 3. The task lifecycle, restated as shell arrays in common.sh.
+# --------------------------------------------------------------------------
+# CONTRACT.md invariant 1 is a PARTITION of `TaskState`: CONCURRENCY_STATES hold
+# capacity, PENDING_STATES cost nothing, TERMINAL_STATES have released. A state
+# added to the enum and not to the arrays is counted in none of them, so
+# `make status` prints a busy platform as idle -- during exactly the incident
+# where that number is the one being read. The full enum is asserted too,
+# because `status.sh` counts tasks by iterating it: a state missing from
+# TASK_STATES is a state whose tasks are never queried at all.
+set_matches() {
+  local name="$1"; shift
+  local from_shell from_py
+  from_shell="$(printf '%s\n' "$@" | LC_ALL=C sort | tr '\n' ' ')"
+  from_py="$(python3 - "${REPO_ROOT}" "${name}" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common import states as S
+
+name = sys.argv[2]
+if name == "TASK_STATES":
+    values = [s.value for s in S.TaskState]
+else:
+    values = [s.value for s in getattr(S, name)]
+print(" ".join(sorted(values)), end=" ")
+PY
+)"
+  if [[ "${from_shell}" == "${from_py}" ]]; then
+    ok "${name}: the shell array matches swarm_common.states ($# state(s))"
+  else
+    err "${name} has DRIFTED from swarm_common.states:"
+    err "    frozen enum     : ${from_py}"
+    err "    common.sh array : ${from_shell}"
+    err "Fix the array in scripts/lib/common.sh; the frozen module is the authority."
+    FAILED=1
+  fi
+}
+
+set_matches TASK_STATES        ${TASK_STATES[@]+"${TASK_STATES[@]}"}
+set_matches CONCURRENCY_STATES ${CONCURRENCY_STATES[@]+"${CONCURRENCY_STATES[@]}"}
+set_matches PENDING_STATES     ${PENDING_STATES[@]+"${PENDING_STATES[@]}"}
+set_matches TERMINAL_STATES    ${TERMINAL_STATES[@]+"${TERMINAL_STATES[@]}"}
+
+# --------------------------------------------------------------------------
+# 4. The tenant-id length budget, restated in register-tenant.sh.
+# --------------------------------------------------------------------------
+# `swarm_common.identity` sizes its slugs so `<_GSA_PREFIX><id>` always fits
+# GCP's 30-character service account id; register-tenant.sh refuses an id that
+# does not. While both derive the same number the script's check is unreachable,
+# which is the correct state. If the frozen module's budget ever grows past what
+# the script's prefix leaves, the resolver starts minting ids the script and
+# terraform both refuse -- tenants the API resolves and nobody can provision.
+# That gap was real here once, and the script's error text went on describing it
+# long after it was closed, which is why the number is asserted and not just
+# written down.
+#
+# Read out of the source rather than by running the script: it takes a
+# principal, talks to GCP and creates things.
+REGISTER_TENANT="${REPO_ROOT}/scripts/register-tenant.sh"
+SHELL_GSA_PREFIX="$(sed -n 's/^GSA_PREFIX="\(.*\)"$/\1/p' "${REGISTER_TENANT}" | head -1)"
+# shellcheck disable=SC2016  # the $(( is the literal shell arithmetic being matched in the file
+SHELL_ID_MAX="$(sed -n 's/^MAX_TENANT_ID=\$(( *\([0-9][0-9]*\) *-.*$/\1/p' "${REGISTER_TENANT}" | head -1)"
+
+if [[ -z "${SHELL_GSA_PREFIX}" || -z "${SHELL_ID_MAX}" ]]; then
+  # Refuse rather than skip. A parity check that passes because it could no
+  # longer find the thing it compares is worse than no check at all: it reports
+  # an agreement it never established.
+  err "could not read GSA_PREFIX / MAX_TENANT_ID out of scripts/register-tenant.sh"
+  err "The restatement moved or changed shape; update the sed above so this keeps checking it."
+  FAILED=1
+else
+  SHELL_TENANT_BUDGET=$(( SHELL_ID_MAX - ${#SHELL_GSA_PREFIX} ))
+  FROZEN_IDENTITY="$(python3 - "${REPO_ROOT}" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common import identity
+
+print(identity._GSA_PREFIX, identity._GSA_ACCOUNT_ID_MAX, identity._MAX_TENANT_ID)
+PY
+)"
+  read -r FROZEN_PREFIX FROZEN_ID_MAX FROZEN_BUDGET <<<"${FROZEN_IDENTITY}"
+
+  if [[ "${SHELL_GSA_PREFIX}" == "${FROZEN_PREFIX}" ]] \
+     && [[ "${SHELL_ID_MAX}" == "${FROZEN_ID_MAX}" ]] \
+     && [[ "${SHELL_TENANT_BUDGET}" == "${FROZEN_BUDGET}" ]]; then
+    ok "tenant-id budget: register-tenant.sh and swarm_common.identity both allow ${FROZEN_BUDGET} characters"
+  else
+    err "the tenant-id budget has DRIFTED from swarm_common.identity:"
+    err "    frozen module      : prefix '${FROZEN_PREFIX}' cap ${FROZEN_ID_MAX} -> ${FROZEN_BUDGET} characters"
+    err "    register-tenant.sh : prefix '${SHELL_GSA_PREFIX}' cap ${SHELL_ID_MAX} -> ${SHELL_TENANT_BUDGET} characters"
+    err "Ids the resolver mints but the script refuses are tenants nobody can provision."
+    FAILED=1
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# 5. The frozen catalogue and the task lifecycle, restated in TypeScript.
+# --------------------------------------------------------------------------
+# `apps/swarm-ui/src/types.ts` hand-copies the unit weights, the twelve task
+# states, the park reasons, the six provider states, the end causes and
+# the pool families, and the child-task fields and cancel class (requests 14,
+# 40, 41, item 9), and the credential an attempt ran on (request 152, item 10).
+# It has to: the browser cannot import Python, and the alternative to a bundled
+# copy of a three-entry frozen catalogue is a request per render to learn
+# something that cannot change without a contract change.
+#
+# Until now nothing asserted any of it, and this file's own header records why
+# that matters -- three shell restatements had already drifted before anyone
+# looked. TypeScript was simply the side nobody had got to. Nothing here
+# typechecks the UI; `make lint` runs no `tsc` and this must keep working on a
+# machine with no node toolchain, so the literals are read out of the source the
+# same way section 4 reads GSA_PREFIX out of register-tenant.sh.
+#
+# NO APOSTROPHES IN THE PYTHON BELOW. The probe is a heredoc inside a command
+# substitution, and bash scans that body for quote characters while it looks for
+# the closing paren -- so one unpaired `'` anywhere in it, including in a comment
+# ("the file's own..."), swallows the rest of the script. The report is
+#
+#     check-contract-parity.sh: line NNN: unexpected EOF while looking for matching `''
+#
+# with NNN pointing at the closing `)"` and nothing at the apostrophe, which is
+# why this is written down rather than left to be rediscovered. `bash -n` catches
+# it; write "the partition the UI makes", not "the UI's partition".
+#
+# WHAT IS DELIBERATELY NOT CHECKED. `REASON_COPY` is a documented SUBSET of
+# BlockedReason -- five members are never written as a blocker and the table
+# omits them on purpose -- so asserting equality there would fail on correct
+# code. `ResourceClassSpec` carries no numbers at all: cpu/memory/disk are
+# served by `/v1/resource-classes` precisely so they cannot drift, and that is
+# the pattern the rest of this file argues for.
+TS_TYPES="${REPO_ROOT}/apps/swarm-ui/src/types.ts"
+
+if [[ ! -f "${TS_TYPES}" ]]; then
+  # Refuse rather than skip, for the reason section 4 gives: a parity check that
+  # passes because it could not find the thing it compares reports an agreement
+  # it never established.
+  err "apps/swarm-ui/src/types.ts is missing; the TypeScript restatements cannot be checked"
+  err "If the UI moved, point this section at it -- do not let it skip."
+  FAILED=1
+elif ! TS_PARITY="$(python3 - "${REPO_ROOT}" "${TS_TYPES}" 2>&1 <<'PY'
+import dataclasses
+import json
+import re
+import sys
+from pathlib import Path
+
+repo_root, types_path = sys.argv[1], sys.argv[2]
+sys.path.insert(0, str(Path(repo_root) / "apps" / "common"))
+
+from swarm_common import states as S                      # noqa: E402
+from swarm_common.models import EndCause, ProviderState, WorkflowStep, pool_names_for  # noqa: E402
+from swarm_common.profiles import default_sizes           # noqa: E402
+
+SRC = Path(types_path).read_text()
+REPORT = []
+
+
+def emit(status, name, detail):
+    # One line per assertion, '|'-separated, because the shell reads it with
+    # `IFS='|' read`. Nothing here may contain a '|' -- every value printed is a
+    # sorted list of identifiers or a small integer.
+    REPORT.append("%s|%s|%s" % (status, name, detail))
+
+
+# -- readers ---------------------------------------------------------------
+# Each returns None when the literal is not where it was, which becomes a
+# MISSING (a failure), never a silent pass.
+
+def ts_union(name):
+    """`export type N = 'a' | 'b'`, one line or continued with leading `|`."""
+    m = re.search(r"export type %s\s*=([^\n]*(?:\n\s*\|[^\n]*)*)" % name, SRC)
+    return None if m is None else re.findall(r"'([^']+)'", m.group(1))
+
+
+def ts_set(name):
+    """`export const N: ReadonlySet<T> = new Set<T>([...])`."""
+    m = re.search(
+        r"export const %s\b[^=]*=\s*new Set<[^>]*>\(\[(.*?)\]\)" % name, SRC, re.S
+    )
+    return None if m is None else re.findall(r"'([^']+)'", m.group(1))
+
+
+def ts_array(name):
+    """`export const N: readonly T[] = [...]`."""
+    m = re.search(r"export const %s\b[^=]*=\s*\[(.*?)\]" % name, SRC, re.S)
+    return None if m is None else re.findall(r"'([^']+)'", m.group(1))
+
+
+def ts_number_map(name):
+    """`export const N: Readonly<Record<string, number>> = { k: 1, ... }`."""
+    m = re.search(r"export const %s\b[^=]*=\s*\{(.*?)\n\}" % name, SRC, re.S)
+    if m is None:
+        return None
+    return dict(
+        (k, int(v)) for k, v in re.findall(r"(\w+)\s*:\s*(\d+)", m.group(1))
+    )
+
+
+def ts_pool_kind_cases():
+    """The `case 'x':` labels inside `poolKind`."""
+    m = re.search(r"export function poolKind\(.*?\n\}", SRC, re.S)
+    return None if m is None else re.findall(r"case '([^']+)':", m.group(0))
+
+
+def compare_set(name, from_ts, from_py, shape):
+    if from_ts is None:
+        emit("MISSING", name, "no %s found" % shape)
+        return
+    got, want = sorted(set(from_ts)), sorted(set(from_py))
+    if len(from_ts) != len(set(from_ts)):
+        emit("DRIFT", name, "the TypeScript list repeats a member: %s" % " ".join(from_ts))
+    elif got == want:
+        emit("OK", name, "%d member(s) match the frozen contract" % len(want))
+    else:
+        emit(
+            "DRIFT",
+            name,
+            "frozen %s  //  types.ts %s" % (" ".join(want), " ".join(got)),
+        )
+
+
+# -- 1. the unit weights, against the CODE DEFAULTS --------------------------
+# The one place the UI copies a NUMBER out of the frozen catalogue. Admission
+# counts weighted units, so a wrong weight here misreports how much of the
+# budget a task will cost before anyone submits it.
+#
+# Since contract requests 109-111 (runner sizes, #1689) an admin may resize a
+# class, and the units follow the size, so the live weights are served by
+# GET /v1/resource-classes and can differ from this bundled copy. What this
+# holds is the copy against the code DEFAULTS (version 0, default_sizes),
+# which is all a bundled fallback can be; it is named so in the report.
+units_ts = ts_number_map("RESOURCE_UNITS")
+units_py = dict((name, size.units) for name, size in default_sizes().items())
+if units_ts is None:
+    emit("MISSING", "RESOURCE_UNITS (code defaults)", "no `export const RESOURCE_UNITS = {...}` found")
+elif units_ts == units_py:
+    emit(
+        "OK",
+        "RESOURCE_UNITS (code defaults)",
+        "%s match swarm_common.profiles.default_sizes"
+        % " ".join("%s=%d" % kv for kv in sorted(units_py.items())),
+    )
+else:
+    emit(
+        "DRIFT",
+        "RESOURCE_UNITS (code defaults)",
+        "frozen %s  //  types.ts %s"
+        % (json.dumps(units_py, sort_keys=True), json.dumps(units_ts, sort_keys=True)),
+    )
+
+# -- 2. the task lifecycle -------------------------------------------------
+compare_set("TaskState", ts_union("TaskState"), [s.value for s in S.TaskState], "union")
+compare_set(
+    "CONCURRENCY_STATES",
+    ts_set("CONCURRENCY_STATES"),
+    [s.value for s in S.CONCURRENCY_STATES],
+    "Set literal",
+)
+compare_set(
+    "TERMINAL_STATES",
+    ts_set("TERMINAL_STATES"),
+    [s.value for s in S.TERMINAL_STATES],
+    "Set literal",
+)
+
+# REAL_STATES is a partition the UI makes of TaskState -- the nine a task document
+# can hold -- and NEVER_WRITTEN is the rest. It is not a restatement of the
+# frozen enum, so it is checked against the partition instead: a state added to
+# the enum and to neither list is a state whose tasks appear in no filter, no
+# legend and no histogram, which reads as "there are none".
+real_states = ts_array("REAL_STATES")
+never_written = ts_set("NEVER_WRITTEN")
+all_states = set(s.value for s in S.TaskState)
+if real_states is None or never_written is None:
+    emit("MISSING", "REAL_STATES/NEVER_WRITTEN", "one of the two literals is not there")
+else:
+    overlap = sorted(set(real_states) & set(never_written))
+    missed = sorted(all_states - set(real_states) - set(never_written))
+    unknown = sorted((set(real_states) | set(never_written)) - all_states)
+    if overlap:
+        emit("DRIFT", "REAL_STATES/NEVER_WRITTEN", "in both lists: %s" % " ".join(overlap))
+    elif missed:
+        emit(
+            "DRIFT",
+            "REAL_STATES/NEVER_WRITTEN",
+            "in neither list, so no filter or legend can show them: %s" % " ".join(missed),
+        )
+    elif unknown:
+        emit("DRIFT", "REAL_STATES/NEVER_WRITTEN", "not a TaskState: %s" % " ".join(unknown))
+    else:
+        emit(
+            "OK",
+            "REAL_STATES/NEVER_WRITTEN",
+            "partition the %d frozen states exactly" % len(all_states),
+        )
+
+# -- 3. the reason and provider enums --------------------------------------
+compare_set("ParkReason", ts_union("ParkReason"), [p.value for p in S.ParkReason], "union")
+compare_set(
+    "ProviderStateName",
+    ts_union("ProviderStateName"),
+    [p.value for p in ProviderState],
+    "union",
+)
+# EndCause: the union and the ordered list. Contract request 29 added
+# publish_refused on 2026-10-02; a value the frozen enum gains and these do
+# not is a task end the UI has no word for. The list is compared in ORDER as
+# well, because the frozen order is the order a reader is shown.
+compare_set("EndCause", ts_union("EndCause"), [c.value for c in EndCause], "union")
+compare_set("END_CAUSES", ts_array("END_CAUSES"), [c.value for c in EndCause], "array literal")
+end_causes_ts = ts_array("END_CAUSES")
+if end_causes_ts is not None and end_causes_ts != [c.value for c in EndCause]:
+    emit(
+        "DRIFT",
+        "END_CAUSES order",
+        "frozen %s  //  types.ts %s"
+        % (" ".join(c.value for c in EndCause), " ".join(end_causes_ts)),
+    )
+
+# -- 4. the pool naming rules ----------------------------------------------
+# Derived from `pool_names_for` rather than written down: it is the function
+# that decides what a pool is called, so its output is the authority. Every
+# name is `<family>:<...>` except `global`.
+families_py = set()
+for pool in pool_names_for(
+    tenant_id="parity",
+    provider="anthropic",
+    resource_class="standard",
+    runner_profile="claude-code",
+    backend="CLOUD_RUN_JOB",
+):
+    families_py.add(pool.split(":")[0] if ":" in pool else pool)
+
+compare_set("PoolKind", ts_union("PoolKind"), families_py, "union")
+compare_set("POOL_FAMILY_ORDER", ts_array("POOL_FAMILY_ORDER"), families_py, "array literal")
+
+# `poolKind` parses the family off the name with a switch whose `default` is
+# `global`. A family added to `pool_names_for` and not to the switch is not a
+# parse error -- it is silently reported as the global pool, and `poolScope`
+# then calls a per-tenant number platform-wide. That is a scope error dressed
+# as a comparison, which the neighbouring comment in types.ts calls Trap E.
+cases = ts_pool_kind_cases()
+compare_set("poolKind cases", cases, families_py - set(["global"]), "switch")
+
+# -- 5. WorkflowStep.input_from, a SHAPE rather than a value ---------------
+# `codec.workflow_to_api` serves this field exactly as the frozen dataclass
+# holds it, so the TypeScript declaration is a restatement of the frozen
+# annotation. It was `string | null` against a `dict[str, str]` that is never a
+# string and never null, and the fixtures supplied a string too -- so the screen
+# was right in development and would have been wrong against every real
+# response, which is the signature defect of this repository. One field, so the
+# mapping from a Python annotation to its TypeScript spelling is a literal.
+PY_TO_TS = {"dict[str, str]": "Record<string, string>"}
+
+step_field = re.search(
+    r"export interface WorkflowStep \{(.*?)\n\}", SRC, re.S
+)
+if step_field is None:
+    emit("MISSING", "WorkflowStep", "no `export interface WorkflowStep` found")
+else:
+    declared = re.search(r"\n  input_from(\?)?:\s*([^\n]+)", step_field.group(1))
+    frozen = None
+    for field in dataclasses.fields(WorkflowStep):
+        if field.name == "input_from":
+            frozen = str(field.type)
+    if declared is None:
+        emit("MISSING", "WorkflowStep.input_from", "the field is not in the interface")
+    elif frozen is None:
+        emit("MISSING", "WorkflowStep.input_from", "the frozen dataclass no longer has it")
+    elif frozen not in PY_TO_TS:
+        emit(
+            "MISSING",
+            "WorkflowStep.input_from",
+            "the frozen annotation is now %r and this probe has no TypeScript "
+            "spelling for it; add one" % frozen,
+        )
+    else:
+        want, got = PY_TO_TS[frozen], declared.group(2).strip()
+        if declared.group(1):
+            emit(
+                "DRIFT",
+                "WorkflowStep.input_from",
+                "declared optional; the frozen field has a default_factory and is "
+                "always served, so it is never absent",
+            )
+        elif got == want:
+            emit("OK", "WorkflowStep.input_from", "%s matches %s" % (got, frozen))
+        else:
+            emit(
+                "DRIFT",
+                "WorkflowStep.input_from",
+                "frozen %s means %s  //  types.ts says %s" % (frozen, want, got),
+            )
+
+# -- 6. the provider pool a quota document feeds (CP-8, #85) ---------------
+# Provider quota names, on every row, the pool its cap feeds, and a helper in
+# types.ts spells that name. pool_names_for is the function that decides what
+# the pool is called, so the spelling is read out of the helper and compared
+# with what the frozen function produces for the same provider and tenant. A
+# rename on either side would otherwise leave the screen linking to a pool
+# name nobody has.
+#
+# NO BACKTICK AND NO DOLLAR SIGN BELOW, for the reason the apostrophe note at
+# the top of this section gives: the probe is a heredoc inside a command
+# substitution. The template literal is matched with the escapes \x60 and \x24.
+TICK = "\x60"
+DOLLAR = "\x24"
+helper = re.search(
+    r"export function providerTenantPool\(provider: string, tenant: string\): string \{\s*return "
+    + TICK + r"([^" + TICK + r"]*)" + TICK,
+    SRC,
+)
+if helper is None:
+    emit(
+        "MISSING",
+        "providerTenantPool",
+        "no helper returning a template literal over (provider, tenant) found",
+    )
+else:
+    got = (
+        helper.group(1)
+        .replace(DOLLAR + "{provider}", "anthropic")
+        .replace(DOLLAR + "{tenant}", "parity")
+    )
+    want = [
+        p
+        for p in pool_names_for(
+            tenant_id="parity",
+            provider="anthropic",
+            resource_class="standard",
+            runner_profile="claude-code",
+            backend="CLOUD_RUN_JOB",
+        )
+        if p.startswith("provider:") and "parity" in p
+    ]
+    if want == [got]:
+        emit("OK", "providerTenantPool", "spells %s as pool_names_for does" % got)
+    else:
+        emit(
+            "DRIFT",
+            "providerTenantPool",
+            "frozen %s  //  types.ts %s" % (" ".join(want), got),
+        )
+
+# -- 7. the quota broker tick the staleness rule is twice of (CP-9, #85) ---
+# Provider quota draws a reading older than twice the broker's sweep interval
+# as stale. The interval is Terraform configuration, not frozen contract: the
+# quota-refresh Cloud Scheduler job, which calls QuotaService.sweep, and whose
+# cron is the scheduler module default quota_refresh_schedule, which the root
+# does not override. It is a SWEEP, not a report: the sweep rewrites a quota
+# document only when its state or derived cap changes, and updated_at moves
+# when a worker reports. #159's review found the constant named
+# QUOTA_REPORT_INTERVAL_SECONDS and the screen calling it a reporting
+# interval, which no such report has; it is QUOTA_SWEEP_INTERVAL_SECONDS now.
+# types.ts states it once, and this holds it to the cron: a changed schedule
+# with the old constant would call current readings stale, or stale current.
+tf_vars = Path(repo_root) / "terraform" / "modules" / "scheduler" / "variables.tf"
+ts_interval = re.search(r"export const QUOTA_SWEEP_INTERVAL_SECONDS = (\d+)\b", SRC)
+tf_block = None
+if tf_vars.is_file():
+    # \x22 is the double quote, written as an escape for the same reason.
+    tf_block = re.search(
+        r"variable \x22quota_refresh_schedule\x22 \{.*?default\s*=\s*\x22([^\x22]+)\x22",
+        tf_vars.read_text(),
+        re.S,
+    )
+overrides = sorted(
+    str(p.relative_to(repo_root))
+    for p in (Path(repo_root) / "terraform").rglob("*")
+    if p.is_file()
+    and p.suffix in (".tf", ".tfvars")
+    and "modules/scheduler" not in p.as_posix()
+    and "quota_refresh_schedule" in p.read_text(errors="replace")
+)
+if ts_interval is None:
+    emit("MISSING", "QUOTA_SWEEP_INTERVAL_SECONDS", "no numeric export const found")
+elif tf_block is None:
+    emit("MISSING", "QUOTA_SWEEP_INTERVAL_SECONDS", "no quota_refresh_schedule default in %s" % tf_vars)
+elif overrides:
+    emit(
+        "MISSING",
+        "QUOTA_SWEEP_INTERVAL_SECONDS",
+        "quota_refresh_schedule is set outside the module (%s); read that value instead" % " ".join(overrides),
+    )
+else:
+    cron = tf_block.group(1).split()
+    step = re.fullmatch(r"\*/(\d+)", cron[0]) if len(cron) == 5 else None
+    if step is None or cron[1:] != ["*", "*", "*", "*"]:
+        emit(
+            "MISSING",
+            "QUOTA_SWEEP_INTERVAL_SECONDS",
+            "quota_refresh_schedule %s is not an every-N-minutes cron this probe reads" % tf_block.group(1),
+        )
+    else:
+        seconds = int(step.group(1)) * 60
+        if seconds == int(ts_interval.group(1)):
+            emit(
+                "OK",
+                "QUOTA_SWEEP_INTERVAL_SECONDS",
+                "%ss matches quota_refresh_schedule %s" % (seconds, tf_block.group(1)),
+            )
+        else:
+            emit(
+                "DRIFT",
+                "QUOTA_SWEEP_INTERVAL_SECONDS",
+                "terraform quota_refresh_schedule %s is %ss  //  types.ts %ss"
+                % (tf_block.group(1), seconds, ts_interval.group(1)),
+            )
+
+# -- 9. the child-task restatements (contract requests 14, 40 and 41) ------
+# The two Task fields the API serves on every task, and the end cause the
+# outcome ledger counts as its own cancel class. The park reason is in the
+# ParkReason comparison above. Read as text, like everything in this section.
+from swarm_common.models import EndCause, Task             # noqa: E402
+
+frozen_fields = set(f.name for f in dataclasses.fields(Task))
+iface = re.search(r"export interface Task \{(.*?)\n\}", SRC, re.S)
+wanted = ["parent_attempt_id", "parent_task_id"]
+if iface is None:
+    emit("MISSING", "Task.parent_*", "no export interface Task block")
+elif not set(wanted) <= frozen_fields:
+    emit("DRIFT", "Task.parent_*", "the frozen Task lacks %s" % " ".join(sorted(set(wanted) - frozen_fields)))
+else:
+    declared = [w for w in wanted if re.search(r"\n\s*%s\??\s*:" % w, iface.group(1))]
+    if declared == wanted:
+        emit("OK", "Task.parent_*", "types.ts declares %s" % " ".join(wanted))
+    else:
+        emit("DRIFT", "Task.parent_*", "types.ts declares %s of %s" % (" ".join(declared) or "none", " ".join(wanted)))
+
+# -- 10. the credential an attempt ran on (contract request 152) ----------
+# Attempt.account_id, credential_source and credential_tier, restated on
+# AttemptRow, and the two tiers restated as the CredentialTier union, which
+# the field must be typed with: a field typed as a bare string would take a
+# tier the frozen module refuses.
+from swarm_common import models as frozen_models          # noqa: E402
+
+attempt_fields = set(f.name for f in dataclasses.fields(frozen_models.Attempt))
+run_on = ["account_id", "credential_source", "credential_tier"]
+row = re.search(r"export interface AttemptRow \{(.*?)\n\}", SRC, re.S)
+if row is None:
+    emit("MISSING", "AttemptRow.credential_*", "no export interface AttemptRow block")
+elif not set(run_on) <= attempt_fields:
+    emit("DRIFT", "AttemptRow.credential_*",
+         "the frozen Attempt lacks %s" % " ".join(sorted(set(run_on) - attempt_fields)))
+else:
+    declared = [c for c in run_on if re.search(r"\n\s*%s\??\s*:" % c, row.group(1))]
+    tier_typed = re.search(r"\n\s*credential_tier\??\s*:\s*CredentialTier\s*\|\s*null\s*\n", row.group(1))
+    if declared != run_on:
+        missing = [c for c in run_on if c not in declared]
+        emit("DRIFT", "AttemptRow.credential_*",
+             "types.ts declares %s of %s, missing %s"
+             % (" ".join(declared) or "none", " ".join(run_on), " ".join(missing)))
+    elif tier_typed is None:
+        emit("DRIFT", "AttemptRow.credential_*",
+             "credential_tier is not typed CredentialTier or null")
+    else:
+        emit("OK", "AttemptRow.credential_*", "types.ts declares %s" % " ".join(run_on))
+
+compare_set("CredentialTier", ts_union("CredentialTier"),
+            getattr(frozen_models, "CREDENTIAL_TIERS", ()), "export type union")
+
+outcomes_ts = Path(types_path).with_name("outcomes.ts")
+cause_union = None
+if outcomes_ts.is_file():
+    m = re.search(r"export type CancelCauseKey\s*=([^\n]*(?:\n\s*\|[^\n]*)*)", outcomes_ts.read_text())
+    cause_union = None if m is None else re.findall(r"'([^']+)'", m.group(1))
+if cause_union is None:
+    emit("MISSING", "CancelCauseKey", "no CancelCauseKey union in outcomes.ts")
+elif EndCause.CHILD_CASCADE.value in cause_union:
+    emit("OK", "CancelCauseKey", "outcomes.ts counts %s" % EndCause.CHILD_CASCADE.value)
+else:
+    emit("DRIFT", "CancelCauseKey", "outcomes.ts has no %s class" % EndCause.CHILD_CASCADE.value)
+
+print("\n".join(REPORT))
+PY
+)"; then
+  err "the TypeScript parity probe failed to run:"
+  printf '%s\n' "${TS_PARITY}" | sed 's/^/     /' >&2
+  FAILED=1
+else
+  while IFS='|' read -r TS_STATUS TS_NAME TS_DETAIL; do
+    [[ -n "${TS_STATUS}" ]] || continue
+    case "${TS_STATUS}" in
+      OK)
+        ok "types.ts ${TS_NAME}: ${TS_DETAIL}"
+        ;;
+      MISSING)
+        err "could not read ${TS_NAME} out of apps/swarm-ui/src/types.ts: ${TS_DETAIL}"
+        err "The restatement moved or changed shape; update the probe so this keeps checking it."
+        FAILED=1
+        ;;
+      DRIFT)
+        err "types.ts ${TS_NAME} has DRIFTED from the frozen contract:"
+        err "    ${TS_DETAIL}"
+        err "Fix apps/swarm-ui/src/types.ts; the frozen module is the authority."
+        FAILED=1
+        ;;
+      *)
+        err "unexpected TypeScript parity output: ${TS_STATUS}|${TS_NAME}|${TS_DETAIL}"
+        FAILED=1
+        ;;
+    esac
+  done <<<"${TS_PARITY}"
+fi
+
+# --------------------------------------------------------------------------
+# 6. The tenant NAMESPACE, which is not in the frozen contract at all.
+# --------------------------------------------------------------------------
+# THIS SECTION EXISTS BECAUSE THE VALUE HAS NO FROZEN HOME. Every other section
+# above compares a copy against `swarm_common`; there is no
+# `swarm_common.namespace_for(tenant)` to compare against, so seven components
+# each wrote the prefix down and two of them wrote it down differently.
+#
+# What that cost, on 2026-09-23: `kubernetes/render.py` spelled it `swarm-` and
+# `apps/scheduler/scheduler/dispatch.py` spelled it `swarm-tenant-`, so the
+# provisioner created `swarm-eng` and the dispatcher created Jobs in
+# `swarm-tenant-eng`, which did not exist. Kubernetes AUTHORISES BEFORE IT
+# RESOLVES: a Job created into a namespace that is not there is reported as
+#
+#     jobs.batch is forbidden: User "..." cannot create resource "jobs" in API
+#     group "batch" in the namespace "swarm-tenant-eng"
+#
+# -- a 403 naming a permission, never a 404 naming the namespace. Every
+# `browser` task this platform had ever accepted (seven, over two days) failed
+# that way and three separate investigations went at IAM. docs/gke-dispatch-403.md.
+#
+# THE AUTHORITY IS THE DISPATCHER, not this file and not the renderer: the
+# scheduler is the component that actually creates the object, so whatever it
+# spells is what has to exist. It is read out of the source as text rather than
+# imported, for the reason sections 4 and 5 give -- this check must keep working
+# with nothing but python3 and jq, in the `shell` CI job, with no scheduler
+# dependencies installed.
+#
+# Two halves, because they catch different things:
+#
+#   6a. THE DECLARED PREFIXES -- every `namespace_prefix`-shaped default in the
+#       repository. This is where the bug lived.
+#   6b. THE NAMESPACE LITERALS -- every place a namespace VALUE is written out,
+#       including test fixtures. A fixture that restates the prefix is the worst
+#       case of all: it agrees with the bug and makes the suite prove it.
+#
+# This is a STATIC scan of the repository and cannot see Firestore: a tenant
+# document that stores a namespace outside the prefix (u-owner's, 2026-10-11)
+# is caught at runtime instead, by `verified_namespace` in
+# apps/scheduler/scheduler/dispatch.py and apps/reconciler/reconciler/backends.py
+# (the `tenant_namespace_mismatch` log entry and alert), and on demand by
+# scripts/tenant-namespace-audit.sh.
+#
+# Both halves REFUSE TO SKIP. A scan that finds fewer sites than it did when it
+# was written reports that the restatements moved, rather than passing because
+# it could no longer see them -- the failure mode section 4 already guards.
+step "Tenant namespace parity"
+
+if ! NS_PARITY="$(python3 - "${REPO_ROOT}" "${TENANT_NAMESPACE_PREFIX}" 2>&1 <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+shell_prefix = sys.argv[2]
+REPORT = []
+
+
+def emit(status, name, detail):
+    REPORT.append("%s|%s|%s" % (status, name, detail))
+
+
+# Directories that hold no source.
+SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build", ".mypy_cache",
+             "__pycache__", ".pytest_cache", ".terraform", ".claude"}
+SKIP_SUFFIXES = {".md", ".lock", ".png", ".svg", ".ico", ".woff", ".woff2"}
+
+
+# This file describes the patterns it looks for, in prose and in regex
+# literals, so scanning it finds itself: the sentence explaining what a
+# namespace literal looks like IS a namespace literal. The value it would
+# otherwise contribute -- the shell prefix -- arrives as argv[2] instead, so
+# nothing is lost by leaving it out.
+SELF = (root / "scripts" / "lib" / "check-contract-parity.sh").resolve()
+
+
+def sources():
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.resolve() == SELF:
+            continue
+        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        if path.suffix in SKIP_SUFFIXES:
+            continue
+        try:
+            yield path, path.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+
+
+FILES = list(sources())
+
+# -- the authority ---------------------------------------------------------
+# `namespace_template: str = "swarm-tenant-{tenant}"` in the dispatcher. The
+# prefix is whatever precedes the interpolation.
+dispatch = (root / "apps" / "scheduler" / "scheduler" / "dispatch.py").read_text()
+templates = re.findall(r"namespace_template[^=\n]*=\s*\"([^\"]*\{tenant\})\"", dispatch)
+# The fallback inside `namespace_for` is a second literal of the same template
+# and is included deliberately: it is what is used when no GkeTarget was built.
+templates += re.findall(r"else\s+\"([^\"]*\{tenant\})\"", dispatch)
+prefixes = set(t.split("{tenant}")[0] for t in templates)
+
+if not templates:
+    emit("MISSING", "GkeTarget.namespace_template",
+         "no `namespace_template = \"...{tenant}\"` in apps/scheduler/scheduler/dispatch.py")
+    print("\n".join(REPORT))
+    raise SystemExit(0)
+if len(prefixes) != 1:
+    emit("DRIFT", "GkeTarget.namespace_template",
+         "the dispatcher itself spells the namespace %d ways: %s"
+         % (len(prefixes), " ".join(sorted(prefixes))))
+    print("\n".join(REPORT))
+    raise SystemExit(0)
+
+AUTHORITY = prefixes.pop()
+emit("OK", "authority",
+     "the scheduler dispatches into %s<tenant> (%d template literal(s) agree)"
+     % (AUTHORITY, len(templates)))
+
+if shell_prefix != AUTHORITY:
+    emit("DRIFT", "TENANT_NAMESPACE_PREFIX in scripts/lib/common.sh",
+         "shell says %s, the scheduler dispatches into %s" % (shell_prefix, AUTHORITY))
+else:
+    emit("OK", "TENANT_NAMESPACE_PREFIX in scripts/lib/common.sh",
+         "%s, same as the scheduler" % shell_prefix)
+
+# -- 6a. declared prefixes -------------------------------------------------
+# Python defaults, the renderer constant and the terraform variable default.
+# Each regex is anchored on the IDENTIFIER rather than on a file path, so a new
+# component that names its setting the same way is picked up without anyone
+# remembering that this file exists.
+DECLARATIONS = (
+    (r"^\s*(?:tenant_)?namespace_prefix\s*:\s*str\s*=\s*\"([^\"]*)\"", "python default"),
+    (r"^\s*NAMESPACE_PREFIX\s*=\s*\"([^\"]*)\"", "renderer constant"),
+    (r"os\.environ\.get\(\s*\n?\s*\"TENANT_NAMESPACE_PREFIX\",\s*\"([^\"]*)\"", "env default"),
+    (r"variable\s+\"namespace_prefix\"\s*\{[^}]*?default\s*=\s*\"([^\"]*)\"", "terraform default"),
+    (r"^\s*tenant_namespace_prefix\s*=\s*\"([^\"]*)\"", "test/tfvars literal"),
+    # The `or` half of an env read. `Settings.from_env` writes the default TWICE
+    # -- once as os.environ.get(NAME, default) and once as the `or default` that
+    # catches a variable set to the empty string -- and only the first was being
+    # scanned. Two literals in one expression look like they must be edited
+    # together, right up until one of them is not.
+    (r"or\s+\"(swarm-tenant-[a-z0-9-]*)\"", "python empty-string fallback"),
+    # A prefix REBUILT from the Terraform name_prefix rather than written out:
+    # terraform/modules/monitoring/metrics.tf extracts the tenant from
+    # `resource.labels.namespace_name` with "^${var.name_prefix}-tenant-(.+)$".
+    # The captured template has `${var.name_prefix}` resolved below against
+    # the terraform/infra default, the value it is applied with. A drift here
+    # would not fail anything loudly: the GKE spec-refusal metric tenant_id
+    # label would read empty for every tenant (2026-10-11 stale-name audit).
+    (r"\^(\$\{var\.name_prefix\}-[a-z0-9-]*-)\(", "terraform namespace regex"),
+)
+
+# `${var.name_prefix}` in a captured template is the terraform/infra default.
+INFRA_VARS = (root / "terraform" / "infra" / "variables.tf").read_text()
+NAME_PREFIX = re.search(
+    r"variable\s+\"name_prefix\"\s*\{[^}]*?default\s*=\s*\"([^\"]*)\"", INFRA_VARS, re.S)
+if NAME_PREFIX is None:
+    emit("MISSING", "terraform/infra name_prefix default",
+         "no `variable \"name_prefix\"` default in terraform/infra/variables.tf, so the "
+         "templates built from it cannot be resolved")
+
+declared = []
+for path, text in FILES:
+    rel = path.relative_to(root)
+    for pattern, kind in DECLARATIONS:
+        for match in re.finditer(pattern, text, re.M | re.S):
+            line = text.count("\n", 0, match.start()) + 1
+            value = match.group(1)
+            if "${var.name_prefix}" in value and NAME_PREFIX is not None:
+                value = value.replace("${var.name_prefix}", NAME_PREFIX.group(1))
+            declared.append((str(rel), line, kind, value))
+
+# The count when this was last raised (10 on 2026-10-11, with the monitoring
+# regex; 7 when written). Lower means a restatement moved or was renamed and
+# this scan stopped seeing it, which is not the same as agreement.
+MIN_DECLARATIONS = 10
+if len(declared) < MIN_DECLARATIONS:
+    emit("MISSING", "declared namespace prefixes",
+         "found %d, expected at least %d; a restatement moved or was renamed -- "
+         "update the DECLARATIONS patterns so this keeps checking it"
+         % (len(declared), MIN_DECLARATIONS))
+else:
+    wrong = [d for d in declared if d[3] != AUTHORITY]
+    if wrong:
+        for rel, line, kind, value in wrong:
+            emit("DRIFT", "declared namespace prefix",
+                 "%s:%d (%s) says %s, the scheduler dispatches into %s"
+                 % (rel, line, kind, value, AUTHORITY))
+    else:
+        emit("OK", "declared namespace prefixes",
+             "%d declaration(s) all spell it %s" % (len(declared), AUTHORITY))
+
+# -- 6b. namespace literals ------------------------------------------------
+# Anything of the form `namespace = "swarm-..."`, `"namespace": f"swarm-..."`,
+# `namespaces["eng"] == "swarm-..."`. The literal has to FOLLOW the identifier,
+# so an unrelated `swarm-` string elsewhere on the line is not matched.
+#
+# `# namespace-prefix-exempt:` on the line opts one out, for the negative tests
+# that feed the WRONG spelling in on purpose. The marker carries a reason, and
+# it is a line comment in every language scanned here.
+#
+# apps/swarm-ui IS SCANNED LIKE EVERYTHING ELSE. Its display-only fixtures
+# carried `swarm-u-owner` and were reported ADVISORY from 2026-09-24 until the
+# 2026-10-11 stale-name audit renamed them; the advisory branch went with them,
+# so a browser fixture that restates a wrong prefix now fails like any other.
+# The apostrophe is BUILT, not written. This probe is a heredoc inside a
+# command substitution and bash scans that body for quote characters while it
+# looks for the closing paren, so a single one here truncates the script -- the
+# note in section 5 above records the unhelpful error that produces.
+_Q = chr(39)
+# The optional `[...]` is what lets this see an HCL assertion such as
+# `output.namespaces["eng"] == "swarm-tenant-eng"`, which is a restatement
+# exactly as much as a Python fixture is -- it pins what terraform must emit.
+LITERAL = re.compile(
+    r"namespaces?(?:\[[^\]]*\])?[\"\]]*\s*(?:==|=|:)\s*f?[\""
+    + _Q
+    + r"]([a-z0-9][a-z0-9.\-{}_]*)[\""
+    + _Q
+    + r"]"
+)
+
+literals = []
+for path, text in FILES:
+    rel = str(path.relative_to(root))
+    for number, line in enumerate(text.splitlines(), start=1):
+        if "namespace-prefix-exempt" in line:
+            continue
+        for match in LITERAL.finditer(line):
+            value = match.group(1)
+            # Only namespaces this platform owns. `finance-prod` in a
+            # negative test belongs to another team and must not match.
+            if not value.startswith("swarm-"):
+                continue
+            literals.append((rel, number, value))
+
+MIN_LITERALS = 8
+if len(literals) < MIN_LITERALS:
+    emit("MISSING", "namespace literals",
+         "found %d, expected at least %d; the literals moved or changed shape -- "
+         "update the LITERAL pattern so this keeps checking them"
+         % (len(literals), MIN_LITERALS))
+else:
+    bad = [lit for lit in literals if not lit[2].startswith(AUTHORITY)]
+    for rel, number, value in bad:
+        emit("DRIFT", "namespace literal",
+             "%s:%d is %s; the scheduler dispatches into %s<tenant>, so this "
+             "names a namespace nothing creates" % (rel, number, value, AUTHORITY))
+    if not bad:
+        emit("OK", "namespace literals",
+             "%d literal(s) all start with %s" % (len(literals), AUTHORITY))
+
+print("\n".join(REPORT))
+PY
+)"; then
+  err "the tenant-namespace parity probe failed to run:"
+  printf '%s\n' "${NS_PARITY}" | sed 's/^/     /' >&2
+  FAILED=1
+else
+  # Counted, and the count is printed. A `while read` over an empty string
+  # reports nothing and reads exactly like a clean sweep -- CLAUDE.md rule zero.
+  NS_SEEN=0
+  while IFS='|' read -r NS_STATUS NS_NAME NS_DETAIL; do
+    [[ -n "${NS_STATUS}" ]] || continue
+    NS_SEEN=$(( NS_SEEN + 1 ))
+    case "${NS_STATUS}" in
+      OK)       ok "namespace ${NS_NAME}: ${NS_DETAIL}" ;;
+      MISSING)
+        err "the tenant-namespace scan lost sight of what it compares: ${NS_DETAIL}"
+        err "A scan that passes because it stopped looking reports an agreement it never established."
+        FAILED=1
+        ;;
+      DRIFT)
+        err "${NS_NAME} has DRIFTED: ${NS_DETAIL}"
+        err "See docs/gke-dispatch-403.md -- the failure this produces is a 403, not a 404."
+        FAILED=1
+        ;;
+      *)
+        err "unexpected tenant-namespace parity output: ${NS_STATUS}|${NS_NAME}|${NS_DETAIL}"
+        FAILED=1
+        ;;
+    esac
+  done <<<"${NS_PARITY}"
+  if [[ "${NS_SEEN}" -eq 0 ]]; then
+    err "the tenant-namespace probe printed no assertions at all; nothing was checked"
+    FAILED=1
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# 7-11. THE REST OF THE MIRRORED VALUES, found by sweeping for the shape.
+# --------------------------------------------------------------------------
+# Sections 1-6 each grew out of an incident. This section is the sweep that was
+# run afterwards, looking for the same shape everywhere else in the repository:
+# a value, a name or a spec written down in more than one place with nothing
+# asserting the copies agree. Three of those cost a day each inside 48 hours --
+# the namespace prefix, the RBAC subject, the GKE Job spec -- and not one of
+# them was hard to compare. Nobody compared them.
+#
+# Ranked by what a drift COSTS, which is not the same as how many copies exist.
+# A drifted log message costs a confusing line; each of these costs an outage
+# that reads as something else entirely.
+#
+#   7.  THE WORKER KSA NAME. Five dispatcher literals, the renderer constant,
+#       two terraform variable defaults and an array in register-tenant.sh. Two
+#       different failures, neither of which names the cause: a pod naming a
+#       ServiceAccount that does NOT EXIST is admitted and then never
+#       scheduled -- `serviceaccount "..." not found` on the Job events, no pod
+#       at all, and the task sits RUNNING against a lease until its deadline,
+#       which reads as capacity. A pod naming one that exists but that terraform
+#       issued no Workload Identity binding for runs with NO Google identity and
+#       403s on Secret Manager, GCS and Firestore.
+#       tests/unit/worker/test_kubernetes_manifests.py already holds the
+#       renderer to the dispatcher. NOTHING held TERRAFORM to either of them,
+#       and terraform is the half that decides whether the identity works.
+#
+#   8.  THE WORKER GSA PREFIX. `swarm_common.identity._GSA_PREFIX` is the
+#       authority and is IMPORTED here rather than copied. The quota broker
+#       turns a worker OIDC token into a tenant id by matching this prefix, so a
+#       drift makes every account lease 403 for every tenant at once; the API
+#       derives the same name to grant a tenant secret access, so a drift there
+#       refuses every credential write with a message about a service account
+#       nobody recognises. Section 4 already compares register-tenant.sh against
+#       the frozen module; six other restatements had nothing.
+#
+#   9.  THE PUSH ENDPOINT PATHS. Two of the three have ALREADY been wrong in a
+#       deployed environment: `/pubsub/wake` against an app serving
+#       `/pubsub/push`, and `/refresh` against an app whose sweep is
+#       `/v1/quota/sweep`. A push subscription treats 404 as a retryable
+#       delivery failure and a Cloud Scheduler job logs it and moves on, so the
+#       symptom is NOTHING AT ALL -- no task is ever admitted, or provider state
+#       silently goes stale, while every health check stays green.
+#       tests/terraform/endpoint_paths.tftest.hcl pins the terraform defaults
+#       already -- against string literals written inside the test, which is a
+#       FOURTH copy and not the authority. Rename the route in Python and that
+#       test still passes. This reads the route decorators instead.
+#
+#   10. THE ARTIFACT REGISTRY REPOSITORY. Two terraform variables whose own
+#       descriptions say "Must match swarm_common.config.Settings
+#       .artifact_registry", and terraform/infra/locals.tf says outright that
+#       nothing enforced it. A drift is a 404 on the image on every dispatch,
+#       which reads as a broken build rather than as a changed variable.
+#
+#   11. THE WORKSPACE MOUNT PATH, and with it the VALUE half of the
+#       SWARM_ARTIFACTS_DIR defect. The assertion added with that fix compares
+#       the env key SETS and says so in its own docstring; it would still pass
+#       with a template pointing SWARM_ARTIFACTS_DIR at a path outside the
+#       mounted volume, which is the same `OSError: [Errno 30] Read-only file
+#       system` by a different route.
+#
+# Every check here REFUSES TO SKIP, for the reason sections 4 and 6 give: a scan
+# that finds fewer restatements than it did when it was written reports that
+# they moved, rather than passing because it can no longer see them.
+step "Mirrored-value parity"
+
+if ! MIRROR_PARITY="$(python3 - "${REPO_ROOT}" 2>&1 <<'PY'
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+# The frozen modules are the authority wherever one exists, so they are imported
+# and not read as text. Both are pure -- no client is built at import time -- so
+# this needs no credentials and nothing installed, which is what lets the whole
+# file run in the `shell` CI job.
+sys.path.insert(0, str(root / "apps" / "common"))
+from swarm_common import config as frozen_config
+from swarm_common import identity as frozen_identity
+
+REPORT = []
+
+
+def emit(status, name, detail):
+    REPORT.append("%s|%s|%s" % (status, name, detail))
+
+
+SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build",
+             ".mypy_cache", "__pycache__", ".pytest_cache", ".terraform", ".claude"}
+SKIP_SUFFIXES = {".md", ".lock", ".png", ".svg", ".ico", ".woff", ".woff2"}
+# Same reason as section 6: this file describes the patterns it looks for, so
+# scanning it finds itself.
+SELF = (root / "scripts" / "lib" / "check-contract-parity.sh").resolve()
+
+
+def sources():
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.resolve() == SELF:
+            continue
+        if any(part in SKIP_DIRS for part in path.relative_to(root).parts):
+            continue
+        if path.suffix in SKIP_SUFFIXES:
+            continue
+        try:
+            yield str(path.relative_to(root)), path.read_text()
+        except (UnicodeDecodeError, OSError):
+            continue
+
+
+FILES = list(sources())
+TEXT = dict(FILES)
+
+
+def line_of(text, offset):
+    return text.count("\n", 0, offset) + 1
+
+
+def scan(patterns):
+    """Every match of every (pattern, kind) over every source file.
+
+    Anchored on IDENTIFIERS rather than on file paths, so a new component that
+    names its setting the same way is compared without anyone remembering that
+    this file exists. That is the property section 6 established and the reason
+    its namespace scan caught a test fixture nobody had thought about.
+    """
+    out = []
+    for rel, text in FILES:
+        for pattern, kind in patterns:
+            for match in re.finditer(pattern, text, re.M | re.S):
+                out.append((rel, line_of(text, match.start()), kind, match.group(1)))
+    return out
+
+
+def verdict(label, authority, sites, floor, cost, normalise=None):
+    if len(sites) < floor:
+        emit("MISSING", label,
+             "found %d restatement(s), expected at least %d; one moved or was "
+             "renamed and this scan stopped seeing it -- update the patterns "
+             "rather than trusting this pass" % (len(sites), floor))
+        return
+    norm = normalise or (lambda value: value)
+    wrong = [s for s in sites if norm(s[3]) != authority]
+    for rel, line, kind, value in wrong:
+        emit("DRIFT", label,
+             "%s:%d (%s) says %s, the authority says %s -- %s"
+             % (rel, line, kind, value, authority, cost))
+    if not wrong:
+        emit("OK", label,
+             "%d restatement(s) all agree on %s" % (len(sites), authority))
+
+
+def literals_near(rel, identifier, shape, window=200):
+    """Every `shape` literal within `window` characters AFTER `identifier`.
+
+    Anchored on the identifier rather than on a line, because the value is
+    sometimes on the NEXT line: `os.environ.get("WORKER_KSA_NAME", "").strip()`
+    and the `or "..."` that catches an empty variable are two lines apart, and a
+    line-at-a-time scan sees only the first -- which is exactly the half that
+    was already being checked elsewhere. Comments need no exclusion: every
+    comment in these files spells a name in backticks, and a backtick is not a
+    string literal. Deduplicated by (line, value) because the identifier occurs
+    several times around one declaration.
+    """
+    text = TEXT[rel]
+    seen = set()
+    for match in identifier.finditer(text):
+        chunk = text[match.end(): match.end() + window]
+        for lit in shape.finditer(chunk):
+            seen.add((line_of(text, match.end() + lit.start()), lit.group(1)))
+    return [(rel, line, "dispatcher literal", value) for line, value in sorted(seen)]
+
+
+def tf_variable_defaults(name_test):
+    """`default = "..."` for every terraform variable whose name passes a test.
+
+    The block is sliced to the next top-level `variable "` so a heredoc
+    description cannot contribute: `scheduler_push_path` describes the WRONG
+    value it used to hold, in prose, inside its own description, and a regex
+    over the whole file would read that instead of the default.
+    """
+    out = []
+    for rel, text in FILES:
+        if not rel.endswith(".tf"):
+            continue
+        for match in re.finditer(r"^variable\s+\"([a-z0-9_]+)\"\s*\{", text, re.M):
+            if not name_test(match.group(1)):
+                continue
+            rest = text[match.end():]
+            following = re.search(r"\nvariable\s+\"", rest)
+            block = rest[: following.start()] if following else rest
+            found = re.search(r"^\s*default\s*=\s*\"([^\"]*)\"", block, re.M)
+            if found:
+                out.append((rel, line_of(text, match.start()), "terraform default",
+                            found.group(1)))
+    return out
+
+
+# -- 7. the worker KSA name ------------------------------------------------
+# THE DISPATCHER IS THE AUTHORITY, for the reason section 6 gives about the
+# namespace: it is the component that actually creates the pod, so the name it
+# puts in `serviceAccountName` is the name that has to exist in the namespace
+# AND the name terraform bound to the tenant GSA. Its own literals are gathered
+# first and have to agree with each other before anything is compared to them.
+KSA_ID = re.compile(r"(?:worker_)?ksa_name")
+# Only names this platform owns, and only complete ones: the `[a-z0-9-]+` stops
+# at a brace, so the `"swarm-tenant-{tenant}"` template eight lines above
+# GkeTarget.ksa_name cannot be mistaken for a KSA.
+KSA_SHAPE = re.compile(r"\"(swarm-[a-z0-9-]+)\"")
+
+ksa_sites = (literals_near("apps/scheduler/scheduler/dispatch.py", KSA_ID, KSA_SHAPE)
+             + literals_near("apps/scheduler/scheduler/settings.py", KSA_ID, KSA_SHAPE))
+ksa_values = set(value for _, _, _, value in ksa_sites)
+
+if len(ksa_sites) < 3:
+    emit("MISSING", "GkeTarget.ksa_name",
+         "found %d KSA literal(s) in the scheduler, expected at least 3; the "
+         "declarations moved or changed shape" % len(ksa_sites))
+elif len(ksa_values) != 1:
+    emit("DRIFT", "GkeTarget.ksa_name",
+         "the scheduler itself spells the worker KSA %d ways: %s"
+         % (len(ksa_values), " ".join(sorted(ksa_values))))
+else:
+    KSA = sorted(ksa_values)[0]
+    emit("OK", "authority",
+         "the scheduler runs worker pods as %s (%d literal(s) agree)"
+         % (KSA, len(ksa_sites)))
+
+    KSA_COST = ("a pod naming a ServiceAccount that does not exist is never "
+                "scheduled at all, and one terraform did not bind runs with no "
+                "Google identity and 403s on every secret it reads")
+    verdict("worker KSA name", KSA,
+            scan(((r"^DEFAULT_KSA_NAME\s*=\s*\"([^\"]*)\"", "renderer constant"),
+                  (r"ksa_name\s*=\s*optional\(string,\s*\"([^\"]*)\"\)",
+                   "terraform default"))),
+            3, KSA_COST)
+
+    # register-tenant.sh binds a LIST, because a binding is per (namespace, KSA)
+    # pair and every tenant registered before the rename carries the older name
+    # too. So this is containment, not equality: what must hold is that the name
+    # the dispatcher asks for is among the ones the script binds.
+    KSAS = re.search(r"^KSAS=\(([^)]*)\)", TEXT["scripts/register-tenant.sh"], re.M)
+    if not KSAS:
+        emit("MISSING", "KSAS in scripts/register-tenant.sh",
+             "no `KSAS=(...)` array found; the restatement moved")
+    else:
+        bound = set(re.findall(r"\"([^\"]+)\"", KSAS.group(1)))
+        if KSA in bound:
+            emit("OK", "KSAS in scripts/register-tenant.sh",
+                 "binds %s, which is what the dispatcher asks for (also binds %s)"
+                 % (KSA, " ".join(sorted(bound - {KSA})) or "nothing else"))
+        else:
+            emit("DRIFT", "KSAS in scripts/register-tenant.sh",
+                 "binds %s and NOT %s, so a tenant registered by the script has "
+                 "no Workload Identity binding for the KSA the dispatcher names; "
+                 "the pod starts and authenticates as nothing at all"
+                 % (" ".join(sorted(bound)), KSA))
+
+# -- 8. the worker GSA prefix ----------------------------------------------
+# The frozen module is the authority and is imported. Compared WITHOUT the
+# trailing dash, because half the restatements carry it (they interpolate the
+# tenant straight after) and half do not (they pass it to a joiner) -- and that
+# difference is a spelling convention, not a disagreement about the identity.
+GSA = frozen_identity._GSA_PREFIX.rstrip("-")
+GSA_COST = ("the quota broker maps a worker OIDC token to a tenant by this "
+            "prefix and the API derives the same name to grant secret access, "
+            "so a drift is a 403 for every tenant at once")
+verdict("worker GSA prefix", GSA,
+        # Terraform spells the prefix once, in modules/service_account_ids,
+        # which modules/tenancy and terraform/bootstrap both read (#334).
+        scan(((r"^\s*tenant_worker_prefix\s*=\s*\"([a-z0-9-]*)\"",
+               "terraform tenant GSA id"),
+              (r"WORKER_SERVICE_ACCOUNT_TEMPLATE\s*=\s*\"([a-z0-9-]*)\{tenant\}",
+               "broker env template"),
+              (r"tenant_service_account_prefix\s*(?::\s*str\s*)?=\s*\"([^\"]*)\"",
+               "python default"),
+              (r"\"TENANT_SERVICE_ACCOUNT_PREFIX\",\s*\"([^\"]*)\"",
+               "python env default"),
+              (r"(?<![_A-Za-z])service_account_prefix\s*:\s*str\s*=\s*\"([^\"]*)\"",
+               "python default"),
+              (r"(?<![_A-Za-z])prefix\s*:\s*str\s*=\s*\"(swarm-[^\"]*)\"",
+               "python default"))),
+        5, GSA_COST, normalise=lambda value: value.rstrip("-"))
+
+# Contract request 43: the PUBLIC home of the rule, which swarm-api derives a
+# child route caller from, spells exactly the prefix every restatement above
+# is held to. One assertion, so the two cannot part.
+public_id = frozen_identity.worker_service_account_id("parity")
+if public_id == frozen_identity._GSA_PREFIX + "parity":
+    emit("OK", "worker_service_account_id", "derives %s, the prefix above" % public_id)
+else:
+    emit("DRIFT", "worker_service_account_id",
+         "derives %s, not %sparity" % (public_id, frozen_identity._GSA_PREFIX))
+
+# The broker's allow-list must be EXACTLY the frozen module's prefix. It is an
+# authentication list, so an extra entry is not harmless slack: it is a
+# service-account name that authenticates as a tenant although no provisioning
+# path creates it. `swarm-t` sat here for that reason until #176.
+BROKER = TEXT["apps/quota-broker/quota_broker/main.py"]
+accepted = re.search(r"^WORKER_SA_PREFIXES\s*=\s*\(([^)]*)\)", BROKER, re.M)
+if not accepted:
+    emit("MISSING", "WORKER_SA_PREFIXES",
+         "no `WORKER_SA_PREFIXES = (...)` in the quota broker; the restatement moved")
+else:
+    values = set(re.findall(r"\"([^\"]+)\"", accepted.group(1)))
+    if values == {GSA}:
+        emit("OK", "WORKER_SA_PREFIXES",
+             "accepts only %s, which is what the frozen module derives" % GSA)
+    elif GSA in values:
+        emit("DRIFT", "WORKER_SA_PREFIXES",
+             "accepts %s as well as %s; no provisioning path creates those, so "
+             "an account made by hand under that name authenticates as a tenant"
+             % (" ".join(sorted(values - {GSA})), GSA))
+    else:
+        emit("DRIFT", "WORKER_SA_PREFIXES",
+             "accepts %s and NOT %s, so every worker token is refused and no "
+             "account can be leased" % (" ".join(sorted(values)), GSA))
+
+# -- 9. the push endpoint paths --------------------------------------------
+# THE AUTHORITY IS THE ROUTE DECORATOR, which is the whole point of doing this
+# here. endpoint_paths.tftest.hcl compares the terraform default to a string
+# written in the test; both copies can be right about each other while the
+# application serves something else, which is what happened twice.
+ROUTE = re.compile(r"@(?:app|router)\.(get|post)\(\s*\"([^\"]+)\"")
+
+
+def routes_of(package, method):
+    served = set()
+    for path in sorted((root / package).rglob("*.py")):
+        for match in ROUTE.finditer(path.read_text()):
+            if match.group(1) == method:
+                served.add(match.group(2))
+    return served
+
+
+TARGETS = (
+    ("scheduler_push_path", "apps/scheduler/scheduler", "post",
+     "every Pub/Sub wake and every safety tick 404s and no task is ever "
+     "admitted, while the control plane reports itself healthy"),
+    ("reconciler_path", "apps/reconciler/reconciler", "post",
+     "the reconciliation tick 404s, so nothing ever reclaims a stale lease or "
+     "a dead attempt"),
+    ("quota_broker_path", "apps/quota-broker/quota_broker", "post",
+     "the quota sweep 404s, so provider state goes stale and an EXHAUSTED "
+     "provider is never observed to have recovered"),
+)
+
+for variable, package, method, cost in TARGETS:
+    configured = tf_variable_defaults(lambda name, want=variable: name == want)
+    if not configured:
+        emit("MISSING", variable,
+             "no terraform variable named %s with a string default; the target "
+             "path moved" % variable)
+        continue
+    served = routes_of(package, method)
+    if not served:
+        emit("MISSING", variable,
+             "no %s route decorator found under %s; this comparison would check "
+             "nothing" % (method.upper(), package))
+        continue
+    for rel, line, _, value in configured:
+        if value in served:
+            emit("OK", variable, "%s -> %s %s, which %s serves"
+                 % (rel, method.upper(), value, package))
+        else:
+            emit("DRIFT", variable,
+                 "%s:%d sends %s %s at %s, which serves only %s -- %s"
+                 % (rel, line, method.upper(), value, package,
+                    " ".join(sorted(served)), cost))
+
+# The health check path, held against EVERY app in the repository rather than
+# against a list of service names kept here. The set of apps is derived: a file
+# containing `def create_app(` is a FastAPI application, and its package is the
+# directory it sits in. A new service therefore joins this check by existing.
+HEALTH = re.search(r"health_check_path\s*=\s*optional\(string,\s*\"([^\"]*)\"\)",
+                   TEXT["terraform/modules/cloud_run/variables.tf"])
+apps = sorted({str(Path(rel).parent) for rel, text in FILES
+               if rel.endswith(".py") and "def create_app(" in text})
+if not HEALTH:
+    emit("MISSING", "health_check_path",
+         "no `health_check_path = optional(string, ...)` in modules/cloud_run")
+elif len(apps) < 4:
+    emit("MISSING", "health_check_path",
+         "found %d app factories, expected at least 4; `def create_app(` moved "
+         "or was renamed" % len(apps))
+else:
+    probe = HEALTH.group(1)
+    silent = [package for package in apps if probe not in routes_of(package, "get")]
+    if silent:
+        emit("DRIFT", "health_check_path",
+             "terraform probes GET %s and %s serves no such route; the startup "
+             "probe fails and NO REVISION EVER BECOMES READY, which a deploy "
+             "reports as a timeout rather than as a wrong path"
+             % (probe, " ".join(silent)))
+    else:
+        emit("OK", "health_check_path",
+             "%d app(s) all serve GET %s" % (len(apps), probe))
+
+# -- 10. the artifact registry repository ----------------------------------
+# Matched on the variable NAME rather than on the two files that hold it today,
+# so a third module declaring the same repository is compared as well.
+REGISTRY_COST = ("every dispatch pulls from a registry path that does not "
+                 "exist and fails 404 on the image, which reads as a broken "
+                 "build rather than as a changed variable")
+verdict("artifact registry repository", frozen_config.Settings.artifact_registry,
+        tf_variable_defaults(
+            lambda name: name == "repository_id" or "artifact_registry" in name),
+        2, REGISTRY_COST)
+
+# -- 11. the workspace mount path, and the artifacts directory inside it ---
+# THE WORKER IS THE AUTHORITY: it is the process that writes the files, so the
+# path it defaults to is the path everything else has to mount. Read as text
+# rather than imported, because `agent_worker` is not installed in the `shell`
+# CI job and importing it to learn one string would make this check need a
+# worker environment.
+WORKER_CONFIG = TEXT["apps/agent-worker/agent_worker/config.py"]
+roots = set(re.findall(r"workspace_root\s*:\s*Path\s*=\s*Path\(\"([^\"]*)\"\)",
+                       WORKER_CONFIG))
+roots |= set(re.findall(r"\"WORKSPACE_ROOT\",\s*\"([^\"]*)\"", WORKER_CONFIG))
+if len(roots) != 1:
+    emit("MISSING" if not roots else "DRIFT", "WorkerConfig.workspace_root",
+         "the worker spells its own workspace root %d way(s): %s"
+         % (len(roots), " ".join(sorted(roots)) or "none found"))
+else:
+    MOUNT = sorted(roots)[0]
+    emit("OK", "authority", "the worker writes its workspace under %s" % MOUNT)
+
+    MOUNT_COST = ("the worker writes outside the mounted volume, which on GKE "
+                  "is a read-only root filesystem and OSError Errno 30, and on "
+                  "Cloud Run is a write that silently escapes the disk budget")
+    verdict("workspace mount path", MOUNT,
+            scan(((r"^WORKSPACE_MOUNT\s*=\s*\"([^\"]*)\"", "dispatcher constant"),
+                  (r"^\s*WORKSPACE_ROOT\s*=\s*\"([^\"]*)\"", "terraform env"),
+                  (r"workspace_mount_path\"\s*\{[^}]*?default\s*=\s*\"([^\"]*)\"",
+                   "terraform default"))),
+            3, MOUNT_COST)
+
+    # THE VALUE HALF OF THE THIRD DEFECT. The test added with that fix compares
+    # the env key SETS across dispatch.py and the templates and says so in its
+    # own docstring; a template pointing SWARM_ARTIFACTS_DIR at a path outside
+    # the volume satisfies it and still dies on the runner first line.
+    ARTIFACTS = "%s/artifacts" % MOUNT
+    templates = sorted((root / "kubernetes" / "worker-templates").glob("*.yaml"))
+    if len(templates) < 3:
+        emit("MISSING", "SWARM_ARTIFACTS_DIR",
+             "found %d worker template(s), expected at least 3" % len(templates))
+    else:
+        bad = []
+        for template in templates:
+            whole = template.read_text()
+            # SCOPED TO THE `worker` CONTAINER, and that is the whole point of
+            # this check rather than an over-careful detail. worker-job-v2.yaml
+            # had an init container as well (removed since: the worker installs
+            # the credential itself), and from the commit that fixed the
+            # Errno 30 until the one that added this check, SWARM_ARTIFACTS_DIR
+            # sat on the INIT container -- which installed a credential and
+            # never wrote an artifact -- while the worker container had none. The
+            # existing assertion in
+            # tests/unit/worker/test_kubernetes_manifests.py read each template
+            # as one document, so it saw the name present and passed. A
+            # per-document scan cannot tell "set" from "set on the wrong
+            # container", and on v2 the difference is an eviction rather than a
+            # crash, because v2 leaves the root filesystem writable.
+            start = whole.find("\n        - name: worker\n")
+            if start < 0:
+                bad.append((template.name, ["no container named worker"]))
+                continue
+            end = whole.find("\n      volumes:", start)
+            text = whole[start:] if end < 0 else whole[start:end]
+            values = set(re.findall(
+                r"name:\s*SWARM_ARTIFACTS_DIR\s*\n\s*value:\s*(\S+)", text))
+            if values != {ARTIFACTS}:
+                bad.append((template.name, sorted(values) or ["unset"]))
+            # The template also tells the worker where its workspace is, and a
+            # third spelling there moves every file the agent writes.
+            declared = set(re.findall(
+                r"name:\s*WORKSPACE_ROOT\s*\n\s*value:\s*(\S+)", text))
+            if declared != {MOUNT}:
+                bad.append((template.name,
+                            ["WORKSPACE_ROOT " + (" ".join(sorted(declared)) or "unset")]))
+            # And the volume really is mounted where the worker expects it.
+            if ("mountPath: %s" % MOUNT) not in text:
+                bad.append((template.name, ["no volumeMount at %s" % MOUNT]))
+        for name, values in bad:
+            emit("DRIFT", "SWARM_ARTIFACTS_DIR",
+                 "kubernetes/worker-templates/%s has %s; it must be %s -- "
+                 "anything else is OSError Errno 30 on a read-only root, which "
+                 "is the defect this pair already produced"
+                 % (name, " ".join(values), ARTIFACTS))
+        if not bad:
+            emit("OK", "SWARM_ARTIFACTS_DIR",
+                 "%d template(s) write artifacts to %s, inside the mounted "
+                 "volume" % (len(templates), ARTIFACTS))
+    # The dispatcher must DERIVE it rather than restate it. This is case (a):
+    # one source, so there is nothing left to compare.
+    if not re.search(r"^WORKER_ARTIFACTS_DIR\s*=\s*f\"\{WORKSPACE_MOUNT\}/artifacts\"",
+                     TEXT["apps/scheduler/scheduler/dispatch.py"], re.M):
+        emit("DRIFT", "WORKER_ARTIFACTS_DIR",
+             "the dispatcher no longer DERIVES the artifacts directory from "
+             "WORKSPACE_MOUNT; a literal there is a fourth copy of a path that "
+             "has already cost this platform every browser task it accepted")
+    else:
+        emit("OK", "WORKER_ARTIFACTS_DIR",
+             "derived from WORKSPACE_MOUNT in the dispatcher, not restated")
+
+# -- 12. the tenant-id character class -------------------------------------
+# Section 4 asserts the LENGTH budget that `swarm_common.identity` and
+# terraform share. The CHARACTER SET had nothing, and it fails the same way: a
+# resolver that mints ids terraform refuses produces a tenant the API resolves
+# and nobody can provision -- resolved, authorised, and with no namespace, no
+# service account and no secrets.
+#
+# The two spell the same rule INSIDE OUT, which is why no plain grep would have
+# paired them. The frozen module holds the negated class it substitutes away,
+# `[^a-z0-9-]+`; terraform validates the positive form, `^[a-z0-9-]+$`. Only the
+# class body is comparable, and it is the part that would change.
+#
+# ANCHORED ON THE CLAIM THE FILE ITSELF MAKES. The validation block is found by
+# an error_message that names `swarm_common.identity`, not by a line number and
+# not by the regex -- so a validation that stops claiming parity stops being
+# checked for it, loudly, rather than being compared to a rule it no longer cites.
+FROZEN_CLASS = re.search(r"\[\^([^\]]*)\]", frozen_identity._TENANT_SAFE.pattern)
+if not FROZEN_CLASS:
+    emit("MISSING", "identity._TENANT_SAFE",
+         "the frozen tenant-id pattern is no longer a negated character class, "
+         "so there is nothing for terraform to be compared against")
+else:
+    claimed = [
+        (condition, message)
+        for condition, message in re.findall(
+            r"condition\s*=\s*([^\n]*)\n\s*error_message\s*=\s*\"([^\"]*)\"",
+            TEXT["terraform/modules/tenancy/variables.tf"])
+        if "swarm_common.identity" in message
+    ]
+    classes = []
+    for condition, _ in claimed:
+        classes += re.findall(r"regex\(\"\^\[([^\]]*)\]\+\$\"", condition)
+    if not classes:
+        emit("MISSING", "tenant-id character class",
+             "no validation in terraform/modules/tenancy/variables.tf both cites "
+             "swarm_common.identity and carries a `^[...]+$` regex; the claim of "
+             "parity moved, so nothing is holding terraform to the resolver")
+    else:
+        wrong = [c for c in classes if c != FROZEN_CLASS.group(1)]
+        if wrong:
+            emit("DRIFT", "tenant-id character class",
+                 "terraform accepts [%s] while swarm_common.identity slugs to "
+                 "[%s]; ids the resolver mints are ids terraform refuses, which "
+                 "is a tenant the API authorises and nobody can provision"
+                 % (" ".join(wrong), FROZEN_CLASS.group(1)))
+        else:
+            emit("OK", "tenant-id character class",
+                 "%d terraform validation(s) accept exactly the [%s] the frozen "
+                 "resolver slugs to" % (len(classes), FROZEN_CLASS.group(1)))
+
+# -- 13. the runner inputs the scripts send and the Submit form offers -----
+# Contract request 25 (accepted by the owner on #142, 2026-09-25) put each
+# runner profile inputs in the frozen catalogue, `RunnerProfile.inputs`, and
+# the API now refuses any key of `input` that a declared profile does not
+# declare, with 422 `invalid_input`, from every caller. That turned two lists
+# nobody compared into restatements of the catalogue:
+#
+#   * THE TASK INPUTS THE OPERATIONAL SCRIPTS SEND. smoke, concurrency, race,
+#     load, both benches, quota and failure all sent `message`, and several
+#     `index` or `run_id`, which every runner ignored. Against a deployment of
+#     this change each of those submissions is a 422, and nothing offline said
+#     so: the scripts run against a live platform, never in CI.
+#   * `SUGGESTED` IN apps/swarm-ui/src/Submit.tsx, the keys the Submit form
+#     OFFERS per profile. Its comment called a stale suggestion harmless -- it
+#     "never refuses valid work" -- and that stopped being true: an offer the
+#     catalogue does not declare is a refusal the form invites.
+#
+# `prompt` is every profile input. Every profile declares since contract
+# request 32 (#218): browser and generic were `inputs is None` until then,
+# bounded by size only and so never compared here. Now they are compared like
+# the rest, and a generic submission without its required `command` is a 422.
+# The default branch of `profile_input` in testlib.sh goes to whichever
+# profile a run names, so it may carry only what every declared profile takes.
+#
+# NO APOSTROPHES, for the reason section 5 gives. A single quote is built with
+# chr(39) wherever a pattern needs one.
+Q = chr(39)
+# Parentheses too, where one would stand unpaired in a string: bash counts
+# them while it looks for the end of this command substitution.
+OPENERS = "{[" + chr(40)
+CLOSERS = "}]" + chr(41)
+SUBSHELL = "\"$" + chr(40)
+QUOTED = re.compile(Q + "([^" + Q + "]*)" + Q)
+from swarm_common import profiles as frozen_profiles
+
+
+def top_level_keys(program):
+    """The keys of the first object literal in a jq program or a JSON text.
+
+    A jq object is `{key: value, "key": value, key}`; a value may nest
+    brackets, parentheses and strings, and only depth one names a key of
+    `input`. None when the text holds no complete object.
+    """
+    keys = []
+    depth = 0
+    want_key = False
+    i = 0
+    while i < len(program):
+        ch = program[i]
+        if ch == "\"":
+            j = i + 1
+            while j < len(program) and program[j] != "\"":
+                j += 2 if program[j] == "\\" else 1
+            token = program[i + 1:j]
+            i = j + 1
+            if depth == 1 and want_key and program[i:].lstrip().startswith(":"):
+                keys.append(token)
+                want_key = False
+            continue
+        if ch in OPENERS:
+            depth += 1
+            if depth == 1:
+                if ch != "{":
+                    return None
+                want_key = True
+        elif ch in CLOSERS:
+            depth -= 1
+            if depth == 0:
+                return keys
+        elif depth == 1 and ch == ",":
+            want_key = True
+        elif depth == 1 and ch == ":":
+            want_key = False
+        elif depth == 1 and want_key and (ch.isalpha() or ch == "_"):
+            word = re.match(r"[A-Za-z_][A-Za-z0-9_]*", program[i:]).group(0)
+            if program[i + len(word):].lstrip()[:1] in (":", ",", "}"):
+                keys.append(word)
+                want_key = False
+            i += len(word)
+            continue
+        i += 1
+    return None
+
+
+def script_default(text, var):
+    """The first non-empty literal a script assigns to `var`, or None."""
+    found = re.search(r"(?:^|[\s;\x29])%s=\"([a-z][a-z0-9-]*)\"" % var, text, re.M)
+    return found.group(1) if found else None
+
+
+def enclosing_object_start(text, pos):
+    """The offset of the `{` that opens the object the key at POS sits in.
+
+    Scanned backward: a CLOSER seen first means its OPENER belongs to a
+    balanced sibling value (an array, a nested object) and must be walked
+    past rather than mistaken for the object enclosing POS, so a closer
+    pushes the depth up and its matching opener brings it back down. The
+    first opener found at depth zero is the one that actually encloses POS.
+    """
+    depth = 0
+    i = pos - 1
+    while i >= 0:
+        ch = text[i]
+        if ch in CLOSERS:
+            depth += 1
+        elif ch in OPENERS:
+            if depth == 0:
+                return i
+            depth -= 1
+        i -= 1
+    return None
+
+
+RUNNER_PROFILE_KEY = re.compile(
+    "runner_profile:\\s*" + chr(34) + "([a-z][a-z0-9-]*)" + chr(34)
+)
+
+
+def sibling_runner_profile(text, pos):
+    """The `runner_profile: "name"` literal declared in the same jq object
+    as the key at POS -- a workflow step like
+    `{step_id: "a", runner_profile: "mock", input: {...}}`, where each step
+    names its own profile rather than a script-wide PROFILE variable. None
+    when the enclosing object cannot be found or names none, including when
+    it is a jq variable (`runner_profile: $profile`) rather than a literal.
+    """
+    start = enclosing_object_start(text, pos)
+    if start is None:
+        return None
+    found = RUNNER_PROFILE_KEY.search(text, start, pos)
+    return found.group(1) if found else None
+
+
+if "inputs" not in getattr(frozen_profiles.RunnerProfile, "__dataclass_fields__", {}):
+    emit("MISSING", "RunnerProfile.inputs",
+         "the frozen catalogue declares no runner inputs, so there is nothing "
+         "for the scripts or the Submit form to be compared against")
+else:
+    CATALOGUE = frozen_profiles.RUNNER_PROFILES
+    DECLARING = [set(p.inputs) for p in CATALOGUE.values()]
+
+    def accepted(name):
+        """`prompt` plus what `name` declares."""
+        return {"prompt"} | set(CATALOGUE[name].inputs)
+
+    # What the default branch of profile_input may carry: the keys EVERY
+    # declared profile takes, because a run may name any of them.
+    EVERYWHERE = {"prompt"} | (set.intersection(*DECLARING) if DECLARING else set())
+
+    # Every site: (where, the profile or a rule name, the keys it sends).
+    sites = []
+    unread = []
+    for rel, text in FILES:
+        if not (rel.startswith("scripts/") and rel.endswith(".sh")):
+            continue
+        # Comments name the function too -- the usage line in testlib.sh, the
+        # notes in the benches -- and a comment submits nothing.
+        code = "\n".join(
+            "" if line.lstrip().startswith("#") else line for line in text.splitlines()
+        )
+        logical = re.sub(r"\\\n\s*", " ", code)
+        for call in re.finditer(r"\bsubmit_task\s+(\S+)\s+(.*)", logical):
+            where = "%s, at: %s" % (rel, call.group(0)[:72])
+            token, rest = call.group(1).strip("\""), call.group(2)
+            if token == "$" + "@":
+                # A forwarder, not a call: acc_submit in
+                # scripts/acceptance/lib.sh shifts off its own VAR argument
+                # and passes the rest straight through
+                # ("submit_task \"$@\""). This exact line names no profile
+                # and sends no input of its own, so there is nothing to
+                # compare here -- unlike a real call, skipping it hides no
+                # restatement, because it restates nothing itself. Its own
+                # callers (acc_submit VAR PROFILE INPUT EXTRA) are a
+                # distinct spelling this scan does not parse yet; teaching
+                # it that shape is separate follow-up work, not a silent
+                # gap introduced by this line.
+                continue
+            if token.startswith("$" + "{"):
+                token = script_default(text, token[2:].split("}")[0].split(":")[0])
+            if rest.startswith(SUBSHELL + "profile_input"):
+                sites.append((where, "profile_input", None))
+                continue
+            literal = QUOTED.search(rest)
+            if not literal or not (rest.startswith(Q) or rest.startswith(SUBSHELL + "jq")):
+                unread.append(where)
+                continue
+            keys = top_level_keys(literal.group(1))
+            if keys is None or token is None:
+                unread.append(where)
+                continue
+            sites.append((where, token, keys))
+        for step in re.finditer(r"\binput:\s*[{]", text):
+            where = "%s:%d" % (rel, line_of(text, step.start()))
+            keys = top_level_keys(text[step.end() - 1:])
+            # A workflow step names its own profile as a sibling key --
+            # `{step_id: "a", runner_profile: "mock", input: {...}}`, as the
+            # jq bodies in the acceptance suite do, one workflow naming
+            # several profiles in a single call -- so that literal is
+            # checked FIRST.
+            # Only when the step carries no such literal (a jq variable like
+            # `runner_profile: $profile`, filled from a script-wide PROFILE
+            # the old e2e-test.sh shape uses) does this fall back to that.
+            profile = sibling_runner_profile(text, step.start())
+            if profile is None:
+                profile = script_default(text, "PROFILE")
+            if keys is None or profile is None:
+                unread.append(where)
+                continue
+            sites.append((where, profile, keys))
+
+    testlib = TEXT.get("scripts/lib/testlib.sh", "")
+    body = re.search(r"^profile_input[(][)]\s*[{]\n(.*?)^[}]", testlib, re.M | re.S)
+    branches = (
+        re.findall(r"^\s*([a-z*|-]+)\)\n(.*?)[;]{2}", body.group(1), re.M | re.S) if body else []
+    )
+    for label, code in branches:
+        literal = QUOTED.search(code)
+        keys = top_level_keys(literal.group(1)) if literal else None
+        where = "scripts/lib/testlib.sh profile_input, branch %s" % label
+        if keys is None:
+            unread.append(where)
+        elif label == "*":
+            sites.append((where, "*", keys))
+        elif label in CATALOGUE:
+            sites.append((where, label, keys))
+        else:
+            unread.append(where)
+
+    # The floor is what this scan found the last time it was widened: the
+    # original eleven submit_task calls, four workflow steps in e2e-test.sh
+    # and the two branches of profile_input (17), plus the twelve step
+    # objects the acceptance suite names its own runner_profile on directly
+    # -- two in scripts/acceptance/groups/mock.sh, ten in
+    # scripts/acceptance/groups/workflow.sh. Fewer means a site moved out of
+    # its sight.
+    SITE_FLOOR = 29
+    compared = 0
+    drift = []
+    for where, profile, keys in sites:
+        if profile == "profile_input":
+            continue
+        if profile == "*":
+            allowed = EVERYWHERE
+        elif profile not in CATALOGUE:
+            drift.append("%s names %s, which the catalogue does not hold" % (where, profile))
+            continue
+        else:
+            allowed = accepted(profile)
+        if allowed is None:
+            continue
+        compared += 1
+        extra = sorted(set(keys) - allowed)
+        if extra:
+            drift.append("%s sends %s to %s, which takes only %s"
+                         % (where, " ".join(extra), profile, " ".join(sorted(allowed))))
+    if unread:
+        emit("MISSING", "script runner inputs",
+             "could not read the input at %s; the scan no longer understands the "
+             "shape there -- teach it rather than trusting this pass" % ", ".join(unread))
+    elif len(sites) < SITE_FLOOR:
+        emit("MISSING", "script runner inputs",
+             "found %d submission site(s), expected at least %d; one moved and "
+             "this scan stopped seeing it" % (len(sites), SITE_FLOOR))
+    elif drift:
+        for line in drift:
+            emit("DRIFT", "script runner inputs",
+                 line + " -- the API answers 422 invalid_input, against a live platform")
+    else:
+        emit("OK", "script runner inputs",
+             "%d submission site(s), %d compared with a declaration; every key is declared"
+             % (len(sites), compared))
+
+    # The Submit form: `SUGGESTED` per profile, plus `ANY_PROFILE` for all.
+    SUBMIT = TEXT.get("apps/swarm-ui/src/Submit.tsx", "")
+    table = re.search(r"const SUGGESTED\b[^=]*=\s*[{]\n(.*?)\n[}]\n", SUBMIT, re.S)
+    every = re.search(r"const ANY_PROFILE\b[^=]*=\s*\[(.*?)\n\]", SUBMIT, re.S)
+    NAME = re.compile(r"name:\s*" + Q + "([A-Za-z_]+)" + Q)
+    for_all = NAME.findall(every.group(1)) if every else []
+    offered = {}
+    if table:
+        for block in re.finditer(
+                r"^  (" + Q + r"?)([a-z][a-z0-9-]*)\1:\s*\[(.*?)^  \],?$",
+                table.group(1), re.M | re.S):
+            offered[block.group(2)] = NAME.findall(block.group(3)) + for_all
+    if len(offered) < len(CATALOGUE):
+        emit("MISSING", "Submit.tsx SUGGESTED",
+             "read suggestions for %d profile(s) of the %d in the catalogue; the "
+             "table moved or changed shape" % (len(offered), len(CATALOGUE)))
+    else:
+        wrong = []
+        for name, keys in sorted(offered.items()):
+            if name not in CATALOGUE:
+                wrong.append("%s is not a profile in the catalogue" % name)
+                continue
+            allowed = accepted(name)
+            extra = sorted(set(keys) - allowed) if allowed is not None else []
+            if extra:
+                wrong.append("%s offers %s, which it does not declare" % (name, " ".join(extra)))
+        if wrong:
+            for line in wrong:
+                emit("DRIFT", "Submit.tsx SUGGESTED",
+                     line + " -- the form invites a submission the API refuses")
+        else:
+            emit("OK", "Submit.tsx SUGGESTED",
+                 "every key the form offers a declared profile is one it declares")
+
+# -- 14. the listed service-account shape (contract request 30) ------------
+# A tenant may list service accounts that resolve to it by exact email and
+# unique id. Two copies decide which addresses may be listed at all: the frozen
+# `identity.SERVICE_ACCOUNT_EMAIL`, which `tenant_member_for` refuses to match
+# outside of, and the `tenants.*.service_accounts` validation in
+# terraform/infra/variables.tf, which refuses them at plan. If they drift,
+# terraform plans a listing the API then silently never matches (a fixer that
+# 403s with nothing wrong in its config), or the API would match a shape
+# terraform was supposed to have refused.
+#
+# The project-id pin is NOT compared here and cannot be: identity.py has no
+# project id. settings.py and variables.tf each pin it; the settings tests hold
+# the Python half.
+#
+# ANCHORED ON THE FIELD NAME in the error_message, as section 12 is on its
+# claim, so a validation that stops being about service_accounts stops being
+# compared, loudly.
+FROZEN_SA = getattr(frozen_identity, "SERVICE_ACCOUNT_EMAIL", None)
+if FROZEN_SA is None:
+    emit("MISSING", "identity.SERVICE_ACCOUNT_EMAIL",
+         "the frozen module has no SERVICE_ACCOUNT_EMAIL, so there is nothing "
+         "for the tenants.*.service_accounts validation to be compared against")
+else:
+    sa_claims = [
+        condition
+        for condition, message in re.findall(
+            r"condition\s*=\s*(alltrue\(flatten\(\[.*?\]\)\))\s*\n\s*error_message\s*=\s*\"([^\"]*)\"",
+            TEXT["terraform/infra/variables.tf"], re.S)
+        if "service_accounts" in message
+    ]
+    sa_patterns = []
+    for condition in sa_claims:
+        # HCL spells a backslash as two; the regex terraform evaluates has one.
+        sa_patterns += [p.replace("\\\\", "\\")
+                        for p in re.findall(r"regex\(\"((?:[^\"\\]|\\.)*)\"", condition)]
+    if not sa_patterns:
+        emit("MISSING", "tenants.*.service_accounts shape",
+             "no validation in terraform/infra/variables.tf both names "
+             "service_accounts in its error_message and carries a regex(); the "
+             "plan-time copy of the listed-account shape moved")
+    else:
+        wrong = [p for p in sa_patterns if p != FROZEN_SA.pattern]
+        if wrong:
+            emit("DRIFT", "tenants.*.service_accounts shape",
+                 "terraform validates %s while swarm_common.identity matches %s; "
+                 "a listing one accepts and the other refuses either fails the "
+                 "plan for a valid account or never resolves at runtime"
+                 % (" ".join(wrong), FROZEN_SA.pattern))
+        else:
+            emit("OK", "tenants.*.service_accounts shape",
+                 "%d terraform validation(s) accept exactly the shape "
+                 "identity.SERVICE_ACCOUNT_EMAIL matches" % len(sa_patterns))
+
+# -- 15. no live-browser profile in the Cloud Run fallback (request 71) ----
+# `RunnerProfile.live_browser` is valid only on a GKE_AUTOPILOT profile, and
+# the frozen dataclass refuses anything else. The Cloud Run fallback list in
+# terraform/infra/locals.tf is the one place that can still put such a profile
+# on Cloud Run: a fallback would silently run a profile whose display sidecar
+# does not exist there, so its hand-off could never work
+# (docs/design/live-browser.md section 8.1). Read from the frozen catalogue, so
+# a second live profile is covered the day it is added.
+live_profiles = sorted(
+    name for name, p in frozen_profiles.RUNNER_PROFILES.items()
+    if getattr(p, "live_browser", False)
+)
+fallback = re.search(r"^\s*cloud_run_fallback_profiles\s*=\s*\[([^\]]*)\]",
+                     TEXT["terraform/infra/locals.tf"], re.M)
+if not live_profiles:
+    emit("MISSING", "live_browser profiles",
+         "no profile in the frozen catalogue sets live_browser, so there is "
+         "nothing for the fallback list to be checked against")
+elif fallback is None:
+    emit("MISSING", "cloud_run_fallback_profiles",
+         "terraform/infra/locals.tf no longer declares cloud_run_fallback_profiles "
+         "as a list literal; point this check at where it moved")
+else:
+    listed = re.findall(r"\"([^\"]+)\"", fallback.group(1))
+    leaked = sorted(set(live_profiles) & set(listed))
+    if leaked:
+        emit("DRIFT", "cloud_run_fallback_profiles",
+             "lists live-browser profile(s) %s, which only run on GKE_AUTOPILOT"
+             % " ".join(leaked))
+    else:
+        emit("OK", "cloud_run_fallback_profiles",
+             "names none of the live-browser profiles %s" % " ".join(live_profiles))
+
+# -- 16. the browser tool names (contract request 77, BSTATUS-API) --------
+# `claude-code-browser` declares `browser_tool` with four choices: auto and
+# three tools. Each tool name is restated where Python cannot import the
+# catalogue or must not: the worker module that maps a name to what is
+# registered (agent_worker/browser_tools.py `TOOLS`), the API models the
+# console reads (apps/swarm-api/swarm_api/live.py, `LiveToolUse.name` and
+# `LiveBrowserTool.tool_selected`), the client tag each wrapper puts on the
+# CDP endpoint (images/agent-runtime-browser/dev-browser and
+# jev-browser/bin/jev-browser-mcp), and the tag the runner gives Playwright
+# MCP (runners/claude_code.py). A name renamed in one place and not the
+# others is a tool the gate never attributes, or a choice the API serves and
+# the console cannot draw. The jev reasons are restated by swarm-api from
+# the worker module, and compared here too.
+# Parentheses in patterns are built from chr, for the reason section 13 gives.
+LP, RP = re.escape(chr(40)), re.escape(chr(41))
+declared_inputs = getattr(frozen_profiles.RUNNER_PROFILES.get("claude-code-browser"), "inputs", {}) or {}
+browser_tool = declared_inputs.get("browser_tool")
+if browser_tool is None:
+    emit("MISSING", "browser_tool choices",
+         "claude-code-browser declares no browser_tool input, so there is nothing "
+         "for the runner, the API or the wrappers to be compared against")
+else:
+    choices = tuple(browser_tool.choices)
+    tools = [c for c in choices if c != "auto"]
+    wrong = []
+    worker = TEXT.get("apps/agent-worker/agent_worker/browser_tools.py", "")
+    found = re.search(r"^TOOLS = " + LP + r"([^\n]*)" + RP + r"\s*$", worker, re.M)
+    worker_tools = re.findall(r"\"([^\"]+)\"", found.group(1)) if found else None
+    if worker_tools is None:
+        wrong.append("agent_worker/browser_tools.py no longer declares TOOLS as a one-line tuple")
+    elif worker_tools != tools:
+        wrong.append("agent_worker/browser_tools.py TOOLS is %s, the catalogue offers %s"
+                     % (worker_tools, tools))
+    reasons = dict(re.findall(r"^(NO_KEY|NOT_INSTALLED|NOT_SELECTED|NO_ROUTE) = \"([a-z_]+)\"", worker, re.M))
+    api = TEXT.get("apps/swarm-api/swarm_api/live.py", "")
+    api_reasons = re.search(r"^JEV_REASONS: [^=]+= " + LP + r"([^\n]*)" + RP, api, re.M)
+    listed = re.findall(r"\"([^\"]+)\"", api_reasons.group(1)) if api_reasons else None
+    if len(reasons) != 4 or listed is None:
+        wrong.append("the jev reasons are no longer where this scan reads them")
+    elif sorted(reasons.values()) != sorted(listed):
+        wrong.append("swarm_api.live JEV_REASONS is %s, the worker sends %s"
+                     % (sorted(listed), sorted(reasons.values())))
+    for model, field, expected in (("LiveToolUse", "name", tools),
+                                   ("LiveBrowserTool", "tool_selected", list(choices))):
+        block = re.search(r"^class " + model + LP + r"_Wire" + RP + r":\n(.*?)\n\n\n", api, re.M | re.S)
+        literal = re.search(r"^    " + field + r": Literal\[([^\]]*)\]", block.group(1), re.M) if block else None
+        names = re.findall(r"\"([^\"]+)\"", literal.group(1)) if literal else None
+        if names != expected:
+            wrong.append("swarm_api.live %s.%s offers %s, the catalogue %s" % (model, field, names, expected))
+    for rel, tool in (("images/agent-runtime-browser/dev-browser", "dev-browser"),
+                      ("images/agent-runtime-browser/jev-browser/bin/jev-browser-mcp", "jev"),
+                      ("apps/agent-worker/agent_worker/runners/claude_code.py", "playwright")):
+        text = TEXT.get(rel, "")
+        tagged = ("/client/" + tool + chr(34)) in text or ("tag_endpoint" + chr(40) + "endpoint, \"" + tool + "\"") in text
+        if tool not in tools:
+            wrong.append("%s tags its connection %s, which the catalogue does not offer" % (rel, tool))
+        elif not tagged:
+            wrong.append("%s no longer tags its CDP connection as %s" % (rel, tool))
+    if wrong:
+        for line in wrong:
+            emit("DRIFT", "browser_tool names", line)
+    else:
+        emit("OK", "browser_tool names",
+             "the worker, the API models, the jev reasons and the three client tags "
+             "match the catalogue choices %s" % " ".join(choices))
+
+# -- 17. the model classes (#1435, docs/design/model-per-step.md §4.2) -----
+# The class vocabulary is the frozen catalogue's (`MODEL_CLASSES`, contract
+# request A) and the ID behind each class is Terraform's (`runner_models` in
+# terraform/infra/locals.tf, keyed by class). A class with no pin there is a
+# step that can never be dispatched; a pin under a name the catalogue does not
+# have is a model nobody can ask for; a pin of the wrong family is a step
+# that quietly runs another model. Each pin is held to its class by the
+# frozen `ModelClass.admits`, not by a rule restated here. And each profile's
+# `model_classes` and `default_model_class` (request B) are mirrored in
+# `runner_profiles`, which the Jobs' MODEL and the derived WORKER_MODELS read.
+locals_tf = TEXT.get("terraform/infra/locals.tf", "")
+model_classes = getattr(frozen_profiles, "MODEL_CLASSES", None)
+pinned = re.search(r"^  runner_models = \{\n(.*?)^  \}", locals_tf, re.M | re.S)
+mirrored = re.search(r"^  runner_profiles = \{\n(.*?)^  \}", locals_tf, re.M | re.S)
+if not model_classes:
+    emit("MISSING", "MODEL_CLASSES",
+         "swarm_common.profiles declares no MODEL_CLASSES, so there is no class "
+         "vocabulary for runner_models to be compared against")
+elif pinned is None or mirrored is None:
+    emit("MISSING", "runner_models",
+         "terraform/infra/locals.tf no longer declares runner_models and "
+         "runner_profiles as two-space-indented maps; point this check at where "
+         "they moved")
+else:
+    pins = dict(re.findall(r"^\s*\"?([a-z0-9-]+)\"?\s*=\s*\"([^\"]+)\"\s*$",
+                           pinned.group(1), re.M))
+    wrong = []
+    for name in sorted(set(model_classes) - set(pins)):
+        wrong.append("class %s has no pin in runner_models" % name)
+    for name in sorted(set(pins) - set(model_classes)):
+        wrong.append("runner_models pins %s, which is not a MODEL_CLASSES name" % name)
+    for name, model_id in sorted(pins.items()):
+        if name in model_classes and not model_classes[name].admits(model_id):
+            wrong.append("runner_models pins %s to %s, which ModelClass.admits refuses"
+                         % (name, model_id))
+    for name, profile in sorted(frozen_profiles.RUNNER_PROFILES.items()):
+        entry = re.search(r"^    \"" + re.escape(name) + r"\" = \{\n(.*?)^    \}",
+                          mirrored.group(1), re.M | re.S)
+        if entry is None:
+            wrong.append("runner_profiles in locals.tf has no entry for %s" % name)
+            continue
+        classes = re.search(r"^\s*model_classes\s*=\s*\[([^\]]*)\]", entry.group(1), re.M)
+        default = re.search(r"^\s*default_model_class\s*=\s*(null|\"[a-z]+\")\s*$",
+                            entry.group(1), re.M)
+        if classes is None or default is None:
+            wrong.append("the mirror of %s states no model_classes or default_model_class" % name)
+            continue
+        listed = tuple(re.findall(r"\"([^\"]+)\"", classes.group(1)))
+        stated = None if default.group(1) == "null" else default.group(1).strip("\"")
+        if listed != tuple(getattr(profile, "model_classes", ())) or stated != getattr(
+            profile, "default_model_class", None
+        ):
+            wrong.append("the mirror of %s accepts %s with default %s; the catalogue %s with default %s"
+                         % (name, list(listed), stated,
+                            list(getattr(profile, "model_classes", ())),
+                            getattr(profile, "default_model_class", None)))
+    if wrong:
+        for line in wrong:
+            emit("DRIFT", "model classes", line)
+    else:
+        emit("OK", "model classes",
+             "runner_models pins exactly %s, each admitted by its class, and the "
+             "%d mirrored profiles state the catalogue's classes and defaults"
+             % (" ".join(model_classes), len(frozen_profiles.RUNNER_PROFILES)))
+
+print("\n".join(REPORT))
+PY
+)"; then
+  err "the mirrored-value parity probe failed to run:"
+  printf '%s\n' "${MIRROR_PARITY}" | sed 's/^/     /' >&2
+  FAILED=1
+else
+  # Counted and printed, for the reason section 6 gives: a `while read` over an
+  # empty string reports nothing and reads exactly like a clean sweep.
+  MIRROR_SEEN=0
+  while IFS='|' read -r M_STATUS M_NAME M_DETAIL; do
+    [[ -n "${M_STATUS}" ]] || continue
+    MIRROR_SEEN=$(( MIRROR_SEEN + 1 ))
+    case "${M_STATUS}" in
+      OK)       ok "${M_NAME}: ${M_DETAIL}" ;;
+      ADVISORY) warn "${M_NAME}: ${M_DETAIL}" ;;
+      MISSING)
+        err "the mirrored-value scan lost sight of what it compares: ${M_DETAIL}"
+        err "A scan that passes because it stopped looking reports an agreement it never established."
+        FAILED=1
+        ;;
+      DRIFT)
+        err "${M_NAME} has DRIFTED: ${M_DETAIL}"
+        FAILED=1
+        ;;
+      *)
+        err "unexpected mirrored-value parity output: ${M_STATUS}|${M_NAME}|${M_DETAIL}"
+        FAILED=1
+        ;;
+    esac
+  done <<<"${MIRROR_PARITY}"
+  if [[ "${MIRROR_SEEN}" -eq 0 ]]; then
+    err "the mirrored-value probe printed no assertions at all; nothing was checked"
+    FAILED=1
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# 12. THE REDACTION FILTER, stated twice: `redact()` in common.sh and
+#     `swarm_api.redaction.redact`.
+# --------------------------------------------------------------------------
+# Not the frozen contract, and restated for the same reason everything above
+# is: sed cannot import Python. The terminal and the browser are meant to show
+# an operator the same masked line, and the two have drifted every time they
+# were compared -- archived issue 206 (the shell masked a plain-text private key's BEGIN
+# line and printed its body), archived issue 224 (both served `AWS_SECRET_ACCESS_KEY=`), and
+# `X-API-KEY:`, masked by the API and printed by the terminal (epic archived issue 227).
+#
+# ONE FIXTURE SET DRIVES BOTH: tests/fixtures/redaction-parity.json, which the
+# unit suite (tests/unit/control_plane/test_log_redaction.py) reads too. Every
+# case goes through both filters here and each must give the fixture's
+# `expected` exactly, with none of its `never` substrings left. Counted and
+# printed, for the reason section 6 gives.
+step "Redaction-filter parity"
+
+# redact_wait_batch -- wait for every redact() started since the last call,
+# pid by pid, and mark a case whose redact() failed with a `.failed` file
+# holding its exit status. The case index is the pid's position counted back
+# from REDACT_SEEN, the count of cases started so far.
+redact_wait_batch() {
+  local n="${#REDACT_PIDS[@]}" k=0 rc
+  while [[ "${k}" -lt "${n}" ]]; do
+    rc=0
+    wait "${REDACT_PIDS[${k}]}" || rc=$?
+    if [[ "${rc}" -ne 0 ]]; then
+      printf '%s' "${rc}" >"${REDACT_DIR}/$(( REDACT_SEEN - n + k )).failed"
+    fi
+    k=$(( k + 1 ))
+  done
+  REDACT_PIDS=()
+}
+
+REDACT_FIXTURE="${REPO_ROOT}/tests/fixtures/redaction-parity.json"
+if [[ ! -s "${REDACT_FIXTURE}" ]]; then
+  err "the redaction parity fixture is missing: ${REDACT_FIXTURE}"
+  FAILED=1
+else
+  REDACT_CASES="$(jq '.cases | length' "${REDACT_FIXTURE}")"
+
+  # The shell half: redact() as this file sourced it from common.sh.
+  #
+  # ONE jq CALL READS EVERY CASE. Four jq runs per case cost about 20 s over
+  # 114 cases and pushed this script past changed-guards.sh's PARITY_SECONDS.
+  # Each case is four NUL-terminated fields -- name, text, expected, and the
+  # `never` list one per line -- because texts span lines (the PEM cases) and
+  # NUL is the one byte a bash string cannot hold anyway. The trailing-newline
+  # trim is what `$(jq -r ...)` did to each field before. The records come in
+  # on fd 3 so that nothing in the loop can read them off stdin.
+  #
+  # REDACT() RUNS IN PARALLEL (owner's pick on archived pull request 3286). One call costs about
+  # 147 ms -- its sed programs, not this loop -- so 114 of them in a row were
+  # about 16.7 s of this section's 17.3 s. The first pass starts each case's
+  # redact() in the background, REDACT_JOBS at a time, writing its output to
+  # a file per case and its exit status beside it; the second pass compares,
+  # in fixture order, exactly as before. A batch is waited on pid by pid, so a
+  # redact() that fails is reported against its case instead of vanishing in a
+  # bare `wait`, which always returns 0. Batches, not `wait -n`: bash 3.2.
+  REDACT_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+  [[ "${REDACT_JOBS}" =~ ^[0-9]+$ && "${REDACT_JOBS}" -ge 1 ]] || REDACT_JOBS=4
+  # Capped: past 8 the sed processes only contend for the same few cores a CI
+  # runner has, and the check's own memory stays small.
+  [[ "${REDACT_JOBS}" -le 8 ]] || REDACT_JOBS=8
+  REDACT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/redact-parity.XXXXXX")"
+  # shellcheck disable=SC2064 # expand REDACT_DIR now, it is set once
+  trap "rm -rf -- '${REDACT_DIR}'" EXIT
+  REDACT_SEEN=0
+  REDACT_PIDS=()
+  while IFS= read -r -d '' -u 3 R_NAME \
+    && IFS= read -r -d '' -u 3 R_TEXT \
+    && IFS= read -r -d '' -u 3 R_WANT \
+    && IFS= read -r -d '' -u 3 R_NEVERS; do
+    printf '%s' "${R_NAME}" >"${REDACT_DIR}/${REDACT_SEEN}.name"
+    printf '%s' "${R_WANT}" >"${REDACT_DIR}/${REDACT_SEEN}.want"
+    printf '%s' "${R_NEVERS}" >"${REDACT_DIR}/${REDACT_SEEN}.never"
+    printf '%s\n' "${R_TEXT}" | redact >"${REDACT_DIR}/${REDACT_SEEN}.got" 3<&- &
+    REDACT_PIDS+=("$!")
+    REDACT_SEEN=$(( REDACT_SEEN + 1 ))
+    if [[ "${#REDACT_PIDS[@]}" -ge "${REDACT_JOBS}" ]]; then
+      redact_wait_batch
+    fi
+  done 3< <(jq -j '.cases[]
+    | (.name | tostring), (.text | tostring | sub("\n+$"; "")),
+      (.expected | tostring | sub("\n+$"; "")),
+      ((.never // []) | map(tostring) | join("\n"))
+    | . + "\u0000"' "${REDACT_FIXTURE}")
+  redact_wait_batch
+
+  REDACT_DRIFT=0
+  REDACT_AT=0
+  while [[ "${REDACT_AT}" -lt "${REDACT_SEEN}" ]]; do
+    R_NAME="$(<"${REDACT_DIR}/${REDACT_AT}.name")"
+    R_WANT="$(<"${REDACT_DIR}/${REDACT_AT}.want")"
+    R_NEVERS="$(<"${REDACT_DIR}/${REDACT_AT}.never")"
+    R_GOT="$(<"${REDACT_DIR}/${REDACT_AT}.got")"
+    R_LEFT=""
+    while IFS= read -r R_NEVER; do
+      [[ -n "${R_NEVER}" ]] || continue
+      [[ "${R_GOT}" != *"${R_NEVER}"* ]] || R_LEFT="${R_NEVER}"
+    done <<<"${R_NEVERS}"
+    if [[ -e "${REDACT_DIR}/${REDACT_AT}.failed" ]]; then
+      err "redact() in common.sh FAILED on case '${R_NAME}' (exit $(<"${REDACT_DIR}/${REDACT_AT}.failed"))"
+      REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
+    elif [[ -n "${R_LEFT}" ]]; then
+      err "redact() in common.sh printed what case '${R_NAME}' must never show: ${R_LEFT}"
+      REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
+    elif [[ "${R_GOT}" != "${R_WANT}" ]]; then
+      err "redact() in common.sh has DRIFTED on case '${R_NAME}':"
+      err "    expected : ${R_WANT}"
+      err "    got      : ${R_GOT}"
+      REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
+    fi
+    REDACT_AT=$(( REDACT_AT + 1 ))
+  done
+  if [[ "${REDACT_SEEN}" -eq 0 ]]; then
+    err "the redaction fixture holds no cases; nothing was compared"
+    FAILED=1
+  elif [[ "${REDACT_SEEN}" -ne "${REDACT_CASES}" ]]; then
+    err "the shell half read ${REDACT_SEEN} of ${REDACT_CASES} cases; the rest were not compared"
+    FAILED=1
+  elif [[ "${REDACT_DRIFT}" -gt 0 ]]; then
+    err "${REDACT_DRIFT} of ${REDACT_SEEN} redaction cases differ in the shell filter"
+    FAILED=1
+  else
+    ok "redact() in common.sh gives the fixture's output on all ${REDACT_SEEN} cases"
+  fi
+
+  # The Python half: the API's filter, over the same file.
+  if ! REDACT_PY="$(python3 - "${REPO_ROOT}" "${REDACT_FIXTURE}" 2>&1 <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "swarm-api"))
+# swarm_api.redaction re-exports the rules from swarm_redaction (#259).
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "redaction"))
+from swarm_api.redaction import redact
+
+for case in json.loads(Path(sys.argv[2]).read_text())["cases"]:
+    got = redact(case["text"])
+    left = [n for n in case["never"] if n in got.text]
+    if left:
+        print("DRIFT|%s|served what it must never show: %s" % (case["name"], left[0]))
+    elif got.text != case["expected"] or got.count != case["count"]:
+        print("DRIFT|%s|expected %r (count %d), got %r (count %d)" % (
+            case["name"], case["expected"], case["count"], got.text, got.count))
+    else:
+        print("OK|%s|" % case["name"])
+PY
+)"; then
+    err "the Python half of the redaction parity check failed to run:"
+    printf '%s\n' "${REDACT_PY}" | sed 's/^/     /' >&2
+    FAILED=1
+  else
+    PY_SEEN=0
+    PY_DRIFT=0
+    while IFS='|' read -r P_STATUS P_NAME P_DETAIL; do
+      [[ -n "${P_STATUS}" ]] || continue
+      PY_SEEN=$(( PY_SEEN + 1 ))
+      case "${P_STATUS}" in
+        OK) ;;
+        DRIFT)
+          err "swarm_api.redaction has DRIFTED on case '${P_NAME}': ${P_DETAIL}"
+          PY_DRIFT=$(( PY_DRIFT + 1 ))
+          ;;
+        *)
+          err "unexpected redaction parity output: ${P_STATUS}|${P_NAME}|${P_DETAIL}"
+          PY_DRIFT=$(( PY_DRIFT + 1 ))
+          ;;
+      esac
+    done <<<"${REDACT_PY}"
+    if [[ "${PY_SEEN}" -ne "${REDACT_CASES}" ]]; then
+      err "the Python half reported ${PY_SEEN} of ${REDACT_CASES} cases; the rest were not compared"
+      FAILED=1
+    elif [[ "${PY_DRIFT}" -gt 0 ]]; then
+      err "${PY_DRIFT} of ${PY_SEEN} redaction cases differ in swarm_api.redaction"
+      FAILED=1
+    else
+      ok "swarm_api.redaction gives the fixture's output on all ${PY_SEEN} cases"
+    fi
+  fi
+fi
+
+# -- 18. claude-code-lightpanda (docs/design/lightpanda-runtime.md §6.5) ----
+# The profile's promise is "never receives Chromium, never claims a live
+# view", and the five facts behind it live in five files no one import joins:
+# the frozen catalogue's entry (live_browser false, no `browser_tool` input),
+# its Terraform mirror (section 13 compares the fields of every entry that
+# exists; this asserts the entry exists), the runner's CDP port (the
+# live-browser pods own 9222, and a Lightpanda on it would be read as a live
+# view), the runner's denied `screenshot` (it crashes on heavy pages and its
+# picture is not a live view), and the image's amd64 pin, which the tool
+# mirror the build verifies against must carry too. The runner module is read
+# with ast, not imported: importing agent_worker needs the worker's
+# dependencies, and this script needs none of them.
+step "claude-code-lightpanda parity"
+
+if ! LIGHTPANDA_PARITY="$(python3 - "${REPO_ROOT}" 2>&1 <<'PY'
+import ast
+import re
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+NAME = "claude-code-lightpanda"
+REPORT = []
+
+
+def emit(status, item, detail):
+    REPORT.append("%s|%s|%s" % (status, item, detail.replace("\n", " ")))
+
+
+def read(rel):
+    path = root / rel
+    return path.read_text() if path.is_file() else None
+
+
+sys.path.insert(0, str(root / "apps" / "common"))
+from swarm_common import profiles as frozen_profiles
+
+profile = frozen_profiles.RUNNER_PROFILES.get(NAME)
+if profile is None:
+    emit("DRIFT", NAME, "the frozen catalogue has no %s profile, so nothing below "
+         "has a profile to describe" % NAME)
+else:
+    # 1. No live view and no browser-tool choice.
+    if profile.live_browser is not False:
+        emit("DRIFT", "live_browser", "%s declares live_browser=%r; it has no display "
+             "and must claim no live view" % (NAME, profile.live_browser))
+    else:
+        emit("OK", "live_browser", "%s declares live_browser false" % NAME)
+    if "browser_tool" in (profile.inputs or {}):
+        emit("DRIFT", "browser_tool", "%s declares a browser_tool input; its agents get "
+             "Lightpanda only, never a choice of Chromium tools" % NAME)
+    else:
+        emit("OK", "browser_tool", "%s declares no browser_tool input" % NAME)
+
+    # 2. The Terraform mirror has the entry, with the catalogue image, class
+    # and backend.
+    locals_tf = read("terraform/infra/locals.tf") or ""
+    entry = re.search(r"^    \"" + re.escape(NAME) + r"\" = \{\n(.*?)^    \}", locals_tf, re.M | re.S)
+    if entry is None:
+        emit("DRIFT", "locals.tf", "terraform/infra/locals.tf runner_profiles has no "
+             "%s entry, so Terraform makes no Job for it" % NAME)
+    else:
+        def field(key):
+            found = re.search(r"^\s*" + key + r"\s*=\s*\"([^\"]*)\"", entry.group(1), re.M)
+            return found.group(1) if found else None
+
+        expected = (("image", profile.image), ("resource_class", profile.resource_class),
+                    ("backend", getattr(profile.backend, "value", profile.backend)))
+        wrong = ["%s is %r, the catalogue says %r" % (key, field(key), want)
+                 for key, want in expected if field(key) != want]
+        if wrong:
+            emit("DRIFT", "locals.tf", "the %s entry in terraform/infra/locals.tf: %s"
+                 % (NAME, "; ".join(wrong)))
+        else:
+            emit("OK", "locals.tf", "terraform/infra/locals.tf mirrors %s (%s, %s, %s)"
+                 % (NAME, expected[0][1], expected[1][1], expected[2][1]))
+
+# 3 and 4. The runner module: its CDP_PORT and DISALLOWED_TOOLS.
+RUNNER = "apps/agent-worker/agent_worker/lightpanda.py"
+source = read(RUNNER)
+assigned = {}
+if source is not None:
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            assigned[node.targets[0].id] = node.value
+
+port = assigned.get("CDP_PORT")
+if not (isinstance(port, ast.Constant) and isinstance(port.value, int)):
+    emit("DRIFT", "CDP_PORT", "%s no longer assigns CDP_PORT an integer literal" % RUNNER)
+elif port.value == 9222:
+    emit("DRIFT", "CDP_PORT", "%s CDP_PORT is 9222, the port of the live-browser pods; "
+         "Lightpanda would be taken for a live view" % RUNNER)
+else:
+    emit("OK", "CDP_PORT", "%s CDP_PORT is %d, not the live-browser 9222" % (RUNNER, port.value))
+
+
+def literal_tail(element):
+    # A tool is a plain string or an f-string ending in a literal, e.g.
+    # f"mcp__{MCP_SERVER_NAME}__screenshot"; the tool name itself is that tail.
+    if isinstance(element, ast.Constant) and isinstance(element.value, str):
+        return element.value
+    if isinstance(element, ast.JoinedStr) and element.values:
+        last = element.values[-1]
+        if isinstance(last, ast.Constant) and isinstance(last.value, str):
+            return last.value
+    return None
+
+
+denied = assigned.get("DISALLOWED_TOOLS")
+if not isinstance(denied, (ast.Tuple, ast.List)):
+    emit("DRIFT", "DISALLOWED_TOOLS", "%s no longer assigns DISALLOWED_TOOLS a tuple literal" % RUNNER)
+elif not any(re.search(r"(^|__)screenshot$", literal_tail(e) or "") for e in denied.elts):
+    emit("DRIFT", "DISALLOWED_TOOLS", "%s DISALLOWED_TOOLS does not deny screenshot" % RUNNER)
+else:
+    emit("OK", "DISALLOWED_TOOLS", "%s DISALLOWED_TOOLS denies screenshot" % RUNNER)
+
+# 5. The image pins the amd64 binary, and the tool mirror carries that hash.
+DOCKERFILE = "images/agent-runtime-lightpanda/Dockerfile"
+MIRROR = "images/agent-runtime-base/tool-mirror.sha256"
+pin = re.search(r"^ARG LIGHTPANDA_SHA256_AMD64=([0-9a-f]{64})\s*$", read(DOCKERFILE) or "", re.M)
+mirrored = re.findall(r"^([0-9a-f]{64})\s", read(MIRROR) or "", re.M)
+if pin is None:
+    emit("DRIFT", "LIGHTPANDA_SHA256_AMD64", "%s does not pin LIGHTPANDA_SHA256_AMD64 "
+         "to a sha256" % DOCKERFILE)
+elif pin.group(1) not in mirrored:
+    emit("DRIFT", "LIGHTPANDA_SHA256_AMD64", "%s pins %s, which tool-mirror.sha256 (%s) "
+         "does not carry" % (DOCKERFILE, pin.group(1), MIRROR))
+else:
+    emit("OK", "LIGHTPANDA_SHA256_AMD64", "%s pins %s, and %s carries it"
+         % (DOCKERFILE, pin.group(1)[:12], MIRROR))
+
+print("\n".join(REPORT))
+PY
+)"; then
+  err "the claude-code-lightpanda parity probe failed to run:"
+  printf '%s\n' "${LIGHTPANDA_PARITY}" | sed 's/^/     /' >&2
+  FAILED=1
+else
+  # Counted and printed, for the reason section 6 gives.
+  LIGHTPANDA_SEEN=0
+  while IFS='|' read -r L_STATUS L_NAME L_DETAIL; do
+    [[ -n "${L_STATUS}" ]] || continue
+    LIGHTPANDA_SEEN=$(( LIGHTPANDA_SEEN + 1 ))
+    case "${L_STATUS}" in
+      OK) ok "${L_NAME}: ${L_DETAIL}" ;;
+      DRIFT)
+        err "${L_NAME} has DRIFTED: ${L_DETAIL}"
+        FAILED=1
+        ;;
+      *)
+        err "unexpected claude-code-lightpanda parity output: ${L_STATUS}|${L_NAME}|${L_DETAIL}"
+        FAILED=1
+        ;;
+    esac
+  done <<<"${LIGHTPANDA_PARITY}"
+  if [[ "${LIGHTPANDA_SEEN}" -eq 0 ]]; then
+    err "the claude-code-lightpanda probe printed no assertions at all; nothing was checked"
+    FAILED=1
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# 13. A lease's units per pool (contract request 129, archived issue 2950), restated in jq.
+# --------------------------------------------------------------------------
+# swarm_common.models.pool_units_for decides what a lease takes in each pool
+# (1 in a provider pool, the resource units elsewhere) and held_pool_units what
+# a stored lease gives back (its `pool_units`, or `units` in every pool on a
+# lease from before the request). Two jq files restate it:
+#   * concurrency-judge.jq's `held_units`, invariant 3's exact pool check;
+#   * pool-units.jq's provider branch, `make pool-check`'s smallest useful limit.
+# The judge is run with every pool's `active` at -1, so every pool is a
+# mismatch and its `lease_units` -- the jq's sum of held units -- is printed.
+POOL_UNIT_CASES='[
+  {"id": "new-large", "task_id": "t1", "units": 4,
+   "pools": ["global", "tenant:eng", "resource:large", "runner:claude-code-large",
+             "backend:GKE_AUTOPILOT", "provider:anthropic", "provider:anthropic:tenant:eng"],
+   "pool_units": {"global": 4, "tenant:eng": 4, "resource:large": 4,
+                  "runner:claude-code-large": 4, "backend:GKE_AUTOPILOT": 4,
+                  "provider:anthropic": 1, "provider:anthropic:tenant:eng": 1}},
+  {"id": "old-large", "task_id": "t2", "units": 4,
+   "pools": ["global", "tenant:eng", "resource:large", "provider:anthropic",
+             "provider:anthropic:tenant:eng"]},
+  {"id": "old-unitless", "task_id": "t3",
+   "pools": ["global", "tenant:eng", "provider:anthropic"]},
+  {"id": "new-standard", "task_id": "t4", "units": 1,
+   "pools": ["global", "tenant:eng", "provider:anthropic"],
+   "pool_units": {"global": 1, "tenant:eng": 1, "provider:anthropic": 1}}
+]'
+JUDGE_HELD="$(
+  jq -c '{at: "2026-11-01T00:00:00Z", leases: ., tasks: [],
+          pools: ([ .[].pools[] ] | unique | map({id: ., active: -1}))}' <<<"${POOL_UNIT_CASES}" \
+  | jq -c --arg mode sample --argjson concurrency '[]' --argjson pending '[]' \
+      --argjson pre_running '[]' --argjson grace 0 -f "${SWARM_LIB_DIR}/concurrency-judge.jq" \
+  | jq -c '.pool_mismatches | map({key: .pool, value: .lease_units}) | from_entries'
+)" || JUDGE_HELD="(concurrency-judge.jq failed)"
+PY_HELD="$(python3 - "${REPO_ROOT}" "${POOL_UNIT_CASES}" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.models import held_pool_units
+
+held = {}
+for lease in json.loads(sys.argv[2]):
+    for name, units in held_pool_units(
+        lease["pools"], int(lease.get("units", 1)), lease.get("pool_units")
+    ).items():
+        held[name] = held.get(name, 0) + units
+print(json.dumps(dict(sorted(held.items())), separators=(",", ":")))
+PY
+)"
+if [[ "$(jq -cS . <<<"${JUDGE_HELD}" 2>/dev/null || true)" == "$(jq -cS . <<<"${PY_HELD}")" ]]; then
+  ok "held_pool_units: concurrency-judge.jq sums what each lease holds as the frozen model does"
+else
+  err "concurrency-judge.jq's held_units has DRIFTED from swarm_common.models.held_pool_units:"
+  err "    frozen model        : ${PY_HELD}"
+  err "    concurrency-judge.jq: ${JUDGE_HELD}"
+  FAILED=1
+fi
+
+UNIT_CATALOGUE="$(python3 - "${REPO_ROOT}" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.models import pool_names_for
+from swarm_common.profiles import RUNNER_PROFILES, default_sizes, resolve_backend
+
+classes = {name: {"units": size.units} for name, size in default_sizes().items()}
+profiles = {
+    name: {"resource_class": p.resource_class, "backend": resolve_backend(p).value,
+           "provider": p.provider}
+    for name, p in RUNNER_PROFILES.items()
+}
+pools = sorted({
+    pool
+    for name, p in RUNNER_PROFILES.items()
+    for pool in pool_names_for(tenant_id="eng", provider=p.provider,
+                               resource_class=p.resource_class, runner_profile=name,
+                               backend=resolve_backend(p).value)
+})
+print(json.dumps({"classes": classes, "profiles": profiles, "pools": pools}))
+PY
+)"
+UNIT_POOLS_SEEN=0
+UNIT_DRIFT=""
+while IFS= read -r U_POOL; do
+  [[ -n "${U_POOL}" ]] || continue
+  UNIT_POOLS_SEEN=$(( UNIT_POOLS_SEEN + 1 ))
+  U_GOT="$(jq -c --argjson classes "$(jq -c .classes <<<"${UNIT_CATALOGUE}")" \
+             --argjson profiles "$(jq -c .profiles <<<"${UNIT_CATALOGUE}")" \
+             --arg pool "${U_POOL}" -n -f "${SWARM_LIB_DIR}/pool-units.jq")"
+  U_WANT="$(python3 - "${REPO_ROOT}" "${U_POOL}" "${U_GOT}" "${UNIT_CATALOGUE}" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "common"))
+from swarm_common.models import pool_units_for
+
+got = json.loads(sys.argv[3])
+classes = json.loads(sys.argv[4])["classes"]
+print("null" if got is None else pool_units_for(sys.argv[2], classes[got["class"]]["units"]))
+PY
+)"
+  if [[ "$(jq -c '.units // null' <<<"${U_GOT}")" != "${U_WANT}" ]]; then
+    UNIT_DRIFT="${UNIT_DRIFT} ${U_POOL}=${U_GOT}(frozen ${U_WANT})"
+  fi
+done < <(jq -r '.pools[]' <<<"${UNIT_CATALOGUE}")
+if [[ "${UNIT_POOLS_SEEN}" -eq 0 ]]; then
+  err "pool_units_for parity read no pools at all; nothing was checked"
+  FAILED=1
+elif [[ -z "${UNIT_DRIFT}" ]]; then
+  ok "pool_units_for: pool-units.jq charges ${UNIT_POOLS_SEEN} catalogue pools as the frozen model does"
+else
+  err "pool-units.jq has DRIFTED from swarm_common.models.pool_units_for:${UNIT_DRIFT}"
+  FAILED=1
+fi
+
+hr
+[[ "${FAILED}" -eq 0 ]] || die "a restatement of the frozen contract has drifted"
+ok "every restatement of the frozen contract still matches it"

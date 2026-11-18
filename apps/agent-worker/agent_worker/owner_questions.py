@@ -1,0 +1,524 @@
+"""`owner-questions.json`: the workflow's owner questions, staged into its review.
+
+WHY (archived issue 2070, owner decision 2026-10-23, option (c)). `input_from` stages ONE
+file per parent -- the frozen contract's `dict[str, str]` -- and a lane's
+review stages the implementer's `swarm-work.patch`. So a question an earlier
+step asked in its `questions.json` reached neither the review nor the merge:
+on 2026-10-23 three lanes (QAFIX6-WORKPAGES, IMAGE-TOOL-RESCAN,
+CAPTCHA-BYPASS) reached their merge step with questions open, and each review
+wrote "the implementer left no questions.json". Adding a second file per
+parent would be a contract change; this needs none.
+
+WHICH STEP. A REVIEW: a step a dependant stages `verdict.json` from, which is
+exactly what `metadata.expected_outputs` records (`expected_outputs`). Any
+other step is given nothing and reads nothing.
+
+WHICH QUESTIONS. Every SUCCEEDED step of the same workflow that this one
+depends on, directly or through other steps of the workflow (`depends_on`,
+walked through this tenant's tasks of this workflow only, at most
+`MAX_ANCESTORS` documents), so a re-review that depends only on the fix still
+sees the implement step's. Each step's questions are the ones its worker
+validated and counted (`result_summary.questions`), read back from the
+upload in its successful attempt's manifest and validated again
+(`questions.validate`); a count the file does not hold is refused. A step
+that counted none but parked on a blocking question (`metadata.question_wait`)
+offers that wait's questions. The answers are `metadata.owner_answers`, by
+question index, which swarm-api's answer route writes (`swarm_task_answer`).
+
+THE READS ARE THE ONES STAGING ALREADY MAKES: `inputs.fetch_upstream_task`
+(Firestore, or `GET state/upstream`, which serves a workflow ancestor along
+`depends_on` for this reason) and the object store under this tenant's
+prefix (`inputs.artifact_key`). No new credential reaches the container.
+
+A COUNTED FILE THAT CANNOT BE READ FAILS THE ATTEMPT, as a declared input
+does (`inputs`): a review told "no questions" when there were some is the
+failure this module exists to end.
+
+WHAT THE REVIEW DOES WITH THEM is said once, in `guidance`, appended to its
+prompt: copy each UNANSWERED question that should hold the merge into
+`verdict.needs_owner`, list the other unanswered ones in
+`verdict.open_questions`. `merge.run_merge` holds only for the first, and
+re-reads the answers before it does. An ANSWERED question whose answer is
+the option its `built` names goes in neither; one whose answer is not its
+`built` goes in `verdict.needs_owner` too, and is not by itself a NOT_YET
+finding: the merge step builds the owner's pick in a pick-fix round (archived issue 3149;
+wf_f0044e94's re-review wrote it as a finding instead, and the merge
+refused).
+
+A FILE THE WORKER DID NOT TAKE IS NAMED (archived issue 3086). An earlier step whose
+questions.json was rejected (`questions_rejected`) offers no question, so
+the review is told which step's file it was and the worker's reason
+(`rejected_files`, `rejected_guidance`) instead of writing a free-text
+`needs_owner` entry the merge cannot read; the merge's owner-question park
+names the same files (`merge._Run.wait_for_owner`).
+
+A workflow, or a review, with no questions and no rejected file behaves
+exactly as before: no file, no prompt text.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import re
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping
+
+from swarm_common.config import Settings
+from swarm_common.states import TaskState
+
+from . import expected_outputs as expected_mod
+from . import inputs as inputs_mod
+from . import questions as questions_mod
+from . import verdict as verdict_mod
+from .errors import InputUnavailable
+from .objectstore import ObjectStore
+
+#: The file, in the work directory beside the staged inputs.
+NAME = "owner-questions.json"
+#: What a review's dependants stage from it.
+REVIEW_OUTPUT = "verdict.json"
+#: The verdict keys the guidance names; `verdict.read_verdict` reads both.
+NEEDS_OWNER_KEY = "needs_owner"
+OPEN_QUESTIONS_KEY = "open_questions"
+#: A question's record of the option its asker's branch builds, or null when
+#: the answer changes nothing it builds (`questions`, ANSWER-CONTENT-CHECK).
+BUILT_KEY = "built"
+#: A merge's pick-fix round's report (PICK-FIX-ROUND, part of archived issue 2441): a JSON
+#: list, one `{task_id, question_index, picked, builds_pick}` per pick its
+#: brief named, `picked` the owner's option label (null for a free-text
+#: answer) and `builds_pick` whether the branch now builds it. Written by the
+#: round's agent beside its other artifacts, read back by the merge
+#: (`picks_built`); swarm-api's brief names the file
+#: (`swarm_api.mergewake.PICKS_BUILT_NAME`, held equal by
+#: tests/unit/worker/test_merge_pick_fix_round.py).
+PICKS_BUILT_NAME = "picks-built.json"
+#: The most task documents the ancestor walk reads: every ancestor is a
+#: distinct step of one workflow, so the most steps a workflow may have, read
+#: from the FROZEN `Settings` default as `lifecycle._MAX_WORKFLOW_STEPS` is.
+#: swarm-api's `state/upstream` walk has the same bound
+#: (`attemptstate.WORKFLOW_ANCESTORS_MAX`).
+MAX_ANCESTORS: int = next(
+    f.default for f in dataclasses.fields(Settings) if f.name == "max_workflow_steps"
+)
+
+#: The longest a rejected questions.json's reason is shown (`rejected_files`):
+#: a worker's reason is one position and key, well under this; the bound
+#: keeps a park record and a prompt line short whatever the summary holds.
+MAX_REJECTED_REASON_CHARS = 300
+
+Fetch = Callable[[str], dict[str, Any]]
+
+#: ADVISORY QUESTIONS DO NOT HOLD A MERGE (owner decision, 2 November 2026).
+#: Over the 14 days before, 251 hours of finished merges waited on a lane's
+#: questions, 86 of them ending only in a cancellation. A merge step now
+#: merges past an unanswered question (`merges_past`) that is
+#: - not blocking (`"blocking"` is not true);
+#: - has a `recommended` option, one of its labels;
+#: - was built as recommended: its `built` is that label, or null (the answer
+#:   changes nothing the branch builds), or absent (a file from before
+#:   `built`, read as "the lane built the recommended option, as told");
+#: - and is about none of IAM, secrets or credentials, tenant isolation, the
+#:   frozen contract, cost or quota limits, or workflow files: no
+#:   `SENSITIVE_TOPICS` match in its text, context, recommended label or any
+#:   option's label or description.
+#: Anything else still holds. The match is deliberately broad ("token",
+#: "tenant", "contract", "cost", ".github"): a false hold costs an answer, a
+#: false pass merges a decision that was the owner's. The question stays
+#: open for the owner; an answer other than the recommended option, given
+#: after the merge, starts a pick-fix round against the default branch
+#: (`swarm_api.agent_questions`, `swarm_api.mergewake.advisory_pick_fix`).
+SENSITIVE_TOPICS: dict[str, re.Pattern[str]] = {
+    "iam": re.compile(
+        r"\biam\b|\broles?\b|\bpermissions?\b|\bservice[ _-]?accounts?\b|\bgsa\b|\bksa\b"
+        r"|workload identity|\bgrant(s|ed|ing)?\b|\bpolicy bindings?\b|\bacl\b"
+        r"|\bprivilege|\bimpersonat|\badmin\b|\boauth\b", re.I),
+    "secrets": re.compile(
+        r"\bsecrets?\b|secret manager|\bcredentials?\b|\btokens?\b|\bpasswords?\b"
+        r"|private key|\bapi[ _-]?keys?\b|\bpat\b|\bpats\b|\bsigning key|\bkms\b"
+        r"|\bredact", re.I),
+    "tenant isolation": re.compile(
+        r"\btenants?\b|\bisolation\b|\bcross[ -]tenant|\bnamespaces?\b|\bmulti[ -]tenan",
+        re.I),
+    "frozen contract": re.compile(
+        r"\bfrozen\b|\bcontract\b|swarm_common|contract\.md|contract change", re.I),
+    "cost or quota": re.compile(
+        r"\bcosts?\b|\bbudgets?\b|\bbilling\b|\bquotas?\b|\bpric(e|es|ing)\b|\bspend"
+        r"|\bpool[ _]limits?\b|\bmax[ _]instances\b|\bconcurrency (limit|cap)"
+        r"|\bcapacity\b|\bspot\b", re.I),
+    "workflow files": re.compile(
+        r"\.github\b|\bworkflow[ -]files?\b|github actions?\b|workflow-lines|\bci workflows?\b"
+        r"|\bactions/", re.I),
+}
+
+
+def sensitive_topics(row: Mapping[str, Any]) -> list[str]:
+    """The `SENSITIVE_TOPICS` a question's own words touch, in table order."""
+    parts = [row.get("question"), row.get("context"), row.get("recommended")]
+    for option in row.get("options") or ():
+        if isinstance(option, Mapping):
+            parts += [option.get("label"), option.get("description")]
+    text = "\n".join(p for p in parts if isinstance(p, str))
+    return [topic for topic, pattern in SENSITIVE_TOPICS.items() if pattern.search(text)]
+
+
+def hold_reason(row: Mapping[str, Any]) -> str | None:
+    """Why an unanswered question holds a merge, or None when it is advisory.
+
+    `row` is a `questions_of` row. The rule is the comment above
+    `SENSITIVE_TOPICS`; this reads only the question's own fields.
+    """
+    if row.get("blocking") is True:
+        return "blocking"
+    labels = [o.get("label") for o in row.get("options") or () if isinstance(o, Mapping)]
+    recommended = row.get("recommended")
+    if not isinstance(recommended, str) or recommended not in labels:
+        return "no recommended option"
+    if BUILT_KEY in row and row[BUILT_KEY] is not None and row[BUILT_KEY] != recommended:
+        return f"the branch built {row[BUILT_KEY]!r}, not the recommended {recommended!r}"
+    topics = sensitive_topics(row)
+    if topics:
+        return "about " + ", ".join(topics)
+    return None
+
+
+def merges_past(row: Mapping[str, Any]) -> bool:
+    """Whether a merge goes ahead with this unanswered question open (`hold_reason`)."""
+    return row.get("answer") is None and hold_reason(row) is None
+
+
+
+def is_review(metadata: Any) -> bool:
+    """Whether a dependant stages `verdict.json` from this step."""
+    return REVIEW_OUTPUT in expected_mod.declared_outputs(metadata).names
+
+
+def _ids(value: Any) -> list[str]:
+    return sorted({v.strip() for v in value or () if isinstance(v, str) and v.strip()})
+
+
+def workflow_ancestors(task: Mapping[str, Any], fetch: Fetch) -> list[tuple[str, dict[str, Any]]]:
+    """`(task id, document)` of every step of this workflow this one depends on.
+
+    Breadth first from `depends_on`, sorted at each level, so the order is
+    the same on every run. A step of another workflow is neither kept nor
+    walked through. `fetch` is the tenant-gated upstream read, so another
+    tenant's task is its refusal: raised for a parent this step declares,
+    and skipped further back.
+    """
+    workflow_id = task.get("workflow_id")
+    if not isinstance(workflow_id, str) or not workflow_id:
+        return []
+    found: list[tuple[str, dict[str, Any]]] = []
+    seen: set[str] = set()
+    level = _ids(task.get("depends_on"))
+    direct = set(level)
+    while level and len(seen) < MAX_ANCESTORS:
+        following: list[str] = []
+        for task_id in level:
+            if task_id in seen or len(seen) >= MAX_ANCESTORS:
+                continue
+            seen.add(task_id)
+            try:
+                doc = fetch(task_id)
+            except InputUnavailable:
+                # A parent this step declares is read as staging reads it, and
+                # its refusal is the attempt's. One further back that the read
+                # refuses is not of this tenant's workflow -- `state/upstream`
+                # serves exactly this workflow's ancestors -- so it is no step
+                # whose questions this review is owed.
+                if task_id in direct:
+                    raise
+                continue
+            if doc.get("workflow_id") != workflow_id:
+                continue
+            found.append((task_id, doc))
+            following += _ids(doc.get("depends_on"))
+        level = sorted(set(following) - seen)
+    return found
+
+
+def _counted(doc: Mapping[str, Any]) -> int:
+    summary = doc.get("result_summary")
+    count = summary.get(questions_mod.SUMMARY_KEY) if isinstance(summary, Mapping) else None
+    return count if isinstance(count, int) and not isinstance(count, bool) and count > 0 else 0
+
+
+def _validated(data: bytes, where: str) -> list[dict[str, Any]]:
+    try:
+        return questions_mod.validate(data)
+    except questions_mod.Rejected as exc:
+        raise InputUnavailable(f"{where} does not validate as its worker validated it: {exc}") from None
+
+
+def questions_of(
+    task_id: str, doc: Mapping[str, Any], *, store: ObjectStore, tenant_id: str
+) -> list[dict[str, Any]]:
+    """One step's validated questions, each with its stored answer or None.
+
+    The answer is the one given to the question asked at that index now
+    (`questions.answers_asked`), never one a later attempt's other question
+    took over by its index.
+    """
+    if doc.get("state") != TaskState.SUCCEEDED.value:
+        return []
+    metadata = doc.get("metadata") if isinstance(doc.get("metadata"), Mapping) else {}
+    count = _counted(doc)
+    where = f"the {questions_mod.NAME} of upstream task {task_id}"
+    if count:
+        reference = inputs_mod.artifact_reference(
+            dict(doc), tenant_id=tenant_id, upstream_task_id=task_id, filename=questions_mod.NAME)
+        if reference.size_bytes > questions_mod.MAX_BYTES:
+            raise InputUnavailable(f"{where} is larger than {questions_mod.MAX_BYTES} bytes")
+        asked = _validated(store.download_bytes(reference.key), where)
+        if len(asked) != count:
+            raise InputUnavailable(
+                f"{where} holds {len(asked)} question(s), not the {count} its worker counted")
+    else:
+        wait = metadata.get(questions_mod.QUESTION_WAIT_KEY)
+        raw = wait.get("questions") if isinstance(wait, Mapping) else None
+        if not isinstance(raw, list) or not raw:
+            return []
+        asked = _validated(json.dumps(raw).encode("utf-8"), f"the question wait of task {task_id}")
+    # An answer to another question at the same index is not this one's (archived issue 3349).
+    answers = questions_mod.answers_asked(asked, metadata)
+    step_id = doc.get("step_id") if isinstance(doc.get("step_id"), str) else None
+    rows: list[dict[str, Any]] = []
+    for index, question in enumerate(asked):
+        answer = answers.get(index)
+        row: dict[str, Any] = {
+            "task_id": task_id,
+            "step_id": step_id,
+            "question_index": index,
+            "question": question.get("question"),
+            "options": question.get("options"),
+            "recommended": question.get("recommended"),
+            "context": question.get("context"),
+            "blocking": question.get("blocking") is True,
+            "answer": None if answer is None else {
+                "choice": answer.get("choice"), "text": answer.get("text")},
+        }
+        # Only where the asker wrote it: a file from before ANSWER-CONTENT-CHECK
+        # has no `built`, and the merge reads its absence as "answered is
+        # enough", never as null.
+        if BUILT_KEY in question:
+            row[BUILT_KEY] = question[BUILT_KEY]
+        rows.append(row)
+    return rows
+
+
+def workflow_questions(
+    task: Mapping[str, Any], *, fetch: Fetch, store: ObjectStore, tenant_id: str
+) -> list[dict[str, Any]]:
+    """Every question the steps `task` depends on asked, each with its answer.
+
+    The review's staging (`collect`) and the merge's comparison of every
+    answered pick with its `built` (PICK-FIX-ROUND) read the same rows.
+    """
+    rows: list[dict[str, Any]] = []
+    for task_id, doc in workflow_ancestors(task, fetch):
+        rows += questions_of(task_id, doc, store=store, tenant_id=tenant_id)
+    return rows
+
+
+def collect(
+    task: Mapping[str, Any], *, fetch: Fetch, store: ObjectStore, tenant_id: str
+) -> list[dict[str, Any]]:
+    """Every earlier step's questions for a review; [] for any other step."""
+    if not is_review(task.get("metadata")):
+        return []
+    return workflow_questions(task, fetch=fetch, store=store, tenant_id=tenant_id)
+
+
+def rejected_files(task: Mapping[str, Any], fetch: Fetch) -> list[dict[str, Any]]:
+    """`{task_id, step_id, file, reason}` of each earlier step's questions.json not taken.
+
+    archived issue 3086: a file the worker's validator rejected is recorded as
+    `questions: 0` with `questions_rejected` (`questions.summarise`), so no
+    reader saw a question in it, and the merge parked on the review's
+    free-text entry for it with nothing naming the file. Each SUCCEEDED step
+    `workflow_ancestors` walks to, in its order, whose summary holds that
+    key. The reason is the worker's own, which never quotes the file
+    (`questions.Rejected`), clipped to `MAX_REJECTED_REASON_CHARS`.
+    """
+    found: list[dict[str, Any]] = []
+    for task_id, doc in workflow_ancestors(task, fetch):
+        if doc.get("state") != TaskState.SUCCEEDED.value:
+            continue
+        summary = doc.get("result_summary")
+        if not isinstance(summary, Mapping) or questions_mod.REJECTED_KEY not in summary:
+            continue
+        reason = summary[questions_mod.REJECTED_KEY]
+        reason = " ".join(reason.split()) if isinstance(reason, str) else ""
+        if len(reason) > MAX_REJECTED_REASON_CHARS:
+            reason = reason[:MAX_REJECTED_REASON_CHARS - 3].rstrip() + "..."
+        found.append({
+            "task_id": task_id,
+            "step_id": doc.get("step_id") if isinstance(doc.get("step_id"), str) else None,
+            "file": questions_mod.NAME,
+            "reason": reason or "the worker recorded no reason",
+        })
+    return found
+
+
+def rejected_line(entry: Mapping[str, Any]) -> str:
+    """One rejected file, as the review's prompt and the merge's park name it."""
+    return (f"step {entry.get('step_id') or entry.get('task_id')} (task {entry.get('task_id')}) "
+            f"wrote {entry.get('file')} the worker did not take: {entry.get('reason')}")
+
+
+def collect_rejected(task: Mapping[str, Any], *, fetch: Fetch) -> list[dict[str, Any]]:
+    """`rejected_files` for a review; [] for any other step."""
+    if not is_review(task.get("metadata")):
+        return []
+    return rejected_files(task, fetch)
+
+
+def picks_built(
+    task_id: str, doc: Mapping[str, Any], *, store: ObjectStore, tenant_id: str
+) -> dict[tuple[str, int], tuple[str | None, bool]]:
+    """A pick-fix round's `PICKS_BUILT_NAME`: `{(task, index): (picked, builds_pick)}`.
+
+    {} when the round uploaded no such file: a round that reported nothing
+    built nothing. A file that is there and cannot be read, or is not the
+    list the brief asked for, raises `InputUnavailable`; the merge reads that
+    as no report, so its picks stay unbuilt, never as built.
+    """
+    try:
+        reference = inputs_mod.artifact_reference(
+            dict(doc), tenant_id=tenant_id, upstream_task_id=task_id, filename=PICKS_BUILT_NAME)
+    except InputUnavailable:
+        return {}
+    where = f"the {PICKS_BUILT_NAME} of pick fix round task {task_id}"
+    if reference.size_bytes > questions_mod.MAX_BYTES:
+        raise InputUnavailable(f"{where} is larger than {questions_mod.MAX_BYTES} bytes")
+    try:
+        rows = json.loads(store.download_bytes(reference.key))
+    except ValueError:
+        raise InputUnavailable(f"{where} is not JSON") from None
+    if not isinstance(rows, list):
+        raise InputUnavailable(f"{where} is not a JSON list")
+    out: dict[tuple[str, int], tuple[str | None, bool]] = {}
+    for row in rows:
+        asker = row.get("task_id") if isinstance(row, Mapping) else None
+        index = row.get("question_index") if isinstance(row, Mapping) else None
+        picked = row.get("picked") if isinstance(row, Mapping) else None
+        builds = row.get("builds_pick") if isinstance(row, Mapping) else None
+        if (not isinstance(asker, str) or type(index) is not int or index < 0
+                or not (picked is None or isinstance(picked, str))
+                or not isinstance(builds, bool)):
+            raise InputUnavailable(
+                f"{where} holds an entry that is not {{task_id, question_index, picked, "
+                "builds_pick}")
+        out[(asker, index)] = (picked, builds)
+    return out
+
+
+def guidance(path: Path | str, rows: list[dict[str, Any]]) -> str:
+    """The review's verdict instructions for the questions it was given."""
+    open_count = sum(1 for row in rows if row["answer"] is None)
+    return (
+        f"\n\nEarlier steps of this workflow asked the owner {len(rows)} question(s), "
+        f"{open_count} still unanswered. They are in {path}, a JSON list of "
+        "{task_id, step_id, question_index, question, options, recommended, context, "
+        "blocking, answer}, with answer null while the owner has not answered, and "
+        "`built`, where the asker wrote it, the option label its branch implements "
+        "(null: the answer changes nothing it builds). Read it "
+        f"before you write verdict.json. In verdict.json, put in `{NEEDS_OWNER_KEY}` a "
+        "list of references, one for each UNANSWERED "
+        "question that must hold the merge: each entry names the asking step's "
+        "`task_id` and the question's `question_index` exactly as the file gives them, "
+        "for example "
+        f'"{NEEDS_OWNER_KEY}": [{json.dumps(verdict_mod.NEEDS_OWNER_EXAMPLE)}], '
+        "with `note` optional free text beside the reference. Never write an entry as "
+        "a sentence alone: the merge step cannot read one, and holds on it until a "
+        "person says ready. A question belongs there when its answer could reverse a "
+        "recorded owner decision, when it is about IAM, secrets, tenant isolation, cost "
+        "or the frozen contract, or when the asker marked it blocking. Put every other unanswered "
+        f"question, in the same shape, in `{OPEN_QUESTIONS_KEY}`, so the pull request "
+        f"lists it. The merge step will not merge while a `{NEEDS_OWNER_KEY}` question "
+        "is unanswered, nor once its answer picks an option other than its `built`; "
+        "it merges past the others, and past an unanswered non-blocking one with a "
+        "recommended option the branch built that touches nothing sensitive (it stays "
+        "open for the owner). An answered question whose answer is the option its "
+        "`built` names goes in neither. An answered question whose answer is NOT its "
+        "`built` (another option, or free text) goes in "
+        f"`{NEEDS_OWNER_KEY}` too: the merge step builds the owner's pick in a "
+        "pick-fix round, so it is not by itself a NOT_YET finding. "
+        "A finding that waits only on an unanswered owner question is not a NOT_YET "
+        f"finding: put that question in `{NEEDS_OWNER_KEY}` (the merge step holds for "
+        "its answer and builds the owner's pick in a pick-fix round) and give MERGE if "
+        "nothing else is open; give NOT_YET only for findings a fix step can act on now."
+    )
+
+
+def rejected_guidance(rejected: list[dict[str, Any]]) -> str:
+    """The review's instructions for the earlier questions.json files not taken (archived issue 3086)."""
+    named = "; ".join(rejected_line(entry) for entry in rejected)
+    return (
+        f"\n\nEarlier steps of this workflow wrote a {questions_mod.NAME} the worker did not "
+        f"take, so no question in it reached you or the owner: {named}. Say so in your "
+        "review, naming the step and the reason. Do not write a free-text "
+        f"`{NEEDS_OWNER_KEY}` entry for it: there is no question index to cite, the merge "
+        "step cannot read a sentence, and it would hold on it until a person says ready. "
+        "The merge step names these files itself when it holds for the owner."
+    )
+
+
+def stage(work: Path | str, payload: dict[str, Any], rows: list[dict[str, Any]], *,
+          rejected: list[dict[str, Any]] | None = None) -> int:
+    """Write `work/owner-questions.json` and close the prompt with `guidance`; how many.
+
+    Written whole on every attempt, and removed when there is nothing to
+    stage, so a stale file restored from a checkpoint is never trusted.
+    `rejected` (`collect_rejected`) closes the prompt with
+    `rejected_guidance` too, with or without questions.
+    """
+    path = Path(work) / NAME
+    prompt = payload.get("prompt")
+    if rejected and isinstance(prompt, str):
+        payload["prompt"] = prompt = prompt + rejected_guidance(rejected)
+    if not rows:
+        path.unlink(missing_ok=True)
+        return 0
+    path.write_text(json.dumps(rows, indent=2))
+    if isinstance(prompt, str):
+        payload["prompt"] = prompt + guidance(path.resolve(), rows)
+    return len(rows)
+
+
+def normalised(text: Any) -> str:
+    """A question's text as the dedupe compares it: case and spacing ignored."""
+    return " ".join(text.split()).casefold() if isinstance(text, str) else ""
+
+
+def drop_answered(directory: Path | str, answered: Iterable[str]) -> list[str]:
+    """Drop from `directory/questions.json` every question already answered; the dropped.
+
+    `answered` is the text of each question the owner answered on a step
+    this one builds on (archived issue 2836): the agent was given them, and one it asks
+    again would put the same question to the owner twice. A question matches
+    on its text (`normalised`). The file is rewritten without them, removed
+    when none is left, and the `await-answers` beside it removed when no
+    blocking question is left, so the step never parks on a decision already
+    made. A file that does not validate is left as it is, for
+    `questions.summarise` to report.
+    """
+    seen = {normalised(text) for text in answered} - {""}
+    if not seen:
+        return []
+    try:
+        data = questions_mod.read(directory)
+        asked = questions_mod.validate(data) if data is not None else []
+    except questions_mod.Rejected:
+        return []
+    kept = [q for q in asked if normalised(q.get("question")) not in seen]
+    if len(kept) == len(asked):
+        return []
+    path = Path(directory) / questions_mod.NAME
+    path.unlink(missing_ok=True)
+    if kept:
+        path.write_text(json.dumps(kept, indent=2))
+    if not questions_mod.blocking(kept):
+        (Path(directory) / questions_mod.AWAIT_ANSWERS).unlink(missing_ok=True)
+    return [q["question"] for q in asked if normalised(q.get("question")) in seen]

@@ -1,0 +1,950 @@
+// THE LANDING SCREEN'S STRUCTURE, AS A COUNT.
+//
+// WHY THIS FILE EXISTS, stated so nobody has to re-derive it.
+//
+// Two passes over this console corrected ATTRIBUTES -- figure size, shadow
+// count, hue count, chip construction -- and the owner's verdict on the second
+// was that the design "didn't really change much". The proof was in that pass's
+// own report: bordered elements on the Overview went 41 -> 41. Values moved;
+// structure did not. Nothing in the suite could have caught that, because every
+// gate here measures a value (a type step, a word count, a contrast ratio) and
+// none of them measures a LEVEL.
+//
+// So this file asserts levels. Each claim below is one a colour pass, a
+// spacing pass or a type pass cannot satisfy by accident, and each was proved
+// by mutation rather than by going green:
+//
+//   * making the lead a `.ctl-card` again           -> `is a region, not a panel` fails
+//   * restoring the Attention tile                  -> `says the count once` fails
+//   * giving `.ctl-metric` a four-sided border      -> `a fact is not a tile` fails
+//   * re-adding a fourth or fifth panel             -> `holds three panels` fails
+//
+// WHAT THIS FILE DELIBERATELY DOES NOT DO. It does not assert a total bordered
+// count. jsdom has no layout engine and the probe in `spacing.test.tsx` says so
+// at `spaceprobe.ts:12`; a total would have to include another file's help
+// glyphs and a shared primitive's track axes, so it would fail for reasons this
+// screen cannot fix and pass for reasons it did not earn. Levels are the thing
+// that is both checkable here and load-bearing.
+
+import { describe, expect, it, vi } from 'vitest'
+import { act, cleanup, render } from '@testing-library/react'
+
+import STYLES from '../styles.css?raw'
+// App.tsx as TEXT, not as a module: importing it would evaluate every screen
+// against the api mock below, which declares only the eight reads Overview
+// makes. The tab labels are string literals in `SECTIONS` -- the Python gate
+// reads them the same way -- so the source is the one place they are stated.
+import APP_SOURCE from '../App.tsx?raw'
+import type { Result } from '../fetch'
+import { pathToAddress } from '../paths'
+import type { SpendRollup } from '../api'
+import { elapsed, type Account, type AccountsPage, type Capacity, type Stats, type Task, type TaskPage } from '../types'
+import { painted } from './marks'
+
+const api = vi.hoisted(() => ({
+  loadCapacity: vi.fn(),
+  loadTasks: vi.fn(),
+  loadLeases: vi.fn(),
+  loadProviders: vi.fn(),
+  loadAccountPool: vi.fn(),
+  loadWorkflows: vi.fn(),
+  loadStats: vi.fn(),
+  loadSpend: vi.fn(),
+}))
+// `TASK_PAGE_LIMIT` BESIDE THE READS: Overview names the full page it asks
+// for (archived issue 168), and a factory mock throws on any export it does not declare.
+vi.mock('../api', () => ({ ...api, TASK_PAGE_LIMIT: 200 }))
+
+const { OverviewScreen, OVERVIEW_POLL_MS } = await import('../Overview')
+
+function ok<T>(data: T): Result<T> {
+  return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-09-23T10:00:00Z' }
+}
+
+/** A good read taken `ago` ms before now: an aged reading (archived issue 98). */
+function okFrom<T>(data: T, ago: number): Result<T> {
+  return { status: 'ok', data, fetchedAt: Date.now() - ago, serverAt: '2026-09-23T10:00:00Z' }
+}
+
+function account(over: Partial<Account>): Account {
+  return {
+    account_id: 'eng:laptop',
+    owner_tenant: 'eng',
+    label: 'laptop',
+    provider: 'anthropic-subscription',
+    state: 'AVAILABLE',
+    reason: '',
+    lend_to: [],
+    assigned: 0,
+    windows: {},
+    observed_at: null,
+    stale: false,
+    unreadable_by: [],
+    unreadable_now: [],
+    last_assigned_at: null,
+    ...over,
+  }
+}
+
+const EMPTY_TASKS: TaskPage = { tasks: [], next_page_token: null }
+const EMPTY_STATS: Stats = {
+  tenant_id: 'eng',
+  tasks_by_state: {},
+  dispatch_paused: false,
+  limits: {},
+  generated_at: '2026-09-23T10:00:00Z',
+}
+const CAPACITY: Capacity = {
+  pools: [],
+  runner_profiles: {},
+  tenant_id: 'eng',
+  generated_at: '2026-09-23T10:00:00Z',
+}
+
+function accountsPage(accounts: Account[]): AccountsPage {
+  return { accounts, tenant_id: 'eng', unreadable_documents: [], unreadable_document_count: 0 }
+}
+
+function spend(over: Partial<SpendRollup> = {}): SpendRollup {
+  return {
+    tenantId: 'eng',
+    tasksOnPage: 0,
+    tasksWithAttempts: 0,
+    tasksSampled: 0,
+    failedReads: 0,
+    failedDetail: null,
+    attempts: 0,
+    attemptsWithCost: 0,
+    attemptsWithTokens: 0,
+    costUsd: null,
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: null,
+    cacheCreationTokens: null,
+    from: '2026-09-23T09:00:00Z',
+    to: '2026-09-23T10:00:00Z',
+    ...over,
+  }
+}
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 40; i++) await new Promise((r) => setTimeout(r, 5))
+}
+
+async function mountOverview(
+  over: { tasks?: TaskPage; stats?: Stats } = {},
+): Promise<HTMLElement> {
+  api.loadCapacity.mockResolvedValue(ok(CAPACITY))
+  api.loadTasks.mockResolvedValue(ok(over.tasks ?? EMPTY_TASKS))
+  api.loadLeases.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadProviders.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadWorkflows.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadStats.mockResolvedValue(ok(over.stats ?? EMPTY_STATS))
+  api.loadAccountPool.mockResolvedValue(ok(accountsPage([account({})])))
+  api.loadSpend.mockResolvedValue(ok(spend()))
+
+  const { container } = render(<OverviewScreen />)
+  await settle()
+  return container
+}
+
+/** A top-level rule's body, by exact selector — never by substring. */
+function ruleFor(selector: string): string {
+  const at = new RegExp(`^${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{`, 'm').exec(
+    STYLES,
+  )
+  expect(at, `styles.css must declare a top-level ${selector} rule`).not.toBeNull()
+  return STYLES.slice(at!.index).split('}')[0] ?? ''
+}
+
+describe('the landing screen is a lead, a band and five panels', () => {
+  /**
+   * THE LEAD IS A REGION, NOT A PANEL. §13.3 of design-system.md: a REGION is
+   * a change of subject and is never a box; a PANEL is an object and draws
+   * the one box there is. O1 draws Needs a look unboxed, its check cards on
+   * the page background.
+   *
+   * MUTATION: make the lead a `.ctl-card` again.
+   */
+  it('draws Needs a look as a region, not as a panel', async () => {
+    const el = await mountOverview()
+    const lead = el.querySelector('.ov-lead')
+    expect(lead, 'the overview drew no lead region').not.toBeNull()
+    expect(lead!.tagName).toBe('SECTION')
+    expect(lead!.className, 'the lead went back to being a card').not.toContain('ctl-card')
+    expect(lead!.closest('.ctl-card'), 'the lead is nested inside a panel').toBeNull()
+  })
+
+  /**
+   * NO FIGURE ROW (archived issue 503). A "Running N agents · Units held N of 100" strip
+   * sat between the band and the cards; O1 has none. The band says how many
+   * hold capacity and the global pool is a row of Headroom's pool list, so
+   * each fact is drawn once.
+   *
+   * MUTATION: put the fact strip back.
+   */
+  it('draws the lead title once and no fact strip', async () => {
+    const el = await mountOverview()
+    expect([...el.querySelectorAll('h2')].filter((h) => text(h) === 'Needs a look')).toHaveLength(1)
+    expect(el.querySelector('.ctl-metrics'), 'the fact strip is back').toBeNull()
+  })
+
+  /**
+   * FIVE PANELS, IN O1'S ORDER: Running now beside Cost so far, Waiting, and
+   * why beside Headroom, then Recent failures across the column.
+   *
+   * MUTATION: add or drop a panel, or split Headroom into groups again.
+   */
+  it('holds six panels in O1’s order, the pools a row of their own (browser QA N17)', async () => {
+    const el = await mountOverview()
+    const panels = [...el.querySelectorAll('.ctl-card')].filter((c) => c.parentElement?.closest('.ctl-card') == null)
+    const titles = panels.map((p) => {
+      const clone = p.querySelector('.ctl-card-title')!.cloneNode(true) as HTMLElement
+      for (const n of [...clone.querySelectorAll('[data-help-description], button')]) n.remove()
+      return (clone.textContent ?? '').trim()
+    })
+    // IN DOCUMENT ORDER, BY COLUMN (U12 N17/D19, owner QA 2026-10-04): the
+    // left column stacks Running now and Waiting, the right Cost so far and
+    // Headroom, so no column is blank beside a taller card; Recent failures
+    // (visual QA VQ-006, 2026-10-26) and the pools are full-width rows under
+    // both. On a phone the sheet draws them in O1's order
+    // (qa.u12.overview.test.tsx).
+    expect(titles).toEqual(['Running now', 'Waiting, and why', 'Recent token cost', 'Headroom', 'Recent failures', 'Pools'])
+    expect(el.querySelectorAll('.ov-headroom .ov-group').length).toBe(0)
+  })
+})
+
+describe('§B6.1: a fact is not a tile', () => {
+  /**
+   * THE BORDER IS DECLARED ON ONE EDGE AND PAINTED ON NONE.
+   *
+   * §13.5 keeps the declared transparent border -- an absence state that
+   * ADDS a border would move every neighbour by a pixel at the moment the
+   * strip most needs to hold still. What this pass decided is which edge may
+   * ever be painted: a box around a fact says "this is an object", a rule
+   * under it says "there is something to say about this reading". Nothing
+   * healthy is ruled.
+   */
+  it('declares the border on the bottom edge alone', () => {
+    const rule = ruleFor('.ctl-metric')
+    expect(rule, '.ctl-metric declares no border colour').toMatch(/border-color:\s*transparent/)
+    const width = /border-width:\s*([^;]+);/.exec(rule)
+    expect(width, '.ctl-metric must declare its border widths explicitly').not.toBeNull()
+    // `0 0 1px` — top, sides zero; bottom reserved. Anything with a non-zero
+    // first or second value is a box again.
+    const parts = (width?.[1] ?? '').trim().split(/\s+/)
+    expect(parts.length, 'the widths are written as a four-value shorthand').toBe(3)
+    expect(parts[0], 'the top edge is reserved, so the fact is a box again').toBe('0')
+    expect(parts[1], 'the side edges are reserved, so the fact is a box again').toBe('0')
+    expect(parts[2]).toBe('1px')
+    // And no fill: a --surface patch on a --surface panel is either invisible
+    // or a box with a soft edge, and neither is a separation.
+    expect(rule).toMatch(/background:\s*none/)
+  })
+
+  /**
+   * THE TWO ABSENCES PAINT THAT ONE EDGE, AND ONLY THAT ONE.
+   *
+   * `is-absent` (hatched: the platform has no such figure) and `is-unread`
+   * (the read failed) are told apart by tone, but neither may be told apart
+   * from a healthy fact by tone alone -- the `.ctl-mark` beside the value
+   * carries the fill and the words. What is asserted here is that the rule
+   * they paint is a rule and not a box.
+   */
+  it('paints an absence as a rule under the fact, never as a box around it', () => {
+    for (const state of ['.ctl-metric.is-absent', '.ctl-metric.is-unread']) {
+      const rule = ruleFor(state)
+      expect(rule, `${state} draws nothing at all`).toMatch(/border-bottom-style:\s*dashed/)
+      expect(
+        /border-style:\s*dashed/.test(rule),
+        `${state} went back to a four-sided dashed box`,
+      ).toBe(false)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// What the cards say about what they link to and what they count
+// ---------------------------------------------------------------------------
+
+function liveTask(over: Partial<Task> = {}): Task {
+  return {
+    id: 'task_0123456789abcdef0123',
+    tenant_id: 'eng',
+    state: 'RUNNING',
+    runner_profile: 'claude-code',
+    resource_class: 'standard',
+    provider: 'anthropic',
+    priority: 5,
+    created_at: '2026-09-23T09:00:00Z',
+    updated_at: '2026-09-23T09:30:00Z',
+    started_at: '2026-09-23T09:01:00Z',
+    completed_at: null,
+    submitted_by: 'ada@eng.test',
+    attempt_count: 1,
+    max_attempts: 3,
+    park_reason: null,
+    blocked_by: null,
+    workflow_id: null,
+    step_id: null,
+    depends_on: null,
+    cancel_requested: false,
+    repository_url: null,
+    model: null,
+    timeout_seconds: 3600,
+    next_eligible_at: null,
+    metadata: null,
+    repository_ref: null,
+    input: null,
+    last_error: null,
+    result_summary: null,
+    latest_checkpoint: null,
+    current_generation: 1,
+    current_lease_id: 'lease_1',
+    ...over,
+  }
+}
+
+/**
+ * The label App.tsx's `SECTIONS` gives the tab a `#<section>/<tab>` hash
+ * opens, read out of the source. Null when the hash names no declared tab, so
+ * a link to nowhere fails here as well as in `nav.links.test.tsx`.
+ */
+function tabLabel(hash: string): string | null {
+  const tab = hash.replace(/^#/, '').split('/')[1]
+  if (tab === undefined) return null
+  const escaped = tab.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const decl = new RegExp(`\\{\\s*id:\\s*'${escaped}',\\s*label:\\s*'([^']+)'`).exec(APP_SOURCE)
+  return decl?.[1] ?? null
+}
+
+describe('a card says what it opens, and a count is not a verdict', () => {
+  /**
+   * OV-11. THE LINK WORD IS THE NAME OF WHAT IT OPENS.
+   *
+   * The Headroom card's link read `pools →` and opened Profile headroom -- a
+   * reader who wanted the Pools tab got a different one. Every card-head link
+   * is held to the label its destination tab carries in `SECTIONS`, DERIVED
+   * from App.tsx. The three that open a list on Agents name that list as O1
+   * draws them -- `All live`, `All waiting`, `All recent` -- because the tab
+   * is Agents and the list is the destination.
+   *
+   * MUTATION: put `cta="pools"` back on a link to `#capacity/profiles`.
+   */
+  it('names every card-head link after what it opens', async () => {
+    const el = await mountOverview()
+    const accounts = el.querySelector<HTMLAnchorElement>('.ov-headroom .ov-acc a.ov-link')
+    expect(accounts, 'the account line carries no link to LLM Providers').not.toBeNull()
+    expect(accounts!.getAttribute('href')).toBe('/capacity/llm-providers/plans')
+    const links = [...el.querySelectorAll<HTMLAnchorElement>('.ctl-card-head a.ov-link, .ov-acc a.ov-link')]
+    // A sweep that found no links would pass over the one that is wrong.
+    expect(links.length, 'no card-head link was found, so nothing was checked').toBeGreaterThanOrEqual(6)
+    for (const a of links) {
+      // The card links are paths now (browser QA, 2026-10-04); the tab they
+      // open is the address the router reads them as.
+      const path = a.getAttribute('href') ?? ''
+      const [pathname, search = ''] = path.split('?')
+      const href = `#${pathToAddress(pathname!, search)?.address ?? path}`
+      const label = tabLabel(href)
+      expect(label, `${href} names no tab declared in App.tsx SECTIONS`).not.toBeNull()
+      // A BUTTON IN THE THEME'S STYLE, NEVER AN ARROW LINK (the owner's standing rule, 2026-11-05).
+      // MUTATION: put `&rarr;` back after CardHead's `cta`, or draw it with `ctl-link` alone.
+      expect(a.textContent ?? '', `the link to ${href} still carries an arrow`).not.toContain('→')
+      expect(a.classList.contains('c-btn'), `the link to ${href} is not drawn as a button`).toBe(true)
+      const word = (a.textContent ?? '').trim().toLowerCase()
+      const list = /^#work\/running(?:\/(live|waiting|recent))?/.exec(href)
+      const want = list ? `all ${list[1] ?? 'live'}` : label!.toLowerCase()
+      expect(word, `the link to ${href} reads "${word}", not "${want}"`).toBe(want)
+    }
+  })
+
+  /**
+   * OV-5. A RUNNING COUNT CARRIES NO VERDICT TONE. Five agents holding
+   * capacity is neither good nor bad (design-system.md §6.7).
+   *
+   * MUTATION: give the band's figure a tone class.
+   */
+  it('draws a non-zero holding count with no verdict tone', async () => {
+    const el = await mountOverview({
+      tasks: { tasks: [liveTask()], next_page_token: null },
+      stats: { ...EMPTY_STATS, tasks_by_state: { RUNNING: 5, LEASED: 0, DISPATCHED: 0, STARTING: 0 } },
+    })
+    const cell = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-k')) === 'Holding capacity')
+    expect(cell, 'the Holding figure is not in the band').toBeDefined()
+    const figure = cell!.querySelector('.ov-lc-n')!
+    expect(text(figure)).toBe('5')
+    expect(figure.className, 'a running count is painted as a verdict').toBe('ov-lc-n')
+  })
+
+  /**
+   * AG-3. A CELL THAT HOLDS NO RUN DOES NOT CLAIM RUN TIME.
+   *
+   * O1 heads the column "Runtime". A LEASED task has no `started_at` -- the
+   * worker writes it on DISPATCHED -> STARTING -- so its cell under that head
+   * is `elapsed()`'s state word alone: no duration, never the task's age
+   * read as time held in the lease.
+   *
+   * MUTATION: print the task's age in a not-started row's Runtime cell.
+   */
+  // BROWSER QA N6 (owner, 2026-10-04): the state word here repeated the
+  // State column. A not-started row is timed from its lease, and with no
+  // lease read it is a dash that says so -- still never the task's age.
+  it('prints a not-started agent’s Runtime as a dash when no lease dates it, never a duration or the state word', async () => {
+    const leased = liveTask({ id: 'task_leased00000000000000', state: 'LEASED', started_at: null })
+    const el = await mountOverview({
+      tasks: { tasks: [leased], next_page_token: null },
+      stats: { ...EMPTY_STATS, tasks_by_state: { LEASED: 1 } },
+    })
+    const table = el.querySelector('.ov-running table')
+    expect(table, 'the running table is not drawn for a leased agent').not.toBeNull()
+    const heads = [...table!.querySelectorAll('thead th')].map((th) => (th.textContent ?? '').trim())
+    const at = heads.indexOf('Runtime')
+    expect(at, 'the running table has no Runtime column').toBeGreaterThan(-1)
+    const cell = [...table!.querySelector('tbody tr')!.children][at]!
+    expect(cell.textContent ?? '').not.toBe(elapsed(leased, Date.now()).text)
+    expect(cell.querySelector('.c-dash')?.getAttribute('title') ?? '').toMatch(/lease/)
+    expect(cell.textContent ?? '', 'a not-started row claims a duration').not.toMatch(/\d/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The 2026-09-25 QA decisions (epic archived issue 81). Each test names its box, and the
+// mutation that turns it red is in its docstring.
+// ---------------------------------------------------------------------------
+
+type Reads = Partial<Record<keyof typeof api, Result<unknown> | Promise<Result<unknown>>>>
+
+/** A read that never lands: the request is in flight for the whole test. */
+function never<T>(): Promise<Result<T>> {
+  return new Promise(() => {})
+}
+
+/** Every read landed and healthy, then whichever the test overrides. */
+async function mountWith(reads: Reads = {}): Promise<HTMLElement> {
+  api.loadCapacity.mockResolvedValue(ok(CAPACITY))
+  api.loadTasks.mockResolvedValue(ok(EMPTY_TASKS))
+  api.loadLeases.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadProviders.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadWorkflows.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadStats.mockResolvedValue(ok(EMPTY_STATS))
+  api.loadAccountPool.mockResolvedValue(ok(accountsPage([account({})])))
+  api.loadSpend.mockResolvedValue(ok(spend()))
+  for (const [name, result] of Object.entries(reads)) {
+    const fn = api[name as keyof typeof api]
+    if (result instanceof Promise) fn.mockReturnValue(result)
+    else fn.mockResolvedValue(result)
+  }
+  const { container } = render(<OverviewScreen />)
+  await settle()
+  return container
+}
+
+const text = (n: Element | null | undefined): string => (n?.textContent ?? '').replace(/\s+/g, ' ').trim()
+
+/** An account with a current reading of its five-hour window, `used` of 1. */
+function reading(label: string, used: number, over: Partial<Account> = {}): Account {
+  return account({
+    account_id: `eng:${label}`,
+    label,
+    observed_at: new Date().toISOString(),
+    windows: { five_hour: { utilization: used, resets_at: '2099-01-01T00:00:00Z', reset: false } },
+    ...over,
+  })
+}
+
+/** One pool and one profile bound by it, so the profile group draws a row and a foot. */
+const CAPACITY_ONE: Capacity = {
+  pools: [
+    {
+      name: 'global',
+      hard_limit: 4,
+      adaptive_target: null,
+      quota_derived_limit: null,
+      effective_limit: 4,
+      active: 1,
+      available: 3,
+      enabled: true,
+      updated_at: '2026-09-23T10:00:00Z',
+    },
+  ],
+  runner_profiles: {
+    'claude-code': {
+      resource_class: 'standard',
+      backend: 'cloudrun',
+      provider: 'anthropic',
+      units: 1,
+      pools: ['global'],
+      admission: {
+        units: 1,
+        headroom: 3,
+        basis: 'measured',
+        blockers: [],
+        binding: ['global'],
+        counterfactual: [],
+        complete: true,
+        unread: [],
+        uncapped: [],
+      },
+    },
+  },
+  tenant_id: 'eng',
+  generated_at: '2026-09-23T10:00:00Z',
+}
+
+describe('O1: the account line names the best account in % used, and says what it covers', () => {
+  /**
+   * OV-1 holds in the one-line form: the figure is % USED of the best usable
+   * account's binding window, named, never `% left`; and OV-2's coverage is
+   * the `N of M usable` that leads the line, with the accounts that are not
+   * in it named in its accessible name.
+   *
+   * MUTATION: print `100 - pct`, or count an unpolled account as usable.
+   */
+  it('prints the best account as % used and names it', async () => {
+    const el = await mountWith({
+      loadAccountPool: ok(accountsPage([reading('laptop', 0.28), reading('desk', 0.74)])),
+    })
+    const line = [...el.querySelector('.ov-headroom .ov-acc')!.children].map(text).join(' ')
+    expect(line).toMatch(/^2 of 2 usable best laptop at 28% of its five-hour window/)
+    expect(text(el), 'a figure on the screen still reads as % left').not.toMatch(/% left/)
+  })
+
+  it('leaves an unpolled account out of the usable count, and names it', async () => {
+    const el = await mountWith({
+      loadAccountPool: ok(accountsPage([reading('laptop', 0.28), account({ account_id: 'eng:never', label: 'never' })])),
+    })
+    const lead = el.querySelector('.ov-headroom .ov-acc > span')!
+    expect(text(lead)).toBe('1 of 2 usable')
+    expect(lead.getAttribute('aria-label') ?? '').toMatch(/never has no reading/)
+  })
+
+  it('draws an em dash, never 0%, when no account has a current reading', async () => {
+    const el = await mountWith({ loadAccountPool: ok(accountsPage([account({ account_id: 'eng:never', label: 'never' })])) })
+    const line = [...el.querySelector('.ov-headroom .ov-acc')!.children].map(text).join(' ')
+    expect(line).toMatch(/^0 of 1 usable — no current reading/)
+    expect(line).not.toMatch(/0%/)
+  })
+
+  /**
+   * OV-12. A FACT IS DRAWN AT THE FIGURE STEP ONCE.
+   *
+   * MUTATION: restore a spend tile beside the card.
+   */
+  it('draws the spend figure at the figure step exactly once', async () => {
+    const el = await mountWith({
+      loadAccountPool: ok(accountsPage([reading('laptop', 0.28)])),
+      loadSpend: ok(spend({ tasksWithAttempts: 3, tasksSampled: 3, attempts: 3, attemptsWithCost: 3, costUsd: 1.25 })),
+    })
+    const figures = [...el.querySelectorAll('.ov-figure, .ov-lc-n, .ctl-metric-value')].map(text)
+    // `$1.25`, not `$1.2500`: the headline keeps two decimals at every size (archived issue 97).
+    expect(figures.filter((f) => f.includes('$1.25')), 'the spend figure is drawn twice').toHaveLength(1)
+  })
+})
+
+describe('OV-4, OV-14: the spend figure is a partial sum, and its foot is a run of clauses', () => {
+  /**
+   * OV-4. The sum is the 12 newest tasks that have run, drawn as a total, with
+   * `tasksWithAttempts` never rendered. It keeps the client-side sum and now
+   * carries the partial mark and names what it covers.
+   *
+   * OV-14. The foot's clauses are separate nowrap elements in the decided
+   * order -- what the sum covers, the holes in it, then how old it is -- and
+   * no `·` is typed anywhere in a foot: CSS draws it, so a separator never
+   * ends or begins a line. HOW OLD IT IS is said only once the sum is stale
+   * (archived issue 98, owner ruling 2026-10-07: `from 6 min ago` past `AGED_AFTER_MS` or
+   * after a failed refresh); a fresh sum's age is the head's refresh
+   * control's, so a fresh foot has no age clause at all.
+   *
+   * MUTATION: drop the mark, drop the coverage clause, reorder the clauses,
+   * print a fresh age in the foot, drop the stale age, or type a ' · ' back
+   * into any foot.
+   */
+  it('marks the sum partial, names its coverage first, and types no separator in any foot', async () => {
+    const el = await mountWith({
+      loadCapacity: ok(CAPACITY_ONE),
+      loadTasks: ok({ tasks: [liveTask()], next_page_token: null, tenant_id: 'eng' }),
+      loadStats: ok({ ...EMPTY_STATS, tasks_by_state: { RUNNING: 1 } }),
+      loadAccountPool: ok(accountsPage([reading('laptop', 0.28)])),
+      loadSpend: ok(
+        spend({
+          tasksOnPage: 60,
+          tasksWithAttempts: 40,
+          tasksSampled: 12,
+          attempts: 31,
+          attemptsWithCost: 29,
+          failedReads: 1,
+          failedDetail: 'HTTP 503',
+          costUsd: 1.25,
+        }),
+      ),
+    })
+    const card = el.querySelector('.ov-spend')!
+    const mark = card.querySelector('.ctl-mark.is-partial')
+    expect(mark, 'the spend sum is drawn as a total').not.toBeNull()
+    expect(mark!.getAttribute('aria-label') ?? '').toMatch(/12 newest of 40/)
+
+    const run = card.querySelector('.ov-foot .ctl-foot-run')
+    expect(run, 'the spend foot is not a run of clauses').not.toBeNull()
+    const clauses = [...run!.children].map(text)
+    // VOCAB-AGENTS (QA-109, part of archived issue 1680): the sample counts agents.
+    // MUTATION: put back `countOf(s.tasksWithAttempts, 'task')` in SpendBody.
+    expect(clauses).toEqual([
+      '31 attempts, 12 newest of 40 agents',
+      // ITS OWN CLAUSE (QA1B-06 review): inside the first span it could not
+      // wrap (every `.ctl-foot-run > *` is nowrap) and was cut off at 390 and 1440.
+      // MUTATION: append it inside the coverage clause's span again.
+      // overview-agents-09 (pass 2): the window is the page less the agents
+      // holding capacity, and the clause names it.
+      // MUTATION: drop 'that hold no capacity' from SpendBody's clause.
+      'that have run (of the 60 newest read that hold no capacity)',
+      '2 unmeasured',
+      '1 of 12 reads failed',
+      // No age clause: the sum is fresh, and a fresh age is the head's (archived issue 98).
+      // Plain words, not `no re-poll` (archived issue 97): the sum moves on a press of
+      // refresh and on nothing else.
+      'updates only on refresh',
+    ])
+
+    const feet = [...el.querySelectorAll('.ov-foot')]
+    // The three feet that join clauses -- Headroom's pools, Running and
+    // Spend -- are drawn by this fixture. A sweep over none is not a clean
+    // sweep.
+    expect(feet.length, 'the fixture drew too few feet to check').toBeGreaterThanOrEqual(3)
+    for (const foot of feet) {
+      expect(foot.textContent ?? '', `a foot still types its separator: "${text(foot)}"`).not.toContain('·')
+      expect(foot.querySelector('.ctl-foot-run'), `a foot is not a run of clauses: "${text(foot)}"`).not.toBeNull()
+    }
+  })
+
+  it('says how old the sum is once it is stale, after the holes and before how it moves', async () => {
+    const el = await mountWith({
+      loadSpend: okFrom(spend({ tasksWithAttempts: 40, tasksSampled: 12, attempts: 31, attemptsWithCost: 31 }), 6 * 60_000),
+    })
+    const run = el.querySelector('.ov-spend .ov-foot .ctl-foot-run')
+    expect(run, 'the spend foot is not a run of clauses').not.toBeNull()
+    expect([...run!.children].map(text)).toEqual(['31 attempts, 12 newest of 40 agents', 'from 6 min ago', 'updates only on refresh'])
+  })
+})
+
+
+describe('OV-9: while the checks read, the lead says so and draws no figure', () => {
+  /**
+   * The lead drew the "could not run" hatch and `0 open` while its reads were
+   * still in flight, and the head printed `scope —` for a tenant id that had
+   * not arrived. (The tenant is now in the count note under the head, archived issue 138.) Pending is its own picture: the kit's pending mark, no
+   * count, no card; the partial mark waits for a read that failed.
+   *
+   * MUTATION: fall through to the check cards or the partial mark while a
+   * check reads.
+   */
+  it('draws a skeleton card, no count and no partial mark, and says the tenant is reading', async () => {
+    const el = await mountWith({ loadStats: never(), loadTasks: never() })
+    const lead = el.querySelector('#ov-needs')!
+    // A SKELETON OF THE CHECK CARD, not the pending mark's dashed box
+    // (walkthrough F, 2026-10-03): still pending, still no count.
+    expect(lead.querySelector('.ov-atts[aria-busy="true"] .ov-att.is-skel'), 'the lead carries no skeleton').not.toBeNull()
+    expect(lead.querySelector('.ctl-mark.is-partial'), 'a read in flight drew the partial mark').toBeNull()
+    expect(lead.querySelectorAll('.ov-att:not(.is-skel)').length, 'a check card was drawn before the checks ran').toBe(0)
+    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^\d+ of \d+ checks still reading$/)
+    const note = el.querySelector('.ov-page > .c-phead + .c-count-note')
+    expect(note, 'the tenant and reads tally are not the note under the head').not.toBeNull()
+    expect(text(note!.querySelector('.ov-reading')), 'the tenant reads as missing while it is in flight').toBe('workspace reading…')
+    expect(text(note)).not.toMatch(/workspace —/)
+  })
+
+  /** MUTATION: drop the partial mark, or the blind count, for a check that could not run. */
+  it('marks the lead partial once a read has failed, and not before', async () => {
+    const el = await mountWith({
+      loadStats: { status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } },
+      loadAccountPool: ok(accountsPage([reading('fine', 0.1)])),
+    })
+    const lead = el.querySelector('#ov-needs')!
+    expect(lead.querySelector('.ctl-mark.is-pending')).toBeNull()
+    const mark = lead.querySelector('.ctl-mark.is-partial')
+    expect(mark, 'a failed check did not mark the lead partial').not.toBeNull()
+    expect(mark!.getAttribute('aria-label') ?? '').toMatch(/could not run/)
+    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/· 1 blind$/)
+    // Nothing else is open, so the all-clear is a PARTIAL one, named so.
+    expect(text(lead.querySelector('.ctl-empty h3'))).toMatch(/1 not checked/)
+  })
+
+  /**
+   * THE SQUARED DASHED SIDE IS THE ACCOUNTS SECTION'S, NOT EVERY SCREEN'S
+   * (QA-049, the owner's choice of 2026-10-20). Off Accounts and Provider
+   * quota, the partial mark keeps the rounded corners it had before
+   * QAFIX-CAPACITY squared them in the shared rule.
+   */
+  it('draws the lead\'s partial mark with its original rounded corners', async () => {
+    const el = await mountWith({
+      loadStats: { status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } },
+      loadAccountPool: ok(accountsPage([reading('fine', 0.1)])),
+    })
+    const mark = el.querySelector('#ov-needs')!.querySelector<HTMLElement>('.ctl-mark.is-partial')!
+    // One even edge off Accounts (visual QA run 6, box 6343768697, part of
+    // archived issue 1680): the dashed right side drew as a bracket off the pill.
+    expect(painted(mark, ['border-right-style', 'border-style', 'border'], { width: 1440 })).toBe('1px solid currentColor')
+    for (const corner of ['border-top-right-radius', 'border-bottom-right-radius']) {
+      // MUTATION: square the corners in the shared `.ctl-mark.is-partial` rule
+      // again -- every partial mark on every screen loses its rounded side.
+      expect(painted(mark, [corner, 'border-radius'], { width: 1440 }), corner).toBe('var(--ctl-radius-sm)')
+    }
+  })
+
+  /**
+   * A HEALTHY READ IS A REAL ALL-CLEAR, and an open check is a card: the
+   * count is the problems found -- one per card (visual QA QA-013) -- not
+   * the checks that ran, which follow it as a share of all of them (VQ-004).
+   *
+   * MUTATION: count the checks that ran as open.
+   */
+  it('counts the open checks, not the ones that ran', async () => {
+    const failedTask = liveTask({ id: 'task_failed0000000000000', state: 'FAILED', started_at: null })
+    const el = await mountWith({
+      loadTasks: ok({ tasks: [failedTask], next_page_token: null, tenant_id: 'eng' }),
+      loadAccountPool: ok(accountsPage([reading('fine', 0.1)])),
+    })
+    const lead = el.querySelector('#ov-needs')!
+    expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^1 problem · (\d+) of \1 checks ran$/)
+    expect(lead.querySelectorAll('.ov-att:not(.is-skel)').length).toBeGreaterThan(0)
+    expect(lead.querySelector('.ctl-mark.is-partial')).toBeNull()
+  })
+})
+
+describe('OV-16: the running count re-reads every 60 seconds and says how old it is', () => {
+  /**
+   * `/v1/stats` re-read only on a manual refresh, while its comment said it
+   * was on the 20-second poll, and "created before this page begins" reasoned
+   * from a count of unknown age. The owner set its cadence at 60 seconds; the
+   * age is beside the figure and in the sentence that reasons from it.
+   *
+   * `usePoll` (archived issue 168) schedules with `setTimeout`, re-armed per tick, rather
+   * than `setInterval` -- it has to pause while `document.hidden` and finish
+   * the wait it was part-way through on return, which a restarted interval
+   * cannot do without the same due-time bookkeeping. It always schedules its
+   * REGULAR tick as `setTimeout(fire, ms)` with the literal `ms`, so spying
+   * on `setTimeout` and keying on that value still tells the 60 s stats timer
+   * apart from the 20 s poll.
+   *
+   * THE AGE IS SAID ONLY WHEN STALE (archived issue 98, owner ruling 2026-10-07): a fresh
+   * count's age is the head's refresh control's (`⟳ every 20 s · read 4 s
+   * ago`), so the tile foot is silent while fresh and reads `counted from 6
+   * min ago` once the count is older than `AGED_AFTER_MS` or a refresh of it
+   * failed; the Running card's sentence says the same `from … ago`.
+   *
+   * MUTATION: put stats back on the manual cadence, or on the 20s poll, or
+   * print a fresh age, or drop either stale age.
+   */
+  it('re-reads /v1/stats on a 60-second timer and not on the 20-second one', async () => {
+    const spy = vi.spyOn(globalThis, 'setTimeout')
+    try {
+      await mountWith()
+      const timers = spy.mock.calls.map((c) => ({ fn: c[0] as unknown as () => void, ms: c[1] }))
+      const minute = timers.filter((t) => t.ms === 60_000)
+      expect(minute.length, 'nothing re-reads /v1/stats on a 60-second timer').toBeGreaterThan(0)
+      const before = api.loadStats.mock.calls.length
+      await act(async () => {
+        for (const t of minute) t.fn()
+      })
+      await settle()
+      expect(api.loadStats.mock.calls.length, 'the 60-second timer did not re-read /v1/stats').toBeGreaterThan(before)
+
+      expect(OVERVIEW_POLL_MS, 'the Overview cadence moved off 20 s').toBe(20_000)
+      const poll = timers.filter((t) => t.ms === OVERVIEW_POLL_MS)
+      expect(poll.length, 'the 20-second poll is gone').toBeGreaterThan(0)
+      const mid = api.loadStats.mock.calls.length
+      await act(async () => {
+        for (const t of poll) t.fn()
+      })
+      await settle()
+      expect(api.loadStats.mock.calls.length, 'the 20-second poll re-read /v1/stats').toBe(mid)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('is silent about a fresh count’s age, and shows it in the head as every 20 s', async () => {
+    const el = await mountWith({ loadStats: ok({ ...EMPTY_STATS, tasks_by_state: { RUNNING: 3 } }) })
+    const holding = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-k')) === 'Holding capacity')
+    expect(holding, 'the band has no Holding capacity figure').toBeDefined()
+    expect(holding!.querySelector('.ov-lc-foot'), 'a fresh count prints its age in the tile').toBeNull()
+    // The fresh age is the head's one age, on the control that renews it.
+    expect(text(el.querySelector('.ov-page > .c-phead .c-acts .c-refresh'))).toMatch(/every 20 s · read \d+ s ago$/)
+
+    // No row on the page is running while the counts say 3: the sentence
+    // that explains the gap still reasons from the 3, and prints no fresh age.
+    const mark = el.querySelector('.ov-running .ctl-empty .ctl-mark')
+    expect(mark, 'the Running card drew no empty state').not.toBeNull()
+    const say = mark!.getAttribute('aria-label') ?? ''
+    expect(say).toMatch(/The state counts say 3;/)
+    expect(say, 'a fresh count claimed an unknown age').not.toMatch(/unknown time|ago/)
+  })
+
+  it('prints counted from N min ago once the count is older than five minutes', async () => {
+    const el = await mountWith({
+      loadStats: okFrom({ ...EMPTY_STATS, tasks_by_state: { RUNNING: 3 } }, 6 * 60_000),
+    })
+    const holding = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-k')) === 'Holding capacity')
+    expect(holding, 'the band has no Holding capacity figure').toBeDefined()
+    expect(text(holding!.querySelector('.ov-lc-foot'))).toBe('counted from 6 min ago')
+    const mark = el.querySelector('.ov-running .ctl-empty .ctl-mark')
+    expect(mark, 'the Running card drew no empty state').not.toBeNull()
+    expect(mark!.getAttribute('aria-label') ?? '').toMatch(/state counts, from 6 min ago, say 3;/)
+  })
+
+  it('prints counted from … ago after a failed refresh, however young the count', async () => {
+    const el = await mountWith({
+      loadStats: {
+        status: 'stale',
+        data: { ...EMPTY_STATS, tasks_by_state: { RUNNING: 3 } },
+        fetchedAt: Date.now() - 40_000,
+        error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' },
+      },
+    })
+    const holding = [...el.querySelectorAll('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-k')) === 'Holding capacity')
+    expect(holding, 'the band has no Holding capacity figure').toBeDefined()
+    expect(text(holding!.querySelector('.ov-lc-foot'))).toMatch(/^counted from 4\d s ago$/)
+  })
+})
+
+describe('#227: usePoll leaves nothing behind when the Overview unmounts', () => {
+  /**
+   * `usePoll` (archived pull request 249) arms a `setTimeout` per poll and a `visibilitychange`
+   * listener on `document`. A screen the reader has left that still re-reads
+   * every 20 and 60 seconds is load on the API for nobody, and a listener left
+   * on `document` re-arms that timer every time the tab comes back.
+   *
+   * Fake timers from before the mount, so the timers `usePoll` arms are ones
+   * this test can run to completion after the unmount; `shouldAdvanceTime`
+   * so `settle()` still lets the reads land.
+   *
+   * MUTATION: drop `disarm()` from usePoll's cleanup (a timer is still
+   * pending), or drop the `removeEventListener` (the listener is left behind).
+   */
+  it('fires no timer and keeps no visibilitychange listener after unmount', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] })
+    const added = vi.spyOn(document, 'addEventListener')
+    const removed = vi.spyOn(document, 'removeEventListener')
+    try {
+      await mountWith()
+      const listeners = added.mock.calls.filter((c) => c[0] === 'visibilitychange').map((c) => c[1])
+      expect(listeners.length, 'the Overview armed no visibilitychange listener; this check is vacuous').toBeGreaterThanOrEqual(2)
+      // The control: while mounted, the 60-second timer does re-read.
+      const mounted = api.loadStats.mock.calls.length
+      await act(async () => {
+        vi.advanceTimersByTime(60_000)
+      })
+      await settle()
+      expect(api.loadStats.mock.calls.length, 'the poll never fired while mounted; this check is vacuous').toBeGreaterThan(
+        mounted,
+      )
+
+      cleanup()
+      // THE TIMERS THEMSELVES, not only their effect: a tick that fires after
+      // unmount calls `setState` on a dead component and re-reads nothing, so
+      // counting reads alone cannot see an armed timer. Every timer the
+      // Overview armed is cleared by its unmount; `settle()` is between calls.
+      expect(vi.getTimerCount(), 'a timer the Overview armed is still pending after unmount').toBe(0)
+      const reads = () => Object.values(api).reduce((n, fn) => n + fn.mock.calls.length, 0)
+      const before = reads()
+      await act(async () => {
+        vi.advanceTimersByTime(5 * 60_000)
+        document.dispatchEvent(new Event('visibilitychange'))
+        vi.advanceTimersByTime(5 * 60_000)
+      })
+      await settle()
+      expect(reads(), 'a poll fired after the Overview unmounted').toBe(before)
+
+      const gone = removed.mock.calls.filter((c) => c[0] === 'visibilitychange').map((c) => c[1])
+      for (const fn of listeners) {
+        expect(gone, 'a visibilitychange listener outlived the Overview').toContain(fn)
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('OV-10: the failures figure and the failed-agents list count one population', () => {
+  /** `phoneWidth()` reads `matchMedia`, which jsdom does not have. */
+  function media(phone: boolean): void {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: phone && query.includes('560'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }))
+  }
+
+  /**
+   * THE DECISION'S GUARANTEE, AT PHONE WIDTH. The failures item's figure and
+   * the list its link opens "describe the same population" because the list
+   * filters client-side over the same task read the check counts. Since archived pull request 152
+   * the agent list reads the 50-row phone page at 560px and under (§2.5, and
+   * `drawer.reread.test.tsx` pins it at 50), while the Overview kept counting
+   * over 200 -- so "7 failed among the 200 most recent" could open a list
+   * reading "nothing failed in recent". The Overview's task read is the list's
+   * page at every width now, and the headline's N says which. Since live QA
+   * CH-4 (2026-10-11) that page is 200 rows on a phone too
+   * (`PHONE_PAGE_LIMIT` is `TASK_PAGE_LIMIT`; `drawer.reread.test.tsx` pins
+   * the list at 200), so both still read one page.
+   *
+   * MUTATION: read a page other than the list's on a phone.
+   */
+  it('reads the phone page at phone width, the page the agent list reads', async () => {
+    media(true)
+    api.loadTasks.mockClear()
+    await mountWith()
+    const limits = api.loadTasks.mock.calls.map((c) => c[0] as unknown)
+    expect(limits.length, 'the Overview made no task read').toBeGreaterThan(0)
+    expect(limits.filter((l) => l !== 200), 'a phone Overview counted over a page the list does not read').toEqual([])
+  })
+
+  /**
+   * The control: a wide screen reads the full page, as the list does -- and
+   * NAMES it (archived issue 168). A bare `loadTasks()` took the api's default, so the page
+   * this screen counts over was decided in another file.
+   *
+   * MUTATION: call `loadTasks()` with no argument on a wide screen.
+   */
+  it('reads the full page on a wide screen, and asks for it by number', async () => {
+    media(false)
+    api.loadTasks.mockClear()
+    await mountWith()
+    const limits = api.loadTasks.mock.calls.map((c) => c[0] as unknown)
+    expect(limits.length).toBeGreaterThan(0)
+    expect(limits.filter((l) => l !== 200), 'a wide Overview did not ask for the 200-row page').toEqual([])
+  })
+})
+
+describe('VOCAB-AGENTS (QA-109, part of #1680): Running now and Spend name their empty and unread states by agents', () => {
+  const empty = { status: 'empty' as const, fetchedAt: Date.now() }
+  const broken = { status: 'error' as const, error: { kind: 'server_error' as const, httpStatus: 503, code: null, message: 'boom' } }
+
+  it('says "Agent list unread" on Running now, and "Spend unassembled" over the agent list, when the list fails', async () => {
+    const el = await mountWith({ loadTasks: broken, loadSpend: broken })
+    // MUTATION: put back `heading="Task list unread"` in RunningCard.
+    expect(text(el.querySelector('.ov-running .ctl-empty h3'))).toContain('Agent list unread')
+    expect(text(el.querySelector('.ov-spend .ctl-empty h3'))).toContain('Spend unassembled')
+    // MUTATION: put back `the most recent tasks, and the task list itself` in SpendBody.
+    expect(el.querySelector('.ov-spend .ctl-empty .ctl-mark')?.getAttribute('aria-label')).toContain('Spend is summed from the attempts of the most recent agents, and the agent list itself could not be read.')
+  })
+
+  it('says "No agent exists" on both cards for a tenant with no agents', async () => {
+    const el = await mountWith({ loadTasks: empty, loadSpend: empty })
+    // MUTATION: put back `heading="No task exists"` in RunningCard.
+    expect(text(el.querySelector('.ov-running .ctl-empty h3'))).toContain('No agent exists')
+    // MUTATION: put back `heading="No task exists"` in SpendBody.
+    expect(text(el.querySelector('.ov-spend .ctl-empty h3'))).toContain('No agent exists')
+  })
+
+  it('says "No agent has run" on Spend when the agents on the page have no attempt', async () => {
+    const el = await mountWith({ loadSpend: empty })
+    // MUTATION: put back `heading="No task has run"` in SpendBody.
+    expect(text(el.querySelector('.ov-spend .ctl-empty h3'))).toContain('No agent has run')
+    expect(el.querySelector('.ov-spend .ctl-empty .ctl-mark')?.getAttribute('aria-label')).toContain('Every agent on the page has an attempt count of 0')
+  })
+})

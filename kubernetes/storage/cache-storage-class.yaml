@@ -1,0 +1,75 @@
+# The class of every GKE worker pod's `cache` volume (CACHE-PVC, owner decision
+# 2026-10-15 ~04:00 PDT, "Network-disk cache").
+#
+# WHY A NETWORK DISK. The agent's tool caches and TMPDIR had a 2 GiB local
+# emptyDir of their own (CACHE-SCRATCH), and task_247c87a8714c4977921a was
+# evicted on it twice (`EmptyDir volume "cache" exceeds 2Gi`). Autopilot caps a
+# pod's ephemeral storage at 10 GiB and the local split was already 10, so the
+# cache became a 20 GiB generic ephemeral volume on this class: a PVC the
+# ephemeral-volume controller creates with the pod and deletes with it. It is
+# not ephemeral-storage, so a full cache is ENOSPC in the tool that filled it,
+# not an eviction. Size, mount and access mode are the dispatcher's
+# (CACHE_STORAGE_CLASS, CACHE_VOLUME_GIB in apps/scheduler/scheduler/dispatch.py).
+#
+# WHY THIS REPOSITORY ADDS ONE. Nothing in terraform/ or kubernetes/ defined a
+# StorageClass. Autopilot ships `standard-rwo`, which is pd-balanced too, but
+# its parameters are Google's to change and nothing here would notice; the
+# tenant quota holds every class but this one to zero claims.
+#
+#   pd-balanced            -- SSD-backed, the cheapest class that is not a
+#                             spinning pd-standard under `npm install`.
+#   reclaimPolicy: Delete  -- the disk goes when the claim goes, which is when
+#                             the pod goes: a cache never outlives its run.
+#   WaitForFirstConsumer   -- the disk is made in the zone the pod was
+#                             scheduled into, not a zone Autopilot then has to
+#                             chase. It is also why the attach is on the
+#                             start-up path: docs/browser-startup-speed.md.
+#
+#   csi.storage.k8s.io/fstype: xfs
+#                          -- #4061. Without it the driver formats ext4 at one
+#                             inode per 16 KiB: 1,310,720 on a 20 GiB disk, and a
+#                             run of small files used every one with 14 GB
+#                             free, so every create failed ENOSPC while `df -h`
+#                             showed room. xfs allocates inodes as files are
+#                             made, so the disk runs out of space first.
+#
+# Cluster-scoped, applied by `kubernetes/apply.sh --policies` (render.py
+# POLICY_FILES). Its parameters are immutable once created: a change is a new
+# class name in CACHE_STORAGE_CLASS, never an edit to an applied class. So the
+# xfs class is a new name, and the ext4 one it replaced is the second document,
+# unchanged, applied until no running pod holds a claim on it
+# (RETIRED_CACHE_STORAGE_CLASS); nothing new is created on it.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: __CACHE_STORAGE_CLASS__
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: pd-balanced
+  csi.storage.k8s.io/fstype: xfs
+  # GCE labels on each disk the class provisions, so a leaked one is
+  # attributable in the project's disk list.
+  labels: managed-by=swarm-scheduler,swarm-volume=agent-cache
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: false
+---
+# The retired ext4 class, exactly as it was first applied (an apply of
+# different parameters under its name is refused).
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: __RETIRED_CACHE_STORAGE_CLASS__
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+provisioner: pd.csi.storage.gke.io
+parameters:
+  type: pd-balanced
+  labels: managed-by=swarm-scheduler,swarm-volume=agent-cache
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: false

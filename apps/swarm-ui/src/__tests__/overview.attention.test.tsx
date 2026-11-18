@@ -1,0 +1,341 @@
+// OVERVIEW, WAVE 3 (lane B27): archived issue 89, archived issue 90, archived issue 91, archived issue 92, archived issue 93, and archived issue 168's pin.
+//
+// Five issues filed against the old console, each re-checked against the
+// "Lead and ledger" Overview (archived pull request 432) and built only where it was still missing:
+//
+//   archived issue 89  Account headroom cut its own headline's account and the busy one.
+//   archived issue 90  The failed-task item named no workflow; Running rows named none.
+//   archived issue 91  The waiting backlog never reached the figure strip.
+//   archived issue 92  "2 workers silent" named nobody, and the failed item had no age.
+//   archived issue 93  The Running card cut a handful of agents to four.
+//   archived issue 168 Already built (OV-10 and `overview.glance.test.tsx`); pinned there.
+//
+// Each test names the mutation that turns it red.
+
+import { describe, expect, it, vi } from 'vitest'
+import { render } from '@testing-library/react'
+
+import type { Result } from '../fetch'
+import type { SpendRollup } from '../api'
+import type { Account, AccountsPage, Capacity, LeasePage, LeaseRow, Stats, Task, TaskPage } from '../types'
+import { task } from './runfixture'
+
+const api = vi.hoisted(() => ({
+  loadCapacity: vi.fn(),
+  loadTasks: vi.fn(),
+  loadLeases: vi.fn(),
+  loadProviders: vi.fn(),
+  loadAccountPool: vi.fn(),
+  loadWorkflows: vi.fn(),
+  loadStats: vi.fn(),
+  loadSpend: vi.fn(),
+}))
+vi.mock('../api', () => ({ ...api, TASK_PAGE_LIMIT: 200 }))
+
+const { OverviewScreen } = await import('../Overview')
+
+function ok<T>(data: T): Result<T> {
+  return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-09-23T10:00:00Z' }
+}
+
+const text = (n: Element | null | undefined): string => (n?.textContent ?? '').replace(/\s+/g, ' ').trim()
+
+const MIN = 60_000
+const ago = (m: number): string => new Date(Date.now() - m * MIN).toISOString()
+
+function account(label: string, used: number, over: Partial<Account> = {}): Account {
+  return {
+    account_id: `eng:${label}`,
+    owner_tenant: 'eng',
+    label,
+    provider: 'anthropic-subscription',
+    state: 'AVAILABLE',
+    reason: '',
+    lend_to: [],
+    assigned: 0,
+    windows: { five_hour: { utilization: used, resets_at: '2099-01-01T00:00:00Z', reset: false } },
+    observed_at: new Date().toISOString(),
+    stale: false,
+    unreadable_by: [],
+    unreadable_now: [],
+    last_assigned_at: null,
+    ...over,
+  }
+}
+
+function accountsPage(accounts: Account[]): AccountsPage {
+  return { accounts, tenant_id: 'eng', unreadable_documents: [], unreadable_document_count: 0 }
+}
+
+const STATS: Stats = {
+  tenant_id: 'eng',
+  tasks_by_state: {},
+  dispatch_paused: false,
+  limits: {},
+  generated_at: '2026-09-23T10:00:00Z',
+}
+
+const CAPACITY: Capacity = { pools: [], runner_profiles: {}, tenant_id: 'eng', generated_at: '2026-09-23T10:00:00Z' }
+
+const SPEND: SpendRollup = {
+  tenantId: 'eng',
+  tasksOnPage: 0,
+  tasksWithAttempts: 0,
+  tasksSampled: 0,
+  failedReads: 0,
+  failedDetail: null,
+  attempts: 0,
+  attemptsWithCost: 0,
+  attemptsWithTokens: 0,
+  costUsd: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreationTokens: 0,
+  from: null,
+  to: null,
+} as unknown as SpendRollup
+
+function lease(taskId: string, silentSeconds: number, over: Partial<LeaseRow> = {}): LeaseRow {
+  return {
+    lease_id: `lease-${taskId}`,
+    task_id: taskId,
+    attempt_id: `att-${taskId}`,
+    tenant_id: 'eng',
+    generation: 1,
+    pools: ['global'],
+    units: 1,
+    dispatch_state: 'DISPATCHED',
+    created_at: ago(30),
+    dispatch_deadline: ago(25),
+    expires_at: new Date(Date.now() + 60 * MIN).toISOString(),
+    heartbeat_at: ago(silentSeconds / 60),
+    released_at: null,
+    release_reason: null,
+    released: false,
+    expired: false,
+    dispatch_overdue: false,
+    silent_seconds: silentSeconds,
+    heartbeat_ever: true,
+    last_error: null,
+    ...over,
+  }
+}
+
+function leasePage(leases: LeaseRow[]): LeasePage {
+  return {
+    leases,
+    thresholds: { heartbeat_grace_seconds: 90, lease_timeout_seconds: 120 },
+    evaluated_at: new Date().toISOString(),
+    active_only: true,
+    tenant_id: 'eng',
+    units_held: leases.length,
+  } as unknown as LeasePage
+}
+
+function running(n: number, over: Partial<Task> = {}): Task {
+  return task({
+    id: `tsk_run_${n}`,
+    tenant_id: 'eng',
+    state: 'RUNNING',
+    created_at: ago(60 + n),
+    started_at: ago(50 - n),
+    updated_at: ago(1),
+    ...over,
+  })
+}
+
+type Reads = Partial<Record<keyof typeof api, Result<unknown>>>
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 40; i++) await new Promise((r) => setTimeout(r, 5))
+}
+
+async function mount(reads: Reads = {}): Promise<HTMLElement> {
+  api.loadCapacity.mockResolvedValue(ok(CAPACITY))
+  api.loadTasks.mockResolvedValue(ok({ tasks: [], next_page_token: null } satisfies TaskPage))
+  api.loadLeases.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadProviders.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadWorkflows.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+  api.loadStats.mockResolvedValue(ok(STATS))
+  api.loadAccountPool.mockResolvedValue(ok(accountsPage([account('laptop', 0.2)])))
+  api.loadSpend.mockResolvedValue(ok(SPEND))
+  for (const [name, result] of Object.entries(reads)) api[name as keyof typeof api].mockResolvedValue(result)
+  const { container } = render(<OverviewScreen />)
+  await settle()
+  return container
+}
+
+function page(tasks: Task[]): Result<TaskPage> {
+  return ok({ tasks, next_page_token: null, tenant_id: 'eng' } as TaskPage)
+}
+
+/** The Needs a look card whose title matches: an `a.ov-att`, or a `div.ov-att.is-split` when it links the workflows it names (N11). Its title is `.ov-att-t b`, its link word `.ov-att-go`. */
+function problem(el: HTMLElement, pattern: RegExp): HTMLElement {
+  const row = [...el.querySelectorAll<HTMLElement>('.ov-att:not(.is-skel)')].find((p) => pattern.test(text(p.querySelector('.ov-att-t b'))))
+  expect(row, `no check card matches ${pattern}: ${[...el.querySelectorAll('.ov-att-t b')].map(text).join(' | ')}`).toBeDefined()
+  return row!
+}
+
+// ---------------------------------------------------------------------------
+// archived issue 89
+// ---------------------------------------------------------------------------
+
+describe('#89: overview account headroom names the account its figure is', () => {
+  /**
+   * archived issue 89 was the account the headline's figure came from being cut from the
+   * rows under it. O1 draws the pool as one line, and the line names that
+   * account beside its figure, so the two cannot be separated.
+   *
+   * MUTATION: print the figure without the account it belongs to.
+   */
+  it('names the best account beside its own figure', async () => {
+    const el = await mount({
+      loadAccountPool: ok(accountsPage([account('a', 0.95), account('b', 0.9), account('c', 0.8), account('roomy', 0.28)])),
+    })
+    const best = [...el.querySelectorAll('.ov-headroom .ov-acc > span')].map(text).find((t) => t.startsWith('best'))
+    // A fresh reading states no age on the tile (archived issue 98); the line's title keeps it.
+    expect(best).toBe('best roomy at 28% of its five-hour window')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// archived issue 90
+// ---------------------------------------------------------------------------
+
+describe('#90: the overview names the workflow a failure came from', () => {
+  /**
+   * MUTATION: drop the workflow clause from `failureCheck`'s headline.
+   */
+  it('names the workflow behind the failed-agent count', async () => {
+    const tasks = [
+      task({ id: 'tsk_f1', state: 'FAILED', workflow_id: 'wf-nightly', step_id: 'build', updated_at: ago(3), completed_at: ago(3) }),
+      task({ id: 'tsk_f2', state: 'FAILED', workflow_id: 'wf-nightly', step_id: 'test', updated_at: ago(4), completed_at: ago(4) }),
+      task({ id: 'tsk_f3', state: 'FAILED', updated_at: ago(9), completed_at: ago(9) }),
+    ]
+    const el = await mount({ loadTasks: page(tasks) })
+    const p = problem(el, /failed agent/)
+    // Named in the card's second line, under its short title (visual QA Q5).
+    expect(text(p.querySelector('.ov-att-ids'))).toMatch(/2 in workflow wf-nightly/)
+  })
+
+  /**
+   * The Running card listed agents with no workflow attached.
+   *
+   * MUTATION: drop the workflow link from `RunningRow`.
+   */
+  it('marks a running agent with the workflow it is a step of, linked', async () => {
+    const el = await mount({ loadTasks: page([running(1, { workflow_id: 'wf-nightly', step_id: 'build' })]) })
+    const link = el.querySelector<HTMLAnchorElement>('.ov-running a[href^="/workflows/"]')
+    expect(link, 'the running row names no workflow').not.toBeNull()
+    expect(link!.getAttribute('href')).toBe('/workflows/wf-nightly')
+    expect(text(link)).toMatch(/wf-nightly/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// archived issue 91
+// ---------------------------------------------------------------------------
+
+describe('#91: the overview shows how much work is waiting, and says waiting costs nothing', () => {
+  /**
+   * MUTATION: drop the Waiting tile, count a CONCURRENCY state into it, or
+   * point its link anywhere but the Waiting tab.
+   */
+  it('counts QUEUED, READY and PARKED from /v1/stats and links the Waiting list', async () => {
+    const el = await mount({
+      loadStats: ok({ ...STATS, tasks_by_state: { QUEUED: 12, READY: 4, PARKED: 5, RUNNING: 5, LEASED: 1, DISPATCHED: 0, STARTING: 0 } }),
+    })
+    const cell = [...el.querySelectorAll<HTMLElement>('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-k')) === 'Waiting')
+    expect(cell, 'the band has no Waiting figure').toBeDefined()
+    expect(text(cell!.querySelector('.ov-lc-n'))).toBe('21')
+    // The wording on the surface says waiting creates no demand.
+    expect(text(cell!.querySelector('.ov-lc-h small'))).toBe('costs nothing')
+    expect(el.querySelector('#ov-waiting .ctl-card-head a')?.getAttribute('href')).toBe('/agents/waiting')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// archived issue 92
+// ---------------------------------------------------------------------------
+
+describe('#92: the overview’s attention items say which workers are silent and how fresh the failures are', () => {
+  /**
+   * MUTATION: drop the task ids from the silent headline, or the link label.
+   */
+  it('names the silent workers and labels the link with its destination', async () => {
+    const el = await mount({
+      loadLeases: ok(leasePage([lease('tsk_quiet_a', 300), lease('tsk_quiet_b', 200), lease('tsk_fine', 10)])),
+    })
+    const p = problem(el, /silent/)
+    // The workers are named in the card's second line (visual QA Q5).
+    const headline = text(p.querySelector('.ov-att-ids'))
+    expect(headline).toMatch(/tsk_quiet_a/)
+    expect(headline).toMatch(/tsk_quiet_b/)
+    expect(headline).not.toMatch(/tsk_fine/)
+    expect(text(p.querySelector('.ov-att-go'))).toMatch(/^holders/)
+  })
+
+  /**
+   * MUTATION: drop the age clause from `failureCheck`.
+   */
+  it('says how old the newest failure is', async () => {
+    const tasks = [
+      task({ id: 'tsk_f1', state: 'FAILED', updated_at: ago(3), completed_at: ago(3) }),
+      task({ id: 'tsk_f2', state: 'FAILED', updated_at: ago(120), completed_at: ago(120) }),
+    ]
+    const el = await mount({ loadTasks: page(tasks) })
+    expect(text(problem(el, /failed agent/).querySelector('.ov-att-ids'))).toMatch(/newest 3m ago/)
+  })
+
+  /**
+   * The Running card is built from tasks; a silent lease was invisible on it.
+   * A silent row is marked, and sorts first so the cut cannot hide it.
+   *
+   * MUTATION: drop the lease join from `RunningBody`, or the silent-first sort.
+   */
+  it('marks a silent agent on its Running row and keeps it on screen', async () => {
+    const rows = Array.from({ length: 12 }, (_, i) => running(i))
+    // The newest-started agent would sort last; it is the silent one.
+    const quiet = running(99, { id: 'tsk_quiet', started_at: ago(1) })
+    const el = await mount({
+      loadTasks: page([...rows, quiet]),
+      loadLeases: ok(leasePage([lease('tsk_quiet', 400)])),
+    })
+    const visible = [...el.querySelectorAll('.ov-running > .ov-rows > table tbody tr')]
+    // Named by what it is (walkthrough G); the id is the name's title.
+    const row = visible.find((r) => r.querySelector('a.ov-name[title$=" · tsk_quiet"]') !== null)
+    expect(row, 'the silent agent is not among the visible Running rows').toBeDefined()
+    expect(row!.querySelector('.ov-silent'), 'the silent agent’s row carries no mark').not.toBeNull()
+    expect(text(row!.querySelector('.ov-silent'))).toMatch(/silent 6m/)
+    // The control: a beating agent is not marked.
+    expect(el.querySelectorAll('.ov-running .ov-silent').length).toBe(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// archived issue 93
+// ---------------------------------------------------------------------------
+
+describe('#93: the overview’s Running card shows every running agent, or discloses the rest in place', () => {
+  /**
+   * MUTATION: put `RUNNING_ROWS` back to 4.
+   */
+  it('shows five running agents as five rows', async () => {
+    const el = await mount({ loadTasks: page(Array.from({ length: 5 }, (_, i) => running(i))) })
+    expect(el.querySelectorAll('.ov-running tbody tr').length).toBe(5)
+    expect(el.querySelector('.ov-running details')).toBeNull()
+  })
+
+  /**
+   * MUTATION: drop the disclosure, so rows past the cap vanish again.
+   */
+  it('discloses the rest in place past the cap', async () => {
+    const el = await mount({ loadTasks: page(Array.from({ length: 11 }, (_, i) => running(i))) })
+    expect(el.querySelectorAll('.ov-running > .ov-rows > table tbody tr').length).toBe(8)
+    const more = el.querySelector('.ov-running details.ov-more')
+    expect(more, 'the rows past the cap are not disclosed in place').not.toBeNull()
+    expect(text(more!.querySelector('summary'))).toBe('3 more')
+    expect(more!.querySelectorAll('tbody tr').length).toBe(3)
+  })
+})

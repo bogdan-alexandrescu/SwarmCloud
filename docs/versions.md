@@ -1,0 +1,262 @@
+# Versions
+
+Every version this platform is built and verified against. All of them were
+checked on the reference workstation on **2026-09-15/16**; the commands to
+re-verify are at the bottom.
+
+A pin here is not a preference. In several cases below the *wrong* version is
+the one that wins `$PATH` on the reference machine, and in at least two of them
+the failure is silent.
+
+---
+
+## Toolchain
+
+| Tool | Pinned | Verified | Where it is enforced |
+|---|---|---|---|
+| Terraform | **1.16.2** | `terraform version` | `~/.local/bin/terraform`; roots require `>= 1.9.0` |
+| OpenTofu | **1.12.6** | `tofu version` | drop-in alternative; not used by default |
+| tflint | **0.64.0** | `tflint --version` | `make lint` |
+| checkov | **3.3.17** | `checkov --version` | `make security`, CI |
+| trivy | **0.74.0** | `trivy --version` | `make security`, `push-images.sh` |
+| kubectl | **1.36.3** | `kubectl version --client` | `/opt/homebrew/bin/kubectl` |
+| Python | **3.11** | `.python-version` | `requires-python = ">=3.11"` |
+| uv | **0.11.7** | `uv --version` | pinned image in the Dockerfiles |
+| Node | **24.22.3** (24 LTS, floor 24.22.1; see §1) | `node --version` in the image | `NODE_VERSION`, asserted against the `NODE_IMAGE` digest at build |
+| gcloud SDK | **483.0.0** | `gcloud version` | `prerequisites.sh` |
+| shellcheck | **0.11.0** | `shellcheck --version` | `make lint`, CI |
+| jq | **1.7.1** | `jq --version` | `prerequisites.sh` |
+| bash | **3.2.57** (macOS) | `bash --version` | see §4 |
+
+### Terraform providers
+
+| Provider | Constraint | Locked build |
+|---|---|---|
+| `hashicorp/google` | `~> 6.0` | **6.50.0** |
+| `hashicorp/google-beta` | `~> 6.0` | **6.50.0** |
+| `hashicorp/random` | `~> 3.0` | **3.9.1** |
+
+Constraints live in each root's `versions.tf`; the **exact** build is pinned by
+`.terraform.lock.hcl`, which is committed. A lock file that is not committed
+means two operators can apply the same configuration through two different
+provider builds and get two different results.
+
+### Container bases (digest-pinned in `images/*/Dockerfile`)
+
+| Image | Tag | Digest (truncated) |
+|---|---|---|
+| Python | `python:3.11-slim-bookworm` | `sha256:528257d4...` |
+| Node | `node:24-bookworm-slim` (Node 24.22.3, npm 11.19.1) | `sha256:dc26ae92...` |
+| uv | `ghcr.io/astral-sh/uv:0.11.7` | `sha256:240fb85a...` |
+| Playwright | `playwright==1.63.0` (pip) | — |
+| Claude Code CLI | `@anthropic-ai/claude-code@2.1.283` | — |
+| Codex CLI | `@openai/codex@0.154.0` | — |
+
+Every `FROM` carries a digest, so a rebuild in six months produces the same
+toolchain rather than whatever the tag points at that day.
+
+### Agent image toolbox
+
+What an agent in `agent-runtime-base` can run besides the language toolchains
+above (`git`, `jq`, `rg`, `fd`, `curl`, `wget`, `make`, `build-essential` come
+from Debian's apt and move with `apt-get upgrade`). Each row is a vendor's
+prebuilt linux/amd64 release, pinned and sha256-verified in
+`images/agent-runtime-base/Dockerfile`, which records where every checksum
+came from. `tests/unit/scripts/test_agent_toolbox_image.py` fails when this
+table and the Dockerfile disagree.
+
+The versions were chosen **against the promote gate**, not by recency: on
+2026-10-01 each artifact was scanned with trivy 0.74.0 using the release's own
+filter (fixable HIGH/CRITICAL). That is why two of them differ from the
+operator pins in the table at the top. tofu, tflint and trivy were re-scanned
+on 2026-10-06 with trivy 0.75.0 (DB updated 2026-10-05T19:07Z), and
+tofu and tflint again on 2026-10-09 (DB updated 2026-10-08T19:05Z): no newer
+release of either, and the same findings.
+
+| Tool | In the image | Default build | Why this version |
+|---|---|---|---|
+| `gh` | **2.103.3** | yes | newest; go1.27.3 and x/net 0.60.0 fix CVE-2026-78667 and -78669 (2026-10-31) |
+| `gcloud` | **591.0.0** | yes | newest; its bundled Python 3.14 is removed (7 fixable HIGHs in its site-packages) and gcloud runs on the image's 3.11; its gcloud-crc32c is go1.27.2, its gke-gcloud-auth-plugin still go1.27.1 (accepted in `.trivyignore.yaml`, 2026-10-31) |
+| `kubectl` | **1.36.6** | yes | newest 1.36 patch (go1.26.10: CVE-2026-56857, -78667 and -111943 fixed; x/net 0.56.0's CVE-2026-78669 is in every kubectl release and accepted); operators pin 1.36.3 |
+| `terraform` | **1.17.1** | yes | newest; go1.26.10, x/net 0.62.0 and go-jose 4.1.6 fix CVE-2026-78667, -78669 and -116587 (1.16.7 still has go-jose 4.1.4); operators and CI pin 1.16.2, whose Go 1.26.4 stdlib has 9 fixable HIGHs |
+| `checkov` | **3.3.17** | yes | matches CI; isolated `uv tool` env, resolution pinned to 2026-10-01 |
+| `shellcheck` | **0.11.0** | yes | matches the operator pin |
+| `docker` | **29.9.2** | yes | CLI only, from Docker's bookworm `.deb`; no daemon, no socket; go1.26.10 fixes CVE-2026-78667 and -78669 |
+| `trivy` | **0.76.2** | yes | newest; go-jose 4.1.6 fixes CVE-2026-116587 (0.76.1 had 4.1.5); go1.27.3 and x/net 0.62.0 (0.76.1's go1.27.3 and x/net 0.60.0 fixed CVE-2026-78667 and -78669; 0.74.0 had grpc 1.82.1) |
+| `coderabbit` | **0.9.1** | yes | the release the vendor's installer binds Linux to; checksum from its signed `SHA256SUMS`; 91.1 MiB on disk; nothing in it trivy can analyse (2026-10-26). Fetched from `cli.coderabbit.ai`, not the tool mirror; its key is a workspace secret ([worker-images.md](worker-images.md#coderabbit)) |
+| `pgvector` | **0.8.7** | yes | a floor, not a pin: PGDG's `postgresql-16-pgvector` beside the test services' PostgreSQL 16, which floats with `APT_REFRESH` as the server does; the build refuses anything older than `PGVECTOR_MIN_VERSION` (0.8.7-1.pgdg12+2 was bookworm-pgdg's on 2026-11-12) and a package without `vector.control`. A branch's migrations `CREATE EXTENSION vector` against the worker's server (archived issue 2442, the owner, 2026-11-12); trivy does not track PGDG's packages ([test-services.md](test-services.md#the-catalogue-postgresql-16-one-entry)) |
+| `tofu` | **1.13.1** | **no** | no release scans clean (2026-10-09): x/mod 0.39.0, grpc 1.83.1 (1.12.7 has eight) |
+| `tflint` | **0.64.0** | **no** | no release scans clean (2026-10-09): Go 1.26.3 stdlib, x/crypto, x/mod, grpc |
+
+The last two are installed only with `--build-arg INSTALL_TOFU=1` and
+`--build-arg INSTALL_TFLINT=1` respectively. Each install path is complete and
+covered by the build's smoke step. Each is off because the gate refuses the
+whole image over one tool's dependency. The two arguments are independent, so
+turn each on once its own vendor ships a release that scans clean, re-scanning
+first; one tool does not wait for the other. The
+owner ruled out a `.trivyignore.yaml` waiver for them.
+
+---
+
+## 1. Node: 24, not 20 — a deliberate departure
+
+The original build brief specified **Node LTS 20**. The images pin **Node 24
+LTS**, because Node 20 reached end of life in April 2026 and 24 is the current
+LTS line. Pinning an EOL runtime would mean shipping an agent runtime that
+receives no security updates — in an image that runs other people's code.
+
+**The exact version is 24.22.3, and 24.22.1 is the floor.** Every coding
+runner image (agent-runtime-base, and agent-runtime-browser, -lightpanda and
+-indexer built FROM it) takes Node from one `NODE_IMAGE` digest in
+`images/agent-runtime-base/Dockerfile`. Beside it, `ARG NODE_VERSION` states
+the version that digest carries, and the build fails unless `node --version`
+prints exactly `v${NODE_VERSION}`, so the stated version and the shipped one
+cannot drift. The floor is 24.22.1 because ContextOS's CLI startup guard exits
+78 on any older Node; the previous digest (`sha256:2fe369e9...`) was 24.21.0
+and failed that guard (archived issue 3929). Re-resolved 2026-11-12: `node:24-bookworm-slim`
+and `node:24.22.3-bookworm-slim` returned the same index digest, whose amd64
+and arm64 configs carry `NODE_VERSION=24.22.3`.
+`tests/unit/scripts/test_runner_node_version.py` holds `NODE_VERSION` at or
+above the floor and below 25. plugin-bundler and swarm-voice share the same
+digest (their tests hold them equal to the base); swarm-ui keeps its own
+`NODE_IMAGE` line, held only to the major, because it is not a runner.
+
+If a runner genuinely requires Node 20, change `NODE_IMAGE` (and `NODE_VERSION`) in
+`images/agent-runtime-base/Dockerfile` to a Node 20 digest and record why here.
+Do not silently downgrade: the CLIs the `claude-code` and `codex` profiles run
+are pinned against the Node in this image and are tested there.
+
+Note that the Node on an operator's workstation is **not** the Node that runs
+agents — the reference machine has v20.10.0 and the image has 24. Nothing in the
+platform executes the workstation's Node, so `prerequisites.sh` reports it for
+information rather than treating drift as a problem.
+
+---
+
+## 2. kubectl: why it is resolved explicitly
+
+Three `kubectl` binaries exist on the reference workstation, and the two that win
+`$PATH` lookup are **1.22 (EKS)** and **1.25 (Docker Desktop)** — both far outside
+the supported skew for a modern control plane.
+
+A 1.22 client against a 1.3x server does not fail loudly. It **silently drops
+fields it does not understand** from manifests it applies. A pod security context
+or an extended-run-time annotation that vanishes on apply is a platform promise
+that quietly stops being true.
+
+So `scripts/lib/common.sh` resolves kubectl by checking, in order:
+`$SWARM_KUBECTL`, `/opt/homebrew/bin/kubectl`,
+`/usr/local/opt/kubernetes-cli/bin/kubectl`, and only then `$PATH` — accepting
+the first that reports **>= 1.30**. `$PATH` is consulted last, on purpose.
+
+---
+
+## 3. checkov: why `~/.local/bin` wins
+
+Homebrew's checkov 3.3.10 on this machine **raises on import** and shadows the
+working 3.3.17 in `~/.local/bin`. `prefer_local_bin()` therefore prefers
+`~/.local/bin/<tool>` over `$PATH` for terraform, tflint, checkov and trivy, with
+`SWARM_<TOOL>` environment overrides for anyone whose layout differs.
+
+---
+
+## 4. bash 3.2, not 4+
+
+macOS ships **bash 3.2.57** and Apple will not ship a newer one. Every script in
+`scripts/` is written for it:
+
+* no associative arrays;
+* no `mapfile` / `readarray`;
+* no `${var,,}` / `${var^^}`;
+* empty arrays always expanded as `${arr[@]+"${arr[@]}"}` — plain `"${arr[@]}"`
+  on an empty array is an unbound-variable error under `set -u` in 3.2.
+
+Note also that the interactive shell on this machine is **zsh**, which does not
+word-split unquoted variables the way bash does. Scripts declare
+`#!/usr/bin/env bash`; anything typed at a zsh prompt needs explicit quoting or
+arrays.
+
+---
+
+## 5. Python 3.11
+
+`.python-version` and `requires-python = ">=3.11"` in every package. 3.11 is
+chosen for `datetime.UTC`-era typing ergonomics and for matching the runtime base
+image exactly — the container and the developer machine run the same minor
+version, so a syntax or stdlib difference cannot appear only in production.
+
+Dependencies are resolved by `uv` and locked in `uv.lock`, which is committed.
+
+---
+
+## 6. The Firestore emulator needs a JRE
+
+`gcloud emulators firestore` is a **Java** program. On the reference workstation
+`/usr/bin/java` is Apple's stub that only offers to install a JRE, so
+`command -v java` succeeds while `java -version` fails. `dev.sh` checks the
+latter and says exactly what to install:
+
+```bash
+brew install --cask temurin
+# or, if Docker works on your machine:
+docker compose up firestore
+```
+
+`gcloud components install cloud-firestore-emulator` is also required; the local
+SDK has `cloud-firestore-emulator 1.19.7`.
+
+---
+
+## 7. Upgrading
+
+**Terraform / providers.** Bump the constraint in `versions.tf`, run
+`terraform init -upgrade`, commit the changed `.terraform.lock.hcl`, and run
+`make tf-plan` for **every** environment. A provider minor bump can rewrite an
+attribute default; in a shared project that is a plan to read carefully.
+
+**kubectl.** Must stay within one minor of the GKE control plane. Autopilot
+follows its release channel (`RAPID` in dev, `STABLE` in prod), so check the
+cluster version before bumping the client.
+
+**Container bases.** Change the digest, not the tag, and rebuild:
+
+```bash
+docker buildx imagetools inspect python:3.11-slim-bookworm   # get the new digest
+# edit images/agent-runtime-base/Dockerfile, then:
+make build push
+```
+
+**Agent CLIs.** `CLAUDE_CODE_VERSION` and `CODEX_VERSION` are build args pinned
+in the Dockerfile. Bump deliberately and run `make smoke` plus one real agent per
+affected profile — a CLI's output format changes more often than its flags.
+
+**Scanners.** checkov and trivy update their rule sets constantly; a green build
+today can fail tomorrow on a newly published CVE. That is the point, and it is
+why `security.yml` also runs on a weekly schedule rather than only on PRs.
+
+---
+
+## 8. Re-verifying every pin
+
+```bash
+make prerequisites          # checks everything below and reports drift
+```
+
+or individually:
+
+```bash
+~/.local/bin/terraform version
+tofu version
+~/.local/bin/tflint --version
+~/.local/bin/checkov --version
+trivy --version
+/opt/homebrew/bin/kubectl version --client
+python3 --version && uv --version
+gcloud version
+shellcheck --version && jq --version && bash --version
+terraform providers -chdir=terraform/infra
+```
+
+`prerequisites.sh` treats version drift as a **warning**, not a failure — except
+for kubectl, where an old client is worse than a missing one because it fails
+silently.

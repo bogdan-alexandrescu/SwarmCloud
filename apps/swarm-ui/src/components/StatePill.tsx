@@ -1,0 +1,255 @@
+/**
+ * EVERY TASK STATE AND EVERY PARK REASON, DRAWN ONE WAY (components.html A,
+ * "Task states" and "PARKED reasons"; brand.html §3's marks).
+ *
+ * Three forms of a state, one vocabulary (`STATE_MARK` in marks.tsx):
+ *
+ *   table  the mark in its hue and the word in ink          (`StateMark`)
+ *   pill   a tinted pill, mark and word in the hue           (headers, detail)
+ *   mark   the mark alone, the word as its accessible name   (the 64px strip)
+ *
+ * Shape names the state on its own; hue names the family -- teal for the four
+ * states that hold capacity (CONTRACT invariant 1), violet for parked, red for
+ * failed and dead-lettered, grey for the rest. Succeeded and cancelled stay
+ * grey: a healthy platform is quiet.
+ *
+ * A PARK SAYS WHY AND UNTIL WHEN, in plain words, with the reason code in the
+ * tooltip. The three reasons that need a person (`PARK_NEEDS_A_PERSON`) carry
+ * the amber flag, so they are found without reading every row.
+ */
+import { MarkGlyph, MarkIcon, NamedMark, StateMark, STATE_MARK, WarnMark, type MarkHue, type MarkName } from '../marks'
+import { PARK_NEEDS_A_PERSON, reasonCopy, type FixLoopPersonPhase, type FixLoopRead, type ParkReason, type TaskState } from '../types'
+import type { ReactNode } from 'react'
+import { WarnGlyph } from './glyphs'
+
+export { MarkIcon, NamedMark, StateMark, WarnMark }
+
+/** The state as a word: lower case, `DEAD_LETTERED` as `dead-lettered`. */
+export function stateWord(state: TaskState): string {
+  return state.toLowerCase().replace('_', '-')
+}
+
+export type StateForm = 'table' | 'pill' | 'mark'
+
+export function StatePill({ state, form = 'pill', label, small = false }: { state: TaskState; form?: StateForm; label?: string; small?: boolean }) {
+  if (form === 'table') return <StateMark state={state} label={label} />
+  if (form === 'mark') return <StateMark state={state} label={label} bare />
+  const { mark, hue } = STATE_MARK[state]
+  return (
+    <span className={`c-pill is-${hue}${small ? ' is-sm' : ''}`} data-mark={mark} data-hue={hue}>
+      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+        <MarkGlyph mark={mark} />
+      </svg>
+      {label ?? stateWord(state)}
+    </span>
+  )
+}
+
+/** The pill's words for each reason: what a reader is waiting on. */
+export const PARK_WORD: Readonly<Record<ParkReason, string>> = {
+  PROVIDER_QUOTA_EXHAUSTED: 'provider quota',
+  PROVIDER_COOLDOWN: 'provider cooldown',
+  PROVIDER_OUTAGE: 'provider outage',
+  SCHEDULED_RETRY: 'retry scheduled',
+  DEPENDENCY_INCOMPLETE: 'waiting on a step',
+  MANUAL_PAUSE: 'paused by someone',
+  BUDGET_EXHAUSTED: 'budget used up',
+  CREDENTIAL_MISSING: 'credential missing',
+  CHILDREN_INCOMPLETE: 'waiting on its helpers',
+  CI_PENDING: 'waiting for CI',
+  HUMAN_REQUIRED: 'waiting for you',
+  // Contract request 92: any member of the step's tenant may answer, so not "you".
+  AWAITING_INPUT: 'waiting for a member',
+  // Contract request 125: a fix loop whose rounds run as steps of their own.
+  FIX_ROUNDS_RUNNING: 'fix rounds running',
+  // Contract request 123: the cluster's Job quota or a policy refused it.
+  PLATFORM_REFUSED: 'refused by the cluster, retrying',
+}
+
+function isParkReason(v: string): v is ParkReason {
+  return Object.prototype.hasOwnProperty.call(PARK_WORD, v)
+}
+
+/**
+ * A PARKED pill with its reason, and `until` when the writer knew it.
+ *
+ * A reason this client does not know is printed VERBATIM rather than hidden
+ * (`reasonCopy`'s rule): the table is shipped client-side and will go stale,
+ * and printing the raw value is what makes that visible. A park with no
+ * reason recorded says so; it is never drawn as a reasonless pill.
+ */
+export function ParkPill({ reason, until }: { reason: ParkReason | string | null; until?: string | null }) {
+  const word = reason === null ? 'reason not recorded' : isParkReason(reason) ? PARK_WORD[reason] : reason
+  const person = reason !== null && PARK_NEEDS_A_PERSON.has(reason)
+  const { mark, hue } = STATE_MARK.PARKED
+  return (
+    <span className="c-park" data-reason={reason ?? 'none'}>
+      <span className={`c-pill is-${hue}`} data-mark={mark} data-hue={hue} title={reason === null ? undefined : `${reason} · ${reasonCopy(reason)}`}>
+        <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+          <MarkGlyph mark={mark} />
+        </svg>
+        parked
+        <span className="c-pr">{word}</span>
+      </span>
+      {person && (
+        <span className="c-flag" data-flag="needs-a-person" title="needs a person">
+          <WarnGlyph />
+          <span className="sk-vh">needs a person</span>
+        </span>
+      )}
+      {until != null && until !== '' && <span className="c-until">{until}</span>}
+    </span>
+  )
+}
+
+/**
+ * WHY A FIX LOOP WAITS FOR A PERSON (docs/design/fix-loop.md §4.4), for the
+ * loop pill's tooltip: the glass says only "waiting for you", the phase is
+ * one hover away. A phase this client does not know is printed verbatim.
+ */
+export const FIX_LOOP_PHASE_WORD: Readonly<Record<FixLoopPersonPhase, string>> = {
+  fix_loop_exhausted: 'its rounds ran out on a NOT_YET verdict',
+  fix_changed_nothing: 'a fix round pushed nothing, so there was no new head to review',
+  round_failed: 'a round ended without succeeding',
+  review_unreadable: 'a re-review wrote no verdict that reads',
+  round_refused: 'a round could not be submitted',
+}
+
+/** The pill's word for the loop's two live states. */
+export const FIX_LOOP_WORD = {
+  running: 'rounds running',
+  waiting: PARK_WORD.HUMAN_REQUIRED,
+} as const
+
+function phaseWords(phase: string): string {
+  return Object.prototype.hasOwnProperty.call(FIX_LOOP_PHASE_WORD, phase)
+    ? FIX_LOOP_PHASE_WORD[phase as FixLoopPersonPhase]
+    : phase
+}
+
+/**
+ * A FIX LOOP'S COUNTER AND STATE (docs/design/fix-loop.md §6.2): `round k of
+ * N`, then `rounds running` while its rounds run, or `waiting for you` with
+ * the amber flag when it is parked for a person. In the parked hue either
+ * way: the loop holds no capacity (CONTRACT invariant 1), its rounds do. The
+ * half that runs, the phase and the last verdict are the tooltip's. An
+ * unread `N` prints the round alone, never a guessed ceiling.
+ */
+export function FixLoopPill({ loop, state }: { loop: FixLoopRead; state: TaskState }) {
+  const { mark, hue } = loop.waiting || loop.running !== null ? STATE_MARK.PARKED : STATE_MARK[state]
+  const counter = loop.of === null ? `round ${loop.round}` : `round ${loop.round} of ${loop.of}`
+  const word = loop.waiting ? FIX_LOOP_WORD.waiting : state === 'PARKED' ? FIX_LOOP_WORD.running : null
+  const title = [
+    loop.of === null ? 'The loop\u2019s round ceiling was not read.' : null,
+    loop.running === 'fix' ? 'A fix round is running.' : loop.running === 'review' ? 'A re-review is running.' : null,
+    loop.waiting && loop.phase !== null ? `Waiting for a person: ${phaseWords(loop.phase)} (${loop.phase}).` : null,
+    !loop.waiting && loop.phase !== null ? `Ended on ${loop.phase}.` : null,
+    loop.verdict !== null
+      ? `Last verdict ${loop.verdict}${loop.findings !== null ? `, ${loop.findings} finding${loop.findings === 1 ? '' : 's'}` : ''}.`
+      : null,
+  ]
+    .filter((t): t is string => t !== null)
+    .join(' ')
+  return (
+    <span className="c-park c-loop" data-loop={loop.waiting ? 'waiting' : word !== null ? 'running' : 'ended'}>
+      <span className={`c-pill is-${hue} is-sm`} data-mark={mark} data-hue={hue} title={title === '' ? undefined : title}>
+        <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+          <MarkGlyph mark={mark} />
+        </svg>
+        {counter}
+        {word !== null && <span className="c-pr">{word}</span>}
+      </span>
+      {loop.waiting && (
+        <span className="c-flag" data-flag="needs-a-person" title="needs a person">
+          <WarnGlyph />
+          <span className="sk-vh">needs a person</span>
+        </span>
+      )}
+    </span>
+  )
+}
+
+/**
+ * A TONE THAT IS NOT A TASK STATE, DRAWN WITH THE BRAND MARKS (brand.html §3):
+ * a pool that is full or paused, a heartbeat that went silent, a route that
+ * answered, a pull request that is open. It replaced the local `.ctl-chip`
+ * and `.ctl-dot`, whose marks were CSS shapes of their own (archived issue 503 swap: "state
+ * marks must be the brand marks everywhere, never a local dot or glyph").
+ *
+ * Every tone keeps its own silhouette, so colour is never the only thing
+ * telling two apart (design-system.md §6.6, held by test_state_colour_
+ * discriminability.py and components.test.tsx):
+ *
+ *   ok       check          grey    healthy is quiet: never a hue
+ *   info     flat bar       grey    a fact, not a verdict
+ *   warn     triangle       amber   (`wait` is warn: a throttled state is
+ *                                    never drawn in the unknown grey)
+ *   bad      solid diamond  red
+ *   paused   pause bars     violet  an operator held it
+ *   live     haloed disc    teal
+ *   unknown  hollow ring    grey    nobody derived it -- and the mark of any
+ *                                    tone this list does not know, never a
+ *                                    healthy check by default
+ */
+export type MarkTone = 'ok' | 'info' | 'warn' | 'bad' | 'paused' | 'live' | 'unknown'
+
+export const TONE_MARK: Readonly<Record<MarkTone, { mark: MarkName | 'warn'; hue: MarkHue | 'warn' | 'unknown' }>> = {
+  ok: { mark: 'succeeded', hue: 'neu' },
+  info: { mark: 'cancelled', hue: 'neu' },
+  warn: { mark: 'warn', hue: 'warn' },
+  bad: { mark: 'failed', hue: 'bad' },
+  paused: { mark: 'parked', hue: 'park' },
+  live: { mark: 'running', hue: 'live' },
+  unknown: { mark: 'queued', hue: 'unknown' },
+}
+
+/**
+ * A tone word as the screens wrote it -- `ok`, `is-ok`, `is-warn full`, and
+ * the derived `wait` and `ended` -- as a `MarkTone`. Anything else is
+ * `unknown`: an underived state is the ring, never a filled healthy mark.
+ */
+export function toneOf(word: string | null | undefined): MarkTone {
+  const first = (word ?? '').trim().split(/\s+/)[0] ?? ''
+  const t = first.startsWith('is-') ? first.slice(3) : first
+  if (t === 'wait') return 'warn'
+  if (t === 'ended') return 'info'
+  return Object.prototype.hasOwnProperty.call(TONE_MARK, t) ? (t as MarkTone) : 'unknown'
+}
+
+export function ToneMark({
+  tone,
+  children,
+  title,
+  label,
+  describedBy,
+  hidden = false,
+  className,
+}: {
+  /** The tone, in any spelling `toneOf` reads. */
+  tone: string
+  /** The word. Omitted, the mark stands alone and is hidden: decoration beside words. */
+  children?: ReactNode
+  title?: string
+  label?: string
+  describedBy?: string
+  hidden?: boolean
+  /** Layout only. */
+  className?: string
+}) {
+  const t = toneOf(tone)
+  const { mark, hue } = TONE_MARK[t]
+  return (
+    <NamedMark
+      mark={mark}
+      hue={hue}
+      word={children}
+      title={title}
+      label={label}
+      describedBy={describedBy}
+      hidden={hidden || children === undefined}
+      className={className}
+      dataMark={t === 'unknown' ? 'unknown' : undefined}
+      dataTone={t}
+    />
+  )
+}

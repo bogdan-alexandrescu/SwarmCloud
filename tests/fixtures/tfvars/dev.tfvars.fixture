@@ -1,0 +1,116 @@
+# A placeholder deployment's dev tfvars, for the tests that hold a property of
+# a deployment's capacity and identities (tests/fixtures/tfvars/README.md).
+# Not a terraform root's input: the real dev.tfvars is private and lives under
+# the state bucket's config/dev/ prefix (docs/ci.md). Placeholders only.
+
+project_id  = "example-project"
+region      = "us-central1"
+environment = "dev"
+
+deletion_protection = false
+nat_static_ip_count = 2
+
+# Each Cloud Run service's ceiling (docs/scaling.md "Ceilings below the pools").
+service_max_instances = {
+  "swarm-api"          = 8
+  "swarm-scheduler"    = 2
+  "swarm-quota-broker" = 2
+  "swarm-reconciler"   = 1
+  "swarm-ui"           = 2
+}
+
+# BROWSER-POOL-100: 100 browser units beside claude-code's 80 standard, so
+# every pool both draw on is 180. No single tenant is meant to hold the whole
+# fleet, so the tenant pools stay below it.
+pool_limits = {
+  global          = 180
+  default_tenant  = 40
+  provider_tenant = 100
+  resource_classes = {
+    standard = 80
+    browser  = 100
+    large    = 40
+    builder  = 80
+  }
+  runner_profiles = {
+    mock                   = 40
+    generic                = 20
+    claude-code            = 80
+    codex                  = 20
+    browser                = 20
+    claude-code-browser    = 100
+    claude-code-lightpanda = 100
+  }
+  backends = {
+    CLOUD_RUN_JOB = 100
+    GKE_AUTOPILOT = 180
+  }
+  providers = {
+    anthropic = 200
+    openai    = 100
+  }
+}
+
+allowed_domains = ["example.com"]
+
+# The oracle API's own account, and nobody else, is admitted by name.
+allowed_users = ["oracle-api@example-project.iam.gserviceaccount.com"]
+
+tenants = {
+  eng = {
+    kind             = "group"
+    principal        = "eng@example.com"
+    directory_group  = true
+    display_name     = "Engineering"
+    providers        = ["anthropic", "openai"]
+    max_active       = 100
+    capacity_units   = 100
+    service_accounts = ["swarm-runner@example-project.iam.gserviceaccount.com"]
+  }
+  smoke = {
+    kind            = "group"
+    principal       = "smoke@example.com"
+    directory_group = true
+    display_name    = "Smoke tests"
+    providers       = ["anthropic"]
+    max_active      = 20
+    capacity_units  = 20
+  }
+  # swarm-verify's tenant: tenant_id_for_user of its email.
+  u-sw-7d8af8 = {
+    kind            = "user"
+    principal       = "swarm-verify@example-project.iam.gserviceaccount.com"
+    display_name    = "Verification gate"
+    directory_group = false
+    providers       = []
+    max_active      = 4
+    capacity_units  = 8
+  }
+  # oracle-api's tenant, at swarm-verify's 4/8.
+  u-or-ef6b39 = {
+    kind            = "user"
+    principal       = "oracle-api@example-project.iam.gserviceaccount.com"
+    display_name    = "Oracle API"
+    directory_group = false
+    providers       = []
+    max_active      = 4
+    capacity_units  = 8
+  }
+}
+
+api_invokers = [
+  "allUsers",
+]
+secret_admin_members = [
+  "group:swarm-admins@example.com",
+]
+admin_users    = ["admin@example.com"]
+platform_owner = "owner@example.com"
+
+# swarm-verify holds the narrow pool capability, never platform admin.
+admin_pool_users = [
+  "swarm-verify@example-project.iam.gserviceaccount.com",
+]
+
+enable_frontend   = true
+frontend_hostname = "swarm.example.com"

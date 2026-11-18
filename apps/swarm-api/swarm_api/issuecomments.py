@@ -1,0 +1,764 @@
+"""What an issue run writes on GitHub, as text: pure, no I/O (archived issue 454).
+
+Four texts, each built from the run document alone:
+
+  * THE PLAN COMMENT -- summary, mode, estimate, requirements, the overlaps
+    the planner named (as links), each step with its files, tests and
+    estimate, the plan's digest and revision, and who approved it or that
+    approval is pending;
+  * THE STATUS COMMENT -- one comment, edited in place as the run moves
+    (planning -> awaiting approval -> running -> PR opened -> checks green ->
+    merged, or failed), with the pull request and the console links;
+  * THE VERIFICATION COMMENT (archived issue 646) -- for a run that ended DONE with
+    `outcome: already_on_main`: the build steps' verification tables, one
+    row per planned requirement, and whether the run closes the issue (every
+    row met) or leaves it open;
+  * THE KEYWORD BLOCK in the pull request's body -- `Closes #N` only when
+    every planned requirement is delivered, `part of #N` naming what is left
+    otherwise (CLAUDE.md, "`Closes #N` ONLY WHEN IT IS UNCONDITIONALLY TRUE").
+
+EVERY TEXT SOMEONE ELSE AUTHORED IS NEUTRALISED, AND WRITTEN PLAIN (`plain`,
+`prose`, `code`). The plan is an agent's output and the issue is anybody's,
+and the comment is posted with the TENANT'S credential, so whatever it says,
+the tenant said:
+
+  * masked by the API's redaction -- with the token as a known literal when
+    the caller has it -- so a plan that quoted a credential does not publish it;
+  * in prose, a `<` that could open HTML takes a Markdown backslash escape
+    (`prose`), so it cannot open an HTML comment that looks like our marker, a
+    `<details>` that swallows the rest, or an image that pings a host -- and
+    GitHub shows the `<` itself, so `->` and `#<n>` read as written. A value
+    in a code span (`code`) or a fenced block (`plain`) is shown as typed and
+    parsed for no HTML, so it is written as it is. No `&lt;`/`&gt;` entity is
+    written to GitHub: a title and a code span print one as typed (the owner,
+    2026-10-26, part of archived issue 2391);
+  * every `@` that could mention someone broken with a zero-width joiner, by
+    the worker's own rule (`agent_worker.lifecycle._neutralise_mentions`,
+    restated here because swarm-api does not import the worker;
+    tests/unit/control_plane/test_issue_writeback.py pins the two equal);
+  * every closing keyword (`fixes #12`) turned into `refs`, so quoted text in
+    a pull request body cannot close an issue the review did not confirm.
+
+EVERY TEXT IS BOUNDED under GitHub's 65,536-character limit for a comment or
+a body: each field by its own cap, and the whole by `MAX_BODY_CHARS`, cut at
+the end so the marker and the headline -- the parts a retry and a reader need
+-- always survive.
+
+EACH COMMENT OPENS WITH A HIDDEN MARKER naming the run and the kind,
+`<!-- swarmcloud-issue-run:<run_id>:<kind> -->`, on the first line. A retry
+whose stored comment id was lost finds its own comment by it
+(`GitHubWriter.find_comment`) and edits it instead of posting a second one.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from typing import Iterable, Sequence
+
+from .codec import run_console_url, workflow_console_url
+from .issueruns import (
+    AUTO_APPROVER,
+    MAX_VERIFICATION_CHARS,
+    OUTCOME_ALREADY_ON_MAIN,
+    VERIFICATION_FILE,
+    IssueRun,
+    RunState,
+)
+from .plansections import size_line
+from .redaction import redact
+
+#: GitHub refuses a comment or a body over 65,536 characters; this leaves room.
+MAX_BODY_CHARS = 60_000
+#: Per-field caps, so no one field can spend the whole body.
+MAX_SUMMARY_CHARS = 4_000
+MAX_LINE_CHARS = 500
+MAX_PROMPT_CHARS = 3_000
+MAX_ERROR_CHARS = 1_500
+
+PLAN_KIND = "plan"
+STATUS_KIND = "status"
+KEYWORD_KIND = "keyword"
+VERIFICATION_KIND = "verification"
+
+_RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+_TRUNCATED = "\n\n… (cut: GitHub's size limit for a comment)\n"
+
+
+#: The GitHub-comment approval's command (docs/schedules.md §4.9). `ghapprove`
+#: parses exactly this; the plan comment and the merge request show it.
+APPROVE_COMMAND = "/swarmcloud approve"
+
+
+def marker(run_id: str, kind: str) -> str:
+    """The hidden first line of one of this run's comments."""
+    if not _RUN_ID.match(run_id):
+        # A run id is `new_id("run")`; anything else would be spliced into HTML.
+        raise ValueError("a run id is letters, digits, '_' and '-'")
+    return f"<!-- swarmcloud-issue-run:{run_id}:{kind} -->"
+
+
+def keyword_end(run_id: str) -> str:
+    return f"<!-- /swarmcloud-issue-run:{run_id}:{KEYWORD_KIND} -->"
+
+
+def body_digest(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# --------------------------------------------------------------------------
+# neutralising text someone else wrote
+# --------------------------------------------------------------------------
+
+#: An `@` that could start a mention, in every spelling GitHub decodes to one:
+#: `@`, the fullwidth `＠`, `&commat;`, and decimal or hex character
+#: references. Not after an ASCII word character, so `ops@example.com` is
+#: left alone exactly as GitHub leaves it. The worker's `_MENTION_AT_RE`,
+#: character for character (the test pins it).
+_MENTION_AT_RE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"(@|\uff20|&commat;|&#0*64(?![0-9]);?|&#[xX]0*40(?![0-9A-Fa-f]);?)"
+    r"(?=[A-Za-z0-9_&-])"
+)
+
+#: U+200D ZERO WIDTH JOINER: invisible, and not a character a mention can
+#: contain, so `@<U+200D>octocat` pages no one. The worker's `MENTION_BREAK`.
+MENTION_BREAK = "‍"
+
+#: GitHub's closing keywords, followed by an issue reference: `#N`,
+#: `owner/repo#N`, or an issue URL.
+_CLOSING_RE = re.compile(
+    r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b(\s*:?\s+)"
+    r"((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+|https?://github\.com/[^\s/]+/[^\s/]+/issues/[0-9]+)",
+    re.IGNORECASE,
+)
+
+
+def neutralise_mentions(text: str) -> str:
+    return _MENTION_AT_RE.sub(lambda match: match.group(1) + MENTION_BREAK, text)
+
+
+def neutralise_closing_keywords(text: str) -> str:
+    """`fixes #12` -> `refs #12`: only the keyword block may close an issue."""
+    return _CLOSING_RE.sub(lambda match: "refs" + match.group(1) + match.group(2), text)
+
+
+def _cut(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def neutral(text: str, limit: int, *, literals: Iterable[str] = (), one_line: bool = False) -> str:
+    """Text someone else wrote, masked and with `<` and `>` as HTML entities.
+
+    For a store that is not GitHub. Nothing posted to GitHub uses it any more:
+    GitHub prints an entity in a title or a code span as typed ('-&gt;'), so
+    a writer there uses `plain`, `prose` or `code`, which keep every other
+    protection here.
+    """
+    masked = redact(str(text), extra=tuple(literals)).text
+    masked = masked.replace("\x00", "")
+    if one_line:
+        masked = " ".join(masked.split())
+    masked = masked.replace("<", "&lt;").replace(">", "&gt;")
+    masked = neutralise_closing_keywords(neutralise_mentions(masked))
+    return _cut(masked, limit)
+
+
+#: Where Markdown prose could begin raw HTML -- a tag, a closing tag, a
+#: comment, a declaration, a processing instruction -- or an entity reference,
+#: with any backslashes already in front of it: `\\` is one literal backslash
+#: to CommonMark, so `\<details>` would undo a single added escape.
+_HTML_START = re.compile(r"(\\*)(<(?=[A-Za-z/!?])|&(?=#?[A-Za-z0-9]+;))")
+_BACKTICKS = re.compile(r"`+")
+
+
+def plain(text: str, limit: int, *, literals: Iterable[str] = (), one_line: bool = False) -> str:
+    """Text someone else wrote, for a GitHub title or a fenced code block, as written.
+
+    `neutral` without its HTML escaping: masked, mentions broken, closing
+    keywords turned into `refs`, cut to `limit`. GitHub stores a title as given
+    and shows it as text, and a fenced block shows every character as typed, so
+    `&gt;` there is printed as `&gt;` (archived issue 2217 read 'implement -&gt; review -&gt;
+    fix'). Every writer that posts to GitHub writes this, `prose` or `code`
+    (the owner, 2026-10-26, part of archived issue 2391).
+    """
+    masked = redact(str(text), extra=tuple(literals)).text.replace("\x00", "")
+    if one_line:
+        masked = " ".join(masked.split())
+    return _cut(neutralise_closing_keywords(neutralise_mentions(masked)), limit)
+
+
+def prose(text: str, limit: int, *, literals: Iterable[str] = (), one_line: bool = False) -> str:
+    r"""`plain`, for Markdown prose: a `<` that could open HTML, and an `&` that
+    could start an entity, take a Markdown backslash escape, which GitHub renders
+    as the character itself. So `<details>`, `<!--` or `<img>` cannot swallow the
+    body, fake a marker or ping a host, and `->` and `#<n>` read as written; an
+    entity would be printed in a code span.
+
+    A backslash already in front of the opener is doubled, so it prints as
+    typed and the added escape still holds. And `-->` becomes `--\>`, so no
+    output contains a marker (`<!-- ... -->`) as a substring: `\<!-- x -->`
+    still holds `<!-- x -->`, which `apply_keyword_block` would take for its
+    end marker."""
+    text = plain(text, limit, literals=literals, one_line=one_line)
+    text = _HTML_START.sub(lambda match: match.group(1) * 2 + "\\" + match.group(2), text)
+    return text.replace("-->", "--\\>")
+
+
+def code(text: str, limit: int, *, literals: Iterable[str] = ()) -> str:
+    """`plain`, one line, as a Markdown code span: GitHub parses no HTML inside
+    one and shows every character as typed. The fence is one backtick longer
+    than any run in the value, so a backtick there cannot end the span early."""
+    text = plain(text, limit, literals=literals, one_line=True)
+    fence = "`" * (max((len(run) for run in _BACKTICKS.findall(text)), default=0) + 1)
+    pad = "" if fence == "`" else " "  # GitHub strips one space each side of a longer fence
+    return f"{fence}{pad}{text}{pad}{fence}"
+
+
+def bounded(body: str, limit: int = MAX_BODY_CHARS) -> str:
+    """`body` under `limit`, cut at the end so its marker and headline survive."""
+    if len(body) <= limit:
+        return body
+    return body[: limit - len(_TRUNCATED)] + _TRUNCATED
+
+
+def _person(email: str | None, *, literals: Iterable[str] = ()) -> str:
+    """Who acted, as a public comment names them: the address's local part.
+
+    The issue may be on a public repository, and a tenant member's full
+    address there is a disclosure the run does not need to make; the console
+    shows the whole address to the tenant.
+    """
+    if not email:
+        return "someone"
+    if email == AUTO_APPROVER:
+        return "automatic approval (`plan_approval: auto`)"
+    return prose(email.split("@", 1)[0], 100, literals=literals, one_line=True)
+
+
+def _iso(moment: object) -> str:
+    text = moment.isoformat() if hasattr(moment, "isoformat") else str(moment or "")
+    return text.split(".")[0].replace("+00:00", "") + (" UTC" if text else "")
+
+
+def _console_lines(run: IssueRun, origin: str | None) -> list[str]:
+    lines = []
+    run_url = run_console_url(origin, run.id)
+    if run_url:
+        lines.append(f"- run: {run_url}")
+    workflow_url = workflow_console_url(origin, run.workflow_id)
+    if workflow_url:
+        lines.append(f"- workflow: {workflow_url}")
+    return lines
+
+
+# --------------------------------------------------------------------------
+# the plan comment
+# --------------------------------------------------------------------------
+
+def _approval_line(run: IssueRun, literals: Sequence[str]) -> str:
+    if run.state == RunState.PLANNED:
+        line = (
+            f"**Approval: pending.** Approve, edit or reject it in the console or with "
+            f"`sc plan approve|edit|reject {run.id}`. Nothing runs, and no capacity is "
+            "held, until it is approved."
+        )
+        if run.plan_digest:
+            # docs/schedules.md §4.9 (SD9): the exact command, with the current
+            # digest, that `ghapprove`'s poll reads on this issue's comments.
+            line += (
+                " A member who connected their GitHub account in onboarding may also approve "
+                f"it by commenting `{APPROVE_COMMAND} {run.plan_digest}` on this issue."
+            )
+        return line
+    if run.state == RunState.REJECTED:
+        reason = (
+            f": {prose(run.rejection_reason, MAX_LINE_CHARS, literals=literals, one_line=True)}"
+            if run.rejection_reason else ""
+        )
+        return f"**Rejected** by {_person(run.rejected_by, literals=literals)}{reason}"
+    if run.approved_by:
+        when = f" at {_iso(run.approved_at)}" if run.approved_at else ""
+        return f"**Approved** by {_person(run.approved_by, literals=literals)}{when}."
+    if run.state == RunState.CANCELLED:
+        return "**Not approved:** the run was cancelled."
+    return "**Approval: pending.**"
+
+
+def _overlap_line(item: dict, literals: Sequence[str]) -> str:
+    ref = str(item.get("ref") or "")
+    kind = "pull request" if item.get("kind") == "pull_request" else "issue"
+    owner_repo, _, number = ref.partition("#")
+    # PlanOverlap's pattern admitted `ref`, so it is `owner/repo#N` and safe in
+    # a URL; it is checked again here because a link is built from it.
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+", owner_repo) and number.isdigit():
+        path = "pull" if kind == "pull request" else "issues"
+        label = f"[{ref}](https://github.com/{owner_repo}/{path}/{number})"
+    else:
+        label = prose(ref, 160, literals=literals, one_line=True)
+    note = prose(item.get("note") or "", MAX_LINE_CHARS, literals=literals, one_line=True)
+    line = f"- {label} ({kind}): {note}"
+    if item.get("theirs"):
+        line += " — theirs: " + prose(item["theirs"], MAX_LINE_CHARS, literals=literals,
+                                      one_line=True)
+    return line
+
+
+#: What a graph edge is drawn as in the comment's Mermaid block.
+_GRAPH_ARROWS = {"calls": "-->", "imports": "-.->", "tests": "==>"}
+#: A Mermaid label keeps only these; anything else is a space, so a label can
+#: neither close its quotes nor carry markup.
+_GRAPH_LABEL_DROP = re.compile(r"[^A-Za-z0-9_.:/ -]")
+
+
+def _lead_lines(plan: dict, literals: Sequence[str]) -> list[str]:
+    """What the plan does, why, how big and how risky: the comment's first lines
+    (the owner, 6 November 2026). Only what the plan has; an older plan has none."""
+    lines = []
+    if plan.get("purpose"):
+        lines.append(f"**{prose(plan['purpose'], 300, literals=literals, one_line=True)}**")
+    if plan.get("why"):
+        lines.append("**Why:** " + prose(plan["why"], 600, literals=literals, one_line=True))
+    if not lines and not plan.get("risk") and not plan.get("changes"):
+        return []
+    lines.append("**Size:** " + size_line(plan))
+    risk = plan.get("risk")
+    if risk:
+        line = f"**Risk:** {risk['level']}"
+        if risk.get("blast_radius"):
+            line += " — " + prose(risk["blast_radius"], 200, literals=literals, one_line=True)
+        lines.append(line)
+        detail = []
+        for factor in risk.get("factors") or []:
+            detail.append("- factor: " + prose(factor, 200, literals=literals, one_line=True))
+        if "invariants" in risk:
+            touched = ", ".join(str(n) for n in risk["invariants"]) or "none"
+            detail.append(f"- CONTRACT.md invariants touched: {touched}")
+        for step in risk.get("mitigations") or []:
+            detail.append("- mitigation: " + prose(step, 200, literals=literals, one_line=True))
+        if risk.get("rollback"):
+            detail.append("- rollback: " + prose(risk["rollback"], 200, literals=literals,
+                                                 one_line=True))
+        if detail:
+            lines += ["", "<details><summary>Risk profile</summary>", "", *detail, "",
+                      "</details>"]
+    return [*("" if not line else line + ("  " if line.startswith("**") else "")
+              for line in lines), ""]
+
+
+def _changes_lines(plan: dict, literals: Sequence[str]) -> list[str]:
+    changes = plan.get("changes")
+    if not changes:
+        return []
+    out = ["#### What changes, where"]
+    for change in changes:
+        out.append(
+            f"- {change['kind']} {code(change['file'], 300, literals=literals)} "
+            f"({prose(change['area'], 120, literals=literals, one_line=True)}): "
+            + prose(change["what"], 200, literals=literals, one_line=True)
+        )
+    return [*out, ""]
+
+
+def _validation_lines(plan: dict, literals: Sequence[str]) -> list[str]:
+    validation = plan.get("validation")
+    if not validation:
+        return []
+    tests, qa = validation.get("tests") or [], validation.get("qa") or []
+    out = [
+        f"**Validation:** {len(tests)} test{'' if len(tests) == 1 else 's'}, "
+        f"{len(qa)} QA check{'' if len(qa) == 1 else 's'}",
+        "",
+        "<details><summary>Test and QA plan</summary>",
+        "",
+    ]
+    for test in tests:
+        line = (f"- test {code(test['file'], 300, literals=literals)}: "
+                + prose(test["proves"], 200, literals=literals, one_line=True))
+        if test.get("requirements"):
+            line += " (requirements " + ", ".join(str(n) for n in test["requirements"]) + ")"
+        out.append(line)
+    for check in qa:
+        out.append(
+            "- QA: " + prose(check["check"], 200, literals=literals, one_line=True)
+            + " — " + prose(check["where"], 120, literals=literals, one_line=True)
+            + ", " + prose(check["when"], 120, literals=literals, one_line=True)
+        )
+    return [*out, "", "</details>", ""]
+
+
+def _graph_lines(plan: dict, literals: Sequence[str]) -> list[str]:
+    """The change graph as a Mermaid block, which GitHub draws. Nodes are
+    renamed `n0`, `n1`, ... and labels keep only safe characters, so nothing
+    the planner wrote is Mermaid or Markdown syntax here."""
+    graph = plan.get("graph")
+    if not graph or not graph.get("nodes"):
+        return []
+    names = {node["id"]: f"n{i}" for i, node in enumerate(graph["nodes"])}
+    out = ["<details><summary>Change graph</summary>", "", "```mermaid", "flowchart LR"]
+    for node in graph["nodes"]:
+        label = " ".join(_GRAPH_LABEL_DROP.sub(" ", plain(node["label"], 120,
+                                                          literals=literals,
+                                                          one_line=True)).split())
+        out.append(f'  {names[node["id"]]}["{label or node["kind"]} ({node["kind"]})"]')
+    for edge in graph.get("edges") or []:
+        if edge["from"] in names and edge["to"] in names:
+            arrow = _GRAPH_ARROWS.get(edge["kind"], "-->")
+            out.append(f'  {names[edge["from"]]} {arrow} {names[edge["to"]]}')
+    return [*out, "```", "", "</details>", ""]
+
+
+def render_plan_comment(
+    run: IssueRun, *, console_origin: str | None = None, literals: Sequence[str] = ()
+) -> str:
+    """The plan as a comment on the issue. `run.plan` must be set."""
+    plan = run.plan or {}
+    out: list[str] = [
+        marker(run.id, PLAN_KIND),
+        f"### SwarmCloud plan for #{run.issue.number}",
+        "",
+        *_lead_lines(plan, literals),
+        _approval_line(run, literals),
+        "",
+    ]
+    facts = []
+    if plan.get("mode"):
+        facts.append(f"**Mode:** {'one agent' if plan['mode'] == 'single' else 'workflow'}")
+    if plan.get("estimate"):
+        facts.append(
+            "**Estimate:** " + prose(plan["estimate"], 200, literals=literals, one_line=True)
+        )
+    facts.append(f"**Revision:** {run.plan_revision}")
+    facts.append(f"**Digest:** `{run.plan_digest or 'none'}`")
+    out += [" · ".join(facts), ""]
+    out += [prose(plan.get("summary") or "", MAX_SUMMARY_CHARS, literals=literals), ""]
+
+    requirements = plan.get("requirements") or []
+    out.append("#### Requirements")
+    if requirements:
+        out += [
+            f"{n}. {prose(item, MAX_LINE_CHARS, literals=literals, one_line=True)}"
+            for n, item in enumerate(requirements, start=1)
+        ]
+    else:
+        out.append("_The plan lists none, so the pull request will say `part of`, not `Closes`._")
+    out.append("")
+
+    out.append("#### Overlaps with open work")
+    overlaps = plan.get("overlaps")
+    if overlaps:
+        out += [_overlap_line(item, literals) for item in overlaps]
+    elif overlaps is not None:
+        out.append("None found in the repository's open issues and pull requests.")
+    else:
+        out.append("_The plan does not say._")
+    out.append("")
+
+    out += _changes_lines(plan, literals)
+    out += _validation_lines(plan, literals)
+    out += _graph_lines(plan, literals)
+
+    out.append("#### Steps")
+    for n, step in enumerate(plan.get("steps") or [], start=1):
+        title = prose(step.get("title") or "", 200, literals=literals, one_line=True)
+        line = f"{n}. **{title}** (`{step.get('step_id')}`)"
+        if step.get("estimate"):
+            line += " — " + prose(step["estimate"], 100, literals=literals, one_line=True)
+        out.append(line)
+        if step.get("files"):
+            out.append("   - files: " + ", ".join(
+                code(path, 300, literals=literals)
+                for path in step["files"]
+            ))
+        if step.get("tests"):
+            out.append("   - tests, written first:")
+            out += [
+                f"     - {prose(test, MAX_LINE_CHARS, literals=literals, one_line=True)}"
+                for test in step["tests"]
+            ]
+        prompt = prose(step.get("prompt") or "", MAX_PROMPT_CHARS, literals=literals)
+        out += [
+            "",
+            "   <details><summary>Instructions</summary>",
+            "",
+            *("   " + line if line else "" for line in prompt.splitlines()),
+            "",
+            "   </details>",
+            "",
+        ]
+    console = _console_lines(run, console_origin)
+    if console:
+        out += ["Console:", *console, ""]
+    out.append(
+        "_Written by SwarmCloud for its run "
+        f"`{run.id}`, and edited in place when the plan changes._"
+    )
+    return bounded("\n".join(out) + "\n")
+
+
+# --------------------------------------------------------------------------
+# the status comment
+# --------------------------------------------------------------------------
+
+def status_phase(run: IssueRun) -> str:
+    """Where the run is, in the words the issue's readers see."""
+    pull = run.pull_request or {}
+    checks = pull.get("checks")
+    if run.state == RunState.PLANNING:
+        return "planning"
+    if run.state == RunState.PLANNED:
+        return "plan awaiting approval"
+    if run.state == RunState.APPROVED:
+        return "approved, starting"
+    if run.state == RunState.RUNNING:
+        if not pull:
+            return "running"
+        if checks == "green":
+            return "checks green"
+        if checks == "red" or run.ci_fix_round:
+            return "CI red, fixing"
+        return "pull request opened"
+    if run.state == RunState.CHECKING:
+        if checks == "red":
+            return "CI red"
+        return "pull request opened, CI pending"
+    if run.state == RunState.FIXING:
+        return "CI red, fixing"
+    if run.state == RunState.DONE:
+        if run.outcome == OUTCOME_ALREADY_ON_MAIN:
+            return "already done on main"
+        if pull.get("merged"):
+            return "merged"
+        if checks == "green":
+            return "checks green, ready to merge"
+        if checks == "none":
+            return "pull request opened, no CI reported"
+        return "done"
+    if run.state == RunState.FAILED:
+        return "failed"
+    if run.state == RunState.REJECTED:
+        return "plan rejected"
+    if run.state == RunState.NOT_READY:
+        return "not ready"
+    return "cancelled"
+
+
+#: What a NOT_READY verdict's `kind` says on the issue.
+_NOT_READY_KIND_WORDS = {
+    "already_done": "already done on main",
+    "owner_decision": "needs an owner decision",
+    "blocked": "blocked by other work",
+    "too_vague": "too vague to plan",
+    "security_deferred": "deferred security work",
+    "epic": "an epic",
+    "other": "not ready",
+}
+
+
+def _not_ready_lines(verdict: dict, literals: Sequence[str]) -> list[str]:
+    """The planner's reason and needs. Agent text: neutralised like a plan's,
+    so it pings nobody and closes nothing."""
+    kind = _NOT_READY_KIND_WORDS.get(str(verdict.get("kind") or ""), "")
+    out = []
+    if kind:
+        out.append(f"- **Verdict:** {kind}")
+    out += [
+        "",
+        "**Why:** " + prose(str(verdict.get("reason") or ""), MAX_LINE_CHARS * 4,
+                            literals=literals, one_line=True),
+    ]
+    needs = [str(n) for n in verdict.get("needs") or []]
+    if needs:
+        out += ["", "**Needs:**"]
+        out += [f"- {prose(n, MAX_LINE_CHARS, literals=literals, one_line=True)}" for n in needs]
+    out += [
+        "",
+        "_The issue is planned again only after it is edited or commented on._",
+    ]
+    return out
+
+
+def render_status_comment(
+    run: IssueRun, *, console_origin: str | None = None, literals: Sequence[str] = ()
+) -> str:
+    """The ONE status comment. Carries no time, so an unchanged run renders unchanged."""
+    out = [
+        marker(run.id, STATUS_KIND),
+        f"### SwarmCloud: {status_phase(run)}",
+        "",
+        f"- **Run:** `{run.id}` ({run.state.value})",
+    ]
+    pull = run.pull_request or {}
+    if pull.get("url") and pull.get("number"):
+        sha = str(pull.get("head_sha") or "")[:12]
+        out.append(
+            f"- **Pull request:** #{int(pull['number'])}"
+            + (f" at {code(sha, 12)}" if sha else "")
+        )
+        if run.requirements_met is not None:
+            # Which keyword the pull request's body carries, and why. An
+            # issue comment closes nothing, so the keyword is safe to quote.
+            number = int(run.issue.number)
+            if run.requirements_met:
+                out.append(
+                    f"- **Keyword:** `Closes #{number}` -- the review confirmed every "
+                    "planned requirement"
+                )
+            else:
+                left = len(run.requirements_unmet)
+                out.append(
+                    f"- **Keyword:** `part of #{number}` -- "
+                    + (f"{left} planned requirement(s) not confirmed by the review"
+                       if left else "no planned requirement could be confirmed")
+                )
+    if run.outcome == OUTCOME_ALREADY_ON_MAIN:
+        out.append(f"- **Outcome:** `{OUTCOME_ALREADY_ON_MAIN}` -- " + _closing_words(run))
+    if run.ci_fix_round:
+        out.append(f"- **CI fix round:** {run.ci_fix_round} of {run.fix_rounds}")
+    if run.state == RunState.PLANNED and run.plan_digest:
+        out.append(f"- **Plan:** revision {run.plan_revision}, `{run.plan_digest}`")
+    if run.state == RunState.PLANNED and run.hold:
+        out.append(
+            "- **Waiting:** " + code(run.hold, 120, literals=literals)
+            + " -- another live run's plan edits the same files; "
+            "this one is approved once that run ends"
+        )
+    if run.state == RunState.NOT_READY and run.not_ready:
+        out += _not_ready_lines(run.not_ready, literals)
+    if run.error and run.state in (RunState.FAILED, RunState.CANCELLED):
+        out += [
+            "",
+            "**Why:**",
+            "",
+            "```text",
+            # A fenced block shows its text as typed: plain, its fence defused.
+            plain(run.error, MAX_ERROR_CHARS, literals=literals).replace("```", "'''"),
+            "```",
+        ]
+    console = _console_lines(run, console_origin)
+    if console:
+        out += ["", "Console:", *console]
+    out += [
+        "",
+        "_SwarmCloud edits this comment in place as the run moves._",
+    ]
+    return bounded("\n".join(out) + "\n")
+
+
+# --------------------------------------------------------------------------
+# the verification comment (archived issue 646)
+# --------------------------------------------------------------------------
+
+def closes_issue(run: IssueRun) -> bool:
+    """Whether the write-back closes the issue: an already_on_main run whose
+    tables say EVERY planned requirement is met on main, and nothing less."""
+    return (
+        run.state == RunState.DONE
+        and run.outcome == OUTCOME_ALREADY_ON_MAIN
+        and run.requirements_met is True
+        and bool((run.plan or {}).get("requirements"))
+    )
+
+
+def _closing_words(run: IssueRun) -> str:
+    if closes_issue(run):
+        # Written in the same sync that closes the issue (`issuesync`); a
+        # close that fails is on the run as `writeback_error`, and retried.
+        return "every planned requirement is met on main, so this issue is closed as completed"
+    left = len(run.requirements_unmet)
+    return (
+        f"{left} planned requirement(s) not confirmed met on main, so this issue stays open"
+        if left else "no planned requirement could be confirmed met on main, so this issue stays open"
+    )
+
+
+def render_verification_comment(
+    run: IssueRun, *, literals: Sequence[str] = ()
+) -> str | None:
+    """The build's verification tables, for an already_on_main run; None for any other.
+
+    The tables are the agents' text, so they are written like the plan
+    (`prose`): masked again with the tenant's token as a literal, an HTML
+    opener backslash-escaped, mentions broken, closing keywords turned into
+    `refs`. They keep their lines, so the Markdown table still renders.
+    """
+    if run.state != RunState.DONE or run.outcome != OUTCOME_ALREADY_ON_MAIN:
+        return None
+    out = [
+        marker(run.id, VERIFICATION_KIND),
+        "### SwarmCloud: already done on main",
+        "",
+        "The build changed nothing: its agent found this issue's work already on the "
+        f"default branch, and wrote what it verified ({VERIFICATION_FILE}, one row per "
+        "planned requirement).",
+        "",
+        prose(run.verification or f"No build step wrote {VERIFICATION_FILE}.",
+                MAX_VERIFICATION_CHARS, literals=literals),
+        "",
+        f"**{_closing_words(run)[0].upper() + _closing_words(run)[1:]}.**",
+    ]
+    if not closes_issue(run):
+        if run.requirements_unmet:
+            out += ["", "Not confirmed:"]
+            out += [
+                f"- {prose(item, MAX_LINE_CHARS, literals=literals, one_line=True)}"
+                for item in run.requirements_unmet[:60]
+            ]
+        if run.requirements_note:
+            out += ["", f"_{prose(run.requirements_note, MAX_ERROR_CHARS, literals=literals, one_line=True)}_"]
+    return bounded("\n".join(out) + "\n")
+
+
+# --------------------------------------------------------------------------
+# the pull request body's keyword block
+# --------------------------------------------------------------------------
+
+def keyword_block(
+    run: IssueRun, *, closes: bool, unmet: Sequence[str] = (), literals: Sequence[str] = ()
+) -> str:
+    """`Closes #N`, or `part of #N` and what is left, between this run's markers.
+
+    `closes` is the caller's finding that the review confirmed EVERY planned
+    requirement; it is refused (rendered `part of`) when the plan lists no
+    requirements to confirm, or when anything is named as unmet.
+    """
+    number = int(run.issue.number)
+    requirements = (run.plan or {}).get("requirements") or []
+    lines = [marker(run.id, KEYWORD_KIND)]
+    if closes and requirements and not unmet:
+        lines.append(f"Closes #{number}")
+    else:
+        lines.append(f"part of #{number}")
+        if unmet:
+            lines += ["", "Not yet delivered:"]
+            lines += [
+                f"- {prose(item, MAX_LINE_CHARS, literals=literals, one_line=True)}"
+                for item in list(unmet)[:60]
+            ]
+        elif not requirements:
+            lines += ["", "The plan listed no requirements, so none could be confirmed."]
+        else:
+            lines += ["", "The review did not confirm every planned requirement."]
+    lines.append(keyword_end(run.id))
+    return "\n".join(lines)
+
+
+def apply_keyword_block(body: str, run: IssueRun, block: str) -> str:
+    """`body` with this run's block replaced (or appended), and no other closing keyword.
+
+    The block is the one place that may close the issue: any closing keyword
+    elsewhere in the body -- an agent's "Fixes archived pull request 42" -- becomes `refs`, so a
+    `part of` block cannot be contradicted by a line above it.
+    """
+    start, end = marker(run.id, KEYWORD_KIND), keyword_end(run.id)
+    text = body or ""
+    head, sep, rest = text.partition(start)
+    if sep:
+        _, sep_end, tail = rest.partition(end)
+        text = head.rstrip() + (tail if sep_end else "")
+    text = neutralise_closing_keywords(text).rstrip()
+    joined = (text + "\n\n" if text else "") + block + "\n"
+    if len(joined) > MAX_BODY_CHARS:
+        room = MAX_BODY_CHARS - len(block) - len(_TRUNCATED) - 2
+        joined = text[: max(room, 0)] + _TRUNCATED + "\n" + block + "\n"
+    return joined

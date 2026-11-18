@@ -1,0 +1,625 @@
+import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+
+import { cancelTask } from './api'
+import { Button } from './components'
+import { WarnGlyph } from './components/glyphs'
+import { useRoleGate } from './Profile'
+import { errorHeading, type ApiError } from './fetch'
+import { trapTab } from './focus'
+import {
+  TERMINAL_STATES,
+  canBeStopped,
+  stoppingEndsALiveAttempt,
+  type Task,
+  type TaskState,
+  type Workflow,
+  type WorkflowStep,
+} from './types'
+
+/**
+ * The stop control. `POST /v1/tasks/{id}/cancel`, which has worked since it was
+ * written and which NOTHING in this app called.
+ *
+ * B28 in docs/web-ui/ui-audit-and-build-prompt.md, and the gap it names is not
+ * a missing feature so much as a missing exit: "an operator watching an agent
+ * burn tokens on the wrong thing cannot stop it from the console."
+ *
+ * EVERY SENTENCE THIS FILE PUTS ON SCREEN IS PINNED BY A TEST.
+ * `tests/unit/control_plane/test_cancel_semantics.py` exists because a
+ * confirmation dialog is a set of claims about what is about to happen, and
+ * the first draft of these claims was wrong in two ways that only running the
+ * scheduler exposed:
+ *
+ *   1. STOPPING IS A REQUEST, NOT AN EVENT. For a task holding capacity,
+ *      `Store.request_cancel` sets `cancel_requested` and leaves the state
+ *      alone -- releasing the lease from the API would decrement a pool that a
+ *      live container still occupies. The agent keeps running, and keeps
+ *      spending, until its next heartbeat -- WHEN A WORKER IS RUNNING IT. See
+ *      `workerHasStarted` for the case where none is, which is the one this
+ *      file got wrong (incident wf_ebb3ab2d65664707a559, F-8).
+ *   2. DEPENDENTS FALL OVER AFTERWARDS, NOT AT THE SAME TIME. The scheduler's
+ *      `_FAILED_PARENT_STATES` tests the parent's STATE, not the flag, so
+ *      nothing downstream moves until the worker has actually finished the
+ *      attempt as CANCELLED. `test_nothing_downstream_moves_until_the_worker_
+ *      has_acted` pins that window.
+ *
+ * AND THE THING THAT MAKES THE DECISION EASY, which the dialog says because it
+ * is true and because it is the kind of fact this product should be stating:
+ * the work is KEPT. `lifecycle.py:611-625` terminates the child, takes a
+ * checkpoint, uploads the artifacts and the logs, and only then finishes the
+ * attempt as CANCELLED. Stopping an agent costs the rest of that attempt, not
+ * what it has already done.
+ *
+ * WHAT IS DELIBERATELY NOT SAID. `Workflow.on_step_failure` changes what a
+ * FAILED or DEAD_LETTERED step does. Under `fail_workflow` the scheduler cancels
+ * every step of the workflow that has not started. It does not change what a
+ * STOP does: a stop ends in CANCELLED, and neither setting treats CANCELLED as a
+ * failure (`scheduler.loop._WORKFLOW_FAILING_STATES`). So for this dialog the
+ * two settings behave identically, and it describes the behaviour rather than
+ * the setting. `test_on_step_failure_does_not_change_what_a_stop_does` pins that
+ * under both settings. See that test file's module docstring for the finding.
+ */
+
+/** Which steps of this workflow die with the one being stopped. */
+export function dependentsOf(
+  step: WorkflowStep,
+  steps: WorkflowStep[],
+): WorkflowStep[] {
+  const byId = new Map(steps.map((s) => [s.step_id, s]))
+  const doomed = new Set<string>()
+  // Transitive, not just direct children: `join` depends on `left`, and
+  // `report` depends on `join`, so stopping `left` takes both. Naming only the
+  // direct child would under-report what the button does.
+  const walk = (id: string): void => {
+    for (const candidate of steps) {
+      if (candidate.depends_on.includes(id) && !doomed.has(candidate.step_id)) {
+        doomed.add(candidate.step_id)
+        walk(candidate.step_id)
+      }
+    }
+  }
+  walk(step.step_id)
+  doomed.delete(step.step_id)
+  return Array.from(doomed)
+    .map((id) => byId.get(id))
+    .filter((s): s is WorkflowStep => s !== undefined)
+}
+
+/**
+ * Whether a worker is running THIS attempt, so that "at its next heartbeat"
+ * is a promise something will keep.
+ *
+ * Every sentence below used to promise the heartbeat for any task holding
+ * capacity. In incident wf_ebb3ab2d65664707a559, five DISPATCHED tasks whose
+ * GKE pods never ran the worker lifecycle were stopped under that promise and
+ * stayed DISPATCHED for hours: nothing was ever going to heartbeat.
+ *
+ * TWO SIGNALS, because either alone is wrong:
+ *
+ *   * `started_at` is written by the worker's DISPATCHED -> STARTING
+ *     transition (`control.py:412`). Null means no worker has ever started
+ *     this task;
+ *   * but nothing clears it on a retry, so a second attempt waiting
+ *     DISPATCHED carries the first attempt's value. The STATE is what says
+ *     whether this attempt's worker has started: it moves the task to
+ *     STARTING before it runs anything.
+ *
+ * What is true when this is false, and so what the copy says instead: a worker
+ * that does start sees `cancel_requested` before it runs anything, finishes
+ * the attempt as CANCELLED and exits (`lifecycle.py:269-278`). If none starts,
+ * the reconciler reclaims the attempt once its dispatch deadline passes. No
+ * time is given for that. On GKE the reclaim depends on the reconciler being
+ * able to read GKE at all, and a number on screen would be a second promise
+ * the platform cannot always keep.
+ */
+export function workerHasStarted(task: {
+  state: TaskState
+  started_at?: string | null
+}): boolean {
+  return (task.state === 'STARTING' || task.state === 'RUNNING') && Boolean(task.started_at)
+}
+
+/**
+ * Whether an EARLIER attempt of this task did work, which is what decides
+ * whether "nothing has run" is true of a task whose current attempt has no
+ * worker (or which has no current attempt at all).
+ *
+ * "No worker has started THIS attempt" and "nothing has run" are different
+ * facts. The designed path that separates them is invariant 4: an attempt runs,
+ * checkpoints, parks on a provider quota and exits; the task is re-admitted and
+ * waits DISPATCHED for its next worker. That task's `started_at` is still set
+ * (see `workerHasStarted`: nothing clears it), and `latest_checkpoint` names
+ * what the next worker would restore (`lifecycle.py:345`). Telling the reader
+ * "nothing has run" there says nothing is at stake when the whole of that
+ * earlier attempt's progress is: a stopped task is never resumed.
+ *
+ * `attempt_count > 1` IS DELIBERATELY NOT A SIGNAL. The reconciler reclaims an
+ * attempt whose worker never started and the task is admitted again, so a task
+ * can reach attempt 2 with nothing ever run -- the shape of every task in
+ * incident wf_ebb3ab2d65664707a559. `started_at` null means no worker has ever
+ * reached STARTING for this task, and a checkpoint cannot exist without one.
+ * `latest_checkpoint` is checked as well because it is the thing at stake,
+ * and a task that names one is not a task on which nothing ran.
+ */
+export function earlierAttemptRan(task: {
+  started_at?: string | null
+  latest_checkpoint?: string | null
+}): boolean {
+  return Boolean(task.started_at) || Boolean(task.latest_checkpoint)
+}
+
+/**
+ * What a stop gives up when an earlier attempt did the work, as one sentence.
+ *
+ * WHY "NEVER RESUMED". A stop ends the task. CANCELLED has no outgoing
+ * transition in the frozen state machine, and a flagged task that the
+ * reconciler returns to READY is cancelled by the scheduler before it can be
+ * admitted again (`scheduler/loop.py`, `_admit_one`). So no later attempt
+ * restores that checkpoint.
+ *
+ * WHAT IS NOT CLAIMED. Nothing here says the checkpoint stays. Once the task is
+ * terminal and its attempts are complete, the reconciler's checkpoint retention
+ * (`reconciler/checkpoints.py`, `classify`) treats a CANCELLED task's
+ * checkpoints as unreferenced. Artifacts and logs are outside that collector,
+ * so "left where they are" is true of them. It is said of "whatever" was
+ * uploaded because an attempt that ran is not proof that it uploaded anything.
+ */
+function earlierWorkSentence(task: { latest_checkpoint?: string | null }): string {
+  return task.latest_checkpoint
+    ? 'An earlier attempt of this agent did run, and left a checkpoint. A stopped agent is never ' +
+        'resumed, so stopping gives up resuming from that checkpoint. Whatever artifacts and logs ' +
+        'earlier attempts uploaded are left where they are.'
+    : 'An earlier attempt of this agent did run. A stopped agent is never resumed, so stopping ' +
+        'gives up anything a later attempt would have picked up from it. Whatever artifacts and ' +
+        'logs earlier attempts uploaded are left where they are.'
+}
+
+/**
+ * Steps that share the workflow, do not depend on the one being stopped, and
+ * have not already ended.
+ *
+ * "KEEPS RUNNING" IS A CLAIM ABOUT STEPS THAT ARE STILL GOING (live QA WF-4,
+ * 2026-10-11). Every non-downstream step was listed, so stopping a parked
+ * `merge` said `keeps running: implement, review, fix, re-review` over four
+ * steps that had SUCCEEDED or been skipped by verdict. With the task read
+ * (`taskById`), a step whose task is in a terminal state is left out. A step
+ * with no task yet has not ended and is kept, and so is one whose task this
+ * read did not reach: the read cannot say it ended. With no `taskById` at all
+ * nothing is known, and the list is every non-downstream step as before.
+ */
+export function survivorsOf(
+  step: WorkflowStep,
+  steps: WorkflowStep[],
+  taskById: ReadonlyMap<string, Task> | null = null,
+): WorkflowStep[] {
+  const doomed = new Set(dependentsOf(step, steps).map((s) => s.step_id))
+  return steps.filter((s) => {
+    if (s.step_id === step.step_id || doomed.has(s.step_id)) return false
+    const t = s.task_id ? taskById?.get(s.task_id) : undefined
+    return t === undefined || !TERMINAL_STATES.has(t.state)
+  })
+}
+
+/**
+ * Step ids as one run of text: `review, fix, merge`. One element, so a flex
+ * fact row (`.ctl-fact`) lays out ONE item and its gap does not land before
+ * each comma (live QA WF-14: `review , fix , re-review`).
+ */
+function StepIdList({ steps }: { steps: readonly WorkflowStep[] }) {
+  return (
+    <span className="stop-steps">
+      {steps.map((s, i) => (
+        <Fragment key={s.step_id}>
+          {i > 0 && ', '}
+          <code>{s.step_id}</code>
+        </Fragment>
+      ))}
+    </span>
+  )
+}
+
+export interface StopRunProps {
+  task: Task
+  /** A label for the thing being stopped, as the operator names it. */
+  what: string
+  /** The workflow this task is a step of, when it is one. */
+  workflow?: Workflow | null
+  step?: WorkflowStep | null
+  /** The workflow's task read, so `keeps running` leaves out steps that already ended. */
+  taskById?: ReadonlyMap<string, Task> | null
+  /** Re-read the screen after the request is recorded. */
+  reload: () => void
+  /** `inline` sits on a graph node; `panel` sits in the run detail. */
+  variant?: 'inline' | 'panel'
+  /**
+   * Open the confirmation as a modal over the page instead of in place.
+   *
+   * THE GRAPH NODE ASKS FOR THIS, AND NOTHING ELSE DOES (V001, archived issue 1038). In
+   * place on a node the dialog grew upward out of a 221px strip: its title
+   * and its facts were above the canvas's clip, the buttons spilled out of
+   * the card, and focus stayed on `<body>` because the button that held it
+   * had been replaced. `styles.css` said the answer in advance -- "if the
+   * wrapped dialog ever needs more room than this, the answer is to move it
+   * out of the card" -- and this is that move. The pick panel and the run
+   * detail have the width, so they keep the in-place dialog.
+   */
+  overlay?: boolean
+  /**
+   * The button's word. `stop` in a row and on a graph node; the agent header
+   * says `Stop`, as the live-browser mockup's "Copy link · Take control ·
+   * Stop" does (owner decision 2026-10-12, LB-UX1).
+   */
+  label?: string
+}
+
+export function StopRun({
+  task,
+  what,
+  workflow = null,
+  step = null,
+  taskById = null,
+  reload,
+  variant = 'panel',
+  overlay = false,
+  label = 'stop',
+}: StopRunProps) {
+  const [open, setOpen] = useState(false)
+  const buttonId = useId()
+  const box = useRef<HTMLDivElement | null>(null)
+  const refocus = useRef(false)
+  // FOCUS GOES INTO THE DIALOG WHEN IT OPENS AND BACK TO THE BUTTON WHEN IT
+  // CLOSES. The button that held focus is unmounted by the very click that
+  // opens the dialog, so without this focus fell to `<body>` and a keyboard
+  // reader had to Tab the whole page again to reach the question (V001). The
+  // dialog box itself takes focus, not its first button: the first button is
+  // the destructive one, and Enter pressed twice must not stop a task. The
+  // button is a new element after closing, so it is found again by its id.
+  useEffect(() => {
+    if (open) {
+      box.current?.focus()
+      refocus.current = true
+      return
+    }
+    if (refocus.current) {
+      refocus.current = false
+      document.getElementById(buttonId)?.focus()
+    }
+  }, [open, buttonId])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<ApiError | null>(null)
+  const [outcome, setOutcome] = useState<'requested' | 'released' | null>(null)
+  const started = workerHasStarted(task)
+  // Only consulted when no worker is running this attempt: a started worker's
+  // own attempt is the work, and its copy already says what happens to it.
+  const earlier = !started && earlierAttemptRan(task)
+  // A VIEWER CANCELS NOTHING (docs/design/workspace-roles.md §4.8, Q8): the
+  // button is disabled with the role sentence beside it. The API still decides
+  // (`role_member_required`); this only stops offering a click it refuses.
+  // Called before any early return below, as every hook must be.
+  const roleGate = useRoleGate('member', 'cancel')
+  const gateId = useId()
+
+  // A button that 409s is a button that should not have been drawn:
+  // `request_cancel` refuses every terminal state. `cancel_requested` already
+  // set is the other case -- the request is in, and offering to make it again
+  // would imply the first one had not taken.
+  if (!canBeStopped(task)) {
+    return task.cancel_requested === true && !TERMINAL_STATES.has(task.state) ? (
+      <span
+        className="stop-pending"
+        title={
+          started
+            ? 'The request is recorded. The worker acts on it at its next heartbeat.'
+            : 'The request is recorded. No worker has started this attempt: one that starts ' +
+              'stops before running anything, and if none does, the reconciler finishes it.'
+        }
+      >
+        stop requested
+      </span>
+    ) : null
+  }
+
+  const live = stoppingEndsALiveAttempt(task)
+  const doomed = workflow && step ? dependentsOf(step, workflow.steps) : []
+  const survivors = workflow && step ? survivorsOf(step, workflow.steps, taskById) : []
+
+  const run = async () => {
+    setBusy(true)
+    setError(null)
+    const res = await cancelTask(task.id)
+    setBusy(false)
+    if (res.status === 'ok') {
+      // The FIELD, not the status. A 200 means the request was recorded; only
+      // `released_immediately` says whether anything stopped.
+      setOutcome(res.data?.released_immediately === true ? 'released' : 'requested')
+      setOpen(false)
+      reload()
+    } else if (res.status === 'error' || res.status === 'stale') {
+      setError(res.error)
+    }
+  }
+
+  if (outcome !== null) {
+    // STOPPED AND STOP-REQUESTED ARE DIFFERENT FACTS AND STAY DIFFERENT WORDS.
+    // `released_immediately` is the only thing that says which, and the two
+    // must not converge -- that is the whole point of reading the field rather
+    // than the status. What went is the second sentence of each: the long form
+    // is the accessible name.
+    return (
+      <p
+        className={variant === 'inline' ? 'stop-note small' : 'stop-note'}
+        aria-label={
+          outcome === 'released'
+            ? earlier
+              ? 'Stopped. It held no capacity, so it went straight to CANCELLED. Nothing was running. ' +
+                earlierWorkSentence(task)
+              : 'Stopped. It held no capacity, so it went straight to CANCELLED. No attempt had started, so there is nothing to harvest.'
+            : started
+              ? 'Stop requested. It is recorded on the agent. The agent is still running and still spending until its next heartbeat, when the worker checkpoints, uploads and exits.'
+              : 'Stop requested. It is recorded on the agent. No worker has started this attempt, so ' +
+                'nothing is running to act on it yet: a worker that starts sees the request before it ' +
+                'runs anything and stops, and if none starts, the reconciler reclaims the attempt and ' +
+                'finishes it. Until one of those happens the slot stays held.'
+        }
+      >
+        {outcome === 'released' ? (
+          earlier ? (
+            <>
+              <strong>Stopped.</strong> Nothing was running;{' '}
+              {task.latest_checkpoint
+                ? 'the earlier checkpoint is not resumed.'
+                : 'what earlier attempts did is not resumed.'}
+            </>
+          ) : (
+            <>
+              <strong>Stopped.</strong> It held no capacity, so nothing to harvest.
+            </>
+          )
+        ) : started ? (
+          <>
+            <strong>Stop requested.</strong> Still running until the next
+            heartbeat.
+          </>
+        ) : (
+          <>
+            <strong>Stop requested.</strong> No worker has started this attempt; the
+            reconciler finishes it if none does.
+          </>
+        )}
+      </p>
+    )
+  }
+
+  // The canonical button (components.html A). In a row or on a graph node
+  // it is QUIET until opened (B28) -- the plain small button, whose 28px
+  // the node's slot is measured for; in an agent's header, where there is
+  // one, it is the danger outline: a destructive action that will still ask.
+  const stopButton = (
+    <Button
+      kind={variant === 'inline' ? 'secondary' : 'danger'}
+      size={variant === 'inline' ? 'sm' : 'md'}
+      id={buttonId}
+      className="run-stop-btn"
+      aria-haspopup={overlay ? 'dialog' : undefined}
+      aria-expanded={overlay ? open : undefined}
+      disabled={roleGate !== null}
+      aria-describedby={roleGate === null ? undefined : gateId}
+      onClick={() => { if (roleGate === null) setOpen(true) }}
+    >
+      {label}
+    </Button>
+  )
+  // THE ROLE SENTENCE IS A SIBLING, NEVER A WRAPPER. Button's own
+  // `disabledReason` wraps the button in a new element, so the role read
+  // landing would remount it: the stop control someone was tabbing to becomes
+  // a different node and focus is lost. The same shape before and after.
+  const gateNote = roleGate === null ? null : (
+    <span className="c-why" id={gateId} data-role-gate="member">
+      <WarnGlyph />
+      {roleGate}
+    </span>
+  )
+  if (!open || roleGate !== null) return <>{stopButton}{gateNote}</>
+
+  // FOUR PARAGRAPHS BECAME FOUR FACTS, AND EVERY CLAIM SURVIVES.
+  //
+  // This dialog's claims are pinned by `test_cancel_semantics.py` for a real
+  // reason -- the first draft of them was wrong twice, and only running the
+  // scheduler showed it. What that file holds is that the dialog does not
+  // OVERSTATE: not "this cancels the following steps" but "these are cancelled
+  // once this one has stopped"; not "it stops" but "the request is recorded".
+  // Those distinctions are in the values below, word for word.
+  //
+  // What went is the connective tissue: "because releasing the lease from here
+  // would free capacity a live container still occupies" is the REASON the
+  // stop is a request rather than an event, and it is the same reason on every
+  // task, every time. A keyed fact whose value is `at the worker's next
+  // heartbeat` makes the same promise in four words and cannot be skimmed past
+  // the way the fourth line of a paragraph can. The full sentences are the
+  // strip's accessible name, so nothing is lost to a screen reader either.
+  //
+  // THREE CASES, NOT TWO. That four-word promise, and "the work so far is
+  // kept", are true only while a worker is running this attempt. For an
+  // attempt no worker has started (`workerHasStarted`) nothing will heartbeat
+  // and nothing of THIS attempt has been done, so that case gets its own
+  // values, and they name the two things that can actually finish it: a worker
+  // that starts, or the reconciler. Neither is given a time.
+  //
+  // AND "THIS ATTEMPT HAS NOT STARTED" IS NOT "NOTHING HAS RUN". A re-admitted
+  // task whose earlier attempt ran and checkpointed (`earlierAttemptRan`) has
+  // work at stake, whether it is waiting DISPATCHED for its next worker or
+  // PARKED before that. There the copy says what the stop gives up, not
+  // "none". `stoppingWhat` is the lead sentence for every case: a stop ends the
+  // task, so it must not say the task's retries survive it.
+  const stops =
+    step === null ? task.id : `${task.id} — step ${step.step_id}`
+  const stoppingWhat =
+    `Stopping ${stops} is irreversible: the agent ends, and no attempt of it is retried or ` +
+    `resumed afterwards. `
+  const notStartedMechanics =
+    'It does not stop instantly — the API records the request, and the slot stays held until a ' +
+    'worker starts and stops before running anything or, if none starts, the reconciler reclaims ' +
+    'the attempt and finishes it. Releasing the lease from here would free capacity a starting ' +
+    'container may still occupy.'
+  const earlierWorkFact = task.latest_checkpoint
+    ? 'an earlier attempt checkpointed — not resumed once stopped'
+    : 'an earlier attempt ran — not resumed once stopped'
+  const close = () => {
+    if (!busy) setOpen(false)
+  }
+  const confirm = (
+    <div
+      className={overlay ? 'stop-confirm is-overlay' : 'stop-confirm'}
+      role={overlay ? 'dialog' : 'group'}
+      aria-modal={overlay ? true : undefined}
+      aria-label={`Stop ${what}`}
+      tabIndex={-1}
+      ref={box}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation()
+          close()
+          return
+        }
+        if (overlay) trapTab(e, box.current)
+      }}
+    >
+      <h4>Stop {what}?</h4>
+
+      <ul
+        className="ctl-facts stop-facts"
+        aria-label={
+          stoppingWhat +
+          (!live
+            ? earlier
+              ? 'Nothing is executing and no capacity is held, so this takes effect at once. ' +
+                earlierWorkSentence(task)
+              : 'Nothing is executing and no capacity is held, so this takes effect at once and there is ' +
+                'no attempt to harvest.'
+            : started
+              ? 'The work so far is kept: before it exits the worker takes a checkpoint and uploads ' +
+                "this attempt's artifacts and logs, so stopping costs the rest of this attempt and not " +
+                'what it has already done. It does not stop instantly — the API records the request and ' +
+                'the worker acts on it at its next heartbeat; until then the agent keeps running and the ' +
+                'slot stays held, because releasing the lease from here would free capacity a live ' +
+                'container still occupies.'
+              : earlier
+                ? 'No worker has started this attempt, so nothing of this attempt is running or to ' +
+                  'harvest. ' +
+                  earlierWorkSentence(task) +
+                  ' ' +
+                  notStartedMechanics
+                : 'Nothing has run yet: no worker has ever started this agent, so there is no work to ' +
+                  'harvest. ' +
+                  notStartedMechanics)
+        }
+      >
+        <li className="ctl-fact">
+          <b>stops</b>
+          <span className="stop-val">
+            <code>{task.id}</code>
+            {step !== null && (
+              <>
+                {' '}
+                step <code>{step.step_id}</code>
+              </>
+            )}
+          </span>
+        </li>
+        {task.attempt_count > 0 && (
+          <li className="ctl-fact">
+            <b>attempt</b>
+            <span className="stop-val">
+              {task.attempt_count} of {task.max_attempts}, not resumed
+            </span>
+          </li>
+        )}
+        <li className="ctl-fact">
+          <b>work so far</b>
+          <span className="stop-val">
+            {earlier
+              ? earlierWorkFact
+              : !live
+                ? 'none to harvest'
+                : started
+                  ? 'kept — checkpoint, artifacts and logs are uploaded first'
+                  : 'none — no worker has ever started this agent'}
+          </span>
+        </li>
+        <li className="ctl-fact">
+          <b>takes effect</b>
+          <span className="stop-val">
+            {!live
+              ? 'at once'
+              : started
+                ? "at the worker's next heartbeat, not now"
+                : 'when a worker starts, or when the reconciler finishes it — not now'}
+          </span>
+        </li>
+      </ul>
+
+      {/* WHAT ELSE GOES WITH IT. Named, never counted -- and the tense is the
+          part `test_cancel_semantics.py` holds: the scheduler cancels these
+          when the parent reaches CANCELLED, which is after the worker has
+          acted, not when the button is pressed. So the key is `once stopped`
+          and not `also cancels`. */}
+      {workflow !== null && step !== null && (
+        <ul className="ctl-facts stop-facts stop-blast">
+          <li className={doomed.length > 0 ? 'ctl-fact' : 'ctl-fact is-absent'}>
+            <b>once stopped, also cancels</b>
+            <span className="stop-val">
+              {doomed.length === 0 ? 'nothing — no other step depends on this one' : <StepIdList steps={doomed} />}
+            </span>
+          </li>
+          {survivors.length > 0 && (
+            <li className="ctl-fact">
+              <b>keeps running</b>
+              <span className="stop-val">
+                <StepIdList steps={survivors} />
+              </span>
+            </li>
+          )}
+        </ul>
+      )}
+
+      <div className="stop-actions">
+        <Button kind="danger-filled" disabled={busy} onClick={() => void run()}>
+          {busy ? 'stopping…' : `stop ${what}`}
+        </Button>
+        <Button kind="ghost" disabled={busy} onClick={close}>
+          keep running
+        </Button>
+      </div>
+
+      {/* "Nothing was stopped" stays: an absent side effect has nothing to put
+          a mark on, and it is the fact that decides whether to press again. */}
+      {error && (
+        <p className="warn-text">
+          {errorHeading(error)} &mdash; {error.message} Nothing was stopped.
+        </p>
+      )}
+    </div>
+  )
+  if (!overlay) return confirm
+  // ON A GRAPH NODE THE BUTTON STAYS WHERE IT WAS and the question opens over
+  // the page, on the same scrim every other dialog here uses. The scrim closes
+  // it like "keep running" does -- never like "stop", which only its own
+  // button may do.
+  const modal: ReactNode = (
+    <div
+      className="c-scrim stop-scrim"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) close()
+      }}
+    >
+      {confirm}
+    </div>
+  )
+  return (
+    <>
+      {stopButton}
+      {typeof document === 'undefined' ? modal : createPortal(modal, document.body)}
+    </>
+  )
+}

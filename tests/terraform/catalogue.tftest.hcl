@@ -1,0 +1,593 @@
+# The execution catalogue, mirrored from the frozen Python contract.
+#
+# terraform/infra/locals.tf restates swarm_common.profiles because terraform
+# cannot import Python. This file checks that restatement two different ways,
+# and only one of them is a real drift detector:
+#
+#   The hand-written runs below ("resource_classes_match_the_frozen_catalogue",
+#   "runner_backends_match_resolve_backend") state what the catalogue is SUPPOSED
+#   to be. They are documentation with teeth -- they catch a terraform edit -- but
+#   they compare terraform against terraform, so if profiles.py is edited they
+#   drift away from Python alongside locals.tf and still pass.
+#
+#   "the_terraform_mirror_matches_the_python_catalogue" is the actual detector.
+#   ./catalogue_mirror reads apps/common/swarm_common/profiles.py off disk and
+#   parses it, and the run compares the parse against terraform's outputs. That
+#   is the one that fails when Python moves and terraform does not -- the case
+#   whose symptom in production is a Job resource sized for a profile the worker
+#   is not running, which is exactly the class of bug nobody finds by reading.
+
+# source: the shared defaults every suite that plans terraform/infra needs
+# (mocks/google/kms.tfmock.hcl -- the step-spec key's enabled version 1).
+mock_provider "google" {
+  source = "./mocks/google"
+}
+
+variables {
+  project_id  = "example-project"
+  environment = "dev"
+
+  tenants = {
+    eng = {
+      kind      = "group"
+      principal = "eng@example.com"
+      providers = ["anthropic", "openai"]
+    }
+    smoke = {
+      kind      = "group"
+      principal = "swarm-smoke@example.com"
+      providers = []
+    }
+  }
+
+  # Every image by digest, because the root refuses to plan without one. See
+  # image_refs.tftest.hcl.
+  image_refs = {
+    "swarm-api"                = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    "swarm-scheduler"          = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    "swarm-quota-broker"       = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    "swarm-reconciler"         = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    "swarm-ui"                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    "swarm-verify"             = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "agent-runtime-base"       = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "agent-runtime-browser"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer"    = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    "agent-runtime-lightpanda" = "us-central1-docker.pkg.dev/example-project/swarm-images/agent-runtime-lightpanda@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  }
+}
+
+run "resource_classes_match_the_frozen_catalogue" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # RESOURCE_CLASSES: standard 4/8/4, browser 4/8/4 (contract request 79),
+  # medium 6/16/8 (contract request 147), builder 8/16/8 (contract request
+  # 135), large 8/32/16.
+  assert {
+    condition     = output.resource_classes["standard"].cpu == 4 && output.resource_classes["standard"].memory_gib == 8 && output.resource_classes["standard"].disk_gib == 4
+    error_message = "the standard class is 4 vCPU / 8 GiB / 20 GiB"
+  }
+
+  assert {
+    condition     = output.resource_classes["browser"].cpu == 4 && output.resource_classes["browser"].memory_gib == 8 && output.resource_classes["browser"].disk_gib == 4
+    error_message = "the browser class is 4 vCPU / 8 GiB / 4 GiB (contract request 79)"
+  }
+
+  assert {
+    condition     = output.resource_classes["large"].cpu == 8 && output.resource_classes["large"].memory_gib == 32 && output.resource_classes["large"].disk_gib == 16
+    error_message = "the large class is 8 vCPU / 32 GiB / 100 GiB"
+  }
+
+  assert {
+    condition     = output.resource_classes["medium"].cpu == 6 && output.resource_classes["medium"].memory_gib == 16 && output.resource_classes["medium"].disk_gib == 8 && output.resource_classes["medium"].units == 2
+    error_message = "the medium class is 6 vCPU / 16 GiB / 8 GiB at 2 units (contract request 147)"
+  }
+
+  assert {
+    condition     = output.resource_classes["builder"].cpu == 8 && output.resource_classes["builder"].memory_gib == 16 && output.resource_classes["builder"].disk_gib == 8 && output.resource_classes["builder"].units == 2
+    error_message = "the builder class is 8 vCPU / 16 GiB / 8 GiB at 2 units (contract request 135)"
+  }
+
+  # units: 1, 1, 4 -- heavier classes cost more scheduling budget; browser
+  # dropped from 2 to 1 with contract request 79 (owner, 2026-10-14).
+  assert {
+    condition     = output.resource_classes["standard"].units == 1 && output.resource_classes["browser"].units == 1 && output.resource_classes["large"].units == 4
+    error_message = "capacity units must match RESOURCE_CLASSES: 1, 1 and 4"
+  }
+
+  assert {
+    condition = alltrue([
+      for name, rc in output.resource_classes : rc.cpu <= 8 && rc.memory_gib <= 32
+    ])
+    error_message = "no class may exceed the Cloud Run Jobs ceiling; anything larger must be GKE-only"
+  }
+}
+
+run "runner_backends_match_resolve_backend" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # mock reaches no internet, so archived issue 939's option A left it on Cloud Run Jobs;
+  # post-verdict and claude-code-review were designed to run as their own
+  # accounts, which a GKE pod cannot be (contract request 66). Chromium needs
+  # a large /dev/shm that only GKE lets us control, so browser work stays on
+  # Autopilot.
+  assert {
+    condition = alltrue([
+      for profile in ["mock", "post-verdict", "claude-code-review"] :
+      output.runner_backends[profile] == "CLOUD_RUN_JOB"
+    ])
+    error_message = "mock, post-verdict and claude-code-review stay on Cloud Run Jobs (contract request 66 says why)"
+  }
+
+  assert {
+    condition     = output.runner_backends["browser"] == "GKE_AUTOPILOT"
+    error_message = "the browser profile runs on Autopilot: Chromium needs a /dev/shm size Cloud Run does not expose"
+  }
+
+  # Contract request 53 (applied 2026-10-08): claude-code runs on Autopilot,
+  # where it starts in about 23 s against Cloud Run's 128 s median.
+  assert {
+    condition     = output.runner_backends["claude-code"] == "GKE_AUTOPILOT"
+    error_message = "claude-code runs on GKE Autopilot (contract request 53)"
+  }
+
+  # Contract request 63 (owner, 2026-10-10): indexer runs on Autopilot as the
+  # canary for archived issue 939, where a new pod's internet path opens in about 1 s
+  # against a new Cloud Run instance's 20 s median.
+  assert {
+    condition     = output.runner_backends["indexer"] == "GKE_AUTOPILOT"
+    error_message = "indexer runs on GKE Autopilot (contract request 63, the canary for #939)"
+  }
+
+  # Contract request 67 (owner, 2026-10-11): claude-code on the browser image
+  # runs where the browser image must, on Autopilot, sized by the browser class.
+  assert {
+    condition     = output.runner_backends["claude-code-browser"] == "GKE_AUTOPILOT"
+    error_message = "claude-code-browser runs on GKE Autopilot (contract request 67): Cloud Run cannot size Chromium's /dev/shm"
+  }
+
+  # Contract requests 64, 65 and 66 (owner, 2026-10-10, archived issue 939 option A, after
+  # the indexer canary): the remaining profiles that reach the internet follow.
+  assert {
+    condition = alltrue([
+      for profile in ["generic", "codex", "merge"] :
+      output.runner_backends[profile] == "GKE_AUTOPILOT"
+    ])
+    error_message = "generic, codex and merge run on GKE Autopilot (contract requests 64, 65 and 66, #939 option A)"
+  }
+
+  # Contract request 55's canary is gone: the switch replaced it.
+  assert {
+    condition     = !contains(keys(output.runner_backends), "claude-code-gke")
+    error_message = "claude-code-gke was the temporary request 55 canary; it is removed with the switch of claude-code itself"
+  }
+
+  assert {
+    condition     = length(output.runner_backends) == 15
+    error_message = "fifteen runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer, contract request 67's claude-code-browser, contract request 94's await-input, contract request 113's claude-code-large, contract request 124's fix-loop, contract request 127's claude-code-lightpanda and contract request 147's claude-code-medium"
+  }
+
+  # Contract request 127 (owner, 2026-10-31): claude-code on the Lightpanda
+  # image runs on Autopilot, as claude-code does, on the standard class.
+  assert {
+    condition     = output.runner_backends["claude-code-lightpanda"] == "GKE_AUTOPILOT"
+    error_message = "claude-code-lightpanda runs on GKE Autopilot (contract request 127)"
+  }
+
+  # Contract request 94: await-input is a control_plane profile (request 93)
+  # that nothing runs. Its backend is the catalogue's CLOUD_RUN_JOB, which is
+  # why `profiles_without_a_job` must name it: the Job loop below would
+  # otherwise make one for every tenant, since it needs no provider.
+  assert {
+    condition     = output.runner_backends["await-input"] == "CLOUD_RUN_JOB"
+    error_message = "await-input states CLOUD_RUN_JOB in the catalogue (contract request 94); it is never run there or anywhere"
+  }
+
+  # Contract request 124: fix-loop is the second control_plane profile, on the
+  # same terms as await-input: CLOUD_RUN_JOB in the catalogue, run nowhere.
+  assert {
+    condition     = output.runner_backends["fix-loop"] == "CLOUD_RUN_JOB"
+    error_message = "fix-loop states CLOUD_RUN_JOB in the catalogue (contract request 124); it is never run there or anywhere"
+  }
+}
+
+run "every_pool_name_the_contract_can_produce_is_materialised" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # swarm_common.models.pool_names_for() produces exactly these shapes, and
+  # evaluate_capacity() treats a MISSING pool document as unlimited -- so a pool
+  # nobody created is not "unlimited by intent", it is a ceiling nobody chose.
+  assert {
+    condition     = contains(output.pool_names, "global")
+    error_message = "the global pool must exist"
+  }
+
+  assert {
+    condition = alltrue([
+      for t in ["tenant:eng", "tenant:smoke"] : contains(output.pool_names, t)
+    ])
+    error_message = "every declared tenant needs its own pool"
+  }
+
+  assert {
+    condition = alltrue([
+      for c in ["resource:standard", "resource:browser", "resource:medium", "resource:builder", "resource:large"] : contains(output.pool_names, c)
+    ])
+    error_message = "every resource class needs a pool"
+  }
+
+  assert {
+    condition = alltrue([
+      for r in [
+        "runner:mock", "runner:generic", "runner:claude-code", "runner:codex", "runner:browser",
+        "runner:merge", "runner:post-verdict", "runner:claude-code-review",
+        "runner:indexer", "runner:claude-code-browser", "runner:await-input",
+        "runner:fix-loop",
+      ] :
+      contains(output.pool_names, r)
+    ])
+    error_message = "every runner profile needs a pool"
+  }
+
+  assert {
+    condition = alltrue([
+      for b in ["backend:CLOUD_RUN_JOB", "backend:GKE_AUTOPILOT"] : contains(output.pool_names, b)
+    ])
+    error_message = "every backend needs a pool"
+  }
+
+  assert {
+    condition     = contains(output.pool_names, "provider:anthropic") && contains(output.pool_names, "provider:openai")
+    error_message = "every provider in the catalogue needs a pool"
+  }
+
+  # Provider quota is tracked per tenant because tenants bring their own keys:
+  # one tenant's 429 must never throttle another's.
+  assert {
+    condition     = contains(output.pool_names, "provider:anthropic:tenant:eng") && contains(output.pool_names, "provider:openai:tenant:eng")
+    error_message = "a per-tenant provider pool is required for every credential a tenant holds"
+  }
+
+  assert {
+    condition = !anytrue([
+      for name in output.pool_names : startswith(name, "provider:anthropic:tenant:smoke")
+    ])
+    error_message = "a tenant with no credential for a provider must not get that provider's per-tenant pool"
+  }
+
+  assert {
+    condition = alltrue([
+      for name, limit in output.pool_limits : limit > 0
+    ])
+    error_message = "every pool needs a positive, finite ceiling"
+  }
+}
+
+run "jobs_exist_only_where_a_credential_does" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # A profile that needs a provider is only materialised for tenants holding a
+  # credential for it. The rest would produce Job resources whose every
+  # execution fails at start, when the correct behaviour is for the task to PARK
+  # as CREDENTIAL_MISSING and cost nothing.
+  assert {
+    condition = alltrue([
+      for name in ["swarm-job-eng-mock", "swarm-job-eng-generic", "swarm-job-eng-claude-code", "swarm-job-eng-codex", "swarm-job-eng-indexer"] :
+      contains(output.job_names, name)
+    ])
+    error_message = "a tenant with anthropic and openai keys gets every Cloud Run profile"
+  }
+
+  assert {
+    condition     = contains(output.job_names, "swarm-job-smoke-mock") && contains(output.job_names, "swarm-job-smoke-generic")
+    error_message = "the credential-free profiles must exist for every tenant, so a smoke test works before anyone registers a key"
+  }
+
+  assert {
+    condition     = !contains(output.job_names, "swarm-job-smoke-claude-code") && !contains(output.job_names, "swarm-job-smoke-indexer")
+    error_message = "a tenant with no anthropic key must not get a claude-code Job resource"
+  }
+
+  assert {
+    condition = !anytrue([
+      for name in output.job_names : strcontains(name, "browser")
+    ])
+    error_message = "the browser profile runs on Autopilot; it has no Cloud Run Job"
+  }
+
+  # Contract request 53 moved claude-code to GKE Autopilot, and the Job loop
+  # makes Jobs only for CLOUD_RUN_JOB profiles -- so without
+  # `cloud_run_fallback_profiles` the switch would have destroyed every
+  # tenant's claude-code Job. The owner kept them as the rollback until
+  # 2026-10-15; this assertion goes with that list.
+  assert {
+    condition     = contains(output.job_names, "swarm-job-eng-claude-code")
+    error_message = "the claude-code Cloud Run Jobs are kept until 2026-10-15 as the request 53 rollback; the backend switch must not destroy them"
+  }
+
+  # Contract request 63 moved indexer to GKE Autopilot as archived issue 939's canary; its
+  # Cloud Run Jobs stay, idle, as the rollback until the owner decides it.
+  assert {
+    condition     = contains(output.job_names, "swarm-job-eng-indexer")
+    error_message = "the indexer Cloud Run Jobs are kept as the request 63 rollback; the backend switch must not destroy them"
+  }
+
+  # Contract requests 64 and 65 moved generic and codex to GKE Autopilot; their
+  # Cloud Run Jobs stay, idle, as the rollback. merge's is held the same way in
+  # merge_step_iam.tftest.hcl, where a tenant registers git.
+  assert {
+    condition     = contains(output.job_names, "swarm-job-eng-generic") && contains(output.job_names, "swarm-job-eng-codex") && contains(output.job_names, "swarm-job-smoke-generic")
+    error_message = "the generic and codex Cloud Run Jobs are kept as the request 64 and 65 rollback; the backend switch must not destroy them"
+  }
+
+  # The fallback keeps exactly what it names: browser, on GKE too, still gets
+  # no Cloud Run Job (asserted above), and nor does the removed canary.
+  assert {
+    condition = !anytrue([
+      for name in output.job_names : endswith(name, "-claude-code-gke")
+    ])
+    error_message = "claude-code-gke is removed; no Job may carry its name"
+  }
+
+  assert {
+    condition     = length(output.job_names) == 7
+    error_message = "mock for eng and the rollback Jobs of claude-code, indexer, generic and codex, plus 2 credential-free ones for smoke"
+  }
+
+  # archived issue 295: post-verdict and claude-code-review are retired (owner decision
+  # MS0-Q4, 2026-10-06) but still in the frozen catalogue, so neither gets a
+  # Job for any tenant (`profiles_without_a_job`): eng holds anthropic, and a
+  # claude-code-review Job keyed on it would run as the worker account. merge
+  # (contract request 47) is keyed on `git`, the tenant's forge token, which
+  # eng does not list here (merge_step_iam.tftest.hcl holds one that does).
+  assert {
+    condition = !anytrue([
+      for name in output.job_names :
+      endswith(name, "-merge") || endswith(name, "-post-verdict") || endswith(name, "-claude-code-review")
+    ])
+    error_message = "a retired #295 profile, or merge for a tenant without git, got a Cloud Run Job"
+  }
+
+  # Contract requests 93 and 94: await-input is a control_plane profile, and
+  # nothing runs one, so no tenant gets a Job for it -- not eng, which holds
+  # keys, and not smoke, which holds none (await-input needs no provider, so
+  # only `profiles_without_a_job` keeps the Job loop off it).
+  assert {
+    condition = !anytrue([
+      for name in output.job_names : endswith(name, "-await-input")
+    ])
+    error_message = "await-input is a control_plane profile (contract request 93); no tenant may get a Cloud Run Job for it"
+  }
+
+  # Contract request 124: fix-loop is a control_plane profile too, and needs
+  # no provider either, so `profiles_without_a_job` alone keeps it Job-less.
+  assert {
+    condition = !anytrue([
+      for name in output.job_names : endswith(name, "-fix-loop")
+    ])
+    error_message = "fix-loop is a control_plane profile (contract request 124); no tenant may get a Cloud Run Job for it"
+  }
+
+  # Cloud Run only exposes memory-medium ephemeral volumes, so a workspace sized
+  # at the full memory limit would OOM-kill the agent instead of failing a write.
+  assert {
+    condition = alltrue([
+      for job, gib in output.workspace_size_gib : gib >= 1 && gib <= 4
+    ])
+    error_message = "every Cloud Run job here is the standard class: a 4 GiB workspace inside an 8 GiB container"
+  }
+}
+
+run "every_resource_carries_the_destroy_guard_label" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # `make destroy` ABORTS if a plan would delete anything without this label.
+  assert {
+    condition     = output.labels["managed-by"] == "swarm-terraform"
+    error_message = "destroy.sh refuses to delete anything lacking managed-by=swarm-terraform"
+  }
+
+  assert {
+    condition     = output.labels["swarm-env"] == "dev"
+    error_message = "the environment label is what separates dev from prod resources in one project"
+  }
+
+  assert {
+    condition     = output.wake_topic == "swarm-scheduler-wake"
+    error_message = "the wake topic name is derived in locals so the API can carry it without a module dependency"
+  }
+}
+
+run "extra_labels_cannot_overwrite_the_destroy_guard_label" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    extra_labels = {
+      "managed-by" = "someone-else"
+    }
+  }
+
+  expect_failures = [var.extra_labels]
+}
+
+# ---------------------------------------------------------------------------
+# The drift detector proper: terraform's mirror against the Python source.
+# ---------------------------------------------------------------------------
+
+run "the_python_catalogue_is_readable" {
+  command = plan
+
+  module {
+    source = "./catalogue_mirror"
+  }
+
+  # A text parser that finds nothing returns an empty map, and an empty map
+  # compares equal to nothing and fails no assertion. So the parse is checked
+  # before it is trusted: if profiles.py moved or was reformatted past the
+  # parser, this run fails here rather than the comparison below passing
+  # vacuously.
+  assert {
+    condition     = output.profiles_file != ""
+    error_message = "swarm_common/profiles.py was not found at any candidate path: the drift detector is reading nothing, so the catalogue comparison below would pass vacuously"
+  }
+
+  assert {
+    condition     = length(output.resource_classes) == 5
+    error_message = "expected 5 resource classes in profiles.py (standard, browser, medium, builder, large); the parser read a different number, so it no longer matches the file's literal form"
+  }
+
+  assert {
+    condition     = length(output.runner_profiles) == 15
+    error_message = "expected 15 runner profiles in profiles.py (mock, generic, claude-code, claude-code-large, claude-code-medium, claude-code-lightpanda, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser, await-input, fix-loop); the parser read a different number"
+  }
+
+  # claude-code's and indexer's entries carry a comment above their backend;
+  # the parser must read the field, and the last entry (claude-code-browser,
+  # contract request 67) must not run on past the dict. post-verdict is read alongside so the check sees a
+  # CLOUD_RUN_JOB entry too, not only GKE ones.
+  assert {
+    condition     = output.runner_profiles["claude-code"].backend == "GKE_AUTOPILOT" && output.runner_profiles["indexer"].backend == "GKE_AUTOPILOT" && output.runner_profiles["merge"].backend == "GKE_AUTOPILOT" && output.runner_profiles["post-verdict"].backend == "CLOUD_RUN_JOB" && output.runner_profiles["claude-code-browser"].image == "agent-runtime-browser" && output.runner_profiles["claude-code-browser"].resource_class == "browser"
+    error_message = "the parser misread profiles.py: claude-code (contract request 53), indexer (63) and merge (66) must read GKE_AUTOPILOT, post-verdict must keep CLOUD_RUN_JOB, and claude-code-browser (67) must read the browser image and class"
+  }
+
+  # await-input (contract request 94) is read on its own terms: its own
+  # timeout and its absent provider.
+  assert {
+    condition     = output.runner_profiles["await-input"].timeout_seconds == 300 && output.runner_profiles["await-input"].provider == "" && length(output.runner_profiles["await-input"].secret_env_names) == 0
+    error_message = "the parser misread await-input (contract request 94): timeout 300, no provider and no secrets"
+  }
+
+  # fix-loop (contract request 124) is now the dict's last entry: the parser
+  # must read its own timeout, its absent provider and its empty secrets, and
+  # not run on past the dict into the statements after it.
+  assert {
+    condition     = output.runner_profiles["fix-loop"].timeout_seconds == 300 && output.runner_profiles["fix-loop"].provider == "" && length(output.runner_profiles["fix-loop"].secret_env_names) == 0 && output.runner_profiles["fix-loop"].backend == "CLOUD_RUN_JOB"
+    error_message = "the parser misread fix-loop (contract request 124): CLOUD_RUN_JOB, timeout 300, no provider and no secrets"
+  }
+
+  assert {
+    condition     = output.default_timeout_seconds > 0
+    error_message = "RunnerProfile.timeout_seconds default could not be read; a profile that states no timeout would be compared against 0"
+  }
+}
+
+run "the_terraform_mirror_matches_the_python_catalogue" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  assert {
+    condition = length(output.resource_classes) == length(run.the_python_catalogue_is_readable.resource_classes) && alltrue([
+      for name, rc in run.the_python_catalogue_is_readable.resource_classes :
+      contains(keys(output.resource_classes), name)
+      && output.resource_classes[name].cpu == rc.cpu
+      && output.resource_classes[name].memory_gib == rc.memory_gib
+      && output.resource_classes[name].disk_gib == rc.disk_gib
+      && output.resource_classes[name].units == rc.units
+    ])
+    error_message = "local.resource_classes in terraform/infra/locals.tf no longer matches RESOURCE_CLASSES in swarm_common/profiles.py: the Job resources would be sized for a class the worker is not running"
+  }
+
+  assert {
+    condition = length(output.runner_profiles) == length(run.the_python_catalogue_is_readable.runner_profiles) && alltrue([
+      for name, rp in run.the_python_catalogue_is_readable.runner_profiles :
+      contains(keys(output.runner_profiles), name)
+      && output.runner_profiles[name].image == rp.image
+      && output.runner_profiles[name].resource_class == rp.resource_class
+      && output.runner_profiles[name].backend == rp.backend
+      && output.runner_profiles[name].timeout_seconds == rp.timeout_seconds
+    ])
+    error_message = "local.runner_profiles in terraform/infra/locals.tf no longer matches RUNNER_PROFILES in swarm_common/profiles.py: image, resource class, backend or timeout has drifted"
+  }
+
+  # provider and the secret env-var names decide which tenants get a Job at all
+  # and which Secret Manager entry each Job's environment is wired to, so they
+  # are compared separately from the sizing. Terraform models "no provider" as
+  # null and the parser as "", which is the same statement.
+  assert {
+    condition = alltrue([
+      for name, rp in run.the_python_catalogue_is_readable.runner_profiles :
+      (output.runner_profiles[name].provider == null ? "" : output.runner_profiles[name].provider) == rp.provider
+      && output.runner_profiles[name].secret_env_names == rp.secret_env_names
+    ])
+    error_message = "the provider or the secret env-var names in terraform/infra/locals.tf no longer match swarm_common/profiles.py: a Job would be created for a tenant holding no key, or wired to the wrong secret"
+  }
+}
+
+# archived issue 1435 (contract request B of docs/design/model-per-step.md): each profile's
+# `model_classes` and `default_model_class`, mirrored in local.runner_profiles
+# so the Jobs' MODEL and the scheduler's derived WORKER_MODELS read the default
+# class from the mirror and not from a second table. Hand-written, like the
+# runs at the top of this file: ./catalogue_mirror does not parse these two
+# fields, so the Python-against-Terraform comparison of them is
+# scripts/lib/check-contract-parity.sh (section 17), which imports the frozen
+# catalogue instead of parsing it.
+run "the_mirror_carries_each_profiles_model_classes" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # Q3: the claude-code-family profiles accept all four, opus by default;
+  # claude-code-lightpanda (contract request 127) is claude-code's classes too.
+  assert {
+    condition = alltrue([
+      for name in ["claude-code", "claude-code-browser", "indexer", "claude-code-lightpanda"] :
+      local.runner_profiles[name].model_classes == ["opus", "fable", "sonnet", "haiku"]
+      && local.runner_profiles[name].default_model_class == "opus"
+    ])
+    error_message = "claude-code, claude-code-browser, indexer and claude-code-lightpanda must accept opus, fable, sonnet and haiku, opus by default (owner decision Q3, 2026-10-17; contract request 127)"
+  }
+
+  # Retired under contract request 50: it keeps the pin it has and gains nothing.
+  assert {
+    condition     = local.runner_profiles["claude-code-review"].model_classes == ["opus"] && local.runner_profiles["claude-code-review"].default_model_class == "opus"
+    error_message = "claude-code-review must accept opus only, by default"
+  }
+
+  # Every other profile starts no Claude model: no classes, no default. The
+  # count is the control that this statement is about eight profiles; fix-loop
+  # (contract request 124) is the eighth.
+  assert {
+    condition = length([
+      for name, p in local.runner_profiles : name
+      if length(p.model_classes) == 0 && p.default_model_class == null
+    ]) == 8
+    error_message = "mock, generic, codex, browser, merge, post-verdict, await-input and fix-loop must carry no model class and no default"
+  }
+
+  # A default is always one of the profile's own classes.
+  assert {
+    condition = alltrue([
+      for name, p in local.runner_profiles :
+      p.default_model_class == null ? length(p.model_classes) == 0 : contains(p.model_classes, p.default_model_class)
+    ])
+    error_message = "a profile's default_model_class must be one of its own model_classes, and a profile with classes must name a default"
+  }
+}

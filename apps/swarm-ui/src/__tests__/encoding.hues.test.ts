@@ -1,0 +1,535 @@
+// TWO COLOUR CLAIMS, read off the shipped tokens in both themes.
+//
+// 1. AN ABSENCE IS NOT AN OUTCOME. `--ctl-absent` was `var(--text-faint)`, and
+//    `--text-faint` is what the Activity chart paints CANCELLED with -- so a
+//    cancelled bar and a never-measured band were the same colour, exactly,
+//    which is the one collapse design-system.md §5.5 and the audit (§A3.3,
+//    table row 6) name as the thing this product exists to prevent. The shape
+//    channels (solid bar, hatched band, dashed tile) survive greyscale; this
+//    is the colour channel, for everyone reading in colour.
+//
+// 2. A PLAIN FILL IS GREY. `.sr-bar > i` (Admin > Platform counts) and the
+//    default `.ctl-track > i` filled `--info` with no verdict to report; the
+//    owner's rule (archived issue 122) is that state hue is a verdict and a plain fill is
+//    `--text-dim`. `.sr-bar > i.bad` keeps its `--bad`.
+//
+// Everything is resolved from the source the app ships, through the same
+// `tokenTables` / `resolveVars` / `colour` the spacing probe uses, so a token
+// renamed or a `var()` broken fails here by name rather than being compared as
+// an empty string.
+
+import STYLES from '../styles.css?raw'
+import OVERVIEW_CSS from '../styles/overview.css?raw'
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { cascade, declarations, flatRules, parseSheet, splitTop, type GateNode } from './cssgate'
+import { build, painted, resolveColour, shapeOf, stateHueIn, tokensIn } from './marks'
+import { colour, contrast, over, resolveVars, stripComments, tokenTables, type RGBA } from './spaceprobe'
+
+type Theme = 'dark' | 'light'
+const THEMES: readonly Theme[] = ['dark', 'light']
+const TABLES = tokenTables(STYLES)
+
+function resolved(value: string, theme: Theme): RGBA {
+  const v = resolveVars(value.trim(), TABLES[theme])
+  const c = colour(v)
+  expect(c, `could not read ${JSON.stringify(value)} -> ${JSON.stringify(v)} as a colour`).not.toBeNull()
+  return c!
+}
+
+/** The declared value of `prop` in the first rule for exactly `selector`. */
+function declared(css: string, selector: string, prop: string): string {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+  const rule = new RegExp(`(?:^|[}\\s])${esc}\\s*\\{([^}]*)\\}`, 'm').exec(css)
+  expect(rule, `no rule for ${selector}`).not.toBeNull()
+  const decl = new RegExp(`(?:^|;|\\s)${prop}\\s*:\\s*([^;]+)`).exec(rule![1]!)
+  expect(decl, `${selector} declares no ${prop}`).not.toBeNull()
+  return decl![1]!.trim()
+}
+
+/** CIE L*a*b* (D65) of an opaque sRGB colour. */
+function lab(c: RGBA): [number, number, number] {
+  const lin = (v: number): number => {
+    const s = v / 255
+    return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+  }
+  const r = lin(c.r)
+  const g = lin(c.g)
+  const b = lin(c.b)
+  const x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+  const y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+  const z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+  const f = (t: number): number => (t > 216 / 24389 ? Math.cbrt(t) : (24389 / 27 * t + 16) / 116)
+  return [116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z))]
+}
+
+/**
+ * CIE76 colour difference. About 2.3 is the smallest difference a practised
+ * eye can see side by side; 10 is a difference nobody has to look for.
+ */
+function deltaE(a: RGBA, b: RGBA): number {
+  const [l1, a1, b1] = lab(a)
+  const [l2, a2, b2] = lab(b)
+  return Math.hypot(l1 - l2, a1 - a2, b1 - b2)
+}
+
+describe('an absence is not drawn in the colour of an outcome', () => {
+  const hosts: HTMLElement[] = []
+  afterEach(() => {
+    for (const h of hosts.splice(0)) h.remove()
+  })
+
+  for (const theme of THEMES) {
+    it(`separates --ctl-absent from CANCELLED in the ${theme} theme`, () => {
+      const absent = resolved('var(--ctl-absent)', theme)
+      // The places CANCELLED is painted: a segment and its legend key.
+      // RE-POINTED (TS-4): the segment is the neutral flat bar now, a stripe
+      // pattern rather than a flat fill, so its colour is read out of the
+      // pattern -- every colour it paints, the transparent gaps excepted --
+      // through the cascade, which also reads the one rule the bar and its
+      // key share. The claim is unchanged: no colour a cancelled segment
+      // paints is the absence colour.
+      // RE-POINTED AGAIN (archived issue 185, decision 7): `.stackcol` and `.chart-legend`
+      // were the row-window Timeline's and are deleted with it. A cancelled
+      // segment is the ledger card's now (the Workflows row that also drew
+      // one was removed with the board, 2026-10-01), and its key the ledger's.
+      for (const selector of ['.ol-meter > i.ol-seg.cancelled', '.ol-legend > i.ol-k.is-ended']) {
+        const value = painted(build(selector, hosts), ['background', 'background-image', 'background-color'], {
+          width: 1440,
+          theme,
+        })
+        const paints = tokensIn(value ?? '', theme).filter((t) => t.rgba.a > 0)
+        expect(paints.length, `${selector} paints no colour at all`).toBeGreaterThan(0)
+        for (const { token, rgba } of paints) {
+          const d = deltaE(absent, rgba)
+          expect(
+            d,
+            `${selector}'s ${token} and --ctl-absent are ΔE ${d.toFixed(1)} apart in ${theme}: ` +
+              'a cancelled task and a figure nobody measured read as the same colour',
+          ).toBeGreaterThanOrEqual(10)
+        }
+      }
+      // And the small print, which the audit counted as the same collapse:
+      // "not measured" in the colour of every caption on the screen.
+      expect(deltaE(absent, resolved('var(--text-faint)', theme))).toBeGreaterThanOrEqual(10)
+    })
+
+    it(`keeps --ctl-absent legible as text in the ${theme} theme`, () => {
+      // It is drawn as TEXT -- `.ctl-fact.is-absent`, `.node-num.is-absent dd`,
+      // `.ctl-metric.is-absent .ctl-metric-value` -- at 12-14px, so moving it
+      // may not be bought by making the absence hard to read. AA, every
+      // surface it can sit on.
+      const absent = resolved('var(--ctl-absent)', theme)
+      for (const surface of ['--bg', '--surface', '--surface-2']) {
+        const ratio = contrast(absent, resolved(`var(${surface})`, theme))
+        expect(ratio, `--ctl-absent on ${surface} in ${theme}`).toBeGreaterThanOrEqual(4.5)
+      }
+    })
+  }
+})
+
+describe('metadata and hypotheticals carry no state hue (CP-13)', () => {
+  // A STATE HUE IS A VERDICT (design-system.md §1.2-§1.3): `--paused` means an
+  // operator is holding something, `--ok` means it went well. Profile headroom
+  // spent both on things that are neither -- the "this tenant" scope pill in
+  // `--paused`, beside pools that really were paused, and every counterfactual
+  // effect in `--ok`, including the one that says it "could not be measured".
+  const CSS = stripComments(STYLES)
+  const STATE = /var\(--(?:ok|warn|bad|paused|info)(?:-ink)?\)/
+
+  it('draws the tenant scope as a neutral step, not in the paused hue', () => {
+    // MUTATION: `.scope.tenant` back on a `--paused` tint.
+    for (const prop of ['background', 'color']) {
+      expect(declared(CSS, '.scope.tenant', prop), `.scope.tenant ${prop}`).not.toMatch(STATE)
+    }
+  })
+
+  // The counterfactual effect's rule (`.cf-effect`) was deleted with the
+  // `+N if lifted` column that drew it: no source renders it (2026-10-01).
+})
+
+describe('the token-mix bar left no rules behind (#227)', () => {
+  // archived pull request 249 removed the bar and its keyed swatches from Overview; the four tones,
+  // the segment and the swatch stayed in the sheet with nothing to draw. A
+  // rule no element carries is a rule the next reader has to reason about, and
+  // this block's old claims (four tones separable in greyscale) were holding a
+  // bar that no longer exists. `.ov-kv` is the token list that replaced it
+  // (O1's Cost so far card, styles/overview.css), so it is what proves the
+  // Overview sheet was read.
+  // MUTATION: put back any of `.ov-mix`, `.ov-mix-seg`, `.ov-s1..4`, `.ov-swatch`.
+  const CSS = stripComments(`${STYLES}\n${OVERVIEW_CSS}`)
+
+  it('reads the Overview sheet', () => {
+    expect(CSS).toContain('.ov-kv {')
+  })
+
+  for (const sel of ['.ov-mix', '.ov-mix-seg', '.ov-s1', '.ov-s2', '.ov-s3', '.ov-s4', '.ov-swatch']) {
+    it(`declares no ${sel} rule`, () => {
+      const re = new RegExp(`${sel.replace('.', '\\.')}(?![\\w-])`)
+      expect(re.test(CSS), `${sel} is still in the sheet`).toBe(false)
+    })
+  }
+})
+
+// ===========================================================================
+// THE CHROME-SHARED LANE'S COLOUR CLAIMS (archived issue 87 CH-17, CH-19, CH-23; archived issue 84 TS-4)
+// ===========================================================================
+
+describe('a healthy or factual mark carries no state hue (CH-17)', () => {
+  // THE RULING (design-system.md §6.6, §6.7): on a state mark, hue is spent
+  // only on warn, bad, paused and live. `ok` and `info` keep their SHAPES --
+  // a filled disc, a flat bar -- and lose their hue, and their word or figure
+  // is plain or `--text-dim` ink. A healthy platform is a quiet grey screen,
+  // and a dock of twenty-nine green cells was the opposite of that.
+  //
+  // Beside CP-13's block above, which made the same ruling for metadata and
+  // hypotheticals. MUTATION: put `var(--ok)` or `var(--info)` back on any of
+  // the marks below, or a hue back on a healthy cell's status.
+  const hosts: HTMLElement[] = []
+  afterEach(() => {
+    for (const h of hosts.splice(0)) h.remove()
+  })
+
+  const CASES: ReadonlyArray<{ what: string; selector: string; props: readonly string[]; pseudo?: string }> = [
+    // The ok and info marks are the canonical `ToneMark` (archived issue 503 swap): the
+    // brand glyph in the neutral hue (`TONE_MARK.ok/info.hue === 'neu'`,
+    // components.test.tsx), so the hue the sheet paints `.sk-st.is-neu` is
+    // the one both take.
+    { what: 'the ok and info marks', selector: '.sk-st.is-neu', props: ['color'] },
+    {
+      what: "the good metric's mark",
+      selector: '.ctl-metric.is-good > .ctl-metric-label',
+      props: ['background', 'background-color'],
+      pseudo: 'after',
+    },
+    { what: "the good metric's value", selector: '.ctl-metric.is-good > .ctl-metric-value', props: ['color'] },
+    { what: "a healthy read cell's status", selector: '.source.ok > .s-status', props: ['color'] },
+    { what: "the admin-only read cell's status", selector: '.source.info > .s-status', props: ['color'] },
+  ]
+
+  for (const theme of THEMES) {
+    it(`paints none of --ok, --info, --warn, --bad or --paused in the ${theme} theme`, () => {
+      for (const c of CASES) {
+        const value = painted(build(c.selector, hosts), c.props, { width: 1440, theme }, c.pseudo ?? null)
+        expect(stateHueIn(value, theme), `${c.what} (${c.selector}) is painted ${value}`).toBeNull()
+      }
+    })
+  }
+
+  it("puts a failing read's status in full ink, never in its hue (§6.7)", () => {
+    // Only warn and bad cells carry tone, and the tone is the left-edge rule
+    // and the dot -- the word is read, so it is `--text`, which is how the API
+    // reads table already draws the same records. MUTATION: `.source.bad
+    // .s-status { color: var(--bad) }` back.
+    for (const tone of ['warn', 'bad']) {
+      expect(painted(build(`.source.${tone} > .s-status`, hosts), 'color', { width: 1440 }), tone).toBe('var(--text)')
+    }
+  })
+})
+
+describe('the last healthy greens are neutral, like the chip and the dot (CP-14, CH-17 follow-up)', () => {
+  // THE FOLLOW-UP SETTLED ON archived issue 85, 2026-09-25. Three healthy-state greens were
+  // in neither decision's text and are the same ruling: the pool card's track
+  // fill, and Accounts' success box heading
+  // together with the legacy `.tag.ok`. A healthy state is a fact, not a
+  // verdict. Two greys, by kind: a mark or a fill (the track, the chip, the
+  // dot) takes the primitives' `--text-faint` per CH-17; a WORD (the success
+  // box's heading, the legacy `.tag.ok`) takes `--text-dim`, CH-17's word rule
+  // ("plain or `--text-dim`", §6.6) and the grey archived pull request 159 gave the tag. Clarified
+  // on archived issue 85, 2026-09-25: an earlier fix-up read the follow-up as `--text-faint`
+  // for the words too. The heading and the tag are separate `it`s so that each
+  // is shown red on its own: the heading would otherwise stop the block
+  // before the tag's line ran.
+  //
+  // MUTATION: `var(--ok)` back on the fill, the box's border, its tint, its
+  // heading or the tag; or `--text-faint` on the heading or the tag.
+  const hosts: HTMLElement[] = []
+  afterEach(() => {
+    for (const h of hosts.splice(0)) h.remove()
+  })
+
+  const HEALTHY: ReadonlyArray<{ what: string; selector: string; props: readonly string[] }> = [
+    { what: "the pool card's healthy fill", selector: '.pool .ctl-track > i', props: ['background', 'background-color'] },
+    { what: "the success box's edge", selector: '.state.acct-ok', props: ['border-color', 'border'] },
+    { what: "the success box's fill", selector: '.state.acct-ok', props: ['background', 'background-color'] },
+    { what: "the success box's heading", selector: '.state.acct-ok > h3', props: ['color'] },
+    { what: 'the legacy ok tag', selector: '.tag.ok', props: ['color'] },
+  ]
+
+  for (const theme of THEMES) {
+    it(`paints none of --ok, --info, --warn, --bad or --paused in the ${theme} theme`, () => {
+      for (const c of HEALTHY) {
+        const value = painted(build(c.selector, hosts), c.props, { width: 1440, theme })
+        expect(stateHueIn(value, theme), `${c.what} (${c.selector}) is painted ${value}`).toBeNull()
+      }
+    })
+
+    const isGrey = (value: string | null, token: string, what: string) => {
+      expect(value, `${what} declares nothing`).not.toBeNull()
+      const got = resolveColour(value!, theme)
+      const want = resolveColour(`var(${token})`, theme)
+      expect(
+        Math.max(Math.abs(got.r - want.r), Math.abs(got.g - want.g), Math.abs(got.b - want.b)),
+        `${what} is ${value}, not ${token}`,
+      ).toBeLessThan(1)
+    }
+
+    it(`draws the pool card's healthy fill in the primitives' grey, --text-faint, in the ${theme} theme`, () => {
+      const env = { width: 1440, theme }
+      isGrey(painted(build('.pool .ctl-track > i', hosts), ['background', 'background-color'], env), '--text-faint', 'the fill')
+    })
+
+    it(`draws the success box's heading in the word grey, --text-dim, in the ${theme} theme`, () => {
+      const env = { width: 1440, theme }
+      isGrey(painted(build('.state.acct-ok > h3', hosts), 'color', env), '--text-dim', "the success box's heading")
+    })
+
+    it(`draws the legacy ok tag in the word grey, --text-dim, in the ${theme} theme`, () => {
+      const env = { width: 1440, theme }
+      isGrey(painted(build('.tag.ok', hosts), 'color', env), '--text-dim', 'the ok tag')
+    })
+  }
+})
+
+/** The lowest opacity `@keyframes ctl-live-pulse` fades a live mark to. */
+function pulseFloor(): number {
+  const frames: string[] = []
+  const walk = (nodes: readonly GateNode[]): void => {
+    for (const n of nodes) {
+      if (n.kind === 'group') walk(n.children)
+      else if (n.kind === 'opaque' && /^@(?:-webkit-)?keyframes\s+ctl-live-pulse$/.test(n.prelude)) frames.push(n.body)
+    }
+  }
+  walk(parseSheet(STYLES).nodes)
+  expect(frames, '@keyframes ctl-live-pulse is declared once').toHaveLength(1)
+  const stops = [...frames[0]!.matchAll(/opacity\s*:\s*([\d.]+)/g)].map((m) => Number(m[1]))
+  expect(stops.length, 'the pulse animates no opacity; this check would be vacuous').toBeGreaterThan(0)
+  return Math.min(...stops)
+}
+
+describe('the live pulse never fades a live mark under 3:1 (CH-19)', () => {
+  // MEASURED BEFORE THE FIX: at the old floor of .35 a live mark blended to
+  // 1.69:1 (light) and 1.95:1 (dark) for roughly half of every cycle -- the
+  // running dot, the one thing on the screen that says "this costs money
+  // now", was under the graphical-object floor half the time.
+  //
+  // EVERY RULE THAT NAMES THE PULSE, not a list of three, so a fourth live mark
+  // is held to the same floor the moment it is written. MUTATION: the keyframe
+  // back to `opacity: .35`, or a new live mark in a colour that cannot hold 3:1
+  // at the floor.
+  const hosts: HTMLElement[] = []
+  afterEach(() => {
+    for (const h of hosts.splice(0)) h.remove()
+  })
+
+  const pulses = flatRules(STYLES).filter(
+    (r) =>
+      r.conditions.length === 0 &&
+      declarations(r.body).some(
+        (d) => (d.property === 'animation' || d.property === 'animation-name') && /\bctl-live-pulse\b/.test(d.value),
+      ),
+  )
+
+  it('finds every live mark the pulse is on', () => {
+    // The dot's and the chip's pulses went with `.ctl-dot` and `.ctl-chip`
+    // (archived issue 503 swap): the canonical live mark is the brand's haloed disc, which
+    // does not pulse. The liveness badge's rule is the one left to hold.
+    expect(pulses.length, 'no live mark carries the pulse, so the floor below is asked of nothing').toBeGreaterThanOrEqual(1)
+  })
+
+  for (const theme of THEMES) {
+    it(`holds every live mark at 3:1 on every surface at the pulse's floor, in the ${theme} theme`, () => {
+      const floor = pulseFloor()
+      for (const rule of pulses) {
+        for (const branch of splitTop(rule.selector)) {
+          const fill = painted(build(branch, hosts), ['background', 'background-color'], { width: 1440, theme })
+          expect(fill, `${branch} paints no fill`).not.toBeNull()
+          const mark = resolveColour(fill!, theme)
+          const faded: RGBA = { ...mark, a: mark.a * floor }
+          for (const ground of ['--bg', '--surface', '--surface-2']) {
+            const g = resolved(`var(${ground})`, theme)
+            const ratio = contrast(over(faded, g), g)
+            expect(ratio, `${branch} at opacity ${floor} on ${ground} in ${theme}`).toBeGreaterThanOrEqual(3)
+          }
+        }
+      }
+    })
+  }
+
+  it('stops the pulse at rest under prefers-reduced-motion, rather than freezing it mid-fade', () => {
+    // `.01ms` on its own leaves `infinite` running: every frame shows the mark
+    // at an arbitrary opacity. One iteration plays once, invisibly, and rests
+    // at the mark's base opacity. MUTATION: drop the iteration count from the
+    // global reduced-motion rule.
+    for (const rule of pulses) {
+      for (const branch of splitTop(rule.selector)) {
+        const el = build(branch, hosts)
+        const w = cascade(STYLES, el, ['animation', 'animation-iteration-count'], {
+          width: 1440,
+          reducedMotion: true,
+        }).winner
+        expect(w?.property, `${branch} under reduced motion`).toBe('animation-iteration-count')
+        expect(w?.value).toBe('1')
+        expect(w?.important).toBe(true)
+      }
+    }
+  })
+})
+
+describe('every resting underline clears the 3:1 boundary floor (CH-23)', () => {
+  // A link is ink plus an underline, and the underline is the whole
+  // affordance at rest -- so it is a component boundary and is held to §1.2's
+  // floor for one. `--line-soft` measured 2.05:1 (light) and 1.72:1 (dark) on
+  // `--surface`, and about 1.3:1 once antialiased, which is why Overview's row
+  // links read as plain text.
+  //
+  // EVERY `text-decoration-color` IN THE SHEET, wherever it is written, so the
+  // next underline drawn in `--line-soft` fails where it lands. `currentColor`
+  // is the hover and focus state and takes the text's own contrast.
+  // MUTATION: any resting underline back on `--line-soft`.
+  const underlines = flatRules(STYLES).flatMap((r) =>
+    declarations(r.body)
+      .filter((d) => d.property === 'text-decoration-color')
+      .map((d) => ({ selector: r.selector, value: d.value })),
+  )
+
+  it('finds the underlines it is about', () => {
+    expect(underlines.length, 'fewer underlines than the link primitive and its fallback').toBeGreaterThanOrEqual(4)
+  })
+
+  for (const theme of THEMES) {
+    it(`holds each one at 3:1 on --bg, --surface and --surface-2 in the ${theme} theme`, () => {
+      for (const u of underlines) {
+        if (/^(currentcolor|inherit|transparent)$/i.test(u.value)) continue
+        const c = resolveColour(u.value, theme)
+        for (const ground of ['--bg', '--surface', '--surface-2']) {
+          const ratio = contrast(c, resolved(`var(${ground})`, theme))
+          expect(ratio, `\`${u.selector}\` underlines in ${u.value} on ${ground} in ${theme}`).toBeGreaterThanOrEqual(3)
+        }
+      }
+    })
+  }
+})
+
+describe('the outcome stack is four shapes, not four hues (TS-4)', () => {
+  // MEASURED: failed against cancelled was 1.01:1 in the dark theme and
+  // succeeded against cancelled 1.08:1 in the light one -- three flat fills
+  // told apart by hue alone, with only "still open" textured. The vocabulary:
+  //
+  //   succeeded  solid                     the one outcome that is just a fill
+  //   failed     a 2px left rule           redesign-v2 §5.5 Tier 1's form for bad
+  //   cancelled  the neutral flat bar      CH-22's "ended" mark, stacked
+  //   open       the 45° hatch             unchanged: not an outcome yet
+  //
+  // MUTATION: give any two the same form, or draw a key its own way again.
+  //
+  // RE-POINTED (archived issue 185, decision 7): the stack these cases built was the
+  // row-window Timeline's `.stackcol > i.<outcome>` with its `.chart-legend`
+  // keys, deleted with it. The forms are asked of the segments the page draws
+  // now -- the ledger card's outcome track, `.ol-meter > .ol-seg.<outcome>` --
+  // and of the ledger's keys. "open" retired with the stack: the ledger places
+  // work by the bucket it ENDED in, so it draws no open segment, and the sheet
+  // no longer carries a rule for one.
+  const hosts: HTMLElement[] = []
+  afterEach(() => {
+    for (const h of hosts.splice(0)) h.remove()
+  })
+  const OUTCOMES = ['succeeded', 'failed', 'cancelled'] as const
+  const KEY: Record<(typeof OUTCOMES)[number], string> = { succeeded: 'is-ok', failed: 'is-bad', cancelled: 'is-ended' }
+  const WIDE = { width: 1440 }
+  const fill = (el: Element): string =>
+    painted(el, ['background', 'background-image', 'background-color'], WIDE) ?? ''
+
+  it('draws each outcome in a silhouette of its own', () => {
+    const shapes = OUTCOMES.map((o) => shapeOf(build(`.ol-meter > i.ol-seg.${o}`, hosts), WIDE))
+    for (let i = 0; i < shapes.length; i++) {
+      for (let j = i + 1; j < shapes.length; j++) {
+        expect(shapes[i], `${OUTCOMES[i]} and ${OUTCOMES[j]} are one shape in greyscale`).not.toBe(shapes[j])
+      }
+    }
+  })
+
+  it('names the forms: succeeded solid, failed ruled, cancelled flat bars', () => {
+    const seg = (o: string): HTMLElement => build(`.ol-meter > i.ol-seg.${o}`, hosts)
+    const succeeded = seg('succeeded')
+    expect(fill(succeeded), 'succeeded is the one flat fill').not.toMatch(/gradient/)
+    expect(painted(succeeded, 'box-shadow', WIDE) ?? 'none').toBe('none')
+
+    // SOLID, AS TIER 1 SAYS: "solid fill + a 2px left rule". It was a 60%
+    // wash, which drew the most important outcome lighter than the healthy
+    // one beside it. MUTATION: the wash back, or the rule gone.
+    const failed = seg('failed')
+    expect(fill(failed), 'failed is a wash, not the solid fill Tier 1 names').toBe('var(--bad)')
+    expect(painted(failed, 'box-shadow', WIDE) ?? '', 'no 2px rule down the failed segment').toMatch(
+      /^inset\s+2px\s+0(px)?\s+0(px)?\s+var\(--[\w-]+\)$/,
+    )
+
+    const cancelled = fill(seg('cancelled'))
+    expect(cancelled, 'cancelled is not drawn as flat bars').toMatch(/^repeating-linear-gradient\(\s*to bottom/)
+    expect(stateHueIn(cancelled, 'light'), 'the ended bar is neutral').toBeNull()
+    expect(stateHueIn(cancelled, 'dark'), 'the ended bar is neutral').toBeNull()
+  })
+
+  for (const theme of THEMES) {
+    it(`draws the failed rule in a colour that shows on the solid fill, in the ${theme} theme`, () => {
+      // A rule that is there in the sheet and not on the screen is the defect
+      // with a passing test: a rule in the segment's own hue on a solid fill
+      // of that hue is 1:1, and --bad-ink (1.28:1 dark) or --text (1.26:1
+      // light) are barely better. §1.2's 3:1 floor for a graphical object.
+      // MUTATION: the rule in --bad, --bad-ink or --text.
+      const failed = build('.ol-meter > i.ol-seg.failed', hosts)
+      const rule = /var\(--[\w-]+\)$/.exec(painted(failed, 'box-shadow', WIDE) ?? '')
+      expect(rule, 'no rule colour to measure').not.toBeNull()
+      const ratio = contrast(resolveColour(rule![0], theme), resolveColour(fill(failed), theme))
+      expect(ratio, `the failed rule ${rule![0]} on ${fill(failed)} in ${theme}`).toBeGreaterThanOrEqual(3)
+    })
+  }
+
+  it('draws every legend key as the segment it names', () => {
+    for (const o of OUTCOMES) {
+      const bar = build(`.ol-meter > i.ol-seg.${o}`, hosts)
+      const key = build(`.ol-legend > i.ol-k.${KEY[o]}`, hosts)
+      expect(fill(key), `the ${o} key`).toBe(fill(bar))
+      expect(painted(key, 'box-shadow', WIDE), `the ${o} key's rule`).toBe(painted(bar, 'box-shadow', WIDE))
+    }
+  })
+})
+
+describe('a plain proportion fill is grey, a verdict fill keeps its hue (#122)', () => {
+  // THE OWNER'S RULE: state hue is a verdict, and a plain fill is grey.
+  // `.sr-bar > i` is Admin > Platform counts' bar and `.ctl-track > i` the
+  // default fill of the shared track; both drew `--info` with nothing to say.
+  // Read through the cascade, so a later rule re-hueing either fails here too.
+  // MUTATION: `background: var(--info)` back on `.ctl-track > i, .sr-bar > i`,
+  // or `.sr-bar > i.bad` dropped.
+  const hosts: HTMLElement[] = []
+  afterEach(() => {
+    for (const h of hosts.splice(0)) h.remove()
+  })
+  const PROPS = ['background', 'background-color'] as const
+
+  const same = (value: string | null, token: string, theme: Theme, what: string) => {
+    expect(value, `${what} declares nothing`).not.toBeNull()
+    const got = resolveColour(value!, theme)
+    const want = resolveColour(`var(${token})`, theme)
+    expect(
+      Math.max(Math.abs(got.r - want.r), Math.abs(got.g - want.g), Math.abs(got.b - want.b)),
+      `${what} is ${value}, not ${token}`,
+    ).toBeLessThan(1)
+  }
+
+  for (const theme of THEMES) {
+    const env = { width: 1440, theme }
+    for (const selector of ['.sr-bar > i', '.ctl-track > i']) {
+      it(`fills ${selector} in --text-dim, with no state hue, in the ${theme} theme`, () => {
+        const value = painted(build(selector, hosts), PROPS, env)
+        expect(stateHueIn(value, theme), `${selector} is painted ${value}`).toBeNull()
+        same(value, '--text-dim', theme, selector)
+      })
+    }
+
+    it(`keeps --bad on .sr-bar > i.bad in the ${theme} theme`, () => {
+      same(painted(build('.sr-bar > i.bad', hosts), PROPS, env), '--bad', theme, '.sr-bar > i.bad')
+    })
+  }
+})

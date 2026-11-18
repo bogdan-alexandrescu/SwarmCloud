@@ -1,0 +1,10 @@
+{
+  "name": "swarmcloud-acceptance-generic",
+  "version": "1.0.0",
+  "private": true,
+  "description": "The generic runner's npm fixture: no dependencies, so npm ci needs nothing from the registry.",
+  "scripts": {
+    "test": "node test.js",
+    "build": "node build.js"
+  }
+}

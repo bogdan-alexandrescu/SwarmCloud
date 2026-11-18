@@ -1,0 +1,10 @@
+{
+  "files": [
+    {"src": "vm/swarm-speech-launch.sh", "dest": "/usr/local/lib/swarm-speech/swarm-speech-launch.sh", "mode": "0755"},
+    {"src": "swarm_speech/watchdog.py", "dest": "/usr/local/lib/swarm-speech/watchdog.py", "mode": "0644"},
+    {"src": "vm/swarm-speech.service", "dest": "/etc/systemd/system/swarm-speech.service", "mode": "0644"},
+    {"src": "vm/swarm-speech-watchdog.service", "dest": "/etc/systemd/system/swarm-speech-watchdog.service", "mode": "0644"},
+    {"src": "vm/swarm-speech-watchdog.timer", "dest": "/etc/systemd/system/swarm-speech-watchdog.timer", "mode": "0644"}
+  ],
+  "enable": ["swarm-speech-watchdog.timer", "swarm-speech.service"]
+}

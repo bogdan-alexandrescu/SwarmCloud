@@ -1,0 +1,2070 @@
+"""Reading and stopping real execution on the two backends.
+
+Everything here is I/O against Google APIs, kept behind two small interfaces so
+`detect.py` and `repair.py` can be exercised without a project. Two rules hold
+across both implementations:
+
+* **Nothing is touched unless this platform created it.** The project is shared
+  with a live GKE cluster, a VPC and a dozen service accounts belonging to other
+  teams. Every list is label-filtered on the `managed-by=swarm*` family and
+  every delete re-checks the label on the object it is about to remove, because
+  a list filter is a query and a re-check is a guarantee.
+* **Termination is proven, not requested.** `terminate()` returns True only
+  when the backend acknowledged the stop, or when the backend's own record of
+  the execution says it has already finished -- never on the strength of having
+  asked. The caller uses that return value to decide whether it may release the
+  slot, and a slot released after an unproven termination is exactly the
+  duplicate-execution bug this service exists to prevent. The second form of
+  proof exists because Cloud Run reports a cancellation it carried out as a
+  FAILED operation whenever the execution did not succeed; see `terminate`.
+
+Two asymmetries here are deliberate, and both exist because being BLIND is far
+more dangerous than seeing too much.
+
+**Reading accepts the whole `managed-by=swarm*` family; deleting does not.**
+Components stamp their own marker -- the dispatcher writes `swarm-scheduler`,
+terraform writes `swarm-terraform`, the API writes `swarm-api`. A reconciler
+that recognised only one of those would list zero executions, conclude that
+every running task had no execution behind it, release its slot and let the
+scheduler start a second agent on the same task: the exact duplicate-execution
+failure this service exists to prevent, caused by a label typo. So reads accept
+the family. Deletes are narrower -- only the runtime markers (`swarm`,
+`swarm-scheduler`) -- because a `swarm-terraform` resource has an owner that
+will simply recreate it, and fighting terraform is not this service's job.
+
+**Identifiers are read from the environment first, labels second.** Label values
+are sanitised to fit Kubernetes' and Cloud Run's character rules, so the task
+`task_9f3a` appears in a label as `task-9f3a`. Matching that against a Firestore
+document id would fail, and a failed match reads as "this execution belongs to
+no task I know about" -- an orphan, which gets terminated. The container
+environment carries the identifiers verbatim, so that is what is trusted, with
+the label kept only as a hint that `detect` can resolve by sanitised comparison.
+
+**The TENANT is the one identifier that is never taken from the container.**
+Everything else in a pod spec is a hint; the tenant decides whose work this
+service is allowed to fence, release and re-queue, and this service runs with an
+identity that can do that to every tenant at once. A container environment is
+written by whoever created the object, so a Job whose env claimed another
+tenant's `TENANT_ID` and `TASK_ID` would be a cross-tenant kill switch operated
+by a trusted identity. So the tenant comes from the enclosing object instead --
+the Kubernetes namespace, or the Cloud Run Job resource's own label, both of
+which the platform creates per tenant and neither of which a workload can edit
+from inside itself. A container that disagrees is logged and overruled, and
+`detect.scope_executions_to_their_tenant` then drops any claim on a task that
+belongs to someone else.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import os
+import re
+import tempfile
+import threading
+import time
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Iterable, Protocol
+
+#: The character class `sanitize_name` below rewrites, IMPORTED from the frozen
+#: contract exactly as `scheduler.dispatch` imports it, so the two copies of the
+#: naming rule cannot disagree about which characters survive.
+from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
+
+from .detect import WORKER_EXIT_CANNOT_START, sanitised
+from .model import ExecutionPhase, ExecutionView, JobResourceView, Termination, as_datetime
+from .startproblem import StartProblem, failed_create_problem, pods_start_problem
+from .startsteps import StartRead, pods_start_steps
+
+MANAGED_LABEL = "managed-by"
+#: The marker this service itself would stamp. Other components stamp their own.
+MANAGED_VALUE = "swarm"
+
+#: Every marker this platform's components stamp. Listed explicitly rather than
+#: matched with a `swarm-*` glob so that a resource another team happens to
+#: label `swarm-something` is not silently adopted by the reconciler.
+MANAGED_VALUES: tuple[str, ...] = (
+    MANAGED_VALUE,
+    "swarm-scheduler",
+    "swarm-api",
+    "swarm-worker",
+    "swarm-terraform",
+    "swarm-bootstrap",
+)
+
+#: Markers whose resources the reconciler may DELETE. `swarm-terraform` is
+#: absent on purpose: terraform owns those and will recreate them.
+GC_MANAGED_VALUES: frozenset[str] = frozenset({"swarm", "swarm-scheduler", "swarm-worker"})
+
+#: Both label spellings in use across the platform. The dispatcher writes the
+#: short form; earlier drafts of this service assumed the long one. Reading both
+#: costs one dict lookup and removes a whole class of false orphans.
+TASK_LABELS = ("swarm-task-id", "swarm-task")
+ATTEMPT_LABELS = ("swarm-attempt-id", "swarm-attempt")
+TENANT_LABELS = ("swarm-tenant-id", "swarm-tenant")
+GENERATION_LABELS = ("swarm-generation",)
+
+TASK_LABEL = TASK_LABELS[0]
+ATTEMPT_LABEL = ATTEMPT_LABELS[0]
+TENANT_LABEL = TENANT_LABELS[0]
+GENERATION_LABEL = GENERATION_LABELS[0]
+
+#: Environment variables the dispatcher sets on every worker container. These
+#: carry the identifiers verbatim, which labels cannot.
+TASK_ENV = "TASK_ID"
+ATTEMPT_ENV = "ATTEMPT_ID"
+TENANT_ENV = "TENANT_ID"
+GENERATION_ENV = "GENERATION"
+
+#: The worker container's name in every Job the dispatcher creates, on both
+#: backends (`scheduler.dispatch`: `run_v2.Container(name="worker")` and the
+#: GKE manifest's `"name": "worker"`). Used to pick the worker's status out of
+#: a pod's container statuses. Not load-bearing on its own: a pod with ONE
+#: container, which every worker pod is, is read whatever that container is
+#: called, so a rename costs the preference and not the reading.
+WORKER_CONTAINER = "worker"
+
+#: The labels the Job controller puts on the pods it creates, newest first.
+#: `batch.kubernetes.io/job-name` since Kubernetes 1.27; `job-name` before it,
+#: and still set alongside it.
+JOB_NAME_POD_LABELS = ("batch.kubernetes.io/job-name", "job-name")
+
+
+#: What the dispatcher records as a Cloud Run attempt's `execution_name` when
+#: the run operation's metadata named no execution:
+#: `f"{job}/executions/pending-{attempt_id}"` (`scheduler.dispatch`,
+#: `CloudRunJobDispatcher.dispatch`). RESTATED, because the reconciler's image
+#: carries only `apps/common` and `apps/reconciler`. It is not a name Cloud Run
+#: knows, so a GET of it proves nothing either way.
+PLACEHOLDER_EXECUTION_MARKER = "/executions/pending-"
+
+
+def is_placeholder_execution_name(name: str | None) -> bool:
+    """True for the dispatcher's stand-in, which no backend can be asked about."""
+    return PLACEHOLDER_EXECUTION_MARKER in str(name or "")
+
+
+def managed_marker(labels: dict[str, Any] | None) -> str | None:
+    """The `managed-by` value, when it is one this platform recognises."""
+    value = (labels or {}).get(MANAGED_LABEL)
+    return value if value in MANAGED_VALUES else None
+
+
+def is_swarm_managed(labels: dict[str, Any] | None) -> bool:
+    """True for any resource this platform created. Used for READS."""
+    return managed_marker(labels) is not None
+
+
+def is_gc_eligible(labels: dict[str, Any] | None) -> bool:
+    """True only for resources this service is allowed to DELETE."""
+    return (managed_marker(labels) or "") in GC_MANAGED_VALUES
+
+
+def is_namespace_gc_eligible(labels: dict[str, Any] | None) -> bool:
+    """True for a per-tenant namespace that is the platform's to collect.
+
+    The reconciler itself no longer collects namespaces -- a Namespace is
+    cluster-scoped and it holds no ClusterRole (see
+    `GkeBackend.list_job_resources`) -- so this is the rule any out-of-band
+    deprovisioning must honour, kept beside the other ownership predicates and
+    pinned against the rendered manifest by test_kubernetes_manifests.py.
+
+    Namespaces get their own rule because they are the one platform resource
+    whose `managed-by` marker says `swarm-terraform` while no terraform state
+    contains it: `scripts/register-tenant.sh` creates it with kubectl and
+    relabels it on every run, and there is no kubernetes provider anywhere in
+    `terraform/`. Applying the Cloud Run rule here would make namespace
+    collection dead code.
+
+    What replaces it is a stronger pair of conditions: a recognised `managed-by`
+    marker AND a `swarm-tenant` label, which only this platform ever sets. A
+    namespace belonging to another team in this shared project can match neither.
+    """
+    labels = labels or {}
+    return is_swarm_managed(labels) and bool(_first(labels, TENANT_LABELS))
+
+
+def managed_label_selector() -> str:
+    """A set-based Kubernetes selector covering the whole managed family."""
+    return f"{MANAGED_LABEL} in ({','.join(MANAGED_VALUES)})"
+
+
+def _first(mapping: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = mapping.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def owning_tenant(
+    claimed: Any,
+    authority: str | None,
+    *,
+    resource: str,
+    logger: Any | None = None,
+) -> str | None:
+    """Reconcile a container-supplied tenant id against the enclosing object.
+
+    `authority` is derived from something the workload cannot write from inside
+    itself -- its namespace, or the label on the per-tenant Job resource it runs
+    under. `claimed` is whatever the container's environment or its own labels
+    say. The claim is accepted only when it names the same tenant the authority
+    does, because the identifiers differ in shape: a namespace is
+    `swarm-<tenant>` or `swarm-tenant-<tenant>` depending on which of the two
+    dispatch paths created it, and a label has been through `sanitize_name`.
+
+    When there is no authority (nothing per-tenant encloses the object) the
+    claim is returned unchanged -- there is nothing to check it against, and
+    `detect.scope_executions_to_their_tenant` still refuses to let it act on
+    another tenant's task.
+    """
+    claim = str(claimed).strip() if claimed not in (None, "") else None
+    if authority is None or authority == "":
+        return claim
+    if claim is None:
+        return authority
+    slug = sanitised(claim)
+    if slug and (authority == slug or authority.endswith(f"-{slug}")):
+        return claim
+    if logger is not None:
+        logger.warning(
+            "execution claims a tenant its own namespace or job resource does not; "
+            "using the enclosing object's tenant instead",
+            resource=resource,
+            claimed=claim,
+            authority=authority,
+        )
+    return authority
+
+
+class Backend(Protocol):
+    """A backend that can be listed in one call: Cloud Run Jobs."""
+
+    name: str
+
+    def list_executions(self) -> list[ExecutionView]: ...
+    def terminate(self, execution: ExecutionView) -> bool: ...
+    def termination(self, execution: ExecutionView) -> Termination | None: ...
+    def list_job_resources(self) -> list[JobResourceView]: ...
+    def delete_job_resource(self, resource: JobResourceView) -> bool: ...
+
+
+@dataclass(frozen=True)
+class NamespacedListing:
+    """What one pass could and could not see on a namespaced backend.
+
+    Readability is PER NAMESPACE because that is the granularity at which
+    Kubernetes grants it. The reconciler's only grant is the namespaced
+    `swarm-reaper` Role (kubernetes/rbac/dispatcher-rbac.yaml), applied tenant by
+    tenant, and Kubernetes AUTHORISES BEFORE IT RESOLVES -- so a registered
+    tenant whose namespace was never provisioned answers 403, exactly like a
+    namespace with no RoleBinding. With one boolean for the whole backend, that
+    one missing namespace would blind the reconciler to every tenant on GKE.
+    """
+
+    executions: list[ExecutionView] = field(default_factory=list)
+    #: Namespaces whose Job list came back. Only these support a conclusion
+    #: about absence.
+    readable: frozenset[str] = frozenset()
+    #: namespace -> why it could not be read. Never a secret: see `_describe`.
+    unreadable: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def blind(self) -> bool:
+        """True only when EVERY namespace this pass tried was unreadable."""
+        return bool(self.unreadable) and not self.readable
+
+
+class ProbeOutcome(str, Enum):
+    """What a by-name read of one execution established."""
+
+    #: The API answered 404 for a namespace this service may read. The Job
+    #: does not exist, so nothing of it can be running.
+    ABSENT = "absent"
+    #: The Job carries a terminal condition (Complete or Failed).
+    FINISHED = "finished"
+    #: The Job exists and carries no terminal condition: treat it as running.
+    ACTIVE = "active"
+    #: Anything else -- 403, 401, a transport error, a Job that is not ours.
+    #: Proves nothing either way.
+    UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True)
+class Probe:
+    outcome: ProbeOutcome
+    execution: ExecutionView | None = None
+    detail: str = ""
+
+
+class NamespacedBackend(Protocol):
+    """A backend read namespace by namespace: GKE Autopilot.
+
+    There is no `list_executions()` here, on purpose. Listing the whole backend
+    in one call is a cluster-scope request, and this platform grants no
+    cluster-scope role to anybody (kubernetes/rbac/worker-rbac.yaml, closing
+    note). The caller says which namespaces to read, from control-plane data.
+    """
+
+    name: str
+
+    def namespace_for(self, tenant_id: str, recorded: str | None = None) -> str: ...
+    def namespace_of(
+        self, execution_name: str | None, *, task_id: str | None = None,
+        tenant_id: str | None = None, generation: int | None = None,
+    ) -> str | None: ...
+    def list_executions_in(self, namespaces: Iterable[str]) -> NamespacedListing: ...
+    def probe(
+        self, execution_name: str, *, task_id: str | None = None,
+        tenant_id: str | None = None, generation: int | None = None,
+    ) -> Probe: ...
+    def terminate(self, execution: ExecutionView) -> bool: ...
+    def termination(self, execution: ExecutionView) -> Termination | None: ...
+    def list_job_resources(self) -> list[JobResourceView]: ...
+    def delete_job_resource(self, resource: JobResourceView) -> bool: ...
+
+
+def _api_status(exc: BaseException) -> int | None:
+    """The HTTP status a kubernetes client exception carries, if any."""
+    status = getattr(exc, "status", None)
+    try:
+        return int(status) if status is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _describe(exc: BaseException) -> str:
+    """One line naming a failed read, for logs and the persisted report.
+
+    The status and reason only, never `str(exc)` whole: a kubernetes
+    ApiException renders its response headers and body, and this string is
+    served to operators through the pass history.
+    """
+    status = _api_status(exc)
+    reason = str(getattr(exc, "reason", "") or "").strip()
+    if status is not None:
+        return f"{status} {reason}".strip()
+    return f"{type(exc).__name__}: {str(exc).splitlines()[0] if str(exc) else ''}".strip()
+
+
+def job_conditions(job: Any) -> dict[str, bool]:
+    """Condition type -> whether it is True, from a Job object or a dict."""
+    status = getattr(job, "status", None)
+    if status is None and isinstance(job, dict):
+        status = job.get("status")
+    raw = getattr(status, "conditions", None)
+    if raw is None and isinstance(status, dict):
+        raw = status.get("conditions")
+    found: dict[str, bool] = {}
+    for condition in raw or []:
+        kind = getattr(condition, "type", None)
+        state = getattr(condition, "status", None)
+        if kind is None and isinstance(condition, dict):
+            kind, state = condition.get("type"), condition.get("status")
+        if kind:
+            found[str(kind)] = str(state) == "True"
+    return found
+
+
+def job_phase(job: Any) -> ExecutionPhase:
+    """The phase of a batch/v1 Job, decided by its CONDITIONS.
+
+    Not by `status.failed` or `status.succeeded`. Those are pod counters, and a
+    counter can move before the Job is over: with `backoffLimit > 0` a failed
+    pod is followed by a replacement, and on Kubernetes >= 1.31 a Job reports
+    `SuccessCriteriaMet`/`FailureTarget` while its pods are still terminating.
+    `Complete` and `Failed` are the Job controller's own statement that nothing
+    of it is running any more, which is the only question that may release a
+    slot. A Job with neither is treated as running -- the direction that holds
+    the slot, or terminates before it releases.
+    """
+    conditions = job_conditions(job)
+    if conditions.get("Complete"):
+        return ExecutionPhase.SUCCEEDED
+    if conditions.get("Failed"):
+        return ExecutionPhase.FAILED
+    return ExecutionPhase.RUNNING
+
+
+def job_finished_at(job: Any) -> datetime | None:
+    """When a batch/v1 Job finished, or None while it runs or when nothing says.
+
+    `status.completion_time` is set only on success. A FAILED Job has none, and
+    the time is on its `Failed` condition, as `last_transition_time`. The same
+    field on `Complete` covers a Job whose completion time was not copied. Read
+    from a client object or a dict, like `job_conditions`.
+    """
+    status = getattr(job, "status", None)
+    if status is None and isinstance(job, dict):
+        status = job.get("status")
+    completed = getattr(status, "completion_time", None)
+    if completed is None and isinstance(status, dict):
+        completed = status.get("completion_time") or status.get("completionTime")
+    if completed is not None:
+        return _ensure_utc(completed)
+    raw = getattr(status, "conditions", None)
+    if raw is None and isinstance(status, dict):
+        raw = status.get("conditions")
+    for condition in raw or []:
+        kind = getattr(condition, "type", None)
+        state = getattr(condition, "status", None)
+        moved = getattr(condition, "last_transition_time", None)
+        if kind is None and isinstance(condition, dict):
+            kind, state = condition.get("type"), condition.get("status")
+            moved = condition.get("last_transition_time") or condition.get("lastTransitionTime")
+        if str(kind) in ("Failed", "Complete") and str(state) == "True" and moved is not None:
+            return _ensure_utc(moved)
+    return None
+
+
+def pod_eviction(pod: Any) -> str | None:
+    """kubelet's message on a pod it EVICTED, one bounded line; None if it was not.
+
+    `status.reason == "Evicted"` is kubelet's own marker, set by its eviction
+    manager for a volume or container past its limit and for node pressure
+    alike. The message is kubelet's, not the tenant's, but it is bounded like
+    any backend text before it goes near a task. An evicted pod with no
+    message still reads as evicted.
+    """
+    status = getattr(pod, "status", None)
+    if status is None and isinstance(pod, dict):
+        status = pod.get("status")
+    reason = getattr(status, "reason", None)
+    message = getattr(status, "message", None)
+    if reason is None and isinstance(status, dict):
+        reason, message = status.get("reason"), status.get("message")
+    if str(reason or "") != "Evicted":
+        return None
+    return _short(message) or "Evicted"
+
+
+#: A Kubernetes memory quantity's binary or decimal suffix, read as a unit a
+#: person reads: "8Gi" is "8 GiB". Anything else is shown as written.
+_QUANTITY = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(Ki|Mi|Gi|Ti|K|M|G|T)?\s*$")
+
+#: Cloud Run's words for a container past its memory limit, e.g. "Memory limit
+#: of 8192 MiB exceeded with 8243 MiB used." It keeps no `OOMKilled` reason, so
+#: this sentence is the only sign; matched loosely, and only ever used to put
+#: "OOMKilled: " in front of Cloud Run's own sentence.
+_CLOUD_RUN_MEMORY = re.compile(r"memory limit\b.*\bexceeded", re.IGNORECASE)
+
+
+def memory_quantity_words(quantity: Any) -> str | None:
+    """A memory limit as a person reads it ("8Gi" -> "8 GiB"), or None when there is none."""
+    text = _short(quantity, 40)
+    if not text:
+        return None
+    matched = _QUANTITY.match(text)
+    if matched is None:
+        return text
+    number, unit = matched.groups()
+    return f"{number} {unit}B" if unit else f"{number} bytes"
+
+
+def _container_memory_limit(pod: Any, container: str | None) -> str | None:
+    """The memory limit the pod spec gave `container`, in words, or None."""
+    spec = getattr(pod, "spec", None)
+    for candidate in getattr(spec, "containers", None) or []:
+        if getattr(candidate, "name", None) != container:
+            continue
+        limits = getattr(getattr(candidate, "resources", None), "limits", None)
+        if isinstance(limits, dict):
+            return memory_quantity_words(limits.get("memory"))
+        return memory_quantity_words(getattr(limits, "memory", None))
+    return None
+
+
+def termination_reason(termination: Any) -> str | None:
+    """Why a finished execution ended, in words for its attempt and its task, or None.
+
+    From the termination the reconciler already read (`Reconciler.
+    _read_terminations`), never a second call: kubelet's eviction message,
+    or the backend's own words for a non-zero exit -- an OOM kill reads
+    "container worker: OOMKilled: the container passed its 8 GiB memory
+    limit (exit code 137)". None when the read found no exit code, exit 0,
+    or the worker's own 78, whose cause the cannot-start rule already puts
+    on the task: those keep today's words (archived issue 1822).
+    """
+    if termination is None:
+        return None
+    eviction = getattr(termination, "eviction", None)
+    if eviction:
+        return f"Evicted: {_short(eviction)}"
+    code = getattr(termination, "exit_code", None)
+    if not isinstance(code, int) or isinstance(code, bool) or code in (0, WORKER_EXIT_CANNOT_START):
+        return None
+    detail = _short(getattr(termination, "detail", "") or "")
+    return f"{detail} (exit code {code})" if detail else None
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _short(text: Any, limit: int = 300) -> str:
+    """One line of a backend's own words, for a log line or a finding. Never a secret field."""
+    return " ".join(str(text or "").split())[:limit]
+
+
+def _within(created_at: datetime | None, now: datetime, seconds: int) -> bool:
+    """Whether something created at `created_at` is at most `seconds` old.
+
+    An unknown create time reads as young, so what cannot be dated is still
+    reported once by the instance that sees it rather than never.
+    """
+    if created_at is None:
+        return True
+    return (now - created_at).total_seconds() <= seconds
+
+
+def execution_is_finished(execution: Any) -> bool:
+    """True only when Cloud Run's own record proves this execution is over.
+
+    A separate question from `_execution_view`'s phase, and deliberately so.
+    The phase answers "what is this doing", and its `UNKNOWN` bucket is where
+    shapes nobody has characterised land; this answers "is the compute gone",
+    which is the only question that may release a slot. Reusing the phase would
+    quietly let that bucket release slots too.
+
+    All three conditions are required, and each rules out a shape seen on a real
+    execution rather than an imagined one:
+
+    * `completion_time` set -- the field Cloud Run writes when an execution
+      reaches a terminal state. `swarm-job-eng-claude-code-sq2l6` read back
+      `completion_time=2026-09-22T04:00:14Z`, `cancelled_count=1`,
+      `running_count=0`, `reconciling=False`; the healthy
+      `swarm-job-eng-claude-code-vn5mp` read the same shape with
+      `succeeded_count=1`. Only the counts differ, which is why the counts are
+      not what is tested: this must confirm a stop, not a success.
+    * `running_count == 0` -- an execution with `task_count > 1` can post a
+      terminal count for one task while another is still going, and the agent in
+      that task is still holding the credential.
+    * not `reconciling` -- Cloud Run is still acting on the resource, so its
+      counters are mid-flight. sq2l6 grew an `ImmediateRetry` Retry condition at
+      04:00:19, five seconds AFTER its completionTime; `maxRetries: 0` meant
+      nothing came of it, but a profile with retries would have restarted the
+      container under a completion time that was already set.
+
+    An object missing these fields reads as not finished, which is the direction
+    that holds the slot.
+    """
+    if as_datetime(getattr(execution, "completion_time", None)) is None:
+        return False
+    if int(getattr(execution, "running_count", 0) or 0) > 0:
+        return False
+    return not bool(getattr(execution, "reconciling", False))
+
+
+#: Cloud Run's own words when it refuses a cancel: `400 Execution '...' cannot
+#: be cancelled because it is not running.`
+CANCEL_REFUSED_NOT_RUNNING = "because it is not running"
+#: Added (PEP 678) to the re-raised cancel error when the re-read execution has
+#: no running task and no completion time: the shape Cloud Run will neither
+#: cancel nor call finished. `swarm-job-eng-mock-5lrt8`, `-rsdxp`, `-ww2gb` and
+#: `-r5877` have read so since 2026-10-04T10:33:07Z (archived issue 1822).
+WEDGED_NOTE = "cloud run reports no running task and no completion time"
+
+
+def cancel_refused_as_not_running(exc: BaseException) -> bool:
+    """True when a failed termination is Cloud Run refusing an execution it does
+    not count as running, while not recording it as finished either.
+
+    Either Cloud Run said so (`CANCEL_REFUSED_NOT_RUNNING`), or the re-read
+    found the wedged shape and `CloudRunBackend._confirmed_finished` noted it on
+    the error. This proves nothing about the compute, and releases nothing: the
+    reconciler only uses it to stop asking every pass when no lease holds the
+    execution (`repair.Reconciler._terminate`).
+    """
+    if CANCEL_REFUSED_NOT_RUNNING in str(exc):
+        return True
+    return any(WEDGED_NOTE in str(note) for note in getattr(exc, "__notes__", ()) or ())
+
+
+#: How young an unattributed, unfinished execution must be for a pass to log it.
+#: The "already reported" memory has to hold across instances, and the
+#: reconciler runs with min_instance_count 0, so it is derived from the
+#: execution's own create time rather than kept: every one-minute pass sees an
+#: execution inside its first 15 minutes, and no pass logs it after. Two
+#: instances logging the same one needs both to pass over it in that window.
+UNATTRIBUTED_REPORT_HORIZON_SECONDS = 900
+
+
+# ---------------------------------------------------------------------------
+# Cloud Run Jobs
+# ---------------------------------------------------------------------------
+
+
+class CloudRunBackend:
+    """Cloud Run Jobs: the primary backend.
+
+    The dispatcher creates one Job resource per (tenant, runner profile) because
+    Cloud Run pins the service account on the Job, not the execution -- so the
+    per-tenant identity boundary requires per-tenant Job resources, and this
+    class is what stops them accumulating forever.
+    """
+
+    name = "CLOUD_RUN_JOB"
+
+    def __init__(
+        self,
+        project_id: str,
+        region: str,
+        *,
+        job_name_prefix: str = "swarm-",
+        executions_client: Any | None = None,
+        jobs_client: Any | None = None,
+        tasks_client: Any | None = None,
+        logger: Any | None = None,
+    ) -> None:
+        self._project_id = project_id
+        self._region = region
+        self._prefix = job_name_prefix
+        self._executions = executions_client
+        self._jobs = jobs_client
+        self._tasks = tasks_client
+        self._log = logger
+        #: Unattributed executions already logged by this instance, so each is
+        #: logged ONCE rather than on every one-minute pass. Pruned to what the
+        #: latest listing returned, so it never outgrows the listing itself.
+        #: Across instances, `UNATTRIBUTED_REPORT_HORIZON_SECONDS` is the memory.
+        self._reported_unattributed: set[str] = set()
+        #: Unattributed executions the latest listing returned already finished:
+        #: counted, never logged one by one. The pass summary reports it
+        #: (`ReconcileReport.unattributed_finished`).
+        self.unattributed_finished = 0
+
+    @property
+    def parent(self) -> str:
+        return f"projects/{self._project_id}/locations/{self._region}"
+
+    def _executions_client(self) -> Any:
+        if self._executions is None:
+            from google.cloud import run_v2  # lazy
+
+            self._executions = run_v2.ExecutionsClient()
+        return self._executions
+
+    def _jobs_client(self) -> Any:
+        if self._jobs is None:
+            from google.cloud import run_v2  # lazy
+
+            self._jobs = run_v2.JobsClient()
+        return self._jobs
+
+    def _tasks_client(self) -> Any:
+        if self._tasks is None:
+            from google.cloud import run_v2  # lazy
+
+            self._tasks = run_v2.TasksClient()
+        return self._tasks
+
+    def termination(self, execution: ExecutionView) -> Termination | None:
+        """How a finished execution's worker exited, from Cloud Run's record of its TASK.
+
+        An Execution carries counts (`failed_count`, `succeeded_count`) and no
+        exit code. The code is on each of its Tasks, as
+        `last_attempt_result.exit_code`, so this lists the execution's tasks:
+        one call, and one task, because the dispatcher's Jobs run
+        `task_count` 1 with no retries. `run.tasks.list` is already in
+        swarmJobReaper (terraform/modules/iam/custom_roles.tf).
+
+        Cloud Run keeps no termination message, so `message` is always None
+        here. The task's own status message ("Task ... failed with exit code:
+        78") goes to `detail`, never to the worker's cause.
+
+        None when no task records an exit. A task whose last attempt reads
+        exit code 0 has recorded none: proto3 cannot tell 0 from unset, and a
+        FAILED execution did not exit 0. Raises when the call fails, and the
+        caller then concludes nothing.
+        """
+        tasks = list(self._tasks_client().list_tasks(parent=execution.name))
+        for task in tasks:
+            result = getattr(task, "last_attempt_result", None)
+            code = _int_or_none(getattr(result, "exit_code", None))
+            if not code:
+                continue
+            status = getattr(result, "status", None)
+            said = _short(getattr(status, "message", "") or f"task exited {code}")
+            # Cloud Run keeps no `OOMKilled` reason, only its sentence about
+            # the memory limit; name it as GKE does, so a memory kill reads
+            # the same on the task whichever backend ran it (archived issue 1822).
+            if _CLOUD_RUN_MEMORY.search(said):
+                said = f"OOMKilled: {said}"
+            return Termination(exit_code=code, message=None, detail=said)
+        return None
+
+    # -- reads ----------------------------------------------------------
+    def list_executions(self) -> list[ExecutionView]:
+        """Every execution under a managed `swarm-` job that the scheduler created.
+
+        AN EXECUTION WITH NO TASK ID AND NO ATTEMPT ID IS NOT OURS, and is left
+        out of what this returns. The scheduler sets both on every execution it
+        creates; one with neither was started by something else -- CI's
+        acceptance and verify runs (`gcloud run jobs execute`) run under the
+        very same `swarm-job-<tenant>-<profile>` jobs. No rule may act on one
+        (`detect_orphan_executions` already skipped them) and no lease is its,
+        so leaving it out changes no verdict. It is logged once per execution
+        per instance, never per pass: on 2026-10-03 three CI executions wrote
+        a warning every minute for five hours beside a held lease, and the
+        noise was read as the reason for the hold.
+
+        Only an UNFINISHED one is logged, and only inside its first
+        `UNATTRIBUTED_REPORT_HORIZON_SECONDS`: the in-process memory alone reset
+        on every new instance, and on 2026-10-21 the line was ~70k a day, 95%
+        of it about executions already over (mostly swarm-verify acceptance
+        runs). A finished one is counted in `unattributed_finished` instead.
+
+        An execution carrying a TASK id but no attempt id is kept: archived issue 372's live
+        claude-code execution came back exactly so, and the orphan rule's
+        stand-aside for it, and the obsolete-generation rule's kill of an old
+        one, both need to see it. It is logged by the same rule.
+
+        Neither kind can make this backend unreadable. Logging one is wrapped:
+        a failure there is logged and the listing goes on, because a listing
+        that raised would hold every Cloud Run lease on the platform.
+        """
+        views: list[ExecutionView] = []
+        listed: set[str] = set()
+        finished = 0
+        now = datetime.now(timezone.utc)
+        for job in self._list_jobs():
+            job_name = getattr(job, "name", "")
+            if not self._is_managed(job):
+                continue
+            # The Job resource is created per (tenant, profile) by the
+            # dispatcher, and Cloud Run pins the service account on it -- so its
+            # tenant label is the identity the executions under it actually run
+            # as, and is what an execution's own claim is checked against.
+            owner = _first(self._labels(job), TENANT_LABELS)
+            for execution in self._executions_client().list_executions(parent=job_name):
+                view = self._execution_view(
+                    execution, job_name, job_tenant=str(owner) if owner else None
+                )
+                if view.attempt_id:
+                    views.append(view)
+                    continue
+                listed.add(view.name)
+                if view.ended:
+                    finished += 1
+                elif view.name not in self._reported_unattributed and _within(
+                    view.created_at, now, UNATTRIBUTED_REPORT_HORIZON_SECONDS
+                ):
+                    self._reported_unattributed.add(view.name)
+                    try:
+                        self._log_unattributed(execution, view, job_name)
+                    except Exception as exc:
+                        if self._log is not None:
+                            self._log.warning(
+                                "could not describe an unattributed cloud run execution",
+                                execution=view.name,
+                                error=_short(f"{type(exc).__name__}: {exc}"),
+                            )
+                if view.task_id:
+                    views.append(view)
+        self._reported_unattributed &= listed
+        self.unattributed_finished = finished
+        return views
+
+    def _log_unattributed(self, execution: Any, view: ExecutionView, job_name: str) -> None:
+        """Say which identifiers an execution under a `swarm-` job came back without (archived issue 372).
+
+        An execution the listing cannot tie to an attempt is invisible to every
+        rule keyed by attempt: on 2026-09-30 that made a live claude-code
+        attempt look "missing" while its execution ran. Why it came back
+        without one -- the overrides absent from `template`, the labels never
+        written -- is what this line exists to show next time, so it names each
+        identifier that neither the environment nor a label supplied.
+
+        Once per unfinished execution, inside its first minutes (see
+        `list_executions`), not once per pass. It never carries
+        an environment VALUE other than the swarm ids already on the view: the
+        template's environment holds the worker's whole configuration.
+        """
+        if self._log is None:
+            return
+        labels = dict(getattr(execution, "labels", {}) or {})
+        env = self._env_from_template(execution)
+        missing = [
+            env_name
+            for env_name, label_names in (
+                (TASK_ENV, TASK_LABELS),
+                (ATTEMPT_ENV, ATTEMPT_LABELS),
+                (TENANT_ENV, TENANT_LABELS),
+                (GENERATION_ENV, GENERATION_LABELS),
+            )
+            if not env.get(env_name) and _first(labels, label_names) is None
+        ]
+        template = getattr(execution, "template", None)
+        self._log.warning(
+            "cloud run execution under a swarm- job carries no attempt id",
+            execution=view.name,
+            job=job_name,
+            phase=view.phase.value,
+            missing=missing,
+            task_id=view.task_id,
+            generation=view.generation,
+            template_containers=len(getattr(template, "containers", []) or []),
+            template_env_entries=len(env),
+            labels_present=sorted(labels),
+        )
+
+    def probe(self, execution_name: str) -> Probe:
+        """Read ONE execution by its full name, whatever the listing said (archived issue 372).
+
+        A listing that succeeds and does not attribute an execution to its
+        attempt is not proof that nothing runs for that attempt, so an absence
+        finding on Cloud Run is confirmed here before it is repaired
+        (`repair.Reconciler._admit`). What each answer proves:
+
+        * NotFound -- Cloud Run has no such execution: ABSENT.
+        * an execution Cloud Run's own record shows over -- FINISHED, by
+          `execution_is_finished`, the same test a confirmed stop passes.
+        * any other execution -- ACTIVE, and read as running whatever its
+          counters say, which is the direction that holds the slot.
+        * anything else, including a name that is not a platform execution in
+          this project and region or a Job not ours by label -- UNREADABLE.
+
+        `run.executions.get` and `run.jobs.get` are already exercised by
+        `_confirmed_finished` and `delete_job_resource`.
+        """
+        from google.api_core import exceptions as gapi_exceptions
+
+        name = str(execution_name or "").strip()
+        job_name, marker, short = name.rpartition("/executions/")
+        job_id = job_name.rsplit("/", 1)[-1]
+        if not marker or not short or not job_name.startswith(f"{self.parent}/jobs/"):
+            return Probe(ProbeOutcome.UNREADABLE, detail=f"{name}: not an execution of {self.parent}")
+        if not job_id.startswith(self._prefix):
+            return Probe(
+                ProbeOutcome.UNREADABLE,
+                detail=f"{name}: job {job_id} is outside the prefix {self._prefix!r}",
+            )
+        if is_placeholder_execution_name(name):
+            # The dispatcher's stand-in for a name the run operation did not
+            # return. A GET of it answers NotFound whether or not the real
+            # execution runs, so it must never read as absence.
+            return Probe(ProbeOutcome.UNREADABLE, detail=f"{name}: a placeholder, not a name")
+        try:
+            execution = self._executions_client().get_execution(name=name)
+        except gapi_exceptions.NotFound:
+            return Probe(ProbeOutcome.ABSENT, detail=f"{name}: not found")
+        except Exception as exc:
+            return Probe(ProbeOutcome.UNREADABLE, detail=f"{name}: {_describe(exc)}")
+        try:
+            job = self._jobs_client().get_job(name=job_name)
+        except Exception as exc:
+            return Probe(ProbeOutcome.UNREADABLE, detail=f"{job_name}: {_describe(exc)}")
+        if not self._is_managed(job):
+            return Probe(ProbeOutcome.UNREADABLE, detail=f"{job_name}: not a platform-managed job")
+        owner = _first(self._labels(job), TENANT_LABELS)
+        view = self._execution_view(execution, job_name, job_tenant=str(owner) if owner else None)
+        if execution_is_finished(execution):
+            return Probe(
+                ProbeOutcome.FINISHED, execution=view, detail=f"{name}: {view.phase.value.lower()}"
+            )
+        return Probe(
+            ProbeOutcome.ACTIVE,
+            execution=replace(view, phase=ExecutionPhase.RUNNING),
+            detail=f"{name}: active",
+        )
+
+    def _list_jobs(self) -> list[Any]:
+        return [
+            job
+            for job in self._jobs_client().list_jobs(parent=self.parent)
+            if str(getattr(job, "name", "")).rsplit("/", 1)[-1].startswith(self._prefix)
+        ]
+
+    @staticmethod
+    def _labels(resource: Any) -> dict[str, Any]:
+        return dict(getattr(resource, "labels", {}) or {})
+
+    def _is_managed(self, resource: Any) -> bool:
+        """Visible to this service: any marker in the platform family."""
+        return is_swarm_managed(self._labels(resource))
+
+    def _is_gc_eligible(self, resource: Any) -> bool:
+        """Deletable by this service: runtime markers only."""
+        return is_gc_eligible(self._labels(resource))
+
+    def _execution_view(
+        self, execution: Any, job_name: str, *, job_tenant: str | None = None
+    ) -> ExecutionView:
+        labels = dict(getattr(execution, "labels", {}) or {})
+        env = self._env_from_template(execution)
+        running = int(getattr(execution, "running_count", 0) or 0)
+        cancelled = int(getattr(execution, "cancelled_count", 0) or 0)
+        succeeded = int(getattr(execution, "succeeded_count", 0) or 0)
+        failed = int(getattr(execution, "failed_count", 0) or 0)
+        completion = as_datetime(getattr(execution, "completion_time", None))
+
+        if running > 0 and completion is None:
+            phase = ExecutionPhase.RUNNING
+        elif cancelled > 0:
+            phase = ExecutionPhase.CANCELLED
+        elif succeeded > 0:
+            phase = ExecutionPhase.SUCCEEDED
+        elif failed > 0:
+            phase = ExecutionPhase.FAILED
+        elif completion is None:
+            phase = ExecutionPhase.RUNNING      # created, not yet reporting
+        else:
+            phase = ExecutionPhase.UNKNOWN
+
+        # Environment first: it carries the identifiers verbatim, while a label
+        # value has been through `sanitize_name` and no longer matches the
+        # Firestore document id it came from.
+        return ExecutionView(
+            name=str(getattr(execution, "name", "")),
+            backend=self.name,
+            phase=phase,
+            created_at=as_datetime(getattr(execution, "create_time", None)),
+            task_id=env.get(TASK_ENV) or _first(labels, TASK_LABELS),
+            attempt_id=env.get(ATTEMPT_ENV) or _first(labels, ATTEMPT_LABELS),
+            tenant_id=owning_tenant(
+                env.get(TENANT_ENV) or _first(labels, TENANT_LABELS),
+                job_tenant,
+                resource=str(getattr(execution, "name", "")),
+                logger=self._log,
+            ),
+            generation=_int_or_none(env.get(GENERATION_ENV) or _first(labels, GENERATION_LABELS)),
+            parent=job_name,
+            # What the ended-at-startup rule measures its grace from (archived issue 198).
+            completed_at=completion,
+            # The same test a confirmed stop passes, so a lease is never
+            # released on a weaker reading of "over" than a kill is.
+            ended=execution_is_finished(execution),
+        )
+
+    @staticmethod
+    def _env_from_template(execution: Any) -> dict[str, str]:
+        """Identifiers the dispatcher passed as env overrides, not labels.
+
+        Label values cannot hold every id shape, so the identifiers are read
+        from both places and whichever is present wins.
+        """
+        env: dict[str, str] = {}
+        template = getattr(execution, "template", None)
+        for container in getattr(template, "containers", []) or []:
+            for entry in getattr(container, "env", []) or []:
+                name = getattr(entry, "name", None)
+                value = getattr(entry, "value", None)
+                if name and isinstance(value, str):
+                    env[name] = value
+        return env
+
+    # -- writes ---------------------------------------------------------
+    def terminate(self, execution: ExecutionView) -> bool:
+        """Stop the execution and return whether the stop is PROVEN.
+
+        Two kinds of proof, and only two.
+
+        **The cancel was acknowledged for this execution.** Only an operation
+        whose result names this exact execution counts. `bool(result)` would
+        not: a protobuf is truthy whenever it carries any field at all, so
+        falling back to it reports success for essentially any completed
+        operation -- including one that returned a different execution, which is
+        precisely the case the name comparison exists to catch. `repair.py`
+        gates the lease release on this boolean, so a false True releases a slot
+        while the first agent may still be running: two agents, one task, one
+        credential, one repository.
+
+        **Or Cloud Run's own record says the execution is over.** A `NotFound`
+        is the extreme of that: the execution this service was asked to end does
+        not exist any more. `_confirmed_finished` is the rest of it, and it
+        exists because Cloud Run does NOT distinguish "the cancellation failed"
+        from "the execution did not succeed". Every failed cancel seen on
+        example-project was the second thing:
+
+        * `400 Execution 'swarm-job-example-tenant-mock-w8g2g' cannot be cancelled
+          because it is not running.` -- 16 of these in 1.997s on 2026-09-20,
+          because the executions finished between the list and the cancel. That
+          pass (pass_0bd239d41f79479385cf) found 17 dead workers and released
+          exactly one: sixteen leases held on a read-then-act race.
+        * `409 Task swarm-verify-dc9fl-task0 failed with exit code: 1` -- the
+          LRO carrying the task's own failure as operation error code 10.
+        * `None Unspecified error. 2: Unspecified error.` --
+          swarm-job-eng-claude-code-sq2l6 on 2026-09-22. Its CancelExecution
+          audit entry reads `status { code: 2, message: "Execution
+          swarm-job-eng-claude-code-sq2l6 has failed to complete, 0/1 tasks were
+          a success." }` and carries, in the same payload, the execution with
+          cancelledCount 1 and completionTime set. The cancellation worked.
+
+        So an unacknowledged cancel is not evidence of anything and the
+        execution is re-read instead. A GET that reports it finished is STRONGER
+        evidence than an ack: an ack says Cloud Run accepted a request, a
+        terminal execution says the compute is gone. Nothing else changes -- if
+        the re-read cannot prove termination the original error is re-raised,
+        `repair.py` logs it and the slot stays held, which is the outcome this
+        module exists to produce.
+        """
+        from google.api_core import exceptions as gapi_exceptions
+        from google.cloud import run_v2
+
+        request = run_v2.CancelExecutionRequest(name=execution.name)
+        try:
+            operation = self._executions_client().cancel_execution(request=request)
+            result = operation.result(timeout=120)
+        except gapi_exceptions.NotFound:
+            if self._log:
+                self._log.info(
+                    "cloud run execution already gone", execution=execution.name, confirmed=True
+                )
+            return True
+        except Exception as exc:
+            # Re-raised rather than turned into False when the proof fails, so
+            # `repair.py`'s "termination failed" carries the real cause. A bare
+            # False would report the same refusal with nothing to act on.
+            if self._confirmed_finished(execution, cause=exc):
+                return True
+            raise
+        if getattr(result, "name", None) == execution.name:
+            if self._log:
+                self._log.info(
+                    "cloud run execution cancelled", execution=execution.name, confirmed=True
+                )
+            return True
+        returned = str(getattr(result, "name", "")) or None
+        if self._confirmed_finished(
+            execution, cause=f"cancel acknowledged {returned!r}, not this execution"
+        ):
+            return True
+        if self._log:
+            self._log.error(
+                "cloud run did not confirm the cancellation; NOT releasing the slot",
+                execution=execution.name,
+                returned=returned,
+                confirmed=False,
+            )
+        return False
+
+    def _confirmed_finished(self, execution: ExecutionView, *, cause: Any) -> bool:
+        """Re-read the execution and say whether Cloud Run reports it finished.
+
+        The read is what makes this safe to act on, so a read that does not
+        happen, or does not prove termination, returns False every time. There
+        is no inference here: no timeout heuristic, no "it was probably the
+        cancel", nothing derived from `cause`, which is carried only so the log
+        line says which unacknowledged cancel this is answering.
+        """
+        from google.api_core import exceptions as gapi_exceptions
+
+        try:
+            current = self._executions_client().get_execution(name=execution.name)
+        except gapi_exceptions.NotFound:
+            if self._log:
+                self._log.info(
+                    "cloud run execution is gone; treating the cancellation as confirmed",
+                    execution=execution.name,
+                    cause=str(cause),
+                    confirmed=True,
+                )
+            return True
+        except Exception as exc:
+            # Cannot see it, so cannot claim it stopped. Same rule as an
+            # unreadable backend in `repair._is_actionable`.
+            if self._log:
+                self._log.error(
+                    "could not re-read the execution after an unconfirmed cancellation",
+                    execution=execution.name,
+                    cause=str(cause),
+                    error=str(exc),
+                    confirmed=False,
+                )
+            return False
+        if not execution_is_finished(current):
+            wedged = (
+                int(getattr(current, "running_count", 0) or 0) == 0
+                and as_datetime(getattr(current, "completion_time", None)) is None
+            )
+            if wedged and isinstance(cause, BaseException):
+                # Marked for `cancel_refused_as_not_running`; the error is
+                # still re-raised as it was, so nothing about the slot changes.
+                cause.add_note(WEDGED_NOTE)
+            if self._log:
+                # A warning for the wedged shape: whether it is an error is
+                # `repair.Reconciler._terminate`'s call, which knows whether a
+                # lease holds it. Every other unproven stop stays an ERROR.
+                (self._log.warning if wedged else self._log.error)(
+                    "cloud run still reports this execution as running; NOT releasing the slot",
+                    execution=execution.name,
+                    cause=str(cause),
+                    running_count=int(getattr(current, "running_count", 0) or 0),
+                    reconciling=bool(getattr(current, "reconciling", False)),
+                    confirmed=False,
+                )
+            return False
+        if self._log:
+            self._log.info(
+                "cloud run reports this execution finished; the stop is confirmed",
+                execution=execution.name,
+                cause=str(cause),
+                cancelled_count=int(getattr(current, "cancelled_count", 0) or 0),
+                succeeded_count=int(getattr(current, "succeeded_count", 0) or 0),
+                failed_count=int(getattr(current, "failed_count", 0) or 0),
+                confirmed=True,
+            )
+        return True
+
+    def list_job_resources(self) -> list[JobResourceView]:
+        resources: list[JobResourceView] = []
+        for job in self._list_jobs():
+            if not self._is_managed(job):
+                continue
+            labels = self._labels(job)
+            executions = list(self._executions_client().list_executions(parent=job.name))
+            active = sum(
+                1 for e in executions if self._execution_view(e, job.name).is_active
+            )
+            last = max(
+                (as_datetime(getattr(e, "create_time", None)) for e in executions),
+                default=None,
+            )
+            resources.append(
+                JobResourceView(
+                    name=str(job.name),
+                    tenant_id=_first(labels, TENANT_LABELS),
+                    runner_profile=_first(labels, ("swarm-runner-profile", "swarm-profile")),
+                    created_at=as_datetime(getattr(job, "create_time", None)),
+                    last_execution_at=last,
+                    # `managed` here means "this service may delete it", which is
+                    # the only question the GC asks of the flag.
+                    managed=self._is_gc_eligible(job),
+                    active_executions=active,
+                )
+            )
+        return resources
+
+    def delete_job_resource(self, resource: JobResourceView) -> bool:
+        if not resource.managed:
+            raise PermissionError(
+                f"refusing to delete unmanaged Cloud Run job {resource.name}: "
+                f"{MANAGED_LABEL} is not one of {sorted(GC_MANAGED_VALUES)}"
+            )
+        # Re-read and re-check the label: the list that produced this view may
+        # be seconds old, and this project is shared with other teams.
+        job = self._jobs_client().get_job(name=resource.name)
+        if not self._is_gc_eligible(job):
+            raise PermissionError(
+                f"job {resource.name} does not carry a deletable {MANAGED_LABEL} "
+                f"marker; refusing delete"
+            )
+        operation = self._jobs_client().delete_job(name=resource.name)
+        operation.result(timeout=120)
+        if self._log:
+            self._log.info("cloud run job resource deleted", job=resource.name)
+        return True
+
+
+# ---------------------------------------------------------------------------
+# GKE Autopilot
+# ---------------------------------------------------------------------------
+
+
+def gke_api_host(endpoint: str) -> str:
+    """The `host` a kubernetes client Configuration needs for this cluster.
+
+    GKE_ENDPOINT is `google_container_cluster.endpoint` passed straight through
+    by terraform/infra/locals.tf, and that attribute is a BARE address --
+    `34.118.229.12`, no scheme. The kubernetes client concatenates
+    `configuration.host` with the resource path and hands the result to urllib3,
+    which needs a scheme to choose a connection pool at all: without it the GKE
+    backend is unreadable on every pass, and a reconciler that cannot see a
+    backend refuses to act on anything it might hold.
+
+    This function is duplicated, deliberately: the identical body lives in
+    `scheduler.dispatch`. The two services are separate images that share only
+    the FROZEN `swarm_common` package -- images/swarm-reconciler/Dockerfile
+    copies `apps/common/` and `apps/reconciler/` and nothing else -- so neither
+    can import the other and there is nowhere in-image to put a single copy.
+    `tests/unit/control_plane/test_gke_client_host.py` pins the two together by
+    asserting they agree on the same inputs, which is exactly the check that was
+    missing while they did not: this side added the scheme and the scheduler,
+    which dispatches to the very same cluster, did not.
+    """
+    raw = (endpoint or "").strip()
+    if not raw:
+        # The caller treats "unset" as "not configured for out-of-cluster use"
+        # and falls back to in-cluster config; it must not become "https://".
+        return ""
+    scheme, separator, rest = raw.partition("://")
+    if not separator:
+        rest = raw
+    elif scheme.lower() != "https":
+        # The client puts a cloud-platform OAuth token in an Authorization
+        # header on every call; any other scheme puts it on the wire in clear.
+        raise ValueError(
+            "GKE_ENDPOINT must be a bare host or an https:// URL; "
+            f"{scheme}:// would send the bearer token in clear text"
+        )
+    rest = rest.rstrip("/")
+    if not rest:
+        raise ValueError(f"GKE_ENDPOINT is not a usable host: {endpoint!r}")
+    return f"https://{rest}"
+
+
+def google_bearer_token(credentials: Any) -> str:
+    """The access token for the NEXT Kubernetes API call, refreshed if stale.
+
+    A Google OAuth access token lives about an hour, and on Cloud Run often much
+    less: the metadata server hands out whatever remains of the token it has
+    cached, so a first mint can come back with half an hour of life. That is
+    fine for a one-shot job and fatal for this service, because a single
+    kubernetes client is built once and then lives as long as the process --
+    `service.create_app` keeps the Reconciler (and therefore this backend) in
+    app state, and `run.googleapis.com/cpu-throttling: 'false'` plus a
+    one-minute Cloud Scheduler tick keeps the instance warm for hours.
+
+    That is not a theoretical decay. swarm-reconciler instance 00a41e8c started
+    at 2026-09-22T00:18:03Z and minted its token on the first pass at 00:20:24Z;
+    every GKE list from 00:55:08Z onwards returned 401 Unauthorized, for 3h50m
+    and 40 consecutive passes, on that same process. Nothing in the failure said
+    "token": a 401 from the Kubernetes API reads the same whether the bearer was
+    absent, malformed or merely dead, and the earlier passes on that instance had
+    returned 403, so the log looked like an IAM problem that had somehow got
+    worse. Meanwhile `repair.run_once` was correctly refusing to act on a backend
+    it could not read, so every GKE workload went unreconciled -- a stuck
+    browser-profile task would have held its lease and its capacity forever.
+
+    So: no token is ever cached past its own expiry. `Credentials.valid` is
+    google.auth's own answer to "would this token still be accepted", already
+    carrying google.auth's refresh threshold, so a token this returns had time
+    left when the request was built. Credentials that cannot say when they
+    expire are refreshed on every call: minting one more token costs a metadata
+    round trip, and serving one dead token costs a reconciliation pass.
+    """
+    import google.auth.transport.requests
+
+    expiry = getattr(credentials, "expiry", None)
+    if expiry is None or not getattr(credentials, "valid", False):
+        credentials.refresh(google.auth.transport.requests.Request())
+    token = getattr(credentials, "token", None)
+    if not token:
+        # Never the token itself, here or anywhere: this message reaches the
+        # reconciliation report, which the API serves to operators.
+        raise RuntimeError(
+            "google.auth returned no access token for the GKE API; "
+            "the cluster cannot be read without one"
+        )
+    return str(token)
+
+
+def install_google_bearer_token(configuration: Any, credentials: Any) -> None:
+    """Give a kubernetes Configuration a token it refreshes for every request.
+
+    `refresh_api_key_hook` is the kubernetes client's own extension point for
+    exactly this, and it is called on every single request:
+    `ApiClient.update_params_for_auth` -> `Configuration.auth_settings` ->
+    `get_api_key_with_prefix("authorization")` -> the hook. Hooking it is what
+    lets the client, its connection pool and the CA file on disk stay cached for
+    the life of the process while the credential does not.
+
+    This function is duplicated in `scheduler.dispatch`, deliberately and for
+    the same reason `gke_api_host` is: the two services ship as separate images
+    that share only the FROZEN `swarm_common` package, so neither can import the
+    other and there is nowhere in-image to put a single copy.
+    `tests/unit/control_plane/test_gke_client_auth.py` pins the two copies
+    together, by running the same expiring credential through both and asserting
+    the same sequence of headers comes out.
+    """
+
+    def refresh(config: Any) -> None:
+        config.api_key["authorization"] = f"Bearer {google_bearer_token(credentials)}"
+
+    # Refused, not assumed. A Configuration that does not KNOW about the hook
+    # would accept the attribute and never call it -- silently restoring the
+    # one-shot token this replaces, with no test and no log line to show for it.
+    # Both images resolve `kubernetes>=30` at build time rather than from a
+    # lock, and this repository has already lost a working check to a client
+    # version that quietly ignored what it was handed.
+    if not hasattr(configuration, "refresh_api_key_hook"):
+        raise RuntimeError(
+            "this kubernetes client Configuration has no refresh_api_key_hook, "
+            "so a GKE access token cannot be refreshed per request"
+        )
+    # Seeded as well as hooked. `auth_settings()` only asks for a bearer token
+    # when `api_key` ALREADY holds an "authorization" entry, so a Configuration
+    # carrying the hook alone would send no Authorization header at all -- and
+    # the API server answers a missing bearer with the very same 401 this is
+    # here to stop.
+    configuration.api_key = {}
+    refresh(configuration)
+    configuration.refresh_api_key_hook = refresh
+
+
+def sanitize_name(*parts: str, max_length: int = 63) -> str:
+    """A Kubernetes-safe name: lowercase alnum and dashes, at most `max_length`.
+
+    THE DISPATCHER'S RULE, NOT A RESEMBLANCE OF IT. `GkeJobDispatcher` names a
+    tenant's namespace `sanitize_name(template.format(tenant=...))`, and the
+    reconciler must read the namespace the dispatcher wrote into. It used to
+    name it with `detect.sanitised`, which reproduces only the character-class
+    half of this function: past 63 characters the dispatcher truncates and
+    appends a hash of the full name, and the reconciler would have gone on
+    reading the untruncated name -- a namespace nothing writes to, listed empty
+    on every pass, and an orphan Job in the real one never found. No tenant id
+    in use today is long enough (`identity._slug` caps them at 11 characters and
+    `scripts/register-tenant.sh` refuses longer), and a live attempt is read at
+    the namespace its own `execution_name` records, so this was a latent
+    divergence rather than an observed one. One rule stated twice has to agree
+    on every input, not only on the short ones.
+
+    This function is duplicated, deliberately, for the reason `gke_api_host` is:
+    the reconciler image copies `apps/common/` and `apps/reconciler/` and
+    nothing else (images/swarm-reconciler/Dockerfile), so it cannot import
+    `scheduler.dispatch`, and the only home both images share is the frozen
+    `swarm_common`. Moving it there is contract request 16 in
+    docs/contract-change-requests.md. Until then
+    `tests/unit/control_plane/test_reconciler_gke_namespaced.py` pins the two
+    copies together over a corpus that reaches every branch -- truncation,
+    hashing, a leading digit -- which the short tenant ids in use today do not.
+
+    Raises ValueError where the dispatcher raises its DispatchError: on input
+    that leaves nothing to name.
+    """
+    joined = "-".join(p for p in parts if p)
+    slug = _NAME_SAFE.sub("-", joined.lower()).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug)
+    if not slug:
+        raise ValueError(f"cannot build a resource name from {parts!r}")
+    if len(slug) > max_length:
+        # Truncating alone would collide for two long tenant names sharing a
+        # prefix, so the tail carries a hash of the full name.
+        digest = hashlib.sha256(slug.encode("utf-8")).hexdigest()[:8]
+        slug = slug[: max_length - 9].rstrip("-") + "-" + digest
+    if not slug[0].isalpha():
+        slug = "s" + slug[: max_length - 1]
+    return slug
+
+
+@dataclass
+class GkeConnection:
+    endpoint: str
+    ca_cert_path: str
+
+
+# ---------------------------------------------------------------------------
+# A stored tenant namespace is VERIFIED, not trusted (owner decision 2026-10-11)
+# ---------------------------------------------------------------------------
+#
+# THE DISPATCHER'S RULE, copied because this image cannot import
+# `scheduler.dispatch` (its block comment over `verified_namespace` says why the
+# rule exists: `tenants/example-tenant` stored the pre-2026-09-23 spelling
+# `swarm-example-tenant`, and dispatch went to a namespace that does not exist).
+# A stored value outside the authority prefix is IGNORED for the derived name
+# and logged at ERROR; one inside it but different is KEPT and logged at
+# WARNING. The reconciler must agree, or it reads one namespace while the
+# dispatcher writes another and every task there looks abandoned.
+# tests/unit/control_plane/test_reconciler_gke_namespaced.py pins the two.
+
+#: The event name the monitoring module's log-based metric counts.
+TENANT_NAMESPACE_MISMATCH = "tenant_namespace_mismatch"
+
+#: One entry per tenant per process per this many seconds. A pass asks for
+#: every tenant's namespace several times, every minute.
+TENANT_NAMESPACE_MISMATCH_LOG_INTERVAL_S = 3600.0
+
+
+class _OncePerInterval:
+    """Says yes for a key at most once per `interval_s`, process-wide.
+
+    Module-level rather than per backend: `service.build_backends` runs twice
+    per process, and "once per process" has to hold across both.
+    """
+
+    def __init__(self, interval_s: float) -> None:
+        self._interval_s = interval_s
+        self._last: dict[str, float] = {}
+        self._lock = threading.Lock()
+        self._clock = time.monotonic
+
+    def __call__(self, key: str) -> bool:
+        now = self._clock()
+        with self._lock:
+            last = self._last.get(key)
+            if last is not None and now - last < self._interval_s:
+                return False
+            self._last[key] = now
+            return True
+
+    def clear(self) -> None:
+        with self._lock:
+            self._last.clear()
+
+
+_namespace_mismatch_due = _OncePerInterval(TENANT_NAMESPACE_MISMATCH_LOG_INTERVAL_S)
+
+
+def verified_namespace(
+    tenant_id: str, stored: Any, derived: str, prefix: str, logger: Any | None
+) -> str:
+    """`stored` if it is inside `prefix`, else `derived`; logs any disagreement.
+
+    `logger` is a `reconciler.logs.StructuredLogger`, whose keyword fields land
+    at the top of the JSON line (jsonPayload.event, jsonPayload.tenant_id).
+    """
+    stored = str(stored) if stored else ""
+    if not stored or stored == derived:
+        return derived
+    trusted = bool(prefix) and stored.startswith(prefix) and len(stored) > len(prefix)
+    if logger is not None and _namespace_mismatch_due(tenant_id):
+        fields = {
+            "event": TENANT_NAMESPACE_MISMATCH,
+            "tenant_id": tenant_id,
+            "stored": stored,
+            "derived": derived,
+            "used": stored if trusted else derived,
+        }
+        if trusted:
+            logger.warning(
+                f"{TENANT_NAMESPACE_MISMATCH} tenant={tenant_id} stored={stored!r} "
+                f"derived={derived!r}: kept, it is inside {prefix!r}",
+                **fields,
+            )
+        else:
+            logger.error(
+                f"{TENANT_NAMESPACE_MISMATCH} tenant={tenant_id} stored={stored!r} "
+                f"derived={derived!r}: IGNORED, it is outside {prefix!r}; reading the "
+                "derived namespace. Repair the tenant document "
+                "(scripts/tenant-namespace-audit.sh)",
+                **fields,
+            )
+    return stored if trusted else derived
+
+
+class GkeBackend:
+    """GKE Autopilot: browser and oversized profiles.
+
+    The reconciler runs on Cloud Run, not in the cluster, so it authenticates
+    with its own service-account token against the cluster endpoint. The CA
+    certificate arrives base64-encoded in the environment (Terraform emits it),
+    which avoids a Container API round trip on every pass.
+
+    EVERY CALL HERE IS NAMESPACED, and that is the fix for an outage, not a
+    style. This class used to list with `list_job_for_all_namespaces` and
+    `list_namespace`, both CLUSTER-scope. The reconciler's only Kubernetes grant
+    is the namespaced `swarm-reaper` Role, and no ClusterRole exists anywhere in
+    this repository by policy (kubernetes/rbac/worker-rbac.yaml, closing note),
+    so the Job list answered 403 -- first on 2026-09-19, then on every pass
+    from 2026-09-22T04:45Z, 766 passes by the 24th:
+    `jobs.batch is forbidden: User "108023754768362642341" cannot list resource
+    "jobs" ... at the cluster scope`. `repair.run_once` then treated GKE as
+    unreadable and correctly refused to conclude that anything on it was dead,
+    so the one component able to release a dead GKE task's lease never did. On
+    2026-09-24 that stranded five leases, held 10 units on every pool, and left
+    workflow wf_ebb3ab2d65664707a559 RUNNING with its cancel ignored for hours.
+
+    So the namespace set comes from the control plane -- the registered tenants,
+    named by the same rule the dispatcher uses, plus the namespace recorded in
+    every live GKE attempt's `execution_name` -- and each is read with
+    `list_namespaced_job`, which the Role grants.
+    """
+
+    name = "GKE_AUTOPILOT"
+
+    def __init__(
+        self,
+        *,
+        # `swarm-tenant-`, not `swarm-`, and the difference is not cosmetic:
+        # this prefix is SLICED OFF a namespace name to recover a tenant id
+        # (`namespace[len(self._prefix):]`, twice below) whenever the
+        # `swarm-tenant` label is missing. The short spelling turned
+        # `swarm-tenant-eng` into the tenant `tenant-eng`, so a finding about a
+        # real orphan was filed against a tenant that does not exist. See
+        # `ReconcilerConfig.namespace_prefix` for the outage this spelling comes
+        # from, and `scripts/lib/check-contract-parity.sh` section 6 for what
+        # now holds every copy of it together.
+        namespace_prefix: str = "swarm-tenant-",
+        batch_api: Any | None = None,
+        core_api: Any | None = None,
+        logger: Any | None = None,
+    ) -> None:
+        self._prefix = namespace_prefix
+        self._batch = batch_api
+        self._core = core_api
+        self._log = logger
+        self._ca_file: str | None = None
+        self._gc_notice_logged = False
+        # Set once the Job's events answer 403: the `swarm-reaper` Role may
+        # read events (get, list) to name a Job's creation failure, so a 403
+        # means a tenant's Role predates that rule. The FailedCreate read then
+        # asks once and stays quiet instead of 403-ing on every pass (archived issue 3531).
+        self._events_forbidden = False
+
+    # -- client ---------------------------------------------------------
+    def _configure(self) -> None:
+        # Only the batch client is used: every read and write here is a
+        # namespaced Job call. `_core` is still built for callers that inspect it.
+        if self._batch is not None:
+            return
+        from kubernetes import client as k8s_client
+        from kubernetes import config as k8s_config
+
+        endpoint = os.environ.get("GKE_ENDPOINT", "").strip()
+        ca_b64 = os.environ.get("GKE_CA_CERT_B64", "").strip()
+        if endpoint and ca_b64:
+            if self._ca_file is None:
+                handle = tempfile.NamedTemporaryFile(
+                    prefix="gke-ca-", suffix=".crt", delete=False
+                )
+                handle.write(base64.b64decode(ca_b64))
+                handle.close()
+                self._ca_file = handle.name
+            import google.auth
+
+            credentials, _ = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            configuration = k8s_client.Configuration()
+            configuration.host = gke_api_host(endpoint)
+            configuration.ssl_ca_cert = self._ca_file
+            # Per request, not once. `self._batch`/`self._core` below are cached
+            # for the life of the process and `_configure` returns early on
+            # every later pass, so a token minted here would be the token every
+            # subsequent call carried until the instance died.
+            install_google_bearer_token(configuration, credentials)
+            api_client = k8s_client.ApiClient(configuration)
+        else:
+            k8s_config.load_incluster_config()
+            api_client = k8s_client.ApiClient()
+        self._batch = k8s_client.BatchV1Api(api_client)
+        self._core = k8s_client.CoreV1Api(api_client)
+
+    @property
+    def label_selector(self) -> str:
+        """Set-based, so every marker in the managed family is listed.
+
+        An equality selector on one value is how this service goes blind: the
+        dispatcher stamps `swarm-scheduler`, and a selector pinned to `swarm`
+        would return an empty list of Jobs for a cluster full of running agents.
+        """
+        return managed_label_selector()
+
+    @staticmethod
+    def _pod_env(job: Any) -> dict[str, str]:
+        """Identifiers from the worker container's environment.
+
+        Read verbatim, unlike labels, which `sanitize_name` has already rewritten
+        by the time they reach the API server.
+        """
+        env: dict[str, str] = {}
+        spec = getattr(job, "spec", None)
+        template = getattr(spec, "template", None)
+        pod_spec = getattr(template, "spec", None)
+        containers = getattr(pod_spec, "containers", None) or []
+        for container in containers:
+            for entry in getattr(container, "env", None) or []:
+                name = getattr(entry, "name", None)
+                value = getattr(entry, "value", None)
+                if name is None and isinstance(entry, dict):
+                    name, value = entry.get("name"), entry.get("value")
+                if name and isinstance(value, str):
+                    env.setdefault(name, value)
+        return env
+
+    # -- naming -------------------------------------------------------
+    def namespace_for(self, tenant_id: str, recorded: str | None = None) -> str:
+        """The namespace the dispatcher creates this tenant's Jobs in.
+
+        The SAME rule as `scheduler.dispatch.GkeJobDispatcher.namespace_for`,
+        in the same order and through the same sanitiser: the `namespace` the
+        tenant document records wins IF it is inside the prefix
+        (`verified_namespace`, owner decision 2026-10-11); a tenant with none, or
+        with one outside the prefix, gets `sanitize_name(prefix + tenant id)` --
+        the dispatcher's function, copied above because this image cannot import
+        it, 63-character truncation and hash included. The precedence matters
+        as much as the sanitiser: the dispatcher prefers a verified recorded
+        value over its own template, so a reconciler that derived the name from
+        the prefix alone would read one namespace while the dispatcher wrote
+        into another, and every task there would look abandoned.
+
+        The prefix is not restated here: it is the one this backend was built
+        with, `ReconcilerConfig.namespace_prefix`, which
+        `scripts/lib/check-contract-parity.sh` section 6 holds to the
+        dispatcher's template. `tests/unit/control_plane/
+        test_reconciler_gke_namespaced.py` pins this method to the dispatcher's
+        on the same tenants, long ids included, and pins the two sanitisers to
+        each other.
+        """
+        derived = sanitize_name(f"{self._prefix}{tenant_id}")
+        return verified_namespace(tenant_id, recorded, derived, self._prefix, self._log)
+
+    def namespace_of(
+        self,
+        execution_name: str | None,
+        *,
+        task_id: str | None = None,
+        tenant_id: str | None = None,
+        generation: int | None = None,
+    ) -> str | None:
+        """The namespace part of a GKE attempt's `execution_name`.
+
+        The dispatcher records `<namespace>/<job>` (`GkeJobDispatcher.dispatch`),
+        and since archived issue 1804 the worker records the same string, so this is where
+        THIS attempt's Job was created -- a better answer than any derivation
+        from the tenant, because it is what actually happened.
+
+        A LEGACY record -- the pod's name, `swarm-<task>-<gen>-<5 chars>`, which
+        a GKE worker wrote before archived issue 1804 -- names no namespace. Given the
+        attempt's task, tenant and generation it is mapped to the tenant's
+        namespace (`_legacy_job` says how exactly); without them, or for a name
+        that is not that attempt's pod, the answer is None, as before.
+        """
+        if not execution_name:
+            return None
+        if "/" not in str(execution_name):
+            legacy = self._legacy_job(str(execution_name), task_id, tenant_id, generation)
+            return legacy[0] if legacy else None
+        namespace = str(execution_name).split("/", 1)[0].strip()
+        return namespace or None
+
+    def _legacy_job(
+        self,
+        name: str,
+        task_id: str | None,
+        tenant_id: str | None,
+        generation: int | None,
+    ) -> tuple[str, str] | None:
+        """`(namespace, job)` for a bare name that is EXACTLY this attempt's Job or pod.
+
+        A GKE worker recorded its pod's HOSTNAME before archived issue 1804. The Job
+        controller names a Job's pod `<job>-<5 random characters>`, and the
+        dispatcher names the Job `sanitize_name("swarm", <task id without
+        task_>, <generation>)` in the tenant's derived namespace -- so the
+        mapping is computed FROM THE ATTEMPT, never read out of the name: the
+        name must be that Job, or that Job plus a 5-character suffix, and
+        nothing else maps. Another task's pod, another generation's, a name
+        without its ids: None, and the caller's answer stays UNREADABLE rather
+        than becoming a 404 that would call a live agent gone.
+        """
+        if not task_id or not tenant_id or generation is None:
+            return None
+        job = sanitize_name("swarm", str(task_id).replace("task_", ""), str(generation))
+        if name != job and not re.fullmatch(re.escape(job) + r"-[a-z0-9]{5}", name):
+            return None
+        return self.namespace_for(str(tenant_id)), job
+
+    # -- reads ----------------------------------------------------------
+    def list_executions_in(self, namespaces: Iterable[str]) -> NamespacedListing:
+        """Every platform Job in the named namespaces, and which could be read.
+
+        One `list_namespaced_job` per namespace, each in its own try: a 403 on
+        one tenant's namespace -- a missing namespace, a missing RoleBinding --
+        costs the findings in that namespace and nothing else.
+
+        A namespace outside `self._prefix` is never read. The prefix is what
+        lets a namespace name be turned back into a tenant id (the authority
+        `owning_tenant` checks a container's claim against), so a namespace
+        without it cannot be attributed safely. It is reported as unreadable,
+        which is the direction that holds a lease rather than releasing one.
+        """
+        wanted = sorted({str(ns).strip() for ns in namespaces if ns and str(ns).strip()})
+        if not wanted:
+            # Nothing on this backend is the control plane's; nothing to read,
+            # and no client to build for it.
+            return NamespacedListing()
+        self._configure()
+        views: list[ExecutionView] = []
+        readable: set[str] = set()
+        unreadable: dict[str, str] = {}
+        for namespace in wanted:
+            if not namespace.startswith(self._prefix):
+                unreadable[namespace] = (
+                    f"outside the tenant namespace prefix {self._prefix!r}; not read"
+                )
+                continue
+            try:
+                jobs = self._batch.list_namespaced_job(
+                    namespace=namespace, label_selector=self.label_selector
+                )
+            except Exception as exc:
+                unreadable[namespace] = _describe(exc)
+                continue
+            readable.add(namespace)
+            for job in getattr(jobs, "items", []) or []:
+                view = self._job_view(job, namespace)
+                if view is not None:
+                    views.append(view)
+        return NamespacedListing(
+            executions=views, readable=frozenset(readable), unreadable=unreadable
+        )
+
+    def probe(
+        self,
+        execution_name: str,
+        *,
+        task_id: str | None = None,
+        tenant_id: str | None = None,
+        generation: int | None = None,
+    ) -> Probe:
+        """Read ONE Job by name, for when its namespace could not be listed.
+
+        A namespaced `get`, which the `swarm-reaper` Role grants alongside
+        `list`. It exists because "I could not list this namespace" and "I
+        cannot see this Job" are different claims: RBAC can allow one verb and
+        not the other, and a list can fail transiently where a single get does
+        not. What each answer proves:
+
+        * 404 -- the API server authorised the request and then found nothing.
+          Kubernetes AUTHORISES BEFORE IT RESOLVES, so a 404 is only ever
+          reached for a namespace this identity may read: absence confirmed.
+        * a Job with a Complete or Failed condition -- finished; see `job_phase`.
+        * a Job with neither -- running, as far as anyone can prove.
+        * 403 (a missing namespace or RoleBinding), 401, anything else --
+          nothing is proven, and the caller must go on holding the slot.
+
+        `execution_name` is `<namespace>/<job>`. A LEGACY pod-name record
+        (archived issue 1804) is read as its Job only when the caller names the attempt's
+        task, tenant and generation and the name is exactly that attempt's pod
+        (`_legacy_job`); the Job then still has to be a platform-managed Job of
+        that task and generation, or it is not ours to judge.
+        """
+        legacy = None
+        if "/" not in str(execution_name):
+            legacy = self._legacy_job(str(execution_name), task_id, tenant_id, generation)
+        if legacy is not None:
+            namespace, name = legacy
+        else:
+            namespace = self.namespace_of(execution_name)
+            name = str(execution_name).split("/", 1)[1].strip() if namespace else ""
+        if not namespace or not name:
+            return Probe(ProbeOutcome.UNREADABLE, detail="not a <namespace>/<job> name")
+        if not namespace.startswith(self._prefix):
+            return Probe(
+                ProbeOutcome.UNREADABLE,
+                detail=f"{namespace} is outside the tenant namespace prefix {self._prefix!r}",
+            )
+        try:
+            self._configure()
+            job = self._batch.read_namespaced_job(name=name, namespace=namespace)
+        except Exception as exc:
+            if _api_status(exc) == 404:
+                return Probe(ProbeOutcome.ABSENT, detail=f"{namespace}/{name}: 404")
+            return Probe(ProbeOutcome.UNREADABLE, detail=f"{namespace}/{name}: {_describe(exc)}")
+        view = self._job_view(job, namespace)
+        if view is None:
+            # It exists but is not ours by label, or sits in another namespace
+            # than the one asked for. Not something this service may act on.
+            return Probe(
+                ProbeOutcome.UNREADABLE,
+                detail=f"{namespace}/{name}: not a platform-managed Job",
+            )
+        if legacy is not None and (
+            (view.task_id and view.task_id != task_id)
+            or (view.generation is not None and view.generation != generation)
+        ):
+            # The Job a legacy name maps to says it runs another attempt.
+            return Probe(
+                ProbeOutcome.UNREADABLE,
+                detail=f"{namespace}/{name}: not the Job of {task_id} generation {generation}",
+            )
+        if view.phase is ExecutionPhase.RUNNING:
+            return Probe(ProbeOutcome.ACTIVE, execution=view, detail=f"{namespace}/{name}: active")
+        return Probe(
+            ProbeOutcome.FINISHED,
+            execution=view,
+            detail=f"{namespace}/{name}: {view.phase.value.lower()}",
+        )
+
+    def termination(self, execution: ExecutionView) -> Termination | None:
+        """How a finished Job's worker container exited, from its pod's status.
+
+        A Job's status carries conditions and pod counts, and no exit code.
+        The code is on the POD the Job created, as the worker container's
+        `state.terminated.exitCode`, next to `state.terminated.message`: the
+        termination message the worker wrote before it exited 78
+        (`agent_worker.startup.write_termination_message`). The kubelet copies
+        that file into the status, so reading it needs `pods list` in the
+        tenant's namespace, which the `swarm-reaper` Role already grants
+        (kubernetes/rbac/dispatcher-rbac.yaml). Reading the pod's LOG would
+        need `pods/log`, which it does not hold.
+
+        The pods are found by the label the Job controller puts on them,
+        `batch.kubernetes.io/job-name`, then the older `job-name`. The Job's
+        `backoffLimit` is 0, so there is one pod. If there were more, the
+        newest terminated worker container would be the one read.
+
+        Nothing outside the tenant namespace prefix is read, by the same rule
+        `list_executions_in` keeps. A pod kubelet EVICTED carries its
+        message in `Termination.eviction` (`pod_eviction`, archived issue 893), with or
+        without a terminated container beside it. None when neither is
+        found: a pod already collected (the Job's TTL is an hour), or a
+        container that never started. Raises when a call fails, and the
+        caller then concludes nothing.
+        """
+        namespace = execution.namespace
+        if not namespace or not namespace.startswith(self._prefix):
+            return None
+        self._configure()
+        pods: list[Any] = []
+        for label in JOB_NAME_POD_LABELS:
+            listed = self._core.list_namespaced_pod(
+                namespace=namespace, label_selector=f"{label}={execution.name}"
+            )
+            pods = list(getattr(listed, "items", None) or [])
+            if pods:
+                break
+        found: list[tuple[Any, Any, Any]] = []
+        evictions: list[tuple[Any, str]] = []
+        for pod in pods:
+            evicted = pod_eviction(pod)
+            if evicted is not None:
+                evictions.append((pod, evicted))
+            statuses = list(getattr(getattr(pod, "status", None), "container_statuses", None) or [])
+            chosen = [s for s in statuses if getattr(s, "name", None) == WORKER_CONTAINER]
+            if not chosen and len(statuses) == 1:
+                chosen = statuses
+            for status in chosen:
+                terminated = getattr(getattr(status, "state", None), "terminated", None)
+                if terminated is None:
+                    terminated = getattr(getattr(status, "last_state", None), "terminated", None)
+                if terminated is not None:
+                    found.append((pod, status, terminated))
+        # The pod kubelet EVICTED, in its own words (archived issue 893). An evicted pod's
+        # worker container reads `ContainerStatusUnknown`, exit 137 -- true,
+        # and no help: the cause is on the pod, `status.reason: Evicted` and
+        # `status.message` ("Usage of EmptyDir volume \"tmp\" exceeds the
+        # limit \"2Gi\". "). Read from the same `pods list` as the exit code,
+        # so it needs no grant the `swarm-reaper` Role does not already hold.
+        # With `backoffLimit: 0` there is one pod; the newest eviction wins.
+        eviction = (
+            max(
+                evictions,
+                key=lambda item: _ensure_utc(
+                    getattr(getattr(item[0], "metadata", None), "creation_timestamp", None)
+                )
+                or datetime.min.replace(tzinfo=timezone.utc),
+            )[1]
+            if evictions
+            else None
+        )
+        if not found:
+            if eviction is None:
+                return None
+            return Termination(exit_code=None, detail="pod evicted", eviction=eviction)
+        pod, status, terminated = max(
+            found,
+            key=lambda item: _ensure_utc(getattr(item[2], "finished_at", None))
+            or datetime.min.replace(tzinfo=timezone.utc),
+        )
+        message = getattr(terminated, "message", None)
+        reason = getattr(terminated, "reason", None) or "terminated"
+        if str(reason) == "OOMKilled":
+            # The kernel killed the worker for passing its memory limit. The
+            # limit is on the same pod's spec, from the same `pods list`, so
+            # the task can say which limit without another grant (archived issue 1822).
+            limit = _container_memory_limit(pod, getattr(status, "name", None))
+            reason = f"OOMKilled: the container passed its {limit + ' ' if limit else ''}memory limit"
+        return Termination(
+            exit_code=_int_or_none(getattr(terminated, "exit_code", None)),
+            message=str(message) if message else None,
+            detail=_short(f"container {getattr(status, 'name', '?')}: {reason}"),
+            eviction=eviction,
+        )
+
+    def start_problem(self, execution: ExecutionView) -> StartProblem | None:
+        """Why a Job's pod is not starting, from its container statuses (F1-POD).
+
+        For a task still DISPATCHED or STARTING: a container -- a native
+        sidecar or init container included -- Waiting in one of
+        `startproblem.START_PROBLEM_REASONS`, or one that has restarted. On
+        2026-10-11 the browser pods' `livegate` sidecar crash-looped for three
+        minutes and the task read only "dispatched"; `termination` could not
+        see it, because a crash-looping sidecar never ends the Job.
+
+        The same `pods list` `termination` makes, which the `swarm-reaper`
+        Role already grants, found by the same labels, and never outside the
+        tenant namespace prefix. None when the pod is starting normally, when
+        no pod exists yet, or when the namespace is not a tenant's. Raises when
+        the call fails; the caller then records and clears nothing.
+        """
+        found = self.start_read(execution)
+        return found.problem if found is not None else None
+
+    def start_read(self, execution: ExecutionView) -> StartRead | None:
+        """The Job's pod read once: its start problem and its start-up steps (F1-POD, STARTUP-API).
+
+        One `pods list` serves both `start_problem` and the `startup_progress`
+        steps (`startsteps.pods_start_steps`), so the progress bar costs the
+        reconciler no second read of a starting pod. None when no pod exists
+        yet or the namespace is not a tenant's; raises when the call fails.
+
+        A Job with no pod at all may have been refused one (archived issue 3531): then the
+        Job controller's `FailedCreate` event, when the Role lets it be read,
+        is the problem (`_failed_create`).
+        """
+        namespace = execution.namespace
+        if not namespace or not namespace.startswith(self._prefix):
+            return None
+        self._configure()
+        for label in JOB_NAME_POD_LABELS:
+            listed = self._core.list_namespaced_pod(
+                namespace=namespace, label_selector=f"{label}={execution.name}"
+            )
+            pods = list(getattr(listed, "items", None) or [])
+            if pods:
+                return StartRead(problem=pods_start_problem(pods), steps=pods_start_steps(pods))
+        refused = self._failed_create(execution, namespace)
+        return StartRead(problem=refused) if refused is not None else None
+
+    def _failed_create(self, execution: ExecutionView, namespace: str) -> StartProblem | None:
+        """The Job's newest `FailedCreate` event, or None (archived issue 3531).
+
+        The `swarm-reaper` Role may read events
+        (kubernetes/rbac/dispatcher-rbac.yaml grants `events` get and list
+        beside `jobs` and `pods`): a Job refused its pod leaves no pod to
+        read, so its `FailedCreate` event names the failure. Where a Role
+        still lacks the rule, a 403 is remembered and the read is not made
+        again by this process, so the record is simply absent until the Role
+        grants `events` list. Any other failure raises, as the pod read does.
+        """
+        if self._events_forbidden:
+            return None
+        lister = getattr(self._core, "list_namespaced_event", None)
+        if not callable(lister):
+            return None
+        try:
+            listed = lister(
+                namespace=namespace,
+                field_selector=f"involvedObject.kind=Job,involvedObject.name={execution.name}",
+            )
+        except Exception as exc:
+            if _api_status(exc) != 403:
+                raise
+            self._events_forbidden = True
+            if self._log is not None:
+                self._log.info(
+                    "the Job's events cannot be read; a refused pod create is not recorded",
+                    namespace=namespace,
+                    error=_describe(exc),
+                )
+            return None
+        return failed_create_problem(list(getattr(listed, "items", None) or []))
+
+    def _job_view(self, job: Any, namespace: str) -> ExecutionView | None:
+        """One Job as an ExecutionView, or None when it is not ours to judge."""
+        metadata = getattr(job, "metadata", None)
+        if metadata is None:
+            return None
+        # The namespace the API returned it from, not merely the one asked for:
+        # a list scoped to one namespace cannot return another, and a Job that
+        # claims otherwise is not something to attribute.
+        if str(getattr(metadata, "namespace", "") or namespace) != namespace:
+            return None
+        labels = dict(getattr(metadata, "labels", None) or {})
+        if not is_swarm_managed(labels):
+            return None
+        env = self._pod_env(job)
+        return ExecutionView(
+            name=str(metadata.name),
+            backend=self.name,
+            phase=job_phase(job),
+            created_at=_ensure_utc(getattr(metadata, "creation_timestamp", None)),
+            task_id=env.get(TASK_ENV) or _first(labels, TASK_LABELS),
+            attempt_id=env.get(ATTEMPT_ENV) or _first(labels, ATTEMPT_LABELS),
+            # The namespace is per-tenant and a workload cannot move itself
+            # between namespaces, so it -- not the container's own environment
+            # -- decides whose task this execution is allowed to be about.
+            tenant_id=owning_tenant(
+                env.get(TENANT_ENV) or _first(labels, TENANT_LABELS),
+                namespace[len(self._prefix):],
+                resource=f"{namespace}/{metadata.name}",
+                logger=self._log,
+            ),
+            generation=_int_or_none(env.get(GENERATION_ENV) or _first(labels, GENERATION_LABELS)),
+            namespace=namespace,
+            completed_at=job_finished_at(job),
+            # The Job controller's own Complete or Failed condition (archived issue 893).
+            # Left False, a Failed Job was listed and then counted for
+            # nothing: `ended_executions_by_attempt` skipped it, and
+            # `detect_missing_executions` reported the attempt as having "no
+            # backend execution" at all -- task_22e763906edd4edcb630, evicted
+            # three times on 2026-10-08, ended FAILED with exactly that. With
+            # `backoffLimit: 0` and `restartPolicy: Never` a Job is Failed only
+            # once its one pod has, and `job_phase` reads only these two
+            # conditions, so a Job with neither (still running, or reporting
+            # `FailureTarget` while its pod terminates) stays not ended -- the
+            # direction that holds the lease.
+            ended=job_phase(job) in (ExecutionPhase.SUCCEEDED, ExecutionPhase.FAILED),
+        )
+
+    def list_job_resources(self) -> list[JobResourceView]:
+        """Nothing: namespace collection needs a grant this platform refuses.
+
+        A Namespace is a cluster-scoped object. Listing, reading and deleting
+        one all need a ClusterRole, and none exists here by policy
+        (kubernetes/rbac/worker-rbac.yaml, closing note). This method used to
+        call `list_namespace` anyway, which answered 403 on every pass; before
+        that 403 surfaced it was hidden behind the Job listing's own, so empty
+        tenant namespaces have never actually been collected by this service.
+
+        What is lost is small and stated rather than papered over: an empty
+        namespace of a DEREGISTERED tenant stays until it is removed by hand. A
+        registered tenant's namespace was never collectable anyway -- it holds
+        the tenant's service account and Workload Identity binding, which nothing
+        in the dispatch path recreates. Per-tenant namespaces are created out of
+        band by `scripts/register-tenant.sh`, and the same out-of-band path is
+        what should remove them.
+        """
+        if self._log and not self._gc_notice_logged:
+            self._gc_notice_logged = True
+            self._log.info(
+                "gke namespace collection not performed: namespaces are cluster-scoped "
+                "and the reconciler holds no ClusterRole by policy"
+            )
+        return []
+
+    # -- writes ---------------------------------------------------------
+    def terminate(self, execution: ExecutionView) -> bool:
+        self._configure()
+        from kubernetes.client import V1DeleteOptions
+        from kubernetes.client.rest import ApiException
+
+        try:
+            self._batch.delete_namespaced_job(
+                name=execution.name,
+                namespace=execution.namespace,
+                body=V1DeleteOptions(
+                    # Background propagation removes the pods too; without it the
+                    # agent container keeps running under an orphaned pod.
+                    propagation_policy="Background",
+                    grace_period_seconds=30,
+                ),
+            )
+        except ApiException as exc:
+            if exc.status == 404:
+                return True          # already gone is the outcome we wanted
+            raise
+        if self._log:
+            self._log.info(
+                "k8s job deleted", job=execution.name, namespace=execution.namespace
+            )
+        return True
+
+    def delete_job_resource(self, resource: JobResourceView) -> bool:
+        """Refused, without a call: deleting a Namespace is cluster-scope.
+
+        `list_job_resources` offers nothing to delete, so the collector never
+        reaches this. It refuses rather than trying because the attempt would be
+        a cluster-scope request this identity is not granted -- a guaranteed 403
+        that would read, in the pass history, like a permissions fault to fix.
+        `repair._collect_garbage` records a PermissionError as a refusal.
+        """
+        raise PermissionError(
+            f"refusing to delete namespace {resource.name}: a Namespace is cluster-scoped "
+            f"and the reconciler holds no ClusterRole (kubernetes/rbac/worker-rbac.yaml); "
+            f"deprovision tenant namespaces out of band"
+        )
+
+
+def _ensure_utc(value: Any) -> datetime | None:
+    parsed = as_datetime(value)
+    if parsed is None:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)

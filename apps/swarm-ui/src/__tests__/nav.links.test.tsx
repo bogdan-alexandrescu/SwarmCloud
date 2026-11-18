@@ -1,0 +1,482 @@
+/**
+ * Every internal hash link resolves, and none of them rides an alias.
+ *
+ * WHAT THIS CATCHES. `SECTION_ALIASES` keeps an old section id working so a
+ * link someone saved in a runbook still lands. That is the whole point of it,
+ * and it is also its hazard: if the app's OWN links use the old spelling too,
+ * every one of them keeps working after a rename, so nothing fails, so nobody
+ * updates one, and the old name outlives the rename indefinitely. The rename
+ * that produced this file found `#agents/...` in eighteen places in
+ * `checks.ts` alone -- all of which would have gone on saying `agents` under a
+ * section called Work, silently, forever.
+ *
+ * So the rule is: an alias is for hashes this app did not write. Anything the
+ * app writes uses the current spelling, and this test is what makes that true
+ * rather than merely intended.
+ *
+ * It reads the SOURCE, not a render. A render exercises the links a fixture
+ * happens to reach; the eighteen in `checks.ts` are produced by branches that
+ * need a specific unhealthy platform to appear at all, and the one that is
+ * wrong will be the one no fixture produces.
+ */
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { App, CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, canonical, fromHash, spineOf } from '../App'
+import { HELP_ROUTE } from '../help'
+import { addressToPath, pathToAddress } from '../paths'
+import { PANEL_PAGES, SkyShell, hrefOf, voicePagesFor } from '../Spine'
+
+/**
+ * The props App hands the agent list, captured. The list itself is not what
+ * these tests are about -- App's half of AG-17 is WHICH props it passes -- so
+ * it is replaced by a recorder, and every other screen renders for real.
+ */
+const agentsProps = vi.hoisted(() => [] as Record<string, unknown>[])
+// It still draws the open agent App hosts in the page's inspector (archived pull request 3146).
+vi.mock('../Agents', async () => {
+  const { useContext } = await import('react')
+  const { HostedAgent } = await import('../work/hostedAgent')
+  return {
+    AgentsScreen: (props: Record<string, unknown>) => {
+      agentsProps.push(props)
+      return useContext(HostedAgent)?.view ?? null
+    },
+  }
+})
+
+const SRC = join(__dirname, '..')
+
+function sources(dir: string): string[] {
+  const out: string[] = []
+  for (const name of readdirSync(dir)) {
+    const full = join(dir, name)
+    if (statSync(full).isDirectory()) {
+      // The test directory is excluded: a test may legitimately write an OLD
+      // hash, because asserting that an old hash still resolves is exactly
+      // what a rename needs proven.
+      if (name !== '__tests__' && name !== 'node_modules') out.push(...sources(full))
+    } else if (/\.(tsx?|css|html)$/.test(name)) {
+      out.push(full)
+    }
+  }
+  return out
+}
+
+/**
+ * Hash links as the app writes them.
+ *
+ * Only `href` attributes and `location.hash` assignments, not every `#` in the
+ * file: the stylesheet and the comments are full of `#agents/task/<id>` as
+ * PROSE, describing what an address used to be, and prose about an old name is
+ * not a link to it. A hash starts with a letter: `href="#..."` in a comment
+ * is the prose placeholder for "any old address", not a link to check.
+ */
+function links(): { file: string; hash: string }[] {
+  const found: { file: string; hash: string }[] = []
+  for (const file of sources(SRC)) {
+    const text = readFileSync(file, 'utf8')
+    // BOTH SPELLINGS OF A LINK. `href=` is the JSX attribute; `href:` is an
+    // object property, which is how every one of `checks.ts`'s links is
+    // written -- and `checks.ts` holds more of them than the rest of the app
+    // put together. Matching only the attribute form found 14 links and
+    // reported them all sound while the eighteen that mattered went unread.
+    for (const m of text.matchAll(/href\s*[=:]\s*(?:"|'|`|\{"|\{'|\{`)#([A-Za-z][A-Za-z0-9/_.-]*)/g)) {
+      found.push({ file: file.slice(SRC.length + 1), hash: m[1]! })
+    }
+    for (const m of text.matchAll(/location\.hash\s*=\s*(?:'|"|`)#?([A-Za-z0-9/_.-]+)/g)) {
+      found.push({ file: file.slice(SRC.length + 1), hash: m[1]! })
+    }
+  }
+  return found
+}
+
+/** Retired addresses the router lands on their new page on purpose, old to new. */
+const REDIRECTED: Readonly<Record<string, string>> = { 'capacity/accounts': 'capacity/llm-providers/plans' }
+
+/** `fromHash` reads `window.location.hash`, so the hash is set and it is called. */
+function resolve(hash: string) {
+  window.location.hash = `#${hash}`
+  return fromHash()
+}
+
+describe('internal navigation links', () => {
+  it('binds the id constants to sections that exist', () => {
+    // SECTIONS declares its ids as string LITERALS, because a Python gate
+    // parses the array out of this file with a regex and cannot resolve a
+    // constant; the constants exist so that the nine `SectionBody` cases and
+    // the four comparisons in `fromHash` cannot drift from it. Two spellings
+    // of one id is exactly the defect this file was written to stop, so the
+    // two are tied together here rather than trusted to stay in step.
+    const ids = SECTIONS.map((s) => s.id)
+    expect(ids, 'the WORK constant names no section').toContain(WORK)
+    expect(ids, 'the CAPACITY constant names no section').toContain(CAPACITY)
+  })
+
+  it('finds links to check, so an empty sweep cannot pass as a clean one', () => {
+    // The guard this repository keeps needing: a regex that matched nothing
+    // reports the same "no failures" as a codebase with no defects.
+    expect(links().length).toBeGreaterThan(25)
+  })
+
+  it('never writes a section id that only an alias keeps alive', () => {
+    const aliased = links().filter((l) =>
+      INTERNAL_LINKS_MAY_NOT_USE_ALIASES.includes(l.hash.split('/')[0]!),
+    )
+    expect(
+      aliased.map((l) => `${l.file}: #${l.hash}`),
+      'these use a retired section id. It still resolves, which is why nothing ' +
+        'else would have told you. Write the current spelling; the alias is for ' +
+        'links this app did not write.',
+    ).toEqual([])
+  })
+
+  it('resolves every link to a pane that exists', () => {
+    const dead: string[] = []
+    for (const l of links()) {
+      const head = l.hash.split('/')[0]!
+      // `#help/<topic>` carries a topic verbatim and HelpScreen answers for an
+      // unknown one by name, so there is no dead tail here to find.
+      if (head === HELP_ROUTE) continue
+      const r = resolve(l.hash)
+      // A hash that resolves to the HOME section while naming something else
+      // is the failure mode: `fromHash` falls back to the first section rather
+      // than rendering nothing, so a typo looks like a working link.
+      if (r.sectionId !== head && r.taskId === null) {
+        dead.push(`${l.file}: #${l.hash} -> ${r.sectionId}/${r.tab}`)
+      }
+    }
+    expect(dead, 'these fell through to another section').toEqual([])
+  })
+
+  it('resolves every link to a TAB that exists, not just a section', () => {
+    const dead: string[] = []
+    for (const l of links()) {
+      const [head, ...rest] = l.hash.split('/')
+      if (head === HELP_ROUTE || rest.length === 0) continue
+      const r = resolve(l.hash)
+      // A task drawer link carries an id, not a tab, and is resolved as one.
+      if (r.taskId !== null) continue
+      // COMPARED WITH ITS OWN CANONICAL SPELLING, not with `r.tab` (OV-10). A
+      // list address -- `#work/running/recent/failed` -- resolves to the
+      // `running` tab plus a list state, so it names more than a tab and a tab
+      // comparison would call it dead. A link whose canonical spelling is
+      // itself resolved to exactly what it names; a mistyped one
+      // (`running/recent/faild`) falls back to the plain list, is rewritten,
+      // and is still reported here.
+      //
+      // ONE DOCUMENTED REDIRECT IS NOT A DEAD LINK: Accounts became Capacity ›
+      // LLM Providers (docs/design/llm-providers.md §6.1), and the brief keeps
+      // `capacity/accounts` landing on Plans with its `?account=`. The links
+      // still spelled the old way are rewritten by a later lane; anything else
+      // that is rewritten is still reported.
+      const want = canonical(r)
+      if (REDIRECTED[l.hash] === want) continue
+      if (want !== l.hash) dead.push(`${l.file}: #${l.hash} -> #${want}`)
+    }
+    expect(dead, 'these named a pane that does not exist and fell back to the first one').toEqual([])
+  })
+})
+
+describe('the links the frame draws itself', () => {
+  afterEach(() => {
+    window.location.hash = ''
+    agentsProps.length = 0
+  })
+
+  /**
+   * CH-5 (App half). The API reads page's "What these mean" was an unclassed
+   * anchor, so it fell back to the browser's own blue -- visited purple once
+   * followed -- in a product whose links are ink plus an underline.
+   *
+   * MUTATION: drop `ctl-link` from the anchor.
+   */
+  it('draws the API reads help link in the product link treatment', () => {
+    window.location.hash = '#reference'
+    render(<App />)
+    const link = screen.getByRole('link', { name: /What these mean/ })
+    expect(link.getAttribute('href')).toBe(`#${HELP_ROUTE}/api-reads`)
+    expect(link.className.split(/\s+/)).toContain('ctl-link')
+  })
+
+  /**
+   * AH-5. The head `?` is the way into Help -- ui-audit §B7.2/§B7.3 say so,
+   * and so did the comment on the rail's `?` -- but its card was a dead end:
+   * the section's question and nothing to follow.
+   *
+   * MUTATION: remove the link from the section card.
+   */
+  it("ends the head `?`'s card in a way into Help", async () => {
+    window.location.hash = '#overview/now'
+    const { container } = render(<App />)
+    const glyph = container.querySelector<HTMLButtonElement>('.ctl-q-glyph')
+    expect(glyph, 'the head carries no section `?`').not.toBeNull()
+    await act(async () => {
+      glyph!.focus()
+    })
+    const card = document.getElementById(glyph!.getAttribute('aria-controls') ?? '')
+    expect(card, 'focusing the head `?` opened no card').not.toBeNull()
+    const link = card!.querySelector('a')
+    expect(link, 'the section card is a dead end').not.toBeNull()
+    expect(link!.getAttribute('href')).toBe(`#${HELP_ROUTE}`)
+    expect(link!.textContent).toMatch(/Help/)
+  })
+
+  /**
+   * AG-17 (App half). With the inspector open, no row said which agent it was
+   * showing, because App never told the list: `taskId` stopped at the drawer.
+   *
+   * MUTATION: stop passing it. The list is rendered with no `taskId`.
+   */
+  it('tells the agent list which agent the inspector has open', () => {
+    window.location.hash = '#work/task/task_0123456789abcdef0123'
+    render(<App />)
+    const last = agentsProps[agentsProps.length - 1]
+    expect(last, 'the agent list was not rendered under an open inspector').toBeTruthy()
+    expect(last!.taskId).toBe('task_0123456789abcdef0123')
+  })
+
+  it('tells it that none is open when the inspector is shut', () => {
+    window.location.hash = '#work/running'
+    render(<App />)
+    const last = agentsProps[agentsProps.length - 1]
+    expect(last).toBeTruthy()
+    expect(last!.taskId).toBeNull()
+  })
+
+  /**
+   * OV-10 (App half). The list's tab and Recent state are an address, so App
+   * hands them to the list with a callback for the list's clicks, and the
+   * drawer's close goes back to the list address it was opened from rather
+   * than to bare `#work/running` -- or the address bar and the visible list
+   * would disagree the moment the drawer shut.
+   *
+   * MUTATION: close to `work/running`, or stop passing `list`.
+   */
+  it('hands the list its address, and closes the drawer back to it', async () => {
+    window.location.hash = '#work/running/recent/failed'
+    render(<App />)
+    const first = agentsProps[agentsProps.length - 1]
+    expect(first, 'the agent list was not rendered').toBeTruthy()
+    expect(first!.list).toEqual({ tab: 'recent', state: 'failed' })
+    expect(typeof first!.onList, 'the list has no way to report a click').toBe('function')
+
+    await act(async () => {
+      window.location.hash = '#work/task/task_0123456789abcdef0123'
+      window.dispatchEvent(new HashChangeEvent('hashchange'))
+    })
+    // The ✕ is in the agent header's action row (walkthrough B, 2026-10-03).
+    const close = document.querySelector<HTMLButtonElement>('.ctl-drawer .ag-head-actions > button.drawer-close')
+    expect(close, 'the drawer did not open').not.toBeNull()
+    // App hands the agent to the Agents page's inspector (archived pull request 3146): no column of its own beside the page.
+    expect(document.querySelector('.ctl-drawer.ag-split')?.classList.contains('is-hosted')).toBe(true)
+    expect(document.querySelector('.app.has-inspector')).toBeNull()
+    await act(async () => {
+      close!.click()
+    })
+    expect(window.location.pathname + window.location.search, 'the drawer closed to a different list').toBe('/agents/recent?state=failed')
+  })
+})
+
+/**
+ * SETTINGS › PROFILE FROM THE SPINE (PROFILE-SHELL; user-profile.md §4.7,
+ * part of archived issue 1505). The page is the person's own. It was a link in the panel
+ * foot by their name; since NAV-PROFILE (part of archived issue 1633) it is the spine's
+ * first item, drawn as their avatar, at its own path, and a plain click
+ * routes there rather than reloading the console.
+ *
+ * MUTATION: drop the Profile item, or point it at another address.
+ */
+describe('the Profile spine item', () => {
+  afterEach(() => {
+    cleanup()
+    window.history.pushState(null, '', '/')
+  })
+
+  function item(section: 'work' | 'profile', go = vi.fn()) {
+    render(
+      <SkyShell section={section} tab={section === 'work' ? 'running' : 'profile'} title="x" go={go} foot={null} place={section === 'work' ? '/agents' : '/settings/profile'}>
+        {null}
+      </SkyShell>,
+    )
+    return document.querySelector<HTMLAnchorElement>('.sk-spine a[data-sec="profile"]')
+  }
+
+  it('links to Settings › Profile at /settings/profile', () => {
+    const go = vi.fn()
+    const link = item('work', go)
+    expect(link, 'the spine has no Profile item').not.toBeNull()
+    expect(link!.getAttribute('href')).toBe('/settings/profile')
+    expect(link!.classList.contains('is-on')).toBe(false)
+    fireEvent.click(link!)
+    expect(go).toHaveBeenCalledWith('settings/profile')
+  })
+
+  it('lights the item when Settings › Profile is open', () => {
+    const link = item('profile')
+    expect(link?.classList.contains('is-on')).toBe(true)
+    expect(link?.getAttribute('aria-current')).toBe('page')
+  })
+})
+
+/**
+ * VOICE IT IS A SECTION OF ITS OWN (docs/design/voice-it.md §10, phase one's
+ * first lane; owner decision 2026-11-01): Talk, Projects and Preferences, each
+ * a page at its own path, and the section drawn on the spine only for the
+ * people who may use it. Version one is one person's; until swarm-api's
+ * session routes say who that is, the console's identity read does, and a
+ * platform admin is the only one it can name.
+ *
+ * MUTATION: drop the section from SECTIONS, a row from FIXED, the spine
+ * item's gate, or a pane's heading, and a case below fails.
+ */
+describe('the Voice it section', () => {
+  type Json = Record<string, unknown>
+  const me = (isAdmin: boolean): Json => ({
+    tenant: { tenant_id: 'u-ana', display_name: 'Your workspace' },
+    principal: { email: 'ana.b@example.com', domain: 'example.com', groups: [], is_admin: isAdmin },
+    environment: 'dev',
+    environment_declared: true,
+  })
+  const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+
+  afterEach(() => {
+    cleanup()
+    vi.unstubAllEnvs()
+    window.history.pushState(null, '', '/')
+  })
+
+  /** A live shell whose `/v1/tenants/me` says `isAdmin`; every other read fails. */
+  async function liveShell(isAdmin: boolean, section: 'work' | 'voice' = 'work', tab = 'running') {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/v1/tenants/me') && !url.includes('/v1/tenants/mine')) return json(me(isAdmin))
+      return new Response('{}', { status: 503, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    const { SkyShell: Live } = await import('../Spine')
+    render(
+      <Live section={section} tab={tab} title="x" go={vi.fn()} foot={null}>
+        {null}
+      </Live>,
+    )
+  }
+
+  const PANES: readonly [string, string, string][] = [
+    ['talk', 'Talk', '/voice/talk'],
+    ['projects', 'Projects', '/voice/projects'],
+    ['preferences', 'Preferences', '/voice/preferences'],
+    ['settings', 'Settings', '/voice/settings'],
+    ['telemetry', 'Telemetry', '/voice/telemetry'],
+  ]
+
+  it('is a section with Talk, Projects, Preferences, Settings and Telemetry, in that order', () => {
+    const voice = SECTIONS.find((s) => s.id === 'voice')
+    expect(voice, 'SECTIONS has no Voice it section').toBeDefined()
+    expect(voice!.label).toBe('Voice it')
+    expect(voice!.question.trim()).toMatch(/\?$/)
+    expect(voice!.tabs.map((t) => [t.id, t.label])).toEqual(PANES.map(([id, label]) => [id, label]))
+  })
+
+  it.each(PANES)('resolves %s to its own page, path and spine section', (tab, _label, path) => {
+    expect(addressToPath(`voice/${tab}`)).toBe(path)
+    expect(pathToAddress(path)?.address).toBe(`voice/${tab}`)
+    const at = resolve(`voice/${tab}`)
+    expect([at.sectionId, at.tab]).toEqual(['voice', tab])
+    expect(spineOf('voice', tab)).toBe('voice')
+  })
+
+  it('opens Talk from the section root, /voice', () => {
+    expect(pathToAddress('/voice')?.address).toBe('voice/talk')
+  })
+
+  // Settings and Telemetry head their page once the identity read answers
+  // (voice/Section.tsx `VoiceSettingsSectionScreen`); their own cases are below.
+  it.each(PANES.slice(0, 3))('heads the %s page with its tab label', (tab, label) => {
+    window.location.hash = `#voice/${tab}`
+    render(<App />)
+    expect(screen.getByRole('heading', { level: 1, name: label })).toBeTruthy()
+  })
+
+  /** The live console at `/voice/<tab>`, its `/v1/tenants/me` saying `isAdmin`; every other read fails. */
+  async function liveApp(isAdmin: boolean, tab: string) {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/v1/tenants/me') && !url.includes('/v1/tenants/mine')) return json(me(isAdmin))
+      return new Response('{}', { status: 503, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    vi.stubEnv('VITE_LIVE', '1')
+    vi.resetModules()
+    window.history.pushState(null, '', `/voice/${tab}`)
+    const { App: Live } = await import('../App')
+    render(<Live />)
+  }
+
+  /** The panel's Voice it entries, by label, once the identity read has answered. */
+  function voiceEntries(): string[] {
+    return [...document.querySelectorAll('.sk-pk .sk-pl')].map((e) => e.textContent?.trim() ?? '')
+  }
+
+  // MUTATION: drop either case from App.tsx's routes, or open the
+  // component's default tab whatever the route says, and this fails.
+  it.each([
+    ['settings', 'Settings'],
+    ['telemetry', 'Telemetry'],
+  ])('opens /voice/%s on its own tab, with its own lit entry, for a platform admin', async (tab, label) => {
+    await liveApp(true, tab)
+    expect(await screen.findByRole('heading', { level: 1, name: label })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: label }).getAttribute('aria-selected')).toBe('true')
+    await waitFor(() => expect(voiceEntries()).toEqual(['Talk', 'Projects', 'Preferences', 'Settings', 'Telemetry']))
+    const lit = document.querySelector('.sk-pk[aria-current="page"]')
+    expect(lit?.getAttribute('href')).toBe(`/voice/${tab}`)
+  })
+
+  // MUTATION: drop `voicePagesFor`'s filter, or Telemetry's `admin` mark,
+  // and the Telemetry entry is offered to someone it would refuse.
+  it('opens /voice/settings for anyone else, read only, with no Telemetry entry', async () => {
+    await liveApp(false, 'settings')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeTruthy()
+    expect(screen.queryByRole('tab', { name: 'Telemetry' })).toBeNull()
+    await waitFor(() => expect(voiceEntries()).toEqual(['Talk', 'Projects', 'Preferences', 'Settings']))
+  })
+
+  it('shows anyone else Settings, never Telemetry, on /voice/telemetry', async () => {
+    await liveApp(false, 'telemetry')
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeTruthy()
+    expect(screen.queryByRole('tab', { name: 'Telemetry' })).toBeNull()
+    await waitFor(() => expect(voiceEntries()).toEqual(['Talk', 'Projects', 'Preferences', 'Settings']))
+  })
+
+  it('marks Telemetry admin in SECTIONS and in the panel, and keeps it from anyone else', () => {
+    const tabs = SECTIONS.find((s) => s.id === 'voice')!.tabs
+    expect(tabs.filter((t) => t.admin === true).map((t) => t.id)).toEqual(['telemetry'])
+    expect(PANEL_PAGES.voice.filter((p) => p.admin === true).map((p) => p.key)).toEqual(['telemetry'])
+    expect(voicePagesFor(false).map((p) => p.key)).toEqual(['talk', 'projects', 'preferences', 'settings'])
+    expect(voicePagesFor(null).map((p) => p.key)).toEqual(['talk', 'projects', 'preferences', 'settings'])
+    expect(voicePagesFor(true).map((p) => p.key)).toEqual(PANES.map(([tab]) => tab))
+  })
+
+  it('draws Voice it on the spine, after Admin, with its pages, for the person it is open to', async () => {
+    await liveShell(true)
+    const item = await waitFor(() => {
+      const a = document.querySelector<HTMLAnchorElement>('.sk-spine a[data-sec="voice"]')
+      expect(a, 'no Voice it item for a platform admin').not.toBeNull()
+      return a!
+    })
+    expect(item.getAttribute('href')).toBe('/voice/talk')
+    const labels = [...document.querySelectorAll('.sk-spine a.sk-ri')].map((a) => (a.querySelector('small') ?? a).textContent?.trim())
+    expect(labels.indexOf('Voice it')).toBe(labels.indexOf('Admin') + 1)
+    expect(PANEL_PAGES.voice.map((p) => [p.label, hrefOf(p.to)])).toEqual(PANES.map(([, label, path]) => [label, path]))
+  })
+
+  it('draws no Voice it item for anyone else', async () => {
+    await liveShell(false)
+    await waitFor(() => expect(document.querySelector('.sk-spine a[data-sec="work"]')).not.toBeNull())
+    // The identity read has answered once Profile's avatar carries the email.
+    await waitFor(() => expect(document.querySelector('.sk-spine .sk-av')?.getAttribute('title')).toBe('ana.b@example.com'))
+    expect(document.querySelector('.sk-spine a[data-sec="voice"]')).toBeNull()
+  })
+})

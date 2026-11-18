@@ -1,0 +1,49 @@
+{
+  "tenant_id": "eng",
+  "task_id": "task_8cf26eb6e1f94e85adf8",
+  "recordings": [
+    {
+      "attempt_id": "att_fafe0d6de50c4ff39de9",
+      "seq": 0,
+      "name": "rec-0000000000000.live.webm",
+      "key": "tenants/eng/tasks/task_8cf26eb6e1f94e85adf8/attempts/att_fafe0d6de50c4ff39de9/live/rec-0000000000000.live.webm",
+      "object": "tenants/eng/tasks/task_8cf26eb6e1f94e85adf8/attempts/att_fafe0d6de50c4ff39de9/live/rec-0000000000000.live.webm",
+      "bytes": 204800,
+      "created_at": "2026-10-11T23:41:00+00:00",
+      "started_at": "2026-10-11T23:41:00+00:00"
+    },
+    {
+      "attempt_id": "att_fafe0d6de50c4ff39de9",
+      "seq": 1,
+      "name": "rec-0000000000001.live.webm",
+      "key": "tenants/eng/tasks/task_8cf26eb6e1f94e85adf8/attempts/att_fafe0d6de50c4ff39de9/live/rec-0000000000001.live.webm",
+      "object": "tenants/eng/tasks/task_8cf26eb6e1f94e85adf8/attempts/att_fafe0d6de50c4ff39de9/live/rec-0000000000001.live.webm",
+      "bytes": 409600,
+      "created_at": "2026-10-11T23:42:00+00:00",
+      "started_at": "2026-10-11T23:42:00+00:00"
+    }
+  ],
+  "segments": [
+    {
+      "attempt_id": "att_fafe0d6de50c4ff39de9",
+      "seq": 0,
+      "name": "rec-0000000000000.live.webm",
+      "key": "tenants/eng/tasks/task_8cf26eb6e1f94e85adf8/attempts/att_fafe0d6de50c4ff39de9/live/rec-0000000000000.live.webm",
+      "object": "tenants/eng/tasks/task_8cf26eb6e1f94e85adf8/attempts/att_fafe0d6de50c4ff39de9/live/rec-0000000000000.live.webm",
+      "bytes": 204800,
+      "created_at": "2026-10-11T23:41:00+00:00",
+      "started_at": "2026-10-11T23:41:00+00:00"
+    },
+    {
+      "attempt_id": "att_fafe0d6de50c4ff39de9",
+      "seq": 1,
+      "name": "rec-0000000000001.live.webm",
+      "key": "tenants/eng/tasks/task_8cf26eb6e1f94e85adf8/attempts/att_fafe0d6de50c4ff39de9/live/rec-0000000000001.live.webm",
+      "object": "tenants/eng/tasks/task_8cf26eb6e1f94e85adf8/attempts/att_fafe0d6de50c4ff39de9/live/rec-0000000000001.live.webm",
+      "bytes": 409600,
+      "created_at": "2026-10-11T23:42:00+00:00",
+      "started_at": "2026-10-11T23:42:00+00:00"
+    }
+  ],
+  "truncated": false
+}

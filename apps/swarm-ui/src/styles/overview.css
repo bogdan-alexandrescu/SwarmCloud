@@ -1,0 +1,536 @@
+/* ---------------------------------------------------------------------------
+   OVERVIEW, O1 "LEAD AND LEDGER" (docs/web-ui/mockups/overview.html, the
+   owner's pick 2026-10-01; PICKS.md). Imported by Overview.tsx.
+
+   The frame's geometry, in this product's tokens: the card and inset-tile
+   radii are `--radius` and `--ctl-radius-sm`, never typed, so when the
+   canonical scale lands (components.html A: 12 / 8) this screen follows it
+   without an edit; the spacing gate on main still holds today's 10 / 6.
+   6px bars, 32px table rows, 12px type
+   floor, sentence case and no letter-spacing (PICKS.md "Rules that override
+   the mock-ups"). The state marks are marks.tsx's `.sk-st`, so RUNNING is the
+   brand's teal haloed disc here as on Agents -- never the accent blue, which
+   brand §3 keeps off every state.
+
+   Components named `ov-*` are local to this screen on purpose: lane U0 is
+   building the canonical set (components.html A) in parallel, and a later
+   pass swaps these for it. Each is styled to A so the swap moves nothing.
+   --------------------------------------------------------------------------- */
+
+.ov-page { display: flex; flex-direction: column; gap: 16px; padding-bottom: 28px; }
+
+/* ---- page head: the canonical `PageHead` (.c-phead), as on every page ---- */
+.ov-page > .c-phead { margin: 0; }
+.ov-tally .sk-st { margin-right: 4px; }
+/* The count note's two units (QA-060): neither breaks inside itself, so the
+   `?` stays with "7/8 reads" and the tenant id stays whole. */
+.ov-scope,
+.ov-tally { white-space: nowrap; }
+.ov-num { font-variant-numeric: tabular-nums; }
+.ov-reading { color: var(--text-faint); }
+
+/* ---- Needs a look: a row of check cards ----------------------------------- */
+.ov-lead { display: flex; flex-direction: column; gap: 8px; }
+.ov-lh { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+/* OV-15, ONE RANK DOWN (archived issue 138, owner ruling 2026-10-07): the lead title sat at
+   `--t-lead`, the card titles' step, two pixels under the page's h1 -- read
+   at a glance as a second page title. It steps down to `--t-body`/600: under
+   the h1 by two steps, and told from the card titles by its position, its
+   track and its unboxed region, as the heading ladder ranks hierarchy. */
+.ov-lh h2 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+/* Sans (Q1): `checks 8/8 · 1 found 2 problems` is words around a figure, and
+   mono is for ids, values, code and timestamps. Tabular, so the figure holds. */
+.ov-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+/* 400px OR MORE A CARD (browser QA D18, 2026-10-04): three across a 1056px
+   column made 345px cards that cut the title ("25 failed tasks among the 200
+   mo…") and both detail lines. Two across on a desktop, one on a phone.
+   AUTO-FIT, NOT AUTO-FILL (browser QA D18 again, 2026-10-04): one card took
+   one of two tracks, ~520px, with the other half of the row empty. An empty
+   track collapses now, so the cards share the whole row. */
+/* CARDS SIZE TO THEIR OWN CONTENT (visual QA pass 1, overview-agents-07,
+   2026-10-28): the grid's default `stretch` drew "2 leases past TTL" as tall
+   as the six-line card beside it, a large empty block under two lines. */
+.ov-atts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 10px; align-items: start; }
+.ov-att { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); background-color: var(--surface); border: 1px solid var(--line); color: inherit; text-decoration: none; min-width: 0; }
+.ov-att:hover { border-color: var(--sk-acl); }
+/* A FAILED CHECK IS A ROW FORM, NOT ONLY A MARK (archived issue 96): the table row's edge
+   rule, full height in --bad and a short one in --warn, so a red card stands
+   apart from an amber one in greyscale too. */
+.ov-att.is-bad, .ov-att.is-warn { background-repeat: no-repeat; background-position: left center; }
+.ov-att.is-bad { background-image: linear-gradient(var(--bad), var(--bad)); background-size: 3px 100%; }
+.ov-att.is-warn { background-image: linear-gradient(var(--warn), var(--warn)); background-size: 3px 46%; }
+.ov-att:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ov-att > .sk-st { margin-top: 3px; }
+.ov-att-t { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+/* O1's check card: a short title, two lines of regular text, a link (visual
+   QA Q5, 2026-10-02). The title was the whole headline -- ids and all --
+   wrapping in bold; it is one line now, and the ids are the second. */
+/* THE TITLE KEEPS ITS NOUN (visual QA V143, 2026-10-11): cut to one line, a
+   phone read "2 failed tasks among the 26 most rec…" -- the count with no
+   thing counted. It wraps to two lines now and is cut only past them, whole
+   in its title. */
+.ov-att-t b { font: 600 var(--t-meta)/var(--lh-meta) var(--font); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+/* A SUB-LINE ENDS IN AN ELLIPSIS, NEVER A HARD CUT (visual QA V140,
+   2026-10-11). A clamp draws its `…` only at a line break, and an id with no
+   break in it ran past the card's edge and was sliced there instead, which
+   also left a line holding only "—…". `anywhere` lets the id break, so the
+   clamp always ends on its ellipsis. */
+/* THE DETAIL GETS FOUR LINES AT EVERY WIDTH (visual QA run 2,
+   overview-automate-010, 2026-10-20). The desktop held it to two lines, or
+   one under an ids line, so a failure card at 1440 read "... Newest: exit..."
+   while the same card at 390 -- given four lines by QA-100 -- showed
+   "exit status 1: pytest collected 2 failures". The card is wider at 1440,
+   so four lines there are never more than the phone draws. The ids stay one
+   cut line. */
+.ov-att-t small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.ov-att-t small.ov-att-ids { -webkit-line-clamp: 1; }
+.ov-att-t small.ov-att-ids { display: block; white-space: nowrap; text-overflow: ellipsis; }
+/* A BUTTON, NOT AN ARROW LINK (the owner's standing rule, 2026-11-05): `.ov-att-go`
+   is drawn by the shared `.c-btn` (components.css); this rule only keeps it
+   whole beside a long title. */
+.ov-att-go { flex-shrink: 0; }
+/* A CARD THAT NAMES WORKFLOWS LINKS EACH ONE (visual QA N11, 2026-10-21).
+   A link cannot hold a link, so such a card is a box, and one of its links
+   carries a `::after` that covers the box, so a click anywhere but another
+   link still goes somewhere. Every other link sits above the cover.
+
+   THE COVER OPENS THE FAILED WORKFLOW (archived issue 1680 box 6343766999, the owner's decision
+   of 2026-10-23). It was `Agents · FAILED →`'s, so a click on the card's
+   empty space opened the list while the card's prominent link was the
+   workflow: the card said one thing and did another. The first named
+   workflow's link (`is-cover`) carries it now, static so its cover is
+   positioned against the card; the list's link is a plain link above it. */
+.ov-att.is-split { position: relative; }
+.ov-att.is-split .ov-att-go { position: relative; z-index: 1; text-decoration: none; }
+.ov-att.is-split .ov-att-go:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ov-att.is-split .ov-att-go.is-cover { position: static; z-index: auto; }
+.ov-att.is-split .ov-att-go.is-cover::after { content: ''; position: absolute; inset: 0; border-radius: inherit; }
+.ov-att.is-split .ov-att-go.is-cover:focus-visible { outline: none; }
+.ov-att.is-split .ov-att-go.is-cover:focus-visible::after { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+/* THE WORKFLOW IS A WAY OUT AS PLAIN AS THE LIST (visual QA 5b:wg-dark-D1,
+   2026-10-22). The only way to the failed workflow was its id in the ids
+   line, under a prominent link to the Agents list. Each named workflow now
+   has `Workflow <id> →` above `Agents · FAILED →`, in a column that does not
+   shrink: drawn by `.ov-att-go`, the list link's own rule. The first of them
+   carries the card's cover (above). The id gives way with an ellipsis, the
+   arrow never; its title is whole. */
+/* THE BUTTONS SIT ON THE CARD'S OWN SURFACE, PAINTED (2026-11-05): a
+   button's border is measured against what is behind it, and the card's
+   tone rule is a gradient, which no contrast can be read off; the box
+   that holds the buttons paints the card's colour, so the border's
+   backdrop is a colour. A one-link card holds its one button here too. */
+.ov-att-acts { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; max-width: 45%; min-width: 0; background-color: var(--surface); }
+.ov-att.is-split .ov-att-wf { flex: 0 1 auto; max-width: 100%; min-width: 0; }
+.ov-att-wf-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-att-ids a { position: relative; z-index: 1; color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+/* THE WORKFLOW IS THE PROMINENT WAY OUT, THE LIST THE SECONDARY (archived issue 1680 box
+   6343766999, 5b:wg-dark-D1, routed to a fix lane 2026-10-23). Drawn alike,
+   `Agents · FAILED →` still read as the card's link: the failed workflow is
+   where a reader goes to see what broke, the list is where they go next. The
+   workflow links take the accent at the card title's weight (`font-weight`
+   in `.ov-att-wf`'s rule above); the list link steps down to the sentence's
+   dim ink at the regular weight. The card's cover is the first workflow's
+   (owner, 2026-10-23; the N11 block above). */
+/* Since 2026-11-05 the two are buttons: the workflow the theme's secondary,
+   the list its ghost (`kind: 'ghost'`), which carries the dim ink itself. */
+.ov-att-ids a:hover { color: var(--sk-ac); }
+/* The skeleton of a check card, while the checks read: the card's own box
+   and rhythm, its lines as the canonical skeleton bars (walkthrough F). */
+.ov-att.is-skel { cursor: default; }
+.ov-att.is-skel:hover { border-color: var(--line); }
+.ov-att.is-skel > .ov-att-t { gap: 8px; padding: 2px 0; }
+
+/* ---- the lifecycle band: three figures, each broken down by state --------- */
+.ov-life { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+/* The rules between the three are drawn inside the one band, not as three
+   touching boxes: a 1px stroke in the control-border token on each cell after
+   the first. */
+.ov-lc { position: relative; padding: 12px 16px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ov-lc + .ov-lc::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 1px; background: var(--line); }
+.ov-lc-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 600; }
+.ov-lc-h small { font-weight: 400; font-size: var(--t-micro); color: var(--text-dim); text-align: right; }
+.ov-lc-n { font: 650 var(--t-figure)/var(--lh-figure) var(--font); font-variant-numeric: tabular-nums; }
+.ov-lc-ps { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.ov-lc-p { display: inline-flex; gap: 6px; align-items: center; }
+.ov-lc-p b { font-variant-numeric: tabular-nums; font-weight: 600; }
+.ov-lc-p .sk-st-w { color: var(--text-dim); }
+.ov-lc-foot { font-size: var(--t-micro); color: var(--text-faint); }
+
+/* ---- the card grids: Running beside Cost, Waiting beside Headroom --------- */
+/* EACH CARD AT ITS OWN HEIGHT (browser QA D19, owner 2026-10-04). Walkthrough
+   F stretched both cards of a row to the row's height; with Headroom's three
+   stacks beside it, Running now and Waiting then drew ~600px of blank card.
+   A short card ends where its content does. */
+.ov-g21 { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (min-width: 1100px) {
+  /* O1's 1.7 : 1. The table and the grouped list take the width; Cost and
+     Headroom are a figure and three short stacks. */
+  .ov-g21 { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); }
+}
+/* EACH COLUMN STACKS ITS OWN CARDS (owner QA N17/D19, 2026-10-04): two rows
+   of pairs left ~157px blank beside Cost so far and ~388px beside Headroom,
+   each row as tall as its taller card. A column is a stack of cards at their
+   own heights; Recent failures and the pools span both columns under them.
+   Below 1100px the column wrappers step aside and the cards are one column
+   in O1's order. */
+/* RECENT FAILURES ACROSS BOTH COLUMNS (visual QA VQ-006, 2026-10-26; O1 draws
+   it full width under the two). At the foot of the left column it left the
+   right one blank under Headroom for its whole height, about 550px at 1512.
+   It sits before the pools at every width now, the order G1-07 gave a phone:
+   it is the card a reader acts on, and the pools can be dozens of rows. */
+.ov-cols > .ov-col { display: contents; }
+@media (min-width: 1100px) {
+  .ov-cols > .ov-col { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-content: start; align-items: start; min-width: 0; }
+  .ov-cols > .ov-failures { grid-column: 1 / -1; }
+  .ov-cols > .ov-pools { grid-column: 1 / -1; }
+}
+@media (max-width: 1099px) {
+  .ov-cols .ov-running { order: 1; }
+  .ov-cols .ov-spend { order: 2; }
+  .ov-cols .ov-waiting { order: 3; }
+  .ov-cols .ov-headroom { order: 4; }
+  .ov-cols .ov-failures { order: 5; }
+  .ov-cols > .ov-pools { order: 6; }
+}
+
+/* A card per components.html A: the card radius, 12px/14px padding. */
+.ov-card { padding: 12px 14px; border-radius: var(--radius); min-width: 0; }
+/* The head wraps (D2): at 390 a long note pushed "All recent →" off the card.
+   ONE PADDING, THE CARD'S (visual QA V056, 2026-10-11): `.ctl-card-head`
+   pads itself by `--ctl-pad-chrome` for a card whose body pads itself, but
+   this card pads its own box (12px/14px above), so every title sat 16px in
+   from the rows under it. The head gives up its sides and top here; the
+   bottom keeps its step to the content. */
+.ov-card .ctl-card-head { display: flex; align-items: baseline; gap: 4px 10px; flex-wrap: wrap; padding: 0 0 var(--ctl-s2); }
+.ov-card .ctl-card-title { flex: none; }
+.ov-card .ctl-card-note { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.ov-card .ov-link { margin-left: auto; }
+
+/* ---- tables: 32px rows, sentence-case heads, flat in a card --------------- */
+.ov-tbl { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.ov-tbl th { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.ov-tbl td { height: 32px; padding: 4px 12px 4px 0; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.ov-tbl tr:last-child td { border-bottom: 0; }
+.ov-tbl .is-num { text-align: right; white-space: nowrap; }
+/* A ROW HEAD IS NOT A COLUMN HEAD (D2, D19): it wraps, and it draws the same
+   separator as the cells beside it, so a row's rule is one colour end to end. */
+.ov-tbl tbody th { font: inherit; color: inherit; white-space: normal; border-bottom: 1px solid var(--line-soft); padding: 4px 12px 4px 0; vertical-align: middle; }
+/* A LONG ID BREAKS INSIDE ITS CELL (visual QA V053, 2026-10-11): an
+   auto-layout column is as wide as its longest unbreakable run, so one
+   workflow id under a Running now row widened the Agent column until the
+   table overran its card by 35px and "Cost so far" was cut to "Cost s".
+   `anywhere`, unlike `break-word`, lowers the cell's min-content width, so
+   the column gives way and the numeric columns stay whole. */
+.ov-tbl tbody th, .ov-tbl .ov-sub { overflow-wrap: anywhere; }
+.ov-tbl tbody tr:last-child th { border-bottom: 0; }
+/* Recent failures (D2): fixed columns, so the age always sits in the card;
+   the error is two lines at most, and whole in its title. The row ends in its
+   age (owner decision c03, 2026-10-22: the title is the only link), so the
+   name takes every px the mark and age columns leave. */
+.ov-fails { table-layout: fixed; }
+.ov-fc-mark { width: 28px; }
+.ov-fc-age { width: 76px; }
+/* THE WHOLE WORKFLOW ID ON A WIDE SCREEN (visual QA V263, owner Q5,
+   2026-10-16): the short form is the phone's alone, below. The row head
+   breaks anywhere (above), so the whole id wraps in its cell rather than
+   pushing the age out of the card. */
+.ov-fails .ov-why { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.ov-tbl td:last-child, .ov-tbl th:last-child { padding-right: 0; }
+.ov-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* A ROW LINK LOOKS LIKE ONE (QA G1-09, 2026-10-07): with no underline the
+   name read as a label while the workflow id beside it was underlined. A
+   hairline in the line token at rest, the text colour on hover. */
+.ov-name { color: var(--text); text-decoration-line: underline; text-decoration-color: var(--line); text-underline-offset: 3px; font-weight: 500; }
+.ov-name:hover { text-decoration-color: currentColor; }
+.ov-wf { color: var(--text-dim); }
+.ov-silent { color: var(--warn); font-size: var(--t-micro); margin-left: 6px; }
+.ov-dash { color: var(--text-faint); cursor: help; }
+.ov-more { font-size: var(--t-micro); color: var(--text-dim); }
+
+/* The phone's compact Running list (O1 390 frame). Hidden on a wide screen,
+   where the table says the same rows with more columns. */
+.ov-prun { display: none; list-style: none; margin: 0; padding: 0; }
+/* Its "N more" (visual QA V177) is the phone's too: the table's own sits in
+   `.ov-rows`, which the phone hides. */
+.ov-prun-more { display: none; }
+.ov-prun li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 32px; }
+.ov-prun .sk-st-w { display: none; }
+.ov-prun-m { display: flex; flex-direction: column; min-width: 0; }
+/* ONE LINE, THE TITLE CUT AND THE STEP KEPT (visual QA VQ-002, 2026-10-26;
+   O1's 390 frame). ffp-002 (visual QA run 3, 2026-10-21) found that cut at
+   its end, every step of one workflow read "<its title> · sc…" alike, so the
+   step -- the only part that told the rows apart -- was the part lost; it
+   wrapped whole, and a long title took three or four lines, about three
+   agents a screen. The name is two parts now: the workflow's title gives way
+   with an ellipsis, the step after it keeps its width up to two thirds of the
+   row and is cut only past that (`pre` keeps the space before its ` · `,
+   which a flex item would drop, so the text is still the tooltip's). No clamp: names.css's Overview clamp names
+   `.ov-name` alone, because names.css comes after this sheet in the bundle
+   and a tie there is its. */
+/* THE TITLE TAKES TWO LINES BEFORE IT IS CUT (visual QA pass 2,
+   overview-agents-08 recheck, 2026-10-29): on one line at 390, 'Audit the
+   operator scri… · scan-terraform' kept the step and lost what the work was.
+   The title wraps to two lines and only then gives way with an ellipsis; the
+   step still keeps its width (ffp-002) and sits on the title's last line, so
+   a row is at most two lines, not VQ-002's four. */
+.ov-prun-n { display: flex; align-items: flex-end; min-width: 0; white-space: nowrap; color: var(--text); text-decoration: none; }
+.ov-prun-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.ov-prun-s { flex: none; max-width: 66%; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+/* STATE · PROFILE · SHORT WORKFLOW ID UNDER THE NAME (QA G1-08, 2026-10-07):
+   the phone dropped all three, and two "implement" rows read alike. */
+.ov-prun-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* THE DESKTOP'S NUMERALS, NOT THE MONOSPACE FACE (QA G1-08): the Runtime
+   column is the sans face with tabular figures, and so is this. */
+.ov-prun em { font-style: normal; font-size: var(--t-micro); line-height: var(--lh-micro); font-variant-numeric: tabular-nums; color: var(--text-dim); }
+
+/* ---- Recent token cost (the Cost so far card until QA G1-03) ------------- */
+.ov-big { display: flex; align-items: baseline; gap: 8px; font: 650 var(--t-figure)/var(--lh-figure) var(--font); font-variant-numeric: tabular-nums; }
+.ov-big small { font: 400 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.ov-figure.is-absent { font-size: var(--t-body); }
+.ov-kv { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; margin: 8px 0 0; }
+.ov-kv-row { display: contents; }
+.ov-kv dt { color: var(--text-dim); }
+.ov-kv dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.ov-foot { margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ov-foot .ov-warn { color: var(--warn); }
+.ov-foot .ov-bad { color: var(--bad); }
+
+/* ---- Waiting, and why: one row per reason --------------------------------- */
+.ov-wlist { display: flex; flex-direction: column; gap: var(--ctl-s1); }
+.ov-wr { display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.ov-wr:last-child { border-bottom: 0; }
+.ov-wt { display: flex; flex-direction: column; min-width: 0; }
+/* WORDS BREAK BETWEEN WORDS, IDS WHERE THEY MUST (visual QA V055,
+   2026-10-11): `anywhere` on the reason broke it mid-word, while the detail
+   line under it -- which carries whole workflow ids -- had no break at all
+   and ran through the card's border. The reason wraps at spaces and breaks
+   a word only when the word alone is wider than the column; the detail may
+   break an id anywhere. */
+.ov-wt b { font-weight: 600; overflow-wrap: break-word; }
+.ov-wt small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; }
+.ov-wn { font: 600 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
+
+/* ---- Headroom: profile tiles, pool rows, the account line, one column ---- */
+.ov-sub2 { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); margin: 2px 0 0; }
+/* A TILE HOLDS "claude-code-review" ON ONE LINE (browser QA D17, 2026-10-04:
+   at 92px it broke at its hyphen). 140px is that name in the sans face plus
+   the tile's padding; a longer one is cut, whole in its title. */
+.ov-hps { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
+.ov-hp b.ov-hp-off { font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--s-warn); }
+.ov-hp { display: flex; flex-direction: column; min-width: 0; padding: 6px 8px; border-radius: var(--ctl-radius-sm); background: var(--sk-hv); }
+.ov-hp b { font: 650 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
+.ov-hp b.is-zero { color: var(--s-warn); }
+.ov-hp small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* THE BINDING POOLS, EVERY ONE ON THE TILE (visual QA N10, 2026-10-21): cut to
+   one line, the mock tile read "binds global + standard + C…" and hid the
+   backend pool, binding as much as the other two. The line wraps at ` + `,
+   never inside a pool's name; the tile's title still holds the full names. */
+.ov-hp small.ov-hp-binds { white-space: normal; text-overflow: clip; }
+.ov-hp-pool { white-space: nowrap; }
+/* A DISABLED TILE'S REASON WRAPS TO TWO LINES (QA G1-13, 2026-10-07): cut to
+   one, "the merge chain (archived issue 295) is disab…" could not be read without opening
+   Pools. Past two lines it is cut, whole in the line's title. */
+.ov-hp.is-off small { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ov-idc { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ov-pls { display: flex; flex-direction: column; gap: 5px; }
+/* THE POOLS CARD SPANS THE PAGE (browser QA N17): its rows are laid across
+   it, as many columns as 280px allows, so fourteen pools are a few lines. */
+.ov-pools .ov-pls { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 8px 24px; }
+/* NAME AND FIGURE ON ONE LINE, THE BAR UNDER BOTH (browser QA D17,
+   2026-10-04): a 118px name column cut "provider:anthro…" three times with no
+   tooltip, and each bar stopped where its own figure began, so no two ended
+   together. The bar spans the row; the name is whole, or cut with its title. */
+.ov-pl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; }
+.ov-pl .ctl-util-track { height: 6px; grid-column: 1 / -1; grid-row: 2; }
+/* A POOL IS NAMED IN WORDS (QA2 ovag2-04): 'anthropic · u-owner' in the
+   page's face, as Headroom writes it; the mono key is the name's title. */
+.ov-pl .ov-pl-k { font-family: var(--font); }
+.ov-pl b { font-size: var(--t-micro); text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+/* A FULL POOL'S FIGURE CARRIES THE VERDICT (visual QA V057, owner decision
+   Q3 2026-10-11). The phone block hides every utilisation track at 560px and
+   below, and the track's tone was the only place "this pool is full" was
+   drawn, so a phone read `5/5` as plainly as `0/5`. The figure takes the
+   over-ceiling vocabulary -- the bad ink, with the weight above as the
+   greyscale channel -- at every width, so the two widths agree. Q3 also kept
+   the track hidden on a phone; owner reversed that on 2026-10-23 (the 560px
+   block's `.ov-pools .ov-pl > .ctl-util-track`), and the toned figure stays. */
+.ov-pl b.is-full { color: var(--bad); }
+/* NEARLY FULL, ON THE FIGURE (visual QA V057, owner decision Q4
+   2026-10-16): the hidden track turns warn at 80%, so the figure does too, at
+   every width -- the warn ink, as the full figure takes the bad. */
+.ov-pl b.is-near { color: var(--warn); }
+/* A paused pool's name and its `paused` mark share the name's cell; the name
+   still gives way first, cut with its title (run 6, overview-automate-013). */
+.ov-pl-n { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ov-pl-n > .ov-idc { flex: 0 1 auto; }
+.ov-pl-n > :not(.ov-idc) { flex: none; }
+.ov-acc { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: var(--t-micro); }
+.ov-acc .sk-st-w { font-size: var(--t-micro); }
+.ov-acc-proj { color: var(--text-dim); }
+.ov-acc .ov-link { margin-left: auto; }
+
+/* ---- absences ------------------------------------------------------------ */
+/* In a card the card draws the box, so the primitive gives up its own; the
+   mark is the greyscale-safe signal. Its heading cannot be louder than the
+   card title it sits under. */
+.ctl-empty.ov-empty { border: 0; background: none; padding: 0; display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap; }
+.ctl-empty.ov-empty > h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+/* THE MARK STANDS OFF ITS HEADING (visual QA V141, 2026-10-11): a bordered
+   pill and one space read as flush against the word after it. */
+.ctl-empty.ov-empty > h3 > .ctl-mark { margin-right: var(--ctl-s1); }
+/* WHY IT IS BLIND, IN SIGHT (visual QA V259, 2026-10-16): the reason a card
+   could not read was only the mark's accessible name. It is the one sentence
+   under the heading, on a line of its own, a step below the heading it
+   explains, and a long error message breaks rather than widening the card. */
+.ctl-empty.ov-empty > p { flex-basis: 100%; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+/* The page-level one (an expired session) keeps its box: no card is around it. */
+.ov-page-empty { display: flex; align-items: flex-start; gap: var(--ctl-s3); flex-wrap: wrap; }
+.ov-page-empty > h3 { margin: 0; flex: 1 1 auto; }
+.ov-page-empty > .retry { margin-top: 0; }
+.ov-ghost { margin: 2px 0; }
+.ov-info { color: var(--info); }
+.ov-warn { color: var(--warn); }
+.ov-bad { color: var(--bad); }
+
+/* ---- phone (O1 390 frame) ------------------------------------------------- */
+/* ONE "Overview". Wherever the phone header is drawn (the spine's 759px
+   breakpoint) it already names the page in the spine's colour, so the h1 steps
+   aside -- visually, never from the outline: a screen reader still lands on
+   it. */
+@media (max-width: 759px) {
+  .ov-page > .c-phead h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  /* THE `?` AND THE REFRESH SHARE THE LINE (U10a D39, owner QA at 390px,
+     2026-10-04): with the h1 stepped aside the head held only the `?`, and
+     the row wrapped it onto a line of its own. The row does not wrap; the
+     actions wrap inside their own half when they must. */
+  .ov-page > .c-phead { flex-wrap: nowrap; align-items: flex-start; grid-column: 2; grid-row: 1; }
+  .ov-page > .c-phead > .c-acts { flex: 1 1 0; min-width: 0; }
+  /* THE REFRESH SHARES ITS LINE WITH THE COUNT NOTE (visual QA V143,
+     2026-10-11). With the h1 and the `?` stepped aside, the head held only
+     the refresh, right-aligned in a ~50px band of its own above the tenant
+     line. The page is a two-column grid on a phone: the note on the left of
+     the first row, the head's actions on its right, every other region
+     across both columns in source order. */
+  /* `baseline`, not `center` (QA-060, 2026-10-20): where the note takes two
+     lines the refresh sits on its first, not floating between the two. */
+  .ov-page { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; }
+  .ov-page > * { grid-column: 1 / -1; min-width: 0; }
+  .ov-page > .c-count-note { grid-column: 1; grid-row: 1; margin: 0; }
+  /* THE NOTE BREAKS BETWEEN ITS UNITS, AND DROPS ITS DOT TO DO IT (QA-060):
+     the tenant and the tally are flex items, the gap is their separator. */
+  .ov-page > .c-count-note { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; }
+  .ov-page > .c-count-note .ov-sep { display: none; }
+}
+@media (max-width: 560px) {
+  /* RECENT FAILURES BEFORE HEADROOM AND THE POOLS (QA G1-07, 2026-10-07):
+     last in the column, the most actionable card sat under 29 pool rows. */
+  .ov-cols .ov-failures { order: 4; }
+  .ov-cols .ov-headroom { order: 5; }
+  .ov-cols > .ov-pools { order: 6; }
+  /* NO ROOM OF ITS OWN FOR `↑ Top` (visual QA V009, 2026-10-11). G1-07 added
+     56px here, but the pill is an in-flow sticky child of the scroller AFTER
+     this page (Spine.tsx), so at the foot it already sits under the last
+     card; the 56px only stacked a second blank band on top of the pill's
+     own (measured at 400x800: ~115px of blank under Pools). Room while the
+     pill floats mid-page is the scroller's to reserve, once, for every page
+     (lane L14), not each page's. */
+  .ov-atts { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  /* A CHECK IS ONE LINE ON A PHONE: ITS MARK, ITS TITLE AND AN ARROW (visual
+     QA VQ-002, 2026-10-26; O1's 390 frame, "the checks, the three lifecycle
+     figures, then running"). Each card printed its whole detail -- a commit
+     SHA among it -- and two workflow-id links, so the three figures began
+     about a screen and a half down. The ids and the detail are the desktop's;
+     here they are behind the card's link, and in its accessible name. The
+     title keeps its two lines (V143), so the count keeps its noun.
+     QA-061's "the link takes a line of its own" (2026-10-20) is gone with
+     the words it made room for: the link's words step aside, visually only
+     -- the card's or the link's accessible name keeps them -- and the arrow
+     stays at the right edge. */
+  .ov-att-t small, .ov-att-t small.ov-att-ids { display: none; }
+  .ov-att { align-items: center; }
+  /* No arrow is left to draw (the owner's standing rule, 2026-11-05): a one-link
+     card's button steps aside whole, and the cover link keeps its box but
+     not its chrome, so the card itself is the tap target. */
+  .ov-att:not(.is-split) .ov-att-go, .ov-att:not(.is-split) > .ov-att-acts { display: none; }
+  .ov-att.is-split .ov-att-wf.is-cover { height: auto; padding: 0; border: 0; background: none; }
+  .ov-att.is-split .ov-att-wf.is-cover .ov-att-wf-t { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  /* A split card keeps one way out: the first workflow's link, which carries
+     the card's cover (the owner's decision of 2026-10-23), so a tap anywhere on
+     the card opens the failed workflow. The other workflows and the list are
+     the desktop's links; Recent failures, further down, is the list. */
+  .ov-att.is-split .ov-att-wf:not(.is-cover), .ov-att.is-split .ov-att-go:not(.ov-att-wf) { display: none; }
+  .ov-att-acts { max-width: none; }
+  /* A hand-off banner's Open keeps the line of its own QA-061 gave every
+     `.ov-att-go` here: the banner draws no check card, so VQ-002 leaves it. */
+  .ov-handoff .ov-handoff-open { margin-left: auto; }
+  /* Three across, the figure only: the per-state breakdown is the desktop's. */
+  .ov-life { gap: 6px; border: 0; background: none; overflow: visible; }
+  .ov-lc { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 7px 8px; gap: 0; }
+  .ov-lc + .ov-lc::before { display: none; }
+  .ov-lc-h small, .ov-lc-ps, .ov-lc-foot { display: none; }
+  /* THE PAGE'S FOOT STAYS (QA G1-02, 2026-10-07): a phone reads the newest
+     50 and a desktop the newest 200, so "Finished today" differs by width;
+     hidden here, a phone's 41 sat under the same words as a desktop's 62. */
+  .ov-lc-foot.is-page { display: block; }
+  .ov-lc-h { font-weight: 400; font-size: var(--t-micro); color: var(--text-dim); }
+  .ov-rows { display: none; }
+  /* Recent failures stacks (D2): the name and why over the age, which is the
+     row's last cell now the Open link is gone (c03), so the name's column is
+     the row's whole width after the mark. */
+  .ov-fails, .ov-fails tbody { display: block; }
+  .ov-fails colgroup { display: none; }
+  .ov-fails tr { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+  .ov-fails tr:last-child { border-bottom: 0; }
+  .ov-fails td, .ov-fails tbody th { height: auto; padding: 0; border-bottom: 0; }
+  .ov-fails tbody th { grid-column: 2; grid-row: 1; }
+  /* THE TITLE IS THE TAP TARGET (owner decision c03, 2026-10-22; run 4
+     flow-find-failure-phone-390-P2): the only link in the row, so it is at
+     least 44px tall, its text at the top as it was. */
+  .ov-fails .ov-name { min-height: 44px; }
+  /* The phone's short form, `wf_5e5ad3…`, cut by the sheet from the whole id
+     the row carries (V263): about nine characters, then the ellipsis. */
+  .ov-fails .ov-wf-id { display: inline-block; max-width: 10ch; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; vertical-align: bottom; }
+  .ov-fails td:first-child { grid-row: 1; }
+  .ov-fails td.is-num { grid-row: 2; grid-column: 2; text-align: left; }
+  .ov-prun, .ov-prun-more { display: block; }
+  /* THE POOLS LIST KEEPS ITS BARS (visual QA run 6, overview-automate-011,
+     archived issue 1680 box 6343776209; the owner's decision of 2026-10-23, which reverses the owner's Q3
+     of 2026-10-11, "the bar stays hidden on a phone"). styles.css's phone
+     block hides every `.ctl-util-track`; here that left a full pool's hatch,
+     a lowered pool's short fill and a paused pool's tone nowhere at 390, only
+     the figure. The row already lays its track across the whole card under
+     the name and figure, so the phone draws it as 1440 does, as Capacity ›
+     Pools' phone records do (capacity.css). Q3's toned figure stays. */
+  .ov-pools .ov-pl > .ctl-util-track { display: flex; }
+  /* RUNNING NOW'S ROWS ARE RULED APART (visual QA run 6, overview-automate-012,
+     2026-10-23): with no separator, each title sat about 4px under the
+     previous row's state line and two rows read as one. The rule and padding
+     Recent failures' phone rows use, so the two lists on the page agree. */
+  .ov-prun li { padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+  .ov-prun li:last-child { border-bottom: 0; }
+  /* A DISABLED REASON WHOLE ON A PHONE (live QA OV-13, 2026-10-11): past two
+     lines the reason was only in the tile's `title`, which a touch screen
+     cannot open. Whole, the sentence costs the tile a line or two of
+     height and hides nothing. */
+  .ov-hp.is-off small { display: block; -webkit-line-clamp: unset; overflow: visible; }
+  .ov-link { position: relative; }
+  .ov-link::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* The hand-off banners under Needs a look (live-browser.md §6, lane LB-L12). */
+.ov-handoffs { display: flex; flex-direction: column; gap: var(--ctl-s2); margin-top: var(--ctl-s2); }
+
+/* WHICH AGENT IS WAITING, above each hand-off banner (visual QA pass 5, U2;
+   lane LB-V5): five identical yellow cards told nobody which was which. One
+   line, cut with an ellipsis; the whole of it is the card's group name. */
+.ov-handoff { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ov-handoff-who { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-handoffs-more { align-self: flex-start; font-size: var(--t-meta); }

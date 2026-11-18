@@ -1,0 +1,33 @@
+/* A plan's diagram (DiagramView.tsx): the drawn image, its export row, the
+   "Read as text" outline and the failure state. The look is the pinned
+   strip's: the image on the card's surface, height-capped in the strip and
+   whole when opened large. Every colour is a console token, so light and dark
+   follow the theme; the image carries its own colours (an <img> cannot read
+   the page's variables). Nothing here is wider than its container. */
+
+.dg { display: grid; gap: 8px; margin: 0; min-width: 0; max-width: 100%; }
+.dg-dim { color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); }
+
+/* ---- the image ------------------------------------------------------------ */
+.dg-img { display: grid; place-items: center; min-width: 0; padding: 8px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: var(--r-tile); overflow: auto; }
+.dg-img img { display: block; max-width: 100%; height: auto; }
+.dg.is-strip .dg-img img { max-height: 200px; width: auto; }
+.dg.is-large .dg-img img { width: 100%; }
+.dg.is-drawing { min-height: 96px; place-items: center; background: var(--surface-2); border-radius: var(--r-tile); }
+
+/* ---- export --------------------------------------------------------------- */
+.dg-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
+
+/* ---- read as text --------------------------------------------------------- */
+.dg-text { min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.dg-text > summary { cursor: pointer; color: var(--text-dim); width: max-content; max-width: 100%; }
+.dg-text > summary:focus-visible { outline: 2px solid var(--sk-ac, var(--info)); outline-offset: 2px; border-radius: var(--r-xs); }
+.dg-text ol { margin: 6px 0 8px; padding-left: 22px; display: grid; gap: 2px; }
+.dg-text li { overflow-wrap: anywhere; }
+
+/* ---- the failure state ---------------------------------------------------- */
+.dg.is-failed { padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--warn); border-radius: var(--r-tile); }
+.dg-why { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.dg-why > b { color: var(--warn-ink); font-weight: 600; }
+.dg .c-code { min-width: 0; max-width: 100%; margin: 0; }
+.dg .c-code pre { overflow-x: auto; }

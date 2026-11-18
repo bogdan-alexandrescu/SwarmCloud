@@ -1,0 +1,208 @@
+output "project_id" {
+  value = var.project_id
+}
+
+output "region" {
+  value = var.region
+}
+
+output "environment" {
+  value = var.environment
+}
+
+output "labels" {
+  description = "The label set every resource carries. destroy.sh matches on managed-by."
+  value       = local.labels
+}
+
+# --- network ---------------------------------------------------------------
+
+output "network_name" {
+  value = module.network.network_name
+}
+
+output "subnetwork_name" {
+  value = module.network.subnetwork_name
+}
+
+output "nat_egress_addresses" {
+  description = "Give these to a model provider that allow-lists source addresses."
+  value       = module.network.nat_addresses
+}
+
+# The addresses a caller allowlists on its registered MCP server
+# (docs/design/registered-mcp-servers.md §4.9, lane MCP-IAM, part of archived issue 1433).
+# The same reserved NAT addresses as above, named for that reader: a GKE pod
+# and a Cloud Run Job (vpc_access egress ALL_TRAFFIC) both leave through
+# google_compute_router_nat.this, MANUAL_ONLY, so an MCP call has no other
+# source address. The console's registration page shows them once swarm-api's
+# settings carry them (lane MCP-UI).
+output "mcp_egress_addresses" {
+  description = "Give these to the owner of a registered MCP server to allow-list: every worker's MCP call leaves through these NAT addresses."
+  value       = module.network.nat_addresses
+}
+
+# --- data ------------------------------------------------------------------
+
+output "firestore_database" {
+  value = module.firestore.database_name
+}
+
+output "firestore_bench_database" {
+  value = module.firestore.bench_database_name
+}
+
+output "firestore_indexes" {
+  value = module.firestore.index_names
+}
+
+output "artifact_bucket" {
+  value = module.storage.artifact_bucket_name
+}
+
+output "image_base" {
+  value = module.artifact_registry.image_base
+}
+
+# --- images, by digest -------------------------------------------------------
+
+output "image_refs" {
+  description = "The digest-pinned image, per name, this state was last applied with: every deployed image and every gated image (images.json) given a digest. scripts/lib/image-refs.sh --applied reads it so that a plan which is not a deploy replans exactly what is running instead of moving any image or switching a gated service off (#1878)."
+  value       = local.applied_image_refs
+}
+
+output "service_images" {
+  description = "Cloud Run service -> the image its template names, read off the planned resource. Every value is a digest."
+  value       = merge(module.cloud_run_api.images, module.cloud_run.images)
+}
+
+output "job_images" {
+  description = "Worker job -> the image its template names, read off the planned resource. Every value is a digest."
+  value       = module.cloud_run_jobs.images
+}
+
+output "worker_image_refs" {
+  description = "Runner image -> digest, as handed to the scheduler in WORKER_IMAGE_REFS for every Job it creates itself."
+  value       = jsondecode(local.service_env["swarm-scheduler"].WORKER_IMAGE_REFS)
+}
+
+output "job_models" {
+  description = "Worker job -> the MODEL its agent CLI runs (null when none), as its module entry carries it. From local.runner_models (#226)."
+  value       = module.cloud_run_jobs.models
+}
+
+output "worker_models" {
+  description = "Runner profile -> model, as handed to the scheduler in WORKER_MODELS for every Job it creates itself (#226)."
+  value       = jsondecode(local.service_env["swarm-scheduler"].WORKER_MODELS)
+}
+
+# --- identity --------------------------------------------------------------
+
+output "service_accounts" {
+  value = module.iam.service_account_emails
+}
+
+output "tenant_service_accounts" {
+  value = module.tenancy.worker_service_accounts
+}
+
+output "tenant_namespaces" {
+  value = module.tenancy.namespaces
+}
+
+output "tenant_secret_ids" {
+  value = module.secret_manager.secrets_by_tenant
+}
+
+# --- compute ---------------------------------------------------------------
+
+output "service_urls" {
+  value = merge(module.cloud_run_api.service_urls, module.cloud_run.service_urls)
+}
+
+output "job_names" {
+  value = module.cloud_run_jobs.job_names
+}
+
+output "gke_cluster_name" {
+  value = var.enable_gke_autopilot ? module.gke_autopilot[0].cluster_name : ""
+}
+
+# --- scheduling ------------------------------------------------------------
+
+output "wake_topic" {
+  value = module.scheduler.wake_topic
+}
+
+output "scheduler_jobs" {
+  value = module.scheduler.scheduler_job_names
+}
+
+# --- capacity --------------------------------------------------------------
+
+output "pool_names" {
+  description = "Every slot pool materialised in Firestore."
+  value       = sort(keys(local.pools))
+}
+
+output "pool_limits" {
+  value = { for name, p in local.pools : name => p.hard_limit }
+}
+
+# The three outputs below are the restatement of swarm_common.profiles that
+# locals.tf has to carry because terraform cannot import Python. They are
+# exported so a test can compare them against the real file:
+# tests/terraform/catalogue_mirror parses apps/common/swarm_common/profiles.py
+# off disk and tests/terraform/catalogue.tftest.hcl asserts these against it.
+# Without that comparison the mirror is a copy nothing checks, and the two drift
+# together the first time a profile is resized.
+output "resource_classes" {
+  description = "Mirror of swarm_common.profiles.RESOURCE_CLASSES, compared field by field against the parsed Python source in tests/terraform/catalogue.tftest.hcl."
+  value       = local.resource_classes
+}
+
+output "runner_backends" {
+  description = "runner profile -> backend, mirroring resolve_backend()."
+  value       = { for name, p in local.runner_profiles : name => p.backend }
+}
+
+output "runner_profiles" {
+  description = "Mirror of swarm_common.profiles.RUNNER_PROFILES: image, class, backend, provider, timeout and the secret env-var names. Compared against the parsed Python source in tests."
+  value = {
+    for name, p in local.runner_profiles : name => {
+      image            = p.image
+      resource_class   = p.resource_class
+      backend          = p.backend
+      provider         = p.provider
+      timeout_seconds  = p.timeout_seconds
+      secret_env_names = sort(keys(p.secret_env))
+    }
+  }
+}
+
+output "workspace_size_gib" {
+  value = module.cloud_run_jobs.workspace_size_gib
+}
+
+output "dashboard_id" {
+  value = module.monitoring.dashboard_id
+}
+
+output "frontend_iap_audiences" {
+  description = "The audiences swarm-api pins on an IAP assertion; locals.tf computes IAP_AUDIENCES from the same module output (DAYONE-TF-1)."
+  value       = var.enable_frontend ? try(module.frontend[0].iap_audiences, []) : []
+}
+
+
+output "quota_broker_url" {
+  description = "swarm-quota-broker's uri, as Cloud Run reports it. The services are handed main.tf's local.quota_broker_url, the deterministic URL of the same service (DAYONE-TF-1)."
+  value       = module.cloud_run.service_urls["swarm-quota-broker"]
+}
+
+output "console_service_env" {
+  description = "swarm-api and swarm-scheduler -> the console-link variables their environment carries (SWARM_CONSOLE_URL, SWARM_PR_CONSOLE_LINKS)."
+  value = {
+    for svc in ["swarm-api", "swarm-scheduler"] :
+    svc => { for k, v in local.service_env[svc] : k => v if startswith(k, "SWARM_CONSOLE_") || startswith(k, "SWARM_PR_CONSOLE_") }
+  }
+}

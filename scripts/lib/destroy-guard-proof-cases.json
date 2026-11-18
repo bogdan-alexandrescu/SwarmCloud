@@ -1,0 +1,106 @@
+{
+  "description": [
+    "How to place each SHARED_DENY_LIST entry into a REAL terraform plan.",
+    "",
+    "The deny-list holds five kinds of thing and they do not carry their identity in",
+    "the same field. A service account is `.email`, and its `.name` is",
+    "`projects/-/serviceAccounts/<email>`. A bucket is `.name`. A cluster's `.id` is",
+    "`projects/<p>/locations/<loc>/clusters/<name>`, a network's is",
+    "`projects/<p>/global/networks/<name>`, and Firestore's shared database is",
+    "`projects/<p>/databases/(default)`. Proving the guard catches a neighbour",
+    "therefore means copying the REAL resource_change of the matching type out of a",
+    "real plan and substituting the neighbour's identity into the fields the",
+    "provider actually populates -- not writing a fixture from memory.",
+    "",
+    "WHY THIS IS A FILE AND NOT A CASE STATEMENT IN EACH READER. Two things need",
+    "this mapping: scripts/verify-destroy-guard.sh, which runs it against a live",
+    "plan, and tests/integration/test_destroy_guard_real_plan.py, which runs it",
+    "against the recorded one in CI. This repository has already paid for the",
+    "alternative three times over -- the deny-list transformation existed in three",
+    "spellings and the one inside `destroy.sh --self-test` had lost the `(default)`",
+    "entry, so the self-test of the guard protecting the shared Firestore database",
+    "could never reach that branch. A mapping with two implementations drifts the",
+    "same way.",
+    "",
+    "`classify` is ORDERED and the FIRST match wins: a subnet must be reached by",
+    "`*subnet*` before anything broader sees it. The patterns use `*` only, because",
+    "that is the one wildcard every reader agrees on exactly.",
+    "",
+    "The rules here are GENERIC: the kinds every deployment's names share (a service",
+    "account's address, Firestore's `(default)`, a `*-vpc`, a `*subnet*`) and the",
+    "placeholders the tests use. A deployment's own names are not in this",
+    "repository: its deny-list.json (gs://<state-bucket>/config/<env>/) carries its",
+    "own `classify` rules, which common.sh reads AHEAD of these.",
+    "",
+    "AN ENTRY THAT MATCHES NOTHING IS A FATAL ERROR in the proof, never a skip.",
+    "The defect this whole exercise answers is a proof that silently covered",
+    "fourteen of twenty entries.",
+    "",
+    "The inventory FLOORS are not here any more. A proof whose input is the list",
+    "it is proving can never notice the list getting shorter -- MEASURED: deleting",
+    "one service account from the list left this proof green -- so the floors are",
+    "asserted independently of the entries. They are deployment values, so they",
+    "moved into the same object as `floors` (kind -> minimum count, `total` for",
+    "all), and deny_list_load in common.sh refuses a list below any of them on",
+    "every load, not only when this proof runs. deny_list_floors prints them.",
+    "",
+    "`patch` is a jq expression applied to that resource's `change.before`, with $e",
+    "bound to the deny-list entry and $p to the project id. `expect_matched` is what",
+    "the guard must PRINT as the reason it refused: the entry itself for a token",
+    "match, or the literal `default-network` for the bare `default`, which",
+    "`guard_deny_json` removes from the token list on purpose (the string appears",
+    "inside too many unrelated ids) and which destroy-guard.jq matches on the",
+    "network/subnetwork FIELD instead."
+  ],
+  "classify": [
+    { "glob": "*@*gserviceaccount.com", "kind": "sa" },
+    { "glob": "(default)", "kind": "firestore" },
+    { "glob": "default", "kind": "default-network" },
+    { "glob": "peer-cluster", "kind": "cluster" },
+    { "glob": "*subnet*", "kind": "subnet" },
+    { "glob": "*-vpc", "kind": "network" },
+    { "glob": "peer-bucket", "kind": "bucket" }
+  ],
+  "kinds": {
+    "sa": {
+      "carrier_type": "google_service_account",
+      "patch": ".email = $e | .name = \"projects/-/serviceAccounts/\" + $e | .member = \"serviceAccount:\" + $e | .account_id = ($e | split(\"@\")[0])",
+      "expect_matched": "entry"
+    },
+    "bucket": {
+      "carrier_type": "google_storage_bucket",
+      "patch": ".name = $e | .id = $e | .url = \"gs://\" + $e",
+      "expect_matched": "entry"
+    },
+    "cluster": {
+      "carrier_type": "google_container_cluster",
+      "patch": ".name = $e | .id = \"projects/\" + $p + \"/locations/us-central1/clusters/\" + $e",
+      "expect_matched": "entry"
+    },
+    "network": {
+      "carrier_type": "google_compute_network",
+      "patch": ".name = $e | .id = \"projects/\" + $p + \"/global/networks/\" + $e",
+      "expect_matched": "entry"
+    },
+    "subnet": {
+      "carrier_type": "google_compute_subnetwork",
+      "patch": ".name = $e | .id = \"projects/\" + $p + \"/regions/us-central1/subnetworks/\" + $e",
+      "expect_matched": "entry"
+    },
+    "firestore": {
+      "carrier_type": "google_firestore_database",
+      "patch": ".name = \"projects/\" + $p + \"/databases/\" + $e",
+      "expect_matched": "entry"
+    },
+    "run-service": {
+      "carrier_type": "google_cloud_run_v2_service",
+      "patch": ".name = $e | .id = \"projects/\" + $p + \"/locations/us-central1/services/\" + $e",
+      "expect_matched": "entry"
+    },
+    "default-network": {
+      "carrier_type": "google_compute_subnetwork",
+      "patch": ".network = \"https://www.googleapis.com/compute/v1/projects/\" + $p + \"/global/networks/default\"",
+      "expect_matched": "default-network"
+    }
+  }
+}

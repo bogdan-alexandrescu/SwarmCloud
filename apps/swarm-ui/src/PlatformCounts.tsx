@@ -1,0 +1,667 @@
+import { useContext, useEffect, useRef, useState } from 'react'
+import { loadMe, loadStats, loadTenants } from './api'
+import { errorHeading, type ApiError, type Result } from './fetch'
+import type { TopicId } from './help'
+import { HelpCard, HelpLinks } from './HelpCard'
+import { PlatformOverTime, type OverTimePrice } from './PlatformOverTime'
+import { Mark } from './primitives'
+import { FrameAge, PageHead, timeAgo, useClaimPageAge } from './Shell'
+import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
+import { AGE_TICK_MS, useNow } from './useNow'
+import './styles/admin.css'
+import './styles/schedules.css'
+import { Button } from './components'
+
+/**
+ * Platform-wide task counts. Admin only, and deliberately behind a button.
+ *
+ * WHY A BUTTON AND NOT AN AUTO-LOAD. /v1/stats runs one Firestore count()
+ * aggregation per TaskState -- twelve for a tenant, twenty-four for an admin,
+ * because an admin also gets the platform figures. count() bills per 1000
+ * index entries scanned, so the cost of this screen grows with the platform's
+ * HISTORY, not with how busy it is. It is the one panel that gets more
+ * expensive as the platform gets older, and auto-refreshing it at 5s would be
+ * a standing charge nobody chose.
+ *
+ * THAT USED TO BE A PARAGRAPH ABOVE THE BUTTON. It is now a figure on the
+ * button -- `24 reads`, one count() read per state per scope -- which is the same fact with the arithmetic already
+ * done for the reader and, unlike the sentence, it moves when the caller turns
+ * out to be an admin. §8.4.1: a well-chosen unit is the explanation. What a
+ * run returns is at #help/platform-counts.
+ *
+ * AND IT IS ON THE CONTROL IT PRICES (AH-25, archived issue 138). The cost once sat in a
+ * toolbar row a row away from the press it priced. The head is `PageHead`'s
+ * one shape, title left and actions right (archived issue 138, owner ruling 2026-10-07):
+ * what the last count found and how old it is, then the run, on the right.
+ *
+ * SCOPE IS NOT DECORATION. `tasks_by_state` is the caller's own tenant;
+ * `platform_tasks_by_state` is everyone. They are separate cards with the
+ * scope in the title, and never side by side in one row -- an admin reading
+ * their own four running tasks as the platform total is a truth bug, not a
+ * layout preference.
+ */
+/**
+ * THE LAST GOOD RUN, KEPT FOR THE SESSION (archived issue 135). A run is billed, so leaving
+ * the screen and coming back used to throw away an answer already paid for
+ * and draw the not-run cards over it. It lives in the module -- this tab's
+ * lifetime, never storage -- and the screen opens on it, with its age in the
+ * head as it had when it landed. A failed run is this visit's news and is not
+ * kept: coming back shows the counts the session last actually read.
+ */
+let lastRun: { run: Result<Stats>; runs: number } | null = null
+
+/** Forgets the session's record, for a test that starts a new session. */
+export function forgetLastRun(): void {
+  lastRun = null
+}
+
+/**
+ * THE PLATFORM TICKS (docs/schedules.md §8.4): the platform's machinery,
+ * which no tenant manages and which stays in Terraform
+ * (`terraform/modules/scheduler/jobs.tf`). A static list, so an admin sees
+ * every recurring thing in one place; what each does is its Cloud Scheduler
+ * job's own description. Nothing here is read from GCP.
+ *
+ * EVERY JOB, IN jobs.tf's ORDER (live QA ADM-6, 2026-10-11): the list said
+ * "every recurring thing" and held 7 of the 12, schedule_tick among the
+ * missing though its own report headed the page then. `name` is the job's
+ * resource name in jobs.tf and `job` its name after the prefix, `<tenant>`
+ * for a per-tenant job; `adminSchedules.test.tsx` and
+ * `schedules.onepage.test.tsx` read jobs.tf and fails
+ * when the two disagree.
+ *
+ * HERE SINCE SCHED-ONE-PAGE (owner decision 2026-10-13). They were the third
+ * table of Admin › Schedules; that page folded into Automate › Schedules as
+ * its admin-only "All tenants" view, which is about TENANTS' schedules. These
+ * belong to no tenant, and this page is already the admin's read of what the
+ * platform itself is doing, so they came here rather than onto a page whose
+ * switch says "Mine | All tenants".
+ */
+export const PLATFORM_TICKS: readonly { name: string; job: string; does: string }[] = [
+  { name: 'safety_tick', job: 'scheduler-tick', does: 'A one-minute safety tick for the scheduler’s drain loop.' },
+  { name: 'reconciler', job: 'reconciler-tick', does: 'Reclaims expired leases and garbage-collects unused Job resources.' },
+  { name: 'quota_refresh', job: 'quota-refresh', does: 'Recomputes provider quota state and adaptive pool targets.' },
+  { name: 'workflow_rollup', job: 'workflow-rollup-<tenant>', does: 'Converges the stored state of each tenant’s workflows nobody reads, and seals each tenant’s ended outcome days (yesterday and the two before) so the counts over time read sealed days.' },
+  { name: 'issue_run_advance', job: 'issue-run-advance-<tenant>', does: 'Advances each tenant’s issue runs nobody is reading.' },
+  { name: 'stranded_pr_sweep', job: 'stranded-pr-sweep-<tenant>', does: 'Finds each tenant’s SwarmCloud pull requests nothing is going to merge, and logs them.' },
+  { name: 'repo_index_poll', job: 'repo-index-poll-<tenant>', does: 'Reads each tenant’s registered repositories’ heads and queues their index runs.' },
+  { name: 'merge_wake', job: 'merge-wake-<tenant>', does: 'Every minute, marks each tenant’s CI-waiting merge steps whose checks have settled.' },
+  { name: 'forge_refresh', job: 'forge-refresh', does: 'Refreshes GitHub user access tokens before they expire.' },
+  { name: 'schedule_tick', job: 'schedule-tick', does: 'Fires every tenant’s due schedules, one firing per slot (its last hour is on Automate › Schedules, All tenants).' },
+  { name: 'workspace_sweep', job: 'workspace-sweep', does: 'Re-dispatches approved personal workspaces nobody built, and logs each one still waiting.' },
+  { name: 'secrets_rotation_sweep', job: 'workspace-secrets-rotation-sweep', does: 'Hourly, disables each rotated-out workspace secret version once its day of grace has passed; never destroys one.' },
+  { name: 'mcp_credentials_sweep', job: 'mcp-credentials-sweep', does: 'Every ten minutes, deletes per-run MCP credentials whose agent ended or expired.' },
+]
+
+function PlatformTicks() {
+  return (
+    <div className="sc-table-wrap">
+      <table className="sc-table is-ticks" data-testid="as-platform-ticks">
+        <thead>
+          <tr>
+            <th scope="col" data-col="name">Tick</th>
+            <th scope="col" data-col="job">Cloud Scheduler job</th>
+            <th scope="col" data-col="does">What it does</th>
+          </tr>
+        </thead>
+        <tbody>
+          {PLATFORM_TICKS.map((t) => (
+            <tr key={t.name} className="sc-row" data-tick={t.name}>
+              <td data-label="Tick"><span className="mono">{t.name}</span></td>
+              <td data-label="Cloud Scheduler job"><span className="mono">{t.job}</span></td>
+              <td data-label="What it does">{t.does}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+export function PlatformCountsScreen() {
+  const [run, setRun] = useState<Result<Stats> | null>(() => lastRun?.run ?? null)
+  const [runs, setRuns] = useState(() => lastRun?.runs ?? 0)
+  const [busy, setBusy] = useState(false)
+  /**
+   * WHO IS ASKING, FROM THE SESSION READ -- the same `/v1/tenants/me` the
+   * header's admin badge is drawn from (AH-9, visual QA 2026-09-25).
+   *
+   * The cost below used to learn it only from the RESULT of a run, so before
+   * the first press it was unknown and was priced as a tenant's: an admin was
+   * shown `12 count()` for a press that costs 24. The figure exists to say what
+   * the button costs, and it was wrong on exactly the press it was there for.
+   * `null` is "not known yet, or the read failed" and is priced as such.
+   */
+  const [sessionAdmin, setSessionAdmin] = useState<boolean | null>(null)
+  // The run's age moves on the shared clock, as every age in the frame does
+  // (CH-1): an age that was read once and never re-drawn is the one number on
+  // the line whose whole job is to grow.
+  const now = useNow(AGE_TICK_MS)
+  // ONE AGE ON THIS SCREEN, AND IT IS THE COUNT'S (archived issue 98). The frame head's age
+  // is the newest read this screen made -- the session read, seconds old --
+  // while the figures below are as old as the run that counted them, which
+  // can be an hour. The run's age is the one that describes the data, so this
+  // screen claims the age and the head prints none.
+  useClaimPageAge(useContext(FrameAge))
+
+  /**
+   * HOW MANY WORKSPACES THE OVER TIME READ COVERS, from the roster read once
+   * on mount (owner, 2026-10-24, archived issue 2149: "Roster on mount"). That read is billed
+   * by the days it covers in each workspace, so its price is a total only once
+   * the page knows how many there are; before, the view prices it per
+   * workspace. One request, never on a timer. A refused or failed read leaves
+   * `null`, and the price stays per workspace rather than guessing a count.
+   *
+   * IT CANNOT TAKE THE PAGE DOWN. The roster prices one button and nothing
+   * else on this page depends on it, so whatever goes wrong with it -- a
+   * refusal, a loader that throws, one that hands back no promise -- ends in
+   * the per-workspace price, never in an error boundary over the counts.
+   */
+  const [workspaces, setWorkspaces] = useState<number | null>(null)
+
+  /**
+   * ONE RUN FOR THE PAGE (COUNTS-ONE-RUN; owner, CTV-5, 2026-10-24 17:30Z:
+   * "roster on mount, one shared Run", and 2026-10-25). The page drew two
+   * primary Runs, each priced at half of what the page reads. The head's Run
+   * now reads both: `presses` moves Over time's `run` prop, and Over time
+   * hands back the price of its read for the bucket it shows (`overPrice`),
+   * priced from the roster above. Null until it has said.
+   */
+  const [presses, setPresses] = useState(0)
+  const [overPrice, setOverPrice] = useState<OverTimePrice | null>(null)
+
+  useEffect(() => {
+    let live = true
+    loadMe().then((r) => {
+      if (live && (r.status === 'ok' || r.status === 'stale')) setSessionAdmin(r.data.principal.is_admin)
+    })
+    Promise.resolve()
+      .then(() => loadTenants())
+      .then((r) => {
+        if (live && (r.status === 'ok' || r.status === 'stale')) setWorkspaces(r.data.tenants.length)
+      })
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [])
+
+  // A REF, NOT `busy`: two presses inside one render both read `busy` as it
+  // was before the first, and each press bills a count.
+  const counting = useRef(false)
+  const go = () => {
+    // OVER TIME IS PRESSED FOR AN ADMIN ONLY: its read is platform scope, and
+    // for anyone else the route would only refuse it. Pressed first, so a
+    // press while the count is still in flight still reaches it; it refuses a
+    // press of its own while its read is in flight. When nobody could say who
+    // is asking, the count's own answer says (it carries the platform half
+    // only for an admin), and Over time is pressed when it lands.
+    const known = admin
+    if (known === true) setPresses((n) => n + 1)
+    if (counting.current) return
+    counting.current = true
+    setBusy(true)
+    // The platform half is asked for here and nowhere on a timer (archived issue 2149).
+    loadStats({ platform: true }).then((r) => {
+      counting.current = false
+      setRun(r)
+      setBusy(false)
+      if (known === null && (r.status === 'ok' || r.status === 'stale') && r.data.platform_tasks_by_state !== undefined) {
+        setPresses((n) => n + 1)
+      }
+      // Counted only on a read that actually produced counts. Incrementing on
+      // every settled promise would let a failure inflate a number the toolbar
+      // then presents as work that was billed.
+      if (r.status === 'ok' || r.status === 'stale') {
+        setRuns((n) => {
+          lastRun = { run: r, runs: n + 1 }
+          return n + 1
+        })
+      }
+    })
+  }
+
+  const data = run && (run.status === 'ok' || run.status === 'stale') ? run.data : null
+  // ONE BAR SCALE FOR BOTH CARDS (VQA V084). Each card scaled its bars to its
+  // own largest count, so side by side a tenant's 7 drew as long as the
+  // platform's 185. The scale is the largest count on the screen, so equal
+  // bars are equal counts in either card.
+  const scale = data ? Math.max(barMax(data.tasks_by_state), barMax(data.platform_tasks_by_state ?? {})) : 1
+  // A RUN'S OWN ANSWER WINS WHEN THERE IS ONE: it is the route that bills, and
+  // it says whether it counted the platform. Before any run, the session says.
+  const admin = data ? data.platform_tasks_by_state !== undefined : sessionAdmin
+  // DERIVED, both halves. "Twelve, or twenty-four as an admin" was a copy of
+  // the size of the frozen state enum, written in prose, with nothing checking
+  // it -- and the admin doubling was a clause the reader had to apply. Now the
+  // number on screen is the number this caller's next press will cost -- and
+  // when nobody could say who the caller is, BOTH numbers, because a single one
+  // would be a guess about the caller presented as a price.
+  const queries = runPrice(admin, overPrice)
+
+  // WHAT WAS READ, AND HOW LONG AGO -- in the head's actions, before the run. A run that came back with no counts is a failed query
+  // (the panel below says so), so it reads as a failed run here too, and
+  // neither kind of failure is counted as a run.
+  const failed = run !== null && (run.status === 'error' || run.status === 'empty')
+  // WHILE COUNTING THE LINE SAYS SO (VQA V029), and the button keeps its
+  // words: it said `Counting…` instead, a third of its width, and the head
+  // re-laid itself around the shorter control on every press.
+  const provenance = busy ? (
+    'counting…'
+  ) : failed ? (
+    'last run failed'
+  ) : runs === 0 ? (
+    'not counted yet'
+  ) : (
+    <>
+      {pluralise(runs, 'run')}
+      {data && ` · read ${timeAgo(data.generated_at, now)}`}
+    </>
+  )
+
+  return (
+    <>
+      {/* ONE HEAD SHAPE ACROSS ADMIN (AH-25, archived issue 138, owner ruling 2026-10-07).
+          This page drew a second one: the run beside the title, and what
+          was read on a line under it. The head is title left, actions right
+          now, as on every Screen route: what the last count found and how
+          old it is, then the run, both on the right. This page reads on a
+          button rather than on a cadence, so the run is its read control.
+
+          THE COST IS ON THE BUTTON (archived issue 138), not beside it: `Run the count ·
+          24 reads` is one control whose name says what pressing it spends,
+          so the price cannot wrap away from the press or be read as a fact
+          about the last run. While a run is in flight the button keeps its
+          words and is disabled, and the line before it says `counting…`
+          (VQA V029), so the head keeps its shape. */}
+      <PageHead title="Platform counts">
+        <span className="counts-prov">{provenance}</span>
+        {/* The canonical button (components.html A): primary before the
+            first run, plain for a re-run, disabled while counting. */}
+        <Button
+          className="counts-run"
+          kind={run === null ? 'primary' : 'secondary'}
+          onClick={go}
+          // Disabled, not `busy`: `busy` swaps in a spinner and widens the
+          // control; the cards below carry `aria-busy` for the run.
+          //
+          // `aria-disabled`, NOT `disabled` (a11y-keyboard-001, visual QA run
+          // 3): a focused button that turns `disabled` is blurred to <body>,
+          // so the press threw a keyboard user back to the top of the page.
+          // It draws the same (`.c-btn[aria-disabled='true']`, components.css)
+          // and `go` refuses a press while a count is in flight.
+          aria-disabled={busy || undefined}
+        >
+          {run === null ? 'Run the count' : 'Run it again'}
+          {' · '}
+          <span className="counts-cost">{queries}</span>
+        </Button>
+      </PageHead>
+
+      {/* OVER TIME (COUNTS-PAGE, archived issue 2149): how many agents ran per day, week
+          or month, for how long and at what estimated cost -- the view owner
+          picked (counts-a.html F2 to F6). FIRST, then the state counts, then
+          the ticks: mock-up F1's order (owner, 2026-10-25, COUNTS-ONE-RUN). It
+          is drawn whether or not the count has run, and draws no Run of its
+          own: the head's one Run reads it (`run`), priced with its half
+          (`onPrice`). */}
+      <PlatformOverTime workspaces={workspaces} run={presses} onPrice={setOverPrice} />
+      {/* RIGHT NOW (F1): the live counts this page always had, read by the
+          same Run. A snapshot, so it is a section of its own, under the span
+          above rather than part of it. */}
+      <section className="counts-now" aria-labelledby="counts-now-title">
+        <h2 className="sc-h2" id="counts-now-title">Right now: agents in each state</h2>
+        <p className="sb-note">A snapshot, read by the same Run{runParts(admin, overPrice)}.</p>
+        {/* BOTH CARDS BEFORE THE FIRST RUN (archived issue 135), each with `not run` in its
+            figure slot: the page has its shape before the press, and an empty
+            page is not mistaken for a platform with nothing on it. They stay
+            while the first run is in flight (VQA V029) -- removing them on the
+            press left the page blank until the answer came -- marked busy, and
+            are replaced by the result, so a result never shares the screen
+            with the placeholder it replaces. */}
+        {run === null && (
+          <div className="ctl-cards counts-scopes" aria-busy={busy || undefined}>
+            <NotRun title="This tenant" queries={STATE_COUNT} counting={busy} />
+            <NotRun title="Every tenant" queries={admin === false ? null : STATE_COUNT} counting={busy} />
+          </div>
+        )}
+
+        {run?.status === 'error' && <Failed error={run.error} />}
+
+        {run?.status === 'empty' && (
+          <div className="ctl-empty is-failed">
+            <span
+              className="ctl-mark is-unread"
+              aria-label="The read succeeded and returned no counts at all, which should be impossible. Treat it as a failed query rather than an idle platform."
+            >
+              not read
+            </span>
+            <h3>No counts came back</h3>
+            <p>Treat this as a failed query.</p>
+          </div>
+        )}
+
+        {data && (
+          <div className="ctl-cards counts-scopes" aria-busy={busy || undefined}>
+            <Scope title="This tenant" subtitle={data.tenant_id} counts={data.tasks_by_state} scale={scale} />
+            {data.platform_tasks_by_state !== undefined ? (
+              <Scope
+                title="Every tenant"
+                subtitle="all tenants"
+                counts={data.platform_tasks_by_state}
+                scale={scale}
+              />
+            ) : (
+              <AdminGated />
+            )}
+          </div>
+        )}
+      </section>
+      {/* THE PLATFORM TICKS (§8.4), moved here from Admin › Schedules
+          (SCHED-ONE-PAGE, 2026-10-13). Static: nothing here is billed or
+          read, so it is drawn whether or not the count has run. */}
+      <section className="counts-ticks">
+        <h2 className="sc-h2">Platform ticks</h2>
+        <p className="sb-note">The platform’s own machinery. No tenant manages these; they are set in Terraform, and listed here so every recurring thing is in one place.</p>
+        <PlatformTicks />
+      </section>
+      {/* THE FOOTER EVERY SIBLING PAGE HAS (QA G5-23): what a run returns,
+          and why a state with no row is not a zero. `.counts-help`
+          (styles/admin.css) rules the two links apart (QA-042). */}
+      <div className="counts-help">
+        <HelpLinks topics={COUNTS_TOPICS} />
+      </div>
+    </>
+  )
+}
+
+const COUNTS_TOPICS: readonly TopicId[] = ['platform-counts', 'absent-vs-zero']
+
+/**
+ * WHAT THE ONE RUN COSTS: the state counts plus the over-time read, summed,
+ * as one figure on the button (mock-up F1: `Run · ~584 reads`).
+ *
+ *   * A caller known not to be an admin reads only their own tenant's counts:
+ *     the over-time read is platform scope, so their Run does not ask for it.
+ *   * An admin's is both scopes' counts plus Over time's read, `~` because
+ *     that half is an estimate (platformTimeApi.ts `readEstimate`). While the
+ *     roster is not known it is per workspace, said as such, never a guess at
+ *     the platform's size presented as a total.
+ *   * Nobody could say who is asking: both callers' prices, low to high.
+ */
+function runPrice(admin: boolean | null, over: OverTimePrice | null): string {
+  if (admin === false || over === null) {
+    const counts = admin === null ? `${STATE_COUNT}–${STATE_COUNT * 2}` : String(STATE_COUNT * (admin ? 2 : 1))
+    return `${counts} reads`
+  }
+  const low = admin === null ? `${STATE_COUNT}–` : ''
+  // The per-workspace part is the admin's alone: "12–24 reads + ~178 a
+  // workspace" read as if the 12 paid it too (review, 2026-10-25).
+  if (over.total === null) {
+    const admins = `${STATE_COUNT * 2} reads + ~${over.perWorkspace} a workspace`
+    return admin === null ? `${STATE_COUNT} reads, or ${admins}` : admins
+  }
+  return `${low}~${STATE_COUNT * 2 + over.total} reads`
+}
+
+/**
+ * WHAT THE BUTTON'S TOTAL IS MADE OF (visual QA pass 1, admin-shell-15). An
+ * admin's button said `~562 reads` and Over time's note `The price is ~538
+ * reads`, and nothing added the 24 between them up: the two snapshots here,
+ * one count per state for the workspace and one for the platform. Right
+ * now's note says so, in the button's terms: an admin's when nobody could say
+ * who is asking, per workspace while the roster is not known. A Run that
+ * reads the snapshot alone has nothing to add up, and the note stays short.
+ */
+function runParts(admin: boolean | null, over: OverTimePrice | null): string {
+  if (admin === false || over === null) return ''
+  const snapshots = `2 × ${STATE_COUNT}`
+  if (over.total === null) return `: ${snapshots} of its reads, the rest Over time’s ~${over.perWorkspace} a workspace`
+  return `: ${snapshots} reads, which with Over time’s ~${over.total} make ${admin === null ? 'an admin’s' : 'its'} ~${STATE_COUNT * 2 + over.total}`
+}
+
+/**
+ * How many `count()` queries one run costs, for one scope.
+ *
+ * DERIVED, because the alternative is a number in prose that nothing
+ * checks. `check-contract-parity.sh` covers shell and jq and does not read
+ * TypeScript, so "twelve" here would have outlived the twelfth state.
+ */
+const STATE_COUNT = REAL_STATES.length + NEVER_WRITTEN.size
+
+/**
+ * One scope's card before anything has been counted. `queries` is what this
+ * card's half of a run costs; null where the caller is known not to be an
+ * admin, whose run does not read this scope at all.
+ *
+ * `counting`: the first run is in flight. THE CARD SAYS SO, AS THE HEAD DOES
+ * (VQA V192): while the head read `counting…`, both cards still read `not run
+ * yet`, which the press had just made untrue. A card this run will not read
+ * -- a non-admin's platform scope -- still says why it has no figure.
+ */
+function NotRun({ title, queries, counting }: { title: string; queries: number | null; counting: boolean }) {
+  return (
+    <section className="ctl-card counts-notrun">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">{title}</h2>
+        {queries === null && <span className="ctl-card-note">admin only</span>}
+      </div>
+      <div className="ctl-card-body">
+        {/* NOT MEASURED, NOT A TASK STATE (archived issue 503). This drew the QUEUED ring,
+            which is a task-state mark: a card with no count in it read as a
+            card of queued work. Nothing has been read, so it is the neutral
+            `not measured` mark of the six kinds of nothing (primitives.tsx
+            `Mark`), hatched and greyscale-safe -- not `not read`, which is a
+            read that failed -- and the words say why there is no figure. */}
+        {counting && queries !== null ? (
+          // The `reading` mark of a read in flight, not `not measured`.
+          <Mark kind="pending" say="Counting now. Nothing has come back yet, so there is no figure to show." />
+        ) : (
+          <Mark
+            kind="absent"
+            say="Not counted yet. Nothing has been read, so there is no figure to show; this says nothing about the platform."
+          />
+        )}
+        <span className="counts-notrun-words">
+          {queries === null
+            ? 'not run yet. Only an admin’s run counts every tenant.'
+            : counting
+              ? `counting now. One exact count per state, ${queries} reads.`
+              : `not run yet. One exact count per state, ${queries} reads.`}
+        </span>
+      </div>
+    </section>
+  )
+}
+
+/**
+ * The platform block a non-admin cannot have.
+ *
+ * ABSENT, NOT ZERO, AND NOT BROKEN. It keeps the card, the title and the
+ * figure slot -- a panel that simply vanished would be indistinguishable from
+ * one that was never going to be there -- and the figure slot holds the em
+ * dash with the blue `admin only` mark beside it. Blue and solid, never red
+ * and never dashed: a non-admin genuinely cannot read /v1/admin/*, and
+ * painting that as a failure tells someone their platform is down when it is
+ * not.
+ */
+function AdminGated() {
+  return (
+    <section className="ctl-card">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">Every tenant</h2>
+        <span className="ctl-card-note">not entitled</span>
+      </div>
+      <div className="ctl-card-body">
+        <p className="counts-total">
+          <b
+            className="ctl-figure is-absent"
+            aria-label="These figures are absent from this response rather than zero. Only an admin may read the platform-wide counts; nothing failed."
+          >
+            <i className="ctl-em">—</i>
+          </b>
+          <span className="ctl-mark is-admin">admin only</span>
+          {/* NO `?` (B7.4). The figure's own accessible name beside it is
+              `admin-gate-not-failure` spelled out -- absent rather than zero,
+              nothing failed -- and the `is-admin` mark is the fourth mark this
+              console draws precisely so the case does not need a sentence. */}
+        </p>
+      </div>
+    </section>
+  )
+}
+
+function Failed({ error }: { error: ApiError }) {
+  if (error.kind === 'admin_required') {
+    return (
+      <div className="ctl-empty is-admin">
+        <span
+          className="ctl-mark is-admin"
+          aria-label="You are not in an admin group. Nothing failed, and this says nothing about the platform."
+        >
+          admin only
+        </span>
+        <h3>Not an admin</h3>
+        <p>Nothing failed.</p>
+      </div>
+    )
+  }
+  return (
+    // NO NUMBER ANYWHERE ON A FAILURE. A zero here is the most reassuring
+    // thing on the screen and it would be a guess. The sentence that used to
+    // say so -- "this says nothing about how much work the platform is
+    // carrying" -- is the mark's accessible name: the mark is the visible,
+    // greyscale-safe anchor and the words ride on it.
+    <div className="ctl-empty is-failed">
+      <span
+        className="ctl-mark is-unread"
+        aria-label="No counts are shown, because none arrived. This says nothing about how much work the platform is carrying."
+      >
+        not read
+      </span>
+      <h3>{errorHeading(error)}</h3>
+      <p>
+        {error.code ?? 'error'} — {error.message}
+      </p>
+    </div>
+  )
+}
+
+/** The largest count one scope carries over the written states, and never under 1 (a scale of 0 divides by zero). */
+function barMax(counts: Record<string, number>): number {
+  return Math.max(1, ...REAL_STATES.map((s) => (typeof counts[s] === 'number' ? counts[s] : 0)))
+}
+
+function Scope({
+  title,
+  subtitle,
+  counts,
+  scale,
+}: {
+  title: string
+  subtitle: string
+  counts: Record<string, number>
+  /** The count a full bar stands for: the largest on the screen, shared by both cards. */
+  scale: number
+}) {
+  const real = REAL_STATES.map((s) => ({ state: s, n: counts[s] }))
+  const missing = real.filter((r) => typeof r.n !== 'number').map((r) => r.state)
+  const max = Math.max(1, scale)
+
+  // Only summed when every state arrived. A total over a partial response is
+  // a wrong number wearing the clothes of a right one.
+  const total = missing.length === 0 ? real.reduce((a, r) => a + (r.n as number), 0) : null
+  const arrived = REAL_STATES.length - missing.length
+
+  return (
+    <section className="ctl-card counts-card">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">{title}</h2>
+        {/* The qualifier slot carries the COVERAGE when the response was
+            partial, because that is the fact that changes how every figure
+            below should be read, and the scope otherwise. */}
+        <span className="ctl-card-note">
+          {total === null ? `${arrived} of ${REAL_STATES.length} states` : subtitle}
+        </span>
+      </div>
+
+      <div className="ctl-card-body">
+        {/* THE TOTAL'S SLOT IS ALWAYS DRAWN. A card that simply omitted the
+            total when it could not compute one would look like a card that
+            never had a total. The hole is drawn as a hole: the em dash at the
+            figure step's absent treatment, with the `partial` mark -- dashed
+            on one side only, the side the missing part would have been on --
+            beside it. The reader never has to notice something is missing;
+            the missing thing is on screen. */}
+        <p className="counts-total">
+          <b
+            className={`ctl-figure${total === null ? ' is-absent' : ''}`}
+            aria-label={
+              total === null
+                ? `No total is shown. ${missing.length} of the ${REAL_STATES.length} state counts did not come back (${missing.join(', ')}), and a sum over a partial response is a wrong number wearing the clothes of a right one.`
+                : `${total} agents across the ${REAL_STATES.length} states that are written.`
+            }
+          >
+            {total === null ? <i className="ctl-em">—</i> : total}
+            {total !== null && <span className="ctl-figure-unit">agents</span>}
+          </b>
+          {total === null && <span className="ctl-mark is-partial">partial</span>}
+          {/* NO `?` (B7.4). The figure's accessible name above is longer and
+              more specific than `withheld-total`: it names HOW MANY of the
+              state counts did not come back and WHICH ones, for this response.
+              A glyph beside it opened the general version of a sentence the
+              figure already carries with the particulars filled in. */}
+        </p>
+
+        {real.map(({ state, n }) => (
+          <div className="split-row" key={state}>
+            <span className="sr-name">{state}</span>
+            {/* A STATE THE RESPONSE DID NOT CARRY IS NOT A ZERO (§B20). This
+                drew a zero-width fill on a plain track for it, which is the one
+                mark the axis now reserves for a MEASURED zero -- so an absent
+                count would have been promoted to a measurement by the fix.
+                Hatched instead, with no axis, matching the em dash beside it. */}
+            <span className={`sr-bar${typeof n === 'number' ? '' : ' is-unknown'}`}>
+              <i style={{ width: `${((typeof n === 'number' ? n : 0) / max) * 100}%` }} />
+            </span>
+            <span className="sr-n">
+              {typeof n === 'number' ? (
+                n
+              ) : (
+                <i
+                  className="ctl-em"
+                  aria-label={`The ${state} count did not come back. That is an absence, not a zero.`}
+                >
+                  —
+                </i>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      {/* The states that can never be written, named rather than explained.
+          A bucket that can only ever read zero teaches "nothing is wrong"
+          rather than "this cannot happen", so they are not drawn above -- and
+          naming them here is what stops their absence from the histogram
+          looking like an oversight. Derived from the contract sets, so the
+          list cannot drift if a state is added. */}
+      {/* THIS SCREEN'S ONE `?` (B7.4). It was seven; six of them opened a card
+          restating an accessible name already attached to the figure beside
+          them, twice over in two cases. This one is different in kind: the line
+          under it is a bare list of three state names with no figure, no mark
+          and no context, and nothing on this screen says why a state the
+          contract defines is absent from a histogram of the contract's states.
+          A reader who does not open it is left with an unexplained list, which
+          is the only place on this screen where that is true.
+          `honesty.counts.test.tsx` pins it to this foot.
+
+          AFTER THE LABEL, NEVER AFTER A VALUE (AH-24). It trailed the list --
+          `never written: A · B · C ?` -- where it read as a footnote on the
+          last state name. It follows `never written:` now, before the names. */}
+      <p className="ctl-card-foot">
+        never written:
+        <HelpCard topic="states" /> {Array.from(NEVER_WRITTEN).join(' · ')}
+      </p>
+    </section>
+  )
+}

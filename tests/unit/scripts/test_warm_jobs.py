@@ -1,0 +1,396 @@
+"""`scripts/warm-jobs.sh` runs one no-op execution of each worker job after a release (archived issue 363).
+
+WHY IT EXISTS. Measured 2026-10-07 on archived issue 363: the first execution of each Cloud
+Run job after a new image digest spends 30-59 s importing the image
+(ContainerReady "Imported container image in Xs"); every later start pays
+1-3 s. Owner decision the same day: a post-deploy warm run per Cloud Run job
+absorbs that import, so the first tenant task after a release does not.
+
+The properties asserted here, against the REAL script with a fake `gcloud` on
+PATH serving a job listing:
+
+  * it executes exactly the per-tenant worker jobs -- terraform-managed, named
+    `swarm-job-*`, carrying a `swarm-tenant` label -- and nothing else in the
+    listing (not swarm-verify, not a job something else created);
+  * every execution passes `--args=--self-test`, the worker's no-op mode, so
+    no task is leased and no Firestore task state is touched, and `--wait`;
+  * a deny-listed name (the project's never-touch list; the placeholder one here) is refused and
+    never executed, whether it was named on the command line or listed;
+  * a name outside the worker-job prefix is refused the same way;
+  * a failed warm execution, or a listing that failed, is a WARNING and the
+    script still exits 0: a cold start is a slower first task, not a broken
+    release;
+  * it prints how many jobs it visited, so an empty run cannot read as a pass;
+  * (observer proposal H, 2026-10-08) nothing is warmed when --previous names
+    a release whose three runner digests equal this one's, and a listed job
+    that already ran its current digest successfully is skipped by name -- a
+    job new to this release is still warmed;
+  * (archived issue 888 box 94, measured 2026-10-27) that skip counts any successful
+    execution on the digest, however old and whether a warm run or a tenant
+    task, because the cached import was measured to hold across every
+    same-digest idle gap that exists; the script's header cites that
+    measurement (docs/ci-warm-jobs-measurement.md) instead of calling the
+    premise unmeasured.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[3]
+SCRIPT = REPO / "scripts" / "warm-jobs.sh"
+PROJECT = "swarm-test-project"
+_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_P = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_P)
+#: A never-touch entry of the placeholder list: another team's name.
+PEER_NAME = _P.PEER["cluster"]
+
+pytestmark = pytest.mark.skipif(
+    shutil.which("jq") is None or shutil.which("bash") is None,
+    reason="warm-jobs.sh needs bash and jq",
+)
+
+FAKE_GCLOUD = r'''#!{python}
+import json, os, sys
+
+args = sys.argv[1:]
+with open(os.environ["FAKE_EVENTS"], "a") as fh:
+    fh.write(json.dumps(args) + "\n")
+if args[:3] == ["run", "jobs", "list"]:
+    if os.environ.get("FAKE_LIST_FAIL"):
+        print("ERROR: (gcloud.run.jobs.list) PERMISSION_DENIED: run.jobs.list", file=sys.stderr)
+        sys.exit(1)
+    print(open(os.environ["FAKE_LISTING"]).read())
+    sys.exit(0)
+if args[:4] == ["run", "jobs", "executions", "list"]:
+    job = args[args.index("--job") + 1]
+    executions = json.load(open(os.environ["FAKE_EXECUTIONS"])) if os.environ.get("FAKE_EXECUTIONS") else None
+    if executions is None:
+        print("fake gcloud: no executions served", file=sys.stderr)
+        sys.exit(2)
+    print(json.dumps(executions.get(job, [])))
+    sys.exit(0)
+if args[:3] == ["run", "jobs", "execute"]:
+    job = args[3]
+    if job in os.environ.get("FAKE_FAIL_JOBS", "").split(","):
+        print(f"ERROR: (gcloud.run.jobs.execute) The execution failed. "
+              f"gcloud run jobs executions describe {job}-abcde", file=sys.stderr)
+        sys.exit(1)
+    print(f"Execution [{job}-xyz12] has successfully completed.", file=sys.stderr)
+    sys.exit(0)
+print("fake gcloud: unexpected call " + " ".join(args), file=sys.stderr)
+sys.exit(2)
+'''
+
+
+def _job(name: str, *, managed: str = "swarm-terraform", tenant: str | None = "acme",
+         image: str | None = None) -> dict:
+    labels = {"managed-by": managed}
+    if tenant is not None:
+        labels["swarm-tenant"] = tenant
+    job = {"metadata": {"name": name, "labels": labels}}
+    if image:
+        # The shape `gcloud run jobs list --format=json` gives a v1 Job.
+        job["spec"] = {"template": {"spec": {"template": {"spec": {"containers": [{"image": image}]}}}}}
+    return job
+
+
+LISTING = [
+    _job("swarm-job-acme-mock"),
+    _job("swarm-job-acme-claude-code"),
+    _job("swarm-job-globex-mock", tenant="globex"),
+    # Terraform's verification job: not a worker, no tenant.
+    _job("swarm-verify", tenant=None),
+    # Created by something other than terraform.
+    _job("swarm-job-acme-adhoc", managed="swarm-scheduler"),
+    # Terraform-managed but no tenant label: not a per-tenant worker job.
+    _job("swarm-job-orphan", tenant=None),
+    # Another team's name, even dressed as ours.
+    _job("default"),
+    _job(PEER_NAME),
+]
+
+
+@pytest.fixture
+def world(tmp_path: Path) -> dict:
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    gcloud = bindir / "gcloud"
+    gcloud.write_text(FAKE_GCLOUD.replace("{python}", sys.executable))
+    gcloud.chmod(0o755)
+    (tmp_path / "listing.json").write_text(json.dumps(LISTING))
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("K_SERVICE", "CLOUD_RUN_JOB", "SWARM_IMPERSONATE_SA", "SWARM_NAME_PREFIX")}
+    env.update({
+        "PATH": f"{bindir}{os.pathsep}{env['PATH']}",
+        "FAKE_EVENTS": str(tmp_path / "events.jsonl"),
+        "FAKE_LISTING": str(tmp_path / "listing.json"),
+        "SWARM_ENV_FILE": str(tmp_path / "no.env"),
+        "PROJECT_ID": PROJECT,
+        "REGION": "us-central1",
+        "NO_COLOR": "1",
+    })
+    return {"env": env, "tmp": tmp_path}
+
+
+def _run(world: dict, *args: str, **extra: str) -> subprocess.CompletedProcess:
+    env = dict(world["env"], **extra)
+    return subprocess.run(["bash", str(SCRIPT), *args], capture_output=True, text=True,
+                          env=env, timeout=120, check=False)
+
+
+def _executed(world: dict) -> list[list[str]]:
+    path = world["tmp"] / "events.jsonl"
+    if not path.exists():
+        return []
+    calls = [json.loads(line) for line in path.read_text().splitlines()]
+    return [c for c in calls if c[:3] == ["run", "jobs", "execute"]]
+
+
+def test_warms_each_per_tenant_worker_job_once_with_the_self_test(world):
+    proc = _run(world)
+    assert proc.returncode == 0, proc.stderr
+    calls = _executed(world)
+    jobs = sorted(c[3] for c in calls)
+    assert jobs == ["swarm-job-acme-claude-code", "swarm-job-acme-mock", "swarm-job-globex-mock"]
+    for call in calls:
+        assert "--args=--self-test" in call
+        assert "--wait" in call
+        assert call[call.index("--project") + 1] == PROJECT
+        assert call[call.index("--region") + 1] == "us-central1"
+    assert "3 of 3" in proc.stderr
+
+
+def test_a_deny_listed_name_on_the_command_line_is_refused_and_never_executed(world):
+    # The deny-list is keyed by project (the Day One project-defaults lane): it is the list of
+    # the project named, where PEER_NAME is another team's. Elsewhere the
+    # job-prefix rule below still refuses the name.
+    proc = _run(world, PEER_NAME, "swarm-job-acme-mock", PROJECT_ID=_P.SHARED_PROJECT)
+    assert proc.returncode != 0
+    assert PEER_NAME in proc.stderr
+    assert "deny-list" in proc.stderr
+    assert [c[3] for c in _executed(world)] == ["swarm-job-acme-mock"]
+
+
+def test_a_deny_listed_name_in_the_listing_is_never_executed(world):
+    (world["tmp"] / "listing.json").write_text(json.dumps([
+        _job("swarm-job-acme-mock"),
+        _job("default"),
+    ]))
+    proc = _run(world)
+    executed = [c[3] for c in _executed(world)]
+    assert "default" not in executed
+    assert executed == ["swarm-job-acme-mock"]
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_a_name_outside_the_worker_job_prefix_is_refused(world):
+    proc = _run(world, "swarm-verify")
+    assert proc.returncode != 0
+    assert "swarm-verify" in proc.stderr
+    assert _executed(world) == []
+
+
+def test_a_failed_warm_execution_is_a_warning_not_a_failed_release(world):
+    proc = _run(world, FAKE_FAIL_JOBS="swarm-job-acme-claude-code")
+    assert proc.returncode == 0, proc.stderr
+    assert "warn" in proc.stderr
+    assert "swarm-job-acme-claude-code" in proc.stderr
+    assert "2 of 3" in proc.stderr
+    # The others were still warmed.
+    assert len(_executed(world)) == 3
+
+
+def test_a_listing_that_failed_is_a_warning_and_warms_nothing(world):
+    proc = _run(world, FAKE_LIST_FAIL="1")
+    assert proc.returncode == 0, proc.stderr
+    assert "warn" in proc.stderr
+    assert "could not list" in proc.stderr
+    assert _executed(world) == []
+
+
+def test_no_worker_job_listed_says_so_rather_than_reading_as_a_pass(world):
+    (world["tmp"] / "listing.json").write_text(json.dumps([_job("swarm-verify", tenant=None)]))
+    proc = _run(world)
+    assert proc.returncode == 0, proc.stderr
+    assert "no per-tenant worker job" in proc.stderr
+    assert _executed(world) == []
+
+
+def test_parallelism_bounds_each_batch(world):
+    proc = _run(world, WARM_PARALLELISM="1")
+    assert proc.returncode == 0, proc.stderr
+    assert len(_executed(world)) == 3
+
+
+def test_a_parallelism_that_is_not_a_positive_integer_is_refused(world):
+    proc = _run(world, WARM_PARALLELISM="0")
+    assert proc.returncode != 0
+    assert "WARM_PARALLELISM" in proc.stderr
+    assert _executed(world) == []
+
+
+def test_the_release_warms_after_verifying_the_digests_and_never_fails_on_it():
+    from .test_release_reuses_ci_images import _workflow
+
+    # Composite actions flattened into the steps they run (the verify step is
+    # .github/actions/release-verify).
+    workflow = _workflow("release.yml")
+    steps = workflow["jobs"]["deploy"]["steps"]
+    runs = [str(s.get("run", "")) for s in steps]
+    warm = [i for i, r in enumerate(runs) if "scripts/warm-jobs.sh" in r]
+    assert len(warm) == 1, "release.yml's deploy job must run scripts/warm-jobs.sh exactly once"
+    index = warm[0]
+    verify = next(i for i, s in enumerate(steps) if s.get("id") == "verify")
+    smoke = next(i for i, r in enumerate(runs) if "verify-remote.sh smoke-test" in r)
+    assert verify < index < smoke
+    step = steps[index]
+    assert step.get("continue-on-error") is True
+    assert "steps.verify.outcome == 'success'" in step["if"]
+    assert "!cancelled()" in step["if"]
+    # On dev the warm run is accept.yml's (owner decision 2026-10-08, cut A):
+    # here it is prod's alone, and accept.yml warms before it smokes and
+    # before any acceptance group (test_release_acceptance_job.py).
+    assert "github.event.inputs.environment == 'prod'" in step["if"]
+    accept = _workflow("accept.yml")["jobs"]
+    smoke = [str(s.get("run", "")) for s in accept["smoke"]["steps"]]
+    assert sum("scripts/warm-jobs.sh" in r for r in smoke) == 1
+    assert "smoke" in accept["acceptance"]["needs"] and "smoke" in accept["acceptance-2"]["needs"]
+
+
+# ---------------------------------------------------------------------------
+# Nothing to warm when the runner digests did not change (observer proposal H).
+# ---------------------------------------------------------------------------
+# Every image a worker job can run, agent-runtime-lightpanda since
+# LIGHTPANDA-BUILD-SCRIPTS (docs/design/lightpanda-runtime.md 6.4).
+RUNNERS = ["agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer", "agent-runtime-lightpanda"]
+WORKER_REPO = "us-central1-docker.pkg.dev/p/swarm-images/agent-runtime-base"
+
+
+def _digest(seed: str) -> str:
+    import hashlib
+
+    return "sha256:" + hashlib.sha256(seed.encode()).hexdigest()
+
+
+def _deployed(path: Path, digests: dict[str, str]) -> Path:
+    path.write_text(json.dumps({"images": [
+        {"name": n, "digest": d} for n, d in {**{"swarm-api": _digest("api")}, **digests}.items()
+    ]}))
+    return path
+
+
+def test_unchanged_runner_digests_against_the_previous_release_warm_nothing(world):
+    same = {n: _digest(n) for n in RUNNERS}
+    current = _deployed(world["tmp"] / "now.json", same)
+    before = _deployed(world["tmp"] / "before.json", same)
+    proc = _run(world, "--previous", str(before), "--manifest", str(current))
+    assert proc.returncode == 0, proc.stderr
+    assert _executed(world) == []
+    assert "skipped warming" in proc.stderr and "same digests" in proc.stderr, proc.stderr
+
+
+def test_one_changed_runner_digest_warms_every_job(world):
+    current = _deployed(world["tmp"] / "now.json", {n: _digest(n) for n in RUNNERS})
+    before = _deployed(world["tmp"] / "before.json",
+                       {**{n: _digest(n) for n in RUNNERS}, "agent-runtime-browser": _digest("older")})
+    proc = _run(world, "--previous", str(before), "--manifest", str(current))
+    assert proc.returncode == 0, proc.stderr
+    assert len(_executed(world)) == 3
+    assert "3 of 4 runner image digest(s) unchanged" in proc.stderr, proc.stderr
+
+
+def test_a_previous_manifest_that_is_missing_warms_every_job(world):
+    proc = _run(world, "--previous", str(world["tmp"] / "absent.json"),
+                "--manifest", str(world["tmp"] / "also-absent.json"))
+    assert proc.returncode == 0, proc.stderr
+    assert len(_executed(world)) == 3
+    assert "cannot compare" in proc.stderr
+
+
+def _execution(image: str, succeeded: int = 1) -> dict:
+    return {"spec": {"template": {"spec": {"containers": [{"image": image}]}}},
+            "status": {"succeededCount": succeeded}}
+
+
+def test_a_job_that_already_ran_its_current_digest_is_skipped_and_a_new_one_is_warmed(world):
+    current = f"{WORKER_REPO}@{_digest('now')}"
+    (world["tmp"] / "listing.json").write_text(json.dumps([
+        # Warmed by the previous release on the digest it still runs.
+        _job("swarm-job-acme-mock", image=current),
+        # Its last execution ran the digest before this release's.
+        _job("swarm-job-acme-claude-code", image=current),
+        # New in this release: never executed.
+        _job("swarm-job-globex-mock", tenant="globex", image=current),
+        # Ran this digest, but the execution failed: the import may not be paid.
+        _job("swarm-job-initech-mock", tenant="initech", image=current),
+    ]))
+    (world["tmp"] / "executions.json").write_text(json.dumps({
+        "swarm-job-acme-mock": [_execution(current)],
+        "swarm-job-acme-claude-code": [_execution(f"{WORKER_REPO}@{_digest('before')}")],
+        "swarm-job-initech-mock": [_execution(current, succeeded=0)],
+    }))
+    proc = _run(world, FAKE_EXECUTIONS=str(world["tmp"] / "executions.json"))
+    assert proc.returncode == 0, proc.stderr
+    assert sorted(c[3] for c in _executed(world)) == [
+        "swarm-job-acme-claude-code", "swarm-job-globex-mock", "swarm-job-initech-mock"]
+    assert "skipped swarm-job-acme-mock" in proc.stderr
+    assert "3 of 3" in proc.stderr and "skipped 1" in proc.stderr, proc.stderr
+
+
+def test_a_job_pinned_by_tag_is_warmed_whatever_ran_before(world):
+    tagged = f"{WORKER_REPO}:dev"
+    (world["tmp"] / "listing.json").write_text(json.dumps([_job("swarm-job-acme-mock", image=tagged)]))
+    (world["tmp"] / "executions.json").write_text(json.dumps({"swarm-job-acme-mock": [_execution(tagged)]}))
+    proc = _run(world, FAKE_EXECUTIONS=str(world["tmp"] / "executions.json"))
+    assert proc.returncode == 0, proc.stderr
+    assert [c[3] for c in _executed(world)] == ["swarm-job-acme-mock"]
+
+
+def test_every_job_already_on_its_digest_says_it_skipped_warming(world):
+    current = f"{WORKER_REPO}@{_digest('now')}"
+    (world["tmp"] / "listing.json").write_text(json.dumps([_job("swarm-job-acme-mock", image=current)]))
+    (world["tmp"] / "executions.json").write_text(json.dumps({"swarm-job-acme-mock": [_execution(current)]}))
+    proc = _run(world, FAKE_EXECUTIONS=str(world["tmp"] / "executions.json"))
+    assert proc.returncode == 0, proc.stderr
+    assert _executed(world) == []
+    assert "skipped warming: all 1 worker job(s)" in proc.stderr, proc.stderr
+
+
+def test_an_old_tenant_task_on_the_same_digest_still_skips_the_job(world):
+    """Measured 2026-10-27 (docs/ci-warm-jobs-measurement.md): after a 1-13.7 h
+    same-digest idle gap every timed import read 1.0-2.5 s, never the 30-59 s
+    of a fresh digest, and no runner digest has ever idled a day. So an old
+    successful tenant task on the digest counts as its import paid: no age
+    bound, no warm-runs-only rule."""
+    current = f"{WORKER_REPO}@{_digest('now')}"
+    (world["tmp"] / "listing.json").write_text(json.dumps([_job("swarm-job-acme-claude-code", image=current)]))
+    old_agent_run = _execution(current)
+    old_agent_run["metadata"] = {"creationTimestamp": "2026-10-03T20:35:05.123456Z"}
+    old_agent_run["spec"]["template"]["spec"]["containers"][0]["args"] = ["--task"]
+    (world["tmp"] / "executions.json").write_text(json.dumps({"swarm-job-acme-claude-code": [old_agent_run]}))
+    proc = _run(world, FAKE_EXECUTIONS=str(world["tmp"] / "executions.json"))
+    assert proc.returncode == 0, proc.stderr
+    assert _executed(world) == []
+    assert "skipped swarm-job-acme-claude-code" in proc.stderr, proc.stderr
+
+
+def test_the_skip_rule_cites_its_measurement_and_no_longer_calls_it_unmeasured():
+    header = SCRIPT.read_text().split("\nset -euo pipefail", 1)[0]
+    assert "UNMEASURED" not in header, "the skip's premise was measured on 2026-10-27 (#888)"
+    assert "docs/ci-warm-jobs-measurement.md" in header
+    doc = (REPO / "docs" / "ci-warm-jobs-measurement.md").read_text()
+    # The read time, the longest same-digest gap on a runner, and what it read.
+    assert "2026-10-27" in doc and "05:52" in doc and "06:12" in doc
+    assert "13.7 h" in doc and "1.00-2.49 s" in doc
+    # The gap nobody could measure is stated as such, not glossed.
+    assert "24 h or more" in doc

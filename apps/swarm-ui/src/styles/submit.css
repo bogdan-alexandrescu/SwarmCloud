@@ -1,0 +1,585 @@
+/* ==========================================================================
+   THE SUBMIT PAGES -- submit.html, the owner's picks of 2026-10-01:
+   the chooser (M2), the one-page task form (F1), the stacked workflow form
+   (G1). Imported by SubmitChooser.tsx, Submit.tsx and SubmitWorkflow.tsx.
+   ==========================================================================
+
+   WHY A SHEET OF ITS OWN. The seven UI lanes of 2026-10-02 run at once, and
+   each section's rules in one 12,000-line sheet would be seven lanes editing
+   one file. The shared parts -- the field editor, the send panel's frame, the
+   dispatch control -- stay in styles.css; what the picked frames changed
+   lives here.
+
+   TO components.html A (picked 2026-10-02) until lane U0's canonical set
+   lands: 32px controls, the 3:1 control border (`--line`),
+   the accent and its soft fill (`--sk-ac`, `--sk-acs`). THE RADII ARE THE
+   LIVE TOKENS (`--radius` for a card, `--ctl-radius-sm` for a control), not
+   A's literal 12 and 8: spacing.test.tsx holds every rendered corner to the
+   scale on main (0/2/6/10/14/999), and U0 is moving that scale to A's
+   4/8/9/12/14/999 in parallel -- through the tokens, which these follow.
+   Every class here is prefixed `sb-` (or extends an `sbf-` one) so a later
+   pass can swap it for U0's component by name.
+
+   TYPE: the 12px floor, sentence case, no letter-spacing (PICKS.md).
+
+   LOADED BEFORE styles.css (main.tsx imports App, and so these, first), so a
+   rule here that restyles an `sbf-` element is written one class more
+   specific than the styles.css rule it meets. */
+
+/* ---- a step of either form: a card, its ordinal an accent disc ---------- */
+.sbf-build > .sb-step {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+/* NOT REACHED YET: steps 2 and 3 before a runner is chosen (F1 frame 3).
+   Dimmed, never disabled -- what it holds stays readable and focusable.
+   THE CONTROLS ARE DIMMED, NOT THE STEP (QA G4-26, 2026-10-07). `.55` on the
+   whole card multiplied every label's already-muted ink down with it, and
+   "how this work gets merged" read at about 2.3:1 on the dark card. The
+   labels, the title and the options' words keep their own tokens at full
+   strength; only the fields fade. No
+   `pointer-events: none`: a step not reached is still one a caller may fill
+   in first, by pointer as by keyboard.
+   NOT THE RADIOS (visual QA run 2, work-b-006): a radio's ring is the only
+   mark its option carries, and `.55` took the 3:1 `--ctl-bd` ring down to
+   about 1.9:1 -- an enabled choice drawn below SC 1.4.11 for as long as no
+   runner is chosen. The step's other fields still say it is not reached. */
+.sb-step.is-dim input:where(:not([type='radio'])),
+.sb-step.is-dim textarea,
+.sb-step.is-dim select { opacity: .55; }
+/* THE REPOSITORY FIELD IS AN EMPTY FIELD UNTIL ONE IS TYPED (visual QA run 2,
+   work-b-007). `.dsp-repo` in styles.css fills it `--surface-2` and leaves the
+   placeholder to the browser, so on the workflow form -- whose step is never
+   dimmed -- the example URL sat on a tint in near-value ink and read as an
+   entered URL. On the task form the dim above hid the same drawing. The field
+   takes the `.c-inp` fill every other text field has, and the example a muted
+   token (`--text-faint`, 4.5:1 on that fill in both themes) that is not the
+   value's `--text`. `input.dsp-repo`, not `.dsp-repo`: this sheet loads before
+   styles.css, so an equal selector would lose to the one it corrects. */
+input.dsp-repo { background: var(--surface); }
+input.dsp-repo::placeholder { color: var(--text-faint); opacity: 1; }
+/* A URL THE API WILL REFUSE IS DRAWN REFUSED (visual QA run 3, sf-002). The
+   field set `aria-invalid` and no rule painted it, so at 1440 a refused URL
+   looked like any other while its sentence sat under it, below the fold. The
+   warn edge doubled by an inset ring, as the issue form's fix-rounds field
+   and the field editor (`.sbf-field [aria-invalid]`) draw theirs; the
+   sentence is brought into view by `DispatchChoice` and is the field's
+   description. */
+input.dsp-repo[aria-invalid='true'] { border-color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn); }
+.sb-step .sbf-move-n {
+  width: 20px; height: 20px;
+  background: var(--sk-acs); color: var(--sk-ac);
+}
+
+/* ---- the task form's runners: two columns of cards (F1) ---------------- */
+.sbf-runners.is-cards {
+  list-style: none; margin: 0 0 12px; padding: 0;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+}
+.sbf-runners.is-cards .sbf-runner {
+  display: flex; align-items: flex-start; gap: 8px;
+  flex: 1 1 auto;
+  min-height: 32px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+}
+.sbf-runners.is-cards .sbf-runner:hover { border-color: var(--text-faint); }
+/* SELECTED IS THE ACCENT EDGE ON ITS SOFT FILL, the frame's `.runner.on`. */
+.sbf-runners.is-cards .sbf-runner.is-on { border-color: var(--sk-ac); background: var(--sk-acs); }
+.sbf-runners.is-cards .sbf-runner.is-off { cursor: not-allowed; }
+.sbf-runners.is-cards .sbf-runner.is-off:hover { border-color: var(--line); }
+/* The reason a runner is refused is the most useful line on its card, so the
+   card is not dimmed away -- its name and facts are, and the reason is not. */
+.sbf-runners.is-cards .sbf-runner.is-off .sbf-runner-name,
+.sbf-runners.is-cards .sbf-runner.is-off .sbf-runner-facts { color: var(--text-faint); }
+
+/* THE RADIO, DRAWN AS THE FRAME'S RING. A native radio still carries the
+   role, the arrow keys and the pick-one behaviour; only its paint changes.
+   ONE RULE FOR BOTH OF THE FORMS' RADIOS: the runner cards and the dispatch
+   options (visual QA QA-075, 2026-10-20). `.dsp-option > input` in styles.css
+   only tinted the native control, and in dark mode an unchosen native radio
+   is a filled grey disc -- so "A PR per step" and "Open a pull request" sat
+   under the runner cards' outlined rings in a second vocabulary for the same
+   pick-one control. Two copies of the rule are how they parted.
+
+   THE UNSELECTED RING IS A CONTROL BOUNDARY, `--ctl-bd`, NOT THE HAIRLINE
+   (visual QA run 2, work-b-006). On `--line` it measured 1.37:1 against its
+   card in dark and 1.34:1 in light, and it is the only mark an enabled,
+   unchosen option carries: the card's own edge is the hairline too. WCAG 2.1
+   SC 1.4.11 asks 3:1 of it; `--ctl-bd` is 3.45:1 on `--surface` in dark and
+   3.35:1 in light. Chosen is the accent's 4px ring; DISABLED shares the
+   live ring's `--ctl-bd` but is dashed and on `--surface-2`, which is what
+   tells a refused runner's radio from a live one (QA-046, below). */
+.sbf-runners.is-cards .sbf-runner > input[type='radio'],
+.dsp-option > input[type='radio'] {
+  appearance: none;
+  flex: none;
+  width: 14px; height: 14px;
+  margin: 2px 0 0;
+  border: 1.5px solid var(--ctl-bd);
+  border-radius: 999px;
+  background: var(--surface);
+}
+.sbf-runners.is-cards .sbf-runner > input[type='radio']:checked,
+.dsp-option > input[type='radio']:checked { border: 4px solid var(--sk-ac); }
+/* A REFUSED RUNNER'S RADIO STILL HAS AN EDGE (visual QA run 5b, QA-046).
+   On `--line` it measured 1.15:1 against its card in light and 1.13:1 in
+   dark, so codex read as a card with no control. It takes the live ring's
+   3:1 `--ctl-bd`, DASHED and on `--surface-2`, which is what still tells it
+   from a radio that can be chosen. */
+.sbf-runners.is-cards .sbf-runner > input[type='radio']:disabled,
+.dsp-option > input[type='radio']:disabled { border: 1.5px dashed var(--ctl-bd); background: var(--surface-2); }
+.sbf-runners.is-cards .sbf-runner > input[type='radio']:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+
+/* EVERY CARD FILLS ITS ROW (visual QA QA-068). The grid stretches each `li`
+   to its row, but the label inside kept its own height, so a two-line card
+   beside a one-line one ended 20px lower and the bottoms stepped down the
+   list. The cell is a flex box and the card grows into it (`flex: 1 1 auto`
+   on `.sbf-runner` above). */
+.sbf-runners.is-cards > li { display: flex; }
+/* NO RUNNER, AND A SUBMIT WAS ATTEMPTED (visual QA run 6, QA-103): the group
+   carries `aria-invalid` and its error line under it, and every card it can
+   still choose from takes the warn edge the field editor's invalid state
+   draws (`.sbf-field [aria-invalid]`). A refused runner keeps its hairline. */
+.sbf-runners.is-cards[aria-invalid='true'] .sbf-runner:not(.is-off) { border-color: var(--warn); }
+.sb-runner-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+/* THE PLATFORM'S OWN RUNNER (QA G4-33): a quiet pill under its name, in the
+   muted token at full strength -- a fact about who submits it, not a state,
+   so no hue. Its cards are listed after the runners people submit. */
+.sb-runner-platform {
+  align-self: flex-start;
+  font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: 999px; padding: 0 6px;
+}
+/* 500, THE HEAVIEST DM MONO THERE IS (VQA V125). main.tsx bundles 400 and
+   500, and the family ships nothing above 500; a 600 here made Chrome
+   synthesise a smeared bold from the 500 face. */
+.sbf-runners.is-cards .sbf-runner-name { font: 500 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
+.sbf-runners.is-cards .sbf-runner-facts,
+.sbf-runners.is-cards .sbf-runner-room {
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+}
+/* AN UNREAD ROOM'S COUNT IS ONE UNIT (visual QA QA-069): "… pools could not
+   be read" left "be read" alone on the card's last line. The clause breaks
+   before its count or not at all; RunnerPicker.tsx's `UnreadRoom` says why it
+   always fits. */
+.sb-room-unread { white-space: nowrap; }
+.sbf-runners.is-cards .sbf-runner-off { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* THE RUNNERS A LIST HOLDS BACK (walkthrough D): one quiet disclosure under
+   the usable cards, "Other runners (N unavailable)", and inside it one row
+   per runner -- its name and a one-line reason, the platform's own words in
+   the row's tooltip. Not orange: an unavailable runner is not a warning about
+   anything the submitter did. */
+.sbf-runners-more { margin: 0 0 12px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.sbf-runners-more > summary {
+  display: inline-flex; align-items: center; min-height: 32px; padding: 0 2px;
+  cursor: pointer; color: var(--text-dim); font: 500 var(--t-meta)/var(--lh-meta) var(--font);
+}
+/* A DISCLOSURE THAT LOOKS LIKE ONE (VQA V128, as `.wfb-more` in styles.css).
+   `inline-flex` takes the summary out of `display: list-item`, and with it the
+   browser's triangle: "Other runners (4 …)" read as a caption. The marker is
+   drawn instead, a shape that turns on open. */
+.sbf-runners-more > summary { list-style: none; }
+.sbf-runners-more > summary::-webkit-details-marker { display: none; }
+.sbf-runners-more > summary::marker { content: ''; }
+.sbf-runners-more > summary::before { content: '\25B8'; margin-right: 6px; }
+.sbf-runners-more[open] > summary::before { content: '\25BE'; }
+.sbf-runners-more > summary:hover { color: var(--text); }
+.sbf-runners-more > summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+.sbf-runners-more > .sbf-runners-why { display: inline-flex; align-items: center; gap: 4px; margin: 0 0 6px; }
+.sbf-runners-more > ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.sbf-runners-more li {
+  display: flex; align-items: baseline; gap: 8px; min-height: 28px; padding: 4px 10px;
+  border: 1px solid var(--line-soft); border-radius: var(--ctl-radius-sm);
+}
+.sbf-runners-more li > .sbf-runner-name { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.sbf-runners-more li > .sbf-runner-why { color: var(--text-dim); }
+/* A MISSING KEY IS THE ONE FACT ON A CARD SOMEBODY HAS TO ACT ON: a task
+   under it is parked until the key is registered. */
+.sbf-runner-miss { color: var(--warn-ink); }
+
+/* ---- the send panel (F1, G1) -------------------------------------------- */
+/* A DISABLED PRIMARY ACTION LOOKS DISABLED (visual QA run 5b, QA-045).
+   "Start one agent", "Submit this workflow" and "Plan this issue" drew the
+   pale accent components.css gives every disabled primary, and in a send
+   panel that read as a light-blue button that would work. Here it is no
+   fill, a dashed 3:1 edge and the dim ink, with the not-allowed pointer:
+   the label still says what the click would do, and the line under it why
+   it will not. (0,4,0), over components.css's (0,3,0). */
+.sbf-send .c-btn.is-primary:disabled {
+  background: transparent;
+  border-color: var(--ctl-bd);
+  border-style: dashed;
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+/* THE PRESS STILL COUNTS (visual QA run 6, QA-103). A disabled button takes
+   no click, so the task form's lets the pointer through to this strip, whose
+   click is the submit attempt that marks each missing field; the strip
+   carries the not-allowed pointer the button can no longer show. */
+.sbf-go { display: block; min-width: 0; }
+.sbf-go.is-off { cursor: not-allowed; }
+.sbf-go > .c-btn:disabled { pointer-events: none; }
+.sbf-go > .c-btn.is-full { max-width: 100%; box-sizing: border-box; }
+/* HINTS, PLACEHOLDERS AND THE FIXED CARRIER ARE WORDS, NOT CODE (visual QA
+   run 5b, QA-047): "one PR for several steps →", "checkpoints (fixed)", "not
+   acted on yet" and every placeholder were in the code face beside sans
+   labels. `.ctl-panel-note` is mono everywhere else; on the submit forms it
+   is the sans face. (0,2,0) and up, over styles.css's `.ctl-panel-note` and
+   `.mono`, which load after this sheet. */
+.sbf .ctl-panel-note,
+.sbf .dsp-fixed { font-family: var(--font); }
+.sbf input::placeholder,
+.sbf textarea::placeholder { font-family: var(--font); }
+/* THE PRIMARY ACTION IS THE ACCENT, and disabled it is the pale accent the
+   frame draws (`.btn.pri.dis`), not a grey bar (archived issue 503). */
+.sb-note { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* ROOM FOR 0 NOW IS SAID IN THE WARNING INK (owner decision 2026-10-22, c09):
+   the task is accepted and waits, so it is not a refusal (`--warn`) and not a
+   footnote (`--text-dim`); `--warn-ink` is the runner card's "key missing". */
+.sb-note.sbf-wait { color: var(--warn-ink); }
+/* NOT CHOSEN YET IS NOT A WARNING (QA2-FIX-27, runs2-33, part of archived issue 2694).
+   Start an agent's summary draws runner, input, cost and room as a dash until
+   a runner is picked. `.ctl-fact.is-absent` and `.ctl-em` (styles.css) take
+   `--ctl-absent`, the warm hue for a value nothing READ, and on an untouched
+   form four warm dashes read as amber before anything was wrong. Here
+   nothing has been decided, so the row and its dash keep the neutral muted
+   ink at the same luminance; a value that is wrong is `.sbf-bad`, unchanged.
+   The issue form (`.in-form`) is not this: its dashes are reads not served. */
+form.sbf:not(.in-form) .sbf-send > .ctl-facts > .ctl-fact.is-absent,
+form.sbf:not(.in-form) .sbf-send > .ctl-facts > .ctl-fact.is-absent > .ctl-em { color: var(--text-faint); }
+/* THE REASON AT ITS STEP (visual QA run 4, N27). Below 1080 the send panel is
+   the last thing on the page, and at 390 its "Not ready" line sat about three
+   screens below the field it was about; each step now says its own clause.
+   From 1080 the panel is sticky beside the steps (the rule below), so the
+   step's copy is not drawn there. */
+.sbf-why-at { margin-top: var(--ctl-s2); }
+/* THE REASON START IS DISABLED, KEPT IN VIEW BELOW 1080 (visual QA
+   r4:flow-submit-form-phone-390-02, run 5b). The send panel is the last block
+   at 390; this line is the steps column's last child and sticks to the foot
+   of the screen while the steps scroll past it, then settles above the panel.
+   Opaque, so the steps do not show through it. Not drawn from 1080 (below). */
+.sbf-build > .sbf-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: var(--ctl-s2) 0;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+
+/* WHAT THE CLICK DID, UNDER THE BUTTON (VQA V002/V049, owner decision Q1 on
+   archived issue 1038). Every submit form draws its outcome here; the panel's own gap is
+   the space above it, and its parts keep the same 12px between them that the
+   steps keep -- the card sat flush on step 1 when it lived in the build
+   column. A 300px panel, so any unbroken id or address wraps rather than
+   widening it. */
+.sbf-send > .sbf-outcome { display: grid; gap: 12px; min-width: 0; overflow-wrap: anywhere; }
+.sbf-outcome > .state { margin: 0; }
+/* THE CARD SPEAKS AT THE PANEL'S SIZE (live QA SUB-7). `.state p` is the
+   full-page lead, 16px: in a 260px card "That is not a running agent" was set
+   larger than the facts beside it, and the task id broke with one letter on
+   its second line. The panel's facts are meta; the id is micro mono, which
+   holds a 25-character id on one line at that width, and still wraps rather
+   than widening the panel when an id is longer. (0,2,1), so it outranks
+   `.state p` (0,1,1) on specificity rather than on order. */
+.sbf-outcome > .state { padding: 12px; }
+.sbf-outcome > .state p { font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sbf-outcome > .state p.sbf-id { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); }
+.sbf-outcome > .state p.sbf-woke { margin-top: 8px; }
+/* A FACT IS ITS KEY AND ONE VALUE, AND THE VALUE WRAPS INSIDE ITSELF (VQA
+   V174, V250). A wrapping row of loose parts under the panel's `space-between`
+   set "direct-pr" mid-row, a lone "/" at the edge and "checkpoints" on a line
+   of its own, and in the Created card "checkpoints" floated mid-row beside
+   its mark. A value of several parts is now one element (`.dsp-fact-v`), the
+   row does not wrap, and the value is the box that wraps, right-aligned.
+   A `<code>` stays whole (live QA SUB-8: the slot's `overflow-wrap: anywhere`
+   reached it and the card printed "collec / t"); only the id, which can be
+   longer than the card, still breaks anywhere.
+   THE CARD'S SIZE (VQA V174): the facts were the 14px body beside the card's
+   13px sentences, and the 13px mono values read larger than both. Sans at
+   meta, mono a step under it -- the panel's own pairing (V129) one step down.
+   (0,3,0) and up: `.sbf-send .ctl-fact` in styles.css is (0,2,0) and loads
+   after this sheet. */
+.sbf-send > .sbf-outcome .ctl-fact { flex-wrap: nowrap; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sbf-send > .sbf-outcome .ctl-fact > :not(b) { min-width: 0; }
+.sbf-send > .sbf-outcome .ctl-fact code { font-size: var(--t-micro); white-space: nowrap; overflow-wrap: normal; }
+.sbf-send > .sbf-outcome .ctl-fact .mono { font-size: var(--t-micro); }
+/* EVERY PART OF THE CARD IS 8px FROM THE LAST (VQA V174, V250, V254). The
+   facts lists are `margin: 0` in the panel, so "progress —" touched "accepted
+   as", the task id touched the sentence above it and the facts below, and a
+   422's last fact touched "Nothing was created…". */
+.sbf-send > .sbf-outcome > .state > * + * { margin-top: 8px; }
+/* A TASK ID IS SPLIT EVENLY WHEN IT MUST BE SPLIT (VQA V250): a 36-character
+   id at 1440 left "d4" alone on its second line. Every character is a break
+   opportunity, and the lines are balanced, so a long id is two even halves. */
+.sbf-send > .sbf-outcome > .state p.sbf-id { word-break: break-all; text-wrap: balance; }
+/* THE SLOT TAKES FOCUS AFTER A CLICK (VQA V255); from the keyboard it shows. */
+.sbf-send > .sbf-outcome:focus { outline: none; }
+.sbf-send > .sbf-outcome:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--radius); }
+/* The steps a refusal names (V051), each a way to its card. */
+.sbf-refused { margin: 0; padding-left: 16px; display: grid; gap: 4px; }
+
+/* A VALUE THE PANEL CUTS (VQA V130): one line, an ellipsis, the whole value in
+   its title -- the issue panel's rule for its reference (`.in-send .ctl-fact
+   code`, intake.css). A repository address `repositorySlug` cannot shorten
+   wrapped over eight lines here. */
+.sbf-send .ctl-fact { max-width: 100%; }
+.sbf-send .ctl-fact > code.sbf-cut {
+  display: inline-block; min-width: 0; max-width: 100%; vertical-align: bottom;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal;
+}
+
+/* "N steps not ready: a, b, c" (VQA V131): a name and its comma are one
+   unbroken run, so no line opens on a comma. */
+.sbf-gap-i { white-space: nowrap; }
+
+/* THE POOLS IN "ROOM FOR N MORE" ARE DM MONO (VQA V257): a bare `<code>` took
+   the browser's generic `monospace` at 14px. At the meta step beside the 14px
+   sans, the send panel's pairing (V129): mono is not louder than the words. */
+.sbf-room code { font-family: var(--mono); font-size: var(--t-meta); }
+
+/* ---- the issue form (intake.css owns the rest) --------------------------- */
+/* A FAILED PREVIEW READ IS 12px UNDER THE INPUT ROW (VQA V251), as a 404's
+   `.in-refusal` is; the panel sat flush. */
+.in-read-failed { margin-top: 12px; }
+/* THE REFERENCE AND ITS DOT ARE ONE RUN OF TEXT (VQA V252). The item is a flex
+   row in intake.css, where a wrapped reference is one box and the dot another,
+   left at the card's right edge; as a block of inline text the dot follows the
+   last line, held by the no-break space before it. (0,3,0) over (0,2,0). */
+.in-meta > .in-meta-i.is-ref { display: block; }
+
+/* ---- the workflow form (G1) ---------------------------------------------- */
+/* A stage is a dashed band (the frame's `.stage`); its steps are cards. */
+.sbf-build .wfb-stage {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  padding: 10px;
+}
+/* "Stage 1" IS A NAME IN WORDS, NOT A KEY (QA1 runs-submit-22): styles.css
+   sets `.wfb-stage-n` in bold mono, which read `first` as a raw value. The
+   body face, at the same size and weight. (0,3,0) over (0,1,0). */
+.sbf-build .wfb-stage .wfb-stage-n { font-family: inherit; }
+.wfb-steps > .wfb-step {
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  padding: 8px 10px;
+}
+/* A STEP WITH NO RUNNER IS FLAGGED ON ITS EDGE, and its select and the
+   summary's "not ready" name it in words. So is a step the API refused (V051). */
+.wfb-steps > .wfb-step.is-bad { border-color: var(--warn-ink); }
+
+.sb-runner-select {
+  width: 100%;
+  min-height: 32px;
+  border-radius: var(--ctl-radius-sm);
+}
+.sb-runner-select[aria-invalid='true'] { color: var(--text-dim); }
+/* The runner's size is one run (VQA V127): its own dots never open a line. */
+.wfb-cost > .sb-runner-size { white-space: nowrap; }
+/* AND THE LINE IS TEXT, NOT A FLEX ROW (VQA2 V127). `.wfb-cost` is a wrapping
+   flex row in styles.css, so each " · " between the facts was an anonymous
+   item of its own: the no-break space in it could hold it to nothing, and a
+   line ended on "Cloud Run ·" while the next opened on "· anthropic key
+   present". In inline flow the space binds the dot to the fact before it. */
+.wfb-step > .wfb-cost { display: block; }
+
+/* "If a step fails" and "Priority", in step 2 (G1 frames 7-8). Their type
+   is `.dsp-head` in styles.css, the dispatch control's labels' own, so the
+   card's labels are one style (VQ-027); this rule only spaces them. */
+.sb-step .sb-sub {
+  display: block;
+  margin: 12px 0 4px;
+}
+/* "If a step fails" IS THE DISPATCH CONTROL'S CARD (QA G4-35): `.dsp-option`
+   in styles.css draws both of the workflow form's radio groups, so the two
+   cannot drift into two styles again. `.sb-option` is deleted with its last
+   caller. What this group adds is the explanation under each title: the
+   muted token at the body size, regular weight -- the strategy's bold line is
+   its pull-request count, which is the decision; this is a description. */
+/* AT THE META SIZE (VQA V253): at the body size these were 14px in the card
+   under the merge options' 13px `.dsp-count`, two description sizes in one
+   card. The muted ink is still what tells it from a pull-request count. */
+.dsp-option-say { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.sb-prio { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sb-prio > input { width: 92px; min-height: 32px; border-radius: var(--ctl-radius-sm); font-family: var(--mono); }
+.sb-prio > small { flex: 1 1 260px; }
+
+/* ---- the chooser (M2) ---------------------------------------------------- */
+/* THREE CARDS: task, workflow, and "From a GitHub issue" (intake-tenants.html
+   1A, whose own form is styles/intake.css). The grid took the third unchanged. */
+.sb-chooser { display: flex; flex-direction: column; gap: 16px; max-width: 1200px; }
+.sb-chooser h1 { margin: 0; font-size: var(--t-title); }
+.sb-choices {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+}
+.sb-card {
+  display: flex; flex-direction: column; gap: 10px; min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 12px 14px;
+}
+.sb-choice { padding: 18px; }
+.sb-choice h2 {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0;
+  font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600;
+}
+.sb-glyph {
+  flex: none; width: 20px; height: 20px;
+  fill: none; stroke: var(--sk-ac); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+}
+.sb-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sb-kbd {
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  padding: 0 4px;
+  color: var(--text-dim);
+}
+.sb-card-h { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+.sb-card-hr { display: flex; align-items: center; gap: 6px; }
+.sb-empty {
+  display: flex; gap: 10px; align-items: flex-start;
+  margin: 0; padding: 6px 0;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim);
+}
+.sb-empty b { color: var(--text); }
+.sb-empty .sk-st { margin-top: 3px; }
+/* YOUR RECENT SUBMISSIONS (owner QA R15, 2026-10-04): 32px rows -- the kind
+   as a chip, the name cut with its title, its age -- then the windows the
+   card looked in. */
+.sb-recent-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; }
+.sb-recent-i {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center;
+  min-height: 32px; border-bottom: 1px solid var(--line);
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.sb-recent-i:last-child { border-bottom: 0; }
+.sb-recent-n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sk-ac); }
+.sb-recent-n:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+.sb-recent-at { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; }
+.sb-recent-scope { margin: 6px 0 0; }
+/* ON A PHONE THE STATE GOES UNDER THE NAME (QA1 runs-submit-26, re-review):
+   beside it, "dispatched · 9d ago" cut "claude-code agent · 19d91b82" to
+   "claude-code agent · 19…", and the id is what tells those rows apart. */
+@media (max-width: 560px) {
+  .sb-recent-i { grid-template-columns: auto minmax(0, 1fr); row-gap: 0; padding: 4px 0; }
+  .sb-recent-at { grid-column: 2; }
+}
+
+/* ---- a phone (submit.html's 390px frames) ------------------------------- */
+/* One column of runners; the choices stack (the grid already does); no key
+   hints, which a phone has no keyboard for; 44px targets. */
+@media (max-width: 560px) {
+  .sbf-runners.is-cards { grid-template-columns: minmax(0, 1fr); }
+  .sb-kbd, .sb-foot { display: none; }
+  .sb-runner-select, .sb-prio > input { min-height: 44px; }
+}
+
+/* THE SEND CARD STAYS IN VIEW (browser QA D35, 2026-10-04). `.sbf-send` is
+   sticky from 1080px (styles.css), but its column was a grid item aligned to
+   the start of the row -- exactly as tall as the card -- so sticky had no room
+   to move and the card scrolled away with the form. The column spans the row,
+   on the task, workflow and issue forms alike. */
+@media (min-width: 1080px) {
+  .sbf > .sbf-side { align-self: stretch; }
+  .sbf-why-at { display: none; }
+  .sbf-build > .sbf-dock { display: none; }
+}
+
+/* THE SEND CARD IS ITS COLUMN'S WIDTH, NEVER ITS CONTENT'S (browser QA N2,
+   2026-10-04). Its `auto` grid track grew to the min-content of the unbroken
+   mono issue reference, so the card and its full-width "Plan this issue"
+   (326px) ran past the 300px column and the page scrolled sideways. One
+   track of the card's width; the button is that wide and no wider. */
+.sbf-side > .sbf-send { grid-template-columns: minmax(0, 1fr); }
+.sbf-send > .c-btn.is-full { max-width: 100%; box-sizing: border-box; }
+
+/* "+ ADD SETTING": THE KEY OVER ITS NOTE (D34). Key and note side by side
+   squeezed both into two ragged columns; the note now sits under its key,
+   left-aligned, in a list wide enough for a sentence. */
+.sbf-addset > .sbf-addset-list { width: min(420px, 100%); scroll-margin-bottom: 12px; }
+.sbf-addset-list > .sbf-addset-item { flex-direction: column; align-items: flex-start; gap: 2px; }
+.sbf-addset-list > .sbf-addset-item em { text-align: left; }
+
+/* A SETTING'S "remove" IS ON ITS NAME'S LINE AND AFTER ITS FIELD IN TAB ORDER
+   (live QA SUB-17). The button follows the value in the DOM, so a keyboard
+   meets the setting before the way to delete it; the grid draws it back
+   beside the name, where it was. Every other part of the row spans both
+   columns and is placed below row 1, in its source order. */
+.sbf-field.has-remove { grid-template-columns: auto 1fr; column-gap: var(--ctl-s2); }
+.sbf-field.has-remove > * { grid-column: 1 / -1; }
+.sbf-field.has-remove > .sbf-key { grid-row: 1; grid-column: 1; }
+.sbf-field.has-remove > .sbf-remove { grid-row: 1; grid-column: 2; justify-self: start; align-self: center; }
+/* ON A PHONE, ITS OWN LINE AFTER THE VALUE (visual QA QA-107, 2026-10-20).
+   At 390px a setting of one's own -- name box, type select, remove -- does not
+   fit on one line: `.sbf-key` wrapped the type select under the name while
+   "remove" stayed beside the name, so the row read name, remove, type. Here
+   it takes its place in source order instead: name, type, value, remove. */
+@media (max-width: 560px) {
+  .sbf-field.has-remove > .sbf-remove { grid-row: auto; grid-column: 1 / -1; }
+}
+
+/* A STEP'S `?` IS AFTER ITS HEADING, NOT IN IT (QAFIX-HELP, 2026-10-20), as
+   `PageHead` draws the h1's: inside the <h2> the glyph's own name ran on into
+   the heading's, so "Choose a runner" was announced as "Choose a runner Help:
+   …". The row is the heading's line; the heading keeps its type. */
+.sbf-move-head { display: flex; align-items: center; gap: var(--ctl-s2); margin: 0 0 var(--ctl-s3); }
+.sbf-move-head > .sbf-move-h { margin: 0; }
+
+/* THE BROWSER TOOL (BSTATUS-SUBMIT, owner decision 2026-10-14). A segmented
+   control of native radios: the radio is hidden visually but keeps the
+   keyboard, the focus and the role; its label is the segment. One row on a
+   desktop; two to a row on a phone, where four segments of
+   "dev-browser"-length text overflow a 390px card. Colours are the theme's
+   tokens only, so both themes read the checked segment the same way. */
+.btp { display: grid; gap: 4px; margin: 0 0 12px; }
+.btp-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.btp-h { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.btp-seg {
+  display: grid; grid-template-columns: repeat(4, auto); justify-content: start;
+  border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); overflow: hidden; background: var(--surface);
+}
+.btp-opt {
+  position: relative; display: flex; align-items: center; justify-content: center; min-height: var(--h-ctl);
+  padding: 0 12px; border-right: 1px solid var(--line); cursor: pointer; white-space: nowrap;
+  font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); background: var(--surface);
+}
+.btp-opt:last-child { border-right: 0; }
+.btp-opt > input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: inherit; }
+.btp-opt:hover:not(.is-off) { color: var(--text); }
+.btp-opt.is-on { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
+.btp-opt.is-off { opacity: .45; cursor: not-allowed; }
+.btp-opt:focus-within { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+.btp-hint, .btp-jev-off, .btp-net { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.btp-hint:empty { display: none; }
+.btp-notice {
+  margin: 0; padding: 4px 8px; border-left: 2px solid var(--info); background: var(--surface-2);
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text);
+}
+
+@media (max-width: 560px) {
+  .btp-seg { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .btp-opt { min-height: 44px; border-bottom: 1px solid var(--line); }
+  .btp-opt:nth-child(2n) { border-right: 0; }
+}
+/* A GAP BETWEEN THE SETTINGS AND THE NEXT GROUP (QA1 runs-submit-19): the
+   "+ Add setting" button, the last thing in `.sbf-input`, sat on the
+   "Additional repositories" legend with no space. One step, the 12px `.btp`
+   already keeps below itself. */
+.sbf-input + .btp { margin-top: 12px; }
+/* A SETTING'S LABEL IN WORDS (QA1 runs-submit-18): `.sbf-name` is mono for a
+   key typed by the caller; an offered setting's label is a name, in the body
+   face at the size the key used to take. */
+.sbf-name > .sbf-words { font: var(--t-body)/var(--lh-body) var(--font); color: var(--text); }

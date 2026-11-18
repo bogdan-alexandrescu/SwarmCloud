@@ -1,0 +1,2605 @@
+"""Resource classes and runner profiles -- the admin-defined execution catalogue.
+
+API callers choose a `runner_profile` by NAME and nothing else. They never supply
+an image, a command, a resource spec or a backend. That is the whole point: it is
+what stops an authenticated caller from turning the swarm into arbitrary compute.
+
+Sizing note. These numbers are not guesses. They were measured on the reference
+workstation on 2026-09-15: one working Claude Code lane was `claude` 1,532 MB +
+`pytest` 769 MB + node/tsx guards 207 MB = ~2.5 GiB resident. The classes below
+are roughly 2x that, and the worker exports peak RSS and peak disk per profile so
+the numbers get corrected from production rather than from arithmetic.
+
+Two hard rules follow from the stability requirement:
+  * Memory and disk: requests == limits. Memory is not compressible, and a
+    memory burst past its request is precisely what gets a container
+    OOM-killed under node pressure. CPU is the one exception (contract request
+    108, RS-1, accepted 2026-10-20 for #1689): on GKE Autopilot a class's CPU
+    limit may be up to `CPU_BURST_MAX_RATIO` x its request, because a CPU
+    burst on a busy node is throttled, never killed. Cloud Run renders the
+    request alone.
+  * Spot is disabled. Verified against GKE docs: Spot Pods cannot use Autopilot
+    extended run time, so Spot and "no preemption" are mutually exclusive.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+import math
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from enum import Enum
+from types import MappingProxyType
+from typing import Any
+from urllib.parse import urlsplit
+
+from .models import PLATFORM_COMPONENTS, parse_consumer
+
+
+class Backend(str, Enum):
+    CLOUD_RUN_JOB = "CLOUD_RUN_JOB"
+    GKE_AUTOPILOT = "GKE_AUTOPILOT"
+    AUTO = "AUTO"
+
+
+class SpotStrategy(str, Enum):
+    ON_DEMAND_ONLY = "on_demand_only"
+    SPOT_PREFERRED = "spot_preferred"
+    SPOT_ONLY = "spot_only"
+
+
+class WorkerAction(str, Enum):
+    """A platform action the WORKER performs instead of starting a runner.
+
+    Contract request 33 (MERGE) and 35 (POST_VERDICT), ACCEPTED by the owner on
+    2026-10-01 for #295. A profile that names one runs no agent, so a forge
+    App key read by its Job's own service account is never in a container an
+    agent shares (docs/merge-step.md §0, §1.3).
+    """
+
+    MERGE = "merge"
+    POST_VERDICT = "post_verdict"
+
+
+#: How far a class's CPU limit may sit above its request (contract request 108,
+#: RS-1; docs/design/runner-sizes.md §4.1). 2: the agents averaged 1.74 of 4
+#: cores on 2026-10-20, so co-located agents have about 2 cores of idle request
+#: each to lend; a higher limit would mostly describe CPU that is not there.
+CPU_BURST_MAX_RATIO = 2
+
+
+@dataclass(frozen=True)
+class ResourceClass:
+    """A sizing envelope.
+
+    `cpu` is the CPU REQUEST: what admission charges, what Autopilot bills
+    and what every container is guaranteed. `cpu_limit` is what it may burst
+    to on GKE Autopilot when its node has idle requested CPU; a burst past
+    the request is throttled under contention, never killed. Cloud Run
+    renders `cpu` alone. `memory_gib` and `disk_gib` are request AND limit:
+    memory is not compressible, and a memory burst is a kill.
+    """
+
+    name: str
+    cpu: float
+    memory_gib: int
+    disk_gib: int
+    #: Capacity units consumed from the weighted global budget. Heavier classes
+    #: cost more scheduling budget than light ones.
+    units: int
+    #: Cloud Run ephemeral disk is a Preview feature and, per Google's docs,
+    #: disables live migration -- which is why mandatory checkpointing exists.
+    requires_preview_disk: bool = False
+    #: The CPU limit on GKE Autopilot (contract request 108). None: equal to `cpu`.
+    cpu_limit: float | None = None
+
+    @property
+    def cpu_limit_cores(self) -> float:
+        return self.cpu if self.cpu_limit is None else self.cpu_limit
+
+    def __post_init__(self) -> None:
+        if self.cpu <= 0 or self.memory_gib <= 0:
+            raise ValueError(f"resource class {self.name}: cpu and memory must be positive")
+        if self.cpu > 8 or self.memory_gib > 32:
+            # Cloud Run's hard ceiling. Anything above must be GKE-only. It binds
+            # the request, not `cpu_limit`: Cloud Run renders the request alone.
+            raise ValueError(f"resource class {self.name} exceeds the Cloud Run Jobs ceiling")
+        if not self.cpu <= self.cpu_limit_cores <= CPU_BURST_MAX_RATIO * self.cpu:
+            raise ValueError(
+                f"resource class {self.name}: cpu_limit {self.cpu_limit_cores} must be between "
+                f"its request {self.cpu} and {CPU_BURST_MAX_RATIO} x the request"
+            )
+
+
+# WORKSPACE SIZES ARE MEMORY, NOT DISK.
+#
+# These originally claimed 20/40/100 GiB of disk-backed ephemeral storage. That
+# is a Cloud Run Preview feature the Terraform google provider cannot express:
+# `empty_dir.medium` accepts only "MEMORY". The workspace is therefore a tmpfs
+# carved out of the container's memory, so `disk_gib` is a slice OF `memory_gib`
+# and not additional capacity.
+#
+# The measured reference workload -- Claude Code plus a Node/Python toolchain
+# running a test suite -- peaks near 2.5 GiB, which leaves standard roughly
+# 1.5 GiB of real workspace headroom. A large monorepo with node_modules will
+# not fit on `standard`; use `browser` or `large`, or route to GKE.
+#
+# Upside: this path is fully GA and supports live migration, which the Preview
+# disk explicitly does not -- so the reliability requirement that drove the
+# Cloud Run choice is better served here than by the feature we set out to use.
+#
+# CPU LIMITS ARE TWICE THE REQUESTS (contract request 108, owner 2026-10-20,
+# docs/design/runner-sizes.md §4.1). The requests are unchanged, so admission,
+# units and Autopilot's bill are unchanged; the limit is what a GKE pod may
+# borrow from its node's idle requests. Cloud Run profiles render `cpu` alone.
+#
+# MEDIUM (contract request 147, accepted by the owner 2026-11-06): over the 7
+# days to that date 771 large attempts (4.8% of 16,103) held 46% of all
+# capacity unit-hours and used about a third of what they reserved; measured
+# without page cache 96% fit 6 CPU and 16 GiB. `medium` is that size, 2 units
+# (`units_for`), its workspace half its memory as `large`'s is.
+#
+# BUILDER (contract request 135, accepted by the owner 2026-11-13; request 134
+# declined in its favour): the class the platform picks for the steps that
+# build (`BUILD_STAGES`, `resource_class_for_stage`), so the pre-publish gate's
+# guard parts run on more cores. 8 CPU requested, the Cloud Run ceiling every
+# request keeps; 12 the GKE limit (1.5 x, within CPU_BURST_MAX_RATIO); 16 GiB;
+# 2 units (`units_for`). GKE only: only a GKE profile names it as its
+# `build_resource_class`, and no profile names it as its own class.
+RESOURCE_CLASSES: dict[str, ResourceClass] = {
+    "standard": ResourceClass("standard", cpu=4, memory_gib=8, disk_gib=4, units=1, cpu_limit=8),
+    "browser": ResourceClass("browser", cpu=4, memory_gib=8, disk_gib=4, units=1, cpu_limit=8),
+    "medium": ResourceClass("medium", cpu=6, memory_gib=16, disk_gib=8, units=2, cpu_limit=12),
+    "builder": ResourceClass("builder", cpu=8, memory_gib=16, disk_gib=8, units=2, cpu_limit=12),
+    "large": ResourceClass("large", cpu=8, memory_gib=32, disk_gib=16, units=4, cpu_limit=16),
+}
+
+
+# RUNNER SIZES AN ADMIN SETS (contract requests 109-110, RS-2 and RS-3,
+# accepted by the owner 2026-10-20 for #1689; docs/design/runner-sizes.md §4.2).
+#
+# The class NAMES and the BOUNDS stay frozen here; the live sizes become a
+# versioned platform setting written by swarm-api's admin route and pinned on
+# each attempt at admission. RESOURCE_CLASSES above are the DEFAULTS: what runs
+# with no version written, and what a Cloud Run profile always runs at,
+# because Cloud Run fixes resources on the Job and not on the execution.
+#
+# Every bound below is checked by `check_size`, the one validator the admin
+# route and the scheduler's read both call, so neither an admin nor a caller
+# can size a pod outside them (invariants 7 and 10).
+
+#: 0.5: Autopilot extended run time's minimum. 8: Cloud Run's ceiling, which
+#: binds every class's REQUEST because every class can be reached by a Cloud
+#: Run profile's step or fallback Job. 0.25: Autopilot's own granularity on a
+#: non-bursting cluster, so a size is valid on both.
+CPU_REQUEST_MIN, CPU_REQUEST_MAX, CPU_REQUEST_STEP = 0.5, 8, 0.25
+#: 32: Cloud Run's ceiling. 2: below it the worker and an agent CLI do not
+#: start (the module docstring's measured 2.5 GiB reference workload).
+MEMORY_GIB_MIN, MEMORY_GIB_MAX = 2, 32
+#: GiB per requested core. Autopilot's general-purpose ratio: outside it
+#: Autopilot silently raises the smaller resource, and bills it.
+MEMORY_PER_CPU_MIN, MEMORY_PER_CPU_MAX = 1.0, 6.5
+#: A live-browser pod's two containers, (cpu request, memory GiB) each at
+#: least. 5 GiB for the display: its resident tmpfs plus its measured peak is
+#: 4.73 GiB (scheduler dispatch.py, the LIVE_DISPLAY_SHARE comment).
+LIVE_WORKER_MIN = (1, 2)
+LIVE_DISPLAY_MIN = (1, 5)
+#: Smallest first. A workflow step may name a SMALLER class than its
+#: profile's (`validate_resource_class_override`), so a resize that made
+#: `standard` larger than `browser` would let a step grow by "shrinking".
+#: `builder` (contract request 135) sits between `medium` and `large`.
+CLASS_ORDER = ("standard", "browser", "medium", "builder", "large")
+
+
+def units_for(cpu_request: float, memory_gib: int) -> int:
+    """The capacity units a size charges: one per 4 requested cores or 8 GiB,
+    whichever is more. Derived, so a resize cannot leave the budget charging
+    the wrong weight; it reproduces the classes' 1 / 1 / 2 / 4."""
+    return max(math.ceil(cpu_request / 4), math.ceil(memory_gib / 8))
+
+
+for _rc in RESOURCE_CLASSES.values():
+    if _rc.units != units_for(_rc.cpu, _rc.memory_gib):
+        raise ValueError(
+            f"resource class {_rc.name}: units {_rc.units} is not "
+            f"units_for({_rc.cpu}, {_rc.memory_gib}) = {units_for(_rc.cpu, _rc.memory_gib)}"
+        )
+del _rc
+
+
+@dataclass(frozen=True)
+class LiveShare:
+    """One container's part of a live-browser pod: the worker or the display.
+
+    Memory is request AND limit, as everywhere (invariant 7)."""
+
+    cpu_request: float
+    cpu_limit: float
+    memory_gib: int
+
+
+@dataclass(frozen=True)
+class ResourceSize:
+    """A resource class's size in one version of the setting.
+
+    `memory_gib` and `disk_gib` are request AND limit; only CPU has two
+    numbers. `live_split` is (worker, display) for a live-browser pod, whose
+    requests and memories sum to the class's. Nothing is checked at
+    construction: a stored version is parsed into this shape and THEN judged
+    by `check_size`, which reports every refusal instead of the first.
+    """
+
+    cpu_request: float
+    cpu_limit: float
+    memory_gib: int
+    disk_gib: int
+    live_split: tuple[LiveShare, LiveShare] | None = None
+
+    @property
+    def units(self) -> int:
+        return units_for(self.cpu_request, self.memory_gib)
+
+
+@dataclass(frozen=True)
+class SizeRefusal:
+    """One bound a size breaks. `field` is the size's field, or for a live
+    split `live_split.<worker|display>.<field>` (`live_split.<field>` for a
+    sum); `bound` is the rule, worded with the number it works out to."""
+
+    resource_class: str
+    field: str
+    value: float | None
+    bound: str
+
+
+#: The browser class's default live split, worker then display: the 2 / 2
+#: requests of BROWSER-SPLIT with memory unchanged (3 / 5 GiB), the worker at
+#: the class's burst ratio and the display's limit at 3, its size before the
+#: split (design §4.1). The scheduler's LIVE_DISPLAY_SHARE renders the same
+#: pod; tests/unit/common/test_runner_size_shape.py holds the two together.
+_DEFAULT_LIVE_SPLIT: dict[str, tuple[LiveShare, LiveShare]] = {
+    "browser": (
+        LiveShare(cpu_request=2, cpu_limit=4, memory_gib=3),
+        LiveShare(cpu_request=2, cpu_limit=3, memory_gib=5),
+    ),
+}
+
+_DEFAULT_SIZES: Mapping[str, ResourceSize] = MappingProxyType(
+    {
+        name: ResourceSize(
+            cpu_request=rc.cpu,
+            cpu_limit=rc.cpu_limit_cores,
+            memory_gib=rc.memory_gib,
+            disk_gib=rc.disk_gib,
+            live_split=_DEFAULT_LIVE_SPLIT.get(name),
+        )
+        for name, rc in RESOURCE_CLASSES.items()
+    }
+)
+
+
+def default_sizes() -> Mapping[str, ResourceSize]:
+    """The code defaults, read-only: version 0, what runs with no version
+    written, and what a Cloud Run profile always runs at."""
+    return _DEFAULT_SIZES
+
+
+def effective_size(
+    name: str, version: Mapping[str, ResourceSize] | None, backend: Backend
+) -> ResourceSize:
+    """`version`'s size for a GKE profile; the code default for Cloud Run.
+
+    Cloud Run fixes resources on the Job, not the execution, so a Cloud Run
+    profile cannot follow a version (design §4.7, owner Q3 A). `version` None,
+    or a version that omits `name`, is the default. `backend` must be resolved
+    (`resolve_backend`): AUTO says nothing about where a pod runs. An unknown
+    class is a KeyError: an admin resizes classes, never creates one.
+    """
+    default = _DEFAULT_SIZES[name]
+    if backend is Backend.AUTO:
+        raise ValueError(f"effective_size({name!r}) needs a resolved backend; call resolve_backend first")
+    if backend is not Backend.GKE_AUTOPILOT or version is None:
+        return default
+    return version.get(name, default)
+
+
+def _number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def _integer(value: Any) -> bool:
+    return _number(value) and float(value).is_integer()
+
+
+def _on_step(value: float) -> bool:
+    return float(value / CPU_REQUEST_STEP).is_integer()
+
+
+def _shown(value: Any) -> float | None:
+    return value if _number(value) else None
+
+
+def _check_cpu(
+    name: str, prefix: str, request: Any, limit: Any, minimum: float, out: list[SizeRefusal]
+) -> bool:
+    """The request's bounds and step, then the limit's ratio to it. True when
+    the request is a usable number (so the callers may compare with it)."""
+    def refuse(field_name: str, value: Any, bound: str) -> None:
+        out.append(SizeRefusal(name, prefix + field_name, _shown(value), bound))
+
+    if not _number(request):
+        refuse("cpu_request", request, "cpu_request is a number")
+        if not _number(limit):
+            refuse("cpu_limit", limit, "cpu_limit is a number")
+        return False
+    if not minimum <= request <= CPU_REQUEST_MAX:
+        refuse("cpu_request", request, f"{minimum} <= cpu_request <= {CPU_REQUEST_MAX}")
+    if not _on_step(request):
+        refuse("cpu_request", request, f"cpu_request is a multiple of {CPU_REQUEST_STEP}")
+    if not _number(limit):
+        refuse("cpu_limit", limit, "cpu_limit is a number")
+    elif limit < request:
+        refuse("cpu_limit", limit, f"cpu_limit >= cpu_request ({request:g})")
+    elif limit > CPU_BURST_MAX_RATIO * request:
+        refuse(
+            "cpu_limit",
+            limit,
+            f"cpu_limit <= {CPU_BURST_MAX_RATIO} x cpu_request ({CPU_BURST_MAX_RATIO * request:g})",
+        )
+    return True
+
+
+def _check_live_split(name: str, size: ResourceSize, out: list[SizeRefusal]) -> None:
+    split = size.live_split
+    if split is None:
+        return
+    if (
+        not isinstance(split, tuple)
+        or len(split) != 2
+        or not all(isinstance(share, LiveShare) for share in split)
+    ):
+        out.append(SizeRefusal(name, "live_split", None, "live_split is (worker, display)"))
+        return
+    sums_known = True
+    for role, share, (min_cpu, min_memory) in (
+        ("worker", split[0], LIVE_WORKER_MIN),
+        ("display", split[1], LIVE_DISPLAY_MIN),
+    ):
+        prefix = f"live_split.{role}."
+        cpu_ok = _check_cpu(name, prefix, share.cpu_request, share.cpu_limit, min_cpu, out)
+        memory = share.memory_gib
+        if not _integer(memory):
+            out.append(SizeRefusal(name, prefix + "memory_gib", _shown(memory), "memory_gib is an integer"))
+            sums_known = False
+        elif memory < min_memory:
+            out.append(SizeRefusal(name, prefix + "memory_gib", memory, f"memory_gib >= {min_memory}"))
+        sums_known = sums_known and cpu_ok
+    if not sums_known:
+        return
+    worker, display = split
+    if _number(size.cpu_request) and worker.cpu_request + display.cpu_request != size.cpu_request:
+        out.append(SizeRefusal(
+            name, "live_split.cpu_request", worker.cpu_request + display.cpu_request,
+            f"worker + display cpu_request == the class's ({size.cpu_request:g})",
+        ))
+    if _integer(size.memory_gib) and worker.memory_gib + display.memory_gib != size.memory_gib:
+        out.append(SizeRefusal(
+            name, "live_split.memory_gib", worker.memory_gib + display.memory_gib,
+            f"worker + display memory_gib == the class's ({size.memory_gib:g})",
+        ))
+
+
+def _check_one(name: str, size: ResourceSize, out: list[SizeRefusal]) -> None:
+    cpu_ok = _check_cpu(name, "", size.cpu_request, size.cpu_limit, CPU_REQUEST_MIN, out)
+    memory = size.memory_gib
+    memory_ok = _integer(memory)
+    if not memory_ok:
+        out.append(SizeRefusal(name, "memory_gib", _shown(memory), "memory_gib is an integer"))
+    elif not MEMORY_GIB_MIN <= memory <= MEMORY_GIB_MAX:
+        out.append(SizeRefusal(name, "memory_gib", memory, f"{MEMORY_GIB_MIN} <= memory_gib <= {MEMORY_GIB_MAX}"))
+    if cpu_ok and memory_ok and size.cpu_request > 0:
+        ratio = memory / size.cpu_request
+        if not MEMORY_PER_CPU_MIN <= ratio <= MEMORY_PER_CPU_MAX:
+            out.append(SizeRefusal(
+                name, "memory_per_cpu", ratio,
+                f"{MEMORY_PER_CPU_MIN:g} <= memory_gib / cpu_request <= {MEMORY_PER_CPU_MAX:g}",
+            ))
+    disk = size.disk_gib
+    if not _integer(disk):
+        out.append(SizeRefusal(name, "disk_gib", _shown(disk), "disk_gib is an integer"))
+    elif disk < 1 or (memory_ok and disk > memory - 2):
+        ceiling = f"{memory - 2:g}" if memory_ok else "memory_gib - 2"
+        out.append(SizeRefusal(name, "disk_gib", disk, f"1 <= disk_gib <= memory_gib - 2 ({ceiling})"))
+    _check_live_split(name, size, out)
+
+
+def check_size(sizes: Mapping[str, ResourceSize]) -> list[SizeRefusal]:
+    """Every bound the table `sizes` breaks; empty when it may be used.
+
+    Pure: no I/O, no clock, nothing cached. It takes the whole table so it can
+    check `CLASS_ORDER`; a class the table omits is judged as its default
+    (what `effective_size` falls back to), and a name that is not a class is
+    refused. Every refusal is returned, not the first, so an admin sees all
+    of them at once.
+    """
+    out: list[SizeRefusal] = []
+    for name in sorted(set(sizes) - set(CLASS_ORDER)):
+        out.append(SizeRefusal(name, "resource_class", None, f"resource_class is one of {CLASS_ORDER}"))
+    table = {name: sizes.get(name, _DEFAULT_SIZES[name]) for name in CLASS_ORDER}
+    for name in CLASS_ORDER:
+        size = table[name]
+        if not isinstance(size, ResourceSize):
+            out.append(SizeRefusal(name, "resource_class", None, "a size is a ResourceSize"))
+            continue
+        _check_one(name, size, out)
+    for smaller, larger in zip(CLASS_ORDER, CLASS_ORDER[1:]):
+        low, high = table[smaller], table[larger]
+        if not (isinstance(low, ResourceSize) and isinstance(high, ResourceSize)):
+            continue
+        for field_name in ("cpu_request", "memory_gib", "disk_gib"):
+            a, b = getattr(low, field_name), getattr(high, field_name)
+            if _number(a) and _number(b) and a > b:
+                bound = f"{smaller} <= {larger} in {field_name} ({smaller} {a:g}, {larger} {b:g})"
+                out.append(SizeRefusal(smaller, field_name, a, bound))
+                out.append(SizeRefusal(larger, field_name, b, bound))
+    return out
+
+
+@dataclass(frozen=True)
+class ModelClass:
+    """A model family a step may name (contract request 100, #1435).
+
+    The ID it stands for is Terraform's (`runner_models`, keyed by class),
+    held to the class by `admits` at the scheduler's and swarm-api's start.
+    A caller names the class, never the ID (invariant 10)."""
+
+    name: str
+    #: The family word in a model ID: claude-<family>-<major>[-<minor>].
+    family: str
+    #: The oldest generation a pin of this class may name.
+    min_major: int
+
+    def admits(self, model_id: str) -> bool:
+        if not isinstance(model_id, str):
+            return False
+        m = re.fullmatch(
+            rf"claude-{re.escape(self.family)}-(\d+)(?:-\d+)?(?:-\d{{8}})?", model_id
+        )
+        return m is not None and int(m.group(1)) >= self.min_major
+
+
+#: The classes a step may name. `opus` is the default of every classed
+#: profile: coding and implementation. `fable` is for planning ("Fable 5+"),
+#: `sonnet` and `haiku` for mechanical steps. Owner decision 2026-10-17. The
+#: floor is generation 5 for all four, since all four pins are generation-5
+#: models: a re-pin to an older generation fails at start instead of shipping.
+MODEL_CLASSES: dict[str, ModelClass] = {
+    "opus": ModelClass("opus", "opus", 5),
+    "fable": ModelClass("fable", "fable", 5),
+    "sonnet": ModelClass("sonnet", "sonnet", 5),
+    "haiku": ModelClass("haiku", "haiku", 5),
+}
+
+
+# ---------------------------------------------------------------------------
+# The inputs a caller may send a runner (contract request 25)
+# ---------------------------------------------------------------------------
+#
+# Accepted by the owner on #142, 2026-09-25: "RunnerProfile.inputs goes in the
+# frozen catalogue and the API enforces it for every caller, not only the
+# bridge." Invariant 10 is unchanged -- a caller names a profile and supplies
+# DATA, never an image, a command, a resource spec or a backend -- but an input
+# means something only to the runner that reads it, and to another runner it
+# can mean something else: `input.model` is read by the CLI runners and would
+# choose the model a `claude-code` agent runs. So what may be sent is declared
+# per profile, here, once. swarm-api refuses anything else at submission and
+# the plugin's bridge refuses it sooner; both read this, and neither keeps a
+# table of its own. Every profile declares: `browser` and `generic` last, by
+# contract request 32 (#218), which added the kinds their inputs needed.
+
+#: The kinds an input can be. `filename` is a bare file name with no
+#: directory: the worker keeps only the last path segment of an artifact name
+#: (`RunnerContext.artifact_path`), so `../x` would quietly become `x`.
+#:
+#: Added by contract request 32 (#218), for the two runners whose work IS
+#: their input:
+#:
+#: * `url`: an http or https URL a browser may open. See `url_refusal`.
+#: * `argument`: a value the generic runner appends to a catalogue argv, or
+#:   runs in -- `_ARGUMENT_SAFE` and the `..` refusal in
+#:   `agent_worker/runners/generic.py`, restated because the catalogue cannot
+#:   import the worker. Existence and "inside the workspace" stay the
+#:   runner's: only it has the workspace.
+#: * `list`: a JSON array. Its BOUNDS ARE ITS LENGTH, both required, as a
+#:   number's are; every element is `items`, and `items` may not itself be
+#:   `required` -- an element of a list is always present, so that flag on an
+#:   element has nothing to say.
+#: * `object`: a JSON object in one of the fixed shapes `variants` names,
+#:   chosen by its `type` key. A key its shape does not name is refused, as a
+#:   key a profile does not declare is.
+#: * `header`: a string that is, or could become, an HTTP header value:
+#:   printable ASCII only (0x20-0x7E), which by construction rules out CR and
+#:   LF and every other control character, so a caller cannot use it to
+#:   inject a second header. `maximum` is required, as it is for a list: the
+#:   bound is the string's length in characters.
+INPUT_KINDS = ("number", "integer", "boolean", "string", "filename", "url", "argument", "list", "object", "header")
+
+#: The signed 64-bit range, which is what Firestore stores an integer in.
+#: Python reads a JSON integer of any length, so an integer input whose bounds
+#: reached past this would accept a value the task write then fails to encode:
+#: a 500 at the store instead of a 422 at the door (the review of #213).
+INT64_MIN = -(2**63)
+INT64_MAX = 2**63 - 1
+
+#: `argument`: what `generic._ARGUMENT_SAFE` accepts, restated because the
+#: catalogue cannot import the worker. No leading dash, so no value becomes a
+#: flag; no leading slash; 256 characters at most.
+_ARGUMENT = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._\-/]{0,255}")
+
+#: The longest URL a browser task may name. Chromium's own limit is far
+#: larger; a task's URL is stored with the task and shown with it, and past
+#: this it is not a page address but a payload.
+_URL_MAX_CHARS = 2048
+
+#: A host, once `urlsplit` has extracted it and this module has lower-cased
+#: it, must be exactly this: letters, digits, `.` and `-`. Nothing else is
+#: plain ASCII host syntax, so this single check is what closes a
+#: percent-encoded host (`interna%6cl`), a host carrying a literal backslash,
+#: and a raw non-ASCII host at once -- see `url_refusal` and the entry's own
+#: prose for the three bypasses a security review found here on 2026-09-29.
+_HOST_CHARS = re.compile(r"[a-z0-9.-]+")
+
+#: Every network `url_refusal` refuses a *global* IPv4 address in, besides
+#: RFC 1918 and the rest of the ranges `ipaddress` itself would already
+#: refuse as non-global. Chosen as an explicit, named list instead of relying
+#: on `ipaddress.IPv4Address.is_global`, because that property's own
+#: membership is not pinned across the versions this platform runs: the
+#: CGNAT block (100.64.0.0/10) and 192.0.0.0/24 have both changed category
+#: in `ipaddress` between Python 3.11 and 3.13. An explicit list is what a
+#: reviewer can diff against RFC 1918, 5735 and 6890 directly, and it does
+#: not move under this module on a Python upgrade the platform did not make
+#: for this reason.
+_URL_REFUSED_V4_NETWORKS = (
+    ipaddress.ip_network("0.0.0.0/8"),  # "this network" (RFC 791)
+    ipaddress.ip_network("10.0.0.0/8"),  # RFC 1918
+    ipaddress.ip_network("100.64.0.0/10"),  # CGNAT, RFC 6598
+    ipaddress.ip_network("127.0.0.0/8"),  # loopback
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local, and the metadata server
+    ipaddress.ip_network("172.16.0.0/12"),  # RFC 1918
+    ipaddress.ip_network("192.0.0.0/24"),  # IETF protocol assignments
+    ipaddress.ip_network("192.0.2.0/24"),  # documentation (TEST-NET-1)
+    ipaddress.ip_network("192.168.0.0/16"),  # RFC 1918
+    ipaddress.ip_network("198.18.0.0/15"),  # benchmarking
+    ipaddress.ip_network("198.51.100.0/24"),  # documentation (TEST-NET-2)
+    ipaddress.ip_network("203.0.113.0/24"),  # documentation (TEST-NET-3)
+    ipaddress.ip_network("224.0.0.0/4"),  # multicast
+    ipaddress.ip_network("240.0.0.0/4"),  # reserved
+    ipaddress.ip_network("255.255.255.255/32"),  # limited broadcast
+)
+
+#: The IPv6 equivalent of `_URL_REFUSED_V4_NETWORKS`, for a literal IPv6 host
+#: that is neither IPv4-mapped nor a NAT64/6to4 embedding (both unwrapped to
+#: an IPv4 address and checked against the list above instead; see
+#: `_embedded_v4`).
+#:
+#: Teredo (`2001::/32`) also embeds IPv4 addresses, but is refused outright
+#: rather than unwrapped: its client IPv4 is XOR-obfuscated and its server
+#: IPv4 is a second embedded address, so unwrapping it would be this rule
+#: reproducing a tunnelling scheme instead of refusing it -- the subset of
+#: what Chromium accepts that `url_refusal`'s docstring states. Site-local,
+#: Teredo, `3fff::/20` and `5f00::/16` were added by contract request 57
+#: (#349), after the #345 security review found each accepted. Benchmarking
+#: `2001:2::/48` and the deprecated ORCHID `2001:10::/28`, the two parts of
+#: `2001::/23` the IANA registry calls not globally reachable besides Teredo,
+#: were added by contract request 61; the block's global assignments
+#: (`2001:1::1`, AMT, AS112, ORCHIDv2, Drone Remote ID) stay accepted.
+_URL_REFUSED_V6_NETWORKS = (
+    ipaddress.ip_network("::1/128"),  # loopback
+    ipaddress.ip_network("::/128"),  # unspecified
+    ipaddress.ip_network("100::/64"),  # discard-only, RFC 6666
+    ipaddress.ip_network("2001::/32"),  # Teredo, RFC 4380 (refused, not unwrapped)
+    ipaddress.ip_network("2001:2::/48"),  # benchmarking, RFC 5180 (request 61)
+    ipaddress.ip_network("2001:10::/28"),  # ORCHID, RFC 4843, deprecated by RFC 7343 (request 61)
+    ipaddress.ip_network("2001:db8::/32"),  # documentation
+    ipaddress.ip_network("3fff::/20"),  # documentation, RFC 9637
+    ipaddress.ip_network("5f00::/16"),  # SRv6 SIDs, RFC 9602; not globally routable
+    ipaddress.ip_network("fc00::/7"),  # unique local
+    ipaddress.ip_network("fe80::/10"),  # link-local
+    ipaddress.ip_network("fec0::/10"),  # site-local, deprecated by RFC 3879
+    ipaddress.ip_network("ff00::/8"),  # multicast
+)
+
+#: Private Google Access, which the worker's NetworkPolicy opens
+#: (kubernetes/network-policies/allow-egress.yaml, rule 3). These are global
+#: addresses by any definition, so they are refused explicitly rather than by
+#: `is_global`: the pod can reach them, but they are authenticated Google
+#: APIs, useless to a browser task without a token, and not what "the public
+#: internet" is meant to include.
+_URL_REFUSED_NETWORKS = (
+    ipaddress.ip_network("199.36.153.4/30"),
+    ipaddress.ip_network("199.36.153.8/30"),
+)
+
+#: Every IPv6 range that EMBEDS an IPv4 address, so a refused v4 address
+#: reachable through any of them would otherwise pass
+#: `_URL_REFUSED_V6_NETWORKS` unseen. IPv4-mapped (`::ffff:a.b.c.d`) is
+#: handled separately by `ipaddress.IPv6Address.ipv4_mapped`; the rest are
+#: unwrapped by `_embedded_v4`:
+#: * `64:ff9b::/96` -- NAT64, RFC 6052 (well-known prefix).
+#: * `64:ff9b:1::/48` -- NAT64, RFC 8215 (local-use prefix; the embedding
+#:   follows RFC 6052 section 2.2's PL48 layout: 48-bit prefix, 16 bits of
+#:   v4, an 8-bit zero field, 16 more bits of v4, 40-bit suffix).
+#: * `2002::/16` -- 6to4, RFC 3056.
+#: * `::ffff:0:0:0/96` -- "IPv4-translated", RFC 6052's SIIT form
+#:   (`::ffff:0:a.b.c.d`; note the extra `:0:` before the address, which is
+#:   what distinguishes it from IPv4-mapped).
+#: * `::/96` -- IPv4-compatible, deprecated (RFC 4291 says so; RFC 6540 says
+#:   not to originate or accept it) but still a parseable literal
+#:   (`::a9fe:a9fe`), so still refused here explicitly rather than assumed
+#:   gone.
+_URL_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+_URL_NAT64_LOCAL_PREFIX = ipaddress.ip_network("64:ff9b:1::/48")
+_URL_6TO4_PREFIX = ipaddress.ip_network("2002::/16")
+_URL_SIIT_PREFIX = ipaddress.ip_network("::ffff:0:0:0/96")
+_URL_IPV4_COMPATIBLE_PREFIX = ipaddress.ip_network("::/96")
+
+#: Names that are never a public page: GKE's metadata server is
+#: `metadata.google.internal`; `.local`/`.localhost` never leave the host or
+#: the cluster (`cluster.local`); and `.svc` is the short, no-FQDN-suffix
+#: form Kubernetes' own DNS resolves for a Service
+#: (`<service>.<namespace>.svc`, e.g. `kubernetes.default.svc`), which the
+#: pod's search path completes to `.svc.cluster.local` for any name under
+#: five dots (`ndots:5`) -- added 2026-09-29, after the owner found the
+#: dot-count rule this replaced still admitted it. See `url_refusal`'s
+#: docstring for what actually closes the general search-path gap; this
+#: suffix closes only the specific, well-known `.svc` shorthand.
+_URL_REFUSED_SUFFIXES = (".internal", ".local", ".localhost", ".svc")
+
+#: Names refused EXACTLY, not as suffixes (contract request 57, #349):
+#: `metadata.goog` is the metadata server's other name, and
+#: `localhost.localdomain` is the loopback name many resolvers still carry.
+#: Not a `.goog` suffix: `.goog` is a real gTLD Google serves public pages on,
+#: so a suffix would refuse public sites to catch one name.
+_URL_REFUSED_HOSTS = ("metadata.goog", "localhost.localdomain")
+
+#: How much of a refused value a refusal repeats. A caller who sent three
+#: hundred digits needs the bound, not the digits back. A value containing
+#: '@' is not repeated at all (`RunnerInput.check`, contract request 57).
+_SHOWN_VALUE_CHARS = 40
+
+
+def _bound(value: float) -> str:
+    """`33554432`, not `3.35544e+07`: a caller copies a bound, and `:g` rounds it."""
+    return str(int(value)) if float(value).is_integer() else f"{value:g}"
+
+
+def _embedded_v4(address: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """The IPv4 address a NAT64, 6to4, SIIT or IPv4-compatible address
+    embeds, or None. IPv4-mapped is handled by the caller
+    (`address.ipv4_mapped`) and never reaches here."""
+    packed = address.packed
+    if address in _URL_NAT64_PREFIX:
+        return ipaddress.IPv4Address(packed[12:16])
+    if address in _URL_NAT64_LOCAL_PREFIX:
+        # RFC 6052 section 2.2, PL48: prefix(6 bytes) + v4-hi(2) + u(1, zero)
+        # + v4-lo(2) + suffix(5). The `u` byte at packed[8] is skipped.
+        return ipaddress.IPv4Address(bytes([packed[6], packed[7], packed[9], packed[10]]))
+    if address in _URL_6TO4_PREFIX:
+        return ipaddress.IPv4Address(packed[2:6])
+    if address in _URL_SIIT_PREFIX:
+        return ipaddress.IPv4Address(packed[12:16])
+    if address in _URL_IPV4_COMPATIBLE_PREFIX:
+        return ipaddress.IPv4Address(packed[12:16])
+    return None
+
+
+def url_refusal(value: str) -> str:
+    """Why `value` is not a URL a browser task may open, or "" when it is.
+
+    One home for the rule, so swarm-api, the plugin's bridge and the browser
+    runner (`_check_url`, which today checks the scheme and that there is a
+    host) give one answer. Not one of #218's three questions -- declaring
+    `url` as a kind at all raises it; see the entry's prose in
+    docs/contract-change-requests.md for why, and for four bypasses a
+    security review found and closed here on 2026-09-29.
+
+    THIS IS NOT THE SSRF CONTROL, AND CANNOT BE. It sees the URL a caller
+    typed, never the page's redirects, its subresources, its script's
+    requests, or what a name resolves to when the pod asks. The control is the
+    network: the worker's NetworkPolicy drops every private range but the
+    metadata server, and the metadata server answers only a request carrying
+    `Metadata-Flavor: Google`, which a navigation does not send. What this
+    buys is a 422 naming the reason, instead of a task that waits out
+    `timeout_ms` against an address the network silently drops (Dataplane V2
+    drops; the sender sees a timeout), and a URL with a password in it that
+    is never stored with the task, served by the API or shown in the UI.
+
+    Refuses rather than normalises. Every check below runs on the raw string
+    or on `urlsplit`'s own view of it: a host that is not already plain ASCII
+    (`[a-z0-9.-]+` once lower-cased) is refused outright rather than
+    IDNA/UTS46-normalised and re-checked, because a normalising rule has to
+    track whatever WHATWG host-parsing Chromium does, forever, while a
+    refusing rule only has to be a subset of what Chromium accepts. A caller
+    whose real target is an internationalised domain sends its ASCII
+    (punycode) form, which the site already answers to -- the owner accepted
+    this as the rule on 2026-09-29 (no separate IDN allowance).
+
+    An underscore is refused by the same `[a-z0-9.-]+` check as any other
+    character outside that set, with no separate rule: RFC 952/1035 do not
+    allow one in a hostname label at all (some internal DNS -- SRV records,
+    `_service._proto.name` -- uses one anyway, which is one more reason a
+    browser task should not be handed a host carrying one).
+
+    WHAT THIS DOES NOT DO, as of the owner's decision on 2026-09-29: it does
+    not refuse a host by dot count. An earlier revision refused any non-IP
+    host with fewer than two dots, which caught `kubernetes.default` and
+    `swarm-api.swarm-system` but also every bare apex domain a browser task
+    might legitimately target (`github.com`, `example.com` both have exactly
+    one dot) -- for a browser profile, refusing those is refusing the
+    profile's main use. It was also incomplete on its own terms: a three-label
+    name ending in `.svc` (`kubernetes.default.svc`) has two dots and was
+    never caught by it either. The general gap -- GKE's `ndots:5` pod
+    resolver tries every search domain before the absolute name for anything
+    under five dots -- is NOT closed by any check in this function, and
+    cannot be from here: it sees the string the caller sent, never what the
+    pod's resolver does with it. The real controls are the worker's
+    NetworkPolicy (which does not depend on what a name resolves to), the
+    pod's own DNS config (tracked as #341: set `ndots:1` and drop search
+    domains, which removes the search-path trial entirely rather than
+    guessing at every name shape it could produce), and the planned
+    `context.route` guard (see the entry's *Preconditions*). What this
+    function still refuses is the single-label case (`kubernetes`,
+    `metadata`), which resolves only through the cluster's search path and
+    is never a real page address, and the specific `.svc` shorthand below,
+    which is the one case named in the review that is also a fixed, known
+    string rather than an open-ended shape.
+
+    ADDED BY CONTRACT REQUEST 57 (#349), after the #345 security review found
+    each accepted: site-local `fec0::/10`, Teredo `2001::/32`, documentation
+    `3fff::/20` and SRv6 `5f00::/16` (`_URL_REFUSED_V6_NETWORKS`); the exact
+    names `metadata.goog` and `localhost.localdomain` (`_URL_REFUSED_HOSTS`);
+    and a host ending in two dots. A host loses at most ONE trailing dot, so
+    the fully-qualified `example.com.` is accepted while `example.com..`
+    reaches the empty-label check and is refused as `a..b` is. The same
+    request makes `RunnerInput.check` never repeat a value containing '@',
+    which is what keeps "never served by the API" true of a refused URL too.
+
+    ADDED BY CONTRACT REQUEST 61 (#346 box 42): benchmarking `2001:2::/48`
+    (RFC 5180) and the deprecated ORCHID `2001:10::/28` (RFC 4843), the rest
+    of `2001::/23` that is not globally reachable.
+    """
+    if len(value) > _URL_MAX_CHARS:
+        return f"it is longer than {_URL_MAX_CHARS} characters"
+    if any(ch < " " or ch == "\x7f" or ord(ch) > 0x7E for ch in value):
+        return "it contains a space, a control character or a non-ASCII character"
+    if "\\" in value:
+        return "it contains a backslash, which a browser treats as a host or path separator"
+    try:
+        parsed = urlsplit(value)
+        parsed.port  # noqa: B018 -- raises ValueError on a port out of range
+    except ValueError:
+        return "it is not a URL"
+    if parsed.scheme not in ("http", "https"):
+        return "only http and https are opened"
+    if parsed.username is not None or parsed.password is not None:
+        return "it carries credentials, which would be stored with the task and shown with it"
+    host = parsed.hostname or ""
+    # At most ONE trailing dot: `example.com.` is a fully-qualified name, but
+    # `.rstrip(".")` also made `example.com..` into an accepted host while
+    # `a..b` was refused (request 57). A second dot is an empty label.
+    host = host.removesuffix(".")
+    if not host:
+        return "it has no host"
+    # An IP LITERAL IS CHECKED BEFORE THE HOST-CHARACTER RULE, not after: an
+    # IPv6 literal's `hostname` is unbracketed and colon-bearing
+    # (`64:ff9b::808:808`), which `_HOST_CHARS` never matches, and `ipaddress`
+    # itself already rejects a backslash, a percent sign or a non-ASCII
+    # character in an address -- there is nothing left for a second charset
+    # check to catch there.
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is None:
+        if not _HOST_CHARS.fullmatch(host):
+            return (
+                "its host is not letters, digits, '.' and '-' once lower-cased -- a "
+                "browser's own host parsing accepts more than this, including a "
+                "percent-encoded or backslash-bearing host, and this module refuses "
+                "rather than reproduces it"
+            )
+        labels = host.split(".")
+        if any(label == "" for label in labels):
+            return "its host has an empty label ('..' in it, or it starts or ends with '.')"
+        if any(label.strip("-") == "" for label in labels):
+            return "its host has a label made only of hyphens, which is not a valid domain label"
+        # A browser reads a host whose last label is a number (`2852039166`,
+        # `0xa9.254.169.254`) as an IPv4 address in another notation, which
+        # `ip_address` does not parse. No public suffix starts with a digit.
+        if labels[-1][:1].isdigit():
+            return "its host ends in a number, which a browser reads as an address"
+        if not labels[-1][:1].isalpha():
+            return f"its host's last label starts with {labels[-1][:1]!r}, not a letter"
+        # SINGLE LABEL ONLY, not a general dot-count rule: see the docstring
+        # above for why the broader rule this replaced was both too costly
+        # (it refused bare apex domains) and still incomplete.
+        if len(labels) < 2:
+            return "its host is a single label, which only the cluster's search path resolves"
+        if host.endswith(_URL_REFUSED_SUFFIXES):
+            return "its host is a cluster or node-local name"
+        if host in _URL_REFUSED_HOSTS:
+            return "its host is the metadata server's other name or a loopback name"
+        return ""
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        else:
+            embedded = _embedded_v4(address)
+            if embedded is not None:
+                address = embedded
+    if isinstance(address, ipaddress.IPv4Address):
+        if any(address in net for net in _URL_REFUSED_V4_NETWORKS) or any(
+            address in net for net in _URL_REFUSED_NETWORKS
+        ):
+            return "its host is not a public address"
+    elif any(address in net for net in _URL_REFUSED_V6_NETWORKS):
+        return "its host is not a public address"
+    return ""
+
+
+class InputRefused(ValueError):
+    """An input a profile does not accept, and why.
+
+    `key` is the first key refused and `keys` every one; `expected` is the
+    declared bound a value broke, or None when the key is not declared at all
+    or is required and was not sent.
+    The message names the key and the bound, and never repeats a value longer
+    than it has to.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        key: str,
+        keys: tuple[str, ...] = (),
+        expected: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.key = key
+        self.keys = keys or (key,)
+        self.expected = expected
+
+
+@dataclass(frozen=True)
+class RunnerInput:
+    """One key of a task's `input` that a runner reads, and what it must be.
+
+    The bounds are what the runner can do anything useful with. A value outside
+    them is refused at submission rather than coerced, or crashed on, after
+    admission has spent a lease on it.
+
+    A NUMBER HAS BOTH BOUNDS, and an integer's bounds lie inside the signed
+    64-bit range. A declaration without them is refused here, not left to
+    review: the mock's `steps`, `sleep_seconds` and `cpu_burn_seconds` were
+    declared with a floor only, so `steps: 10**30` passed every check and
+    failed at the Firestore write (the review of #213).
+    """
+
+    kind: str
+    minimum: float | None = None
+    maximum: float | None = None
+    #: What the runner does with it, in the runner's own terms.
+    means: str = ""
+    #: Values inside the bounds that are refused all the same, each with what
+    #: the platform would read it as instead -- the mock's exit codes 77, 78
+    #: and 143. Pairs, not a dict, so the declaration stays hashable.
+    refused: tuple[tuple[Any, str], ...] = ()
+    #: A `string` must be one of these, when any are named: a name from a
+    #: catalogue the runner owns, such as the generic runner's commands.
+    choices: tuple[str, ...] = ()
+    #: The caller must send this key. Read for a profile's keys and for an
+    #: object's fields. Refused on a list's `items`: an element of a list is
+    #: always present, so `required` on it has nothing to say.
+    required: bool = False
+    #: What each element of a `list` must be.
+    items: RunnerInput | None = None
+    #: An `object`'s shapes: the value of its `type` key, to the fields that
+    #: shape takes besides `type`. Excluded from the hash, as
+    #: `RunnerProfile.inputs` is; frozen read-only below.
+    variants: Mapping[str, Mapping[str, RunnerInput]] | None = field(default=None, hash=False)
+
+    def __post_init__(self) -> None:
+        if self.kind not in INPUT_KINDS:
+            raise ValueError(f"input kind {self.kind!r} is not one of {INPUT_KINDS}")
+        numeric = self.kind in ("number", "integer")
+        #: `list` and `header` MUST give both bounds, like a number: without
+        #: them a list or a header string is unbounded until the task write
+        #: fails. `string` MAY give a `maximum` -- a length bound in
+        #: characters, for keys such as `selector`, `text` and `key`, whose
+        #: content the runner does not otherwise constrain -- and when it
+        #: does, an omitted `minimum` defaults to 0 rather than being
+        #: required, because most bounded strings have no meaningful floor.
+        strictly_bounded = numeric or self.kind in ("list", "header")
+        length_boundable = strictly_bounded or self.kind == "string"
+        if not length_boundable and (self.minimum is not None or self.maximum is not None):
+            raise ValueError(
+                f"a {self.kind} input has no bounds; only a number, a list, a header or a "
+                "string does"
+            )
+        if not numeric and self.refused:
+            raise ValueError(f"a {self.kind} input refuses no values; only a number does")
+        if strictly_bounded and (self.minimum is None or self.maximum is None):
+            raise ValueError(
+                f"a {self.kind} input declares both a minimum and a maximum; without "
+                "one, a JSON number -- or a string, for a header -- of any size passes "
+                "and fails at the store instead"
+            )
+        if self.kind == "string" and self.maximum is not None and self.minimum is None:
+            object.__setattr__(self, "minimum", 0.0)
+        if self.kind in ("list", "header") and not (
+            float(self.minimum).is_integer() and float(self.maximum).is_integer() and self.minimum >= 0
+        ):
+            raise ValueError(f"a {self.kind}'s bounds are its length: whole numbers, from 0")
+        if self.choices and self.kind != "string":
+            raise ValueError(f"a {self.kind} input has no choices; only a string does")
+        if (self.kind == "list") != isinstance(self.items, RunnerInput):
+            raise ValueError("a list input names what its elements are, and nothing else does")
+        if self.kind == "list" and self.items is not None and self.items.required:
+            raise ValueError(
+                "a list's items are always present; `required` on them is refused"
+            )
+        if (self.kind == "object") != bool(self.variants):
+            raise ValueError("an object input names its shapes, and nothing else does")
+        if self.variants:
+            frozen: dict[str, Mapping[str, RunnerInput]] = {}
+            for shape, fields in self.variants.items():
+                for name, declared in fields.items():
+                    if name == "type" or not isinstance(declared, RunnerInput):
+                        raise ValueError(
+                            f"shape {shape!r}: field {name!r} must be a RunnerInput, "
+                            "and `type` is the shape's name, not a field"
+                        )
+                frozen[shape] = MappingProxyType(dict(fields))
+            object.__setattr__(self, "variants", MappingProxyType(frozen))
+        for bound in (self.minimum, self.maximum):
+            if bound is not None and not math.isfinite(bound):
+                raise ValueError("an input's bounds must be finite numbers")
+        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+            raise ValueError(f"input bounds {self.minimum}..{self.maximum} admit nothing")
+        # Both bounds are set for an integer by now: the check above refused it.
+        if self.kind == "integer" and not (
+            self.minimum >= INT64_MIN and self.maximum <= INT64_MAX
+        ):
+            raise ValueError(
+                f"integer input bounds {self.minimum}..{self.maximum} leave the signed "
+                "64-bit range Firestore stores"
+            )
+        for _, reads_as in self.refused:
+            if not reads_as:
+                raise ValueError("a refused value must say what the platform would read it as")
+
+    def describe(self) -> str:
+        """`integer 1..255 except 77, 78, 143`: the kind and the bound, as a caller reads it."""
+        # `__post_init__` gives a number both bounds and anything else neither.
+        if self.kind == "list" and self.items is not None:
+            return f"list of {_bound(self.minimum)}..{_bound(self.maximum)}, each {self.items.describe()}"
+        if self.variants:
+            return f"object, `type` one of {' | '.join(self.variants)}"
+        if self.minimum is not None and self.maximum is not None:
+            text = f"{self.kind} {_bound(self.minimum)}..{_bound(self.maximum)}"
+        else:
+            text = self.kind
+        if self.choices:
+            text += f", one of {' | '.join(self.choices)}"
+        if self.refused:
+            text += " except " + ", ".join(str(value) for value, _ in self.refused)
+        return text
+
+    def check(self, key: str, value: Any) -> Any:
+        """`value`, normalised (an integral float becomes an int), or InputRefused."""
+        expected = self.describe()
+        article = "an" if expected[0] in "aeio" else "a"  # "a url"
+        wanted = f"input {key!r} must be {article} {expected}"
+
+        def refuse(detail: str = "") -> InputRefused:
+            shown = repr(value)
+            # A VALUE CONTAINING '@' IS NEVER REPEATED, of any kind (contract
+            # request 57, #349): a URL's userinfo sits before its '@', and an
+            # object or list refusal repeats a repr that can hold a nested
+            # `url`. Blunt on purpose. Masking only the userinfo needs a parse
+            # of exactly the URL being refused -- the one a parser already
+            # disagreed about -- and `http:user:pw@host` has no `//` for a
+            # pattern to anchor on. Not repeating it at all cannot leak, and
+            # keeps `url_refusal`'s "never served by the API" true.
+            if "@" in shown:
+                shown = f"<a value of {len(shown)} characters, not repeated because it contains '@'>"
+            elif len(shown) > _SHOWN_VALUE_CHARS:
+                shown = f"{shown[:_SHOWN_VALUE_CHARS]}... ({len(shown)} characters)"
+            return InputRefused(
+                f"{wanted}, not {shown}{detail}", key=key, expected=expected
+            )
+
+        if self.kind in ("number", "integer"):
+            # A bool is an int to Python and is refused: `sleep_seconds: true`
+            # is a caller who meant something else.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise refuse()
+            # json.loads reads NaN and Infinity, and every comparison with NaN
+            # is False, so the bounds below would let it straight through.
+            if isinstance(value, float) and not math.isfinite(value):
+                raise refuse(" -- NaN and Infinity are not numbers a runner can use")
+            if self.kind == "integer":
+                if isinstance(value, float):
+                    if not value.is_integer():
+                        raise refuse()
+                    value = int(value)
+            if self.minimum is not None and value < self.minimum:
+                raise refuse()
+            if self.maximum is not None and value > self.maximum:
+                raise refuse()
+            for refused, reads_as in self.refused:
+                if value == refused:
+                    raise refuse(f": {reads_as}")
+            return value
+        if self.kind == "boolean":
+            if not isinstance(value, bool):
+                raise refuse(" (true or false)")
+            return value
+        if self.kind == "list":
+            if not isinstance(value, list):
+                raise refuse()
+            if not self.minimum <= len(value) <= self.maximum:
+                raise refuse(f" -- it has {len(value)} entries")
+            # Named by position, so a refusal says WHICH element: `actions[3].url`.
+            return [self.items.check(f"{key}[{index}]", item) for index, item in enumerate(value)]
+        if self.kind == "object":
+            if not isinstance(value, Mapping):
+                raise refuse()
+            shape = value.get("type")
+            if not isinstance(shape, str) or shape not in self.variants:
+                raise refuse()
+            fields = self.variants[shape]
+            unknown = sorted(set(value) - set(fields) - {"type"})
+            if unknown:
+                raise refuse(f" -- a {shape!r} takes {sorted(fields) or 'no field'}, not {unknown}")
+            missing = sorted(name for name, spec in fields.items() if spec.required and name not in value)
+            if missing:
+                raise refuse(f" -- a {shape!r} needs {missing}")
+            checked = {
+                name: fields[name].check(f"{key}.{name}", value[name])
+                for name in sorted(value)
+                if name != "type"
+            }
+            return {"type": shape, **checked}
+        if not isinstance(value, str):
+            raise refuse()
+        if self.kind == "filename" and (
+            not value or value in (".", "..") or "/" in value or "\\" in value or "\x00" in value
+        ):
+            raise refuse(" -- a bare file name, with no directory")
+        if self.kind == "argument" and (not _ARGUMENT.fullmatch(value) or ".." in value):
+            raise refuse(
+                " -- letters, digits, '.', '_', '-' and '/', starting with none of '-' or "
+                "'/', at most 256 characters, and no '..'"
+            )
+        if self.kind == "url":
+            reason = url_refusal(value)
+            if reason:
+                raise refuse(f" -- {reason}")
+        if self.kind == "header":
+            if not (self.minimum <= len(value) <= self.maximum):
+                raise refuse(f" -- it has {len(value)} characters")
+            if any(ch < " " or ch == "\x7f" or ord(ch) > 0x7E for ch in value):
+                raise refuse(" -- printable ASCII only (0x20-0x7E), which rules out CR and LF")
+        if self.kind == "string" and self.maximum is not None and not (
+            self.minimum <= len(value) <= self.maximum
+        ):
+            raise refuse(f" -- it has {len(value)} characters")
+        if self.choices and value not in self.choices:
+            raise refuse()
+        return value
+
+
+def _frozen_inputs(declared: Mapping[str, RunnerInput]) -> Mapping[str, RunnerInput]:
+    """A read-only copy, so no caller can widen a profile's declaration in place."""
+    return MappingProxyType(dict(declared))
+
+
+#: Contract request 80 (workspace secrets, docs/design/workspace-secrets.md
+#: §2.1): the kinds a workspace secret can be. A kind decides the value's
+#: SHAPE (basic_auth is a JSON object of exactly username and password,
+#: oauth_client of exactly client_id and client_secret) and which slots may
+#: take it; never behaviour. `forge_token` is listed so a forge row has a
+#: kind, and is accepted by no profile or tool slot (owner rule 2026-09-25:
+#: a forge token is never readable by the agent).
+SECRET_KINDS: tuple[str, ...] = (
+    "api_key", "bearer_token", "basic_auth", "oauth_client", "opaque", "forge_token",
+)
+_SLOT_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+#: A runtime capability's name (`RunnerProfile.runtime_capabilities`,
+#: contract request 136): the shape of `swarm_api.workcontract`'s names.
+_CAPABILITY_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+
+@dataclass(frozen=True)
+class SecretSlot:
+    """A place a consumer takes a workspace secret (design §2.4).
+
+    The slot's NAME is the key it is declared under and becomes a directory
+    (`private/secrets/<slot>/<name>`, design §4.1), so it is a short
+    lower-case word. A grant names one slot; a release lands each secret in
+    its grant's slot and nowhere else."""
+
+    kinds: tuple[str, ...]
+    means: str
+    #: True when the consumer cannot run without it: the task parks
+    #: CREDENTIAL_MISSING before it leases, at no cost (invariant 1), and
+    #: starts by itself once a grant is ticked. False (the default) starts
+    #: without it.
+    required: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.kinds:
+            raise ValueError("a secret slot accepts at least one kind")
+        unknown = [k for k in self.kinds if k not in SECRET_KINDS]
+        if unknown:
+            raise ValueError(f"secret slot: unknown kind(s) {unknown}")
+        if "forge_token" in self.kinds:
+            raise ValueError(
+                "secret slot: a forge token is never granted to a profile or a tool "
+                "(contract request 80)"
+            )
+        if not self.means.strip():
+            raise ValueError("secret slot: `means` says what the consumer does with it")
+
+
+#: The slot every agent profile declares: any non-forge kind, one 0600 file
+#: per secret, listed by name in the manifest the runner is pointed at.
+_FILES_SLOT = SecretSlot(
+    kinds=("api_key", "bearer_token", "basic_auth", "oauth_client", "opaque"),
+    means="one file per granted secret under private/secrets/files/, named in "
+          "the manifest at $SWARM_SECRETS_MANIFEST; never in the environment",
+)
+
+#: CONTRACT REQUEST 117, accepted by the owner 2026-10-26 (CF-ACCESS-TOKEN, #2442):
+#: a Cloudflare Access service token, declared on `claude-code-browser` only.
+#: Optional: a step whose workspace granted none starts and reaches the site
+#: signed out.
+_CF_ACCESS_SLOT = SecretSlot(
+    kinds=("oauth_client",),
+    means="a Cloudflare Access service token ({client_id, client_secret}); the live "
+          "gate sends it as CF-Access-Client-Id and CF-Access-Client-Secret to the "
+          "hosts its grant lists and to no other; never a file, never in the "
+          "agent's environment",
+)
+
+
+@dataclass(frozen=True)
+class RunnerProfile:
+    name: str
+    image: str
+    resource_class: str
+    backend: Backend
+    #: The argv of the RUNNER, which the worker lifecycle starts as a supervised
+    #: CHILD (`agent_worker.lifecycle._runner_argv`). NEVER a container command:
+    #: both worker images' ENTRYPOINT is the lifecycle (`tini -- python -m
+    #: agent_worker`), and a container `command` replaces it, switching off
+    #: fencing, cancel, heartbeat, checkpointing and lease release at once. A
+    #: dispatcher names the profile in RUNNER_PROFILE and sets no command.
+    #:
+    #: Called `command` until 2026-09-24. Under that name both dispatchers put
+    #: it on the container, and every GKE pod ran the bare runner (incident
+    #: wf_ebb3ab2d65664707a559). Renamed by contract request 18, accepted by
+    #: the owner, so `list(profile.command)` can no longer be written.
+    runner_argv: tuple[str, ...]
+    #: Provider whose quota and credentials this runner consumes. None means the
+    #: runner needs no external provider, so it works before a tenant registers
+    #: any key -- which is what keeps the mock smoke path always available.
+    provider: str | None = None
+    secrets: tuple[str, ...] = ()
+    #: True when `secrets` lists INTERCHANGEABLE credentials rather than a set
+    #: that must all be present. claude-code takes either metered API access or
+    #: a subscription token, never both, so requiring all of them would refuse a
+    #: tenant who supplied exactly the one they pay for.
+    secrets_any_of: bool = False
+    #: True when this runner DECLARES what an attempt cost rather than measuring
+    #: it from a provider's bill. The mock reports $0.00 on purpose; a reader
+    #: has to be able to tell that deliberate zero from a real one, so every
+    #: cost figure over a declared profile is marked as declared
+    #: (`swarm_api.outcomes`, "Reported cost · not a bill").
+    #:
+    #: Contract request 24, ACCEPTED by the owner on 2026-09-25 (#185, the
+    #: decisions comment, item 9). Until then the outcome ledger named `mock`
+    #: in a set of its own, a restatement of the catalogue held to it only by
+    #: a test.
+    cost_declared: bool = False
+    #: Whether this profile may be dispatched AT ALL.
+    #:
+    #: A profile is disabled, not deleted, when its provider stops working.
+    #: Deleting the entry would refuse new work (which is the point) but also
+    #: strand anything already queued against it, and break the catalogue
+    #: lookup for every task document that still names it -- 4 exist for
+    #: `codex` today. The flag keeps the profile readable and makes re-enabling
+    #: one word.
+    #:
+    #: `disabled_reason` is required when this is False and is served to the
+    #: caller. "unknown runner_profile" would be a lie: the profile is known,
+    #: it is refused, and a caller who cannot tell those apart goes looking for
+    #: a typo that is not there.
+    available: bool = True
+    disabled_reason: str = ""
+    supports_checkpoint: bool = True
+    spot: SpotStrategy = SpotStrategy.ON_DEMAND_ONLY
+    timeout_seconds: int = 3600
+    #: Seconds between mandatory workspace checkpoints. This is what replaces
+    #: live migration on the Cloud Run ephemeral-disk path.
+    checkpoint_interval_seconds: int = 120
+    #: The keys of `input`, besides `prompt`, a caller may set for this
+    #: profile, each with its kind and bounds (contract request 25). For a
+    #: profile that declares, swarm-api refuses any other key, from every
+    #: caller, with 422 `invalid_input`; the plugin's bridge reads the same
+    #: declaration to refuse it before it travels. `check_inputs` below is the
+    #: rule both call, and the one place each of the three meanings is read.
+    #:
+    #: EMPTY IS A DECLARATION: the profile takes its prompt and nothing else.
+    #: That is what closes `input.model` on `claude-code`, which its runner
+    #: would pass as `--model`.
+    #:
+    #: THERE IS NO "NOT DECLARED YET". Until contract request 32 (#218) this
+    #: field could be None, for `browser` and `generic`, and then only the
+    #: input's size was bounded -- an amendment to request 25 the owner
+    #: confirmed on 2026-09-26 as the state until #218 was decided. Both
+    #: declare now, so the type is the one request 25 was accepted with.
+    #:
+    #: Excluded from the hash: a mapping is not hashable, and a profile's
+    #: identity is its name.
+    inputs: Mapping[str, RunnerInput] = field(default_factory=dict, hash=False)
+    #: When set, the lifecycle performs this action itself and starts no
+    #: runner child, so no agent ever runs under this profile's Job identity.
+    #: `runner_argv` must then be empty, and it must be non-empty otherwise.
+    #: Contract request 33, ACCEPTED by the owner on 2026-10-01.
+    worker_action: WorkerAction | None = None
+    #: When True, the lifecycle never restores a checkpoint for this
+    #: profile, on any attempt, not only the first. False (the default)
+    #: preserves today's behaviour for every existing profile. `review`
+    #: must never resume an agent inside a workspace a previous attempt
+    #: left behind -- its whole judgement depends on seeing the checked-out
+    #: head honestly (merge-step.md's own threat model, S0).
+    #:
+    #: Contract request 36, ACCEPTED by the owner on 2026-10-01. The name is
+    #: the owner's choice of 2026-09-30 over `restore_on_retry`, which read as
+    #: "restore on attempt 1, skip only on retries". Checkpointing itself
+    #: stays on (invariant 8); only the restore is skipped.
+    never_restore_checkpoint: bool = False
+    #: True when this profile's pod runs the live browser: a platform-launched
+    #: Chromium in a display sidecar that a member of the task's tenant can
+    #: watch and, to sign in, take control of (docs/design/live-browser.md).
+    #: A catalogue property, never a caller's: a caller names a profile, and
+    #: cannot ask for a live browser on another one (invariant 10). Valid only
+    #: on a profile whose backend is GKE_AUTOPILOT, stated, not AUTO: the
+    #: sidecar and its second uid exist only in the GKE manifest, and AUTO
+    #: resolves the `browser` class to Cloud Run. Contract request 71 (LB-D),
+    #: accepted by the owner 2026-10-11 (#1030).
+    live_browser: bool = False
+    #: Contract request 80: the workspace-secret slots this profile's
+    #: attempts may be released into, by slot name. Empty (the default)
+    #: means a grant to `profile:<name>` is refused at write time. NOT the
+    #: provider key (`secrets` above, unchanged). Excluded from the hash, as
+    #: `inputs` is: a mapping is not hashable.
+    secret_slots: Mapping[str, SecretSlot] = field(default_factory=dict, hash=False)
+    #: True when no container ever runs this profile: the control plane
+    #: ends its tasks itself (docs/design/human-steps.md, `await-input`).
+    #: The scheduler never leases one; admission parks it before any
+    #: capacity check. Such a profile has no runner, no worker action, no
+    #: provider, no secrets, no slots, no live browser and no declared
+    #: inputs besides `prompt`, and has no Job or pod (Terraform's
+    #: `profiles_without_a_job`). Contract request 93 (HW-CONTRACT, human
+    #: steps request B), accepted by the owner 2026-10-17.
+    control_plane: bool = False
+    #: Contract request 101 (#1435): the MODEL_CLASSES names a step on this
+    #: profile may ask for, and the one it runs when it asks for none. Both
+    #: empty on a profile that runs no Claude model. The IDs are
+    #: `runner_models` in terraform/infra/locals.tf. Last in the class, so no
+    #: positional construction of a profile changes meaning.
+    model_classes: tuple[str, ...] = ()
+    default_model_class: str | None = None
+    #: Contract request 133 (CONTRACT-MAXTURNS, part of #2524), accepted by
+    #: the owner 2 November 2026. Whether this profile's runner passes a turn
+    #: cap to its agent CLI (claude_code: `--max-turns`). False: swarm-api
+    #: refuses a step's `max_turns` for it, because a cap the runner ignores
+    #: is a promise nothing keeps.
+    supports_max_turns: bool = False
+    #: The most turns an attempt on this profile may run, and the cap for a
+    #: step that names none. None: no cap (today's behaviour). Only read when
+    #: `supports_max_turns`. Last in the class, after the model classes, so no
+    #: positional construction of a profile changes meaning.
+    max_turns: int | None = None
+    #: Contract request 136 (AQ-WORK-CONTRACT, part of #2688), accepted by the
+    #: owner 3 November 2026. The runtime capabilities this profile's runner
+    #: provides (`dom_automation`, `screenshots`, `write_isolation` ...), each
+    #: a name from `swarm_api.workcontract.RUNTIME_CAPABILITIES`, so swarm-api
+    #: can refuse a strict work contract whose capabilities its profile does
+    #: not provide. Names only, never a binary or a path (invariant 10). Empty
+    #: on every profile until the routing package fills them in; each
+    #: catalogue entry states its value, so filling one in is an edit to that
+    #: profile. Last in the class, so no positional construction changes meaning.
+    #:
+    #: Contract request 143 (managed plugins P4, docs/design/managed-plugins.md
+    #: section 5, accepted by the owner 2026-11-06) fills in the five
+    #: claude-code profiles with _CLAUDE_PLUGIN_CAPABILITIES.
+    runtime_capabilities: tuple[str, ...] = ()
+    #: The class the platform runs this profile's steps at when the step
+    #: builds (a stage in `BUILD_STAGES`), chosen by `resource_class_for_stage`
+    #: from the stage its compiler writes, never from a caller (invariant 10).
+    #: None: every stage runs `resource_class`. GKE only, since only a GKE pod
+    #: renders the class's CPU limit. Contract request 135, accepted by the
+    #: owner 2026-11-13: `builder` on `claude-code`.
+    build_resource_class: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.control_plane:
+            # Contract request 93: nothing runs this profile, anywhere, so a
+            # field that only means something to a runner, a worker or a pod
+            # is a declaration nobody would honour.
+            for declared, set_ in (
+                ("runner_argv", bool(self.runner_argv)),
+                ("worker_action", self.worker_action is not None),
+                ("provider", self.provider is not None),
+                ("secrets", bool(self.secrets)),
+                ("secret_slots", bool(self.secret_slots)),
+                ("inputs", bool(self.inputs)),
+                ("live_browser", self.live_browser),
+            ):
+                if set_:
+                    raise ValueError(
+                        f"runner {self.name}: a control_plane profile is never run, so it "
+                        f"sets no {declared} (contract request 93)"
+                    )
+        if self.worker_action is not None and self.runner_argv:
+            raise ValueError(
+                f"runner {self.name}: a worker_action profile starts no runner, so its "
+                "runner_argv must be empty (contract request 33)"
+            )
+        if self.worker_action is None and not self.runner_argv and not self.control_plane:
+            raise ValueError(
+                f"runner {self.name}: an empty runner_argv starts nothing; only a "
+                "worker_action or control_plane profile may have one (contract "
+                "requests 33 and 93)"
+            )
+        if self.worker_action is not None:
+            # Contract request 60 (#453): a worker action reads its credential
+            # itself, at action time, and the lifecycle dispatches on the enum
+            # by identity. Item 2 is scoped to POST_VERDICT, the one action
+            # that runs as its own Cloud Run Job's service account: merge runs
+            # as the tenant's worker account on either backend (requests 47
+            # and 66), so refusing GKE for every action would refuse `merge`.
+            if not isinstance(self.worker_action, WorkerAction):
+                raise ValueError(
+                    f"runner {self.name}: worker_action must be a WorkerAction, not a "
+                    f"{type(self.worker_action).__name__} (contract request 60)"
+                )
+            if self.secrets:
+                raise ValueError(
+                    f"runner {self.name}: a worker_action profile mounts no secret; the "
+                    "worker reads its credential at action time (contract request 60)"
+                )
+            if (
+                self.worker_action is WorkerAction.POST_VERDICT
+                and self.backend is not Backend.CLOUD_RUN_JOB
+            ):
+                raise ValueError(
+                    f"runner {self.name}: a post_verdict profile runs as its own Cloud "
+                    "Run Job's service account, so its backend is CLOUD_RUN_JOB, not "
+                    f"{self.backend.value} (contract request 60)"
+                )
+            if self.secret_slots:
+                raise ValueError(
+                    f"runner {self.name}: a worker_action profile runs no agent and "
+                    "takes no workspace secret (contract request 80)"
+                )
+        for slot, declared_slot in self.secret_slots.items():
+            if not _SLOT_NAME.fullmatch(slot):
+                raise ValueError(f"runner {self.name}: secret slot {slot!r} is not a slot name")
+            if not isinstance(declared_slot, SecretSlot):
+                raise ValueError(f"runner {self.name}: secret slot {slot!r} is not a SecretSlot")
+        for key, declared in self.inputs.items():
+            if not isinstance(declared, RunnerInput):
+                raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
+            if key == "prompt":
+                raise ValueError(
+                    f"runner {self.name}: `prompt` is every profile's input and is not declared"
+                )
+            if key == "command" and self.name != "generic":
+                raise ValueError(
+                    f"runner {self.name}: `command` is invariant 10's own guard "
+                    "(_NEVER, FORBIDDEN_CALLER_FIELDS); only `generic` is exempted, "
+                    "and only for its closed catalogue -- see contract request 32"
+                )
+            if key == "command" and self.name == "generic" and (
+                declared.kind != "string" or set(declared.choices) != set(_GENERIC_COMMANDS)
+            ):
+                raise ValueError(
+                    f"runner {self.name}: `command` may only be a string whose choices "
+                    "are exactly GENERIC_COMMANDS -- the one exemption contract request "
+                    "32 asks _NEVER to carry, not a general licence to declare it"
+                )
+        object.__setattr__(self, "inputs", _frozen_inputs(self.inputs))
+        if not self.available and not self.disabled_reason:
+            raise ValueError(
+                f"runner {self.name}: a disabled profile must say why. A caller "
+                "told only that a known profile was refused has nothing to act on."
+            )
+        if self.resource_class not in RESOURCE_CLASSES:
+            raise ValueError(f"runner {self.name}: unknown resource class {self.resource_class}")
+        if self.build_resource_class is not None and (
+            self.build_resource_class not in RESOURCE_CLASSES
+            or self.backend is not Backend.GKE_AUTOPILOT
+        ):
+            raise ValueError(
+                f"runner {self.name}: build_resource_class {self.build_resource_class!r} must be "
+                "a known resource class on a GKE_AUTOPILOT profile (contract request 135)"
+            )
+        if self.live_browser and self.backend is not Backend.GKE_AUTOPILOT:
+            raise ValueError(
+                f"runner {self.name}: live_browser needs the GKE_AUTOPILOT backend, "
+                f"not {self.backend.value}; the display sidecar exists only in the "
+                "GKE manifest (contract request 71)"
+            )
+        if self.spot is not SpotStrategy.ON_DEMAND_ONLY:
+            raise ValueError(
+                f"runner {self.name}: Spot is disabled platform-wide; Spot Pods cannot "
+                "use extended run time and would violate the no-preemption requirement"
+            )
+        if self.max_turns is not None and (
+            isinstance(self.max_turns, bool) or not isinstance(self.max_turns, int)
+            or self.max_turns < 1
+        ):
+            raise ValueError(
+                f"runner {self.name}: max_turns is a positive integer or None "
+                "(contract request 133)"
+            )
+        self._check_model_classes()
+        self._check_runtime_capabilities()
+
+    def _check_runtime_capabilities(self) -> None:
+        """Contract request 136: capability names, each once."""
+        if not isinstance(self.runtime_capabilities, tuple) or not all(
+            isinstance(c, str) and _CAPABILITY_NAME.fullmatch(c)
+            for c in self.runtime_capabilities
+        ):
+            raise ValueError(
+                f"runner {self.name}: runtime_capabilities is a tuple of capability "
+                f"names, not {self.runtime_capabilities!r} (contract request 136)"
+            )
+        if len(set(self.runtime_capabilities)) != len(self.runtime_capabilities):
+            raise ValueError(
+                f"runner {self.name}: runtime_capabilities names a capability twice "
+                "(contract request 136)"
+            )
+
+    def _check_model_classes(self) -> None:
+        """Contract request 101: a profile's classes mean something only where a
+        Claude model runs, and must agree with their own default."""
+        if not self.model_classes and self.default_model_class is None:
+            return
+        if not self.model_classes or self.default_model_class is None:
+            raise ValueError(
+                f"runner {self.name}: model_classes and default_model_class are set "
+                "together or not at all (contract request 101)"
+            )
+        if self.worker_action is not None:
+            raise ValueError(
+                f"runner {self.name}: a worker_action profile starts no model, so it "
+                "names no model class (contract request 101)"
+            )
+        if self.provider != "anthropic":
+            raise ValueError(
+                f"runner {self.name}: model classes name Claude models, so only an "
+                f"anthropic profile has them, not {self.provider!r} (contract request 101)"
+            )
+        for name in self.model_classes:
+            if name not in MODEL_CLASSES:
+                raise ValueError(
+                    f"runner {self.name}: model class {name!r} is not one of "
+                    f"MODEL_CLASSES {tuple(MODEL_CLASSES)} (contract request 101)"
+                )
+        if len(set(self.model_classes)) != len(self.model_classes):
+            raise ValueError(
+                f"runner {self.name}: model_classes names a class twice (contract request 101)"
+            )
+        if self.default_model_class not in self.model_classes:
+            raise ValueError(
+                f"runner {self.name}: default_model_class {self.default_model_class!r} "
+                f"is not one of its own model_classes {self.model_classes} (contract "
+                "request 101)"
+            )
+
+
+#: The mock's test knobs (agent_worker/runners/mock.py), as the owner decided
+#: them on #142 on 2026-09-25. Left out on purpose, because they write platform
+#: records rather than shape a run: `spend`, which the worker books as the
+#: attempt's cost; `provider`, which names whose quota document a park writes;
+#: `credential_revoked_times` and `credential_detail`, which simulate a refused
+#: credential; `quota_detail` and `reset_at`, which dress a simulated rate
+#: limit. tests/unit/mcp/test_runner_inputs.py holds every key here to a
+#: `payload` read in the mock's source.
+_MOCK_INPUTS: dict[str, RunnerInput] = {
+    # ONE HOUR, for both. Deliberately past the mock's own 600 s timeout
+    # (`RUNNER_PROFILES["mock"].timeout_seconds`, which a caller may lower and
+    # never raise): a sleep, or a burn, longer than the timeout is how the
+    # timeout path is exercised, and #142's 120 s cancel check sits well inside
+    # either. Six timeouts' worth is room for any such test; past it a value is
+    # a typo, and without a ceiling at all `10**30` failed at the task write.
+    "sleep_seconds": RunnerInput(
+        "number", minimum=0, maximum=3600, means="how long the run sleeps, in total"
+    ),
+    "cpu_burn_seconds": RunnerInput(
+        "number", minimum=0, maximum=3600, means="how long it burns CPU, in total"
+    ),
+    # A THOUSAND. Each step writes a small progress file into `work/`, and
+    # every later checkpoint carries every one, so this bounds the files a
+    # mock checkpoint can hold to a thousand. The largest any test or script
+    # sends is 60 (tests/unit/worker/startup_harness.py); a checkpoint that
+    # holds partial work needs two.
+    "steps": RunnerInput(
+        "integer",
+        minimum=1,
+        maximum=1000,
+        means="how many progress files, and checkpoints, it writes",
+    ),
+    "fail": RunnerInput("boolean", means="fail on purpose, after the steps"),
+    "fail_message": RunnerInput("string", means="the error a failure reports"),
+    # THE WORKER DECIDES WHAT AN ATTEMPT WAS FROM ITS EXIT CODE, so a code it
+    # reads as something else turns a failure on purpose into that thing
+    # (`agent_worker/runners/base.py`, `lifecycle._finalise`). Minimum 1: a 0
+    # beside the result.json the mock writes is recorded SUCCEEDED. The three
+    # refused are the EXIT_* codes that are not a plain failure, restated
+    # because the catalogue cannot import the worker; test_runner_inputs.py
+    # reads base.py's EXIT_* constants and fails when one is missing here
+    # (contract request 21 asks for the codes to have a shared home).
+    "exit_code": RunnerInput(
+        "integer",
+        minimum=1,
+        maximum=255,
+        means="the exit code a failure uses",
+        refused=(
+            (77, "77 is a provider rate limit to the worker, which parks the task "
+                 "instead of failing it -- and with no quota.json, again on every attempt"),
+            (78, "78 is the code a runner exits with when its credential is refused, "
+                 "so a failure recorded with it reads as one"),
+            (143, "143 is a runner stopped by SIGTERM, which the worker records CANCELLED"),
+        ),
+    ),
+    "artifact_text": RunnerInput("string", means="what the output artifact holds"),
+    "artifact_name": RunnerInput("filename", means="the output artifact's file name"),
+    # THE BOUNDED PARK. Withheld by the review of PR #201, because the mock
+    # raised its rate limit on every attempt and a park does not spend one, so
+    # a task sent this parked and resumed until someone cancelled it. The mock
+    # now parks the task's FIRST attempt only, by the task's `attempt_count`,
+    # which admission increments in the lease's own transaction and the
+    # lifecycle hands every runner. Not by a count in its own `work/`: that
+    # reached the next attempt only through the park's checkpoint, and a park
+    # whose checkpoint failed lost it (the review of #213).
+    "quota_exhausted": RunnerInput(
+        "boolean",
+        means="park the first attempt on a simulated provider rate limit; the next one runs",
+    ),
+    # One second to one hour. A wait under the worker's in-place threshold is
+    # retried in place three times and then parked, a longer one is parked at
+    # once; the mock refuses every retry of the same attempt, so either way one
+    # attempt parks. The task waits parked, holding no capacity, and an hour is
+    # longer than any test of the park path needs to be held.
+    "retry_after_seconds": RunnerInput(
+        "integer",
+        minimum=1,
+        maximum=3600,
+        means="the retry-after that simulated rate limit reports",
+    ),
+    # CONTRACT REQUEST 56, accepted by the owner 2026-10-08, for #166's live
+    # proof: a file written to the artifacts folder before a park reaches the
+    # attempt that succeeds, by reference (`parked_uploads`, `carried_from`).
+    # Without it the mock parks BEFORE it writes its artifact, so no live run
+    # could show the carry. With it, the parking attempt writes
+    # `artifact_name`/`artifact_text` and then parks, and the attempt after
+    # the park writes nothing under that name, so the file the task ends with
+    # can only have arrived by carry. Inert without `quota_exhausted`.
+    "artifact_before_park": RunnerInput(
+        "boolean",
+        means="write the output artifact before the simulated rate limit parks the first attempt",
+    ),
+}
+
+
+#: A wait the browser runner hands Playwright, in milliseconds. FROM 1, NOT 0:
+#: Playwright reads a timeout of 0 as "no timeout", so a 0 here would let one
+#: action wait out the whole 5400 s attempt. FIVE MINUTES at most: a selector
+#: that has not appeared in five minutes is not coming, and the attempt's own
+#: timeout is the ceiling above that.
+_BROWSER_WAIT_MS = {"minimum": 1, "maximum": 300_000}
+
+#: `selector`, `text` and `key` may carry arbitrary Unicode (a CSS selector, a
+#: page's own text, a key combination), so they are `string` with a length
+#: bound rather than `header`, which is ASCII-only. 4 KiB: far past any real
+#: selector or typed text, and small enough that a caller who sent this much
+#: sent a payload, not a selector.
+_BROWSER_TEXT_MAX = 4096
+
+#: The browser runner's actions (`agent_worker/runners/browser.py`, `body`),
+#: one shape per `type`, each field as the runner reads it. `type` is matched
+#: exactly: the runner lower-cases it, so `"Goto"` runs today and is refused
+#: here. The restatement is held to the runner's source by a test, as the
+#: mock's keys are (tests/unit/mcp/test_runner_inputs.py).
+_BROWSER_ACTION = RunnerInput(
+    "object",
+    means="one step of the run, in the shape its `type` names",
+    variants={
+        "goto": {
+            "url": RunnerInput("url", required=True, means="the page to open"),
+            "wait_until": RunnerInput(
+                "string",
+                choices=("load", "domcontentloaded", "networkidle", "commit"),
+                means="when the load counts as done; default load",
+            ),
+        },
+        "click": {
+            "selector": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
+                means="the element to click",
+            )
+        },
+        "fill": {
+            "selector": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
+                means="the field to fill",
+            ),
+            "text": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX,
+                means="what to type into it; default empty",
+            ),
+        },
+        "press": {
+            "selector": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
+                means="the element to press a key in",
+            ),
+            "key": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX,
+                means="the key; default Enter",
+            ),
+        },
+        "wait_for": {
+            "selector": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
+                means="the element to wait for",
+            ),
+            "timeout_ms": RunnerInput(
+                "integer", **_BROWSER_WAIT_MS, means="how long to wait; default the task's timeout_ms"
+            ),
+        },
+        # 0..60: the runner clamps above 60 with `min(..., 60.0)`, so a larger
+        # value is refused rather than quietly shortened.
+        "wait": {"seconds": RunnerInput("number", minimum=0, maximum=60, means="how long to pause; default 1")},
+        "screenshot": {
+            "name": RunnerInput("filename", means="the artifact's file name; default by position"),
+            "full_page": RunnerInput("boolean", means="the whole page, not the viewport; default true"),
+        },
+        "extract": {
+            "selector": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX,
+                means="the element whose text is kept; default body",
+            ),
+            "name": RunnerInput("filename", means="the artifact's file name; default by position"),
+        },
+    },
+)
+
+#: The browser runner's inputs. NEITHER `url` NOR `actions` IS REQUIRED ALONE:
+#: the runner needs one or the other, which `required` cannot say, so that
+#: refusal stays the runner's (contract request 32, *Owner's decisions*).
+_BROWSER_INPUTS: dict[str, RunnerInput] = {
+    "url": RunnerInput("url", means="opened first, before any action"),
+    # 200: the runner's MAX_ACTIONS.
+    "actions": RunnerInput(
+        "list", minimum=0, maximum=200, items=_BROWSER_ACTION, means="run in order, after `url`"
+    ),
+    "timeout_ms": RunnerInput(
+        "integer", **_BROWSER_WAIT_MS, means="how long any one action may take; default 30000"
+    ),
+    # Three minutes: Chromium starts in seconds, and a launch still waiting at
+    # three minutes is a pod short of /dev/shm, not a slow start.
+    "launch_timeout_ms": RunnerInput(
+        "integer", minimum=1, maximum=180_000, means="how long Chromium may take to start; default 60000"
+    ),
+    # Up to 4K. The viewport is rendered in the pod's memory, and a full-page
+    # screenshot of it is written to the workspace, which is memory too.
+    "viewport_width": RunnerInput("integer", minimum=320, maximum=3840, means="pixels; default 1280"),
+    "viewport_height": RunnerInput("integer", minimum=240, maximum=2160, means="pixels; default 900"),
+    # `header`, not `string`: this value is sent as the User-Agent HTTP
+    # header verbatim, so it must be printable ASCII -- a caller could
+    # otherwise inject a second header through it. 512: real User-Agent
+    # strings run under 300 characters; past 512 it is not a browser
+    # signature.
+    "user_agent": RunnerInput(
+        "header", minimum=0, maximum=512, means="the User-Agent sent; default Chromium's"
+    ),
+    "extract_text": RunnerInput("boolean", means="keep the final page's text as page.txt; default true"),
+    "screenshot": RunnerInput("boolean", means="keep a final full-page screenshot; default true"),
+}
+
+#: The generic runner's catalogue (`agent_worker/runners/generic.py`,
+#: `GENERIC_COMMANDS`), restated because the catalogue cannot import the
+#: worker, and held to it by a test, as `_ARGUMENT` is.
+_GENERIC_COMMANDS = ("make", "npm-build", "npm-ci", "npm-test", "pytest", "uv-sync")
+
+#: Built without `inputs` first, so `_GENERIC_INPUTS` below can read this
+#: profile's OWN `timeout_seconds` for its `timeout_seconds` input's ceiling
+#: instead of restating the number as a second literal. `RunnerProfile` sets
+#: no `timeout_seconds` for `generic`, so this is the class default (3600) --
+#: reading it here, rather than writing `3600` again, is what keeps the two
+#: from drifting if a future change gives `generic` its own value.
+_GENERIC_PROFILE = RunnerProfile(
+    name="generic",
+    image="agent-runtime-base",
+    resource_class="standard",
+    # GKE Autopilot since contract request 64 (owner, 2026-10-10, option A of
+    # #939, after request 63's indexer canary): a generic task clones first,
+    # and a new Cloud Run instance's internet path opens a median 20.2 s after
+    # start (n=19) against GKE's 1.17 s (n=148) through the same NAT. Its
+    # tenants' Cloud Run Jobs are kept as the rollback
+    # (terraform/infra/locals.tf `cloud_run_fallback_profiles`): rolling back
+    # is this one line, back to CLOUD_RUN_JOB.
+    backend=Backend.GKE_AUTOPILOT,
+    runner_argv=("python", "-m", "agent_worker.runners.generic"),
+    provider=None,
+    runtime_capabilities=(),
+)
+
+#: The generic runner's inputs (`agent_worker/runners/generic.py`).
+#:
+#: `command` IS A NAME, NOT AN ARGV: `choices` is `_GENERIC_COMMANDS`, the
+#: runner's own `GENERIC_COMMANDS` restated, whose argv are constants in the
+#: runner. Declaring it reads as invariant 10 relaxed and is not -- see
+#: contract request 32, Question 2 (#218) -- and `RunnerProfile.__post_init__`
+#: enforces the one exemption `_NEVER` (tests/unit/mcp/test_runner_inputs.py)
+#: is asked to carry: `command` declared as a string whose `choices` are
+#: exactly `_GENERIC_COMMANDS`, for `generic` only.
+#:
+#: THE FOUR LIMITS MAY ONLY LOWER THE PLATFORM'S (`runners/limits.py`). Each
+#: ceiling here is the value the worker exports by default -- the profile's
+#: `timeout_seconds`, and `WorkerConfig`'s grace and output caps -- so a
+#: request above it is refused at the door instead of accepted and clamped.
+#: The runner still clamps to what the attempt's worker exports, which an
+#: operator may have set lower. From 1: the runner reads 0 or less as "not
+#: asked", so a 0 was accepted and meant nothing.
+_GENERIC_INPUTS: dict[str, RunnerInput] = {
+    "command": RunnerInput(
+        "string",
+        required=True,
+        choices=_GENERIC_COMMANDS,
+        means="the platform catalogue entry to run; the platform owns its argv",
+    ),
+    # 32: `GenericCommand.max_arguments`. Read for `pytest` only.
+    "paths": RunnerInput(
+        "list",
+        minimum=0,
+        maximum=32,
+        items=RunnerInput("argument", means="an existing path inside the workspace"),
+        means="pytest only: what to run; default everything",
+    ),
+    "target": RunnerInput("argument", means="make only: the target; default all"),
+    "working_directory": RunnerInput(
+        "argument", means="a directory inside the workspace to run in; default the workspace"
+    ),
+    "timeout_seconds": RunnerInput(
+        "number", minimum=1, maximum=_GENERIC_PROFILE.timeout_seconds,
+        means="lowers the command's wall clock",
+    ),
+    "grace_seconds": RunnerInput(
+        "number", minimum=1, maximum=20, means="lowers the wait between SIGTERM and SIGKILL"
+    ),
+    "max_stdout_bytes": RunnerInput(
+        "integer", minimum=1, maximum=32 * 1024 * 1024, means="lowers the stdout kept"
+    ),
+    "max_stderr_bytes": RunnerInput(
+        "integer", minimum=1, maximum=8 * 1024 * 1024, means="lowers the stderr kept"
+    ),
+}
+
+
+#: What claude-code and codex take beside the prompt: contract request 28,
+#: accepted by the owner on 2026-09-28 for #265. `issue` names an issue in the
+#: task's OWN repository; the worker fetches its title, body and comments
+#: read-only with the tenant's forge credential, writes them to the workspace
+#: as `issue.md` and names that file in the prompt (`agent_worker.issue`). The
+#: number is data, and so is the text it fetches (invariant 10).
+#:
+#: THE CEILING IS 999999 BECAUSE `describe()` PRINTS SIX SIGNIFICANT DIGITS. A
+#: bound past that is shown rounded -- 2**31 - 1 reads "2.14748e+09" -- which
+#: tells a caller a limit the check does not apply. An issue number past it is
+#: out of reach of any repository this platform works on.
+_CLI_AGENT_INPUTS: dict[str, RunnerInput] = {
+    "issue": RunnerInput(
+        "integer",
+        minimum=1,
+        maximum=999_999,
+        means=(
+            "an issue in the task's repository: its title, body and comments are "
+            "written to issue.md in the workspace and named in the prompt"
+        ),
+    ),
+}
+
+#: THE OWNER'S PICK, 2026-11-06 (pull request #3470, part of #2688): a step
+#: that works on a pull request may name it. `pull_request` names a pull
+#: request in the task's OWN repository; the worker reads its body,
+#: conversation and review threads read-only with the tenant's forge
+#: credential, writes them to the workspace as `pull_request.md` and names
+#: that file in the prompt (`agent_worker.pull_request`). The number is data,
+#: and so is the text it reads (invariant 10). Declared by claude-code, codex
+#: and claude-code-review, the profiles that write, amend or review a pull
+#: request; the ceiling is the issue input's, for the same reason.
+_PULL_REQUEST_INPUTS: dict[str, RunnerInput] = {
+    "pull_request": RunnerInput(
+        "integer",
+        minimum=1,
+        maximum=999_999,
+        means=(
+            "a pull request in the task's repository: its body, conversation and "
+            "review threads are written to pull_request.md in the workspace and "
+            "named in the prompt"
+        ),
+    ),
+}
+
+#: CONTRACT REQUEST 88, accepted by the owner 2026-10-17 (design
+#: docs/design/registered-mcp-servers.md §5 M1, part of #1433): the
+#: registered MCP servers a step may call, by name, never a URL or a command
+#: (invariant 10). Inside `input`, so the spec signature covers it (format 3).
+#: Its own dict, NOT a key of _CLI_AGENT_INPUTS, which indexer and
+#: claude-code-review also take: the indexer runs no prompt a caller wrote,
+#: and a review step reads the diff it was given. Membership is checked by
+#: swarm-api against the tenant's registry, which changes at runtime, so the
+#: names cannot be `choices`. 31 is models.MCP_SERVER_NAME's length bound.
+_MCP_SERVER_INPUTS: dict[str, RunnerInput] = {
+    "mcp_servers": RunnerInput(
+        "list",
+        minimum=1,
+        maximum=4,
+        items=RunnerInput("string", maximum=31),
+        means=(
+            "registered MCP servers, by name, the agent may call during its run; "
+            "each must be registered and enabled for the task's workspace and allowed "
+            "for this profile (docs/design/registered-mcp-servers.md)"
+        ),
+    ),
+}
+
+#: claude-code and codex: the CLI agent inputs plus mcp_servers (request 88).
+_CLI_AGENT_MCP_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    **_MCP_SERVER_INPUTS,
+}
+
+#: claude-code and codex: the CLI agent inputs, mcp_servers (request 88) and
+#: pull_request (the owner's pick on #3470). Its own dict, so that
+#: claude-code-large and the browser profiles, which share the first two, do
+#: not gain it.
+_CLI_AGENT_PR_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_MCP_INPUTS,
+    **_PULL_REQUEST_INPUTS,
+}
+
+#: claude-code-review: the CLI agent inputs and pull_request, the pull
+#: request it reviews (the owner's pick on #3470).
+_CLI_AGENT_REVIEW_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    **_PULL_REQUEST_INPUTS,
+}
+
+#: CONTRACT REQUEST 77, accepted by the owner 2026-10-14 ("Picker on Submit,
+#: Auto by default"): which browser tool the live-browser agent is given. A
+#: NAMED option, never a command (invariant 10); the claude-code runner maps
+#: each name to what it registers (`agent_worker.browser_tools`). Absent is
+#: `auto`. Only `claude-code-browser` declares it: no other profile has a
+#: browser to choose a tool for.
+_CLAUDE_CODE_BROWSER_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    **_MCP_SERVER_INPUTS,   # contract request 88
+    "browser_tool": RunnerInput(
+        "string",
+        choices=("auto", "playwright", "dev-browser", "jev"),
+        means=(
+            "the live browser's tool: auto (every tool available; the default), "
+            "playwright (the Playwright MCP tools only), dev-browser (the dev-browser "
+            "CLI first, Playwright as fallback) or jev (the jev MCP tools, which send "
+            "page text to TypeSafe and need a TypeSafe key; Playwright as fallback)"
+        ),
+    ),
+    # CONTRACT REQUEST 106 (QI-1), accepted by the owner 2026-10-19 with
+    # option B (docs/design/qa-identity.md §5, part of #1649): the live
+    # browser signed in to this deployment's console as its QA identity. A
+    # NAME from a closed list, never an account, a host or a token (invariant
+    # 10). The name grants nothing by itself: swarm-api's per-tenant grant
+    # decides, at submission and again at signing (invariant 9). Absent is
+    # no QA identity. Only here, because only this profile has a live gate.
+    "qa_identity": RunnerInput(
+        "string",
+        choices=("console",),
+        means=(
+            "sign the live browser in to this deployment's console as its QA "
+            "identity, a service account with its own workspace; the platform "
+            "adds the credential, the agent never holds it, and a tenant may "
+            "name it only when a platform admin has granted it"
+        ),
+    ),
+}
+
+
+#: Why the three #295 profiles are refused, served to a caller who names one.
+_DISABLED_UNTIL_342 = (
+    "the merge chain (#295) is disabled for every tenant until signed step "
+    "specs (#342) are enforced and the review and merge GitHub Apps exist."
+)
+
+
+#: Contract request 101 (owner's Q3, 2026-10-17): the classes the three
+#: claude-code-family profiles accept -- claude-code, indexer and
+#: claude-code-browser run one CLI, pinned once in the base image, so an ID
+#: accepted on one is accepted on all three. Every class, in vocabulary order.
+_CLAUDE_CODE_MODEL_CLASSES: tuple[str, ...] = tuple(MODEL_CLASSES)
+
+#: Contract request 143 (managed plugins P4): what the claude-code runner
+#: gives a managed plugin. `claude_plugins`: it loads Claude Code plugins
+#: (`--plugin-dir`); the rest are the runtimes a plugin's hooks and servers
+#: may need, the design's closed list, each shipped by `agent-runtime-base`
+#: and the browser and lightpanda images built on it (node from NODE_IMAGE,
+#: bun from the gstack build stage, python3, bash). codex loads no Claude
+#: Code plugin, and the indexer is a platform step, so neither has them.
+_CLAUDE_PLUGIN_CAPABILITIES: tuple[str, ...] = ("claude_plugins", "node", "bun", "python3", "bash")
+
+RUNNER_PROFILES: dict[str, RunnerProfile] = {
+    "mock": RunnerProfile(
+        name="mock",
+        image="agent-runtime-base",
+        resource_class="standard",
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=("python", "-m", "agent_worker.runners.mock"),
+        provider=None,          # no key required -- smoke tests must always work
+        cost_declared=True,     # its $0.00 is declared, not measured (request 24)
+        timeout_seconds=600,
+        checkpoint_interval_seconds=30,
+        inputs=_MOCK_INPUTS,
+        runtime_capabilities=(),
+    ),
+    # Built from `_GENERIC_PROFILE` (declared above, alongside `_GENERIC_INPUTS`,
+    # so the input's own `timeout_seconds` ceiling can read this profile's
+    # `timeout_seconds` instead of restating it).
+    "generic": replace(_GENERIC_PROFILE, inputs=_GENERIC_INPUTS),
+    "claude-code": RunnerProfile(
+        name="claude-code",
+        image="agent-runtime-base",
+        resource_class="standard",
+        # GKE Autopilot since contract request 53 (applied 2026-10-08, after
+        # request 55's canary): DISPATCHED -> RUNNING p50 ~23 s / max 44 s on
+        # five real steps, against Cloud Run's DISPATCHED -> STARTING p50
+        # 128 s / p90 212 s, 90-95 % of it in Cloud Run's own provisioning
+        # (#363, #625, #667). Extended run time is what keeps a two-hour agent
+        # from being consolidated away, and it is on-demand only: no Spot
+        # (invariant 6). The tenants' Cloud Run Jobs for this profile are kept
+        # until 2026-10-15 as the rollback (terraform/infra/locals.tf
+        # `cloud_run_fallback_profiles`): rolling back is this one line.
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        # BOTH are accepted, and a tenant supplies exactly one. Claude Code runs
+        # on either metered API access (ANTHROPIC_API_KEY) or a Claude
+        # subscription token (CLAUDE_CODE_OAUTH_TOKEN, from
+        # `claude setup-token`). Requiring the API key would make a tenant who
+        # already pays for a subscription buy metered access on top of it.
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_PR_INPUTS,   # contract request 88; pull_request (#3470)
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
+        # Contract request 101 (owner's Q3, 2026-10-17): every class, opus by
+        # default (R3: a step naming no class runs opus).
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
+        build_resource_class="builder",   # contract request 135
+    ),
+    # CONTRACT REQUEST 113, accepted by the owner 2026-10-22 (Q6 of
+    # docs/design/agent-autonomy.md §7, applied by lane AU-9): claude-code made
+    # bigger, picked by name (invariant 10) for a lane whose cause was an
+    # out-of-memory kill or a timeout. #1926 measured 8 GiB OOM kills on
+    # claude-code and three agents killed at its 7,200 s. The `large` class
+    # (8 CPU requested, 32 GiB, memory request == limit, 4 units against the
+    # tenant's ceiling) and 14,400 s; every other field is claude-code's, held
+    # equal by tests/unit/common/test_claude_code_large.py. A literal rather
+    # than `replace()`, because tests/terraform/catalogue_mirror reads the
+    # catalogue as text and sees only literal constructor calls (and splits on
+    # the constructor's name followed by a parenthesis, so this comment must
+    # not spell that). GKE Autopilot,
+    # on-demand only (invariant 6); the catalogue's default checkpoint
+    # interval (invariant 8), which matters more over four hours.
+    "claude-code-large": RunnerProfile(
+        name="claude-code-large",
+        image="agent-runtime-base",
+        resource_class="large",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=14400,
+        inputs=_CLI_AGENT_MCP_INPUTS,
+        secret_slots={"files": _FILES_SLOT},
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
+    ),
+    # CONTRACT REQUEST 147, accepted by the owner 2026-11-06 (the owner's pick after
+    # the 7-day load analysis): claude-code on the `medium` class (6 CPU
+    # requested, 12 limit, 16 GiB, memory request == limit, 2 units), the size
+    # 96% of the large attempts fit. Every other field is claude-code's,
+    # timeout included, held equal by tests/unit/common/test_claude_code_medium.py.
+    # A literal for the same reason as the entry above. GKE Autopilot,
+    # on-demand only (invariant 6), the catalogue's default checkpoint
+    # interval (invariant 8).
+    "claude-code-medium": RunnerProfile(
+        name="claude-code-medium",
+        image="agent-runtime-base",
+        resource_class="medium",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_MCP_INPUTS,
+        secret_slots={"files": _FILES_SLOT},
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
+    ),
+    "codex": RunnerProfile(
+        name="codex",
+        image="agent-runtime-base",
+        resource_class="standard",
+        # GKE Autopilot since contract request 65 (owner, 2026-10-10, option A
+        # of #939), for the internet path generic's request 64 records. Its
+        # tenants' Cloud Run Jobs are kept as the rollback
+        # (`cloud_run_fallback_profiles`): rolling back is this one line.
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.codex"),
+        provider="openai",
+        # INTERCHANGEABLE, as claude-code's are (contract request 130, owner
+        # 2026-11-01): the tenant's metered key, or a ChatGPT plan leased from
+        # the pool. The plan arrives as an access token (about an hour) and the
+        # plan's account id; the quota broker alone holds and refreshes the
+        # refresh token, which never reaches a worker.
+        secrets=("OPENAI_API_KEY", "CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_PR_INPUTS,   # contract request 88; pull_request (#3470)
+        # DISABLED 2026-09-23 by the owner's decision: the platform is focusing
+        # on Claude, and codex does not currently work here anyway. A twenty-step
+        # load test that day dispatched four codex steps and all four failed
+        # with "openai refused the credential" -- the tenant's
+        # swarm-tenant-eng-openai holds a single version written 2026-09-16 that
+        # the provider rejects.
+        #
+        # Left in the catalogue rather than deleted, so the four task documents
+        # that name it stay readable and re-enabling is one word. Nothing was
+        # queued or running against it when this landed.
+        #
+        # Re-enabled by contract request 130 (owner, 2026-11-01; turned on
+        # 2026-11-02 once the pool lanes had merged): disabled 2026-09-23 by
+        # request 11 when the one registered key was refused; it now runs on a
+        # pool ChatGPT plan as well as a tenant's key.
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
+        runtime_capabilities=(),
+    ),
+    "browser": RunnerProfile(
+        name="browser",
+        image="agent-runtime-browser",
+        resource_class="browser",
+        # Chromium under Cloud Run needs a large /dev/shm; GKE gives us direct
+        # control over that, so browser work stays on Autopilot.
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.browser"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY",),
+        timeout_seconds=5400,
+        inputs=_BROWSER_INPUTS,
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
+        runtime_capabilities=(),
+    ),
+    # --- #295, the merge chain: contract requests 33, 35 and 36 -------------
+    #
+    # ALL THREE ARE DISABLED. The owner accepted the requests on 2026-10-01 and
+    # decided in the same breath that #295 stays disabled for every tenant
+    # until signed step specs (#342) are enforced and the owner has created the
+    # review and merge GitHub Apps. `available=False` is what swarm-api refuses
+    # on submission (`validation.validate_runner_profile`), so an entry here
+    # is readable and dispatchable by nobody. Terraform creates no Job for any
+    # of them either (terraform/infra/locals.tf, `profiles_without_a_job`):
+    # until each runs as its own service account, a Job would run it as the
+    # tenant's worker account, which is the hole these profiles exist to close.
+    #
+    # EXCEPT `merge`, ENABLED BY CONTRACT REQUEST 47 (owner, 2026-10-04, #295):
+    # merging moved off the GitHub-side App into this step, which uses the
+    # tenant's EXISTING `-git` token. The owner accepted, on #476, that an
+    # agent holding `-git` can therefore also merge: the token that pushes the
+    # branch is the token that lands it, so a separate merge App and account
+    # bought nothing an agent with `-git` could not already do. #342 (signed
+    # step specs) is closed, which lifted the other half of the gate.
+    "merge": RunnerProfile(
+        name="merge",
+        image="agent-runtime-base",
+        resource_class="standard",
+        # GKE Autopilot since contract request 66 (owner, 2026-10-10, option A
+        # of #939): the merge reads GitHub, and a new Cloud Run instance's
+        # internet path opens a median 20.2 s after start. It runs as the
+        # tenant's worker account on either backend (contract request 47), so
+        # the GKE pod's KSA, bound to that account, reads the same `-git`
+        # secret. Its tenants' Cloud Run Jobs are kept as the rollback
+        # (`cloud_run_fallback_profiles`): rolling back is this one line.
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=(),
+        worker_action=WorkerAction.MERGE,
+        # The credential is never mounted: the worker reads the tenant's `-git`
+        # secret at merge time only, after every check that needs none, and
+        # never puts it in the workspace, a file, an environment or a log
+        # (#219). `provider` is what parks the step CREDENTIAL_MISSING, at no
+        # cost, for a tenant that has not registered one.
+        provider="git",
+        secrets=(),
+        timeout_seconds=600,
+        inputs={},
+        runtime_capabilities=(),
+    ),
+    "post-verdict": RunnerProfile(
+        name="post-verdict",
+        image="agent-runtime-base",
+        resource_class="standard",
+        # NOT moved by #939's option A (contract request 66): it was designed
+        # to run as its own Job's service account with FORGE_HOST/OWNER/REPO
+        # rendered onto that Job (`forge.forge_target_from_env`), and a GKE
+        # pod has neither -- it runs as the tenant's one worker KSA.
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=(),
+        worker_action=WorkerAction.POST_VERDICT,
+        # The credential is never mounted: its secret was to be read by the
+        # worker at post-time, as a per-tenant post-verdict service account
+        # that was retired with the #295 design (docs/merge-step.md §3 "What
+        # this supersedes"); the profile has no Job for any tenant
+        # (contract request 72). `provider` is what parks the step
+        # CREDENTIAL_MISSING, at no cost, for a tenant that has not registered
+        # one, and keeps Terraform from creating a post-verdict Job for that
+        # tenant.
+        #
+        # Listing `git-review` here is not by itself sufficient to keep the
+        # ordinary worker account off this secret (contract request 35, "What
+        # it would break if accepted", and its #364 amendment).
+        provider="git-review",
+        secrets=(),
+        timeout_seconds=300,
+        inputs={},
+        available=False,
+        disabled_reason=_DISABLED_UNTIL_342,
+        runtime_capabilities=(),
+    ),
+    # Identical to claude-code except its name and never_restore_checkpoint,
+    # and, since contract request 53 moved claude-code to GKE Autopilot, its
+    # backend: this profile is retired (no Job for any tenant,
+    # `profiles_without_a_job`), so request 53 did not move it, and neither
+    # did #939's option A (contract request 66): it was designed to run as its
+    # own per-tenant review account, which a GKE pod cannot be, and that
+    # account is retired (docs/merge-step.md §3 "What this supersedes";
+    # contract request 72).
+    "claude-code-review": RunnerProfile(
+        name="claude-code-review",
+        image="agent-runtime-base",
+        resource_class="standard",
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_REVIEW_INPUTS,   # pull_request (#3470)
+        never_restore_checkpoint=True,
+        available=False,
+        disabled_reason=_DISABLED_UNTIL_342,
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
+        # Contract request 101: retired under request 50 (request 84 (b)), so
+        # it keeps the pin it has today and gains no class.
+        model_classes=("opus",),
+        default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
+    ),
+    # CONTRACT REQUEST 48, accepted by the owner 2026-10-05 (#625): claude-code
+    # on agent-runtime-indexer, the image that carries the repository index's
+    # toolchain once it left agent-runtime-base. Identical to claude-code in
+    # every field but its name and its image, by that decision. swarm-api names
+    # it for its own index runs (`swarm_api.repoindex.INDEXER_PROFILE`); a
+    # caller picks it by name like any other and sends no image (invariant 10).
+    "indexer": RunnerProfile(
+        name="indexer",
+        image="agent-runtime-indexer",
+        resource_class="standard",
+        # GKE Autopilot since contract request 63 (owner, 2026-10-10), the
+        # canary for #939: a new Cloud Run instance's internet path opens a
+        # median 20.2 s after start (n=19) against GKE's 1.17 s (n=148)
+        # through the same NAT. Its tenants' Cloud Run Jobs are kept as the
+        # rollback (terraform/infra/locals.tf `cloud_run_fallback_profiles`):
+        # rolling back is this one line, back to CLOUD_RUN_JOB.
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_INPUTS,
+        secret_slots={"files": _FILES_SLOT},   # contract request 80
+        # Contract request 101 (owner's Q3): claude-code's classes and default.
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
+        runtime_capabilities=(),
+    ),
+    # CONTRACT REQUEST 67, accepted by the owner 2026-10-11: claude-code on
+    # agent-runtime-browser (Playwright + Chromium), so an agent can render
+    # and screenshot pages -- visual QA, reproducing a UI bug -- which
+    # `browser`, a scripted runner that needs input.url or actions, cannot,
+    # and which claude-code cannot either: agent-runtime-base has no Chromium.
+    # claude-code in every field but its name, its image and, because of the
+    # image, its resource class: `browser`'s 16 GiB, because the 2 GiB /dev/shm
+    # tmpfs Chromium needs is charged to the memory limit. GKE Autopilot as
+    # claude-code is, and as the browser image must be: Cloud Run cannot size
+    # /dev/shm. A caller picks it by name and sends no image (invariant 10).
+    # Rolling back is deleting this entry and its mirrors.
+    "claude-code-browser": RunnerProfile(
+        name="claude-code-browser",
+        image="agent-runtime-browser",
+        resource_class="browser",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        # Contract request 77: claude-code's inputs plus `browser_tool`.
+        inputs=_CLAUDE_CODE_BROWSER_INPUTS,
+        # Contract request 71 (LB-D): the one live-browser profile.
+        live_browser=True,
+        # Contract requests 80 and 117.
+        secret_slots={"files": _FILES_SLOT, "cf-access": _CF_ACCESS_SLOT},
+        # Contract request 101 (owner's Q3): claude-code's classes and default.
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
+    ),
+    # CONTRACT REQUEST 127 (LIGHTPANDA-ANALYSIS, part of #2688;
+    # docs/design/lightpanda-runtime.md), accepted by the owner 2026-10-31:
+    # claude-code's runner on agent-runtime-lightpanda, a headless browser
+    # that runs JavaScript and draws no pixels, for DOM-only browser work:
+    # reading, scraping, link checks, form flows. The `standard` class and one
+    # container: no display sidecar, no live view, no take-control, so
+    # `live_browser` stays False and the task leases `resource:standard`, not
+    # the scarce `resource:browser`. A page it cannot read goes to a
+    # claude-code-browser child the agent submits. A literal, not `replace()`,
+    # so tests/terraform/catalogue_mirror sees it (request 113's reason).
+    # GKE Autopilot, on-demand only (invariant 6).
+    "claude-code-lightpanda": RunnerProfile(
+        name="claude-code-lightpanda",
+        image="agent-runtime-lightpanda",
+        resource_class="standard",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_MCP_INPUTS,   # claude-code's; no browser_tool
+        secret_slots={"files": _FILES_SLOT},
+        model_classes=_CLAUDE_CODE_MODEL_CLASSES,
+        default_model_class="opus",
+        supports_max_turns=True,   # contract request 133
+        runtime_capabilities=_CLAUDE_PLUGIN_CAPABILITIES,   # contract request 143
+    ),
+    # CONTRACT REQUEST 94, accepted by the owner 2026-10-17 (HW-CONTRACT,
+    # docs/design/human-steps.md §5 request C): a workflow step that waits for
+    # a tenant member's answer. control_plane (request 93): no container runs
+    # it, swarm-api ends it, and Terraform makes no Job for it
+    # (`profiles_without_a_job`). SHIPPED UNAVAILABLE until every build lane of
+    # the design's §6 has merged and HW-ACCEPT is green on dev; the owner then
+    # applies request D, which is `available=True` and nothing else.
+    "await-input": RunnerProfile(
+        name="await-input",
+        image="agent-runtime-base",   # never pulled: control_plane
+        resource_class="standard",    # never reserved: control_plane
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=(),
+        control_plane=True,
+        provider=None,
+        secrets=(),
+        timeout_seconds=300,          # unused; the wait is await_input's (at most 24 h)
+        inputs={},
+        available=True,
+        runtime_capabilities=(),
+    ),
+    # CONTRACT REQUEST 124, accepted by the owner 2026-10-27 (FL-CONTRACT,
+    # docs/design/fix-loop.md §7 request A, Q1 and Q10): a workflow step that
+    # runs review-fix rounds until the review says MERGE or `max_rounds`.
+    # control_plane (request 93): no container runs it, swarm-api drives its
+    # rounds as steps of their own and ends it, and Terraform makes no Job for
+    # it (`profiles_without_a_job`). SHIPPED UNAVAILABLE until every build
+    # lane of the design's §8 has merged and FL-ACCEPT is green on dev, as
+    # await-input was; enabling it is `available=True` and nothing else.
+    "fix-loop": RunnerProfile(
+        name="fix-loop",
+        image="agent-runtime-base",   # never pulled: control_plane
+        resource_class="standard",    # never reserved: control_plane
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=(),
+        control_plane=True,
+        provider=None,
+        secrets=(),
+        timeout_seconds=300,          # unused; the rounds are steps with their own
+        inputs={},
+        available=False,
+        disabled_reason=(
+            "fix-loop is not available yet: it ships unavailable until its "
+            "acceptance run passes, as docs/design/fix-loop.md says."
+        ),
+        runtime_capabilities=(),
+    ),
+}
+
+
+#: CONTRACT REQUEST 89, accepted by the owner 2026-10-17 (design
+#: docs/design/registered-mcp-servers.md §5 M2): the one slot an `mcp:`
+#: consumer (models.SECRET_CONSUMER_KINDS) takes. Optional, as every slot is
+#: unless it says otherwise; a `workspace_secret` server's registration is
+#: what makes swarm-api require its grant.
+MCP_SECRET_SLOTS: Mapping[str, SecretSlot] = MappingProxyType({
+    "auth": SecretSlot(
+        kinds=("api_key", "bearer_token"),
+        means="the relay adds it as the registered server's auth header; never a file",
+    ),
+})
+
+
+#: Contract request 81 (workspace secrets, design §2.3): a program the
+#: platform launches INSIDE an attempt that can be granted a workspace
+#: secret on its own. A tool is a NAME, never an image or a command
+#: (invariant 10): the agent can start any process in its pod, so a grant
+#: is matched against the signed spec's `browser_tool`, never against a
+#: process name.
+@dataclass(frozen=True)
+class RuntimeTool:
+    name: str
+    #: The profiles whose attempts can launch this tool.
+    profiles: tuple[str, ...]
+    #: The `browser_tool` input values that launch it, on those profiles.
+    #: An attempt whose signed value is not listed never launches it, and is
+    #: never released a secret granted only to it.
+    launched_by: tuple[str, ...]
+    secret_slots: Mapping[str, SecretSlot] = field(default_factory=dict, hash=False)
+
+
+RUNTIME_TOOLS: Mapping[str, RuntimeTool] = MappingProxyType({
+    "jev-browser": RuntimeTool(
+        name="jev-browser",
+        profiles=("claude-code-browser",),
+        launched_by=("auto", "jev"),
+        # Optional, as every tool slot is: the profile runs without the tool,
+        # and with no grant `browser_tools.choose` takes its `no_key` path.
+        secret_slots={"typesafe": SecretSlot(
+            kinds=("api_key",),
+            means="the TypeSafe key jev_launch.py puts in the jev process's own "
+                  "environment; jev sends page text to TypeSafe",
+        )},
+    ),
+    "dev-browser": RuntimeTool(
+        name="dev-browser", profiles=("claude-code-browser",),
+        launched_by=("auto", "dev-browser"),
+    ),
+    "playwright": RuntimeTool(
+        name="playwright", profiles=("claude-code-browser",),
+        # The fallback under every choice (request 77's `means`).
+        launched_by=("auto", "playwright", "dev-browser", "jev"),
+    ),
+})
+
+
+def _check_runtime_tools(
+    runner_profiles: Mapping[str, RunnerProfile], tools: Mapping[str, RuntimeTool]
+) -> None:
+    """Contract request 81's import-time checks, called below on the catalogue.
+
+    Every name in a tool's `profiles` declares `browser_tool`; every
+    `launched_by` value is one of its choices; and every `browser_tool`
+    choice except `auto` launches some tool, so adding a fifth choice without
+    a tool fails the import."""
+    launched: set[str] = set()
+    for key, tool in tools.items():
+        if tool.name != key:
+            raise ValueError(f"runtime tool {key!r} is named {tool.name!r}")
+        for name in tool.profiles:
+            profile = runner_profiles.get(name)
+            if profile is None or "browser_tool" not in profile.inputs:
+                raise ValueError(
+                    f"runtime tool {key}: profile {name!r} does not declare browser_tool "
+                    "(contract request 81)"
+                )
+            outside = [v for v in tool.launched_by if v not in profile.inputs["browser_tool"].choices]
+            if outside:
+                raise ValueError(
+                    f"runtime tool {key}: launched_by {outside} is not a browser_tool "
+                    f"choice of {name} (contract request 81)"
+                )
+        for slot, declared in tool.secret_slots.items():
+            if not _SLOT_NAME.fullmatch(slot) or not isinstance(declared, SecretSlot):
+                raise ValueError(f"runtime tool {key}: secret slot {slot!r} is not a SecretSlot")
+        launched.update(tool.launched_by)
+    for profile in runner_profiles.values():
+        if "browser_tool" not in profile.inputs:
+            continue
+        orphans = [c for c in profile.inputs["browser_tool"].choices if c != "auto" and c not in launched]
+        if orphans:
+            raise ValueError(
+                f"runner {profile.name}: browser_tool choice(s) {orphans} launch no "
+                "RUNTIME_TOOLS entry; add the tool in the same change (contract request 81)"
+            )
+
+
+_check_runtime_tools(RUNNER_PROFILES, RUNTIME_TOOLS)
+
+
+def tools_launched(profile: RunnerProfile, inputs: Mapping[str, Any]) -> tuple[str, ...]:
+    """The RUNTIME_TOOLS an attempt of `profile` with signed `inputs` launches.
+
+    `browser_tool` absent is `auto` (request 77). Empty for a profile that no
+    tool lists. Read by swarm-api's release and by the worker's re-check, so
+    the two derive the same set."""
+    selected = inputs.get("browser_tool", "auto")
+    return tuple(
+        t.name for t in RUNTIME_TOOLS.values()
+        if profile.name in t.profiles and selected in t.launched_by
+    )
+
+
+def is_secret_consumer(consumer: str) -> bool:
+    """Whether `consumer` is a secret consumer this catalogue has.
+
+    Contract request 82: `models.consumer_name` fixes the spelling and the
+    closed component list; profile and tool membership is checked here,
+    beside RUNNER_PROFILES and RUNTIME_TOOLS. Applied by swarm-api on a
+    grant's write and on a release's read."""
+    try:
+        kind, name = parse_consumer(consumer)
+    except ValueError:
+        return False
+    if kind == "profile":
+        return name in RUNNER_PROFILES
+    if kind == "tool":
+        return name in RUNTIME_TOOLS
+    if kind == "mcp":
+        # Contract request 89: an `mcp:` name is a tenant's registration, not
+        # a catalogue entry, so this catalogue cannot vouch for it; swarm-api
+        # checks it against the tenant's registry. Without this branch
+        # `mcp:judge` would fall through to PLATFORM_COMPONENTS below.
+        return False
+    return name in PLATFORM_COMPONENTS
+
+
+def step_model_class(profile: RunnerProfile, requested: str | None) -> str | None:
+    """The class a step on `profile` runs: `requested` if the profile accepts
+    it, the profile's default if None, None for a profile with no classes.
+    Raises ValueError naming the accepted classes otherwise.
+
+    Contract request 101 (#1435): the ONE statement of the resolution rule
+    swarm-api (at submission), the scheduler (at dispatch) and the worker (at
+    start) all apply, so the three can never resolve a step differently.
+    """
+    if requested is None:
+        return profile.default_model_class
+    if requested not in MODEL_CLASSES:
+        raise ValueError(
+            f"model class {requested!r} is not one of MODEL_CLASSES {tuple(MODEL_CLASSES)}"
+        )
+    if not profile.model_classes:
+        raise ValueError(
+            f"runner {profile.name} runs no model class, so a step on it names none"
+        )
+    if requested not in profile.model_classes:
+        raise ValueError(
+            f"runner {profile.name} does not accept model class {requested!r}; it "
+            f"accepts {profile.model_classes}"
+        )
+    return requested
+
+
+#: The stages whose steps build (contract request 135): an issue run's
+#: implement and fix steps and a lane's build step. A stage is the compiler's
+#: own argument, never read from a caller's step.
+BUILD_STAGES = ("implement", "build", "fix")
+
+
+def resource_class_for_stage(profile: RunnerProfile, stage: str | None) -> str:
+    """The class a step of `profile` at `stage` runs at (contract request 135).
+
+    The profile's `build_resource_class` for a stage in `BUILD_STAGES`, its
+    `resource_class` for every other stage, for None, and for a profile that
+    names no build class -- so reviews, checks, merges and every Cloud Run
+    profile keep their class.
+    """
+    if stage in BUILD_STAGES and profile.build_resource_class is not None:
+        return profile.build_resource_class
+    return profile.resource_class
+
+
+def resolve_backend(profile: RunnerProfile) -> Backend:
+    """Resolve AUTO to a concrete backend.
+
+    Cloud Run Jobs is preferred for everything it can hold, because it has no
+    nodes, no autoscaler and no node upgrades -- far fewer ways for the platform
+    to kill a task. GKE Autopilot takes what does not fit, and claude-code,
+    which names it for its start latency (contract request 53).
+    """
+    if profile.backend is not Backend.AUTO:
+        return profile.backend
+    rc = RESOURCE_CLASSES[profile.resource_class]
+    if rc.cpu <= 8 and rc.memory_gib <= 32:
+        return Backend.CLOUD_RUN_JOB
+    return Backend.GKE_AUTOPILOT
+
+
+def check_inputs(profile: RunnerProfile, raw: Mapping[str, Any]) -> dict[str, Any]:
+    """The inputs `raw` sets, each checked against what `profile` declares.
+
+    `raw` holds the keys BESIDES the prompt. Returns them normalised (an
+    integral float for an integer input becomes an int), or raises
+    InputRefused: for every key the profile does not declare, naming them all;
+    for every required key `raw` does not send, naming them all; or for the
+    first declared key whose value is out of its bounds, naming the bound.
+    """
+    declared = profile.inputs
+    unknown = sorted(set(raw) - set(declared))
+    if unknown:
+        if declared:
+            offered = ", ".join(
+                f"{key} ({spec.describe()})" for key, spec in sorted(declared.items())
+            )
+            message = (
+                f"runner profile {profile.name!r} does not declare {unknown} as an input; "
+                f"it declares {offered}"
+            )
+        else:
+            message = (
+                f"runner profile {profile.name!r} takes its prompt and no other input, "
+                f"so {unknown} cannot be sent"
+            )
+        raise InputRefused(message, key=unknown[0], keys=tuple(unknown))
+    missing = sorted(key for key, spec in declared.items() if spec.required and key not in raw)
+    if missing:
+        raise InputRefused(
+            f"runner profile {profile.name!r} needs {missing} in its input",
+            key=missing[0],
+            keys=tuple(missing),
+        )
+    return {key: declared[key].check(key, raw[key]) for key in sorted(raw)}

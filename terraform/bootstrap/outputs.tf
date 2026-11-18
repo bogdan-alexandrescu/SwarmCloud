@@ -1,0 +1,67 @@
+output "state_bucket" {
+  description = "Pass to terraform/infra: terraform init -backend-config=\"bucket=<this>\"."
+  value       = google_storage_bucket.state.name
+}
+
+output "state_bucket_url" {
+  value = google_storage_bucket.state.url
+}
+
+output "state_log_bucket" {
+  value = google_storage_bucket.state_logs.name
+}
+
+output "enabled_services" {
+  value = var.manage_project_services ? module.project_services[0].enabled_services : []
+}
+
+output "github_workload_identity_provider" {
+  description = "Value for google-github-actions/auth's workload_identity_provider input."
+  value       = var.enable_github_wif ? google_iam_workload_identity_pool_provider.github[0].name : ""
+}
+
+output "github_deployer_service_account" {
+  value = var.enable_github_wif ? google_service_account.deployer[0].email : ""
+}
+
+output "deployer_conditions" {
+  description = "role -> the IAM condition its grant carries once the role is named in deployer_scoped_roles. Read the one you are about to switch before you switch it. roles/resourcemanager.projectIamAdmin is chunked (#275): its entries are keyed \"roles/resourcemanager.projectIamAdmin (chunk N of M)\" rather than by role name alone, one per binding."
+  value = merge(
+    local.deployer_conditions,
+    {
+      for k, v in local.deployer_project_iam_admin_conditions :
+      "roles/resourcemanager.projectIamAdmin (chunk ${tonumber(k) + 1} of ${length(local.deployer_project_iam_admin_conditions)})" => v
+    },
+  )
+}
+
+output "deployer_grantable_project_roles" {
+  description = "The only project-level roles CI may grant or revoke once roles/resourcemanager.projectIamAdmin is scoped. tests/terraform/deployer_iam.tftest.hcl holds terraform/infra's grants to this list."
+  value       = local.deployer_grantable_project_roles
+}
+
+output "github_principals" {
+  description = "<workflow file>@<ref> -> the principalSet permitted to assume the deployer SA. One per (workflow file, allowed ref), by attribute.job_workflow_ref: the binding pins the workflow file and the ref as well as the repository, so neither the provider's attribute_condition nor the repository alone holds the boundary (#457)."
+  value       = local.github_principals
+}
+
+output "github_accept_service_account" {
+  description = "The account .github/workflows/accept.yml federates as (terraform/bootstrap/acceptance.tf). Set the repository variable GCP_ACCEPT_SA to this value."
+  value       = var.enable_github_wif ? google_service_account.acceptance[0].email : ""
+}
+
+output "platform_service_accounts" {
+  description = "account id -> email for every platform service account this root creates (platform_service_accounts.tf, DAYONE-BOOT-2). terraform/infra reads each one as a data source by its id."
+  value = merge(
+    { for id, sa in google_service_account.platform : id => sa.email },
+    {
+      (google_service_account.tick.account_id)           = google_service_account.tick.email
+      (google_service_account.verify.account_id)         = google_service_account.verify.email
+      (google_service_account.schedule_tick.account_id)  = google_service_account.schedule_tick.email
+      (google_service_account.rollup_sweeper.account_id) = google_service_account.rollup_sweeper.email
+      (google_service_account.discovery.account_id)      = google_service_account.discovery.email
+      (google_service_account.doctor.account_id)         = google_service_account.doctor.email
+      (google_service_account.voice.account_id)          = google_service_account.voice.email
+    },
+  )
+}

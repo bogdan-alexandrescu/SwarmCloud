@@ -1,0 +1,135 @@
+"""The `indexer` runner profile runs agent-runtime-indexer (contract request 48,
+accepted by the owner 2026-10-05, archived issue 625).
+
+archived issue 625 moved the repository index's toolchain out of agent-runtime-base into
+agent-runtime-indexer. Until a profile named that image, index runs were
+submitted as `claude-code`, ran on the base, recorded the extractor as "not
+installed in this image" and wrote no graph. The owner's decision: ONE
+profile, `indexer`, that is claude-code in every field but its name and its
+image. These hold that:
+
+  * the frozen catalogue's `indexer` is claude-code with only `name` and
+    `image` changed, and it is the only profile that runs the indexer image;
+  * swarm-api submits index runs as `indexer`, by name, and a task carries no
+    image a caller could set (invariant 10);
+  * the Terraform mirror and the model table carry it as they carry
+    claude-code (tests/terraform/catalogue.tftest.hcl compares the rest);
+  * it runs the claude_code runner, so the worker and the API name its agent
+    streams as claude-code's;
+  * request 48 records the acceptance with the phrase
+    scripts/lib/check-frozen-contract.sh looks for.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import re
+from pathlib import Path
+
+from swarm_common.profiles import RUNNER_PROFILES
+
+from swarm_api import repoindex
+from swarm_api.schemas import TaskCreate
+
+REPO = Path(__file__).resolve().parents[3]
+LOCALS = REPO / "terraform" / "infra" / "locals.tf"
+REQUESTS = REPO / "docs" / "contract-change-requests.md"
+SHA = "b" * 40
+
+
+def test_the_indexer_profile_is_claude_code_on_the_indexer_image():
+    assert "indexer" in RUNNER_PROFILES, "contract request 48's profile is missing"
+    indexer = RUNNER_PROFILES["indexer"]
+    claude = RUNNER_PROFILES["claude-code"]
+    assert indexer.name == "indexer"
+    assert indexer.image == "agent-runtime-indexer"
+    differ = sorted(
+        f.name for f in dataclasses.fields(indexer)
+        if getattr(indexer, f.name) != getattr(claude, f.name)
+    )
+    # Contract request 53 (applied 2026-10-08) moved claude-code to GKE
+    # Autopilot, and request 63 (owner, 2026-10-10, archived issue 939's canary) moved
+    # indexer after it: the two share a backend again.
+    # Contract request 88 (MCP-CONTRACT) gave claude-code `mcp_servers` and
+    # left the indexer without it: the indexer runs no prompt a caller wrote.
+    # Contract request 143 (managed plugins P4) gave the five claude-code
+    # profiles the plugin runtime capabilities and left the indexer without
+    # them: an index run names no managed plugin.
+    # Contract request 135 gave claude-code alone the `builder` class for its
+    # implement, build and fix steps and left the indexer without it: an index
+    # run is none of those stages, so it keeps claude-code's own class.
+    assert differ == ["build_resource_class", "image", "inputs", "name", "runtime_capabilities"], (
+        f"the owner's decision was claude-code with only its name and image changed; {differ} differ"
+    )
+    # pull_request is the owner's pick on archived pull request 3470 for claude-code, codex and
+    # claude-code-review alone.
+    assert dict(indexer.inputs) == {
+        k: v for k, v in claude.inputs.items() if k not in ("mcp_servers", "pull_request")
+    }
+    assert indexer.runtime_capabilities == ()
+    assert indexer.build_resource_class is None and claude.build_resource_class == "builder"
+    assert indexer.resource_class == claude.resource_class
+    assert indexer.backend.value == "GKE_AUTOPILOT" and claude.backend.value == "GKE_AUTOPILOT"
+
+
+def test_only_the_indexer_profile_runs_the_indexer_image():
+    runs = {name for name, p in RUNNER_PROFILES.items() if p.image == "agent-runtime-indexer"}
+    assert runs == {"indexer"}
+    for name, profile in RUNNER_PROFILES.items():
+        assert (REPO / "images" / profile.image / "Dockerfile").is_file(), (name, profile.image)
+
+
+def test_index_runs_are_submitted_as_the_indexer_profile_by_name():
+    assert repoindex.INDEXER_PROFILE == "indexer"
+    record = {
+        "tenant_id": "eng",
+        "repo_id": "gh-example-org-widgets",
+        "owner": "example-org",
+        "repo": "widgets",
+        "default_branch": "main",
+        "repository_url": "https://github.com/example-org/widgets",
+    }
+    task = repoindex.indexer_task(record, SHA)
+    assert task.runner_profile == "indexer"
+    # Invariant 10: the task names a profile; the image is the catalogue's.
+    assert not {"image", "command", "resources"} & set(TaskCreate.model_fields)
+    assert set(task.input) == {"prompt"}
+
+
+def test_the_terraform_mirror_carries_the_indexer_as_it_carries_claude_code():
+    text = LOCALS.read_text(encoding="utf-8")
+    block = re.search(r'^    "indexer" = \{\n(.*?)^    \}\n', text, re.M | re.S)
+    assert block, 'terraform/infra/locals.tf runner_profiles has no "indexer" entry'
+    body = block.group(1)
+    assert re.search(r'^\s*image\s*=\s*"agent-runtime-indexer"$', body, re.M), body
+    assert re.search(r'^\s*provider\s*=\s*"anthropic"$', body, re.M), body
+    assert re.search(r"^\s*timeout_seconds\s*=\s*7200$", body, re.M), body
+    # The model table is Terraform-only, and an index run ran claude-code's.
+    # runner_models is keyed by model class (archived issue 1435); a profile's model is the
+    # pin of its default_model_class, so it runs claude-code's model when the
+    # two name the same default class.
+    claude_code = re.search(r'^    "claude-code" = \{\n(.*?)^    \}\n', text, re.M | re.S)
+    assert claude_code, 'terraform/infra/locals.tf runner_profiles has no "claude-code" entry'
+    default = r'^\s*default_model_class\s*=\s*"([a-z]+)"$'
+    classes = [re.search(default, b, re.M) for b in (body, claude_code.group(1))]
+    assert all(classes), classes
+    assert classes[0].group(1) == classes[1].group(1), classes
+
+
+def test_the_indexer_writes_claude_codes_agent_streams():
+    from agent_worker.runners.streams import cli_agent_spec
+    from swarm_api.agent_streams import AGENT_STREAM_FILES
+
+    assert cli_agent_spec("indexer") is cli_agent_spec("claude-code")
+    assert AGENT_STREAM_FILES["indexer"] == AGENT_STREAM_FILES["claude-code"]
+
+
+def test_request_48_records_the_owners_acceptance():
+    text = REQUESTS.read_text(encoding="utf-8")
+    start = text.index("## 48. ")
+    end = text.find("\n## 49. ", start)
+    section = text[start:end if end != -1 else len(text)]
+    # check-frozen-contract.sh passes a diff under apps/common/swarm_common/
+    # only beside an added line holding exactly this phrase (grep -iF).
+    assert "accepted by the owner" in section.lower()
+    assert "**Status:** open" not in section

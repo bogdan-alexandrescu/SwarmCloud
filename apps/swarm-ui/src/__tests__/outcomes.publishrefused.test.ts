@@ -1,0 +1,38 @@
+// CONTRACT REQUEST 29, MIRRORED (applied 2026-10-02).
+//
+// `EndCause.PUBLISH_REFUSED` is a new frozen value and a new failure class in
+// the outcome ledger (`swarm_api/outcomes.py`, `publish_refused`). The page
+// reads the classes from the route's vocabulary, but the fixture the page's
+// tests draw and the `END_CAUSES` copy in types.ts are hand-kept: without the
+// class, a ledger carrying it would draw a strip no fixture ever had.
+//
+// MUTATIONS these catch: drop `publish_refused` from the fixture's vocabulary
+// or its zero counts; drop it from END_CAUSES; place it after `other`.
+
+import { describe, expect, it } from 'vitest'
+
+import { ledgerFixture } from '../outcomes.fixture'
+import { END_CAUSES } from '../types'
+
+describe('the publish refused outcome class (contract request 29)', () => {
+  it('is in the vocabulary, after the worker actions and before the budget stop', () => {
+    const keys = ledgerFixture().vocab.failure_classes.map((c) => c.key)
+    expect(keys).toContain('publish_refused')
+    expect(keys.indexOf('publish_refused')).toBe(keys.indexOf('merge_failed') + 1)
+    // Contract request 118 sits between it and `other` (owner 2026-10-27).
+    expect(keys.indexOf('publish_refused')).toBe(keys.indexOf('budget_exceeded') - 1)
+    const label = ledgerFixture().vocab.failure_classes.find((c) => c.key === 'publish_refused')
+    expect(label?.label).toBe('publish refused')
+  })
+
+  it('is counted in every total, as zero when nothing was refused', () => {
+    expect(ledgerFixture().totals.failure_classes).toHaveProperty('publish_refused')
+  })
+})
+
+describe('the end cause mirror', () => {
+  it('carries publish_refused, child_cascade, budget_exceeded then fix_loop_exhausted, the frozen enum\'s order (requests 29, 41, 118, 126)', () => {
+    expect(END_CAUSES.slice(-4)).toEqual(['publish_refused', 'child_cascade', 'budget_exceeded', 'fix_loop_exhausted'])
+    expect(new Set(END_CAUSES).size).toBe(END_CAUSES.length)
+  })
+})

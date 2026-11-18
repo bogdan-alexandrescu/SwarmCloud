@@ -1,0 +1,179 @@
+# Per-tenant namespace: the isolation boundary for the GKE Autopilot path.
+#
+# Render with `kubernetes/render.py tenant --tenant <id>`; the renderer fills in
+# every double-underscore placeholder below and refuses to emit one it missed.
+# The output is idempotent, so applying it after `scripts/register-tenant.sh`
+# upgrades an imperatively-created namespace into a fully-policed one without
+# disturbing anything running in it.
+#
+# Only `browser` and oversized profiles run here at all -- the frozen catalogue
+# pins everything else to Cloud Run Jobs -- but this is the path where a tenant's
+# workload shares a kernel and a network with other tenants' workloads, so it is
+# the path that needs every boundary stated explicitly.
+#
+# Labels are chosen to agree with the rest of the platform rather than to be
+# tidy: `scripts/register-tenant.sh` creates this namespace with
+# `managed-by=swarm-terraform` and re-applies that label with `--overwrite` on
+# every run, and `scripts/status.sh` and `scripts/configure-kubectl.sh` both
+# select on it. Using a different value here would flip-flop on every
+# registration and hide tenant namespaces from both status commands. The
+# reconciler's namespace garbage collector therefore keys on the PAIR
+# (recognised managed-by marker, swarm-tenant label) instead of on one value --
+# see `is_namespace_gc_eligible` in apps/reconciler/reconciler/backends.py.
+#
+# Pod Security Admission ENFORCES `restricted`, which is the level this path
+# actually depends on. The browser profile runs Chromium with its own sandbox
+# deliberately disabled -- it needs user namespaces and CAP_SYS_ADMIN, which this
+# pod refuses -- on the argument that the isolation is the pod. That argument is
+# only true while the pod controls are enforced rather than audited, so this
+# label is load-bearing for the one profile that runs here.
+#
+# It was `baseline` while the GKE manifest built in
+# `apps/scheduler/scheduler/dispatch.py` set no securityContext, because
+# enforcing the stronger level would have rejected every browser job the
+# dispatcher created and taken the GKE path offline. That manifest now sets
+# POD_SECURITY_CONTEXT and CONTAINER_SECURITY_CONTEXT and mounts no API token,
+# so the gap is closed;
+# `tests/unit/worker/test_kubernetes_manifests.py::test_the_dispatchers_gke_manifest_satisfies_restricted`
+# checks the dispatcher's own manifest against the same requirements, so a
+# regression there fails in CI rather than as Pending pods in a cluster.
+#
+# `--pss-enforce baseline` is still available for an incident. Audit and warn
+# stay at `restricted` regardless, so lowering enforcement leaves a trail.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+    app.kubernetes.io/part-of: swarm
+    app.kubernetes.io/managed-by: swarm
+    # Pod Security Admission. `latest` pins the checks to the cluster's own
+    # version, so an upgrade tightens the policy rather than silently leaving it
+    # at whatever was current when the namespace was created.
+    pod-security.kubernetes.io/enforce: __PSS_ENFORCE__
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+  annotations:
+    __LABEL_PREFIX__/tenant: __TENANT_ID__
+    __LABEL_PREFIX__/service-account: __GSA_EMAIL__
+    __LABEL_PREFIX__/description: >-
+      Agent swarm tenant namespace. Workers here hold the tenant's own Google
+      service account through Workload Identity and can reach nothing belonging
+      to any other tenant.
+---
+# A hard ceiling on what one tenant can ask the cluster for.
+#
+# This is a SECOND line of defence, not the primary one. Concurrency is governed
+# by slot pools in Firestore, and a task that never gets a lease never becomes a
+# pod (invariant 1). The quota exists for the case where that accounting is
+# wrong: a scheduler bug, a stuck reconciler, a hand-run kubectl. Without it the
+# blast radius of such a bug is the whole cluster's capacity; with it, the
+# tenant's own ceiling.
+#
+# `requests.*` and `limits.*` are the same numbers for memory and ephemeral
+# storage, because the platform sets request == limit for both on every
+# container (invariant 7). CPU is the exception (contract request RS-1,
+# docs/design/runner-sizes.md §4.1): a GKE container's CPU limit is up to
+# CPU_BURST_MAX_RATIO x its request, so `limits.cpu` is rendered as that
+# multiple of `requests.cpu` (render.py tenant_values). Equal, the limits line
+# ran out at half the pods the requests line admits, and the API server refused
+# a leased task's pod with "exceeded quota: limits.cpu".
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: swarm-tenant-quota
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+spec:
+  hard:
+    pods: "__QUOTA_PODS__"
+    requests.cpu: "__QUOTA_CPU__"
+    requests.memory: __QUOTA_MEMORY__
+    requests.ephemeral-storage: __QUOTA_EPHEMERAL__
+    limits.cpu: "__QUOTA_CPU_LIMIT__"
+    limits.memory: __QUOTA_MEMORY__
+    limits.ephemeral-storage: __QUOTA_EPHEMERAL__
+    count/jobs.batch: "__QUOTA_JOBS__"
+    # THE CACHE'S NETWORK DISKS (CACHE-PVC, owner decision 2026-10-15). Every
+    # worker pod's `cache` volume is a generic ephemeral volume: the
+    # ephemeral-volume controller creates one PVC per pod, here, and this quota
+    # counts it -- at "0", which this line was, every pod would wait Pending
+    # for a claim the API server refused. One per JOB, not per running pod: the
+    # claim is deleted with its pod, and a finished Job keeps its pod for
+    # ttlSecondsAfterFinished (ten minutes since the owner's 2026-10-28 decision;
+    # an hour before), which is why count/jobs.batch is
+    # larger than pods. Storage is that many 20 GiB claims, on the cache's
+    # class alone; every other class Autopilot ships is held to none, so "we
+    # only ever make cache disks" is the API server's rule too. The cache's
+    # class is the xfs one since #4061 (CACHE_STORAGE_CLASS); the retired ext4
+    # class is named nowhere here, so a claim a running pod already holds on it
+    # still counts in the two totals above until its pod goes.
+    count/persistentvolumeclaims: "__QUOTA_JOBS__"
+    requests.storage: __QUOTA_CACHE_STORAGE__
+    __CACHE_STORAGE_CLASS__.storageclass.storage.k8s.io/persistentvolumeclaims: "__QUOTA_JOBS__"
+    __CACHE_STORAGE_CLASS__.storageclass.storage.k8s.io/requests.storage: __QUOTA_CACHE_STORAGE__
+    standard.storageclass.storage.k8s.io/persistentvolumeclaims: "0"
+    standard-rwo.storageclass.storage.k8s.io/persistentvolumeclaims: "0"
+    premium-rwo.storageclass.storage.k8s.io/persistentvolumeclaims: "0"
+    # Nothing in this platform creates any of these in a tenant namespace, and a
+    # zero quota turns "we never do that" into "the API server refuses to".
+    count/services: "0"
+    count/deployments.apps: "0"
+    count/statefulsets.apps: "0"
+    count/daemonsets.apps: "0"
+    count/cronjobs.batch: "0"
+---
+# Per-container bounds, and the defaults an under-specified pod inherits.
+#
+# The default and the defaultRequest are IDENTICAL on purpose. A container that
+# omits its resources entirely still ends up with requests == limits, which is
+# invariant 7 holding even for a pod this repository did not write. A default
+# request lower than the limit is exactly the burstable configuration that gets
+# OOM-killed under node pressure. Only the dispatcher's own containers burst,
+# and only CPU (contract request RS-1).
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: swarm-worker-limits
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "4"
+        memory: 8Gi
+        ephemeral-storage: 20Gi
+      defaultRequest:
+        cpu: "4"
+        memory: 8Gi
+        ephemeral-storage: 20Gi
+      # The ceiling is the largest resource class in the frozen catalogue.
+      # `max` binds the LIMIT: CPU is `large`'s cpu_limit_cores, 16, twice its
+      # 8-core request (RS-1); memory and disk are request == limit.
+      max:
+        cpu: "16"
+        memory: 32Gi
+        ephemeral-storage: 100Gi
+      # Below this a runner cannot start its toolchain, and a pod that requests
+      # 10m CPU only discovers that after a five-minute image pull.
+      min:
+        cpu: 250m
+        memory: 512Mi
+        ephemeral-storage: 1Gi
+    # The pod's containers summed, the display sidecar included: the largest
+    # is the plain `large` worker pod, limited to 16 cores.
+    - type: Pod
+      max:
+        cpu: "16"
+        memory: 32Gi
+        ephemeral-storage: 100Gi

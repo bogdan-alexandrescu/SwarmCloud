@@ -1,0 +1,858 @@
+import { useCallback } from 'react'
+import { AttemptModel, Em, GEN_TITLE, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
+import { ToneMark } from './components'
+import { ciWaitLead } from './ciwaitlead'
+import { loadAgentDetail, loadAttempts } from './api'
+import { attemptEnd, instant, spanText } from './duration'
+import { isTerminalEvent } from './events'
+import { backendWord, eventWord, stateWord } from './words'
+import { num, type Result } from './fetch'
+import { HelpCard } from './HelpCard'
+import { Screen, timeAgo } from './Shell'
+import { REASON_COPY, TERMINAL_STATES, bytesLabel, newestHeartbeat, pluralise, type AttemptRow, type Task, type TaskEvent } from './types'
+
+/**
+ * One task, attempt by attempt. Replaces the flat event list in the drawer, which
+ * interleaves three attempts into one column where only the timestamps separate them --
+ * so what was different about the two that failed cannot be read off it. Every event
+ * carries `attempt_id` (`_event_to_api`, routes/tasks.py), so the grouping is the API's
+ * own wherever the writer filled it in; where it did not, `attemptOf` places the event
+ * and says so on its row. The attempt documents are the other half: `result_summary` is
+ * written ONCE, by finish(), at terminal state, so a task that failed twice and
+ * succeeded on the third carries only attempt three's numbers.
+ */
+
+interface AttemptTimeline {
+  /**
+   * The task, from the same read as the events. Null when that read failed:
+   * the attempt cards stand without it, and the one thing it is read for --
+   * whether a finished task's terminal event is on this page -- is then not
+   * claimed either way.
+   */
+  task: Task | null
+  attempts: AttemptRow[]
+  /** null means the event read FAILED. An empty array means there are none. */
+  events: TaskEvent[] | null
+  eventsDetail: string | null
+}
+
+/**
+ * Two reads, merged. This belongs in api.ts beside `loadHolders`; it is inline only so
+ * this screen imports nothing that does not already exist, and `loadAgentDetail` gives
+ * the events because api.ts has no events-only loader -- one extra GET to fix there.
+ */
+async function loadTimeline(taskId: string): Promise<Result<AttemptTimeline>> {
+  const [attempts, detail] = await Promise.all([loadAttempts(taskId), loadAgentDetail(taskId)])
+
+  // THE ATTEMPTS READ DECIDES THE SCREEN, and `empty` is passed through rather than
+  // flattened to []: a QUEUED or PARKED task genuinely has no attempt document, which
+  // must stay distinguishable from a read that failed.
+  if (attempts.status !== 'ok' && attempts.status !== 'stale') return attempts
+
+  // The event read may fail on its own: the attempt cards are trustworthy without it,
+  // and failing the screen would hide records that exist nowhere else.
+  const haveEvents = detail.status === 'ok' || detail.status === 'stale'
+  const data: AttemptTimeline = {
+    task: haveEvents ? detail.data.task : null,
+    attempts: attempts.data.attempts,
+    events: haveEvents ? detail.data.events : null,
+    eventsDetail: haveEvents
+      ? detail.data.eventsDetail
+      : detail.status === 'error'
+        ? detail.error.message
+        : 'The event read did not complete.',
+  }
+  return attempts.status === 'stale'
+    ? { status: 'stale', data, fetchedAt: attempts.fetchedAt, error: attempts.error }
+    : { status: 'ok', data, fetchedAt: attempts.fetchedAt, serverAt: attempts.serverAt }
+}
+
+/**
+ * THE NOUNS ARE WORDS AGAIN (QA-113, visual QA 2026-10-20). `3 att · 9 ev`,
+ * `ckpt`, `peak rss`, `gen` and `2 blind` were keys a reader had to have been
+ * told; nothing on the tab told them. Each figure carries its noun in full,
+ * counted by `pluralise`, and each fact its word.
+ */
+
+export function AttemptTimelineScreen({ taskId }: { taskId: string }) {
+  const load = useCallback(() => loadTimeline(taskId), [taskId])
+  // A GUTTER OFF THE PANE'S SCROLLBAR (task-015, visual QA run 2, archived issue 1680). The
+  // split's pane is the one scroller from 561px up (agents.css), and the
+  // toolbar's right-aligned event count and the head's read age sat flush
+  // against its scrollbar. `.att-pane` (styles.css) is the inset; the whole
+  // Screen is inside it, so the head and the body share one right edge.
+  return (
+    <div className="att-pane">
+      <Screen
+        // Verbatim: an id a reader cannot paste back into swarmctl is unusable.
+        title={taskId}
+        load={load}
+        // THE EVENT COUNT IS SAID ONCE, ON THE TOOLBAR (visual QA pass 2,
+        // overview-agents-41). `1 attempt · 9 events` here, `9 events · first
+        // page` on the toolbar and `9 events` on the one card printed one
+        // figure three times. The toolbar's is the one with its qualifier
+        // (`first page`, `before any attempt`, its marks), so it stays.
+        summary={(t) => pluralise(t.attempts.length, 'attempt')}
+        empty={{
+          // ONE `real zero`, THE PRIMITIVE'S. `No attempt · real zero` said it a
+          // second time beside the mark `Absent` draws in the heading (archived pull request 145).
+          heading: 'No attempt',
+          // ONE SENTENCE. Which states have no attempt document, and why, is
+          // `#help/attempt-documents` -- a topic that already exists and says it
+          // better than a two-clause sentence with a parenthetical in it.
+          // NO `?` (B7.4). "succeeded and returned nothing" is already the
+          // distinction `attempt-documents` exists to protect -- a measured zero
+          // rather than a read that did not land. Which states never write an
+          // attempt document is in the rail's Help section; this screen keeps its
+          // one glyph for the PARTIAL case below, which is the one a reader
+          // cannot resolve from the surface.
+          body: <>The attempts query succeeded and returned nothing.</>,
+        }}
+      >
+        {(t) => <Body t={t} />}
+      </Screen>
+    </div>
+  )
+}
+
+interface Group {
+  key: string
+  /** null for the pre-admission group, and for events naming an unknown attempt. */
+  attempt: AttemptRow | null
+  label: string
+  events: TaskEvent[]
+  /** Ids of the events `attemptOf` placed here by time, not by a record. */
+  byTime: ReadonlySet<string>
+}
+
+/**
+ * WHICH ATTEMPT AN EVENT BELONGS TO, AND HOW THAT WAS KNOWN (LB-V6).
+ *
+ * The hand-off and control writers put the attempt in `detail` and left the event's
+ * own `attempt_id` null until LB-V6, so visual QA pass 5 found `human handoff
+ * requested`, `ready`, `human control taken` and the rest under "Before any attempt"
+ * though they happened during attempts 1 and 2. The writers fill the field now; the
+ * events already stored stay as written, so in order of how good a witness it is:
+ *
+ *   1. the event's own `attempt_id` -- the API's grouping, as before;
+ *   2. `detail.attempt_id`, when it names an attempt on this page -- what the old
+ *      writers recorded;
+ *   3. the event's `generation` (own, else `detail`'s), when exactly one attempt has it;
+ *   4. its time: the last attempt created at or before it. An event between one
+ *      attempt's end and the next one's lease -- a person's `ready` for a parked
+ *      attempt -- follows the attempt it came after, and one before the first
+ *      attempt stays before any attempt.
+ *
+ * Only 4 is a placement rather than a record, and its row says so (`by time`).
+ * Never by time for an event that NAMES an attempt this page has no document for:
+ * that one keeps its own group, below.
+ */
+function attemptOf(
+  e: TaskEvent,
+  ordered: readonly AttemptRow[],
+): { id: string; byTime: boolean } | null {
+  if (e.attempt_id !== null) return { id: e.attempt_id, byTime: false }
+  const named = e.detail?.['attempt_id']
+  if (typeof named === 'string' && ordered.some((a) => a.attempt_id === named)) {
+    return { id: named, byTime: false }
+  }
+  const gen = e.generation ?? e.detail?.['generation']
+  if (typeof gen === 'number') {
+    const withGen = ordered.filter((a) => a.generation === gen)
+    const only = withGen.length === 1 ? withGen[0] : undefined
+    if (only !== undefined) return { id: only.attempt_id, byTime: false }
+  }
+  const when = Date.parse(e.at)
+  if (Number.isNaN(when)) return null
+  let found: AttemptRow | null = null
+  for (const a of ordered) {
+    const created = Date.parse(a.created_at)
+    if (!Number.isNaN(created) && created <= when) found = a
+  }
+  return found === null ? null : { id: found.attempt_id, byTime: true }
+}
+
+/**
+ * Events under their attempt, oldest attempt first: a retried task only parses in the
+ * order it happened. The route returns attempts newest first, so they are re-sorted on
+ * `created_at` (ISO-8601 UTC, so lexicographic), not on `generation` -- which fences an
+ * attempt and is not promised to be dense.
+ */
+function grouped(t: AttemptTimeline): Group[] {
+  const byAttempt = new Map<string, TaskEvent[]>()
+  const preface: TaskEvent[] = []
+  const byTime = new Set<string>()
+  const ordered = [...t.attempts].sort((x, y) => x.created_at.localeCompare(y.created_at))
+  // `?? []` only skips the loop when the event read FAILED. Nothing downstream then
+  // claims an attempt had no events -- AttemptCard stays silent, and Body says why.
+  for (const e of t.events ?? []) {
+    const owner = attemptOf(e, ordered)
+    if (owner === null) preface.push(e)
+    else {
+      if (owner.byTime) byTime.add(e.event_id)
+      const list = byAttempt.get(owner.id)
+      if (list) list.push(e)
+      else byAttempt.set(owner.id, [e])
+    }
+  }
+
+  const groups: Group[] = [{ key: '@preface', attempt: null, label: 'Before any attempt', events: preface, byTime }]
+  ordered.forEach((a, i) => {
+    // THE DETAIL PANE'S NAME FOR THE SAME ATTEMPT (AG-21). This was
+    // `Attempt · gen N` -- no ordinal -- beside a detail pane that said
+    // `Attempt 1` and `Attempt 1 · generation 1` for it.
+    const label = attemptLabel(i + 1, a.generation)
+    groups.push({ key: a.attempt_id, attempt: a, label, events: byAttempt.get(a.attempt_id) ?? [], byTime })
+    byAttempt.delete(a.attempt_id)
+  })
+  // What is left names an attempt no document on this page describes. Folding these into
+  // the preface would file real attempt events under "before any attempt", a lie.
+  for (const [id, events] of byAttempt) {
+    groups.push({ key: id, attempt: null, label: `Attempt ${id} · no document`, events, byTime })
+  }
+  // NEWEST FIRST, AND NO EMPTY PREFACE (QA-113, visual QA run 2). Oldest
+  // first put an empty `Before any attempt` card and a rejected attempt 1
+  // above the attempts that ran, so on a phone a failed task opened on two
+  // cards with nothing in them and its failing attempt below the fold. The
+  // groups are built in the order things happened -- the ordinals and the
+  // by-time placement need it -- and drawn in reverse: the attempt the task
+  // ended on leads, as it does in Details. Each card's events stay oldest
+  // first, so a card still reads in the order it happened. The preface is
+  // drawn only when an event is in it: an empty one claimed nothing.
+  return groups.filter((g) => g.key !== '@preface' || g.events.length > 0).reverse()
+}
+
+/**
+ * THE EVENTS NO ATTEMPT HOLDS, NAMED WHERE THE TOTAL IS (VQ-011, the owner's
+ * visual QA 2026-10-26): the head read `1 attempt · 28 events` over one card
+ * saying `27 events`, and nothing said the 28th was the task's `submitted`,
+ * filed before any attempt. The totals say how many of them there are, in
+ * the words of the card that holds them (`Before any attempt`). Nothing when
+ * there are none, or when there is no attempt for them to come before.
+ */
+function beforeSay(t: AttemptTimeline): string {
+  if (t.attempts.length === 0) return ''
+  const n = grouped(t).find((g) => g.key === '@preface')?.events.length ?? 0
+  return n === 0 ? '' : `, ${n} before any attempt`
+}
+
+/**
+ * WHAT LEFT THIS SCREEN, AND WHERE IT WENT.
+ *
+ * Three paragraphs stood between the toolbar and the first attempt card, and a
+ * fourth under the last one:
+ *
+ *   "The event history could not be read. A failed read, not a task with no
+ *    events..."                                    -> a `not read` mark
+ *   "Zero events came back, yet a task is written with its submitted event in
+ *    the same batch..."                            -> a `not read` mark
+ *   "The events endpoint orders oldest-first and caps the page server-side,
+ *    so past one page..."                          -> #help/event-paging
+ *   "Every figure on these cards is that attempt's own: the task's
+ *    result_summary is written once..."            -> #help/attempt-documents
+ *
+ * (The third paragraph also said the endpoint could not page at all, which
+ * went false with archived pull request 19: the route returns `next_page_token` and takes
+ * `order=desc`. What is true is that THIS screen reads one page,
+ * oldest-first, and does not follow the page token -- which is what
+ * `event-paging` says, and the topic the toolbar's `?` opens since AG-19.)
+ *
+ * The first two are facts about THIS read and keep a visible encoding; the
+ * last two are invariants of the route and the platform, true of every task
+ * there has ever been, which is the material §8.4(5) sends to the `?`. What is
+ * on the glass is the toolbar: a count, a coverage fraction, and one mark per
+ * distinct absence.
+ */
+function Body({ t }: { t: AttemptTimeline }) {
+  const groups = grouped(t)
+  const blind = groups.filter((g) => g.attempt !== null && g.events.length === 0)
+  const count = t.events?.length ?? 0
+  const before = beforeSay(t)
+  const prev = previousOf(t.events ?? [])
+  // THE FULL TIMELINE LIVES HERE NOW (archived issue 101), so the proof Details drew with
+  // it comes too: a terminal task always writes a terminal event, so a
+  // finished task whose page carries none proves the page ends before the
+  // run did. Details keeps the same mark over its compact form.
+  const endMissing =
+    t.task !== null && t.events !== null && TERMINAL_STATES.has(t.task.state) && !t.events.some(isTerminalEvent)
+  const lastEvent = t.events?.[t.events.length - 1]
+  // The highest generation is the latest attempt: the one the task's
+  // `result_summary` -- and so the CLI's reported models -- belongs to.
+  const latest = t.attempts.reduce<AttemptRow | null>((best, a) => (best === null || a.generation > best.generation ? a : best), null)
+  // A RE-CHECKED MERGE STEP LEADS WITH ONE LINE (part of archived issue 2688): 28 identical
+  // re-check attempts said nothing a person could act on. The line comes
+  // first; the newest attempt stays open and the earlier ones fold under it.
+  const lead = ciWaitLead(t.task, Date.now())
+  const isLatest = (g: Group) => g.attempt !== null && g.attempt.attempt_id === latest?.attempt_id
+  const card = (g: Group) => (
+    <AttemptCard key={g.key} g={g} eventsRead={t.events !== null} pageCount={t.events?.length ?? null} prev={prev} task={t.task}
+      isLatest={isLatest(g)} />
+  )
+  const folded = lead === null ? [] : groups.filter((g) => !isLatest(g))
+  return (
+    <>
+      {lead !== null && (
+        <p className="wp-summary" data-ci-wait-lead="" data-stuck={lead.stuck ? 'true' : 'false'}>
+          {lead.stuck && <ToneMark tone="warn" title="Handed to a person: re-checks would not end this wait">needs you</ToneMark>}{' '}
+          {lead.line}
+        </p>
+      )}
+      <div className="ctl-toolbar">
+        {/* AH-24: AFTER THE LABEL, NEVER AFTER A VALUE. The toolbar's `?` sat at
+            its far end, after the event counts -- `12 ev · first page · 1
+            blind ?` -- and read as a footnote on the last figure. It follows
+            the toolbar's label now. Why it is here is the note at the end. */}
+        {/* ONE COUNT OF ATTEMPTS, THE SUMMARY'S (QA-113, run 5b, box
+            comment 6283738266). The eyebrow said `attempts`, its `?` and a
+            bare `3` under a summary already reading `3 attempts · 8 events`,
+            so the toolbar read `attempts ? 3`. What this toolbar is about
+            is the page of events -- its `?` opens event paging -- so that
+            is its label, and the attempts are counted once, above it. */}
+        <span className="ctl-eyebrow">
+          event history
+          <HelpCard topic="event-paging" />
+        </span>
+        {t.events === null ? (
+          <span className="is-end ctl-card-note">
+            <Mark
+              kind="unread"
+              say={`The event history could not be read. This is a failed read, not an agent with no events; the attempt cards below are complete. ${t.eventsDetail ?? ''}`}
+            />{' '}
+            events unread
+          </span>
+        ) : (
+          <span className="is-end ctl-card-note">
+            {/* create_tasks writes the task and its `submitted` event in ONE
+                batch (store.py), so zero events is a failed query wearing a
+                success code -- which is a different mark from a page that is
+                merely short.
+
+                A PAGE THAT IS MERELY SHORT GETS NO MARK (AG-9). It drew
+                `pending` -- the word `reading`, the dotted in-flight shape --
+                permanently, on a toolbar whose read had landed. `reading` is
+                the one mark of the six that means "still asking"
+                (design-system.md §8.7.1); that this screen reads one page,
+                oldest-first, and does not follow the route's page token is a
+                standing caveat about this screen, not a read in flight. The figures are the qualifier and the caveat is
+                their accessible name. Blind attempts, below, are what this
+                page can PROVE is missing, and they keep the `partial` mark. */}
+            {count === 0 ? (
+              <>
+                <Mark
+                  kind="unread"
+                  say="Zero events came back, yet an agent is written with its submitted event in the same batch — so this is a failed query, not an empty history."
+                />{' '}
+                {pluralise(count, 'event')}{before} · first page
+              </>
+            ) : (
+              <span
+                className="att-ev-cap"
+                aria-label={`${count} events${before}, the first page, oldest first. This screen reads one page and does not follow the page token the events route returns, so newer events may exist that it has not fetched.`}
+              >
+                {pluralise(count, 'event')}{before} · first page
+              </span>
+            )}
+            {blind.length > 0 && (
+              <>
+                {' · '}
+                <Mark
+                  kind="partial"
+                  say={`${blind.length} attempt${blind.length === 1 ? ' has' : 's have'} no events on this page. Past one page the newest events — everything belonging to those attempts — are not fetched by this screen.`}
+                />
+                {/* A GAP AND A DOT AFTER THE CHIP (6:task-004, box comment
+                    6343768697): the plain space sat against the chip's edge
+                    and `partial` touched `2 attempts without events`. The dot
+                    and its gap are drawn by details.css, so the text a screen
+                    reader and the copy carry is unchanged. */}
+                <span className="att-mark-sep" aria-hidden>
+                  {' '}
+                </span>
+                {pluralise(blind.length, 'attempt')} without events
+              </>
+            )}
+            {endMissing && t.task !== null && (
+              <>
+                {' · '}
+                <Mark
+                  kind="partial"
+                  say={`The agent is ${stateWord(t.task.state)} and a terminal agent writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so the newest events are not on it. The end of this agent's history is missing, not absent.`}
+                />{' '}
+                {lastEvent === undefined ? 'ends early' : `ends at ${eventWord(lastEvent)}`}
+              </>
+            )}
+          </span>
+        )}
+        {/* THIS SCREEN'S ONE `?` (B7.4), HOISTED OUT OF THE BRANCH IT USED TO
+            SIT IN. It was inside the "events were read" arm, so the reader who
+            most needed it -- the one looking at `events unread` -- was the one
+            it was not drawn for. On the toolbar it renders on every path, in
+            the same place, beside every mark this screen can draw.
+            It stays a glyph because what it holds cannot be a label: this
+            screen reads one page of events, oldest-first, and does not follow
+            the page token the route returns (archived pull request 19), so "this is everything" is
+            a claim it is never entitled to make and a reader has no way to
+            derive that from the counts in front of them.
+            `prose.runs.test.tsx` pins it to this toolbar's label (AH-24).
+
+            IT OPENS `event-paging` (AG-19). It opened `partial-read`, whose
+            card is "One message belongs to one failure" -- a topic about
+            something else, beside a toolbar about paging. `event-paging` is
+            built from this toolbar's own `say` strings. */}
+      </div>
+      {lead === null || folded.length === 0 ? (
+        groups.map(card)
+      ) : (
+        <>
+          {groups.filter(isLatest).map(card)}
+          <details data-ci-wait-earlier="">
+            <summary>{pluralise(folded.length, 'earlier attempt')}</summary>
+            {folded.map(card)}
+          </details>
+        </>
+      )}
+      <p className="ctl-card-foot">
+        <span>reading these cards:</span>
+        <a href="#help/attempt-documents">When an attempt document exists</a>
+        <a href="#help/absent-vs-zero">Absent is not zero</a>
+      </p>
+    </>
+  )
+}
+
+function AttemptCard({
+  g,
+  eventsRead,
+  pageCount,
+  prev,
+  task,
+  isLatest,
+}: {
+  g: Group
+  eventsRead: boolean
+  /** How many events the page holds; null when the event read failed. */
+  pageCount: number | null
+  /** Each event's predecessor on the page, by event id (`previousOf`). */
+  prev: ReadonlyMap<string, TaskEvent>
+  /** The task, for its model class and its stream's models; null when that read failed. */
+  task: Task | null
+  /** The latest attempt: the only one the task's result summary describes. */
+  isLatest: boolean
+}) {
+  const a = g.attempt
+  const out = a === null ? null : outcome(a)
+  const ranText = a === null ? null : ran(a)
+  const reading = a === null ? null : heartbeatMemory(a, g.events, task, isLatest)
+  return (
+    <section className="ctl-card att-card">
+      <div className="ctl-card-head">
+        {/* THE OUTCOME IS A STATE, SO IT IS A CHIP (§6.6). Both of these were
+            `.tag`: a bordered box, 13px mono 600, UPPERCASE and tracked. Four
+            attempt cards put eight of them on one pane, and `OOM NEAR MISS`
+            was wide enough to break its own box onto a second line -- a chip
+            whose label wraps is a paragraph with a border. As chips they are a
+            mark and a lowercase word, in the same vocabulary as the run's own
+            state two panes away. */}
+        <h2 className="ctl-card-title">
+          {/* One name, kept whole: at 390 it broke `gen` / `2` (QA-113). */}
+          <span className={a === null ? undefined : 'att-label'} title={a === null ? undefined : GEN_TITLE}>
+            {g.label}
+          </span>
+          {out && <ToneMark tone={out.tone}>{out.label}</ToneMark>}
+          {a?.oom_near_miss && <ToneMark tone="bad">OOM near miss</ToneMark>}
+        </h2>
+        <span className="ctl-card-note">
+          {/* NOT `0 events` (QA-113, run 2). Three cards each saying `0
+              events` under a toolbar saying `9 events` read as counts that
+              disagree: this page holds none for the attempt, which is not a
+              measured zero. Why that cannot be told from a missing page is
+              the toolbar's one `partial` tally, said once there. */}
+          {/* NOR THE PAGE'S COUNT A SECOND TIME (visual QA pass 2,
+              overview-agents-41): a card holding every event on the page
+              would repeat the toolbar's figure, so it names its backend only. */}
+          {[
+            g.events.length === 0 && eventsRead
+              ? 'no events on this page'
+              : g.events.length === pageCount
+                ? null
+                : pluralise(g.events.length, 'event'),
+            a === null ? null : backendWord(a.backend),
+          ]
+            .filter((w) => w !== null)
+            .join(' · ')}
+        </span>
+      </div>
+
+      <div className="ctl-card-body">
+        {a && (
+          // FIVE `<dt>/<dd>` PAIRS BECAME ONE STRIP, and every absence keeps
+          // its key and its slot. A row that disappears when its value is null
+          // is indistinguishable from a row that was never going to be there.
+          // ONE ABSENCE, ONE GLYPH (V261, VQA2-R13). `exec — none`, `ran —
+          // none` and `peak rss — not measured` drew the em dash AND the mark
+          // for one missing value; the mark is the fact (its words and its
+          // sentence), so it stands alone. `exit` has no mark, so its em dash
+          // stays.
+          <ul className="ctl-facts">
+            <li className="ctl-fact">
+              <b>attempt</b>
+              <span className="mono">{a.attempt_id}</span>
+            </li>
+            {/* THE LEASE AND THE EXECUTION LIVE HERE (agent-details-v3.html
+                A): per-attempt ids are this tab's subject, and Details
+                printed them as three mono lines on every attempt card. */}
+            <li className="ctl-fact">
+              <b>lease</b>
+              <span className="mono">{a.lease_id}</span>
+            </li>
+            <li className={`ctl-fact${a.execution_name === null ? ' is-absent' : ''}`}>
+              <b>execution</b>
+              {a.execution_name === null ? (
+                <Mark
+                  kind="zero"
+                  say={
+                    // A REJECTED DISPATCH WAS STILL A DISPATCH (QA-113, run 2):
+                    // `never dispatched` over BACKEND_REJECTED contradicted it.
+                    a.error != null
+                      ? 'No execution was ever named for this attempt: it ended with the error below before one was. That is a fact about the attempt, not a missing record.'
+                      : 'This attempt was never dispatched, so no execution was ever named. That is a fact about the attempt, not a missing record.'
+                  }
+                />
+              ) : (
+                <span className="mono">{a.execution_name}</span>
+              )}
+            </li>
+            {/* `att-fact-short`: at 390 the three short figures share a row
+                (details.css, QA-113 run 5b). */}
+            <li className={`ctl-fact att-fact-short${ranText === null ? ' is-absent' : ''}`}>
+              <b>ran</b>
+              {ranText ?? (
+                <Mark
+                  kind={a.started_at === null ? 'zero' : 'absent'}
+                  say={
+                    a.started_at === null
+                      ? 'This attempt was created and nothing ever ran, so there is no duration to measure. That is a fact about the attempt rather than a missing record.'
+                      : 'This attempt has a start time and no readable finish time, so how long it ran cannot be computed from what was recorded.'
+                  }
+                />
+              )}
+            </li>
+            {/* A null exit code means still running or never finished. It is
+                NOT a zero, and the chip in the heading says which of the
+                two -- so the cell carries the em dash and nothing else. */}
+            <li className={`ctl-fact att-fact-short${a.exit_code === null ? ' is-absent' : ''}`}>
+              <b>exit</b>
+              {a.exit_code === null ? <Em /> : num(a.exit_code)}
+            </li>
+            {/* `peak memory` (G2-11, QA-113): the figure is the sampled
+                high-water mark of the resident set, written at exit -- `rss`
+                alone read as the value at exit, and `peak rss` as jargon. */}
+            <li className={`ctl-fact${a.peak_rss_bytes === null && reading === null ? ' is-absent' : ''}`}>
+              <b>peak memory</b>
+              {a.peak_rss_bytes === null && reading !== null ? (
+                // THE FIGURE DETAILS READS (r3:task-007, c06, box comment
+                // 6314119814). With no peak written, Details' Peak memory and
+                // its Resources row read the attempt's newest heartbeat -- its
+                // high-water mark so far, or its last reading once it is over
+                // -- and this card said `not measured` beside them. It reads
+                // the same heartbeat, in the same words, never as a peak.
+                `${bytesLabel(reading.bytes)} · ${reading.ended ? 'last reading' : 'so far'} · heartbeat ${timeAgo(reading.at)}`
+              ) : a.peak_rss_bytes === null ? (
+                <Mark
+                  kind="absent"
+                  say="Peak memory (RSS) is written at the end of an attempt. This attempt has none recorded, so what it used is unknown — it is a missing record, never a zero."
+                />
+              ) : (
+                // `bytesLabel`, AS THE DETAIL PANE PRINTS IT (AG-21). This
+                // was `/ 1e9` and `GB`: the same attempt read `18.6 MiB` in
+                // one pane and `0.02 GB` in the other -- decimal against the
+                // binary GiB the ceilings are in, and two figures a reader has
+                // to convert before they can believe they agree.
+                bytesLabel(a.peak_rss_bytes)
+              )}
+            </li>
+            <li className="ctl-fact att-fact-short">
+              <b>checkpoints</b>
+              {a.checkpoints.length}
+            </li>
+            {/* The model this attempt ran and the task's class (archived issue 1435), and
+                both models when the CLI ran another -- Details' own fact. */}
+            {a.model == null && task?.model ? (
+              <RequestedModel model={task.model} task={task} />
+            ) : (
+              <AttemptModel a={a} task={task} isLatest={isLatest} />
+            )}
+          </ul>
+        )}
+
+        {/* A PARKED ATTEMPT'S `error` IS ITS PARK REASON, NOT A STDERR TAIL
+            (archived issue 163), so it does not go in the red `pre`. The token is already
+            in the chip; the line under it is the reason's copy, and only when
+            this screen has copy for it -- `reasonCopy`'s raw-token fallback
+            would print the chip's word a second time. */}
+        {a?.error != null && !isParked(a) && (
+          // A BARE CODE IS SAID IN WORDS (visual QA pass 2, ovag2-07): the card
+          // ended in `BACKEND_REJECTED`. The code stays in the title, for a
+          // search; free text -- a stderr tail -- is printed whole, as before.
+          <pre className="err full" title={errorCode(a.error) ? a.error : undefined}>
+            {errorWords(a.error)}
+          </pre>
+        )}
+        {a !== null && isParked(a) && a.error != null && REASON_COPY[a.error] !== undefined && (
+          <p className="blocker-copy">{REASON_COPY[a.error]}</p>
+        )}
+
+        {g.events.length > 0 && (
+          <ol className="timeline">
+            {g.events.map((e) => (
+              <li key={e.event_id}>
+                {/* `eventWord`, as Details names it (QA G2-25, G2-29): words,
+                    not `lease_acquired`; a stored `cancelled` that was only
+                    the request reads `cancel requested`; and the account the
+                    worker gives back, which rides `lease_released` because
+                    the frozen type has no account event, reads `account
+                    released` rather than a second `lease released`. The type
+                    as stored stays on the row as `data-kind`. */}
+                <span className="ev-type" data-kind={e.type}>{eventWord(e)}</span>
+                <EventWhen e={e} prev={prev.get(e.event_id) ?? null} />
+                {/* The fencing generation the event was written under. A stale
+                    worker's events carry the OLD one -- that is how a reclaim
+                    reads here. */}
+                {e.generation !== null && (
+                  <span className="ev-gen" title="Fencing generation for this event">
+                    generation {e.generation}
+                  </span>
+                )}
+                {/* LB-V6: written without its attempt, so filed here by when it
+                    happened (`attemptOf`) -- a placement, not a record. */}
+                {g.byTime.has(e.event_id) && (
+                  <span
+                    // `ev-gen`'s faint micro type: styles.css is outside this lane.
+                    className="ev-gen ev-placed"
+                    title="Written without its attempt; placed under the attempt it happened in, by time"
+                  >
+                    by time
+                  </span>
+                )}
+                {/* Only the reconciler labels itself. THE TEST IS THE VALUE,
+                    NOT THE KEY: the worker's quota_exhausted events also carry
+                    a detail.source, describing where the quota signal came
+                    from, so a presence check badges them as reconciler work. */}
+                {e.detail?.['source'] === 'reconciler' && <span className="ev-badge">reconciler</span>}
+                {/* THE JSON IS BEHIND A CLOSED DISCLOSURE (archived issue 101). Every
+                    event's full detail, open, made the sequence -- which is
+                    what a timeline is read for -- a scroll through braces. */}
+                {e.detail && Object.keys(e.detail).length > 0 && (
+                  <details className="ev-more">
+                    <summary>detail</summary>
+                    <pre className="ev-detail">{JSON.stringify(e.detail, null, 2)}</pre>
+                  </details>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </section>
+  )
+}
+
+/**
+ * THE MODEL ASKED FOR, WHEN THE ATTEMPT RECORDED NONE (visual QA pass 2,
+ * overview-agents-43). `not recorded` here sat beside Inputs' `model
+ * claude-opus-5` and the transcript's init row naming it. The task's `model`
+ * is what the agent asked for, so it is shown, labelled `requested`: a
+ * request, not a record of what ran. The class beside it as `AttemptModel`
+ * draws it.
+ */
+function RequestedModel({ model, task }: { model: string; task: Task }) {
+  const modelClass = task.model_class ?? null
+  return (
+    <li className="ctl-fact">
+      <b>model</b>
+      <span className="mono">{model}</span>{' '}
+      <small
+        className="att-model-why"
+        title="This attempt recorded no model; this is the model the agent asked for when it was submitted."
+      >
+        requested
+      </small>
+      {modelClass !== null && (
+        <span className="att-model-class" title={task.model_class_defaulted ? 'The agent named no class, so it runs its runner’s default.' : 'The class the agent named.'}>
+          {' · '}
+          <span className="mono">{modelClass}</span>
+          {task.model_class_defaulted && ' (default)'}
+        </span>
+      )}
+    </li>
+  )
+}
+
+/**
+ * An attempt's memory from its newest heartbeat, when it wrote no peak: what
+ * Details' `memoryOf` and its attempt cards read for the same attempt.
+ * `ended` is `attemptEnd`'s answer -- a running attempt's figure is `so far`,
+ * an ended one's its `last reading`. Without the task (its read failed) a
+ * finish time or a later attempt still ends it, and nothing else is claimed.
+ */
+function heartbeatMemory(
+  a: AttemptRow,
+  events: TaskEvent[],
+  task: Task | null,
+  isLatest: boolean,
+): { bytes: number; at: string; ended: boolean } | null {
+  if (a.peak_rss_bytes !== null) return null
+  const hb = newestHeartbeat(a, events)
+  if (hb === null || hb.peakRssBytes === null) return null
+  const ended = task === null ? a.completed_at !== null || !isLatest : attemptEnd(a, task, isLatest).over
+  return { bytes: hb.peakRssBytes, at: hb.at, ended }
+}
+
+/**
+ * THE ERROR CODES AN ATTEMPT ENDS ON, IN WORDS. A dispatch the backend refused
+ * writes the bare token on the attempt; a code this table does not know is
+ * printed in lower case with its underscores as spaces, as `words.ts` prints
+ * a token it does not know -- never dropped and never guessed at.
+ */
+const ERROR_SAY: Readonly<Record<string, string>> = {
+  BACKEND_REJECTED: 'The backend refused to start it.',
+}
+
+/** True when the error is one bare upper-case token rather than a sentence. */
+function errorCode(error: string): boolean {
+  return /^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$/.test(error)
+}
+
+function errorWords(error: string): string {
+  if (!errorCode(error)) return error
+  return ERROR_SAY[error] ?? error.toLowerCase().replace(/_/g, ' ')
+}
+
+/**
+ * The outcome chip. Exit 0 is the only success; a null exit code is three different things
+ * depending on what else the document says -- never a zero, and never a failure.
+ */
+function outcome(a: AttemptRow): { label: string; tone: ChipTone } {
+  if (a.exit_code === 0) return { label: 'exit 0', tone: 'ok' }
+  // PARKED IS NOT A FAILURE (archived issue 163). The worker ends a parked attempt with
+  // `exit_code: 75` and the ParkReason in `error`, and without this branch the
+  // line below drew it as `exit 75` in the failure tone -- a quota park read
+  // as a crash. `info` is the neutral bar: a fact about the attempt, not a
+  // verdict on it. The reason is printed verbatim, the token the platform
+  // wrote, as the detail pane prints `park_reason`.
+  if (isParked(a)) return parkedOutcome(a)
+  // `bad`, not `.tag`'s `full`. `full` was a pool word borrowed for a failure
+  // colour; the chip vocabulary names the thing it means, and `is-bad` is the
+  // diamond -- the one mark on the screen with corners.
+  if (a.exit_code !== null) return { label: `exit ${a.exit_code}`, tone: 'bad' }
+  // NEVER STARTED IS NOT A FAILURE AND NOT A ZERO. `unknown` is the hollow
+  // ring: the state exists and there is no outcome to report, which is exactly
+  // what the tone is reserved for (§1.3, §6.6).
+  //
+  // UNLESS IT ENDED WITH AN ERROR (QA-113, run 2). A dispatch the backend
+  // rejected writes `BACKEND_REJECTED` on an attempt that never started, and
+  // `never started` in the no-verdict ring over that error read as nothing
+  // having gone wrong. It is a failure, so it takes the failure tone; the
+  // error itself is printed under the facts.
+  if (a.started_at === null) {
+    return a.error != null ? { label: 'failed to start', tone: 'bad' } : { label: 'never started', tone: 'unknown' }
+  }
+  // TWO WORDS, NOT A CLAUSE. "running, no exit code yet" and "ended with no
+  // exit code recorded" were sentences inside a chip; the tone and the `exit`
+  // fact beside them already carry which of the two this is, and a chip whose
+  // label wraps to a second line is a paragraph with a border.
+  if (a.completed_at === null) return { label: 'running', tone: 'live' }
+  return { label: 'no exit code', tone: 'wait' }
+}
+
+/**
+ * How long it ran, or null when that cannot be computed.
+ *
+ * NULL RATHER THAN A SENTENCE. "Never started — created, then nothing ran."
+ * was a string in a value slot, which is the one thing this console must not
+ * do: a value slot holds a measurement or it holds the absence encoding, never
+ * a narration of why there is no measurement. The caller draws `—` plus a mark
+ * and the narration is the mark's accessible name.
+ */
+function ran(a: AttemptRow): string | null {
+  if (a.started_at === null) return null
+  if (a.completed_at === null) return `${timeAgo(a.started_at)} · open`
+  const done = instant(a.completed_at)
+  const started = instant(a.started_at)
+  if (done === null || started === null) return null
+  // `spanText`, the one duration formatter the inspector draws with (AG-21,
+  // archived issue 102). `769s` here beside `12m 49s` for the same attempt in the detail
+  // pane was two formatters for one number; the Details card reads the same
+  // helper over the same two instants, so the two panes cannot round apart.
+  return spanText(done - started)
+}
+
+// ---------------------------------------------------------------------------
+// When an event happened, as a sequence (archived issue 101)
+// ---------------------------------------------------------------------------
+
+/**
+ * Each event's predecessor, by event id, in the order the page holds them --
+ * which is the route's `at` ascending. ACROSS attempt groups, not within one:
+ * the gap between a task's `submitted` and its first attempt's `started` is
+ * the queue wait, and it is the gap a reader most wants.
+ */
+function previousOf(events: readonly TaskEvent[]): Map<string, TaskEvent> {
+  const out = new Map<string, TaskEvent>()
+  for (let i = 1; i < events.length; i += 1) {
+    const e = events[i]
+    const p = events[i - 1]
+    if (e !== undefined && p !== undefined) out.set(e.event_id, p)
+  }
+  return out
+}
+
+/**
+ * A gap between two events: `+3m 09s`.
+ *
+ * THE SECONDS ARE PADDED, AND ONLY HERE. A column of gaps is read down, and
+ * `+3m 9s` over `+3m 10s` does not line up; a duration standing alone
+ * (`spanText`) does not need to. The rounding is `spanText`'s -- whole
+ * seconds, a measured sub-second gap kept in milliseconds -- so a gap and a
+ * `ran` over the same two instants never disagree by one.
+ */
+export function gapText(ms: number): string {
+  if (!Number.isFinite(ms)) return '—'
+  const sign = ms < 0 ? '−' : '+'
+  const a = Math.abs(ms)
+  if (a < 60_000) return `${sign}${spanText(a)}`
+  const s = Math.round(a / 1000)
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${sign}${m}m ${String(s % 60).padStart(2, '0')}s`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${sign}${h}h ${String(m % 60).padStart(2, '0')}m`
+  return `${sign}${spanText(a)}`
+}
+
+/**
+ * An instant as recorded, in UTC, to the second: `2026-09-22 10:02:09 UTC`.
+ * UTC because the event document is, and a reader matching this against a
+ * log line should not have to know which zone the browser is in.
+ */
+export function absTime(iso: string): string {
+  const t = instant(iso)
+  if (t === null) return iso
+  return `${new Date(t).toISOString().slice(0, 19).replace('T', ' ')} UTC`
+}
+
+/**
+ * WHEN, AS THE GAP FROM THE EVENT BEFORE, with the absolute time in `title`
+ * and -- because a title is a hover a keyboard never gets -- in a span the
+ * sheet shows while the element has focus. The first event on the page has
+ * no predecessor, so it keeps its age.
+ */
+export function EventWhen({ e, prev }: { e: TaskEvent; prev: TaskEvent | null }) {
+  const at = instant(e.at)
+  const before = prev === null ? null : instant(prev.at)
+  const abs = absTime(e.at)
+  return (
+    <time className="ev-at" dateTime={e.at} title={abs} tabIndex={0}>
+      {at !== null && before !== null ? gapText(at - before) : timeAgo(e.at)}
+      <span className="ev-abs">{abs}</span>
+    </time>
+  )
+}

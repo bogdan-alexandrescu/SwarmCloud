@@ -1,0 +1,61 @@
+[project]
+name = "swarm-api"
+version = "0.1.0"
+description = "Tenant-scoped control-plane API for the agent swarm."
+requires-python = ">=3.11"
+dependencies = [
+    "swarm-common",
+    # The credential patterns (swarm_api.redaction re-exports them).
+    "swarm-redaction",
+    # The workflow state derivation (swarm_api.rollup re-exports it), shared
+    # with the reconciler's workflow stall check (archived issue 616).
+    "swarm-workflow-rollup",
+    # The Jev client, shared with the worker (jev-contract.md, answer 10):
+    # the work contract's submission review and the control plane's re-ask
+    # call Jev through the same validated, sanitised, audited client.
+    "swarm-jev",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "google-cloud-firestore>=2.16",
+    "google-cloud-secret-manager>=2.20",
+    "google-cloud-pubsub>=2.21",
+    # Reading checkpoints and logs back out of the artifact bucket
+    # (swarm_api.objects). The import is lazy so create_app() still builds no
+    # client, but images/swarm-api/Dockerfile installs THIS package and nothing
+    # else -- an undeclared dependency would be an ImportError the first time an
+    # operator opened a log, in production, reading like a permissions problem.
+    "google-cloud-storage>=2.18",
+    "google-auth>=2.30",
+    "prometheus-client>=0.20",
+    # Signs each step's canonical spec at submission with the platform's
+    # Cloud KMS key (contract request 34, swarm_api.specsigning). Imported
+    # lazily, so create_app() still builds no client. swarm-api only: no
+    # other service signs, and no worker holds any role on the key.
+    "google-cloud-kms>=2.21",
+    "google-crc32c>=1.5",
+    # Verifies the Ed25519 attempt proof on the worker-only child routes
+    # (docs/design/child-tasks.md §3.2, swarm_api.childkey). Imported lazily;
+    # declared because images/swarm-api/Dockerfile installs only this package.
+    "cryptography>=42",
+    # Seals a GitHub Actions secret to the repository's or environment's
+    # public key (libsodium `crypto_box_seal`, `nacl.public.SealedBox`), the
+    # only form GitHub accepts (docs/design/secrets-scopes.md §3.2, owner
+    # decision Q5 b: swarm-api seals). `cryptography` has no sealed box.
+    # Imported lazily by swarm_api.actions_secrets; declared because the
+    # image installs only this package.
+    "pynacl>=1.5",
+]
+
+[tool.uv.sources]
+swarm-common = { path = "../common", editable = true }
+swarm-redaction = { path = "../redaction", editable = true }
+swarm-workflow-rollup = { path = "../workflow-rollup", editable = true }
+swarm-jev = { path = "../jev-client", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["swarm_api"]

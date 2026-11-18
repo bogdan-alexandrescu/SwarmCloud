@@ -1,0 +1,284 @@
+# CI can no longer change a custom role, and cannot grant swarmSecretLister.
+#
+# Owner decisions, 2026-09-25:
+#
+#   archived issue 79  roles/iam.roleAdmin comes off the CI deployer, and every custom role
+#        terraform/infra and its modules defined moves to terraform/bootstrap,
+#        which the owner applies. While CI held roleAdmin, one iam.roles.update
+#        could add resourcemanager.projects.setIamPolicy to a custom role it
+#        already held unconditioned, and its next project setIamPolicy --
+#        roles/owner included -- was authorised by that binding, so the scoped
+#        projectIamAdmin condition (archived issue 68) was never evaluated.
+#   archived issue 69  the quota broker's swarmSecretLister grant moves to terraform/bootstrap
+#        too, and the role leaves deployer_grantable_project_roles, so the scoped
+#        projectIamAdmin cannot admit a grant of it -- to the broker or to CI
+#        itself. The role carries project-wide secrets.setIamPolicy, which
+#        reaches the other team's 63 secrets.
+#
+# Split from archived pull request 150 (2026-09-27) into two PRs merged back together here:
+#
+#   PR A (archived pull request 239, merged) carries the runs that assert something about
+#   terraform/infra and terraform/modules alone, provable without any change to
+#   terraform/bootstrap: CI defines and reads no custom role any more, and
+#   modules/iam no longer grants the broker swarmSecretLister.
+#
+#   PR B (archived pull request 150, this branch) carries the runs that assert something about
+#   terraform/bootstrap's OWN configuration -- roles/iam.roleAdmin off
+#   deployer_roles, and swarmSecretLister off deployer_grantable_project_roles
+#   -- which is only true once bootstrap's own change (dropping roleAdmin from
+#   deployer_roles) lands. They needed a main that had PR A's release before
+#   they could plan cleanly; PR A is merged, so they do now.
+#
+# Each run reads the configuration as merged, not the live policy: what the
+# policy holds changes only when the owner applies bootstrap, and
+# docs/runbooks/custom-roles-to-bootstrap.md is that step.
+
+mock_provider "google" {}
+
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
+variables {
+  # terraform/bootstrap's infra_tenants_tfvars has no default (the real tfvars
+  # is in the state bucket); bootstrap runs read this stand-in's tenants.
+  infra_tenants_tfvars = "../../tests/terraform/tenants_tfvars_fixture/fixture.tfvars"
+
+  project_id = "example-project"
+
+  # Required by terraform/bootstrap; the value only has to pass validation.
+  frontend_iap_members = ["domain:example.com"]
+}
+
+# The files CI applies define no custom role and read none. CI holds no
+# iam.roles.* permission once roleAdmin is gone, so either would 403.
+run "ci_defines_and_reads_no_custom_role" {
+  command = plan
+
+  module {
+    source = "./custom_role_inventory"
+  }
+
+  # The control: the scan read files and matches real declarations. bootstrap
+  # defines swarmSecretProvisioner and swarmDeployerProjectBuckets at least --
+  # true on main today, before this PR's platform_roles.tf adds the other
+  # eight, so this control does not depend on the bootstrap-side change.
+  assert {
+    condition     = output.terraform_dir != "" && output.ci_files_read > 0 && length(output.bootstrap_declarations) >= 2
+    error_message = "the inventory read no terraform/infra or terraform/modules file, or found no custom role even in terraform/bootstrap: the assertion below would be comparing against nothing"
+  }
+
+  assert {
+    condition     = length(output.ci_declarations) == 0
+    error_message = "terraform/infra or a module under terraform/modules defines or reads a custom IAM role. CI holds no iam.roles.* permission (roles/iam.roleAdmin is off the deployer, #79), so the release would 403 on it. Custom roles are defined in terraform/bootstrap, which the owner applies; infra names them by the ids in terraform/modules/custom_role_ids."
+  }
+}
+
+run "terraform_infra_no_longer_grants_the_broker_swarm_secret_lister" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/iam"
+  }
+
+  variables {
+    artifact_bucket  = "swarm-artifacts-example-project"
+    labels           = { "managed-by" = "swarm-terraform" }
+    gke_cluster_name = "swarm-autopilot"
+    gke_location     = "us-central1"
+  }
+
+  assert {
+    condition = !anytrue([
+      for k, b in google_project_iam_member.plain : endswith(b.role, "/roles/swarmSecretLister")
+    ])
+    error_message = "modules/iam still grants the quota broker swarmSecretLister; that grant is terraform/bootstrap's (#69), and a CI-applied grant of it needs the role on the grantable list"
+  }
+
+  # The control: the broker keeps the grants that stay in terraform/infra.
+  assert {
+    condition = alltrue([
+      contains(keys(google_project_iam_member.plain), "swarm-quota-broker:roles/monitoring.viewer"),
+      contains(keys(google_project_iam_member.plain), "swarm-quota-broker:roles/logging.logWriter"),
+    ])
+    error_message = "the broker lost a project grant other than swarmSecretLister"
+  }
+}
+
+run "the_deployer_is_not_granted_role_admin" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "example-org/example-repo"
+  }
+
+  assert {
+    condition     = !contains(keys(google_project_iam_member.deployer_roles), "roles/iam.roleAdmin")
+    error_message = "the CI deployer is still granted roles/iam.roleAdmin: its iam.roles.update can widen any custom role CI holds, which bypasses every condition on the deployer's other grants (#79)"
+  }
+
+  # The reviewed list is the second key: a role not on it is refused at plan.
+  assert {
+    condition     = !contains(local.deployer_roles_reviewed, "roles/iam.roleAdmin")
+    error_message = "roles/iam.roleAdmin is still on the list of roles deployer_roles may name"
+  }
+
+  # The control: every other role the deployer held is still granted, so this
+  # run is not passing because WIF, or the whole list, went away.
+  assert {
+    condition = alltrue([
+      for r in [
+        "roles/artifactregistry.admin",
+        "roles/cloudbuild.builds.editor",
+        "roles/cloudscheduler.admin",
+        "roles/compute.networkAdmin",
+        "roles/compute.securityAdmin",
+        "roles/container.admin",
+        "roles/datastore.owner",
+        "roles/logging.configWriter",
+        "roles/monitoring.editor",
+        "roles/pubsub.admin",
+        "roles/resourcemanager.projectIamAdmin",
+        "roles/run.admin",
+        "roles/serviceusage.serviceUsageAdmin",
+      ] : contains(keys(google_project_iam_member.deployer_roles), r)
+    ])
+    error_message = "a deployer role other than roles/iam.roleAdmin stopped being granted; taking roleAdmin off must move nothing else"
+  }
+}
+
+run "swarm_secret_lister_is_not_a_role_ci_may_grant" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "example-org/example-repo"
+  }
+
+  assert {
+    condition = !anytrue([
+      for r in local.deployer_grantable_project_roles : endswith(r, "/roles/swarmSecretLister")
+    ])
+    error_message = "swarmSecretLister is still on deployer_grantable_project_roles: once projectIamAdmin is scoped, CI could still grant itself project-wide secrets.setIamPolicy over the other team's 63 secrets (#69)"
+  }
+
+  # The control: the five custom roles terraform/infra still grants at the
+  # project level stay grantable, or the next release that touches one 403s.
+  assert {
+    condition = alltrue([
+      for id in [
+        "swarmGkeDispatcher",
+        "swarmGkeReaper",
+        "swarmJobDispatcher",
+        "swarmJobReaper",
+        "swarmTenantWorkerFirestore",
+      ] : contains(local.deployer_grantable_project_roles, "projects/example-project/roles/${id}")
+    ])
+    error_message = "a custom role terraform/infra still grants at the project level is no longer grantable; the release that next adds or removes one of those grants would 403"
+  }
+}
+
+# archived issue 69's acceptance is "swarmSecretLister (or whatever role then carries
+# project-wide secrets.setIamPolicy)". The run above holds the NAME; this one
+# holds the PERMISSION, so moving setIamPolicy onto another role CI may grant --
+# or putting a predefined role that carries it on the list -- fails too.
+# resourcemanager.projects.setIamPolicy is refused alongside it: a project-wide
+# setIamPolicy reaches every secret's policy by inheritance, and grants anything
+# else besides.
+run "no_role_ci_may_grant_carries_secret_set_iam_policy" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "example-org/example-repo"
+  }
+
+  # Every platform custom role on the grantable list, by key, matched on the
+  # full name the list holds (projects/<project>/roles/<id>).
+  assert {
+    condition = !anytrue(flatten([
+      for key, role in local.platform_roles : [
+        for p in role.permissions : contains([
+          "secretmanager.secrets.setIamPolicy",
+          "resourcemanager.projects.setIamPolicy",
+        ], p)
+      ] if contains(local.deployer_grantable_project_roles, "projects/${var.project_id}/roles/${google_project_iam_custom_role.platform[key].role_id}")
+    ]))
+    error_message = "a custom role on deployer_grantable_project_roles carries secretmanager.secrets.setIamPolicy or resourcemanager.projects.setIamPolicy: the scoped projectIamAdmin would let CI grant it to itself, unconditioned, and reach the other team's 63 secrets in example-project (#69)"
+  }
+
+  # Predefined roles that carry secretmanager.secrets.setIamPolicy or
+  # resourcemanager.projects.setIamPolicy. A list READ FROM Google's predefined
+  # roles reference (cloud.google.com/iam/docs/understanding-roles), not
+  # measured live: the mock provider cannot expand a predefined role, so a role
+  # Google later widens is not caught here.
+  assert {
+    condition = length(setintersection(toset(local.deployer_grantable_project_roles), toset([
+      "roles/owner",
+      "roles/secretmanager.admin",
+      "roles/iam.securityAdmin",
+      "roles/resourcemanager.projectIamAdmin",
+    ]))) == 0
+    error_message = "a predefined role that carries secretmanager.secrets.setIamPolicy or project setIamPolicy is on deployer_grantable_project_roles: CI could grant it to itself and reach the other team's 63 secrets in example-project (#69)"
+  }
+
+  # The control: the custom-role assert above examined the five roles infra
+  # grants at the project level, so an empty match cannot pass it.
+  assert {
+    condition = length([
+      for key, role in local.platform_roles : key
+      if contains(local.deployer_grantable_project_roles, "projects/${var.project_id}/roles/${google_project_iam_custom_role.platform[key].role_id}")
+    ]) == 5
+    error_message = "the permission check examined other than the five platform custom roles on deployer_grantable_project_roles (job/gke dispatcher and reaper, worker_firestore): either it matched nothing and proved nothing, or a sixth platform role -- swarmSecretLister among them -- became grantable by CI (#69, the other team's 63 secrets)"
+  }
+
+  # And every custom role on the list is one the first assert could read: a
+  # custom role defined outside platform_roles (forge_user_slots.tf,
+  # workspace_deployer.tf) put on the list would otherwise go unexamined.
+  assert {
+    condition = length([
+      for r in local.deployer_grantable_project_roles : r if startswith(r, "projects/")
+    ]) == 5
+    error_message = "deployer_grantable_project_roles holds a custom role outside local.platform_roles, whose permissions this run cannot see; check it carries no secrets.setIamPolicy (#69, the other team's 63 secrets) and extend this run to read it"
+  }
+}
+
+# Putting it back by hand is refused at plan, not discovered in a review.
+#
+# LAST IN THE FILE ON PURPOSE: an unmet expect_failures is an error, not an
+# assertion failure, and terraform test skips every run after an error in the
+# same file -- so anywhere earlier it would hide the runs below it whenever it
+# fails.
+run "role_admin_cannot_be_put_back_on_the_deployer" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "example-org/example-repo"
+    deployer_roles    = ["roles/artifactregistry.admin", "roles/iam.roleAdmin"]
+  }
+
+  # roleAdmin was on the reviewed list, so this used to plan cleanly; the
+  # refusal is the change.
+  expect_failures = [var.deployer_roles]
+}

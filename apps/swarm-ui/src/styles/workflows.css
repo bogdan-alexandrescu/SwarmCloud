@@ -1,0 +1,980 @@
+/* ========================================================================
+   WORKFLOWS: the list, one workflow's page, wide stages, and the review and
+   merge cards (workflows.html V2, wide-workflows.html A, agent-detail-2.html
+   A; wave 4 lane U2, 2026-10-02).
+
+   THE SECTION'S OWN SHEET, imported by Workflows.tsx. The shared components
+   and tokens are U0's; the `wf-` pieces here are drawn to components.html A
+   (32px rows, pill chips, the brand state marks) so a later pass can swap them
+   for the canonical set. RADII ARE THE SHEET'S TOKENS -- `--radius` for a
+   card, `--ctl-radius-sm` for a control, 999px for a pill, 2px for a bar --
+   not components.html's 8 / 12 literals: spacing.test.tsx still holds the
+   live scale (0 / 2 / 6 / 10 / 14 / 999), and through the tokens these rules
+   move with U0's when the scale does.
+
+   EVERY RULE WINS ON SPECIFICITY, NOT ON ORDER. `main.tsx` imports App (and
+   so this sheet) before `styles.css`, so this file comes FIRST in the bundle
+   and loses every tie. Rules that restyle something `styles.css` also styles
+   are scoped one class deeper than the rule they replace.
+   ======================================================================== */
+
+/* ---- The list's row pieces ------------------------------------------- */
+
+/* THE PROFILE GIVES WAY, THE STEP COUNT DOES NOT (visual QA pass 1 C-11,
+   archived issue 2596): the chip was one block cut at its end, so a lone long profile read
+   `claude-code-browser …` and lost `· 1 step`. The profile is cut inside the
+   chip; the count keeps its width. */
+span.wf-mix > .c-chip { display: flex; }
+.wf-mix > .c-chip > .wf-mix-p { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-mix > .c-chip > .wf-mix-n { flex: none; white-space: nowrap; }
+/* WHAT BECAME OF THE OTHER STEPS, UNDER THE FRACTION (visual QA run 6, F3,
+   archived issue 1680). '4/6' keeps its line; '1 failed · 1 cancelled' is a line of its
+   own that wraps at its spaces rather than being clipped with the cell. The
+   separator that joins the two in the cell's text is not drawn: the line
+   break is the separation. */
+.wfl-done-ends {
+  display: block; white-space: normal;
+  font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim);
+}
+.wfl-done-ends > .wfl-done-sep { display: none; }
+
+/* THE STAGE-SHAPE GLYPH (wide-workflows.html §6): one 7px column per stage,
+   its height log-scaled from the stage's width (`stageGlyph`), filled bottom
+   up with the stage's state mix. Beside the text shape, never instead of it. */
+.wf-sgl {
+  display: inline-flex; align-items: flex-end; gap: 2px;
+  height: 22px; margin-right: 8px;
+  vertical-align: middle;
+}
+.wf-sgl > i {
+  display: flex; flex-direction: column-reverse;
+  width: 7px; border-radius: 2px; overflow: hidden;
+  background: var(--line-soft);
+}
+.wf-sgl > i > b { display: block; width: 100%; }
+
+/* THE MIX PARTS, one vocabulary for the band's bar and the list's glyph, in
+   the brand state hues. Hatching means only "not measured" (components.html
+   A): the unread part is hatched amber; skipped and cancelled are drawn
+   apart from succeeded so a clean finish and a skipped one never read alike. */
+.mx-bad { background: var(--s-bad); }
+.mx-live { background: var(--s-live); }
+.mx-park { background: var(--s-park); }
+.mx-wait { background: color-mix(in srgb, var(--s-neu) 30%, var(--surface)); }
+.mx-done { background: var(--s-neu); }
+.mx-skip { background: color-mix(in srgb, var(--s-neu) 55%, var(--surface)); }
+.mx-can { background: color-mix(in srgb, var(--s-neu) 75%, var(--surface)); }
+.mx-unk { background: repeating-linear-gradient(135deg, var(--s-warn) 0 3px, var(--surface) 3px 6px); }
+
+/* ---- One workflow's page (workflows.html B; archived issue 503) ------------------------ */
+
+/* ONE ROW: the chips left, Copy link and Cancel workflow right, centred on
+   the row. It was a column of breadcrumb, id, provenance and a second heading
+   with the actions top-aligned beside it and ~100px blank under them. */
+.wfp > .wfp-head {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: var(--ctl-s2) var(--ctl-s3);
+}
+.wfp > .wfp-head > .wfp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+/* THE FAILURE POLICY IS CONFIGURATION (box 6343794378): its own group, a
+   'Policy' label before the chip and a rule between it and the state, so
+   'on failure: fail the workflow' does not read as the outcome beside it. */
+.wfp-head .wfp-policy {
+  display: inline-flex; align-items: center; gap: var(--ctl-s1);
+  margin-left: var(--ctl-s1); padding-left: var(--ctl-s3);
+  border-left: 1px solid var(--line);
+}
+.wfp-head .wfp-policy-k { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+
+/* THE BODY CARD KEEPS ALL FOUR EDGES on the page. `styles.css` took its
+   border away (`.wf-card.is-page`), which left a card with no top edge under
+   the tabs (archived issue 503). */
+.wfp .wf-card.is-page {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 0;
+  background: var(--surface);
+}
+/* ONE FRAME, NOT TWO (V097, archived issue 1038). `.wf-body` (styles.css) is drawn to hang
+   under a list row's `.wf-bar`, so it has three edges and no top one; on the
+   page there is no bar, and it drew a second box inside this card with its
+   top edge missing. Here the body is the card's whole inside: no border of its
+   own, the card's corners (`--radius`), and the card's padding. It keeps its fill, because
+   the sticky level rail and the edge halo paint `--wf-body-bg` and have to
+   match what is behind them. */
+.wfp .wf-card.is-page > .wf-body {
+  border: 0; border-radius: var(--radius);
+  padding: var(--ctl-s3) var(--ctl-pad-chrome);
+}
+
+/* THE BODY CARD WHILE THE PAGE READS (archived issue 113): the loaded card's frame, so the
+   board lands inside the edges already drawn. Its own class, not `.wf-card`,
+   which everything that finds the loaded card keys on. */
+.wfp > .wfp-skel-body {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: var(--ctl-s3) var(--ctl-pad-chrome);
+  background: var(--surface);
+}
+
+/* THE COUNT NOTE'S PLACEHOLDER IS ITS OWN FORMATTING CONTEXT (V103), so the
+   bar's half-leading margins stay inside the line instead of collapsing
+   through the `<p>`: collapsed, the line was 12px where the loaded note's is
+   17.4, and the tabs still moved by the difference. */
+.wfp-skel-sum { display: flow-root; }
+/* EACH HEAD CHIP'S BAR IS THE HEIGHT OF THE TEXT IT STANDS FOR (V103,
+   archived issue 1427). A bar's margins are a `--lh-meta` line's half-leading, which made
+   every placeholder chip 27.4px; the loaded state and policy chips are set
+   at `--lh-flush`, 22px. On one line the cost chip (`.wf-spend`, 27.4px) hid
+   the difference; on a phone, where the cost has its own line, the first
+   line was 5px taller while the page read. The cost's bar, in `.wfp-cost`,
+   keeps the full line, as the loaded cost does. */
+.wfp.is-loading .wfp-chips > .c-chip > .wfl-skel { margin: calc((var(--lh-flush) * 1em - 1em) / 2) 0; }
+/* AND THE COST CHIP IS ONE HEIGHT WHATEVER IT SAYS (V103). The figure
+   (`.wf-spend`) is set at `--lh-micro`, a 27.4px chip; "cost not reported",
+   which the head shows until the attempt read lands, was the chip's bare
+   12px line, 24px, so the read head was 101px, then 98, then 101 again,
+   and the tabs moved by 3px each time. It takes the figure's line less
+   the 1px of its own dashed underline: the chip is inline-flex, so the cell
+   is a block whose border adds to its height, and at the full line the
+   chip came out 28.4px (measured in Chromium, 2026-10-16). The line stays a
+   `--lh-` token (typescale.test.ts allows no raw line-height), so the 1px
+   comes off as a negative bottom margin instead. */
+.wfp-head .wfp-cost .wf-cell.is-absent { line-height: var(--lh-micro); margin-bottom: -1px; }
+/* At a phone's column the loaded census is two lines (~90 characters at 12px
+   in ~350px), so the placeholder is too; wider, it is one. */
+.wfp-skel-sum > .wfp-skel-sum-2 { display: none; margin-top: calc(var(--lh-micro) * 1em - 1em); }
+@media (max-width: 560px) {
+  .wfp-skel-sum > .wfp-skel-sum-2 { display: block; }
+  /* AND THE PAGE HEAD IS TWO LINES IN BOTH STATES. A workflow's title is a
+     22-character id, so at a phone the loaded head's `every 10 s · read 0 s
+     ago` wraps under it, while the reading head's shorter `⟳ reading…` fitted
+     beside it: one line, then two, and the tabs dropped ~30px when the read
+     landed. The head's actions take their own row here whatever they say.
+     Scoped by the page's own wrapper (`wfp-screen`; it was the back link
+     this page drew before its head, until VQ-015 left the breadcrumb the one
+     way back). */
+  .wfp-screen > .c-phead > .c-acts { flex: 1 0 100%; }
+  /* AND THE CHIPS ARE TWO LINES IN BOTH STATES (V103, archived issue 1427): the cost takes
+     a line of its own. Beside the state and `on failure: fail the workflow`
+     a short cost (`$0.0366`) fitted and a partial one (`$0.426 3 of 4
+     reported`) wrapped, so the loaded head was 71px or 101px by what the
+     cost said, and the reading head, which cannot know, was 71: the tabs
+     dropped ~30px when the read landed. The skeleton's cost bar is in the
+     same `.wfp-cost` slot (Workflows.tsx), so it takes the same line. */
+  .wfp-head > .wfp-chips > .wfp-cost { flex: 1 0 100%; }
+}
+
+/* THE INSPECTOR HEAD'S FIRST LINE IS THE WORKFLOW AND THE CLOSE BUTTON (V100).
+   `.wf-inspect-wf` takes the whole line in styles.css so the step's line
+   starts under it; here it takes what the × leaves, so the × ends that line
+   at the panel's corner instead of wrapping on its own after the links. */
+/* The basis is the line less the ×'s 28px and the head's gap, so the
+   workflow and the × share the line and nothing else fits beside them. */
+.wf-inspect-head > .wf-inspect-wf { flex: 1 1 calc(100% - 28px - var(--ctl-s2)); }
+.wf-inspect-head > .wf-inspect-close { flex: none; align-self: flex-start; }
+/* ON A WORKFLOW'S PAGE THE STEP IS THAT LINE (QA-120, run 5b): an h3 of the
+   step's mark, id and state, in a row, where the workflow's name and id stood
+   in a column. Its own font, not the heading's: the id and the state keep the
+   sizes styles.css gives them. */
+.wf-inspect-head > .wf-inspect-steph {
+  flex-direction: row; align-items: center; gap: var(--ctl-s2);
+  margin: 0; font: inherit;
+}
+.wf-inspect-steph > .wf-inspect-steph-mk { display: inline-flex; }
+/* What a fact's figure is for (`FACT_HINT`, run 5b L4), after the figure. */
+.wf-inspect-facts .wf-fact-hint { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-faint); }
+/* The step's Logs link (QA-121) is drawn as its neighbours, Open agent and
+   Changes, are: the head's meta size in the body face. */
+.wf-inspect-head > .wf-inspect-logs { font: var(--t-meta)/var(--lh-meta) var(--font); }
+
+/* THE INTEGRATOR'S WHOLE ID, CUT ONLY WHERE THE ROW IS NARROWER THAN IT
+   (V102). The text is the whole id now; this is what keeps a phone's row from
+   being pushed wider by it. */
+.wf-dispatch .wf-integrator {
+  display: inline-block; max-width: 100%; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* THE PICKED STEP'S CARD UNDER THE GRAPH BELOW 1280 (workflows.html B).
+   Beside it, the card's same-step strip ran past its right edge and the graph
+   lost a third of its width; stacked, both have the column.
+   FROM 1280 IT IS BESIDE THE GRAPH (visual QA QA-120, run 5b, 2026-10-22,
+   archived issue 1680 comment 6283740207). Under the graph it was off screen at 1440x900 on
+   arrival, and a click on a node scrolled the page down to it, taking the
+   clicked node out of view: three runs reported it. The strip is fifteen
+   marks at most now (`STRIP_MAX`) and the graph pans inside its own wrapper,
+   so from 1280 the page uses the board's split (styles.css `.wf-split.
+   has-panel`): the card is a column on the right that sticks in view. */
+@media (max-width: 1279px) {
+  .wf-card .wf-split.is-stack.has-panel { display: block; }
+  .wf-split.is-stack > .wf-panel {
+    position: static; max-height: none; overflow: visible;
+    margin-top: var(--ctl-s3);
+  }
+}
+.wf-inspect-acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+/* WHY A FAILED STEP FAILED, WHOLE (visual QA QA-120). The node's note is one
+   ellipsed line because the layout measured one; the card is where the text
+   is read in full, so it wraps -- every line of the error, breaking even a
+   path with no spaces -- and is never cut. */
+/* ITS LABEL IS A HEADING IN THE BODY INK, the block marked by the failure's
+   left rule as the lead above the graph is (visual QA run 2 WG-4, run 5b
+   L4): 'why it failed' was a grey micro caption, the quietest words on the
+   card for the one thing a failed step's card is opened to read. */
+.wf-inspect-cause {
+  display: grid; gap: var(--ctl-s1);
+  padding-left: var(--ctl-s2); border-left: 2px solid var(--bad);
+}
+.wf-inspect-cause > .wf-inspect-cause-h { margin: 0; font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.wf-inspect-cause-text {
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+/* WHILE THE BANNER SAYS IT (visual QA run 6, F2): the card points at the
+   banner in the body face, faint, so the sentence is read once. */
+.wf-inspect-cause-ref { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+/* WHY THE STEP FAILED, LEADING THE GRAPH (visual QA QA-120, run 2). On a
+   failed workflow's page the step's card is under the graph, below the fold;
+   this strip is above it, in view on arrival at 1440x900 and at 390. The
+   failure's ink is its left rule, never its text; the reason wraps whole. */
+.wfp-fail-lead {
+  display: grid; gap: var(--ctl-s1); justify-items: start;
+  margin: 0 0 var(--ctl-s3); padding: var(--ctl-s2) var(--ctl-s3);
+  border-left: 2px solid var(--bad);
+}
+.wfp-fail-lead-head { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); }
+.wfp-fail-lead-text {
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.wfp-fail-lead-go { padding: 0; border: 0; background: none; cursor: pointer; font: var(--t-micro)/var(--lh-micro) var(--font); }
+.wf-scrub-more { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+/* ◀ position ▶ as one unit that never wraps (browser QA D30); the shape after
+   it shrinks and is cut, whole in its title. */
+.wf-scrub > .wf-scrub-nav { display: inline-flex; align-items: center; gap: var(--ctl-s2); flex: none; white-space: nowrap; }
+/* The table's counted figure, after the attempt stepper's unit (V200): the
+   position's own face, dim, as the shape after the same-step unit is. */
+.wf-scrub > .wf-scrub-counted { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wf-scrub > .wf-scrub-shape { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ON A PHONE THE SHAPE IS A LINE OF ITS OWN (archived issue 2391 comment 58): beside the
+   nav at 390 'shape: 2 steps in 2 stages (1 → 1)' was cut (scrollWidth 317 in
+   300). The row already wraps (styles.css `.wf-scrub`); here the shape takes
+   the whole width under the nav and wraps at its spaces. It goes last (order),
+   so the strip's marks stay on the nav's line rather than dropping to one of
+   their own, and its parenthetical moves down whole, breaking inside only when
+   it alone is wider than the line (review of U02). */
+@media (max-width: 560px) {
+  .wf-scrub > .wf-scrub-shape { flex: 1 1 100%; white-space: normal; order: 1; }
+  .wf-scrub-shape > .wf-scrub-paren { display: inline-block; max-width: 100%; }
+}
+.wf-scrub-strip > li > .wf-mk { display: inline-flex; }
+
+/* THE STEP TABLE IS A FIXED TABLE WITH PX COLUMNS (walkthrough A, owner
+   2026-10-03, at 1440). Q3's shares overprinted at the table's real width:
+   Tokens ran into Inputs ("656 in · 1084.2k"), Ran and Attempts touched
+   ("45m 40s2 of 3"), Runner broke at its hyphen ("claude-/code") and Inputs
+   stacked one word per line. Now every column but Why is a px width sized to
+   the widest figure it was measured holding, Why takes the slack, every cell
+   is one line that clips with an ellipsis rather than running into its
+   neighbour, figures are 12px mono right-aligned, and 6px of padding a side
+   holds any two cells' text 12px apart. The minimum is 1000px: the table's
+   box at 1440 with the panel open is 1020 (1440 - 84 spine - 236 panel -
+   2 x 32 gutter - the card's 16px padding and borders), less a classic
+   scrollbar's 15, so it scrolls inside its card only below that. The widths
+   sum to 888, which leaves Why 112px at the minimum and 348px with the panel
+   collapsed. Below 900 the phone form keeps its sideways scroll.
+   THE STEP COLUMN IS 140px AND ITS NAME WRAPS (lane U9 item 1, owner
+   2026-10-03): with the step card docked beside the table, a planned run's
+   names ('impl-plan-schema-and-overlaps') were wider than the column and the
+   state pill printed inside them. The name is a button, an atomic inline
+   box, so the cell's ellipsis never reached it and the clip cut it mid-id;
+   it now wraps inside its own cell (below), whole, because a cut id cannot
+   be pasted. walk.steps.inspector.test.tsx. */
+/* BROWSER QA D12 (owner, 2026-10-04, an issue run's ten long step names):
+   the names wrapped to two and three lines of bold mono with hyphen breaks
+   while an empty Why took ~110px; Ran and Cost held 94-101px of text in 64px
+   cells ("9m 55s…", "not repo…"); with the step card open everything after
+   Waited was behind a sideways scroll; on a phone the table was ~300px in
+   nested borders. So: a name is ONE line, cut with an ellipsis and whole in
+   its title (and in the step card); Why is not drawn when no step has one
+   (`tableColumns`), and the step column takes its room; Ran fits
+   "23h 59m so far" and Cost "not reported"; and below the table's minimum
+   width the rows STACK (the container query below) instead of scrolling.
+   The px columns sum to 920 (Step gave 20px: its name is cut with its
+   title anyway), so Why keeps 60px at the 980px minimum and 76px at 1440
+   (the box is 996px there), cut with its whole reason in its title.
+   BROWSER QA N1 (owner, 2026-10-04): the minimum WAS 1000px and the stacked
+   form below it -- and the box is 996px at a 1440 viewport, so every desktop
+   got the stacked rows, pinned at 30px by `.ctl-table tbody tr`, and each
+   step's Ran / Attempts / Cost line printed over the next step's name. The
+   minimum is now the columns' own sum plus Why's sliver, and a stacked row's
+   height is `auto`. qa.u11b.workflows.test.tsx. */
+/* The box AROUND the table is the container its stacked form asks about, at
+   any width. Not the table's own box: a container query matches descendants
+   only, so the border and overflow below would never apply to it (D12). */
+.wf-card .wf-table-box { container: wf-steps / inline-size; }
+@media (min-width: 900px) {
+  /* `clip`, NOT `auto` (QA G3-12): an `overflow-x: auto` wrapper is the
+     head's scroll container on both axes and never scrolls vertically, so a
+     sticky head inside it never stuck (WF-21). At this width the table never
+     needs to scroll sideways -- below its 980px minimum the box stacks the
+     rows instead (the container query below) -- so the wrapper clips, which
+     makes no scroll container, and the head sticks to the page. */
+  .wf-card .ctl-table.wf-table { overflow-x: clip; }
+  /* THE HEAD STAYS IN VIEW over a long table (QA G3-12). On `thead`, not on
+     each `th`: the fill is `thead`'s one-rectangle paint (archived issue 178), so no head
+     cell declares a fill or a layer of its own. z-index 2 stays under the
+     drawer's band (3), the order shell.test.tsx holds. */
+  .wf-card .ctl-table.wf-table > table > thead { position: sticky; top: 0; z-index: 2; background: var(--surface-2); }
+  .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 980px; font-size: var(--t-meta); }
+  .wf-card .ctl-table.wf-table th,
+  .wf-card .ctl-table.wf-table td { padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wf-card .ctl-table.wf-table td.is-num { font-size: var(--t-micro); }
+  /* QA G3-10 (2026-10-07): State at 100px cut `skipped by verdict` to
+     `skipped by ver…` and Step at 82px cut `implement` to `implem…`. State is
+     the list's 136px; Step is 96px, and takes the slack when no row has a
+     why. Tokens gave the 12px it did not need (its absences are `none`,
+     `none yet`, `not reported` now; `no attempt yet` is never a cost or token
+     cell), and Why keeps 62px at the minimum, on two lines. */
+  /* 96px IS THE STEP COLUMN'S FLOOR. Above it the column grows to its
+     longest name, out of Why's slack (V098, archived issue 1038): `stepColumnWidth` in
+     WorkflowViews.tsx sets that on the cell, capped so Why keeps the 60-odd
+     px it has at the 980px minimum. */
+  .wf-card .ctl-table.wf-table th[data-col="step"] { width: 96px; min-width: 96px; }
+  .wf-card .ctl-table.wf-table.no-why th[data-col="step"] { width: auto; }
+  /* 126px: `skipped by verdict` beside its mark is 114px of 12px sans
+     (measured in Chromium, 2026-10-16) and 12px of padding. It was the
+     list's 136; the 10px went to Ran (V202, archived issue 1427). */
+  .wf-card .ctl-table.wf-table th[data-col="state"] { width: 126px; }
+  .wf-card .ctl-table.wf-table th[data-col="runner"] { width: 96px; }
+  .wf-card .ctl-table.wf-table th[data-col="waited"] { width: 108px; }
+  /* 128px, not 114: `between attempts` is 115px of 12px mono and was cut
+     (V202, archived issue 1427); State and Tokens gave the 14px, so the columns still sum
+     to 920 and Why keeps 60px at the 980px minimum. These px widths are each
+     figure column's CEILING now: the head cell carries the column's own width
+     inline, its longest value in this table (`figureColumnWidths`), so Why
+     takes what they do not use. */
+  .wf-card .ctl-table.wf-table th[data-col="ran"] { width: 128px; }
+  /* 'task unread' was 79px of 12px mono; at 70px it clipped (owner QA R8).
+     It is 'not joined' now (VOCAB-AGENTS-UI): 'agent unread' is 86px and
+     would clip at 92 again, and no column here has 8px to give.
+     Step gives the 22px: its name is one line cut with its title (D12), and
+     Why keeps its 60px at the 980px minimum. */
+  .wf-card .ctl-table.wf-table th[data-col="attempts"] { width: 92px; }
+  .wf-card .ctl-table.wf-table th[data-col="inputs"] { width: 72px; }
+  .wf-card .ctl-table.wf-table th[data-col="cost"] { width: 100px; }
+  /* A PARTIAL SUM'S MARK IS A LINE OF ITS OWN (overview-agents-69, QA1B-08
+     re-review): `$0.4230 · 1 of 2` is 127px of 12px mono, and on one line
+     the ellipsis cut its `of 2`. 136px would hold it, but Why keeps its 60px
+     at the 980px minimum only while Cost is 100. `CostCellView`. */
+  .wf-card .ctl-table.wf-table td[data-col="cost"] .wf-cost-of { display: block; }
+  /* 100px: `not reported`, its longest word, is 98.4px of 12px mono with
+     the padding; the 4px went to Ran (V202). */
+  .wf-card .ctl-table.wf-table th[data-col="tokens"] { width: 100px; }
+  /* WHY WRAPS ONTO TWO LINES before it is cut (QA G3-10): `expecte…` and
+     `Waiting o…` said nothing. The whole reason is still its title. */
+  .wf-card .ctl-table.wf-table td[data-col="why"] { white-space: normal; }
+  .wf-card .ctl-table.wf-table td[data-col="why"] > .wf-why {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+    overflow: hidden; white-space: normal; overflow-wrap: anywhere;
+  }
+  /* The files a step reads, in the row under it: wrapping text, the row's width. */
+  .wf-card .ctl-table.wf-table tr.wf-xrow > td { white-space: normal; overflow: visible; padding: 4px 12px 10px; }
+}
+/* THE LONGEST NAME READS WHOLE (VQ-WORKFLOWS re-review): `stepColumnWidth`
+   (WorkflowViews.tsx) sizes the column at 0.6em a character plus 22px of
+   chrome, and the face's measured advance is 0.602em (dag.ts
+   `MONO_ADVANCE_EM`), so a 14-character `scan-terraform` was 0.4px over
+   and drew as `scan-terraf…`. `stepColumnWidth` now uses that advance, and
+   the cell's LEFT padding gives the name 2px more: its right padding stays
+   6px, so with State's own 6px the two columns' text is still 12px apart
+   (walk.steps.test.tsx `crowded(…, 12)`; a 2px right padding drew them 8px
+   apart). */
+@media (min-width: 900px) {
+  .wf-card .ctl-table.wf-table td[data-col="step"] { padding: 4px 6px 4px 4px; }
+}
+/* A STEP'S NAME IS ONE LINE (D12): the button is the cell's width at most and
+   the id inside it is cut with an ellipsis, its whole text in its title, so
+   the next column's state pill is never drawn over it and no hyphen breaks it. */
+.wf-table td[data-col="step"] > .wf-pick { display: flex; max-width: 100%; white-space: nowrap; }
+.wf-table td[data-col="step"] .wf-pick-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* THE SELECTED STEP'S NAME READS WHOLE (VQ-WORKFLOWS re-review 2, archived issue 2391).
+   At 1440 with the nav open the Step column is held to `96px + 100cqi -
+   980px` (`stepColumnWidth`, WorkflowViews.tsx), about 121px, so Why keeps
+   its room: the selected `scan-terraform` drew as `scan-terraf…`, the name the
+   step card beside it is about. That one name wraps -- at its hyphens first,
+   anywhere if a part is still wider than the cell -- and every other row
+   keeps D12's one line, cut, whole in its title. */
+.wf-table td[data-col="step"] > .wf-pick[aria-pressed="true"] { white-space: normal; }
+.wf-table td[data-col="step"] > .wf-pick[aria-pressed="true"] > .wf-pick-id { white-space: normal; overflow-wrap: anywhere; }
+/* BELOW THE MINIMUM WIDTH THE ROWS STACK (D12): the name and the state on a
+   line, then each figure under its own label, wrapping; no sideways scroll,
+   no second border inside the card. Phone and the docked step card alike. */
+@container wf-steps (max-width: 979px) {
+  .wf-card .ctl-table.wf-table.is-scroll { border: 0; overflow-x: visible; }
+  .wf-card .ctl-table.wf-table.is-scroll > table { display: block; min-width: 0; width: 100%; }
+  .wf-card .ctl-table.wf-table.is-scroll > table > thead { display: none; }
+  .wf-card .ctl-table.wf-table.is-scroll > table > tbody { display: block; }
+  /* `padding-left: 14px` (QA G3-34): the row's 4px state edge is an inset
+     shadow, and the 4px padding left every label flush against it. THE RIGHT
+     IS 14px TOO (V204, archived issue 1427): at 4px the state word ended against the
+     tinted card's right edge, while every label sat well in from its left. */
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; height: auto; padding: 6px 14px 6px 14px; border-bottom: 1px solid var(--line-soft); }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td { display: block; padding: 0; border: 0; overflow: visible; position: static; }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="step"] { flex: 1 1 60%; width: auto; min-width: 0; max-width: none; overflow: hidden; background: none; }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="state"] { flex: none; }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="why"] { flex: 1 1 100%; min-width: 0; white-space: normal; }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-label]::before { content: attr(data-label) ' '; color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--font); }
+  /* A row with no why draws no Why block (QA G3-32): the cell is empty and
+     carries no label, and an empty block still cost a gap. */
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="why"]:empty { display: none; }
+  .wf-card .ctl-table.wf-table.is-scroll tr.wf-xrow,
+  .wf-card .ctl-table.wf-table.is-scroll tr.wf-inline-row { display: block; height: auto; }
+  /* A STACKED CARD IS NOT A SCROLLER, SO NOTHING IN IT MAY BE WIDER THAN IT
+     AND IT DRAWS NO RIGHT-EDGE FADE (V035, archived issue 1038). The why line kept the
+     one-line `nowrap` the wide table gives it, so one long reason ("Waiting on
+     an earlier step ... Eligible again 2026-10-11T05:29:51Z") made its block
+     493px in a 316px card. That overflow is what `useMoreRight` measures, so
+     the scroll table's fade came on and dimmed the right edge of every card --
+     exactly where the state word sits: "succeede", "parke". The line wraps
+     here, its cell may shrink below its text (`min-width: 0`, on the
+     cell's rule above), and the fade, which says "more
+     columns to the right", is off: stacked, there are none. */
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="why"] > .wf-why { white-space: normal; overflow-wrap: anywhere; }
+  .wf-card .ctl-table.wf-table.is-scroll.has-more { -webkit-mask-image: none; mask-image: none; }
+}
+/* The why line fits the cell it is in, whatever that cell's width. */
+.wf-table .wf-why { display: block; max-width: 100%; }
+/* THE TABLE'S HEAD ROW, inside the card: its title, and the sampling mark
+   right-aligned (walkthrough A: the mark floated in a strip above the card). */
+.wf-table-head { display: flex; align-items: center; gap: var(--ctl-s3); min-height: 32px; margin: 0 0 var(--ctl-s2); }
+.wf-table-head > .wf-table-title { margin: 0; font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.wf-table-head > .wf-table-marks { margin-left: auto; display: inline-flex; align-items: center; gap: var(--ctl-s2); }
+/* The Inputs count: a quiet text control, and its files under the row. */
+.wf-table .wf-inputs-toggle {
+  margin: 0; padding: 0; border: 0; background: none; cursor: pointer;
+  font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--sk-ac);
+  text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px;
+}
+.wf-table .wf-inputs-toggle[aria-expanded='true'] { color: var(--text); }
+.wf-table .wf-inputs-toggle.is-unread { color: var(--warn); }
+.wf-table .wf-inputs-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.wf-table tr.wf-xrow > td { background: var(--surface-2); }
+.wf-xinputs { display: flex; align-items: baseline; gap: var(--ctl-s3); font: var(--t-micro)/var(--lh-micro) var(--mono); }
+.wf-xinputs-h { flex: none; font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.wf-table tr.is-skipped > td { background: repeating-linear-gradient(135deg, var(--s-neub) 0 6px, var(--surface) 6px 11px); }
+/* STACKED, THE SKIP HATCH IS A STRIP BESIDE THE EDGE (QA G3-34): across the
+   cells it ran behind every figure on the card. The row keeps its tint; the
+   hatch is the 10px between the state edge and the first label. */
+@container wf-steps (max-width: 979px) {
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step].is-skipped > td { background: none; }
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step].is-skipped {
+    background-image: repeating-linear-gradient(135deg, var(--s-neu) 0 2px, transparent 2px 5px);
+    background-size: 10px 100%; background-position: 4px 0; background-repeat: no-repeat;
+  }
+}
+
+/* ---- Step tints: one state vocabulary in every view (archived issue 405) --------------- */
+
+/* THE OWNER'S DECISION OF 2026-10-01 ON archived issue 405 (workflows.html D, "Step tints"):
+   a step is drawn in its state's own pair wherever it is drawn -- a pale tint
+   of the state's hue across it and a stronger edge in that hue. Teal for the
+   four states that hold capacity (invariant 1), violet for parked, red for
+   failed and dead-lettered, grey for the rest. It superseded archived issue 405's own light
+   green / light blue / cream tints.
+
+   ONE TOKEN PAIR PER HUE, AND THEY ARE THE BRAND'S: `--s-<hue>b` the tint and
+   `--s-<hue>` the edge, declared once in styles.css for both themes -- dark
+   gets the deep tints, light the pale ones, with no second declaration here.
+   The class is the node's: `t-<hue>` from `dag.ts` `lookClass` (graph, map)
+   and `WorkflowViews.tsx` `tintClass` (table, timeline). The graph's node was
+   drawn this way by the rebrand (`.node.t-<hue>` in styles.css); these rules
+   take the same pair to the table's rows, the timeline's runs and the map.
+   `t-unk`, a step whose task was not read, matches none of them: it keeps
+   the dashed amber, never a state's hue.
+
+   Each edge is 3:1 or better on its own tint and `--text` 4.5:1 on every
+   tint, in both themes (workflow.tints.test.tsx). The rules out-rank
+   styles.css on specificity, because this sheet comes first in the bundle. */
+
+/* A TABLE ROW: the tint across its cells and a 4px edge down its first one.
+   The edge is an inset shadow on the cell, not a border, so it costs no
+   layout; the failed row's 3px `is-bad` rule still draws under it, and a
+   skipped row's stripes (a background IMAGE) still draw over the tint. */
+.ctl-table.wf-table tbody tr[data-step].t-live > td { background-color: var(--s-liveb); }
+.ctl-table.wf-table tbody tr[data-step].t-park > td { background-color: var(--s-parkb); }
+.ctl-table.wf-table tbody tr[data-step].t-bad > td { background-color: var(--s-badb); }
+.ctl-table.wf-table tbody tr[data-step].t-neu > td { background-color: var(--s-neub); }
+.ctl-table.wf-table tbody tr[data-step].t-live > td:first-child { box-shadow: inset 4px 0 0 var(--s-live); }
+.ctl-table.wf-table tbody tr[data-step].t-park > td:first-child { box-shadow: inset 4px 0 0 var(--s-park); }
+.ctl-table.wf-table tbody tr[data-step].t-bad > td:first-child { box-shadow: inset 4px 0 0 var(--s-bad); }
+.ctl-table.wf-table tbody tr[data-step].t-neu > td:first-child { box-shadow: inset 4px 0 0 var(--s-neu); }
+/* STACKED (below the table's minimum width, D12) the row is a flex box of
+   blocks with gaps between them, so the ROW takes the tint and the edge and
+   its cells draw none -- a tint per block would leave the gaps bare. */
+@container wf-steps (max-width: 979px) {
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step][class*="t-"] > td { background-color: transparent; box-shadow: none; }
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step].t-live { background-color: var(--s-liveb); box-shadow: inset 4px 0 0 var(--s-live); }
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step].t-park { background-color: var(--s-parkb); box-shadow: inset 4px 0 0 var(--s-park); }
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step].t-bad { background-color: var(--s-badb); box-shadow: inset 4px 0 0 var(--s-bad); }
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step].t-neu { background-color: var(--s-neub); box-shadow: inset 4px 0 0 var(--s-neu); }
+}
+
+/* A TIMELINE RUN: the tint as its fill and the edge as a 1px inset outline
+   (a shadow, so `is-open`'s dashed end and `is-clamped`'s dashed border, both
+   borders, still draw). Only a run takes it: a wait stays the hueless outline,
+   because waiting is not the step's verdict (WF-11) and the mock-up draws every
+   wait neutral. A failed run keeps its post, in the brand red. */
+.wf-timeline .wf-tl-track > .wf-tl-span.t-live { background-color: var(--s-liveb); box-shadow: inset 0 0 0 1px var(--s-live); }
+.wf-timeline .wf-tl-track > .wf-tl-span.t-park { background-color: var(--s-parkb); box-shadow: inset 0 0 0 1px var(--s-park); }
+.wf-timeline .wf-tl-track > .wf-tl-span.t-bad { background-color: var(--s-badb); box-shadow: inset 0 0 0 1px var(--s-bad); }
+.wf-timeline .wf-tl-track > .wf-tl-span.t-neu { background-color: var(--s-neub); box-shadow: inset 0 0 0 1px var(--s-neu); }
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran.is-bad::before { background: var(--s-bad); }
+/* A RUN HAS A SOLID CORE IN ITS EDGE HUE (QA G3-13). The tint alone was the
+   bar: `--s-neub` on the card is about 1.1:1, so a finished run and the empty
+   track looked alike. The core is the middle half of the bar in the state's
+   edge colour, 3:1 or better on the card in both themes
+   (qa.g3.workflow.test.tsx), and a background IMAGE, so the tint pair archived issue 405
+   holds is still the bar's colour and edge. */
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran { background-size: 100% 50%; background-position: center; background-repeat: no-repeat; }
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran.t-live { background-image: linear-gradient(var(--s-live), var(--s-live)); }
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran.t-park { background-image: linear-gradient(var(--s-park), var(--s-park)); }
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran.t-bad { background-image: linear-gradient(var(--s-bad), var(--s-bad)); }
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran.t-neu { background-image: linear-gradient(var(--s-neu), var(--s-neu)); }
+/* A VERDICT-SKIPPED RUN IS THE NODE'S SKIP HATCH (QA G3-02): its agent never
+   ran, so it is drawn as the striped card the Graph draws, not as a run. */
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran.is-skipped {
+  background-image: repeating-linear-gradient(135deg, var(--s-neu) 0 2px, transparent 2px 6px);
+  background-size: auto; background-position: 0 0; background-repeat: repeat;
+}
+/* PARKED NOW: the open wait in the parked hatch and edge (QA G3-13). A step
+   parked 1h 37m drew a faint outline the length of the track. */
+.wf-timeline .wf-tl-track > .wf-tl-span.is-waiting.is-parked {
+  border-color: var(--s-park);
+  background: repeating-linear-gradient(135deg, var(--s-park) 0 2px, var(--s-parkb) 2px 6px);
+}
+/* ON PARENTS, DOTTED in the wait's ink (QA G3-13): the `--line` outline was
+   nearly invisible on the card. Dotted against the queue's solid outline, so
+   the two waits differ by shape, not only by shade. */
+.wf-timeline .wf-tl-track > .wf-tl-span.is-parents { border: 1px dotted var(--text-faint); }
+
+/* THE KEY, one line above the axis across both columns (QA G3-13). Each
+   swatch is drawn by the classes its spans use. */
+.wf-timeline > .wf-tl-key {
+  grid-column: 1 / -1;
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+  margin: 0 0 var(--ctl-s1); padding: 0; list-style: none;
+  font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim);
+}
+.wf-tl-key-item { display: inline-flex; align-items: center; gap: 6px; }
+.wf-tl-swatch { display: inline-block; width: 20px; height: 10px; box-sizing: border-box; border-radius: var(--track-radius); }
+.wf-tl-swatch.is-parents { border: 1px dotted var(--text-faint); }
+.wf-tl-swatch.is-waited { border: 1px solid var(--text-faint); }
+.wf-tl-swatch.is-parked { border: 1px solid var(--s-park); background: repeating-linear-gradient(135deg, var(--s-park) 0 2px, var(--s-parkb) 2px 6px); }
+.wf-tl-swatch.is-ran {
+  background-color: var(--s-neub); box-shadow: inset 0 0 0 1px var(--s-neu);
+  background-image: linear-gradient(var(--s-neu), var(--s-neu)); background-size: 100% 50%; background-position: center; background-repeat: no-repeat;
+}
+.wf-tl-swatch.is-skipped { background: repeating-linear-gradient(135deg, var(--s-neu) 0 2px, var(--s-neub) 2px 6px); box-shadow: inset 0 0 0 1px var(--s-neu); }
+
+
+/* A MAP NODE: the tint as its fill and the edge as its stroke, held at 1px
+   however far the map is scaled down. Unread is the dashed amber. */
+.wf-minimap .wf-mini-node, .wf-vmap .wf-mini-node { stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.wf-minimap .wf-mini-node.t-live, .wf-vmap .wf-mini-node.t-live { fill: var(--s-liveb); stroke: var(--s-live); }
+.wf-minimap .wf-mini-node.t-park, .wf-vmap .wf-mini-node.t-park { fill: var(--s-parkb); stroke: var(--s-park); }
+.wf-minimap .wf-mini-node.t-bad, .wf-vmap .wf-mini-node.t-bad { fill: var(--s-badb); stroke: var(--s-bad); }
+.wf-minimap .wf-mini-node.t-neu, .wf-vmap .wf-mini-node.t-neu { fill: var(--s-neub); stroke: var(--s-neu); }
+.wf-minimap .wf-mini-node.t-unk, .wf-vmap .wf-mini-node.t-unk { fill: var(--s-warnb); stroke: var(--s-warn); stroke-dasharray: 3 2; }
+
+/* THE STAGE FILTER A BAND COUNT OPENED, as the canonical removable filter Chip. */
+.wf-filter { display: flex; align-items: center; gap: var(--ctl-s2); margin: 0 0 var(--ctl-s2); }
+.wf-filter-n { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+
+
+
+/* A NODE'S REASON IS CUT AT A WORD (visual QA QA-120, archived issue 1680 comment
+   6283740207). styles.css's `.node-note` is `nowrap` with an ellipsis, which
+   cut 'exit status 1: pytest coll…' inside a word. Clamped to one line and
+   wrapping at its spaces, the line ends on the last whole word that fits and
+   the ellipsis follows it; a single word wider than the card still breaks
+   (`anywhere`) rather than run past the edge. Still one line, so `layoutOf`'s
+   `NOTE_H` holds; the whole reason is the line's title and the focused card's
+   `.node-note-full`, as before. */
+.wf-canvas .node-note {
+  display: -webkit-box; -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1; line-clamp: 1;
+  white-space: normal; overflow-wrap: anywhere;
+}
+
+/* ---- A wide stage's band (wide-workflows.html A) ------------------------- */
+
+/* THREE ROWS IN A BOX `dag.ts` SIZED (`BAND_H`, 100): the toggle (count,
+   range, mix bar, slots held, caret) at 32px, the counts at 20, the named
+   chips at 22, 4px between, 8px of padding and a 1px border. No row wraps,
+   so the height never depends on how many states or names a stage has.
+   ABOVE THE EDGES, opaque, as the band always was: an edge crossing it reads
+   as passing behind it. */
+.wf-canvas .wf-band {
+  position: absolute; z-index: 1;
+  box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 4px;
+  /* 12px a side is `BAND_PAD_X` in Workflows.tsx, which adds the on-screen inset to it. */
+  margin: 0; padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--text-faint);
+  border-radius: var(--radius);
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+  color: var(--text);
+  cursor: default;
+  overflow: hidden;
+}
+/* A STAGE WHOSE CENSUS IS INCOMPLETE MUST NOT LOOK CLEAN: dashed amber, as
+   `.node.unknown`. Declared before `.has-failure` so a band that is both keeps
+   the dashed edge and takes the bad colour. */
+.wf-canvas .wf-band.has-unread { border-left-color: var(--warn); border-left-style: dashed; }
+.wf-canvas .wf-band.has-failure {
+  border-left-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 6%, var(--surface));
+}
+/* The stage holding the picked step (WF-10): three sides in `--text`; a
+   selection is not a state, so the left accent keeps its tone. */
+.wf-canvas .wf-band.holds-picked { border-top-color: var(--text); border-right-color: var(--text); border-bottom-color: var(--text); }
+
+/* THE DISCLOSURE ROW. A plain row that is a control: no centring, casing or
+   tracking inherited from a button. */
+.wf-band-toggle {
+  display: flex; align-items: center; gap: var(--ctl-s3);
+  height: 32px; min-width: 0; margin: 0; padding: 0;
+  border: 0; border-radius: var(--ctl-radius-sm); background: none;
+  text-align: left; text-transform: none; letter-spacing: normal;
+  font: inherit; color: inherit; white-space: nowrap;
+  cursor: pointer;
+}
+.wf-band-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.wf-band-toggle .wf-band-n { flex: none; font-weight: 600; }
+.wf-band-range { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--mono); }
+.wf-band-mix {
+  display: flex; flex: none; gap: 1px;
+  width: 150px; height: 6px; border-radius: 2px; overflow: hidden;
+  background: var(--line-soft);
+}
+.wf-band-mix > i { display: block; height: 100%; flex-basis: 0; }
+.wf-band-hold { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--mono); }
+.wf-band-toggle .wf-caret { margin-left: auto; flex: none; color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--font); }
+.wf-band-toggle:hover .wf-caret { color: var(--text); }
+
+/* THE COUNTS, NOWRAP AND CLIPPED, and that is only safe because of the order:
+   `stageCensus` puts failures and cancellations first. On a page each count
+   is a button that opens the Table at those steps. */
+.wf-canvas .wf-band-counts {
+  display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s3);
+  height: 20px; min-width: 0; overflow: hidden;
+}
+.wf-canvas .wf-band-count {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  margin: 0; padding: 0 4px; border: 0; border-radius: 2px; background: none;
+  white-space: nowrap;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-dim);
+}
+.wf-canvas button.wf-band-count { cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
+.wf-canvas button.wf-band-count:hover { color: var(--text); text-decoration-color: currentColor; }
+.wf-canvas button.wf-band-count:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.wf-canvas .wf-band-count.is-bad { color: var(--bad-ink); font-weight: 600; }
+.wf-canvas .wf-band-count.is-unknown { color: var(--text-faint); }
+.wf-canvas .wf-band-cause {
+  flex: 0 1 auto; min-width: 8ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--bad-ink);
+}
+
+/* THE NAMED STEPS: failed, then holding capacity, then parked, as pill chips
+   in their state's tint and edge (Chip `tone`), each picking its step. */
+.wf-band-chips {
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 6px;
+  height: 22px; min-width: 0; overflow: hidden;
+}
+/* The named steps are canonical pick Chips in their state's tint (archived issue 503 swap; they were `.wf-band-chip`). */
+.wf-band-chips > .c-chip { flex: none; }
+.wf-band-chips .wf-mk,
+.wf-canvas .wf-band-count > .wf-mk { display: inline-flex; }
+.wf-canvas .wf-band-pick { flex: none; font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); white-space: nowrap; }
+
+/* ---- Edges: lit on hover and select, the rest faded ---------------------- */
+
+.wf-edges .wf-link.is-lit .wf-edge { stroke: var(--sk-ac); stroke-width: 2.4px; }
+.wf-edges .wf-link.is-lit .wf-arrowhead { fill: var(--sk-ac); }
+.wf-edges .wf-link.is-faded { opacity: .35; }
+
+/* ---- A step its verdict gate kept from running --------------------------- */
+
+/* STRIPED, WITH A DASHED EDGE (wide-workflows.html A): it ended SUCCEEDED and
+   its agent never ran, so it may not wear the solid card of work done. */
+.wf-canvas .node.is-skipped {
+  background: repeating-linear-gradient(135deg, var(--s-neub) 0 7px, var(--surface) 7px 13px);
+  border-left: 4px dashed var(--s-neu);
+}
+.node-dur.is-skip { color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--mono); }
+
+/* ---- The review verdict and the merge checklist (agent-detail-2.html A) --- */
+
+.wf-verdict,
+.wf-merge {
+  display: flex; flex-direction: column; gap: var(--ctl-s2);
+  margin: var(--ctl-s3) 0 0; padding: var(--ctl-s3) 14px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+}
+/* THE PENDING REVIEW VERDICT IS ONE SENTENCE (QA G3-19): `.wf-verdict` is a
+   column flex box for the verdict card, which made every text run of this
+   paragraph a block of its own -- `not read yet` on a line, and the next one
+   starting with its colon. A paragraph flows inline. */
+.wf-verdict.is-pending { display: block; color: var(--text-dim); }
+.wf-card-h { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+.wf-card-r { margin-left: auto; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wf-card-foot { margin: 0; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.wf-verdict-pill {
+  display: inline-flex; align-items: center; padding: 1px 8px;
+  border-radius: 999px; border: 1px solid var(--line);
+  font: 600 var(--t-micro)/var(--lh-micro) var(--mono);
+}
+.wf-verdict-pill.is-merge { background: var(--s-liveb); border-color: color-mix(in srgb, var(--s-live) 45%, transparent); }
+.wf-verdict-pill.is-notyet { background: var(--s-warnb); border-color: color-mix(in srgb, var(--s-warn) 45%, transparent); }
+.wf-sev { display: flex; flex-direction: column; gap: 4px; }
+.wf-sev-h { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.wf-sev-n { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wf-finding {
+  margin: 0; padding: 4px 8px;
+  border-left: 3px solid var(--line); border-radius: 2px;
+  background: var(--surface-2);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+}
+.wf-sev.is-blocker .wf-finding { border-left-color: var(--s-bad); }
+.wf-sev.is-major .wf-finding { border-left-color: var(--s-warn); }
+.wf-merge-out { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); }
+.wf-merge-out.is-bad { color: var(--bad-ink); }
+.wf-merge-label {
+  padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line);
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
+}
+.wf-merge-head { margin: 0; }
+.wf-checks { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.wf-check {
+  display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: start; gap: var(--ctl-s2);
+  min-height: 32px; padding: 6px 0; border-bottom: 1px solid var(--line-soft);
+}
+.wf-check-m { text-align: center; font-weight: 600; }
+.wf-check.is-passed .wf-check-m { color: var(--s-live); }
+.wf-check.is-failed .wf-check-m { color: var(--s-bad); }
+.wf-check.is-waiting .wf-check-m { color: var(--s-warn); }
+.wf-check.is-not_read { color: var(--text-dim); }
+.wf-check-t small { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.wf-check-c { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+
+/* ---- The graph at phone width (workflows.html B, phone frame) ------------ */
+
+/* STACKED STAGE CARDS below 561px, where the canvas is hidden: a 390px
+   column shows one card of a fan-out and a sideways scroll, and the cards say
+   where the run is without one. Above it they are not drawn. */
+.wf-ph-stages { display: none; }
+@media (max-width: 560px) {
+  .wf-card .wf-ph-stages {
+    display: flex; flex-direction: column; gap: 6px;
+    margin: 0; padding: 0; list-style: none;
+  }
+  .wf-card.is-page .wf-canvas-wrap,
+  .wf-card.is-page .wf-zoom { display: none; }
+}
+.wf-ph-stage {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface);
+}
+.wf-ph-stage + .wf-ph-stage::before {
+  content: "↓"; align-self: center; margin: -4px 0 2px;
+  color: var(--text-faint); font: var(--t-micro)/var(--lh-micro) var(--font);
+}
+.wf-ph-h { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.wf-ph-step {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 32px; margin: 0; padding: 4px 8px;
+  border: 1px solid var(--line); border-left-width: 4px; border-radius: var(--ctl-radius-sm);
+  background: var(--s-neub); color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font); text-align: left; cursor: pointer;
+}
+.wf-ph-step.t-live { background: var(--s-liveb); border-left-color: var(--s-live); }
+.wf-ph-step.t-park { background: var(--s-parkb); border-left-color: var(--s-park); }
+.wf-ph-step.t-bad { background: var(--s-badb); border-left-color: var(--s-bad); }
+.wf-ph-step.t-unk { background: var(--surface); border-left-style: dashed; border-left-color: var(--s-warn); }
+.wf-ph-step.is-picked { border-color: var(--text); }
+.wf-ph-step:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.wf-ph-name { font-weight: 600; overflow-wrap: anywhere; }
+.wf-ph-state { margin-left: auto; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wf-ph-more { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--sk-ac); }
+
+/* A SETTLED STEP'S CARD RESERVES NO STOP STRIP (browser QA D29, 2026-10-04):
+   its task is terminal, so no Stop control can appear on it, and the 42px
+   strip was 40-65px of blank under every finished card. The card keeps its
+   tier's top padding under its last row instead. `stripSavingAt` in dag.ts
+   is the same arithmetic: 42 - 10 and 34 - 6. */
+.wf-canvas .node.is-settled { padding-bottom: 10px; }
+.wf-canvas .node.zoom-names.is-settled { padding-bottom: 6px; }
+
+/* THE TIMELINE THINS ITS LABELS BY ITS OWN WIDTH (browser QA D38, 2026-10-04).
+   The phone rule in styles.css asks the VIEWPORT, so with the step card open
+   at 1440 the track was ~290px and "+3h" "+4h" all but touched. The scale is
+   its own container, and below 420px -- six seven-character labels at 59px --
+   it prints every other label exactly as the phone rule does: counted back
+   from the last, `0` and the last always printed, every rule line kept. */
+.wf-timeline > .wf-tl-scale { container: wf-tl-scale / inline-size; }
+@container wf-tl-scale (max-width: 420px) {
+  .wf-tl-scale > .wf-tl-tick:nth-last-of-type(even):not(:first-of-type) > .wf-tl-tick-label { visibility: hidden; }
+}
+
+/* ---- Graph rendering GR1: critical path and the vertical map -------------- */
+
+/* THE CRITICAL PATH'S EDGES, HEAVIER AND NOTHING ELSE. Weight, not hue: the
+   kind classes keep their colour and dash, so a declared edge on the path is
+   still dashed, and a greyscale screenshot still shows which edges it holds.
+   A lit or faded edge keeps its own treatment over this one. */
+.wf-edges .wf-link.is-critical .wf-edge { stroke-width: 3px; }
+.wf-edges .wf-link.is-critical .wf-edge-halo { stroke-width: 8px; }
+
+/* The caption is one line between the zoom strip and the canvas, in the
+   strip's micro type. The chain wraps rather than widening the card. */
+.wf-critical {
+  margin: 0 0 var(--ctl-s2);
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
+}
+.wf-critical-h { font-weight: 600; color: var(--text); }
+.wf-critical-chain { overflow-wrap: anywhere; }
+
+/* THE CANVAS AND ITS VERTICAL MAP SIDE BY SIDE. The wrapper takes the row and
+   scrolls sideways as it did; the map is fixed-width and sticky, so it stays on
+   screen while the page scrolls the canvas past it. The adjacency rules that
+   spaced `.wf-canvas-wrap` (styles.css) are restated against the row. */
+.wf-canvas-row { display: flex; align-items: flex-start; gap: var(--ctl-s2); }
+.wf-canvas-row > .wf-canvas-wrap { flex: 1 1 auto; min-width: 0; }
+/* A GRAPH THAT FITS ACROSS IS AS TALL AS IT IS (visual QA VQ-014, archived issue 2391;
+   workflows.html B draws the graph at its content's height in a box that
+   scrolls only sideways). The screen-height bound (V034, styles.css) is for a
+   graph wider than its column, whose sideways scrollbar would otherwise sit
+   below the fold; one that fits across (`fitsAcross`, Workflows.tsx) gains
+   nothing from it but a second scroller, so the page scrolls it. */
+.wf-canvas-row > .wf-canvas-wrap.fits-x { max-height: none; overflow: visible; }
+.wf-dispatch + .wf-canvas-row,
+.wf-viewbar + .wf-canvas-row { margin-top: var(--ctl-s3); }
+.wf-vmap {
+  flex: none;
+  position: sticky; top: var(--ctl-s3);
+  width: 44px; height: min(60vh, 480px);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--wf-body-bg);
+  overflow: hidden;
+  cursor: pointer;
+  /* A finger dragged on the strip steers the canvas (the component's pointer
+     handlers) rather than scrolling the page under it; everywhere else the
+     page scrolls natively. */
+  touch-action: none;
+}
+.wf-vmap svg { display: block; width: 100%; height: 100%; }
+@media (max-width: 560px) {
+  .wf-card.is-page .wf-vmap { display: none; }
+}
+
+/* A Steps-table figure still being read (WF-24): said in the absent ink, so
+   it is never taken for a value. */
+.wf-table .wf-cell.is-reading { color: var(--text-dim); font-style: italic; }
+
+/* THE LIVE BROWSER CARD, INLINE IN ITS NODE (LB-UX2b, live-browser.md §6, the
+   owner's chosen mockup). A RUNNING browser step's `.node-slot` carries
+   `has-live` and `--node-live-h` (`LIVE_CARD_H` in dag.ts, which `layoutOf`
+   added to this node's height). The node's button keeps its padding for the
+   stop strip and adds the card's height on top, and `.node-live` -- the
+   button's SIBLING, so its links are not inside a button -- is laid into that
+   room, directly above the strip: 42px from the foot (34px at the names tier,
+   the same strip `.node.zoom-names` reserves).
+
+   A FIXED BOX: the card's height is the reserved height less the one
+   `--ctl-s1` gap above it, and the two text rows are one line each, so the
+   canvas letterboxes into what is left whatever the device's shape.
+   `LIVE_CARD_H` carries the arithmetic; keep the two in step. The `0px`
+   fallback is never drawn (only a slot that sets the property has `has-live`);
+   it keeps the number in one place, dag.ts, rather than restated here. */
+.node-slot.has-live > .node { padding-bottom: calc(42px + var(--node-live-h, 0px)); }
+.node-slot.has-live > .node.zoom-names { padding-bottom: calc(34px + var(--node-live-h, 0px)); }
+.node-slot.has-live > .node-live {
+  position: absolute; left: 15px; right: 12px; bottom: 42px; z-index: 2;
+  height: calc(var(--node-live-h, 0px) - var(--ctl-s1));
+}
+.node-slot.has-live > .node.zoom-names ~ .node-live { bottom: 34px; }
+
+/* THE STOP CONTROL HAS ITS OWN PLACE ON THE CARD (VQ-WORKFLOWS re-review,
+   archived issue 2391). It was anchored to the SLOT's foot while the card's rows ran on in
+   the card: wherever a card drew taller than the height `layoutOf` gave its
+   slot, the rows went on into the strip and the small `stop` was drawn over
+   the last of them -- scan-terraform's `↑ plan (plan.md)` at 1440. Now the
+   slot is one grid cell holding both: the card fills it and grows with what
+   it draws, and the stop (and a live card above it) sits at the cell's foot,
+   so in the card's own bottom padding however tall the card turns out. The
+   insets are styles.css's, read as offsets from that foot: `bottom: 10px`
+   (4px at Names) lifts it, `left: 15px` moves it to the text column, and
+   the 27px margin is that 15 plus the card's 12px right padding, so the box
+   keeps the text column's width. A card that fits its slot draws exactly as
+   before.
+
+   THE CARD'S HEIGHT IS ITS CONTENT'S, NOT THE SLOT'S (VQ-WORKFLOWS re-review
+   2). `button.node`'s `height: 100%` (styles.css) is a percentage of the
+   slot's inline height -- `layoutOf`'s 107px for scan-terraform -- so the
+   one-cell grid could not grow: the card stayed 107px, its rows ran on past
+   its padding, and the stop at the cell's foot still covered `(plan.md)`.
+   `height: auto` sizes the cell to the card's content and its 42px strip;
+   `align-self: stretch` keeps a shorter card filling its slot as before.
+
+   AND THE SLOT'S HEIGHT IS A FLOOR (VQ-WORKFLOWS re-review 3). With the slot
+   at an inline `height: 107px` the browser still held the grid's one row to
+   107px, so the card stayed short and the stop still covered `(plan.md)` at
+   1440 in both themes. Workflows.tsx gives the slot `min-height` instead: the
+   row is as tall as the card, and never shorter than `layoutOf`'s figure. */
+.wf-canvas .node-slot { display: grid; }
+.wf-canvas .node-slot > .node { position: relative; inset: auto; grid-area: 1 / 1; height: auto; align-self: stretch; }
+.wf-canvas .node-slot > .node-stop,
+.wf-canvas .node-slot.has-live > .node-live { position: relative; grid-area: 1 / 1; align-self: end; margin-right: 27px; }
+.node-live > .wf-live {
+  display: flex; flex-direction: column; gap: var(--ctl-s1);
+  height: 100%; min-width: 0;
+}
+.node-live .wf-live-head,
+.node-live .wf-live-links {
+  flex: none; height: 18px; min-width: 0;
+  display: flex; align-items: center; gap: var(--ctl-s2);
+  overflow: hidden; white-space: nowrap;
+  font-size: var(--t-micro); line-height: var(--lh-micro);
+}
+.node-live .wf-live-thumb {
+  flex: 1 1 auto; min-height: 0; width: 100%; display: block;
+  object-fit: contain; background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  box-sizing: border-box;
+}
+
+/* THE ZOOM NOTE WRAPS (N22, visual QA run 4, archived issue 1680). It now says why its
+   fields are hidden and how to see them -- 'profile, duration and figures
+   hidden at this zoom. Choose Figures, or open a step, to see them.' -- about
+   500px of micro type. `flex: none` (styles.css, the strip's other caveats)
+   would run that past a 390px column; the note shrinks to the row and wraps.
+   One class deeper than that rule, which comes after this sheet. */
+.wf-zoom > .wf-caveat.wf-zoom-note { flex: 0 1 auto; min-width: 0; }
+
+/* A WORKFLOW COST STILL BEING READ (visual QA 5b:wg-dark-D2, archived issue 1680 comment
+   6343767840). The head read 'cost not reported' and the list '—' while the
+   attempt read was in flight, then '$1.21': an absence claimed by a request
+   that had not answered. Reading is upright and faint -- not the absence's
+   italic, and not `.wf-spend`'s dim ink, one step from a figure. */
+.wf-spend.is-reading { color: var(--text-faint); font-style: normal; }

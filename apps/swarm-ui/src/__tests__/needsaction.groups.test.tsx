@@ -1,0 +1,289 @@
+// NEEDS ACTION, ONE RULE IN TWO PLACES (owner decision, 2026-10-01).
+//
+// `blockerGroup` (types.ts) splits a refusal by REMEDY: somebody must act, or
+// waiting is a valid answer. Until this change only a unit test called it: the
+// Agents list drew every waiting task in one undifferentiated list, and the
+// Capacity board's top group was "Needs a look", decided by its own
+// classification (`needsALook`), which also took in pools that are merely
+// full. Two screens, two rules, and a full pool filed beside one no wait will
+// ever reopen.
+//
+// THE DECISION. Agents splits its Waiting tab into "Needs action" and "No
+// room" by `blockerGroup`. Capacity's top group was "Needs action" too, by the
+// same rule, from 2026-10-01 until owner answered VQ-031 on 2026-10-26 ("Needs
+// a look, as the mock-up draws it"): Pools' top group is "Needs a look" again
+// (`needsALook`), every pool `blockerGroup` files under needs_action AND every
+// full, lowered or 80%+ one. The Waiting split is about a task's refusals and
+// stays; it no longer decides Pools' grouping.
+//
+// MUTATION: draw Agents' Waiting tab as one list, or drop the needs-action
+// pools (`needsAction`) from Pools' Needs a look, and the tests below go red.
+
+import { useEffect } from 'react'
+import { describe, expect, it, vi } from 'vitest'
+import { act, render, screen } from '@testing-library/react'
+
+import type { ResourceClasses } from '../api'
+import type { Result } from '../fetch'
+import type { Capacity, Pool, Task } from '../types'
+import { POOL_LIMIT_UNSET, poolGroup, taskGroup } from '../types'
+import { task } from './runfixture'
+
+const api = vi.hoisted(() => ({
+  loadTasks: vi.fn(),
+  loadResourceClasses: vi.fn(),
+  loadCheckpoints: vi.fn(),
+  loadTaskLogs: vi.fn(),
+  loadCapacity: vi.fn(),
+  loadLeases: vi.fn(),
+}))
+
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api')>()
+  return { ...actual, ...api }
+})
+
+const { AgentsScreen } = await import('../Agents')
+const { CapacityScreen } = await import('../Capacity')
+const { useResourceClasses } = await import('../Blockers')
+
+const CLASSES: ResourceClasses = {
+  standard: { name: 'standard', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
+  browser: { name: 'browser', cpu: 4, memory_gib: 8, disk_gib: 4, units: 1 },
+  large: { name: 'large', cpu: 8, memory_gib: 32, disk_gib: 16, units: 4 },
+}
+
+function ok<T>(data: T): Result<T> {
+  return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-10-01T10:00:00Z' }
+}
+
+/**
+ * THE CATALOGUE ANSWERS ONLY WHEN LET GO (FLAKE-UI-2, part of archived issue 1680). On the
+ * `push` run 39719361013 of PR 1924 it answered after the task rows had
+ * drawn: `useResourceClasses` asks from a passive effect, which React runs
+ * only after the screen's own commit, and on a loaded runner that commit took
+ * seconds. Holding the answer until `primeCatalogue` lets it go keeps that
+ * order -- the screen's read first, the catalogue after -- on every run and
+ * at no cost in time, so the prime below is what makes these tests pass.
+ */
+function holdCatalogue(): () => void {
+  let release = (): void => {}
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  api.loadResourceClasses.mockImplementation(async () => {
+    await gate
+    return ok({ resource_classes: CLASSES })
+  })
+  return release
+}
+
+/**
+ * THE CATALOGUE IN HAND BEFORE THE SCREEN MOUNTS (FLAKE-UI-2). Both screens
+ * read it through `useResourceClasses`, which starts from the tab's shared
+ * read (`readResourceClasses.peek()`, Blockers.tsx) and otherwise asks from a
+ * passive effect -- one React runs only after the screen's own commit. The
+ * assertions below are about the split the catalogue decides, not about how
+ * soon it lands, so it is read first, through the same shared read the
+ * screens use, and awaited with no clock: the screen's first render then
+ * already has it, and the one async state left is the screen's own read.
+ * `setup.ts`'s `forgetProbes` drops the shared read between tests, so this
+ * runs in every test that renders a screen.
+ */
+async function primeCatalogue(release: () => void): Promise<void> {
+  let landed = (): void => {}
+  const held = new Promise<void>((resolve) => {
+    landed = resolve
+  })
+  function Prime() {
+    const classes = useResourceClasses()
+    useEffect(() => {
+      if (classes !== null) landed()
+    }, [classes])
+    return null
+  }
+  const { unmount } = render(<Prime />)
+  release()
+  await held
+  unmount()
+}
+
+/**
+ * EVERY STUBBED READ ANSWERED, AND WHAT IT CAUSED DRAWN (FLAKE-UI-2). The
+ * stubs answer from already-settled promises, so one macrotask drains every
+ * chain they start; inside `act`, React then renders and runs the effects
+ * those answers cause before this returns. Order decides it, not a clock: it
+ * was `waitFor`'s 2 s budget, which a loaded runner spent on the commit
+ * alone and failed with the rows half drawn.
+ */
+async function settle(): Promise<void> {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+}
+
+function waiting(over: Partial<Task>): Task {
+  return task({ state: 'READY', started_at: null, completed_at: null, ...over })
+}
+
+/**
+ * A large task (4 units) under `resource:large` at limit 1: never admitted at
+ * this limit. It was a browser task (2 units) under `resource:browser` until
+ * contract request 79 made the browser class 1 unit, which a limit of 1 admits.
+ */
+const TOO_SMALL = waiting({
+  id: 'tsk_toosmall0',
+  resource_class: 'large',
+  blocked_by: [{ pool: 'resource:large', reason: 'RESOURCE_CLASS_LIMIT', limit: 1, active: 0 }],
+})
+
+/** A task behind a pool with no limit set (archived issue 374). */
+const UNSET_TASK = waiting({
+  id: 'tsk_unsetpool',
+  blocked_by: [{ pool: 'tenant:eng', reason: POOL_LIMIT_UNSET, active: 0 }],
+})
+
+/** A standard task behind a full global pool: waiting is the answer. */
+const FULL = waiting({
+  id: 'tsk_fullpool0',
+  blocked_by: [{ pool: 'global', reason: 'GLOBAL_LIMIT', limit: 4, active: 4 }],
+})
+
+function section(heading: RegExp): HTMLElement {
+  const h = screen.getByRole('heading', { name: heading })
+  const s = h.closest('section')
+  expect(s, `the "${heading.source}" heading is not inside a section`).not.toBeNull()
+  return s as HTMLElement
+}
+
+function taskIds(el: HTMLElement): string[] {
+  return [...el.querySelectorAll<HTMLElement>('[data-task-id]')].map((r) => r.dataset.taskId ?? '').sort()
+}
+
+describe('taskGroup: the Waiting tab split, by blockerGroup with the task units', () => {
+  it('files below-units and limit-unset under needs action, a full pool under no room', () => {
+    expect(taskGroup(TOO_SMALL, 4)).toBe('needs_action')
+    expect(taskGroup(UNSET_TASK, 1)).toBe('needs_action')
+    expect(taskGroup(FULL, 1)).toBe('no_room')
+    // The control: the same limit-1 pool for a task it fits under is a wait.
+    expect(taskGroup({ ...TOO_SMALL, resource_class: 'standard' }, 1)).toBe('no_room')
+  })
+
+  it('files a task behind an over-ceiling (drift) pool under needs action', () => {
+    const drift = waiting({
+      id: 'tsk_driftpool',
+      blocked_by: [{ pool: 'global', reason: 'GLOBAL_LIMIT', limit: 4, active: 6 }],
+    })
+    expect(taskGroup(drift, 1)).toBe('needs_action')
+    // The control: at the ceiling exactly is full, and waiting is the answer.
+    expect(taskGroup(FULL, 1)).toBe('no_room')
+  })
+})
+
+describe('the Agents list splits Waiting into Needs action and No room', () => {
+  it('draws each waiting task under the group its blockers put it in', async () => {
+    api.loadTasks.mockResolvedValue(ok({ tasks: [FULL, TOO_SMALL, UNSET_TASK], tenant_id: 'acme' }))
+    const release = holdCatalogue()
+
+    await primeCatalogue(release)
+    render(<AgentsScreen onOpen={() => {}} />)
+    await settle()
+
+    // MUTATION: drop `primeCatalogue(release)` above and the list draws with
+    // the catalogue still held, so this reads ['tsk_unsetpool'] -- the push
+    // run 39719361013 failure, every run.
+    expect(taskIds(section(/^Needs action/))).toEqual(['tsk_toosmall0', 'tsk_unsetpool'])
+    // MUTATION: prime through anything but the shared read the list uses and
+    // the list asks the catalogue a second time.
+    expect(api.loadResourceClasses).toHaveBeenCalledTimes(1)
+    expect(taskIds(section(/^No room/))).toEqual(['tsk_fullpool0'])
+    // Needs action comes first: it is the group somebody has to act on.
+    const heads = screen.getAllByRole('heading').map((h) => h.textContent ?? '')
+    const a = heads.findIndex((t) => t.startsWith('Needs action'))
+    const b = heads.findIndex((t) => t.startsWith('No room'))
+    expect(a).toBeGreaterThanOrEqual(0)
+    expect(a).toBeLessThan(b)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Capacity
+// ---------------------------------------------------------------------------
+
+function pool(name: string, over: Partial<Pool> = {}): Pool {
+  return {
+    name,
+    hard_limit: 8,
+    adaptive_target: null,
+    quota_derived_limit: null,
+    effective_limit: 8,
+    active: 0,
+    available: 8,
+    enabled: true,
+    updated_at: '2026-10-01T10:00:00Z',
+    ...over,
+  }
+}
+
+const POOLS: Pool[] = [
+  pool('global', { active: 8, available: 0 }), // full: waiting is the answer
+  pool('tenant:eng', { hard_limit: null, effective_limit: null, available: null }), // no limit set
+  pool('resource:large', { hard_limit: 1, effective_limit: 1, available: 1 }), // below one large task
+  pool('resource:standard', { hard_limit: 0, effective_limit: 0, available: 0 }), // set to zero
+  pool('runner:codex', { enabled: false }), // paused
+  pool('provider:anthropic', { hard_limit: 0, effective_limit: 0, available: 0 }), // quota zero: names nobody
+]
+
+describe('poolGroup: the same rule, read off a pool', () => {
+  it('files paused, set-to-zero, limit-unset and below-units pools under needs action', () => {
+    const byName = new Map(POOLS.map((p) => [p.name, p]))
+    expect(poolGroup(byName.get('tenant:eng')!)).toBe('needs_action')
+    expect(poolGroup(byName.get('resource:large')!, 4)).toBe('needs_action')
+    expect(poolGroup(byName.get('resource:standard')!)).toBe('needs_action')
+    expect(poolGroup(byName.get('runner:codex')!)).toBe('needs_action')
+    expect(poolGroup(byName.get('global')!)).not.toBe('needs_action')
+    // Drift: active above the ceiling is not merely full.
+    expect(poolGroup(pool('global', { active: 6, effective_limit: 4, available: 0 }))).toBe('needs_action')
+    expect(poolGroup(pool('global', { active: 4, effective_limit: 4, available: 0 }))).not.toBe('needs_action')
+    expect(poolGroup(byName.get('provider:anthropic')!)).not.toBe('needs_action')
+    // Without the class weight a limit of 1 is not known to be too small.
+    expect(poolGroup(byName.get('resource:large')!, null)).not.toBe('needs_action')
+  })
+})
+
+describe('Capacity puts the pools that need a person under "Needs a look" at the top', () => {
+  it('holds every blockerGroup needs-action pool, and the full and zeroed ones beside them', async () => {
+    const data: Capacity = { pools: POOLS, runner_profiles: {}, tenant_id: 'eng', generated_at: '2026-10-01T10:00:00Z' }
+    api.loadCapacity.mockResolvedValue(ok(data))
+    // The board reads leases beside capacity (`loadPoolsBoard`). Unstubbed it
+    // was the fixture, behind a real 180 ms timer, so the board waited on a
+    // clock (FLAKE-UI-2). No lease decides the group under test.
+    api.loadLeases.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    const release = holdCatalogue()
+
+    await primeCatalogue(release)
+    render(<CapacityScreen />)
+    await settle()
+
+    const names = (el: Element) => [...el.querySelectorAll('tbody .ctl-sub')].map((s) => s.textContent ?? '').sort()
+    // MUTATION: drop `primeCatalogue(release)` above and `resource:large` -- too small
+    // only once the catalogue says a large task weighs 4 -- is missing here.
+    expect(names(section(/^Needs a look/))).toEqual([
+      'global',
+      'provider:anthropic',
+      'resource:large',
+      'resource:standard',
+      'runner:codex',
+      'tenant:eng',
+    ])
+    // MUTATION: as above, a second catalogue read means the board did not
+    // draw from the primed shared read.
+    expect(api.loadResourceClasses).toHaveBeenCalledTimes(1)
+    const top = section(/^Needs a look/)
+    // It is the first group on the board, and the only one: every pool here
+    // is something to look at (owner 2026-10-26, VQ-031).
+    expect(document.querySelector('.cap-families > section')).toBe(top)
+    expect(document.querySelectorAll('.cap-families > section').length).toBe(1)
+    expect(screen.queryByRole('heading', { name: /Needs action/ })).toBeNull()
+  })
+})

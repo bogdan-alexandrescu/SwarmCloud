@@ -1,0 +1,46 @@
+# The shared graph service's path out of a tenant namespace: TCP 8080 to the
+# swarm-graph pods in swarm-system, from any pod in the namespace, and nothing
+# else (docs/design/graph-service.md §2.1; lane GS-INFRA, part of #1384;
+# kubernetes/swarm-system/swarm-graph.yaml).
+#
+# Built exactly like `swarm-allow-egress-proxy` (allow-egress-proxy.yaml), for
+# the same reason: the internet rule in `allow-egress.yaml` is an ipBlock, and
+# "Pod traffic is never covered by an ipBlock rule", so reaching a pod in
+# swarm-system needs a pod selector naming ONE destination.
+#
+# WHY NO POD LABEL. Any agent pod may hold a graph ticket -- claude-code, codex
+# and claude-code-browser all register the swarm-graph MCP server -- so the
+# dispatcher sets no new label and every pod of the namespace is selected.
+# NetworkPolicies are unions, so this adds exactly that path and removes
+# nothing.
+#
+# WHAT THIS DOES NOT DO. It does not make swarm-graph trust the pod.
+# swarm-graph answers only a ticket swarm-api minted for this tenant, this
+# repository, this attempt and its generation, and it builds every object name
+# from that ticket alone; this policy only decides who may knock. Until the
+# service is deployed (terraform/infra/graph_service.tf, off by default) it
+# selects no pod on the far side and opens nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-allow-graph-service
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # ONE peer with BOTH selectors: the swarm-graph pods in swarm-system.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: swarm-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: swarm-graph
+      ports:
+        - protocol: TCP
+          port: 8080

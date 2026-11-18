@@ -1,0 +1,2977 @@
+{
+  "about": "The workspace call guard's self-test (docs/workspaces.md \u00a72.5). Every rule in workspace-calls.json has a call it must refuse and a call it must allow. `rule` is the rule a case exercises; `by` (default: rule) is the rule the guard must name in its verdict. Values in braces come from the expectation the self-test builds from `record` with the guard's own `expect`, plus {casedir}, {fake_token} and {auth_config} (common.sh's auth_config around the fake token: the line fs_request writes), made at run time so nothing here looks like a credential. `phase` is bootstrap (before A1), ready (the default) or stopped (after a refusal). expect_refusals are records `expect` must refuse to turn into an expectation. `kind_records` are a group's and a service's records (docs/design/workspace-kinds.md \u00a74.3); a case or an expect_refusal that names a `kind` is judged against that kind's expectation, and the rest against `record`'s, a person's.",
+  "workspace_id": "w-3f9a2c",
+  "record": {
+    "name": "projects/example-project/databases/swarm/documents/workspaces/u-alice",
+    "fields": {
+      "tenant_id": {
+        "stringValue": "u-alice"
+      },
+      "workspace_id": {
+        "stringValue": "w-3f9a2c"
+      },
+      "principal": {
+        "stringValue": "alice@example.com"
+      },
+      "state": {
+        "stringValue": "applying"
+      }
+    }
+  },
+  "expect_refusals": [
+    {
+      "name": "a record for another workspace id",
+      "change": {
+        "fields": {
+          "workspace_id": {
+            "stringValue": "w-000000"
+          }
+        }
+      }
+    },
+    {
+      "name": "a tenant id the principal does not derive",
+      "change": {
+        "fields": {
+          "tenant_id": {
+            "stringValue": "u-bob"
+          }
+        },
+        "name": "projects/example-project/databases/swarm/documents/workspaces/u-bob"
+      }
+    },
+    {
+      "name": "a principal swapped under the same tenant id",
+      "change": {
+        "fields": {
+          "principal": {
+            "stringValue": "bob@example.com"
+          }
+        }
+      }
+    },
+    {
+      "name": "a record filed under another tenant",
+      "change": {
+        "name": "projects/example-project/databases/swarm/documents/workspaces/u-bob"
+      }
+    },
+    {
+      "name": "a group tenant id is not a personal workspace",
+      "change": {
+        "fields": {
+          "tenant_id": {
+            "stringValue": "eng"
+          }
+        },
+        "name": "projects/example-project/databases/swarm/documents/workspaces/eng"
+      }
+    },
+    {
+      "name": "a service record filed under the group id",
+      "kind": "service",
+      "change": {
+        "fields": {
+          "tenant_id": {
+            "stringValue": "reports-bot"
+          }
+        },
+        "name": "projects/example-project/databases/swarm/documents/workspaces/reports-bot"
+      }
+    },
+    {
+      "name": "a group whose slug is a person's (u-)",
+      "kind": "group",
+      "change": {
+        "fields": {
+          "principal": {
+            "stringValue": "u-eng@example.com"
+          },
+          "tenant_id": {
+            "stringValue": "u-eng"
+          }
+        },
+        "name": "projects/example-project/databases/swarm/documents/workspaces/u-eng"
+      }
+    },
+    {
+      "name": "a group filed under the personal id of its address",
+      "kind": "group",
+      "change": {
+        "fields": {
+          "tenant_id": {
+            "stringValue": "u-research"
+          }
+        },
+        "name": "projects/example-project/databases/swarm/documents/workspaces/u-research"
+      }
+    },
+    {
+      "name": "a group record naming a service account",
+      "kind": "group",
+      "change": {
+        "fields": {
+          "principal": {
+            "stringValue": "research@example-project.iam.gserviceaccount.com"
+          }
+        }
+      }
+    },
+    {
+      "name": "a kind this build does not know",
+      "change": {
+        "fields": {
+          "kind": {
+            "stringValue": "robot"
+          }
+        }
+      }
+    },
+    {
+      "name": "a group whose tenant is Terraform's (eng)",
+      "kind": "group",
+      "change": {
+        "fields": {
+          "principal": {
+            "stringValue": "eng@example.com"
+          },
+          "tenant_id": {
+            "stringValue": "eng"
+          }
+        },
+        "name": "projects/example-project/databases/swarm/documents/workspaces/eng"
+      }
+    },
+    {
+      "name": "a service whose tenant is Terraform's (u-or-9a0792)",
+      "kind": "service",
+      "change": {
+        "fields": {
+          "principal": {
+            "stringValue": "oracle-api@example-project.iam.gserviceaccount.com"
+          },
+          "tenant_id": {
+            "stringValue": "u-or-9a0792"
+          }
+        },
+        "name": "projects/example-project/databases/swarm/documents/workspaces/u-or-9a0792"
+      }
+    }
+  ],
+  "cases": [
+    {
+      "name": "a call no rule names stops the run",
+      "rule": "C0",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "compute",
+        "instances",
+        "list",
+        "--project",
+        "{project_id}"
+      ]
+    },
+    {
+      "name": "a tool the guard does not wrap is refused",
+      "rule": "C0",
+      "expect": "refuse",
+      "tool": "terraform",
+      "argv": [
+        "apply",
+        "-auto-approve"
+      ]
+    },
+    {
+      "name": "an argument naming the other team's account is refused whatever the call",
+      "rule": "C0",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "describe",
+        "peer-runner@example-shared-project.iam.gserviceaccount.com",
+        "--project",
+        "{project_id}"
+      ]
+    },
+    {
+      "name": "kubectl naming the other team's cluster peer-cluster is refused",
+      "rule": "C0",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context",
+        "gke_example-shared-project_us-central1-a_peer-cluster",
+        "get",
+        "--raw=/readyz"
+      ]
+    },
+    {
+      "name": "Firestore's (default) database belongs to whoever got there first",
+      "rule": "C0",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "GET",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "https://firestore.googleapis.com/v1/projects/{project_id}/databases/(default)/documents/{tenant_doc}"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "a REST call to IAM is not a call the guard knows",
+      "rule": "C0",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"policy\":{}}",
+        "https://iam.googleapis.com/v1/projects/{project_id}/serviceAccounts/{scheduler_email}:setIamPolicy"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "the project's own name is not mistaken for a deny-listed one",
+      "rule": "C0",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "projects",
+        "get-iam-policy",
+        "{project_id}",
+        "--format=json"
+      ],
+      "by": "C1"
+    },
+    {
+      "name": "describe the expected worker account",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "describe",
+        "{worker_email}",
+        "--project",
+        "{project_id}",
+        "--format=value(email)"
+      ]
+    },
+    {
+      "name": "apply.sh reads the scheduler's uniqueId",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "describe",
+        "{scheduler_email}",
+        "--project={project_id}",
+        "--format=value(uniqueId)"
+      ]
+    },
+    {
+      "name": "the squat inspection lists the worker's user-managed keys",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "keys",
+        "list",
+        "--iam-account",
+        "{worker_email}",
+        "--project",
+        "{project_id}",
+        "--managed-by=user",
+        "--format=value(name)"
+      ]
+    },
+    {
+      "name": "the bucket policy is read at the artifact bucket",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "storage",
+        "buckets",
+        "get-iam-policy",
+        "{bucket_url}",
+        "--project",
+        "{project_id}",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "cluster-network.sh describes the swarm cluster",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "container",
+        "clusters",
+        "describe",
+        "{gke_cluster}",
+        "--project",
+        "{project_id}",
+        "--location",
+        "{gke_location}",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "kube-dns is read in kube-system on our context",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "-n",
+        "kube-system",
+        "get",
+        "service",
+        "kube-dns",
+        "-o",
+        "jsonpath={.spec.clusterIP}"
+      ]
+    },
+    {
+      "name": "readyz through the current context, when it is ours",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "get",
+        "--raw=/readyz"
+      ],
+      "kube_current_context": "swarm-dev"
+    },
+    {
+      "name": "kubectl version --client touches no cluster",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "version",
+        "--client"
+      ]
+    },
+    {
+      "name": "the metadata server mints the job's token",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "curl",
+      "argv": [
+        "-sf",
+        "-H",
+        "Metadata-Flavor: Google",
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+      ]
+    },
+    {
+      "name": "before A1, A1's runQuery for this workspace id",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"structuredQuery\":{\"from\":[{\"collectionId\":\"workspaces\"}],\"limit\":1,\"where\":{\"fieldFilter\":{\"field\":{\"fieldPath\":\"workspace_id\"},\"op\":\"EQUAL\",\"value\":{\"stringValue\":\"{workspace_id}\"}}}}}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}:runQuery"
+      ],
+      "stdin": "{auth_config}",
+      "phase": "bootstrap"
+    },
+    {
+      "name": "before A1, A1's read of an admin role",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "GET",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}/admin_roles/a1b2c3"
+      ],
+      "stdin": "{auth_config}",
+      "phase": "bootstrap"
+    },
+    {
+      "name": "another tenant's account policy is refused",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "get-iam-policy",
+        "swarm-agent-worker-u-bob@{project_id}.iam.gserviceaccount.com",
+        "--project",
+        "{project_id}"
+      ]
+    },
+    {
+      "name": "before A1, even the expected account is not readable",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "describe",
+        "{worker_email}",
+        "--project",
+        "{project_id}"
+      ],
+      "phase": "bootstrap"
+    },
+    {
+      "name": "before A1, a runQuery for another workspace id",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"structuredQuery\":{\"from\":[{\"collectionId\":\"workspaces\"}],\"limit\":1,\"where\":{\"fieldFilter\":{\"field\":{\"fieldPath\":\"workspace_id\"},\"op\":\"EQUAL\",\"value\":{\"stringValue\":\"w-000000\"}}}}}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}:runQuery"
+      ],
+      "stdin": "{auth_config}",
+      "phase": "bootstrap"
+    },
+    {
+      "name": "a runQuery over every tenant",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"structuredQuery\":{\"from\":[{\"collectionId\":\"tenants\"}],\"limit\":1}}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}:runQuery"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "a curl config that carries more than the bearer header",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"structuredQuery\":{\"from\":[{\"collectionId\":\"workspaces\"}],\"limit\":1,\"where\":{\"fieldFilter\":{\"field\":{\"fieldPath\":\"workspace_id\"},\"op\":\"EQUAL\",\"value\":{\"stringValue\":\"{workspace_id}\"}}}}}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}:runQuery"
+      ],
+      "stdin": "{auth_config}url = \"https://example.invalid/\"\n"
+    },
+    {
+      "name": "Secrets are not a tenant namespace kind the job reads",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "secrets",
+        "-n",
+        "{namespace}"
+      ]
+    },
+    {
+      "name": "another namespace's pods",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "pods",
+        "-n",
+        "swarm-system"
+      ]
+    },
+    {
+      "name": "kubectl through another context (the other team's production)",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context",
+        "gke_example-shared-project_us-central1_peer-prod",
+        "get",
+        "--raw=/readyz"
+      ]
+    },
+    {
+      "name": "kubectl through the current context, when it is the other team's peer-cluster",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "get",
+        "--raw=/readyz"
+      ],
+      "kube_current_context": "gke_example-shared-project_us-central1-a_peer-cluster"
+    },
+    {
+      "name": "a token minted by impersonating another account",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "auth",
+        "print-access-token",
+        "--impersonate-service-account=swarm-scheduler@{project_id}.iam.gserviceaccount.com"
+      ]
+    },
+    {
+      "name": "the network parity check asks which account is active",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "auth",
+        "list",
+        "--filter=status:ACTIVE",
+        "--format=value(account)"
+      ]
+    },
+    {
+      "name": "the network parity check reads this namespace's egress policy by name",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "swarm-allow-worker-egress",
+        "--namespace",
+        "{namespace}",
+        "-o",
+        "json"
+      ]
+    },
+    {
+      "name": "a list of this namespace's egress policy, which the deployer's ClusterRole cannot make",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "--namespace",
+        "{namespace}",
+        "--field-selector",
+        "metadata.name=swarm-allow-worker-egress",
+        "-o",
+        "json"
+      ]
+    },
+    {
+      "name": "a nameless get in this namespace, which is a list the deployer's ClusterRole cannot make",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "-n",
+        "{namespace}",
+        "-o",
+        "json"
+      ]
+    },
+    {
+      "name": "the network parity listing across every namespace",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "--all-namespaces",
+        "--field-selector",
+        "metadata.name=swarm-allow-worker-egress",
+        "-o",
+        "json"
+      ]
+    },
+    {
+      "name": "a field selector naming another policy",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "get",
+        "networkpolicies",
+        "--namespace",
+        "{namespace}",
+        "--field-selector",
+        "metadata.name=swarm-default-deny",
+        "-o",
+        "json"
+      ]
+    },
+    {
+      "name": "the forge slot's versions, which the job never lists",
+      "rule": "C1",
+      "expect": "refuse",
+      "by": "C0",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "versions",
+        "list",
+        "{forge_slot}",
+        "--project",
+        "{project_id}",
+        "--limit",
+        "1"
+      ]
+    },
+    {
+      "name": "create the expected worker account",
+      "rule": "C2",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "create",
+        "{worker_id}",
+        "--project",
+        "{project_id}",
+        "--display-name",
+        "swarm tenant {tenant_id}",
+        "--description",
+        "Agent swarm workload identity for workspace {workspace_id}"
+      ]
+    },
+    {
+      "name": "create another person's worker account",
+      "rule": "C2",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "create",
+        "swarm-agent-worker-u-bob",
+        "--project",
+        "{project_id}"
+      ]
+    },
+    {
+      "name": "before A1, even the expected account cannot be created",
+      "rule": "C2",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "create",
+        "{worker_id}",
+        "--project",
+        "{project_id}"
+      ],
+      "phase": "bootstrap"
+    },
+    {
+      "name": "after a stop, nothing more is created",
+      "rule": "C2",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "create",
+        "{worker_id}",
+        "--project",
+        "{project_id}"
+      ],
+      "phase": "stopped"
+    },
+    {
+      "name": "modify an account",
+      "rule": "C2",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "update",
+        "{worker_email}",
+        "--project",
+        "{project_id}",
+        "--display-name",
+        "x"
+      ],
+      "by": "C0"
+    },
+    {
+      "name": "disable an account",
+      "rule": "C2",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "disable",
+        "{worker_email}",
+        "--project",
+        "{project_id}"
+      ],
+      "by": "C9"
+    },
+    {
+      "name": "mint a key for the worker",
+      "rule": "C2",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "keys",
+        "create",
+        "{casedir}/key.json",
+        "--iam-account",
+        "{worker_email}"
+      ],
+      "by": "C9"
+    },
+    {
+      "name": "Workload Identity for the namespace's swarm-agent-worker",
+      "rule": "C3",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "add-iam-policy-binding",
+        "{worker_email}",
+        "--project",
+        "{project_id}",
+        "--role",
+        "roles/iam.workloadIdentityUser",
+        "--member",
+        "serviceAccount:{project_id}.svc.id.goog[{namespace}/swarm-agent-worker]",
+        "--quiet"
+      ]
+    },
+    {
+      "name": "act-as for the scheduler",
+      "rule": "C3",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "add-iam-policy-binding",
+        "{worker_email}",
+        "--project",
+        "{project_id}",
+        "--role",
+        "roles/iam.serviceAccountUser",
+        "--member",
+        "serviceAccount:{scheduler_email}",
+        "--quiet"
+      ]
+    },
+    {
+      "name": "a binding on another account",
+      "rule": "C3",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "add-iam-policy-binding",
+        "{scheduler_email}",
+        "--project",
+        "{project_id}",
+        "--role",
+        "roles/iam.serviceAccountUser",
+        "--member",
+        "serviceAccount:{worker_email}"
+      ]
+    },
+    {
+      "name": "token creator on the worker",
+      "rule": "C3",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "add-iam-policy-binding",
+        "{worker_email}",
+        "--project",
+        "{project_id}",
+        "--role",
+        "roles/iam.serviceAccountTokenCreator",
+        "--member",
+        "serviceAccount:{scheduler_email}"
+      ]
+    },
+    {
+      "name": "Workload Identity for a member not named for this workspace",
+      "rule": "C3",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "add-iam-policy-binding",
+        "{worker_email}",
+        "--project",
+        "{project_id}",
+        "--role",
+        "roles/iam.workloadIdentityUser",
+        "--member",
+        "serviceAccount:{project_id}.svc.id.goog[swarm-tenant-u-bob/swarm-agent-worker]"
+      ]
+    },
+    {
+      "name": "act-as for a person",
+      "rule": "C3",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "add-iam-policy-binding",
+        "{worker_email}",
+        "--project",
+        "{project_id}",
+        "--role",
+        "roles/iam.serviceAccountUser",
+        "--member",
+        "user:mallory@example.com"
+      ]
+    },
+    {
+      "name": "the prefix-conditioned read grant",
+      "rule": "C4",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "storage",
+        "buckets",
+        "add-iam-policy-binding",
+        "{bucket_url}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/storage.objectViewer",
+        "--condition-from-file",
+        "{casedir}/read.json"
+      ],
+      "files": {
+        "read.json": {
+          "title": "swarm-tenant-prefix-read-{tenant_id}",
+          "description": "read",
+          "expression": "{read_expr}"
+        }
+      }
+    },
+    {
+      "name": "the prefix-conditioned write grant",
+      "rule": "C4",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "storage",
+        "buckets",
+        "add-iam-policy-binding",
+        "{bucket_url}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/storage.objectUser",
+        "--condition-from-file={casedir}/write.json"
+      ],
+      "files": {
+        "write.json": {
+          "title": "swarm-tenant-prefix-write-{tenant_id}",
+          "description": "write",
+          "expression": "{write_expr}"
+        }
+      }
+    },
+    {
+      "name": "the .tenant marker, one create-only upload",
+      "rule": "C4",
+      "expect": "allow",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"tenant_id\":\"{tenant_id}\",\"workspace_id\":\"{workspace_id}\"}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{marker_upload_url}"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "on the WD9 fallback, the bucket-metadata role",
+      "rule": "C4",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "storage",
+        "buckets",
+        "add-iam-policy-binding",
+        "{bucket_url}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "{bucket_metadata_role}",
+        "--condition",
+        "None"
+      ],
+      "wd9_fallback": true
+    },
+    {
+      "name": "a condition naming another tenant's prefix",
+      "rule": "C4",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "storage",
+        "buckets",
+        "add-iam-policy-binding",
+        "{bucket_url}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/storage.objectViewer",
+        "--condition-from-file",
+        "{casedir}/read.json"
+      ],
+      "files": {
+        "read.json": {
+          "title": "t",
+          "description": "d",
+          "expression": "resource.name.startsWith(\"projects/_/buckets/{artifact_bucket}/objects/tenants/u-bob/\")"
+        }
+      }
+    },
+    {
+      "name": "an unconditioned object grant",
+      "rule": "C4",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "storage",
+        "buckets",
+        "add-iam-policy-binding",
+        "{bucket_url}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/storage.objectUser",
+        "--condition",
+        "None"
+      ]
+    },
+    {
+      "name": "a bucket grant for any other member",
+      "rule": "C4",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "storage",
+        "buckets",
+        "add-iam-policy-binding",
+        "{bucket_url}",
+        "--member",
+        "serviceAccount:{scheduler_email}",
+        "--role",
+        "roles/storage.objectViewer",
+        "--condition-from-file",
+        "{casedir}/read.json"
+      ],
+      "files": {
+        "read.json": {
+          "title": "t",
+          "description": "d",
+          "expression": "{read_expr}"
+        }
+      }
+    },
+    {
+      "name": "the bucket-metadata role while the principal-set grant holds it",
+      "rule": "C4",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "storage",
+        "buckets",
+        "add-iam-policy-binding",
+        "{bucket_url}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "{bucket_metadata_role}",
+        "--condition",
+        "None"
+      ]
+    },
+    {
+      "name": "an object written under another tenant's prefix",
+      "rule": "C4",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"tenant_id\":\"{tenant_id}\",\"workspace_id\":\"{workspace_id}\"}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "https://storage.googleapis.com/upload/storage/v1/b/{artifact_bucket}/o?uploadType=media&ifGenerationMatch=0&name=tenants%2Fu-bob%2F.tenant"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "a marker upload that could replace an existing object",
+      "rule": "C4",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"tenant_id\":\"{tenant_id}\",\"workspace_id\":\"{workspace_id}\"}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "https://storage.googleapis.com/upload/storage/v1/b/{artifact_bucket}/o?uploadType=media&name=tenants%2F{tenant_id}%2F.tenant"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "a marker naming another tenant",
+      "rule": "C4",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"tenant_id\":\"u-bob\",\"workspace_id\":\"{workspace_id}\"}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{marker_upload_url}"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "a marker upload with no bearer config on stdin",
+      "rule": "C4",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"tenant_id\":\"{tenant_id}\",\"workspace_id\":\"{workspace_id}\"}",
+        "{marker_upload_url}"
+      ]
+    },
+    {
+      "name": "gcloud storage cp, which reads the object before it writes it",
+      "rule": "C4",
+      "expect": "refuse",
+      "by": "C0",
+      "tool": "gcloud",
+      "argv": [
+        "storage",
+        "cp",
+        "-",
+        "{marker_url}",
+        "--project",
+        "{project_id}"
+      ]
+    },
+    {
+      "name": "on the WD9 fallback, the worker's telemetry role",
+      "rule": "C5",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "projects",
+        "add-iam-policy-binding",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/logging.logWriter",
+        "--condition",
+        "None",
+        "--quiet"
+      ],
+      "wd9_fallback": true
+    },
+    {
+      "name": "a project-wide role while the principal-set grant holds it",
+      "rule": "C5",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "projects",
+        "add-iam-policy-binding",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/logging.logWriter",
+        "--condition",
+        "None",
+        "--quiet"
+      ]
+    },
+    {
+      "name": "roles/editor, even on the fallback",
+      "rule": "C5",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "projects",
+        "add-iam-policy-binding",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/editor",
+        "--condition",
+        "None"
+      ],
+      "wd9_fallback": true
+    },
+    {
+      "name": "a project role for another member, even on the fallback",
+      "rule": "C5",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "projects",
+        "add-iam-policy-binding",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{scheduler_email}",
+        "--role",
+        "roles/logging.logWriter",
+        "--condition",
+        "None"
+      ],
+      "wd9_fallback": true
+    },
+    {
+      "name": "create the person's forge slot, empty",
+      "rule": "C6",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{forge_slot}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "automatic",
+        "--labels",
+        "tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "create its -refresh twin",
+      "rule": "C6",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{forge_slot_twin}",
+        "--project",
+        "{project_id}",
+        "--replication-policy=automatic"
+      ]
+    },
+    {
+      "name": "the worker reads its own slot",
+      "rule": "C6",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{forge_slot}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor",
+        "--quiet"
+      ]
+    },
+    {
+      "name": "a binding on a group tenant's secret",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "swarm-tenant-eng-git",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "the worker never reads the refresh twin",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{forge_slot_twin}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "a slot created with material in it",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{forge_slot}",
+        "--project",
+        "{project_id}",
+        "--data-file",
+        "{casedir}/value"
+      ]
+    },
+    {
+      "name": "a slot created wherever the configured project points",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{forge_slot}",
+        "--replication-policy",
+        "automatic"
+      ]
+    },
+    {
+      "name": "a slot role that writes versions",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{forge_slot}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/secretmanager.secretVersionManager"
+      ]
+    },
+    {
+      "name": "A6 reads the person's QA secret",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "describe",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "A6 reads the QA secret's policy",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "get-iam-policy",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "no read of another person's QA secret",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "describe",
+        "swarm-tenant-u-bob-qa",
+        "--project",
+        "{project_id}"
+      ]
+    },
+    {
+      "name": "no read of a group's QA secret",
+      "rule": "C1",
+      "expect": "refuse",
+      "kind": "group",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "describe",
+        "swarm-tenant-{tenant_id}-qa",
+        "--project",
+        "{project_id}",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "create the person's QA secret, empty, in the workload region",
+      "rule": "C6",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "user-managed",
+        "--locations",
+        "us-central1",
+        "--labels",
+        "managed-by=swarm-register-tenant,swarm-env=dev,component=qa-target-credential,tenant={tenant_id},swarm-tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "a QA secret replicated automatically",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "automatic",
+        "--labels",
+        "managed-by=swarm-register-tenant,swarm-env=dev,component=qa-target-credential,tenant={tenant_id},swarm-tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "a QA secret with no region",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "user-managed",
+        "--labels",
+        "managed-by=swarm-register-tenant,swarm-env=dev,component=qa-target-credential,tenant={tenant_id},swarm-tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "a QA secret with no labels",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "user-managed",
+        "--locations",
+        "us-central1"
+      ]
+    },
+    {
+      "name": "a QA secret created with material in it",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "user-managed",
+        "--locations",
+        "us-central1",
+        "--labels",
+        "managed-by=swarm-register-tenant,swarm-env=dev,component=qa-target-credential,tenant={tenant_id},swarm-tenant={tenant_id}",
+        "--data-file",
+        "{casedir}/value"
+      ]
+    },
+    {
+      "name": "another person's QA secret",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "swarm-tenant-u-bob-qa",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "user-managed",
+        "--locations",
+        "us-central1",
+        "--labels",
+        "managed-by=swarm-register-tenant,swarm-env=dev,component=qa-target-credential,tenant={tenant_id},swarm-tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "V-1: swarm-api adds versions to the QA secret",
+      "rule": "C6",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{api_email}",
+        "--role",
+        "roles/secretmanager.secretVersionAdder"
+      ]
+    },
+    {
+      "name": "V-2: swarm-api reads the QA secret",
+      "rule": "C6",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{api_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "the worker never reads the QA secret",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "swarm-api gets no other role on the QA secret",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{api_email}",
+        "--role",
+        "roles/secretmanager.admin"
+      ]
+    },
+    {
+      "name": "nobody else on the QA secret",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{qa_secret}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{scheduler_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "swarm-api on another person's QA secret",
+      "rule": "C6",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "swarm-tenant-u-bob-qa",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{api_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "a group's QA secret is not the deployer's to create",
+      "rule": "C6",
+      "expect": "refuse",
+      "kind": "group",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "swarm-tenant-{tenant_id}-qa",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "user-managed",
+        "--locations",
+        "us-central1",
+        "--labels",
+        "managed-by=swarm-register-tenant,swarm-env=dev,component=qa-target-credential,tenant={tenant_id},swarm-tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "a service's QA secret is not the deployer's to bind",
+      "rule": "C6",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "swarm-tenant-{tenant_id}-qa",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:swarm-api@{project_id}.iam.gserviceaccount.com",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "apply the tenant namespace on our context",
+      "rule": "C7",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n---\napiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: swarm-tenant-quota\n  namespace: {namespace}\nspec:\n  hard:\n    pods: \"4\"\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nrules: []\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: Role\n  name: swarm-worker\nsubjects:\n  - kind: ServiceAccount\n    name: swarm-agent-worker\n    namespace: {namespace}\n---\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: swarm-default-deny\n  namespace: {namespace}\nspec:\n  podSelector: {}\n  policyTypes: [\"Ingress\", \"Egress\"]\n"
+    },
+    {
+      "name": "the server dry run that precedes it",
+      "rule": "C7",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "--dry-run=server",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n---\napiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: swarm-tenant-quota\n  namespace: {namespace}\nspec:\n  hard:\n    pods: \"4\"\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nrules: []\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: Role\n  name: swarm-worker\nsubjects:\n  - kind: ServiceAccount\n    name: swarm-agent-worker\n    namespace: {namespace}\n---\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: swarm-default-deny\n  namespace: {namespace}\nspec:\n  podSelector: {}\n  policyTypes: [\"Ingress\", \"Egress\"]\n"
+    },
+    {
+      "name": "the client dry run through the current context, ours",
+      "rule": "C7",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "apply",
+        "--dry-run=client",
+        "--validate=false",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n---\napiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: swarm-tenant-quota\n  namespace: {namespace}\nspec:\n  hard:\n    pods: \"4\"\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nrules: []\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: Role\n  name: swarm-worker\nsubjects:\n  - kind: ServiceAccount\n    name: swarm-agent-worker\n    namespace: {namespace}\n---\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: swarm-default-deny\n  namespace: {namespace}\nspec:\n  podSelector: {}\n  policyTypes: [\"Ingress\", \"Egress\"]\n",
+      "kube_current_context": "swarm-dev"
+    },
+    {
+      "name": "an object in swarm-system",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: swarm-system\n"
+    },
+    {
+      "name": "a cluster-scoped binding",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRoleBinding\nmetadata:\n  name: x\n  namespace: {namespace}\nroleRef:\n  kind: ClusterRole\n  name: cluster-admin\n"
+    },
+    {
+      "name": "a RoleBinding to cluster-admin inside our namespace",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: x\n  namespace: {namespace}\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: ClusterRole\n  name: cluster-admin\n"
+    },
+    {
+      "name": "another person's namespace",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: swarm-tenant-u-bob\n"
+    },
+    {
+      "name": "a Pod, which a tenant namespace's apply never makes",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: Pod\nmetadata:\n  name: x\n  namespace: {namespace}\n"
+    },
+    {
+      "name": "the tenant's TypeSafe hostname policy, by its one name, in this namespace",
+      "rule": "C7",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n---\napiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: {namespace}\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n"
+    },
+    {
+      "name": "a hostname policy under any other name, which could admit any host",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-anything\n  namespace: {namespace}\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n"
+    },
+    {
+      "name": "the TypeSafe hostname policy in another person's namespace",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: swarm-tenant-u-bob\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n"
+    },
+    {
+      "name": "the TypeSafe hostname policy in swarm-system",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: swarm-system\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n"
+    },
+    {
+      "name": "another kind under the hostname policy's name",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: {namespace}\n"
+    },
+    {
+      "name": "the TypeSafe hostname policy through the current context, the other team's peer-cluster",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: networking.gke.io/v1alpha1\nkind: FQDNNetworkPolicy\nmetadata:\n  name: swarm-allow-typesafe-direct\n  namespace: {namespace}\nspec:\n  podSelector:\n    matchLabels:\n      swarm-jev: typesafe-direct\n",
+      "kube_current_context": "gke_example-shared-project_us-central1-a_peer-cluster"
+    },
+    {
+      "name": "apply through the current context, the other team's peer-cluster",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n---\napiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: swarm-tenant-quota\n  namespace: {namespace}\nspec:\n  hard:\n    pods: \"4\"\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nrules: []\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: Role\n  name: swarm-worker\nsubjects:\n  - kind: ServiceAccount\n    name: swarm-agent-worker\n    namespace: {namespace}\n---\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: swarm-default-deny\n  namespace: {namespace}\nspec:\n  podSelector: {}\n  policyTypes: [\"Ingress\", \"Egress\"]\n",
+      "kube_current_context": "gke_example-shared-project_us-central1-a_peer-cluster"
+    },
+    {
+      "name": "a manifest the reader cannot be certain of (an alias)",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: ServiceAccount\nmetadata: &m\n  name: swarm-agent-worker\n  namespace: {namespace}\n---\nkind: ServiceAccount\nmetadata: *m\n"
+    },
+    {
+      "name": "a List hides its items from a reader of kinds",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: List\nitems:\n  - kind: ClusterRole\n    metadata:\n      name: x\n"
+    },
+    {
+      "name": "a directory is applied whole, so it is refused",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "{casedir}"
+      ]
+    },
+    {
+      "name": "apply --prune deletes",
+      "rule": "C7",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "--prune",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n---\napiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: swarm-tenant-quota\n  namespace: {namespace}\nspec:\n  hard:\n    pods: \"4\"\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nrules: []\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: Role\n  name: swarm-worker\nsubjects:\n  - kind: ServiceAccount\n    name: swarm-agent-worker\n    namespace: {namespace}\n---\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: swarm-default-deny\n  namespace: {namespace}\nspec:\n  podSelector: {}\n  policyTypes: [\"Ingress\", \"Egress\"]\n",
+      "by": "C9"
+    },
+    {
+      "name": "kubectl patch of the namespace, which A7 never runs",
+      "rule": "C7",
+      "expect": "refuse",
+      "by": "C0",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "patch",
+        "namespace",
+        "{namespace}",
+        "-p",
+        "{}"
+      ]
+    },
+    {
+      "name": "the tenant document",
+      "rule": "C8",
+      "expect": "allow",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "PATCH",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"fields\":{}}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}/{tenant_doc}?updateMask.fieldPaths=max_active&updateMask.fieldPaths=updated_at"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "the pool document, colon escaped",
+      "rule": "C8",
+      "expect": "allow",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "PATCH",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"fields\":{}}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}/pools/tenant%3A{tenant_id}?updateMask.fieldPaths=hard_limit"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "the claim's commit on the workspace record",
+      "rule": "C8",
+      "expect": "allow",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"writes\":[{\"update\":{\"name\":\"{firestore_docs_prefix}/{workspace_doc}\",\"fields\":{\"state\":{\"stringValue\":\"applying\"}}},\"updateMask\":{\"fieldPaths\":[\"state\"]}}],\"transaction\":\"dHg=\"}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}:commit"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "after a stop, recording needs_owner on the workspace record",
+      "rule": "C8",
+      "expect": "allow",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "PATCH",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"fields\":{}}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}/{workspace_doc}?updateMask.fieldPaths=state"
+      ],
+      "stdin": "{auth_config}",
+      "phase": "stopped"
+    },
+    {
+      "name": "after a stop, the token for that write",
+      "rule": "C8",
+      "expect": "allow",
+      "tool": "curl",
+      "argv": [
+        "-sf",
+        "-H",
+        "Metadata-Flavor: Google",
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+      ],
+      "phase": "stopped",
+      "by": "C1"
+    },
+    {
+      "name": "another tenant's pool",
+      "rule": "C8",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "PATCH",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"fields\":{}}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}/pools/tenant:u-bob?updateMask.fieldPaths=hard_limit"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "a commit that also writes another tenant",
+      "rule": "C8",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"writes\":[{\"update\":{\"name\":\"{firestore_docs_prefix}/{workspace_doc}\",\"fields\":{\"state\":{\"stringValue\":\"applying\"}}},\"updateMask\":{\"fieldPaths\":[\"state\"]}},{\"update\":{\"name\":\"{firestore_docs_prefix}/tenants/u-bob\",\"fields\":{\"state\":{\"stringValue\":\"applying\"}}},\"updateMask\":{\"fieldPaths\":[\"state\"]}}],\"transaction\":\"dHg=\"}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}:commit"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "after a stop, the tenant document is not written",
+      "rule": "C8",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "PATCH",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"fields\":{}}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}/{tenant_doc}?updateMask.fieldPaths=max_active"
+      ],
+      "stdin": "{auth_config}",
+      "phase": "stopped"
+    },
+    {
+      "name": "a write with no bearer config on stdin",
+      "rule": "C8",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-X",
+        "PATCH",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"fields\":{}}",
+        "{firestore_base}/{tenant_doc}"
+      ]
+    },
+    {
+      "name": "the legacy repair path's binding removal",
+      "rule": "C9",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "storage",
+        "buckets",
+        "remove-iam-policy-binding",
+        "{bucket_url}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/storage.objectUser",
+        "--all"
+      ]
+    },
+    {
+      "name": "a policy replacement on the worker",
+      "rule": "C9",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "set-iam-policy",
+        "{worker_email}",
+        "{casedir}/policy.json",
+        "--project",
+        "{project_id}"
+      ]
+    },
+    {
+      "name": "delete the worker account",
+      "rule": "C9",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "delete",
+        "{worker_email}",
+        "--project",
+        "{project_id}",
+        "--quiet"
+      ]
+    },
+    {
+      "name": "kubectl delete in our own namespace",
+      "rule": "C9",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "delete",
+        "rolebinding",
+        "swarm-worker",
+        "-n",
+        "{namespace}"
+      ]
+    },
+    {
+      "name": "a Firestore DELETE of our own tenant",
+      "rule": "C9",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "DELETE",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}/{tenant_doc}"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "a commit that deletes",
+      "rule": "C9",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"writes\":[{\"update\":{\"name\":\"{firestore_docs_prefix}/{workspace_doc}\",\"fields\":{\"state\":{\"stringValue\":\"applying\"}}},\"updateMask\":{\"fieldPaths\":[\"state\"]}},{\"delete\":\"{firestore_docs_prefix}/{tenant_doc}\"}],\"transaction\":\"dHg=\"}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}:commit"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "an update-only commit is not a delete",
+      "rule": "C9",
+      "expect": "allow",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"writes\":[{\"update\":{\"name\":\"{firestore_docs_prefix}/{workspace_doc}\",\"fields\":{\"state\":{\"stringValue\":\"applying\"}}},\"updateMask\":{\"fieldPaths\":[\"state\"]}},{\"update\":{\"name\":\"{firestore_docs_prefix}/{tenant_doc}\",\"fields\":{\"state\":{\"stringValue\":\"applying\"}}},\"updateMask\":{\"fieldPaths\":[\"state\"]}},{\"update\":{\"name\":\"{firestore_docs_prefix}/{pool_doc}\",\"fields\":{\"state\":{\"stringValue\":\"applying\"}}},\"updateMask\":{\"fieldPaths\":[\"state\"]}}],\"transaction\":\"dHg=\"}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}:commit"
+      ],
+      "stdin": "{auth_config}",
+      "by": "C8"
+    },
+    {
+      "name": "an add of a binding is not a removal",
+      "rule": "C9",
+      "expect": "allow",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{forge_slot}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ],
+      "by": "C6"
+    },
+    {
+      "name": "S2 admits the approved service account on the API backend",
+      "rule": "C10",
+      "expect": "allow",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "add-iam-policy-binding",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service={front_door_backend}",
+        "--role=roles/iap.httpsResourceAccessor",
+        "--member=serviceAccount:{service_principal}",
+        "--condition=None",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "an admit of any other member",
+      "rule": "C10",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "add-iam-policy-binding",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service={front_door_backend}",
+        "--role=roles/iap.httpsResourceAccessor",
+        "--member=serviceAccount:other-bot@{project_id}.iam.gserviceaccount.com",
+        "--condition=None",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "an admit of a whole domain",
+      "rule": "C10",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "add-iam-policy-binding",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service={front_door_backend}",
+        "--role=roles/iap.httpsResourceAccessor",
+        "--member=allAuthenticatedUsers",
+        "--condition=None",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "an admit on the console's backend",
+      "rule": "C10",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "add-iam-policy-binding",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service=swarm-ui-ui-backend",
+        "--role=roles/iap.httpsResourceAccessor",
+        "--member=serviceAccount:{service_principal}",
+        "--condition=None",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "an admit on another team's backend",
+      "rule": "C10",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "add-iam-policy-binding",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service=keycloak-backend",
+        "--role=roles/iap.httpsResourceAccessor",
+        "--member=serviceAccount:{service_principal}",
+        "--condition=None",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "an admit with any role but the accessor",
+      "rule": "C10",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "add-iam-policy-binding",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service={front_door_backend}",
+        "--role=roles/iap.admin",
+        "--member=serviceAccount:{service_principal}",
+        "--condition=None",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "an admit on another resource type",
+      "rule": "C10",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "add-iam-policy-binding",
+        "--project",
+        "{project_id}",
+        "--resource-type=app-engine",
+        "--service={front_door_backend}",
+        "--role=roles/iap.httpsResourceAccessor",
+        "--member=serviceAccount:{service_principal}",
+        "--condition=None",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "a conditioned admit",
+      "rule": "C10",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "add-iam-policy-binding",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service={front_door_backend}",
+        "--role=roles/iap.httpsResourceAccessor",
+        "--member=serviceAccount:{service_principal}",
+        "--condition=expression=true,title=t",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "an admit wherever the configured project points",
+      "rule": "C10",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "add-iam-policy-binding",
+        "--resource-type=backend-services",
+        "--service={front_door_backend}",
+        "--role=roles/iap.httpsResourceAccessor",
+        "--member=serviceAccount:{service_principal}",
+        "--condition=None",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "no admit in a personal workspace",
+      "rule": "C10",
+      "expect": "refuse",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "add-iam-policy-binding",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service=swarm-ui-backend",
+        "--role=roles/iap.httpsResourceAccessor",
+        "--member=serviceAccount:{worker_email}",
+        "--condition=None"
+      ]
+    },
+    {
+      "name": "no admit in a group workspace",
+      "rule": "C10",
+      "expect": "refuse",
+      "kind": "group",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "add-iam-policy-binding",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service=swarm-ui-backend",
+        "--role=roles/iap.httpsResourceAccessor",
+        "--member=serviceAccount:{worker_email}",
+        "--condition=None"
+      ]
+    },
+    {
+      "name": "the front door's member is never removed",
+      "rule": "C9",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "remove-iam-policy-binding",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service={front_door_backend}",
+        "--role=roles/iap.httpsResourceAccessor",
+        "--member=serviceAccount:{service_principal}"
+      ]
+    },
+    {
+      "name": "the front door's policy is never replaced",
+      "rule": "C9",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "set-iam-policy",
+        "{casedir}/policy.json",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service={front_door_backend}"
+      ]
+    },
+    {
+      "name": "S2 reads the API backend's IAP policy first",
+      "rule": "C1",
+      "expect": "allow",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "get-iam-policy",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service={front_door_backend}",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "no read of the console's IAP policy",
+      "rule": "C1",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iap",
+        "web",
+        "get-iam-policy",
+        "--project",
+        "{project_id}",
+        "--resource-type=backend-services",
+        "--service=swarm-ui-ui-backend",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "S1 reads the service account it is asked to admit",
+      "rule": "C1",
+      "expect": "allow",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "iam",
+        "service-accounts",
+        "describe",
+        "{service_principal}",
+        "--project",
+        "{project_id}",
+        "--format=json"
+      ]
+    },
+    {
+      "name": "the discovery read for the hostname policy's kind, on our context",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "api-resources",
+        "--api-group=networking.gke.io",
+        "-o",
+        "name"
+      ]
+    },
+    {
+      "name": "the discovery read with the flag spelled apart",
+      "rule": "C1",
+      "expect": "allow",
+      "tool": "kubectl",
+      "argv": [
+        "--context",
+        "gke_{project_id}_{gke_location}_{gke_cluster}",
+        "api-resources",
+        "--api-group",
+        "networking.gke.io",
+        "--output=name"
+      ]
+    },
+    {
+      "name": "discovery of every API group, which the job never asks",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "api-resources",
+        "-o",
+        "name"
+      ]
+    },
+    {
+      "name": "discovery of another API group",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "api-resources",
+        "--api-group=rbac.authorization.k8s.io",
+        "-o",
+        "name"
+      ]
+    },
+    {
+      "name": "discovery through the current context, the other team's peer-cluster",
+      "rule": "C1",
+      "expect": "refuse",
+      "tool": "kubectl",
+      "argv": [
+        "api-resources",
+        "--api-group=networking.gke.io",
+        "-o",
+        "name"
+      ],
+      "kube_current_context": "gke_example-shared-project_us-central1-a_peer-cluster"
+    },
+    {
+      "name": "a group's team slot, empty",
+      "rule": "C6",
+      "expect": "allow",
+      "kind": "group",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{forge_slot}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "automatic",
+        "--labels",
+        "tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "a group's team slot's refresh twin",
+      "rule": "C6",
+      "expect": "allow",
+      "kind": "group",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{forge_slot_twin}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "automatic"
+      ]
+    },
+    {
+      "name": "a group's worker reads its team slot",
+      "rule": "C6",
+      "expect": "allow",
+      "kind": "group",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{forge_slot}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "a group's worker never reads its team slot's twin",
+      "rule": "C6",
+      "expect": "refuse",
+      "kind": "group",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{forge_slot_twin}",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "a group's worker on a member's own slot",
+      "rule": "C6",
+      "expect": "refuse",
+      "kind": "group",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "add-iam-policy-binding",
+        "{forge_slot}-u-0123456789abcdef",
+        "--project",
+        "{project_id}",
+        "--member",
+        "serviceAccount:{worker_email}",
+        "--role",
+        "roles/secretmanager.secretAccessor"
+      ]
+    },
+    {
+      "name": "a service's team slot, empty",
+      "rule": "C6",
+      "expect": "allow",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{forge_slot}",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "automatic",
+        "--labels",
+        "tenant={tenant_id}"
+      ]
+    },
+    {
+      "name": "a service's team slot has no refresh twin",
+      "rule": "C6",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "create",
+        "{forge_slot}-refresh",
+        "--project",
+        "{project_id}",
+        "--replication-policy",
+        "automatic"
+      ]
+    },
+    {
+      "name": "a group's namespace with the job's label",
+      "rule": "C7",
+      "expect": "allow",
+      "kind": "group",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.example.com/workspace: {workspace_id}\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
+    },
+    {
+      "name": "a group's namespace without the job's label",
+      "rule": "C7",
+      "expect": "refuse",
+      "kind": "group",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n"
+    },
+    {
+      "name": "a group's namespace labelled for another workspace",
+      "rule": "C7",
+      "expect": "refuse",
+      "kind": "group",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.example.com/workspace: w-000000\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
+    },
+    {
+      "name": "a service's namespace with the job's label",
+      "rule": "C7",
+      "expect": "allow",
+      "kind": "service",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n    swarm.example.com/workspace: {workspace_id}\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n"
+    },
+    {
+      "name": "a service's namespace without the job's label",
+      "rule": "C7",
+      "expect": "refuse",
+      "kind": "service",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n"
+    },
+    {
+      "name": "a group's tenant document",
+      "rule": "C8",
+      "expect": "allow",
+      "kind": "group",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "PATCH",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"fields\":{}}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{firestore_base}/{tenant_doc}?updateMask.fieldPaths=max_active&updateMask.fieldPaths=updated_at"
+      ],
+      "stdin": "{auth_config}"
+    }
+  ],
+  "kind_records": {
+    "group": {
+      "name": "projects/example-project/databases/swarm/documents/workspaces/research",
+      "fields": {
+        "tenant_id": {
+          "stringValue": "research"
+        },
+        "workspace_id": {
+          "stringValue": "w-3f9a2c"
+        },
+        "principal": {
+          "stringValue": "research@example.com"
+        },
+        "kind": {
+          "stringValue": "group"
+        },
+        "state": {
+          "stringValue": "applying"
+        }
+      }
+    },
+    "service": {
+      "name": "projects/example-project/databases/swarm/documents/workspaces/u-re-35a908",
+      "fields": {
+        "tenant_id": {
+          "stringValue": "u-re-35a908"
+        },
+        "workspace_id": {
+          "stringValue": "w-3f9a2c"
+        },
+        "principal": {
+          "stringValue": "reports-bot@example-project.iam.gserviceaccount.com"
+        },
+        "kind": {
+          "stringValue": "service"
+        },
+        "state": {
+          "stringValue": "applying"
+        }
+      }
+    }
+  }
+}

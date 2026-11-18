@@ -1,0 +1,754 @@
+"""Getting an agent's code out of GCS and into a working tree.
+
+This is the half of the loop that did not exist. A worker now harvests one
+`git apply`-able patch per attempt into the tenant's artifact prefix
+(`lifecycle.py::_harvest_git`); this is what reads it back.
+
+TWO DESIGN POINTS WORTH KNOWING BEFORE CHANGING ANYTHING HERE
+-------------------------------------------------------------
+
+**`--3way`, always.** A plain `git apply` fails atomically on the first hunk it
+cannot place, leaving nothing and saying little. `--3way` falls back to a merge
+using the blobs the patch names, which means it either applies, or it leaves
+ordinary conflict markers in the file. Conflict markers are the point: they are
+what lets the integration be finished by whoever is reading, rather than being
+handed back as "patch 3 of 5 did not apply".
+
+**Patches are applied in sequence onto one branch, never merged pairwise.**
+Agents never see each other's trees -- per-tenant isolation is not negotiable
+and cross-attempt visibility would breach it. So the only place several agents'
+work can meet is a working tree that already has all of them. Sequential apply
+puts that meeting somewhere a human can watch it happen.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES
+
+from .client import SwarmClient, SwarmError, send_user_agent, task_id_of
+from .profiles import backend_of
+
+_GCS = "https://storage.googleapis.com/storage/v1/b"
+
+
+def parse_gs_uri(uri: str) -> tuple[str, str]:
+    if not uri.startswith("gs://"):
+        raise SwarmError(f"not a gs:// uri: {uri}")
+    rest = uri[len("gs://") :]
+    bucket, _, key = rest.partition("/")
+    if not bucket or not key:
+        raise SwarmError(f"incomplete gs:// uri: {uri}")
+    return bucket, key
+
+
+def download(client: SwarmClient, uri: str, *, timeout: int = 120) -> bytes:
+    """Read one object, with the READER's own credentials.
+
+    The API deliberately mints no signed download URL -- it passes artifacts by
+    reference so the tenant boundary stays in one place, enforced by IAM rather
+    than by whoever holds a link. The cost is that this needs an access token
+    of its own, which is why `SwarmClient` exposes one separately from the ID
+    token IAP wants.
+    """
+    return _get(client, uri, f"{_object_url(uri)}?alt=media", timeout=timeout)
+
+
+def object_size(client: SwarmClient, uri: str, *, timeout: int = 30) -> int:
+    """How many bytes one object holds, read from its METADATA, not its bytes.
+
+    `swarm tail` asks this of a completed log (`logs/<stream>.log`) to tell an
+    agent that printed nothing from one whose output never reached a live
+    flush. The answer is one number and the object can be 32 MB
+    (`max_stdout_bytes`), so downloading it to count would cost the whole
+    stream. The same credentials, retry and status-carrying errors as
+    `download`, because they are the same request without `alt=media`.
+    """
+    raw = _get(client, uri, _object_url(uri), timeout=timeout)
+    try:
+        return int(json.loads(raw)["size"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise SwarmError(f"could not read the size of {uri}: {exc}") from exc
+
+
+def _object_url(uri: str) -> str:
+    bucket, key = parse_gs_uri(uri)
+    return f"{_GCS}/{urllib.parse.quote(bucket, safe='')}/o/{urllib.parse.quote(key, safe='')}"
+
+
+def _get(client: SwarmClient, uri: str, url: str, *, timeout: int) -> bytes:
+    """One GCS JSON-API GET with the reader's own access token."""
+    # ONE RETRY, on a 401 with a token the client had cached: the access token
+    # is cached now (`SwarmClient.access_token`), and gcloud can hand back one
+    # with less life left than the cache assumes. A fake client without the
+    # method -- the tests' -- gets no retry, which is the old behaviour.
+    forget = getattr(client, "forget_credentials", None)
+    for attempt in (1, 2):
+        req = send_user_agent(urllib.request.Request(url), getattr(client, "user_agent", None))
+        req.add_header("Authorization", f"Bearer {client.access_token()}")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401 and attempt == 1 and callable(forget) and forget():
+                continue
+            body = exc.read().decode("utf-8", errors="replace")[:300]
+            if exc.code == 403:
+                body += (
+                    " -- an artifact lives under the TENANT's prefix, so reading it "
+                    "needs storage.objects.get on that bucket for your own account, "
+                    "not for the worker's service account"
+                )
+            # THE STATUS AS DATA, so a caller can tell "not written yet" (404)
+            # from "you may not read it" (403) without searching this sentence.
+            # `swarm tail` read every failure here as "not published yet", which
+            # hid a missing grant behind an agent that seemed to print nothing
+            # (archived issue 88, SC-F12).
+            raise SwarmError(f"could not read {uri}: {exc.code} {body}", status=exc.code) from exc
+        except urllib.error.URLError as exc:
+            raise SwarmError(f"could not read {uri}: {exc.reason}") from exc
+    raise SwarmError(f"could not read {uri}: refused twice")  # pragma: no cover - loop always returns or raises
+
+
+def patch_uri(task: dict[str, Any]) -> str | None:
+    """The GCS uri of a task's patch, or None with the reason available above.
+
+    The patch is recorded twice on purpose: `git.patch` holds its NAME and
+    `artifacts[]` holds the uri. Matching them here rather than minting a
+    second uri means an artifact that failed to upload has no entry, and this
+    returns None instead of a link to nothing.
+    """
+    summary = task.get("result_summary") or {}
+    git = summary.get("git") or {}
+    name = git.get("patch")
+    if not name:
+        return None
+    for artifact in summary.get("artifacts") or []:
+        if artifact.get("name") == name:
+            return artifact.get("uri")
+    return None
+
+
+class PatchRefused(SwarmError):
+    """The API served a task's patch, but not as bytes `git apply` may be given."""
+
+
+#: The window `read_patch` asks for: swarm-api's own ceiling for one artifact
+#: window (`InspectionService.max_artifact_bytes`, 4 MiB). The route clamps
+#: whatever is asked into its range, so a deployment with a smaller ceiling
+#: just answers in more windows; this only saves round trips.
+PATCH_WINDOW_BYTES = 4 * 1024 * 1024
+
+
+def _is_count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def read_patch(client: SwarmClient, task: dict[str, Any]) -> bytes:
+    """A task's patch, read through swarm-api's artifact route, byte for byte (archived issue 2834).
+
+    THROUGH THE API, NOT CLOUD STORAGE. This was `download(patch_uri(task))`,
+    a GCS read with the developer's own gcloud access token, so a stale gcloud
+    login -- one that needs reauthentication, which cannot prompt from a
+    non-interactive bridge -- failed `swarm_apply` on 2026-10-30
+    (task_3ed834efdaa14baab798) while `swarm_artifact` read the same patch
+    through `/artifacts/content` with the bridge's own API credential. Same
+    route, same credential, same tenant check here: the route resolves the
+    NAME the task's `git.patch` records against the task's own manifest.
+
+    EVERY WINDOW, UNTIL THE ROUTE SAYS COMPLETE. One window is at most
+    `max_artifact_bytes`; the next starts at `next_offset`.
+
+    CHECKED BEFORE IT IS APPLIED, because the route serves TEXT that it masks:
+    a patch with a masked span is a different patch, and `git apply --3way`
+    would land the mask in the tree. Each window must be `ok`, carry a
+    `redaction_count` of exactly 0 (a missing count is refused too: nothing
+    says it was not masked), hold no byte that is not UTF-8 (those are served
+    as U+FFFD), start where the last one ended and hold the bytes it says it
+    returned; the whole must be `total_bytes` long. Anything else is a
+    `PatchRefused` naming why, and nothing is applied.
+    """
+    task_id = task_id_of(task)
+    name = ((task.get("result_summary") or {}).get("git") or {}).get("patch")
+    if not task_id or not name:
+        raise PatchRefused("this task document names no task id or no patch, so there is nothing to read")
+    where = f"{name} of {task_id}"
+    out = bytearray()
+    total: int | None = None
+    while True:
+        row = client.artifact_content(task_id, name, offset=len(out), limit_bytes=PATCH_WINDOW_BYTES)
+        status = row.get("status")
+        if status != "ok":
+            raise PatchRefused(
+                f"the API answered `{status}` for {where}, not its text: {row.get('detail') or 'no detail'}"
+            )
+        count = row.get("redaction_count")
+        if not _is_count(count) or count != 0 or row.get("redacted") is True:
+            raise PatchRefused(
+                f"the API redacted {count if _is_count(count) else 'an uncounted number of'} span(s) "
+                f"in {where} at offset {len(out)}, so the bytes it served are not the patch the "
+                "agent wrote; it was not applied. Read the masked text with swarm_artifact to see "
+                "what was masked, and apply it by hand if that is what you want"
+            )
+        if row.get("invalid_utf8_bytes") != 0:
+            raise PatchRefused(
+                f"{row.get('invalid_utf8_bytes')} byte(s) of {where} at offset {len(out)} are not "
+                "UTF-8 and were served as U+FFFD, so the patch cannot be rebuilt byte for byte; "
+                "it was not applied"
+            )
+        if row.get("offset") != len(out):
+            raise PatchRefused(
+                f"the API's window of {where} starts at {row.get('offset')}, not at {len(out)} "
+                "where the last one ended; it was not applied"
+            )
+        content = row.get("content")
+        data = content.encode("utf-8") if isinstance(content, str) else b""
+        if _is_count(row.get("returned_bytes")) and row["returned_bytes"] != len(data):
+            raise PatchRefused(
+                f"the API's window of {where} at offset {len(out)} says {row['returned_bytes']} "
+                f"bytes and holds {len(data)}; it was not applied"
+            )
+        out += data
+        if _is_count(row.get("total_bytes")):
+            total = row["total_bytes"]
+        if not row.get("truncated"):
+            break
+        following = row.get("next_offset")
+        if following != len(out) or not data:
+            raise PatchRefused(
+                f"the API's next_offset for {where} is {following}, but the bytes read end at "
+                f"{len(out)}: the windows do not join end to end; it was not applied"
+            )
+    if total is not None and total != len(out):
+        raise PatchRefused(
+            f"{where} is {total} bytes and {len(out)} were read; it was not applied"
+        )
+    return bytes(out)
+
+
+#: States in which a task is still on its way and a summary is simply not due
+#: yet. From the frozen contract, not written out; PARKED has its own sentence.
+_UNFINISHED = frozenset(
+    state.value for state in CONCURRENCY_STATES | PENDING_STATES
+) - {"PARKED"}
+
+
+def _no_summary(task: dict[str, Any]) -> str:
+    """Why a task has no result summary, from its own state and history.
+
+    THE PARKED SENTENCE IS FOR PARKED TASKS. It was printed for every task
+    without a summary -- including, on 2026-09-25 (archived issue 88, SC-F10), a workflow
+    step the scheduler cascade-cancelled before it was ever attempted, which
+    has no parked attempt and no event detail to go looking in.
+    """
+    state = str(task.get("state") or "unknown")
+    if state == "PARKED":
+        return (
+            f"{state}: no result summary was written. "
+            "A parked attempt puts its summary in the event detail instead."
+        )
+    if state in _UNFINISHED:
+        return f"{state}: no result summary yet -- one is written when the task finishes"
+    if not task.get("started_at") and not task.get("attempt_count"):
+        return (
+            f"{state}: no result summary was written -- the task never started, "
+            "so no agent produced anything"
+        )
+    return f"{state}: no result summary was written"
+
+
+def explain_absence(task: dict[str, Any]) -> str:
+    """Why there is no patch. Six causes, six different responses."""
+    summary = task.get("result_summary") or {}
+    git = summary.get("git")
+    if summary == {} or summary is None:
+        return _no_summary(task)
+    if not git:
+        return "this task cloned no repository, so there is no code to apply"
+    if git.get("error"):
+        return f"the change could not be read from the workspace: {git['error']}"
+    if git.get("patch_omitted"):
+        return (
+            f"the diff was {git.get('patch_bytes')} bytes, over the cap, and was "
+            "discarded rather than truncated"
+        )
+    if not git.get("commits") and not git.get("dirty"):
+        return "the agent changed nothing in the repository"
+    return git.get("publish_reason") or "no patch was recorded"
+
+
+def _measured(git: dict[str, Any], key: str) -> int | None:
+    """A count the worker's harvest recorded, or None when it recorded none."""
+    value = git.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+#: Where `describe_task`'s `backend` came from. Two values, and the difference
+#: matters: the attempt record is what the platform PLACED; the catalogue is
+#: what this bridge's own copy of `swarm_common` says the profile resolves to,
+#: and that copy is as old as the installed plugin tag. On 2026-10-08 PR 866
+#: moved claude-code to GKE Autopilot and release 37757901721 deployed it, and
+#: every result the plugin bridge (tag sc-v0.5.24, before 866) printed still
+#: said CLOUD_RUN_JOB, because the backend was computed here from the copy.
+BACKEND_FROM_ATTEMPT = "attempt"
+BACKEND_FROM_CATALOGUE = "catalogue (bridge copy)"
+
+
+def _served_backend(record: Any) -> str | None:
+    """The `backend` an attempt record carries, or None when it carries none.
+
+    The API's attempt codec serves `""` for an attempt whose backend was never
+    recorded (`store.attempt_from_dict` reads a missing one as empty), and an
+    empty string is not a backend.
+    """
+    if not isinstance(record, dict):
+        return None
+    value = record.get("backend")
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def reported_backend(task: dict[str, Any], client: Any = None) -> dict[str, Any]:
+    """The backend this task ran on, and where that answer came from.
+
+    THE ATTEMPT RECORD FIRST. The task document carries no backend; the
+    per-attempt record does (`codec.attempt_to_api` serves `backend`), and it
+    is what the scheduler actually leased and dispatched. A `last_attempt`
+    block on the task is read when the API serves one; otherwise, given a
+    client and a task that has been attempted, ONE read of the newest attempt
+    (`limit=1`; the route serves newest first).
+
+    THE CATALOGUE ONLY WHEN THE PLATFORM GAVE NONE, and labelled as such: no
+    attempt yet, no client, or the attempts route could not be read. The
+    label is the point -- a reader who sees `backend_source: "catalogue
+    (bridge copy)"` knows the value is what this bridge's copy of the
+    catalogue predicts, not what ran, and `backend_note` says why the
+    platform's answer was not used.
+
+    NEVER RAISES, for the reason `backend_of` gives: a result read that threw
+    over a backend would take away the one thing that read is for.
+    """
+    served = _served_backend(task.get("last_attempt"))
+    if served is not None:
+        return {"backend": served, "backend_source": BACKEND_FROM_ATTEMPT}
+    task_id = task_id_of(task)
+    attempted = task.get("attempt_count")
+    if client is None:
+        why = "this read did not ask the platform for the task's attempts"
+    elif not task_id:
+        why = "the task document carries no id, so its attempts cannot be read"
+    elif not isinstance(attempted, int) or isinstance(attempted, bool) or attempted < 1:
+        # No round trip for a task the API says was never attempted: there
+        # is no attempt record to read, and asking costs a request per row.
+        why = "the task has no attempt yet, so the platform has placed it nowhere"
+    else:
+        try:
+            attempts = client.attempts(task_id, limit=1)
+        except SwarmError as exc:
+            attempts, why = None, f"the attempts route could not be read: {exc}"
+        else:
+            why = (
+                "the newest attempt record names no backend"
+                if attempts
+                else "the attempts route returned no attempt record"
+            )
+        if attempts:
+            served = _served_backend(attempts[0])
+            if served is not None:
+                return {"backend": served, "backend_source": BACKEND_FROM_ATTEMPT}
+    predicted = backend_of(task.get("runner_profile"))
+    if predicted is None:
+        # Not a default: the copy does not hold the profile either, so the
+        # backend is UNKNOWN and says so.
+        return {"backend": None, "backend_source": None, "backend_note": why}
+    return {
+        "backend": predicted,
+        "backend_source": BACKEND_FROM_CATALOGUE,
+        "backend_note": (
+            f"{why}. This is what this bridge's own copy of the catalogue says "
+            f"{task.get('runner_profile')} resolves to; the platform may place it elsewhere"
+        ),
+    }
+
+
+def describe_task(task: dict[str, Any], client: Any = None) -> dict[str, Any]:
+    """What one task produced, in the shape every read tool hands back.
+
+    IT LIVES HERE, not in `server.py`, because it is the composition of the two
+    functions above and because it now has four callers: `swarm_result`,
+    `swarm_wait`, `swarm_follow`'s per-task outcome, and the per-step rollup a
+    workflow read produces. It was private to the MCP server while there was one
+    consumer; a second copy for the workflow tools is exactly how a task's
+    result and a workflow step's result would start disagreeing about what "no
+    patch" means. (There WAS a second copy -- `server._describe`, byte-for-byte
+    identical, left behind by the move and still being called by `swarm_follow`
+    until 2026-09-24.)
+
+    THE PROFILE AND THE BACKEND ARE HERE FOR THE FAILURE CASE. A result that
+    says only `state: FAILED` and an error string sends the reader to the logs
+    to find out what kind of thing failed. Which profile ran and which backend
+    it landed on are the two facts that separate "this agent's prompt was wrong"
+    from "GKE Autopilot could not place a browser pod" -- and they are the two
+    the reader cannot derive, because the profile-to-backend mapping lives in
+    the attempt record rather than on the task. The backend is the one the
+    platform's attempt record names (`reported_backend`), with
+    `backend_source` saying so; pass `client` to let it read the newest
+    attempt. Without one, or before any attempt, it falls back to this
+    bridge's copy of the catalogue, labelled `catalogue (bridge copy)` --
+    which on 2026-10-08 said CLOUD_RUN_JOB for claude-code tasks GKE
+    Autopilot had run.
+
+    `backend` is None when neither the platform nor the catalogue holds an
+    answer -- an old, unattempted task naming a profile since renamed. NOT a
+    default and not a guess: the three-marks rule this plugin is held to says
+    an unknown is reported as unknown, and a reader who saw CLOUD_RUN_JOB
+    there would go and read the wrong service's logs.
+    """
+    summary = task.get("result_summary") or {}
+    git = summary.get("git") or {}
+    out: dict[str, Any] = {
+        # The API names it `id`. Read as `task_id` this was null for every task
+        # on the platform, and a session reads a null id and a null state as
+        # "it has not started yet".
+        "task_id": task_id_of(task),
+        "state": task.get("state"),
+        "runner_profile": task.get("runner_profile"),
+        **reported_backend(task, client),
+        # NULL WHEN NOTHING WAS MEASURED, never 0 (archived issue 191). These defaulted to 0
+        # for a task with no `git` summary -- one that cloned no repository,
+        # or never started -- and for a summary holding only the harvest's
+        # error, so `swarm workflow-status --result` printed `commits 0` beside
+        # a footnote saying there was no repository, and every result tool
+        # handed the model the same zeros. `no_patch_because` says why.
+        "commits": _measured(git, "commit_count"),
+        "insertions": _measured(git, "insertions"),
+        "deletions": _measured(git, "deletions"),
+        "uncommitted_files": _measured(git, "dirty_count"),
+        "patch": patch_uri(task),
+    }
+    if not out["patch"]:
+        out["no_patch_because"] = explain_absence(task)
+    pr = git.get("pull_request")
+    out["pull_request"] = pr["url"] if pr else None
+    if not pr and git:
+        out["no_pull_request_because"] = git.get("publish_reason")
+    if task.get("last_error"):
+        out["error"] = task["last_error"]
+    out["masked"] = masked_counts(task)
+    return out
+
+
+def masked_counts(task: dict[str, Any]) -> dict[str, int | None]:
+    """How many credential-shaped strings the API masked in the task's input and metadata.
+
+    MASKED EVERYWHERE (owner decision, 2026-09-26, on #184). The API serves a
+    task's `input` and `metadata` masked at read time, with
+    `input_redaction_count` and `metadata_redaction_count` beside them, and
+    never the raw input -- even to the tenant that submitted it. This hands
+    the two counts on, so a result says `masked N` as the screens do.
+
+    None, NOT 0, when the API did not send a count: a deployment older than
+    the change serves the input as submitted and counts nothing, and a 0 would
+    say it looked and found nothing.
+    """
+
+    def count(key: str) -> int | None:
+        value = task.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    return {"input": count("input_redaction_count"), "metadata": count("metadata_redaction_count")}
+
+
+def masked_words(task: dict[str, Any]) -> str:
+    """`masked N` for a terminal line: the input's and the metadata's masks together.
+
+    `masked —` when the API sent no count at all (an older deployment, whose
+    input is NOT masked), so a line never claims a masking that did not happen.
+    """
+    counts = masked_counts(task)
+    known = [n for n in counts.values() if n is not None]
+    return f"masked {sum(known)}" if known else "masked —"
+
+
+#: The states that mean "this went wrong", as the frozen vocabulary spells
+#: them. `DEAD_LETTER` is not a member and is matched anyway, because
+#: `client.TERMINAL` already carries both spellings defensively and a failure
+#: explainer that silently declined to explain an unrecognised spelling would
+#: be the worst possible place to be strict.
+FAILED_STATES = frozenset({"FAILED", "DEAD_LETTERED", "DEAD_LETTER"})
+
+
+def explain_failure(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any] | None:
+    """The per-attempt facts that make a dead agent actionable. None if it lived.
+
+    "task failed" is not a report. What a reader needs is which attempt, on
+    which backend, with what exit code, and what the worker said -- and none of
+    those are on the task document. `result_summary` is written once at terminal
+    state, so a task that failed twice and succeeded on the third try carries
+    only the third attempt's numbers; the per-attempt record is the only place
+    the others exist.
+
+    ONE EXTRA ROUND TRIP, AND ONLY ON A FAILURE. Every successful result read
+    would otherwise pay for a list it has nothing to say about. The condition is
+    the task's state, so the cost lands exactly where the information is wanted.
+
+    A FAILED READ IS REPORTED, NOT SWALLOWED. If the attempts route cannot be
+    read, this says so in `attempts_unreadable` rather than returning None --
+    None means "this task did not fail", and collapsing "it failed and I could
+    not find out why" into that would be the exact substitution this repository
+    keeps deleting.
+
+    `exit_code: null` MEANS NOT RECORDED. It must never be rendered as 0, which
+    is the one value that would read as a clean exit on a task that failed. The
+    same rule as the em dash in `sc`, in the place where getting it wrong is
+    most expensive.
+    """
+    if str(task.get("state") or "") not in FAILED_STATES:
+        return None
+
+    task_id = task_id_of(task)
+    out: dict[str, Any] = {
+        "state": task.get("state"),
+        # From the task, so there is always something here even when the
+        # attempts route cannot be read.
+        "last_error": task.get("last_error"),
+        "attempt_count": task.get("attempt_count"),
+    }
+    if not task_id:
+        # NOT the same as "no attempts". Without an id the route cannot be
+        # asked at all, so the attempts are UNREADABLE -- reporting that as an
+        # empty list would say this task failed before any agent ran, which is
+        # a claim nobody checked.
+        out["attempts_unreadable"] = (
+            "this task document carries no id, so its attempts cannot be read. "
+            "The exit code and the backend that ran are UNKNOWN"
+        )
+        return out
+    try:
+        attempts = client.attempts(task_id)
+    except SwarmError as exc:
+        out["attempts_unreadable"] = (
+            f"the per-attempt record could not be read: {exc}. The exit code and "
+            "the backend that ran are UNKNOWN, not absent"
+        )
+        return out
+
+    if not attempts:
+        # A real measurement, and a meaningful one: a task can reach FAILED
+        # without ever being attempted -- admission or dispatch failed -- and
+        # that is a different investigation from an agent that ran and died.
+        out["attempts"] = []
+        out["note"] = (
+            "this task has no attempt records, so it failed before any agent "
+            "ran -- look at admission and dispatch, not at the agent"
+        )
+        return out
+
+    # Newest first, per the route's contract, so the last attempt is the one
+    # that decided the outcome.
+    last = attempts[0]
+    out["last_attempt"] = {
+        "attempt_id": last.get("attempt_id"),
+        "generation": last.get("generation"),
+        # The backend that ACTUALLY ran, which is the ground truth. The
+        # result's own `backend` is read from this same record when the
+        # reader passed a client (`reported_backend`); when it says
+        # `backend_source: "catalogue (bridge copy)"` it is only what the
+        # bridge's copy predicts, and the two differing is itself a finding.
+        "backend": last.get("backend"),
+        "execution_name": last.get("execution_name"),
+        "exit_code": last.get("exit_code"),
+        "error": last.get("error"),
+        # OOM is a common way an agent dies and is invisible in an exit code
+        # alone. `oom_near_miss` says the run came close even when it survived,
+        # which is the difference between "make the prompt smaller" and
+        # "use a bigger resource class".
+        "oom_near_miss": last.get("oom_near_miss"),
+        "peak_rss_bytes": last.get("peak_rss_bytes"),
+    }
+    if last.get("exit_code") is None:
+        out["last_attempt"]["exit_code_note"] = (
+            "not recorded -- this is UNKNOWN, not 0. A missing exit code and a "
+            "clean exit are different facts and only one of them means the "
+            "agent finished"
+        )
+    if len(attempts) > 1:
+        # Earlier attempts are the whole reason this route exists: their
+        # numbers are the ones `result_summary` overwrote.
+        out["earlier_attempts"] = [
+            {
+                "attempt_id": a.get("attempt_id"),
+                "generation": a.get("generation"),
+                "exit_code": a.get("exit_code"),
+                "error": a.get("error"),
+            }
+            for a in attempts[1:]
+        ]
+    return out
+
+
+@dataclass
+class ApplyResult:
+    task_id: str
+    applied: bool
+    conflicted: list[str] = field(default_factory=list)
+    detail: str = ""
+
+    @property
+    def clean(self) -> bool:
+        return self.applied and not self.conflicted
+
+
+def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    done = subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True
+    )
+    if check and done.returncode != 0:
+        raise SwarmError(f"git {args[0]} failed: {done.stderr.strip()[:400]}")
+    return done
+
+
+def _git_dir(repo: Path) -> Path:
+    """The repository's git directory, as git itself resolves it (archived issue 872).
+
+    Not `repo / ".git"`: in a linked worktree (`git worktree add`) or a
+    submodule `.git` is a FILE pointing elsewhere, and writing the incoming
+    patch under it raised `NotADirectoryError` -- measured 2026-10-08,
+    recovering task_6a0c9afdbaea449eb53d's work. Relative answers are
+    relative to `repo`.
+    """
+    out = _git(repo, "rev-parse", "--git-dir").stdout.strip()
+    path = Path(out)
+    return path if path.is_absolute() else repo / path
+
+
+def apply_patch(patch: bytes, repo: Path, *, task_id: str = "") -> ApplyResult:
+    """Apply one patch with a three-way fallback. Returns rather than raises.
+
+    A conflict is an OUTCOME, not an error: the whole design of the integrate
+    path is that conflicts come back as markers in files for someone with the
+    whole repository in front of them, rather than as an exception that throws
+    away the four patches that did apply.
+    """
+    tmp = _git_dir(repo) / "swarm-incoming.patch"
+    tmp.write_bytes(patch)
+    try:
+        done = subprocess.run(
+            ["git", "-C", str(repo), "apply", "--3way", "--whitespace=nowarn", str(tmp)],
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    stderr = done.stderr.strip()
+    if done.returncode == 0:
+        return ApplyResult(task_id=task_id, applied=True, detail="applied cleanly")
+
+    # `git apply --3way` exits non-zero when it leaves conflict markers, which
+    # is a SUCCESS for our purposes -- the content is in the tree. The files it
+    # could not resolve are the ones `diff --name-only --diff-filter=U` lists.
+    unmerged = _git(repo, "diff", "--name-only", "--diff-filter=U", check=False).stdout
+    conflicted = [line for line in unmerged.splitlines() if line.strip()]
+    if conflicted:
+        return ApplyResult(
+            task_id=task_id,
+            applied=True,
+            conflicted=conflicted,
+            detail="applied with conflicts; markers are in the files listed",
+        )
+    return ApplyResult(task_id=task_id, applied=False, detail=stderr[:600] or "apply failed")
+
+
+@dataclass
+class IntegrateResult:
+    branch: str
+    results: list[ApplyResult] = field(default_factory=list)
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+
+    @property
+    def conflicts(self) -> list[str]:
+        seen: list[str] = []
+        for result in self.results:
+            for path in result.conflicted:
+                if path not in seen:
+                    seen.append(path)
+        return seen
+
+    def render(self) -> str:
+        lines = [f"branch {self.branch}"]
+        for result in self.results:
+            mark = "ok" if result.clean else ("CONFLICT" if result.conflicted else "FAILED")
+            lines.append(f"  apply {result.task_id}  {mark}")
+            for path in result.conflicted:
+                lines.append(f"      {path}")
+            if not result.applied:
+                lines.append(f"      {result.detail}")
+        for task_id, why in self.skipped:
+            lines.append(f"  skip  {task_id}  {why}")
+        if self.conflicts:
+            lines.append("")
+            lines.append(
+                f"{len(self.conflicts)} file(s) carry conflict markers. Resolve them "
+                "in place; nothing was committed."
+            )
+        return "\n".join(lines)
+
+
+def integrate(
+    client: SwarmClient,
+    task_ids: list[str],
+    repo: Path,
+    *,
+    branch: str,
+    base: str | None = None,
+) -> IntegrateResult:
+    """Put several agents' work on one branch, in the order given.
+
+    ORDER IS THE CALLER'S, and it matters: patch N is applied to a tree that
+    already contains patches 1..N-1, so a later task's conflict is reported
+    against the accumulated state rather than against the pristine base. That
+    is the state a reviewer actually has to resolve, so it is the one reported.
+
+    The tree must be clean before this starts. Applying on top of uncommitted
+    local edits would mix the operator's work into the agents' and leave no way
+    to tell which conflict came from where.
+    """
+    status = _git(repo, "status", "--porcelain").stdout.strip()
+    if status:
+        raise SwarmError(
+            "the working tree has uncommitted changes. Integrating on top of them "
+            "would mix your edits with the agents' and leave no way to tell which "
+            "conflict came from where. Commit or stash first."
+        )
+
+    if base:
+        _git(repo, "checkout", "-B", branch, base)
+    else:
+        _git(repo, "checkout", "-B", branch)
+
+    out = IntegrateResult(branch=branch)
+    for task_id in task_ids:
+        task = client.task(task_id)
+        uri = patch_uri(task)
+        if uri is None:
+            out.skipped.append((task_id, explain_absence(task)))
+            continue
+        # Through the API, as `swarm_apply` reads it (archived issue 2834). A refused patch
+        # is a FAILED apply, not a skip: there IS a patch, and it was not used.
+        try:
+            patch = read_patch(client, task)
+        except PatchRefused as exc:
+            out.results.append(ApplyResult(task_id=task_id, applied=False, detail=str(exc)))
+            continue
+        out.results.append(apply_patch(patch, repo, task_id=task_id))
+    return out

@@ -1,0 +1,2841 @@
+"""Everything `sc` prints, and nothing it fetches.
+
+WHY FORMATTING LIVES IN A MODULE THAT CANNOT REACH THE NETWORK. `sc` is the
+command an operator runs when they suspect the platform is lying to them, so
+the one thing its output must never do is invent a number. Keeping every rule
+about how a figure is shown in a module with no client, no credentials and no
+sockets means those rules can be tested exhaustively and offline -- which is
+the only way the stale case gets tested at all, because a stale reading is by
+definition one you cannot produce on demand from a live system.
+
+THE THREE MARKS. They are the whole vocabulary, and they are `cs status`'s:
+
+    12%     a measurement, recent enough to trust
+    ~12%    the last measurement, too old to trust -- a projection, not a fact
+    --      not measured (an em dash on a terminal that can draw one)
+
+An operator who already reads `cs status` on their laptop should not have to
+learn a second vocabulary for the same five facts about the same five accounts.
+
+NEVER 0 FOR UNKNOWN. "this account has used none of its quota" and "nobody has
+asked this account how much quota it has used" are different claims, and a
+renderer that collapses them turns a dead poller into a healthy-looking pool.
+Every formatter here returns the em dash rather than a zero when its input is
+absent, and `Reading.known` is the only thing that decides which.
+
+TWO TRAPS THIS FILE DELIBERATELY AVOIDS, both already paid for elsewhere in
+this repository:
+
+  * `pool.get("enabled", True)` is the Python spelling of `.enabled // true`
+    in jq -- it reports a PAUSED pool as open, which is the one thing that
+    column exists to show. `_tri_enabled` compares explicitly and returns
+    None for "the payload did not say", which renders as a mark, not as open.
+  * `windows.get(key) or {}` swallows a real reading of zero. Absence is
+    tested with `is None`, never with truthiness.
+"""
+
+from __future__ import annotations
+
+import textwrap
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Iterable, Sequence
+
+from swarm_common import states as _states
+from swarm_common.models import PROVIDER_POOL_UNITS
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
+from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
+
+from . import details
+
+# --------------------------------------------------------------------------
+# Style
+# --------------------------------------------------------------------------
+#
+# A Style is data, not a terminal. Whoever owns stdout decides what goes in it
+# (`sc.py` does); this module only reads it. That is what lets a test render
+# the 60-column no-colour ASCII case without owning a terminal at all.
+
+#: SGR codes, by tone name. Applied only when `Style.color` is true, which is
+#: only ever true when the caller has confirmed stdout is a TTY.
+_SGR = {
+    "dim": "\x1b[2m",
+    "bold": "\x1b[1m",
+    "good": "\x1b[32m",
+    "warn": "\x1b[33m",
+    "bad": "\x1b[31m",
+    "accent": "\x1b[36m",
+}
+_RESET = "\x1b[0m"
+
+#: Severity order, worst first. Used to sort findings and to pick a tone.
+SEVERITIES = ("down", "warn", "note")
+_SEVERITY_TONE = {"down": "bad", "warn": "warn", "note": "dim"}
+_SEVERITY_MARK = {"down": "x", "warn": "!", "note": "-"}
+
+
+@dataclass(frozen=True)
+class Style:
+    """How wide, whether colour is allowed, and whether the font has glyphs.
+
+    `unicode` is not cosmetic. A terminal running under `LANG=C` raises
+    UnicodeEncodeError on the bar glyphs, which would turn `sc` into a
+    traceback at exactly the moment someone needs it to work.
+    """
+
+    width: int = 80
+    color: bool = False
+    unicode: bool = True
+
+    #: Below this, the table engine stops dropping columns and starts
+    #: truncating. Nothing useful survives narrower than this anyway.
+    MIN_WIDTH = 32
+
+    @property
+    def usable(self) -> int:
+        return max(self.MIN_WIDTH, self.width)
+
+    @property
+    def dash(self) -> str:
+        """The mark for "not measured". Never a zero, never an empty cell."""
+        return "—" if self.unicode else "--"
+
+    @property
+    def filled(self) -> str:
+        return "▰" if self.unicode else "#"
+
+    @property
+    def empty(self) -> str:
+        return "▱" if self.unicode else "."
+
+    @property
+    def ellipsis(self) -> str:
+        return "…" if self.unicode else "..."
+
+    @property
+    def marker(self) -> str:
+        return "▸" if self.unicode else ">"
+
+    @property
+    def unlimited(self) -> str:
+        return "∞" if self.unicode else "inf"
+
+    @property
+    def sep(self) -> str:
+        """The separator between facts on one line.
+
+        Style-bound rather than hard-coded because a middle dot is the single
+        commonest way a "pure ASCII" screen turns out not to be one: it hides
+        in subtitles and joined fragments, far from the bar glyphs anyone
+        remembers to check.
+        """
+        return " · " if self.unicode else " - "
+
+    def paint(self, text: str, tone: str | None) -> str:
+        if not self.color or not tone:
+            return text
+        code = _SGR.get(tone)
+        return f"{code}{text}{_RESET}" if code else text
+
+
+PLAIN = Style()
+
+
+@dataclass(frozen=True)
+class Cell:
+    """A table cell whose colour cannot corrupt the column arithmetic.
+
+    Tone is kept beside the text rather than baked into it, because an SGR
+    sequence is four invisible characters that `len()` counts and a terminal
+    does not -- which is how coloured tables end up ragged.
+    """
+
+    text: str
+    tone: str | None = None
+
+
+def _text(value: Any) -> str:
+    return value.text if isinstance(value, Cell) else str(value)
+
+
+def _tone(value: Any) -> str | None:
+    return value.tone if isinstance(value, Cell) else None
+
+
+# --------------------------------------------------------------------------
+# Table
+# --------------------------------------------------------------------------
+
+
+#: The narrowest a flexible column is allowed to become before the table gives
+#: up and drops something instead. Below this a truncated cell is all ellipsis.
+#:
+#: A column that may be dropped altogether is allowed to shrink further than
+#: one that may not: losing four characters of a STATE that `sc trouble`
+#: repeats in full is cheaper than losing four characters of the account id
+#: that says WHICH account the row is about.
+_FLEX_FLOOR = 8
+_FLEX_FLOOR_DROPPABLE = 5
+
+
+def _floor(col: "Column") -> int:
+    return _FLEX_FLOOR if col.drop == 0 else _FLEX_FLOOR_DROPPABLE
+
+
+@dataclass(frozen=True)
+class Column:
+    key: str
+    heading: str
+    align: str = "left"
+    #: Higher drops sooner. 0 never drops: a table that has shed its identity
+    #: column is not a narrower table, it is a different one.
+    drop: int = 0
+    #: Absorbs truncation once there is nothing left to drop.
+    flex: bool = False
+
+
+def _fit(text: str, width: int, style: Style) -> str:
+    if len(text) <= width:
+        return text
+    if width <= len(style.ellipsis):
+        return text[:width]
+    return text[: width - len(style.ellipsis)] + style.ellipsis
+
+
+def render_table(
+    columns: Sequence[Column],
+    rows: Sequence[dict[str, Any]],
+    style: Style,
+    *,
+    indent: int = 2,
+    gutter: int = 2,
+    heading: bool = True,
+) -> list[str]:
+    """Lay a table out, dropping columns rather than wrapping them.
+
+    A wrapped terminal table is unreadable in a way a narrower one is not: the
+    eye loses which continuation line belongs to which row. So when the width
+    runs out, whole columns go -- highest `drop` first -- and only when nothing
+    droppable is left does the flex column get truncated with an ellipsis.
+    """
+    if not rows:
+        return []
+
+    live = list(columns)
+    budget = style.usable - indent
+
+    def widths(cols: Sequence[Column]) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for col in cols:
+            longest = len(col.heading) if heading else 0
+            for row in rows:
+                longest = max(longest, len(_text(row.get(col.key, ""))))
+            out[col.key] = longest
+        return out
+
+    def total(cols: Sequence[Column], w: dict[str, int]) -> int:
+        return sum(w[c.key] for c in cols) + gutter * max(0, len(cols) - 1)
+
+    def minimum(cols: Sequence[Column], wid: dict[str, int]) -> int:
+        """What this column set costs once every flexible column has shrunk.
+
+        Dropping is measured against THIS rather than against the natural
+        width, because a column that truncation could have saved should not be
+        thrown away -- one account with a wordy reason would otherwise cost
+        every other account its STATE column entirely.
+
+        A `drop=0` column counts at its FULL width even when it is flexible.
+        Those are the identity columns -- the account id, the profile name --
+        and shrinking one to make room for a column that could simply be
+        dropped trades the label for the thing it labels.
+        """
+        base = sum(
+            min(wid[c.key], _floor(c)) if (c.flex and c.drop > 0) else wid[c.key]
+            for c in cols
+        )
+        return base + gutter * max(0, len(cols) - 1)
+
+    w = widths(live)
+    while minimum(live, w) > budget:
+        droppable = [c for c in live if c.drop > 0]
+        if not droppable:
+            break
+        victim = max(droppable, key=lambda c: (c.drop, len(c.heading)))
+        live = [c for c in live if c.key != victim.key]
+        w = widths(live)
+
+    over = total(live, w) - budget
+    if over > 0:
+        # Shed from the most-droppable flexible column first, all the way to
+        # its floor, before touching the next -- the same priority order the
+        # drop loop uses. Taking from the widest instead would truncate the
+        # account id, which nothing else on the screen repeats, in order to
+        # spare a STATE that `sc trouble` prints in full.
+        for col in sorted(
+            (c for c in live if c.flex), key=lambda c: (-c.drop, c.key)
+        ):
+            if over <= 0:
+                break
+            take = min(over, max(0, w[col.key] - _floor(col)))
+            w[col.key] -= take
+            over -= take
+
+    lines: list[str] = []
+    pad = " " * indent
+
+    if heading:
+        parts = []
+        for col in live:
+            cell = _fit(col.heading, w[col.key], style)
+            parts.append(cell.rjust(w[col.key]) if col.align == "right" else cell.ljust(w[col.key]))
+        lines.append(style.paint(pad + (" " * gutter).join(parts).rstrip(), "dim"))
+
+    for row in rows:
+        parts = []
+        for col in live:
+            raw = row.get(col.key, "")
+            text = _fit(_text(raw), w[col.key], style)
+            laid = text.rjust(w[col.key]) if col.align == "right" else text.ljust(w[col.key])
+            parts.append(style.paint(laid, _tone(raw)))
+        lines.append((pad + (" " * gutter).join(parts)).rstrip())
+    return lines
+
+
+def detail(text: str, style: Style, *, indent: int = 4, tone: str | None = "dim") -> list[str]:
+    """A prose line under a heading, wrapped to the terminal rather than past it.
+
+    Transport errors are the longest strings `sc` ever prints and the ones it
+    most needs to print in full -- truncating the explanation of why a figure
+    is missing would leave only the fact that it is missing.
+    """
+    pad = " " * indent
+    body = textwrap.wrap(text, width=max(20, style.usable - indent)) or [""]
+    return [style.paint(pad + line, tone) for line in body]
+
+
+def section(title: str, subtitle: str, style: Style) -> str:
+    label = title.upper()
+    head = style.paint(label, "bold")
+    if not subtitle:
+        return head
+    room = style.usable - len(label) - 2
+    return f"{head}  {style.paint(_fit(subtitle, max(0, room), style), 'dim')}"
+
+
+# --------------------------------------------------------------------------
+# Time
+# --------------------------------------------------------------------------
+
+
+def parse_time(value: Any) -> datetime | None:
+    """An ISO timestamp, or None. Never raises: a malformed timestamp is an
+    unknown time, and an unknown time is a mark, not a crash."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _span(seconds: float, style: Style) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return "<1m"
+    minutes, hours = seconds // 60, seconds // 3600
+    if hours < 1:
+        return f"{minutes}m"
+    if hours < 24:
+        return f"{hours}h {minutes % 60:02d}m"
+    days = hours // 24
+    return f"{days}d {hours % 24:02d}h"
+
+
+def format_until(value: Any, now: datetime, style: Style) -> str:
+    """How long until `value`. `cleared` once it is in the past."""
+    when = parse_time(value)
+    if when is None:
+        return style.dash
+    delta = (when - now).total_seconds()
+    if delta <= 0:
+        return "cleared"
+    return _span(delta, style)
+
+
+def format_ago(value: Any, now: datetime, style: Style) -> str:
+    when = parse_time(value)
+    if when is None:
+        return style.dash
+    delta = (now - when).total_seconds()
+    if delta < 0:
+        return "just now"
+    return _span(delta, style) + " ago"
+
+
+def format_age(value: Any, now: datetime, style: Style) -> str:
+    when = parse_time(value)
+    if when is None:
+        return style.dash
+    return _span(max(0.0, (now - when).total_seconds()), style)
+
+
+def clock(value: Any) -> str:
+    """`03:52:52Z` for an event's `at`, or `--:--:--` when it carried none.
+
+    WHY LIVE OUTPUT CARRIES A TIME AT ALL. `swarm tail` and `swarm follow`
+    print each task's events as they are read, task by task, so the order on
+    screen is the order of the POLL and not of the platform. Measured on
+    2026-09-25 (archived issue 88, SC-F9): a dependent step's cancel printed above its
+    upstream's, which reads as the cascade running backwards. A time on every
+    event line is what lets a reader put them back in order -- and, for
+    `tail`, the events of one poll are sorted by it as well.
+
+    UTC, and SAYS so with the `Z`: the API stamps UTC, and a bare `03:52:52`
+    beside a local clock would be hours out with nothing to show it.
+    ASCII only, so it survives the `--ascii` rule every other mark obeys.
+    """
+    when = parse_time(value)
+    if when is None:
+        return "--:--:--"
+    return when.astimezone(timezone.utc).strftime("%H:%M:%SZ")
+
+
+# --------------------------------------------------------------------------
+# Who is asking, whose the figures are, and whether a listing is whole
+# --------------------------------------------------------------------------
+
+
+def tenant_of(me: Any) -> str | None:
+    """The tenant id out of a `GET /v1/tenants/me` answer, or None.
+
+    NESTED. The route answers `{"tenant": {"tenant_id": ...}, "principal":
+    {...}}` (swarm_api/routes/tenants.py), and three readers in this package
+    read `tenant_id` off the top level instead: the `sc` header, `swarm
+    doctor` and `sc whoami`/`sc login`. None of them errored -- the key was
+    simply absent -- so on 2026-09-25 (archived issue 88, SC-F3/F4) the header showed the
+    tenant as "not measured" and doctor printed `tenant None` in the same run
+    that had just read it. ONE reader, here, so the next shape change is one
+    edit.
+
+    The flat shape is still accepted after the nested one. It is what every
+    fake in this suite used to answer, and a deployment older than the nesting
+    would answer it too; reading it costs nothing and misreads nothing.
+    """
+    if not isinstance(me, dict):
+        return None
+    tenant = me.get("tenant")
+    if isinstance(tenant, dict) and tenant.get("tenant_id"):
+        return str(tenant["tenant_id"])
+    flat = me.get("tenant_id")
+    return str(flat) if flat else None
+
+
+def principal_of(me: Any) -> dict[str, Any]:
+    """`principal` out of the same answer: email, groups, is_admin.
+
+    `{}` when there is none, never None, so a caller reads each field with
+    `.get` and an absent field prints as "(not reported)" rather than as the
+    word None -- which is what `swarm doctor` printed for `admin` on
+    2026-09-25 while the route was serving `is_admin: false`.
+    """
+    if not isinstance(me, dict):
+        return {}
+    principal = me.get("principal")
+    if isinstance(principal, dict):
+        return principal
+    return {key: me[key] for key in ("email", "groups", "is_admin") if key in me}
+
+
+class Listing(list):
+    """A list that also says WHOSE it is and whether it is WHOLE.
+
+    A plain list can say neither, and both were missing on 2026-09-25 (archived issue 88):
+    `sc` printed ACCOUNTS "0 accounts" and AGENTS "0 running" -- one tenant's
+    figures -- directly beside CAPACITY's `claude-code 8/40`, which was
+    another tenant's work on a shared pool, with nothing on screen to say the
+    two were measured over different populations (SC-F5); and AGENTS was built
+    from the newest 100 of 324 tasks and presented as complete (SC-F11).
+
+    A SUBCLASS rather than a new return type, so every renderer and test that
+    already takes a list keeps working, and `sc --json` still dumps a list.
+    `tenant_id` is the tenant the ROUTE says it answered for -- every tenant-
+    scoped listing route echoes the resolved one -- and `incomplete` is a list
+    of sentences, empty when the listing is whole.
+    """
+
+    def __init__(
+        self,
+        items: Iterable[Any] = (),
+        *,
+        tenant_id: str | None = None,
+        incomplete: Iterable[str] = (),
+        window: "TaskWindow | None" = None,
+    ) -> None:
+        super().__init__(items)
+        self.tenant_id = str(tenant_id) if tenant_id else None
+        self.incomplete = [str(line) for line in incomplete]
+        self.window = window
+
+
+@dataclass(frozen=True)
+class TaskWindow:
+    """The newest-N page a task listing read beside its live states, SAID (archived issue 190).
+
+    `sc.fetch_tasks` reads every LIVE task by state and, beside them, one page
+    of the newest tasks of any state -- the only place a FAILED or
+    DEAD_LETTERED task is read from. `sc trouble` counted those as "N task(s)
+    ... in the window listed" and listed no window anywhere; the window lived
+    in a docstring and a constant. So the page describes itself: how many it
+    held, whether that was every task the tenant has, and when the oldest of
+    them was created -- which is what a reader needs to tell "5 today" from
+    "5 ever" from "5 of the newest hundred".
+    """
+
+    limit: int
+    count: int
+    oldest: Any = None
+    whole: bool = False
+
+
+def listing_tenant(items: Any) -> str | None:
+    """The tenant a `Listing` was answered for; None for a plain list."""
+    return getattr(items, "tenant_id", None) or None
+
+
+def listing_window(items: Any) -> TaskWindow | None:
+    """The newest-N window a `Listing` read; None for a plain list."""
+    window = getattr(items, "window", None)
+    return window if isinstance(window, TaskWindow) else None
+
+
+def format_since(value: Any, now: datetime) -> str:
+    """`03:28Z` for today, `2026-09-01 00:10Z` for any other day, "" when unknown."""
+    when = parse_time(value)
+    if when is None:
+        return ""
+    when = when.astimezone(timezone.utc)
+    if when.date() == now.astimezone(timezone.utc).date():
+        return when.strftime("%H:%MZ")
+    return when.strftime("%Y-%m-%d %H:%MZ")
+
+
+def window_scope(items: Any, whose: str, now: datetime) -> tuple[str, str]:
+    """`("of the newest 100 tasks of tenant eng", " (created since 03:28Z)")`.
+
+    The population a count over a task listing was taken from, and when its
+    oldest member was created -- the two halves of "which window". A plain
+    list, which has no window to name, is named by how many tasks it held.
+    """
+    window = listing_window(items)
+    if window is None:
+        return f"of the {len(items)} tasks{whose} this read returned", ""
+    scope = (
+        f"of all {window.count} tasks{whose}"
+        if window.whole
+        else f"of the newest {window.count} tasks{whose}"
+    )
+    since = format_since(window.oldest, now)
+    return scope, f" (created since {since})" if since else ""
+
+
+def listing_gaps(items: Any) -> list[str]:
+    """What a `Listing` did not read, as sentences; `[]` for a plain list."""
+    return list(getattr(items, "incomplete", None) or [])
+
+
+def scoped(subtitle: str, tenant: str | None, style: Style) -> str:
+    """A section subtitle that names the tenant its figures belong to.
+
+    Only for TENANT-SCOPED sections. The capacity section is the other kind --
+    shared pools, counted across every tenant -- and says that in its own body
+    (`render_capacity`), so the two can no longer be read as one population.
+    """
+    if not tenant:
+        return subtitle
+    head = f"tenant {tenant}"
+    return f"{head}{style.sep}{subtitle}" if subtitle else head
+
+
+def scope_tenant(snap: "Snapshot") -> str | None:
+    """Which tenant this snapshot's tenant-scoped figures belong to.
+
+    `/v1/tenants/me` first, because it is the identity route; then whatever
+    tenant a listing route echoed. They are the same resolved tenant -- every
+    route resolves it through the same call -- so the fallbacks only matter for
+    a narrow view that did not fetch the identity at all.
+    """
+    capacity = snap.capacity if isinstance(snap.capacity, dict) else {}
+    return (
+        tenant_of(snap.tenant)
+        or listing_tenant(snap.tasks)
+        or listing_tenant(snap.accounts)
+        or (str(capacity["tenant_id"]) if capacity.get("tenant_id") else None)
+    )
+
+
+# --------------------------------------------------------------------------
+# Readings
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Reading:
+    """One window's utilisation, and how much it can be trusted.
+
+    `known` and `stale` are independent. A known-but-stale reading is a real
+    number about a moment that has passed; an unknown reading is no number at
+    all. Printing the second as the first is the failure this type exists to
+    make impossible.
+    """
+
+    key: str
+    utilization: float | None = None
+    resets_at: Any = None
+    reset: bool = False
+    stale: bool = True
+
+    @property
+    def known(self) -> bool:
+        return self.utilization is not None
+
+    @property
+    def trusted(self) -> bool:
+        """A reset window's last reading describes a window that is over, so it
+        is a projection even when it arrived a second ago."""
+        return self.known and not self.stale and not self.reset
+
+
+def account_is_stale(account: dict[str, Any]) -> bool:
+    """Absent provenance is stale provenance.
+
+    The broker computes `stale` and always sends it. If it is missing, this
+    payload came from somewhere that does not track reading age -- which is
+    exactly the case where a number must not be presented as current.
+    """
+    if account.get("observed_at") is None:
+        return True
+    flag = account.get("stale")
+    if flag is None:
+        return True
+    return bool(flag)
+
+
+def read_window(account: dict[str, Any], key: str) -> Reading:
+    windows = account.get("windows")
+    entry = windows.get(key) if isinstance(windows, dict) else None
+    stale = account_is_stale(account)
+    if not isinstance(entry, dict):
+        return Reading(key=key, stale=stale)
+    raw = entry.get("utilization")
+    # `is None`, not falsiness: 0.0 is a measurement.
+    util = None
+    if raw is not None:
+        try:
+            util = float(raw)
+        except (TypeError, ValueError):
+            util = None
+    return Reading(
+        key=key,
+        utilization=util,
+        resets_at=entry.get("resets_at"),
+        reset=bool(entry.get("reset")),
+        stale=stale,
+    )
+
+
+#: Provider window keys, mapped to the two-character heading an operator
+#: already knows. The broker's contract says the keys are the PROVIDER's and
+#: are not fixed, so an unrecognised key keeps its own name rather than being
+#: relabelled into a column it may not mean.
+_WINDOW_HEADINGS = {
+    "five_hour": "5H",
+    "session": "5H",
+    "5h": "5H",
+    "seven_day": "7D",
+    "weekly": "7D",
+    "weekly_all": "7D",
+    "7d": "7D",
+}
+_SHORT_KEYS = ("five_hour", "session", "5h")
+_LONG_KEYS = ("seven_day", "weekly", "weekly_all", "7d")
+
+
+def window_heading(key: str) -> str:
+    return _WINDOW_HEADINGS.get(key, key.replace("_", " ").upper()[:7])
+
+
+def window_keys(accounts: Iterable[dict[str, Any]]) -> tuple[str | None, str | None]:
+    """The two window keys this pool actually reports, in the order to show.
+
+    Preference before position: a provider that names its windows the way
+    Anthropic does gets 5H and 7D in the right columns. Anything else is shown
+    in the order it arrived, under its own name, rather than being forced into
+    a heading that would misdescribe it.
+    """
+    ordered: list[str] = []
+    for account in accounts:
+        windows = account.get("windows")
+        if isinstance(windows, dict):
+            for key in windows:
+                if key not in ordered:
+                    ordered.append(key)
+    if not ordered:
+        return None, None
+    short = next((k for k in _SHORT_KEYS if k in ordered), None)
+    long = next((k for k in _LONG_KEYS if k in ordered), None)
+    rest = [k for k in ordered if k not in (short, long)]
+    if short is None:
+        short = rest.pop(0) if rest else None
+    if long is None:
+        long = rest.pop(0) if rest else None
+    return short, long
+
+
+def format_percent(reading: Reading, style: Style) -> str:
+    if not reading.known:
+        return style.dash
+    pct = f"{round(reading.utilization * 100)}%"
+    return pct if reading.trusted else f"~{pct}"
+
+
+def format_bar(reading: Reading, style: Style, cells: int = 5) -> str:
+    if not reading.known:
+        return ""
+    filled = min(cells, max(0, int(round(reading.utilization * cells))))
+    # A non-zero utilisation that rounds to nothing still gets one cell: an
+    # empty bar beside "3%" reads as a rendering bug.
+    if filled == 0 and reading.utilization > 0:
+        filled = 1
+    return style.filled * filled + style.empty * (cells - filled)
+
+
+def format_window(reading: Reading, style: Style) -> Cell:
+    if not reading.known:
+        return Cell(f"{style.dash:>5}", "dim")
+    text = f"{format_percent(reading, style):>5}  {format_bar(reading, style)}"
+    tone = None
+    if reading.utilization >= 0.98:
+        tone = "bad"
+    elif reading.utilization >= 0.85:
+        tone = "warn"
+    elif not reading.trusted:
+        tone = "dim"
+    return Cell(text, tone)
+
+
+def binding_window(readings: Sequence[Reading]) -> Reading | None:
+    """The window that will stop this account first: the fullest known one."""
+    known = [r for r in readings if r.known]
+    if not known:
+        return None
+    return max(known, key=lambda r: r.utilization)
+
+
+_ACCOUNT_STATE_TONE = {
+    "AVAILABLE": None,
+    "PAUSED": "warn",
+    "DRAINING": "dim",
+    "REAUTH_REQUIRED": "bad",
+}
+_ACCOUNT_STATE_TEXT = {
+    "AVAILABLE": "available",
+    "PAUSED": "paused",
+    "DRAINING": "draining",
+    "REAUTH_REQUIRED": "reauth needed",
+}
+
+
+def format_account_state(account: dict[str, Any], style: Style = PLAIN) -> Cell:
+    raw = str(account.get("state") or "")
+    text = _ACCOUNT_STATE_TEXT.get(raw, raw.lower() or "?")
+    reason = str(account.get("reason") or "").strip()
+    if reason and raw != "AVAILABLE":
+        text = f"{text}{style.sep}{reason}"
+    return Cell(text, _ACCOUNT_STATE_TONE.get(raw, "dim"))
+
+
+def format_takes_agent(account: dict[str, Any], style: Style = PLAIN) -> Cell:
+    """`yes`, `no`, or a dash when the broker did not say."""
+    takes = account.get("can_take_new_agent")
+    if takes is True:
+        return Cell("yes")
+    if takes is False:
+        return Cell("no", "bad")
+    return Cell(style.dash, "dim")
+
+
+def format_agents(account: dict[str, Any], style: Style = PLAIN) -> Cell:
+    """`N of M`: the agents it holds of the most it may (archived issue 2222)."""
+    held = _int_or_none(account.get("assigned"))
+    most = _int_or_none(account.get("max_agents"))
+    if held is None:
+        return Cell(style.dash, "dim")
+    if most is None:
+        return Cell(str(held))
+    return Cell(f"{held} of {most}", "warn" if held >= most else None)
+
+
+#: A window's name as a person says it, for the words under the table.
+_WINDOW_WORDS = {
+    "five_hour": "5-hour", "session": "5-hour", "5h": "5-hour",
+    "seven_day": "7-day", "weekly": "7-day", "weekly_all": "7-day", "7d": "7-day",
+}
+
+
+def _percent(value: Any) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return f"{round(value * 100)}%"
+
+
+def block_words(entry: dict[str, Any], style: Style, now: datetime) -> str:
+    """One `blocked_by` entry as a person reads it.
+
+    Window under its floor, full, first reading pending, duplicate withheld,
+    possible duplicate -- the five the broker serves -- and the broker's own
+    `reason` for anything else, so a new kind reads as itself rather than
+    being dropped.
+    """
+    if "window" in entry:
+        name = str(entry.get("window") or "")
+        words = f"{_WINDOW_WORDS.get(name, name.replace('_', ' '))} window under its floor"
+        used = entry.get("used")
+        left = _percent(1 - used) if isinstance(used, (int, float)) and not isinstance(used, bool) else None
+        floor = _percent(entry.get("floor"))
+        if left and floor:
+            words += f" ({left} left, floor {floor})"
+        if entry.get("resets_at"):
+            words += f", clears {format_until(entry.get('resets_at'), now, style)}"
+        if entry.get("aged_reading") is True:
+            words += ", on an aged reading counted at half"
+        return words
+    if "cap" in entry:
+        return (
+            f"full, {entry.get('cap')} of {entry.get('max_agents')} agents; "
+            "a slot frees when one of them finishes"
+        )
+    if "first_reading" in entry:
+        return (
+            f"first reading pending: it holds {entry.get('assigned')} and takes "
+            f"no more than {entry.get('max_before_reading')} until it is measured"
+        )
+    if "duplicate_of" in entry:
+        other = entry.get("duplicate_of")
+        reason = details.shown(entry.get("reason")) or (
+            f"the same subscription as {other}" if other else ANOTHER_WORKSPACE
+        )
+        return f"duplicate withheld: {reason}"
+    if "possible_duplicate" in entry:
+        reason = details.shown(entry.get("reason")) or "identical readings on two polls"
+        return f"possible duplicate, still given agents: {reason}"
+    reason = details.shown(entry.get("reason"))
+    return reason or "blocked for a reason this sc does not name"
+
+
+# --------------------------------------------------------------------------
+# Accounts
+# --------------------------------------------------------------------------
+
+
+#: Every field `account_to_api` documents, and nothing else. An ALLOW-list,
+#: not a deny-list, because the field that must never reach a screen or a file
+#: is the one nobody has thought of yet: `Credential.redacted()` already
+#: exposes `access_token_len`, and a length is a real hint about a secret.
+#: Anything the broker starts sending tomorrow is dropped here until someone
+#: adds it on purpose.
+_ACCOUNT_FIELDS = (
+    "account_id",
+    "owner_tenant",
+    "label",
+    "provider",
+    "state",
+    "reason",
+    "lend_to",
+    "assigned",
+    "observed_at",
+    "stale",
+    # Whether the pool would hand it a new agent, and what stops it (archived issue 2222,
+    # POOL-ACCOUNT-CAP and POOL-DUP-DETECT). Each nested shape has its own
+    # allow-list below, and every name of another workspace's account is
+    # taken out first (`own_view`).
+    "max_agents",
+    "can_take_new_agent",
+    "blocked_by",
+    "next_eligible_at",
+    "organisation",
+    "duplicate_of",
+    "duplicate_reason",
+    "possible_duplicate",
+    # Which pools it serves -- the agents' "workspace" pool, the "voice-it"
+    # pool, or both -- and who holds it for Voice it right now
+    # (voice-it-pool). The holder has its own allow-list below.
+    "pools",
+)
+#: The live Voice it hold, as swarm-api serves it to the owner's members: who
+#: and since when. The session id is the voice service's business, not a
+#: listing's, so it is not carried.
+_HOLDER_FIELDS = ("person", "since")
+#: The pools an account can serve (voice-it-pool interface): "workspace", the
+#: agents' pool, and "voice-it", the Voice it pool, in the order swarm-api
+#: serves them. `sc account pool` sends sets in this order too.
+ACCOUNT_POOLS = ("workspace", "voice-it")
+_WINDOW_FIELDS = ("utilization", "resets_at", "reset")
+#: What one `blocked_by` entry may carry: a window under its floor
+#: (`window, used, floor, resets_at, aged_reading`), a full account (`cap,
+#: max_agents`), a first reading pending (`first_reading, assigned,
+#: max_before_reading`), a duplicate withheld (`duplicate_of, reason`) or a
+#: possible duplicate (`possible_duplicate, advisory, reason`).
+_BLOCK_FIELDS = (
+    "window", "used", "floor", "resets_at", "aged_reading",
+    "cap", "max_agents",
+    "first_reading", "assigned", "max_before_reading",
+    "duplicate_of", "possible_duplicate", "advisory", "reason",
+)
+#: The organisation an account's credential runs on: its name and plan as the
+#: provider gave them. The broker never serves the organisation's id.
+_ORGANISATION_FIELDS = ("name", "plan")
+_POSSIBLE_FIELDS = ("of", "reason")
+
+#: What a reader is told of the other side of a duplicate pair another
+#: workspace owns (archived issue 2222; the owner, 2026-10-24 17:26Z: "only within the same
+#: tenant"). The broker's and swarm-api's wording, so the three never differ.
+ANOTHER_WORKSPACE = "this subscription is already registered in another workspace"
+ANOTHER_WORKSPACE_READINGS = (
+    "identical readings on two polls with an account in another workspace"
+)
+
+
+def _foreign(other: Any, tenant: str | None) -> bool:
+    """Whether the account id `other` may NOT be named to a reader in `tenant`.
+
+    An id is `<owner_tenant>:<label>`. A listing that did not say whose it is
+    names nobody: with no tenant to compare, every id counts as foreign.
+    """
+    return isinstance(other, str) and (not tenant or not other.startswith(f"{tenant}:"))
+
+
+def own_view(account: dict[str, Any], tenant: str | None) -> dict[str, Any]:
+    """`account` with every name of ANOTHER workspace's account taken out of
+    its duplicate marks (archived issue 2222, POOL-DUP-FIX's rule).
+
+    The broker and swarm-api already answer in the caller's view; this is the
+    third line, so an older API cannot make `sc` print or dump another
+    workspace's label. A mark whose other side is withheld also has its words
+    replaced, because a reason is free text and could carry the name the field
+    no longer does.
+    """
+    out = dict(account)
+    if "duplicate_of" in out and (out["duplicate_of"] is None or _foreign(out["duplicate_of"], tenant)):
+        if out["duplicate_of"] is not None or out.get("duplicate_reason"):
+            out["duplicate_reason"] = ANOTHER_WORKSPACE
+        out["duplicate_of"] = None
+    possible = out.get("possible_duplicate")
+    if isinstance(possible, dict):
+        possible = {k: possible[k] for k in _POSSIBLE_FIELDS if k in possible}
+        if possible.get("of") is None or _foreign(possible.get("of"), tenant):
+            possible = {"of": None, "reason": ANOTHER_WORKSPACE_READINGS}
+        out["possible_duplicate"] = possible
+    elif "possible_duplicate" in out:
+        out["possible_duplicate"] = None
+    blocked = out.get("blocked_by")
+    if isinstance(blocked, list):
+        entries: list[dict[str, Any]] = []
+        for entry in blocked:
+            if not isinstance(entry, dict):
+                continue
+            if "duplicate_of" in entry and (
+                entry["duplicate_of"] is None or _foreign(entry["duplicate_of"], tenant)
+            ):
+                entry = {"duplicate_of": None, "reason": ANOTHER_WORKSPACE}
+            elif "possible_duplicate" in entry and (
+                entry["possible_duplicate"] is None
+                or _foreign(entry["possible_duplicate"], tenant)
+            ):
+                entry = {"possible_duplicate": None, "advisory": True,
+                         "reason": ANOTHER_WORKSPACE_READINGS}
+            entries.append({k: entry[k] for k in _BLOCK_FIELDS if k in entry})
+        out["blocked_by"] = entries
+    elif "blocked_by" in out:
+        out["blocked_by"] = []
+    organisation = out.get("organisation")
+    if "organisation" in out:
+        out["organisation"] = (
+            {k: organisation[k] for k in _ORGANISATION_FIELDS if k in organisation}
+            if isinstance(organisation, dict) else None
+        )
+    return out
+
+
+def public_account(account: dict[str, Any], tenant: str | None = None) -> dict[str, Any]:
+    """One account, reduced to the fields this surface is allowed to show.
+
+    The table is defended by construction -- it prints named columns and can
+    only show what it asks for -- but `sc --json` dumps the payload as
+    fetched, so without this the same account would obey one rule on screen
+    and none in a file. `sc` never sees key material today; this is what keeps
+    that true when the broker's shape widens.
+    """
+    account = own_view(account, tenant)
+    out = {key: account[key] for key in _ACCOUNT_FIELDS if key in account}
+    windows = account.get("windows")
+    if isinstance(windows, dict):
+        out["windows"] = {
+            name: {key: entry[key] for key in _WINDOW_FIELDS if key in entry}
+            for name, entry in windows.items()
+            if isinstance(entry, dict)
+        }
+    if "pools" in account:
+        out["pools"] = account_pools(account)
+    if "voice_it_holder" in account:
+        holder = account.get("voice_it_holder")
+        out["voice_it_holder"] = (
+            {key: holder[key] for key in _HOLDER_FIELDS if key in holder}
+            if isinstance(holder, dict) else None
+        )
+    return out
+
+
+def account_pools(account: dict[str, Any]) -> list[str]:
+    """The pools an account serves, as swarm-api serves them: absent or empty
+    reads as ["workspace"] (the voice-it-pool interface), unknown names are
+    dropped, and the order is always workspace, voice-it."""
+    served = account.get("pools")
+    names = [p for p in served if p in ACCOUNT_POOLS] if isinstance(served, list) else []
+    return [p for p in ACCOUNT_POOLS if p in names] or ["workspace"]
+
+
+def holder_words(account: dict[str, Any], now: datetime, style: Style) -> str | None:
+    """Who holds `account` for Voice it right now, in words, or None."""
+    holder = account.get("voice_it_holder")
+    if not isinstance(holder, dict):
+        return None
+    person = details.shown(holder.get("person")) or "someone"
+    since = format_ago(holder.get("since"), now, style)
+    when = "" if since == style.dash else f", taken {since}"
+    return f"{account.get('account_id')} is held for Voice it by {person}{when}"
+
+
+def render_accounts(
+    accounts: Sequence[dict[str, Any]] | None,
+    style: Style,
+    now: datetime,
+    *,
+    error: str | None = None,
+) -> list[str]:
+    """The pool, in `cs status`'s columns: ACCOUNT | 5H | 7D | CLEARS | STATE."""
+    if accounts is None:
+        return [
+            f"  {style.paint(style.dash + ' the account pool could not be read', 'bad')}",
+        ] + detail(error or "no reason reported", style) + detail(
+            "no figure is shown because every one of them would be a guess: "
+            "utilisation here is UNKNOWN, not zero",
+            style,
+        )
+    if not accounts:
+        return [
+            f"  {style.paint('no accounts registered', 'warn')}",
+            f"    {style.paint('a claude-code runner has no subscription credential to run on', 'dim')}",
+        ]
+
+    short_key, long_key = window_keys(accounts)
+    columns = [
+        Column("account", "ACCOUNT", flex=True),
+        # Drop priorities, easiest-to-lose first: CLEARS is derivable from the
+        # reset time, STATE is repeated in full by `sc trouble`, and the 7-day
+        # window moves slower than the 5-hour one. The 5-hour figure and the
+        # account it belongs to are what a narrow screen must still show --
+        # dropping the utilisation would leave a table about nothing.
+        #
+        # USED, ON THE HEAD (OV-1, owner decision 2026-09-25): one polarity on
+        # every surface -- the console's Overview, its Accounts table and this
+        # -- and every percentage carries its word. The figures were always
+        # utilisation; the heads now say so, as the Accounts table's do.
+        Column("short", f"{window_heading(short_key) if short_key else '5H'} USED", drop=1),
+        Column("long", f"{window_heading(long_key) if long_key else '7D'} USED", drop=2),
+        Column("clears", "CLEARS", align="right", drop=6),
+        Column("state", "STATE", flex=True, drop=5),
+    ]
+    # WHETHER IT CAN TAKE AN AGENT, AND HOW MANY IT HOLDS OF HOW MANY (archived issue 2222).
+    # Only when the broker says: an older one serves neither field, and a
+    # column of dashes beside every account would read as "no" -- the claim
+    # the issue was opened about, "7 available" while the pool parked all.
+    capped = any("max_agents" in a or "can_take_new_agent" in a for a in accounts)
+    if capped:
+        columns[3:3] = [
+            Column("new", "NEW AGENT", drop=3),
+            Column("agents", "AGENTS", align="right", drop=4),
+        ]
+    # WHICH PROVIDER (archived issue 2688): a pool of Claude subscriptions alone needs no
+    # column, so it appears once any account is something else -- a ChatGPT
+    # plan for the codex runner -- and then names every account's.
+    if any(str(a.get("provider") or "anthropic") != "anthropic" for a in accounts):
+        columns.insert(1, Column("provider", "PROVIDER", drop=7))
+    # WHICH POOLS (voice-it-pool): the agents' workspace pool, the Voice it
+    # pool, or both. Only when the API says: an older one serves no `pools`,
+    # and every account then is in the workspace pool, so a column of
+    # "workspace" would say nothing.
+    if any("pools" in a for a in accounts):
+        columns.insert(1, Column("pools", "POOLS", drop=3))
+    tenant = listing_tenant(accounts)
+
+    rows: list[dict[str, Any]] = []
+    for account in accounts:
+        account = own_view(account, tenant)
+        account_id = str(account.get("account_id") or account.get("label") or "?")
+        # THE NAME WITH THE ID BESIDE IT (archived issue 1913): an owner's Name for the
+        # account, and the id this column always printed, so the Name never
+        # hides which account it is. Free text, so it passes `details.shown`
+        # like any typed value; a credential-shaped one is not printed at all.
+        name = details.shown(account.get("display_name"))
+        if name and name != details.WITHHELD:
+            account_id = f"{name} ({account_id})"
+        short = read_window(account, short_key) if short_key else Reading("5h")
+        long = read_window(account, long_key) if long_key else Reading("7d")
+        binding = binding_window([short, long])
+        rows.append(
+            {
+                "account": Cell(account_id),
+                "provider": Cell(str(account.get("provider") or "anthropic")),
+                "pools": Cell(",".join(account_pools(account))),
+                "short": format_window(short, style),
+                "long": format_window(long, style),
+                "clears": Cell(
+                    format_until(binding.resets_at, now, style) if binding else style.dash,
+                    "dim" if binding is None else None,
+                ),
+                "state": format_account_state(account, style),
+                "new": format_takes_agent(account, style),
+                "agents": format_agents(account, style),
+            }
+        )
+
+    lines = render_table(columns, rows, style)
+
+    # WHAT BLOCKS EACH ONE, IN WORDS: the table says yes or no, and "no" with
+    # nothing beside it is the page the issue was opened about.
+    for account in accounts:
+        account = own_view(account, tenant)
+        said = [block_words(entry, style, now) for entry in account.get("blocked_by") or []]
+        if not said:
+            continue
+        refused = account.get("can_take_new_agent") is False
+        head = (
+            f"{account.get('account_id')} cannot take a new agent: "
+            if refused else f"{account.get('account_id')}: "
+        )
+        lines += detail(head + "; ".join(said), style, tone="warn" if refused else "dim")
+
+    for account in accounts:
+        held = holder_words(account, now, style)
+        if held:
+            lines += detail(held, style)
+    for account in accounts:
+        if account.get("lend_to"):
+            who = ", ".join(str(t) for t in account["lend_to"])
+            lines += detail(f"{account.get('account_id')} lends to {who}", style)
+    if any(account_is_stale(a) for a in accounts):
+        joiner = f" {style.sep} " if style.unicode else "   "
+        lines += detail(
+            f"~ projected from an older reading{joiner}{style.dash} not measured", style
+        )
+    return lines
+
+
+def accounts_subtitle(
+    accounts: Sequence[dict[str, Any]] | None,
+    style: Style,
+    *,
+    tenant: str | None = None,
+) -> str:
+    if accounts is None:
+        return "unreadable"
+    assigned = sum(int(a.get("assigned") or 0) for a in accounts)
+    stale = sum(1 for a in accounts if account_is_stale(a))
+    bits = [f"{len(accounts)} account{'s' if len(accounts) != 1 else ''}"]
+    bits.append(f"{assigned} agent{'s' if assigned != 1 else ''} assigned")
+    if stale:
+        bits.append(f"{stale} stale")
+    # The pool a tenant may RUN on: the accounts it owns and the ones lent to
+    # it. That is a tenant-scoped answer and it is printed beside platform-wide
+    # pools, so it says whose it is -- see `scoped`.
+    return scoped(style.sep.join(bits).strip(), tenant or listing_tenant(accounts), style)
+
+
+# --------------------------------------------------------------------------
+# Capacity
+# --------------------------------------------------------------------------
+
+
+def _tri_enabled(pool: dict[str, Any]) -> bool | None:
+    """True, False, or "the payload did not say".
+
+    `pool.get("enabled", True)` is `.enabled // true` in another language: it
+    reports a paused pool as open. The third state exists so that a payload
+    which omitted the field renders as a mark instead of as permission.
+    """
+    if "enabled" not in pool:
+        return None
+    return pool["enabled"] is not False
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass(frozen=True)
+class Binding:
+    """Which pool actually stops a profile, and how much room is left in it.
+
+    `unknown` means THE ROOM CANNOT BE KNOWN, which is not the same as zero
+    and not the same as unlimited. It is set when a required pool did not
+    report its ceiling, or did not report whether it is enabled -- a pool that
+    may be paused may also refuse the next task outright.
+    """
+
+    pool: str | None = None
+    room: int | None = None
+    limit: int | None = None
+    active: int | None = None
+    paused: bool = False
+    unknown: bool = False
+    unconfigured: bool = False
+
+
+def binding_pool(
+    required: Sequence[str],
+    pools: dict[str, dict[str, Any]],
+    units: int,
+    pool_units: Any = None,
+) -> Binding:
+    """The pool with the least headroom for one more task of this profile.
+
+    ROOM DIVIDES EACH POOL BY WHAT ONE AGENT TAKES IN IT, read from the
+    profile's served `pool_units` (`/v1/capacity`, contract request 129,
+    archived issue 2950): a large agent takes its 4 units in a compute pool and 1 in a
+    provider pool, so dividing a provider pool's room by 4 understated it
+    four times over. An API older than the field sends none, and that API's
+    admission took `units` in every pool, so `units` is then the true share
+    (`pool_share`).
+
+    Admission is all-or-nothing across `required`, so the ceiling a profile
+    actually feels is the tightest of them -- not the global one, which is the
+    one people quote. A pool that is absent from `pools` is unlimited by
+    construction (admission.py says so); that is a fact, not a gap, so it is
+    skipped rather than marked.
+
+    ONE UNGRADEABLE POOL MAKES THE WHOLE ANSWER UNKNOWN, and that is the same
+    rule stated from the other side: if admission needs every required pool to
+    say yes, then a pool that did not report its ceiling -- or did not report
+    whether it is paused -- could be the one that refuses, and the true room
+    may be 0. Returning the tightest pool that DID report would print a
+    confident number whose only support is that the pool which might have
+    contradicted it stayed silent. An unknown pool therefore wins over every
+    measured one, whatever order the payload happened to list them in.
+    """
+    if not required:
+        return Binding(unknown=True)
+
+    best: Binding | None = None
+    ungradeable: Binding | None = None
+    considered = 0
+    for name in required:
+        pool = pools.get(name)
+        if pool is None:
+            continue
+        considered += 1
+        enabled = _tri_enabled(pool)
+        limit = _int_or_none(pool.get("effective_limit"))
+        active = _int_or_none(pool.get("active"))
+        if enabled is False:
+            # A paused pool is not unknown: it refuses, now, and saying so is
+            # more useful than saying nothing is known.
+            return Binding(pool=name, room=0, limit=limit, active=active, paused=True)
+        if limit is None or enabled is None:
+            # USED is still carried: `3/10` is a measurement even when what it
+            # implies about the next task is not.
+            if ungradeable is None:
+                ungradeable = Binding(pool=name, limit=limit, active=active, unknown=True)
+            continue
+        available = _int_or_none(pool.get("available"))
+        if available is None:
+            available = max(0, limit - (active or 0))
+        room = available // max(1, pool_share(name, units, pool_units))
+        candidate = Binding(pool=name, room=room, limit=limit, active=active)
+        if best is None or room < best.room:
+            best = candidate
+    if ungradeable is not None:
+        return ungradeable
+    if best is None:
+        return Binding(unconfigured=considered == 0)
+    return best
+
+
+def pool_share(name: str, units: int, pool_units: Any) -> int:
+    """What one agent of a profile takes in pool `name`: the served
+    `pool_units` entry when there is one, else `units`.
+
+    Never restated here from the pool's kind: the rule is admission's
+    (`swarm_common.models.pool_units_for`), and the API serves its answer per
+    profile. A profile served without the field came from an API whose
+    admission took `units` in every pool, so `units` is not a guess there.
+    """
+    if isinstance(pool_units, dict):
+        share = _int_or_none(pool_units.get(name))
+        if share is not None and share > 0:
+            return share
+    return units
+
+
+def format_room(binding: Binding, style: Style) -> Cell:
+    """The mark, never a number, whenever the room is not actually known.
+
+    `unknown` is tested as well as `room is None` on purpose: they mean the
+    same thing today, and the day they stop meaning the same thing is the day
+    this column would otherwise print an inference as a measurement.
+    """
+    if binding.paused:
+        return Cell("paused", "bad")
+    if binding.unconfigured:
+        return Cell(style.unlimited, "dim")
+    if binding.unknown or binding.room is None:
+        return Cell(style.dash, "dim")
+    tone = "bad" if binding.room == 0 else ("warn" if binding.room <= 1 else None)
+    return Cell(str(binding.room), tone)
+
+
+def format_used(binding: Binding, style: Style) -> Cell:
+    if binding.limit is None or binding.active is None:
+        return Cell(style.dash, "dim")
+    tone = "bad" if binding.active >= binding.limit else None
+    return Cell(f"{binding.active}/{binding.limit}", tone)
+
+
+def profile_refused(name: str, spec: Any) -> str | None:
+    """Why no task of this profile can be dispatched at all, or None.
+
+    ROOM IS ABOUT POOLS, AND A POOL WITH ROOM DOES NOT MAKE A PROFILE
+    DISPATCHABLE. On 2026-09-25 (archived issue 88, SC-F13) `sc capacity` showed ROOM for
+    `codex` while `swarm profiles` and every dispatch refused it: the pools it
+    binds on had headroom, and the catalogue has disabled the profile. The
+    API's capacity route does not serve a profile's availability (CP-3 holds
+    that half), so two sources are read here, the served one first:
+
+      * `available: false` on the profile's own entry, for an API that serves it;
+      * the FROZEN catalogue, `swarm_common.profiles.RUNNER_PROFILES` -- the
+        same module the API imports, so this is the platform's own answer and
+        not a copy of it (profiles.py makes the same argument for `check`).
+    """
+    if isinstance(spec, dict) and spec.get("available") is False:
+        return str(spec.get("disabled_reason") or "the API reports it unavailable")
+    profile = RUNNER_PROFILES.get(name)
+    if profile is not None and not profile.available:
+        return profile.disabled_reason or "disabled in the runner catalogue"
+    return None
+
+
+def render_capacity(
+    capacity: dict[str, Any] | None,
+    style: Style,
+    *,
+    error: str | None = None,
+    profiles_only: bool = False,
+) -> list[str]:
+    if capacity is None:
+        return [
+            f"  {style.paint(style.dash + ' capacity could not be read', 'bad')}",
+        ] + detail(error or "no reason reported", style)
+
+    pools = {p["name"]: p for p in capacity.get("pools") or [] if isinstance(p, dict) and p.get("name")}
+    profiles = capacity.get("runner_profiles") or {}
+
+    rows: list[dict[str, Any]] = []
+    refused: list[str] = []
+    for name in sorted(profiles):
+        spec = profiles[name] or {}
+        if profile_refused(name, spec) is not None:
+            # NO ROOM AND NO BINDING POOL. Either would be a figure about a
+            # pool presented as a figure about a profile nothing can run.
+            refused.append(name)
+            rows.append(
+                {
+                    "profile": Cell(name, "dim"),
+                    "class": Cell(str(spec.get("resource_class") or style.dash), "dim"),
+                    "backend": Cell(str(spec.get("backend") or style.dash), "dim"),
+                    "binds": Cell(style.dash, "dim"),
+                    "used": Cell(style.dash, "dim"),
+                    "room": Cell("disabled", "bad"),
+                }
+            )
+            continue
+        units = _int_or_none(spec.get("units")) or 1
+        binding = binding_pool(list(spec.get("pools") or []), pools, units, spec.get("pool_units"))
+        rows.append(
+            {
+                "profile": Cell(name),
+                "class": Cell(str(spec.get("resource_class") or style.dash), "dim"),
+                "backend": Cell(str(spec.get("backend") or style.dash), "dim"),
+                "binds": Cell(binding.pool or (style.unlimited if binding.unconfigured else style.dash),
+                              "dim" if binding.pool is None else None),
+                "used": format_used(binding, style),
+                "room": format_room(binding, style),
+            }
+        )
+
+    # UNITS, NOT "USED" (archived issue 192). The cell is the binding pool's `active/limit`,
+    # and admission adds a task's share to `active` on every pool it takes --
+    # its `units` in a compute pool, 1 in a provider pool (`pool_units_for`,
+    # contract request 129) -- so it counts units, while ROOM beside it
+    # counts agents of the profile. The header says which, and the note under
+    # the table says how the two relate.
+    lines = render_table(
+        [
+            Column("profile", "PROFILE", flex=True),
+            Column("class", "CLASS", drop=3),
+            Column("backend", "BACKEND", drop=4),
+            Column("binds", "BINDS ON", flex=True, drop=1),
+            Column("used", "UNITS", align="right", drop=2),
+            Column("room", "ROOM", align="right"),
+        ],
+        rows,
+        style,
+    )
+    if not rows:
+        lines = [f"  {style.paint('no runner profiles reported', 'warn')}"]
+    else:
+        if refused:
+            lines += detail(
+                f"disabled in the runner catalogue, so no pool's room applies: "
+                f"{', '.join(refused)}",
+                style,
+            )
+        # THE POPULATION, SAID. A shared pool's figure counts every tenant's
+        # work; the tenant-scoped sections around this one count the caller's
+        # only. On 2026-09-25 (archived issue 88, SC-F5) `claude-code 8/40` -- another
+        # tenant's work -- sat beside AGENTS "0 running" with nothing to say
+        # the two were different populations.
+        #
+        # AND THE UNIT, SAID (archived issue 192). This note used to say the figure "counts
+        # every tenant's agents", so two browser agents at `4/10` read as four.
+        tenant = capacity.get("tenant_id")
+        own = f"tenant:{tenant}" if tenant else "your own tenant pool"
+        lines += detail(units_note(own), style)
+
+    if profiles_only:
+        return lines
+
+    pool_rows: list[dict[str, Any]] = []
+    for name in sorted(pools):
+        pool = pools[name]
+        enabled = _tri_enabled(pool)
+        limit = _int_or_none(pool.get("effective_limit"))
+        active = _int_or_none(pool.get("active"))
+        available = _int_or_none(pool.get("available"))
+        if enabled is False:
+            state = Cell("paused", "bad")
+        elif enabled is None:
+            state = Cell("? not reported", "warn")
+        elif limit == 0:
+            state = Cell("closed", "bad")
+        elif available == 0:
+            state = Cell("full", "warn")
+        else:
+            state = Cell("open", "dim")
+        pool_rows.append(
+            {
+                "pool": Cell(name),
+                "used": Cell(
+                    style.dash if limit is None or active is None else f"{active}/{limit}",
+                    "dim" if limit is None or active is None else None,
+                ),
+                "free": Cell(style.dash if available is None else str(available),
+                             "dim" if available is None else None),
+                "ceiling": ceiling_cell(pool, style),
+                "state": state,
+            }
+        )
+
+    if pool_rows:
+        lines = (
+            render_table(
+                [
+                    Column("pool", "POOL", flex=True),
+                    # Units, like the profile table's column (archived issue 192); FREE is
+                    # the pool's free units, which ROOM divides.
+                    Column("used", "UNITS", align="right"),
+                    Column("free", "FREE", align="right", drop=2),
+                    # The configured ceiling beside the applied limit UNITS
+                    # divides by, and what lowered it (archived issue 3047).
+                    Column("ceiling", "CEILING", align="right", drop=3),
+                    Column("state", "STATE", drop=1),
+                ],
+                pool_rows,
+                style,
+            )
+            + [""]
+            + lines
+        )
+    return lines
+
+
+#: The short word for each input that can hold a pool below its ceiling.
+_LOWERED_WORD = {"adaptive_target": "adaptive", "quota_derived_limit": "quota"}
+
+
+def ceiling_cell(pool: dict[str, Any], style: Style) -> Cell:
+    """A pool's configured ceiling, and the input that holds UNITS' limit below it (archived issue 3047).
+
+    `40` when the ceiling applies; `40 adaptive` when the AIMD target holds the
+    applied limit (UNITS' denominator) below it, `40 quota` when the provider
+    quota does. The input is read from the `lowered_by` /v1/capacity serves;
+    an older API without it is read from the pool's own fields the same way.
+    """
+    ceiling = _int_or_none(pool.get("hard_limit"))
+    applied = _int_or_none(pool.get("effective_limit"))
+    if ceiling is None:
+        return Cell(style.dash, "dim")
+    if applied is None or applied >= ceiling:
+        return Cell(str(ceiling), "dim")
+    served = pool.get("lowered_by")
+    if isinstance(served, list):
+        inputs = [str(e.get("input")) for e in served if isinstance(e, dict)]
+    else:
+        inputs = [
+            name for name in ("adaptive_target", "quota_derived_limit")
+            if _int_or_none(pool.get(name)) == applied
+        ]
+    words = [_LOWERED_WORD.get(name, name) for name in inputs]
+    return Cell(" ".join([str(ceiling), *words]), "warn")
+
+
+def units_note(own: str) -> str:
+    """The sentence under the capacity table: what UNITS and ROOM each count.
+
+    The per-class units are read from `swarm_common.profiles.RESOURCE_CLASSES`
+    -- the numbers admission charges -- so the note cannot go on saying 2 the
+    day the catalogue says 3.
+    """
+    per_class = ", ".join(
+        f"{name} {resource.units}"
+        for name, resource in sorted(RESOURCE_CLASSES.items(), key=lambda kv: (kv[1].units, kv[0]))
+    )
+    return (
+        "UNITS is capacity units in use out of the pool's limit, not agents: an "
+        f"agent takes its resource class's units ({per_class}) in a compute pool and "
+        f"{PROVIDER_POOL_UNITS} in a provider pool. On a shared pool "
+        f"it counts every tenant's; only {own} counts yours alone. ROOM counts "
+        "agents: how many more of that profile fit before the binding pool refuses."
+    )
+
+
+def _fit_phrase(room: int) -> str:
+    if room <= 0:
+        return "no more agents fit"
+    if room == 1:
+        return "1 more agent fits"
+    return f"{room} more agents fit"
+
+
+def capacity_subtitle(capacity: dict[str, Any] | None, style: Style) -> str:
+    """The profile with the fewest agents still to fit -- the real ceiling, named.
+
+    RANKED BY AGENTS, AND SAYS SO (archived issue 192). The ranking was always the fewest
+    agents of a profile that still fit (ROOM), but the line printed the binding
+    pool's UNITS -- `tightest: resource:browser 0/10` -- which named an empty
+    pool the tightest because a browser agent took two units (one since
+    contract request 79). It now names
+    the profile, the agents that fit, and the pool, with its units labelled.
+
+    A pool that could not be graded outranks every measured one, for the same
+    reason it does in `binding_pool`: naming a "tightest" pool while another
+    required pool's ceiling is unknown is a confident answer with a hole in
+    it, and the subtitle is the line people quote.
+    """
+    if capacity is None:
+        return "unreadable"
+    pools = {p["name"]: p for p in capacity.get("pools") or [] if isinstance(p, dict) and p.get("name")}
+    profiles = capacity.get("runner_profiles") or {}
+    paused: Binding | None = None
+    ungradeable: Binding | None = None
+    tightest: tuple[str, Binding] | None = None
+    for name, spec in profiles.items():
+        if profile_refused(name, spec) is not None:
+            # A profile nothing can dispatch has no ceiling worth quoting, and
+            # the subtitle is the line people quote.
+            continue
+        units = _int_or_none((spec or {}).get("units")) or 1
+        binding = binding_pool(list((spec or {}).get("pools") or []), pools, units, (spec or {}).get("pool_units"))
+        if binding.pool is None:
+            continue
+        if binding.paused:
+            paused = paused or binding
+        elif binding.unknown or binding.room is None:
+            ungradeable = ungradeable or binding
+        elif tightest is None or binding.room < tightest[1].room:
+            tightest = (name, binding)
+    if paused is not None:
+        return f"{paused.pool} is paused"
+    if ungradeable is not None:
+        return f"{ungradeable.pool} ceiling unknown"
+    if tightest is None:
+        return "no pool limits configured"
+    name, binding = tightest
+    return (
+        f"tightest: {name}, {_fit_phrase(binding.room or 0)} on {binding.pool} "
+        f"({format_used(binding, style).text} units)"
+    )
+
+
+# --------------------------------------------------------------------------
+# Jev usage (part of archived issue 2688)
+# --------------------------------------------------------------------------
+
+#: The route the console's Capacity › Jev usage reads, and `sc capacity` with it.
+JEV_USAGE_ROUTE = "/v1/jev-usage"
+
+#: Each kind's group, in the console's words (`swarm-ui/src/jevUsage.ts`
+#: `JEV_GROUP_LABEL`). A worker judgment is named by its question as well.
+JEV_GROUP_LABEL = {
+    "worker_judgment": "Worker judgment",
+    "quality_gate": "Quality gate",
+    "decision_tool": "Agent decision tool",
+    "jev_browser": "Jev browser",
+    "control_plane_reask": "Control-plane re-ask",
+    "contract_review": "Contract review at submission",
+    "unattributed": "Not split by kind",
+    "other": "Other",
+}
+
+#: Why the worker skipped a Jev call, in the console's words
+#: (`swarm-ui/src/jevUsage.ts` `JEV_SKIP_LABEL`); an unknown one is its code's.
+JEV_SKIP_LABEL = {
+    "breaker_open": "Jev unavailable",
+    "budget_calls": "call budget spent",
+    "budget_tokens": "token budget spent",
+    "budget_monthly": "monthly cap reached",
+    "oversize": "question too large",
+    "empty_state": "nothing to ask",
+}
+
+#: What is absent, worded as the console words it: never a zero.
+RATE_NOT_SET = "rate not set"
+NOT_RECORDED = "not recorded"
+
+
+def _count_or_none(value: Any) -> int | None:
+    """A served count, or None when it is absent or not a count."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _rate_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
+        return None
+    return float(value)
+
+
+def _plain_number(value: float) -> str:
+    """`3` for 3.0 and `0.8` for 0.8, as the console prints a rate."""
+    return f"{value:g}"
+
+
+def jev_dollars(usd: Any, rate_set: bool) -> str:
+    """Dollars as the console prints them, or why there are none: never $0
+    for "not priced" (`JevUsagePage.tsx` `Dollars`)."""
+    value = _rate_or_none(usd)
+    if value is None:
+        return RATE_NOT_SET if not rate_set else "needs the output rate, which is not set"
+    return f"${value:.4f}" if value < 1 else f"${value:.2f}"
+
+
+def jev_tokens(value: Any) -> str:
+    count = _count_or_none(value)
+    return NOT_RECORDED if count is None else f"{count:,}"
+
+
+def jev_outcomes(outcomes: Any, style: Style) -> str:
+    """`2 ok · 1 failed · 3 skipped (call budget spent 1, question too large 2)
+    · 2 not recorded`, or "not recorded" when no row recorded an outcome
+    (`JevUsagePage.tsx` `outcomeText`): never "0 ok · 0 failed"."""
+    if not isinstance(outcomes, dict):
+        return NOT_RECORDED
+    parts = [
+        f"{_count_or_none(outcomes.get('ok')) or 0:,} ok",
+        f"{_count_or_none(outcomes.get('failed')) or 0:,} failed",
+        f"{_count_or_none(outcomes.get('skipped')) or 0:,} skipped",
+    ]
+    text = style.sep.join(parts)
+    by_reason = outcomes.get("skipped_by_reason")
+    reasons = [
+        f"{JEV_SKIP_LABEL.get(str(reason), str(reason).replace('_', ' '))} {n:,}"
+        for reason, n in sorted((by_reason or {}).items() if isinstance(by_reason, dict) else [])
+        if (_count_or_none(n) or 0) > 0
+    ]
+    if reasons:
+        text = f"{text} ({', '.join(reasons)})"
+    unrecorded = _count_or_none(outcomes.get("unrecorded")) or 0
+    if unrecorded:
+        text = f"{text}{style.sep}{unrecorded:,} {NOT_RECORDED}"
+    return text
+
+
+def jev_kind_label(row: dict[str, Any]) -> str:
+    """A kind as the console names it (`JevUsagePage.tsx` `kindLabel`)."""
+    group = row.get("group") if row.get("group") in JEV_GROUP_LABEL else "other"
+    label = JEV_GROUP_LABEL[group]
+    return f"{label} {row.get('kind')}" if group == "worker_judgment" else label
+
+
+def jev_rate_line(rate: Any) -> str:
+    """What the dollars were priced at, as the console says it."""
+    rate = rate if isinstance(rate, dict) else {}
+    given = _rate_or_none(rate.get("input_usd_per_million"))
+    if rate.get("set") is not True or given is None:
+        return (f"Jev's price: {RATE_NOT_SET}. Dollars stay blank until a platform admin "
+                "sets Jev's per-token rate.")
+    out = _rate_or_none(rate.get("output_usd_per_million"))
+    tail = " (output rate not set)" if out is None else f", ${_plain_number(out)} out"
+    return f"Priced at ${_plain_number(given)} per million tokens in{tail}."
+
+
+def jev_month_line(month: Any) -> str:
+    """The month's use against its cap."""
+    month = month if isinstance(month, dict) else {}
+    name = month.get("month") or "this month"
+    used = _count_or_none(month.get("used_tokens"))
+    cap = _count_or_none(month.get("cap_tokens"))
+    used_text = f"{used:,}" if used is not None else NOT_RECORDED
+    if cap is None:
+        return (f"{name}: {used_text} tokens in this month; no monthly cap is set "
+                "for this workspace")
+    share = f" ({round(used * 100 / cap)}%)" if cap and used is not None else ""
+    return f"{name}: {used_text} of {cap:,} tokens in this month{share}"
+
+
+def render_jev_usage(
+    usage: dict[str, Any] | None,
+    style: Style,
+    *,
+    error: str | None = None,
+    absent: bool = False,
+) -> list[str]:
+    """`GET /v1/jev-usage` as Capacity › Jev usage draws it: the 30-day total,
+    by kind, with its outcomes, and the month's use against its cap.
+
+    ABSENT IS ONE LINE. An API older than the route answers 403 or 404, and
+    that is not a broken capacity view: the line says the route is not served
+    and nothing else changes. A route that FAILED says so with its reason.
+    """
+    if usage is None:
+        if absent:
+            return [section("jev usage", "", style),
+                    "  " + style.paint(f"Jev usage: this API does not serve {JEV_USAGE_ROUTE} "
+                                       "(an older swarm-api)", "dim")]
+        return [section("jev usage", "", style),
+                f"  {style.paint(style.dash + ' Jev usage could not be read', 'bad')}"] + \
+            detail(error or "no reason reported", style)
+
+    rate_set = isinstance(usage.get("rate"), dict) and usage["rate"].get("set") is True
+    window = usage.get("window") if isinstance(usage.get("window"), dict) else {}
+    days = _count_or_none(window.get("days")) or 30
+    total = usage.get("total") if isinstance(usage.get("total"), dict) else {}
+    calls = _count_or_none(total.get("calls"))
+    lines = [section("jev usage", f"last {days} days", style)]
+
+    facts = [
+        ("calls", NOT_RECORDED if calls is None else f"{calls:,}"),
+        ("tokens in", jev_tokens(total.get("input_tokens"))),
+        ("tokens out", jev_tokens(total.get("output_tokens"))),
+        ("dollars", jev_dollars(total.get("usd"), rate_set)),
+        ("outcomes", jev_outcomes(total.get("outcomes"), style)),
+        ("monthly cap", jev_month_line(usage.get("month"))),
+    ]
+    label_width = max(len(label) for label, _ in facts)
+    for label, value in facts:
+        head = f"  {style.paint(label.ljust(label_width), 'dim')}  "
+        body = textwrap.wrap(value, width=max(20, style.usable - label_width - 4)) or [""]
+        lines.append(head + body[0])
+        lines += [" " * (label_width + 4) + more for more in body[1:]]
+    lines += detail(jev_rate_line(usage.get("rate")), style, indent=2)
+
+    kinds = [k for k in total.get("by_kind") or [] if isinstance(k, dict)]
+    if not kinds and not calls:
+        lines += detail(f"No Jev calls were recorded for this workspace in the last {days} days.",
+                        style, indent=2)
+    if kinds:
+        # Outcomes are not a column: a skip's reason is never truncated away,
+        # so each kind's outcomes are a wrapped line under the table.
+        lines += [""] + render_table(
+            [
+                Column("kind", "KIND", flex=True),
+                Column("calls", "CALLS", align="right"),
+                Column("in", "TOKENS IN", align="right", drop=3),
+                Column("out", "TOKENS OUT", align="right", drop=2),
+                Column("usd", "DOLLARS", align="right", drop=1),
+            ],
+            [
+                {
+                    "kind": Cell(jev_kind_label(k)),
+                    "calls": Cell(jev_tokens(k.get("calls"))),
+                    "in": Cell(jev_tokens(k.get("input_tokens"))),
+                    "out": Cell(jev_tokens(k.get("output_tokens")),
+                                "dim" if _count_or_none(k.get("output_tokens")) is None else None),
+                    "usd": Cell(jev_dollars(k.get("usd"), rate_set),
+                                "dim" if _rate_or_none(k.get("usd")) is None else None),
+                }
+                for k in kinds
+            ],
+            style,
+        )
+        lines += [f"  {style.paint('outcomes', 'dim')}"]
+        for k in kinds:
+            lines += detail(f"{jev_kind_label(k)}: {jev_outcomes(k.get('outcomes'), style)}",
+                            style, tone=None)
+
+    undated = usage.get("undated")
+    if isinstance(undated, dict):
+        lines += detail(
+            f"Also {jev_tokens(undated.get('calls'))} calls and "
+            f"{jev_tokens(undated.get('input_tokens'))} tokens in whose records carry no day.",
+            style, indent=2)
+    return lines
+
+
+def render_capacity_view(snap: "Snapshot", style: Style) -> list[str]:
+    """`sc capacity` and the bridge's `swarm_capacity`: the pools and
+    profiles, then Jev's usage, from one function so the two cannot drift."""
+    return (
+        [section("capacity", capacity_subtitle(snap.capacity, style), style)]
+        + render_capacity(snap.capacity, style, error=snap.capacity_error)
+        + [""]
+        + render_jev_usage(snap.jev_usage, style, error=snap.jev_usage_error,
+                           absent=snap.jev_usage_absent)
+    )
+
+
+# --------------------------------------------------------------------------
+# Agents
+# --------------------------------------------------------------------------
+
+#: WHICH STATES COUNT AS RUNNING IS THE FROZEN CONTRACT'S ANSWER, NOT THIS
+#: MODULE'S. `swarm_common.states` is the single definition of "only
+#: LEASED/DISPATCHED/STARTING/RUNNING create infrastructure demand", and a
+#: status tool that kept its own copy would go on reporting the old answer for
+#: months after the contract gained a state -- under-reporting the one
+#: invariant the whole platform is built around. The module is enum-only: no
+#: client, no credentials, no network, so importing it keeps this file as
+#: offline as it was. The values (not the members) are what is compared,
+#: because a task payload carries its state as a plain string.
+RUNNING_STATES = frozenset(state.value for state in CONCURRENCY_STATES)
+QUEUED_STATES = frozenset(state.value for state in PENDING_STATES)
+
+#: The active states in LIFECYCLE order, for the headline's breakdown. Read off
+#: the frozen enum's own order rather than written out, for the reason above.
+_ACTIVE_ORDER = tuple(state.value for state in TaskState if state.value in RUNNING_STATES)
+
+#: States a task never leaves. Named FINISHED rather than TERMINAL_STATES on
+#: purpose: `test_the_contract_is_not_shadowed_by_a_local_terminal_set` holds
+#: this module to not re-exporting that name. It is the contract's set plus the
+#: `DEAD_LETTER` spelling older payloads use, the same pair `client.TERMINAL`
+#: carries.
+FINISHED_STATES = frozenset(state.value for state in _states.TERMINAL_STATES) | {"DEAD_LETTER"}
+
+_STATE_TONE = {
+    "RUNNING": "good",
+    "STARTING": "good",
+    "DISPATCHED": "good",
+    "LEASED": "good",
+    "PARKED": "warn",
+    "READY": None,
+    "QUEUED": "dim",
+    "SUBMITTED": "dim",
+    "FAILED": "bad",
+    "DEAD_LETTERED": "bad",
+    "DEAD_LETTER": "bad",
+    "CANCELLED": "dim",
+    "SUCCEEDED": "good",
+}
+
+
+def task_id_of(task: dict[str, Any]) -> str:
+    """`task_to_api` says `id`; a dispatch response says `task_id`.
+
+    Both shapes reach this renderer, and guessing wrong prints a column of
+    question marks over perfectly good data.
+    """
+    return str(task.get("id") or task.get("task_id") or "?")
+
+
+#: HOW MANY CHARACTERS OF A TASK ID A LINE IS LABELLED WITH -- one number, for
+#: every surface. On 2026-09-25 (archived issue 88, SC-F15) one task was shown three ways in
+#: one session: in full by `swarm workflow`, as its last 8 by `tail` and
+#: `follow`, and as its last 10 by `sc agents`, so matching a line in one to a
+#: row in another meant counting characters. Eight, because the id's random
+#: tail is what distinguishes it and eight hex characters of it do.
+SHORT_ID_CHARS = 8
+
+#: A step id is the caller's own name for the step and can be as long as they
+#: like; the label is a prefix, so it is clipped before it crowds out the id.
+_STEP_LABEL_CHARS = 12
+
+
+def short_id(task_id: str, keep: int = SHORT_ID_CHARS) -> str:
+    return task_id if len(task_id) <= keep else task_id[-keep:]
+
+
+def task_label(task_id: Any, step_id: Any = None) -> str:
+    """How a line names one task: `b 4674b39f` for a workflow step, else `4674b39f`.
+
+    THE STEP ID FIRST, because it is the name the reader chose and the one
+    their spec uses. A workflow's steps were shown by task id alone, which
+    nobody has written down anywhere, so reading `tail` for a five-step
+    workflow meant keeping the id-to-step map in your head (archived issue 88, SC-F15).
+    """
+    short = short_id(str(task_id or "?"))
+    step = str(step_id or "").strip()
+    if not step:
+        return short
+    if len(step) > _STEP_LABEL_CHARS:
+        step = step[: _STEP_LABEL_CHARS - 2] + ".."
+    return f"{step} {short}"
+
+
+def describe_blocker(blocker: Any) -> str:
+    """One `blocked_by` entry as words: `provider concurrency limit (provider:anthropic)`.
+
+    The scheduler writes each entry as `{"pool": ..., "reason": ...}`. Printed
+    as it is stored, that is a Python dict repr, which is what `swarm
+    workflow-status` printed on 2026-09-25 (archived issue 88, SC-F16).
+    """
+    if isinstance(blocker, dict):
+        pool = blocker.get("pool") or ""
+        reason = str(blocker.get("reason") or "").lower().replace("_", " ")
+        return f"{reason} ({pool})" if pool else reason
+    return str(blocker)
+
+
+def describe_blockers(blocked: Any) -> list[str]:
+    """Every `blocked_by` entry, each through `describe_blocker`."""
+    if not blocked:
+        return []
+    items = blocked if isinstance(blocked, list) else [blocked]
+    return [describe_blocker(item) for item in items]
+
+
+def task_note(task: dict[str, Any], style: Style) -> Cell:
+    park = task.get("park_reason")
+    if park:
+        return Cell(str(park).lower().replace("_", " "), "warn")
+    blocked = describe_blockers(task.get("blocked_by"))
+    if blocked:
+        return Cell(blocked[0], "warn")
+    error = task.get("last_error")
+    if error:
+        return Cell(str(error).splitlines()[0], "bad")
+    return Cell("", None)
+
+
+def render_agents(
+    tasks: Sequence[dict[str, Any]] | None,
+    style: Style,
+    now: datetime,
+    *,
+    error: str | None = None,
+) -> list[str]:
+    if tasks is None:
+        return [
+            f"  {style.paint(style.dash + ' agents could not be listed', 'bad')}",
+        ] + detail(error or "no reason reported", style)
+
+    running = [t for t in tasks if t.get("state") in RUNNING_STATES]
+    queued = [t for t in tasks if t.get("state") in QUEUED_STATES]
+    # What the listing did NOT read, said under whatever it did. A table built
+    # from part of the tenant's tasks and presented as the whole is the
+    # defect (archived issue 88, SC-F11); the sentence is how a reader knows which it is.
+    gaps: list[str] = []
+    for gap in listing_gaps(tasks):
+        gaps += detail(gap, style, tone="warn")
+    if not running and not queued:
+        return [f"  {style.paint('nothing running, nothing queued', 'dim')}"] + gaps
+
+    def rows_for(items: Sequence[dict[str, Any]], anchor: str) -> list[dict[str, Any]]:
+        out = []
+        for task in items:
+            state = str(task.get("state") or "?")
+            metadata = task.get("metadata") or {}
+            out.append(
+                {
+                    "task": Cell(task_label(task_id_of(task), task.get("step_id"))),
+                    # AS THE API SPELLS IT. `swarm status`, `swarm result`,
+                    # `workflow-status` and `follow` all print the state in
+                    # upper case, and this table and `sc task` printed it in
+                    # lower -- two spellings of one vocabulary (archived issue 88, SC-F19).
+                    "state": Cell(state, _STATE_TONE.get(state, None)),
+                    "profile": Cell(str(task.get("runner_profile") or style.dash), "dim"),
+                    "label": Cell(str(metadata.get("unit") or ""), "dim"),
+                    "age": Cell(format_age(task.get(anchor) or task.get("created_at"), now, style),
+                                "dim"),
+                    "note": task_note(task, style),
+                }
+            )
+        return out
+
+    columns = [
+        # FLEXIBLE, and never dropped: a workflow step's label carries its step
+        # id, and at the narrowest widths truncating that beats overflowing.
+        Column("task", "TASK", flex=True),
+        Column("state", "STATE"),
+        Column("profile", "PROFILE", drop=3),
+        Column("label", "LABEL", flex=True, drop=4),
+        Column("age", "AGE", align="right", drop=2),
+        Column("note", "NOTE", flex=True, drop=1),
+    ]
+
+    lines: list[str] = []
+    if running:
+        lines += render_table(columns, rows_for(running, "started_at"), style)
+    if queued:
+        if running:
+            lines.append("")
+        lines.append(style.paint(f"  queued ({len(queued)})", "dim"))
+        lines += render_table(columns, rows_for(queued, "created_at"), style, heading=False)
+    return lines + gaps
+
+
+def active_headline(tasks: Sequence[dict[str, Any]]) -> str:
+    """`2 active (2 dispatched, 0 running)` -- demand, and how much of it runs.
+
+    "RUNNING" WAS THE WRONG WORD FOR THIS COUNT. It is every state that holds
+    capacity (`CONCURRENCY_STATES`, invariant 1), which is right for demand and
+    wrong as a description: on 2026-09-25 (archived issue 88, SC-F14) the headline said "2
+    running" over two tasks that were DISPATCHED and waiting for a container.
+    The total is kept -- it is what the pools are charged for -- and the
+    breakdown says how much of it is actually running. RUNNING is always
+    named, as 0 when it is 0, because that zero is the finding.
+    """
+    counts: dict[str, int] = {}
+    for task in tasks:
+        state = task.get("state")
+        if state in RUNNING_STATES:
+            counts[state] = counts.get(state, 0) + 1
+    running = TaskState.RUNNING.value
+    parts = [
+        f"{counts[state]} {state.lower()}"
+        for state in _ACTIVE_ORDER
+        if state != running and counts.get(state)
+    ]
+    parts.append(f"{counts.get(running, 0)} running")
+    return f"{sum(counts.values())} active ({', '.join(parts)})"
+
+
+def agents_subtitle(
+    tasks: Sequence[dict[str, Any]] | None,
+    style: Style,
+    *,
+    tenant: str | None = None,
+) -> str:
+    if tasks is None:
+        return "unreadable"
+    queued = sum(1 for t in tasks if t.get("state") in QUEUED_STATES)
+    text = f"{active_headline(tasks)}{style.sep}{queued} queued"
+    if listing_gaps(tasks):
+        text += f"{style.sep}incomplete"
+    return scoped(text, tenant or listing_tenant(tasks), style)
+
+
+# --------------------------------------------------------------------------
+# One task
+# --------------------------------------------------------------------------
+
+
+def _size(value: Any, style: Style) -> str:
+    """`47 bytes`, or the not-measured mark for a size nobody recorded."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return f"{value} bytes"
+    return style.dash
+
+
+#: What each recorded skip cause says (archived issue 165), in the worker's words.
+_SKIP_CAUSE_TEXT = {
+    "cap": "over the artifact size cap",
+    "upload_error": "the upload failed",
+    "refused": "refused: a link, not a regular file, or an unstorable name",
+}
+
+
+def produced_lines(
+    produced: dict[str, Any],
+    style: Style,
+    *,
+    fetch_with: str | None = None,
+) -> list[str]:
+    """What a task produced beyond its code, as `swarm result` and `sc task` show it (archived issue 143).
+
+    `produced` is `client.outputs_of`'s dict. `fetch_with` is the command that
+    fetches one artifact, spelled by the caller where it runs, with `<name>`
+    in place of the artifact's name -- this module stays pure, and a list
+    that names files without saying how to read one sends the reader to the
+    console anyway.
+
+    THREE ANSWERS ABOUT ARTIFACTS, never collapsed into "none": the listing
+    failed, the task has not finished (artifacts are uploaded when the attempt
+    ends), or it finished and produced none.
+    """
+
+    def label(name: str) -> str:
+        return f"  {style.paint(name.ljust(9), 'dim')} "
+
+    lines: list[str] = []
+    artifacts = produced.get("artifacts")
+    if artifacts is None:
+        why = produced.get("artifacts_unavailable_because") or "no reason reported"
+        lines.append(label("produced") + style.paint(f"{style.dash} artifacts could not be listed: {why}", "warn"))
+    elif not produced.get("artifacts_complete"):
+        lines.append(label("produced") + f"{style.dash} artifacts are uploaded when the attempt ends")
+    elif not artifacts:
+        lines.append(label("produced") + "no artifacts")
+    else:
+        for artifact in artifacts:
+            lines.append(label("produced") + f"{artifact['name']}  {_size(artifact.get('bytes'), style)}")
+        if fetch_with:
+            first = artifacts[0]["name"]
+            lines.append(label("fetch") + style.paint(fetch_with.replace("<name>", first), "dim"))
+    # The cause the worker recorded (archived issue 165). A name with none predates causes,
+    # and is not described as the cap: that assumption is what archived issue 165 removed.
+    for entry in produced.get("artifacts_skipped") or []:
+        name, cause = (entry.get("name"), entry.get("cause")) if isinstance(entry, dict) else (entry, None)
+        why = _SKIP_CAUSE_TEXT.get(cause, cause) if cause else "cause not recorded"
+        lines.append(label("skipped") + style.paint(f"{name} ({why})", "warn"))
+    runner = [str(v) for v in (produced.get("runner_status"), produced.get("runner_summary")) if v]
+    if runner:
+        lines.append(label("runner") + _fit(style.sep.join(runner), max(20, style.usable - 12), style))
+    exit_code = produced.get("exit_code")
+    seconds = produced.get("duration_s")
+    if exit_code is not None or seconds is not None:
+        lines.append(
+            label("exit")
+            + f"exit code {style.dash if exit_code is None else exit_code}"
+            + style.sep
+            + (style.dash if seconds is None else f"{seconds}s")
+        )
+    runs_text = runs_line(produced)
+    if runs_text is not None:
+        lines.append(label("runs") + runs_text)
+    for item in produced.get("staged_inputs") or []:
+        lines.append(
+            label("input")
+            + f"{item.get('filename') or style.dash}  {_size(item.get('bytes'), style)}"
+            + f"  from {item.get('from_task') or style.dash}"
+        )
+    return lines
+
+
+def _account_name(account: Any) -> str:
+    """`ai-eng-2` for `eng:ai-eng-2`: the account's label, without its tenant."""
+    text = str(account or "")
+    return text.split(":", 1)[1] if ":" in text else (text or "?")
+
+
+def runs_line(produced: dict[str, Any]) -> str | None:
+    """`2 runs · 1 account swap (ai-eng-2 exhausted → ai-eng-1-max at 09:50)`, or None.
+
+    The worker records `runs` only for an attempt that started more than one
+    agent run (SWAP-RUNS, archived issue 2457); the duration beside it is their sum. The
+    swap's time is UTC, as every instant in a summary is. The re-read cost
+    follows when it was measured.
+    """
+    runs = produced.get("runs")
+    if not isinstance(runs, list) or len(runs) < 2:
+        return None
+    swaps = [s for s in produced.get("swaps") or [] if isinstance(s, dict)]
+    text = f"{len(runs)} runs"
+    if swaps:
+        noun = "account swap" if len(swaps) == 1 else "account swaps"
+        moves = ", ".join(
+            f"{_account_name(s.get('from'))} {s.get('reason') or '?'} → "
+            f"{_account_name(s.get('to'))}"
+            + (f" at {str(s['at'])[11:16]} UTC" if isinstance(s.get("at"), str) and len(s["at"]) >= 16 else "")
+            for s in swaps
+        )
+        text += f" · {len(swaps)} {noun} ({moves})"
+    cost = produced.get("swap_cost")
+    if isinstance(cost, dict) and isinstance(cost.get("reread_seconds"), (int, float)):
+        tokens = cost.get("reread_tokens") if isinstance(cost.get("reread_tokens"), dict) else {}
+        total = sum(v for v in tokens.values() if isinstance(v, int) and not isinstance(v, bool))
+        text += f" · re-read {round(float(cost['reread_seconds']))}s, {total:,} tokens"
+    last = produced.get("last_run_duration_s")
+    if isinstance(last, (int, float)) and not isinstance(last, bool):
+        text += f" · last run {last}s"
+    return text
+
+
+#: How much of the merge commit's sha a merge row shows.
+_MERGE_SHA_CHARS = 12
+
+
+def _issue_numbers(values: Any) -> list[str]:
+    """`#N` for each issue number (or `{number: N}` record) in a summary list."""
+    out: list[str] = []
+    for value in values if isinstance(values, list) else []:
+        number = value.get("number") if isinstance(value, dict) else value
+        if isinstance(number, int) and not isinstance(number, bool):
+            out.append(f"#{number}")
+    return out
+
+
+def merge_row(task: dict[str, Any]) -> str | None:
+    """A finished merge step's outcome in one line, from `result_summary.merge`.
+
+    `merged #N at <sha> · issues closed #a, #b` (or `already merged`, when an
+    earlier attempt's merge stood), or `refused <code>` with the worker's
+    refusal code (`agent_worker.merge`). The refusal's message is NOT here: it
+    is the task's `last_error`, which every view already prints, and a row is
+    one line. None for a task with no merge record, and for one that is not
+    finished: a parked merge says why in its waiting row (CI_PENDING).
+
+    Issues are said as recorded and never inferred: `issues_unread` (the
+    closing references could not be read) is `issues unread`, not "none".
+    """
+    if task.get("state") not in FINISHED_STATES:
+        return None
+    merge = (task.get("result_summary") or {}).get("merge")
+    if not isinstance(merge, dict):
+        return None
+    refused = merge.get("refusal")
+    if isinstance(refused, dict) and refused.get("code"):
+        return f"refused {refused['code']}"
+    if not (merge.get("merged_by_this_task") or merge.get("already_merged")):
+        return None
+    head = "merged" if merge.get("merged_by_this_task") else "already merged"
+    number = merge.get("pull_request")
+    if isinstance(number, int) and not isinstance(number, bool):
+        head += f" #{number}"
+    commit = str(merge.get("merge_commit") or "")[:_MERGE_SHA_CHARS]
+    if commit:
+        head += f" at {commit}"
+    parts = [head]
+    if merge.get("issues_unread"):
+        parts.append("issues unread")
+    else:
+        closed = _issue_numbers(merge.get("issues_closed"))
+        parts.append("issues closed " + (", ".join(closed) if closed else "none"))
+    left = _issue_numbers(merge.get("issues_not_closed"))
+    if left:
+        parts.append("not closed " + ", ".join(left))
+    return " · ".join(parts)
+
+
+def answer_lines(task: dict[str, Any], style: Style) -> list[str]:
+    """`answered  1. <choice> -- <text>  (<by>, <at>)`, one line per answered question."""
+    answers = [a for a in task.get("owner_answers") or [] if isinstance(a, dict)]
+    lines = []
+    for i, answer in enumerate(answers):
+        index = answer.get("question_index")
+        n = index + 1 if isinstance(index, int) and not isinstance(index, bool) else "?"
+        said = [str(v) for v in (answer.get("choice"), answer.get("text")) if v]
+        who = ", ".join(str(v) for v in (answer.get("by"), answer.get("at")) if v)
+        head = style.paint("answered", "dim") if i == 0 else " " * len("answered")
+        body = f"{n}. {' -- '.join(said) or style.dash}"
+        tail = style.paint(f"  ({who})", "dim") if who else ""
+        lines.append(f"  {head}  {_fit(body, max(20, style.usable - 14), style)}{tail}")
+    return lines
+
+
+def render_task(
+    task: dict[str, Any] | None,
+    style: Style,
+    now: datetime,
+    *,
+    error: str | None = None,
+    patch: str | None = None,
+    no_patch_because: str | None = None,
+    produced: dict[str, Any] | None = None,
+    fetch_with: str | None = None,
+) -> list[str]:
+    if task is None:
+        return [
+            style.paint(f"{style.dash} that task could not be read", "bad"),
+        ] + detail(error or "no reason reported", style, indent=2)
+
+    state = str(task.get("state") or "?")
+    # NEVER A BARE DASH FOR "IT NEVER STARTED". The dash means "not measured",
+    # and a step cascade-cancelled before it was attempted HAS been measured:
+    # it has no start because there was none. `started —` said the opposite
+    # (archived issue 88, SC-F19).
+    if task.get("started_at"):
+        started = f"started {format_ago(task.get('started_at'), now, style)}"
+    elif state in FINISHED_STATES:
+        started = "never started"
+    else:
+        started = "not started yet"
+    lines = [
+        # Upper case, as the API and every `swarm` command spell a state.
+        f"{style.paint(task_id_of(task), 'bold')}  {style.paint(state, _STATE_TONE.get(state))}",
+        style.paint(
+            f"  profile   {task.get('runner_profile') or style.dash}"
+            f"   attempt {task.get('attempt_count', style.dash)}"
+            f"/{task.get('max_attempts', style.dash)}",
+            "dim",
+        ),
+        style.paint(
+            f"  created   {format_ago(task.get('created_at'), now, style)}   {started}",
+            "dim",
+        ),
+    ]
+    if task.get("step_id"):
+        lines.append(
+            style.paint(
+                f"  step      {task['step_id']} of {task.get('workflow_id') or style.dash}",
+                "dim",
+            )
+        )
+    note = task_note(task, style)
+    if note.text:
+        lines.append(f"  {style.paint('why', 'dim')}       {style.paint(note.text, note.tone)}")
+    # WHAT IT PRODUCED, before the code (archived issue 143): a step that cloned no
+    # repository printed only that, over an output.txt it had written.
+    if produced is not None:
+        lines += produced_lines(produced, style, fetch_with=fetch_with)
+    # WHAT THE OWNER ANSWERED (TASK-ANSWERS): the answers given in the console
+    # to the agent's questions, so whoever launched it reads them here too.
+    lines += answer_lines(task, style)
+
+    merged = merge_row(task)
+    if merged is not None:
+        lines.append(f"  {style.paint('merge', 'dim')}     {merged}")
+
+    git = ((task.get("result_summary") or {}).get("git")) or {}
+    if not git:
+        lines.append(f"  {style.paint('code', 'dim')}      {no_patch_because or style.dash + ' nothing recorded yet'}")
+        return lines
+
+    commits = git.get("commit_count")
+    lines.append(f"  {style.paint('base', 'dim')}      {git.get('base') or style.dash}")
+    lines.append(
+        f"  {style.paint('commits', 'dim')}   "
+        f"{style.dash if commits is None else commits}"
+        f"   +{git.get('insertions', 0)}/-{git.get('deletions', 0)}"
+    )
+    for commit in git.get("commits") or []:
+        sha = str(commit.get("sha") or "")[:10]
+        lines.append(f"    {style.paint(sha, 'dim')}  {_fit(str(commit.get('subject') or ''), max(20, style.usable - 16), style)}")
+    if git.get("dirty_count"):
+        lines.append(f"  {style.paint('uncommitted', 'warn')} {git['dirty_count']} file(s)")
+    lines.append(f"  {style.paint('patch', 'dim')}     {patch or no_patch_because or style.dash}")
+    pr = git.get("pull_request")
+    if pr:
+        lines.append(f"  {style.paint('pr', 'dim')}        {pr.get('url') or ('#' + str(pr.get('number')))}")
+    else:
+        reason = git.get("publish_reason") or "no reason recorded"
+        tail = style.sep.strip() + " " + str(reason)
+        lines.append(f"  {style.paint('pr', 'dim')}        none {style.paint(tail, 'dim')}")
+    return lines
+
+
+# --------------------------------------------------------------------------
+# Trouble
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Finding:
+    severity: str
+    where: str
+    what: str
+
+    @property
+    def rank(self) -> int:
+        return SEVERITIES.index(self.severity) if self.severity in SEVERITIES else len(SEVERITIES)
+
+
+@dataclass
+class Snapshot:
+    """Everything `sc` fetched, and what failed while fetching it.
+
+    A field is None when it could not be read and `[]`/`{}` when it was read
+    and was empty. Those are different answers and the renderer treats them
+    differently, so the fetcher must never turn a failure into an empty list.
+    """
+
+    tenant: dict[str, Any] | None = None
+    tenant_error: str | None = None
+    stats: dict[str, Any] | None = None
+    stats_error: str | None = None
+    capacity: dict[str, Any] | None = None
+    capacity_error: str | None = None
+    accounts: list[dict[str, Any]] | None = None
+    accounts_error: str | None = None
+    #: True when the API answered "there is no such route" for /v1/accounts.
+    #: That is what EVERY deployment older than the accounts proxy looks like,
+    #: and it is not a broken cluster: the pool is unreadable from here, the
+    #: rest of the platform is untouched. Kept apart from `accounts_error`
+    #: because the two produce the same sentence on screen and must not
+    #: produce the same severity -- grading an absent route as "down" turns
+    #: the first `sc trouble` run on current production into a red screen.
+    accounts_absent: bool = False
+    tasks: list[dict[str, Any]] | None = None
+    tasks_error: str | None = None
+    #: The page `GET /v1/admin/leases?active_only=true` serves: the read the
+    #: console's Overview "Needs a look" takes its Leases check from
+    #: (`swarm-ui/src/checks.ts` `leaseCheck`), so `sc trouble` counts a lease
+    #: held past its TTL exactly where the console does (archived issue 532, 5b).
+    leases: dict[str, Any] | None = None
+    leases_error: str | None = None
+    #: True when the API REFUSED the read -- a 403 to a caller who is not an
+    #: admin, or a deployment with no such route -- rather than failing it.
+    #: The finding is still printed; only its severity changes, for the reason
+    #: `accounts_absent` gives: a non-admin's `sc trouble` must not be a red
+    #: screen forever over a check the console gates the same way.
+    leases_refused: bool = False
+    #: The page `GET /v1/workflows` serves, read for its `stalled_workflows`:
+    #: the reconciler's workflow stall check, as the console's Overview
+    #: Workflows check reads it (archived issue 616). None when not fetched or not read.
+    workflows: dict[str, Any] | None = None
+    workflows_error: str | None = None
+    #: `GET /v1/jev-usage`, the console's Capacity › Jev usage read, for `sc
+    #: capacity`'s Jev usage block (part of archived issue 2688). None when not fetched or
+    #: not read.
+    jev_usage: dict[str, Any] | None = None
+    jev_usage_error: str | None = None
+    #: True when an API older than the route answered 403 or 404: one line on
+    #: screen, never a failed capacity view.
+    jev_usage_absent: bool = False
+    api_url: str = ""
+    tier: str = ""
+    now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+#: The park reason `find_trouble` leaves out: waiting for a parent step. From
+#: the frozen enum; `compact` imports it from here.
+_DEPENDENCY_WAIT = _states.ParkReason.DEPENDENCY_INCOMPLETE.value
+
+#: Every park reason `find_trouble` leaves out, each an ordinary wait that
+#: holds no capacity (invariant 1). A merge step parked on CI_PENDING is
+#: waiting for its pull request's checks and is woken when they settle
+#: (docs/merge-step.md, "Revised 2026-10-06" §1); it is the ordinary shape of a
+#: workflow whose last step has not merged yet. A check that ends red ends the
+#: step `checks_failed`, which is its own finding as a failed task.
+_NOT_TROUBLE_PARKS = frozenset({_DEPENDENCY_WAIT, _states.ParkReason.CI_PENDING.value})
+
+
+def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
+    """Everything wrong right now, worst first.
+
+    An area that could not be READ is itself a finding. Silence about a
+    subsystem is how an operator concludes it is fine.
+    """
+    out: list[Finding] = []
+    now = snap.now
+    # WHOSE, on every finding about a tenant-scoped figure. The trouble list
+    # mixes the caller's tasks and accounts with pools every tenant shares, and
+    # a finding that does not say which it is about reads as the platform's
+    # when it is the tenant's, or the other way round (archived issue 88, SC-F5).
+    tenant = scope_tenant(snap)
+    whose = f" of tenant {tenant}" if tenant else ""
+
+    for area, error in (
+        ("identity", snap.tenant_error),
+        ("stats", snap.stats_error),
+        ("capacity", snap.capacity_error),
+        ("accounts", snap.accounts_error),
+        ("agents", snap.tasks_error),
+    ):
+        if not error:
+            continue
+        # "I could not read it" is a finding; "this deployment does not have
+        # that route" is a fact about the deployment. Only the first one is a
+        # reason to call the cluster down.
+        absent = area == "accounts" and snap.accounts_absent
+        out.append(Finding("note" if absent else "down", area, f"unreadable {style.dash} {error}"))
+
+    if snap.stats is not None and snap.stats.get("dispatch_paused"):
+        out.append(Finding("down", "dispatch", "paused platform-wide; nothing will be admitted"))
+
+    if snap.accounts is not None:
+        if not snap.accounts:
+            out.append(
+                Finding(
+                    "warn",
+                    "accounts",
+                    f"none registered{' for tenant ' + tenant if tenant else ''}; "
+                    "a claude-code runner has no credential to run on",
+                )
+            )
+        for account in snap.accounts:
+            ident = str(account.get("account_id") or account.get("label") or "?")
+            state = str(account.get("state") or "")
+            if state == "REAUTH_REQUIRED":
+                out.append(Finding(
+                    "down", ident,
+                    f"needs re-authentication {style.dash} "
+                    f"{account.get('reason') or 'no reason given'}",
+                ))
+            elif state == "PAUSED":
+                out.append(Finding(
+                    "warn", ident,
+                    f"paused {style.dash} {account.get('reason') or 'no reason given'}",
+                ))
+            elif state == "DRAINING":
+                out.append(Finding("note", ident, "draining; it takes no new agents"))
+            if account_is_stale(account):
+                seen = account.get("observed_at")
+                out.append(
+                    Finding(
+                        "warn",
+                        ident,
+                        "no reading has ever arrived; its utilisation is unknown"
+                        if seen is None
+                        else f"last read {format_ago(seen, now, style)}; figures are projections",
+                    )
+                )
+            for key in (account.get("windows") or {}):
+                reading = read_window(account, key)
+                if reading.known and reading.utilization >= 0.98 and not reading.reset:
+                    out.append(
+                        Finding(
+                            "warn" if reading.utilization < 1.0 else "down",
+                            ident,
+                            # "used", because every percentage carries its word
+                            # (OV-1): a bare "98%" beside a window name reads
+                            # as either room or use.
+                            f"{window_heading(key)} at {format_percent(reading, style)} used"
+                            f", clears in {format_until(reading.resets_at, now, style)}",
+                        )
+                    )
+
+    if snap.capacity is not None:
+        for pool in snap.capacity.get("pools") or []:
+            if not isinstance(pool, dict) or not pool.get("name"):
+                continue
+            name = pool["name"]
+            enabled = _tri_enabled(pool)
+            limit = _int_or_none(pool.get("effective_limit"))
+            active = _int_or_none(pool.get("active"))
+            available = _int_or_none(pool.get("available"))
+            if enabled is False:
+                out.append(Finding("warn", name, "pool paused; admission into it is refused"))
+                continue
+            if enabled is None:
+                out.append(Finding("note", name, "pool did not report whether it is enabled"))
+            # A pool named for a tenant is that tenant's alone; every other
+            # pool is shared, and its `active` is every tenant's agents.
+            shared = not (name.startswith("tenant:") or ":tenant:" in name)
+            if limit == 0:
+                out.append(Finding("down", name, "effective limit is 0; nothing can be admitted"))
+            elif available == 0 and limit:
+                # UNITS, as the capacity table now labels them (archived issue 192): a pool
+                # of 10 is full at five browser agents, not ten.
+                out.append(
+                    Finding(
+                        "warn",
+                        name,
+                        f"full at {active}/{limit} units"
+                        + (", counting every tenant's" if shared else ""),
+                    )
+                )
+
+    if snap.tasks is not None:
+        parked: dict[str, int] = {}
+        dead = 0
+        failed = 0
+        for task in snap.tasks:
+            state = task.get("state")
+            if state == "PARKED":
+                reason = str(task.get("park_reason") or "no reason recorded")
+                if reason in _NOT_TROUBLE_PARKS:
+                    # Not trouble (owner decision 2026-10-06, P5): a step
+                    # waiting for its parents holds no capacity (invariant 1)
+                    # and is the ordinary shape of a workflow whose earlier
+                    # steps still run. A parent that dead-lettered shows as its
+                    # own finding; this one would only bury it. A merge step
+                    # waiting for CI is the same (MS5).
+                    continue
+                parked[reason] = parked.get(reason, 0) + 1
+            elif state in ("DEAD_LETTERED", "DEAD_LETTER"):
+                dead += 1
+            elif state == "FAILED":
+                failed += 1
+        for reason, count in sorted(parked.items(), key=lambda kv: -kv[1]):
+            out.append(
+                Finding("warn", "parked", f"{count} task(s){whose}: {reason.lower().replace('_', ' ')}")
+            )
+        # THE WINDOW, NAMED (archived issue 190). Parked tasks are live and every live task
+        # is read; failed and dead-lettered ones are finished and come only
+        # from the newest-N page, so their counts are over that page, and the
+        # finding says which page -- "in the window listed" named none.
+        scope, since = window_scope(snap.tasks, whose, now)
+        if dead:
+            out.append(
+                Finding("down", "dead-lettered", f"{dead} {scope} gave up after every attempt{since}")
+            )
+        if failed:
+            out.append(Finding("note", "failed", f"{failed} {scope} failed{since}"))
+
+    out += lease_findings(snap, style)
+    out += workflow_findings(snap, style)
+
+    # Stable: findings that share a severity and a WHERE keep the order they
+    # were added in, which is how the stalled workflows stay worst first.
+    out.sort(key=lambda f: (f.rank, f.where))
+    return out
+
+
+#: The longest a lease's task error may run in a finding. `last_error` can be
+#: an agent's stderr tail; its first line says what happened and the task's
+#: own view prints the rest.
+_LEASE_REASON_CHARS = 160
+
+
+def _lease_reason(row: dict[str, Any], style: Style) -> str:
+    """Why a held lease is held, in the words the lease row has."""
+    error = str(row.get("last_error") or "").strip()
+    if error:
+        first = error.splitlines()[0].strip()
+        if len(first) > _LEASE_REASON_CHARS:
+            first = first[: _LEASE_REASON_CHARS - 1] + style.ellipsis
+        return first
+    if row.get("heartbeat_ever") is False:
+        return f"its worker never beat {style.dash} no error recorded"
+    silent = row.get("silent_seconds")
+    if isinstance(silent, (int, float)) and not isinstance(silent, bool):
+        return f"no heartbeat for {_span(silent, style)} {style.dash} no error recorded"
+    return "no error recorded"
+
+
+def lease_findings(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
+    """Leases held past their TTL: the console's "N leases are past the TTL".
+
+    THE SAME ROWS AND THE SAME TEST AS THE CONSOLE. `leaseCheck` counts the
+    rows of `/v1/admin/leases?active_only=true` whose server-computed
+    `expired` is true; so does this, so the two cannot disagree about a lease.
+    The tenant-scoped `/v1/leases` was not used: it serves only each task's
+    CURRENT lease, and a lease held past its TTL is most often one that is no
+    longer current -- fenced at an older generation, the archived issue 560 shape.
+
+    A READ THAT FAILED IS A FINDING, never an empty list: no finding would
+    read as "no lease is held past its TTL", which nobody established.
+    """
+    if snap.leases_error:
+        return [
+            Finding(
+                "note" if snap.leases_refused else "down",
+                "leases",
+                f"not read ({snap.leases_error})",
+            )
+        ]
+    if snap.leases is None:
+        return []
+    rows = [r for r in (snap.leases.get("leases") or []) if isinstance(r, dict)]
+    now = parse_time(snap.leases.get("evaluated_at")) or snap.now
+    out: list[Finding] = []
+    held = [r for r in rows if r.get("expired") is True and not r.get("released")]
+    if held:
+
+        def past(row: dict[str, Any]) -> float:
+            due = parse_time(row.get("expires_at"))
+            return (now - due).total_seconds() if due is not None else 0.0
+
+        worst = max(held, key=past)
+        out.append(
+            Finding(
+                "warn",
+                "held",
+                f"{len(held)} lease(s) past their TTL, longest held "
+                f"{_span(max(0.0, past(worst)), style)} past it "
+                f"({worst.get('task_id') or '?'}): {_lease_reason(worst, style)}",
+            )
+        )
+    beyond = _int_or_none(snap.leases.get("active_beyond_window"))
+    if beyond:
+        # The console's page is 200 rows and so is this one; a live lease
+        # beyond it was not looked at, and saying nothing would count it clear.
+        out.append(
+            Finding(
+                "note",
+                "leases",
+                f"{beyond} more live lease(s) beyond the {len(rows)} read were not checked",
+            )
+        )
+    return out
+
+
+#: The reconciler grades each stalled-workflow row (`WorkflowStall.entry`,
+#: `bad`/`warn`/`note`); this is the trouble list's word for each. A stalled
+#: workflow is `warn`, as a lease held past its TTL is: one tenant's work has
+#: stopped, the platform has not.
+_STALL_SEVERITY = {"bad": "warn", "warn": "warn", "note": "note"}
+
+#: Rows printed before the rest are summarised in one line.
+_STALL_ROWS = 10
+
+
+def _stall_line(entry: dict[str, Any], style: Style) -> str:
+    what = str(entry.get("workflow_id") or "?")
+    if entry.get("step_id"):
+        what += f" step {entry['step_id']}"
+        if entry.get("task_id"):
+            what += f" ({entry['task_id']})"
+    what += f" {entry.get('kind') or '?'}"
+    age = entry.get("age_seconds")
+    if isinstance(age, (int, float)) and not isinstance(age, bool):
+        what += f" {_span(max(0.0, float(age)), style)}"
+    what += f": {entry.get('reason') or 'no reason given'}"
+    if entry.get("repaired"):
+        what += f" {style.dash} repaired: {entry.get('repair') or 'yes'}"
+    elif entry.get("repair"):
+        what += f" {style.dash} {entry['repair']}"
+    return what
+
+
+def workflow_findings(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
+    """The reconciler's stalled workflows: the console's Workflows check.
+
+    WORST FIRST, IN THE RECONCILER'S ORDER. The pass sorts its rows once
+    (`reconciler.detect._STALL_ORDER`) and the API keeps that order, so this
+    lists them as served rather than re-ranking them by a second rule.
+
+    THREE WAYS TO KNOW NOTHING, and each is a finding, never silence: the
+    route failed (`workflows_error`), the reconciler's check was blind
+    (`check_error`), or the API is older than the field.
+    """
+    if snap.workflows_error:
+        return [Finding("down", "workflows", f"not read ({snap.workflows_error})")]
+    if snap.workflows is None:
+        return []
+    report = snap.workflows.get("stalled_workflows")
+    if not isinstance(report, dict):
+        return [
+            Finding(
+                "note",
+                "workflows",
+                "this deployment's API does not report stalled workflows; "
+                "whether any has stopped is unknown",
+            )
+        ]
+    if report.get("check_error") or report.get("count") is None:
+        return [
+            Finding(
+                "warn",
+                "workflows",
+                f"stall check not known {style.dash} "
+                f"{report.get('check_error') or 'the API gave no count'}",
+            )
+        ]
+    rows = [r for r in (report.get("workflows") or []) if isinstance(r, dict)]
+    out = [
+        Finding(_STALL_SEVERITY.get(str(r.get("severity")), "warn"), "workflow", _stall_line(r, style))
+        for r in rows[:_STALL_ROWS]
+    ]
+    more = (_int_or_none(report.get("count")) or len(rows)) - len(out)
+    if more > 0:
+        out.append(Finding("note", "workflow", f"{more} more stalled workflow row(s) not shown"))
+    return out
+
+
+#: The widest the WHERE column may grow, as a fraction of the screen. One
+#: account id long enough to fill half the line must not push every reason on
+#: the screen down to two words.
+_WHERE_SHARE = 3
+
+
+def render_trouble(findings: Sequence[Finding], style: Style) -> list[str]:
+    """One finding per row, with the reason WRAPPED rather than truncated.
+
+    This is deliberately not a table. A transport error -- `GET /v1/accounts
+    -> 404: ...` -- is the longest string `sc` ever prints and the one it most
+    needs to print whole: truncated at an 80-column edge it keeps the half
+    that says something is unreadable and loses the half that says which thing
+    and what to do about it. The overview already prints those in full through
+    `detail()`; before this, the same text was shorter in `sc trouble`, which
+    is the view an operator opens precisely to read it.
+    """
+    if not findings:
+        return [f"  {style.paint('nothing wrong right now', 'good')}"]
+
+    indent = 2
+    gutter = 2
+    label = min(
+        max(len(f.where) for f in findings),
+        max(6, style.usable // _WHERE_SHARE),
+    )
+    lead = indent + 2 + label + gutter  # "  x " + WHERE + gutter
+    body = max(8, style.usable - lead)
+
+    lines: list[str] = []
+    for finding in findings:
+        tone = _SEVERITY_TONE.get(finding.severity)
+        mark = _SEVERITY_MARK.get(finding.severity, "-")
+        where = _fit(finding.where, label, style).ljust(label)
+        head = style.paint(f"{' ' * indent}{mark} {where}", tone)
+        what_tone = "dim" if finding.severity == "note" else None
+        # `break_long_words` is textwrap's default and is load-bearing here: a
+        # URL or a path with no spaces in it would otherwise run off the edge
+        # of the screen the wrapping exists to fit.
+        wrapped = textwrap.wrap(finding.what, body) or [""]
+        lines.append((head + " " * gutter + style.paint(wrapped[0], what_tone)).rstrip())
+        for continuation in wrapped[1:]:
+            lines.append((" " * lead + style.paint(continuation, what_tone)).rstrip())
+    return lines
+
+
+# --------------------------------------------------------------------------
+# Overview
+# --------------------------------------------------------------------------
+
+
+def render_header(snap: Snapshot, style: Style) -> list[str]:
+    # `tenant_of`, not `.get("tenant_id")`: the identity route nests it, and
+    # the flat read showed a tenant that WAS read as not measured (archived issue 88, SC-F4).
+    tenant = scope_tenant(snap) or style.dash
+    # Ordered by what an operator needs when only part of it fits: the tenant
+    # they are acting as first, then the tier that explains a refusal, then the
+    # URL, which is the longest and the least often surprising.
+    bits = ["SwarmCloud", str(tenant)]
+    if snap.tier:
+        bits.append(snap.tier)
+    if snap.api_url:
+        bits.append(snap.api_url)
+    joiner = " · " if style.unicode else "  "
+    while len(bits) > 2 and len(joiner.join(bits)) > style.usable:
+        bits.pop()
+    line = _fit(joiner.join(bits), style.usable, style)
+    return [style.paint(line, "bold") if style.color else line]
+
+
+def render_overview(snap: Snapshot, style: Style) -> list[str]:
+    now = snap.now
+    tenant = scope_tenant(snap)
+    lines = render_header(snap, style)
+    lines.append("")
+
+    lines.append(
+        section("accounts", accounts_subtitle(snap.accounts, style, tenant=tenant), style)
+    )
+    lines += render_accounts(snap.accounts, style, now, error=snap.accounts_error)
+    lines.append("")
+
+    lines.append(section("capacity", capacity_subtitle(snap.capacity, style), style))
+    lines += render_capacity(snap.capacity, style, error=snap.capacity_error, profiles_only=True)
+    lines.append("")
+
+    lines.append(section("agents", agents_subtitle(snap.tasks, style, tenant=tenant), style))
+    lines += render_agents(snap.tasks, style, now, error=snap.tasks_error)
+    lines.append("")
+
+    findings = find_trouble(snap, style)
+    worst = findings[0].severity if findings else "ok"
+    lines.append(section("trouble", "" if worst == "ok" else f"{len(findings)} finding(s)", style))
+    lines += render_trouble(findings, style)
+    return lines
+
+
+def join(lines: Sequence[str]) -> str:
+    return "\n".join(lines).rstrip() + "\n"

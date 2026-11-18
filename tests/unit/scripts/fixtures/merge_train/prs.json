@@ -1,0 +1,93 @@
+[
+  {"number": 120, "title": "The scheduler reads the pool ceiling once per tick", "headRefOid": "1200000000000000000000000000000000000001",
+   "headRefName": "lane/pool-ceiling", "baseRefName": "main", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "MERGEABLE", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "secret scan", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "terraform test", "status": "COMPLETED", "conclusion": "SKIPPED"}]},
+  {"number": 101, "title": "The docs say why the reconciler parks", "headRefOid": "1010000000000000000000000000000000000001",
+   "headRefName": "lane/docs", "baseRefName": "main", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "MERGEABLE", "labels": [{"name": "docs"}, {"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "StatusContext", "context": "secret scan", "state": "SUCCESS"}]},
+  {"number": 102, "title": "A draft is never in a train", "headRefOid": "1020000000000000000000000000000000000001",
+   "headRefName": "lane/draft", "baseRefName": "main", "isDraft": true, "isCrossRepository": false,
+   "mergeable": "MERGEABLE", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "secret scan", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 103, "title": "A fork is never in a train", "headRefOid": "1030000000000000000000000000000000000001",
+   "headRefName": "main", "baseRefName": "main", "isDraft": false, "isCrossRepository": true,
+   "mergeable": "MERGEABLE", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "secret scan", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 104, "title": "Not labelled ready", "headRefOid": "1040000000000000000000000000000000000001",
+   "headRefName": "lane/unready", "baseRefName": "main", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "MERGEABLE", "labels": [{"name": "already-ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "secret scan", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 105, "title": "Conflicts with main", "headRefOid": "1050000000000000000000000000000000000001",
+   "headRefName": "lane/conflict", "baseRefName": "main", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "CONFLICTING", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "secret scan", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 106, "title": "Mergeability not computed yet", "headRefOid": "1060000000000000000000000000000000000001",
+   "headRefName": "lane/unknown", "baseRefName": "main", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "UNKNOWN", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "secret scan", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 107, "title": "A check that is not required failed", "headRefOid": "1070000000000000000000000000000000000001",
+   "headRefName": "lane/trivy", "baseRefName": "main", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "MERGEABLE", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "secret scan", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "Trivy", "status": "COMPLETED", "conclusion": "FAILURE"}]},
+  {"number": 108, "title": "A required check never reported", "headRefOid": "1080000000000000000000000000000000000001",
+   "headRefName": "lane/missing", "baseRefName": "main", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "MERGEABLE", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 109, "title": "A required check is still running", "headRefOid": "1090000000000000000000000000000000000001",
+   "headRefName": "lane/running", "baseRefName": "main", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "MERGEABLE", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "IN_PROGRESS", "conclusion": null},
+     {"__typename": "CheckRun", "name": "secret scan", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 110, "title": "  [Swarm] task_0123abcd", "headRefOid": "1100000000000000000000000000000000000001",
+   "headRefName": "swarm/task_0123abcd", "baseRefName": "main", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "MERGEABLE", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "secret scan", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 111, "title": "Merge train 999-1: #101", "headRefOid": "1110000000000000000000000000000000000001",
+   "headRefName": "train/999-1", "baseRefName": "main", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "MERGEABLE", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "secret scan", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 112, "title": "Aimed at another branch", "headRefOid": "1120000000000000000000000000000000000001",
+   "headRefName": "lane/other-base", "baseRefName": "release", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "MERGEABLE", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "secret scan", "status": "COMPLETED", "conclusion": "SUCCESS"}]},
+  {"number": 113, "title": "A required status context errored", "headRefOid": "1130000000000000000000000000000000000001",
+   "headRefName": "lane/status-error", "baseRefName": "main", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "MERGEABLE", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "StatusContext", "context": "secret scan", "state": "ERROR"}]},
+  {"number": 114, "title": "Tabs\tin a title are flattened", "headRefOid": "1140000000000000000000000000000000000001",
+   "headRefName": "lane/tabs", "baseRefName": "main", "isDraft": false, "isCrossRepository": false,
+   "mergeable": "MERGEABLE", "labels": [{"name": "ready"}],
+   "statusCheckRollup": [
+     {"__typename": "CheckRun", "name": "ci-gate", "status": "COMPLETED", "conclusion": "SUCCESS"},
+     {"__typename": "CheckRun", "name": "secret scan", "status": "COMPLETED", "conclusion": "SUCCESS"}]}
+]

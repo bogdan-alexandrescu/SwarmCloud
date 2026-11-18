@@ -1,0 +1,84 @@
+/* ========================================================================
+   LONG NAMES: TWO LINES, THEN AN ELLIPSIS, AND THE WHOLE NAME IN A TOOLTIP
+   (walkthrough C, owner 2026-10-03, at 1440x900). A long workflow name --
+   the lane label -- ran off the right edge of the workflow page, because the
+   page head's title block was `flex: none` beside a meta chip and the
+   freshness, and every other name that can be long was cut to one line.
+
+   Imported by Workflows.tsx and Overview.tsx (the import is global; the two
+   are the screens the owner measured). Every rule wins on SPECIFICITY, not
+   on order: this sheet comes before styles.css in the bundle, so each rule
+   is one element or class deeper than the one it replaces. Each name's
+   element carries its whole text in `title`.
+   ======================================================================== */
+
+/* THE PAGE TITLE, on every page: the title block may shrink, and the title
+   wraps to a second line before it is cut. */
+.c-phead > div.head { flex: 0 1 auto; min-width: 0; }
+.c-phead > div.head > h1 {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* THE PANEL'S RECENT WORKFLOWS: ONE LINE, THEN AN ELLIPSIS (U10a D14,
+   owner QA 2026-10-04). Two lines broken anywhere cut an unnamed workflow's
+   id mid-token -- `wf_8fa28bbc798e4b8a8e7 / e` -- and an id broken across
+   lines is a different id to the eye. One line, never broken; the whole name
+   and id are the link's title (Spine.tsx `RecentWorkflows`). */
+/* (Selected through the group and its links: a class name of seven or more
+   characters after the panel's two-letter prefix reads as a provider key to
+   the worker's publish scan.) */
+.sk-recent > a.sk-kid > span > span:last-child {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.sk-recent > a.sk-kid > span { align-items: center; }
+
+/* OVERVIEW'S AGENT NAMES, in the Running and Recent failures cards. NOT THE
+   PHONE'S RUNNING LIST (visual QA run 3, ffp-002, 2026-10-21): clamped to two
+   lines, the steps of one long-titled workflow were cut at the same point and
+   read alike. Its `.ov-prun-n` wraps whole (overview.css). It is left out of
+   this rule rather than overridden there: this sheet loads after overview.css
+   (Overview.tsx imports them in that order), so an equal selector there lost
+   here, in the built console, while a test that read the sheets in another
+   order passed. */
+.ov-page a.ov-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* A HEADROOM TILE'S PROFILE NAME, WHOLE (walkthrough F): `claude-code-…` was
+   cut to one mono line. It is a name a person reads, so it is the sans face.
+   ONE LINE, NEVER BROKEN (browser QA D17, 2026-10-04): wrapping it broke
+   `claude-code-` / `review` at its hyphen, which reads as two names. The tile
+   is wide enough for it (overview.css `.ov-hps`); a longer one is cut with an
+   ellipsis, whole in its title. */
+.ov-hp > span.ov-idc {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  hyphens: manual;
+  font: 500 var(--t-micro)/var(--lh-micro) var(--font);
+  color: var(--text);
+}
+
+/* THE WORKFLOW PAGE'S ROWS SIT 12px APART (walkthrough C): the head, the
+   tabs and the card were a gutter apart, and with the empty strip between
+   the tabs and the card that was a ~100px band. */
+div.wfp { gap: var(--ctl-s3); }

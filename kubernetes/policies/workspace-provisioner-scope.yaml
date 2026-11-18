@@ -1,0 +1,734 @@
+# What the workspace deployer may write, enforced by the API server
+# (docs/workspaces.md §2.3, lane W5).
+#
+# kubernetes/rbac/provisioner-rbac.yaml gives `swarm-workspace-deployer` a
+# ClusterRole, because RBAC cannot restrict `create` by name: a role that can
+# create one namespace can create any, and a role that can create a Role in a
+# new namespace can create it in `swarm-system` or `kube-system`. These
+# policies are what narrow it, for requests by that identity and nobody else:
+#
+#   swarm-workspace-deployer-scope        every kind the deployer may write,
+#                                         listed (Autopilot refuses "*"). The
+#                                         write is a CREATE or an UPDATE
+#                                         (never a DELETE), of a Namespace
+#                                         named swarm-tenant-u-* or
+#                                         swarm-tenant-<id>, or of an object
+#                                         inside a swarm-tenant-u-* namespace or
+#                                         inside one carrying the workspace
+#                                         label -- never in a Terraform
+#                                         tenant's -- and only of a kind and
+#                                         name the tenant render produces.
+#   swarm-workspace-deployer-namespaces   the Namespace carries the labels the
+#                                         worker policies and the scheduler
+#                                         select on, and enforces `restricted`;
+#                                         one outside swarm-tenant-u-* is
+#                                         created only with the workspace label
+#                                         and updated only if it already has it.
+#   swarm-workspace-deployer-roles        a Role's rules are EXACTLY the
+#                                         render's, so `escalate` (which RBAC
+#                                         cannot narrow on create) writes
+#                                         nothing else.
+#   swarm-workspace-deployer-rolebindings a RoleBinding names one of the three
+#                                         Roles, and binds it only to whom the
+#                                         render binds it: the dispatcher Role
+#                                         to the scheduler, the reaper Role to
+#                                         the reconciler, the worker Role to
+#                                         ServiceAccounts in the same
+#                                         namespace. Otherwise the deployer
+#                                         could bind Job creation to itself and
+#                                         run as a person's worker identity.
+#   swarm-workspace-deployer-networkpolicies
+#                                         a NetworkPolicy's selector, policy
+#                                         types, peers and ports are, per
+#                                         name, the render's (#3941; the
+#                                         normal form is at the policy).
+#   swarm-workspace-deployer-fqdnnetworkpolicies
+#                                         the TypeSafe direct hostname policy
+#                                         selects the TypeSafe direct pods
+#                                         and names one host, on TCP 443.
+#
+# THE LITERALS BELOW ARE A RESTATEMENT, AND A TEST HOLDS THEM.
+# tests/unit/worker/test_workspace_provisioner_scope.py renders the tenant
+# files and asserts the Role rules, the RoleBinding subjects and the
+# kind-to-names map here equal what render.py produces, and that the users
+# matched here are exactly the subjects provisioner-rbac.yaml binds. They are
+# written as JSON-shaped CEL literals so that test can read them.
+#
+# WHY THE SCOPE POLICY MATCHES EVERY KIND THE DEPLOYER WRITES, against the
+# one-kind-per-policy rule pod-security.yaml states. That rule exists because CEL is type-checked
+# against the schema of what it matches; the scope policy reads `request`
+# alone and never `object`, so there is no schema to disagree about. The five
+# policies that read `object` match one kind each.
+#
+# WHY THE BINDINGS HAVE NO namespaceSelector, unlike every other binding in
+# this directory. A selector on the swarm label would let the deployer escape
+# by creating a namespace WITHOUT the label, or by writing into one that lacks
+# it. What scopes these is `matchConditions` on the caller: a request by anyone
+# but the deployer is not evaluated at all.
+#
+# THE WORKSPACE LABEL, AND WHY IT IS THE BOUND FOR A GROUP OR SERVICE
+# WORKSPACE (docs/design/workspace-kinds.md §3.1 and §4.3, owner's answer
+# Q3 (a), 2026-10-19). A group tenant's id is the bare slug of the group
+# (`eng`, `research`), so the `swarm-tenant-u-*` name bound cannot hold it.
+# The bound is widened to `swarm-tenant-<id>`, and narrowed again by
+# `swarm.<org_domain>/workspace: w-<6 hex>`, which only the job writes and only on
+# CREATE (render.py --workspace-id, the job's step A7):
+#
+#   * a Namespace outside `swarm-tenant-u-*` is CREATED only with the label,
+#     and UPDATED only when the namespace already has it, unchanged -- so
+#     labelling an existing hand-made namespace is refused, and nothing the
+#     deployer did not create becomes its;
+#   * an object inside such a namespace is written only when the namespace
+#     (`namespaceObject`) carries the label. `eng`'s, `smoke`'s and every
+#     hand-made namespace lack it, so the deployer still cannot write into any
+#     of them;
+#   * the namespaces of the tenants terraform/infra declares are refused BY
+#     NAME, whatever their labels, so a missing `swarm-tenant-eng` cannot be
+#     created with the label either. The list is rendered from the
+#     environment's tfvars (render.py --terraform-tfvars; kubernetes/apply.sh
+#     passes its environment's). It includes Terraform's `u-` tenants, which
+#     the deployer never had any business writing;
+#   * the `swarm-tenant-u-*` arm is as it was, for the personal namespaces
+#     made before the label existed (w-752763's, w-7f9285's). Once written,
+#     the label never changes and never goes, on any namespace.
+#
+# The label is a string in this file and in render.py, not a constant in the
+# frozen contract: neither imports the contract for labels (design §5).
+#
+# Fail closed throughout: a policy that cannot be evaluated refuses the write.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-workspace-deployer-scope
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    # Every resource provisioner-rbac.yaml grants the deployer a write on, by
+    # name. Not ("*", "*"): GKE Autopilot's own admission webhook refuses any
+    # admission rule matching every group and resource (measured 2026-10-11,
+    # `apply.sh --policies` server dry run). RBAC already bounds what the
+    # deployer can write to these, so listing them matches what "*" matched;
+    # test_the_scope_policy_matches_every_resource_the_rbac_lets_it_write holds
+    # this list to the grants. DELETE is matched so the validation below can
+    # refuse it.
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["namespaces", "serviceaccounts", "resourcequotas", "limitranges"]
+      - apiGroups: ["networking.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["networkpolicies"]
+      # The tenant's hostname policy (render.py TENANT_FQDN_FILES), on a
+      # cluster that serves the kind; a rule for a kind the cluster does not
+      # serve matches nothing.
+      - apiGroups: ["networking.gke.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["fqdnnetworkpolicies"]
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["roles", "rolebindings"]
+  # The deployer, by email and by numeric uniqueId -- the same two subjects
+  # provisioner-rbac.yaml binds. A spelling bound there and missing here would
+  # be RBAC without this policy.
+  matchConditions:
+    - name: workspace-deployer
+      expression: >-
+        request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+  variables:
+    # `has()` on every optional request field: AdmissionRequest omits an empty
+    # group, namespace, name or subresource, and reading an absent field is an
+    # evaluation error -- which, failing closed, would refuse every write the
+    # deployer makes with a message about nothing.
+    - name: resource
+      expression: >-
+        (has(request.resource.group) ? request.resource.group : '') + '/' + request.resource.resource
+    - name: target
+      expression: >-
+        variables.resource == '/namespaces'
+          ? (has(request.name) ? request.name : '')
+          : (has(request.namespace) ? request.namespace : '')
+    # A person's namespace: the arm that predates the workspace label.
+    - name: personal
+      expression: >-
+        variables.target.matches('^swarm-tenant-u-[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
+    # The namespaces of the tenants terraform/infra declares, refused by name
+    # whatever they carry: kubernetes/render.py --terraform-tfvars.
+    - name: terraform
+      expression: >-
+        __TERRAFORM_NAMESPACES__
+    # Whether the namespace a namespaced object is written into carries the
+    # workspace label. Read only for a namespaced object: `namespaceObject` is
+    # null for a Namespace itself (cluster-scoped), and that request is judged
+    # by swarm-workspace-deployer-namespaces, which reads the object.
+    - name: labelled
+      expression: >-
+        has(namespaceObject.metadata.labels) &&
+        '__LABEL_PREFIX__/workspace' in namespaceObject.metadata.labels &&
+        namespaceObject.metadata.labels['__LABEL_PREFIX__/workspace'].matches('^w-[0-9a-f]{6}$')
+    # What the tenant render produces, by `group/resource`: render.py's
+    # TENANT_FILES, LEGACY_KSA_FILES and TENANT_FQDN_FILES (the one hostname
+    # policy, rendered only where the cluster serves the kind). Not the spec-verify-keys ConfigMap:
+    # the workspace job renders without it, and the ClusterRole grants none.
+    - name: names
+      expression: >-
+        {"/serviceaccounts": ["swarm-agent-worker", "default", "swarm-worker"],
+        "/resourcequotas": ["swarm-tenant-quota"],
+        "/limitranges": ["swarm-worker-limits"],
+        "networking.k8s.io/networkpolicies": ["swarm-default-deny", "swarm-deny-cross-tenant-ingress", "swarm-allow-worker-egress", "swarm-allow-live-egress", "swarm-allow-egress-proxy", "swarm-allow-judge-egress", "swarm-allow-graph-service", "swarm-allow-typesafe-fwd"],
+        "networking.gke.io/fqdnnetworkpolicies": ["swarm-allow-typesafe-direct"],
+        "rbac.authorization.k8s.io/roles": ["swarm-worker", "swarm-dispatcher", "swarm-reaper"],
+        "rbac.authorization.k8s.io/rolebindings": ["swarm-worker", "swarm-worker-legacy", "swarm-dispatcher", "swarm-reaper"]}
+  validations:
+    - expression: "request.operation == 'CREATE' || request.operation == 'UPDATE'"
+      message: >-
+        the workspace deployer creates and patches; it never deletes. Removing a
+        person's workspace is deprovisioning (docs/workspaces.md §7), which is
+        the owner's.
+      reason: Forbidden
+
+    - expression: "!has(request.subResource) || request.subResource == ''"
+      message: >-
+        the workspace deployer writes whole objects, never a subresource
+        (status, finalize, exec, ...).
+      reason: Forbidden
+
+    - expression: >-
+        !(variables.target in variables.terraform)
+      message: >-
+        the workspace deployer never writes the namespace of a tenant
+        terraform/infra declares, or anything inside one, whatever its labels.
+        Those are the release's.
+      reason: Forbidden
+
+    - expression: >-
+        variables.personal ||
+        (variables.target.matches('^swarm-tenant-[a-z0-9]([-a-z0-9]*[a-z0-9])?$') &&
+          (variables.resource == '/namespaces' || variables.labelled))
+      message: >-
+        the workspace deployer writes only a Namespace named swarm-tenant-<tenant>,
+        an object inside a swarm-tenant-u-<person> namespace, or an object inside
+        a namespace carrying __LABEL_PREFIX__/workspace, which only the deployer
+        writes and only on create. Every other namespace, and every other
+        cluster-scoped object, belongs to someone else.
+      reason: Forbidden
+
+    - expression: >-
+        variables.resource == '/namespaces' ||
+        (variables.resource in variables.names && has(request.name) &&
+          request.name in variables.names[variables.resource])
+      message: >-
+        the workspace deployer writes only the kinds and names the tenant render
+        produces (kubernetes/render.py TENANT_FILES). A new object in that
+        render must be added to swarm-workspace-deployer-scope as well; the
+        parity test says which.
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-workspace-deployer-scope
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-workspace-deployer-scope
+  # Audit as well: the refusal reaches the job's log, and the audit log is
+  # where the alert of docs/workspaces.md §2.4 can see it.
+  validationActions: ["Deny", "Audit"]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-workspace-deployer-namespaces
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["namespaces"]
+  matchConditions:
+    - name: workspace-deployer
+      expression: >-
+        request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+  variables:
+    # The workspace label on the namespace as written, and as it was ('' when
+    # absent). oldObject is read only on UPDATE: it is null on CREATE.
+    - name: label
+      expression: >-
+        has(object.metadata.labels) && '__LABEL_PREFIX__/workspace' in object.metadata.labels
+          ? object.metadata.labels['__LABEL_PREFIX__/workspace'] : ''
+    - name: old_label
+      expression: >-
+        request.operation == 'UPDATE' && has(oldObject.metadata.labels) &&
+        '__LABEL_PREFIX__/workspace' in oldObject.metadata.labels
+          ? oldObject.metadata.labels['__LABEL_PREFIX__/workspace'] : ''
+  validations:
+    # The worker pod and Job policies in pod-security.yaml bind by this label.
+    # A namespace without it is a namespace where Spot, bursting and
+    # Kubernetes-level retries are allowed again.
+    - expression: >-
+        has(object.metadata.labels) &&
+        'app.kubernetes.io/part-of' in object.metadata.labels &&
+        object.metadata.labels['app.kubernetes.io/part-of'] == 'swarm'
+      message: >-
+        a workspace namespace must carry app.kubernetes.io/part-of=swarm, which
+        is what the worker admission policies select on.
+      reason: Forbidden
+
+    - expression: >-
+        has(object.metadata.labels) &&
+        'swarm-tenant' in object.metadata.labels &&
+        'swarm-tenant-' + object.metadata.labels['swarm-tenant'] == object.metadata.name
+      message: >-
+        a workspace namespace's swarm-tenant label must name the tenant the
+        namespace is for (swarm-tenant-<tenant>).
+      reason: Forbidden
+
+    # Lowering enforcement for an incident stays possible (render.py
+    # --pss-enforce), and stays the owner's: the deployer always writes
+    # `restricted`.
+    - expression: >-
+        has(object.metadata.labels) &&
+        'pod-security.kubernetes.io/enforce' in object.metadata.labels &&
+        object.metadata.labels['pod-security.kubernetes.io/enforce'] == 'restricted'
+      message: >-
+        a workspace namespace enforces Pod Security `restricted`; only the owner
+        may lower it.
+      reason: Forbidden
+
+    # The workspace label (header): a w- id when present; outside the
+    # personal arm, present on CREATE and already present on UPDATE; and once
+    # written, never changed or removed.
+    - expression: >-
+        variables.label == '' || variables.label.matches('^w-[0-9a-f]{6}$')
+      message: >-
+        __LABEL_PREFIX__/workspace names the workspace that created the namespace,
+        w- and six hex digits.
+      reason: Forbidden
+
+    - expression: >-
+        object.metadata.name.matches('^swarm-tenant-u-[a-z0-9]([-a-z0-9]*[a-z0-9])?$') ||
+        (variables.label != '' && (request.operation == 'CREATE' || variables.old_label != ''))
+      message: >-
+        a namespace outside swarm-tenant-u-* is created by the workspace deployer
+        only with __LABEL_PREFIX__/workspace, and updated only when it already
+        carries it. Labelling an existing namespace does not make it the
+        deployer's.
+      reason: Forbidden
+
+    - expression: >-
+        variables.old_label == '' || variables.label == variables.old_label
+      message: >-
+        __LABEL_PREFIX__/workspace never changes and never goes once written.
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-workspace-deployer-namespaces
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-workspace-deployer-namespaces
+  validationActions: ["Deny", "Audit"]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-workspace-deployer-roles
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["roles"]
+  matchConditions:
+    - name: workspace-deployer
+      expression: >-
+        request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+  variables:
+    # Each Role's rules as [apiGroups, resources, verbs], in the render's order:
+    # rbac/worker-rbac.yaml's empty swarm-worker and rbac/dispatcher-rbac.yaml's
+    # two. Order is compared too, which costs nothing: apply sends the render.
+    - name: expected
+      expression: >-
+        {"swarm-worker": [],
+        "swarm-dispatcher": [[["batch"], ["jobs"], ["create", "get", "list", "watch"]], [[""], ["pods"], ["get", "list", "watch"]], [[""], ["pods/log"], ["get"]], [[""], ["events"], ["get", "list", "watch"]]],
+        "swarm-reaper": [[["batch"], ["jobs"], ["get", "list", "watch", "delete"]], [[""], ["pods"], ["get", "list", "watch", "delete"]], [[""], ["events"], ["get", "list"]]]}
+    # A rule without apiGroups, resources or verbs is an evaluation error here,
+    # and so a refusal. None of the render's omits them.
+    # The swarm-worker Role is intentionally empty, and an empty `rules` list
+    # reaches admission as a PRESENT field whose value is null: has() alone
+    # let `.map` run on null, the expression errored ("got 'types.Null',
+    # expected iterable type") and the first self-service workspace's A7 was
+    # refused (w-7f9285, 2026-10-13 04:52Z). Null and absent both mean no rules.
+    - name: actual
+      expression: >-
+        has(object.rules) && type(object.rules) == list ? object.rules.map(r, [r.apiGroups, r.resources, r.verbs]) : []
+  validations:
+    - expression: "object.metadata.name in variables.expected"
+      message: >-
+        the workspace deployer creates only the swarm-worker, swarm-dispatcher
+        and swarm-reaper Roles.
+      reason: Forbidden
+
+    - expression: >-
+        !(object.metadata.name in variables.expected) ||
+        variables.actual == variables.expected[object.metadata.name]
+      message: >-
+        a Role the workspace deployer writes must carry exactly the rules
+        kubernetes/render.py renders for it. The deployer holds `escalate`
+        because these Roles grant what it does not hold; this is what keeps
+        that from meaning any rule at all.
+      reason: Forbidden
+
+    - expression: >-
+        !has(object.rules) || type(object.rules) != list ||
+        object.rules.all(r, !has(r.resourceNames) && !has(r.nonResourceURLs))
+      message: "the rendered Roles name no resourceNames and no nonResourceURLs."
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-workspace-deployer-roles
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-workspace-deployer-roles
+  validationActions: ["Deny", "Audit"]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-workspace-deployer-rolebindings
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["rolebindings"]
+  matchConditions:
+    - name: workspace-deployer
+      expression: >-
+        request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+  variables:
+    # Who rbac/dispatcher-rbac.yaml binds each control-plane Role to, by email
+    # and by uniqueId. swarm-worker is bound to ServiceAccounts, checked below.
+    - name: users
+      expression: >-
+        {"swarm-dispatcher": ["__SCHEDULER_GSA__", "__SCHEDULER_UID__"],
+        "swarm-reaper": ["__RECONCILER_GSA__", "__RECONCILER_UID__"]}
+  validations:
+    - expression: >-
+        object.roleRef.apiGroup == 'rbac.authorization.k8s.io' &&
+        object.roleRef.kind == 'Role' &&
+        (object.roleRef.name == 'swarm-worker' || object.roleRef.name in variables.users)
+      message: >-
+        a RoleBinding the workspace deployer writes references one of the
+        Roles swarm-worker, swarm-dispatcher or swarm-reaper -- never a
+        ClusterRole.
+      reason: Forbidden
+
+    - expression: >-
+        object.roleRef.name != 'swarm-worker' || !has(object.subjects) ||
+        object.subjects.all(s,
+          s.kind == 'ServiceAccount' && has(s.namespace) && has(request.namespace) &&
+          s.namespace == request.namespace)
+      message: >-
+        swarm-worker is bound only to ServiceAccounts in its own namespace.
+      reason: Forbidden
+
+    - expression: >-
+        !(object.roleRef.name in variables.users) || !has(object.subjects) ||
+        object.subjects.all(s,
+          s.kind == 'User' && s.name in variables.users[object.roleRef.name])
+      message: >-
+        swarm-dispatcher is bound only to the scheduler and swarm-reaper only to
+        the reconciler. Binding either to anyone else -- the deployer included
+        -- would let that caller create or delete Jobs in a person's namespace.
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-workspace-deployer-rolebindings
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-workspace-deployer-rolebindings
+  validationActions: ["Deny", "Audit"]
+---
+# A NETWORK POLICY'S CONTENT, NOT ONLY ITS NAME (#3941, decided 2026-11-12).
+# The scope policy admits a NetworkPolicy by kind, name and namespace; this
+# one holds what it says to the render. Without it the deployer could write
+# `swarm-allow-live-egress` selecting every pod and allowing every port to
+# anywhere, inside a person's namespace.
+#
+# One kind (pod-security.yaml's rule): the CEL reads `object`. Matched for the
+# deployer and, by name, inside swarm-tenant-* namespaces only -- the scope
+# policy refuses the deployer everywhere else by itself, so nothing outside
+# the swarm namespaces is evaluated here (CLAUDE.md rule 2). By name, not by a
+# namespaceSelector, for the reason the header gives.
+#
+# THE NORMAL FORM. CEL has no user functions and Kubernetes' CEL refuses a
+# literal mixing types, so each policy is written as four maps by name, every
+# leaf a map of strings:
+#   selectors  the pod selector's matchLabels; {"~": "matchExpressions"} when
+#              it has expressions (the render writes none);
+#   types      policyTypes;
+#   ingress,   one entry per rule: [namespace selectors, pod selectors,
+#   egress     ipBlocks, ports], the first three one per peer, in order.
+#              A peer's absent selector or ipBlock is {"~": "absent"} (absent
+#              and empty select different things); a port is {protocol, port,
+#              endPort}, an absent port "~all". `~` is in no label key or CIDR
+#              the API server accepts, so nothing written can forge these.
+# Every list is compared in order, which costs nothing: apply sends the render.
+#
+# THE CLUSTER'S OWN NETWORK. swarm-allow-worker-egress carries four values
+# read from the cluster (render.py NETWORK_INPUTS: the two DNS addresses and
+# the pod and service ranges). kubernetes/apply.sh --policies reads them from
+# the cluster it targets, as it does for a tenant, and passes them to
+# `render.py policies`, which writes them below as `cluster_cidrs` and in their
+# four positions in the `egress` literal: a CIDR in `fixed_cidrs` (every one
+# the templates write literally) or `cluster_cidrs` is compared as written, so
+# each of the four is pinned exactly. Any other CIDR is encoded by shape,
+# "~host" for an IPv4 /32 (an IPv6 /32 is a 2^96-address prefix, so it is a
+# "~range") and "~range" otherwise, which no exact literal equals.
+# A render given no network (an offline self-test, or a bootstrap whose apply
+# could not read the cluster's, which both say on stderr) writes `cluster_cidrs`
+# empty and "~host"/"~range" in the four positions: then the two DNS peers may
+# name any one IPv4 address on port 53, and the two carve-outs any range. Every
+# other selector, peer, CIDR and port is the render's exactly either way.
+#
+# tests/unit/worker/test_workspace_provisioner_scope.py encodes the tenant
+# render the same way and holds every literal here equal to it.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-workspace-deployer-networkpolicies
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["networking.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["networkpolicies"]
+  matchConditions:
+    - name: workspace-deployer
+      expression: >-
+        request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+    - name: swarm-tenant-namespace
+      expression: >-
+        has(request.namespace) && request.namespace.startsWith('swarm-tenant-')
+  variables:
+    - name: fixed_cidrs
+      expression: >-
+        ["169.254.169.254/32", "199.36.153.4/30", "199.36.153.8/30", "0.0.0.0/0", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10"]
+    - name: cluster_cidrs
+      expression: >-
+        __DEPLOYER_CLUSTER_CIDRS__
+    - name: selectors
+      expression: >-
+        {"swarm-default-deny": {},
+        "swarm-deny-cross-tenant-ingress": {},
+        "swarm-allow-worker-egress": {},
+        "swarm-allow-live-egress": {"swarm-live": "enabled"},
+        "swarm-allow-egress-proxy": {"swarm-egress": "proxy"},
+        "swarm-allow-judge-egress": {"swarm-judge": "internal"},
+        "swarm-allow-graph-service": {},
+        "swarm-allow-typesafe-fwd": {"swarm-typesafe": "inject"}}
+    - name: types
+      expression: >-
+        {"swarm-default-deny": ["Ingress", "Egress"],
+        "swarm-deny-cross-tenant-ingress": ["Ingress"],
+        "swarm-allow-worker-egress": ["Egress"],
+        "swarm-allow-live-egress": ["Egress"],
+        "swarm-allow-egress-proxy": ["Egress"],
+        "swarm-allow-judge-egress": ["Egress"],
+        "swarm-allow-graph-service": ["Egress"],
+        "swarm-allow-typesafe-fwd": ["Egress"]}
+    - name: ingress
+      expression: >-
+        {"swarm-default-deny": [],
+        "swarm-deny-cross-tenant-ingress": [],
+        "swarm-allow-worker-egress": [],
+        "swarm-allow-live-egress": [],
+        "swarm-allow-egress-proxy": [],
+        "swarm-allow-judge-egress": [],
+        "swarm-allow-graph-service": [],
+        "swarm-allow-typesafe-fwd": []}
+    - name: egress
+      expression: >-
+        {"swarm-default-deny": [],
+        "swarm-deny-cross-tenant-ingress": [],
+        "swarm-allow-worker-egress": [[[{"kubernetes.io/metadata.name": "kube-system"}], [{"k8s-app": "kube-dns"}], [{"~": "absent"}], [{"protocol": "UDP", "port": "53", "endPort": ""}, {"protocol": "TCP", "port": "53", "endPort": ""}]], [[{"~": "absent"}, {"~": "absent"}], [{"~": "absent"}, {"~": "absent"}], [{"cidr": "__DEPLOYER_NODE_LOCAL_DNS_CIDR__", "except": ""}, {"cidr": "__DEPLOYER_CLUSTER_DNS_CIDR__", "except": ""}], [{"protocol": "UDP", "port": "53", "endPort": ""}, {"protocol": "TCP", "port": "53", "endPort": ""}]], [[{"~": "absent"}], [{"~": "absent"}], [{"cidr": "169.254.169.254/32", "except": ""}], [{"protocol": "TCP", "port": "80", "endPort": ""}, {"protocol": "TCP", "port": "8080", "endPort": ""}]], [[{"~": "absent"}, {"~": "absent"}], [{"~": "absent"}, {"~": "absent"}], [{"cidr": "199.36.153.4/30", "except": ""}, {"cidr": "199.36.153.8/30", "except": ""}], [{"protocol": "TCP", "port": "443", "endPort": ""}]], [[{"~": "absent"}], [{"~": "absent"}], [{"cidr": "0.0.0.0/0", "except": "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,__DEPLOYER_POD_CIDR__,__DEPLOYER_SERVICE_CIDR__,169.254.0.0/16,100.64.0.0/10"}], [{"protocol": "TCP", "port": "443", "endPort": ""}, {"protocol": "TCP", "port": "80", "endPort": ""}, {"protocol": "TCP", "port": "22", "endPort": ""}]]],
+        "swarm-allow-live-egress": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "swarm-live"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "8080", "endPort": ""}]]],
+        "swarm-allow-egress-proxy": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "swarm-egress"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "3128", "endPort": ""}]]],
+        "swarm-allow-judge-egress": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "decision-api-egress"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "8443", "endPort": ""}]]],
+        "swarm-allow-graph-service": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "swarm-graph"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "8080", "endPort": ""}]]],
+        "swarm-allow-typesafe-fwd": [[[{"kubernetes.io/metadata.name": "swarm-system"}], [{"app.kubernetes.io/name": "swarm-typesafe-fwd"}], [{"~": "absent"}], [{"protocol": "TCP", "port": "8080", "endPort": ""}]]]}
+    # The object in the normal form above. podSelector is never absent on a
+    # NetworkPolicy (the API server requires it); a protocol the request
+    # omits is "" here and so refused, though the render always writes one.
+    - name: actual_selector
+      expression: >-
+        has(object.spec.podSelector.matchExpressions) ? {"~": "matchExpressions"} :
+        has(object.spec.podSelector.matchLabels) ? object.spec.podSelector.matchLabels : {}
+    - name: actual_types
+      expression: >-
+        has(object.spec.policyTypes) ? object.spec.policyTypes : []
+    - name: actual_ingress
+      expression: >-
+        has(object.spec.ingress) ? object.spec.ingress.map(r, [
+          has(r.from) ? r.from.map(p, !has(p.namespaceSelector) ? {"~": "absent"} : has(p.namespaceSelector.matchExpressions) ? {"~": "matchExpressions"} : has(p.namespaceSelector.matchLabels) ? p.namespaceSelector.matchLabels : {}) : [],
+          has(r.from) ? r.from.map(p, !has(p.podSelector) ? {"~": "absent"} : has(p.podSelector.matchExpressions) ? {"~": "matchExpressions"} : has(p.podSelector.matchLabels) ? p.podSelector.matchLabels : {}) : [],
+          has(r.from) ? r.from.map(p, !has(p.ipBlock) ? {"~": "absent"} : {"cidr": p.ipBlock.cidr in variables.fixed_cidrs || p.ipBlock.cidr in variables.cluster_cidrs ? p.ipBlock.cidr : (p.ipBlock.cidr.endsWith('/32') && !p.ipBlock.cidr.contains(':') ? "~host" : "~range"), "except": has(p.ipBlock.except) ? p.ipBlock.except.map(e, e in variables.fixed_cidrs || e in variables.cluster_cidrs ? e : (e.endsWith('/32') && !e.contains(':') ? "~host" : "~range")).join(",") : ""}) : [],
+          has(r.ports) ? r.ports.map(q, {"protocol": has(q.protocol) ? q.protocol : "", "port": has(q.port) ? string(q.port) : "~all", "endPort": has(q.endPort) ? string(q.endPort) : ""}) : []]) : []
+    - name: actual_egress
+      expression: >-
+        has(object.spec.egress) ? object.spec.egress.map(r, [
+          has(r.to) ? r.to.map(p, !has(p.namespaceSelector) ? {"~": "absent"} : has(p.namespaceSelector.matchExpressions) ? {"~": "matchExpressions"} : has(p.namespaceSelector.matchLabels) ? p.namespaceSelector.matchLabels : {}) : [],
+          has(r.to) ? r.to.map(p, !has(p.podSelector) ? {"~": "absent"} : has(p.podSelector.matchExpressions) ? {"~": "matchExpressions"} : has(p.podSelector.matchLabels) ? p.podSelector.matchLabels : {}) : [],
+          has(r.to) ? r.to.map(p, !has(p.ipBlock) ? {"~": "absent"} : {"cidr": p.ipBlock.cidr in variables.fixed_cidrs || p.ipBlock.cidr in variables.cluster_cidrs ? p.ipBlock.cidr : (p.ipBlock.cidr.endsWith('/32') && !p.ipBlock.cidr.contains(':') ? "~host" : "~range"), "except": has(p.ipBlock.except) ? p.ipBlock.except.map(e, e in variables.fixed_cidrs || e in variables.cluster_cidrs ? e : (e.endsWith('/32') && !e.contains(':') ? "~host" : "~range")).join(",") : ""}) : [],
+          has(r.ports) ? r.ports.map(q, {"protocol": has(q.protocol) ? q.protocol : "", "port": has(q.port) ? string(q.port) : "~all", "endPort": has(q.endPort) ? string(q.endPort) : ""}) : []]) : []
+  validations:
+    - expression: "object.metadata.name in variables.selectors"
+      message: >-
+        the workspace deployer writes only the NetworkPolicies the tenant render
+        produces (kubernetes/render.py TENANT_FILES).
+      reason: Forbidden
+
+    - expression: >-
+        !(object.metadata.name in variables.selectors) ||
+        (variables.actual_selector == variables.selectors[object.metadata.name] &&
+          variables.actual_types == variables.types[object.metadata.name])
+      message: >-
+        a NetworkPolicy the workspace deployer writes selects exactly the pods,
+        and has exactly the policy types, kubernetes/render.py renders for it.
+      reason: Forbidden
+
+    - expression: >-
+        !(object.metadata.name in variables.selectors) ||
+        (variables.actual_ingress == variables.ingress[object.metadata.name] &&
+          variables.actual_egress == variables.egress[object.metadata.name])
+      message: >-
+        a NetworkPolicy the workspace deployer writes allows exactly the peers
+        and ports kubernetes/render.py renders for it, and the cluster's own
+        DNS addresses and pod and service ranges as kubernetes/apply.sh read
+        them (by shape only in a render that was given none).
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-workspace-deployer-networkpolicies
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-workspace-deployer-networkpolicies
+  validationActions: ["Deny", "Audit"]
+---
+# The tenant's hostname policy (render.py TENANT_FQDN_FILES), in the same
+# normal form: it selects the TypeSafe direct pods alone and allows egress to
+# the TypeSafe API host alone, on TCP 443. On a cluster that does not serve
+# the kind, the rule matches nothing. Only the fields the GKE kind declares
+# are read (podSelector, egress, matches' name and pattern, ports' protocol
+# and port): a field a CRD's schema lacks fails to compile, and this policy,
+# failing closed, would then refuse the render's own policy.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: swarm-workspace-deployer-fqdnnetworkpolicies
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["networking.gke.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["fqdnnetworkpolicies"]
+  matchConditions:
+    - name: workspace-deployer
+      expression: >-
+        request.userInfo.username in ["__WORKSPACE_DEPLOYER_GSA__", "__WORKSPACE_DEPLOYER_UID__"]
+    - name: swarm-tenant-namespace
+      expression: >-
+        has(request.namespace) && request.namespace.startsWith('swarm-tenant-')
+  variables:
+    - name: selectors
+      expression: >-
+        {"swarm-allow-typesafe-direct": {"swarm-jev": "typesafe-direct"}}
+    - name: egress
+      expression: >-
+        {"swarm-allow-typesafe-direct": [[[{"name": "api.typesafe.ai", "pattern": ""}], [{"protocol": "TCP", "port": "443"}]]]}
+    - name: actual_selector
+      expression: >-
+        !has(object.spec.podSelector) ? {"~": "absent"} :
+        has(object.spec.podSelector.matchExpressions) ? {"~": "matchExpressions"} :
+        has(object.spec.podSelector.matchLabels) ? object.spec.podSelector.matchLabels : {}
+    - name: actual_egress
+      expression: >-
+        has(object.spec.egress) ? object.spec.egress.map(r, [
+          has(r.matches) ? r.matches.map(m, {"name": has(m.name) ? m.name : "", "pattern": has(m.pattern) ? m.pattern : ""}) : [],
+          has(r.ports) ? r.ports.map(q, {"protocol": has(q.protocol) ? q.protocol : "", "port": has(q.port) ? string(q.port) : "~all"}) : []]) : []
+  validations:
+    - expression: "object.metadata.name in variables.selectors"
+      message: >-
+        the workspace deployer writes only the hostname policy the tenant render
+        produces (kubernetes/render.py TENANT_FQDN_FILES).
+      reason: Forbidden
+
+    - expression: >-
+        !(object.metadata.name in variables.selectors) ||
+        (variables.actual_selector == variables.selectors[object.metadata.name] &&
+          variables.actual_egress == variables.egress[object.metadata.name])
+      message: >-
+        the TypeSafe direct policy selects only the TypeSafe direct pods and
+        allows egress only to the TypeSafe API host, on TCP 443, exactly as
+        kubernetes/render.py renders it.
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: swarm-workspace-deployer-fqdnnetworkpolicies
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/part-of: swarm
+spec:
+  policyName: swarm-workspace-deployer-fqdnnetworkpolicies
+  validationActions: ["Deny", "Audit"]

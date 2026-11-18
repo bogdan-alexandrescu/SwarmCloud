@@ -1,0 +1,485 @@
+# Benchmarks — measuring what the correctness suites cannot see
+
+`make test` proves the platform is right. Nothing proves it is fast, and on
+2026-09-22 that gap produced its best illustration yet. The first real
+`claude-code` run on this platform:
+
+```
+dispatched 03:46:05 → starting 03:49:14 (+3m09s) → running +0.1s → succeeded +18s
+```
+
+**Three minutes nine seconds of Cloud Run cold start against eighteen seconds
+of agent.** Every suite in this repository calls that run a pass, because it
+*is* a pass — the agent succeeded, no capacity leaked, no invariant was
+violated. The UI renders the whole thing as the single word "dispatched".
+Nothing anywhere turns 189 seconds into a figure anyone can compare against
+last week.
+
+That is what this suite is for.
+
+---
+
+## The four rules
+
+These are not style preferences. Each one is a way a benchmark lies, and each
+is enforced in `scripts/benchstat.py` rather than left to the author of a
+collector.
+
+### 1. A failed measurement is not a fast one
+
+The rule benchmarks break more often than any other, and the same bug this
+repository has produced repeatedly in other costumes — an unread value falling
+into a comparison that is true for every bound.
+
+A timing that could not be taken is recorded as `{"value": null,
+"not_measured": "<reason>"}`. It is counted in `missing`, never as zero, and a
+metric whose samples are *all* missing is reported `not_measured` and **fails
+the gate**. A route answering HTTP 500 in five milliseconds does not set a
+record; it is recorded as not measured, with the status as the reason.
+
+There is a second, quieter form of the same rule: `max_missing_fraction`. A
+metric where more than a fifth of samples failed fails as `too_many_missing`,
+because the percentile is then computed only over the samples that worked — and
+the ones that failed are the likelier to have been slow.
+
+### 2. No mean. p50 / p95 / p99 and n, always
+
+There is deliberately **no `mean` field** in a summary. A mean hides the tail,
+and the number here that most needs its tail read is the cold start above: a
+mean over a warm pool erases it. A field nobody may gate on is a field somebody
+will quote, so it is not emitted at all.
+
+### 3. A percentile from two samples is a lie
+
+`min_samples` is part of every threshold. Below it, the metric fails as
+`insufficient_samples` rather than passing on a "p99" that is just the larger
+of a pair. This fires often while a collector is being written, and it is
+supposed to: the fix is to take more samples, not to lower the bar.
+
+### 4. A baseline is part of the benchmark
+
+A number with nothing to compare it to is a number nobody acts on. Baselines
+live in `benchmarks/baselines/<environment>.json` and are **checked in**, so a
+regression is reproducible on someone else's clone. With no baseline present,
+every metric reports `new` and the run says plainly that *nothing was
+compared* — a first run must not look like a green gate.
+
+A metric the baseline knows about that produces **no samples at all** fails as
+`missing_from_current`. That is the collector having stopped running, or the
+code path it measures having stopped executing, and both are precisely what a
+benchmark exists to notice.
+
+### A ratio threshold is meaningless at the noise floor
+
+A `1.5x` rule on a route that answers in 3ms fires forever: the ordinary jitter
+of a process spawn is itself more than 1.5x of 3ms. This is not theoretical —
+the offline collector tests failed about one run in three for exactly this
+reason, on the *untouched* routes, while the injected 400ms regression was
+caught perfectly. The routes really had gone from 2.0ms to 3.4ms.
+
+Where the signal is small against the noise, gate on an **absolute limit**
+rather than a ratio, or do not gate that metric at all and read it beside one
+that can be. The offline fixture now answers in 50ms so that a few milliseconds
+of scheduler jitter is a few percent; on a deployed environment the real
+latencies are large enough that the default ratio is meaningful.
+
+### And one more, because clocks
+
+**Negative durations are reported, never clamped.** Segment timings come from
+event timestamps written by different processes on different machines. Clock
+skew produces a negative segment, and `max(0, x)` would turn a real distributed
+systems problem into a suspiciously fast dispatch. A negative sample is kept,
+counted, and fails as `anomalous_samples`.
+
+---
+
+## What each suite measures, and what it costs to run
+
+| Suite | Time | Money | Creates anything? |
+|---|---|---|---|
+| `api` | ~30s | under a cent | no — GETs only |
+| `reconcile` | ~10s | under a cent | **no — it reads logs, it does not trigger a pass** |
+| `cost` | ~15s | under a cent | no — reads history |
+| `ui` | ~1m | free | no — drives a browser at a UI you are running |
+| `dispatch` | ~2m on `mock` | cents | **submits agents**, cancels them on exit |
+| `admission` | ~3m on `mock` | cents | **submits a 150-agent backlog**, cancels on exit |
+| `contention` | ~3.5m | well under a dollar | **writes only to a dedicated bench database** (`swarm-bench`); refuses the live one |
+| `coldstart` | ~1m | under a cent | no — reads the event log of agents that already ran |
+| `cache-ttl` | ~1m | under a cent | no — reads attempts; prints a table, not a verdict |
+
+`dispatch` and `admission` on `--profile claude-code` **spend real provider
+tokens**, because they run an actual agent. That is also the only way to
+measure the cold start that matters, so it is worth doing deliberately with a
+small `--count` and not on every commit.
+
+`make bench` runs the read-only three (`api`, `reconcile`, `cost`). Nothing in
+that set submits work, so it is safe against a production environment.
+
+### `api` — latency per route, with percentiles
+
+`scripts/bench-api.sh`. A fixed concurrency against each route the web UI
+drives. Per route, because the UI's own data-source strip measured `/v1/stats`
+at 1711ms and `/v1/providers` at 896ms while everything else answered under
+300ms — and a single "API p95" averages exactly that away.
+
+**`/v1/stats` gets three metrics, not one.** `service.stats()` issues one
+Firestore `count()` per agent state, and Firestore bills an aggregation per 1000
+index entries **scanned**. So that route's latency and cost grow with
+*history*, not with load — a threshold on its raw latency fires on a perfectly
+healthy platform that has simply been running for a month, and an operator
+learns to ignore it. Recorded instead:
+
+| metric | what it says |
+|---|---|
+| `api.latency{route=/v1/stats}` | the raw number, which is what the UI shows |
+| `api.stats.history_tasks` | how many task documents exist right now |
+| `api.stats.ms_per_1k_history` | latency normalised by that history |
+
+**The normalised one is the one to gate on.** Flat means the route is fine and
+the collection grew. Rising means the route itself regressed.
+
+### `dispatch` — the decomposition, and cold start
+
+`scripts/bench-dispatch.sh`. "Dispatch got slower" is at least four different
+problems with four different owners:
+
+| segment | owner |
+|---|---|
+| `ready → lease_acquired` | admission — the scheduler's transaction |
+| `lease_acquired → dispatched` | the control plane creating the execution |
+| `dispatched → starting` | the **backend** — scheduling and image pull |
+| `starting → running` | the container reaching the agent |
+
+`dispatch.cold_start` (`dispatched → running`) is its own metric rather than
+the sum of its two halves, because **percentiles cannot be added**: p95 of two
+segments is not p95 of the whole. It is labelled by `runner_profile` and by
+`backend`, so Cloud Run Jobs and GKE Autopilot never share a baseline.
+
+This collector reads the **API**, not Firestore, which is a deliberate
+departure from the other suites. Their reason for reading Firestore — that
+observing through the API under test would let a broken API report success —
+does not transfer: these timestamps are written by the control plane into the
+event log, and a broken API produces a transport failure or a non-2xx, both of
+which are recorded as not-measured. What it buys is that this collector needs
+no Firestore access at all, so it runs as any identity that can call the API.
+
+### `admission` — throughput under a backlog
+
+`scripts/bench-admission.sh`. 150 agents, which is `concurrency-test.sh`'s shape
+on purpose so the two runs are comparable. The rate is computed from
+`lease_acquired` timestamps — first lease to last — not from how long the
+script took to notice, because polling rate is the script's property and the
+timestamps are the platform's.
+
+**On whether the all-or-nothing multi-pool reservation degrades with pool
+count**: not answered by reconfiguring pools, which would be an admin mutation
+on a shared project. Different runner profiles already reserve different
+numbers of pools — a profile with no provider skips the provider pool — so
+running this on two profiles and comparing is the experiment.
+`admission.pools_visible` records the platform's pool cardinality beside it,
+read from `/v1/capacity` rather than restated from the frozen catalogue.
+
+### `contention` — the admission transaction under offered load (S32)
+
+`scripts/bench-contention.sh` plus `scripts/bench_contention.py`. Spec §8 row 6
+(`docs/BUILD_PROMPT_V2.md:740`) asks "Firestore contention at 100
+admissions/min?" and says to measure before designing the sharding.
+`bench-admission.sh` cannot answer it: it measures the deployed scheduler
+draining a backlog, one instance admits serially so the drain caps the rate it
+can offer, and it deliberately changes no pools.
+
+**What runs is production code.** The harness calls
+`SchedulerStore.acquire_lease`, which runs the frozen
+`acquire_lease_in_transaction` inside `firestore.transactional`, and releases
+through `SchedulerStore.release_lease` and the frozen release. It restates no
+admission logic. The per-admission numbers come from the record
+`acquire_lease` itself logs — `admission_runs`, `admission_reruns`,
+`admission_latency_ms`, `admission_outcome` — so the bench reads the same
+fields an operator filters production logs by.
+
+**Open loop.** Arrival *i* is due at `start + i × 60 / rate` whether or not
+earlier arrivals have finished; N admitter threads (default 8, standing in for
+N scheduler instances) take them. A closed loop slows its own offered load
+exactly when the database slows, and reports a healthy latency at a rate it
+never offered. `contention.arrival_lag` and `contention.achieved_rate_per_min`
+are recorded, and a row whose achieved rate is under 95% of the offered one is
+flagged `rate_not_offered`: that row measured the harness, not Firestore.
+
+**A dedicated bench database, nothing else** (owner decision OD-B17-1). The
+harness writes pool documents named `global`, `tenant:…` and so on, because
+those are the names the frozen `pool_names_for()` returns. Against the live
+`swarm` database that would overwrite live limits and counts, so both the
+shell and the Python refuse the environment's `FIRESTORE_DATABASE`, `swarm`,
+`(default)` and any name that is not `swarm-bench` or `swarm-bench-<suffix>`,
+before a client is built. Pool limits are set at 10⁹, so capacity never binds:
+a denial would be a short-circuit that reads as a fast admission. A run lock
+(`bench_lock/contention`) refuses a second concurrent run, whose writes would be
+counted as this run's contention. Cleanup deletes this run's agents, leases and
+pools and nothing else.
+
+**The bench database must have the live database's concurrency mode**
+(`terraform/modules/firestore` `concurrency_mode`), or the result describes a
+different locking model. It is not created by the script but by Terraform
+(`terraform/modules/firestore/bench.tf`, dev only), which copies the live
+database's `concurrency_mode` rather than restating it, because a database made
+by hand is one nobody can safely delete later.
+
+| metric | unit | per | what it says |
+|---|---|---|---|
+| `contention.admission_latency` | ms | admission | the whole transactional call, re-runs included |
+| `contention.reruns` | count | admission | times Firestore made the body run again: **the contention signal** |
+| `contention.aborted` | count (0/1) | admission | the admission exhausted Firestore's retries: saturation |
+| `contention.release_latency` | ms | lease | the release, which also writes every pool |
+| `contention.arrival_lag` | ms | arrival | how late the harness started it; a large one voids the row |
+| `contention.achieved_rate_per_min` | per_min | rate | what was actually offered |
+
+Every sample is labelled `rate_per_min`, `admitters` and `pools`, so a
+seven-pool `claude-code` admission (the default shape, the heaviest real one)
+never shares a baseline with a five-pool one (`--provider none`). An admission
+whose record never arrived is recorded as **not measured**, never as fast. The
+table printed at the end states n, missing, p50/p95/p99 latency, total re-runs,
+the share of admissions that re-ran, aborts, lag and achieved rate per row.
+
+**It is summarised, not gated.** It feeds one design decision and is not a
+regression check, and `compare` cannot judge it. On a healthy run
+`contention.reruns` and `contention.aborted` are 0 at p95, and a baseline of 0
+makes every later ratio infinite, so the next 0 reads as "regressed". The
+achieved rate is one sample per rate, under every `min_samples`. The run fails
+only when a sample was not measured. The verdict is the table, read against
+the rule in [scaling.md §5](scaling.md#5-firestore).
+
+```bash
+scripts/bench-contention.sh                       # 100, 200, 400 per minute, 60 s each
+scripts/bench-contention.sh --rates 100,200,400,800 --admitters 16
+scripts/bench-contention.sh --database swarm-bench-b17 --provider none
+```
+
+### `coldstart` — cold start from history, before anything is changed
+
+`scripts/bench-coldstart.sh`. The owner's ruling on the cold-start measurement is to measure cold
+start before shortening it. `bench-dispatch.sh` measures it by submitting
+agents, which on `claude-code` spends provider tokens and samples a handful of
+fresh runs. This reads the event log of the newest terminal agents instead and
+feeds it through the same `benchstat.py segments` decomposition, so it emits
+the same `dispatch.cold_start` (`dispatched → running`) and its two halves, at
+p50/p95/p99 with n, for the cold starts real work actually paid.
+
+`runner_profile` comes from the agent and `backend` from its `lease_acquired`
+event's detail, which the scheduler writes. An event with no backend is
+labelled `unknown`, not guessed from the frozen profile catalogue. An agent that
+was dispatched and never reached `running` is a null sample, so it fails the
+gate rather than improving the figure.
+
+### `cache-ttl` — what a 1-hour prompt-cache TTL would cost
+
+`scripts/bench-cache-ttl.sh` plus `benchstat.py cache-ttl`. **Read-only, and a
+table rather than a verdict.** A 1-hour cache write costs 2× the base input
+price, against 1.25× for the default 5 minutes. A read costs 0.1× on most
+models, 0.05× on Claude Opus 5.5 and 0.025× on Claude Fable 5.1, so the read
+multiplier is a flag. The longer TTL pays only if it turns at least
+`0.75 / (2 − r)` of the writes into reads: **39.5% at r = 0.1**.
+
+The platform records each attempt's *total* cache writes and reads, not the
+per-request split by TTL or the gaps between requests inside an attempt. So per
+runner profile the table prints what can be read:
+
+| column | meaning |
+|---|---|
+| `cost 5m` | the cache cost as billed, in base-input-token equivalents |
+| `1h no reuse` | the same writes at 2×: the floor of the downside |
+| `1h best` | 1h if every write in a 5–60-minute resume became a read |
+| `x-att share` | share of writes made by attempts that started 5–60 min after the agent's previous attempt ended |
+
+`x-att share` is an **upper bound** for that one source, since not every write
+in a resumed attempt is the earlier prefix, and it **cannot see** gaps inside
+one attempt, such as a tool call that runs past five minutes. If it is under
+the break-even, cross-attempt re-use alone cannot pay for 1h. If it is over,
+the table says 1h *could* pay, and the per-TTL split
+(`usage.cache_creation.ephemeral_1h_input_tokens`) is what confirms it. An
+attempt with no cache fields is counted as `unrep`, never as free. Dollars
+appear only with `--base-usd-per-mtok`; no price is kept in the repository to
+go stale.
+
+### `reconcile` — pass duration, and what the pass examined
+
+`scripts/bench-reconcile.sh`. **It reads Cloud Logging. It does not trigger a
+pass.** A pass mutates: it terminates executions, releases leases and deletes
+job resources, and `dry_run` comes from the service's environment rather than
+from the request, so there is no safe way to ask for one. A triggered pass is
+also unrepresentative — fired by hand seconds after the last tick, it examines
+almost nothing and reports a wonderful duration.
+
+`Reconciler.run_once` already logs its whole report as structured fields, so
+the numbers exist for every real pass. This reads them back.
+
+**The important metric here is not the duration.** When a backend cannot be
+listed — the GKE 401 seen on 2026-09-22 — the reconciler correctly *skips* that
+backend's findings rather than repairing against a list it could not read,
+appends one string to `report.errors`, and returns a pass that looks healthy
+and is **faster** than a complete one. Every duration and count threshold
+rewards it. `reconcile.backend_errors` has an absolute maximum of **zero**, and
+it is the only check that fails that pass.
+
+Zero passes found in the window is itself the finding, not the absence of one:
+a reconciler that has not run in six hours is a platform whose stale leases are
+not being reclaimed. It is recorded as not-measured, which fails.
+
+### `cost` — spend per agent
+
+`scripts/bench-cost.sh`. A change that doubles token usage — a longer system
+prompt, a retry that re-sends context, a checkpoint restore that replays
+history — is invisible to every latency benchmark here. Wall time can even
+*improve* while the bill doubles.
+
+It sums across **attempts**, not `result_summary`: that is written once at
+terminal state, so an agent that failed twice and succeeded on the third carries
+only the third attempt's numbers, and a per-agent cost that omits the two failed
+ones understates every retried agent on the platform.
+
+**It is also a regression test for the spend fields.** `attempt_from_dict`
+dropped all five of them once, and the unit test that should have caught it
+asserted they are `None` when *absent* — an assertion the bug satisfies. This
+collector cannot be satisfied that way: an attempt that ran an agent and
+carries no `cost_usd` is recorded as not-measured with that reason, and there
+is no assertion to get backwards because the absence of a number *is* the
+failure.
+
+### `ui` — what the dashboard costs in a real browser
+
+`scripts/bench-ui.sh` plus `scripts/lib/bench-ui-probe.js`. `bench-api.sh`
+measures the server's number; this measures the operator's. The Overview screen
+issues a dozen `/v1` reads, several in parallel, and the slow one decides when
+the screen is usable.
+
+It uses the **Performance API** rather than the UI's internal probe registry:
+it needs no change to the app (`apps/` is another track's), and it measures
+what the browser did rather than what the app believes it did.
+
+**Fixtures are not a measurement.** `npm run dev` without `VITE_LIVE` serves
+fixtures and never touches the network, so a fixture run has zero `/v1`
+resource entries. That run measures render cost honestly and API cost not at
+all — so the API metrics are recorded as not-measured with that reason rather
+than omitted. Omitting them would make a fixture run look like a very fast live
+one, which is the single most likely way this benchmark could lie.
+
+---
+
+## Operating the browser driver
+
+Four things cost several hours to learn and are easy to undo:
+
+* **`BROWSE_HEADED=1` and a long `BROWSE_IDLE_TIMEOUT` go in the ENVIRONMENT.**
+  Never pass `--headed`: the flag writes a `configHash`, and every later call
+  must then match it or the daemon restarts underneath you.
+* **Headed mode keeps a cookie jar** (`launchPersistentContext`); `launched`
+  mode uses `chromium.launch()` and has none, so a silent fall back to it loses
+  the session.
+* **Never delete `.gstack/browse.json`** — `buildRestartEnv` reads `mode:headed`
+  from it to survive an autostart.
+* **The driver acts on the ACTIVE tab, and the active tab drifts.** Pin one by
+  id and re-pin before every command. `bench-ui.sh` does, and re-opens a tab
+  whose id has gone stale.
+
+Three of this collector's own bugs are worth knowing, because each produced a
+plausible wrong number rather than an error:
+
+1. **The driver refuses to read a file outside its allowed roots.** The probe
+   was written under `$TMPDIR` (`/var/folders/…` on a Mac), `eval` failed
+   silently, and the read-back returned the **previous screen's payload**. Every
+   screen would have been recorded with some earlier screen's numbers. The probe
+   now lives under `build/`, and — more importantly — carries a **nonce** minted
+   per capture. A payload without this capture's nonce is refused.
+2. **A `goto` that differs only in the hash does not reload.** The SPA router
+   handles it in place, so navigation timing reported the *first* load every
+   time and the resource buffer **accumulated**, crediting each screen with
+   every request every earlier screen had made. The symptom was
+   `ui.nav.dom_content_loaded` reading 83.5ms for all six screens, to the tenth
+   of a millisecond. Each capture now navigates to a unique query string before
+   the hash, so every one is a genuinely new document.
+3. **`set -o pipefail` plus `$(browse newtab | tail -n 1)`** meant that when the
+   shared daemon was killed mid-run, the pipeline failed, the substitution
+   failed, and `set -e` ended the script with exit 1 and no explanation — the
+   "a failure that renders as nothing" shape, produced by the benchmark written
+   to catch it. The status is now swallowed deliberately so the emptiness can be
+   reported as the real cause.
+
+---
+
+## Running them
+
+```bash
+make bench                              # read-only: api, reconcile, cost
+make bench SUITES=api,ui                # pick suites
+make bench SUITES=dispatch              # submits tasks on mock, cancels them
+make bench-baseline SUITES=api          # record this run as the reference
+scripts/bench.sh --self-test            # offline; in `make test`
+```
+
+Against a deployed environment the API suites must run **in-VPC**, because
+`swarm-api` ingress is `internal-and-cloud-load-balancing` and refuses a
+laptop:
+
+```bash
+scripts/verify-remote.sh bench-api bench-reconcile bench-cost
+```
+
+`scripts/bench.sh --self-test` runs in `make test`. It is fully offline — no
+cloud, no browser, no credentials — and it exercises the paths a collector
+cannot reach on a laptop: the percentile engine, the not-measured semantics,
+the baseline comparison, the event decomposition against the real 2026-09-22
+timings, and the UI collector's capture-to-samples half through `--from-json`.
+
+---
+
+## Results on record
+
+Each row below is a measurement or an honest statement that there is none. A
+SwarmCloud agent has no dev credentials, so these suites were **built** on
+2026-10-02 and an operator **runs** them. No number is entered here until one
+has been measured.
+
+| question | suite | status (2026-10-02) |
+|---|---|---|
+| Admission contention at 100 / 200 / 400 per minute (§8 row 6, S32) | `contention` | **not yet measured.** Needs the `swarm-bench` database, which the next dev apply creates (`terraform/modules/firestore/bench.tf`) |
+| Cold start p50/p95/p99 per profile and backend (§8 row 5) | `coldstart` | **not yet measured** |
+| 5m vs 1h prompt-cache cost per profile | `cache-ttl` | **not yet measured** |
+
+When a row is measured, record it with the date, the environment, the commit
+of the harness, n per rate, and the full table the suite printed, and copy the
+contention result into [scaling.md §5](scaling.md#5-firestore), which owns the
+sharding decision.
+
+## Known gaps, stated rather than hidden
+
+* **`benchmarks/baselines/` is empty.** Every baseline must come from a run
+  against a real deployed environment; the benchmarks were written on a laptop
+  that cannot reach `swarm-api`. A baseline recorded against anything else would
+  be a fiction that every later run is compared to. See
+  `benchmarks/baselines/README.md`.
+* **The engine compares in one direction only** — it fails when a statistic
+  rises. That is correct for every duration and wrong for throughput, where
+  higher is better. `admission.throughput_per_s` therefore has its ratio gate
+  disabled (`max_regression_ratio: null`) and `admission.window_seconds` — the
+  duration form of the same thing — is gated instead. The proper fix is a
+  `higher_is_better` flag in `benchstat.py`; it is written down here rather than
+  faked with a huge threshold, because a huge threshold reads as an oversight
+  and the next person tightens it.
+* **Cold start is measured per profile and per backend, but only for backends
+  that actually run.** GKE dispatch was 401ing on 2026-09-22, so a run today
+  produces Cloud Run numbers and nothing for GKE. That shows up as an absent
+  label rather than as a fast one.
+* **`contention` writes, so it is never in the read-only default set** of
+  `scripts/bench.sh`. It, `coldstart` and `cache-ttl` are registered there
+  (`make bench SUITES=contention`), and none of the three is in the default
+  run, so adding them did not change what a default run gates on.
+* **The bench database is created by one apply, and has not been yet
+  (2026-10-02).** `terraform/modules/firestore/bench.tf` defines `swarm-bench`
+  with the live database's type, location and `concurrency_mode`, no delete
+  protection and `deletion_policy = DELETE`. It is off by default and on in
+  `dev.tfvars` only (`firestore_bench_database`), so the next dev apply
+  (`make apply ENV=dev`, or the release's infrastructure job) creates it.
+  `google_firestore_database` has no labels attribute, so it carries
+  `managed-by=swarm-terraform` as the `bench_meta/managed-by` document, which the
+  harness's cleanup never deletes. No service account is granted it: the
+  harness runs with the operator's own credentials, and the scheduler has no
+  reason to reach a database that only a bench writes.

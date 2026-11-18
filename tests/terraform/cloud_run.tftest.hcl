@@ -1,0 +1,574 @@
+# The control plane. Four services, four identities, and an idle cost of zero:
+# a backlog of ten thousand QUEUED tasks must produce no running containers
+# (CONTRACT.md invariant 1).
+
+mock_provider "google" {}
+
+variables {
+  project_id = "example-project"
+  network    = "projects/example-project/global/networks/swarm-vpc"
+  subnetwork = "projects/example-project/regions/us-central1/subnetworks/swarm-subnet-us-central1"
+  labels     = { "managed-by" = "swarm-terraform" }
+
+  services = {
+    "swarm-api" = {
+      service_account_email = "swarm-api@example-project.iam.gserviceaccount.com"
+      image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api:test"
+      max_instances         = 20
+      cpu                   = "1"
+      memory                = "1Gi"
+      invokers              = { eng = "group:eng@example.com" }
+    }
+    "swarm-scheduler" = {
+      service_account_email = "swarm-scheduler@example-project.iam.gserviceaccount.com"
+      image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler:test"
+      max_instances         = 3
+      concurrency           = 1
+      invokers              = { tick = "serviceAccount:swarm-tick@example-project.iam.gserviceaccount.com" }
+    }
+    "swarm-quota-broker" = {
+      service_account_email = "swarm-quota-broker@example-project.iam.gserviceaccount.com"
+      image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-quota-broker:test"
+      max_instances         = 3
+    }
+    "swarm-reconciler" = {
+      service_account_email = "swarm-reconciler@example-project.iam.gserviceaccount.com"
+      image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-reconciler:test"
+      max_instances         = 2
+      concurrency           = 1
+    }
+  }
+}
+
+run "idle_costs_nothing_and_scale_is_bounded" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  assert {
+    condition = alltrue([
+      for name, svc in google_cloud_run_v2_service.this :
+      svc.template[0].scaling[0].min_instance_count == 0
+    ])
+    error_message = "min-instances must be 0 on every control-plane service: a queued backlog costs nothing"
+  }
+
+  assert {
+    condition = alltrue([
+      for name, svc in google_cloud_run_v2_service.this :
+      svc.template[0].scaling[0].max_instance_count > 0
+    ])
+    error_message = "max-instances must be explicit: an unbounded control plane can outscale its own database"
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-scheduler"].template[0].max_instance_request_concurrency == 1
+    error_message = "concurrent requests on one scheduler instance contend on the same Firestore documents and abort each other"
+  }
+}
+
+# The one warm floor (owner decision Q6(a), archived issue 1457): swarm-api asks for two
+# instances and gets them; every service that does not ask still scales to zero.
+run "a_service_that_sets_min_instances_keeps_that_floor_and_no_other_does" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    services = {
+      "swarm-api" = {
+        service_account_email = "swarm-api@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api:test"
+        max_instances         = 20
+        min_instances         = 2
+      }
+      "swarm-scheduler" = {
+        service_account_email = "swarm-scheduler@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler:test"
+        max_instances         = 3
+        concurrency           = 1
+      }
+    }
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-api"].template[0].scaling[0].min_instance_count == 2
+    error_message = "swarm-api's min_instances must reach the revision: under design B every heartbeat goes through it"
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-scheduler"].template[0].scaling[0].min_instance_count == 0
+    error_message = "a service that sets no min_instances must still scale to zero"
+  }
+}
+
+run "a_floor_above_the_ceiling_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    services = {
+      "swarm-api" = {
+        service_account_email = "swarm-api@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api:test"
+        max_instances         = 1
+        min_instances         = 2
+      }
+    }
+  }
+
+  expect_failures = [var.services]
+}
+
+run "the_control_plane_is_not_on_the_internet" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  assert {
+    condition = alltrue([
+      for name, svc in google_cloud_run_v2_service.this :
+      svc.ingress == "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
+    ])
+    error_message = "ingress must be internal-and-cloud-load-balancing"
+  }
+
+  assert {
+    condition = alltrue([
+      for name, svc in google_cloud_run_v2_service.this :
+      length(svc.template[0].vpc_access) == 1 && svc.template[0].vpc_access[0].network_interfaces[0].subnetwork == var.subnetwork
+    ])
+    error_message = "every service egresses through the swarm subnet via Direct VPC egress"
+  }
+
+  assert {
+    condition = alltrue([
+      for k, m in google_cloud_run_v2_service_iam_member.invokers :
+      m.member != "allUsers" && m.member != "allAuthenticatedUsers"
+    ])
+    error_message = "no public invoker: callers are authenticated by Google ID token"
+  }
+
+  assert {
+    condition = alltrue([
+      for k, m in google_cloud_run_v2_service_iam_member.invokers :
+      m.role == "roles/run.invoker"
+    ])
+    error_message = "invoker bindings grant run.invoker and nothing else"
+  }
+}
+
+run "each_service_runs_as_its_own_identity_with_requests_equal_to_limits" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  assert {
+    condition = length(distinct([
+      for name, svc in google_cloud_run_v2_service.this : svc.template[0].service_account
+    ])) == length(google_cloud_run_v2_service.this)
+    error_message = "a shared service account would make 'only the reconciler may delete' unenforceable"
+  }
+
+  assert {
+    condition = alltrue([
+      for name, svc in google_cloud_run_v2_service.this :
+      svc.template[0].execution_environment == "EXECUTION_ENVIRONMENT_GEN2"
+    ])
+    error_message = "second-generation execution environment is required"
+  }
+
+  assert {
+    condition = alltrue([
+      for name, svc in google_cloud_run_v2_service.this :
+      svc.template[0].containers[0].resources[0].limits["cpu"] != "" && svc.template[0].containers[0].resources[0].limits["memory"] != ""
+    ])
+    error_message = "CPU and memory must both be explicit: an unstated limit is not a limit"
+  }
+
+  # An explicit limit is not the same as request == limit. These two fields are
+  # the only ways Cloud Run breaks that equality, and an assertion about
+  # invariant 7 that does not mention them is an assertion about nothing.
+  #
+  # startup_cpu_boost allocates MORE than the declared limit while an instance
+  # starts, which is bursting in the plain sense of the word. cpu_idle throttles
+  # CPU to near zero between requests, so the guaranteed allocation is the limit
+  # only while a request happens to be in flight -- and the scheduler's drain
+  # loop and the reconciler's sweep both run for minutes inside one request.
+  #
+  # None of the file-level services sets startup_cpu_boost, so every one of
+  # them must come out false: the one exception, swarm-api's (the owner, 2026-10-23,
+  # archived issue 1816 option (a)), is held by the two runs at the end of this file.
+  assert {
+    condition = alltrue([
+      for name, svc in google_cloud_run_v2_service.this :
+      svc.template[0].containers[0].resources[0].startup_cpu_boost == false
+    ])
+    error_message = "startup_cpu_boost allocates CPU above the declared limit during startup: that is bursting, which invariant 7 forbids for every service that does not set it"
+  }
+
+  assert {
+    condition = alltrue([
+      for name, svc in google_cloud_run_v2_service.this :
+      svc.template[0].containers[0].resources[0].cpu_idle == false
+    ])
+    error_message = "cpu_idle = true means CPU is allocated only during a request, so the guaranteed request is not equal to the limit (invariant 7)"
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-api"].name == "swarm-api"
+    error_message = "service names carry the swarm- prefix the destroy guard looks for"
+  }
+}
+
+run "a_public_invoker_is_accepted_only_while_ingress_is_restricted" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  # REVERSED on evidence, 2026-09-16. allUsers used to be refused outright.
+  # When Cloud Run enforces IAM it CONSUMES the caller's Authorization header
+  # and the container receives a different, non-JWT credential -- measured on a
+  # correlated request: the client sent tok:7f518e564d27, the application saw
+  # tok:c130e289a085 and failed with MalformedError. The same image and token
+  # authenticate correctly when the edge is not gating, so edge IAM does not add
+  # a layer here, it removes the only one that can identify a tenant.
+  #
+  # What authenticates a caller is swarm_api.auth: Google ID token signature,
+  # email_verified, the example.com hosted domain, and Cloud Identity group
+  # membership. What keeps the service off the internet is ingress, which this
+  # module pins to internal and refuses to set to INGRESS_TRAFFIC_ALL.
+  variables {
+    services = {
+      "swarm-api" = {
+        service_account_email = "swarm-api@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api:test"
+        max_instances         = 20
+        invokers              = { everyone = "allUsers" }
+      }
+    }
+  }
+
+  assert {
+    condition     = var.ingress != "INGRESS_TRAFFIC_ALL"
+    error_message = "allUsers is only safe because ingress keeps the service off the internet; this pairing is the whole guarantee."
+  }
+
+  assert {
+    condition = alltrue([
+      for k, v in var.services : !contains(values(v.invokers), "allAuthenticatedUsers")
+    ])
+    error_message = "allAuthenticatedUsers means every Google account and adds nothing over the app's own check."
+  }
+}
+
+run "internet_ingress_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    ingress = "INGRESS_TRAFFIC_ALL"
+  }
+
+  expect_failures = [var.ingress]
+}
+
+# A slow but healthy start is not killed (archived issue 1816, options (d) and (e) chosen by
+# the owner on 2026-10-21). The startup probe polls every 5 s; at 12 failures a
+# start is killed at about 96 s, and five healthy swarm-api starts measured at
+# 61-77 s on 2026-10-21 left too little room. swarm-api asks for 36 (three
+# times the window); every service that does not ask keeps 12.
+run "a_service_that_sets_a_startup_failure_threshold_gets_it_and_no_other_does" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    services = {
+      "swarm-api" = {
+        service_account_email     = "swarm-api@example-project.iam.gserviceaccount.com"
+        image                     = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api:test"
+        max_instances             = 20
+        startup_failure_threshold = 36
+      }
+      "swarm-scheduler" = {
+        service_account_email = "swarm-scheduler@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler:test"
+        max_instances         = 3
+        concurrency           = 1
+      }
+    }
+  }
+
+  # MUTATION: ignore each.value.startup_failure_threshold in the module (keep
+  # the fixed 12) and this fails.
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-api"].template[0].containers[0].startup_probe[0].failure_threshold == 36
+    error_message = "swarm-api's startup_failure_threshold must reach the revision's startup probe: a healthy 61-77 s start is otherwise killed near 96 s"
+  }
+
+  # MUTATION: change the attribute's default from 12 to 36 and this fails.
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-scheduler"].template[0].containers[0].startup_probe[0].failure_threshold == 12
+    error_message = "a service that sets no startup_failure_threshold must keep the module's 12"
+  }
+}
+
+# The default, over the four services of the file-level variables, none of
+# which sets a threshold: every one keeps 12, polled every 5 s.
+run "every_service_that_sets_no_threshold_keeps_twelve" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  # MUTATION: change the attribute's default from 12 to anything else, or the
+  # probe's period from 5 s, and this fails.
+  assert {
+    condition = alltrue([
+      for name, svc in google_cloud_run_v2_service.this :
+      svc.template[0].containers[0].startup_probe[0].failure_threshold == 12
+      && svc.template[0].containers[0].startup_probe[0].period_seconds == 5
+    ])
+    error_message = "every service that sets no startup_failure_threshold must keep 12 failures at a 5 s period"
+  }
+}
+
+# The root sets 36 for swarm-api and for no other service. A test cannot
+# address a child module's resources from terraform/infra, so this reads the
+# root's text.
+run "the_infra_root_sets_36_for_swarm_api_and_nothing_else" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  # MUTATION: drop `startup_failure_threshold = 36` from swarm-api's block in
+  # terraform/infra/main.tf, or set any other number, and this fails.
+  assert {
+    # The module plans swarm-api from the file-level variables: the reference
+    # terraform test requires, and a control that this run planned at all.
+    condition = contains(keys(google_cloud_run_v2_service.this), "swarm-api") && length(regexall(
+      "(?s)\n    \"swarm-api\" = \\{\n.*?\n      startup_failure_threshold = 36\n.*?\n    \"swarm-scheduler\" = \\{",
+      file("../../terraform/infra/main.tf"),
+    )) == 1
+    error_message = "terraform/infra/main.tf must set startup_failure_threshold = 36 in swarm-api's block of module \"cloud_run\""
+  }
+
+  # MUTATION: add startup_failure_threshold to any other service's block and
+  # this fails.
+  assert {
+    condition     = contains(keys(google_cloud_run_v2_service.this), "swarm-api") && length(regexall("(?m)^\\s*startup_failure_threshold\\s*=", file("../../terraform/infra/main.tf"))) == 1
+    error_message = "only swarm-api sets startup_failure_threshold in terraform/infra/main.tf; every other service keeps the module's 12"
+  }
+}
+
+# SWARM-API'S REQUEST TIMEOUT OUTLASTS A GIT CALL (archived issue 2576). swarm-api runs
+# git_push_branch, git_fetch and git_rebase_onto against GitHub under
+# gitexec.CALL_DEADLINE_SECONDS = 600 (apps/swarm-api/swarm_api/gitexec.py).
+# At the module's 300s default, Cloud Run cuts a 300-600 s call with a 504 the
+# worker reads as api_unavailable, and the publish fails exactly as the
+# worker-side 10 s timeout made it fail. 660s is the deadline plus 60 s for the
+# bundle and the answer, and equals the worker's
+# agent_worker.gittools.GIT_CALL_TIMEOUT_SECONDS. Read from the root's text, as the
+# startup_failure_threshold run above does.
+run "the_infra_root_gives_swarm_api_a_request_timeout_above_the_git_call_deadline" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  # MUTATION: drop `request_timeout = "660s"` from swarm-api's block in
+  # terraform/infra/main.tf (it falls back to the module's 300s), or set any
+  # other value, and this fails.
+  assert {
+    # The module plans swarm-api from the file-level variables: the reference
+    # terraform test requires, and a control that this run planned at all.
+    condition = contains(keys(google_cloud_run_v2_service.this), "swarm-api") && length(regexall(
+      "(?s)\n    \"swarm-api\" = \\{\n.*?\n      request_timeout += \"660s\"\n.*?\n    \"swarm-scheduler\" = \\{",
+      file("../../terraform/infra/main.tf"),
+    )) == 1
+    error_message = "terraform/infra/main.tf must set request_timeout = \"660s\" in swarm-api's block of module \"cloud_run\": gitexec.CALL_DEADLINE_SECONDS is 600, and the module's 300s default cuts a longer git call with a 504"
+  }
+}
+
+# STARTUP CPU BOOST ON SWARM-API AND NOWHERE ELSE (the owner's decision, 2026-10-23,
+# archived issue 1816 option (a)): the one recorded exception to invariant 7 among the Cloud
+# Run services. Boost bursts past the declared limit while an instance starts;
+# swarm-api's Python start on 1 vCPU sometimes outlasted its startup probe.
+run "a_service_that_sets_startup_cpu_boost_gets_it_and_no_other_does" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    services = {
+      "swarm-api" = {
+        service_account_email = "swarm-api@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-api:test"
+        max_instances         = 20
+        startup_cpu_boost     = true
+      }
+      "swarm-scheduler" = {
+        service_account_email = "swarm-scheduler@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler:test"
+        max_instances         = 3
+        concurrency           = 1
+      }
+    }
+  }
+
+  # MUTATION: keep the module's fixed `startup_cpu_boost = false` (ignore
+  # each.value.startup_cpu_boost) and this fails.
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-api"].template[0].containers[0].resources[0].startup_cpu_boost == true
+    error_message = "swarm-api's startup_cpu_boost must reach the revision (the owner, 2026-10-23, #1816 option (a))"
+  }
+
+  # MUTATION: change the attribute's default from false to true and this fails.
+  assert {
+    condition     = google_cloud_run_v2_service.this["swarm-scheduler"].template[0].containers[0].resources[0].startup_cpu_boost == false
+    error_message = "a service that sets no startup_cpu_boost must keep it off: boost bursts past the declared limit (invariant 7)"
+  }
+
+  # The boost is the exception; CPU always allocated is not relaxed with it.
+  assert {
+    condition = alltrue([
+      for name, svc in google_cloud_run_v2_service.this :
+      svc.template[0].containers[0].resources[0].cpu_idle == false
+    ])
+    error_message = "cpu_idle stays false on every service, swarm-api included: the boost exception does not extend to it"
+  }
+}
+
+# The root turns the boost on for swarm-api and for no other service. Read from
+# the root's text, as the startup_failure_threshold run above does, because a
+# test cannot address a child module's resources from terraform/infra.
+run "the_infra_root_boosts_swarm_api_and_nothing_else" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  # MUTATION: drop `startup_cpu_boost = true` from swarm-api's block in
+  # terraform/infra/main.tf, or set it false, and this fails.
+  assert {
+    condition = contains(keys(google_cloud_run_v2_service.this), "swarm-api") && length(regexall(
+      "(?s)\n    \"swarm-api\" = \\{\n.*?\n      startup_cpu_boost = true\n.*?\n    \"swarm-scheduler\" = \\{",
+      file("../../terraform/infra/main.tf"),
+    )) == 1
+    error_message = "terraform/infra/main.tf must set startup_cpu_boost = true in swarm-api's block of module \"cloud_run\" (the owner, 2026-10-23, #1816)"
+  }
+
+  # MUTATION: set startup_cpu_boost on any other service's block (true or
+  # false) and this fails.
+  assert {
+    condition     = contains(keys(google_cloud_run_v2_service.this), "swarm-api") && length(regexall("(?m)^\\s*startup_cpu_boost\\s*=", file("../../terraform/infra/main.tf"))) == 1
+    error_message = "only swarm-api sets startup_cpu_boost in terraform/infra/main.tf; every other service keeps the module's false"
+  }
+}
+
+# SWARM-API ROLLS FIRST (owner's pick, 2026-11-02, archived issue 3041). terraform/infra
+# calls this module once for swarm-api and once for the rest, the second
+# waiting on the first; swarm-api's run.invoker grants stay in the second call,
+# at the addresses they always had, through `invokers_elsewhere`.
+# tests/unit/scripts/test_cloud_run_api_first.py holds the root's side.
+run "a_grant_on_a_service_another_call_creates_keeps_its_address" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    services = {
+      "swarm-scheduler" = {
+        service_account_email = "swarm-scheduler@example-project.iam.gserviceaccount.com"
+        image                 = "us-central1-docker.pkg.dev/example-project/swarm-images/swarm-scheduler:test"
+        max_instances         = 3
+        concurrency           = 1
+        invokers              = { tick = "serviceAccount:swarm-tick@example-project.iam.gserviceaccount.com" }
+      }
+    }
+    invokers_elsewhere = {
+      "swarm-api" = {
+        eng = "group:eng@example.com"
+        iap = "serviceAccount:service-123@gcp-sa-iap.iam.gserviceaccount.com"
+      }
+    }
+  }
+
+  # MUTATION: drop invokers_elsewhere from the invokers for_each and this fails.
+  assert {
+    condition = (
+      !contains(keys(google_cloud_run_v2_service.this), "swarm-api")
+      && google_cloud_run_v2_service_iam_member.invokers["swarm-api:iap"].name == "swarm-api"
+      && google_cloud_run_v2_service_iam_member.invokers["swarm-api:iap"].member == "serviceAccount:service-123@gcp-sa-iap.iam.gserviceaccount.com"
+      && google_cloud_run_v2_service_iam_member.invokers["swarm-api:eng"].name == "swarm-api"
+    )
+    error_message = "a grant in invokers_elsewhere must be planned at invokers[\"<service>:<label>\"] on the service it names, without this call creating that service"
+  }
+
+  # A service this call creates still grants on its own resource.
+  assert {
+    condition     = google_cloud_run_v2_service_iam_member.invokers["swarm-scheduler:tick"].name == "swarm-scheduler"
+    error_message = "a service's own invokers must still grant on it"
+  }
+}
+
+run "a_service_granted_both_here_and_elsewhere_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    invokers_elsewhere = {
+      "swarm-api" = { iap = "serviceAccount:service-123@gcp-sa-iap.iam.gserviceaccount.com" }
+    }
+  }
+
+  expect_failures = [var.invokers_elsewhere]
+}
+
+run "allauthenticatedusers_is_refused_elsewhere_too" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/cloud_run"
+  }
+
+  variables {
+    services = {}
+    invokers_elsewhere = {
+      "swarm-api" = { everyone = "allAuthenticatedUsers" }
+    }
+  }
+
+  expect_failures = [var.invokers_elsewhere]
+}

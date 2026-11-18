@@ -1,0 +1,687 @@
+# Security scanning.
+#
+# Runs on every pull request AND on a weekly schedule. The schedule is the
+# important half: a dependency that was clean when it merged is not clean
+# forever, and a vulnerability disclosed after merge is invisible to PR-only
+# scanning until someone happens to touch that file.
+#
+# Findings are uploaded as SARIF so they appear in the repository's Security tab
+# with file and line annotations, rather than only in a log nobody re-reads.
+
+name: security
+
+on:
+  # A LANE'S PULL REQUEST RUNS NOTHING (owner direction, 12 November 2026:
+  # no testing on lane pull requests, only on the merge train's run on its
+  # way to main, to cut CI wait time; docs/ci.md "A lane's pull request runs
+  # no checks"). A pull request whose head is a `swarm/` branch of this
+  # repository skips every job here: each job's `if:` ends with
+  # `&& !(<that pull request>)`, a job skipped by its own `if:` reports a
+  # passing required check, and the merge train's pull request runs
+  # them on the change.
+  # The train's pull request (`train/`), main, a queue entry, a fork and any
+  # other branch run exactly what they ran before.
+  # tests/unit/scripts/test_fast_checks_on_lane_prs.py.
+  pull_request:
+  # Main only, never a lane branch (owner decision 2026-11-02, CI once per
+  # head, part of archived issue 2688): a lane head's four required checks of this workflow
+  # report from its pull request's run, once (application.yml says why).
+  push:
+    branches: [main]
+  # MAIN MERGES THROUGH A MERGE QUEUE (owner decision 2026-10-06, docs/ci.md
+  # "Merging through the merge queue"). Four of the ruleset's required
+  # checks are this workflow's, and a queue entry waits for them on its own
+  # `gh-readonly-queue/main/...` ref: without this trigger they never report
+  # there and the queue drops every entry at its timeout. No filter, ever
+  # (tests/unit/scripts/test_merge_queue_workflows.py). While the queue is off
+  # GitHub never raises this event, so nothing else changes.
+  merge_group:
+    types: [checks_requested]
+  schedule:
+    # Mondays, 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+# Least privilege at workflow level (archived issue 457, docs/merge-step.md M4/R4).
+# `id-token: write` lets a job mint a Google identity token through workload
+# identity federation, so it is declared only on the job that authenticates to
+# Google (`images`). `security-events: write` is declared only on the two jobs
+# that upload SARIF (`filesystem`, `iac`). A job-level `permissions:` block
+# REPLACES this one.
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TRIVY_VERSION: "0.74.0"
+  CHECKOV_VERSION: "3.3.17"
+
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted runner pool's VMs through the one guarded
+# `runs-on` expression: a fork's pull request, or the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
+# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
+jobs:
+  filesystem:
+    # NOT FOLDED, on purpose (owner decision 2026-10-21 on PR 1813): this is
+    # the one check that uploads SARIF, so it is the one job that holds
+    # security-events: write. Folded into `checks`, that permission would
+    # reach `secret scan` and `platform policy assertions`, which run
+    # repository scripts (scripts/destroy.sh --self-test) a lane's pull
+    # request can edit. One VM a run buys least privilege.
+    name: trivy (repo)
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
+    # Uploads SARIF to code scanning: the only reason this job holds
+    # security-events: write.
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: install trivy
+        # Explicit and pinned, not aquasecurity/trivy-action: that action's
+        # setup restores its binary from actions/cache at /home/runner/.local/bin,
+        # which exists on GitHub's image but not on the self-hosted VM, so the
+        # cache "hit" extracted nowhere and `trivy` was missing (exit 127, then
+        # no trivy-fs.sarif). The install goes into the job's temp dir (the
+        # self-hosted runner user cannot write /usr/local/bin) and works the same
+        # on both runner kinds.
+        run: |
+          set -euo pipefail
+          # scripts/install-trivy.sh says why not trivy's own install.sh.
+          scripts/install-trivy.sh "${RUNNER_TEMP}/bin"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      - name: download the trivy vulnerability DB
+        # Its own step, retried, because the download is the flaky part
+        # (archived issue 2351): mirror.gcr.io answered 404 for the DB on a push run at
+        # d6a740b1 whose earlier run had passed, the job read red with no
+        # finding behind it, and the merge step's free re-run often read red
+        # again for the same reason. Three tries at the mirror with a short
+        # backoff, then the upstream repository the mirror copies (the owner,
+        # 2026-10-27, "Both halves"). Both down still fails the job: a scan
+        # with no DB reports no vulnerability, and that is not a pass.
+        env:
+          DB_MIRROR: mirror.gcr.io/aquasec/trivy-db:2
+          DB_UPSTREAM: ghcr.io/aquasecurity/trivy-db:2
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if trivy fs --download-db-only --db-repository "${DB_MIRROR}" --no-progress .; then
+              exit 0
+            fi
+            echo "::warning::trivy DB download from ${DB_MIRROR} failed (attempt ${attempt} of 3)"
+            if [ "${attempt}" -lt 3 ]; then sleep $((attempt * 10)); fi
+          done
+          echo "::warning::falling back to ${DB_UPSTREAM}"
+          trivy fs --download-db-only --db-repository "${DB_UPSTREAM}" --no-progress . \
+            || { echo "::error::the trivy vulnerability DB could not be downloaded from ${DB_MIRROR} or ${DB_UPSTREAM}"; exit 1; }
+
+      - name: write the accept list for the filesystem scan
+        # The gate's own filtered copy of .trivyignore.yaml: unexpired entries
+        # scoped to apps/swarm-speech/uv.lock alone (the owner, 2026-11-05, archived issue 2688),
+        # so code scanning's alerts honour the same list and the same expiry
+        # as the gate. One filter, in scripts/trivy-new-findings.sh.
+        run: |
+          set -euo pipefail
+          scripts/trivy-new-findings.sh accept-list "${RUNNER_TEMP}/trivy-fs.trivyignore.yaml"
+
+      - name: trivy filesystem scan
+        # Report everything (exit 0); the gate is the step after the upload.
+        # --skip-db-update: the step above fetched the DB; a second download
+        # here would meet the mirror's 404 again, unretried.
+        run: |
+          set -euo pipefail
+          trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
+            --ignore-unfixed --format sarif --output trivy-fs.sarif \
+            --ignorefile "${RUNNER_TEMP}/trivy-fs.trivyignore.yaml" \
+            --exit-code 0 --skip-db-update --no-progress .
+
+      - name: upload SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: fail on fixable HIGH/CRITICAL new against the base branch
+        # Only findings the base branch's scan of the same target does not
+        # have, compared by rule id + package + target, never by line (PR 1186
+        # had main's alerts re-attributed to its edited FROM lines; archived issue 1194).
+        # No base (main's push, schedule): every finding fails. Every finding
+        # is still in the Security tab above. scripts/trivy-new-findings.sh
+        # says why.
+        #
+        # A LANE PUSH (`swarm/**`) compares with main's tip, the base its pull
+        # request will have: with no base, every finding main already carries
+        # would fail it, and the merge step holds a red push run at the head
+        # as red. A tip that cannot be read fails here, never "no base".
+        #
+        # TRIVY_SKIP_DB_UPDATE: the gate's head scan judges against the DB the
+        # download step fetched (with its retry and fallback), never a fresh,
+        # unretried download of its own (archived issue 2351).
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          TRIVY_SKIP_DB_UPDATE: "true"
+        run: |
+          set -euo pipefail
+          base="${BASE_SHA}"
+          if [ -z "${base}" ] && [ "${EVENT}" = "push" ] && [ "${REF}" != "refs/heads/main" ]; then
+            tip="$(git ls-remote origin refs/heads/main)" \
+              || { echo "::error::could not read main's tip to compare this lane push with"; exit 1; }
+            base="$(printf '%s\n' "${tip}" | awk '$2 == "refs/heads/main" { print $1 }')"
+            if ! printf '%s' "${base}" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "::error::main's tip read as '${base}', not a commit; nothing to compare this lane push with"
+              exit 1
+            fi
+            echo "lane push: comparing with main's tip ${base}"
+          fi
+          scripts/trivy-new-findings.sh gate --base "${base}"
+
+  secrets:
+    # NAME-KEEPER (CI-FOLD, archived issue 1799): the `secret scan · ...` steps of
+    # `checks` run the check; this passes only on its verdict `success`.
+    # `!cancelled()`, not `always()` (archived issue 2582): it still runs, and fails, when
+    # `checks` failed, but a run concurrency cancelled no longer posts a
+    # `failure` for a required check whose folded job only stopped.
+    name: secret scan
+    runs-on: ubuntu-24.04
+    needs: checks
+    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
+    steps:
+      - name: the folded check passed in `checks`
+        env:
+          CHECK: secret scan
+          VERDICT: ${{ needs.checks.outputs.secrets }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
+
+  iac:
+    name: checkov (terraform + kubernetes)
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
+    # Uploads SARIF to code scanning: the only reason this job holds
+    # security-events: write.
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: install checkov
+        run: pip install "checkov==${CHECKOV_VERSION}"
+
+      - name: scan terraform
+        run: |
+          set -euo pipefail
+          checkov -d terraform --framework terraform \
+            --output cli --output sarif --output-file-path console,checkov-tf.sarif \
+            --compact
+
+      - name: render the manifests
+        # Scanned RENDERED, not raw.
+        #
+        # The files in kubernetes/ are templates with __TOKEN__ placeholders.
+        # Checkov reads a placeholder image reference as an unpinned tag and
+        # reports a finding about a value that is not the deployed value, and
+        # when a placeholder makes a file unparseable checkov SKIPS the file
+        # silently and still exits 0 -- so the scan reports clean while the two
+        # most security-sensitive manifests in the repository, the ones where
+        # runAsNonRoot, allowPrivilegeEscalation, readOnlyRootFilesystem and the
+        # projected tenant secret actually live, are not scanned at all.
+        #
+        # kubernetes/render.py produces the objects that really reach a cluster,
+        # for every runner profile in the frozen catalogue. This is the same
+        # renderer `make lint` and kubernetes/apply.sh use. Its label and
+        # annotation keys render under the placeholder organisation's prefix
+        # (kubernetes/label_prefix.py refuses to guess one): no check reads a
+        # key's prefix, and this render reaches no cluster.
+        env:
+          SWARM_LABEL_PREFIX: swarm.example.com
+        run: |
+          set -euo pipefail
+          mkdir -p build/rendered
+          python3 kubernetes/render.py policies > build/rendered/policies.yaml
+          python3 kubernetes/render.py tenant --tenant lint > build/rendered/tenant.yaml
+          profiles="$(python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "apps/common")
+          from swarm_common.profiles import RUNNER_PROFILES
+          print(" ".join(sorted(RUNNER_PROFILES)))
+          PY
+          )"
+          for p in ${profiles}; do
+            python3 kubernetes/render.py job --tenant lint --profile "${p}" \
+              --task tsk_lint --attempt att_lint --lease lease_lint --generation 1 \
+              > "build/rendered/job-${p}.yaml"
+          done
+          ls -1 build/rendered
+
+      - name: scan kubernetes manifests
+        # CKV_K8S_14, _15 and _43 are skipped, and only those three. All three
+        # are about the image REFERENCE, which is not decided by these manifests:
+        # the deployed reference is chosen by the dispatcher at dispatch time and
+        # the tag it names is pinned to a vetted sha256 digest by
+        # scripts/push-images.sh, which runs `trivy image` before a digest is
+        # allowed a channel tag at all. The tag in a rendered lint artifact is
+        # render.py's default, so gating on it would gate on a placeholder.
+        #
+        # Every other kubernetes check is a hard gate. Nothing is soft-failed:
+        # a scan that cannot fail is the thing this step is replacing.
+        run: |
+          set -euo pipefail
+          checkov -d build/rendered --framework kubernetes \
+            --skip-check CKV_K8S_14,CKV_K8S_15,CKV_K8S_43 \
+            --output cli --output sarif --output-file-path console,checkov-k8s.sarif \
+            --compact
+
+      - name: upload SARIF (terraform)
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: checkov-tf.sarif
+          category: checkov-terraform
+
+      - name: upload SARIF (kubernetes)
+        # Uploaded separately, and previously not uploaded at all: a finding that
+        # only ever appears in a job log is a finding nobody re-reads.
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: checkov-k8s.sarif
+          category: checkov-kubernetes
+
+  policy:
+    # NAME-KEEPER (CI-FOLD, archived issue 1799): the `platform policy assertions · ...` steps of
+    # `checks` run the check; this passes only on its verdict `success`.
+    # `!cancelled()`, not `always()`: as `secret scan` above (archived issue 2582).
+    name: platform policy assertions
+    runs-on: ubuntu-24.04
+    needs: checks
+    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
+    steps:
+      - name: the folded check passed in `checks`
+        env:
+          CHECK: platform policy assertions
+          VERDICT: ${{ needs.checks.outputs.policy }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
+
+  deployment-values:
+    # ITS OWN JOB, NEVER A FOLD OF `checks` (independent review, 14 November
+    # 2026): it holds the pattern list, so no code from the change under test
+    # runs in it or before it (docs/design/generic-repository.md, section 4.3:
+    # the check never runs pull-request code). The guard comes from the base
+    # commit, checked out into guard/; the change is checked out into pr/ as
+    # data only. A step of `checks` could otherwise reach this one through
+    # $GITHUB_ENV or $GITHUB_PATH, and an edited guard could print the list.
+    # The ruleset requires this check by its name: keep `deployment-values`.
+    name: deployment-values
+    runs-on: ubuntu-24.04
+    if: ${{ !cancelled() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
+    permissions:
+      contents: read
+    steps:
+      - name: checkout · the guard, from the base commit
+        uses: actions/checkout@v5
+        with:
+          # A dispatch from another branch still runs main's guard.
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
+          path: guard
+          persist-credentials: false
+
+      - name: checkout · the change, as data only
+        uses: actions/checkout@v5
+        with:
+          path: pr
+          # Full history: --diff reads the merge base.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # THE DEPLOYMENT-VALUES GUARD, ENFORCING (docs/design/generic-repository.md,
+      # section 4; part of archived issue 2688). Nothing in this repository may tie it to a
+      # company, a person or a live deployment. scripts/guards/deployment-values.sh
+      # finds such values by their shape (rules in the tree) and by their name
+      # (the pattern list, the DEPLOYMENT_PATTERNS secret), and prints
+      # `path:line C<n> <rule-id>`, never the value.
+      #
+      #   * a pull request or a merge-queue entry: only the lines it adds
+      #     (--diff reads the merge base; the checkout above is full history);
+      #   * main, the schedule and a dispatch: every tracked file.
+      #
+      # The list unset or altered on a same-repository run is exit 2: red, never
+      # a pass. A FORK'S PULL REQUEST gets no secrets, so it runs the shape layer
+      # alone and says so; it prints only pass or fail and a count, never a
+      # path:line or a rule id, so nobody can test guesses against the list one
+      # string at a time. The maintainer reads the per-line report from a
+      # same-repository rerun or the worker's gate.
+      - name: deployment-values · enforce
+        id: deployment-values-enforce
+        env:
+          DEPLOYMENT_PATTERNS: ${{ secrets.DEPLOYMENT_PATTERNS }}
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          QUEUE_BASE: ${{ github.event.merge_group.base_sha }}
+          FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        working-directory: pr
+        run: |
+          set -euo pipefail
+          # The guard, its library and its allowlist are the BASE commit's
+          # (guard/); the change is data in pr/, never run.
+          guard="${GITHUB_WORKSPACE}/guard/scripts/guards/deployment-values.sh"
+          case "${EVENT}" in
+            pull_request) scope=(--diff "${PR_BASE}") ;;
+            merge_group)  scope=(--diff "${QUEUE_BASE}") ;;
+            *)            scope=(--tree) ;;
+          esac
+          if [ "${FORK}" = "true" ]; then
+            # No secret reaches a fork's run. Not under CI=true, which would
+            # read the missing list as exit 2: the shape layer runs, the name
+            # layer says it was skipped, and that is exit 3.
+            rc=0
+            env -u CI -u DEPLOYMENT_PATTERNS "${guard}" "${scope[@]}" --mode summary || rc=$?
+            case "${rc}" in
+              0|3) echo "::notice title=deployment-values::a fork's pull request: the shape layer passed; the name layer needs the pattern list, which forks never get, and runs on a same-repository rerun"; exit 0 ;;
+              1) echo "::error title=deployment-values::the shape layer found deployment values in this pull request's added lines"; exit 1 ;;
+              *) echo "::error title=deployment-values::the guard exited ${rc}"; exit 1 ;;
+            esac
+          fi
+          "${guard}" "${scope[@]}" --mode enforce
+
+  checks:
+    # SUB-MINUTE CHECKS SHARE A JOB (CI-FOLD, archived issue 1799; owner approval
+    # 2026-10-21; docs/ci.md "Sub-minute checks share a job"). `secret scan`
+    # and `platform policy assertions` -- two of the ruleset's required
+    # checks -- each paid a VM create and boot (~52 s) for under a minute of
+    # work. `trivy (repo)` stays its own job (`filesystem`, above), so this one
+    # holds no write permission. They run here as steps named `<the old job's
+    # name> · <what it does>`, every one `!cancelled()` so one check failing
+    # never hides another's answer, and any failed step fails this job. The
+    # `verdict` step gives each check one result, and its old job id --
+    # `secrets`, `policy` -- stays as a name-keeper on
+    # ubuntu-24.04 that reports it under the required name.
+    # `deployment-values` is NOT folded here: it holds the pattern list, and
+    # these steps run the change's own scripts (its job, above, says why).
+    #
+    # Step ids are the contract: `setup-*` is the shared setup, every step of
+    # a check is `<old job id>-*`, and the last is `verdict`
+    # (tests/unit/scripts/test_ci_fold.py).
+    name: sub-minute checks (secret scan, policy)
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
+    # Read-only (owner decision 2026-10-21 on PR 1813): these steps run
+    # repository scripts, so they get no write permission of any kind.
+    permissions:
+      contents: read
+    outputs:
+      secrets: ${{ steps.verdict.outputs.secrets }}
+      policy: ${{ steps.verdict.outputs.policy }}
+    steps:
+      - name: setup · checkout
+        id: setup-checkout
+        uses: actions/checkout@v5
+        with:
+          # Full history, for `secret scan`: a key removed in the latest commit
+          # is still a leaked key if it is reachable anywhere in the branch.
+          fetch-depth: 0
+
+      - name: setup · install trivy
+        id: setup-trivy
+        # Explicit and pinned, not aquasecurity/trivy-action: that action's
+        # setup restores its binary from actions/cache at /home/runner/.local/bin,
+        # which exists on GitHub's image but not on the self-hosted VM, so the
+        # cache "hit" extracted nowhere and `trivy` was missing (exit 127, then
+        # no trivy-fs.sarif). The install goes into the job's temp dir (the
+        # self-hosted runner user cannot write /usr/local/bin) and works the same
+        # on both runner kinds.
+        run: |
+          set -euo pipefail
+          # scripts/install-trivy.sh says why not trivy's own install.sh.
+          scripts/install-trivy.sh "${RUNNER_TEMP}/bin"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
+      # --- secret scan ---------------------------------------------------------
+      # First, before any step below writes a report into the checkout.
+      - name: secret scan · trivy secret scan (history)
+        id: secrets-trivy
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          # trivy is the shared `setup · install trivy` step's.
+          trivy fs --scanners secret --severity HIGH,CRITICAL --exit-code 1 --no-progress .
+
+      - name: secret scan · no service account keys in the repository
+        id: secrets-keys
+        if: ${{ !cancelled() }}
+        # WIF exists so that no downloadable key is ever needed. A committed key
+        # is a credential with no expiry and no record of where it was copied.
+        run: |
+          set -euo pipefail
+          # Scan TRACKED files only, via git ls-files. Scanning the working tree
+          # would match vendored library source (cryptography and google-auth
+          # both contain PEM header literals) and report a leak that is not one.
+          fail=0
+          if git ls-files -z | xargs -0 grep -lIE '"type"[[:space:]]*:[[:space:]]*"service_account"' 2>/dev/null; then
+            echo "::error::a Google service account key appears to be committed"
+            fail=1
+          fi
+          if git ls-files -z | xargs -0 grep -nIE -- '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----' 2>/dev/null; then
+            echo "::error::a private key appears to be committed"
+            fail=1
+          fi
+          if [ "${fail}" -eq 0 ]; then echo "no keys found"; fi
+          exit "${fail}"
+
+      # --- platform policy assertions ----------------------------------------
+      - name: platform policy assertions · no Spot anywhere
+        id: policy-spot
+        if: ${{ !cancelled() }}
+        # Verified constraint: Spot Pods cannot use GKE Autopilot extended run
+        # time, so Spot and the platform's no-preemption requirement are
+        # mutually exclusive. The frozen catalogue raises at import if a profile
+        # tries; this catches the Terraform and manifest sides.
+        run: |
+          set -euo pipefail
+          fail=0
+          # Terraform must never ASK for spot or preemptible capacity.
+          if grep -rnIE '(spot|preemptible)[[:space:]]*=[[:space:]]*true' \
+               --exclude-dir=.git --exclude-dir=.terraform terraform 2>/dev/null; then
+            echo "::error::Spot/preemptible capacity is disabled platform-wide"
+            fail=1
+          fi
+          # Worker pods must never SELECT or TOLERATE spot nodes. The admission
+          # policies in kubernetes/policies/ mention the same label in order to
+          # REJECT it, so only the templates are checked here.
+          #
+          # The directory MUST exist. It used to be an `if [ -d ... ] && grep`,
+          # which is the shape this repository keeps being bitten by: a renamed
+          # or missing directory reads exactly like a clean one, and invariant 6
+          # is then asserted by a check that never opened a file. Absence is a
+          # failure of the check, not a pass.
+          if [ ! -d kubernetes/worker-templates ]; then
+            echo "::error::kubernetes/worker-templates is missing; this check cannot run"
+            echo "::error::If the templates moved, point this step at the new path."
+            fail=1
+          else
+            # grep's three answers are kept apart: 0 found, 1 clean, anything
+            # else could not look. Collapsing the third into the second is how a
+            # check reports a clean tree it never read.
+            set +e
+            grep -rnIE 'cloud\.google\.com/gke-spot' kubernetes/worker-templates
+            status=$?
+            set -e
+            if [ "${status}" -eq 0 ]; then
+              echo "::error::a worker template requests Spot capacity"
+              fail=1
+            elif [ "${status}" -ne 1 ]; then
+              echo "::error::grep exited ${status} over kubernetes/worker-templates;"
+              echo "::error::this check could not run, which is a failure and not a pass"
+              fail=1
+            fi
+          fi
+          if [ "${fail}" -eq 0 ]; then echo "no spot configuration"; fi
+          exit "${fail}"
+
+      - name: platform policy assertions · no public Cloud Run services
+        id: policy-public
+        if: ${{ !cancelled() }}
+        # allUsers on a control-plane service would put an agent-execution API on
+        # the public internet with no identity behind it.
+        run: |
+          set -euo pipefail
+          # Only actual GRANTS, not the variable validations that exist to
+          # forbid them -- terraform/infra/variables.tf and two modules refuse
+          # allUsers by name, and those lines must not fail this check.
+          if grep -rnIE 'members?[[:space:]]*=[[:space:]]*\[?[[:space:]]*"(allUsers|allAuthenticatedUsers)"' \
+               --exclude-dir=.git --exclude-dir=.terraform terraform 2>/dev/null; then
+            echo "::error::a public IAM member is granted in the Terraform"
+            exit 1
+          fi
+          # THE ONE DECIDED EXCEPTION (owner answer Q3 on archived issue 1384, GS-HOOKS):
+          # the GitHub push receiver swarm-github-hooks, whose public invoker
+          # is held in terraform/infra/github_hooks.tf's local
+          # `github_hooks_public_invoker`. Any other `name = "allUsers"`
+          # assignment in terraform/ -- a local, a default, an argument --
+          # fails here (a comparison, `!=` or `==`, does not), so the
+          # exception cannot quietly grow.
+          # THE SECOND (owner decision on archived issue 1628, FIXTURE-SELF): the browser
+          # acceptance fixture's bucket, one fixed page whose only input is a
+          # validated run id set as text, held in
+          # terraform/infra/acceptance_fixture.tf's local
+          # `acceptance_fixture_public_reader`.
+          public="$(grep -rnIE '(^|[^!=<>])=[[:space:]]*\[?[[:space:]]*"(allUsers|allAuthenticatedUsers)"' \
+               --exclude-dir=.git --exclude-dir=.terraform --include='*.tf' --include='*.tfvars' terraform 2>/dev/null \
+             | grep -vE '^terraform/infra/github_hooks\.tf:[0-9]+:[[:space:]]*github_hooks_public_invoker[[:space:]]*=[[:space:]]*"allUsers"$' \
+             | grep -vE '^terraform/infra/acceptance_fixture\.tf:[0-9]+:[[:space:]]*acceptance_fixture_public_reader[[:space:]]*=[[:space:]]*"allUsers"$' || true)"
+          if [ -n "${public}" ]; then
+            printf '%s\n' "${public}"
+            echo "::error::a public IAM member is assigned in the Terraform outside the GitHub push receiver and the acceptance fixture"
+            exit 1
+          fi
+          echo "no public bindings beyond the GitHub push receiver's and the acceptance fixture's"
+
+      - name: platform policy assertions · destroy guard still catches offenders
+        id: policy-destroy-guard
+        if: ${{ !cancelled() }}
+        # This guard is the only thing between `make destroy` and another team's
+        # live cluster in the shared project. It is verified here as well as in
+        # `make test`, because it is security-critical rather than merely tested.
+        run: ./scripts/destroy.sh --self-test
+
+      - name: platform policy assertions · the frozen contract is intact
+        id: policy-contract
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          for f in states.py models.py profiles.py admission.py config.py identity.py; do
+            test -f "apps/common/swarm_common/${f}" || { echo "::error::missing ${f}"; exit 1; }
+          done
+          # Spot must remain impossible to configure through the catalogue.
+          grep -q 'Spot is disabled platform-wide' apps/common/swarm_common/profiles.py \
+            || { echo "::error::the Spot guard has been removed from profiles.py"; exit 1; }
+          echo "contract present"
+
+      - name: verdict · each folded check's own result, for its name-keeper
+        # One result per check, by step id: `success` only when every shared
+        # `setup-*` step succeeded, none of the check's own `<old job id>-*`
+        # steps failed or was cancelled, and at least one of them ran;
+        # `skipped` when none ran; `failure` otherwise. Each name-keeper
+        # passes on `success` alone (docs/ci.md "Sub-minute checks share a
+        # job"). The same text in application.yml, security.yml and
+        # terraform.yml; tests/unit/scripts/test_ci_fold.py holds them equal.
+        id: verdict
+        if: always()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          CHECKS: secrets policy
+        run: |
+          set -euo pipefail
+          read -r -a checks <<< "${CHECKS}"
+          for check in "${checks[@]}"; do
+            result="$(printf '%s\n' "${STEPS}" | jq -r --arg check "${check}" '
+              [to_entries[] | select(.key | startswith("setup-")) | .value.outcome] as $setup
+              | [to_entries[] | select(.key | startswith($check + "-")) | .value.outcome] as $own
+              | if ($setup | length) == 0 or any($setup[]; . != "success") then "failure"
+                elif any($own[]; . == "failure" or . == "cancelled") then "failure"
+                elif any($own[]; . == "success") then "success"
+                else "skipped" end')"
+            echo "${check}: ${result}"
+            echo "${check}=${result}" >> "${GITHUB_OUTPUT}"
+          done
+
+  images:
+    name: trivy (published images)
+    runs-on: ubuntu-24.04
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
+    # Scheduled only: this scans what is DEPLOYED, which is the question a PR
+    # cannot answer. A base-image CVE published today affects a running fleet
+    # that no pull request is touching.
+    #
+    # Authenticates to Google through workload identity: the only reason this
+    # job holds id-token (the workflow grants it to no one by default).
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: scan the current channel images
+        env:
+          PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          REGION: ${{ vars.GCP_REGION }}
+        run: |
+          set -euo pipefail
+          # scripts/install-trivy.sh says why not trivy's own install.sh.
+          scripts/install-trivy.sh /usr/local/bin
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          repo="${REGION}-docker.pkg.dev/${PROJECT_ID}/swarm-images"
+          status=0
+          # workspace-apply too: it is the toolchain of swarm-workspace-deployer, the
+          # one identity here with project-wide account-IAM power (docs/workspaces.md §2.4).
+          # swarm-live too: the live relay carries a person's keystrokes during a sign-in,
+          # and ffmpeg is the largest third-party surface any control-plane image ships.
+          # swarm-egress too (EGRESS-BUILD): it holds the vendor credential and relays
+          # every proxied browser byte.
+          # swarm-typesafe-fwd too (SEC-INJECT-B, PR 1385): it holds every tenant's TypeSafe key in memory.
+          # swarm-graph too (GS-ROLL, part of archived issue 1384): it verifies every agent's graph ticket and serves every tenant's index.
+          # swarm-voice too (VOICE-ROLL, part of archived issue 2688): it holds the platform owner's OpenAI subscription credential in memory and relays the voice session.
+          # swarm-github-hooks too (GS-HOOKS, part of archived issue 1384): the one public service, running as the rollup sweeper account.
+          # swarm-speech too (part of archived issue 2688, docs/design/voice-it-own-speech.md §5.3, §14 L3): the speech machine pulls the digest the release pins, and it carries vLLM and torch, the largest third-party Python surface we ship.
+          for image in agent-runtime-base agent-runtime-browser agent-runtime-lightpanda agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live swarm-egress swarm-typesafe-fwd swarm-graph swarm-voice swarm-github-hooks swarm-speech; do
+            echo "==> ${image}:dev"
+            trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
+              --exit-code 1 --no-progress "${repo}/${image}:dev" || status=1
+          done
+          exit "${status}"

@@ -1,0 +1,1922 @@
+# sc — the SwarmCloud plugin
+
+Makes the cluster readable from inside a Claude Code session, and makes running
+a session's work out there a decision the session takes on its own.
+
+* `/sc` — the overview, or `/sc accounts`, `/sc agents`, `/sc capacity`,
+  `/sc trouble`, `/sc task <id>`
+* `/sc:setup` — connect GitHub as yourself, enable your orgs and choose the
+  repositories SwarmCloud may use, resumed wherever the checklist stands
+  ([below](#setting-up-github-as-yourself-and-the-repositories-swarmcloud-may-use))
+* the **`sc` skill** teaches the session how to **read** that output — chiefly
+  that `~12%` is a projection and `—` is "not measured", never zero. It is
+  read-only and lists no tool that writes.
+* the **`delegate` skill** owns the question the developer should not have to
+  ask every time: does this unit of work run here or in SwarmCloud? It covers
+  when remote is right, when local is right, what a remote agent cannot see
+  (a **clean, shallow checkout** — none of your uncommitted work), how to turn
+  a dead agent into something actionable, and when it may apply a patch into
+  your tree without asking. It **writes**, which is the whole difference
+  between the two.
+
+The delegation skill carries the honesty rule with it: remote work spends a
+**shared** subscription pool rather than your own session budget, so the
+session must always be able to say what is running remotely and what the pool
+is at. Seamless is not the same as hidden.
+
+## Install
+
+The plugin is a **client for your deployment**, not for this repository's.
+Ask your platform operator for three values first: the deployment URL, and —
+for a deployment behind IAP — its Desktop OAuth client ID and secret.
+
+In a Claude Code session (`example-org/example-repo` stands for the repository's
+own address, here and below):
+
+```text
+/plugin marketplace add example-org/example-repo
+/plugin install sc@swarmcloud
+```
+
+You are prompted for the deployment URL (required), the OAuth client ID and
+the OAuth client secret. The secret is `sensitive` in the manifest, so Claude
+Code keeps it in your system's secure credential store, never in
+`settings.json`. Three more settings have defaults: `default_target`,
+`auto_attach` and **`max_live_rows`** (how many running workflows, and how
+many single tasks, `/sc attach --all` follows as live rows: 30, held to
+1–50), and a fourth, **`tenant`**, is empty unless you name one — see
+*Acting as one of several tenants*, below. Then:
+
+```text
+/reload-plugins
+/mcp                # plugin:sc:swarmcloud should say connected
+```
+
+The server fetches the bridge from GitHub at the tag `sc-v<version>` (see
+*The bridge ships with the plugin*, below). **Between merging a version and
+pushing its tag, that tag does not exist and the server cannot start** — uv
+reports that it cannot find the ref. Until then, start Claude Code with the
+escape hatch, `SWARM_MCP_FROM=<checkout>/apps/swarm-mcp claude`.
+
+Then sign in, from a terminal:
+
+```bash
+uv run sc login    # in a checkout; a browser window opens; pick your work account
+uv run sc whoami   # context, URL, you, your tenant
+```
+
+Outside a checkout, `sc` runs from the same package the server does:
+`uv tool run --from 'swarm-mcp @ git+https://github.com/example-org/example-repo@sc-v<version>#subdirectory=apps/swarm-mcp' sc login`.
+
+`sc login` finds the deployment because the plugin's MCP server writes it to
+your config file when it starts — so start the server first (the `/mcp` line
+above), or add it yourself with `sc context add`. `sc login` ends by calling
+the API once **with the sign-in it just made**, whatever else is set on the
+machine, and warns you if `SWARM_IMPERSONATE_SA`, `SWARM_ID_TOKEN` or a GCP
+metadata server means every other command will still act as a service account
+rather than as you.
+
+From then on every tool acts **as you**. A tool called before you sign in
+answers `sign-in required for <context>: run sc login (a browser window
+opens)` rather than failing some other way. Change a value later with
+`/plugin configure sc@swarmcloud`.
+
+**More than one deployment** is a context each, `kubectl`-style —
+`uv run sc context add`, `uv run sc context use`, `uv run sc context list`,
+`uv run sc context remove` — and CI overrides all of it with `SWARM_URL` and
+`SWARM_IMPERSONATE_SA`. [docs/plugin-setup.md](../docs/plugin-setup.md) has
+the whole of it: what each command stores where, the override order, and
+this repository's `dev` values as a worked example. The operator's one-time step — one
+Desktop OAuth client per deployment, allowlisted on IAP — is
+[docs/runbooks/iap-desktop-client.md](../docs/runbooks/iap-desktop-client.md).
+
+**Nothing in the plugin names a deployment.** Until 2026-09-25 the bridge read
+`terraform/environments/<env>/<env>.tfvars` out of whatever checkout it ran
+from, so every install pointed at this deployment's cluster. It now reads Terraform only
+in developer mode (`SWARM_MCP_CONFIG_FROM=repo`), for working inside this
+repository, and `tests/unit/mcp/test_contexts.py` fails if it opens a tfvars
+file otherwise.
+
+### Where the plugin comes from
+
+The plugin lives in this repository at `plugin/`, and the repository root is
+the marketplace: `.claude-plugin/marketplace.json` lists `sc` with `plugin/` as
+its source.
+
+That file is small and easy to overlook, so it is worth saying what it is for:
+**without it none of the rest of this directory is reachable.** A plugin is
+installed from a marketplace, so a repository with skills, commands, a manifest
+and no marketplace entry has a plugin that is entirely correct and entirely
+uninstallable. It was missing until 2026-09-24 and everything here was in that
+state. `tests/unit/mcp/test_plugin_commands.py` now asserts it exists and points
+at a directory that really holds a `plugin.json`.
+
+```text
+/plugin marketplace add example-org/example-repo
+/plugin install sc@swarmcloud
+```
+
+### What an install copies: only `plugin/`
+
+`/plugin marketplace add` clones this repository into
+`~/.claude/plugins/marketplaces/swarmcloud/`. `/plugin install sc@swarmcloud`
+then copies **only `plugin/`** into
+`~/.claude/plugins/cache/swarmcloud/sc/<version>/`, and that copy is
+`${CLAUDE_PLUGIN_ROOT}`. Nothing above it exists there — Claude Code's plugin
+loading reference: "Files outside the plugin directory aren't copied" — and a
+symlink that leads out of the plugin is refused too.
+
+Until 0.4.1 the server was declared as
+`uv run --directory ${CLAUDE_PLUGIN_ROOT}/.. swarm-mcp`. In the cache,
+`${CLAUDE_PLUGIN_ROOT}/..` is `.../cache/swarmcloud/sc/`, which holds no
+`pyproject.toml`, so uv answered
+`error: Failed to spawn: swarm-mcp -- No such file or directory` and the
+session showed `plugin:sc:swarmcloud failed to connect` (measured 2026-09-25 on
+0.4.0, commit ea1355d). It had only ever worked inside a checkout — where the
+root `.mcp.json` registers the bridge anyway.
+
+### The bridge ships with the plugin — fetched, not copied
+
+`plugin.json` declares the `swarmcloud` MCP server as
+
+```text
+uv tool run --from 'swarm-mcp @ git+https://github.com/example-org/example-repo@sc-v<version>#subdirectory=apps/swarm-mcp' swarm-mcp
+```
+
+`uv tool run` builds a cached environment from a requirement and needs no
+project on disk, so the server starts wherever the session is. That line
+commits to four things:
+
+* **The ref is the plugin's own version.** The tag is `sc-v<version>`, where
+  `<version>` is `plugin.json`'s `version`. Claude Code keeps every user on
+  their cached copy until `version` changes, so the version decides which
+  skills a user has and the tag decides which bridge those skills talk to. They
+  move together, or a skill describes tools the running bridge does not have.
+  The ref is written once, in `plugin.json`;
+  `tests/unit/mcp/test_plugin_bridge_install.py` fails when it is not `sc-v`
+  followed by the version, and when it is restated anywhere else.
+* **Not `main`.** A branch would pair the skills copied at install time with
+  whatever `main` was at each server start, and make every start depend on
+  `main` being releasable at that moment.
+* **swarm-common comes from the same commit.** The bridge depends on the frozen
+  contract in `apps/common`, which is not on PyPI — and the name is unclaimed
+  there, so a bare dependency would install whoever registers it.
+  `apps/swarm-mcp/pyproject.toml` gives it a relative `path` source, and
+  uv ≥ 0.5.6 rewrites a relative path inside a git dependency into a git source
+  at the same commit, with the subdirectory relative to the checkout. One ref,
+  and no second pin to drift from it. pip does not read `[tool.uv.sources]`;
+  installing the bridge with pip is not supported.
+
+  **uv's documentation does not describe this case**, so here is what the
+  claim rests on. The docs cover the pieces: a `path` source may be relative
+  and installs "from a directory relative to the project root", and "Sources
+  are only respected by uv"
+  ([Dependency sources](https://docs.astral.sh/uv/concepts/projects/dependencies/#dependency-sources));
+  `uvx --from` takes a git URL
+  ([Requesting different sources](https://docs.astral.sh/uv/guides/tools/#requesting-different-sources)).
+  Neither page says what a relative path means once the package declaring it
+  was fetched from git. uv's 0.5.6 release notes do — "Respect path
+  dependencies within Git dependencies
+  ([#9594](https://github.com/astral-sh/uv/pull/9594))" — and the code is
+  `path_source` in `crates/uv-distribution/src/metadata/lowering.rs`. Because
+  that is a release note and not a documented contract, CI checks it on every
+  run: `uv pip compile` of the pinned requirement must resolve swarm-common
+  to `git+https://github.com/example-org/example-repo@<the same commit>#subdirectory=apps/common`.
+* **Never shorten it to `uvx swarm-mcp`.** PyPI's `swarm-mcp` is an unrelated
+  project (a Foursquare Swarm check-in server). The name before ` @ ` binds the
+  URL; a bare name is a PyPI lookup.
+
+**Releasing a version** is three steps, and the third is the easy one to
+forget: bump `version` and the ref in `plugin.json` together (the test holds
+them together), merge, then tag the merge commit and push the tag.
+
+```bash
+git fetch origin
+git tag sc-v<version> origin/main
+git push origin sc-v<version>
+```
+
+Until that tag exists the new version's server cannot start: uv reports that
+it cannot find the ref.
+
+**What it takes on the machine the session runs on:**
+
+* **`uv` ≥ 0.5.6** on the `PATH` Claude Code was started with. A session
+  started from a desktop launcher may not have `~/.local/bin` or Homebrew's
+  `bin` on its `PATH`, and `/mcp` then shows the server failing to spawn `uv`.
+* **Network to github.com and pypi.org at the first start.** uv fetches the
+  repository at the tag, fetches hatchling to build two small wheels, and
+  downloads a Python ≥ 3.11 if none is installed. Later starts reuse uv's
+  cached environment, but resolving the tag is still one request to GitHub, so a
+  start with no network fails.
+* **The first start can outlast Claude Code's MCP startup timeout**
+  (`MCP_TIMEOUT`, 30 seconds by default). How long it takes depends on the
+  network and on whether a Python has to be downloaded; CI installs the bridge
+  from a cold cache on every run and prints how long that took, which is a
+  datacentre's number rather than a laptop's. If the first connect fails,
+  reconnect the server in `/mcp` — uv resumes from what it has already cached —
+  or start that first session with `MCP_TIMEOUT=120000 claude`.
+
+**Where the API is, outside a checkout: wherever you configured it.** The
+deployment URL the install asked for reaches the bridge through the server's
+environment (`SWARM_PLUGIN_DEPLOYMENT_URL`, from `${user_config.deployment_url}`),
+and that one value decides both the address and the credential — see
+*Where the API actually is*, below. The bridge never reads this repository's
+Terraform to find it, installed from git or not, unless developer mode
+(`SWARM_MCP_CONFIG_FROM=repo`) says to.
+
+The environment still overrides the plugin, in the order
+[docs/plugin-setup.md](../docs/plugin-setup.md) gives, for CI and for anyone
+who exports one in the shell Claude Code starts from:
+
+* **`SWARM_URL=https://<address>`**, or the older `SWARM_API_URL`. An `https`
+  address that is not `*.run.app` is taken to be the IAP load balancer: nothing
+  else in this platform serves the API over https under another name. Without
+  that rule, which archived pull request 62's first version lacked, the bridge presents a Google ID
+  token for the URL, and IAP refuses that as `Invalid JWT audience`. A
+  `*.run.app` address still gets an ID token.
+* **`API_HOST=<hostname>`** (or `SWARM_API_HOST`) declares the front door.
+* **`SWARM_REPO_ROOT=<a checkout>`** names the checkout whose tfvars developer
+  mode reads. It does nothing outside developer mode.
+
+At a front door the token also has to be one IAP admits. A user's own gcloud
+access token is refused with 401, IAP error code 900, which is why `sc login`
+exists; CI sets `SWARM_IMPERSONATE_SA`.
+
+**With nothing configured at all**, the bridge says what to configure — the
+plugin's deployment URL, `sc context add`, or `SWARM_URL` — instead of
+guessing. It no longer falls back to gcloud's configured project: that
+deployment was one the user never named. `PROJECT_ID` still selects the old
+solo path (`gcloud run services proxy` against that project's `swarm-api`).
+
+### Running your own bridge: `SWARM_MCP_FROM`
+
+The `--from` value in `plugin.json` is
+`${SWARM_MCP_FROM:-<the pinned requirement>}`, and Claude Code expands
+`${VAR:-default}` in a plugin server's arguments. Set it before starting
+Claude Code:
+
+```bash
+# your working copy -- an absolute path to apps/swarm-mcp in a checkout
+SWARM_MCP_FROM="$PWD/apps/swarm-mcp" claude
+
+# an unmerged branch
+SWARM_MCP_FROM='swarm-mcp @ git+https://github.com/example-org/example-repo@<branch>#subdirectory=apps/swarm-mcp' claude
+```
+
+* A working copy is rebuilt when its source changes: `swarm_mcp/**/*.py` is one
+  of the bridge's uv cache keys, so an edit is served once the server restarts
+  (reconnect it in `/mcp`). `swarm-common` is installed editable from the
+  sibling `apps/common`.
+* **In developer mode it reads the tfvars of the checkout it was built from**
+  (`SWARM_MCP_CONFIG_FROM=repo`; without it, no tfvars are read at all, and
+  the plugin's configured deployment is used). The install is not
+  editable. The code is your working copy's, but the files are in uv's cache,
+  where nothing above them is your checkout. Going by file location alone, the
+  bridge would lose the front door that `uv run` in the same checkout finds, and
+  in archived pull request 62's first version it did. It finds the checkout from the install's own
+  record of its source. That is
+  the `direct_url.json` uv writes for a directory install (PEP 610). CI's install
+  step checks it against a real install. `SWARM_REPO_ROOT` still overrides it.
+* **Not `local`, and not any bare word.** `--from` reads a bare word as a PyPI
+  name — the trap above. Leave the variable **unset** rather than empty: an
+  empty value is passed through as an empty `--from`.
+
+Inside a checkout there is also the project `.mcp.json`, which registers
+`swarmcloud` as `uv run --directory . swarm-mcp` — the editable working tree,
+no variable needed. Its tools arrive under a different name, which is the next
+section.
+
+### The bridge arrives under two names
+
+A plugin's own MCP server is **scoped**. Its tools arrive as
+`mcp__plugin_sc_swarmcloud__*`, not `mcp__swarmcloud__*` — those are the
+project server's. A permission rule is matched and not resolved, so the wrong
+spelling grants nothing, silently, and the session behaves as though delegation
+does not work. `delegate` therefore lists **both** spellings of all eighteen
+tools, and `tests/unit/mcp/test_plugin_skills.py` holds the two lists in
+lockstep and derives the scoped prefix from `plugin.json` itself.
+
+The agents in `plugin/agents/` do **not**: each lists ONLY the plugin's scoped
+names (`mcp__plugin_sc_swarmcloud__*`). A skill's list is a permission grant,
+where a second spelling costs nothing; an agent's `tools` is the set of tools
+it can call, and in this repository's own checkout both servers load — Claude
+Code merges two servers only when their commands are identical, and
+`uv tool run --from …@sc-v<version>` is not `uv run --directory . swarm-mcp`.
+The two are not the same program: the checkout's server runs whatever branch
+is checked out, and reads its deployment from the tfvars, while the plugin's
+runs the pinned tag against the deployment in its settings. An agent granted
+both would call either, per call — `sc:workflow` could submit through one
+deployment and `sc:step` follow through the other, reading 404 on every task —
+and a stale checkout bridge silently drops arguments it does not know, such as
+`strategy`. Listing only the plugin's own server means a plugin agent runs
+exactly where its plugin's server runs, and when that server is down it fails
+loudly rather than falling through to another one: Claude Code refuses to
+launch a subagent none of whose `tools` resolve, and each agent's instructions
+say what to answer when its SwarmCloud tools are missing. The scoped form is
+`mcp__plugin_<plugin>_<server>__<tool>`; a session with the Slack plugin
+installed lists its tools as `mcp__plugin_slack_slack__*`, the same shape.
+`tests/unit/mcp/test_plugin_agents_and_workflows.py` holds each agent to
+exactly the scoped set it needs.
+
+The bridge itself now refuses an argument it does not know, rather than
+ignoring it, so a caller newer than the bridge it reaches is told so instead of
+getting a task that quietly ran without the option it asked for.
+
+### What is still repository-bound, and why
+
+**The MCP half is not.** Since 0.4.1 the server is fetched by uv rather than
+found on disk, so it starts from any working directory. Outside a checkout it
+reaches the deployment the plugin was configured with, as *Where the API is,
+outside a checkout* explains above. Before 0.4.1 this
+README said the MCP half worked from anywhere, and that was false for every
+marketplace install.
+
+**The shell half is.** `${CLAUDE_PLUGIN_ROOT}` is exported to MCP server
+subprocesses and **not** to commands Claude runs through the Bash tool, and
+`uv run sc` resolves `uv`'s project against the session's own directory:
+outside a checkout it answers that there is no `pyproject.toml`. That is a real limit,
+stated here rather than papered over, because a model that meets it without
+warning reports the platform as broken. `/sc` and the `sc` skill want the
+repository, and the plugin's two descriptions say so. The `delegate` skill's
+tools come from the MCP server and are unaffected. The shell commands the
+bridge hands back -- `follow_live_with`, a sign-in hint, the `swarm doctor`
+command a tool's error ends with when the request never reached the API -- are
+spelled for the install the bridge runs from, so they need no checkout (see
+*Where the API actually is*, below). The delegate skill names no launcher of
+its own: it tells the model to run each command exactly as the bridge spelled it.
+
+The `sc` skill and `/sc` are granted each **view** by name —
+`uv run sc accounts`, `uv run sc task`, and so on — and never `sc` as a
+prefix. `sc login`, `sc logout` and `sc context` share that prefix, and a
+prefix grant would let a session sign the developer out or move every later
+dispatch to another cluster without asking.
+`tests/unit/mcp/test_plugin_commands.py` compiles each grant the way Claude
+Code matches it and runs every command it allows through the real parsers.
+
+The CLI is the same surface without the session wrapping, and is what to reach
+for when diagnosing the plugin itself:
+
+```bash
+uv run sc            # the same output the plugin shows
+uv run sc trouble
+uv run swarm profiles
+```
+
+## What it needs
+
+`swarm-mcp` from this repository, a configured deployment (see Install), and a
+working auth tier — `uv run swarm doctor` says which deployment it resolved
+and from where, which tier this machine has, **which door it will use**, and
+what that door takes.
+
+### How the bridge paces its calls to the API
+
+Every live row's `swarm_follow` and every other tool call this session makes
+reach swarm-api as one principal, which the API allows 20 requests a second
+with a burst of 40. So the bridge holds itself below that: a quick call (a
+submit, a check, a status) goes before a hold (a row waiting on its task),
+reads several rows share are made once, and a GET answered 429 is tried again
+— a quick one for at most 20 s of waiting in all, so a person is never held
+minutes by a rate-limit storm. Three settings move it, read once when the
+bridge starts, from the environment Claude Code was started with:
+
+| setting | what it bounds | default | why that default |
+|---|---|---|---|
+| `SWARM_MCP_MAX_HOLDS` | how many holds — rows waiting on a task — the bridge runs at once; held to 32–1024 | 256 | 50 five-step workflows, three times the 17 measured on archived issue 1437; a waiting hold costs one mostly idle thread. Under 32 one big workflow's rows queue again; over 1024 threads is a host problem |
+| `SWARM_MCP_RATE_PER_SECOND` | requests a second the bridge sends swarm-api; held to 0.5–20 | 15 | below the API's 20/s, so the console open as the same person keeps 5/s; never above 20, since a gate above the limit it exists to stay under is no gate |
+| `SWARM_MCP_RATE_BURST` | requests the bridge may send at once before the rate applies; held to 1–40 | 30 | below the API's burst of 40, so the console keeps 10; a third of it is kept for quick calls, which holds never spend |
+
+A value that is not a number is ignored and the default used. Raising the
+rate or the burst toward the API's own figures leaves nothing for the console
+and the `sc` commands run beside the session, which then answer 429.
+
+### Where the API actually is
+
+Wherever **you** configured it: `--context`, `SWARM_URL`, the plugin's
+deployment URL or the current context, in that order ([docs/plugin-setup.md](../docs/plugin-setup.md)
+has the full order). On a **team** deployment that is the load balancer: the
+`*.run.app` address is internal-only — its ingress is
+`internal-and-cloud-load-balancing`, so Google's frontend refuses an outside
+caller and renders the refusal as HTTP 404, the one status a reader takes for
+"missing route on a broken deployment". A context on any host other than
+`*.run.app`, or with an OAuth client ID, is treated as that IAP front door.
+
+In **developer mode** (`SWARM_MCP_CONFIG_FROM=repo`) the bridge instead reads
+`frontend_hostname` out of `terraform/environments/<env>/<env>.tfvars`, the same
+three-source order `scripts/lib/common.sh` uses, with `API_HOST` overriding it.
+That is for working inside this repository and is never the default.
+
+The doors take **different credentials**, which is the other half:
+
+| Door | Who you are | Credential |
+|---|---|---|
+| the IAP load balancer | a developer, signed in with `sc login` | an **ID** token for the deployment's Desktop OAuth client |
+| the IAP load balancer | CI, `SWARM_IMPERSONATE_SA` | the service account's OAuth **ACCESS** token |
+| Cloud Run directly | an in-VPC caller, or CI on a solo deployment | a Google **ID** token for the service URL |
+| a solo deployment's `*.run.app` address | a developer on ordinary gcloud credentials | gcloud's own **ID** token (`gcloud auth print-identity-token`), which Cloud Run takes from an account holding `run.routes.invoke` |
+
+Measured on 2026-09-24 against the live front door: a gcloud **user** access
+token is refused **401, IAP error code 900**, because the deployment's IAP uses
+a Google-managed OAuth client, which admits only allowlisted programmatic
+clients — that is why `sc login` exists. An impersonated service account's
+access token is refused **403 naming that service account** — IAP saying
+"authenticated, not authorised", one `roles/iap.httpsResourceAccessor` grant
+from working. That grant is `frontend_iap_members` in
+`terraform/bootstrap/terraform.tfvars`, applied by the owner rather than by CI.
+`SWARM_IAP_CLIENT_ID` applies only where a deployment configured its own IAP
+OAuth client, which this one deliberately does not (a client id there means a
+client secret in Terraform state).
+
+**A command the bridge hands back is spelled for the install it is running
+from**, by one function (`swarm_mcp.invocation.terminal_command`), so it runs
+where the bridge runs and reaches the same version of it:
+
+| The bridge is running from | A command reads |
+|---|---|
+| a checkout of this repository (its `.mcp.json`, or a shell inside it) | `uv run swarm tail <id>` |
+| `uv tool install`, with that install's `swarm` on your PATH | `swarm tail <id>` |
+| the plugin, with nothing installed | `uv tool run --from 'swarm-mcp @ git+https://github.com/example-org/example-repo@sc-v<version>#subdirectory=apps/swarm-mcp' swarm tail <id>` |
+| the escape hatch, `SWARM_MCP_FROM` | `uv tool run --from <that value> swarm tail <id>` |
+
+The plugin-only row is rebuilt from the install's own record of where it came
+from, so it names the same tag the server was started with. Until 0.5.2 every
+row read `uv run`, which outside a checkout answers `Failed to spawn: swarm`
+(archived issue 189). A `swarm` on your PATH from some other install is not used: it is
+installed on its own and can be another version. Run what the bridge hands
+back rather than retyping it.
+
+### Acting as one of several tenants
+
+With no choice made, the API picks your default: your own personal workspace
+when it is **ready**, otherwise the first matching registered group in the
+order the admin registered them (archived issue 1200; `docs/multi-tenancy.md`). Your groups
+are what you choose instead (archived issue 447). The choice is sent as `X-Swarm-Tenant` on every request, and
+the API honours it only when your verified membership includes that tenant's
+group: the header selects among your memberships, it never grants one. A
+tenant you are not a member of is refused with 403 `tenant_not_member`, and
+that refusal is shown as the API wrote it.
+
+| Surface | List your tenants | Choose one |
+|---|---|---|
+| terminal | `swarm tenants` (`--json`), the current one marked `*` | `swarm --tenant <id> ...`, or `SWARM_TENANT=<id>`; the flag wins |
+| `sc` | `sc whoami` / `sc config` show the tenant that answered and which setting chose it | `SWARM_TENANT=<id>`, read once per invocation |
+| MCP | `swarm_tenants` (read-only) | the plugin's **`tenant`** setting, or `SWARM_TENANT` in the environment Claude Code started with — **the environment wins**; read once when the bridge starts |
+| SessionStart hook | — | the same as the MCP server: `SWARM_TENANT` if set, else the `tenant` setting |
+
+Nothing chosen sends no header at all, and the API's default applies. The
+bridge's setting is per session, not per call: a session whose calls could
+each name a tenant would read one tenant's rows and act on another's.
+
+**`sc` reads `SWARM_TENANT`** (SC-TENANT, owner decision 2026-10-12). Before
+archived issue 1200 every tool that sent no header landed in the same first group, so `sc`
+sending none was harmless. Once a ready personal workspace became the default,
+`sc` would have read your personal workspace while the bridge, the plugin's
+tools and `swarm` acted in the group you chose — two views of "your" tasks
+that disagree. `sc` now chooses with the same helper they do
+(`client.chosen_tenant`) and names that tenant on every request.
+
+**The plugin's `tenant` setting** (`/plugin configure sc@swarmcloud`) is how a
+plugin session stays in a group without exporting anything. The manifest
+passes it to the bridge as
+`SWARM_TENANT: ${SWARM_TENANT:-${user_config.tenant}}`: Claude Code
+substitutes the setting first and then expands the variable from its own
+environment, so **a `SWARM_TENANT` in the environment Claude Code was started
+with wins** — set, even empty (empty means your default). The SessionStart
+hook applies the same rule before its `sc workflows`, so the workflows it
+names are the tenant's the session will act on. The setting does **not**
+reach a `uv run sc` the `sc` skill or `/sc` runs through the Bash tool: that
+process sees only the session's environment, so export `SWARM_TENANT` there
+(or start Claude Code with it) to move `sc` as well.
+
+## Choosing a runner profile
+
+A caller names a **profile** and nothing else — never an image, a command, a
+resource spec or a backend. That is invariant 10 and it is the rule that stops
+an authenticated caller turning the swarm into arbitrary compute.
+
+So the names have to come from somewhere a session can reach, and they come
+from `swarm_profiles` (the tool) and `uv run swarm profiles` (the terminal),
+which are the same function over `swarm_common.profiles.RUNNER_PROFILES` — the
+frozen catalogue itself, not a list copied into a skill. They read nothing from
+the network, which is why they still answer when the cluster does not.
+
+Neither shows an image or a command. That is deliberate: a field a session can
+see is a field a session will eventually offer to set.
+
+**Start at `claude-code`, the standard class.** Move a step up only when it
+was OOM-killed or ran out of time there, and then to `claude-code-medium`
+before `claude-code-large`: over the 7 days to 6 November 2026, 96% of the
+large attempts fit medium, and every large request came from a spec sent
+through this plugin. A step that names `claude-code-large` is still
+submitted, and the answer carries a `warnings` line naming the medium
+profile.
+
+A name the catalogue refuses is refused **before anything is dispatched**, and
+the two refusals are kept apart because they need different answers — an unknown
+name is a typo and lists the real names, while a known-but-disabled one quotes
+the catalogue's own reason. `post-verdict` is the live example: disabled
+rather than deleted, so the runs that name it stay readable. (`codex` was the
+example until contract request 130 turned it on, 2026-11-02: it runs on the
+tenant's OpenAI key, else a ChatGPT plan from the pool.)
+
+**Beside the prompt, a caller may send only the inputs a profile declares.**
+`mock` declares its test knobs — `sleep_seconds`, `steps`, `fail`,
+`artifact_text` and the rest, listed by `swarm_profiles` under `inputs` — so a
+step can sleep long enough to be cancelled, or fail on purpose: `inputs` on a
+`swarm_dispatch` call or a `swarm_workflow` step, `--input sleep_seconds=120`
+on `swarm dispatch`, `"inputs": {...}` on a step in a `swarm workflow` spec.
+`{"quota_exhausted": true}` parks a mock step once, on a simulated rate limit
+with the `retry_after_seconds` you give it, and the attempt after the park
+finishes: the mock parks the task's first attempt only, counted by the task's
+own `attempt_count`, so the bound holds even when the park's checkpoint fails
+to upload. Before 0.5.3 the rate limit fired on every attempt, a park does not
+spend one, and the step parked until cancelled, which is why 0.5.2 withheld
+both keys. With `"artifact_before_park": true` beside it, the mock writes
+its artifact before that park and not again after it, so the file the step
+ends with can only have been carried from the parked attempt (contract
+request 56, archived issue 166; the recipe is in docs/workflows.md). `exit_code` refuses the codes the worker reads as a success, a rate
+limit, a refused credential and a cancellation. Every key's kind and bounds
+are in the table below, which is generated from the catalogue rather than
+restated here. `claude-code` and `codex` declare `issue`: the
+number of a GitHub issue in the repository the step clones (contract request
+28). They also declare `mcp_servers` (contract request 88), the registered MCP
+servers the agent may call, by name; see
+[Registered MCP servers](#registered-mcp-servers-by-name-and-a-per-run-credential-the-agent-never-sees). The worker fetches its title, body and comments read-only into
+`issue.md` in the workspace, beside the checkout and never among the
+artifacts, and names that file in the prompt, so a prompt need not restate
+the issue. A step that sends it with no repository is refused by the API.
+A key the profile does not declare is refused by name, never dropped, and
+never an image, a command, a resource spec, a backend or a model: the model a
+`claude-code` agent runs is its Job's own `MODEL`, set in Terraform, and the
+runner reads no `input.model` (archived issue 226). The declarations are the frozen
+catalogue's own, `RunnerProfile.inputs` (contract request 25), and for a
+profile that declares, the API refuses an undeclared key with 422
+`invalid_input` whoever sends it, so the bridge's refusal is only the earlier
+of two identical answers. **`browser` and `generic` declare too**, since
+contract request 32 (archived issue 218):
+`browser` takes a `url` and `actions`, and `generic` a required `command`
+from its runner's catalogue, so the bridge sends a browser task its page and
+steps, and refuses a private address, a missing `command` or an action its
+shape does not take before anything is dispatched.
+
+What each declaring profile takes, as `swarm_profiles` lists it:
+
+<!-- runner-inputs:mock generated from RUNNER_PROFILES["mock"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the mock runner does with it |
+|---|---|---|
+| `sleep_seconds` | number 0..3600 | how long the run sleeps, in total |
+| `cpu_burn_seconds` | number 0..3600 | how long it burns CPU, in total |
+| `steps` | integer 1..1000 | how many progress files, and checkpoints, it writes |
+| `fail` | boolean | fail on purpose, after the steps |
+| `fail_message` | string | the error a failure reports |
+| `exit_code` | integer 1..255 except 77, 78, 143 | the exit code a failure uses |
+| `artifact_text` | string | what the output artifact holds |
+| `artifact_name` | filename | the output artifact's file name |
+| `quota_exhausted` | boolean | park the first attempt on a simulated provider rate limit; the next one runs |
+| `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
+| `artifact_before_park` | boolean | write the output artifact before the simulated rate limit parks the first attempt |
+<!-- /runner-inputs:mock -->
+
+<!-- runner-inputs:browser generated from RUNNER_PROFILES["browser"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the browser runner does with it |
+|---|---|---|
+| `url` | url | opened first, before any action |
+| `actions` | list of 0..200, each object, `type` one of goto \| click \| fill \| press \| wait_for \| wait \| screenshot \| extract | run in order, after `url` |
+| `actions` `goto` | `url` (required) url, `wait_until` string, one of load \| domcontentloaded \| networkidle \| commit | `url`: the page to open; `wait_until`: when the load counts as done; default load |
+| `actions` `click` | `selector` (required) string 0..4096 | `selector`: the element to click |
+| `actions` `fill` | `selector` (required) string 0..4096, `text` string 0..4096 | `selector`: the field to fill; `text`: what to type into it; default empty |
+| `actions` `press` | `selector` (required) string 0..4096, `key` string 0..4096 | `selector`: the element to press a key in; `key`: the key; default Enter |
+| `actions` `wait_for` | `selector` (required) string 0..4096, `timeout_ms` integer 1..300000 | `selector`: the element to wait for; `timeout_ms`: how long to wait; default the task's timeout_ms |
+| `actions` `wait` | `seconds` number 0..60 | `seconds`: how long to pause; default 1 |
+| `actions` `screenshot` | `name` filename, `full_page` boolean | `name`: the artifact's file name; default by position; `full_page`: the whole page, not the viewport; default true |
+| `actions` `extract` | `selector` string 0..4096, `name` filename | `selector`: the element whose text is kept; default body; `name`: the artifact's file name; default by position |
+| `timeout_ms` | integer 1..300000 | how long any one action may take; default 30000 |
+| `launch_timeout_ms` | integer 1..180000 | how long Chromium may take to start; default 60000 |
+| `viewport_width` | integer 320..3840 | pixels; default 1280 |
+| `viewport_height` | integer 240..2160 | pixels; default 900 |
+| `user_agent` | header 0..512 | the User-Agent sent; default Chromium's |
+| `extract_text` | boolean | keep the final page's text as page.txt; default true |
+| `screenshot` | boolean | keep a final full-page screenshot; default true |
+<!-- /runner-inputs:browser -->
+
+<!-- runner-inputs:generic generated from RUNNER_PROFILES["generic"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the generic runner does with it |
+|---|---|---|
+| `command` | string, one of make \| npm-build \| npm-ci \| npm-test \| pytest \| uv-sync, required | the platform catalogue entry to run; the platform owns its argv |
+| `paths` | list of 0..32, each argument | pytest only: what to run; default everything |
+| `target` | argument | make only: the target; default all |
+| `working_directory` | argument | a directory inside the workspace to run in; default the workspace |
+| `timeout_seconds` | number 1..3600 | lowers the command's wall clock |
+| `grace_seconds` | number 1..20 | lowers the wait between SIGTERM and SIGKILL |
+| `max_stdout_bytes` | integer 1..33554432 | lowers the stdout kept |
+| `max_stderr_bytes` | integer 1..8388608 | lowers the stderr kept |
+<!-- /runner-inputs:generic -->
+
+What `claude-code` and `codex` declare, as `swarm_profiles` lists it:
+
+<!-- runner-inputs:claude-code generated from RUNNER_PROFILES["claude-code"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
+<!-- /runner-inputs:claude-code -->
+
+<!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the codex runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
+<!-- /runner-inputs:codex -->
+
+`claude-code-review` is `claude-code` under its own Job and service account,
+for the merge chain's review step (contract request 36, archived issue 295). It is
+disabled until archived issue 295 is enabled, and declares what `claude-code` does:
+
+<!-- runner-inputs:claude-code-review generated from RUNNER_PROFILES["claude-code-review"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-review runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `pull_request` | integer 1..999999 | a pull request in the task's repository: its body, conversation and review threads are written to pull_request.md in the workspace and named in the prompt |
+<!-- /runner-inputs:claude-code-review -->
+
+`indexer` is `claude-code` on `agent-runtime-indexer`, the image that carries
+the repository index's toolchain (contract request 48, archived issue 625). swarm-api runs
+index runs on it; it declares what `claude-code` does:
+
+<!-- runner-inputs:indexer generated from RUNNER_PROFILES["indexer"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the indexer runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:indexer -->
+
+`claude-code-browser` is `claude-code` on `agent-runtime-browser`, Playwright
+and Chromium beside the agent, so it can render and screenshot pages: visual
+QA, reproducing a UI bug (contract request 67). It costs a `browser` resource
+class and runs on GKE Autopilot; it declares what `claude-code` does:
+
+<!-- runner-inputs:claude-code-browser generated from RUNNER_PROFILES["claude-code-browser"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-browser runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+| `browser_tool` | string, one of auto \| playwright \| dev-browser \| jev | the live browser's tool: auto (every tool available; the default), playwright (the Playwright MCP tools only), dev-browser (the dev-browser CLI first, Playwright as fallback) or jev (the jev MCP tools, which send page text to TypeSafe and need a TypeSafe key; Playwright as fallback) |
+| `qa_identity` | string, one of console | sign the live browser in to this deployment's console as its QA identity, a service account with its own workspace; the platform adds the credential, the agent never holds it, and a tenant may name it only when a platform admin has granted it |
+<!-- /runner-inputs:claude-code-browser -->
+
+`claude-code-large` is `claude-code` exactly (same image, runner, inputs,
+secret slots and model classes) on the `large` resource class, 8 CPU and
+32 GiB requested (4 units), with a 14,400 s timeout, on GKE Autopilot
+on-demand (contract request 113). A heavy lane picks it by name when
+`claude-code` was OOM-killed or ran out of time; it declares what
+`claude-code` does:
+
+<!-- runner-inputs:claude-code-large generated from RUNNER_PROFILES["claude-code-large"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-large runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+<!-- /runner-inputs:claude-code-large -->
+
+`claude-code-medium` is `claude-code` exactly (same image, runner, inputs,
+secret slots, model classes and 7,200 s timeout) on the `medium` resource
+class, 6 CPU and 16 GiB requested (2 units), on GKE Autopilot on-demand
+(contract request 147). Over the 7 days to 6 November 2026, 96% of the
+`claude-code-large` attempts fit it; name it before `claude-code-large`.
+It declares what `claude-code` does:
+
+<!-- runner-inputs:claude-code-medium generated from RUNNER_PROFILES["claude-code-medium"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-medium runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+<!-- /runner-inputs:claude-code-medium -->
+
+`claude-code-lightpanda` is `claude-code` on the `agent-runtime-lightpanda`
+image (contract request 127): the same runner, inputs, secret slots and
+model classes on the `standard` class, on GKE Autopilot on-demand, with
+Lightpanda, a headless browser that runs JavaScript and draws no pixels,
+for DOM-only browser work: reading, scraping, link checks and form flows.
+It has no live view and no `browser_tool`; a page it cannot read goes to a
+`claude-code-browser` child. It declares what `claude-code` does:
+
+<!-- runner-inputs:claude-code-lightpanda generated from RUNNER_PROFILES["claude-code-lightpanda"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-lightpanda runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `mcp_servers` | list of 1..4, each string 0..31 | registered MCP servers, by name, the agent may call during its run; each must be registered and enabled for the task's workspace and allowed for this profile (docs/design/registered-mcp-servers.md) |
+<!-- /runner-inputs:claude-code-lightpanda -->
+
+`--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`
+on a step, points a `claude-code` step at an issue of its repository. The
+issue's text is data for the agent: the worker scrubs it of every secret the
+attempt holds and reads nothing in it as an instruction to the platform. The
+tenant's forge token is used for the fetch in the worker's memory only, as for
+the clone, and never reaches the workspace. A fetch that fails -- no such
+issue, a pull request's number, a repository the token cannot read -- fails
+the attempt before the agent starts, with `INPUTS_UNAVAILABLE`.
+
+Every step's spec -- its prompt and inputs, profile, class, timeout, attempt
+cap, repository, dependencies and the platform's own `metadata` blocks -- is
+signed by swarm-api when it is submitted (contract request 34). A worker
+that finds the stored spec no longer matches its signature, or finds it
+unsigned outside the rollout window, ends the task FAILED with
+`SPEC_SIGNATURE_INVALID` before the agent starts or any credential is read,
+and does not retry it: another attempt would read the same rewritten
+document. Every occurrence is either another agent rewriting the step or a
+platform bug, and both are alerted on. Resubmit the work.
+
+## A task's input comes back masked
+
+The API serves a task's `input` and `metadata` masked at read time, to every
+caller, the submitter included (owner decision, 2026-09-26, on #184), with a
+count of what it masked. The bridge passes the count on and prints nothing of
+the input itself: `swarm status` ends each line with `masked N`, `swarm result`
+prints `masked 3  (input 2 · metadata 1)`, `swarm workflow-status` puts it on
+each step, and `swarm_status`, `swarm_result`, `swarm_wait` and
+`swarm_workflow_status` carry `masked: {input, metadata}`. A count the API did
+not send is `—` in the terminal and `null` in JSON, never 0: that deployment is
+older than the change and serves the input unmasked. The masking is at read
+time only; the runner still reads what was submitted.
+
+## What a task produced
+
+A step that clones no repository still produces something: the files it wrote
+into `$SWARM_ARTIFACTS_DIR`, and the runner's own summary. `swarm result`,
+`sc task` and `swarm_result` (its `outputs` block) list each artifact by name
+and size, the runner's summary, the exit code, the duration, and the inputs
+staged into the step from upstream ones — before the code, which is "this task cloned
+no repository" for such a step. They read the API's `/v1/tasks/{id}/artifacts`
+route, whose `complete` tells "uploaded when the attempt ends" (the task has not
+finished) from "no artifacts"; an unreadable listing is said, never shown as
+none.
+
+`swarm artifact <task> <name>` prints one of them, or writes it to a file
+with `-o <file>`; `swarm_artifact` is the same read for a session. Both go through
+`/v1/tasks/{id}/artifacts/content`: the name is matched against the task's own
+manifest (a path is never accepted), the content is redacted at read time, and
+a file larger than one window is read window by window from `next_offset` —
+the terminal command prints all of it; the tool returns one window and says
+where the next starts. An artifact that is not text is refused with a reason,
+not served: nothing can scan its bytes for a credential.
+
+To look at a lane's screenshots, give `swarm_artifact` a `save_to` directory
+(archived issue 2182): an artifact named `.png`, `.jpg`, `.jpeg`, `.webp` or `.gif` that
+`/v1/tasks/{id}/artifacts/raw` serves as an image (its extension and its magic
+bytes agree) is written to `<save_to>/<task_id>/<name>`, and the answer is
+`{status: "saved", path, bytes, content_type}`; the session opens `path` with
+its own Read tool. Only images are saved: a text artifact is still the
+redacted window, and any other binary is still `binary` with no bytes. The
+tenant boundary is the raw route's, so another tenant's task is the same 404
+the text read gets. `save_to` must resolve, symlinks included, under the
+bridge's working directory or the user's Claude Code temp directory (where the
+session's scratchpad is), and a name that is absolute or has a `..` segment is
+refused, both before anything is read.
+
+`swarm tail` prints every event of every task it follows, each once. It read
+the task's oldest 50 events on every poll, so it printed no event after the
+50th (archived issue 164); it now reads newest first and pages back to the last event it
+printed, one request per poll while it keeps up.
+
+## Running a Claude Code workflow's steps in SwarmCloud
+
+Owner decision, 2026-09-26: a Claude Code workflow shows as running in Claude
+Code while every step executes in SwarmCloud. Claude Code has no hook that
+replaces how `agent()` runs, so the plugin ships agents whose only job is to BE
+the row: each one dispatches or adopts a SwarmCloud task, follows it, and
+returns what it produced. `/workflows` then lists the row with its label,
+phase, state and elapsed time, and its transcript shows the remote agent's
+progress — narrated by the bridge, a line per thing the agent did.
+
+There are two modes.
+
+**One step: the `sc:remote` agent.** In any workflow script, give a step
+`agentType: 'sc:remote'` and its prompt is what the remote agent is told:
+
+```js
+const notes = await agent('Survey apps/swarm-mcp for blocking calls and write up each one.',
+  { agentType: 'sc:remote', label: 'survey-mcp' })
+
+const fix = await agent('strategy: direct-pr\nFix the flaky test in tests/unit/mcp/test_x.py.',
+  { agentType: 'sc:remote', label: 'fix-flake' })
+
+// With a schema: give it room to say it failed, and catch the call.
+const counts = await agent('Count the TODO markers per package.', {
+  agentType: 'sc:remote',
+  schema: {
+    type: 'object',
+    properties: {
+      state: { type: 'string' },
+      error: { type: ['string', 'null'] },
+      counts: { type: ['object', 'null'] },
+    },
+    required: ['state', 'error', 'counts'],
+  },
+}).catch((error) => ({ state: 'ROW_FAILED', error: String(error), counts: null }))
+if (!counts || counts.error) log('TODO count did not come back: ' + (counts ? counts.error : 'row stopped'))
+```
+
+It dispatches the prompt as ONE `claude-code` task on this session's
+repository and pushed branch, with strategy `collect` — or `direct-pr` when
+the prompt's first line is `strategy: direct-pr`, which it removes. It follows
+the task until it finishes and returns the remote agent's answer. When the call
+passes a `schema`, it appends one instruction to the prompt asking the remote
+agent to END its answer with a JSON object matching that schema, and returns
+the object the bridge parses out of the answer.
+
+**When the task does not succeed, nothing is invented — and in schema mode
+that means the call can THROW.** Without a schema, the row's answer is a short
+failure report: the state, the last error and the task id. With a schema,
+Claude Code requires a schema-valid object and asks the agent again, up to five
+times; if it never gets one, the `agent()` call fails with an error ("If the
+subagent's output still fails validation after five attempts, the call fails
+with an error" — Claude Code's workflow docs, read 2026-09-25). `sc:remote` is
+told never to build an object just to pass validation, because `{counts: {}}`
+would read as "no TODOs" rather than "the count failed". So:
+
+* **Give the schema a state and an error** (`state`, and `error` or
+  `last_error`) and make every other required property nullable, as above.
+  Then a failed step comes back as an object — `state` the task's end state,
+  `error` its last error, everything else `null` — and the call does not throw.
+* **Otherwise the call throws**, which aborts a script that does not catch it.
+  Wrap a schema-mode `sc:remote` call in `.catch()` or `try`, or run it inside
+  `parallel()` or `pipeline()`, which turn a thrown call into `null`.
+* **A stopped row resolves to `null`**, like any agent, whatever the schema.
+
+A row is `null` or a failure report in these cases, never the remote agent's
+answer: the dispatch was refused (an unpushed branch, say), the task ended
+`FAILED`, `CANCELLED` or `DEAD_LETTERED`, the remote agent's answer did not end
+with the requested object, the task could not be read (a 404 or 403, or three
+calls in a row that read nothing), or the sc plugin's server is not connected.
+
+**A whole SwarmCloud workflow: `/sc:swarmcloud`.** Its argument is a SwarmCloud
+workflow spec — the same object `swarm workflow` reads — as an object, as JSON
+text, or as the path of the spec file, relative to the session's checkout and
+inside it (the bridge reads no spec file from outside the checkout). A
+workflow script has no filesystem, so given a path one `sc:spec` agent
+(label `read spec`, holding no submit tool) has the bridge read the file with `swarm_workflow_spec`,
+which checks it as `swarm_workflow` would, submits nothing and returns the spec
+with its digest; the script submits the relayed spec only when it digests to
+what the bridge read. Text that begins like JSON and does not parse is reported
+as broken JSON, not looked for as a file. One `sc:workflow` agent then
+submits the spec (phase `Submit`), and SwarmCloud owns the DAG from then on:
+dependencies, `input_from` staging, `on_step_failure`, retries. The script
+starts one `sc:step` row per step, labelled
+`[SwarmCloud] <spec label or workflow id> · stage <n> · <step_id>` (cut at 80
+characters from the name, so the stage and step survive), under phase
+`Level N` — its depth in the DAG — or under the step's `stage` when the spec
+gives one (`stage` is display-only and never sent). The submit and result rows
+carry the same prefix. A row follows its own task only, so it may start before
+its parents finish; it then says it is waiting, and why, in its first line,
+and a waiting task holds no capacity. Each finished step is one narrator line, `scan-03 SUCCEEDED · 4m12s · $0.21 · PR #231 · produced findings.md`,
+which names the artifacts the step produced, or says `produced no artifacts`
+for a success that made none.
+The run returns every step's result and the workflow's state as
+`swarm_workflow_status` reads it — derived by the server, never by the script.
+
+**What crosses the relay is checked.** A workflow script cannot call a tool, so
+the spec reaches `swarm_workflow` through the `sc:workflow` agent, which
+retypes it, and the step-to-task map comes back the same way. `run.js`
+computes the spec's digest (`fnv1a32:` over its sorted-key compact JSON — the
+same function as `swarm_mcp.workflows.spec_digest`, held equal by a test) and
+the agent passes it beside the spec; `swarm_workflow` submits NOTHING when the
+spec it received digests differently. The reply must carry the digest back,
+every step of the spec under its own id (none dropped, none renamed), each
+spec step's `depends_on` as the spec has it, and a distinct task per step — or
+no row starts and the run returns `SUBMITTED_UNVERIFIED` with the workflow id
+and what differed. A reply MISSING its digest or a spec step is not taken as a
+different workflow, only as a thin copy (measured 2026-10-24 on
+wf_effa3d00346b40d1a1d3: neither the digest nor the one step came back, while
+the step ran and succeeded; archived issue 2206). The script reads the workflow back once,
+with the `ATTACH` job (`swarm_workflow_status`), and decides from what
+SwarmCloud shows: the spec's steps, dependencies and the profile each names
+mean it is submitted and its rows start, with `verified_by: "read_back"` and a
+`verify_note` saying the digest was not served. Different steps there are
+`SUBMITTED_UNVERIFIED`, but a row still starts for every unfinished step the
+read-back shows, and `workflow_state` carries the state SwarmCloud derived; a
+read-back that fails is `SUBMITTED_UNVERIFIED` with its error and no row. A
+step the reply names beyond the spec is one SwarmCloud
+added — a `re-review` and a `merge` for the merge choice — and is accepted
+when the bridge marked it `added: true` (it compares the reply with the spec it
+submitted itself) or, from a bridge too old to mark it, when every step it
+depends on is a spec step or another added step. The script no longer has to
+predict the server's merge rules: measured on 0.5.27, a 3-step spec came back
+with 5 steps and the prediction refused it. An extra step marked `added:
+false`, or tied to no spec step, is still refused, and so is a reply that names
+no step beyond a spec whose own `merge` choice makes SwarmCloud append some.
+Appended steps get a row each, after the spec's own, so
+the rows count what the console counts. Each `sc:step`
+row passes its `step_id` to `swarm_follow`, which will not follow a task that
+is a different step.
+
+**How `/sc:swarmcloud` can end before any row starts**, and what each means:
+
+| `state` | What happened | What to do |
+|---|---|---|
+| `NOT_SUBMITTED` | `swarm_workflow` refused the spec, with `error`; or, given a path, the file could not be read as a spec, or the spec relayed from it does not digest to what the bridge read; nothing was sent | fix what `error` names and run again |
+| `SUBMISSION_UNKNOWN` | the Submit row stopped, failed, or answered with neither an id nor an error — possibly AFTER the workflow was created | look for it in the console's workflow list before running again: the API has no idempotency key, so a second run submits a second copy |
+| `SUBMITTED_UNVERIFIED` | SwarmCloud accepted workflow `workflow_id`, but the reply relayed back does not match the spec, or a thin reply's read-back failed or shows other steps (then the rows for what it shows did start) | it runs regardless: read it with `swarm_workflow_status`, or cancel it with `swarm_workflow_cancel` |
+
+A Result row that fails does not lose the steps: the run returns every row with
+`state` null and a `state_note` saying why.
+
+**A step row that cannot answer is not an error row.** Every field of the
+`sc:step` answer is optional and takes a null, and `sc:step` is given the exact
+object to send. A row that still throws — "StructuredOutput retry cap (5)
+exceeded", "subagent completed without calling StructuredOutput" — or answers
+with no state makes one `swarm_workflow_status` read at once, labelled
+`<workflow> · <step> · setup · status`: a step SwarmCloud names as finished
+becomes a row with that state, `state_from: "workflow status"` and the row's
+failure in `row_note`. A step still running, or not named, stays a
+`row_error`, which the Result step re-attaches while the workflow runs on.
+
+All eight agents run on **haiku at low effort** (`model` and `effort` in their
+frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
+need — `sc:remote` dispatch and follow, `sc:step`, `sc:task`, `sc:summary` and `sc:finish` follow,
+`sc:spec` read a spec file and nothing else, `sc:workflow` submit and read — and only through the sc plugin's own server (above).
+`sc:wait` holds no SwarmCloud tool: it is the pause between two tries of a step
+row whose bridge was not connected or not responding, one `sleep 30` through
+Bash, because a workflow script has no timer of its own. A session that asks
+before running Bash will ask for it; refused, the next try comes at once and
+the run logs that the wait could not be made.
+
+### Every running workflow, shown without asking for it
+
+Owner decision, 2026-10-02: a workflow running in SwarmCloud shows in Claude
+Code as live `[SwarmCloud]` rows without anyone attaching it by id. Three
+pieces do it, and none of them submits anything.
+
+* **The list.** `swarm_workflows` (MCP) and `uv run sc workflows` (in a
+  checkout) read `GET /v1/workflows?state=...` for the caller's own tenant
+  and keep only the workflows that are not finished — every state outside
+  `SUCCEEDED`, `FAILED`, `CANCELLED` and `DEAD_LETTERED`, plus `UNKNOWN`. Each
+  comes with its `workflow_id`, its spec's `label`, its state, its current
+  (unfinished) steps with their states, its age, and the console link the API
+  served. The route filters on the state it DERIVED from the steps, never the
+  stored cache, and the bridge filters again so a deployment older than the
+  filter still lists only running ones. The 30 newest are read step by step;
+  any more are listed with `steps_unread_because`. Each entry names the
+  `workspace` it runs in, read from the workflow's own `tenant_id` (the
+  display name when `GET /v1/tenants/mine` gives one), never from the
+  session's configured tenant, and the list is newest first, grouped by
+  workspace.
+* **`/sc attach --all`** runs `/sc:swarmcloud` with `{attach: "all"}`: one
+  `sc:workflow` row lists them (`LIST`), and each of the newest **30** is
+  attached exactly as `/sc attach <wf_id>` attaches one — finished steps said
+  once, one slim `sc:step` row per unfinished step, all workflows at once.
+  30 is the owner's number (SC-ROWS, 2026-10-14; 10 before) and the default
+  of the plugin's **`max_live_rows`** option, which any value is held to
+  1–50: every unfinished step is an agent of its own in the session, so it
+  stays a cap. The bridge reads the option and hands it to each run as
+  `max_rows`. The rest are logged and returned as `not_followed`, each with
+  its `workspace` and the `/sc attach` that follows it.
+* **No name carries a workspace; every expanded run and row says whose,
+  where and on which LLM** (SC-DESC-DETAILS, owner 2026-10-14: "workflows in
+  here should not have the [Engineering] or [eng@example.com] prefix in front of
+  the names"). Run titles are `SC ∴ <name> · N steps` (`SC ∴ <name>` for a
+  spec launched before it is submitted) and `SC · <label>` — three dots a
+  workflow, one dot a single task, right after `SC` because the panel shows
+  about 28 characters (the name is cut to 150, never the count); every
+  single task is a run of its own, whatever the `rows` setting; rows inside the run are
+  `[SwarmCloud] <name> · stage <n> · <step>` and `[SwarmCloud] <label> ·
+  task`. Each run's description starts with its DETAILS, one line, six
+  fields in this order: `Workspace: <workspace> (<tenant>) · Started by:
+  <submitted_by> · Profiles: <runner profiles> · LLM: <pool account>
+  (<provider>), model <model> · Browser tool: <browser_tool> · Session:
+  <claude_session>` — each `not reported` when the API serves none, the
+  workspace first so the 300-character clip takes the end, the account by the
+  label `GET /v1/accounts` gives it, and anything credential-shaped shown as
+  `withheld`. Each row's prompt ends with ITS OWN `details:` line, which is
+  what Claude Code shows when the row is expanded: `swarm_workflow_launch`
+  writes them into an attach's args (`details.steps`) and an `attach_tasks`
+  entry (`details`), and hands a spec's back as `row_details` for the args,
+  which also carry `spec_handle` (`{path, digest}`, the file the spec was
+  written to, so the submit row passes the handle and never retypes the spec);
+  a run launched without them says what run.js knows and `not reported` for
+  the rest. A run started before its account was assigned says `LLM: not
+  assigned yet`, and each of its rows says `LLM: <account>` once, on the first
+  progress line after the assignment. Every result object and listing line
+  still carries `workspace` — from the API's workflow and task documents, so
+  one attach can cover several workspaces correctly.
+* **Scrolling is Claude Code's.** `/workflows` is Claude Code's panel; the
+  plugin cannot make it scroll. It keeps 30 rows scannable instead: one
+  compact line per row, newest first, grouped by workspace, in a stable
+  order. The run ends `ATTACHED`, `NOTHING_RUNNING`, or
+  `NOT_ATTACHED` with the list's error verbatim; one workflow that cannot be
+  attached is `NOT_ATTACHED` on its own and does not stop the others.
+* **The SessionStart hook** (`hooks/hooks.json`, `hooks/session-start.sh`).
+  On a new or resumed session where the plugin is configured, it runs the
+  plugin's own bridge — the same `${SWARM_MCP_FROM:-<pin>}` the MCP server
+  runs, read out of `plugin.json` — as `sc workflows --session-start`, and when
+  workflows or single tasks of the caller are running it hands the session
+  `additionalContext` naming them and telling it to run `/sc attach --all`
+  first. The two reads run at once and fail alone: a deployment that answers
+  one still gets that one named. A hook cannot start a
+  workflow itself; this makes the attach the session's first action. It is
+  read-only, gives up after 10 seconds (`SWARM_SESSION_START_TIMEOUT`), and is
+  silent and exits 0 when none run, when the bridge or the API fails, and when
+  the plugin's **`auto_attach`** option is off (`/plugin configure
+  sc@swarmcloud`; on by default). It reads in the session's tenant:
+  `SWARM_TENANT` if set, else the plugin's `tenant` setting. The first session after a new plugin version
+  may get no notice while uv fetches the new bridge; `/sc attach --all` works
+  by hand at any time.
+
+### Every running single task, shown too (archived issue 830)
+
+Owner, 2026-10-07: "we need to be able to auto attach on single tasks too". A
+task sent with `swarm_dispatch` belongs to no workflow, so `GET /v1/workflows`
+never lists it: five lanes dispatched that day ran with no row at all. So:
+
+* **The list.** `sc workflows`, `swarm_workflows` and the SessionStart hook
+  also read the caller's **running single tasks**: not finished, in no
+  workflow (`workflow_id` null), submitted by the caller. It is one
+  `GET /v1/tasks?state=<s>&submitted_by=me` walk per unfinished state — both
+  existing filters, nothing new in the API — and the bridge checks every row
+  again, because a task can move state between two reads. A task a parent
+  task submitted (`parent_task_id`) is left out: it was never dispatched from
+  a session, and its parent's row is where it shows. `state` and
+  `submitted_by` together are filtered after the route's cursor, so a page
+  can come back short; past 3 pages of one state the list says it stopped
+  short (`incomplete_because`) rather than spend the hook's ten seconds.
+* **`sc:task`, the row for a task in no workflow.** `sc:step` always passes
+  its `step_id`, and the bridge stops a step row whose task is not that step —
+  for a single task it now says `task … is a single task, not workflow step
+  …: follow it WITHOUT step_id`. `sc:task` is `sc:step` without the step: it
+  calls `swarm_follow` with `format: "progress"` and no `step_id` or
+  `parents`, writes one line per state change ending with the console link,
+  and answers with the same `{state, result}`.
+* **`/sc attach --all`** launches one more run beside the workflows' —
+  `/sc:swarmcloud` with `{attach_tasks: [{task_id, title, console}]}`, written
+  by `swarm_workflow_launch` — which starts one `[SwarmCloud] <label> · task`
+  row per running single task, titled from the task's label (else its id), at
+  most **30** (`max_live_rows`), the same row cap as workflows for the same
+  reason, each labelled `[SwarmCloud] <label> · task` with its details line. Launched by
+  name with `{attach: "all"}`, the run returns those args as `task_call`.
+* **`swarm_dispatch` starts its own rows.** Every dispatch reply (one task or
+  `tasks`) carries `rows`: a titled copy of the run script whose args are
+  `{attach_tasks: [...]}` for exactly the ids just sent, and `start_now`,
+  which tells the session to launch it with the Workflow tool at once. The
+  `delegate` skill does so, so a dispatched task gets a row without anyone
+  asking. A bridge started outside the plugin has no run.js to copy: `rows`
+  then carries `error` and `/sc attach --all`. The dispatch itself never fails
+  over it — the task is already in SwarmCloud.
+* **The titled copies live in `<project>/.sc-swarmcloud-runs/`, never under
+  `.claude/`** (PLUGIN-RUNDIR, part of archived issue 1511). The Workflow tool refuses a
+  script path outside the session's allowed directories, so the copies left
+  the system temp folder for the project (0.5.39). But it refused
+  `<project>/.claude/sc-swarmcloud-runs/` too — measured 2026-10-19 on 0.5.44,
+  twice, the second time after the session had Read the file — because Claude
+  Code treats `.claude/` as protected configuration. Since 0.5.45 the bridge
+  writes each copy and the project record `launched.jsonl` into the
+  project's own `.sc-swarmcloud-runs/`, which carries a `.gitignore` of `*`
+  so nothing in it is ever a change to commit. A `launched.jsonl` an older
+  bridge left under `.claude/sc-swarmcloud-runs/` is moved there on the next
+  launch and read where it is until then, so `/sc check` and
+  `/sc attach --all` still know what the project launched. The system temp
+  folder's `sc-swarmcloud-runs/` stays the fallback when no project is known
+  or its folder cannot be written; the bridge says on stderr which it used.
+* **A plugin reload does not re-check, because nothing fires on it.** Claude
+  Code exposes no hook event for `/reload-plugins` (its hooks reference,
+  read 2026-10-07: `SessionStart` matches `startup`, `resume`, `clear`,
+  `compact` and `fork`; `ConfigChange` fires on settings and skill files only,
+  and can block a change but cannot add context). So after
+  `/reload-plugins`, or for a task started outside this session mid-way, run
+  **`/sc attach --all`**: it covers workflows and single tasks alike. A task
+  this session dispatches needs nothing — its reply starts the row.
+
+### A workflow step that waits for a person (HW-MCP)
+
+docs/design/human-steps.md §4.2, §4.5 and §4.8. An `await-input` step parks
+`AWAITING_INPUT`, holds no lease and no capacity, and waits up to 24 hours
+for any member of its tenant to answer. It shipped dark; the owner made the
+`await-input` profile available with contract request D (entry 105). While a
+deployment's catalogue lists it as unavailable, no such step can be submitted
+and these tools find nothing.
+
+* **`swarm_inputs`** (`/sc inputs`) lists the tenant's waiting steps
+  (`GET /v1/inputs?status=waiting`), each with the call that answers it.
+* **`swarm_workflow_input`** (`/sc answer <wf_id> <step_id> [file ...]`)
+  answers one. **The person types the answer, never the agent**: the tool
+  takes only `workflow_id`, `step_id` and `files`, and refuses any other
+  argument before it reads or sends anything. It reads the step (`GET
+  .../steps/{step}/input`), shows its prompt and what it stages in the
+  host's MCP elicitation, and sends only what the person typed there --
+  Approve or Request changes plus findings, an answer per upstream question,
+  or a text -- as `via: "mcp"`. A host that cannot elicit is refused with
+  the step's console link. `files` are local paths the agent may propose;
+  the elicitation lists each one's name, bytes and sha256 under the
+  console's warning ("Files go to the next agent byte for byte..."), and
+  they are sent, as one multipart answer, only when the person ticks "Send
+  the files". More than 10 files or 16 MiB is refused before anything is
+  read from the API; more than the step's own `max_files` before the person
+  is asked. The form waits up to 30 minutes for the person.
+* **`swarm_workflow_status`** rows carry `awaiting` (tenant, window, form,
+  artifact, max_files, remind) on a waiting step and `answered` (who, when,
+  via, files) once it is answered.
+* A `swarm_workflow` spec step may carry `await_input`; the bridge checks
+  only that it is an object and swarm-api checks the rest.
+
+### Stuck or stale work, checked on an interval (SC-WATCH)
+
+Owner request 2026-10-14: a check every set interval (default 30 minutes)
+for stuck or stale workflows and tasks, which also attaches every workflow
+of the project running at the time.
+
+* **`/sc check`** makes ONE `swarm_check` call. It is read-only and scoped to
+  this checkout's `origin` repository (a workflow belongs to the repository
+  its steps clone): it flags a RUNNING or STARTING task with no heartbeat and
+  no event for 20 minutes, a READY or QUEUED one waiting longer than that
+  (naming the pool that binds it), a PARKED one on HUMAN_REQUIRED, on
+  CI_PENDING past 90 minutes or on a dependency that failed, a merge step
+  refused with `head_moved`, `merge_conflict` or `checks_failed`, and a
+  workflow whose stored state disagrees with its derived state about whether
+  it is finished. A step waiting for a person (`AWAITING_INPUT`) is listed
+  apart, under `awaiting_input`, as information and not as stuck; it is
+  flagged STUCK only when it is still parked more than two ticks of the
+  one-minute expiry sweep past its `expires_at`. Each comes with the evidence the API served, its console
+  link and the next command; it acts on none of them. The API serves no pull
+  request state, so a refused merge's PR is linked, not read. Then it calls
+  `swarm_workflow_launch {attach: "all", repository, new_only: true}`: rows
+  only for the project's running workflows and tasks this session has no row
+  for. The bridge process lives as long as the session, so it remembers what
+  it handed a row; `/sc attach <id>` by hand always attaches.
+* **`/sc watch [interval]`** (`swarm_check_schedule`) schedules `/sc check`
+  with Claude Code's own CronCreate — the facility a plugin skill can call —
+  every interval (default `30m`, at least `5m`; rounded to what a cron
+  expression can say), and remembers it for the project in
+  `<config dir>/sc-watch/<sha256 of the project directory>.json`, never in
+  the repository. Where CronCreate is not available, `/loop 30m /sc check`
+  does the same. **`/sc watch off`** cancels it and saves "off" for the
+  project.
+* CronCreate's jobs end with the session (and a recurring one after 7 days),
+  so the **SessionStart hook** reads the saved preference — locally, before
+  and without the bridge — and asks each new session in the project to run
+  `/sc watch <N>m` first, beside the attach or on its own, even with
+  `auto_attach` off.
+
+### The watch arms itself (SC-AUTO-WATCH)
+
+Owner request 2026-10-14: "/sc watch should automatically be set if there is
+at least one workflow being worked on in sc that is attached here or if and
+when we start a new workflow ... Also this should run when we attach manually
+either one or --all".
+
+* `/sc run` (a spec submitted), `/sc run --issue` once its workflow exists,
+  `/sc attach <wf_id>`, `/sc attach --all` and a `/sc check` that attached
+  something each END by arming the watch. The tools say so themselves:
+  `swarm_workflow_launch` (spec and attach), `swarm_workflow` and the issue-run
+  tools answer `arm_watch` — the CronCreate call at the project's saved
+  interval, else 30 minutes, with the `swarm_check_schedule` call that
+  remembers it. The skill runs CronList first and makes no call when a
+  `/sc check` job exists, so a session never holds two watches.
+* `arm_watch` is null when nothing was attached, when no workflow exists yet,
+  and when the project's watch was turned off: **an explicit `/sc watch off`
+  is saved** (`"watch": "off"` in the same file) and wins until `/sc watch`
+  again, so an attach does not undo it.
+* At session start, when the bridge finds running workflows or single tasks
+  of yours and no interval was ever saved, its context asks the session to
+  arm the watch beside the attach; the hook hands an explicit off over as
+  `SWARM_SC_WATCH_MINUTES=off` and then nothing is asked. Nothing running,
+  nothing asked.
+* `/sc check` that finds nothing running for the project says so
+  (`nothing_running`) and leaves the job armed: one read per interval is
+  cheap, and the next workflow is watched without re-arming.
+* A task sent with `swarm_dispatch` (one or `tasks`) arms it too, and so does
+  `/sc attach <wf_id>` of a workflow that has already finished, and a `/sc
+  run` that ended `SUBMISSION_UNKNOWN` or `SUBMITTED_UNVERIFIED` (work may be
+  running; its result carries `arm_watch`). Only `NOT_SUBMITTED` sent nothing.
+
+### Only this session's work (SC-SESSION-SCOPE)
+
+Owner decision 2026-10-14: "only the tasks related to the work this claude
+code session is doing should pass as valid candidates to attach if not
+attached already. Same goes for watching and checking for staleness" -- even
+when several sessions share one tenant or workspace.
+
+* **The session id.** Claude Code starts the plugin's MCP server, and its
+  hooks, with `CLAUDE_CODE_SESSION_ID` in the environment (measured
+  2026-10-14 on Claude Code 2.1.283: the swarm-mcp process carried the same
+  id as the session's transcript). /compact and `claude --resume <id>` keep
+  it; a new `claude` gets a new one. `/clear` moves the session to a new id
+  while the server keeps running, so the SessionStart hook (its matcher now
+  includes `clear`) records the id it gets on stdin under `<config
+  dir>/sc-session/<sha256 of the starting id>.json`, and the bridge reads
+  that record first (`swarm_mcp.session`).
+* **The tag.** Every submission carries the id as `metadata.claude_session`:
+  `swarm_dispatch` (one and `tasks`), `swarm_workflow` (`spec`, `spec_path`,
+  `spec_ref`, `merge_pr`) and `swarm_run_issue` (as the run's
+  `claude_session`, which swarm-api copies onto the planner, the compiled
+  workflow, every CI-fix round and the merge workflow). The merge step's
+  conflict-fix and CI-fix rounds copy their merge task's tag, so a session's
+  own fix rounds are its own. swarm-api serves it back as `claude_session` on
+  task rows (the summary view too), workflow rows and runs.
+* **The scope.** `/sc check` (and its `new_only` attach) and so the watch
+  consider ONLY work tagged with this session's id; `/sc attach --all` and the
+  SessionStart hook's context also take this project's running work,
+  whichever session started it (owner, 2026-11-09). Another session's work,
+  and untagged work (submitted before this change, or by another client),
+  are never automatic candidates; each answer counts them in
+  `session.left_out`. With no session id known, nothing is a candidate and
+  the answer says why.
+* **By hand, anything.** `/sc attach <wf_id>` still attaches any workflow the
+  tenant may read, and says (`not_this_session`) when it is not this
+  session's. `/sc workflows` keeps listing the whole tenant and marks this
+  session's `[this session]` (`this_session` in JSON, and in `swarm_workflows`,
+  whose marks are what `/sc:swarmcloud {attach: "all"}` keeps when it is the
+  fallback).
+
+### The build board: this project's work on one local page (archived issue 1773)
+
+Owner requirements 2026-10-20: every project that dispatches work through the
+plugin gets the operator's build board for free, with no account or
+publishing involved.
+
+* **What it shows.** Every workflow and single task you submitted against
+  this project's repository (its `origin`), from any Claude Code session or
+  account -- not teammates' work: each lane's state, its pull request and
+  what it waits on. "By feature" groups the lanes by the GitHub issue each
+  names (its `issue` input, else `(#N)` in its title), labelled with the
+  issue's title where SwarmCloud has it; the rest are under "No issue".
+  "Waiting on someone" lists owner questions (the recommended option
+  marked) of lanes still open -- not merged, not finished -- that no
+  answer recorded on the task (`swarm_task_answer`, or the console)
+  answers, each once per lane; steps waiting for a person
+  (`AWAITING_INPUT`, `HUMAN_REQUIRED` parks) with their `/sc answer` command, and refused merges and CI parks
+  over 90 minutes; a failed step in general is not listed. In-flight work
+  always shows, finished work for 30 days. Nothing is read from GitHub.
+* **Where it lives.** `<project>/.claude/build-board/index.html`, one
+  self-contained page (inline CSS and JS, light and dark, readable at phone
+  width), with a `cache.json` of what no longer changes beside it.
+* **Never committed.** The folder holds a `.gitignore` of `*`, so git
+  ignores everything in it without your repository's own `.gitignore` being
+  edited -- the rule `.sc-swarmcloud-runs/` follows too. `git status` shows
+  nothing new. The board is never committed, pushed or published.
+* **Local, independent of the Claude account.** The page is a file on this
+  machine, written by the bridge from SwarmCloud's state as you; a
+  claudeswitch rotation or another Claude profile changes nothing.
+* **It keeps itself current** (BOARD-WIRE). The bridge refreshes it in the
+  background after every successful submission (`swarm_workflow`,
+  `swarm_dispatch` for one task or several, `swarm_run_issue`), after
+  `swarm_workflow_launch` and after `swarm_check`, never throttled; and when
+  a row's `swarm_follow` sees a task change state, at most once every 2
+  minutes per project, a change inside that window written when it closes.
+  A refresh never delays or fails the tool behind it: triggers that arrive
+  while one runs coalesce into one more, and a failure goes to the bridge's
+  log and leaves the previous page in place (the next page's banner says
+  why). The SessionStart hook refreshes it once in a project that already
+  has a board or a run record, silently and inside the hook's time budget,
+  with `auto_attach` on or off.
+* **`/sc build-board`** makes one `swarm_build_board` call, opens the page
+  with `open` (macOS) or `xdg-open`, and reports the path, the time written
+  and the counts in one line. A project with no work yet gets an empty board
+  saying "No lanes yet", not an error. From a terminal, `sc build-board`
+  does the same (`--no-open` to only write it).
+
+### What a row shows, and what it costs
+
+A row writes one short line when its task's state or progress changes, and
+nothing otherwise:
+
+    [review 4674b39f] READY · waiting 3m · waits: dependency
+    [review 4674b39f] READY → RUNNING
+    [review 4674b39f] RUNNING · 4m10s · attempt 1/3 · checkpoint 1m ago · 210k tok · $0.31
+
+That is the state, the elapsed time, attempt n/m, the age of the last
+checkpoint, and the tokens and cost recorded so far. For a waiting task it
+says what the task waits for: a dependency, capacity, quota, and so on. A
+figure that is not known is one word: `unrecorded`, `unreadable` or `none`.
+It is never estimated, and an unrecorded cost is never `$0`. When the task
+finishes, the row answers with the same seven fields as before: `state`,
+`answer_excerpt`, `cost_usd`, `duration_s`, `pr_url`, `artifacts` and
+`last_error`.
+
+**Why it is this thin (measured 2026-10-01).** Until then each row followed
+`swarm_follow` with `format: "lines"` and `wait_seconds: 90`. Six wave-1
+workflows of three steps each made eighteen rows. Every reply carried 5–16 KB
+of the remote agent's narrated log, and a row re-reads its whole transcript
+on every turn. One row used 4.0M tokens over 41 calls, and the six workflows
+used about 22M tokens. Rows whose parents had not started polled the whole
+time. Yet what the workflow acts on is one terminal line per step.
+
+A row now follows `format: "progress"` instead:
+
+* **No log.** A reply for one unfinished task is a few hundred bytes, bounded
+  at 768 by a test, and it repeats nothing an earlier reply said.
+* **One long call per turn.** A running task is followed with
+  `wait_seconds: 120`. A task still waiting on its parents is followed with
+  `wait_seconds: 600`. The bridge holds the call until the state, attempt or
+  wait reason changes, or until the wait ends. While a task waits, the bridge
+  reads only the task document, at most every 30 s, with no log, event or
+  attempt reads.
+
+The full log is still there. `swarm_follow` with `format: "lines"` narrates
+it (`sc:remote` still uses that), and so do `swarm tail`, `swarm follow
+<task_id>` and the console.
+
+### Layouts: rows, the SwarmCloud pane (SC-BROWSER-BUILD), or the band
+
+The owner asked on 2026-10-25 (archived issue 2318) to follow SwarmCloud work from Claude Code
+without spending model tokens on it by default, and picked proposal B, Two
+columns, for every frame of the mock-ups (PR 2328). So the plugin has two
+layouts and a toggle, remembered per project:
+
+* **`rows`**, the default, is everything above: one row per workflow
+  (`summary`) or per unfinished step (`per-step`), each a haiku agent that
+  polls for as long as its work runs, whether anyone looks or not.
+* **`pane`** is a Claude Code mod pane beside the chat (`plugin/hooks/pane.tsx`,
+  opened with `/sc-pane`), plus ONE quiet `sc:finish` row per workflow. The
+  pane reads SwarmCloud with ONE direct MCP call per click -- `swarm_browse`,
+  over the engine's own connection -- so browsing never reaches the model:
+  this session's workflows when it opens and on Refresh, a workflow's stages
+  when one is opened, a stage's agents when one is selected, an agent's
+  details when one is opened. No timer, and nothing while it is closed. The
+  stages are the console's, `levelsOf` in apps/swarm-ui/src/dag.ts, named
+  `Stage N`; a unit test runs dag.ts's own function and holds the pane to it.
+  The `sc:finish` row exists so the session still learns of a finish: it
+  follows `swarm_follow` `format: "stage"`, which holds each call until the
+  workflow's stage changes, and writes a line only then.
+
+`/sc layout rows|pane` (or the pane's `[Layout]`) saves the choice with
+`swarm_layout` in `<config_dir>/sc-layout/`, keyed by the project as `/sc
+watch` is; it outranks the plugin's `layout` option, and every launch reads
+it, so it switches without restarting the session. Rows already running keep
+going until they end: a plugin cannot stop a /workflows row. So a switch also
+re-attaches (the owner, 2026-10-25, SC-BROWSER-FOLLOWUP): after it saves, the same
+`/sc layout` run goes on as `/sc attach --all`, one chat turn, and rows in the
+new layout start beside the old ones. (The engine refuses `$.command.run`
+inside a `command.run` hook, so the run is rewritten rather than queued twice;
+the pane's `[Layout]` control, a press, queues it with `$.command.run`.)
+
+At session start the pane module makes ONE `swarm_layout` call (after the
+session has started; a reload asks nothing), and in the pane layout opens the
+pane drawing "not read yet" with Refresh: no list read until someone presses
+it. Claude Code seats a pane nobody asked for only from 144 terminal columns;
+below that it waits and a one-line toast says so.
+
+Session start also tracks THIS PROJECT's running work (the owner's note of the same
+day), at session start only: the SessionStart hook names, beside this
+session's own work, every workflow and single task still running that clones
+this checkout's origin repository, whichever session started it. In the rows
+layout it asks for `/sc attach --all --project` (`swarm_workflow_launch
+{attach: "all", project: true}`); in the pane layout the pane's Level 1 lists
+it once read (`swarm_browse {level: "workflows", project: true}`). Another
+repository's work from another session is left out, and `/sc check` and the
+watch stay this session's (owner decision 2026-10-14). Since 2026-11-09 (the
+owner's decision) the plain `/sc attach --all` takes the same as
+`--project`, outside the pane layout: the project's running work another
+session started is attached, marked `this_session: false`, instead of being
+left out as `other_session`.
+
+What the pane needs and what was not measured: Claude Code's function hooks,
+early access in this build (`CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`); without
+them the module does not load and nothing else changes. `claude plugin test
+plugin` runs `plugin/hooks/pane.test.ts` against the engine. How a live
+session seats the pane, and the `sc:finish` row's real token cost against
+today's `sc:summary` row, are measured in a live session, not here.
+
+### The third layout: a band above the prompt (SC-BAND)
+
+The owner decided on 2026-10-26 (part of archived issue 2318) that the SwarmCloud view moves out
+of the right-docked pane into a HORIZONTAL STRIP ABOVE THE PROMPT, with one
+summary line BELOW the prompt, and that in this layout the plugin starts no
+/workflows rows at all. Why: in Claude Code's fullscreen layout a Pane docks
+on the right and a plugin cannot choose otherwise, and /workflows is Claude
+Code's own background-task list, where a plugin can only add model-driven
+rows. A plugin can draw two horizontal things: the `AbovePrompt` band (many
+rows, scrolled by the engine, folded by the engine's [-], held to half the
+terminal) and `$.ui.status`, one pinned line under the prompt beside other
+plugins' lines.
+
+* **The strip** (`ui.render` on `AbovePrompt`, in `plugin/hooks/pane.tsx`)
+  draws the pane's own levels -- workflows, a workflow's stages, a stage's
+  agents, one agent's details, with Refresh and back -- at the band's
+  `bodyColumns` (two columns where there is room, one at a time on a narrow
+  terminal), under a summary line: `SwarmCloud · 6 running · 1 waits on you
+  · 2 PRs`. Its `[Fold]` leaves that line alone; a taller tree scrolls in the
+  engine's window; while a survey holds the band it yields. Every read is one
+  direct `swarm_browse` call, as the pane's are: no model tokens.
+* **The line under the prompt**: `SC 6 running · 1 waits on you · 2 PRs`,
+  refreshed after each list read and cleared when nothing of this session or
+  project runs.
+* **No rows.** With the layout at `band`, `swarm_workflow_launch` answers an
+  attach, `attach: "all"` and a dispatch's rows with `launches: []`,
+  `rows: "band"` and `followed_by: "band"`; a spec's run submits it and
+  starts no follow row. Arming the `/sc check` watch is unchanged.
+* **It notices what the rows did.** While anything listed runs, the strip
+  re-reads `swarm_browse {level: "workflows"}` once a minute (`$.clock.every`,
+  the plugin's one timer; it stops when nothing runs, when the layout leaves
+  `band`, and when the session ends). A workflow that finished, a step that
+  waits for a person, a merge parked on owner questions, or new owner
+  questions queues ONE chat turn, `/sc status wf_… · finished: succeeded · PR
+  archived pull request 2463`, with `$.command.run`; an unchanged read, and the first read, queue
+  none.
+* **Session start.** In `band` the strip opens at session start with this
+  session's and this project's running work (one `swarm_layout` call, then
+  one `swarm_browse {level: "workflows", project: true}`), and the
+  SessionStart hook asks for nothing else: it reads the layout locally, as
+  the bridge does, and skips the attach listing (a remembered `/sc watch` is
+  still re-armed).
+
+To switch: update the plugin, then `/sc layout band` (or `[Layout]` in the
+pane or the strip). It saves the choice for the project, starts the strip and
+queues no attach; `/sc layout rows` or `/sc layout pane` stops the strip,
+clears the line under the prompt and re-attaches as before. Rows already
+running keep going until they end.
+
+What it needs and what was not measured: function hooks, as the pane does.
+`claude plugin test plugin` runs `plugin/hooks/band.test.ts` against the
+engine. The PR counts and the owner-question notices need `swarm_browse` to
+serve `pull_requests`, `owner_questions` and `park_phase` on its workflow
+rows; until it does, the summary leaves the PR count out and those notices
+do not fire. How a live fullscreen session lays the strip out is measured in
+a live session, not here.
+
+### What differs from a local step — read before swapping one in
+
+| | A local `agent()` step | The same step through `sc:remote` or `/sc:swarmcloud` |
+|---|---|---|
+| What it knows | the prompt, the session's files, its own tools | **only its prompt**. No conversation, no other step's output — except, under `/sc:swarmcloud`, the `input_from` files SwarmCloud stages |
+| Its prompt | handed to the agent as written | **retyped by a relay** — `sc:remote`, a haiku row, copies the prompt into `swarm_dispatch`, and a long prompt can arrive changed, with nothing after it able to tell. The prompt the remote agent got is the task's input: read it in the console, or in the row's transcript. Under `/sc:swarmcloud` the spec is checked by digest (above) |
+| Which code it sees | the working tree, uncommitted edits included | a **depth-1 clone of the pushed branch**, cloned by the branch's OWN name on its remote — never its upstream: no history, no uncommitted work. The bridge refuses a branch that is not on its remote under its own name or has commits that are not there, naming `git push -u <remote> <branch>`, and names uncommitted changes as invisible |
+| Tools | the session's tools, MCP servers and permission rules | the `claude-code` runner's own tools inside its container; none of the session's MCP servers or permission rules |
+| Model | the workflow's `model` option, or the session's | **pinned on the job**: the profile's model. A caller cannot choose it (invariant 10), so a `model` option on the `agent()` call changes only the local row's model |
+| Tokens in `/workflows` | the step's own | **the row's** — haiku relaying the remote run. The remote agent's spend is the outcome's `cost_usd`, drawn from the shared subscription pool; `null` means not recorded, never $0 |
+| Stopping the row | stops the step | stops the ROW only. The SwarmCloud task keeps running; cancel it with `swarm_cancel`, or `swarm workflow-cancel` for a workflow |
+| Relaunching the run | re-runs every agent that did not finish AND every agent that started after a failed or edited one, completed ones included | the same, and for `sc:remote` every re-run row DISPATCHES AGAIN — a second task, even when that row's first task had already completed. Under `/sc:swarmcloud` the finished `Submit` is replayed from cache, so rows re-follow the same tasks |
+| Concurrency | the workflow's agent cap | rows beyond the cap start later; their tasks run on SwarmCloud's schedule regardless |
+
+**Which checkout is inferred.** The bridge reads the git checkout of the
+directory its MCP server was started in — the session's working directory at
+start. A session that later moved into a worktree can point it elsewhere with
+`SWARM_CHECKOUT_DIR` in the environment Claude Code starts from. Outside any
+checkout nothing is cloned, and the dispatch reply says so rather than leaving
+a null.
+
+**Inference is opt-in: `infer: true`, not the default.** A plain
+`swarm_dispatch` or `swarm_workflow` call names a repository only when given,
+exactly as before this feature existed. `sc:remote` and `/sc:swarmcloud` pass
+`infer: true` on every call; anything else naming neither `repo` nor `infer`
+clones nothing.
+
+**Which branch is checked: its own name, never its upstream.** This
+repository's lane recipe, `git checkout -b <lane> origin/main`, leaves the
+lane's upstream at `origin/main`. The bridge ignores the upstream for this: it
+checks `<remote>/<lane>` — the remote being the one `git push` would use.
+A lane pushed without `-u` is accepted; a lane never pushed is refused with
+`git push -u origin <lane>`. The upstream is only reported, in the reply's
+`repository.notes`. (Reading the upstream instead once measured a pushed lane
+against main, refused it, and recommended `git push origin <lane>:main`.)
+
+**What is actually SENT is the commit, not the branch name.** A branch name is
+a moving pointer; a remote task can sit QUEUED for a while, and a caller who
+pushes again to the same branch before it starts must not silently move what
+an already-sent dispatch clones. So `infer: true` sends the commit the branch
+was pushed AT, pinned, and the reply's `repository.commit` and `repository.ref`
+are the same value.
+
+### What the bridge gained for it
+
+* `swarm_dispatch` takes `strategy` (`collect` | `direct-pr`) and `infer`, and
+  with `infer: true` and neither `repo` nor `ref` given, infers both from the
+  checkout: the ref sent is the commit the checkout's pushed branch is pinned
+  at (never the branch name, which can move after the call returns), the URL
+  is made https and stripped of any credential, and the reply carries a
+  `repository` block saying what will be cloned and how that was decided.
+* `swarm_follow` takes `since` — the cursor as one opaque token, ending in a
+  dot and a CRC-32 checksum: a relay copies it by hand on every call, and a
+  token changed on the way back is refused with an error saying so, instead
+  of being read as a different position — and
+  `format: "lines"`: claude-code's `stream-json` narrated as short lines,
+  capped per call with the count left out stated, a `wait_seconds` window that
+  returns early when a task finishes or starts, and, for a finished task, an
+  `outcome` with the whole answer (from the API's `/v1/tasks/{id}/answer`,
+  which reads the agent stream's final `result` event, because the runner's
+  summary keeps only its first 2000 characters), `answer_json`, `cost_usd`,
+  `duration_s`, `pr_url`, `artifacts`, `last_error` and, on a failure,
+  `failure`. The narrated stream is the AGENT's own (`agent_stdout`), not the
+  runner's JSON log; a runner with no agent CLI, such as `mock`, is read from
+  its own streams instead. The reply says `stop: true` when calling again
+  cannot change anything: every task finished, or the row gave up on one — a
+  404 or 403 at once, any other failed read after three calls in a row that
+  read nothing (the streak rides in `since`), or, given `step_id`, a task that
+  is a different step — with that task's `abandoned_because`. A row that can
+  never read its task used to poll it until its turn limit: about 400 windows
+  of 90 seconds.
+* `swarm_workflow` takes `spec`, a whole `swarm workflow` spec, read by the
+  same function the terminal uses, and infers the repository the same way.
+  With `spec_digest` it refuses, before sending, a spec that arrived
+  different; its reply carries the digest of what it received.
+* `swarm_workflow` (and `swarm workflow`, and `/sc:swarmcloud` through
+  `swarm_workflow_launch`) passes `publish_to_pr` through (archived issue 2183, PTP-PLUGIN):
+  a spec's top-level key, or the tool's argument beside a step list or a spec,
+  naming an existing pull request of the workflow's repository — `41`,
+  `"#41"`, `"owner/repo#41"` or its URL (a number is sent as the integer, a
+  form naming a repository as `owner/repo#N`). The lane's commits are pushed
+  onto that pull request's branch as a fast-forward and no pull request is
+  opened. It is sent top-level, beside `steps`, only when given, and with no
+  `metadata.merge`: swarm-api refuses it beside a merge step or a merge
+  choice, so a spec naming both — a merge step, or `merge` other than
+  `"off"` — is refused before any request, with the API's reason, rather
+  than its merge dropped. The argument and a spec naming different pull
+  requests are refused. The reply's `publish_to_pr` says what was sent and
+  that no merge was.
+* `swarm_dispatch`'s single-task form takes `publish_to_pr` too (archived issue 2183,
+  PTP-DISPATCH), in the same forms, read by the same `check_publish_to_pr`,
+  and sends it top-level in the `POST /v1/tasks` body, only when given: a
+  dispatch without it sends exactly what it sent before. `tasks` refuses it —
+  beside the list or inside one of its tasks — before any request, because
+  one pull request takes one publishing task. The reply's `publish_to_pr`
+  says what was sent.
+* `swarm_workflow_spec` reads a spec file from the checkout, checks it, and
+  returns it with its digest, submitting nothing — the half of `/sc:swarmcloud` that
+  takes a path. A file that is not a spec is refused without its content being
+  repeated. Only a file UNDER the checkout (`SWARM_CHECKOUT_DIR`, else the
+  directory the bridge runs in) is read, once symlinks are resolved: an
+  absolute path, a `../` or a symlink that leads outside is refused before
+  anything about the file is looked at, because the path arrives through a
+  relay and the bridge can read every file you can. The same rule holds for
+  `spec_path` on `swarm_workflow` and `swarm_workflow_launch`; a spec kept
+  elsewhere is passed as the `spec` object instead.
+* `swarm_account_remove` is confirmed by a PERSON, not by its caller. The
+  bridge asks the host's human, through the host's own prompt (MCP
+  elicitation), to type the account's label; no tool argument counts as that
+  answer, and no refusal names the label, so an agent cannot confirm its own
+  removal. A host that cannot ask its human removes nothing and is told to run
+  `sc account remove <account>` in a terminal, which asks there.
+* `swarm_task_answers` records up to 200 answers `{task_id, question_index, choice?, text?}` through the single-answer route with `reply=short` (each checked as one answer is; a refusal is its own line and never stops the rest), and `swarm_task_answer` takes `reply: "short"` (6 November 2026).
+* `swarm_follow` `format: "progress"` (2026-10-01): no log, one progress line
+  per task only when it changed, the state `transitions` since `since`, and a
+  finished task's `outcome` reduced to the step result's fields. A call holds
+  for up to 600 s (see "What a row shows, and what it costs" above).
+* Every tool refuses an argument it does not declare, instead of ignoring it.
+* The stdio loop answers tool calls concurrently. It answered one at a time,
+  so a single `swarm_wait` held every other call, and a dozen rows each
+  following their task for a window would have queued behind one another.
+
+None of it adds a model, an image, a command or a resource parameter.
+
+## Planning and running a GitHub issue
+
+`/sc run --issue owner/repo#N` (archived issue 454) hands an issue to SwarmCloud. A planner
+task reads the issue and the repository's open issues and pull requests, with
+the tenant's own forge credential, and writes a plan: the requirements, any
+overlap with work already in flight, and the steps with their files, tests and
+estimates. The plan waits, holding no capacity, until someone approves it;
+then it compiles into one workflow that opens a pull request, and the platform
+reads that pull request's CI and runs up to three fix rounds (`--fix-rounds`).
+The issue carries a plan comment and one status comment the platform keeps up
+to date. Why it works this way -- the digest, the tick, the fix-round cap,
+`Closes` against `part of`, and why auto-merge is refused -- is in
+[docs/issue-runs.md](../docs/issue-runs.md).
+
+| Surface | Create | Read | Act on the plan |
+|---|---|---|---|
+| `/sc` | `/sc run --issue o/r#N [--plan auto] [--auto-merge]` | `/sc runs`, `/sc plan show <run>` | `/sc plan approve\|edit\|reject <run>` |
+| MCP | `swarm_run_issue` | `swarm_runs`, `swarm_run` | `swarm_plan_approve`, `swarm_plan_edit`, `swarm_plan_reject` |
+| terminal | `uv run sc run --issue o/r#N [--follow]` | `uv run sc runs`, `uv run sc run show <run>`, `uv run sc plan show <run>` | `uv run sc plan approve <run>`, `edit --file plan.json`, `reject --reason ...` |
+
+**An approval sends the digest of the plan it showed.** `sc plan approve`
+prints the whole plan and its digest and asks for `approve` typed back
+(`SWARM_ASSUME_YES` is ignored), and `swarm_plan_approve` takes the digest
+from its caller, who was shown it. A plan edited in between is refused with
+`plan_changed`, said plainly, and nothing is retried. `sc plan edit` sends the
+digest of the plan it opened, from `--file` or `$EDITOR`.
+
+**`--auto-merge` merges the run's pull request** with the `merge` step (archived issue 295,
+enabled by contract request 47). The API refuses it only while the `merge`
+profile is disabled; that refusal is printed as it is, and nothing is created.
+
+**Live rows.** Once a run is `RUNNING` (or `FIXING`, a CI fix round),
+`swarm_run` answers `attach_with: /sc attach <workflow_id>` and `sc run show`
+prints the same line: the run's workflow attaches exactly as any other
+(archived issue 448). `sc run --follow` prints one row per compiled step as it moves, and
+stops at a plan waiting for approval.
+
+`run --issue` and `plan approve|edit|reject` write, so no skill or command is
+granted them: `tests/unit/mcp/test_plugin_commands.py` holds them out of every
+grant, and `tests/unit/mcp/test_issue_runs.py` holds the digest rule.
+
+## A repository's Playwright suite as a gate
+
+`swarm_suite_gate` runs a registered repository's whole Playwright suite as
+`shards` steps on `claude-code` plus one `report` step that merges their blob
+reports. The caller names the repository, a ref, `suite: "playwright"`,
+`working_dir`, `shards` (1 to 20, default 8), and optionally `project` and a
+non-secret `env_file`. It never names an image, a command or resources. The
+report's `summary.md` (through `swarm_result`) and `summary.json` and
+`playwright-report.zip` (through `swarm_artifact`) are the answer. What it
+runs, what it costs and how a merge train reads it are in
+[docs/suite-gate.md](../docs/suite-gate.md).
+
+## Schedules and the approval inbox
+
+A schedule is a typed recurring job on your tenant's repositories: an issue
+sweep every weekday morning, a nightly index refresh, a weekly observer
+report. The platform's tick fires it on its cron as its owner, its gate says
+what waits for a person, and everything that waits -- a firing, an issue
+run's plan, a merge, a hold -- lands in one inbox. Why it works this way --
+one tick rather than a job per schedule, exactly once per slot, the gates and
+their floors, the hard stops no mode lifts, and what a budget can and cannot
+promise -- is in [docs/schedules.md](../docs/schedules.md).
+
+| Surface | Read | Write | Decide |
+|---|---|---|---|
+| `/sc` | `/sc schedules`, `/sc schedules show <name>`, `/sc approvals` | -- (not granted; use the tools) | -- (not granted; use the tools) |
+| MCP | `swarm_schedule_types`, `swarm_schedules`, `swarm_approvals` | `swarm_schedule_create`, `swarm_schedule_update`, `swarm_schedule_pause`, `swarm_schedule_resume`, `swarm_schedule_run_now` | `swarm_schedule_approve`, `swarm_schedule_reject` |
+| terminal | `uv run sc schedules`, `uv run sc schedules show <name>`, `uv run sc schedules preview "0 9 * * 1-5" --tz Europe/London`, `uv run sc approvals` | `uv run sc schedules new issue-sweep --repo o/r --cron "0 9 * * 1-5" [--param k=v] [--dry-run]`, `uv run sc schedules pause\|resume\|run <name>` | `uv run sc approvals approve <id>`, `uv run sc approvals reject <id> --reason ...` |
+
+**A schedule names a type, never a backend.** `type` is one of the
+catalogue's twelve (`swarm_schedule_types` says which this deployment can run
+now). No image, command, runner profile, resources or credential is accepted
+-- at the top level or inside `params` -- and one offered is refused by the
+bridge before anything is sent. `--param k=v` reads a JSON value (`5`, `true`)
+as JSON and anything else as text. `--repo` names a repository registered in
+your tenant; one that is not is refused with nothing sent.
+
+**An approval sends the digest it showed.** Each inbox item carries the
+digest of what was shown: a firing's parameters, a plan, a merge's head and
+review verdict. `sc approvals approve` prints the item and its digest and asks
+for `approve` typed back (`SWARM_ASSUME_YES` is ignored), and
+`swarm_schedule_approve` takes the digest from its caller. An item that
+changed in between is refused (`approval_changed`, `merge_changed`,
+`plan_changed`), said plainly, and nothing is retried. An issue run's plan is
+in the inbox as `run:<run_id>`, and approving it there is the same call as
+`swarm_plan_approve`.
+
+**`merge: auto` is not an edit.** `swarm_schedule_update` refuses
+`gate.merge: auto` (`use_merge_switch`): it is set only through the audited
+merge switch on the schedule's gate card in the console.
+
+**There is no session loop.** The operator's session cron is no longer needed:
+a session reads `sc approvals` when the person asks, or when `sc schedules`
+shows a schedule with approvals pending.
+
+The write and decide verbs are granted to no skill or command:
+`tests/unit/mcp/test_schedules_tools.py` holds them out of every read-only
+grant, holds `swarm_schedule_create` to refusing `image`, and holds the digest
+rule.
+
+## Setting up: GitHub as yourself, and the repositories SwarmCloud may use
+
+SwarmCloud acts **as you** at GitHub, through its GitHub App (archived issue 780,
+[docs/onboarding.md](../docs/onboarding.md)). `/sc:setup` walks the same
+checklist the console draws — `signed_in`, `github_connected`,
+`orgs_enabled`, `repos_chosen`, `access_verified`, `ready` — from wherever it
+stands, so a person who connected GitHub in the console and chooses
+repositories here sees one checklist. Every step's state is read from `GET
+/v1/onboarding`; nothing on this side decides a step is done.
+
+| Surface | Walk it | Read it | Change it later |
+|---|---|---|---|
+| `/sc:setup` | `/sc:setup` | `/sc:setup status` | `swarm_setup_grant`, `swarm_setup_revoke`, `swarm_setup_verify` |
+| MCP | `swarm_setup_connect`, `swarm_setup_orgs`, `swarm_setup_repos`, `swarm_setup_grant`, `swarm_setup_verify` | `swarm_setup_status`, `swarm_access` | `swarm_setup_revoke` |
+| terminal | `uv run sc setup` | `uv run sc setup status`, `uv run sc access list` | `uv run sc access grant o/r --read\|--write`, `revoke o/r`, `verify [o/r]`, `verify o/r --push-test`, `add-org`, `request-install`, `remove-org`, `disconnect`; `uv run sc setup token --owner <org>` |
+
+**Connecting happens in your browser.** `sc setup` and `swarm_setup_connect`
+ask the API for an authorize link, open it, and print it once in case the
+browser did not open. You approve SwarmCloud at GitHub, and the console's
+callback page finishes the exchange under your own sign-in; the terminal (or
+`swarm_setup_status` with `wait_for_github_seconds`) only waits for the
+checklist to say GitHub is connected as you. The link lasts 10 minutes and
+works once; on a timeout, run it again for a fresh one. A step that is done
+through the **tenant's** token is not connected as you, and is not taken for
+it.
+
+**No token, code or state is printed.** No route these call returns a token.
+The authorize URL carries GitHub's `state` because GitHub requires it there;
+it is shown once, as the URL, and repeated nowhere — not in an error, not in
+a tool reply's other fields.
+
+**Choosing is yours.** Owners are enabled and repositories granted only as
+you name them, each `read` (clone) or `write` (clone, push, pull request). The
+API reads a repository once as you and refuses write on one that is archived
+or that you cannot push to, with the recovery copy of docs/onboarding.md §2.3,
+which both surfaces print word for word. Verifying reads only: nothing is
+pushed.
+
+**An org that needs its owners' approval.** On an org you do not own, GitHub
+sends the install to its owners as a request and shows your token nothing
+about it, so SwarmCloud records it: `uv run sc access request-install <org>`
+(or `swarm_setup_orgs` with `request_install`) records that you asked and
+prints the install page to send them. The org then shows
+`ORG_APPROVAL_PENDING` with its recovery copy — in `sc access orgs`, in
+`swarm_setup_orgs`'s `approval_pending` and on the checklist — and is
+re-checked every 15 minutes until GitHub lists the installation.
+
+**An org that will not install the App** (or that answers
+`CLASSIC_PAT_BLOCKED`) takes a fine-grained personal access token whose
+resource owner is that org (docs/onboarding.md D5). You store it yourself, in
+a terminal:
+
+```bash
+uv run sc setup token --owner <org>      # typed with no echo
+pass show github/<org> | uv run sc setup token --owner <org>   # or one piped line
+```
+
+It is read from stdin and from nowhere else — there is no `--token`, because
+an argument lands in shell history and `ps` — posted once to
+`POST /v1/onboarding/github/token`, and never printed: the answer is the org
+and the token's kind, login and expiry. It exits 0 when stored, 3 when the
+API refused it (with §2.3's code and copy: SSO, classic-token policy, a
+fine-grained token still awaiting approval) and 1 when the API could not be
+read. `/sc:setup` tells you to run it and never asks for the token in chat;
+no bridge tool takes one. Removing the org (`remove-org`) revokes it.
+
+**The push test is opt-in** (D6). `uv run sc access verify <owner/repo>
+--push-test` creates and deletes one branch,
+`swarmcloud/onboarding-check-<nonce>`, in one write grant, as you — the only
+real proof of push. It asks you to type the repository's name and ignores
+`SWARM_ASSUME_YES`; a read grant is refused before anything is sent.
+`/sc:setup` offers it only after asking, per repository, and then calls
+`swarm_setup_verify` with `push_test: true`.
+
+`sc setup` exits 0 when the checklist ends ready, 3 when it stopped short (a
+step failed, the browser half timed out, nothing installed yet) and 1 when
+something could not be read; `sc setup status` the same. `sc access verify`
+exits 3 when a check did not pass.
+
+`setup` and the `access` verbs write — they change what SwarmCloud may do as
+you — so no skill or `/sc` grant reaches them
+(`tests/unit/mcp/test_plugin_commands.py`), and `/sc:setup` is granted only
+the onboarding tools, by name. Disabling an org
+(`uv run sc access remove-org <owner>`) deletes every grant under it, and
+`uv run sc access disconnect` revokes SwarmCloud's access at GitHub: both have no tool, take a typed
+confirmation and ignore `SWARM_ASSUME_YES`. `tests/unit/mcp/test_setup_and_access.py`
+holds the flow against a fake API, including that no secret is printed.
+
+## Registered MCP servers: by name, and a per-run credential the agent never sees
+
+A workspace can register its own MCP server (a knowledge base, a decision log)
+so a task's agent queries it during its run and writes back through it
+([docs/design/registered-mcp-servers.md](../docs/design/registered-mcp-servers.md),
+archived issue 1433). **Until the deployment sets `SWARM_MCP_SERVERS=on`, SwarmCloud refuses
+every `mcp_servers` with `mcp_unavailable`**; nothing below changes a dispatch
+that names none.
+
+* **Which servers exist:** `swarm_mcp_servers`, or `/sc mcp-servers` (`uv run
+  sc mcp-servers [--json]`). Each server's name, URL, auth mode, allowed
+  profiles and tools (none listed means every tool), whether it is enabled, and
+  the egress addresses its operator allowlists. Read-only.
+* **Naming one:** a claude-code or codex task or workflow step puts the names in
+  its declared input, `"inputs": {"mcp_servers": ["kb"]}`. Never a URL, a header
+  or a command: those come from the registration (invariant 10).
+* **A per-run credential:** a server registered with auth `dispatch` needs one,
+  minted by your application for this run, in the call's top-level
+  `mcp_credentials`, `{"kb": {"value": "<credential>", "expires_in": 3600}}`:
+  `swarm_dispatch` takes it beside `prompt`, each entry of `tasks` takes its
+  own, and `swarm_workflow` takes ONE map, beside `steps` or the spec, for
+  every step naming that server. SwarmCloud stores it in Secret Manager,
+  destroys it when the task ends, and hands it only to the worker's relay,
+  never to the agent.
+* **Never in a spec.** A spec is written to disk, held by `spec_ref` and copied
+  into a run script, so a spec carrying `mcp_credentials` is refused, without
+  repeating it. A workflow that needs a credential is submitted with
+  `swarm_workflow` and the map beside the spec, then given rows with
+  `/sc attach`.
+* **Nothing here registers a server or stores a long-lived credential.** An admin
+  registers a server in the console (Config › MCP servers), and a
+  `workspace_secret` server's key is a workspace secret granted to `mcp:<name>`.
+  No tool's schema has a field either would fit in.
+* **No log of this plugin holds a credential:** not a reply, a refusal, the
+  dispatch signature, a run copy or `launched.jsonl`. Every answer is cut to
+  `{server, expires_at}` per credential before anything reads it, whatever the
+  API sent, and a refusal names the field and the rule, never the value: a
+  credential pasted into `mcp_servers` by mistake is refused without being
+  repeated.
+
+`tests/unit/mcp/test_mcp_servers_tool.py` holds all of this against a fake API
+that echoes every body back, searching every reply and every file a dispatch
+wrote for a credential built at runtime.
+
+## Your TypeSafe key: set it without Claude seeing it
+
+TypeSafe serves the Jev judgment models. A person's own key wins over the
+tenant's, which an admin sets ([docs/provider-keys.md](../docs/provider-keys.md)
+is the API). **The key never passes through Claude** (owner, 2026-10-14): no
+MCP tool takes it as an argument and no reply carries it, so there is no tool
+that sets a key at all.
+
+| Surface | See what is set | Set it |
+|---|---|---|
+| `/sc` | `/sc keys` | `/sc keys set typesafe [--tenant]`: a one-time console link (ten minutes, one use, only in your own console session); you paste the key into the console form |
+| MCP | `swarm_keys` (read-only: set, version, who, when; never a value) | `swarm_key_set_link` (answers only `url` and `expires_at`; its schema has no field a key fits in) |
+| terminal | — | `uv run sc key set typesafe [--tenant] [--stdin]`: a hidden prompt, or one piped line; prints only `stored: version N` |
+
+`sc key set` refuses a key given as an argument, before sending anything and
+without repeating it, because an argument lands in shell history and `ps`.
+No skill is granted it. Until the deployment's owner applies the KEYS-IAM
+bootstrap role, storing a key answers 503 and `sc key set` says
+`keys can't be saved yet: <the API's reason>`. Nothing reads these keys yet.
+`tests/unit/mcp/test_provider_keys_bridge.py` holds all of this.
+
+## Config › Secrets: links and reads, never a value
+
+Every secret of a workspace, a person or a registered repository, and the
+GitHub Actions secrets SwarmCloud writes into a repository, is listed and set
+from Config › Secrets ([docs/design/secrets-scopes.md](../docs/design/secrets-scopes.md)
+§6.4; lane SSC-SC). **A value never passes through Claude** (the owner, Q8 of that
+design's §11): it is typed into the console form a one-time link opens. No
+tool's schema has a field a value fits in. Every string argument is an enum
+or a narrow pattern, checked by `swarm_mcp/secrets.py` before anything is sent
+and refused without being repeated. Every answer is copied field by field.
+
+| Surface | See what is set | Set it |
+|---|---|---|
+| `/sc` | `/sc secrets list [workspace\|personal\|repository] [--repo owner/repo]` | `/sc secrets link <scope> [name] [--repo owner/repo] [--actions [--env name]]`: a one-time console link (ten minutes, one use, only in your own console session) |
+| MCP | `swarm_secrets` (the overview's rows: names, status, who and when, grants, which scope wins a shared name; never a value, a length or `last4`); `swarm_platform_secrets` (Admin › Platform secrets, platform admins only: anyone else gets the API's 403, passed through unchanged) | `swarm_secret_set_link` (`scope`, `action` add or rotate, `name` for a rotate, `repository` for the repository scope) and `swarm_actions_secret_link` (`repository`, `name`, optional `environment`): each answers only `url` and `expires_at` |
+
+`swarm_qa_target_credential_link` gained `field`: `credential` (the default,
+as before) or `challenge_bypass`, the form for a QA target's challenge-bypass
+value.
+
+A personal secret's link is minted in the caller's own personal workspace.
+The overview names that workspace, and the mint is sent on a copy of the
+client that names it. A repository is named as `owner/repo` or its `repo_`
+id and must be registered in the selected workspace; anything else is refused
+before a link is minted. With no console origin configured (`SWARM_CONSOLE_URL`
+on swarm-api), a link tool answers `url: null` and a note, never the API's
+`path`, because the path carries the link's token. Who may set what stays the
+API's rule (§2.5). `tests/unit/mcp/test_secret_links.py` holds all of this,
+and checks that every route the module calls is one swarm-api serves.
+
+## What keeps these honest
+
+Eight files, all in `make test`, all offline — bar one test, which CI runs:
+
+`tests/unit/mcp/test_follow_progress_format.py` holds the row's cost down:
+`format: "progress"` returns no log line and stays under 768 bytes for a task
+with large logs, repeats nothing on an unchanged call, and for a step waiting
+on its parents reads only the task and holds one call for the whole wait. It
+also checks that a finished task still carries every field of the step result.
+
+`tests/unit/mcp/test_plugin_bridge_install.py` covers whether the server can
+**start** on a machine that has only the plugin: the declaration names nothing
+outside `plugin/`, the bridge is a named git requirement whose
+`#subdirectory` really is the package that declares `swarm-mcp`, its ref is
+`sc-v<version>` and is written down once, and every in-repository dependency
+resolves from the same commit. Its last test installs the bridge for real —
+`plugin.json`'s own command, at the pushed commit, from a cold cache, outside
+the checkout — and talks MCP to it; it is skipped unless
+`SWARM_BRIDGE_INSTALL_REF` is set, which only CI's
+`the plugin's bridge installs from git` step does. That test also runs each
+install's own interpreter to ask where it thinks its repository is. The git
+install must find none, and must still class an `https` front-door URL as the
+front door. The escape hatch must find this checkout and, in developer mode, its
+`frontend_hostname`.
+The same file holds both descriptions to naming what still needs a checkout.
+
+`tests/unit/mcp/test_bridge_outside_a_checkout.py` holds the same two facts
+offline, against a simulated uv-cache layout: which door an address is, and
+which checkout an install reads, when the bridge is not running from a
+checkout.
+
+`tests/unit/mcp/test_plugin_skills.py` parses every `SKILL.md` here and asserts
+that each tool named in `allowed-tools` or in the prose is one
+`swarm_mcp.server.TOOLS` actually serves, that `sc` never gains a tool that
+writes, and that the skill never tells a session a tool which exists is missing.
+
+`tests/unit/mcp/test_plugin_commands.py` covers the half that had nothing: the
+**shell commands**. Every `swarm` or `sc` subcommand named in a skill, a command
+file or this README must be one the argparse parsers really accept, nothing the
+bridge returns may tell a model to run a bare `swarm`, and the marketplace
+manifest must exist and agree with `plugin.json` about this plugin's name.
+
+`tests/unit/mcp/test_runner_input_prose.py` holds the runner-inputs table above,
+and the one in `docs/workflows.md`, equal to the frozen catalogue, fails when a
+sentence here, there or in the delegate skill states a bound the table does not
+own, and requires every example input to be one the catalogue accepts.
+
+`tests/unit/mcp/test_plugin_agents_and_workflows.py` covers the agents and
+`/sc:swarmcloud`, whose loader fails quietly: a plugin agent whose frontmatter does not
+parse loads with every field ignored, and `mcpServers`, `permissionMode`,
+`hooks` and `initialPrompt` do nothing in a plugin agent. Each
+`plugin/agents/*.md` must parse strictly — and to the same values under a real
+YAML parser (PyYAML), so the file is not merely consistent with the test's own
+grammar — use only the keys a plugin agent honours, pin haiku at low effort,
+and grant exactly the SwarmCloud tools it needs, under the plugin's scoped
+names only. `run.js` must open with a pure-literal `meta` and read only the
+workflow globals — and it is RUN, under node with those globals stubbed, to
+prove it submits once, starts one `sc:step` row per step by level or stage,
+narrates each step in one line and returns the state SwarmCloud derived; that
+its spec digest is byte-for-byte the bridge's; that a reply missing a step,
+changing a dependency, reusing a task or carrying the wrong digest starts no
+row; that a stopped or failing Submit is reported as UNKNOWN, not as not
+submitted; that given a spec file's path it has the bridge read the file and
+submits nothing unless the relayed spec digests to what the bridge read; that
+each step's line names what it produced; that a failing Result row keeps
+every step's result; that every row is labelled `[SwarmCloud] … · stage <n> ·
+<step>` within 80 characters; and that `sc:step` follows `format: "progress"`,
+never `"lines"`, with its seven-field result unchanged. CI fails
+rather than skips when node is missing. Claude Code's own frontmatter parser
+and workflow runtime are not run by any of this.
+
+`tests/unit/mcp/test_remote_steps_bridge.py` covers what those agents need from
+the bridge: the inferred repository and every refusal of an unpushed branch —
+including a lane branched from `origin/main`, pushed without `-u` and not
+pushed at all — the dispatch `strategy`, `since`, the narrated lines, the
+gathering window and the outcome against the real logs, events and attempts
+routes, a row that stops on a task it cannot read or that is another step, the
+spec-shaped workflow submit and its digest check, the refusal of an undeclared
+argument, and a stdio loop in which one blocked call does not hold the next.

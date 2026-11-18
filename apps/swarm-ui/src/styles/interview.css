@@ -1,0 +1,135 @@
+/* The plugin interview as a full page (InterviewPage.tsx): direction B's plan
+   screens, the layout the owner picked on 4 November 2026. One question at a
+   time, its options side by side with each design inside its card, the rail of
+   answered questions, and the decision bar fixed at the foot; the proposal is a
+   page of its own with the same bar. Console tokens only, so light and dark
+   follow the theme; no type below --t-micro (12px) outside the scaled design
+   pictures, which are a picture of a page and are read at full size through
+   Enlarge. */
+
+.iv-n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; flex: none;
+  background: var(--sk-acs); color: var(--sk-ac); font: 600 var(--t-micro)/var(--lh-micro) var(--font); margin-right: 8px; }
+.iv-sumchip { display: inline-flex; align-items: center; gap: 0; max-width: 100%; min-width: 0; padding: 0; border: 1px solid var(--sk-acl);
+  border-radius: var(--r-pill); background: var(--surface); color: var(--text); font: 500 var(--t-micro)/var(--lh-flush) var(--font); cursor: pointer; overflow: hidden; }
+.iv-sumchip > span { padding: 5px 9px; white-space: nowrap; }
+.iv-sumchip > span + span { border-left: 1px solid var(--sk-acl); }
+.iv-sumchip-k { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
+.iv-sumchip-s { font-family: var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.iv-sumchip.is-static { cursor: default; }
+.iv-page { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
+.iv-page, .iv-prop { padding-bottom: 24px; }
+.iv-facts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: var(--t-meta); }
+.iv-grid, .iv-prop-grid { display: grid; grid-template-columns: 272px minmax(0, 1fr); gap: var(--ctl-s3); align-items: start; }
+.iv-rail { position: sticky; top: 8px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); display: flex; flex-direction: column;
+  max-height: calc(100vh - 215px); min-width: 0; }
+.iv-rail-h { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); }
+.iv-rail-list { list-style: none; margin: 0; padding: 6px 0; overflow: auto; flex: 1; min-height: 0; }
+.iv-rail-item { display: flex; gap: 10px; padding: 7px 14px; position: relative; }
+.iv-rail-item::before { content: ''; position: absolute; left: 25px; top: 0; bottom: 0; width: 1px; background: var(--line-soft); }
+.iv-rail-item:first-child::before { top: 14px; }
+.iv-rail-item:last-child::before { bottom: calc(100% - 14px); }
+.iv-rail-n { position: relative; z-index: 1; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; flex: none;
+  background: var(--surface-2); border: 1px solid var(--line); font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.iv-rail-item.is-now { background: var(--sk-acs); }
+.iv-rail-item.is-now .iv-rail-n { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--ctl-onac, #fff); }
+.iv-rail-item.is-just .iv-rail-n { background: var(--ok); border-color: var(--ok); color: var(--ctl-onac, #fff); }
+.iv-rail-item.is-just { background: var(--surface-2); }
+.iv-rail-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.iv-rail-q { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iv-rail-a { font-weight: 600; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.iv-rail-a.is-now { color: var(--sk-ac); }
+.iv-rail-who { display: flex; gap: 5px; align-items: center; color: var(--text-dim); flex-wrap: wrap; }
+.iv-av { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--surface-2); border: 1px solid var(--line);
+  font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text); letter-spacing: 0; }
+.iv-via b { color: var(--text); margin-left: 2px; }
+.iv-via { white-space: nowrap; padding: 1px 6px; border-radius: var(--r-pill); border: 1px solid var(--line); font-size: var(--t-micro); color: var(--text-dim); }
+.iv-via.is-voice-it { border-color: var(--sk-acl); color: var(--sk-ac); }
+.iv-via.is-claude-code { border-color: var(--s-parkb, var(--line)); }
+.iv-rail-end { margin: 0; padding: 10px 14px; border-top: 1px solid var(--line-soft); color: var(--text-dim); }
+.iv-rail-end b { color: var(--text); }
+.iv-main, .iv-prop-main { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.iv-qhead { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.iv-qnum { font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--sk-ac); }
+.iv-qtext { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; max-width: 900px; }
+.iv-qctx { margin: 0; font-size: var(--t-body); }
+.iv-opts { list-style: none; margin: 4px 0 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.iv-opt { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); min-width: 0; }
+.iv-opt.is-picked { border-color: var(--sk-ac); box-shadow: 0 0 0 1px var(--sk-ac); }
+.iv-opt-h { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; }
+.iv-opt-h input { margin-top: 4px; accent-color: var(--sk-ac); }
+.iv-opt-k { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--line);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font); flex: none; }
+.iv-opt.is-picked .iv-opt-k { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--ctl-onac, #fff); }
+.iv-opt-l { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: var(--t-body); min-width: 0; }
+.iv-opt-d { margin: 0; font-size: var(--t-meta); color: var(--text-dim); line-height: var(--lh-meta); }
+/* The design is drawn at 820px wide and scaled to the card, so a person sees the whole page, not a corner of it. */
+.iv-shot { margin-top: auto; position: relative; border: 1px solid var(--line); border-radius: var(--r-ctl); overflow: hidden; background: #fff; }
+.iv-shot-frame { position: relative; width: 100%; aspect-ratio: 820 / 400; overflow: hidden; }
+.iv-shot-frame iframe { position: absolute; top: 0; left: 0; width: 820px; height: 400px; border: 0; transform-origin: 0 0; pointer-events: none; }
+.iv-shot-big { position: absolute; right: 8px; bottom: 8px; padding: 4px 10px; border-radius: var(--r-pill); border: 1px solid var(--line); background: var(--surface);
+  color: var(--text); font: 500 var(--t-micro)/var(--lh-micro) var(--font); cursor: pointer; box-shadow: var(--ctl-shadow); }
+.iv-big { position: fixed; inset: 40px 40px 40px 320px; z-index: 20; border: 1px solid var(--sk-ac); border-radius: var(--r-card); padding: 12px; background: var(--surface); box-shadow: var(--ctl-shadow-pop); overflow: auto; }
+.iv-big .pc-html { height: calc(100vh - 150px); }
+.iv-big-h { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.iv-done { display: flex; flex-direction: column; gap: 10px; }
+.iv-done-pick { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--sk-ac); border-radius: var(--r-card); background: var(--sk-acs); font-size: var(--t-body); }
+.iv-done-pick .iv-opt-k { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--ctl-onac, #fff); }
+.iv-done-shot .iv-shot { max-width: 760px; }
+.iv-next { padding: 10px 12px; border-radius: var(--r-ctl); background: var(--surface-2); font-size: var(--t-meta); }
+
+/* The decision bar: fixed to the bottom of the page's own column, so the answer is always one click away. */
+.iv-dbar { position: sticky; bottom: 40px; z-index: 3; display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: nowrap;
+  padding: 12px 16px; margin-top: auto; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); box-shadow: var(--ctl-shadow-pop); }
+.iv-dbar-left { display: flex; flex-direction: column; gap: 2px; font-size: var(--t-meta); min-width: 0; flex: 1 1 auto; }
+.iv-dbar-acts { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; flex: 0 1 auto; justify-content: flex-end; }
+.iv-expiry b { font-size: var(--t-lead); }
+.iv-own { display: flex; flex-direction: column; gap: 4px; flex: 1 1 280px; }
+.iv-own textarea { font: inherit; font-size: var(--t-meta); color: var(--text); background: var(--bg); border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); padding: 6px 8px; resize: vertical; }
+
+.iv-none-fit { margin: 0; color: var(--text-dim); }
+.iv-none-fit .c-link { font: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+
+/* ---- the proposal page ---- */
+.iv-rail-done { padding-bottom: 6px; }
+.iv-rail-tally { list-style: none; margin: 0; padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; font-size: var(--t-meta); }
+.iv-rail-tally li { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-width: 0; overflow-wrap: anywhere; }
+.iv-rail-tally .iv-via { white-space: nowrap; }
+.iv-rail-tally b { margin-left: auto; font-family: var(--mono); }
+.iv-rail-done > p { margin: 0; padding: 0 14px 8px; }
+.iv-prop-sec { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }
+.iv-prop-sec h2 { margin: 0; font-size: var(--t-lead); display: flex; gap: 8px; align-items: baseline; }
+.iv-prop-sec p { margin: 0; }
+.iv-prop-lead { font-size: var(--t-lead); line-height: var(--lh-lead); max-width: var(--measure); }
+.iv-plan-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.iv-plan-steps li { display: flex; gap: 4px; align-items: flex-start; font-size: var(--t-body); }
+.iv-plan-steps p { font-size: var(--t-meta); }
+.iv-fig { margin: 0; }
+.iv-fig img { max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: var(--r-ctl); background: #fff; }
+.iv-fig figcaption { font-size: var(--t-micro); color: var(--text-dim); margin-top: 4px; }
+
+/* ---- Needs you ---- */
+.iv-dim { color: var(--text-dim); }
+.iv-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 14px; margin: 0; font-size: var(--t-meta); }
+.iv-dl dt { color: var(--text-dim); }
+.iv-dl dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.iv-small { font-size: var(--t-micro); line-height: var(--lh-micro); }
+.iv-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.iv-shot-none { margin: auto 0 0; padding: 10px 12px; border: 1px dashed var(--line); border-radius: var(--r-ctl); color: var(--text-dim); font-size: var(--t-meta); }
+.iv-big iframe { display: block; width: 100%; height: calc(100vh - 150px); border: 0; background: #fff; }
+.iv-done-shot iframe { display: block; width: 100%; height: 480px; border: 0; background: #fff; }
+.iv-err { margin: 0; color: var(--bad-ink); font-size: var(--t-meta); }
+
+@media (max-width: 1360px) {
+  .iv-grid { grid-template-columns: 232px minmax(0, 1fr); }
+}
+@media (max-width: 900px) {
+  .iv-grid, .iv-prop-grid { grid-template-columns: minmax(0, 1fr); }
+  .iv-rail { position: static; max-height: none; order: 2; }
+  .iv-main, .iv-prop-main { order: 1; }
+  .iv-rail-list { max-height: 200px; }
+  .iv-opts { grid-template-columns: minmax(0, 1fr); }
+  .iv-dbar { padding: 10px 12px; gap: 8px; flex-wrap: wrap; bottom: 8px; }
+  .iv-dbar-acts { justify-content: flex-start; }
+  .iv-qtext { font-size: var(--t-title); }
+  .iv-big { inset: 8px; }
+}

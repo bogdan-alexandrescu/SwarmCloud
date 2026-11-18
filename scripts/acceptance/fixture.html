@@ -1,0 +1,42 @@
+<!doctype html>
+<!--
+  The browser acceptance fixture (#357; served from our own bucket since #1628).
+
+  terraform/infra/acceptance_fixture.tf uploads this file, unchanged, as the
+  one object `fixture.html` in a public bucket of our own. Anyone on the
+  internet can load it, so it is written to show nothing a URL can choose:
+
+  * the markup is fixed. The only input is `?run=<id>`, accepted only when it
+    matches ^[a-z0-9-]{1,80}$ and inserted with textContent, as text, never as
+    markup. Anything else -- missing, empty, too long, carrying `<`, `"`, `%`
+    or a newline -- leaves the fixed "invalid run id" line, which the
+    acceptance check fails on;
+  * the Content-Security-Policy allows no fetch, no frame, no form target and
+    exactly one script, the one below, by its hash. Edit the script and the
+    hash must change with it (tests/unit/scripts/test_acceptance_fixture_page.py
+    recomputes it), or the browser runs no script and every run reads
+    "invalid run id".
+
+  The title, the colour and the text prefix are BROWSER_FIXTURE_TITLE,
+  BROWSER_FIXTURE_RGB and browser_fixture_text in scripts/lib/testlib.sh, and
+  the test holds the two files together.
+-->
+<html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'sha256-LVagp5xBVH1cLJFzKDgM7363/z56VcFBzSq0WfrBH1Y='; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>Swarm acceptance fixture</title>
+<style>html,body{margin:0;height:100%;background:#c2185b}p{margin:0;padding:24px 40px;color:#fff;font:20px sans-serif}</style>
+</head><body><p>Swarm acceptance fixture</p><p id="run">invalid run id</p>
+<script>
+(function () {
+  "use strict";
+  var line = document.getElementById("run");
+  var id = new URLSearchParams(window.location.search).get("run");
+  if (id !== null && /^[a-z0-9-]{1,80}$/.test(id)) {
+    line.textContent = "swarm-fixture-" + id;
+  } else {
+    line.textContent = "invalid run id";
+  }
+})();
+</script>
+</body></html>

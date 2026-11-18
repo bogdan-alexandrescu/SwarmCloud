@@ -1,0 +1,220 @@
+variable "project_id" {
+  type = string
+}
+
+variable "region" {
+  type    = string
+  default = "us-central1"
+}
+
+variable "network" {
+  description = "Swarm VPC self link, for Direct VPC egress."
+  type        = string
+}
+
+variable "subnetwork" {
+  type = string
+}
+
+variable "vpc_egress" {
+  description = "PRIVATE_RANGES_ONLY keeps googleapis traffic on Google's backbone; control-plane services need nothing else."
+  type        = string
+  default     = "PRIVATE_RANGES_ONLY"
+
+  validation {
+    condition     = contains(["PRIVATE_RANGES_ONLY", "ALL_TRAFFIC"], var.vpc_egress)
+    error_message = "vpc_egress must be PRIVATE_RANGES_ONLY or ALL_TRAFFIC."
+  }
+}
+
+variable "ingress" {
+  description = <<-EOT
+    INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER is Cloud Run's
+    "internal and Cloud Load Balancing" setting. It also admits same-project
+    Pub/Sub push and Cloud Scheduler, which is how the scheduler is woken.
+  EOT
+  type        = string
+  default     = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
+
+  validation {
+    condition     = var.ingress != "INGRESS_TRAFFIC_ALL"
+    error_message = "INGRESS_TRAFFIC_ALL would expose the control plane to the internet."
+  }
+}
+
+variable "deletion_protection" {
+  type    = bool
+  default = true
+}
+
+variable "services" {
+  description = <<-EOT
+    The four control-plane services. Every one runs as its own service account:
+    swarm-api authenticates callers, the scheduler admits work, the quota broker
+    owns provider state, and the reconciler is the only component allowed to
+    delete anything.
+  EOT
+  type = map(object({
+    service_account_email = string
+    image                 = string
+    max_instances         = number
+    # A warm floor. 0 -- scale to zero -- for every service that does not set
+    # it; a service that does pays for these instances around the clock.
+    min_instances   = optional(number, 0)
+    cpu             = optional(string, "1")
+    memory          = optional(string, "512Mi")
+    concurrency     = optional(number, 80)
+    request_timeout = optional(string, "300s")
+    env             = optional(map(string), {})
+    # Environment variables read from Secret Manager at instance start: name ->
+    # { secret id, version }. The VALUE never passes through terraform -- only
+    # the reference does -- so it is never in a plan or the state (a managed
+    # secret version would put the plaintext there). Platform secrets only; a
+    # tenant's provider key is a Job's `secret_env`, never a service's.
+    secret_env = optional(map(object({
+      secret  = string
+      version = optional(string, "latest")
+    })), {})
+    # Extra OIDC audiences this service accepts, alongside its own URL. Present
+    # so a caller and a receiver can agree on an audience that is a constant
+    # rather than a URL only known after apply -- without it, a service cannot
+    # be told its own audience, because the URL is an attribute of the very
+    # resource whose environment would carry it.
+    custom_audiences = optional(list(string), [])
+    # Null means "use the module-wide var.vpc_egress". Set it only for a
+    # service that must reach another INTERNAL-ingress service by its public
+    # hostname, which only works when its egress routes through the VPC.
+    vpc_egress = optional(string)
+    # caller label -> IAM member. Keyed by label because the members are service
+    # account emails that are unknown until apply.
+    invokers          = optional(map(string), {})
+    health_check_path = optional(string, "/healthz")
+    container_port    = optional(number, 8080)
+    # How many 5 s startup-probe failures a new instance gets before Cloud Run
+    # kills it: 12, a start killed at about 96 s, for every service that does
+    # not set it. Raise it for one service that is known to start
+    # slowly but healthily, never module-wide: a broken image should still be
+    # killed promptly everywhere else (archived issue 1816).
+    startup_failure_threshold = optional(number, 12)
+    # Startup CPU boost: more CPU than the declared limit while an instance
+    # starts, which is bursting, so off for every service that does not set it
+    # (CONTRACT.md invariant 7). swarm-api is the one service that sets it, by
+    # the owner's decision of 2026-10-23 (archived issue 1816 option (a)); see main.tf.
+    startup_cpu_boost = optional(bool, false)
+  }))
+
+  validation {
+    condition = alltrue([
+      for k, v in var.services :
+      v.vpc_egress == null || contains(["PRIVATE_RANGES_ONLY", "ALL_TRAFFIC"], v.vpc_egress)
+    ])
+    error_message = "a service's vpc_egress override must be PRIVATE_RANGES_ONLY or ALL_TRAFFIC."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.services : startswith(k, "swarm-")])
+    error_message = "every Cloud Run service name must start with 'swarm-'."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.services : v.max_instances > 0 && v.max_instances <= 1000])
+    error_message = "max_instances must be explicit and between 1 and 1000; an unbounded control plane can outscale its own database."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.services : v.min_instances >= 0 && v.min_instances <= v.max_instances])
+    error_message = "min_instances must be between 0 and the service's max_instances: a floor above the ceiling is a revision Cloud Run refuses at deploy."
+  }
+
+  # allAuthenticatedUsers stays forbidden. It means every Google account on
+  # earth, and it buys nothing here because the application performs the real
+  # authentication itself.
+  #
+  # allUsers is PERMITTED, and only for a service whose ingress keeps it off the
+  # internet. The reason is specific and was established on a live deployment on
+  # 2026-09-16: when Cloud Run enforces IAM on a service, it CONSUMES the
+  # caller's Authorization header and the container receives a different,
+  # non-JWT credential. Measured on one correlated request --
+  #
+  #     sent by the client : tok:7f518e564d27
+  #     seen by the app    : tok:c130e289a085   (MalformedError)
+  #
+  # -- so swarm_api.auth can never verify the caller's Google ID token while the
+  # edge is also gating on it. Double-gating does not harden this service, it
+  # breaks it.
+  #
+  # What actually authenticates a caller is unchanged and is all in the app:
+  # signature verification against Google's keys, email_verified, the hosted
+  # domain (example.com), and group membership resolved through Cloud Identity to
+  # pick the tenant. What keeps the service off the internet is
+  # ingress = internal-and-cloud-load-balancing, which is what the spec's
+  # "no required service publicly exposed by default" requirement means.
+  #
+  # Hence the paired validation below: allUsers is allowed ONLY together with
+  # internal ingress, so this can never combine into a genuinely open endpoint.
+  validation {
+    condition = alltrue([
+      for k, v in var.services : alltrue([
+        for label, member in v.invokers : member != "allAuthenticatedUsers"
+      ])
+    ])
+    error_message = "allAuthenticatedUsers may never be granted run.invoker: it means every Google account, and the application's own ID-token check is what authenticates callers."
+  }
+
+  validation {
+    condition = alltrue([
+      for k, v in var.services :
+      !contains(values(v.invokers), "allUsers") || var.ingress != "INGRESS_TRAFFIC_ALL"
+    ])
+    error_message = "allUsers is only permitted while ingress is restricted. With INGRESS_TRAFFIC_ALL it would leave the API genuinely open to the internet."
+  }
+}
+
+variable "labels" {
+  type = map(string)
+}
+
+# INVOKER GRANTS ON A SERVICE ANOTHER CALL OF THIS MODULE CREATES (archived issue 3041).
+#
+# terraform/infra calls this module twice: once for swarm-api alone, then for
+# every other service with `depends_on` on the first call, so one apply rolls
+# swarm-api's new revision to Ready before the scheduler's hands new workers
+# their image. swarm-api's run.invoker grants stay HERE, at the addresses they
+# have always had (`invokers["swarm-api:<label>"]`), rather than moving with
+# the service: their keys include each tenant and each api_invokers member,
+# which a `moved` block cannot enumerate, and an iam_member destroyed at the
+# old address while it is created at the new one can remove the very binding
+# it re-adds -- the IAP agent's among them.
+#
+# service name -> (caller label -> member), the shape of a service's own
+# `invokers`. The service is named by string; ordering comes from the caller's
+# `depends_on`. Empty by default: a single call creates every service it grants.
+variable "invokers_elsewhere" {
+  type    = map(map(string))
+  default = {}
+
+  # The same two refusals `services` makes, for the same reasons.
+  validation {
+    condition = alltrue([
+      for k, v in var.invokers_elsewhere : alltrue([
+        for label, member in v : member != "allAuthenticatedUsers"
+      ])
+    ])
+    error_message = "allAuthenticatedUsers may never be granted run.invoker: it means every Google account, and the application's own ID-token check is what authenticates callers."
+  }
+
+  validation {
+    condition = alltrue([
+      for k, v in var.invokers_elsewhere :
+      !contains(values(v), "allUsers") || var.ingress != "INGRESS_TRAFFIC_ALL"
+    ])
+    error_message = "allUsers is only permitted while ingress is restricted. With INGRESS_TRAFFIC_ALL it would leave the API genuinely open to the internet."
+  }
+
+  # A service this call creates grants through its own `invokers`; naming it
+  # here too would make two grants race for one key.
+  validation {
+    condition     = length(setintersection(keys(var.invokers_elsewhere), keys(var.services))) == 0
+    error_message = "invokers_elsewhere names a service this call creates; grant it through that service's own invokers."
+  }
+}

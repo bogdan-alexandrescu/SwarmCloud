@@ -1,0 +1,305 @@
+# ---------------------------------------------------------------------------
+# swarm-verify -- the verification gate, running INSIDE the VPC
+# ---------------------------------------------------------------------------
+#
+# >>> TRACK OWNERSHIP: this file was written by TRACK D (operations), not by
+# >>> Track C, who own terraform/. It is flagged here rather than buried
+# >>> because CLAUDE.md says to change your own side and REPORT the conflict.
+# >>> Track C should take ownership of it or tell Track D to move it.
+# >>> Rationale and evidence: docs/audits/2026-09-20/verification-targets-cannot-run.md
+#
+# WHY THIS EXISTS
+#
+# CLAUDE.md requires `make smoke concurrency-test race-test` against a deployed
+# environment before claiming a change to admission, dispatch or reconciliation
+# is done. On 2026-09-20 all three were found unable to reach the API at all.
+#
+# Nothing was broken. swarm-api runs with ingress
+# `internal-and-cloud-load-balancing`, which is correct and deliberate -- it is
+# what puts the service behind the external ALB and IAP -- so the `*.run.app`
+# address the scripts resolve to refuses a laptop by design. The gate had
+# quietly stopped being a gate, and it failed in a way that reads as an API
+# problem, which is why nobody noticed.
+#
+# The alternative was to give the scripts an identity that can walk through
+# IAP: an OAuth client id plus a service account holding
+# roles/iap.httpsResourceAccessor. That works from a laptop, does not work from
+# CI, and mints a credential whose only purpose is to bypass the front door.
+# Running the tests from inside the VPC needs no client, no secret, and behaves
+# identically in CI -- the ingress setting already permits internal traffic.
+
+# The id is spelled in modules/service_account_ids, which terraform/bootstrap
+# reads to create the account (platform_service_accounts.tf, DAYONE-BOOT-2,
+# design Q7) and to grant the release deployer roles/iam.serviceAccountAdmin on
+# it (archived pull request 334). This root reads it. The live account was forgotten here, never
+# destroyed (a `removed` block, deleted once the state held none of its
+# addresses), and adopted by bootstrap's gated import; its email
+# and unique id did not change, so no grant below moved.
+module "service_account_ids" {
+  source = "../modules/service_account_ids"
+}
+
+data "google_service_account" "verify" {
+  project    = var.project_id
+  account_id = module.service_account_ids.verify_id
+}
+
+locals {
+  # Built from the account id (known at plan, and what a mock provider keeps)
+  # rather than read off `.email`; the reference orders every use after the read.
+  verify_email = "${data.google_service_account.verify.account_id}@${var.project_id}.iam.gserviceaccount.com"
+}
+
+# WHY THIS IS NO LONGER THE ONLY GRANT.
+#
+# The comment that stood here said this identity "has no Firestore access, no
+# secret access and no admin group", and treated that as the design. It was
+# true and it made the gate impossible: the suites do NOT work only through the
+# public API. scripts/lib/testlib.sh reads pool and task documents with fs_get
+# and fs_count, counts Cloud Run executions for invariant 1, and counts GCS
+# objects to prove artifacts landed under the tenant's own prefix. With
+# run.invoker alone, require_platform died on its opening guard before a single
+# assertion ran -- twice in two days, for two different reasons.
+#
+# So the grants below are the ones the suites actually exercise, and no more.
+# All are READ-ONLY; the two project-level ones are datastore.viewer and
+# run.viewer. The GKE read's IAM half, clusterViewer conditioned to the swarm
+# cluster, is NOT here: terraform/bootstrap/verify_cluster_read.tf grants it,
+# which the owner applies, so CI's allow-list never carries the role (see
+# below). Everything the gate writes, it writes through swarm-api, which is the
+# property the original comment was protecting and which still holds.
+#
+# NOT EVERY WRITE IS AS ITS OWN TENANT, by owner decision on 2026-09-24: in dev
+# this identity is also on `admin_pool_users`, because race-test narrows
+# runner:mock with PUT /v1/admin/limits/runner/mock rather than through a
+# Firestore write role. That list reaches an allow-list of admin routes in
+# swarm-api (swarm_api.auth.POOL_ADMIN_ROUTES) holding that one route; every
+# other /v1/admin route, tenant disable included, answers it 403. It is NOT a
+# platform admin: the first form of the decision put it in `admin_users`, and
+# the owner reversed that the same day. It is an application-level list in
+# tfvars, not IAM, and it is deliberately not granted here -- this file is the
+# same in every environment, and the gate has no reason to hold it in prod.
+# docs/audits/2026-09-22/race-test-needs-a-write.md has the comparison.
+#
+# Secret access is deliberately still absent. Nothing in the suites reads a
+# secret, and the mock runner profile this tenant uses needs no provider key.
+resource "google_cloud_run_v2_service_iam_member" "verify_invokes_api" {
+  project  = var.project_id
+  location = var.region
+  # `service_names` is a sorted LIST of keys, not a map -- indexing it by
+  # string is the error terraform test caught here. The service name is the
+  # map key itself, so take it from the map-shaped output.
+  name   = [for k, _ in module.cloud_run_api.service_ids : k if k == "swarm-api"][0]
+  role   = "roles/run.invoker"
+  member = "serviceAccount:${local.verify_email}"
+}
+
+# Firestore. require_fs_database asks the Admin API whether the database
+# exists, then every suite reads task, lease and pool documents directly.
+# roles/datastore.viewer, not .user: the suites read documents and never write
+# one -- task creation goes through swarm-api, which holds its own write role.
+resource "google_project_iam_member" "verify_reads_firestore" {
+  project = var.project_id
+  role    = "roles/datastore.viewer"
+  member  = "serviceAccount:${local.verify_email}"
+}
+
+# Cloud Run executions. CONTRACT invariant 1 -- that QUEUED, PARKED and READY
+# create no infrastructure demand -- is asserted by counting executions, so a
+# gate that cannot list them cannot check the invariant it exists for.
+resource "google_project_iam_member" "verify_reads_run" {
+  project = var.project_id
+  role    = "roles/run.viewer"
+  member  = "serviceAccount:${local.verify_email}"
+}
+
+# Artifact objects. The smoke suite proves artifacts landed under the tenant's
+# OWN GCS prefix, which is per-tenant isolation (invariant 9) and cannot be
+# checked without listing them. Scoped to the artifact bucket, not the project:
+# this project is SHARED with another team and a project-level storage role
+# would reach their buckets.
+resource "google_storage_bucket_iam_member" "verify_reads_artifacts" {
+  bucket = module.storage.artifact_bucket_name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${local.verify_email}"
+}
+
+# The swarm cluster, for e2e-test.sh [10] (owner decisions 2026-10-20 and
+# 2026-10-21, archived issue 1754). A task holding capacity on GKE is compared with its Job:
+# container.clusters.get for the endpoint and CA, then jobs.get in the
+# tenant's namespace. Neither is granted from this root.
+#
+#   * roles/container.clusterViewer, conditioned to swarm-autopilot, is
+#     terraform/bootstrap/verify_cluster_read.tf's. This root is applied by
+#     CI's deployer, whose scoped projectIamAdmin may modify only the roles on
+#     deployer_grantable_project_roles -- which limits WHICH roles, never to
+#     whom or under what condition. Granted from here, clusterViewer would have
+#     to be on that list, and CI could then grant it unconditioned, reaching
+#     the other team's peer-cluster cluster. So it is not on the list, and no
+#     grant of it is here (tests/terraform/verify_gke_read.tftest.hcl holds
+#     that this root grants swarm-verify no container role at all).
+#   * the Job read is Kubernetes RBAC -- kubernetes/rbac/verify-rbac.yaml,
+#     `get` and `list` on jobs.batch in the eng and smoke namespaces -- applied
+#     by kubernetes/apply.sh.
+
+resource "google_cloud_run_v2_job" "verify" {
+  project  = var.project_id
+  location = var.region
+  name     = "swarm-verify"
+
+  labels = merge(local.labels, { component = "verify" })
+
+  # Mirrors what the worker jobs and services do (both modules take
+  # var.deletion_protection). Omitting it meant the provider's default of
+  # `true` applied, and the first apply after a FAILED create could not
+  # replace the half-made job: "cannot destroy job without setting
+  # deletion_protection=false". A gate that cannot be redeployed after a bad
+  # build is a gate that stays broken.
+  deletion_protection = var.deletion_protection
+
+  template {
+    template {
+      service_account = local.verify_email
+      max_retries     = 0 # A flaky gate that retries is a gate that lies.
+      timeout         = "1800s"
+
+      vpc_access {
+        # ALL_TRAFFIC, and the reasoning that put PRIVATE_RANGES_ONLY here was
+        # wrong in a way worth recording.
+        #
+        # It argued that this job "talks to swarm-api and to the metadata
+        # server, both reachable without routing egress through Cloud NAT".
+        # The address it talks to swarm-api on is
+        # module.cloud_run_api.service_urls["swarm-api"] -- a PUBLIC *.run.app
+        # hostname (see the API_URL env below). A public hostname is not in a
+        # private range, so under PRIVATE_RANGES_ONLY the request never left
+        # the VPC. This repository had already measured that exact refusal from
+        # the other direction and written it down in
+        # docs/audits/2026-09-20/verification-targets-cannot-run.md.
+        #
+        # swarm-api's ingress is INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER, which
+        # admits traffic arriving from within the VPC network -- but the packet
+        # has to be routed there first, and that is what this setting decides.
+        egress = "ALL_TRAFFIC"
+
+        network_interfaces {
+          network    = module.network.network_id
+          subnetwork = module.network.subnetwork_id
+        }
+      }
+
+      containers {
+        image = local.image["swarm-verify"]
+
+        resources {
+          limits = {
+            cpu    = "1"
+            memory = "512Mi"
+          }
+        }
+
+        # The service's own URL, for both the request and the ID token
+        # audience -- a Cloud Run ID token's audience IS the service URL.
+        # Without these the scripts fall back to `gcloud run services
+        # describe`, and there is deliberately no gcloud in this image.
+        env {
+          name  = "API_URL"
+          value = module.cloud_run_api.service_urls["swarm-api"]
+        }
+        env {
+          name  = "API_AUDIENCE"
+          value = module.cloud_run_api.service_urls["swarm-api"]
+        }
+        env {
+          name  = "PROJECT_ID"
+          value = var.project_id
+        }
+        env {
+          name  = "REGION"
+          value = var.region
+        }
+        env {
+          name  = "ENVIRONMENT"
+          value = var.environment
+        }
+        # Sourcing scripts/lib/common.sh loads the never-touch list, as ONE
+        # object (config_fetch_one): config/<env>/deny-list.json in the state
+        # bucket, which this identity may read and nothing else under config/
+        # (terraform/bootstrap/deny_list_readers.tf). There is no gcloud in
+        # this image, so the read goes over REST with the metadata server's
+        # token -- only because this says so; a host without gcloud and
+        # without this setting refuses. The bucket is named here, in the
+        # template, and not per execution, so no caller chooses it. The name is
+        # bootstrap's default (<prefix>-tfstate-<project>, the one
+        # scripts/lib/common.sh assumes too).
+        env {
+          name  = "SWARM_CONFIG_TRANSPORT"
+          value = "rest"
+        }
+        env {
+          name  = "TF_STATE_BUCKET"
+          value = "${var.name_prefix}-tfstate-${var.project_id}"
+        }
+        # The live-browser group's QA identity case (QI-ACCEPT, part of
+        # archived issue 1649) SKIPs every check unless both are set. verify-remote.sh runs
+        # this job with --args only, so its environment is this template's:
+        # a setting not rendered here never reaches the group. Rendered only
+        # when set, so an environment that sets neither (prod) keeps the
+        # SKIP instead of carrying an empty value.
+        dynamic "env" {
+          for_each = var.acceptance_qa_tenant == "" ? [] : [var.acceptance_qa_tenant]
+          content {
+            name  = "SWARM_ACCEPTANCE_QA_TENANT"
+            value = env.value
+          }
+        }
+        dynamic "env" {
+          for_each = var.acceptance_console_url == "" ? [] : [var.acceptance_console_url]
+          content {
+            name  = "SWARM_ACCEPTANCE_CONSOLE_URL"
+            value = env.value
+          }
+        }
+        # The sandbox the acceptance groups push to. Rendered only when set:
+        # unset, config.sh keeps its own default and the live deployment's
+        # plan shows no change.
+        dynamic "env" {
+          for_each = var.acceptance_sandbox_repository_url == null ? [] : [var.acceptance_sandbox_repository_url]
+          content {
+            name  = "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"
+            value = env.value
+          }
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [client, client_version]
+
+    # EVERY IMAGE THIS ROOT DEPLOYS HAS A DIGEST, OR NOTHING PLANS.
+    #
+    # It is checked HERE, on the one image consumer declared in this root,
+    # because a module call cannot carry a precondition -- and a failed
+    # precondition fails the whole plan, so no service and no worker job is
+    # planned either. The alternative, a fall back to a tag for a missing
+    # entry, is exactly how a tag used to get deployed without anybody
+    # choosing it (see var.image_refs).
+    #
+    # A precondition, not a validation on var.image_refs, for one case: a
+    # FRESH project has no images yet, so its first plan targets the registry
+    # alone (scripts/plan.sh does this when there is nothing to pin), and a
+    # targeted plan does not evaluate this resource. A variable validation would
+    # refuse that plan too, leaving no way to create the registry the first
+    # images are pushed to.
+    precondition {
+      condition     = length(local.images_without_a_digest) == 0
+      error_message = "image_refs has no digest for: ${join(", ", local.images_without_a_digest)}. Nothing is deployed at a tag. Plan through scripts/plan.sh (which pins what terraform last applied) or deploy through scripts/lib/deploy.sh (which pins the promotion manifest); both write image_refs with scripts/lib/image-refs.sh."
+    }
+  }
+}
+
+output "verify_job_name" {
+  description = "Cloud Run job that runs the verification gate from inside the VPC."
+  value       = google_cloud_run_v2_job.verify.name
+}

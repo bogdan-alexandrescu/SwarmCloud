@@ -1,0 +1,315 @@
+"""The plugin's `userConfig`, held to what the bridge actually reads.
+
+Claude Code prompts for `userConfig` when the plugin is installed or enabled,
+saves non-sensitive values under `pluginConfigs` in the user's settings.json
+and SENSITIVE ones in the platform's secure credential store, and substitutes
+`${user_config.KEY}` into an MCP server's `command`, `args` and `env`
+(code.claude.com/docs/en/plugins-reference, "User configuration" and
+"Environment variables"). The option object is STRICT: an unknown key fails
+validation and the plugin does not load at all.
+
+So three things can drift, and each drift is silent:
+
+  * a key the manifest prompts for that no env entry carries -- the user is
+    asked, answers, and the bridge never sees it;
+  * an env entry whose name the bridge does not read -- the same, one hop on;
+  * a key the bridge reads that the manifest never prompts for -- the bridge
+    waits for a value nobody can give it.
+
+Nothing is restated here. The manifest is parsed, the bridge's own list is
+imported, and the two are compared.
+"""
+
+from __future__ import annotations
+
+import importlib
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+_REPO = Path(__file__).resolve().parents[3]
+_MANIFEST = _REPO / "plugin" / ".claude-plugin" / "plugin.json"
+
+#: The option fields Claude Code accepts (plugins-reference, "User
+#: configuration"). Anything else makes the whole plugin fail to load.
+_OPTION_FIELDS = {
+    "type", "title", "description", "required", "default", "options",
+    "multiple", "sensitive", "min", "max",
+}
+
+
+def _manifest() -> dict:
+    return json.loads(_MANIFEST.read_text())
+
+
+def _config():
+    return importlib.import_module("swarm_mcp.config")
+
+
+def _user_config() -> dict:
+    options = _manifest().get("userConfig")
+    assert isinstance(options, dict) and options, (
+        "plugin.json declares no userConfig, so installing `sc` asks nothing and "
+        "the bridge falls back to whatever deployment this repository names"
+    )
+    return options
+
+
+#: Options the BRIDGE never reads, each with the plugin file that does. Claude
+#: Code hands a plugin's settings to its hooks as `CLAUDE_PLUGIN_OPTION_<KEY>`
+#: (plugins-reference, "User configuration"), so such an option has a reader
+#: as long as that file names that variable -- which
+#: `test_every_hook_option_is_read_by_its_hook` holds, so the drift this file
+#: guards against (an option nobody reads) is still caught for these.
+#:
+#: `auto_attach` (owner decision, 2026-10-02): the SessionStart hook's opt-out.
+#: Read before the bridge is even started, so turning it off costs nothing.
+_HOOK_OPTIONS = {"auto_attach": _MANIFEST.parents[1] / "hooks" / "session-start.sh"}
+
+
+#: The option that reaches the bridge NOT as `SWARM_PLUGIN_<KEY>` but as the
+#: variable every client already reads for it: `tenant` -> SWARM_TENANT
+#: (SC-TENANT, owner decision 2026-10-12), behind a SWARM_TENANT already in
+#: Claude Code's environment. `test_sc_tenant.py` holds that mapping and that
+#: precedence, by expanding the manifest's own entry the way Claude Code does.
+_TENANT_OPTION = "tenant"
+_TENANT_ENV = "SWARM_TENANT"
+
+
+def _bridge_options() -> dict:
+    """The options the bridge reads as SWARM_PLUGIN_<KEY>: every declared one
+    but the hooks' and the tenant."""
+    return {
+        k: v for k, v in _user_config().items()
+        if k not in _HOOK_OPTIONS and k != _TENANT_OPTION
+    }
+
+
+def test_every_hook_option_is_read_by_its_hook():
+    for key, reader in _HOOK_OPTIONS.items():
+        assert key in _user_config(), f"{key} is no longer declared; drop it from _HOOK_OPTIONS"
+        assert f"CLAUDE_PLUGIN_OPTION_{key.upper()}" in reader.read_text(), (
+            f"{reader.name} never reads the {key} option it is listed as reading"
+        )
+        assert key not in _server_env().get(f"SWARM_PLUGIN_{key.upper()}", ""), key
+
+
+def _server_env() -> dict:
+    servers = _manifest().get("mcpServers") or {}
+    env = (servers.get("swarmcloud") or {}).get("env")
+    assert isinstance(env, dict) and env, "the swarmcloud server passes the bridge no env"
+    return env
+
+
+def test_every_option_is_a_well_formed_strict_object():
+    for key, option in _user_config().items():
+        assert key.isidentifier() and not key[0].isdigit(), key
+        unknown = set(option) - _OPTION_FIELDS
+        assert not unknown, f"{key}: {sorted(unknown)} would stop the plugin loading"
+        for field in ("type", "title", "description"):
+            assert option.get(field), f"{key} has no {field}, which Claude Code requires"
+
+
+def test_the_options_the_manifest_prompts_for_are_the_ones_the_bridge_reads():
+    assert set(_bridge_options()) == set(_config().PLUGIN_KEYS)
+
+
+def test_every_option_reaches_the_bridge_under_the_name_it_reads():
+    """Each key K arrives as `${user_config.K}` in exactly the env variable
+    `config.plugin_env(K)` -- derived from the key, so a rename on either side
+    is a failure here rather than a value that silently never arrives."""
+    env = _server_env()
+    config = _config()
+    for key in _bridge_options():
+        name = config.plugin_env(key)
+        assert env.get(name) == f"${{user_config.{key}}}", (
+            f"{key!r} must reach the bridge as {name}={'${user_config.' + key + '}'}; "
+            f"env carries {env.get(name)!r}"
+        )
+    passed = {
+        v for name, v in env.items()
+        if name != _TENANT_ENV and isinstance(v, str) and "${user_config." in v
+    }
+    assert len(passed) == len(_bridge_options()), f"env passes an option nobody declared: {passed}"
+
+
+def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
+    """The item this file is named for: "userConfig keys in plugin.json match
+    what the bridge READS (derive, don't restate)".
+
+    REVIEW OF archived pull request 61, 2026-09-25: the two tests above compare LISTS -- the
+    manifest's keys against `config.PLUGIN_KEYS`, and its env names against
+    `config.plugin_env(key)`. Neither list is what the bridge reads. The reads
+    were in `config._plugin()`, which spelled each key again as a string
+    literal, so a key renamed in the manifest and in PLUGIN_KEYS together
+    passed both tests while the bridge went on reading the old name, and every
+    value the user typed at install arrived nowhere.
+
+    So this does what Claude Code does and then asks the bridge: one distinct
+    answer per option the manifest declares, substituted into the manifest's
+    own `mcpServers.swarmcloud.env` wherever `${user_config.KEY}` appears
+    (plugins-reference, "Reference a saved value"), handed to
+    `config.resolve` as the server's whole environment -- and each answer
+    must come out in the field the bridge names that key for.
+
+    THE MUTATION THIS CATCHES: make `_plugin` read the client id from any name
+    the manifest does not send, or from the secret's key. The tests above stay
+    green; this goes red.
+    """
+    config = _config()
+    options = _bridge_options()
+    assert set(options) == {
+        config.PLUGIN_URL, config.PLUGIN_CLIENT_ID, config.PLUGIN_CLIENT_SECRET, config.PLUGIN_TARGET,
+        config.PLUGIN_MAX_LIVE_ROWS, config.PLUGIN_ROWS, config.PLUGIN_LAYOUT,
+    }, "the bridge names a role for every option the manifest prompts for, and no other"
+    # URL-shaped for every option: a valid deployment URL, and a string that
+    # is still a well-formed (if unusual) client id and secret. The target is
+    # one of its three words -- `local`, which is not the default, so landing
+    # in the target proves the substitution and not the fallback.
+    answers = {key: f"https://{key.replace('_', '-')}.example.test" for key in options}
+    answers[config.PLUGIN_TARGET] = "local"
+    # A number the default is not, so landing in the cap proves the
+    # substitution and not the fallback (SC-ROWS).
+    answers[config.PLUGIN_MAX_LIVE_ROWS] = "17"
+    # Not the default, so landing in the mode proves the substitution (PLUGIN-ROW-SPLIT).
+    answers[config.PLUGIN_ROWS] = "per-step"
+    # Not the default, so landing in the layout proves the substitution (SC-BROWSER-BUILD).
+    answers[config.PLUGIN_LAYOUT] = "pane"
+    environ = {"SWARM_CONFIG_DIR": str(tmp_path), "CLAUDE_PROJECT_DIR": str(tmp_path)}
+    for name, value in _server_env().items():
+        for key, answer in answers.items():
+            value = value.replace(f"${{user_config.{key}}}", answer)
+        environ[name] = value
+
+    resolved = config.resolve(environ)
+    assert resolved is not None, "the deployment URL typed at install never reached the bridge"
+    assert resolved.url == answers[config.PLUGIN_URL]
+    assert resolved.client_id == answers[config.PLUGIN_CLIENT_ID]
+    assert resolved.client_secret == answers[config.PLUGIN_CLIENT_SECRET]
+    assert "plugin" in resolved.source, resolved.source
+    target = config.session_target(environ)
+    assert target.value == answers[config.PLUGIN_TARGET], "the default target typed at install never arrived"
+    assert "plugin" in target.source, target.source
+    assert config.max_live_rows(environ) == 17, "the live-row cap typed at install never arrived"
+    assert config.rows_mode(environ) == "per-step", "the row mode chosen at install never arrived"
+    from swarm_mcp import layout
+
+    assert layout.current(environ)["layout"] == "pane", "the layout chosen at install never arrived"
+
+
+def test_the_default_target_defaults_to_the_bridges_default_and_names_all_three():
+    """S8, owner decision 2026-10-01: hybrid unless set. The manifest's default
+    and the bridge's are one value, and the prompt names every value the
+    bridge accepts -- anything else stops the server at start-up."""
+    config = _config()
+    option = _user_config()[config.PLUGIN_TARGET]
+    assert option.get("default") == config.DEFAULT_TARGET
+    for target in config.TARGETS:
+        assert target in option["description"], target
+    assert not option.get("sensitive")
+
+
+def test_the_secret_line_is_untouched_by_the_target_entry():
+    """The worker's publish-time secret scan refuses any ADDED line that
+    assigns a value to the client secret's env name outside test paths; the
+    first B9 run was refused for exactly that on 2026-10-01. So the target's
+    env entry sits ABOVE it and the secret line stays the manifest's last env
+    entry, with no trailing comma added to it. The expected line is BUILT from
+    its parts, so this file carries no line of that shape either."""
+    config = _config()
+    secret_name = f'"{config.plugin_env(config.PLUGIN_CLIENT_SECRET)}"'
+    target_name = f'"{config.plugin_env(config.PLUGIN_TARGET)}"'
+    lines = _MANIFEST.read_text().splitlines()
+    secret = [i for i, line in enumerate(lines) if secret_name in line]
+    target = [i for i, line in enumerate(lines) if target_name in line]
+    assert len(secret) == 1 and len(target) == 1
+    assert target[0] < secret[0]
+    reference = "${user_config." + config.PLUGIN_CLIENT_SECRET + "}"
+    assert lines[secret[0]] == " " * 8 + secret_name + ": " + f'"{reference}"'
+
+
+def test_the_deployment_url_is_required_and_the_secret_is_sensitive():
+    options = _user_config()
+    assert options["deployment_url"].get("required") is True
+    assert options["oauth_client_secret"].get("sensitive") is True, (
+        "a client secret saved without `sensitive` lands in plain settings.json"
+    )
+    # Not required: a solo deployment has no IAP and no OAuth client at all.
+    assert not options["oauth_client_id"].get("required")
+    assert not options["oauth_client_secret"].get("required")
+
+
+def _guard():
+    """scripts/guards/deployment_values.py, which reads what is live: its shape
+    rules hold no value, its name layer is the private pattern list
+    (docs/design/generic-repository.md sections 1.4 and 4.5)."""
+    name = "swarm_guards_deployment_values"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, _REPO / "scripts" / "guards" / "deployment_values.py")
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        # Registered first: a dataclass resolves its annotations through sys.modules.
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+def _manifest_findings(entries: list) -> list[str]:
+    guard = _guard()
+    source = guard.Source(_MANIFEST.relative_to(_REPO).as_posix(), _MANIFEST.read_text(encoding="utf-8"))
+    allow = guard.Allow.load().screened(entries)
+    return [str(f) for f in guard.scan([source], allow, entries, archive_refs=False,
+                                       address=guard.repository_address(_REPO))]
+
+
+def test_nothing_in_the_manifest_has_a_deployments_shape():
+    """The defect in one line: the plugin must not ship pointing at the owner's
+    deployment. Offline: no project, host, address or bucket outside the placeholders."""
+    findings = _manifest_findings([])
+    assert not findings, "plugin.json: " + "; ".join(findings)
+
+
+def test_nothing_in_the_manifest_names_this_repositorys_deployment():
+    """The live deployment's domain, project and project number, from the
+    pattern list the guard reads; skipped when no list is given."""
+    guard = _guard()
+    path = os.environ.get(guard.LIST_FILE_VARIABLE)
+    text = Path(path).read_text(encoding="utf-8") if path else os.environ.get(guard.LIST_VARIABLE)
+    if not text or not text.strip():
+        pytest.skip("no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): "
+                    "nothing says what is live")
+    findings = _manifest_findings(guard.parse_list(text).entries)
+    assert not findings, "plugin.json: " + "; ".join(findings)
+
+
+def test_the_marketplace_no_longer_says_it_needs_this_repositorys_mcp_json():
+    marketplace = json.loads((_REPO / ".claude-plugin" / "marketplace.json").read_text())
+    entry = next(p for p in marketplace["plugins"] if p["name"] == "sc")
+    assert ".mcp.json" not in entry["description"], (
+        "the plugin ships its own MCP server and asks for its deployment at "
+        "install; telling people it needs this repository's .mcp.json is stale"
+    )
+
+
+@pytest.mark.parametrize("key", ["deployment_url", "oauth_client_id", "oauth_client_secret"])
+def test_the_prompts_say_what_to_paste_and_where_it_comes_from(key):
+    """A prompt someone cannot answer is a prompt they fill with a guess."""
+    description = _user_config()[key]["description"].lower()
+    assert len(description) > 40, key
+    if key != "deployment_url":
+        assert "desktop" in description, f"{key} must say it is the Desktop app client"
+
+
+def test_the_tenant_option_says_where_the_default_it_falls_back_to_is_set():
+    """Empty is not "the personal workspace" any more: it is the default the
+    person chose in Settings › Profile, else that (PROFILE-SC,
+    docs/design/user-profile.md §4.5). A prompt that names the wrong fallback
+    sends someone to the wrong screen to change it."""
+    described = _user_config()[_TENANT_OPTION]["description"]
+    assert "Settings › Profile" in described, described
+    assert _TENANT_ENV in described, described

@@ -1,0 +1,302 @@
+/* ==========================================================================
+   WORK › SETUP AND WORK › ACCESS (archived issue 780, OB8; onboarding.html, owner picks
+   D10: Entry A, Chooser A, Verify A, Access A and B).
+
+   Built on the Repositories set (`ur-`, repositories.css) and the canonical
+   components; the classes here are layout only. Every colour is a token, so
+   light and dark come from the theme; nothing here has a fixed palette.
+   `ob-` is the checklist, `ac-` the Access page.
+   ========================================================================== */
+
+/* ---- the checklist (Setup, and the card on Overview) ----------------------- */
+.ob-card { display: flex; flex-direction: column; gap: 10px; }
+/* One segment per step, however many the API sends (visual QA V041: a fixed
+   six columns wrapped a seventh step onto a second row and left a gap after a
+   fifth). `StepBar` sets the count on the element; the auto columns are the
+   same shape for a bar drawn without it. */
+.ob-bar { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px; }
+.ob-bar > i { display: block; height: 6px; border-radius: 3px; background: var(--line); }
+.ob-bar > i.is-done { background: var(--s-live); }
+.ob-bar > i.is-in_progress { background: color-mix(in srgb, var(--s-live) 45%, var(--line)); }
+.ob-bar > i.is-failed { background: var(--s-bad); }
+.ob-bar > i.is-stale { background: var(--s-warn); }
+/* THE STEPS ARE HELD APART (SETUP-ACCESS-STYLES, part of archived issue 1680). Each step
+   after the first draws a rule and the next one a filled ground, so the
+   spacing sweep reads them as stacked surfaces, and with no gap they touched:
+   "6 stacked surfaces with a 0px gutter". `--ctl-s1` is the sweep's floor
+   (`FLOORS.boxGutter`, 4px) and the smallest step of the sheet's rhythm, so
+   the list stays as dense as it was drawn; the highlighted next step no longer
+   meets the rules above and below it. */
+.ob-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s1); }
+.ob-step { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 4px 10px; align-items: start; padding: 8px 0; border-top: 1px solid var(--line); }
+.ob-step:first-child { border-top: 0; }
+.ob-step.is-next { background: var(--sk-acs); border-radius: var(--r-ctl); padding: 8px; margin: 0 -8px; }
+.ob-step-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ob-step-h { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.ob-step-h code { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.ob-state { font-size: var(--t-micro); color: var(--text-dim); }
+.ob-step.is-failed .ob-state { color: var(--s-bad); }
+.ob-step.is-stale .ob-state { color: var(--s-warn); }
+.ob-line { margin: 0; overflow-wrap: anywhere; }
+.ob-step-act { display: flex; justify-content: flex-end; }
+.ob-acts { display: inline-flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.ob-issue { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; margin-top: 4px; border-left: 2px solid var(--s-bad); background: var(--s-badb); border-radius: 0 var(--r-ctl) var(--r-ctl) 0; }
+.ob-issue .c-link { font-size: var(--t-micro); }
+
+/* ---- Access ---------------------------------------------------------------- */
+.ac-rules { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ac-rules b { color: var(--text); font-weight: 600; }
+.ac-rules code { font-family: var(--mono); }
+.ac-conn { display: flex; flex-direction: column; gap: 8px; }
+/* ON A PHONE THE POLICY OPENS FOLDED (visual QA V122): three rules a visitor
+   has read before were ~370px of bullets above everything else on every
+   visit. `AccessPolicy` draws each rule as its headline, a summary that opens
+   its text; wider screens keep the whole list. */
+.ac-rules.is-folded { padding-left: 0; list-style: none; gap: 0; }
+.ac-rules.is-folded summary { display: flex; align-items: center; gap: 6px; min-height: 44px; cursor: pointer; list-style: none; font-size: var(--t-body); line-height: var(--lh-body); }
+/* A FOLDED RULE IS A ROW THAT READS (visual QA QA-067, 2026-10-20). At the
+   list's micro step the headline was 12px text behind a ~6px marker in a
+   44px row, and three such rows with nothing between them read as three
+   bands of empty spacing. The headline is body text, the marker a 20px box
+   at the lead step, a hairline divides the rows, and an opened rule's
+   sentences hang under its headline rather than under its marker. The 44px
+   stays: it is the tap target. */
+.ac-rules.is-folded > li { border-top: 1px solid var(--line); }
+/* THE FOLD SAYS IT OPENS (visual QA V227, the V038/V128 pattern). A summary
+   that is `display: flex` is no longer a list item, so the browser drops its
+   disclosure triangle and the three headlines read as plain bold text. The
+   marker is drawn here instead, and turns when the rule is open. */
+.ac-rules.is-folded summary::-webkit-details-marker { display: none; }
+.ac-rules.is-folded summary::before { content: '\25B8'; flex: none; width: 20px; font-size: var(--t-lead); line-height: var(--lh-flush); text-align: center; color: var(--text-dim); }
+.ac-rules.is-folded details[open] > summary::before { content: '\25BE'; }
+.ac-rules.is-folded summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: 4px; }
+.ac-rules.is-folded details > p { margin: 0 0 10px 26px; }
+
+/* Chooser A: owners on the left, one owner's repositories on the right. */
+.ac-choose { display: flex; flex-direction: column; gap: 12px; }
+.ac-chooser { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); gap: 12px; align-items: start; }
+.ac-owners { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ac-owner-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+/* A LONG OWNER LIST SCROLLS IN ITS COLUMN (visual QA V229). Beside the
+   repository pane, 24 owners were ~2,400px of cards, and the typed-repo form
+   and the grants table under the chooser were pushed ~2,000px down. Only
+   where the two panes sit side by side: stacked on a narrower screen, the
+   list is the page and a second scroller inside it would trap the thumb. */
+@media (min-width: 1080px) {
+  .ac-owner-list { max-height: min(600px, 70vh); overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+}
+.ac-owner { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-ctl); min-width: 0; }
+.ac-owner.is-selected { border-color: var(--sk-ac); background: var(--sk-acs); }
+.ac-owner-h { display: flex; gap: 6px; align-items: flex-start; justify-content: space-between; min-width: 0; }
+/* A LONG OWNER NAME WRAPS BESIDE ITS CHIP (visual QA V043): the ellipsis on
+   an inline <b> never applied, so the name ran under "18 chosen" and past the
+   card. The name takes the room left by the chip and breaks where it must;
+   the chip keeps its own width. */
+.ac-owner-h > b, .ac-owner-pick { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.ac-owner-h > .c-chip { flex: none; }
+.ac-owner-pick { all: unset; flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; cursor: pointer; color: var(--text); }
+.ac-owner-pick:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: 4px; }
+.ac-owner-acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+/* "INSTALL ON <OWNER>" WRAPS INSIDE ITS CARD (visual QA V165). A button is
+   `nowrap` and `flex: none`, so a long owner name made it 413px wide on a
+   400px phone (the page scrolled sideways) and ran ~110px past the 260px card
+   at 1440. Here a button may shrink to the card and break its label; its
+   height grows with the lines instead of clipping them, never below the
+   size it had. */
+.ac-owner-acts > .c-btn { flex: 0 1 auto; min-width: 0; max-width: 100%; height: auto; min-height: var(--h-sm); padding-block: 4px; white-space: normal; overflow-wrap: anywhere; text-align: center; }
+.ac-repos { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ac-repos-h { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; }
+.ac-search { display: flex; gap: 6px; align-items: center; flex: 1 1 240px; min-width: 0; }
+.ac-rows, .ac-grid { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+/* The grants and members grids' rows are stacked surfaces too, each after the
+   first drawing its rule, and touched the same way ("2 stacked surfaces with
+   a 0px gutter", SETUP-ACCESS-STYLES): the same 4px floor, `--ctl-s1`. */
+.ac-grid { gap: var(--ctl-s1); }
+.ac-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.ac-row:first-child { border-top: 0; }
+.ac-row-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ac-row-name b { font-size: var(--t-meta); font-weight: 600; overflow-wrap: anywhere; }
+.ac-row-err, .ac-fails { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 4px; }
+.ac-pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; font-size: var(--t-micro); }
+.ac-typed { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 10px; }
+.ac-typed-form { display: flex; flex-direction: column; gap: 6px; }
+.ac-typed-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ac-typed-row .ur-search { flex: 1 1 220px; width: auto; min-width: 0; }
+
+/* Verify A: one row per grant, failures first.
+   ONE SET OF COLUMNS FOR THE HEAD AND EVERY ROW (visual QA V042). Each row was
+   its own grid, so each `auto` column was sized by that row's content and no
+   column lined up with its header or the row above. Every track is now a
+   fixed width or a share of what is left: the same numbers give the same
+   lines in every grid, whatever a row holds. */
+.ac-grants { display: flex; flex-direction: column; gap: 8px; }
+.ac-filter { max-width: 320px; }
+.ac-grid-h, .ac-grant { display: grid; grid-template-columns: minmax(0, 1fr) 132px repeat(4, 84px) 216px; gap: 6px 10px; align-items: center; }
+.ac-grid-h { font-size: var(--t-micro); color: var(--text-dim); font-weight: 600; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.ac-grant { padding: 8px 0; border-top: 1px solid var(--line); }
+.ac-grant:first-child { border-top: 0; }
+/* The Access segment is as wide as its two words (visual QA V226): stretched
+   to its 132px track it left an empty bordered box after "Write". */
+.ac-grant > .c-seg { justify-self: start; }
+.ac-grant.is-rank-0 .ac-row-name b { color: var(--s-bad); }
+.ac-cell { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-micro); min-width: 0; }
+.ac-cell-l { display: none; color: var(--text-dim); }
+.ac-grant-acts { display: inline-flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.ac-member { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr)); gap: 6px 10px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); font-size: var(--t-micro); }
+.ac-member:first-child { border-top: 0; }
+/* MEMBERS HAS A HEAD WHERE ITS ROWS ARE COLUMNS (visual QA V230): "active",
+   "example-org" and "3 · 2 write" had no label at desktop width. The same
+   tracks as `.ac-member`; on a phone the rows are records that carry their
+   own labels (`.ac-cell-l`), and the head goes. */
+.ac-members-h { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr)); gap: 6px 10px; align-items: center; font-size: var(--t-micro); color: var(--text-dim); font-weight: 600; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+
+/* ---- connected, installed nowhere (archived issue 780, 2026-10-08) ------------------------ */
+.ac-install { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--s-warn); border-left-width: 3px; border-radius: var(--r-ctl); background: var(--s-warnb); color: var(--text); }
+.ac-install-h { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.ac-install-h b { font-weight: 600; }
+.ac-install .ur-hint { margin: 0; }
+.ac-authz { margin: 0 0 10px; }
+.ob-help { margin: 2px 0 0; }
+
+/* ---- GH-ACCESS-E-REST (archived issue 2157, config-e.html S2a-S2c) ----------------------- */
+/* WHAT COMES AFTER (S2a) is dashed and unfilled: steps that wait, not a
+   panel to act in. Each step is an empty ring, its name and its wait. */
+.c-card.ac-after.is-dash { border-style: dashed; background: transparent; }
+.ac-steps { list-style: none; margin: 0; padding: 0; }
+.ac-step { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.ac-step:last-child { border-bottom: 0; }
+.ac-step-m { flex: none; width: 18px; height: 18px; margin-top: 1px; border: 2px solid var(--line); border-radius: 50%; }
+.ac-step-t { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
+.ac-step-t b { font-weight: 600; }
+.ac-step-t small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* WHERE THE APP IS INSTALLED (S2b) is keys.css's stacking table: each owner
+   a card on a phone. The owner's kind sits under its name; the action column
+   has no visible head, as S2b draws it, but keeps its name for a reader. */
+.ac-installs-k { display: block; }
+.ac-installs-t td.ac-installs-a { text-align: right; white-space: nowrap; }
+.ac-installs-t td.ac-installs-a .c-banner { white-space: normal; text-align: left; }
+.ac-vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+/* THE FOOT BAR (S2c): what this visit saved on the left, Refresh on the right. */
+.ac-foot { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: flex-end; padding-top: 10px; border-top: 1px solid var(--line); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.ac-foot > .ac-foot-n { margin-right: auto; min-width: 0; overflow-wrap: anywhere; }
+
+/* ---- GITHUB-ACCESS-S2B (part of archived issue 2391; config-e.html S2b) ----------------- */
+/* THE LEAD (VQ-038 minor): the kicker, the step's action as its title and one
+   sentence on the left, the one primary button at the right, as S2b's
+   `.lead` draws it. The row wraps the button under the words when both do
+   not fit; the tint stays config.css's `.ac-lead > .c-card`. */
+.c-card.ac-lead-c { flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--ctl-s3) 16px; }
+.ac-lead-t { flex: 1; min-width: 240px; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.ac-lead-k { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--sk-ac, var(--s-live)); }
+.ac-lead-t > h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
+.ac-lead-t > .ur-small { color: var(--text-dim); }
+.ac-lead-a { flex: none; display: flex; flex-wrap: wrap; gap: var(--ctl-s2); align-items: center; }
+/* S2B'S TWO COLUMNS (VQ-038): the GitHub card and Where the App is installed
+   on the left, the rules checklist on the right, at S2b's 2:1. One column
+   below 900px, where the right column would be under 260px of words. */
+.ac-body { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: var(--ctl-s3); align-items: start; }
+.ac-main { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
+/* THE QUOTA LINES sit in the GitHub card, each its mark, a gap, then its words
+   (the mark was jammed against the text as a bullet between cards). */
+.ac-quota { list-style: none; padding: 0; display: flex; flex-direction: column; gap: var(--ctl-s1); color: var(--text-dim); }
+.ac-quota > li { display: flex; gap: 6px; align-items: baseline; }
+.ac-quota > li > [data-mark] { flex: none; }
+.ac-quota > li > span:not([data-mark]) { min-width: 0; overflow-wrap: anywhere; }
+/* THE RULES CHECKLIST: a check, the headline and one short line per rule,
+   hairlines between, and how each is held one fold away. `display: block`,
+   not the base rule's flex column at `gap: 0`: the rows are one list divided
+   by hairlines, and a flex parent at a 0px gutter is what the spacing sweep
+   reads as stacked surfaces touching (the `.rows` precedent in styles.css). */
+.ac-rules.is-check { display: block; list-style: none; padding-left: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.ac-rules.is-check > li { display: flex; gap: 10px; align-items: flex-start; padding: var(--ctl-s2) 0; border-bottom: 1px solid var(--line); }
+.ac-rules.is-check > li:last-child { border-bottom: 0; }
+.ac-rules.is-check > li > [data-mark] { flex: none; margin-top: 2px; }
+.ac-rule-t { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.ac-rule-t > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ac-rule-how > summary { width: max-content; cursor: pointer; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--sk-ac, var(--s-live)); }
+.ac-rule-how > summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: 4px; }
+.ac-rule-how > p { margin: 4px 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+@media (max-width: 899px) {
+  .ac-body { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ---- narrower screens, and the 390px phone frame ---------------------------- */
+@media (max-width: 1079px) {
+  .ac-grant { grid-template-columns: minmax(0, 1fr) auto; }
+  .ac-chooser { grid-template-columns: minmax(0, 1fr); }
+  .ac-grid-h { display: none; }
+  .ac-grant .ac-cell { grid-column: 1 / -1; }
+  .ac-cell-l { display: inline; min-width: 84px; }
+  .ac-grant-acts { grid-column: 1 / -1; justify-content: flex-start; }
+}
+@media (max-width: 719px) {
+  /* An (i) in a row's prose sits mid-line: its tip, anchored left at 240 wide,
+     would run past a 390 phone. Here it spans the viewport. Its vertical
+     anchor is EXPLICIT: `top: auto` on a fixed box is its unscrolled static
+     position, which ignores `.ctl-scroll`'s offset. `About` (AdminSetupSteps)
+     sets `--ob-tip-top`/`--ob-tip-bottom` from the (i)'s viewport box; before
+     any measure it sits above the dock. */
+  .ob-about .c-tip { position: fixed; top: var(--ob-tip-top, auto); bottom: var(--ob-tip-bottom, calc(var(--dock-h, 28px) + 12px)); left: 16px; right: 16px; width: auto; max-width: none; }
+  .ob-step { grid-template-columns: 18px minmax(0, 1fr); }
+  .ob-step-act { grid-column: 2; justify-content: flex-start; }
+  .ob-step-act .c-btn, .ob-step-act a { min-height: 44px; }
+  .ac-row { grid-template-columns: minmax(0, 1fr); }
+  .ac-grant { grid-template-columns: minmax(0, 1fr); }
+  .ac-member { grid-template-columns: minmax(0, 1fr); }
+  .ac-members-h { display: none; }
+  .ac-member .ac-cell-l { display: inline; min-width: 84px; }
+  .ac-search { flex-basis: 100%; }
+  .ac-typed-row > * { flex-basis: 100%; }
+  /* ONE TARGET SIZE ON A PHONE (visual QA V123). Segments, the buttons beside
+     them and the chips were 44, 30 and full-width by turns; now every control
+     on Access is 44px tall, and a segment or a chip in a one-column row is as
+     wide as its words rather than stretched with its buttons packed left. */
+  .ac-page .c-btn { min-height: 44px; }
+  .ac-page .c-seg { height: auto; }
+  .ac-page .c-seg > button { min-height: 44px; }
+  .ac-row > .c-seg, .ac-grant > .c-seg, .ac-row > .ur-cap, .ac-row > .c-chip { justify-self: start; }
+  .ac-typed-row > .c-seg { flex-basis: auto; }
+  /* A step body's own actions are phone targets too (visual QA V228). */
+  .ob-step .ob-ws .ob-acts .c-btn { min-height: 44px; }
+  /* S2e: an owner's card ends in its action, left under its values, at a tap target's height. */
+  .ac-installs-t td.ac-installs-a { text-align: left; white-space: normal; padding-top: 6px; }
+  .ac-installs-t td.ac-installs-a .c-btn, .ac-installs-t td.ac-installs-a a { min-height: 44px; }
+  .ac-foot .c-btn { min-height: 44px; }
+  /* S2b's lead on a phone: the words take the row, the button the full width under them. */
+  .ac-lead-t { min-width: 0; flex-basis: 100%; }
+  .ac-lead-a { width: 100%; }
+  .ac-lead-a > .c-btn { flex: 1; justify-content: center; }
+}
+
+/* archived issue 847 W8: the workspace and Claude-account steps' bodies, and Admin › People. */
+.ob-ws { display: grid; gap: 4px; margin-top: 4px; }
+.ob-ws-steps { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); }
+.ob-ws-steps li { display: flex; align-items: center; gap: 6px; }
+/* In a People row the steps sit in a narrow cell (visual QA V081): mark,
+   label and state are three columns, so a label that wraps ("Checking the
+   name is free") wraps in its own column and every state lines up. */
+.pp-ws .ob-ws-steps li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 2px 6px; }
+.pp-ws .ob-ws-steps .ob-state { white-space: nowrap; text-align: right; }
+/* A STEP BODY'S ACTIONS START UNDER ITS TEXT (visual QA V228). "Add key",
+   "Request a loan" and "Request my workspace" are in the step's body, not its
+   action column, and `.ob-acts` pushed them to the body's right edge, away
+   from the sentence they answer. Scoped to the checklist: People draws the
+   same steps in a table cell (`.pp-ws`) with its own alignment. */
+.ob-step .ob-ws .ob-acts { justify-content: flex-start; }
+.ob-ws-reason { margin: 2px 0; padding-left: 8px; border-left: 2px solid var(--line); color: var(--text-dim); }
+/* The summary chip names the optional steps, so it is longer than a phone's
+   card head: it wraps instead of being cut at "Request your wo…" (RSA-26). */
+.ob-card .c-card-h > .ur-acts { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+/* Workspace setup's count is a line of the card's body (visual QA VQ-048): the
+   card's sans type, on its content's left edge, wrapping like any sentence. */
+.ob-summary { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+
+/* ---- Access › Browser logins (LB-7) ----------------------------------------- */
+/* AN EXPIRED LOGIN LOOKS EXPIRED (visual QA V234): "expired 24h ago" was the
+   same muted line as "expires in 10d 23h", though a task naming it now fails
+   before its agent runs. The warn ink People uses for an expired token. */
+.lb-expiry.is-expired { color: var(--warn-ink); font-weight: 600; }
+/* The typed name is part of the warning it confirms (visual QA V233): it sat
+   ~6px under the banner, outside its border. */
+.lb-revoke-type { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; color: var(--text); }
+.lb-revoke-type .ur-search { width: 100%; max-width: 320px; }

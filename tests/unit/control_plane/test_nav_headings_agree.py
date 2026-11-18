@@ -1,0 +1,372 @@
+"""The heading you land on must be the label of the tab you clicked.
+
+THE DEFECT. Seven of the console's sixteen routes headed their screen with a
+different name from the nav entry that opened it. Clicking **Pools** produced a
+page headed *Capacity*; **Timeline** produced *Activity*; **Holders** produced
+*Capacity holders*; **Pool limits** produced *Admin settings*; **New agent** and
+**New workflow** produced *Submit a task* and *Submit a workflow*; and the
+utility button **Reference** produced *API surface*.
+
+WHY THAT IS NOT COSMETIC. A reader cannot tell a rename from a redirect. Landing
+on a heading you did not click leaves three readings open -- you mis-navigated,
+the app moved you, or Pools and Capacity are two different things -- and nothing
+on the page settles it. It also breaks every external reference: a runbook step
+"go to Pools" names something that is not on the screen when you arrive, and the
+back button walks you through pages whose names you never saw.
+
+WHY THIS IS A TEST AND NOT AN AUDIT. The seven were found by reading the source
+once. A one-off reading does not cover the eighth -- a route added next month
+whose author writes a tab label in App.tsx and a `title=` in a screen file
+fifteen hundred lines away and never sees both at once. So this walks the route
+table itself: every `case` in `SectionBody` and every tab in `SECTIONS`, each
+resolved to the heading its screen actually renders. (The utility route, API
+reads, was named here by hand until NAV-FOOT, archived issue 1672, made it a Capacity tab.) A new
+route is covered the moment it is added, and a route with no case -- or a case
+with no tab -- fails here rather than rendering "No such pane" in front of
+somebody.
+
+IT READS THE SHIPPED SOURCE, deliberately, the way test_runtimes_screen.py does.
+A fixture listing the expected names would be a third copy of the thing whose
+two copies already disagreed, and it would keep passing while the app drifted
+away from it.
+
+WHAT IT DOES NOT CHECK. Whether a name is a GOOD name. `Screen` renders
+`title` into the `<h1>`, and this asserts the two strings are equal -- it cannot
+tell you that "Timeline" beats "Activity". That judgement is recorded, per pair,
+in a comment beside the value that changed.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[3]
+SRC = REPO / "apps/swarm-ui/src"
+APP_TSX = SRC / "App.tsx"
+
+#: `Screen` (Shell.tsx) renders its `title` prop as the page's `<h1>`, through
+#: `PageHead`, which a screen that reads on a button rather than on mount
+#: (Platform counts, AH-25) renders directly -- so a screen's heading is one of
+#: those two `title` props or, for a screen that draws its own header, a
+#: literal `<h1>`. Named here so that a screen which starts rendering its
+#: heading some fourth way fails loudly instead of being skipped.
+HEADING_SOURCES = ("<Screen title=", "<PageHead title=", "<h1>")
+
+
+def _read(path: Path) -> str:
+    # A missing or empty file must not skip and must not pass. If the UI is
+    # renamed out from under this test, that is the silent hole it exists to
+    # close -- and a skip is indistinguishable from a pass in CI output.
+    assert path.is_file(), f"{path} is not present; this test would check nothing"
+    text = path.read_text(encoding="utf-8")
+    assert text.strip(), f"{path} is empty; this test would check nothing"
+    return text
+
+
+def _strip_line_comments(text: str) -> str:
+    """Drop whole-line `//` comments only.
+
+    Not `/* */`, and never a `//` that follows code on the same line: the
+    section notes in App.tsx are line comments and they quote route ids in
+    prose, while nothing in the arrays this parses puts a trailing comment
+    after a value.
+    """
+    return "\n".join("" if line.lstrip().startswith("//") else line for line in text.splitlines())
+
+
+def _balanced(text: str, start: int, open_ch: str, close_ch: str) -> str:
+    """The slice from `start` (which must be `open_ch`) to its matching close."""
+    assert text[start] == open_ch, f"expected {open_ch!r} at {start}"
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == open_ch:
+            depth += 1
+        elif text[i] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    raise AssertionError(f"unbalanced {open_ch!r} from offset {start}")
+
+
+def _resolve(app: str, token: str) -> str:
+    """A JSX child that is `{IDENT}` resolves to that module constant's value.
+
+    The Reference entry deliberately uses one constant in both places, so the
+    button and the heading cannot drift apart at all. This test still reads
+    both sites rather than trusting that -- it just has to follow the name.
+    """
+    ident = re.fullmatch(r"\{\s*([A-Za-z_$][\w$]*)\s*\}", token)
+    if ident is None:
+        return token
+    m = re.search(rf"^const {re.escape(ident.group(1))} = '([^']*)'", app, re.M)
+    assert m is not None, f"{token} is not a module-level string constant in App.tsx"
+    return m.group(1)
+
+
+# --------------------------------------------------------------------------
+# The route table, read out of App.tsx
+
+
+def _sections(app: str) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """`SECTIONS` as (section id, section label, [(tab id, tab label)])."""
+    decl = "const SECTIONS: SectionDef[] = "
+    # Past the whole declaration, not `index("[", anchor)`: `SectionDef[]`
+    # carries a bracket pair of its own and matching from there yields "[]".
+    anchor = app.index(decl) + len(decl)
+    block = _balanced(app, app.index("[", anchor), "[", "]")
+    block = _strip_line_comments(block)
+
+    out: list[tuple[str, str, list[tuple[str, str]]]] = []
+    cursor = 0
+    # Every section ends in a `tabs: [...]`, so each tab list closes one
+    # section and the id/label before it belong to that section. Walking the
+    # text this way survives reformatting, which an indentation rule would not.
+    for m in re.finditer(r"tabs:\s*\[", block):
+        head = block[cursor : m.start()]
+        tabs_block = _balanced(block, block.index("[", m.start()), "[", "]")
+        sid = re.findall(r"\bid:\s*'([^']+)'", head)
+        slabel = re.findall(r"\blabel:\s*'([^']+)'", head)
+        assert sid and slabel, f"a section in SECTIONS has no id/label: {head!r}"
+        tabs = re.findall(r"\{\s*id:\s*'([^']+)',\s*label:\s*'([^']+)'", tabs_block)
+        assert tabs, f"section {sid[-1]!r} declares no tabs"
+        out.append((sid[-1], slabel[-1], tabs))
+        cursor = m.start() + len(tabs_block)
+    assert out, "SECTIONS parsed to nothing"
+    return out
+
+
+def _switch_cases(app: str) -> dict[str, str]:
+    """`SectionBody`'s switch, as {"section/tab": "ScreenComponent"}."""
+    body = app[app.index("function SectionBody(") :]
+    cases = re.findall(r"case '([\w-]+/[\w-]+)':\s*\n\s*return <(\w+)", body)
+    assert cases, "no `case '<section>/<tab>'` found in SectionBody"
+    return dict(cases)
+
+
+def _import_map(app: str) -> dict[str, Path]:
+    """Component name -> the file App.tsx imports it from."""
+    out: dict[str, Path] = {}
+    # `[\w./]`, not `[\w.]`: Voice it's panes live in a folder of their own
+    # (`./voice/Section`), and a module path with a slash in it must resolve
+    # to its file rather than fall back to App.tsx and miss the heading.
+    for names, module in re.findall(r"import \{([^}]*)\} from '\./([\w./]+)'", app):
+        for name in (n.strip() for n in names.split(",")):
+            if name and not name.startswith("type "):
+                out[name] = SRC / f"{module}.tsx"
+    return out
+
+
+# --------------------------------------------------------------------------
+# The heading a screen actually renders
+
+
+def _component_body(text: str, component: str) -> str:
+    """The source of one component, up to the next top-level declaration.
+
+    `export` is optional: the screens live in their own modules and are
+    exported, but `ReferenceScreen` is declared and rendered inside App.tsx and
+    is never exported.
+    """
+    m = re.search(rf"^(?:export )?function {re.escape(component)}\(", text, re.M)
+    assert m is not None, f"{component} is not a top-level function in that file"
+    rest = text[m.end() :]
+    nxt = re.search(r"^(?:export )?(?:function|const|interface|type) ", rest, re.M)
+    return rest[: nxt.start()] if nxt else rest
+
+
+def _heading_of(component: str, imports: dict[str, Path], app: str) -> str:
+    """The `<h1>` this screen puts on the page."""
+    path = imports.get(component, APP_TSX)
+    text = app if path == APP_TSX else _read(path)
+    body = _component_body(text, component)
+
+    # `<Screen ... title="X">` first: Shell.tsx renders that prop as the h1,
+    # and it is how thirteen of the sixteen screens set their heading. Other
+    # `title=` props on this screen are tooltips, so the prop is only read
+    # after a `<Screen` tag has been seen.
+    #
+    # A SCREEN MAY RENDER MORE THAN ONE `<Screen>` (2026-10-01): Workflows V2
+    # draws the list at `/workflows` and one workflow's page at
+    # `/workflows/<id>`, whose heading is that workflow's id -- `title={id}`,
+    # a value per object, not the tab's word. The tab opens the list, so a
+    # `<Screen>` titled by a local value (not a literal, not a module
+    # constant) is a detail page and is skipped. At least one `<Screen>` must
+    # still carry a heading this test can read, or it fails below.
+    for tag in ("<Screen", "<PageHead"):
+        starts = [m.start() for m in re.finditer(re.escape(tag) + r"\b", body)]
+        for i, at in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else len(body)
+            m = re.search(r'title=(?:"([^"]*)"|(\{[^}]*\}))', body[at:end])
+            assert m is not None, f"{component} renders {tag}> with no title prop"
+            if m.group(1) is not None:
+                return m.group(1)
+            ident = re.fullmatch(r"\{\s*([A-Za-z_$][\w$]*)\s*\}", m.group(2))
+            if ident is not None and re.search(rf"^const {re.escape(ident.group(1))} = '", app, re.M) is None:
+                continue  # a per-object title: one item's page, not the tab's
+            return _resolve(app, m.group(2))
+        if starts:
+            raise AssertionError(f"{component} renders {tag}> only with per-object titles; no tab heading to read")
+
+    m = re.search(r"<h1>(.*?)</h1>", body, re.S)
+    # A SCREEN MAY HAND ITS TAB VIEW TO A COMPONENT IN ITS OWN FILE
+    # (2026-10-11): Schedules returns early for one schedule's page or the
+    # create form, and its last, unconditional `return <ScheduleListScreen />`
+    # is what the tab opens. The list keeps its state hooks there because a
+    # hook may not follow an early return. Only that final return is followed,
+    # and only into a top-level function of the same file, so the heading read
+    # is still the one the tab lands on and still read from the shipped source.
+    if m is None:
+        tail = re.search(r"return <(\w+)\b[^<>]*/>\s*\}\s*$", body)
+        if tail is not None and re.search(
+            rf"^(?:export )?function {re.escape(tail.group(1))}\(", text, re.M
+        ):
+            return _heading_of(tail.group(1), {tail.group(1): path}, app)
+    assert m is not None, (
+        f"{component} renders none of {', '.join(repr(s) for s in HEADING_SOURCES)}, "
+        "so this test cannot see the heading it puts on the page"
+    )
+    return _resolve(app, m.group(1).strip())
+
+
+# --------------------------------------------------------------------------
+
+
+def _routes() -> list[tuple[str, str, str]]:
+    """Every reachable route as (hash, the label that opens it, component)."""
+    app = _read(APP_TSX)
+    cases = _switch_cases(app)
+
+    rows: list[tuple[str, str, str]] = []
+    for sid, _slabel, tabs in _sections(app):
+        for tid, tlabel in tabs:
+            route = f"{sid}/{tid}"
+            assert route in cases, (
+                f"tab {tlabel!r} points at {route}, which SectionBody has no case for: "
+                "clicking it renders the 'No such pane' panel"
+            )
+            rows.append((route, tlabel, cases[route]))
+
+    # API READS IS A TAB NOW (NAV-FOOT, archived issue 1672): Capacity's last page, so its
+    # row comes from SECTIONS like every other and no utility route is added
+    # by hand. `#reference` still lands on it (App.tsx `fromAddress`).
+    assert len(rows) == len(cases), (
+        f"SectionBody has {len(cases)} cases but the tabs reach {len(rows)}: "
+        "a case no tab points at is a screen nobody can open from the nav"
+    )
+    return rows
+
+
+ROUTES = _routes()
+
+# A VIEW OF ANOTHER TAB'S PAGE, headed with that tab's label (capacity.html C1,
+# owner's pick 2026-10-01; the archived issue 503 audit). By runner profile is Pools' second
+# view: the panel nests it under Pools, and the page is headed "Pools" with an
+# in-page `Ceilings | By runner profile` strip naming the view. So its heading
+# is held to the PARENT tab's label, and its own label is held to the strip --
+# read from the file that draws the strip -- so the words a reader clicked are
+# still on the page they land on. Route -> (parent route, file drawing the strip).
+NESTED_VIEWS: dict[str, tuple[str, str]] = {
+    "capacity/profiles": ("capacity/pools", "Capacity.tsx"),
+}
+
+# A TAB WHOSE PAGE ANOTHER FILE DRAWS (owner's pick, 2026-11-08): Voice it's
+# Settings and Telemetry are two routes onto one screen, which opens the tab
+# its route names (`tab="..."`) and draws that tab's page from its own module.
+# The screen has no heading of its own, so each route is held to the page
+# component it draws: the case passes the route's own tab, the screen renders
+# that component, and that component's heading is the tab's label.
+# Route -> the page component the screen draws for it.
+DELEGATED_PAGES: dict[str, str] = {
+    "voice/settings": "VoiceSettings",
+    "voice/telemetry": "VoiceTelemetry",
+}
+
+
+def _delegated_heading(route: str, component: str, app: str) -> str:
+    """The heading of the page `component` draws for `route` (DELEGATED_PAGES)."""
+    page = DELEGATED_PAGES[route]
+    tab = route.split("/", 1)[1]
+    assert re.search(
+        rf"case '{re.escape(route)}':\s*\n\s*return <{re.escape(component)}\b[^<>]*\btab=\"{re.escape(tab)}\"",
+        app,
+    ), f"#{route} must open {component} on its own tab (tab=\"{tab}\")"
+    path = _import_map(app)[component]
+    text = _read(path)
+    body = _component_body(text, component)
+    assert re.search(rf"<{re.escape(page)}\b", body), f"{component} does not draw {page}, the page #{route} names"
+    module = re.search(rf"import \{{[^}}]*\b{re.escape(page)}\b[^}}]*\}} from '\./([\w./]+)'", text)
+    assert module is not None, f"{component}'s file does not import {page} from a sibling module"
+    return _heading_of(page, {page: path.parent / f"{module.group(1)}.tsx"}, app)
+
+
+@pytest.mark.parametrize("route,label,component", ROUTES, ids=[r[0] for r in ROUTES])
+def test_the_heading_matches_the_tab_that_opens_it(
+    route: str, label: str, component: str
+) -> None:
+    """Click a tab, land on a page headed with that tab's own words."""
+    app = _read(APP_TSX)
+    if route in DELEGATED_PAGES:
+        heading = _delegated_heading(route, component, app)
+    else:
+        heading = _heading_of(component, _import_map(app), app)
+    if route in NESTED_VIEWS:
+        parent, strip_file = NESTED_VIEWS[route]
+        parent_label = next(r[1] for r in ROUTES if r[0] == parent)
+        assert heading == parent_label, (
+            f"#{route} is a view of #{parent}'s page and must be headed {parent_label!r}, not {heading!r}"
+        )
+        strip = _read(SRC / strip_file)
+        assert re.search(rf">\s*{re.escape(label)}\s*<", strip), (
+            f"#{route} is headed {parent_label!r}, so its own label {label!r} must be on the page "
+            f"as the in-page view strip in {strip_file}; it is not there"
+        )
+        return
+    assert heading == label, (
+        f"#{route}: the nav entry says {label!r} and {component} heads the page "
+        f"{heading!r}. A reader cannot tell whether they navigated wrong, whether "
+        f"the app moved them, or whether those are two different things -- and a "
+        f"runbook saying 'go to {label}' names nothing on the screen it lands on. "
+        f"Pick whichever of the two is the better name and use it on BOTH sides."
+    )
+
+
+def test_every_route_is_covered() -> None:
+    """The table is the whole nav, not a sample of it.
+
+    Guards the parser rather than the app: a regex that quietly stopped
+    matching would empty ROUTES and every parametrised case above would vanish
+    from the run without failing anything -- collecting nothing looks exactly
+    like passing.
+    """
+    assert len(ROUTES) >= 16, f"only {len(ROUTES)} routes parsed out of App.tsx"
+    assert len({r[0] for r in ROUTES}) == len(ROUTES), "a route is listed twice"
+    # The panes the redesign note names, so a section silently losing its tabs
+    # is a failure here and not a shorter table nobody looks at.
+    # ONE ROUTE FROM EVERY SECTION, as a floor under the parse: a regex that
+    # silently matched nothing would make every assertion in this file vacuous,
+    # and this repository has shipped exactly that more than once.
+    # `pools/pools` was here and is now `capacity/pools` -- the section was
+    # renamed because it was named after its own first tab and the rail drew
+    # `Pools > Pools`.
+    # `history/timeline` is now `work/timeline`: the 2026-09-24 collapse to
+    # three sections dissolved History, sending Timeline to Work and Platform
+    # counts to Admin. The two routes below it are named for the same reason --
+    # they are the two panes that CHANGED SECTION, which is the pair a parse
+    # that half-worked would be likeliest to lose.
+    for expected in (
+        "overview/now",
+        "work/timeline",
+        "capacity/pools",
+        "capacity/catalogue",
+        "capacity/api-reads",
+        "admin/limits",
+        "admin/counts",
+        # Voice it (docs/design/voice-it.md §10, phase one): its three panes.
+        "voice/talk",
+        "voice/projects",
+        "voice/preferences",
+    ):
+        assert expected in {r[0] for r in ROUTES}, f"{expected} is not in the route table"

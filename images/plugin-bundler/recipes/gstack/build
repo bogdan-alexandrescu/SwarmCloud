@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The gstack recipe: gstack and Bun at their pins, set up AT
+# /opt/swarm/plugins/gstack and staged by one of the checked-in lists.
+#
+# Factored out of agent-runtime-base's gstack-build stage and
+# agent-runtime-browser's gstack-browser-build stage
+# (docs/design/managed-plugins.md, section 1.4.2): the release build runs it
+# in both with images/agent-runtime-base/bundled-plugins.json, and a
+# deployment's bundle build runs it in the bundler image with an admin's
+# newer pin. The commands are the stages' own, plus the lockfile checks below
+# (which only refuse: gstack's setup already installs --frozen-lockfile at
+# the default pins), so the default pins set up and stage the tree the stages
+# did before (the base Dockerfile's gstack-build comment says why each step is
+# there):
+#
+#   * Bun (--bun install) and gstack's source archive are read ONLY from the
+#     mirror folder at the object paths their pins name, checked against their
+#     pinned sha256, Bun's version and the archive's commit (the pax header)
+#     before anything runs; --bun present instead requires the Bun already
+#     on PATH to be the pinned one (the browser image builds FROM the base,
+#     which has it); --bun-path is where that Bun is, /usr/local/bin/bun
+#     unless given (the release stages, which run as root; the bundler image
+#     runs as an unprivileged user and passes a path that user owns), and any
+#     other path's folder leads PATH while setup runs;
+#   * gstack is unpacked AT its install path, because the compiled `browse`
+#     embeds the path it was built at, and `./setup --host claude --no-browser`
+#     runs with HOME, gstack's state and Bun's cache in a throwaway folder;
+#   * gstack's dependencies install only at its bun.lock: the archive must
+#     hold one, Bun runs with frozenLockfile set (a throwaway $HOME/.bunfig.toml,
+#     since setup's own fallback is `bun install --lockfile-only`), and the
+#     build fails unless bun.lock is byte-for-byte the archive's after setup
+#     (docs/design/managed-plugins.md, Q19: checked against the pinned lockfile);
+#   * --registry, when given, is the npm registry Bun installs from: the bundle
+#     build passes the deployment's mirror repository (owner, 9 November 2026,
+#     Q19: dependencies only through mirror repositories). Without it Bun reads
+#     its default registry, as the release build's stages always have, so the
+#     default pins set up the same tree;
+#   * gstack-layers check fails the build when the closure differs from either
+#     checked-in list, and gstack-layers stage copies the chosen list to --out;
+#   * .swarm-bundle.json is written last, over the tree the image ends with:
+#     the base list, or for --list browser the browser list laid over the base
+#     list (the browser image copies its list over the base image's).
+#
+# usage: build --pins FILE --mirror DIR --layers FILE --measure FILE
+#              --base-list FILE --browser-list FILE --list base|browser
+#              --bun install|present --out DIR [--registry URL]
+#              [--bun-path FILE]
+
+PLUGIN=gstack
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bundle="${here}/../../swarm-bundle"
+
+pins="" mirror="" layers="" measure="" base_list="" browser_list="" list="" bun="" out="" registry="" bun_path=/usr/local/bin/bun
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --pins) pins="$2"; shift 2 ;;
+    --mirror) mirror="$2"; shift 2 ;;
+    --layers) layers="$2"; shift 2 ;;
+    --measure) measure="$2"; shift 2 ;;
+    --base-list) base_list="$2"; shift 2 ;;
+    --browser-list) browser_list="$2"; shift 2 ;;
+    --list) list="$2"; shift 2 ;;
+    --bun) bun="$2"; shift 2 ;;
+    --out) out="$2"; shift 2 ;;
+    --registry) registry="$2"; shift 2 ;;
+    --bun-path) bun_path="$2"; shift 2 ;;
+    *) echo "gstack recipe: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+for required in pins mirror layers measure base_list browser_list list bun out; do
+  if [ -z "${!required}" ]; then
+    echo "gstack recipe: --${required//_/-} is required" >&2
+    exit 2
+  fi
+done
+case "${list}" in base | browser) ;; *) echo "gstack recipe: --list is base or browser" >&2; exit 2 ;; esac
+case "${bun}" in install | present) ;; *) echo "gstack recipe: --bun is install or present" >&2; exit 2 ;; esac
+case "${bun_path}" in /*/bun) ;; *) echo "gstack recipe: --bun-path is an absolute path ending in /bun" >&2; exit 2 ;; esac
+# The registry lands in a TOML string and Bun's environment: an https URL of
+# plain characters only, or nothing.
+if [ -n "${registry}" ] && ! [[ "${registry}" =~ ^https://[A-Za-z0-9._~:/@%+-]+$ ]]; then
+  echo "gstack recipe: --registry is an https URL" >&2
+  exit 2
+fi
+if [ -e "${out}" ]; then
+  echo "gstack recipe: ${out} exists; it stages into a new folder only" >&2
+  exit 2
+fi
+
+pin() { python3 "${bundle}" pin --pins "${pins}" --plugin "${PLUGIN}" "$1"; }
+GSTACK_INSTALL="$(pin install_path)"
+GSTACK_VERSION="$(pin version)"
+GSTACK_OBJECT="$(pin source.object)"
+GSTACK_SHA256="$(pin source.sha256)"
+GSTACK_COMMIT="$(pin source.commit)"
+BUN_VERSION="$(pin toolchain.bun.version)"
+
+scratch="$(mktemp -d)"
+trap 'rm -rf "${scratch}"' EXIT
+
+if [ "${bun}" = install ]; then
+  BUN_OBJECT="$(pin toolchain.bun.object)"
+  BUN_SHA256="$(pin toolchain.bun.sha256)"
+  curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${scratch}/bun.zip" \
+    "file://${mirror}/${BUN_OBJECT}"
+  echo "${BUN_SHA256}  ${scratch}/bun.zip" | sha256sum -c -
+  python3 -m zipfile -e "${scratch}/bun.zip" "${scratch}/bun"
+  # Owned by whoever runs the recipe: root in the release stages, the
+  # bundler's own user in a bundle build.
+  install -m 0755 "${scratch}/bun/bun-linux-x64/bun" "${bun_path}"
+fi
+test "$("${bun_path}" --version)" = "${BUN_VERSION}"
+bun_env=()
+if [ "${bun_path}" != /usr/local/bin/bun ]; then
+  bun_env=(PATH="$(dirname "${bun_path}"):${PATH}")
+fi
+
+curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${scratch}/gstack.tar.gz" \
+  "file://${mirror}/${GSTACK_OBJECT}"
+echo "${GSTACK_SHA256}  ${scratch}/gstack.tar.gz" | sha256sum -c -
+test "$(gzip -dc "${scratch}/gstack.tar.gz" | git get-tar-commit-id)" = "${GSTACK_COMMIT}"
+rm -rf "${GSTACK_INSTALL}"
+mkdir -p "${GSTACK_INSTALL}" "${scratch}/home"
+tar -xzf "${scratch}/gstack.tar.gz" -C "${GSTACK_INSTALL}" --strip-components=1
+test "$(cat "${GSTACK_INSTALL}/VERSION")" = "${GSTACK_VERSION}"
+if [ ! -f "${GSTACK_INSTALL}/bun.lock" ]; then
+  echo "gstack recipe: the archive holds no bun.lock; its dependencies would resolve unpinned" >&2
+  exit 1
+fi
+LOCK_SHA256="$(sha256sum "${GSTACK_INSTALL}/bun.lock" | cut -d' ' -f1)"
+registry_env=()
+{
+  echo "[install]"
+  echo "frozenLockfile = true"
+  if [ -n "${registry}" ]; then
+    echo "registry = \"${registry}\""
+    registry_env=(BUN_CONFIG_REGISTRY="${registry}" NPM_CONFIG_REGISTRY="${registry}")
+  fi
+} >"${scratch}/home/.bunfig.toml"
+(cd "${GSTACK_INSTALL}" \
+  && env ${bun_env[@]+"${bun_env[@]}"} ${registry_env[@]+"${registry_env[@]}"} HOME="${scratch}/home" GSTACK_STATE_ROOT="${scratch}/state" BUN_INSTALL_CACHE_DIR="${scratch}/bun-cache" \
+    GSTACK_SKIP_FONTS=1 GSTACK_SETUP_SKIP_CSO_BUILD=1 GSTACK_SECURITY_OFF=1 \
+    ./setup --host claude --no-browser)
+if [ "$(sha256sum "${GSTACK_INSTALL}/bun.lock" | cut -d' ' -f1)" != "${LOCK_SHA256}" ]; then
+  echo "gstack recipe: setup changed bun.lock; the install left the pinned lockfile" >&2
+  exit 1
+fi
+python3 "${layers}" check \
+  --measure "${measure}" --install "${GSTACK_INSTALL}" \
+  --base-list "${base_list}" \
+  --browser-list "${browser_list}"
+python3 "${layers}" stage \
+  --measure "${measure}" --install "${GSTACK_INSTALL}" \
+  --base-list "${base_list}" \
+  --browser-list "${browser_list}" --list "${list}" --out "${out}"
+
+trees=()
+if [ "${list}" = browser ]; then
+  python3 "${layers}" stage \
+    --measure "${measure}" --install "${GSTACK_INSTALL}" \
+    --base-list "${base_list}" --list base --out "${scratch}/base-tree"
+  trees+=(--tree "${scratch}/base-tree")
+fi
+trees+=(--tree "${out}")
+python3 "${bundle}" write --pins "${pins}" --plugin "${PLUGIN}" "${trees[@]}" \
+  --input "build=${here}/build" --input "gstack-layers=${layers}" \
+  --input "measure=${measure}" --input "base-list=${base_list}" \
+  --input "browser-list=${browser_list}" --out "${out}/.swarm-bundle.json"

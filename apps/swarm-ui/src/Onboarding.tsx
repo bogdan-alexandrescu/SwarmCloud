@@ -1,0 +1,587 @@
+import { useState, type ReactNode } from 'react'
+import { dismissOnboarding, githubAppName, loadOnboarding } from './api'
+import { Button, ButtonLink, Card, Chip, Dash, ToneMark, Tooltip, buttonClass } from './components'
+import type { ApiError } from './fetch'
+import { connectionOf, Refusal } from './GitHubConnect'
+import { GuideLink } from './Guide'
+import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
+import { Icon } from './Spine'
+import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
+import { WorkspaceTabWords } from './Profile'
+import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
+import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState, WorkspaceView } from './types'
+import { timeAgo } from './types'
+import './styles/repositories.css'
+import './styles/onboarding.css'
+
+/**
+ * THE ONBOARDING CHECKLIST (archived issue 780, lane OB8; docs/onboarding.md §2.1-§2.3,
+ * owner pick D10 "Entry A"). Two renderings of one read, `GET /v1/onboarding`:
+ *
+ *   * `SetupCard`, on Overview, where a person already lands -- shown while
+ *     the checklist is not complete, gone by itself once it is (Entry A);
+ *   * `OnboardingScreen`, Admin › Workspaces › <workspace> › Setup, the
+ *     same steps as a part of that page, which the nav reaches whether or not
+ *     the card was hidden. It was Work › Setup, a page of its own, until
+ *     WS-SETTINGS-PAGE (part of archived issue 2157, proposal E S6b) made it a part: it
+ *     draws no heading, since the page's h1 is Workspace Settings.
+ *
+ * INSTALL THE APP (archived issue 780, 2026-10-08) is its own step, between Connect GitHub
+ * and the orgs: connecting authorises the App, installing it is a second act
+ * at GitHub, and a person who did only the first saw an Access page with
+ * nothing on it. Its action is the App's install page itself.
+ *
+ * DERIVED, NEVER SET (§2.1). Every state here is what the server derived on
+ * this read; nothing on this page marks a step done. A step's sub-line is its
+ * evidence, its failure is the §2.3 copy the server sent WORD FOR WORD (so the
+ * plugin's `/sc:setup` prints the same sentence), and its button is the next
+ * action: Connect GitHub, Enable orgs and Choose repositories link to
+ * Config › GitHub access, where the App is connected and OB4's routes act
+ * (owner, archived issue 2157: GitHub access is connect and disconnect), and Verify access to
+ * Config › Repositories, which holds Verify (visual QA config-10). Connect
+ * GitHub started the authorisation in place until WS-SETTINGS-PAGE; one page
+ * does it now, so the two cannot drift. Re-check is a fresh read, which is a
+ * fresh derivation.
+ *
+ * HIDE IS THE PERSON'S, KEPT BY THE SERVER (§3.1-§3.2). Hide posts
+ * `POST /v1/onboarding/dismiss`, which sets `dismissed_at` on the caller's own
+ * onboarding document, and the card is drawn only while `GET /v1/onboarding`
+ * answers `dismissed: false` -- so a person who hid it does not meet it again
+ * in another browser or on the plugin's surface. It was a localStorage flag
+ * until that route was built (archived issue 780, step 3), which hid the card in one browser
+ * only. The steps keep their state, Workspace setup still shows them, and Show
+ * on Overview there posts `{dismissed: false}`.
+ */
+
+/** Workspace setup and GitHub access, by their Config addresses (CONFIG-NAV moved both; the old ones still land). */
+export const SETUP = WORKSPACE_SETUP_ADDRESS
+export const ACCESS = 'config/github'
+/**
+ * Config › Repositories, where a granted repository's Verify is ("Repositories
+ * SwarmCloud may reach as you"). GitHub access is connect and disconnect only
+ * (archived issue 2157), so the Verify access step points here (visual QA config-10).
+ */
+export const REPOSITORIES = 'config/repositories'
+const SUBMIT_TASK = 'work/new'
+
+/** The steps' names as the mock-up draws them (onboarding.html, Entry A). */
+export const STEP_LABEL: Readonly<Record<OnboardingStepName, string>> = {
+  signed_in: 'Sign in',
+  workspace: 'Request your workspace',
+  claude_account: 'Add a Claude account',
+  github_connected: 'Connect GitHub',
+  app_installed: 'Install the App',
+  orgs_enabled: 'Enable orgs',
+  repos_chosen: 'Choose repositories',
+  access_verified: 'Verify access',
+  ready: 'Ready',
+}
+
+const STATE_WORD: Readonly<Record<OnboardingStepState, string>> = {
+  done: 'done',
+  in_progress: 'in progress',
+  failed: 'failed',
+  stale: 'stale',
+  todo: 'to do',
+}
+
+/** A state as a mark. `todo` is the hollow ring: nobody has derived it done. */
+const STATE_TONE: Readonly<Record<OnboardingStepState, string>> = {
+  done: 'ok',
+  in_progress: 'live',
+  failed: 'bad',
+  stale: 'warn',
+  todo: 'unknown',
+}
+
+/** The steps' next actions and their buttons' words: on GitHub access, but Verify access's on Repositories, where Verify is. Connect GitHub's is drawn apart: it says Reconnect once a connection exists. */
+const ACCESS_ACTION: Partial<Record<OnboardingStepName, string>> = {
+  orgs_enabled: 'Enable orgs',
+  repos_chosen: 'Choose repositories',
+  access_verified: 'Verify access',
+}
+
+function str(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function rows(v: unknown): Record<string, unknown>[] {
+  return Array.isArray(v) ? v.filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null) : []
+}
+
+/**
+ * REQUIRED, AS THE SERVER JUDGES IT (`onboarding.derive`'s
+ * `s.get("required", True)`): a step with `required` absent or null is
+ * required; only an explicit `false` is not. The workspace steps carry
+ * `required: false` while WORKSPACE_GATE is off, and never hold back
+ * `complete` -- so they must not hold back the count either.
+ */
+export function stepRequired(step: OnboardingStep): boolean {
+  // `required` is not on OnboardingStep's type (types.ts is shared); the
+  // server sends it on the workspace steps only.
+  return !('required' in step) || step.required !== false
+}
+
+/** Done REQUIRED steps: the count's numerator. */
+export function doneCount(doc: OnboardingDoc): number {
+  return doc.steps.filter((s) => stepRequired(s) && s.state === 'done').length
+}
+
+/**
+ * The count as one line. Required steps only, with the optional ones named
+ * apart: "8 of 8 required done · 1 optional (Request your workspace)". With no optional
+ * step it reads as it always did, "7 of 7 done". Before 2026-10-08 the
+ * denominator was every step, so a complete checklist read "8 of 9 done".
+ */
+export function countLabel(doc: OnboardingDoc): string {
+  const required = doc.steps.filter(stepRequired)
+  const optional = doc.steps.filter((s) => !stepRequired(s))
+  const done = doneCount(doc)
+  if (optional.length === 0) return `${done} of ${required.length} done`
+  const names = optional.map((s) => STEP_LABEL[s.step] ?? s.step).join(', ')
+  return `${done} of ${required.length} required done · ${optional.length} optional (${names})`
+}
+
+function hhmm(iso: string): string | null {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return null
+  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * A connection whose LAST probe did not complete: its error, and when it was
+ * seen. The error is the probe's, kept until the next probe; the poll probes
+ * such a record again once REVERIFY_RETRY (an hour) has passed
+ * (`GitTokens.reverify`), so its age says how stale it may be. Nothing on
+ * this page re-probes it: this read stays pure.
+ */
+function probeErrorLine(step: OnboardingStep): string | null {
+  if (step.step !== 'github_connected') return null
+  const ev = step.evidence ?? {}
+  const error = str(ev.probe_error)
+  if (ev.probe_complete === true || error === null) return null
+  const at = str(ev.probe_attempted_at)
+  const when = at === null ? null : hhmm(at)
+  return `Last probe did not complete: ${error} (${when === null ? 'time unknown' : `as of ${when}`}; re-checked hourly)`
+}
+
+/** Names as a sentence: "A", "A and B", "A, B and C". */
+function andList(names: string[]): string {
+  return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
+
+/**
+ * WHAT A WAITING STEP WAITS FOR. The server's `waiting_for` names one step, the
+ * first unfinished one, so Ready read "waits for Enable orgs" while Verify
+ * access was unfinished too (visual QA config-11). Ready waits for every
+ * required step before it, so it names every one still open that a person can
+ * act on: a step itself waiting on an earlier one is covered by that one. Any
+ * other step keeps the server's one name.
+ */
+function waitsFor(step: OnboardingStep, waiting: string, doc: OnboardingDoc): string {
+  const named = STEP_LABEL[waiting as OnboardingStepName] ?? waiting
+  if (step.step !== 'ready') return named
+  const at = doc.steps.indexOf(step)
+  const open = doc.steps
+    .slice(0, at < 0 ? doc.steps.length : at)
+    .filter((s) => stepRequired(s) && s.state !== 'done' && !(s.state === 'todo' && str(s.evidence?.waiting_for) !== null))
+    .map((s) => STEP_LABEL[s.step] ?? s.step)
+  return open.length === 0 ? named : andList(open)
+}
+
+/** What the step's evidence says, in one line: its last probe, never a guess. */
+function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
+  const ev = step.evidence ?? {}
+  const waiting = str(ev.waiting_for)
+  if (step.state === 'todo' && waiting !== null) return `waits for ${waitsFor(step, waiting, doc)}`
+  switch (step.step) {
+    case 'signed_in': {
+      const email = str(ev.email)
+      const tenant = str(ev.tenant_id) ?? doc.tenant_id
+      return email === null ? `workspace ${tenant}` : `${email} · workspace ${tenant}`
+    }
+    case 'github_connected': {
+      const view = connectionOf(doc)
+      if (view.kind === 'app') return `connected as @${view.login ?? '?'} · GitHub App`
+      if (view.kind === 'own-token') return `your own stored token${view.login !== null ? ` (@${view.login})` : ''}`
+      if (view.kind === 'tenant') return `agents act through the workspace token${view.login !== null ? ` (@${view.login})` : ''}, not as you`
+      return 'no GitHub account connected'
+    }
+    case 'app_installed': {
+      const inst = ev as Partial<AppInstalledEvidence>
+      if (inst.needed === false) return 'not needed: this connection is a token, not the App'
+      if (inst.read !== true) return 'installations not read yet'
+      const on = Array.isArray(inst.installed) ? inst.installed : []
+      if (on.length > 0) return `installed on ${on.join(', ')}`
+      const login = str(inst.login)
+      return `${login !== null ? `connected as @${login}, but ` : ''}${githubAppName(inst.app_name)} isn't installed anywhere yet`
+    }
+    case 'orgs_enabled': {
+      const owners = rows(ev.owners)
+      if (owners.length === 0) return 'no owner read yet'
+      return owners
+        .map((o) => {
+          const reach = str(o.reach)
+          return `${str(o.owner) ?? '?'}${reach !== null && reach !== 'reachable' ? ` (${reach.replace(/_/g, ' ')})` : ''}`
+        })
+        .join(' · ')
+    }
+    case 'repos_chosen': {
+      const repos = rows(ev.repositories)
+      if (repos.length === 0) return 'no repository granted'
+      const shown = repos.slice(0, 3).map((r) => `${str(r.repository) ?? '?'} (${str(r.mode) ?? '?'})`)
+      return `${repos.length} granted: ${shown.join(', ')}${repos.length > 3 ? `, +${repos.length - 3} more` : ''}`
+    }
+    case 'access_verified': {
+      const repos = rows(ev.repositories)
+      if (repos.length === 0) return 'clone, push and pull request checked for every granted repository'
+      const n = (r: string) => repos.filter((x) => x.result === r).length
+      const parts = [`${n('passed')} passed`]
+      if (n('failed') > 0) parts.push(`${n('failed')} failed`)
+      if (n('pending') > 0) parts.push(`${n('pending')} not checked yet`)
+      // Name the repositories still to verify, so a person knows which
+      // grant's Verify to press on Config › Repositories (archived issue 896; visual QA
+      // config-10: GitHub access has no Verify).
+      const open = repos
+        .filter((r) => r.result === 'failed' || r.result === 'pending')
+        .map((r) => `${str(r.repository) ?? '?'}${r.result === 'failed' ? ' (failed)' : ''}`)
+      if (open.length === 0) return parts.join(' · ')
+      const shown = open.slice(0, 3).join(', ') + (open.length > 3 ? `, +${open.length - 3} more` : '')
+      return (
+        <>
+          {parts.join(' · ')} · {shown}: press Verify on{' '}
+          <a className="c-link" href={addressToPath(REPOSITORIES)}>
+            Repositories
+          </a>
+        </>
+      )
+    }
+    case 'ready': {
+      const first = str(ev.first_repository)
+      return first === null ? 'submit a first agent in a granted repository' : `submit a first agent in ${first}`
+    }
+  }
+  return null
+}
+
+/**
+ * A §2.3 problem: the server's copy and the GitHub page it names.
+ *
+ * NO RAW CODE, NO URL TWICE (visual QA pass 1, overview-agents-03,
+ * 2026-10-28): the card printed `SSO_NOT_AUTHORISED` before the copy, and the
+ * copy's "Open https://github.com/orgs/…/sso" beside an "Open on GitHub" link
+ * to the same place. The code stays on the element (`data-code`, the title)
+ * for support; the URL in the copy reads as the link under it.
+ */
+function IssueCopy({ code, copy, url }: { code: string; copy: string; url?: string | null }) {
+  const linked = typeof url === 'string' && url.startsWith('https://github.com/')
+  const words = linked ? copy.split(url).join('the GitHub page linked below') : copy
+  return (
+    <div className="ob-issue" data-code={code} title={code}>
+      <p className="ur-small">{words}</p>
+      {linked && (
+        <a className="c-link" href={url} target="_blank" rel="noreferrer">
+          Open on GitHub
+        </a>
+      )}
+    </div>
+  )
+}
+
+/** The step's one next action, when it has one. */
+function StepAction({ step, doc, reload }: { step: OnboardingStep; doc: OnboardingDoc; reload: () => void }) {
+  if (step.step === 'signed_in') return null
+  if (step.step === 'ready') {
+    return step.state === 'done' ? (
+      <ButtonLink kind="primary" size="sm" href={addressToPath(SUBMIT_TASK)}>
+        Start an agent
+      </ButtonLink>
+    ) : null
+  }
+  if (step.state === 'done') return null
+  if (step.step === 'github_connected') {
+    if (step.state === 'stale') {
+      return (
+        <Button size="sm" onClick={reload}>
+          Re-check
+        </Button>
+      )
+    }
+    const view = connectionOf(doc)
+    return (
+      <ButtonLink kind={doc.next_step === step.step ? 'primary' : 'secondary'} size="sm" href={addressToPath(ACCESS)}>
+        {view.kind === 'app' ? 'Reconnect' : 'Connect GitHub'}
+      </ButtonLink>
+    )
+  }
+  if (step.step === 'app_installed') {
+    const url = str(step.evidence?.install_url)
+    const waiting = step.state === 'todo' && step.evidence?.waiting_for !== undefined
+    if (waiting) return null
+    return (
+      <span className="ob-acts">
+        {step.state === 'todo' && url !== null && url.startsWith('https://github.com/') && (
+          <ButtonLink kind={doc.next_step === step.step ? 'primary' : 'secondary'} size="sm" href={url} target="_blank" rel="noreferrer">
+            Install the App
+          </ButtonLink>
+        )}
+        <Button size="sm" kind="ghost" onClick={reload}>
+          Re-check
+        </Button>
+      </span>
+    )
+  }
+  const label = ACCESS_ACTION[step.step]
+  if (label === undefined || (step.state === 'todo' && step.evidence?.waiting_for !== undefined)) return null
+  return (
+    <span className="ob-acts">
+      <ButtonLink
+        kind={doc.next_step === step.step ? 'primary' : 'secondary'}
+        size="sm"
+        href={addressToPath(step.step === 'access_verified' ? REPOSITORIES : ACCESS)}
+      >
+        {label}
+      </ButtonLink>
+      {(step.state === 'failed' || step.state === 'stale' || step.state === 'in_progress') && (
+        <Button size="sm" kind="ghost" onClick={reload}>
+          Re-check
+        </Button>
+      )}
+    </span>
+  )
+}
+
+function stepBarLabel(doc: OnboardingDoc): string {
+  const required = doc.steps.filter(stepRequired).length
+  const word = required === doc.steps.length ? '' : 'required '
+  return `${doneCount(doc)} of ${required} ${word}setup steps done`
+}
+
+/**
+ * The steps' states as one bar (optional ones too): a glance at how far along this person is. One segment per step
+ * the API sent, on one row: the column count is the step count (visual QA V041), never a fixed six.
+ */
+export function StepBar({ doc }: { doc: OnboardingDoc }) {
+  const n = Math.max(doc.steps.length, 1)
+  return (
+    <div className="ob-bar" role="img" aria-label={stepBarLabel(doc)} style={{ gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))` }}>
+      {doc.steps.map((s) => (
+        <i key={s.step} className={`is-${s.state}`} />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * A step's mark. An `in_progress` workspace step whose approval nothing will build is `warn`, not the pulsing
+ * `live` mark: the platform does not advance that state by itself, so it must not look as if it were moving.
+ */
+function stepTone(s: OnboardingStep): string {
+  if (s.step === 'workspace' && s.evidence != null && waitingOf(s.evidence as unknown as WorkspaceView) !== null) return 'warn'
+  return STATE_TONE[s.state] ?? 'unknown'
+}
+
+/** The checklist itself, shared by the card and the page. */
+export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => void }) {
+  return (
+    <ol className="ob-list" aria-label="Setup steps">
+      {doc.steps.map((s) => {
+        const issues: OnboardingIssue[] = Array.isArray(s.issues) ? s.issues : []
+        const next = doc.next_step === s.step
+        // A step with nothing to say on its line (the workspace step draws its own detail) gets its check time
+        // alone, not after a separator with nothing before it (RSA-25).
+        const line = stepLine(s, doc)
+        const said = line !== null && line !== undefined && line !== '' && line !== false
+        // A line with nothing on it is not drawn (visual QA V228): an empty `p.ob-line` doubled the gap under the
+        // title of a step whose body says it all (the Claude-account step).
+        const at = s.checked_at !== null && s.state !== 'todo'
+        return (
+          <li key={s.step} className={`ob-step is-${s.state}${next ? ' is-next' : ''}`} data-step={s.step} data-state={s.state} aria-current={next ? 'step' : undefined}>
+            <ToneMark tone={stepTone(s)} hidden />
+            <div className="ob-step-main">
+              <p className="ob-step-h">
+                {/* The title only: the step's id is the API's name for it, not copy (RSA-25). It stays on `data-step`. */}
+                <b>{STEP_LABEL[s.step] ?? s.step}</b>
+                {/* An optional step says so on its own row, as S6b draws it ("done · optional"): the summary
+                    named it optional while the row read like any other (visual QA VQ-048). */}
+                <span className="ob-state">
+                  {STATE_WORD[s.state] ?? s.state}
+                  {!stepRequired(s) && ' · optional'}
+                </span>
+                {next && <Chip>next</Chip>}
+              </p>
+              {(said || at) && (
+                <p className="ur-hint ob-line">
+                  {line}
+                  {at && (
+                    <span className="ob-at">
+                      {said ? ' · ' : ''}checked {timeAgo(s.checked_at!)}
+                    </span>
+                  )}
+                </p>
+              )}
+              {issues.map((i, n) => (
+                <IssueCopy key={`${i.code}:${i.owner ?? ''}:${i.repository ?? ''}:${n}`} code={i.code} copy={i.copy} url={i.url} />
+              ))}
+              {issues.length === 0 && s.code !== null && s.copy !== null && <IssueCopy code={s.code} copy={s.copy} />}
+              <WorkspaceStepDetail step={s} reload={reload} />
+              {probeErrorLine(s) !== null && <p className="ur-hint ob-probe">{probeErrorLine(s)}</p>}
+              {s.step === 'app_installed' && s.state !== 'done' && s.evidence?.waiting_for === undefined && (
+                <p className="ur-hint ob-help">
+                  Connecting authorised the App to act as you; installing it on your account or an org is what lets it
+                  reach that owner's repositories.
+                </p>
+              )}
+            </div>
+            <div className="ob-step-act">
+              <StepAction step={s} doc={doc} reload={reload} />
+            </div>
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
+/**
+ * ENTRY A, THE CARD ON OVERVIEW. It draws nothing until the read lands, and
+ * nothing when the read failed or is not served: Overview's own reads are
+ * the page, and a checklist that could not be read is not a step to take.
+ */
+export function SetupCard() {
+  const doc = useUrRead(loadOnboarding, 'onboarding')
+  const [hidden, setHidden] = useState(false)
+  const [hiding, setHiding] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  if (doc.state.status !== 'ok' && doc.state.status !== 'stale') return null
+  const d = doc.state.data
+  if (d.complete || !Array.isArray(d.steps) || hidden || d.dismissed === true) return null
+
+  // Hidden only once the server has kept it: a refused dismiss leaves the
+  // card where it was and says so, rather than hiding it for this visit and
+  // bringing it back on the next.
+  async function hide() {
+    setHiding(true)
+    setRefused(null)
+    const res = await dismissOnboarding(true)
+    setHiding(false)
+    if (res.status === 'error') {
+      setRefused(res.error)
+      return
+    }
+    setHidden(true)
+  }
+  return (
+    <Card
+      className="ob-card"
+      title="Set up SwarmCloud"
+      action={
+        <span className="ur-acts">
+          <Chip>
+            {countLabel(d)}
+          </Chip>
+          {/* THE GUIDE, as the rail draws Help: an icon whose name and
+              sentence sit in the tooltip, so Overview shows no more words. */}
+          <Tooltip tip="Every step, explained in the user guide.">
+            <GuideLink slug="sign-in" label="User guide" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })}>
+              <Icon name="help" className="c-ic" />
+            </GuideLink>
+          </Tooltip>
+          <Button kind="ghost" size="sm" busy={hiding} onClick={() => void hide()}>
+            Hide
+          </Button>
+          <ButtonLink kind="primary" size="sm" href={addressToPath(SETUP)}>
+            Open setup
+          </ButtonLink>
+        </span>
+      }
+    >
+      {refused !== null && <Refusal error={refused} title="The checklist could not be hidden" />}
+      <StepBar doc={d} />
+      <Checklist doc={d} reload={doc.reload} />
+      <p className="ur-hint">
+        This card leaves Overview by itself once every step is done. Hide keeps every step as it is, for you in every
+        browser; <WorkspaceTabWords tab="Setup" /> still shows them.
+      </p>
+    </Card>
+  )
+}
+
+/**
+ * Workspace setup, the Setup tab of Admin › Workspaces › <workspace> (WS-SETTINGS-PAGE):
+ * the checklist, under the page's own heading and parts, so it draws no h1.
+ * Its read control rides in the checklist card's head.
+ */
+export function OnboardingScreen() {
+  const doc = useUrRead(loadOnboarding, 'onboarding')
+  return (
+    <div className="ur-page ob-page">
+      <p className="ur-sub">
+        Connect GitHub as yourself, install the App where your repositories are, enable the orgs SwarmCloud may reach,
+        choose the repositories it may read or write, and verify that it can, all on GitHub access. Each step is checked
+        again on every read; nothing here is marked done by hand. Every step, explained:{' '}
+        <GuideLink slug="sign-in">the user guide</GuideLink>.
+      </p>
+      <UrRegion state={doc.state} route="GET /v1/onboarding" what="Your setup checklist" onRetry={doc.reload} lines={6}>
+        {(d) =>
+          Array.isArray(d.steps) && d.steps.length > 0 ? (
+            <Card
+              className="ob-card"
+              title={d.complete ? 'Setup is complete' : 'Set up SwarmCloud'}
+              action={
+                <span className="ur-acts">
+                  {d.dismissed === true && !d.complete && <ShowOnOverview reload={doc.reload} />}
+                  <UrRefresh reads={[doc]} />
+                </span>
+              }
+              foot={
+                <>
+                  Derived {d.derived_at ? timeAgo(d.derived_at) : <Dash why="The read carried no time" />} for{' '}
+                  {d.user} in workspace {d.tenant_id}.
+                </>
+              }
+            >
+              {/* THE COUNT IS A SENTENCE IN THE BODY, NOT A CHIP IN THE HEAD (visual QA VQ-048): the chip,
+                  which names the optional steps, wrapped under the title as a monospace pill set in from
+                  the card's edge. Here it reads in the card's own type, on its content's left edge. */}
+              <p className="ob-summary">{countLabel(d)}</p>
+              <StepBar doc={d} />
+              <Checklist doc={d} reload={doc.reload} />
+            </Card>
+          ) : (
+            <Dash why="The checklist answered with no steps" />
+          )
+        }
+      </UrRegion>
+    </div>
+  )
+}
+
+/**
+ * A hidden checklist's way back onto Overview: `{dismissed: false}`, then a
+ * fresh read, so the button goes once the server says the card is shown.
+ */
+function ShowOnOverview({ reload }: { reload: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  return (
+    <>
+      <Button
+        size="sm"
+        busy={busy}
+        onClick={() => {
+          setBusy(true)
+          setRefused(null)
+          void dismissOnboarding(false).then((res) => {
+            setBusy(false)
+            if (res.status === 'error') setRefused(res.error)
+            else reload()
+          })
+        }}
+      >
+        Show on Overview
+      </Button>
+      {refused !== null && <Refusal error={refused} title="The checklist is still hidden from Overview" />}
+    </>
+  )
+}

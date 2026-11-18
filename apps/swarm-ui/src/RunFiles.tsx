@@ -1,0 +1,1321 @@
+import { Fragment, createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Em } from './AgentDetail'
+import { Button, ToneMark } from './components'
+import { loadCheckpoints } from './api'
+import { CheckpointBrowser } from './CheckpointBrowser'
+import { Absent, Mark } from './primitives'
+import { FailedPanel } from './Shell'
+import { LivenessBadge, livenessOf } from './Liveness'
+import type { Result } from './fetch'
+import {
+  ageSpan,
+  bytesLabel,
+  CONCURRENCY_STATES,
+  TERMINAL_STATES,
+  timeAgo,
+  type AttemptRow,
+  type CheckpointFile,
+  type CheckpointRecord,
+  type CheckpointsPage,
+  type LogStream,
+  type LogStreamName,
+  type Task,
+  type TaskEvent,
+  type TaskLogs,
+} from './types'
+
+/**
+ * CHECKPOINTS AND LOGS, READ FROM THE ROUTES THAT SERVE THEM.
+ *
+ * THIS IS THE FIRST CALLER OF EITHER LOADER. `loadCheckpoints` (api.ts) and
+ * `loadTaskLogs` (api.ts) were written in full -- query building, byte-offset
+ * paging, the three-state `status` discipline, a comment explaining why no
+ * empty predicate is passed -- and NOTHING HAS EVER CALLED THEM. The routes
+ * behind them exist too (`GET /v1/tasks/{id}/checkpoints`,
+ * `GET /v1/tasks/{id}/logs`, with `tests/unit/control_plane/
+ * test_checkpoint_read_path.py` and `test_log_read_path.py` over both). Both
+ * ends of the seam were built and the middle was never joined, which is the
+ * defect class this repository keeps producing: nothing about it looks broken.
+ *
+ * It also retires a claim the product was making that had stopped being true.
+ * `AgentDetail`'s log footnote said "there is no log-tail read path on the API,
+ * so a running agent's output is not readable here at all". There is one, it
+ * serves a live window, and this panel reads it.
+ *
+ * THE THREE-STATE RULE, which both payloads are built around and which this
+ * file must not collapse:
+ *
+ *   content: null  absent or unreadable. NEVER rendered as text.
+ *   content: ''    an object that exists and is empty. A real answer.
+ *   resumable: null   the manifest could not be read, so nothing is known.
+ *   resumable: false  the manifest was read and says it cannot be resumed.
+ *
+ * `content ?? ''` and `resumable ?? false` are the two lines that would undo
+ * all of it, and neither appears here.
+ *
+ * ONE LEVEL OF BOX (AG-23, owner decision 2026-09-25). Both panels were boxes
+ * inside boxes: a bordered `.ckpt` card per checkpoint and a bordered
+ * `.logwin` card per stream, each with a legacy `dl.kv` of label/value rows,
+ * a `<details>` holding a second `dl.kv`, and sentences in between -- the
+ * measured-empty stream among them, written out as a paragraph where the kit
+ * has a mark for exactly that. The decision: flatten onto the shared
+ * primitives; files as a table (name, size, age); zero, absent and partial as
+ * the kit's marks; and keep only the sentences that state a fact the table
+ * cannot. So each panel is now a facts strip, ONE `.ctl-table` -- the one box
+ * a panel gets (design-system.md §13.3) -- and a kit mark in any cell whose
+ * value is a kind of nothing. The sentences that stay are the two no cell can
+ * hold: a checkpoint written and since reclaimed, and a restore pointer that
+ * names nothing the listing holds.
+ *
+ * THE LOG PANEL LEFT DETAILS (#184, owner decision of 2026-09-25). It drew the
+ * RUNNER's streams, the platform's wrapper around the agent, and "the runner
+ * (platform) log lives in Artifacts › Logs only". Its rows were already shared
+ * with that pane, so they stay here and are exported: `Stream`, `attemptLine`,
+ * `servedAge` and `WindowSize` are what `Artifacts.tsx`'s `StreamsFrom` draws
+ * every stream with, the runner's included. What went is the panel, its title
+ * and its read of `/logs` on every drawer poll.
+ */
+export function RunFiles({
+  task,
+  attempts,
+  readAt = null,
+  now = null,
+  listing,
+}: {
+  task: Task
+  /**
+   * The run's attempt documents, which record every checkpoint each attempt
+   * wrote. NULL (or not passed) means they were not read, and then an empty
+   * listing is a zero of OBJECTS only -- see `CheckpointsPanel`.
+   */
+  attempts?: readonly AttemptRow[] | null
+  /**
+   * When the drawer last read the run (`ScreenReading.fetchedAt`). Both panels
+   * re-read when it moves. NULL (or not passed) means nothing re-reads the run
+   * -- the acceptance test renders `Run` with no `Screen` -- and the panels
+   * read once.
+   */
+  readAt?: number | null
+  /**
+   * The drawer's clock, so a checkpoint's age ticks with every other age in
+   * the inspector. NULL (or not passed) reads the wall clock at render.
+   */
+  now?: number | null
+  /**
+   * THE LISTING, WHEN THE CALLER HAS ALREADY READ IT (archived issue 103). Details reads it
+   * once, in `Run`, so the Checkpoints tile above can say how many of the
+   * checkpoints written are still in the bucket from the SAME answer this
+   * section draws -- two reads could disagree about the same prefix one poll
+   * apart. Not passed, this section reads its own, as it always has.
+   */
+  listing?: CheckpointListing
+}) {
+  if (listing !== undefined) return <CheckpointsView task={task} listing={listing} now={now} />
+  return <CheckpointsPanel task={task} attempts={attempts ?? null} readAt={readAt} now={now} />
+}
+
+/** The checkpoint listing and the attempt records it was asked alongside. */
+export type CheckpointListing = Held<CheckpointsPage, readonly AttemptRow[] | null>
+
+/**
+ * THE ONE READ OF A TASK'S CHECKPOINT LISTING, re-read with the drawer. The
+ * attempt records ride with it as `asked` -- see `Held` for why the listing is
+ * only ever compared with records read no later than it.
+ */
+export function useCheckpointListing(
+  task: Task,
+  attempts: readonly AttemptRow[] | null,
+  readAt: number | null,
+): CheckpointListing {
+  return useRead<CheckpointsPage, readonly AttemptRow[] | null>(
+    () => loadCheckpoints(task.id),
+    task.id,
+    `${readAt ?? ''}`,
+    attempts,
+  )
+}
+
+/**
+ * An answer, and what was true when it was asked for.
+ *
+ * `asked` is captured when the read STARTS. The checkpoint panel compares its
+ * listing with attempt records, and the two are only comparable when the
+ * records were read no later than the listing: the worker uploads a
+ * checkpoint before it records it, so anything recorded by then is in the
+ * bucket by the time the listing looks. Records read AFTER the listing can
+ * name a checkpoint that did not exist when it looked.
+ */
+export interface Held<T, C> {
+  task: string
+  state: Result<T>
+  asked: C
+}
+
+/**
+ * One read, with its four states kept apart -- and read again whenever the
+ * drawer reads again.
+ *
+ * `Screen` in Shell.tsx owns this for a whole route and draws an `<h1>`, so it
+ * cannot be nested inside a panel. This is the same discipline at panel scale:
+ * a failure is never rendered as an absence, and a component below it can only
+ * be reached with data.
+ *
+ * IT READ ONCE PER TASK, and the drawer around it now re-reads every 10s. The
+ * two panels were the only part of the drawer frozen at open, under a sub-line
+ * (`read 3s ago · every 10s`) that reads as covering all of it: the log panel
+ * went on saying a task had no attempt beside a RUNNING chip, and the
+ * checkpoint listing read at open was compared with attempt records from the
+ * latest poll, so every checkpoint written while the drawer was open was drawn
+ * as reclaimed. `key` is the drawer's read, so each panel re-reads with it.
+ *
+ * THREE RULES, each for a failure the naive version has:
+ *
+ *  - A new read of the SAME task leaves the previous answer on screen until
+ *    the next answer replaces it -- whatever that answer is, a failure
+ *    included -- as `Screen` does for a poll. Blanking to `Reading…` every
+ *    10s would make both panels flash.
+ *  - A DIFFERENT task never shows the previous task's answer, even for a
+ *    frame: it is `loading` until its own read lands.
+ *  - ONE READ IN FLIGHT AT A TIME. A listing slower than the drawer's 10s
+ *    would otherwise stack a request per poll, and cancelling the older one
+ *    instead would mean a listing slower than 10s never lands at all. When a
+ *    read lands and the drawer has read again meanwhile, one more read starts,
+ *    with what is true then.
+ *
+ * EXPORTED for the Artifacts pane (#184), whose raw agent-stdout view and
+ * `show records` transcript are reads of their own that follow the pane's
+ * 5 s poll the same way these panels follow the drawer's 10 s one.
+ */
+export function useRead<T, C = null>(
+  load: () => Promise<Result<T>>,
+  task: string,
+  key: string,
+  asked: C,
+): Held<T, C> {
+  const [held, setHeld] = useState<Held<T, C>>(() => ({
+    task,
+    state: { status: 'loading', since: Date.now() },
+    asked,
+  }))
+  // What the NEXT read should use: this render's loader, key and context.
+  const latest = useRef({ load, task, key, asked })
+  latest.current = { load, task, key, asked }
+  /** The key of the read in flight, or null when none is. */
+  const inFlight = useRef<string | null>(null)
+  const mounted = useRef(true)
+
+  // Typed, because it calls itself: a read that lands after the drawer moved
+  // on starts the next one.
+  const start: () => void = useCallback(() => {
+    const ask = latest.current
+    inFlight.current = `${ask.task}:${ask.key}`
+    ask.load().then((next) => {
+      if (!mounted.current) return
+      inFlight.current = null
+      setHeld({ task: ask.task, state: next, asked: ask.asked })
+      const now = latest.current
+      if (now.task !== ask.task || now.key !== ask.key) start()
+    })
+  }, [])
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    if (inFlight.current === null) start()
+  }, [task, key, start])
+
+  return held.task === task ? held : { task, state: { status: 'loading', since: Date.now() }, asked }
+}
+
+/**
+ * A PATH THAT BREAKS AT ITS SLASHES (QA-088, visual QA 2026-10-20). The
+ * checkpoint prefix and the gs:// uris broke wherever the line ran out --
+ * `checkpoin` / `ts` at 390, `att_aff5_3/ckpt-` / `00002` at 1440 -- because
+ * a `/` between letters is no break opportunity and `overflow-wrap:
+ * anywhere` breaks mid-token instead. Each segment, its slash included, is
+ * its own inline block (`.path-seg`), so a line breaks between segments and
+ * only a segment wider than the line breaks inside itself. The text, and so a
+ * copy or a select, is the path unchanged.
+ */
+export function PathText({ path }: { path: string }) {
+  return (
+    <>
+      {path.split(/(?<=\/)/).map((seg, i) => (
+        <span key={i} className="path-seg">
+          {seg}
+        </span>
+      ))}
+    </>
+  )
+}
+
+function Panel({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="section">
+      <h2>{title}</h2>
+      {children}
+    </section>
+  )
+}
+
+function Reading() {
+  return <p className="muted">Reading…</p>
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoints
+// ---------------------------------------------------------------------------
+
+function CheckpointsPanel({
+  task,
+  attempts,
+  readAt,
+  now,
+}: {
+  task: Task
+  attempts: readonly AttemptRow[] | null
+  readAt: number | null
+  now: number | null
+}) {
+  return <CheckpointsView task={task} listing={useCheckpointListing(task, attempts, readAt)} now={now} />
+}
+
+function CheckpointsView({ task, listing, now }: { task: Task; listing: CheckpointListing; now: number | null }) {
+  // `records` ARE THE ATTEMPTS AS THEY WERE WHEN THIS LISTING WAS ASKED FOR,
+  // not as the latest drawer read has them -- see `Held`. Every comparison
+  // below is between a listing and records read no later than it.
+  const { state, asked: records } = listing
+
+  if (state.status === 'loading') {
+    return (
+      <Panel title="Checkpoints">
+        <Reading />
+      </Panel>
+    )
+  }
+  if (state.status === 'error') {
+    return (
+      <Panel title="Checkpoints">
+        {/* A failed listing is NOT "this task has no checkpoints". The route
+            answers 503 for a listing that failed precisely so the two stay
+            apart, and drawing an empty panel here would throw that away. */}
+        <FailedPanel error={state.error} onRetry={() => window.location.reload()} />
+      </Panel>
+    )
+  }
+  // `loadCheckpoints` passes no empty predicate, so `empty` is unreachable --
+  // but `Result` has five members and a switch that ignores one is how a state
+  // goes unhandled. An explicit branch, with the reason, rather than a cast.
+  // A body the route did not send is not a listing, so it is the `not read`
+  // mark: nothing can be concluded from it, least of all a zero.
+  if (state.status === 'empty') {
+    return (
+      <Panel title="Checkpoints">
+        <Absent
+          kind="failed"
+          heading="No listing"
+          say="The checkpoint route answered with no body. That is not a listing result, and nothing can be concluded from it."
+        />
+      </Panel>
+    )
+  }
+
+  const page = state.data
+  // A LISTING READ TO ITS END is the only one whose absences mean anything:
+  // past a scan cut or on another page, a checkpoint the records name may
+  // simply not have been reached.
+  const whole = page.listed && !page.truncated && page.next_page_token === null
+  const lost = whole ? lostCheckpoints(page, records) : []
+  const cut = page.truncated || page.next_page_token !== null
+  return (
+    <Panel title="Checkpoints">
+      {/* THE LINE ABOVE THE TABLE IS A FACTS STRIP (§6.13). It was a muted
+          paragraph -- `Prefix <path> · N of M found · the scan limit cut the
+          prefix short, so older checkpoints exist beyond these · more pages
+          remain` -- and the pointer's sentence under it. The count is the
+          fact; that it is not the whole prefix is the `partial` mark, with
+          the reason as its accessible name. */}
+      <ul className="ctl-facts">
+        <li className="ctl-fact">
+          <b>prefix</b>
+          {/* `ckpt-prefix` IS THE HOOK THE SHEET WRAPS (AG-26). A task's
+              checkpoint prefix is one unbroken path with no space to break at,
+              and in the 480px inspector it ran out of the drawer. */}
+          <code className="mono ckpt-prefix">
+            <PathText path={page.prefix} />
+          </code>
+        </li>
+        <li className="ctl-fact">
+          <b>found</b>
+          {page.count} of {page.total_found}
+          {cut && (
+            <>
+              {' '}
+              <Mark
+                kind="partial"
+                say={[
+                  page.truncated
+                    ? 'The scan limit cut the prefix short, so older checkpoints exist beyond these.'
+                    : null,
+                  page.next_page_token !== null ? 'More pages of this listing remain unread.' : null,
+                ]
+                  .filter((x): x is string => x !== null)
+                  .join(' ')}
+              />
+            </>
+          )}
+        </li>
+        <PointerFact page={page} />
+      </ul>
+
+      <PointerFinding page={page} finished={TERMINAL_STATES.has(task.state)} />
+
+      {lost.length > 0 && <Lost lost={lost} />}
+
+      {page.checkpoints.length === 0 ? (
+        lost.length > 0 ? null : (
+          <EmptyListing page={page} whole={whole} attempts={records} />
+        )
+      ) : (
+        <CheckpointTable taskId={task.id} rows={page.checkpoints} now={now} />
+      )}
+    </Panel>
+  )
+}
+
+/**
+ * WHAT AN EMPTY LISTING MAY BE CALLED, when no record names a checkpoint it
+ * lost -- and it is the shared empty state, with the kit's mark, rather than
+ * a muted sentence (AG-23).
+ *
+ * THE DEFECT this discipline came from, measured on the live inspector on
+ * 2026-09-24: the run's figures said `Checkpoints 1`, the pointer line said
+ * the pointer named a checkpoint "no longer in the bucket; it may have been
+ * reclaimed", and the line under it called the empty listing a real zero of
+ * checkpoints written. A listing that finds nothing is a measured zero of
+ * OBJECTS. It is a zero of checkpoints WRITTEN only when the listing was read
+ * to its end AND the attempt records -- which list every checkpoint each
+ * attempt wrote -- were read and name none. A record that does name one is
+ * `Lost`, above, and never reaches here.
+ *
+ * Four answers, four encodings, and one sentence on the glass: that the
+ * records themselves are unread, which no heading can carry.
+ */
+function EmptyListing({
+  page,
+  whole,
+  attempts,
+}: {
+  page: CheckpointsPage
+  whole: boolean
+  attempts: readonly AttemptRow[] | null
+}) {
+  if (!page.listed) {
+    return (
+      <Absent
+        kind="failed"
+        heading="Listing incomplete"
+        say="The listing did not complete, so whether this agent has checkpoints is unknown."
+      />
+    )
+  }
+  if (!whole) {
+    return (
+      <Absent
+        kind="partial"
+        heading="None before the cut"
+        say="The listing was cut before it found one, so nothing is known past the cut. This is not a zero."
+      />
+    )
+  }
+  if (attempts === null) {
+    return (
+      <Absent
+        kind="partial"
+        heading="None listed"
+        say="The listing found no checkpoint, and the attempt records could not be read."
+      >
+        The attempt records could not be read, so whether one was written and since reclaimed is unknown.
+      </Absent>
+    )
+  }
+  return (
+    <Absent
+      kind="zero"
+      heading="None written"
+      say="The listing succeeded, was read to its end, and no attempt record names a checkpoint: this agent has written none."
+    />
+  )
+}
+
+/** A checkpoint a record says was written, which the listing does not hold. */
+interface Recorded {
+  /** Null when only the pointer names it: the page serves its id, not its attempt. */
+  attemptId: string | null
+  checkpointId: string
+  byAttempt: boolean
+  byPointer: boolean
+}
+
+/**
+ * Every checkpoint a record names that a WHOLE listing does not hold.
+ *
+ * Two records can name one: each attempt document's `checkpoints` list (the
+ * worker appends to it after the upload, and it is what the run's
+ * `Checkpoints N` figure counts), and the task's `latest_checkpoint` pointer,
+ * whose verdict the route serves as `missing`. Matched on attempt AND id: ids
+ * continue from the restored checkpoint, but two attempts can still share one
+ * (a resume from an older checkpoint reuses the ids after it), and a match on
+ * the id alone would call one attempt's checkpoint present because another
+ * attempt's is.
+ */
+function lostCheckpoints(page: CheckpointsPage, attempts: readonly AttemptRow[] | null): Recorded[] {
+  const listed = new Set(page.checkpoints.map((c) => `${c.attempt_id}/${c.checkpoint_id}`))
+  const lost: Recorded[] = []
+  for (const a of attempts ?? []) {
+    for (const id of a.checkpoints) {
+      if (!listed.has(`${a.attempt_id}/${id}`)) {
+        lost.push({ attemptId: a.attempt_id, checkpointId: id, byAttempt: true, byPointer: false })
+      }
+    }
+  }
+  const p = page.latest_checkpoint
+  if (p.status === 'missing' && p.checkpoint_id !== null) {
+    // The same checkpoint said twice when exactly one attempt record lost that
+    // id; otherwise the pointer is its own line, because which attempt it
+    // names is not served and is not guessed here.
+    const id = p.checkpoint_id
+    const same = lost.filter((r) => r.checkpointId === id)
+    const only = same.length === 1 ? same[0] : undefined
+    if (only !== undefined) only.byPointer = true
+    else lost.push({ attemptId: null, checkpointId: id, byAttempt: false, byPointer: true })
+  }
+  return lost
+}
+
+/**
+ * WRITTEN, THEN RECLAIMED: the absence explained, never a zero. The records
+ * say the checkpoint existed and the listing, read to its end, says it does
+ * not now. ONE OF THE SENTENCES THIS PANEL KEEPS (AG-23): no row of a table
+ * of what IS in the bucket can say what was and no longer is.
+ */
+function Lost({ lost }: { lost: Recorded[] }) {
+  const one = lost.length === 1
+  return (
+    <p className="ckpt-lost">
+      <strong>Written, then reclaimed</strong>
+      {': '}
+      {lost.map((r, i) => (
+        <Fragment key={`${r.attemptId ?? ''}/${r.checkpointId}/${r.byPointer ? 'p' : 'a'}`}>
+          {i > 0 && ', '}
+          {/* AT ITS SLASH, AS THE PREFIX (QA-088, regressed in visual QA run
+              3): one run of text broke `att_aff5_3/ckpt-` / `00002` at 1440. */}
+          <code className="mono">
+            <PathText path={r.attemptId === null ? r.checkpointId : `${r.attemptId}/${r.checkpointId}`} />
+          </code>
+          <span className="muted small">
+            {' '}
+            ({[r.byAttempt && 'attempt record', r.byPointer && 'restore pointer'].filter(Boolean).join(' and ')})
+          </span>
+        </Fragment>
+      ))}
+      . {one ? 'It is' : 'They are'} recorded as written, and the listing, read to its end, no
+      longer finds {one ? 'it' : 'them'} in the bucket.
+    </p>
+  )
+}
+
+/**
+ * WHAT A RETRY WOULD RESTORE FROM, as the strip's `restore` fact -- the
+ * checkpoint `task.latest_checkpoint` names, or nothing.
+ *
+ * THE WORKER'S RULE (`Worker._recorded_checkpoint`, agent_worker/lifecycle.py,
+ * since archived issue 347): restore ONLY the checkpoint the pointer names, resolved by
+ * `find_by_uri` inside this task's own prefix and bound to the attempt
+ * document that recorded it. When that resolves to nothing -- no pointer, a
+ * pointer outside this task's prefix, a checkpoint no longer in the bucket --
+ * it restores NOTHING and starts from an empty workspace. There is no
+ * fallback to `find_latest`, the newest committed checkpoint under the
+ * prefix: every agent of the tenant can write there, so "the newest" is
+ * whatever was last planted. So:
+ *
+ *   present   the pointer's own checkpoint, and its table row says `latest`;
+ *   otherwise `none · empty workspace`, and never another row's id.
+ *
+ * THIS SAID SOMETHING ELSE TWICE. Before archived pull request 170's fix-up it printed the pointer
+ * for `missing` and `outside_this_task`, which the server itself warns is "a
+ * restore source that will never be used" (inspect.py `_pointer_status`).
+ * Then, until archived issue 346, it named "newest committed" and the listing's newest
+ * resumable row -- the fallback archived issue 347 removed -- so a checkpoint planted under
+ * this task's prefix was presented as what a retry would restore.
+ *
+ * THE ANSWER IS QUALIFIED WHERE THE LISTING CANNOT VOUCH FOR IT, with the
+ * kit's marks and never a sentence on the glass: `partial` for a pointer
+ * whose checkpoint is listed but would be refused, and for `missing` on a cut
+ * listing (the server looks the pointer up in what it listed); `not read`
+ * for a pointer whose manifest nobody could read, and for a listing that did
+ * not complete.
+ */
+function PointerFact({ page }: { page: CheckpointsPage }) {
+  const p = page.latest_checkpoint
+  const q = restoreQualifiers(page)
+  const marks = (
+    <>
+      {q.partial.length > 0 && (
+        <>
+          {' '}
+          <Mark kind="partial" say={q.partial.join(' ')} />
+        </>
+      )}
+      {q.unread.length > 0 && (
+        <>
+          {' '}
+          <Mark kind="unread" say={q.unread.join(' ')} />
+        </>
+      )}
+    </>
+  )
+  if (p.status === 'present' && p.checkpoint_id !== null) {
+    return (
+      <li className="ctl-fact">
+        <b>restore</b>
+        <code className="mono">{p.checkpoint_id}</code>
+        {marks}
+      </li>
+    )
+  }
+  return (
+    <li className="ctl-fact">
+      <b>restore</b>
+      none · empty workspace
+      {marks}
+    </li>
+  )
+}
+
+/**
+ * Where this listing cannot vouch for the restore fact. Every sentence is
+ * about the POINTER's checkpoint; none names another row, because no other
+ * row is ever restored.
+ */
+function restoreQualifiers(page: CheckpointsPage): { partial: string[]; unread: string[] } {
+  const p = page.latest_checkpoint
+  const partial: string[] = []
+  const unread: string[] = []
+  if (!page.listed) {
+    unread.push('The listing did not complete, so whether the recorded checkpoint is in the bucket is unknown.')
+  }
+  if (p.status === 'present') {
+    // The pointer's row may be on another page; it is qualified only when
+    // this page holds it.
+    const row = page.checkpoints.find((c) => c.is_latest_pointer)
+    if (row?.resumable === false) {
+      partial.push(
+        `A worker would refuse ${p.checkpoint_id ?? 'the recorded checkpoint'} and start from an empty workspace${row.resumable_detail ? `: ${row.resumable_detail.replace(/\.$/, '')}` : ''}.`,
+      )
+    } else if (row?.resumable === null) {
+      unread.push(
+        `The manifest of ${p.checkpoint_id ?? 'the recorded checkpoint'} could not be read here, so whether a worker would restore it or start from an empty workspace is unknown.`,
+      )
+    }
+  } else if (p.status === 'missing' && page.truncated) {
+    partial.push(
+      'The scan limit cut this listing short, so the recorded checkpoint may be past the cut rather than gone, and a retry may restore it.',
+    )
+  }
+  return { partial, unread }
+}
+
+/**
+ * THE POINTER'S FINDINGS, one sentence each -- kept (AG-23) because both are
+ * about what a resume would DO, which no cell can say.
+ *
+ * `outside_this_task` is a FINDING, not a formatting case: a resuming worker
+ * refuses such a pointer and, with no fallback since archived issue 347, starts from an
+ * empty workspace -- whatever else is listed. The strip's `restore` fact says
+ * the same. This sentence used to say the worker "falls back to the newest
+ * committed checkpoint it can find", which is the fallback archived issue 347 removed
+ * (archived issue 346).
+ *
+ * THE SERVER'S DETAIL CONTINUES THE CLAUSE, AFTER A DASH. It is written
+ * lowercase ("the pointer names a checkpoint of this task that is no longer
+ * in the bucket; ...") and was appended after a full stop, so the panel
+ * carried a sentence that began with a lowercase word.
+ */
+function PointerFinding({ page, finished }: { page: CheckpointsPage; finished: boolean }) {
+  const p = page.latest_checkpoint
+  const tail = p.detail ? <> — {p.detail.replace(/\.$/, '')}.</> : '.'
+  switch (p.status) {
+    case 'unset':
+    case 'present':
+      return null
+    case 'missing':
+      // AFTER THE TASK FINISHED THIS IS RETENTION, NOT A FAULT (G2-12, QA
+      // 2026-10-07): on a succeeded review the tab warned in amber that the
+      // pointer named a checkpoint no longer in the bucket. The reconciler
+      // deletes a finished task's checkpoints once nothing can resume from
+      // them (reconciler/checkpoints.py), so for a finished task the line is
+      // neutral and says so. A task still able to run keeps the amber line:
+      // a retry would not find what the pointer names.
+      if (finished) {
+        return (
+          <p className="rollup" data-pointer="reclaimed">
+            The agent points at <code>{p.pointer}</code> and the listing did not find it{tail} Reclaimed after the agent
+            finished.
+          </p>
+        )
+      }
+      return (
+        <p className="rollup untrusted">
+          The agent points at <code>{p.pointer}</code> and the listing did not find it{tail}
+        </p>
+      )
+    case 'outside_this_task':
+      // The server's detail IS the finding when it is sent; the clause after
+      // the pointer is ours only when it is not, so it is never said twice.
+      return (
+        <p className="rollup untrusted">
+          The agent points at <code>{p.pointer}</code>
+          {p.detail ? (
+            tail
+          ) : (
+            <>
+              , which is not under this agent&apos;s prefix, so a resuming worker refuses it and starts from an empty
+              workspace.
+            </>
+          )}
+        </p>
+      )
+  }
+}
+
+/**
+ * THE CHECKPOINTS, ONE ROW EACH, IN THE ONE BOX THE PANEL GETS -- and their
+ * objects, as rows of the same table.
+ *
+ * THREE COLUMNS, AS DECIDED: name, size, age (AG-23). The first pass added a
+ * fourth, Resume; whether a retry would restore from a checkpoint is now a
+ * line under its name, beside the other facts about it (fix-up on archived pull request 170).
+ *
+ * THE FILES ARE ROWS. A checkpoint is stored as objects -- its manifest and
+ * its archive -- and the decision is "files as a table (name, size, age)".
+ * They were a disclosure of `name · size` spans inside the Size cell. Opened
+ * from that cell, each is now a row directly under its checkpoint, with its
+ * own name, size and age; the age is the object's own time from the listing
+ * (archived issue 172), and the `not measured` mark when the store reported none -- never
+ * the checkpoint's age borrowed.
+ *
+ * `is-stacked` for the reason the attempt panel's checkpoint table is: the
+ * inspector is a size container (`ctl-inspector`) never wider than 720px, so
+ * each row becomes a stacked record keyed by `data-label`, and the explicit
+ * `role`s keep the ARIA table that changing `display` drops.
+ *
+ * THE FILE BROWSERS OPEN BELOW THE TABLE, NOT INSIDE IT. Each was a bordered
+ * inset inside the bordered checkpoint card -- the second level of box the
+ * decision removes. Opened from a row, each is a region named for its
+ * checkpoint, in row order, and several can be open at once.
+ */
+function CheckpointTable({
+  taskId,
+  rows,
+  now,
+}: {
+  taskId: string
+  rows: readonly CheckpointRecord[]
+  now: number | null
+}) {
+  const [open, setOpen] = useState<readonly string[]>([])
+  const [listed, setListed] = useState<readonly string[]>([])
+  const keyOf = (c: CheckpointRecord) => `${c.attempt_id}/${c.checkpoint_id}`
+  const flip = (k: string) => (o: readonly string[]) => (o.includes(k) ? o.filter((x) => x !== k) : [...o, k])
+  const toggle = (k: string) => setOpen(flip(k))
+  return (
+    <>
+      <div className="ctl-table is-stacked">
+        <table role="table">
+          <thead role="rowgroup">
+            <tr role="row">
+              <th role="columnheader" scope="col">Checkpoint</th>
+              <th role="columnheader" scope="col" className="is-num">Size</th>
+              <th role="columnheader" scope="col">Age</th>
+            </tr>
+          </thead>
+          <tbody role="rowgroup">
+            {rows.map((c) => (
+              <Fragment key={keyOf(c)}>
+                <CheckpointRow
+                  record={c}
+                  now={now}
+                  browsing={open.includes(keyOf(c))}
+                  onBrowse={() => toggle(keyOf(c))}
+                  listing={listed.includes(keyOf(c))}
+                  onList={() => setListed(flip(keyOf(c)))}
+                />
+                {listed.includes(keyOf(c)) && c.objects.map((o) => <ObjectRow key={o.key} object={o} now={now} />)}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rows
+        .filter((c) => open.includes(keyOf(c)))
+        .map((c) => (
+          // What is INSIDE the checkpoint (A3): the tree, one file, the
+          // archive. See CheckpointBrowser.tsx; it owns its own reads and its
+          // own absent states.
+          <CheckpointBrowser
+            key={keyOf(c)}
+            taskId={taskId}
+            attemptId={c.attempt_id}
+            checkpointId={c.checkpoint_id}
+            onClose={() => toggle(keyOf(c))}
+          />
+        ))}
+    </>
+  )
+}
+
+/**
+ * ONE CHECKPOINT, AS A ROW: name, size, age -- and, under its name, whether a
+ * retry would use it, which is the question the old card's five `dl.kv` rows
+ * were answering.
+ *
+ * WHERE THE FIVE ROWS WENT. `Attempt` is the name's second line, and an
+ * attempt with no document is the `not measured` mark there rather than a
+ * sentence. `Files inside` is on that line too, beside the button that opens
+ * them. `Stored` is the size, with the objects it sums one click away as rows
+ * of their own. `Manifest` and `Resumable` are the name's third line, `resume`
+ * (it was a fourth column; the decision is three): a manifest that did not
+ * parse makes resumability unknown, which is the `not read` mark -- NEVER
+ * "no" -- and a manifest that was never written is said in three words under
+ * the answer. The server's own detail strings are each a line of their own
+ * under the value they qualify, never appended after a full stop.
+ */
+function CheckpointRow({
+  record,
+  now,
+  browsing,
+  onBrowse,
+  listing,
+  onList,
+}: {
+  record: CheckpointRecord
+  now: number | null
+  browsing: boolean
+  onBrowse: () => void
+  /** Whether this checkpoint's objects are open as rows under it. */
+  listing: boolean
+  onList: () => void
+}) {
+  const n = record.objects.length
+  return (
+    <tr role="row">
+      <th role="rowheader" scope="row">
+        <span className="mono">{record.checkpoint_id}</span>{' '}
+        {record.is_latest_pointer && <ToneMark tone="info">latest</ToneMark>}{' '}
+        <Button size="sm" className="copy" aria-expanded={browsing} onClick={onBrowse}>
+          files
+        </Button>
+        <span className="ctl-sub">
+          {record.attempt_id}
+          {!record.attempt_known && (
+            <>
+              {' '}
+              <Mark
+                kind="absent"
+                say="No attempt document was found for this checkpoint's attempt. That is a missing record, not an attempt that never ran."
+              />
+            </>
+          )}
+          {record.label !== null && ` · ${record.label}`}
+          {' · '}
+          {/* FROM THE MANIFEST, so a manifest that did not parse has no count:
+              the em dash, never a 0 -- and the dash carries its reason
+              (QA1-FIX-09, overview-agents-49: `— files` sat bare beside the
+              other row's `184 files`). The reason is words in parentheses,
+              not a `not read` mark (QA2-FIX-14 as CLD adapted it, QA2B-C:
+              the row read `— files · not read`); the sentence is the title. */}
+          {record.file_count === null ? (
+            <span
+              className="rf-count-unknown"
+              title={
+                record.manifest === 'unreadable'
+                  ? 'The manifest carries how many files this checkpoint holds, and it could not be read, so the count is unknown.'
+                  : 'No file count was recorded for this checkpoint, so how many files it holds is unknown.'
+              }
+            >
+              <Em /> files ({record.manifest === 'unreadable' ? 'manifest unreadable' : 'not recorded'})
+            </span>
+          ) : (
+            `${record.file_count} files`
+          )}
+        </span>
+        {/* THREE VALUES. `resumable ?? false` here would turn "we could not
+            tell" into "a retry cannot use this", which is a different and
+            much more alarming sentence. */}
+        {/* THE LOCATION, WHOLE (archived issue 102). The attempt cards' checkpoint table
+            carried it with `copy gsutil`, and this is the checkpoints' one
+            table now. The whole uri is in the title: a stacked record
+            ellipsizes it to one line (CH-13), and a cut uri is a different
+            uri. No signed URL is minted: the reader's own credentials keep
+            the tenant boundary in one place. */}
+        <span className="ctl-sub rf-uri">
+          <code className="mono uri" title={record.uri}>
+            <PathText path={record.uri} />
+          </code>
+          <Button size="sm" className="copy" onClick={() => navigator.clipboard?.writeText(`gsutil cp -r ${record.uri} .`)}>
+            copy gsutil
+          </Button>
+        </span>
+        {/* THE STATE FIRST, AS WORDS (QA1-FIX-09, overview-agents-49): the
+            row read `resume — not read · The object is there and did not
+            parse as JSON`, a mark and a server string standing in for what
+            happened. `manifest unreadable` says it, as `manifest never
+            written` does; the server's detail stays its own line under it. */}
+        {record.manifest === 'unreadable' && <span className="ctl-sub">manifest unreadable</span>}
+        {record.manifest_detail !== null && <span className="ctl-sub">{record.manifest_detail}</span>}
+        <span className="ctl-sub" data-testid="rf-resume">
+          resume{' '}
+          {record.resumable === null ? (
+            <>
+              <Em />{' '}
+              <Mark
+                kind="unread"
+                say="Whether a retry would restore from this checkpoint: cannot tell — the manifest could not be read."
+              />
+            </>
+          ) : record.resumable ? (
+            'yes'
+          ) : (
+            'no'
+          )}
+        </span>
+        {record.manifest === 'absent' && <span className="ctl-sub">manifest never written</span>}
+        {record.resumable_detail !== null && <span className="ctl-sub">{record.resumable_detail}</span>}
+      </th>
+      <td role="cell" data-label="Size" className="is-num">
+        {/* Summed over objects the listing actually saw, so a zero here is
+            measured. The objects themselves are rows, one click away. */}
+        {bytesLabel(record.stored_bytes)}
+        {n > 0 && (
+          <span className="ctl-sub">
+            <Button size="sm" className="copy" aria-expanded={listing} onClick={onList}>
+              {n} object{n === 1 ? '' : 's'}
+            </Button>
+          </span>
+        )}
+      </td>
+      <td role="cell" data-label="Age">
+        {record.created_at === null ? (
+          <>
+            <Em />{' '}
+            <Mark
+              kind={record.manifest === 'unreadable' ? 'unread' : 'absent'}
+              say={
+                record.manifest === 'unreadable'
+                  ? 'The manifest carries when this checkpoint was written, and it could not be read, so its age is unknown.'
+                  : 'No creation time was recorded for this checkpoint, so its age is unknown.'
+              }
+            />
+          </>
+        ) : (
+          timeAgo(record.created_at, now ?? Date.now())
+        )}
+      </td>
+    </tr>
+  )
+}
+
+/**
+ * ONE OBJECT OF A CHECKPOINT, AS A ROW OF THE SAME TABLE: name, size, age.
+ *
+ * The size is the listing's, so it is measured. The age is the object's own
+ * GCS `updated`, which the listing serves as `object_updated_at` (archived issue 172,
+ * inspect.py `_checkpoint_row`). Where it is null the store reported no time,
+ * and where it is missing the API predates archived issue 172; either way it is the em dash
+ * and the `not measured` mark, never the checkpoint's own age standing in.
+ */
+function ObjectRow({ object, now }: { object: CheckpointFile; now: number | null }) {
+  return (
+    <tr role="row" className="rf-object">
+      <th role="rowheader" scope="row">
+        <span className="mono">{object.name}</span>
+      </th>
+      <td role="cell" data-label="Size" className="is-num">
+        {bytesLabel(object.bytes)}
+      </td>
+      <td role="cell" data-label="Age">
+        {typeof object.object_updated_at === 'string' ? (
+          timeAgo(object.object_updated_at, now ?? Date.now())
+        ) : (
+          <>
+            <Em />{' '}
+            <Mark
+              kind="absent"
+              say={
+                object.object_updated_at === null
+                  ? "The bucket reported no time for this object, so its age is not known here. It is not the checkpoint's age."
+                  : "This API serves no time for a checkpoint's objects, so this object's age is not known here. It is not the checkpoint's age."
+              }
+            />
+          </>
+        )}
+      </td>
+    </tr>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Logs
+// ---------------------------------------------------------------------------
+
+/*
+ * THE STREAM ROWS, shared with the Artifacts pane's Logs, which is the one
+ * place a log is drawn now. The runner log panel that stood here -- titled
+ * `Runner log (platform)`, and before #184 "Output, as the agent wrote it",
+ * over the runner process's streams -- was removed from Details by the
+ * owner's decision of 2026-09-25 (#184): it lives in Artifacts › Logs only,
+ * behind `runner (platform)`, where `StreamsFrom` draws it with these rows.
+ */
+
+/** Which attempt the window below belongs to. `no_attempt_yet` is the state a
+ *  QUEUED or PARKED task is legitimately in and must not read as a failure. */
+export function attemptLine(logs: Pick<TaskLogs, 'attempt' | 'attempt_id'>): string {
+  switch (logs.attempt.status) {
+    case 'latest':
+      return `Latest attempt${logs.attempt_id ? ` ${logs.attempt_id}` : ''}`
+    case 'requested':
+      return `Attempt ${logs.attempt_id ?? 'as requested'}`
+    case 'unknown_attempt':
+      return 'The attempt asked for is not one this agent has'
+    case 'no_attempt_yet':
+      return 'This agent has no attempt yet, so there is nothing to have written a log'
+  }
+}
+
+/**
+ * A STREAM'S NAME AS A READER TELLS THEM APART (G2-07, QA 2026-10-07). The
+ * runner's own two streams are served as `stdout` and `stderr`, and the Logs
+ * tab printed them so -- `stdout 0 B · real zero` beside an `Agent stdout`
+ * sub-tab and a 152 KiB `claude-code.stdout.log`, all called stdout. They
+ * are the platform runner's, not the agent's, and are named so; the agent's
+ * streams keep their served names.
+ */
+export function streamLabel(name: string): string {
+  // THE AGENT'S STREAMS IN WORDS TOO (QA1 overview-agents-38, 2026-10-28):
+  // the stdout window's heading was the raw name `agent_stdout`.
+  if (name === 'agent_stdout' || name === 'agent_stderr') return `agent ${name.slice('agent_'.length)}`
+  return name === 'stdout' || name === 'stderr' ? `runner ${name}` : name
+}
+
+/**
+ * ONE STREAM, AS A ROW: name, size, age.
+ *
+ * THE FOUR ANSWERS THE ROUTE CAN GIVE ARE FOUR ENCODINGS IN THE SIZE CELL,
+ * and each used to be a paragraph:
+ *
+ *   absent          `not measured`: no object, nothing was ever uploaded
+ *   unreadable      `not read`: the object is there and the read failed
+ *   ok, no content  `not read`: success with nothing to hand over
+ *   ok, ''          `real zero`: the object exists and is empty -- the
+ *                   paragraph saying so is now the mark's accessible name
+ *
+ * The server's `detail` is a line of its own under the value, never appended
+ * after a full stop (AG-23).
+ *
+ * THE AGE, and where each answer comes from. It is the OBJECT'S OWN TIME
+ * (archived issue 172): `age_seconds`, the server's measure, or else `object_updated_at`
+ * against this panel's clock (`objectAge`).
+ *
+ *   final, object dated       how long ago the final log object was written;
+ *   final, store gave no time the em dash and `not measured` -- never the
+ *                             attempt's end borrowed for it;
+ *   final, API serves no time the attempt's end, which is when the worker
+ *   (older than #184)         uploads the final log (`_upload_outputs`), and
+ *                             `not measured` when no end is recorded either;
+ *   live, still being written how long ago the tail object last changed,
+ *                             with `live` under it (the word alone when no
+ *                             time was served) -- only while the attempt has
+ *                             no end AND the task holds a slot;
+ *   live, nothing writing it  the em dash and `partial`: `source=auto` serves
+ *                             the tail exactly when the final log is absent,
+ *                             which is what a worker killed before its upload
+ *                             leaves behind, and a parked task's attempt never
+ *                             records an end at all (`park()` writes the task,
+ *                             not the attempt). It is the last tail published,
+ *                             not the stream, and nothing is still writing it.
+ *
+ * The table called every tail `live` (fix-up on archived pull request 170): a FAILED task's
+ * leftover output read as an agent still writing, for as long as anyone
+ * opened it.
+ *
+ * #184 ADDED TWO ANSWERS AND ONE SOURCE, and a served age:
+ *
+ *   not_applicable   the runner has no agent CLI (mock, browser), so an
+ *                    agent stream was never going to exist: the em dash and
+ *                    `real zero`, never `not measured`, which would say an
+ *                    upload was missed;
+ *   source artifact  an agent stream read from the artifact the runner wrote,
+ *                    on an attempt older than the final copies -- whole, and
+ *                    said to be from the artifact;
+ *   age_seconds      the server's own measure of how old the object is, taken
+ *                    at its `read_at`. For a live tail it is the publisher's
+ *                    liveness -- the tail is republished every interval even
+ *                    when nothing changed -- and it moves on this panel's
+ *                    clock between reads.
+ *
+ * EXPORTED for the Artifacts pane's Logs, which draws the agent's streams
+ * with this same row, so the four answers read the same in both panes.
+ */
+/**
+ * THE AGENT'S EVENTS, FOR THE LIVE TAIL'S AGE (epic 2596, comment 155). A
+ * tail is `live` by the task's state alone, so a RUNNING agent whose worker
+ * had sent no event for days drew `3s ago live` here while Details' Now card
+ * said the worker may be gone. Where the events were read (the Logs tab,
+ * AgentLogs.tsx), a silent agent's tail carries the same heartbeat badge
+ * Details draws (`livenessOf`), not `live`. Undefined: nobody read them, and
+ * the row draws as it did.
+ */
+export const StreamEvents = createContext<TaskEvent[] | null | undefined>(undefined)
+
+export function Stream({
+  stream,
+  logs,
+  task,
+  now,
+  fetchedAt = null,
+}: {
+  stream: LogStream
+  logs: TaskLogs
+  task: Task
+  now: number | null
+  /** When this browser received the read, so a served age can tick on. */
+  fetchedAt?: number | null
+}) {
+  const ended = logs.attempt.completed_at
+  const writing = ended === null && CONCURRENCY_STATES.has(task.state)
+  const at = now ?? Date.now()
+  const events = useContext(StreamEvents)
+  const silent = writing && events !== undefined && livenessOf(task, events, at).kind === 'silent'
+  const age = objectAge(stream, fetchedAt, at)
+  return (
+    <tr role="row">
+      <th role="rowheader" scope="row">
+        <span className="mono">{streamLabel(stream.stream)}</span>
+        {stream.uri !== null && (
+          <>
+            {/* CH-13's long value (archived issue 87 follow-up, 2026-09-25). Stacked, the
+                row header cuts the uri to one line (styles.css §B6.3's `.uri`
+                rule), so the whole of it is in the title and in the copy
+                beside it -- the `copy gsutil` the inspector's other uris
+                carry, with `cat` because a log is read, as the attempt's
+                log-location facts already copy it. A cut uri is a
+                different uri. */}
+            <span className="ctl-sub uri" title={stream.uri}>
+              {stream.uri}
+            </span>
+            <Button
+              size="sm"
+              className="copy"
+              onClick={() => navigator.clipboard?.writeText(`gsutil cat ${stream.uri}`)}
+            >
+              copy gsutil
+            </Button>
+          </>
+        )}
+      </th>
+      <td role="cell" data-label="Size" className="is-num">
+        {stream.status === 'absent' && (
+          <>
+            <Em />{' '}
+            <Mark kind="absent" say={`No object exists for ${stream.stream}: nothing was uploaded for this stream.`} />
+          </>
+        )}
+        {stream.status === 'unreadable' && (
+          <>
+            <Em />{' '}
+            <Mark
+              kind="unread"
+              say={`The ${stream.stream} object exists and could not be read. Nothing here says the stream is empty.`}
+            />
+          </>
+        )}
+        {stream.status === 'ok' && stream.content === null && (
+          /* `status: ok` with no content is the server saying it served a
+             window it cannot hand over. Rendering the empty string in its
+             place would print an empty box that reads as a silent agent. */
+          <>
+            <Em />{' '}
+            <Mark kind="unread" say="The read reported success and returned no content, so this window cannot be shown." />
+          </>
+        )}
+        {stream.status === 'ok' && stream.content === '' && (
+          // ONE ITEM, SO THE MARK STAYS BESIDE ITS VALUE (G2-07): in a
+          // stacked record every child of the cell is placed in the value
+          // column on a line of its own, and `real zero` floated mid-row,
+          // apart from the `0 B` it qualifies.
+          <span className="rf-zero">
+            {bytesLabel(0)}{' '}
+            <Mark
+              kind="zero"
+              say={`This object exists and is empty: ${writerOf(stream.stream)} wrote nothing to ${streamLabel(stream.stream)}. A measured empty stream, not a failed read.`}
+            />
+          </span>
+        )}
+        {stream.status === 'not_applicable' && (
+          <>
+            <Em />{' '}
+            <Mark
+              kind="zero"
+              say={`This runner has no agent CLI, so no ${stream.stream} was ever going to be written. Nothing is missing.`}
+            />
+          </>
+        )}
+        {stream.status === 'ok' && stream.content !== null && stream.content !== '' && <WindowSize stream={stream} />}
+        {stream.detail !== null && <span className="ctl-sub">{stream.detail}</span>}
+      </td>
+      <td role="cell" data-label="Age">
+        {stream.source === 'live' ? (
+          writing ? (
+            // How long ago the tail object last changed (archived issue 172), with `live`
+            // beneath it; `live` alone only when no time was served.
+            silent ? (
+              <>
+                {age !== null ? `${ageSpan(age)} ago` : <Em />}
+                <span className="ctl-sub">
+                  <LivenessBadge task={task} events={events ?? null} now={at} />
+                </span>
+              </>
+            ) : age !== null ? (
+              <>
+                {`${ageSpan(age)} ago`}
+                <span className="ctl-sub">live</span>
+              </>
+            ) : (
+              'live'
+            )
+          ) : (
+            <>
+              <Em />{' '}
+              <Mark
+                kind="partial"
+                say="The last tail the worker published before this attempt stopped. No final log was uploaded, so this is not the whole stream, and nothing is writing it now."
+              />
+              {age !== null && <span className="ctl-sub">last published {ageSpan(age)} ago</span>}
+            </>
+          )
+        ) : stream.source === 'final' ? (
+          // THE OBJECT'S OWN TIME FIRST (archived issue 172). The attempt's end stands in
+          // only for an API that serves no `object_updated_at` at all (older
+          // than #184); a null is the store saying it had no time, and the
+          // attempt's end is not borrowed for it.
+          age !== null ? (
+            `${ageSpan(age)} ago`
+          ) : stream.object_updated_at === undefined && ended !== null ? (
+            timeAgo(ended, at)
+          ) : (
+            <>
+              <Em />{' '}
+              <Mark
+                kind="absent"
+                say={
+                  stream.object_updated_at === null
+                    ? "The bucket reported no time for this log object, so when it was written is unknown here. It is not the attempt's end."
+                    : "This attempt's end is not recorded, and the final log is uploaded when it ends, so when this log was written is unknown here."
+                }
+              />
+            </>
+          )
+        ) : stream.source === 'artifact' ? (
+          <>
+            {age !== null ? `${ageSpan(age)} ago` : <Em />}
+            <span className="ctl-sub">from the artifact</span>
+          </>
+        ) : (
+          <Em />
+        )}
+      </td>
+    </tr>
+  )
+}
+
+/** Who writes a stream: the agent CLI, or the platform's runner process around it. */
+function writerOf(name: LogStreamName): string {
+  return name === 'agent_stdout' || name === 'agent_stderr' ? 'the agent' : 'the runner process'
+}
+
+/**
+ * How old a served object is NOW, in ms: the server's `age_seconds` -- taken
+ * at its own `read_at`, on its own clock, so no browser clock skew enters it
+ * -- plus the time since this browser received the read. Null when the server
+ * did not say (an API older than #184) or the read time is unknown.
+ */
+export function servedAge(
+  served: { age_seconds?: number | null },
+  fetchedAt: number | null,
+  now: number,
+): number | null {
+  const a = served.age_seconds
+  if (typeof a !== 'number' || !Number.isFinite(a) || fetchedAt === null) return null
+  // A clock that last ticked before the read landed adds nothing, rather than
+  // taking seconds off what the server measured.
+  return Math.max(0, a * 1000) + Math.max(0, now - fetchedAt)
+}
+
+/**
+ * How old a stream's object is NOW, in ms: `servedAge` when the server
+ * measured it, else its `object_updated_at` against this browser's clock
+ * (archived issue 172) -- the way a checkpoint's `created_at` is aged. Null when neither
+ * was served, never a guess.
+ */
+export function objectAge(
+  served: { age_seconds?: number | null; object_updated_at?: string | null },
+  fetchedAt: number | null,
+  now: number,
+): number | null {
+  const measured = servedAge(served, fetchedAt, now)
+  if (measured !== null) return measured
+  if (typeof served.object_updated_at !== 'string') return null
+  const t = new Date(served.object_updated_at).getTime()
+  return Number.isFinite(t) ? Math.max(0, now - t) : null
+}
+
+/**
+ * How much of a stream the window holds: the whole object as one figure, or
+ * a window of it as `returned of total` with the `partial` mark -- the kit's
+ * encoding for "some of it arrived and the rest was not read".
+ */
+export function WindowSize({ stream }: { stream: LogStream }) {
+  const total = stream.total_bytes
+  const whole = total !== null && stream.offset === 0 && !stream.truncated && stream.returned_bytes >= total
+  return (
+    <>
+      {whole ? (
+        bytesLabel(total)
+      ) : (
+        <>
+          {bytesLabel(stream.returned_bytes)} of {total === null ? <Em /> : bytesLabel(total)}{' '}
+          <Mark
+            kind="partial"
+            say={`A window of this stream, not the whole of it: from byte ${stream.offset}${stream.next_offset !== null ? `, with more from byte ${stream.next_offset}` : ''}.`}
+          />
+        </>
+      )}
+      {stream.tail_window !== null && (
+        <span className="ctl-sub">
+          live window at byte {stream.tail_window.object_offset} of {bytesLabel(stream.tail_window.stream_size)}
+        </span>
+      )}
+      {stream.redacted && stream.redaction_count > 0 && (
+        <span className="ctl-sub">
+          <span className="art-masked is-warn">{stream.redaction_count}</span> masked in this window
+        </span>
+      )}
+    </>
+  )
+}

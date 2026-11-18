@@ -1,0 +1,32 @@
+# Keep the build context small and free of anything that must never reach an
+# image: local virtualenvs, terraform state (which holds secrets), and git
+# history. The image Dockerfiles copy only apps/common and apps/agent-worker.
+.git/
+.github/
+.venv/
+**/__pycache__/
+**/*.pyc
+.pytest_cache/
+.ruff_cache/
+**/.DS_Store
+.env
+docs/
+scripts/
+# The one script an image build reads: the agent-runtime-base and
+# agent-runtime-browser gstack-build stages bind-mount it to check gstack's
+# closure against the checked-in lists (part of archived issue 2688). Without this line the
+# mount has no source and both builds fail.
+!scripts/gstack_packaging_measure.py
+terraform/
+kubernetes/
+tests/
+# uv.lock is deliberately NOT ignored: the four control-plane builders export
+# their third-party dependencies from it, by hash (archived issue 663). Ignoring it fails
+# their `COPY pyproject.toml uv.lock /src/`.
+**/*.tfstate
+**/*.tfstate.backup
+**/.terraform/
+# The credential file google-github-actions/auth writes into the checkout, at
+# any depth. .gcloudignore already keeps it out of the Cloud Build workspace;
+# this keeps it out of any other build context that starts at the repo root.
+**/gha-creds-*.json

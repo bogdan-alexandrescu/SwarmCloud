@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# Every applied tenant egress policy against the LIVE cluster's network.
+#
+#   scripts/lib/check-cluster-network-parity.sh                  # skips without credentials
+#   scripts/lib/check-cluster-network-parity.sh --require-live   # a skip is a failure
+#   scripts/lib/check-cluster-network-parity.sh --context swarm-dev
+#   scripts/lib/check-cluster-network-parity.sh --require-live --context swarm-dev \
+#       --cluster swarm-autopilot --namespace swarm-tenant-eng   # one namespace
+#
+# kubernetes/apply.sh runs the last form after every `--tenant ... --confirm`
+# (archived issue 76): with the context and cluster it applied through, scoped to the
+# namespace it just applied, so a stale NEIGHBOUR cannot fail this tenant's
+# apply. Without --namespace every tenant namespace is compared -- the sweep.
+#
+# THE MIRRORED COPY. `swarm-allow-worker-egress` carries four values that
+# belong to the cluster: its pod range, its service range, the kube-dns Service
+# IP and the NodeLocal DNSCache address. kubernetes/apply.sh now reads them from
+# the cluster when it renders, but an applied policy is a COPY, and a copy goes
+# stale the moment the cluster changes or someone applies a render by hand. On
+# 2026-09-24 the applied copy agreed with none of the four -- it had been
+# rendered from renderer defaults, and its only DNS rule reached kube-dns pods
+# that a Cloud DNS + NodeLocal DNSCache cluster never sends a query to -- and a
+# browser worker ran 390 s with every lookup silently dropped. Nothing compared
+# the copy with the cluster. This does. docs/mirrored-values.md is the register
+# of such copies; this one is "The one whose authority is a live cluster".
+#
+# WHY NOT A SECTION OF check-contract-parity.sh. That script is part of
+# `make test`, which is fully offline by rule, and it refuses to skip. This one
+# needs the live cluster, so it cannot be offline, and in CI -- where there are
+# no cloud credentials -- it cannot run at all. It therefore SKIPS WITH A
+# NOTICE there (a GitHub `::notice`, so the run page says it did not compare
+# anything) instead of passing as though it had. Run it with --require-live
+# after an apply, where a skip would be a false green.
+#
+# READ-ONLY. One `gcloud container clusters describe`, and `kubectl get` on the
+# kube-dns Service, the node-local-dns DaemonSet and the egress policies, all
+# through the swarm cluster's context -- checked first, the same way every other
+# script here checks it, because this kubeconfig reaches other teams' clusters.
+#
+# Exit status: 0 when every policy matches (or the check was skipped without
+# --require-live); 1 when any differs, none was found, or the cluster could
+# not be read.
+set -euo pipefail
+
+# With no gcloud credentials this touches no project: it skips, and the
+# shell job runs it that way. It says so, so common.sh (no default project,
+# the Day One project-defaults lane) does not stop on an unset PROJECT_ID, and it requires one
+# below, once it has credentials and before it reaches for a cluster.
+SWARM_NO_PROJECT=1
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=common.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+# The one reader of the cluster's network, shared with kubernetes/apply.sh, so
+# the value checked is read exactly the way the value rendered was.
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=../../kubernetes/cluster-network.sh
+source "${REPO_ROOT}/kubernetes/cluster-network.sh"
+
+REQUIRE_LIVE=0
+CONTEXT=""
+NAMESPACE=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --require-live) REQUIRE_LIVE=1; shift ;;
+    --context)      CONTEXT="$2"; shift 2 ;;
+    --context=*)    CONTEXT="${1#*=}"; shift ;;
+    # The cluster whose network is read, as apply.sh's --cluster: it replaces
+    # GKE_CLUSTER for this run, under the same two rules apply.sh applies.
+    --cluster)      GKE_CLUSTER="$2"; shift 2 ;;
+    --cluster=*)    GKE_CLUSTER="${1#*=}"; shift ;;
+    --namespace)    NAMESPACE="$2"; shift 2 ;;
+    --namespace=*)  NAMESPACE="${1#*=}"; shift ;;
+    -h|--help)      sed -n '2,42p' "$0"; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+case "${GKE_CLUSTER}" in
+  swarm-*) ;;
+  *) die "cluster '${GKE_CLUSTER}' does not start with 'swarm-'; refusing to read through it." ;;
+esac
+if [[ -n "${NAMESPACE}" ]]; then
+  case "${NAMESPACE}" in
+    "${TENANT_NAMESPACE_PREFIX}"?*) ;;
+    *) die "--namespace '${NAMESPACE}' is not a tenant namespace (${TENANT_NAMESPACE_PREFIX}*)" ;;
+  esac
+fi
+
+skip() {
+  local reason="$1"
+  if [[ "${REQUIRE_LIVE}" -eq 1 ]]; then
+    die "cluster network parity was NOT checked: ${reason}. --require-live makes that a failure."
+  fi
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    # stdout: GitHub reads workflow commands from it.
+    printf '::notice title=cluster network parity skipped::%s. No applied egress policy was compared with the live cluster; run scripts/lib/check-cluster-network-parity.sh --require-live with credentials.\n' "${reason}"
+  fi
+  warn "cluster network parity SKIPPED: ${reason}"
+  dim "  nothing was compared. With credentials: $0 --require-live"
+  exit 0
+}
+
+step "Cluster network parity"
+
+# --- credentials ------------------------------------------------------------
+# Checked before anything touches kubectl, so a runner with no credentials
+# never reaches for a cluster at all.
+command -v gcloud >/dev/null 2>&1 || skip "gcloud is not installed"
+ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | sed -n '1p' || true)"
+[[ -n "${ACCOUNT}" ]] || skip "no active gcloud credentials"
+info "account  ${ACCOUNT}"
+require_project
+# The policies' annotations are read under one prefix, resolved before kubectl
+# is located exactly as kubernetes/apply.sh's step 0 does (common.sh
+# require_label_prefix): the deployment's tfvars name it, a configured one that
+# differs is refused. A caller's export (apply.sh, the tenant policy sweep) is
+# the same value, so it resolves the same way here.
+require_label_prefix "nothing was compared"
+# The never-touch list is the project's (config/<env>/deny-list.json), so it is
+# read once there is a project and credentials, and before any cluster is: a
+# list that cannot be read stops the run here (deny_list_require).
+is_shared_resource "${GKE_CLUSTER}" \
+  && die "cluster '${GKE_CLUSTER}' is on the shared deny-list: it belongs to another team. Refusing."
+
+# --- the swarm cluster, and only it -----------------------------------------
+KUBECTL="$(kubectl_bin)"
+KARGS=()
+if [[ -n "${CONTEXT}" ]]; then
+  # A label common.sh accepts, or -- kubernetes/apply.sh's rule -- any label
+  # whose kubeconfig cluster entry is gcloud's name for exactly this cluster.
+  # Without the second form a context apply.sh had just written through would
+  # be refused here, and its apply reported as failed.
+  EXPECTED_ENTRY="gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}"
+  ENTRY=""
+  if ! is_shared_resource "${CONTEXT##*_}" && ! kube_context_allowed "${CONTEXT}"; then
+    ENTRY="$("${KUBECTL}" config view -o \
+      "jsonpath={.contexts[?(@.name==\"${CONTEXT}\")].context.cluster}" 2>/dev/null || true)"
+  fi
+  if is_shared_resource "${CONTEXT##*_}" \
+      || { ! kube_context_allowed "${CONTEXT}" && [[ "${ENTRY}" != "${EXPECTED_ENTRY}" ]]; }; then
+    die "context '${CONTEXT}' is not the swarm cluster's; refusing to read through it.
+       Expected 'swarm-${ENVIRONMENT}', '${EXPECTED_ENTRY}', or a context whose cluster entry is the latter."
+  fi
+  KARGS+=(--context "${CONTEXT}")
+else
+  assert_kube_context
+fi
+
+resolve_cluster_network "${KUBECTL}" "${GKE_CLUSTER}" "${GKE_LOCATION}" "${PROJECT_ID}" \
+  ${KARGS[@]+"${KARGS[@]}"} \
+  || die "could not read the live network of ${GKE_CLUSTER} (above); nothing was compared"
+info "live     pods=${CLUSTER_POD_CIDR} services=${CLUSTER_SERVICE_CIDR}"
+info "live     dns node-local=${CLUSTER_NODE_LOCAL_DNS_IP} kube-dns=${CLUSTER_DNS_IP}  (${CLUSTER_NETWORK_SOURCE})"
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-network-parity.XXXXXX")"
+trap 'rm -rf "${WORK}"' EXIT
+
+jq -n \
+  --arg pod "${CLUSTER_POD_CIDR}" \
+  --arg svc "${CLUSTER_SERVICE_CIDR}" \
+  --arg dns "${CLUSTER_DNS_IP}" \
+  --arg nodelocal "${CLUSTER_NODE_LOCAL_DNS_IP}" \
+  --arg source "${CLUSTER_NETWORK_SOURCE}" \
+  '{pod_cidr: $pod, service_cidr: $svc, cluster_dns_ip: $dns, node_local_dns_ip: $nodelocal, source: $source}' \
+  >"${WORK}/live.json"
+
+# Every copy, in every namespace: a stale policy in a tenant nobody is looking
+# at is still a tenant whose workers cannot resolve a name. --namespace narrows
+# it to one, for the check after an apply.
+#
+# SCOPED, IT IS A GET BY NAME, NEVER A LIST. The scoped form is the one
+# kubernetes/apply.sh runs after a tenant apply, and that apply is also what the
+# workspace job (`register-tenant.sh --workspace`) runs as the workspace
+# deployer, whose ClusterRole (kubernetes/rbac/provisioner-rbac.yaml) holds
+# `get` and no `list`: a field-selected list here 403'd after every object had
+# been applied, and failed the workspace at A7. A missing policy reads as an
+# empty list, so network_parity.py still says "nothing was compared".
+POLICY_NAME="swarm-allow-worker-egress"
+if [[ -n "${NAMESPACE}" ]]; then
+  info "scope    ${NAMESPACE} only"
+  if "${KUBECTL}" ${KARGS[@]+"${KARGS[@]}"} get networkpolicies "${POLICY_NAME}" \
+        --namespace "${NAMESPACE}" -o json >"${WORK}/policy.json" 2>"${WORK}/policies.err"; then
+    jq '{items: [.]}' "${WORK}/policy.json" >"${WORK}/policies.json" \
+      || die "kubectl's ${NAMESPACE}/${POLICY_NAME} is not JSON; nothing was compared"
+  elif grep -q 'NotFound' "${WORK}/policies.err"; then
+    printf '{"items": []}\n' >"${WORK}/policies.json"
+  else
+    err "could not read ${NAMESPACE}/${POLICY_NAME}:"
+    redact <"${WORK}/policies.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "nothing was compared"
+  fi
+elif ! "${KUBECTL}" ${KARGS[@]+"${KARGS[@]}"} get networkpolicies --all-namespaces \
+      --field-selector "metadata.name=${POLICY_NAME}" -o json \
+      >"${WORK}/policies.json" 2>"${WORK}/policies.err"; then
+  err "could not list the egress policies:"
+  redact <"${WORK}/policies.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+  die "nothing was compared"
+fi
+
+RC=0
+"${PYTHON_BIN:-python3}" "${REPO_ROOT}/kubernetes/network_parity.py" \
+  --live "${WORK}/live.json" \
+  --policies "${WORK}/policies.json" \
+  --namespace-prefix "${TENANT_NAMESPACE_PREFIX}" || RC=$?
+
+if [[ "${RC}" -ne 0 ]]; then
+  err "an applied egress policy differs from ${CLUSTER_NETWORK_SOURCE} (above)"
+  dim "  re-render from the live cluster: kubernetes/apply.sh --tenant <id>, then --confirm"
+  exit 1
+fi
+ok "every applied egress policy matches ${CLUSTER_NETWORK_SOURCE}"

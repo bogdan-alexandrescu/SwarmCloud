@@ -1,0 +1,39 @@
+/*
+ * THE WORKFLOW PAGE'S NEEDS YOU CARD AND QUESTIONS SECTION
+ * (WorkflowQuestions.tsx). The card is one row until its header is pressed;
+ * its items reuse the Needs-you rows (work/needs-you.css). Each step's
+ * questions are the agent page's own cards. Console tokens only, so both
+ * themes hold; every row wraps on a phone.
+ */
+.wq-needs { min-width: 0; max-width: 100%; border: 1px solid var(--s-park); border-left-width: 4px; border-radius: var(--radius); background: var(--surface); box-sizing: border-box; }
+.wq-needs-h { margin: 0; font: inherit; }
+.wq-needs-btn { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s2); width: 100%; min-height: 32px; padding: var(--ctl-s1) var(--ctl-s2); border: 0; background: none; font: inherit; color: var(--text); text-align: left; cursor: pointer; box-sizing: border-box; }
+.wq-needs-btn:hover b { text-decoration: underline; }
+.wq-needs-btn:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+.wq-mark { display: inline-flex; align-items: baseline; gap: var(--ctl-s1); font-size: var(--t-meta); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--paused-ink, var(--s-park)); white-space: nowrap; }
+.wq-mark.is-failed { color: var(--bad-ink, var(--bad)); }
+.wq-mark.is-blocking { color: var(--text); }
+.wq-mark.is-unknown { color: var(--text-dim); }
+.wq-mark.is-question, .wq-mark.is-blocking { text-decoration: underline dotted; text-underline-offset: 3px; }
+.wq-caret { margin-left: auto; color: var(--text-dim); }
+.wq-needs-body { padding: 0 var(--ctl-s2) var(--ctl-s1); border-top: 1px solid var(--line); }
+/* In flow, NOT the usual `position: absolute` recipe: an absolute box in the
+   page scroller can escape the app frame (styles.css, `.ctl-scroll`), and
+   frame.overscroll.test.tsx holds the page to none. 1px, clipped, its -1px
+   margin giving the space back. */
+.wq-vh { display: inline-block; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+.wq { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; margin-top: var(--ctl-s2); }
+.wq-h { margin: 0; display: flex; align-items: center; gap: var(--ctl-s2); font-size: var(--t-body); font-weight: 600; }
+.wq-n { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 var(--ctl-s1); border-radius: 999px; background: var(--s-park); color: var(--surface); font-size: var(--t-meta); font-weight: 700; font-variant-numeric: tabular-nums; box-sizing: border-box; }
+.wq-step { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); scroll-margin-top: var(--ctl-s2); }
+.wq-step:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.wq-step-h { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s2); padding: var(--ctl-s1) var(--ctl-s2); min-width: 0; }
+.wq-step-h h3 { margin: 0; font-size: var(--t-meta); font-weight: 600; font-family: var(--mono); overflow-wrap: anywhere; }
+.wq-state { color: var(--text-dim); font-size: var(--t-meta); }
+.wq-open { color: var(--paused-ink, var(--s-park)); font-size: var(--t-meta); font-weight: 600; font-variant-numeric: tabular-nums; }
+.wq-answered { border: 0; background: none; padding: 0; font: inherit; font-size: var(--t-meta); color: var(--text-dim); cursor: pointer; }
+.wq-answered:hover { text-decoration: underline; }
+.wq-answered:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.wq-agent { margin-left: auto; font-size: var(--t-meta); }
+.wq-step-body { display: flex; flex-direction: column; gap: var(--ctl-s2); padding: 0 var(--ctl-s2) var(--ctl-s2); min-width: 0; }

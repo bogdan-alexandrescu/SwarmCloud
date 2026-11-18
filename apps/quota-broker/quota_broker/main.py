@@ -1,0 +1,7978 @@
+"""Quota broker HTTP surface.
+
+Callers are workers, not people. A worker reports what the provider did -- a
+success, a 429, an exhausted window -- and the broker folds that into the AIMD
+state and the pool caps. There is no human-facing surface here; the read models
+a human wants are on the API's /v1/providers.
+
+Because callers are workers, identity is a service account, and the tenant is
+derived FROM that service account rather than taken from the request. A worker
+running as tenant A's service account cannot report a 429 against tenant B and
+throttle them, which would otherwise be a one-line denial of service.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import uuid
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable, Literal
+
+from fastapi import Body, FastAPI, Header, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
+from prometheus_client import CollectorRegistry, Counter, Gauge, generate_latest
+from prometheus_client.exposition import CONTENT_TYPE_LATEST
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from swarm_common.identity import tenant_id_for_user
+from swarm_common.logging_setup import configure_logging
+from swarm_common.models import ProviderState, QuotaState
+from swarm_common.profiles import RUNNER_PROFILES, step_model_class
+
+from .aimd import quota_derived_limit_for
+from .settings import _int
+from .usage import DEFAULT_MAX_POLLS_PER_SWEEP
+from .oauth import (
+    OAUTH_REDIRECT_URI,
+    Credential,
+    CredentialError,
+    Organisation,
+    build_authorize_url,
+    challenge_for,
+    new_state,
+    new_verifier,
+    parse_credential,
+    read_organisation,
+    split_pasted_code,
+)
+from .usagepoll import UsagePoller
+from .accounts import (
+    ASSIGNABLE_STATES,
+    DEFAULT_HOLD_TTL,
+    DUPLICATE_MATCHED_ON,
+    DUPLICATE_REASON,
+    DEFAULT_STALE_AFTER,
+    HOLD_END_ACCOUNT_REMOVED,
+    HOLD_END_EXPIRED,
+    HOLD_END_RELEASED,
+    HOLD_END_SWAPPED,
+    HOLD_END_UNUSABLE,
+    HOLD_ENDS,
+    HOLD_LOG_COLLECTION,
+    HOLD_LOG_RETENTION,
+    MAX_AGENTS_BEFORE_READING,
+    SWAP_DRAIN,
+    SWAP_EXHAUSTED,
+    SWAP_PLAN_AVAILABLE,
+    SWAP_REASONS,
+    SWAP_UNUSABLE,
+    SPEND_CAP_MAX_USD,
+    CAP_EXHAUSTED,
+    CAP_LEND_MAX_AGENTS,
+    CAP_LEND_SPEND,
+    CAP_SPEND,
+    CAP_WORKSPACE_MAX,
+    PLAN_PROVIDER_OF,
+    TIER_PLAN,
+    chain_providers,
+    lends_from_firestore,
+    lend_spend_from_firestore,
+    month_spend_from_firestore,
+    next_spend_month,
+    soonest,
+    spend_cap_from_firestore,
+    spend_month,
+    tier_of,
+    DEFAULT_POOLS,
+    POOL_VOICE_IT,
+    POOL_WORKSPACE,
+    VOICE_NONE_AVAILABLE,
+    AccountError,
+    AccountState,
+    Hold,
+    key_secret_name,
+    plan_labels_with_key_mark,
+    refuse_plan_label,
+    validate_lends,
+    validate_per_workspace_max,
+    validate_spend_cap,
+    choose_voice,
+    choose_voice_chain,
+    voice_chain,
+    validate_pools,
+    Unavailable,
+    WindowReading,
+    accounts_serving,
+    choose,
+    due_for_refresh,
+    duplicates,
+    identical_reading_pairs,
+    eligibility,
+    holds_from_firestore,
+    holds_to_firestore,
+    hold_log_entry,
+    max_agents_from_firestore,
+    per_workspace_max_from_firestore,
+    secret_name,
+    subscription_identity,
+    validate_label,
+    validate_display_name,
+    validate_max_agents,
+    validate_model_classes,
+    window_floor,
+    withheld_mark,
+)
+from .accountstore import COLLECTION as ACCOUNTS_COLLECTION
+from .accountstore import MALFORMED_ERRORS, AccountStore, MalformedAccountError
+from .accountstore import (
+    HEALTH_ASSIGN_REFUSED,
+    HEALTH_DOCUMENT,
+    HEALTH_EVENTS_MAX,
+    HEALTH_EXHAUSTED,
+    HEALTH_POOL_ACCOUNTS_MAX,
+    HEALTH_RATE_LIMIT,
+    HEALTH_SUBCOLLECTION,
+    PROVIDER_ERROR_KINDS,
+    health_counts,
+    health_status,
+    health_to_api,
+    limited_until_for,
+    refusing_window,
+)
+from .credentials import REFRESH_SUFFIX, CredentialRefresher
+from .oauth import HttpTokenEndpoint
+from . import api_key, openai_api_key, openai_plan
+from .api_key import VENDOR_OF
+from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
+from .publishledger import fingerprint as publish_fingerprint
+from .secretstore import SecretManagerStore, is_key_secret, version_number
+from .service import QuotaBroker, TargetResetRefused, quota_to_firestore
+from .settings import BrokerSettings, held_refresh_margin
+from .sweeplease import (
+    SWEEP_ERROR,
+    SWEEP_OK,
+    LeaseFence,
+    build_sweep_lease,
+    liveness,
+    new_holder,
+    txn_snapshot,
+)
+
+log = logging.getLogger(__name__)
+
+#: The prefix of a tenant's worker service account. ONE family is accepted
+#: because only one exists: terraform/modules/tenancy and
+#: scripts/register-tenant.sh both create `swarm-agent-worker-<tenant>`, the
+#: name swarm_common.identity sizes tenant ids for. register-tenant.sh used to
+#: create `swarm-t-<tenant>`; nothing does now, so an account by that name is
+#: one somebody made by hand, and accepting it would let whoever holds
+#: `iam.serviceAccounts.create` here act as any tenant (archived issue 176). This is an
+#: authentication allow-list: an entry for an identity nothing provisions is a
+#: way in, not a compatibility allowance.
+WORKER_SA_PREFIXES = ("swarm-agent-worker",)
+
+
+def worker_sa_pattern(project_id: str) -> re.Pattern[str]:
+    """`swarm-agent-worker-<tenant>@<THIS project>...` -> `<tenant>`.
+
+    The project id is PINNED. With `[^@]+` in its place, a service account named
+    `swarm-agent-worker-eng` in an ATTACKER'S own Google Cloud project produces a
+    genuine, Google-signed OIDC token that satisfies this pattern, and the broker
+    would authorize it as tenant `eng` -- able to report 429s and exhaustion
+    against them, and to read their quota state. Cloud Run's internal ingress and
+    invoker IAM would be the only thing in the way, which makes this app-level
+    check load-bearing exactly where it was weakest.
+    """
+    if not project_id:
+        raise ValueError(
+            "PROJECT_ID is required: without it the worker service account "
+            "pattern cannot be pinned to this project and any project's "
+            "similarly-named service account would authenticate as a tenant"
+        )
+    alternatives = "|".join(re.escape(p) for p in WORKER_SA_PREFIXES)
+    return re.compile(
+        rf"^(?:{alternatives})-(?P<tenant>[a-z0-9-]+)@"
+        rf"{re.escape(project_id)}\.iam\.gserviceaccount\.com$"
+    )
+
+
+#: What a borrowing tenant id must look like before its worker service account
+#: is named in an IAM policy: the same `[a-z0-9-]+` `worker_sa_pattern` reads
+#: back out of a token. A `lend_to` entry outside it could only produce a member
+#: nothing provisions, or one that re-points the template's domain.
+LENDABLE_TENANT = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+
+
+class BrokerAuthError(Exception):
+    """The caller is not who they need to be. Answered with 403."""
+
+
+class BrokerValidationError(Exception):
+    """The caller is allowed, but the request names something that does not
+    exist. Answered with 422: reporting it as 403 would send an operator
+    hunting for a missing IAM grant that was never the problem."""
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class SuccessReport(StrictModel):
+    requests_remaining: int | None = Field(default=None, ge=0)
+    tokens_remaining: int | None = Field(default=None, ge=0)
+    reset_at: datetime | None = None
+
+
+class AccountRegister(StrictModel):
+    """Register an account, credential included.
+
+    THE CREDENTIAL IS TAKEN AS PASTED, not as three parsed fields, and
+    `oauth.parse_credential` is what reads it. That function already accepts
+    Claude Code's keychain item verbatim -- `claudeAiOauth` wrapper and all --
+    "because pasting that item verbatim is the obvious thing for an operator to
+    do". Asking a UI to take it apart first would mean a second implementation
+    of that shape, and the two would disagree the first time the shape changed.
+
+    It must be a PAIR. `claude setup-token` mints one long-lived token with no
+    refresh token beside it; when it expires a human logs in again. The pair
+    Claude Code itself keeps can be exchanged for a new pair indefinitely,
+    which is what makes "the only manual step is the first one" true rather
+    than aspirational. Registration parses it here so a credential that cannot
+    be refreshed is refused at the moment of pasting -- not discovered at the
+    next sweep, long afterwards, with nothing pointing at the cause.
+    """
+
+    owner_tenant: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=64)
+    provider: str = Field(default="anthropic", max_length=64)
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+    #: Write-only. No response model in this service contains it and no route
+    #: returns it -- the same rule tenants.py states for provider keys.
+    credential: str = Field(min_length=8, max_length=16384)
+    #: For an OpenAI API key (`openai-api`) alone, and required there: the
+    #: verified email of the platform admin who pasted it, which swarm-api
+    #: takes from the caller's token. The broker writes it, with the time it
+    #: stored the key, on the key account's document
+    #: (`openai_api_key.added_fields`; the owner, 5 November 2026).
+    added_by: str | None = Field(default=None, max_length=254)
+    #: An API key's lends (§4.6, Q7): {borrowing workspace: {max_agents,
+    #: monthly_spend_cap_usd}}, both required on a key. A plan may send it
+    #: too, with `max_agents` alone; `lend_to` is then refused beside it.
+    #: Checked by `accounts.validate_lends`, the one check of it.
+    lends: dict[str, Any] | None = Field(default=None, max_length=50)
+    #: An API key only. None: an `openai-api` key is the dedicated Voice it
+    #: key, as every one registered before §4 was (Q9); an `anthropic-api`
+    #: key is a pool key (Q2: no dedicated Anthropic key).
+    voice_dedicated: bool | None = None
+    #: A pool key only, and a platform admin's: the key also serves Voice it
+    #: (`voice-it` in its pools, §4.6), after the plans and before the
+    #: dedicated key.
+    share_with_voice_it: bool = False
+
+
+class AccountAuthorize(StrictModel):
+    """Begin adding an account from a browser."""
+
+    owner_tenant: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=64)
+    provider: str = Field(default="anthropic", max_length=64)
+    lend_to: list[str] = Field(default_factory=list, max_length=50)
+
+
+class AccountExchange(StrictModel):
+    """Finish adding it, with the code the callback page displayed."""
+
+    state: str = Field(min_length=8, max_length=256)
+    #: Accepted as pasted. The callback renders `<code>#<state>` and people
+    #: paste what is on screen, so the whole thing is taken and split here.
+    code: str = Field(min_length=4, max_length=2048)
+    #: The tenant the CALLER is, as the caller checked it. A platform caller
+    #: (swarm-api) must send it and it must equal the pending sign-in's owner;
+    #: see `finish_account_authorization`. Optional in the schema only so that
+    #: its absence is refused as a 403 that names it, not as a bare 422.
+    expected_owner: str | None = Field(default=None, max_length=128)
+
+
+class AccountDevicePoll(StrictModel):
+    """Ask whether a device-code sign-in was approved, by its state.
+
+    No code here: the device id the vendor is polled with stays in the
+    pending record. `expected_owner` is `AccountExchange`'s, with its rule.
+    """
+
+    state: str = Field(min_length=8, max_length=256)
+    expected_owner: str | None = Field(default=None, max_length=128)
+
+
+class AccountLending(StrictModel):
+    """Who may borrow an account, and each borrower's cap (§4.6, Q7).
+
+    `lends` is the shape: {workspace: {max_agents, monthly_spend_cap_usd}},
+    `max_agents` required on both kinds and the spend cap required on a key.
+    `lend_to`, a bare list, is still read FOR A PLAN, so today's callers keep
+    working: a borrower already lent keeps its cap, a new one gets the
+    account's own `max_agents`, marked not set, as today's lends were carried
+    over. A key's bare list is refused: a key is lent only with a spend cap.
+    Neither: lent to nobody, as an empty list always meant.
+    """
+
+    lend_to: list[str] | None = Field(default=None, max_length=50)
+    lends: dict[str, Any] | None = Field(default=None, max_length=50)
+
+
+class AccountPerWorkspaceMax(StrictModel):
+    """Each workspace's cap on the agents it holds on an account (Q6).
+    REQUIRED, so an empty body is refused rather than read as "no caps";
+    `{}` clears every cap."""
+
+    per_workspace_max: dict[str, Any] = Field(max_length=51)
+
+
+class AccountSpendCap(StrictModel):
+    """A key's monthly spend ceiling in US dollars, or null for none (§4.6).
+    REQUIRED, so an empty body is refused rather than read as "clear"."""
+
+    monthly_spend_cap_usd: float | None
+
+
+class ImportWorkspaceKeys(StrictModel):
+    """Import each workspace's own provider key as a pool key (Q7).
+
+    `tenants` narrows the import to those workspaces; empty imports every
+    `swarm-tenant-<tenant>-<vendor>` key the secret store lists. `added_by`
+    is the platform admin who asked, recorded on each imported key."""
+
+    tenants: list[str] = Field(default_factory=list, max_length=200)
+    added_by: str = Field(min_length=3, max_length=254)
+
+
+class AccountModelClasses(StrictModel):
+    """The model classes an account serves (owner decision R5). Empty: every class.
+
+    Bounded by the vocabulary's size; which names are accepted is
+    `accounts.validate_model_classes`, the one check of them.
+    """
+
+    model_classes: list[str] = Field(default_factory=list, max_length=8)
+
+
+class AccountMaxAgents(StrictModel):
+    """How many agents an account may hold at once (archived issue 2222).
+
+    REQUIRED, so an empty body is refused rather than read as the default.
+    Which numbers are accepted is `accounts.validate_max_agents`, the one check
+    of them; the type here only stops a body that is not a number at all.
+    """
+
+    max_agents: int
+
+
+class AccountName(StrictModel):
+    """An account's Name (archived issue 1913), or null to clear it so the label shows.
+
+    REQUIRED, so an empty body is refused rather than read as "clear". The
+    bound here only stops an unbounded body; what a Name may be -- trimmed, 1
+    to 60 characters, no control character -- is `accounts.validate_display_name`,
+    the one check of it, so a 61-character Name is refused in its words rather
+    than in pydantic's.
+    """
+
+    display_name: str | None = Field(max_length=1024)
+
+
+class AccountStateChange(StrictModel):
+    state: str = Field(min_length=1, max_length=32)
+    reason: str = Field(default="", max_length=512)
+
+
+class AccountAssign(StrictModel):
+    """Ask for an account to run on. Carries a PROVIDER and nothing else.
+
+    THERE IS NO TENANT FIELD AND THERE MUST NOT BE ONE. The tenant is derived
+    from the caller's service account, exactly as every other route here
+    derives it, because `Account.may_serve` is what enforces invariant 9 for
+    the pool: an account is reachable by its owner and by the tenants its
+    owner named in `lend_to`, and by nobody else. A tenant taken from the body
+    would make that check a formality -- any worker could name any tenant and
+    be handed that tenant's subscription credential, which is the one thing
+    per-tenant isolation exists to prevent.
+    """
+
+    provider: str = Field(default="anthropic", max_length=64)
+
+    #: Accounts this caller has ALREADY been handed during this attempt and
+    #: could not use. Safe to take from the body in a way a tenant is not: it
+    #: can only ever narrow what this caller is offered, never widen it, and
+    #: `may_serve` still decides the set it narrows. Without it `choose()` is
+    #: deterministic and would return the same unreadable account on every ask
+    #: until the task ran out of attempts.
+    exclude: list[str] = Field(default_factory=list, max_length=20)
+
+    #: Which task and attempt this worker is running, from its OWN config, so
+    #: the account can say who is on it (archived issue 379). OPTIONAL: an older worker image
+    #: sends neither and must still be assigned. Safe to take from the body for
+    #: the same reason `exclude` is -- it can change nothing about which
+    #: account is chosen or who may use it. It is a CLAIM, recorded on the
+    #: hold as sent; swarm-api checks that the hold's tenant owns the task
+    #: before showing it to anyone, and shows "unverified" when it does not.
+    task_id: str | None = Field(default=None, min_length=1, max_length=128)
+    attempt_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    #: A VOICE IT SESSION'S HOLD (docs/design/voice-it-own-speech.md §14.1):
+    #: swarm-voice's fast Claude front (`voice-front`, held for the session)
+    #: or its planner (`voice-planner`, held per delegation), for `person` in
+    #: `voice_session_id`. All three or none, and never beside a task id. Still
+    #: no tenant: the route answers it only for a caller in
+    #: VOICE_SERVICE_ACCOUNTS and takes the tenant from `person` -- the
+    #: person's own workspace (`tenant_id_for_user`) -- so the body cannot
+    #: name one, and `may_serve` decides what that workspace is offered.
+    holder: Literal["voice-front", "voice-planner"] | None = None
+    person: str | None = Field(default=None, min_length=3, max_length=320)
+    voice_session_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    #: Whether the caller can run on an API key (§5.3): set the key's own
+    #: variable, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY`, rather than the
+    #: plan's token. A worker or a swarm-voice that predates the key shapes
+    #: sends nothing and is walked through the plans alone, so it is never
+    #: handed a key it would set as a plan token. It names no key, tier or
+    #: account (invariant 10): the broker still chooses, from the same chain.
+    key_tier: bool = False
+
+    @model_validator(mode="after")
+    def _one_kind_of_hold(self) -> "AccountAssign":
+        voice = (self.holder, self.person, self.voice_session_id)
+        if any(v is not None for v in voice):
+            if any(v is None for v in voice):
+                raise ValueError("a voice hold names its holder, person and voice_session_id together")
+            if self.task_id is not None or self.attempt_id is not None:
+                raise ValueError("a voice hold is not a task's: it carries no task_id or attempt_id")
+        return self
+
+
+class AccountPools(StrictModel):
+    """The pools an account belongs to, and its label typed back.
+
+    REQUIRED, both: a pool change moves an account between Voice it and every
+    workspace, so it is confirmed by the label like a removal is."""
+
+    pools: list[str] = Field(max_length=4)
+    confirm_label: str = Field(max_length=128)
+
+
+class VoiceLease(StrictModel):
+    """A Voice it session asking for a Voice it pool account."""
+
+    person: str = Field(min_length=3, max_length=320)
+    voice_session_id: str = Field(min_length=1, max_length=128)
+    provider: str = Field(default="openai", max_length=32)
+    #: What the session will do with the account. `live` (a GPT-Live session,
+    #: every Voice it session today) is offered only an OpenAI developer API
+    #: key: OpenAI refused the ChatGPT plan for Live on 4 November 2026. The
+    #: default, so a swarm-voice that predates the field is never handed a
+    #: plan either. `text` (a text conversation, swarm_voice.textchat) is
+    #: offered the pool's ChatGPT plan and never a key (`choose_voice`); no
+    #: other value is accepted.
+    capability: Literal["live", "text"] = openai_api_key.CAPABILITY_LIVE
+    #: As `AccountAssign.key_tier`, for a text conversation: swarm-voice can
+    #: run text on a key only once it has the developer Responses wire (lane
+    #: LP-V1), so until it says so a text lease walks the plans alone. A Live
+    #: session needs no flag: a key is the only kind it has ever run on.
+    key_tier: bool = False
+    #: As `AccountAssign.exclude`: accounts this session already held and
+    #: could not use (a key whose credit is gone, a plan at its limit), so the
+    #: walk passes over them to the next tier (llm-providers.md §5.3). It can
+    #: only narrow what the session is offered, never widen it.
+    exclude: list[str] = Field(default_factory=list, max_length=20)
+
+
+class VoiceHold(StrictModel):
+    """A Voice it session naming the hold it was issued."""
+
+    assignment_id: str = Field(min_length=1, max_length=64)
+    voice_session_id: str = Field(min_length=1, max_length=128)
+
+
+class AccountRelease(StrictModel):
+    """Give back one named assignment.
+
+    `assignment_id` is REQUIRED. Releasing used to need nothing but
+    `may_serve`, so any tenant an account was lent to could decrement the
+    owner's counter as often as it liked -- and `choose()` sorts on that
+    number, so an account with five live agents could sort as idle and take a
+    sixth. The id is proof that this caller held what it is giving back.
+    """
+
+    assignment_id: str = Field(min_length=1, max_length=128)
+    #: Set when the account was assigned and its secret could not be read --
+    #: no version yet, or no `secretAccessor` grant for this tenant. Recorded
+    #: against (account, this tenant) so the next agent is not sent at the same
+    #: wall, and so an operator can see the difference between an account
+    #: nobody wants and one nobody can read.
+    unusable: str = Field(default="", max_length=200)
+    #: The worker's `cost_usd` estimate of what ran on this hold (§4.6, Q5).
+    #: On a key it is added to the month's metered spend, and a borrower's to
+    #: its lend's, in the transaction that closes the hold. Absent from a
+    #: worker that predates it, and from a plan's hold: nothing is added.
+    cost_usd: float | None = Field(default=None, ge=0.0, le=SPEND_CAP_MAX_USD, allow_inf_nan=False)
+
+
+class AttemptHoldsRelease(StrictModel):
+    """Give back every hold stamped with one fenced attempt (archived issue 380).
+
+    BOTH ids are required and neither may be empty. A hold taken before holds
+    were stamped carries neither, and an empty `attempt_id` matching "no
+    attempt" would release every one of those at once.
+    """
+
+    task_id: str = Field(min_length=1, max_length=128)
+    attempt_id: str = Field(min_length=1, max_length=128)
+
+
+class _AttemptHold(StrictModel):
+    """Which hold the calling worker says it has: the proof every worker route checks.
+
+    All three are REQUIRED. The broker answers a reading, a swap or a status
+    read only for a LIVE hold with this assignment id, issued to the caller's
+    tenant and stamped with this task and attempt. A fenced attempt's holds
+    are released by the reconciler (archived issue 380), so a stale worker holds nothing and
+    is refused -- invariant 5 at the pool's door.
+    """
+
+    assignment_id: str = Field(min_length=1, max_length=128)
+    task_id: str = Field(min_length=1, max_length=128)
+    attempt_id: str = Field(min_length=1, max_length=128)
+
+
+class AccountHoldStatus(_AttemptHold):
+    """A holder's per-turn status read: the proof, and on a KEY the running
+    spend (§4.6).
+
+    `cost_usd` is the attempt's estimate of what has run on this hold so far,
+    the same figure the hold's close will carry, bounded as a release's and a
+    swap's are. On a key it is recorded on the hold (`Hold.running_cost_usd`)
+    and counted toward the month cap and a borrower's lend cap before the
+    hold closes. Ignored on a plan's hold: a plan's price is flat."""
+
+    cost_usd: float | None = Field(default=None, ge=0.0, le=SPEND_CAP_MAX_USD, allow_inf_nan=False)
+
+
+class WindowIn(StrictModel):
+    #: The provider's 0-1 fraction. NaN and infinities are refused with the
+    #: rest: a non-finite headroom sorts unpredictably in `choose()`.
+    utilization: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    resets_at: datetime
+
+
+#: A window name as the provider spells it (`five_hour`, `seven_day`,
+#: `seven_day_opus`). Keyed rather than enumerated -- see `Account.windows` --
+#: but bounded, because the name becomes a Firestore map key.
+_WINDOW_NAME = re.compile(r"^[a-z0-9_]{1,40}$")
+
+
+class AccountReadingIn(_AttemptHold):
+    """One worker's reading of the account it holds (S15).
+
+    Figures and instants and nothing else: `extra="forbid"` refuses any other
+    field, so a reading cannot carry a token, a header or a session id.
+    """
+
+    windows: dict[str, WindowIn] = Field(min_length=1, max_length=8)
+
+
+class VoiceReadingIn(VoiceHold):
+    """A Voice it session's reading of the plan it holds: the `x-codex-*`
+    windows swarm_voice.textchat reads off each answer.
+
+    Figures and instants and nothing else, as `AccountReadingIn`: the
+    hold's proof and the windows, and `extra="forbid"` refuses any other
+    field, so a reading cannot carry a token or a header."""
+
+    windows: dict[str, WindowIn] = Field(min_length=1, max_length=8)
+
+
+class AccountSwap(_AttemptHold):
+    """Move the calling attempt from the account it holds to another (S13/S14).
+
+    `account_id` is the account being LEFT; the broker picks the one moved to,
+    by the same `choose()` an assign uses, and never the one being left.
+    `exclude` narrows the choice the way it narrows an assign.
+    """
+
+    account_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=32)
+    provider: str = Field(default="anthropic", max_length=64)
+    exclude: list[str] = Field(default_factory=list, max_length=20)
+    #: As `AccountAssign.key_tier`: the swap walks the key tier only for a
+    #: caller that can run on a key.
+    key_tier: bool = False
+    #: As `AccountRelease.cost_usd`, for the hold this swap closes.
+    cost_usd: float | None = Field(default=None, ge=0.0, le=SPEND_CAP_MAX_USD, allow_inf_nan=False)
+
+
+class ReportAccount(_AttemptHold):
+    """The pool account a reporting attempt holds, and the proof it holds it.
+
+    The proof is `_AttemptHold`'s, all of it: a report that names an account
+    moves the 429 off the tenant's AIMD target and onto that account (archived issue 2302),
+    so naming one must cost exactly what reading or swapping it costs -- a
+    LIVE hold with this assignment id, issued to the caller's tenant, stamped
+    with this task and attempt. Anything less and a tenant could name some
+    other account to dodge its own halving.
+    """
+
+    account_id: str = Field(min_length=1, max_length=128)
+
+
+class RateLimitReport(StrictModel):
+    retry_after_seconds: int | None = Field(default=None, ge=0, le=86_400)
+    reset_at: datetime | None = None
+    #: The pool account the attempt held when the provider refused it (archived issue 2302).
+    #: None for API-key traffic, which reports exactly as it always has.
+    account: ReportAccount | None = None
+    #: A short, platform-written sentence for the account's health record.
+    #: The worker redacts it before sending (`agent_worker.control`); the
+    #: record caps it (`accountstore.health_message`).
+    message: str = Field(default="", max_length=500)
+
+
+class AccountErrorReport(StrictModel):
+    """A provider error on a held account that is not a rate limit (archived issue 2302).
+
+    Health only: it never touches AIMD. `kind` is one of
+    `accountstore.PROVIDER_ERROR_KINDS` -- auth, overloaded (529), server_error
+    (5xx), network.
+    """
+
+    account: ReportAccount
+    kind: str = Field(min_length=1, max_length=32)
+    message: str = Field(default="", max_length=500)
+
+
+class HardMaxRequest(StrictModel):
+    """A platform caller's configured max for one tenant, audited in `quota_audit`."""
+
+    hard_max: int = Field(ge=0, le=100_000)
+    #: The person a platform caller acts for. swarm-api's admin proxy sends
+    #: its admin's verified email, from the token; only a platform caller
+    #: reaches this field. Optional, so a caller that names no one is still
+    #: audited -- as the identity the broker verified.
+    requested_by: str | None = Field(default=None, max_length=320)
+    #: Why, in the operator's words. Optional here, unlike a target reset's:
+    #: swarm-api requires one, and a direct platform call without one is
+    #: recorded as having none rather than refused.
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class AdaptiveTargetRequest(StrictModel):
+    """A platform admin's reset of one tenant's AIMD target (QUOTA-RESET).
+
+    No `hard_max`: this route never moves the ceiling, so a body that names
+    one is refused (`extra="forbid"`) rather than half-applied.
+    """
+
+    #: Clamped into [min_target, configured_hard_max] by `aimd._clamp`; the
+    #: bound here only refuses nonsense before it reaches the clamp.
+    target: int = Field(ge=0, le=100_000)
+    #: Why, in the operator's words. Required: it is the audit record's point.
+    reason: str = Field(min_length=1, max_length=500)
+    #: Also reopen a cooldown (and an EXHAUSTED window). Off by default,
+    #: because raising a target and overruling the provider are two decisions.
+    clear_cooldown: bool = False
+    #: The person a platform caller acts for. swarm-api's admin proxy sends
+    #: its admin's verified email; only a platform caller reaches this field.
+    requested_by: str | None = Field(default=None, max_length=320)
+
+
+class BrokerMetrics:
+    def __init__(self) -> None:
+        self.registry = CollectorRegistry()
+        self.reports = Counter(
+            "swarm_quota_reports_total",
+            "Provider outcome reports, by provider and kind.",
+            ["provider", "kind"],
+            registry=self.registry,
+        )
+        self.decreases = Counter(
+            "swarm_quota_decreases_total",
+            "Multiplicative decreases applied, by provider.",
+            ["provider"],
+            registry=self.registry,
+        )
+        self.target = Gauge(
+            "swarm_quota_adaptive_target",
+            "Current AIMD target per provider and tenant.",
+            ["provider", "tenant"],
+            registry=self.registry,
+        )
+        self.derived_limit = Gauge(
+            "swarm_quota_derived_limit",
+            "Quota-derived pool cap per provider and tenant.",
+            ["provider", "tenant"],
+            registry=self.registry,
+        )
+        #: Admin decisions applied to a quota document, by provider and
+        #: action (`adaptive_target_reset`). The audit record in `quota_audit`
+        #: says who and why; this says how often.
+        self.admin_changes = Counter(
+            "swarm_quota_admin_changes_total",
+            "Admin changes applied to quota state, by provider and action.",
+            ["provider", "action"],
+            registry=self.registry,
+        )
+        self.auth_failures = Counter(
+            "swarm_quota_auth_failures_total",
+            "Rejected broker calls, by kind.",
+            ["kind"],
+            registry=self.registry,
+        )
+
+    def observe(self, state: QuotaState) -> None:
+        if state.adaptive_target is not None:
+            self.target.labels(provider=state.provider, tenant=state.tenant_id).set(
+                state.adaptive_target
+            )
+        self.derived_limit.labels(provider=state.provider, tenant=state.tenant_id).set(
+            quota_derived_limit_for(state)
+        )
+
+    def render(self) -> tuple[bytes, str]:
+        return generate_latest(self.registry), CONTENT_TYPE_LATEST
+
+
+class WorkerIdentity:
+    """Verifies the caller's Google ID token and derives its tenant.
+
+    `required=False` makes every anonymous caller a PLATFORM caller, which is
+    how `REQUIRE_OIDC=false` turned a dev convenience into "anyone may set any
+    tenant's hard max and run the sweep". It is accepted only in a local
+    environment now, and `hardened` refuses the combination outright rather than
+    letting a deployment inherit it from a copied .env.
+    """
+
+    def __init__(self, *, audience: str = "", platform_accounts: tuple[str, ...] = (),
+                 required: bool = True, project_id: str = "",
+                 hardened: bool = False) -> None:
+        if hardened:
+            if not required:
+                raise ValueError(
+                    "REQUIRE_OIDC=false is refused outside local development: with "
+                    "it off every unauthenticated caller is treated as a platform "
+                    "administrator, able to set any tenant's hard max and run the "
+                    "quota sweep"
+                )
+            if not audience:
+                raise ValueError(
+                    "BROKER_AUDIENCE is required outside local development: "
+                    "google-auth skips the 'aud' check entirely when no audience is "
+                    "given, so a token minted for any other service would be accepted"
+                )
+        self._audience = audience or None
+        self._platform = {a.lower() for a in platform_accounts if a}
+        self._required = required
+        self._pattern = worker_sa_pattern(project_id) if required else None
+        self._request = None
+
+    @property
+    def required(self) -> bool:
+        return self._required
+
+    def resolve(self, authorization: str | None) -> tuple[str | None, bool]:
+        """Return (tenant_id or None, is_platform_caller)."""
+        if not self._required:
+            return None, True
+        email = self.verified_email(authorization)
+        if email in self._platform:
+            return None, True
+        match = self._pattern.match(email) if self._pattern else None
+        if not match:
+            raise BrokerAuthError("caller is not a swarm worker service account")
+        return match.group("tenant"), False
+
+    def verified_email(self, authorization: str | None) -> str:
+        """The caller's verified email, lower-cased; "" when OIDC is off.
+
+        Separate from `resolve` so an audit record can name the caller without
+        widening what `resolve` returns to every route that reads it.
+        """
+        if not self._required:
+            return ""
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise BrokerAuthError("missing bearer token")
+        token = authorization.split(" ", 1)[1].strip()
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token as google_id_token
+
+        if self._request is None:
+            self._request = google_requests.Request()
+        try:
+            claims = google_id_token.verify_oauth2_token(
+                token, self._request, audience=self._audience
+            )
+        except ValueError:
+            # Never echo the token or the library's message.
+            raise BrokerAuthError("token verification failed") from None
+        return str(claims.get("email", "")).lower()
+
+
+def _flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
+
+
+#: How long a Voice it session's hold lives without a renewal. swarm-voice
+#: renews every four minutes; a swarm-voice that dies stops renewing, and the
+#: hold lapses on its own within this.
+VOICE_HOLD_TTL = timedelta(minutes=10)
+
+
+#: The retired archived issue 295 GitHub App keys (owner decision MS0-Q4, 2026-10-06).
+#: The frozen catalogue still names `git-review` on its disabled post-verdict
+#: entry, but nothing reads either key and neither has a quota to keep: a
+#: quota route naming one is refused like any unknown provider. swarm-api
+#: keeps the same pair in `validation.APP_CREDENTIAL_PROVIDERS`; the broker
+#: does not import swarm-api.
+RETIRED_APP_PROVIDERS: frozenset[str] = frozenset({"git-merge", "git-review"})
+
+
+#: The providers a pool account may be of: Claude subscriptions and, since
+#: 2026-11-01 (archived issue 2688, the owner: codex runs on ChatGPT plans from a shared pool),
+#: ChatGPT plans. Each is a credential pair this service can refresh; a
+#: provider outside this list has no refresh path, so filing one would be a
+#: pool entry that dies at its first expiry.
+ACCOUNT_PROVIDERS = ("anthropic", openai_plan.PROVIDER)
+#: Account kinds only the Voice it pool holds: `openai-api`, an OpenAI
+#: developer API key (`openai_api_key`). Apart from `ACCOUNT_PROVIDERS`, the
+#: pairs the sweep refreshes and swarm-api's `schemas.ACCOUNT_PROVIDERS`
+#: restates, because no workspace's sign-in or task ever names one.
+VOICE_ONLY_PROVIDERS = (openai_api_key.PROVIDER,)
+#: Both developer API key kinds (docs/design/llm-providers.md §3): the new
+#: `anthropic-api` and `openai-api`, which is no longer Voice it only once it
+#: is registered as a pool key (`voice_dedicated` False). Registered through
+#: `_register_api_key`, never refreshed, never polled.
+API_KEY_PROVIDERS = api_key.PROVIDERS
+
+
+#: The API key kind a workspace's own provider secret is imported as (Q7):
+#: `swarm-tenant-<tenant>-<vendor>` holds that vendor's developer key.
+WORKSPACE_KEY_PROVIDER: dict[str, str] = {
+    "anthropic": api_key.ANTHROPIC_API,
+    "openai": api_key.OPENAI_API,
+}
+#: Where an imported key was copied from, on its account document (§4.4: its
+#: delete says the workspace's own secret still holds the value).
+IMPORTED_FROM = "key_imported_from"
+
+#: A deleted API key's owed secret destruction (docs/design/llm-providers.md
+#: §4.4): one document per account id, written in the transaction that
+#: removes the account and closes its holds, marked done once the secret is
+#: destroyed. Secret name, who and when; never the value. The quota sweep
+#: retries every record not marked done (`finish_owed_key_deletions`).
+KEY_DELETIONS_COLLECTION = "key_deletions"
+#: A key's rotation (§4.5): the version it wrote and when the versions it
+#: superseded are destroyed, one hold TTL later, by the quota sweep
+#: (`destroy_superseded_key_versions`). One document per account id; a second
+#: rotation inside the TTL replaces it, keeping its own later version.
+KEY_ROTATIONS_COLLECTION = "key_rotations"
+#: How often a key marked credit gone is asked whether it can serve again
+#: (§5.2: "the broker's hourly probe").
+KEY_PROBE_INTERVAL = timedelta(hours=1)
+#: When a key's exhausted probe last ran, on its account document.
+KEY_PROBED_AT = "exhausted_probed_at"
+#: The steps of a key's delete a 502 names (§4.4).
+KEY_STEP_DESTROY = "destroy_versions"
+KEY_STEP_DELETE = "delete_secret"
+
+
+def _account_provider(provider: str) -> str:
+    name = (provider or "").strip().lower()
+    known = ACCOUNT_PROVIDERS + VOICE_ONLY_PROVIDERS + tuple(
+        p for p in API_KEY_PROVIDERS if p not in VOICE_ONLY_PROVIDERS
+    )
+    if name not in known:
+        raise BrokerValidationError(
+            f"a pool account is one of {', '.join(known)}, not {provider!r}"
+        )
+    return name
+
+
+def _known_provider(provider: str) -> str:
+    providers = {
+        p.provider for p in RUNNER_PROFILES.values() if p.provider
+    } - RETIRED_APP_PROVIDERS
+    name = provider.strip().lower()
+    if name not in providers:
+        raise BrokerValidationError(
+            f"unknown provider {provider!r}; known providers are "
+            + ", ".join(sorted(providers))
+        )
+    return name
+
+
+def build_broker(
+    *,
+    settings: BrokerSettings | None = None,
+    db: Any | None = None,
+) -> QuotaBroker:
+    settings = settings or BrokerSettings.from_env()
+    if db is None:
+        from google.cloud import firestore
+
+        db = firestore.Client(
+            project=settings.project_id, database=settings.core.firestore_database
+        )
+    return QuotaBroker(db, settings=settings)
+
+
+def _aware_utc(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def credential_from_token_response(payload: dict[str, Any]) -> Credential:
+    """Shape a token-endpoint response into a Credential.
+
+    `expires_in` is SECONDS FROM NOW, not an absolute time. Reading it as an
+    epoch would date the credential to 1970 and make every account look
+    expired the moment it was added.
+    """
+    access = str(payload.get("access_token") or "")
+    refresh = str(payload.get("refresh_token") or "")
+    if not access or not refresh:
+        raise CredentialError(
+            "the token endpoint returned no refresh token, so this credential "
+            "could not be kept alive. Nothing was saved."
+        )
+    expires_in = int(payload.get("expires_in") or 3600)
+    return Credential(
+        access_token=access,
+        refresh_token=refresh,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires_in),
+    )
+
+
+#: What a reader is told of the other side of a pair it does not own (archived issue 2222;
+#: the owner, 2026-10-24 17:26Z, "Name it only within the same tenant"): that there
+#: is one, and nothing about it -- no label, owner, account id or organisation.
+#: A tenant learns nothing about another tenant's pool.
+ANOTHER_WORKSPACE = "this subscription is already registered in another workspace"
+
+
+def _names(other: str | None, viewer: str, platform_wide: bool) -> bool:
+    """Whether a reader in `viewer` may be told the account id `other`.
+
+    An account id is `<owner_tenant>:<label>` (`accounts.account_id_for`), so
+    its owner is read off it -- the rule `list_accounts` already applies to
+    unreadable document ids. Only the platform-wide listing names every side.
+    """
+    if other is None:
+        return False
+    return platform_wide or other.split(":", 1)[0] == viewer
+
+
+def _health_row(raw: Any, account: Any, now: datetime, *, readable: bool = True) -> dict[str, Any]:
+    """The two health fields a listing row carries (archived issue 2302): the last 24 h's
+    counts by kind and the one-word status (`accountstore.health_status`).
+    Counts and a word, nothing that names a tenant or a task. Both None when
+    the records could not be read: unknown, never a made-up `healthy`."""
+    if not readable:
+        return {"health_24h": None, "health_status": None}
+    data = raw if isinstance(raw, dict) else {}
+    return {
+        "health_24h": health_counts(data, now)["last_24h"],
+        "health_status": health_status(account, data, now),
+    }
+
+
+def _voice_holder_to_api(account: Any, now: datetime) -> dict[str, Any] | None:
+    for hold in getattr(account, "holds", ()) or ():
+        if getattr(hold, "pool", POOL_WORKSPACE) == POOL_VOICE_IT and not hold.is_expired(now):
+            return {
+                "voice_session_id": hold.voice_session_id,
+                "person": hold.person,
+                "since": _iso(hold.assigned_at),
+            }
+    return None
+
+
+def account_to_api(
+    account: Any,
+    *,
+    now: datetime | None = None,
+    viewer: str | None = None,
+    platform_wide: bool = False,
+) -> dict[str, Any]:
+    """One account, shaped for a human to read.
+
+    `viewer` is the tenant reading it, which decides what the account's
+    duplicate marks may NAME (archived issue 2222): the other side of a pair is named only
+    to the tenant that owns it. None means the account's own owner, which is
+    who every owner-gated route answers. `platform_wide` is the platform's
+    unscoped listing, the one reader shown both sides of every pair.
+
+    THE COLUMNS ARE `cs status`'s, deliberately. An operator who already reads
+    that output on their laptop should not have to learn a second vocabulary
+    for the same five facts about the same five accounts. So: the label, each
+    window's utilisation, when the binding one clears, and the state.
+
+    NO CREDENTIAL MATERIAL, and not even its length. `Credential.redacted()`
+    exposes `access_token_len`, which is fine in a debug log and is not fine on
+    a page -- a length is a real hint about a secret and nobody reading this
+    screen needs it.
+
+    `stale` is computed rather than stored, because a reading's age is what
+    decides whether to trust it: `cs status` marks a projected figure with `~`
+    for exactly this reason, and a number shown without that mark is a claim
+    that it is current.
+    """
+    now = now or datetime.now(timezone.utc)
+    windows: dict[str, Any] = {}
+    for name, reading in (getattr(account, "windows", {}) or {}).items():
+        windows[name] = {
+            "utilization": round(float(reading.utilization), 4),
+            "resets_at": reading.resets_at.isoformat(),
+            "reset": reading.is_reset(now),
+        }
+    observed_at = getattr(account, "observed_at", None)
+    stale = True
+    if observed_at is not None:
+        stale = (now - observed_at) > DEFAULT_STALE_AFTER
+
+    # THE VERDICT AND THE RECORD ARE TWO FIELDS, and the verdict is the one a
+    # reader can act on. `is_unreadable_for` is asked rather than re-derived
+    # from a timestamp this function would have to publish, so the set below is
+    # by construction the set `choose()` will skip -- the two cannot drift
+    # apart the way a copy of the rule would.
+    #
+    # An object without the predicate reports every recorded tenant as
+    # currently unreadable. That over-reports a problem rather than hiding one,
+    # which is the only direction this field may fail in.
+    unreadable_by = sorted(getattr(account, "unreadable_by", {}) or {})
+    predicate = getattr(account, "is_unreadable_for", None)
+    unreadable_now = (
+        [t for t in unreadable_by if predicate(t, now)]
+        if callable(predicate)
+        else list(unreadable_by)
+    )
+
+    # WHETHER A NEW AGENT CAN BE HANDED THIS ACCOUNT, AND WHAT STOPS IT (archived issue 2222).
+    # On 2026-10-24 the listing said "7 accounts, 7 available" while every one
+    # of them was under its floor and 28 agents waited: "available" was the
+    # account's state, and nothing on the page said a window or a cap was
+    # refusing it. Asked of the same methods `choose()` asks, so the listing
+    # and the assignment cannot disagree; `unreadable_now` above stays the
+    # per-tenant half.
+    blocked_by: list[dict[str, Any]] = []
+    blocking = getattr(account, "blocking_windows", None)
+    if callable(blocking):
+        aged = bool(observed_at is not None and stale)
+        for name, reading in sorted(blocking(now).items()):
+            blocked_by.append({
+                "window": name,
+                "used": round(float(reading.utilization), 4),
+                "floor": window_floor(name),
+                "resets_at": reading.resets_at.isoformat(),
+                #: True when the window blocks only because an aged reading
+                #: counts at half (`Account.headroom`).
+                "aged_reading": aged,
+            })
+    # A RECORDED 429 THAT HAS NOT RESET (`Account.is_limited`): `choose()`
+    # skips the account until it does, so the page says so, with when.
+    limited = getattr(account, "is_limited", None)
+    if callable(limited) and limited(now):
+        blocked_by.append({
+            "limited_until": _iso(getattr(account, "limited_until", None)),
+            "window": getattr(account, "limited_window", None),
+        })
+    # A KEY'S OWN MARKS (§5.1, §5.2): credit gone, or the month's spend --
+    # closed and running (`Account.spent`) -- at its cap. `choose()` skips
+    # both (`Account.has_headroom`), so the verdict says so with its reason,
+    # for every reader, and no reader re-derives it.
+    if api_key.is_key(account.provider):
+        exhausted_at = getattr(account, "exhausted_at", None)
+        if isinstance(exhausted_at, datetime):
+            blocked_by.append({"reason": CAP_EXHAUSTED, "exhausted_at": exhausted_at.isoformat()})
+        over = getattr(account, "is_over_spend_cap", None)
+        if callable(over) and over(now):
+            blocked_by.append({
+                "reason": CAP_SPEND,
+                "monthly_spend_cap_usd": account.monthly_spend_cap_usd,
+                "spent_usd": round(account.spent(now), 6),
+                "clears_at": next_spend_month(now).isoformat(),
+            })
+    max_agents = getattr(account, "max_agents", None)
+    live_holds = getattr(account, "live_holds", None)
+    if isinstance(max_agents, int) and callable(live_holds):
+        holding = len(live_holds(now))
+        if holding >= max_agents:
+            blocked_by.append({"cap": holding, "max_agents": max_agents})
+    # ONE AGENT UNTIL MEASURED (archived issue 2222): `choose()` skips a never-observed
+    # account holding one, and the page says it is waiting on that reading,
+    # not that it is full or spent.
+    awaits = getattr(account, "awaits_first_reading", None)
+    if callable(awaits) and awaits(now):
+        blocked_by.append({
+            "first_reading": "pending",
+            "assigned": len(live_holds(now)) if callable(live_holds) else account.assigned,
+            "max_before_reading": MAX_AGENTS_BEFORE_READING,
+        })
+    # A LATER REGISTRATION OF A SUBSCRIPTION ANOTHER ACCOUNT HOLDS (archived issue 2222):
+    # one subscription, handed out once, through the older registration.
+    # NAMED ONLY TO ITS OWN TENANT (the owner, Q2): another workspace's account
+    # reads as "already registered in another workspace", and nothing else.
+    # ONLY ON A RECORDED IDENTITY (archived issue 3046): a stored mark on an account whose
+    # organisation or seat is not recorded is one an older rule wrote, which
+    # `choose()` no longer honours (`withheld_mark`) and the next sweep
+    # clears, so it is not shown. `matched_on` is the identity's KIND, never
+    # its value.
+    reader = viewer if viewer is not None else account.owner_tenant
+    proven = (getattr(account, "duplicate_of", None)
+              if subscription_identity(account) is not None else None)
+    duplicate_of = proven if _names(proven, reader, platform_wide) else None
+    duplicate_reason = None
+    if proven is not None:
+        duplicate_reason = (
+            f"{DUPLICATE_REASON} {duplicate_of}"
+            if duplicate_of is not None
+            else ANOTHER_WORKSPACE
+        )
+    if proven is not None and withheld_mark(account):
+        blocked_by.append({"duplicate_of": duplicate_of, "reason": duplicate_reason,
+                           "matched_on": DUPLICATE_MATCHED_ON})
+    # IDENTICAL READINGS ON TWO POLLS (archived issue 2222, the owner Q1): an inferred pair,
+    # shown here and in `blocked_by` the way a proven one is, but ADVISORY --
+    # `choose()` still hands it out, so it does not make `can_take_new_agent`
+    # false. Readings can coincide; withholding on an inference would take a
+    # real subscription out of the pool with nothing to end it.
+    possible = getattr(account, "possible_duplicate_of", None)
+    possible_duplicate = None
+    if possible is not None:
+        named = possible if _names(possible, reader, platform_wide) else None
+        possible_duplicate = {
+            "of": named,
+            "reason": (
+                "identical readings on two polls"
+                if named is not None
+                else "identical readings on two polls with an account in another workspace"
+            ),
+        }
+        blocked_by.append({
+            "possible_duplicate": named,
+            "advisory": True,
+            "reason": (
+                f"identical readings on two polls with {named}"
+                if named is not None
+                else possible_duplicate["reason"]
+            ),
+        })
+    next_reset = getattr(account, "next_reset", None)
+    next_eligible = next_reset(now) if callable(next_reset) else None
+    # THE LATEST INSTANT ANY AGENT CAN STILL HOLD IT (archived issue 2222, the Timeline's
+    # frames B3/B4): each live hold's own deadline, `Hold.expires_at`, which
+    # is when the quota sweep stops counting a hold whose worker never
+    # released it. The latest, not the soonest: a full account frees when ONE
+    # agent finishes, which no clock says, so the page draws this as "latest",
+    # never as "expected". An expired hold has already stopped counting, so
+    # its deadline is not the account's.
+    latest_hold = None
+    if callable(live_holds):
+        deadlines = [h.expires_at for h in live_holds(now)]
+        latest_hold = max(deadlines) if deadlines else None
+    return {
+        "account_id": account.account_id,
+        "owner_tenant": account.owner_tenant,
+        "label": account.label,
+        "provider": account.provider,
+        "state": account.state.value,
+        "reason": account.reason,
+        "lend_to": list(account.lend_to),
+        #: docs/design/llm-providers.md §3 and §4.6. `getattr` for the reason
+        #: `model_classes` gives. The vendor groups a plan with its keys; a
+        #: lend's `cap_set` False is one carried over from `lend_to`, shown
+        #: `cap not set`. Never a key's value: the value is in Secret Manager.
+        "vendor": VENDOR_OF.get(account.provider, account.provider),
+        "kind": "api_key" if api_key.is_key(account.provider) else "plan",
+        "lends": {
+            t: c.to_firestore() for t, c in (getattr(account, "lends", None) or {}).items()
+        },
+        "per_workspace_max": dict(getattr(account, "per_workspace_max", None) or {}),
+        "monthly_spend_cap_usd": getattr(account, "monthly_spend_cap_usd", None),
+        "exhausted_at": (
+            account.exhausted_at.isoformat()
+            if isinstance(getattr(account, "exhausted_at", None), datetime) else None
+        ),
+        "voice_dedicated": bool(getattr(account, "voice_dedicated", False)),
+        #: The tier it serves from (§5.3), and on a key this month's metered
+        #: spend, the key's and each borrower's (§4.6), what its caps read.
+        "tier": (
+            TIER_PLAN if not api_key.is_key(account.provider)
+            else "voice_dedicated" if getattr(account, "voice_dedicated", False) else "api_key"
+        ),
+        "month_spend_usd": (getattr(account, "month_spend", None) or {}).get(
+            spend_month(now or datetime.now(timezone.utc)), 0.0
+        ),
+        "lend_spend_usd": dict((getattr(account, "lend_spend", None) or {}).get(
+            spend_month(now or datetime.now(timezone.utc)), {}
+        )),
+        #: The classes this account's plan serves; empty means every class
+        #: (R5). `getattr` for the same reason as `observed_at` above.
+        "model_classes": list(getattr(account, "model_classes", ()) or ()),
+        #: The account's Name (archived issue 1913), or None for none -- never the label in
+        #: its place, so a reader can tell a named account from an unnamed one.
+        #: Display text only. `getattr` for the same reason as `model_classes`.
+        "display_name": getattr(account, "display_name", None),
+        #: Which organisation -- which SUBSCRIPTION -- the credential runs on
+        #: (archived issue 2222): its display name and plan as the provider gave them, or
+        #: null when the provider has not said. NEVER the identity itself.
+        "organisation": _organisation_to_api(account),
+        #: The other account registered on the same organisation and seat, or null.
+        #: Both of a pair carry it; the newer one is also in `blocked_by`.
+        #: NULL ALSO WHEN THE OTHER SIDE IS ANOTHER TENANT'S, unless this is
+        #: the platform-wide listing: `duplicate_reason` then says so in words.
+        "duplicate_of": duplicate_of,
+        #: Why this account is one of a pair, in words, or null for none.
+        "duplicate_reason": duplicate_reason,
+        #: Which identity the pair matched on -- its kind, never its value
+        #: (archived issue 3046): "organisation_and_seat", or null for no pair.
+        "duplicate_matched_on": DUPLICATE_MATCHED_ON if proven is not None else None,
+        #: `{of, reason}` when this account read identically to another on
+        #: two consecutive polls and no pair of organisations tells them
+        #: apart, else null. `of` is null for another tenant's account.
+        "possible_duplicate": possible_duplicate,
+        "assigned": account.assigned,
+        #: How many agents may hold it at once (archived issue 2222).
+        "max_agents": max_agents,
+        #: The pools it belongs to (`accounts.POOLS`): ["workspace"] for every
+        #: account before the Voice it pool, ["voice-it"] for one reserved for
+        #: Voice it, or both. `getattr` for the same reason as `model_classes`.
+        "pools": list(getattr(account, "pools", DEFAULT_POOLS) or DEFAULT_POOLS),
+        #: Who may use it through the Voice it pool; [] outside that pool.
+        "voice_it_people": (
+            list(getattr(account, "voice_it_people", ()) or ())
+            if POOL_VOICE_IT in (getattr(account, "pools", ()) or ())
+            else []
+        ),
+        #: The Voice it session holding it now, or null: its id, its person
+        #: and since when. Never the credential.
+        "voice_it_holder": _voice_holder_to_api(account, now),
+        #: Whether `choose()` would hand it a new agent now, for a tenant it
+        #: serves that has not reported it unreadable: AVAILABLE, no window
+        #: under its floor, and a free slot.
+        #: An `advisory` entry (a possible duplicate) is shown, never refusing.
+        "can_take_new_agent": account.state in ASSIGNABLE_STATES
+        and not [b for b in blocked_by if not b.get("advisory")],
+        #: What refuses it: each window under its floor (`used`, the `floor`
+        #: it is held to, when it `resets_at`), or `{cap, max_agents}` when
+        #: every slot is taken; on a key, `reason` `exhausted` (credit gone,
+        #: with `exhausted_at`) or `spend_cap` (the month's spend, closed and
+        #: running, at `monthly_spend_cap_usd`, with `spent_usd` and when it
+        #: `clears_at`). Empty when nothing does.
+        "blocked_by": blocked_by,
+        #: When a window that blocks it clears, or null when no window does --
+        #: a full account frees when an agent on it finishes, which no clock
+        #: says.
+        "next_eligible_at": _iso(next_eligible),
+        #: The latest deadline among the agents holding it now, or null when
+        #: none holds it. A deadline, not a forecast: the hold stops counting
+        #: then whether or not its agent is still running.
+        "latest_hold_deadline": _iso(latest_hold),
+        "windows": windows,
+        #: False for a kind with no usage window to read at all (an OpenAI
+        #: developer API key, `Account.measured`): its windows are "not
+        #: measured", never 0, and no reading will ever arrive.
+        "measured": bool(getattr(account, "measured", True)),
+        "observed_at": observed_at.isoformat() if observed_at else None,
+        #: True when no reading has arrived recently enough to be trusted.
+        #: Distinct from "utilisation is zero", which is a measurement.
+        "stale": stale,
+        #: Tenants that were handed this account and reported they could not
+        #: read its secret. An account nobody can read is not the same thing as
+        #: an account nobody wants, and until this was surfaced the two looked
+        #: identical on the listing: full headroom, zero agents, and every task
+        #: for that tenant quietly failing.
+        "unreadable_by": unreadable_by,
+        #: The tenants `choose()` will REFUSE to hand this account to RIGHT NOW.
+        #:
+        #: Computed here rather than left to the reader, for the same reason
+        #: `stale` and each window's `reset` are: the rule is time-limited --
+        #: `Account.is_unreadable_for` forgets a report after
+        #: DEFAULT_STALE_AFTER, deliberately, so a five-minute onboarding
+        #: window does not become an account that never comes back -- and the
+        #: server owns the clock. `unreadable_by` above carries no ages at all,
+        #: so a reader given only that cannot tell a report five minutes old
+        #: from one three days stale, and both render the same.
+        #:
+        #: Without this the listing was back where `unreadable_by` was added to
+        #: stop it being: an account the pool will not hand out drawn as a
+        #: healthy one with full headroom and zero agents, and every task for
+        #: that tenant quietly failing.
+        "unreadable_now": unreadable_now,
+        #: What the refresh sweep last did with this credential (U27,
+        #: docs/web-ui/06-accounts.md P2): when, why, and when the token it
+        #: holds expires. Null until a sweep has written them. An instant and
+        #: a reason -- never the token, its length or its secret's name.
+        "last_refresh_at": _iso(getattr(account, "last_refresh_at", None)),
+        "token_expires_at": _iso(getattr(account, "token_expires_at", None)),
+        "last_refresh_reason": getattr(account, "last_refresh_reason", "") or None,
+        #: Null means NEVER assigned, which is the shape of "this account is
+        #: registered and no worker can reach the broker at all".
+        "last_assigned_at": (
+            last_assigned.isoformat()
+            if isinstance(last_assigned := getattr(account, "last_assigned_at", None),
+                          datetime)
+            else None
+        ),
+    }
+
+
+def _organisation_to_api(account: Any) -> dict[str, Any] | None:
+    """An account's organisation for a reader: name and plan, never the id."""
+    if not getattr(account, "organisation_id", None):
+        return None
+    return {
+        "name": getattr(account, "organisation_name", None),
+        "plan": getattr(account, "organisation_plan", None),
+    }
+
+
+def organisation_line(account_id: str, organisation: Organisation | None) -> str:
+    """What an add or replace answer says it registered (archived issue 2222).
+
+    "registered eng:example-team: organisation Personal (Max)" -- so a sign-in
+    that authorised the wrong organisation shows at once, in the answer, not
+    two days later in the week's figures.
+    """
+    if organisation is None:
+        return (
+            f"registered {account_id}: the provider did not say which "
+            "organisation this credential runs on"
+        )
+    name = organisation.name or "(unnamed)"
+    plan = organisation.plan or "plan not reported"
+    return f"registered {account_id}: organisation {name} ({plan})"
+
+
+def refuse_duplicate_organisation(
+    accounts: Any, organisation: Organisation | None, account_id: str, owner_tenant: str
+) -> None:
+    """Refuse an add whose organisation AND seat another account already runs
+    on (archived issue 2222, archived issue 2282).
+
+    ANY LABEL AND ANY OWNER: one seat of one organisation is one subscription,
+    and two pool accounts on it count its quota twice and could hand it twice
+    the agents the cap allows. The account being REPLACED is not "another": a
+    re-sign-in of the same seat onto the same account is the normal way to
+    replace a credential. Raised before any secret is written.
+
+    ONLY THE SAME SEAT (the owner, 2026-10-25): a second seat of a Team
+    organisation has its own limits and registers normally. A sign-in whose
+    seat the provider did not name, or an existing account whose seat is not
+    recorded yet, is never refused on the organisation alone, and is never
+    withheld either (archived issue 3046): an unknown identity is not a duplicate. Its seat
+    is recorded at its next refresh, and from then on the sweep pairs it
+    (`accounts.duplicates`) if it is one; until then identical readings only
+    flag it (`possible_duplicate`).
+
+    THE EXISTING ACCOUNT IS NAMED ONLY WITHIN `owner_tenant` (the owner, 2026-10-24
+    17:26Z, "Name it only within the same tenant"). Another tenant's is
+    "already registered in another workspace": no label, owner, account id or
+    organisation, so an add cannot be used to probe another tenant's pool.
+    """
+    if organisation is None:
+        return
+    for other in accounts:
+        if other.account_id == account_id:
+            continue
+        if other.organisation_id != organisation.identity:
+            continue
+        seat = getattr(organisation, "seat", None)
+        if not seat or getattr(other, "seat_id", None) != seat:
+            continue
+        if other.owner_tenant != owner_tenant:
+            raise BrokerValidationError(
+                f"{ANOTHER_WORKSPACE}. One seat is one subscription, so it "
+                "was not registered twice. If you meant another seat or "
+                "organisation, sign in to claude.ai as it and try again. "
+                "Nothing was registered."
+            )
+        raise BrokerValidationError(
+            f"this sign-in authorised a seat of organisation "
+            f"{organisation.name or '(unnamed)'} "
+            f"({organisation.plan or 'plan not reported'}) that is "
+            f"already registered as {other.label}. One seat is one "
+            "subscription, so it was not registered twice. If you meant "
+            "another seat or organisation, sign in to claude.ai as it and "
+            "try again. Nothing was registered."
+        )
+
+
+def mark_duplicates(store: Any) -> list[str]:
+    """Write `duplicate_of` on every account that shares a subscription -- an
+    organisation and a seat (archived issue 2282, `accounts.duplicates`) -- and clear it on
+    every account that no longer does, which is how the marks the
+    organisation-only rule wrote are lifted at the first sweep after it.
+    Returns the ids marked.
+
+    Run after every refresh sweep and every add, so a pair registered before
+    archived issue 2222 is found at its next exchange, and an account re-signed into its
+    own organisation is released the moment it is. Never raises: a listing
+    or a write that fails leaves the marks as they were, for the next pass.
+    Logs account ids only, never an identity.
+    """
+    try:
+        accounts = store.list()
+    except Exception as exc:
+        log.error("could not list accounts to find duplicates",
+                  extra={"error": type(exc).__name__})
+        return []
+    found = duplicates(accounts)
+    marked: list[str] = []
+    for account in accounts:
+        other, withheld = found.get(account.account_id, (None, False))
+        current = (
+            getattr(account, "duplicate_of", None),
+            getattr(account, "duplicate_withheld", False),
+        )
+        if current == (other, withheld):
+            if other is not None:
+                marked.append(account.account_id)
+            continue
+        try:
+            store.set_duplicate(account.account_id, other, withheld)
+        except Exception as exc:
+            log.error(
+                "could not record an account's duplicate mark",
+                extra={"account_id": account.account_id, "error": type(exc).__name__},
+            )
+            continue
+        if other is not None:
+            marked.append(account.account_id)
+            log.warning(
+                "two pool accounts run on one subscription; only the older "
+                "registration is handed out",
+                extra={"account_id": account.account_id, "duplicate_of": other,
+                       "withheld": withheld},
+            )
+    return marked
+
+
+def mark_possible_duplicates(store: Any) -> list[str]:
+    """Write each account's identical-readings count and `possible_duplicate_of`
+    (`accounts.identical_reading_pairs`, archived issue 2222), clearing what no longer
+    holds. Returns the ids flagged. Run after every usage poll.
+
+    Never raises, like `mark_duplicates`: a failed listing or write leaves the
+    marks as they were for the next pass. Logs account ids only.
+    """
+    try:
+        accounts = store.list()
+    except Exception as exc:
+        log.error("could not list accounts to compare their readings",
+                  extra={"error": type(exc).__name__})
+        return []
+    found = identical_reading_pairs(accounts)
+    flagged: list[str] = []
+    for account in accounts:
+        count, possible = found.get(account.account_id, (None, None))
+        before = getattr(account, "possible_duplicate_of", None)
+        if (getattr(account, "identical_readings", None), before) != (count, possible):
+            try:
+                store.set_identical_readings(account.account_id, count, possible)
+            except Exception as exc:
+                log.error(
+                    "could not record an account's identical-readings count",
+                    extra={"account_id": account.account_id, "error": type(exc).__name__},
+                )
+                continue
+            if possible is not None and before is None:
+                log.warning(
+                    "two pool accounts read identically on consecutive polls; "
+                    "flagged as a possible duplicate, still handed out",
+                    extra={"account_id": account.account_id, "possible_duplicate_of": possible},
+                )
+        if possible is not None:
+            flagged.append(account.account_id)
+    return flagged
+
+
+#: One DocumentSnapshot out of a Firestore transactional get -- see
+#: `sweeplease.txn_snapshot` for why a get can be a generator. Imported under
+#: the name this module has always used, so the broker has ONE copy of the
+#: adapter and not one per module that runs a transaction.
+_txn_snapshot = txn_snapshot
+
+
+def _live_holds(data: dict[str, Any], now: datetime) -> list[Hold]:
+    return [h for h in holds_from_firestore(data.get("holds")) if not h.is_expired(now)]
+
+
+def _split_holds(data: dict[str, Any], now: datetime) -> tuple[list[Hold], list[Hold]]:
+    """(live, expired). Every path that drops the expired ones must log them."""
+    holds = holds_from_firestore(data.get("holds"))
+    return (
+        [h for h in holds if not h.is_expired(now)],
+        [h for h in holds if h.is_expired(now)],
+    )
+
+
+#: Where swarm-api writes a task: `swarm_common.admission` names the same
+#: collection. Read here only to learn one task's model class.
+TASKS_COLLECTION = "tasks"
+
+
+def step_class_for(db: Any, tenant_id: str, task_id: str | None) -> str | None:
+    """The model class the caller's step runs, or None when it cannot be known.
+
+    Owner decision R5: an account whose plan cannot serve a class must never
+    be handed a step of it, so the assign and swap routes need the step's
+    class. It is READ, never taken from the body: `tasks/{task_id}` written by
+    swarm-api at submission (signed, and checked again by the worker), and
+    resolved by the frozen `step_model_class` -- the rule swarm-api, the
+    scheduler and the worker apply -- so a step with no class is its
+    profile's default.
+
+    The task id is a claim (`AccountAssign.task_id`). A task that does not
+    exist, or belongs to another tenant, says nothing about this caller's
+    step, so it is None -- and None is served only by an account that serves
+    every class (`Account.serves_class`). So is a worker that sends no task
+    id. Neither can land a step on a narrowed account, and an un-narrowed pool
+    serves both exactly as before. Never raises: an unreadable task is an
+    unknown class, not a failed assignment.
+    """
+    return step_for(db, tenant_id, task_id)[1]
+
+
+def step_for(db: Any, tenant_id: str, task_id: str | None) -> tuple[Any, str | None]:
+    """(the step's runner profile, its model class), each None when it cannot
+    be known: `step_class_for`'s read, which the walk also needs for the
+    profile's declared credentials (§3.1, `chain_providers`): `browser`
+    declares the key alone, so its chain has no plan tier."""
+    if not task_id:
+        return None, None
+    try:
+        snap = db.collection(TASKS_COLLECTION).document(task_id).get()
+        data = snap.to_dict() if getattr(snap, "exists", False) else None
+    except Exception as exc:
+        log.warning(
+            "could not read a task's model class; only an account that serves "
+            "every class may take it",
+            extra={"task_id": task_id, "error": type(exc).__name__},
+        )
+        return None, None
+    if not isinstance(data, dict) or data.get("tenant_id") != tenant_id:
+        return None, None
+    profile = RUNNER_PROFILES.get(str(data.get("runner_profile") or ""))
+    requested = data.get("model_class")
+    if profile is None or not (requested is None or isinstance(requested, str)):
+        return None, None
+    try:
+        return profile, step_model_class(profile, requested)
+    except ValueError:
+        return profile, None
+
+
+def walk_chain(
+    tiers: list[list[Any]],
+    tenant_id: str,
+    now: datetime,
+    *,
+    exclude: Iterable[str],
+    model_class: str | None,
+    take: Any,
+) -> tuple[Any, Any, list[str]]:
+    """Walk a lease's chain, tier by tier (§5.3): the first account `take`
+    grants, or (None, None, the caps that refused).
+
+    Each tier is `choose()`'s, in today's order; `take(account)` is the one
+    transaction that grants it (`acquire_hold`, `swap_hold`) and returns None
+    when the account lost its room since the listing -- refused inside the
+    transaction, writing nothing -- so the walk tries the next candidate and
+    then the next tier. The walk itself holds nothing (§5.5 invariant 2).
+    """
+    caps: list[str] = []
+    skip = set(exclude)
+    for candidates in tiers:
+        for a in candidates:
+            # The caps the listing already shows, so a park can name them.
+            cap = a.cap_for(tenant_id, now)
+            if cap is not None and a.account_id not in skip and cap not in caps:
+                caps.append(cap)
+        while True:
+            chosen = choose(candidates, tenant_id, now, exclude=tuple(skip), model_class=model_class)
+            if chosen is None:
+                break
+            refusals: list[str] = []
+            granted = take(chosen, refusals)
+            if granted is not None:
+                return chosen, granted, caps
+            caps.extend(c for c in refusals if c not in caps)
+            skip.add(chosen.account_id)
+    return None, None, caps
+
+
+def chain_tiers(
+    listing: list[Any], tenant_id: str, providers: Iterable[str], model_class: str | None
+) -> list[list[Any]]:
+    """Each tier's candidates (`accounts_serving`, one provider per tier)."""
+    return [
+        accounts_serving(listing, tenant_id, p, model_class=model_class) for p in providers
+    ]
+
+
+def chain_unavailable(
+    tiers: list[list[Any]],
+    tenant_id: str,
+    now: datetime,
+    *,
+    exclude: Iterable[str],
+    model_class: str | None,
+) -> tuple[Unavailable, datetime | None]:
+    """Why no tier could grant, and when that changes: the soonest of the
+    tiers' `eligibility` answers (§5.1, §5.3), computed with the arguments
+    the walk's `choose()` took, tier by tier."""
+    exclude = tuple(exclude)
+    return soonest(
+        eligibility(c, tenant_id, now, exclude=exclude, model_class=model_class) for c in tiers
+    )
+
+
+def _log_ref(db: Any, assignment_id: str) -> Any:
+    return db.collection(HOLD_LOG_COLLECTION).document(assignment_id)
+
+
+def _close_expired(txn: Any, db: Any, account_id: str, expired: list[Hold]) -> None:
+    """Close the records of holds that lapsed, IN the caller's transaction.
+
+    `released_at` is the hold's own deadline -- when it stopped counting --
+    rather than the moment this transaction happened to notice, so a span in
+    the history ends where the counter stopped including it.
+    """
+    for hold in expired:
+        txn.set(
+            _log_ref(db, hold.assignment_id),
+            hold_log_entry(hold, account_id, end=HOLD_END_EXPIRED, released_at=hold.expires_at),
+        )
+
+
+def _hold_payload(holds: list[Hold]) -> dict[str, Any]:
+    """`assigned` is written from `holds` and never independently of it.
+
+    One statement, one place, so the projection cannot drift from the thing it
+    projects. `assigned` is what `choose()` sorts on and what an operator reads
+    as "agents on this account"; a second writer for it is how it stopped
+    meaning that.
+    """
+    return {"holds": holds_to_firestore(holds), "assigned": len(holds)}
+
+
+def _unreadable_reports(data: dict[str, Any]) -> dict[str, Any]:
+    """`unreadable_by` as a map, or empty when the document holds anything else.
+
+    The hold paths read the RAW document and never decode an `Account` (archived issue 243),
+    so they meet whatever shape is stored. This field is advisory -- it only
+    steers `choose()` away for a while -- and a string or a list where the map
+    should be must not stop a hold being given back or pruned.
+    """
+    raw = data.get("unreadable_by")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _raw_account(db: Any, account_id: str) -> dict[str, Any] | None:
+    """One account document's raw fields, or None when it does not exist.
+
+    NOT `AccountStore.get`, deliberately. That decodes the whole `Account` and
+    raises `MalformedAccountError` on a document the decoder cannot read,
+    which is right for a route that renders or edits the account -- and wrong
+    for giving a hold back, which needs only `holds`, the owner and the
+    lending list (archived issue 243). Decoding first is what froze a bad document's holds:
+    the worker's release answered 500 and the hold could only age out, and the
+    sweep that ages them out could not see the document either.
+    """
+    snap = db.collection(ACCOUNTS_COLLECTION).document(account_id).get()
+    if not getattr(snap, "exists", False):
+        return None
+    return snap.to_dict() or {}
+
+
+def _raw_in_pool(data: dict[str, Any], pool: str) -> bool:
+    """Whether a raw document is in `pool`. Absent `pools` is the workspace
+    pool alone; anything but a list is in NO pool, so a malformed document is
+    never read as one a task may lease."""
+    raw = data.get("pools")
+    if raw is None:
+        return pool in DEFAULT_POOLS
+    return isinstance(raw, (list, tuple)) and pool in raw
+
+
+def _raw_may_serve(data: dict[str, Any], tenant_id: str) -> bool:
+    """`Account.may_serve`, over the raw fields of a document.
+
+    STRICTER on shape than the decoder, never looser: an owner that is not a
+    string, or a `lend_to` that is not a list, serves nobody but the platform.
+    A string `lend_to` is the case that matters -- `tenant in "research"` is a
+    substring test, and a malformed document must not lend itself to every
+    tenant whose id happens to be inside another's.
+    """
+    if not _raw_in_pool(data, POOL_WORKSPACE):
+        # Reserved for Voice it (`Account.may_serve`): no tenant's task.
+        return False
+    owner = data.get("owner_tenant")
+    if isinstance(owner, str) and owner and tenant_id == owner:
+        return True
+    lend_to = data.get("lend_to")
+    return isinstance(lend_to, (list, tuple)) and tenant_id in [
+        t for t in lend_to if isinstance(t, str)
+    ]
+
+
+def acquire_hold(
+    db: Any,
+    account_id: str,
+    *,
+    tenant_id: str,
+    now: datetime,
+    ttl: timedelta = DEFAULT_HOLD_TTL,
+    task_id: str | None = None,
+    attempt_id: str | None = None,
+    person: str | None = None,
+    voice_session_id: str | None = None,
+    refusals: list[str] | None = None,
+) -> tuple[str, int] | None:
+    """Record one agent's claim on an account. Returns (assignment_id, assigned).
+
+    THE CAPS ARE CHECKED HERE TOO (§4.6, §5.5 invariant 2): a key's exhausted
+    mark and spend cap, the workspace's `per_workspace_max` and a borrower's
+    lend (`_raw_tenant_refusal`), in this one transaction, so a refusal writes
+    nothing and the walk moves to its next candidate. The cap that refused is
+    appended to `refusals` when the caller passes a list, so its answer can
+    name it.
+
+    A VOICE IT SESSION'S CLAIM when `person` is given with no tenant:
+    re-checked against the Voice it pool (`_raw_voice_assignable`) instead of a
+    tenant's, recorded with `pool: voice-it`, its person and its session, and
+    no tenant. It is counted on the same `holds` as every task's, so an account
+    in both pools never passes its `max_agents` across the two.
+
+    A VOICE SESSION'S WORKSPACE CLAIM when `person` comes WITH the person's
+    own tenant (the front's and the planner's Claude account, §14.1): checked
+    as a task's is (`_raw_assignable`), recorded in the workspace pool under
+    that tenant with its person and session, and renewed and released by the
+    voice hold routes, which match the session.
+
+    A TRANSACTION AND NOT A READ-MODIFY-WRITE, for the reason `accountstore`
+    states: several processes move this at once, and a lost write makes an
+    account look permanently busier or emptier than it is -- which quietly
+    pushes every new agent onto the other accounts, or stacks them all onto
+    this one.
+
+    EXPIRED HOLDS ARE DROPPED ON THE WAY THROUGH, which is what makes the count
+    self-correcting rather than monotonically wrong. A worker that is SIGKILLed
+    or preempted never releases and nothing else in this repository knows its
+    assignment existed, so without an expiry the count would only ever climb.
+
+    None when the account no longer exists, or can no longer take a new agent
+    for this tenant -- an operator may remove, pause or drain one, or an owner
+    revoke its loan, between the listing and this call -- and nothing was
+    counted.
+
+    ELIGIBILITY IS RE-CHECKED HERE, IN THE TRANSACTION (archived issue 227): state, owner
+    and `lend_to`, through `_raw_assignable`, the check `swap_hold` already
+    makes of the account it moves to. The route's `accounts_serving` reads a
+    listing taken before this transaction, and checking only that the
+    document still exists handed a revoked borrower the account anyway --
+    invariant 9, enforced at the one read that commits.
+
+    THE RECORD IS OPENED IN THIS TRANSACTION (archived issue 379): `account_holds/{id}` is
+    set alongside the account, and every expired hold dropped on the way
+    through is closed as `expired` alongside it too. A record written after
+    this commits is one a crash between the two leaves disagreeing with the
+    counter.
+    """
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+    assignment_id = uuid.uuid4().hex
+    voice_it = person is not None and not tenant_id
+
+    @firestore.transactional
+    def _apply(txn: Any) -> int | None:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return None
+        data = snap.to_dict() or {}
+        if voice_it:
+            if not _raw_voice_assignable(data, person or ""):
+                return None
+        elif not _raw_assignable(data, tenant_id):
+            return None
+        holds, expired = _split_holds(data, now)
+        if not _raw_has_room(data, holds):
+            # Full since the listing: nothing is counted, and the route
+            # answers as it does for an account paused in the same gap.
+            return None
+        refused = None if voice_it else _raw_tenant_refusal(data, holds, tenant_id, now)
+        if voice_it and api_key.is_key(data.get("provider")) and data.get("exhausted_at") is not None:
+            refused = CAP_EXHAUSTED
+        if refused is not None:
+            # THIS WORKSPACE at its `per_workspace_max` (Q6), a BORROWER at
+            # its lend's cap (Q7), or a key spent or exhausted: checked and
+            # counted in this one transaction, so two agents racing for the
+            # last slot cannot both win, and a refusal writes nothing.
+            if refusals is not None:
+                refusals.append(refused)
+            return None
+        hold = Hold(
+            assignment_id=assignment_id,
+            tenant_id=tenant_id,
+            expires_at=now + ttl,
+            task_id=task_id or None,
+            attempt_id=attempt_id or None,
+            assigned_at=now,
+            pool=POOL_VOICE_IT if voice_it else POOL_WORKSPACE,
+            person=person,
+            voice_session_id=voice_session_id,
+        )
+        holds.append(hold)
+        txn.update(ref, {**_hold_payload(holds), "last_assigned_at": now})
+        txn.set(_log_ref(db, assignment_id), hold_log_entry(hold, account_id))
+        _close_expired(txn, db, account_id, expired)
+        return len(holds)
+
+    assigned = _apply(transaction)
+    return None if assigned is None else (assignment_id, assigned)
+
+
+def release_hold(
+    db: Any,
+    account_id: str,
+    *,
+    assignment_id: str,
+    tenant_id: str | None,
+    now: datetime,
+    unusable: str = "",
+    voice_session_id: str | None = None,
+    cost_usd: float | None = None,
+) -> tuple[int | None, bool]:
+    """Give one named assignment back. Returns (assigned, whether it was held).
+
+    `cost_usd`, the worker's estimate of what ran on the hold, is added to a
+    key's `month_spend` and a borrower's `lend_spend` IN THIS TRANSACTION
+    (`_spend_payload`, §4.6), so the spend is counted once with the close.
+
+    NAMED, and that is the fix. This used to decrement a bare counter on proof
+    of nothing but `may_serve`, so any tenant an account was lent to could
+    drive the owner's count to zero as often as it liked -- and `choose()`
+    sorts on that number, so an account with five live agents could look idle
+    and take a sixth. A release now removes the hold it was issued, and a
+    caller that never held one changes nothing.
+
+    IDEMPOTENT, because a release genuinely arrives twice: a worker releases on
+    its exit path, and the same assignment can be released again after the
+    response was lost. The second call finds no matching hold and says so
+    rather than taking someone else's slot away.
+
+    `unusable` records, against this TENANT only, that the account was handed
+    over and its secret could not be read. Per tenant because that is the only
+    honest scope: a borrower that was never granted `secretAccessor` on a lent
+    secret has learned nothing about the owner, and a global mark would let one
+    tenant pause another's account.
+
+    The released hold's record is closed IN THIS TRANSACTION -- `released`, or
+    `unusable` when the secret could not be read -- and so is the record of
+    every expired hold the rewrite drops. A release that matched nothing writes
+    no record at all, so a duplicate cannot re-close a span with a later end --
+    and, when no expired hold needs dropping either, does not write the account
+    document at all.
+    """
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> tuple[int | None, bool]:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return None, False
+        data = snap.to_dict() or {}
+        holds, expired = _split_holds(data, now)
+        held = [
+            h
+            for h in holds
+            if h.assignment_id == assignment_id
+            # A platform caller has no tenant, so it matches on the id alone;
+            # a worker must match both, or a forged id would let one tenant
+            # release another's hold.
+            and (tenant_id is None or h.tenant_id == tenant_id)
+            # A Voice it session releases only its own session's hold: one
+            # of the Voice it pool's, or its front's or planner's in a
+            # workspace pool (`acquire_hold`). A task's hold has no session.
+            and (voice_session_id is None or _is_voice_hold_of(h, voice_session_id))
+        ]
+        remaining = [h for h in holds if h not in held]
+        if not held and not expired:
+            # NOTHING CHANGED, so nothing is written. Rewriting `holds` and
+            # `assigned` here anyway re-projected `assigned` from `holds` on
+            # every unmatched release -- on a document malformed only in
+            # `assigned`, that repaired it on behalf of any tenant `may_serve`
+            # admits, a write no caller was entitled to make.
+            return len(remaining), False
+        payload = _hold_payload(remaining)
+        if held:
+            payload.update(_spend_payload(data, held[0], cost_usd, now))
+        if unusable and held:
+            reports = _unreadable_reports(data)
+            reports[held[0].tenant_id or (tenant_id or "")] = now
+            payload["unreadable_by"] = reports
+        txn.update(ref, payload)
+        end = HOLD_END_UNUSABLE if unusable else HOLD_END_RELEASED
+        for hold in held:
+            txn.set(
+                _log_ref(db, hold.assignment_id),
+                hold_log_entry(hold, account_id, end=end, released_at=now),
+            )
+        _close_expired(txn, db, account_id, expired)
+        return len(remaining), bool(held)
+
+    return _apply(transaction)
+
+
+def remove_account_and_close_holds(
+    db: Any, account_id: str, *, now: datetime, key_deletion: dict[str, Any] | None = None
+) -> int:
+    """Delete the account document and close every open hold record it had.
+
+    `key_deletion`, for an API key (docs/design/llm-providers.md §4.4), is
+    written as `key_deletions/<account id>` IN THE SAME TRANSACTION, so no key
+    document disappears without a record that its secret is owed a deletion.
+
+    Returns how many records were closed as `account_removed`.
+
+    A removal used to delete the document alone. Its holds went with it, but
+    their `account_holds` records stayed OPEN until their hold deadline plus
+    the retention, and then read as `expired` -- a worker killed outright,
+    which is not what happened -- for the whole of that span.
+
+    ONE TRANSACTION: the account read, the open-record query, every close and
+    the delete commit together or not at all, as every other change to `holds`
+    does (archived issue 379). Two sources, joined by assignment id:
+
+    * the document's `holds`: a live one closes as `account_removed`, an
+      expired one as `expired` at its own deadline (`_close_expired`), and a
+      hold taken before the log existed gets a whole record either way;
+    * the open records (`account_id` = this one, `end` = null): a record
+      whose hold is not on the document -- unreadable `holds`, or a write
+      that never landed -- is closed too, so none is left open.
+
+    A `holds` field that cannot be decoded does not stop the removal: the
+    records still close from the query, and the document still goes.
+    """
+    from google.cloud import firestore
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    open_records = (
+        db.collection(HOLD_LOG_COLLECTION)
+        .where(filter=FieldFilter("account_id", "==", account_id))
+        .where(filter=FieldFilter("end", "==", None))
+    )
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> int:
+        snap = _txn_snapshot(txn.get(ref))
+        records = list(txn.get(open_records))
+        live: list[Hold] = []
+        expired: list[Hold] = []
+        if getattr(snap, "exists", False):
+            try:
+                live, expired = _split_holds(snap.to_dict() or {}, now)
+            except MALFORMED_ERRORS as exc:
+                log.warning(
+                    "could not read the holds on an account being removed; "
+                    "closing its hold records from the log alone",
+                    extra={"account_id": account_id, "error": type(exc).__name__},
+                )
+        closed = 0
+        for hold in live:
+            txn.set(
+                _log_ref(db, hold.assignment_id),
+                hold_log_entry(
+                    hold, account_id, end=HOLD_END_ACCOUNT_REMOVED, released_at=now
+                ),
+            )
+            closed += 1
+        _close_expired(txn, db, account_id, expired)
+        covered = {h.assignment_id for h in [*live, *expired]}
+        for record in records:
+            if str(record.id) in covered:
+                continue
+            txn.update(
+                _log_ref(db, str(record.id)),
+                {
+                    "end": HOLD_END_ACCOUNT_REMOVED,
+                    "released_at": now,
+                    "expires_at": now + HOLD_LOG_RETENTION,
+                },
+            )
+            closed += 1
+        txn.delete(ref)
+        if key_deletion is not None:
+            txn.set(db.collection(KEY_DELETIONS_COLLECTION).document(account_id), key_deletion)
+        return closed
+
+    return _apply(transaction)
+
+
+def finish_key_deletion(
+    db: Any, secrets: Any, record: dict[str, Any], *, now: datetime
+) -> dict[str, Any]:
+    """Destroy a deleted key's secret as its record says, and mark the record.
+
+    §4.4's step 2: every version destroyed, then the secret itself deleted --
+    except a dedicated Voice it key stored under its old `--<label>` name
+    (`whole` False, Q9), whose versions are destroyed and whose empty secret
+    stays. Only the secret the record names, and only when it is the deleted
+    account's own: `whole` deletes only an `--key-` name (`is_key_secret`),
+    the one the owner's conditioned grant allows. An imported key's
+    workspace secret is never named by a record, so never reached.
+
+    A failure leaves the record not done, naming the step and the error's
+    type, for the sweep to retry. Never raises; never logs a value.
+    """
+    account_id = str(record.get("account_id") or "")
+    secret = str(record.get("secret") or "")
+    whole = bool(record.get("whole"))
+    ref = db.collection(KEY_DELETIONS_COLLECTION).document(account_id)
+    step = KEY_STEP_DESTROY
+    try:
+        destroyed = secrets.destroy_all_versions(secret)
+        if whole:
+            step = KEY_STEP_DELETE
+            if not is_key_secret(secret):
+                raise ValueError("only an API key's own secret is deleted")
+            secrets.delete_key_secret(secret)
+    except Exception as exc:  # noqa: BLE001 -- the type only, never a value
+        ref.update({
+            "failed_step": step,
+            "error": type(exc).__name__,
+            "attempts": int(record.get("attempts") or 0) + 1,
+            "last_attempt_at": now,
+        })
+        log.error(
+            "a deleted API key's secret is not yet destroyed; the quota sweep retries it",
+            extra={"account_id": account_id, "secret": secret, "step": step,
+                   "error": type(exc).__name__},
+        )
+        return {"done": False, "step": step, "error": type(exc).__name__}
+    ref.update({
+        "done": True,
+        "done_at": now,
+        "failed_step": None,
+        "error": None,
+        "attempts": int(record.get("attempts") or 0) + 1,
+        "last_attempt_at": now,
+        "versions_destroyed": int(destroyed or 0),
+    })
+    log.info(
+        "audit: a deleted API key's secret was destroyed"
+        + ("" if whole else "; its empty secret is kept under its old name"),
+        extra={"audit": True, "account_id": account_id, "secret": secret,
+               "secret_deleted": whole, "versions_destroyed": int(destroyed or 0),
+               "deleted_by": record.get("deleted_by"),
+               "workspace_secret_kept": record.get("imported_from")},
+    )
+    return {"done": True, "secret_deleted": whole, "versions_destroyed": int(destroyed or 0)}
+
+
+def owed_key_deletion(db: Any, account_id: str) -> dict[str, Any] | None:
+    """The record of a deleted key on this account id not yet marked done."""
+    snap = db.collection(KEY_DELETIONS_COLLECTION).document(account_id).get()
+    if not getattr(snap, "exists", False):
+        return None
+    data = snap.to_dict() or {}
+    return None if data.get("done") else data
+
+
+def finish_owed_key_deletions(db: Any, secrets: Any, *, now: datetime) -> dict[str, Any]:
+    """The quota sweep's retry of every `key_deletions` record not done (§4.4).
+
+    A record whose account id has a document again is skipped and named: a
+    live account's secret is never destroyed by a sweep. Registration on that
+    label finishes the owed deletion first (`_register_api_key`), so this is
+    a guard, not a path.
+    """
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    finished: list[str] = []
+    failed: list[str] = []
+    skipped: list[str] = []
+    query = db.collection(KEY_DELETIONS_COLLECTION).where(
+        filter=FieldFilter("done", "==", False)
+    )
+    for snap in query.stream():
+        record = snap.to_dict() or {}
+        account_id = str(record.get("account_id") or snap.id)
+        if getattr(db.collection(ACCOUNTS_COLLECTION).document(account_id).get(), "exists", False):
+            log.error(
+                "a key deletion is owed on an account id that has a document again; "
+                "its secret was not touched",
+                extra={"account_id": account_id},
+            )
+            skipped.append(account_id)
+            continue
+        outcome = finish_key_deletion(db, secrets, {**record, "account_id": account_id}, now=now)
+        (finished if outcome["done"] else failed).append(account_id)
+    return {"finished": finished, "failed": failed, "skipped": skipped}
+
+
+def destroy_superseded_key_versions(db: Any, secrets: Any, *, now: datetime) -> dict[str, Any]:
+    """Destroy what a key's rotation superseded, one hold TTL after it (§4.5).
+
+    Holders keep the old value until their next turn boundary or process
+    start, and a hold lives at most its TTL, so the old version outlives
+    every holder that could have read it and then goes. A rotation whose
+    account is gone is marked done: the delete destroyed every version.
+    """
+    from google.cloud.firestore_v1.base_query import FieldFilter
+
+    destroyed: dict[str, int] = {}
+    failed: list[str] = []
+    query = db.collection(KEY_ROTATIONS_COLLECTION).where(
+        filter=FieldFilter("done", "==", False)
+    )
+    for snap in query.stream():
+        record = snap.to_dict() or {}
+        due = record.get("destroy_after")
+        if not isinstance(due, datetime) or now < _aware_utc(due):
+            continue
+        account_id = str(record.get("account_id") or snap.id)
+        ref = db.collection(KEY_ROTATIONS_COLLECTION).document(snap.id)
+        if not getattr(db.collection(ACCOUNTS_COLLECTION).document(account_id).get(), "exists", False):
+            ref.update({"done": True, "done_at": now, "versions_destroyed": 0})
+            continue
+        keep = record.get("keep_version")
+        try:
+            count = secrets.destroy_versions_before(
+                str(record.get("secret") or ""), int(keep) if keep is not None else None
+            )
+        except Exception as exc:  # noqa: BLE001 -- the type only
+            ref.update({"error": type(exc).__name__, "last_attempt_at": now})
+            log.error(
+                "could not destroy a rotated key's superseded versions; the sweep retries",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
+            failed.append(account_id)
+            continue
+        ref.update({"done": True, "done_at": now, "error": None, "versions_destroyed": count})
+        log.info(
+            "audit: a rotated API key's superseded versions were destroyed",
+            extra={"audit": True, "account_id": account_id, "secret": record.get("secret"),
+                   "versions_destroyed": count},
+        )
+        destroyed[account_id] = count
+    return {"destroyed": destroyed, "failed": failed}
+
+
+def _claim_probe(db: Any, account_id: str, now: datetime) -> bool:
+    """Take this hour's probe of a key marked credit gone, in one transaction:
+    True when the key is still exhausted and its last probe (or its mark,
+    when never probed) is an hour old, and `exhausted_probed_at` is now
+    written. So two sweeps never ask the vendor twice in one hour."""
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> bool:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return False
+        data = snap.to_dict() or {}
+        marked = data.get("exhausted_at")
+        if not isinstance(marked, datetime):
+            return False
+        last = data.get(KEY_PROBED_AT)
+        since = _aware_utc(last) if isinstance(last, datetime) else _aware_utc(marked)
+        if now - since < KEY_PROBE_INTERVAL:
+            return False
+        txn.update(ref, {KEY_PROBED_AT: now})
+        return True
+
+    return _apply(transaction)
+
+
+def probe_exhausted_keys(
+    db: Any, store: Any, secrets: Any, validator: Any, *, now: datetime
+) -> dict[str, Any]:
+    """The hourly exhausted probe (§5.2): each key marked credit gone is
+    asked once an hour, with the vendor's cheapest completion, whether it
+    can serve again, and returns to available when it can.
+
+    "Available" is its state's business, untouched: the probe clears the
+    credit mark (`exhausted_at`) alone, as a person's Resume does, so a key a
+    person paused stays paused. The key is read from its secret for the one
+    call and dropped; never logged or recorded.
+    """
+    served: list[str] = []
+    still: list[str] = []
+    failed: list[str] = []
+    for account in store.list():
+        if not api_key.is_key(account.provider) or account.exhausted_at is None:
+            continue
+        if not _claim_probe(db, account.account_id, now):
+            continue
+        try:
+            key = api_key.read_key(account.provider, secrets.access(store.secret_for(account)))
+            serves = validator.probe(account.provider, key)
+        except Exception as exc:  # noqa: BLE001 -- the type only, never the key
+            log.warning(
+                "could not probe a key marked credit gone; it is asked again in an hour",
+                extra={"account_id": account.account_id, "error": type(exc).__name__},
+            )
+            failed.append(account.account_id)
+            continue
+        if not serves:
+            still.append(account.account_id)
+            continue
+        db.collection(ACCOUNTS_COLLECTION).document(account.account_id).update(
+            {"exhausted_at": None, KEY_PROBED_AT: None}
+        )
+        log.info(
+            "audit: a key marked credit gone serves again and is offered again",
+            extra={"audit": True, "account_id": account.account_id},
+        )
+        served.append(account.account_id)
+    return {"served_again": served, "still_exhausted": still, "failed": failed}
+
+
+def prune_holds(
+    db: Any,
+    account_id: str,
+    *,
+    now: datetime,
+    forget_unreadable_after: timedelta = DEFAULT_STALE_AFTER,
+) -> int:
+    """Drop expired holds and aged-out unreadable reports. Returns how many went.
+
+    THIS IS THE LAST BACKSTOP. An attempt the platform can prove ended has its
+    holds released sooner: by the reconciler once its fence commits or its
+    kill of a left-running Job is confirmed, and by the sweep's
+    `_release_ended_attempt_holds` for every other ending its record shows
+    (archived issue 380). What neither can prove -- an unstamped hold, a hold whose task or
+    attempt document is missing -- is dropped here, when the hold's own
+    deadline passes. The quota sweep calls this for every account on every
+    tick.
+
+    Each pruned hold's record is closed as `expired` IN THIS TRANSACTION, so
+    the history and the counter change together or not at all.
+    """
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> int:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return 0
+        data = snap.to_dict() or {}
+        holds = holds_from_firestore(data.get("holds"))
+        live = [h for h in holds if not h.is_expired(now)]
+        recorded = _unreadable_reports(data)
+        reports = {
+            tenant: when
+            for tenant, when in recorded.items()
+            if isinstance(when, datetime)
+            and now - (when if when.tzinfo else when.replace(tzinfo=timezone.utc))
+            <= forget_unreadable_after
+        }
+        dropped = len(holds) - len(live)
+        stale_reports = len(recorded) - len(reports)
+        # A non-map `unreadable_by` is rewritten as the empty map it reads as,
+        # the same self-correction `assigned` gets below.
+        reshaped = data.get("unreadable_by") is not None and not isinstance(
+            data.get("unreadable_by"), dict
+        )
+        if (
+            not dropped
+            and not stale_reports
+            and not reshaped
+            and data.get("assigned") == len(live)
+        ):
+            return 0
+        payload = _hold_payload(live)
+        payload["unreadable_by"] = reports
+        txn.update(ref, payload)
+        _close_expired(txn, db, account_id, [h for h in holds if h.is_expired(now)])
+        return dropped
+
+    return _apply(transaction)
+
+
+def release_attempt_holds(
+    db: Any,
+    account_id: str,
+    *,
+    task_id: str,
+    attempt_id: str,
+    now: datetime,
+) -> int:
+    """Drop every live hold on one account stamped with (task_id, attempt_id).
+
+    Returns how many were released. For the reconciler, once it has FENCED the
+    attempt (archived issue 380): a fenced worker never runs its own exit path's release, so
+    until now its hold stayed counted for the whole `DEFAULT_HOLD_TTL` and
+    `choose()` handed out less of the account than it had.
+
+    MATCHED ON BOTH STAMPS. The attempt id alone would do in practice; the
+    task id as well means a hold can only be released by a caller that names
+    the work it belongs to. A hold with no stamps (taken before archived pull request 412/#413) is
+    never matched and still ages out through `prune_holds`.
+
+    IDEMPOTENT: a second call finds nothing stamped with the attempt and
+    writes nothing at all, so no record is closed twice with a later end.
+
+    Each released hold's record is closed as `released` in this transaction,
+    and the expired holds the rewrite drops are closed as `expired`, the same
+    as every other change to `holds`. `released`, not a new end: the swarm-api
+    history reader and the Accounts screen accept exactly the three ends in
+    `accounts.py`, and a hold given back on the worker's behalf ended the same
+    way as one the worker gave back.
+    """
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> int:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return 0
+        holds, expired = _split_holds(snap.to_dict() or {}, now)
+        held = [
+            h for h in holds if h.attempt_id == attempt_id and h.task_id == task_id
+        ]
+        if not held:
+            return 0
+        remaining = [h for h in holds if h not in held]
+        txn.update(ref, _hold_payload(remaining))
+        for hold in held:
+            txn.set(
+                _log_ref(db, hold.assignment_id),
+                hold_log_entry(hold, account_id, end=HOLD_END_RELEASED, released_at=now),
+            )
+        _close_expired(txn, db, account_id, expired)
+        return len(held)
+
+    return _apply(transaction)
+
+
+def _attempt_hold(
+    data: dict[str, Any],
+    now: datetime,
+    *,
+    assignment_id: str,
+    tenant_id: str,
+    task_id: str,
+    attempt_id: str,
+) -> Hold | None:
+    """The caller's LIVE hold on this account document, or None.
+
+    Matched on all four: the assignment id the broker issued, the tenant the
+    caller's identity token names, and the task and attempt the hold was
+    stamped with. A hold with no stamps (an older worker) never matches, so a
+    worker route is never answered on proof of an id alone.
+    """
+    for hold in _live_holds(data, now):
+        if (
+            hold.assignment_id == assignment_id
+            and hold.tenant_id == tenant_id
+            and hold.task_id == task_id
+            and hold.attempt_id == attempt_id
+        ):
+            return hold
+    return None
+
+
+def _voice_hold(
+    data: dict[str, Any],
+    now: datetime,
+    *,
+    assignment_id: str,
+    voice_session_id: str,
+) -> Hold | None:
+    """A Voice it session's LIVE hold on this account document, or None.
+
+    Matched as `renew_voice_hold` matches one: the assignment id the broker
+    issued, the Voice it pool, and the session the hold was taken for. A
+    task's hold carries no session, so its id never passes here."""
+    for hold in _live_holds(data, now):
+        if (
+            hold.assignment_id == assignment_id
+            and hold.pool == POOL_VOICE_IT
+            and hold.voice_session_id == voice_session_id
+        ):
+            return hold
+    return None
+
+
+def _reading_windows(windows: dict[str, WindowIn], now: datetime) -> dict[str, WindowReading]:
+    """A reading's windows as `record_reading` takes them, or a 422.
+
+    REFUSED: a window name that is not one, a reset without an offset, and a
+    reset in the past -- a reading that has already expired would be stored
+    as a fresh one. A utilization outside 0..1 the model refuses first."""
+    readings: dict[str, WindowReading] = {}
+    for name, window in windows.items():
+        if not _WINDOW_NAME.match(name):
+            raise BrokerValidationError(f"{name!r} is not a rate-limit window name")
+        if window.resets_at.tzinfo is None:
+            raise BrokerValidationError(f"window {name!r}: resets_at must carry an offset")
+        resets = window.resets_at.astimezone(timezone.utc)
+        if resets <= now:
+            raise BrokerValidationError(
+                f"window {name!r} reset at {resets.isoformat()}, which has passed; "
+                "a reading of an expired window is not a reading"
+            )
+        readings[name] = WindowReading(utilization=window.utilization, resets_at=resets)
+    return readings
+
+
+def _raw_assignable(data: dict[str, Any], tenant_id: str) -> bool:
+    """Whether a raw document may take a NEW agent for this tenant right now."""
+    return (
+        data.get("state", AccountState.AVAILABLE.value) == AccountState.AVAILABLE.value
+        and _raw_may_serve(data, tenant_id)
+        # A later registration of a subscription another account holds
+        # (archived issue 2222): never handed out, re-checked where the hold commits. Only
+        # on a recorded organisation AND seat (archived issue 3046, `withheld_mark`): a mark
+        # on an account whose identity is unknown is an older rule's.
+        and not (
+            data.get("duplicate_withheld") is True
+            and bool(data.get("organisation_id"))
+            and bool(data.get("seat_id"))
+        )
+    )
+
+
+def _raw_voice_assignable(data: dict[str, Any], person: str) -> bool:
+    """`_raw_assignable` for a Voice it session: AVAILABLE, in the Voice it
+    pool, listing `person`, and not a withheld duplicate. Re-checked where the
+    hold commits, so a pool removed between the listing and the hold hands
+    the session nothing."""
+    people = data.get("voice_it_people")
+    listed = isinstance(people, (list, tuple)) and person.strip().lower() in [
+        p.strip().lower() for p in people if isinstance(p, str)
+    ]
+    return (
+        data.get("state", AccountState.AVAILABLE.value) == AccountState.AVAILABLE.value
+        and _raw_in_pool(data, POOL_VOICE_IT)
+        and listed
+        and not (
+            data.get("duplicate_withheld") is True
+            and bool(data.get("organisation_id"))
+            and bool(data.get("seat_id"))
+        )
+    )
+
+
+def _is_voice_hold_of(hold: Hold, voice_session_id: str) -> bool:
+    """Whether `hold` is a voice session's, of this session: the Voice it
+    pool's, or a workspace pool's taken for the session's front or planner
+    (`acquire_hold` with a person and a tenant). A task's hold carries no
+    session and no person, so it never matches."""
+    return (
+        bool(voice_session_id)
+        and hold.voice_session_id == voice_session_id
+        and (hold.pool == POOL_VOICE_IT or bool(hold.person))
+    )
+
+
+def renew_voice_hold(
+    db: Any,
+    account_id: str,
+    *,
+    assignment_id: str,
+    voice_session_id: str,
+    now: datetime,
+    ttl: timedelta,
+) -> datetime | None:
+    """Push a live Voice it hold's deadline to `now + ttl`. The new deadline,
+    or None when the session holds no live hold there (expired, released, or
+    the account removed): a session that lost its hold leases again."""
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> datetime | None:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return None
+        data = snap.to_dict() or {}
+        holds = list(holds_from_firestore(data.get("holds")))
+        for i, h in enumerate(holds):
+            if (
+                h.assignment_id == assignment_id
+                and _is_voice_hold_of(h, voice_session_id)
+                and not h.is_expired(now)
+            ):
+                holds[i] = replace(h, expires_at=now + ttl)
+                txn.update(ref, _hold_payload(holds))
+                return now + ttl
+        return None
+
+    return _apply(transaction)
+
+
+def record_running_spend(
+    db: Any,
+    account_id: str,
+    *,
+    assignment_id: str,
+    tenant_id: str,
+    task_id: str,
+    attempt_id: str,
+    cost_usd: float,
+    now: datetime,
+) -> tuple[dict[str, Any], Hold] | None:
+    """Record a KEY holder's running spend on its hold, in one transaction
+    (§4.6). (the account document as written, the hold), or None when the
+    caller holds no live hold there: proved again inside the transaction, so
+    a hold released or fenced since `_holder` read it is never written.
+
+    The stored figure only rises: two reads crossing in flight never lower
+    what the caps count. A plan's hold is answered unchanged; its price is
+    flat. Nothing else on the document moves, so `assigned` and every other
+    hold are written back as they were read."""
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> tuple[dict[str, Any], Hold] | None:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return None
+        data = snap.to_dict() or {}
+        held = _attempt_hold(
+            data, now, assignment_id=assignment_id, tenant_id=tenant_id,
+            task_id=task_id, attempt_id=attempt_id,
+        )
+        if held is None:
+            return None
+        if not api_key.is_key(data.get("provider")):
+            return data, held
+        figure = max(held.running_cost_usd or 0.0, round(cost_usd, 6))
+        if figure == held.running_cost_usd:
+            return data, held
+        holds = list(holds_from_firestore(data.get("holds")))
+        updated = replace(held, running_cost_usd=figure)
+        holds = [updated if h == held else h for h in holds]
+        payload = _hold_payload(holds)
+        txn.update(ref, payload)
+        return {**data, **payload}, updated
+
+    return _apply(transaction)
+
+
+def _raw_spend_reached(
+    data: dict[str, Any], live: list[Hold], tenant_id: str, now: datetime
+) -> str | None:
+    """The spend cap a KEY holder has reached on a raw document, by name
+    (`CAP_SPEND` for the key's month cap, `CAP_LEND_SPEND` for a borrower's
+    lend), or None. The spend is `_raw_tenant_refusal`'s, closed and running,
+    so the holder that took it over is answered `move` at its next turn
+    boundary (§4.6), not when it ends. A figure nobody can read moves nobody:
+    the next grant is refused on it anyway."""
+    if not api_key.is_key(data.get("provider")):
+        return None
+    owner = data.get("owner_tenant")
+    month = spend_month(now)
+    try:
+        cap = spend_cap_from_firestore(data.get("monthly_spend_cap_usd"))
+        spent = month_spend_from_firestore(data.get("month_spend")).get(month, 0.0)
+        lent = lend_spend_from_firestore(data.get("lend_spend")).get(month, {})
+        lends = (
+            lends_from_firestore(data.get("lends"), owner_tenant=str(owner), key=True)
+            if isinstance(owner, str) and owner
+            else {}
+        )
+    except ValueError:
+        return None
+    if cap is not None and spent + _running_spend(live) >= cap:
+        return CAP_SPEND
+    lend = lends.get(tenant_id) if tenant_id != owner else None
+    if lend is not None and lend.monthly_spend_cap_usd is not None and (
+        lent.get(tenant_id, 0.0) + _running_spend(live, tenant_id)
+        >= lend.monthly_spend_cap_usd
+    ):
+        return CAP_LEND_SPEND
+    return None
+
+
+class PoolInUse(Exception):
+    """A pool cannot be removed while the account holds a lease of it."""
+
+
+class PoolLent(Exception):
+    """An account cannot be reserved for Voice it while it is lent: its
+    borrowers' workers can read its secret until the loan is ended."""
+
+
+def set_account_pools(
+    db: Any,
+    account_id: str,
+    *,
+    pools: tuple[str, ...],
+    voice_it_people: tuple[str, ...],
+    now: datetime,
+) -> tuple[list[str], list[str]] | None:
+    """Move an account between pools in ONE transaction. (before, after), or
+    None when the account does not exist.
+
+    REFUSES (`PoolInUse`) to remove a pool while the account holds a live
+    lease of it: the hold would keep a slot of a pool the account is no
+    longer in, and a release from that side would then be refused
+    (`_raw_may_serve`). The caller waits for the lease to end, or drains."""
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> tuple[list[str], list[str]] | None:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return None
+        data = snap.to_dict() or {}
+        before = [p for p in (data.get("pools") or list(DEFAULT_POOLS)) if isinstance(p, str)]
+        live, _expired = _split_holds(data, now)
+        for pool in before:
+            if pool not in pools and any(h.pool == pool for h in live):
+                raise PoolInUse(
+                    f"{account_id} holds a lease from the {pool} pool; it can leave "
+                    "that pool when the lease ends"
+                )
+        lent = [t for t in (data.get("lend_to") or []) if isinstance(t, str) and t]
+        if POOL_WORKSPACE not in pools and lent:
+            # Reserved for Voice it means never lent: a borrower's worker
+            # keeps read of the account's secret while the loan stands
+            # (`_sync_lending`), so the loan ends first, through the lending
+            # route that revokes those grants.
+            raise PoolLent(
+                f"{account_id} is lent to {len(lent)} other workspace(s); stop lending "
+                "it first, then reserve it for Voice it"
+            )
+        txn.update(
+            ref,
+            {
+                "pools": list(pools),
+                "voice_it_people": list(voice_it_people) if POOL_VOICE_IT in pools else [],
+            },
+        )
+        return before, list(pools)
+
+    return _apply(transaction)
+
+
+def _raw_workspace_has_room(data: dict[str, Any], live: list[Hold], tenant_id: str) -> bool:
+    """Whether `tenant_id`'s live holds on a raw document leave room for one
+    more under its `per_workspace_max` (Q6; `Account.is_full_for`). LIVE
+    holds of that tenant, counted from the grant (CONTRACT.md invariant 3). A
+    malformed cap is no room, as a malformed `max_agents` is."""
+    try:
+        caps = per_workspace_max_from_firestore(data.get("per_workspace_max"))
+    except ValueError:
+        return False
+    cap = caps.get(tenant_id)
+    if cap is None:
+        return True
+    return sum(1 for h in live if h.tenant_id == tenant_id) < cap
+
+
+def _raw_tenant_refusal(
+    data: dict[str, Any], live: list[Hold], tenant_id: str, now: datetime
+) -> str | None:
+    """The cap that refuses `tenant_id` a NEW hold on a raw document, by name
+    (`accounts.CAP_REASONS`), or None. `Account.cap_for`, read where the hold
+    commits (§4.6, §5.5 invariant 2): the listing the walk chose from is older
+    than this transaction, so two borrowers racing for a lend's last slot
+    would both pass it there; here only one commits.
+
+    A key's own marks (`exhausted_at`, the month's spend at its cap), the
+    workspace's `per_workspace_max` (Q6), and, for a borrower, its lend's
+    `max_agents` and spend cap (Q7). A malformed cap or spend is a refusal,
+    as a malformed `max_agents` is no room: a figure nobody can read must not
+    read as no limit.
+
+    THE SPEND IS `Account.spent`'s: the closed holds' and the live holds'
+    running spend (`Hold.running_cost_usd`), so a long attempt reaches the
+    cap before it ends (§4.6).
+    """
+    owner = data.get("owner_tenant")
+    is_key = api_key.is_key(data.get("provider"))
+    month = spend_month(now)
+    if is_key and data.get("exhausted_at") is not None:
+        return CAP_EXHAUSTED
+    try:
+        cap = spend_cap_from_firestore(data.get("monthly_spend_cap_usd"))
+        spent = month_spend_from_firestore(data.get("month_spend")).get(month, 0.0)
+        spent += _running_spend(live)
+        lend_spent = dict(lend_spend_from_firestore(data.get("lend_spend")).get(month, {}))
+        if tenant_id != owner:
+            lend_spent[tenant_id] = lend_spent.get(tenant_id, 0.0) + _running_spend(
+                live, tenant_id
+            )
+        lends = (
+            lends_from_firestore(data.get("lends"), owner_tenant=str(owner or ""), key=is_key)
+            if isinstance(owner, str) and owner
+            else None
+        )
+    except ValueError:
+        return CAP_SPEND if is_key else CAP_LEND_MAX_AGENTS
+    if is_key and cap is not None and spent >= cap:
+        return CAP_SPEND
+    if not _raw_workspace_has_room(data, live, tenant_id):
+        return CAP_WORKSPACE_MAX
+    lend = (lends or {}).get(tenant_id) if tenant_id != owner else None
+    if lend is not None:
+        # A lend carried over from `lend_to` has no stored `lends`; its cap is
+        # the account's own `max_agents`, which `_raw_has_room` applies.
+        if sum(1 for h in live if h.tenant_id == tenant_id) >= lend.max_agents:
+            return CAP_LEND_MAX_AGENTS
+        if lend.monthly_spend_cap_usd is not None and (
+            lend_spent.get(tenant_id, 0.0) >= lend.monthly_spend_cap_usd
+        ):
+            return CAP_LEND_SPEND
+    return None
+
+
+def _running_spend(live: list[Hold], tenant_id: str | None = None) -> float:
+    """The live holds' running spend (`Hold.running_cost_usd`), all of them
+    or one workspace's: what `Account.spent` adds to the closed spend."""
+    return sum(
+        h.running_cost_usd or 0.0
+        for h in live
+        if tenant_id is None or h.tenant_id == tenant_id
+    )
+
+
+def _spend_payload(
+    data: dict[str, Any], hold: Hold, cost_usd: float | None, now: datetime
+) -> dict[str, Any]:
+    """The `month_spend` and `lend_spend` a closing hold adds to a KEY (§4.6,
+    Q5): its `cost_usd` on the key's month, and on its borrower's line when
+    the holder is a borrower. Written by the caller in the transaction that
+    closes the hold, so the spend a cap is measured against and the hold it
+    came from never disagree. Empty for a plan (flat price), a hold with no
+    cost, or a document whose stored spend cannot be read -- whose next grant
+    is refused anyway (`_raw_tenant_refusal`)."""
+    if not cost_usd or not api_key.is_key(data.get("provider")):
+        return {}
+    try:
+        spent = month_spend_from_firestore(data.get("month_spend"))
+        lent = lend_spend_from_firestore(data.get("lend_spend"))
+    except ValueError:
+        return {}
+    month = spend_month(now)
+    spent[month] = round(spent.get(month, 0.0) + cost_usd, 6)
+    payload: dict[str, Any] = {"month_spend": spent}
+    owner = data.get("owner_tenant")
+    if hold.tenant_id and hold.tenant_id != owner:
+        line = lent.setdefault(month, {})
+        line[hold.tenant_id] = round(line.get(hold.tenant_id, 0.0) + cost_usd, 6)
+        payload["lend_spend"] = lent
+    return payload
+
+
+def _raw_has_room(data: dict[str, Any], live: list[Hold]) -> bool:
+    """Whether a raw document's live holds leave room for one more (archived issue 2222).
+
+    The cap `choose()` applies, applied again where the hold commits:
+    `choose()` reads a listing taken before the transaction, so two assigns
+    racing for an account's last slot would both pass it and both commit. A
+    malformed `max_agents` is no room -- the listing could not have offered
+    the account anyway (`accountstore._decode`).
+    """
+    try:
+        cap = max_agents_from_firestore(data.get("max_agents"))
+    except ValueError:
+        return False
+    if data.get("observed_at") is None and not api_key.is_key(data.get("provider")):
+        # ONE UNTIL MEASURED (archived issue 2222), re-checked here for the reason the cap
+        # is: two assigns racing for a never-observed account's one slot. An
+        # OpenAI API key is never measured (`Account.measured`), so its
+        # `max_agents` is the cap.
+        cap = min(cap, MAX_AGENTS_BEFORE_READING)
+    return len(live) < cap
+
+
+class HoldNotHeld(Exception):
+    """The caller holds no live hold matching what it named. Answered 403."""
+
+
+def swap_hold(
+    db: Any,
+    from_account: str,
+    to_account: str,
+    *,
+    assignment_id: str,
+    tenant_id: str,
+    task_id: str,
+    attempt_id: str,
+    reason: str,
+    now: datetime,
+    ttl: timedelta = DEFAULT_HOLD_TTL,
+    cost_usd: float | None = None,
+) -> tuple[str, int] | None:
+    """Move one attempt's hold from one account to another, in ONE transaction.
+
+    The account moved to is checked as `acquire_hold` checks it, caps and all
+    (`_raw_tenant_refusal`), and the hold left closes with its `cost_usd`
+    added to a key's spend (`_spend_payload`), all in the same transaction.
+
+    Returns (new assignment id, holders now on `to_account`), or None when
+    `to_account` cannot take it -- removed, no longer AVAILABLE, or no longer
+    serving this tenant since the listing -- in which case NOTHING was
+    written and the caller still holds exactly what it held. Raises
+    `HoldNotHeld` when the caller's hold on `from_account` is not live.
+
+    ONE TRANSACTION IS THE WHOLE POINT. Both documents are read, then both are
+    written: the left hold removed, the new one added, the left record closed
+    `swapped` naming where it went, the new record opened naming where it came
+    from. So an attempt NEVER holds two accounts at once -- the counter would
+    count it twice and `choose()` would spread the next agents wrongly -- and
+    never holds NONE while the swap succeeds, which would let a release race
+    leave a running agent on an account the pool thinks is free.
+
+    A swap for `unusable` also records, against this tenant only, that the
+    account being left could not be read -- what `release_hold` records for
+    the same cause -- so the next ask is not sent at the same wall.
+    """
+    from google.cloud import firestore
+
+    if from_account == to_account:
+        raise ValueError("a swap must move to a different account")
+    from_ref = db.collection(ACCOUNTS_COLLECTION).document(from_account)
+    to_ref = db.collection(ACCOUNTS_COLLECTION).document(to_account)
+    transaction = db.transaction()
+    new_id = uuid.uuid4().hex
+
+    @firestore.transactional
+    def _apply(txn: Any) -> int | None:
+        # Every read before any write: Firestore requires it of a transaction.
+        from_snap = _txn_snapshot(txn.get(from_ref))
+        to_snap = _txn_snapshot(txn.get(to_ref))
+        if not getattr(from_snap, "exists", False):
+            raise HoldNotHeld(from_account)
+        from_data = from_snap.to_dict() or {}
+        live, expired = _split_holds(from_data, now)
+        held = _attempt_hold(
+            from_data,
+            now,
+            assignment_id=assignment_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+        )
+        if held is None:
+            raise HoldNotHeld(from_account)
+        if not getattr(to_snap, "exists", False):
+            return None
+        to_data = to_snap.to_dict() or {}
+        if not _raw_assignable(to_data, tenant_id):
+            return None
+        to_live, to_expired = _split_holds(to_data, now)
+        if not _raw_has_room(to_data, to_live):
+            return None
+        if _raw_tenant_refusal(to_data, to_live, tenant_id, now) is not None:
+            return None
+        taken = Hold(
+            assignment_id=new_id,
+            tenant_id=tenant_id,
+            expires_at=now + ttl,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            assigned_at=now,
+            swapped_from=from_account,
+            swap_reason=reason,
+        )
+        left = _hold_payload([h for h in live if h.assignment_id != held.assignment_id])
+        left.update(_spend_payload(from_data, held, cost_usd, now))
+        if reason == SWAP_UNUSABLE:
+            reports = _unreadable_reports(from_data)
+            reports[tenant_id] = now
+            left["unreadable_by"] = reports
+        txn.update(from_ref, left)
+        txn.update(to_ref, {**_hold_payload([*to_live, taken]), "last_assigned_at": now})
+        txn.set(
+            _log_ref(db, held.assignment_id),
+            hold_log_entry(
+                held,
+                from_account,
+                end=HOLD_END_SWAPPED,
+                released_at=now,
+                swapped_to=to_account,
+                swap_reason=reason,
+            ),
+        )
+        txn.set(_log_ref(db, new_id), hold_log_entry(taken, to_account))
+        _close_expired(txn, db, from_account, expired)
+        _close_expired(txn, db, to_account, to_expired)
+        return len(to_live) + 1
+
+    assigned = _apply(transaction)
+    return None if assigned is None else (new_id, assigned)
+
+
+def set_state_and_moves(
+    db: Any, account_id: str, state: AccountState, reason: str, *, now: datetime
+) -> int:
+    """An operator's state change, and the holds it moves, in ONE write. Returns how many.
+
+    DRAINING is defined as "running agents are being moved off"
+    (`AccountState.DRAINING`), and until now nothing moved: the state was
+    stored and every agent on the account stayed. So setting DRAINING marks
+    every live hold `move: drain` IN THE SAME TRANSACTION as the state. Why
+    here and not in the sweep: a sweep runs minutes apart, and in between the
+    account would be DRAINING with nobody told to leave -- the window in which
+    an operator reads "draining" and starts the removal. Leaving DRAINING
+    clears the marks the same way, so an agent is not moved off an account an
+    operator has just put back in service.
+
+    Writes what `AccountStore.set_state` writes (state, reason, and clearing
+    `state_before_reauth` because a person decided), plus the holds. AND
+    AVAILABLE ENDS A RECORDED 429's HOLD (`Account.is_limited`), on the
+    account and its health record in this transaction, for the reason
+    `AccountStore.set_state` gives: a bad report can hold an account for
+    days, and a person putting it back in service can say it is wrong.
+    """
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    health_ref = ref.collection(HEALTH_SUBCOLLECTION).document(HEALTH_DOCUMENT)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> int:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            raise BrokerValidationError(f"no account {account_id!r}")
+        live, expired = _split_holds(snap.to_dict() or {}, now)
+        draining = state is AccountState.DRAINING
+        marked = [
+            replace(h, move=SWAP_DRAIN if draining else (None if h.move == SWAP_DRAIN else h.move))
+            for h in live
+        ]
+        resumed: dict[str, Any] = {}
+        if state is AccountState.AVAILABLE:
+            resumed = {"limited_until": None, "limited_window": None}
+            txn.set(health_ref, {"limited_until": None}, merge=True)
+            if (snap.to_dict() or {}).get("exhausted_at") is not None:
+                # RESUME (§4.3, §5.2): a person putting a key whose credit was
+                # gone back in service, after topping it up, clears the mark
+                # the hourly probe would otherwise clear.
+                resumed.update({"exhausted_at": None, KEY_PROBED_AT: None})
+        txn.update(
+            ref,
+            {
+                "state": state.value,
+                "reason": reason,
+                "state_before_reauth": "",
+                **_hold_payload(marked),
+                **resumed,
+            },
+        )
+        _close_expired(txn, db, account_id, expired)
+        return sum(1 for h in marked if h.move == SWAP_DRAIN)
+
+    return _apply(transaction)
+
+
+def _release_attempt_holds_everywhere(
+    db: Any, *, task_id: str, attempt_id: str, now: datetime
+) -> dict[str, Any]:
+    """`release_attempt_holds` over every account document. One transaction each.
+
+    Every document id straight from the collection, as `_prune_all_holds`
+    walks them and for its reason (archived issue 243): a malformed account is the one a
+    decoded listing would skip, and its holds count all the same.
+    """
+    released = 0
+    accounts: list[str] = []
+    for doc in db.collection(ACCOUNTS_COLLECTION).stream():
+        account_id = str(doc.id)
+        try:
+            count = release_attempt_holds(
+                db, account_id, task_id=task_id, attempt_id=attempt_id, now=now
+            )
+        except MALFORMED_ERRORS as exc:
+            log.warning(
+                "could not release a fenced attempt's holds on an account document",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
+            continue
+        if count:
+            released += count
+            accounts.append(account_id)
+    return {"released": released, "accounts": accounts}
+
+
+#: How long after an attempt records `completed_at` the sweep waits before
+#: giving its holds back on its behalf (archived issue 380). The worker records its end and
+#: THEN releases, from the `finally` of its run, so for a few seconds every
+#: orderly exit looks like this. Two minutes is many times that, and still
+#: ninety times shorter than `DEFAULT_HOLD_TTL`, which is what it replaces for
+#: a worker killed between the two.
+ENDED_ATTEMPT_GRACE = timedelta(minutes=2)
+
+
+def _attempt_ended(db: Any, task_id: str, attempt_id: str, now: datetime) -> bool:
+    """Whether the task and attempt documents prove this attempt is over.
+
+    Two proofs, and nothing else counts:
+
+    * the task's `current_generation` is past the attempt's `generation`: the
+      attempt is FENCED (invariant 5), by whoever fenced it. The same evidence
+      the reconciler releases on at its own fence, and like it, monotonic -- a
+      generation never comes back -- so deciding it outside the account
+      transaction cannot release a hold that a later write made live again;
+    * the attempt recorded `completed_at` longer ago than
+      `ENDED_ATTEMPT_GRACE`: its worker said it was done, and its own release
+      has had ample time to land.
+
+    A terminal task state alone is NOT a proof (archived issue 372): a GKE Job can outlive
+    its task's end, still running its agent on the account, which is exactly
+    the `left_running` finding the reconciler kills before it releases.
+
+    False -- leave it to the TTL -- for a missing document, an attempt
+    document naming another task, or a generation that is not an integer: a
+    hold's stamps are the worker's claim, and an unreadable record proves
+    nothing about it.
+    """
+    task_snap = db.collection("tasks").document(task_id).get()
+    attempt_snap = db.collection("attempts").document(attempt_id).get()
+    if not getattr(task_snap, "exists", False) or not getattr(attempt_snap, "exists", False):
+        return False
+    task = task_snap.to_dict() or {}
+    attempt = attempt_snap.to_dict() or {}
+    if attempt.get("task_id") != task_id:
+        return False
+    current, generation = task.get("current_generation"), attempt.get("generation")
+    if (
+        isinstance(current, int)
+        and isinstance(generation, int)
+        and not isinstance(current, bool)
+        and not isinstance(generation, bool)
+        and current > generation
+    ):
+        return True
+    completed = attempt.get("completed_at")
+    return isinstance(completed, datetime) and now - _aware_utc(completed) >= ENDED_ATTEMPT_GRACE
+
+
+def _release_ended_attempt_holds(db: Any, now: datetime) -> dict[str, Any]:
+    """Give back every live hold whose attempt has ended without releasing it (archived issue 380).
+
+    The reconciler releases at the fences IT commits. This is for every other
+    way an attempt ends with nobody calling the broker: a generation fenced by
+    another writer or by a pass whose broker call failed, and a worker killed
+    after recording its end but before its `finally` released the account.
+    Without it each of those holds counted for the whole `DEFAULT_HOLD_TTL`.
+
+    Each attempt is judged once per sweep (`_attempt_ended`: two document
+    reads), then released through `release_attempt_holds` on every account,
+    so the release is the same transaction, the same record closure and the
+    same idempotence as the reconciler's. Unstamped holds are never judged.
+    Every document id straight from the collection, for `_prune_all_holds`'s
+    reason (archived issue 243).
+    """
+    judged: dict[tuple[str, str], bool] = {}
+    released = 0
+    for doc in db.collection(ACCOUNTS_COLLECTION).stream():
+        account_id = str(doc.id)
+        try:
+            live = _live_holds(doc.to_dict() or {}, now)
+        except MALFORMED_ERRORS as exc:
+            log.warning(
+                "could not read the holds on an account document for ended attempts",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
+            continue
+        for hold in live:
+            if not hold.task_id or not hold.attempt_id:
+                continue
+            key = (hold.task_id, hold.attempt_id)
+            if key not in judged:
+                judged[key] = _attempt_ended(db, *key, now)
+            if not judged[key]:
+                continue
+            try:
+                count = release_attempt_holds(
+                    db, account_id, task_id=key[0], attempt_id=key[1], now=now
+                )
+            except MALFORMED_ERRORS as exc:
+                log.warning(
+                    "could not release an ended attempt's holds on an account document",
+                    extra={"account_id": account_id, "error": type(exc).__name__},
+                )
+                continue
+            if count:
+                released += count
+                log.warning(
+                    "released the account holds of an attempt that ended without "
+                    "releasing them",
+                    extra={
+                        "account_id": account_id,
+                        "task_id": key[0],
+                        "attempt_id": key[1],
+                        "released": count,
+                    },
+                )
+    return {"released": released, "judged": len(judged)}
+
+
+#: The history route's page: the default, and the most one request may ask.
+HISTORY_PAGE = 100
+HISTORY_PAGE_MAX = 500
+
+#: The window the history route reads when the caller names none.
+HISTORY_DEFAULT_SPAN = timedelta(days=7)
+
+
+def _iso(value: Any) -> str | None:
+    return _aware_utc(value).isoformat() if isinstance(value, datetime) else None
+
+
+def _hold_to_api(hold: Hold) -> dict[str, Any]:
+    """One live hold for the platform read. NO assignment id: it authorises release."""
+    return {
+        "tenant_id": hold.tenant_id,
+        "task_id": hold.task_id,
+        "attempt_id": hold.attempt_id,
+        "assigned_at": _iso(hold.assigned_at),
+        "expires_at": _iso(hold.expires_at),
+        # Set when this hold was taken by a swap: the account the attempt
+        # came from, and why it moved. swarm-api decides who may see the id.
+        "swapped_from": hold.swapped_from,
+        "swapped_from_reason": hold.swap_reason if hold.swapped_from else None,
+        # Set while the hold is marked to move off a draining account.
+        "move": hold.move,
+    }
+
+
+def _optional_reason(raw: Any) -> str | None:
+    return raw if raw in SWAP_REASONS else None
+
+
+def _optional_id(raw: Any) -> str | None:
+    return raw if isinstance(raw, str) and raw else None
+
+
+def _span_to_api(record: dict[str, Any]) -> dict[str, Any]:
+    """One `account_holds` record, by an allow-list of fields.
+
+    An allow-list rather than the document minus some keys: the document id is
+    the assignment id, and a record that one day grows a field must not start
+    serving it by default.
+    """
+    end = record.get("end")
+    return {
+        "tenant_id": str(record.get("tenant_id") or ""),
+        "task_id": record.get("task_id") if isinstance(record.get("task_id"), str) else None,
+        "attempt_id": (
+            record.get("attempt_id") if isinstance(record.get("attempt_id"), str) else None
+        ),
+        "assigned_at": _iso(record.get("assigned_at")),
+        "released_at": _iso(record.get("released_at")),
+        "end": end if end in HOLD_ENDS else None,
+        "hold_expires_at": _iso(record.get("hold_expires_at")),
+        # A swap, from each side (S13/S14): this span began by moving here
+        # from `swapped_from`, and/or ended by moving to `swapped_to`.
+        "swapped_from": _optional_id(record.get("swapped_from")),
+        "swapped_from_reason": _optional_reason(record.get("swapped_from_reason")),
+        "swapped_to": (
+            _optional_id(record.get("swapped_to")) if end == HOLD_END_SWAPPED else None
+        ),
+        "swapped_to_reason": (
+            _optional_reason(record.get("swapped_to_reason"))
+            if end == HOLD_END_SWAPPED
+            else None
+        ),
+    }
+
+
+def _instant(raw: str, name: str, now: datetime) -> datetime:
+    """An instant within [now - retention - 1 day, now + 1 day], as UTC.
+
+    The bound is what keeps `0001-01-01T00:00:00+01:00` and
+    `9999-12-31T23:59:59-01:00` from reaching arithmetic: `astimezone` raises
+    OverflowError (not ValueError) on them, which was an unhandled 500. No
+    record outlives HOLD_LOG_RETENTION and none is dated in the future, so an
+    instant outside the range can only be a probe or a mistake.
+    """
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if value.tzinfo is None:
+            raise BrokerValidationError(f"`{name}` must carry a UTC offset")
+        value = value.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        raise BrokerValidationError(
+            f"`{name}` must be an ISO 8601 instant with an offset"
+        ) from None
+    if not now - HOLD_LOG_RETENTION - timedelta(days=1) <= value <= now + timedelta(days=1):
+        raise BrokerValidationError(f"`{name}` is outside the range the hold log retains")
+    return value
+
+
+def _history_cursor(raw: str, now: datetime) -> tuple[datetime, int]:
+    """`<instant>|<n served at that instant>`, as the previous page minted it.
+
+    `n` is BOUNDED by `HISTORY_PAGE_MAX`. It sizes the Firestore read
+    (`limit + n + 1`), so an unbounded one let a forged cursor read an
+    account's whole hold log, and past int32 it was an unhandled 500. A page
+    never serves more than `HISTORY_PAGE_MAX` rows, and the account holds a
+    handful of concurrent holds, so a genuine `n` never nears the bound.
+
+    NOT a (assigned_at, document id) cursor, though that would need no count:
+    the document id IS the assignment id, which authorises a release, and a
+    cursor is handed to the caller.
+    """
+    instant, sep, count = raw.rpartition("|")
+    if not sep or not (count.isascii() and count.isdigit()) or len(count) > 4:
+        raise BrokerValidationError("the cursor is not one this route issued")
+    skip = int(count)
+    if skip > HISTORY_PAGE_MAX:
+        raise BrokerValidationError("the cursor is not one this route issued")
+    return _instant(instant, "cursor", now), skip
+
+
+def quota_to_api(state: QuotaState) -> dict[str, Any]:
+    payload = quota_to_firestore(state)
+    payload["effective_limit"] = state.effective_limit
+    payload["quota_derived_limit_now"] = quota_derived_limit_for(state)
+    return payload
+
+
+
+def _prune_all_holds(db: Any, store: Any, now: datetime) -> dict[str, Any]:
+    """Expire abandoned holds across the whole pool. One transaction per account.
+
+    Per account rather than one batch, because each is an independent
+    read-modify-write against a document a live assign or release may be
+    touching at the same moment, and a batch would have to lose one of them.
+    The pool is tens of accounts, not thousands.
+
+    EVERY DOCUMENT, NOT `store.list()` (archived issue 243). The listing leaves a malformed
+    document out by design (archived issue 180), and walking it meant the one backstop for a
+    killed worker's hold never visited that document: its holds stayed counted
+    until someone repaired it by hand. `prune_holds` needs only the raw
+    `holds`, so the sweep enumerates document ids straight from the
+    collection and prunes the readable and the unreadable alike. The readable
+    list is still read, for the alarm below, and it is also what names each
+    unreadable document by id and exception class (`accountstore._decode`).
+
+    ONE STREAM. `list_reporting` reads the collection once and returns the
+    readable accounts and the unreadable document ids together; between them
+    they are every document id the collection held.
+
+    EVERY DOCUMENT FAILING IS AN ERROR, not N warnings and a clean summary.
+    One document whose holds cannot be read is that document; all of them at
+    once is a decoder bug (`accountstore.MALFORMED_ERRORS`). It is logged at
+    ERROR and the summary carries `error`, the key the sweep route already
+    uses for a hold sweep that failed.
+    """
+    reclaimed = 0
+    touched = 0
+    listing = store.list_reporting()
+    accounts = listing.accounts
+    readable = [account.account_id for account in accounts]
+    unreadable = list(listing.unreadable)
+    every = [*readable, *unreadable]
+    failed: list[str] = []
+    for account_id in every:
+        try:
+            dropped = prune_holds(db, account_id, now=now)
+        except MALFORMED_ERRORS as exc:
+            # One document whose hold fields themselves cannot be read must not
+            # stop the rest of the pool being swept. The id and the CLASS only:
+            # `str(exc)` can quote a field value (see `MalformedAccountError`).
+            log.warning(
+                "could not prune the holds on an account document",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
+            failed.append(account_id)
+            continue
+        if dropped:
+            reclaimed += dropped
+            touched += 1
+            log.warning(
+                "reclaimed assignments whose worker never released them",
+                extra={
+                    "account_id": account_id,
+                    "reclaimed": dropped,
+                    # Says the reclaim happened on a document nothing else can
+                    # read, so the operator fixing it knows its count is right.
+                    "unreadable": account_id in unreadable,
+                },
+            )
+
+    # THE ONE ALARM FOR A POOL NOTHING CAN REACH.
+    #
+    # The failure this names has no other symptom. A worker with no
+    # QUOTA_BROKER_URL never calls; a worker whose service account is missing
+    # from this service's `run.invoker` list is rejected by Cloud Run before
+    # the application runs, and its client is written to fall back rather than
+    # fail. Either way nothing errors, nothing is logged here, the listing
+    # shows a healthy idle pool, and every agent runs on the one shared
+    # per-tenant subscription -- which is the contention the pool exists to
+    # remove.
+    #
+    # It can only be said from HERE, because only the broker knows both halves:
+    # that accounts are registered, and that nothing has ever asked for one. A
+    # deployment that has simply not adopted the pool has no accounts and gets
+    # no warning, which is why this is not a plan-time check on a variable.
+    never_used = [a for a in accounts if a.last_assigned_at is None]
+    if accounts and len(never_used) == len(accounts):
+        log.warning(
+            "accounts are registered and none has ever been assigned; the "
+            "workers cannot reach this service. Check that the scheduler sets "
+            "QUOTA_BROKER_URL on the jobs it dispatches and that each tenant's "
+            "worker service account holds roles/run.invoker on swarm-quota-broker",
+            extra={"accounts": len(accounts)},
+        )
+
+    summary: dict[str, Any] = {
+        # `pruned`, not `accounts`: this block sits beside the refresher's own
+        # `accounts` summary in the sweep response and the two count different
+        # things.
+        "pruned": touched,
+        "reclaimed": reclaimed,
+        "registered": len(accounts),
+        "never_assigned": len(never_used),
+    }
+    if every and len(failed) == len(every):
+        log.error(
+            "the hold sweep could read the holds of no account document; no "
+            "abandoned hold was reclaimed this tick. One unreadable document is "
+            "that document; all of them is a decoder or writer bug",
+            extra={"unreadable": sorted(failed), "documents": len(failed)},
+        )
+        summary["error"] = "every account document's holds are unreadable"
+        summary["unreadable"] = sorted(failed)
+    return summary
+
+
+#: Refresh outcomes that mean the credential is dead and only a person can fix
+#: it.
+#:
+#: `unreadable` sits beside `reauth_required` because the stored payload cannot
+#: be parsed at all: there is nothing to present to the token endpoint, so no
+#: number of retries changes the answer, and the account is exactly as unusable
+#: as one whose token was revoked. The on-demand refresh route has treated the
+#: two identically since it was written; naming them once is what stops the
+#: sweep growing a second opinion about what "dead" means.
+CREDENTIAL_NEEDS_A_HUMAN = ("reauth_required", "unreadable")
+
+#: Outcomes that added at least one Secret Manager version. `refreshed` writes
+#: the pair; the other two write the worker-facing half alone. Named here
+#: rather than inline because both sweep summarisers count it and a second
+#: spelling would drift from this one.
+_WROTE_A_VERSION = ("refreshed", "published", "published_unverified")
+
+
+def _sweep_account_pool(
+    refresher: Any, store: Any, now: datetime, *, keep_going: Any = None
+) -> dict[str, Any]:
+    """Refresh every registered account, and RECORD what came back.
+
+    THE RECORDING IS THE POINT, and its absence was the audit's first finding
+    (docs/audits/2026-09-18/06-quota-broker-accounts.md). The sweep already
+    detected a revoked refresh token, logged it and counted it into a response
+    body that Cloud Scheduler throws away. Nothing wrote the account document,
+    so:
+
+      * `choose()` kept handing the account to new agents, which then failed to
+        authenticate for a reason nothing connected to the account;
+      * `due_for_refresh()` kept presenting a dead token to the endpoint every
+        five minutes, forever -- the exact behaviour `AccountState`'s own
+        docstring says must not happen;
+      * and every listing, the UI's included, showed AVAILABLE with an empty
+        reason. An operator looking at a pool with one dead account saw a pool
+        with nothing wrong with it.
+
+    KEYED BY ACCOUNT ID, NOT BY LABEL. `refresh_secret` puts whatever second
+    element it is given into `RefreshOutcome.tenant_id`, and this used to hand
+    it `a.label` -- which is unique only WITHIN a tenant. Two tenants may both
+    have an account labelled `personal`, so a write-back keyed on the label
+    would mark whichever one it found first, and the response named an account
+    nobody could look up. The account id is `tenant:label` and is the document
+    id, so it is both unambiguous and directly usable.
+
+    Never raises: this runs inside the tick that un-parks throttled tenants,
+    and one unreadable account document must not stall every tenant's quota
+    recovery. A failure to WRITE one account is caught per account for the same
+    reason -- the other marks are still worth making.
+
+    `keep_going` is the sweep lease's fence (`sweeplease.LeaseFence`): asked
+    before every exchange, here and inside the refresher, and a False ends the
+    pass there -- the lease is somebody else's now.
+    """
+    try:
+        due = due_for_refresh(store.list(), now)
+        # WHICH OF THEM AN AGENT IS ON NOW (archived issue 626): refreshing revokes the token
+        # that agent runs with, so the refresher defers a held account until
+        # its token nears expiry. A LIVE hold only -- an expired one is a
+        # worker that died without releasing, and nothing is running on it.
+        held = {a.account_id for a in due if a.live_holds(now)}
+        outcomes = refresher.sweep_accounts(
+            [(store.secret_for(a), a.account_id) for a in due],
+            keep_going=keep_going,
+            held=held,
+        )
+    except Exception as exc:
+        log.error(
+            "account pool sweep failed",
+            extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
+        )
+        return {"error": type(exc).__name__}
+
+    # WRITTEN BACK, EVERY ACCOUNT, EVERY SWEEP (U27, docs/web-ui/06-accounts.md
+    # P2). The outcome's expiry used to be thrown away with the rest of the
+    # response, so the Accounts screen could show when a token expires only
+    # after someone pressed Refresh. Keyed by the outcome's `tenant_id`, which
+    # is the ACCOUNT ID because that is what the sweep hands the refresher
+    # above -- never the label, which two tenants may share.
+    recorded = _record_refreshes(store, outcomes, now)
+    # AND WHICH ACCOUNTS NOW SHARE AN ORGANISATION (archived issue 2222), from what the
+    # exchanges above just recorded.
+    duplicate_accounts = mark_duplicates(store)
+
+    needs_human = [
+        (o.tenant_id, o.reason)
+        for o in outcomes
+        if o.reason in CREDENTIAL_NEEDS_A_HUMAN
+    ]
+    marked: list[str] = []
+    for account_id, reason in needs_human:
+        # The confirmation below is an exchange like any other, so it is
+        # fenced like any other.
+        if keep_going is not None and not keep_going():
+            break
+        try:
+            account = store.get(account_id)
+            if account is None:
+                # Removed between the listing and now. `remove` is allowed to
+                # race a sweep in flight; nothing is wrong.
+                continue
+
+            # CONFIRMED BEFORE IT IS WRITTEN, with a second exchange against
+            # the credential AS IT STANDS NOW.
+            #
+            # REAUTH_REQUIRED is a state only a person can leave -- the sweep
+            # cannot lift it, because `due_for_refresh` skips it -- so a false
+            # one costs an operator a sign-in they did not need and the pool an
+            # account that was never broken. That is worth one extra call.
+            #
+            # The concrete way a false one happened is finding 3 of
+            # docs/audits/2026-09-18/06-quota-broker-accounts.md: nothing
+            # serialised this endpoint, Cloud Scheduler retries a tick it
+            # thinks timed out without cancelling the first, and the service
+            # takes many concurrent requests. Two sweeps then read the
+            # same refresh token, one exchanges it, and the OTHER is told
+            # `invalid_grant` for a token that was merely rotated away from it
+            # -- a perfectly healthy account. The second attempt re-reads the
+            # secret, finds the rotated credential the winner just wrote, and
+            # answers `still_valid`, so the account is not marked.
+            #
+            # This is confirmation, not mutual exclusion: it makes the race
+            # harmless HERE. The exclusion is now the sweep lease
+            # (`sweeplease`), which stops two sweeps exchanging at once; the
+            # confirmation stays, because a lease taken over from a sweep that
+            # was merely slow still leaves one exchange in flight on each side.
+            second = refresher.refresh_secret(
+                store.secret_for(account), label=account_id
+            )
+            if second.reason != reason:
+                # The confirmation is the latest thing known about this
+                # credential, so it is what the account says last happened.
+                recorded += _record_refreshes(store, [replace(second, tenant_id=account_id)], now)
+            if second.reason not in CREDENTIAL_NEEDS_A_HUMAN:
+                log.info(
+                    "an account's refresh failed and then worked on a second "
+                    "attempt; leaving its state alone",
+                    extra={
+                        "account_id": account_id,
+                        "first": reason,
+                        "second": second.reason,
+                    },
+                )
+                continue
+
+            recorded = store.mark_reauth_required(
+                account_id, f"refresh failed: {second.reason}"
+            )
+        except Exception as exc:
+            log.error(
+                "could not record that an account's credential is dead",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
+            continue
+        if recorded is None:
+            continue
+        marked.append(account_id)
+        log.warning(
+            "an account's credential is dead and the pool has stopped trying; "
+            "it needs a person to sign in again",
+            extra={"account_id": account_id, "reason": second.reason},
+        )
+    return {
+        "examined": len(outcomes),
+        "refreshed": sum(1 for o in outcomes if o.refreshed),
+        #: How many refresh outcomes were written onto their account document.
+        "recorded": recorded,
+        #: ACCOUNT IDS -- every account this tick's first pass found dead. Ids
+        #: rather than labels because a label is unique only within a tenant.
+        "reauth_required": [account_id for account_id, _ in needs_human],
+        #: The subset that was still dead on a second attempt AND written. The
+        #: two lists differ when an account was removed mid-sweep, when the
+        #: second attempt succeeded, or when the write failed -- each of which
+        #: is logged, because a detection that was never recorded is one the
+        #: listing will not show.
+        "marked_reauth_required": marked,
+        #: The same write-cadence counters `_sweep_block` reports, and for the
+        #: same reason: secrets this broker writes piled up identical versions
+        #: while every tick reported success. The figures are in
+        #: `quota_broker.credentials` (`_BaseState`), and only there: a second
+        #: copy of a count is how this one drifted.
+        "wrote": sum(1 for o in outcomes if o.reason in _WROTE_A_VERSION),
+        "unverified": sum(1 for o in outcomes if o.reason == "published_unverified"),
+        "unverified_skipped": [
+            o.tenant_id for o in outcomes if o.reason == "unverified_skipped"
+        ],
+        #: ACCOUNT IDS a running agent held, left unrefreshed this tick (archived issue 626).
+        "held_deferred": [o.tenant_id for o in outcomes if o.reason == "held_deferred"],
+        #: ACCOUNT IDS on a subscription (organisation and seat, archived issue 2282) another
+        #: account is also on (archived issue 2222).
+        "duplicates": duplicate_accounts,
+    }
+
+
+def _record_refreshes(store: Any, outcomes: Any, now: datetime) -> int:
+    """`AccountStore.record_refresh` for each outcome, never raising. Returns how many.
+
+    A failure to write one account is logged and the rest are still written:
+    this runs inside the tick that un-parks throttled tenants.
+    """
+    written = 0
+    for outcome in outcomes:
+        try:
+            if store.record_refresh(
+                outcome.tenant_id,
+                at=now,
+                reason=outcome.reason,
+                expires_at=outcome.expires_at,
+                organisation=getattr(outcome, "organisation", None),
+            ):
+                written += 1
+        except Exception as exc:
+            log.error(
+                "could not record an account's refresh outcome",
+                extra={"account_id": outcome.tenant_id, "error": type(exc).__name__},
+            )
+    return written
+
+
+def _sweep_block(run: Any, failure_message: str) -> dict[str, Any]:
+    """Run one refresh sweep and summarise it, never raising.
+
+    Neither sweep may take the quota sweep down with it: the same tick is what
+    un-parks throttled tenants, so one bad credential must not stall every
+    tenant's quota recovery. Reported per sweep rather than merged, because
+    "credentials are broken" and "the account pool is broken" want different
+    people to do different things.
+    """
+    try:
+        outcomes = run()
+    except Exception as exc:
+        log.error(failure_message, extra={"error": type(exc).__name__, "detail": str(exc)[:200]})
+        return {"error": type(exc).__name__}
+    return {
+        "examined": len(outcomes),
+        "refreshed": sum(1 for o in outcomes if o.refreshed),
+        "reauth_required": [o.tenant_id for o in outcomes if o.reason == "reauth_required"],
+        # THE WRITE CADENCE, stated on every tick. Nothing reported the
+        # 1,741-version leak for four days except the secret-version count
+        # itself, because the sweep's own summary never said how many versions
+        # it had written. A steady state is `wrote: 0` on every tick but the
+        # one that actually rotates a credential; a `wrote` that is nonzero
+        # tick after tick is the leak, visible from the response and the log
+        # line that carries it rather than from a gcloud count days later.
+        "wrote": sum(1 for o in outcomes if o.reason in _WROTE_A_VERSION),
+        # Published without being able to confirm it was needed. Should be at
+        # most one per credential per deployment; a number that keeps growing
+        # means the ledger is not sticking.
+        "unverified": sum(1 for o in outcomes if o.reason == "published_unverified"),
+        # Declined to write because neither the secret nor the ledger could be
+        # read. Not a failure of the credential -- a failure of this service's
+        # own evidence, and the credential is going stale while it lasts.
+        "unverified_skipped": [
+            o.tenant_id for o in outcomes if o.reason == "unverified_skipped"
+        ],
+    }
+
+
+def _poll_block(run: Any, failure_message: str) -> dict[str, Any]:
+    """Summarise one usage-poll round, never raising.
+
+    ITS OWN SUMMARISER, and it has to be. This used to hand
+    `[o.__dict__ for o in poller.poll_round(...)]` to `_sweep_block`, which
+    reads `o.refreshed` and `o.reason` off each element -- attributes a
+    PollOutcome does not have and a plain dict certainly does not. The
+    AttributeError is raised while building the RETURN value, outside that
+    function's try block, so it escaped and 500'd the whole sweep as soon as
+    the poll returned anything at all.
+
+    That is not a cosmetic bug in a summary line: /v1/quota/sweep is the tick
+    that un-parks throttled tenants, refreshes every account's credential and
+    -- now -- reclaims the holds of workers that were killed before they could
+    release. All of it stopped the moment one account was polled.
+    """
+    try:
+        outcomes = run()
+    except Exception as exc:
+        log.error(failure_message, extra={"error": type(exc).__name__, "detail": str(exc)[:200]})
+        return {"error": type(exc).__name__}
+    return {
+        "examined": len(outcomes),
+        "polled": sum(1 for o in outcomes if o.polled),
+        # The account id and the reason, never the secret name or the token --
+        # see UsagePoller, which is careful about the same thing.
+        "skipped": [
+            {"account_id": o.account_id, "reason": o.reason}
+            for o in outcomes
+            if not o.polled
+        ],
+    }
+
+
+def create_app(
+    broker: QuotaBroker | None = None,
+    *,
+    identity: WorkerIdentity | None = None,
+    metrics: BrokerMetrics | None = None,
+    credential_refresher: CredentialRefresher | None = None,
+    subscription_tenants: Any | None = None,
+    account_store: AccountStore | None = None,
+    token_endpoint: Any | None = None,
+    plan_token_endpoint: Any | None = None,
+) -> FastAPI:
+    # The other three services do this and the broker did not, so every
+    # `extra={...}` field it logged was discarded and its records arrived as
+    # unstructured text. The first thing that cost: a refresher failing on every
+    # sweep with the error type it attached invisible, leaving only a message
+    # that reads like a permissions problem.
+    configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+
+    app = FastAPI(title="swarm quota broker", version="0.1.0")
+    app.state.broker = broker if broker is not None else build_broker()
+    app.state.metrics = metrics or BrokerMetrics()
+    environment = os.environ.get("ENVIRONMENT", "dev").strip().lower()
+    app.state.identity = identity or WorkerIdentity(
+        audience=os.environ.get("BROKER_AUDIENCE", ""),
+        platform_accounts=tuple(
+            a.strip()
+            for a in os.environ.get("PLATFORM_SERVICE_ACCOUNTS", "").split(",")
+            if a.strip()
+        ),
+        required=os.environ.get("REQUIRE_OIDC", "true").strip().lower()
+        not in {"0", "false", "no", "off"},
+        project_id=os.environ.get("PROJECT_ID", ""),
+        hardened=environment not in {"dev", "test", "local"},
+    )
+
+    # THE VOICE IT POOL'S CALLER (owner, 2026-11-02): swarm-voice's service
+    # account, the only identity the /v1/voice/ lease routes answer. Named by
+    # VOICE_SERVICE_ACCOUNTS when set, else the account terraform/bootstrap
+    # creates for it in this project (`service_account_ids.voice_id`).
+    project_for_voice = os.environ.get("PROJECT_ID", "").strip()
+    app.state.voice_callers = frozenset(
+        a.strip().lower()
+        for a in (
+            os.environ.get("VOICE_SERVICE_ACCOUNTS", "").split(",")
+            if os.environ.get("VOICE_SERVICE_ACCOUNTS", "").strip()
+            else ([f"swarm-voice@{project_for_voice}.iam.gserviceaccount.com"]
+                  if project_for_voice else [])
+        )
+        if a.strip()
+    )
+    # Who a Voice it pool account lists when the pool is added. Version one:
+    # the platform owner only (owner, 2026-11-02): VOICE_IT_PEOPLE when set,
+    # else PLATFORM_OWNER, which terraform/infra renders from
+    # var.platform_owner. Never a literal in the code: a new deployment has
+    # its own owner, and with neither set the pool lists nobody.
+    app.state.voice_it_people = tuple(
+        p.strip().lower()
+        for p in (
+            os.environ.get("VOICE_IT_PEOPLE", "")
+            or os.environ.get("PLATFORM_OWNER", "")
+        ).split(",")
+        if p.strip()
+    )
+
+    # This service is the platform's single writer of subscription credentials.
+    # See quota_broker.credentials for why exactly one writer is required; the
+    # refresh runs on the existing sweep tick rather than a timer of its own,
+    # so there is no second thing to schedule, monitor or forget.
+    # The account pool. Registered accounts are swept on the same tick, and
+    # EVERY one is visited -- busy, idle or paused -- because a refresh token
+    # that is never exchanged expires on its own. An "only what is in use"
+    # optimisation here is what turns "no human ever steps in" back into "no
+    # human steps in until the day they urgently need the idle account".
+    if account_store is not None:
+        app.state.account_store = account_store
+    else:
+        # Built from the BROKER's own client, not a second one. A separate
+        # client would carry separate settings, and the first symptom of that
+        # would be an account pool that is mysteriously empty in one process
+        # and populated in another.
+        app.state.account_store = AccountStore(app.state.broker.db)
+
+    # THE RECORD THAT HAS TO OUTLIVE THE PROCESS. The broker cannot read the
+    # worker-facing secrets it writes -- it holds `versions.add` and not
+    # `versions.access` -- so when it asks "does that secret already hold this
+    # token?" the only admissible answer is a positive record of what it put
+    # there. An in-process note is not that record: this service runs at
+    # minScale=0 and is redeployed several times a day, and each new process
+    # published one more identical version before it learned anything. See
+    # quota_broker.publishledger for the four deploys and four writes that
+    # measured it.
+    #
+    # Built from the BROKER's own Firestore handle, for the same reason the
+    # account store is: a second client carries second settings, and the first
+    # symptom of that is a record that exists in one process and not another --
+    # which is precisely the failure this closes.
+    app.state.publish_ledger = (
+        FirestorePublishLedger(app.state.broker.db)
+        if getattr(app.state.broker, "db", None) is not None
+        else InMemoryPublishLedger()
+    )
+
+    # ONE CREDENTIAL SWEEP AT A TIME, across every instance -- see
+    # quota_broker.sweeplease. On the broker's own Firestore handle for the
+    # reason the two above are: a lease held in one client's database and read
+    # through another's is no lease at all.
+    app.state.sweep_lease = build_sweep_lease(getattr(app.state.broker, "db", None))
+
+    refresher, tenants = credential_refresher, subscription_tenants
+    # Bound here rather than only inside the branch below: the usage poller
+    # needs the same store, and reading it conditionally raised
+    # UnboundLocalError in exactly the configuration meant to skip it.
+    secret_store = None
+    if refresher is None and _flag("CREDENTIAL_REFRESH_ENABLED", True):
+        project_id = os.environ.get("PROJECT_ID", "").strip()
+        if project_id:
+            store = secret_store = SecretManagerStore(project_id)
+            refresher = CredentialRefresher(
+                store,
+                HttpTokenEndpoint(),
+                logger=log,
+                ledger=app.state.publish_ledger,
+                held_margin=held_refresh_margin(),
+            )
+            if tenants is None:
+                tenants = store.subscription_tenants
+        else:
+            log.warning(
+                "PROJECT_ID is unset, so subscription credentials will not be "
+                "refreshed; tenants using a Claude subscription will stop "
+                "working when their access token expires"
+            )
+    app.state.credential_refresher = refresher
+
+    # THE SEAM THAT WAS MISSING. `finish_account_authorization` reads
+    # `app.state.token_endpoint` to redeem the authorization code, and nothing
+    # ever set it -- so every /v1/accounts/exchange raised
+    # `AttributeError: 'State' object has no attribute 'token_endpoint'`,
+    # answered 500, and swarm-api turned that into a 503 reading "the account
+    # pool answered HTTP 500". Registering an account has never once completed.
+    #
+    # HttpTokenEndpoint's own docstring says "Injected so tests never make a
+    # network call" -- it was written to be injected and then never was. The
+    # refresh path does not hit this because it calls `exchange` through
+    # CredentialRefresher, which IS constructed above; only the redeem path
+    # went through app.state.
+    #
+    # Injectable for the same reason as every other collaborator here: a test
+    # that reaches the real endpoint is a test that needs the network and a
+    # real authorization code.
+    app.state.token_endpoint = token_endpoint or HttpTokenEndpoint()
+    # The ChatGPT token endpoint, for an `openai` account's sign-in (archived issue 2688);
+    # injected for the same reason as the Claude one above.
+    app.state.plan_token_endpoint = plan_token_endpoint or openai_plan.HttpPlanTokenEndpoint()
+    # The one read-only call an API key must pass before it is stored
+    # (docs/design/llm-providers.md §4.1); injected so tests never make a
+    # network call.
+    app.state.key_validator = api_key.HttpKeyValidator()
+    app.state.subscription_tenants = tenants or (lambda: [])
+    # Registering an account writes two secrets, so the account routes need the
+    # same store the refresher and the poller use. Exposed on app.state rather
+    # than rebuilt, so all three are provably the same writer -- which is the
+    # property that keeps a rotating credential from being corrupted.
+    app.state.secret_store = secret_store
+
+    # What an account's secrets need at creation time: where to replicate them,
+    # what to label them, and who may read them.
+    app.state.region = os.environ.get("REGION", "").strip()
+    app.state.environment = os.environ.get("ENVIRONMENT", "").strip() or "dev"
+    app.state.broker_service_account = os.environ.get(
+        "BROKER_SERVICE_ACCOUNT", ""
+    ).strip()
+
+    # THE TENANT WORKER'S IDENTITY IS A TEMPLATE FROM TERRAFORM, not a pattern
+    # rebuilt here. terraform/modules/tenancy owns what a tenant's service
+    # account is called; a second copy of that rule in this file would be
+    # correct until the day it was not, and the symptom -- a pod that cannot
+    # read the credential it was assigned -- appears inside a job, nowhere near
+    # this line.
+    template = os.environ.get("WORKER_SERVICE_ACCOUNT_TEMPLATE", "").strip()
+
+    def _worker_sa(tenant_id: str) -> str:
+        # Empty means REFUSE, not "grant nobody". A secret created with no
+        # worker accessor is one the tenant's pod cannot read, and that failure
+        # surfaces much later as an unexplained auth error inside a job. The
+        # register route turns this into a 422 naming the variable.
+        if not template or "{tenant}" not in template:
+            raise BrokerValidationError(
+                "WORKER_SERVICE_ACCOUNT_TEMPLATE is unset or has no {tenant} "
+                "placeholder, so an account's secret cannot be bound to the "
+                "tenant that must read it. Refusing rather than creating a "
+                "secret no pod can read."
+            )
+        return f"serviceAccount:{template.format(tenant=tenant_id)}"
+
+    def _is_worker_sa(member: str) -> bool:
+        # The SAME template, read the other way: which accessor-binding members
+        # a lending sync owns and may therefore revoke. Anything else on an
+        # account secret -- the broker, a human, terraform's grants -- is not
+        # this code's to remove.
+        if not template or "{tenant}" not in template:
+            return False
+        head, _, tail = template.partition("{tenant}")
+        return (
+            re.fullmatch(
+                rf"serviceAccount:{re.escape(head)}{LENDABLE_TENANT.pattern}"
+                rf"{re.escape(tail)}",
+                member,
+            )
+            is not None
+        )
+
+    app.state.worker_service_account = _worker_sa
+    app.state.is_worker_service_account = _is_worker_sa
+
+    # The usage poller needs the same Secret Manager store the refresher uses --
+    # it reads each account's CURRENT access token, which the refresh above has
+    # just made fresh. Ordering matters: polling with a token the refresh is
+    # about to replace wastes one of about five calls per five minutes.
+    #
+    # Absent without PROJECT_ID, exactly like the refresher, so an
+    # API-key-only deployment builds neither and the sweep reports neither.
+    poller = None
+    if (
+        refresher is not None
+        and secret_store is not None
+        and getattr(app.state, "account_store", None) is not None
+    ):
+        poller = UsagePoller(
+            secret_store,
+            app.state.account_store,
+            logger=log,
+            max_polls=_int("USAGE_MAX_POLLS_PER_SWEEP", DEFAULT_MAX_POLLS_PER_SWEEP),
+        )
+    app.state.usage_poller = poller
+
+    def _authorize(request: Request, authorization: str | None, tenant_id: str) -> str:
+        """Confirm the caller may speak for `tenant_id`."""
+        try:
+            caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
+        except BrokerAuthError as exc:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise exc
+        if is_platform:
+            return tenant_id
+        if caller_tenant != tenant_id:
+            request.app.state.metrics.auth_failures.labels(kind="tenant_mismatch").inc()
+            raise BrokerAuthError("caller may not report quota for another tenant")
+        return tenant_id
+
+    @app.exception_handler(BrokerAuthError)
+    async def auth_handler(request: Request, exc: BrokerAuthError) -> Response:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=403,
+            content={"code": "forbidden", "message": str(exc)},
+        )
+
+    @app.exception_handler(BrokerValidationError)
+    async def validation_handler(request: Request, exc: BrokerValidationError) -> Response:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=422,
+            content={"code": "validation_failed", "message": str(exc)},
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_handler(
+        request: Request, exc: RequestValidationError
+    ) -> Response:
+        """FastAPI's 422, WITHOUT the values it refused.
+
+        The default handler echoes each refused value back as `input`. Two
+        things wrong with that here: a worker route's body is refused BECAUSE
+        it carried something it must not (a field `extra="forbid"` rejects, a
+        token among them), and echoing it puts that value in a response; and
+        a refused NaN cannot be encoded at all, so the refusal became a 500.
+        Same `detail` list, same locations and messages, no `input`, no `ctx`.
+        """
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": [
+                    {"loc": list(e.get("loc", ())), "msg": str(e.get("msg", "")),
+                     "type": str(e.get("type", ""))}
+                    for e in exc.errors()
+                ]
+            },
+        )
+
+    @app.exception_handler(TargetResetRefused)
+    async def reset_refused_handler(request: Request, exc: TargetResetRefused) -> Response:
+        """409: the request is allowed and well-formed, the quota's STATE
+        refuses it (EXHAUSTED without `clear_cooldown`). Not 422, which a
+        client reads as "fix the body"; the same body succeeds once the
+        window reopens."""
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=409,
+            content={"code": "quota_exhausted", "message": str(exc)},
+        )
+
+    @app.exception_handler(MalformedAccountError)
+    async def malformed_account_handler(
+        request: Request, exc: MalformedAccountError
+    ) -> Response:
+        """One unreadable document fails the one request that touched it.
+
+        500, because the fault is the broker's own stored data and not the
+        request: a 4xx would send the caller looking for something it did
+        wrong, and a retry will not help either way. NAMED, because a bare
+        500 says nothing an operator can act on, and this one can say which
+        document to go and fix. The body is the error's own message -- the
+        id and the exception class, never a field value (see
+        `MalformedAccountError`). Every other account keeps answering: the
+        listing skips this document and the single-account routes only ever
+        read the one they were asked about.
+        """
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "code": "account_malformed",
+                "account_id": exc.account_id,
+                "message": str(exc),
+            },
+        )
+
+    @app.get("/healthz")
+    def healthz() -> dict[str, Any]:
+        return {"status": "ok"}
+
+    @app.get("/readyz")
+    def readyz(request: Request, response: Response) -> dict[str, Any]:
+        try:
+            request.app.state.broker.list(limit=1)
+        except Exception as exc:  # pragma: no cover - depends on live Firestore
+            response.status_code = 503
+            return {"status": "not-ready", "detail": type(exc).__name__}
+        return {"status": "ready"}
+
+    @app.get("/metrics")
+    def metrics_endpoint(request: Request) -> Response:
+        body, content_type = request.app.state.metrics.render()
+        return Response(content=body, media_type=content_type)
+
+    @app.get("/v1/quota")
+    def list_quota(
+        request: Request,
+        tenant_id: str | None = Query(default=None),
+        provider: str | None = Query(default=None),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
+        scope = tenant_id if is_platform else caller_tenant
+        states = request.app.state.broker.list(tenant_id=scope, provider=provider)
+        for state in states:
+            request.app.state.metrics.observe(state)
+        return {"quota": [quota_to_api(s) for s in states], "tenant_id": scope}
+
+    @app.get("/v1/quota/{provider}/{tenant_id}")
+    def get_quota(
+        request: Request,
+        provider: str,
+        tenant_id: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        name = _known_provider(provider)
+        _authorize(request, authorization, tenant_id)
+        state = request.app.state.broker.current(name, tenant_id)
+        request.app.state.metrics.observe(state)
+        return {"quota": quota_to_api(state)}
+
+    @app.post("/v1/quota/{provider}/{tenant_id}/success")
+    def report_success(
+        request: Request,
+        provider: str,
+        tenant_id: str,
+        body: SuccessReport = Body(default_factory=SuccessReport),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        name = _known_provider(provider)
+        _authorize(request, authorization, tenant_id)
+        state = request.app.state.broker.observe_success(
+            name,
+            tenant_id,
+            requests_remaining=body.requests_remaining,
+            tokens_remaining=body.tokens_remaining,
+            reset_at=body.reset_at,
+        )
+        request.app.state.metrics.reports.labels(provider=name, kind="success").inc()
+        request.app.state.metrics.observe(state)
+        return {"quota": quota_to_api(state)}
+
+    # -- a 429 is the account's when an account was refused (archived issue 2302) --------
+    #
+    # A report that names the pool account its attempt holds is recorded
+    # against THAT ACCOUNT -- its health record -- and does not multiply the
+    # tenant's adaptive target. The account is already kept from new work by
+    # its own window readings (S15) and the hold machinery; halving the
+    # tenant on top of that punished every other account for one account's
+    # window (2026-10-25: eng fell 26 -> 14 on one 429 and sat full with 100+
+    # queued while other accounts had room). The tenant is still halved:
+    #
+    #   * for a report that names no account -- API-key traffic, as before;
+    #   * for one whose account the caller cannot prove it holds (`not_held`):
+    #     naming an account must not be a way to dodge the halving;
+    #   * when every account the tenant may draw from is limited at once
+    #     (`AccountStore.every_account_limited`): the pool as a whole is spent,
+    #     and that IS the tenant's limit.
+    #
+    # This changes how far the tenant's ceiling falls on a 429, never
+    # admission's arithmetic: the pools are still written only through
+    # `QuotaBroker._mutate`, and the scheduler still reserves all-or-nothing
+    # and counts from LEASED.
+
+    #: What `_account_scope` decided, as the route answers it.
+    SCOPE_TENANT = "tenant"
+    SCOPE_ACCOUNT = "account"
+    SCOPE_POOL_EXHAUSTED = "pool_exhausted"
+    SCOPE_NOT_HELD = "not_held"
+
+    def _held_report_account(
+        request: Request, tenant_id: str, provider: str, ref: ReportAccount
+    ) -> tuple[Any, Hold] | None:
+        """(the decoded account, the caller's hold), or None when not proven.
+
+        `_attempt_hold` over the raw document, then the decoded account for its
+        windows. The account must also be of the reported provider: a hold on
+        an anthropic account says nothing about another provider's 429.
+        """
+        store = getattr(request.app.state, "account_store", None)
+        if store is None:
+            return None
+        data = _raw_account(request.app.state.broker.db, ref.account_id)
+        if data is None:
+            return None
+        hold = _attempt_hold(
+            data,
+            datetime.now(timezone.utc),
+            assignment_id=ref.assignment_id,
+            tenant_id=tenant_id,
+            task_id=ref.task_id,
+            attempt_id=ref.attempt_id,
+        )
+        if hold is None:
+            return None
+        try:
+            account = store.get(ref.account_id)
+        except MalformedAccountError:
+            return None
+        if account is None or account.provider != provider:
+            return None
+        return account, hold
+
+    def _account_scope(
+        request: Request, provider: str, tenant_id: str, body: RateLimitReport, kind: str
+    ) -> str:
+        """Record the report against its account when it names one; say how
+        far the tenant falls (`SCOPE_*`). Halve unless `SCOPE_ACCOUNT`."""
+        ref = body.account
+        if ref is None:
+            return SCOPE_TENANT
+        held = _held_report_account(request, tenant_id, provider, ref)
+        if held is None:
+            request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            log.warning(
+                "a rate-limit report named an account its caller does not hold; "
+                "counted against the tenant",
+                extra={"account_id": ref.account_id, "tenant_id": tenant_id,
+                       "provider": provider},
+            )
+            return SCOPE_NOT_HELD
+        account, hold = held
+        store = request.app.state.account_store
+        now = datetime.now(timezone.utc)
+        window = refusing_window(account, now, reset_at=body.reset_at)
+        until = limited_until_for(
+            now,
+            reset_at=body.reset_at,
+            retry_after_seconds=body.retry_after_seconds,
+            account=account,
+            window=window,
+        )
+        store.record_health(
+            account.account_id,
+            kind,
+            tenant_id=tenant_id,
+            task_id=hold.task_id,
+            window=window,
+            reset_at=body.reset_at or until,
+            message=body.message,
+            limited_until=until,
+        )
+        try:
+            exhausted = store.every_account_limited(tenant_id, provider, now)
+        except Exception as exc:  # noqa: BLE001 - fail closed, below
+            # Not knowing whether the pool has room is not evidence that it
+            # does: the tenant is halved, as every 429 was before archived issue 2302, and
+            # the report still succeeds -- a 500 would leave AIMD unaware.
+            log.warning(
+                "could not tell whether the tenant's accounts are all limited; "
+                "counting the 429 against the tenant",
+                extra={"tenant_id": tenant_id, "provider": provider,
+                       "error": type(exc).__name__},
+            )
+            return SCOPE_POOL_EXHAUSTED
+        return SCOPE_POOL_EXHAUSTED if exhausted else SCOPE_ACCOUNT
+
+    def _scoped_answer(state: Any, scope: str) -> dict[str, Any]:
+        return {
+            "quota": quota_to_api(state),
+            #: How this report was counted: `tenant` / `not_held` /
+            #: `pool_exhausted` halved the tenant's target, `account` did not.
+            "scope": scope,
+            "tenant_target_decreased": scope != SCOPE_ACCOUNT,
+        }
+
+    @app.post("/v1/quota/{provider}/{tenant_id}/rate-limit")
+    def report_rate_limit(
+        request: Request,
+        provider: str,
+        tenant_id: str,
+        body: RateLimitReport = Body(default_factory=RateLimitReport),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        name = _known_provider(provider)
+        _authorize(request, authorization, tenant_id)
+        scope = _account_scope(request, name, tenant_id, body, HEALTH_RATE_LIMIT)
+        if scope == SCOPE_ACCOUNT:
+            # The account's 429, recorded against the account: the tenant's
+            # document is not touched -- no halving, no cooldown, no step
+            # toward EXHAUSTED, and the success run toward the next increase
+            # goes on. Read through `current` so the answer is the live state.
+            state = request.app.state.broker.current(name, tenant_id)
+        else:
+            state = request.app.state.broker.observe_rate_limit(
+                name,
+                tenant_id,
+                retry_after_seconds=body.retry_after_seconds,
+                reset_at=body.reset_at,
+            )
+            request.app.state.metrics.decreases.labels(provider=name).inc()
+        request.app.state.metrics.reports.labels(provider=name, kind="rate_limit").inc()
+        request.app.state.metrics.observe(state)
+        return _scoped_answer(state, scope)
+
+    @app.post("/v1/quota/{provider}/{tenant_id}/exhausted")
+    def report_exhausted(
+        request: Request,
+        provider: str,
+        tenant_id: str,
+        body: RateLimitReport = Body(default_factory=RateLimitReport),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        key_provider = provider.strip().lower()
+        if key_provider in API_KEY_PROVIDERS:
+            return _key_credit_gone(request, authorization, key_provider, tenant_id, body)
+        name = _known_provider(provider)
+        _authorize(request, authorization, tenant_id)
+        scope = _account_scope(request, name, tenant_id, body, HEALTH_EXHAUSTED)
+        if scope == SCOPE_ACCOUNT:
+            state = request.app.state.broker.current(name, tenant_id)
+        else:
+            state = request.app.state.broker.observe_exhausted(
+                name,
+                tenant_id,
+                retry_after_seconds=body.retry_after_seconds,
+                reset_at=body.reset_at,
+            )
+        request.app.state.metrics.reports.labels(provider=name, kind="exhausted").inc()
+        request.app.state.metrics.observe(state)
+        return _scoped_answer(state, scope)
+
+    def _key_credit_gone(
+        request: Request,
+        authorization: str | None,
+        provider: str,
+        tenant_id: str,
+        body: RateLimitReport,
+    ) -> dict[str, Any]:
+        """A key holder's credit-gone report under the key's OWN provider
+        (§5.2): `anthropic-api` or `openai-api`, for a held account of that
+        provider, and nothing else.
+
+        Marked `exhausted_at` by the health record's `exhausted` kind
+        (`AccountStore.record_health`), which a Resume or the hourly probe
+        clears -- and NOT a rate limit: no `limited_until`, because credit
+        gone does not reset by itself. The tenant's AIMD target is not
+        touched; the answer reads the key's vendor's, as it stands.
+
+        REFUSED (422), as every key provider was before: a report that names
+        no account, one whose account is not a key of this provider, and one
+        whose hold proof is stale -- a key provider has no tenant-level
+        reading to fall back on, so an unproven report counts for nothing.
+        """
+        _authorize(request, authorization, tenant_id)
+        ref = body.account
+        held = (
+            _held_report_account(request, tenant_id, provider, ref)
+            if ref is not None
+            else None
+        )
+        if held is None:
+            if ref is not None:
+                request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            raise BrokerValidationError(
+                f"a report under {provider} names a held account of that provider"
+            )
+        account, hold = held
+        request.app.state.account_store.record_health(
+            account.account_id,
+            HEALTH_EXHAUSTED,
+            tenant_id=tenant_id,
+            task_id=hold.task_id,
+            message=body.message,
+        )
+        log.warning(
+            "a key's credit is gone; it is skipped until a Resume or the hourly probe",
+            extra={"account_id": account.account_id, "tenant_id": tenant_id,
+                   "provider": provider},
+        )
+        vendor = VENDOR_OF.get(provider, provider)
+        state = request.app.state.broker.current(vendor, tenant_id)
+        request.app.state.metrics.reports.labels(provider=provider, kind="exhausted").inc()
+        request.app.state.metrics.observe(state)
+        return _scoped_answer(state, SCOPE_ACCOUNT)
+
+    @app.post("/v1/quota/{provider}/{tenant_id}/account-error")
+    def report_account_error(
+        request: Request,
+        provider: str,
+        tenant_id: str,
+        body: AccountErrorReport,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """A provider error on a held account, for its health record only (archived issue 2302).
+
+        Never touches AIMD or the tenant's quota document. Refused (403) for an
+        account the caller does not hold, by the same proof as a rate-limit
+        report's: a tenant may not write into another's account health.
+        """
+        name = _known_provider(provider)
+        _authorize(request, authorization, tenant_id)
+        if body.kind not in PROVIDER_ERROR_KINDS:
+            raise BrokerValidationError(
+                f"unknown provider error kind {body.kind!r}; known: "
+                f"{', '.join(PROVIDER_ERROR_KINDS)}"
+            )
+        held = _held_report_account(request, tenant_id, name, body.account)
+        if held is None:
+            request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            raise BrokerAuthError(
+                "this caller holds no live hold on that account for that task and attempt"
+            )
+        account, hold = held
+        recorded = request.app.state.account_store.record_health(
+            account.account_id,
+            body.kind,
+            tenant_id=tenant_id,
+            task_id=hold.task_id,
+            message=body.message,
+        )
+        request.app.state.metrics.reports.labels(provider=name, kind="account_error").inc()
+        return {"account_id": account.account_id, "kind": body.kind, "recorded": recorded}
+
+    @app.put("/v1/quota/{provider}/{tenant_id}/hard-max")
+    def set_hard_max(
+        request: Request,
+        provider: str,
+        tenant_id: str,
+        body: HardMaxRequest,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Set a tenant's configured max. PLATFORM ONLY; audited in `quota_audit`
+        in the same transaction as the quota document, with who asked
+        (`requested_by`, and the identity the broker verified) and why."""
+        name = _known_provider(provider)
+        identity = request.app.state.identity
+        _, is_platform = identity.resolve(authorization)
+        if not is_platform:
+            request.app.state.metrics.auth_failures.labels(kind="not_platform").inc()
+            raise BrokerAuthError("only the platform may change a configured hard max")
+        verified = getattr(identity, "verified_email", None)
+        caller = verified(authorization) if callable(verified) else ""
+        state = request.app.state.broker.set_hard_max(
+            name,
+            tenant_id,
+            body.hard_max,
+            requested_by=(body.requested_by or "").strip().lower(),
+            reason=body.reason or "",
+            caller=caller,
+        )
+        request.app.state.metrics.admin_changes.labels(
+            provider=name, action="hard_max_set"
+        ).inc()
+        request.app.state.metrics.observe(state)
+        return {"quota": quota_to_api(state)}
+
+    @app.put("/v1/quota/{provider}/{tenant_id}/adaptive-target")
+    def reset_adaptive_target(
+        request: Request,
+        provider: str,
+        tenant_id: str,
+        body: AdaptiveTargetRequest,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Reset a throttled tenant's AIMD target (QUOTA-RESET, 2026-10-14).
+
+        PLATFORM ONLY, by the same check as `set_hard_max`: a worker that
+        could raise its own target would undo the one brake AIMD applies.
+        Clamped by `aimd._clamp`, audited in `quota_audit` in the same
+        transaction as the quota document and its pool. AIMD resumes from the
+        new target, so the next 429 halves it again -- this is a reset, not a
+        pin. docs/runbooks/quota-throttled-tenant.md.
+        """
+        name = _known_provider(provider)
+        identity = request.app.state.identity
+        _, is_platform = identity.resolve(authorization)
+        if not is_platform:
+            request.app.state.metrics.auth_failures.labels(kind="not_platform").inc()
+            raise BrokerAuthError("only the platform may reset an adaptive target")
+        verified = getattr(identity, "verified_email", None)
+        caller = verified(authorization) if callable(verified) else ""
+        try:
+            result = request.app.state.broker.reset_adaptive_target(
+                name,
+                tenant_id,
+                target=body.target,
+                reason=body.reason,
+                requested_by=(body.requested_by or "").strip().lower(),
+                caller=caller,
+                clear_cooldown=body.clear_cooldown,
+            )
+        except TargetResetRefused:
+            raise
+        except ValueError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        request.app.state.metrics.admin_changes.labels(
+            provider=name, action="adaptive_target_reset"
+        ).inc()
+        request.app.state.metrics.observe(result.state)
+        reset = {k: v for k, v in result.audit.items() if k != "at"}
+        reset["at"] = _iso(result.audit.get("at"))
+        return {"quota": quota_to_api(result.state), "reset": reset}
+
+    # ----------------------------------------------------------------------
+    # The account pool
+    # ----------------------------------------------------------------------
+    #
+    # WHY THESE LIVE HERE AND NOT IN swarm-api. This service is the platform's
+    # single writer for subscription credentials, and that is not a layering
+    # preference -- refreshing an OAuth credential REVOKES the previous one, so
+    # two writers racing on the same account brick it. swarm-api proxies to
+    # these routes rather than touching Secret Manager itself, which keeps the
+    # number of writers at one by construction rather than by agreement.
+
+    def _accounts(request: Request) -> Any:
+        store = getattr(request.app.state, "account_store", None)
+        if store is None:
+            raise BrokerValidationError("this deployment has no account store configured")
+        return store
+
+    @app.get("/v1/accounts")
+    def list_accounts(
+        request: Request,
+        tenant_id: str | None = Query(default=None),
+        include_reserved: bool = Query(default=False),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
+        store = _accounts(request)
+        scope = tenant_id if is_platform else caller_tenant
+        # Only the platform's UNSCOPED listing names both sides of a pair
+        # that spans tenants (archived issue 2222); swarm-api always sends the tenant it
+        # resolved, so a person never reads this unscoped.
+        platform_wide = bool(is_platform and not scope)
+        # `list_reporting` rather than `list`/`for_tenant`, because a listing is
+        # READ BY A PERSON and a document the store could not parse is part of
+        # the answer: without it the page shows four accounts where there are
+        # five, says "4 accounts registered", and computes the pool's headroom
+        # over four -- all silently. See `AccountStore.list_reporting`.
+        listing = store.list_reporting()
+        if scope:
+            # `may_serve` is what `for_tenant` applies: owned AND lent-to, which
+            # is the set a tenant may actually run on, not the set it owns.
+            accounts = [
+                a for a in listing.accounts
+                if a.may_serve(scope)
+                # `include_reserved`: the scope's OWN accounts that are in the
+                # Voice it pool only, which `may_serve` refuses to every
+                # tenant. Capacity › Accounts and the pool move read them
+                # (the owner, 2026-11-02), or a reserved account could never
+                # be seen or moved back. Ownership only, never a loan, and
+                # every other caller's listing (admission, capacity, setup)
+                # leaves them out.
+                or (include_reserved and a.owner_tenant == scope)
+            ]
+        else:
+            accounts = listing.accounts
+        # Each row's 24 h health counts and status (archived issue 2302), so a list can draw
+        # them without one read per account. Counts only, never an event: an
+        # event names a tenant and a task, and a row is read by borrowers.
+        now = datetime.now(timezone.utc)
+        try:
+            health: dict[str, Any] | None = store.health_many(a.account_id for a in accounts)
+        except Exception as exc:  # noqa: BLE001 - the list must still answer
+            log.warning("could not read the accounts' health records for the listing",
+                        extra={"error": type(exc).__name__})
+            health = None
+        return {
+            "accounts": [
+                # `scope or ""`: a reader with no tenant is named nothing,
+                # never given the owner's view by default.
+                {
+                    **account_to_api(a, viewer=scope or "", platform_wide=platform_wide),
+                    **_health_row(health.get(a.account_id) if health is not None else None,
+                                  a, now, readable=health is not None),
+                }
+                for a in accounts
+            ],
+            "tenant_id": scope,
+            #: WHICH documents could not be read, narrowed to the ones this
+            #: caller is entitled to see. A document id is
+            #: `<owner_tenant>:<label>` by construction, so handing the whole
+            #: list to a borrower would name another tenant's accounts --
+            #: invariant 9 is about exactly that. A document whose id does not
+            #: carry a tenant is shown to nobody but the platform.
+            "unreadable_documents": (
+                listing.unreadable
+                if not scope
+                else [d for d in listing.unreadable if d.split(":", 1)[0] == scope]
+            ),
+            #: The TOTAL, unfiltered, for every caller. A borrower may not learn
+            #: whose account is broken; it must still learn that the list it is
+            #: reading is incomplete, because otherwise it reads a short list as
+            #: the whole pool.
+            "unreadable_document_count": len(listing.unreadable),
+            #: WHETHER THE REFRESH SWEEP IS STILL RUNNING (U27): when it last
+            #: completed and how, from the sweep lease document. Both null
+            #: when no sweep has ever completed -- which the screen must not
+            #: read as healthy. When the instant stops moving, the sweep has
+            #: stopped, and every token in the pool is ageing towards expiry.
+            "refresh_sweep": _sweep_liveness(request),
+        }
+
+    def _sweep_liveness(request: Request) -> dict[str, Any]:
+        lease = getattr(request.app.state, "sweep_lease", None)
+        try:
+            data = lease.read() if lease is not None else None
+        except Exception as exc:
+            # A listing must not fail over a liveness read. Unknown is said
+            # as unknown, never as "never ran".
+            log.warning(
+                "could not read the sweep lease for the account listing",
+                extra={"error": type(exc).__name__},
+            )
+            return {"last_completed_at": None, "last_outcome": None, "readable": False}
+        return {**liveness(data), "readable": True}
+
+    def _lending_readers(request: Request, owner_tenant: str, lend_to: list[str]) -> list[str]:
+        """The worker service accounts that must read an account's access token.
+
+        The owner's, always, and one per borrower -- filtered exactly as
+        `AccountStore.register` filters `lend_to`, so the policy and the
+        document can never disagree about who is lent the account. A borrower
+        that is not a tenant id is refused here, before any policy is touched.
+        """
+        borrowers = list(dict.fromkeys(t for t in lend_to if t and t != owner_tenant))
+        bad = [t for t in borrowers if not LENDABLE_TENANT.fullmatch(t)]
+        if bad:
+            raise BrokerValidationError(
+                f"lend_to names {len(bad)} entr{'y' if len(bad) == 1 else 'ies'} "
+                "that are not tenant ids (lowercase letters, digits and dashes)"
+            )
+        worker_sa = request.app.state.worker_service_account
+        return [worker_sa(owner_tenant), *(worker_sa(t) for t in borrowers)]
+
+    def _sync_lending(
+        request: Request,
+        secrets: Any,
+        *,
+        secret: str,
+        owner_tenant: str,
+        lend_to: list[str],
+        revoke: bool,
+    ) -> None:
+        """Make `secret`'s worker readers follow `lend_to`. Raises on failure.
+
+        Called twice per lending change: grants only BEFORE the account
+        document is written, the full sync -- revokes included -- after it.
+        So a borrower is never listed while its worker cannot read the secret
+        (the 2026-10-06 failure), and a dropped borrower is never left
+        reading a secret the document says it may not use for longer than
+        the one write in between.
+        """
+        added, removed = secrets.set_worker_readers(
+            secret,
+            readers=_lending_readers(request, owner_tenant, lend_to),
+            manages=request.app.state.is_worker_service_account,
+            revoke=revoke,
+        )
+        if added or removed:
+            log.info(
+                "an account's secret readers now follow its lending",
+                extra={
+                    "secret": secret,
+                    "owner_tenant": owner_tenant,
+                    "granted": added,
+                    "revoked": removed,
+                },
+            )
+
+    def _revoke_unlent(request: Request, secrets: Any, *, secret: str, account: Any) -> None:
+        """The second half of a lending change, after the document is written.
+
+        The document already says who may use the account, so a failure here
+        cannot assign anyone an account they cannot read -- it leaves a
+        dropped borrower able to READ a secret it is no longer assigned. That
+        is a grant nobody intends, so it is refused loudly rather than
+        logged: the caller is told, and repeating the same request finishes
+        it, because the sync recomputes from the live policy.
+        """
+        try:
+            _sync_lending(
+                request,
+                secrets,
+                secret=secret,
+                owner_tenant=account.owner_tenant,
+                lend_to=list(account.lend_to),
+                revoke=True,
+            )
+        except BrokerValidationError:
+            raise
+        except Exception as exc:
+            log.error(
+                "an account's lending was recorded but a dropped borrower's "
+                "read access to its secret could not be revoked",
+                extra={"secret": secret, "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"{account.account_id}'s lending was recorded, but revoking a "
+                f"dropped borrower's access to its secret failed: "
+                f"{type(exc).__name__}. Repeat the same request to finish it."
+            ) from None
+
+    def _provision_and_register(
+        request: Request,
+        *,
+        store: Any,
+        secrets: Any,
+        owner_tenant: str,
+        label: str,
+        provider: str,
+        lend_to: list[str],
+        credential_payload: str,
+        access_token: str,
+        organisation: Organisation | None = None,
+        lends: dict[str, Any] | None = None,
+    ) -> Any:
+        """Create both secrets, bind their readers, then publish the account.
+
+        ONE implementation for both ways in -- a pasted credential and a
+        browser sign-in. Two would drift, and the thing they would drift on is
+        which service account may read which secret.
+
+        PROVISION FIRST, REGISTER LAST. A probe against the deployed service
+        proved what the other order costs: `add_version` refuses to invent a
+        secret, so a failure left a Firestore document for an account the pool
+        would assign to an agent that then cannot authenticate. A secret with
+        no document is invisible and harmless; a document with no secret is a
+        live trap.
+        """
+        # A LABEL THE RULE REFUSES IS THE CALLER'S MISTAKE, answered 422 with
+        # the rule's own sentence (archived issue 1912). Unhandled, `AccountError` was a 500,
+        # and swarm-api reads every status but 409/422 as the pool being down.
+        # Named before anything is created, so a refusal leaves no secret.
+        existing = store.get(f"{owner_tenant}:{label}")
+        try:
+            base = secret_name(owner_tenant, label)
+            if existing is None:
+                # A NEW plan never carries the key mark (§4.1): `--key-` must
+                # name a key's secret alone, the one IAM lets the broker delete.
+                refuse_plan_label(label)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        # ONE SEAT, ONE ACCOUNT (archived issue 2222, archived issue 2282), refused before any secret is
+        # written, so a refusal leaves nothing behind.
+        refuse_duplicate_organisation(
+            store.list(), organisation, f"{owner_tenant}:{label}", owner_tenant
+        )
+        # A KEY'S LABEL IS NEVER RE-REGISTERED AS A PLAN: it would rewrite the
+        # provider and bind the owner's worker to `{base}`, whose older
+        # version still holds the key the broker alone may read.
+        if existing is not None and api_key.is_key(existing.provider):
+            raise BrokerValidationError(
+                f"{existing.account_id} is an {'OpenAI' if existing.provider == api_key.OPENAI_API else 'Anthropic'} "
+                f"API key; a {provider} account needs a label of its own"
+            )
+        labels = {
+            "managed-by": "swarm-secrets",
+            "component": "swarm-account",
+            "tenant": owner_tenant,
+            "account": label,
+            "provider": provider,
+            "environment": request.app.state.environment,
+        }
+        broker_sa = request.app.state.broker_service_account
+        if broker_sa and not broker_sa.startswith("serviceAccount:"):
+            broker_sa = f"serviceAccount:{broker_sa}"
+        worker_sa = request.app.state.worker_service_account(owner_tenant)
+        region = request.app.state.region
+
+        try:
+            # `{base}-refresh` holds the PAIR and only this service may read it.
+            # The worker is deliberately not an accessor: a pod that could read
+            # the refresh token could mint successors forever, which is the
+            # blast radius the two-secret split exists to prevent.
+            secrets.ensure_secret(
+                f"{base}{REFRESH_SUFFIX}",
+                labels=labels,
+                accessors=[broker_sa] if broker_sa else [],
+                region=region,
+            )
+            secrets.ensure_secret(
+                base,
+                labels=labels,
+                accessors=[sa for sa in (broker_sa, worker_sa) if sa],
+                region=region,
+            )
+            # EVERY BORROWER TOO, on `{base}` only -- `-refresh` above stays
+            # the broker's alone. Before 2026-10-06 only the owner's worker
+            # was bound here, and every borrower was assigned an account it
+            # got PermissionDenied reading.
+            _sync_lending(
+                request,
+                secrets,
+                secret=base,
+                owner_tenant=owner_tenant,
+                lend_to=list(lends) if lends is not None else lend_to,
+                revoke=False,
+            )
+            secrets.add_version(f"{base}{REFRESH_SUFFIX}", credential_payload)
+            secrets.add_version(base, access_token)
+        except BrokerValidationError:
+            raise
+        except Exception as exc:
+            log.error(
+                "could not provision an account's secrets",
+                extra={
+                    "tenant_id": owner_tenant,
+                    "label": label,
+                    "error": type(exc).__name__,
+                },
+            )
+            raise BrokerValidationError(
+                f"could not provision the secrets for {owner_tenant}:{label}: "
+                f"{type(exc).__name__}. No account was registered."
+            ) from None
+
+        # THIS PATH IS A WRITER TOO, so it owes the ledger a record. Without
+        # it, the next sweep finds a base secret it cannot read and no record
+        # of what is in it, and publishes one more identical version -- the
+        # exact leak, restarted by the one code path that already knew the
+        # answer. Best effort: a registration that provisioned both secrets
+        # must not fail because a bookkeeping write did, and the cost of
+        # losing it is one redundant version within five minutes.
+        ledger = getattr(request.app.state, "publish_ledger", None)
+        if ledger is not None:
+            try:
+                ledger.record(base, publish_fingerprint(access_token))
+            except Exception as exc:
+                log.warning(
+                    "provisioned an account but could not record which access "
+                    "token was published; the next sweep may add one "
+                    "identical secret version",
+                    extra={"secret": base, "error": type(exc).__name__},
+                )
+
+        account = store.register(
+            owner_tenant, label, provider=provider, lend_to=lend_to, lends=lends
+        )
+        # Re-registering is also how lending changes (`AccountStore.register`),
+        # so a borrower dropped from the list loses the secret here.
+        _revoke_unlent(request, secrets, secret=base, account=account)
+
+        # THE WAY BACK, for the way people actually recover an account.
+        #
+        # Signing in again, or pasting a fresh credential, IS the fix for
+        # REAUTH_REQUIRED -- and `register` deliberately preserves state, so
+        # without this the account would keep refusing work after the thing
+        # that was wrong with it had been replaced, carrying a `reason` that
+        # is no longer true. The sweep cannot lift it either: `due_for_refresh`
+        # skips marked accounts.
+        #
+        # A freshly written pair is the best evidence available at this
+        # moment -- `parse_credential` has already refused a payload with no
+        # refresh token. If the token turns out to be dead anyway, the next
+        # sweep marks it again within five minutes, which is the cheap
+        # direction to be wrong in.
+        if account.state is AccountState.REAUTH_REQUIRED:
+            account = store.clear_reauth_required(account.account_id) or account
+        # WHICH ORGANISATION THIS CREDENTIAL RUNS ON (archived issue 2222), recorded with the
+        # account; a replaced credential records its own, which is how a
+        # re-sign-in into the right organisation clears a duplicate mark.
+        if organisation is not None:
+            account = store.record_organisation(account.account_id, organisation) or account
+        mark_duplicates(store)
+        return store.get(account.account_id) or account
+
+    def _lends_for(
+        body_lends: dict[str, Any] | None, *, owner_tenant: str, key: bool
+    ) -> dict[str, Any] | None:
+        """A caller's `lends`, validated (`accounts.validate_lends`), or None
+        when it sent none. A cap's `cap_set` is the broker's mark of a
+        carried-over lend and is never taken from a caller."""
+        if body_lends is None:
+            return None
+        if any(isinstance(c, dict) and "cap_set" in c for c in body_lends.values()):
+            raise BrokerValidationError("a lend's cap is max_agents and monthly_spend_cap_usd alone")
+        try:
+            lends = validate_lends(body_lends, owner_tenant=owner_tenant, key=key)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        bad = [t for t in lends if not LENDABLE_TENANT.fullmatch(t)]
+        if bad:
+            raise BrokerValidationError(
+                f"lends names {len(bad)} entr{'y' if len(bad) == 1 else 'ies'} "
+                "that are not tenant ids (lowercase letters, digits and dashes)"
+            )
+        return lends
+
+    def _check_key_with_vendor(request: Request, provider: str, key: str) -> api_key.KeyCheck:
+        """The vendor's answer to the key's one read-only call (§4.1). A
+        refusal is the caller's: 422, "the provider refused this key". A
+        vendor that cannot be asked stores nothing: 422 too, naming the
+        status, never the key, so swarm-api does not read it as the pool
+        being down."""
+        validator = request.app.state.key_validator
+        try:
+            check = validator.check(provider, key)
+        except api_key.KeyCheckUnavailable as exc:
+            raise BrokerValidationError(
+                f"the key could not be checked with the provider ({exc}); nothing was stored"
+            ) from None
+        if check.outcome == api_key.CHECK_REFUSED:
+            raise BrokerValidationError("the provider refused this key; nothing was stored")
+        return check
+
+    def _store_api_key(
+        request: Request,
+        *,
+        store: Any,
+        secrets: Any,
+        owner_tenant: str,
+        label: str,
+        provider: str,
+        key: str,
+        check: api_key.KeyCheck,
+        lends: dict[str, Any],
+        voice_dedicated: bool,
+        share_with_voice_it: bool,
+        added: dict[str, Any],
+    ) -> Any:
+        """Write a validated key to its one secret, then publish the account.
+
+        PROVISION FIRST, REGISTER LAST, as `_provision_and_register` does. The
+        secret is the recorded one when the label exists (a dedicated Voice
+        it key from before §4 keeps `--<label>`), else `--key-<label>`. Its
+        readers: the broker always; for a pool key, the owner's worker and
+        every borrower's (`_sync_lending`), as a plan's `{base}` has; for the
+        dedicated Voice it key, nobody else.
+        """
+        existing = store.get(f"{owner_tenant}:{label}")
+        try:
+            base = store.secret_for(existing) if existing is not None else key_secret_name(
+                owner_tenant, label)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        broker_sa = request.app.state.broker_service_account
+        if broker_sa and not broker_sa.startswith("serviceAccount:"):
+            broker_sa = f"serviceAccount:{broker_sa}"
+        labels = {
+            "managed-by": "swarm-secrets",
+            "component": "swarm-account",
+            "tenant": owner_tenant,
+            "account": label,
+            "provider": provider,
+            "environment": request.app.state.environment,
+        }
+        accessors = [broker_sa] if broker_sa else []
+        if not voice_dedicated:
+            worker_sa = request.app.state.worker_service_account(owner_tenant)
+            accessors += [worker_sa] if worker_sa else []
+        try:
+            secrets.ensure_secret(
+                base, labels=labels, accessors=accessors, region=request.app.state.region
+            )
+            if not voice_dedicated:
+                _sync_lending(
+                    request, secrets, secret=base, owner_tenant=owner_tenant,
+                    lend_to=list(lends), revoke=False,
+                )
+            secrets.add_version(base, api_key.serialise(provider, key))
+        except BrokerValidationError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- the type only, never the value
+            log.error(
+                "could not store an API key account's secret",
+                extra={"tenant_id": owner_tenant, "label": label, "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"could not store the key for {owner_tenant}:{label}: "
+                f"{type(exc).__name__}. No account was registered."
+            ) from None
+        account = store.register(
+            owner_tenant, label, provider=provider, lends=dict(lends),
+            voice_dedicated=voice_dedicated,
+        )
+        now = datetime.now(timezone.utc)
+        pools = None
+        if voice_dedicated:
+            pools = (POOL_VOICE_IT,)
+        elif share_with_voice_it:
+            pools = (POOL_WORKSPACE, POOL_VOICE_IT)
+        if pools is not None:
+            set_account_pools(
+                request.app.state.broker.db, account.account_id, pools=pools,
+                voice_it_people=request.app.state.voice_it_people, now=now,
+            )
+        if account.state is AccountState.REAUTH_REQUIRED:
+            store.clear_reauth_required(account.account_id)
+        # A replacement overwrites both fields; `registered_at` keeps the first.
+        request.app.state.broker.db.collection(ACCOUNTS_COLLECTION).document(
+            account.account_id
+        ).update(added)
+        if check.outcome == api_key.CHECK_LIMITED:
+            # ADDED AS LIMITED (§4.1): the vendor's 429 holds it as a plan's
+            # does, until its `retry-after`.
+            store.record_health(
+                account.account_id, "rate_limit", window="other",
+                message="the provider answered 429 when the key was added",
+                limited_until=now + timedelta(seconds=check.retry_after or 60),
+            )
+        if not voice_dedicated:
+            _revoke_unlent(request, secrets, secret=base, account=store.get(account.account_id) or account)
+        return store.get(account.account_id) or account
+
+    def _register_api_key(
+        request: Request,
+        body: AccountRegister,
+        authorization: str | None,
+        *,
+        store: Any,
+        secrets: Any,
+        provider: str,
+    ) -> dict[str, Any]:
+        """File a developer API key (`api_key`, docs/design/llm-providers.md §4.1).
+
+        TWO KINDS OF KEY. The DEDICATED Voice it key (`voice_dedicated`, an
+        `openai-api` key alone, the default for that provider so today's
+        Voice it settings path is unchanged; the owner, 4 November 2026, Q9):
+        platform only, in the Voice it pool alone, never lent, the broker its
+        only reader, one per deployment. A POOL key (every `anthropic-api`
+        key, Q2, and an `openai-api` key sent `voice_dedicated: false`): the
+        owner's workspace's, read by its worker and its borrowers', each lend
+        capped (`lends`, Q7), shared with Voice it only by a platform admin.
+
+        Parsed and VALIDATED WITH THE VENDOR before anything is written (one
+        list-models call), so a refusal leaves no secret and no document; the
+        key is never logged or answered.
+
+        A KEY ALREADY ON THE LABEL IS ROTATED (`_rotate_api_key`, §4.5), not
+        registered again; a label whose deleted key's secret is still owed a
+        destruction has it finished first, or is refused.
+        """
+        current = store.get(f"{body.owner_tenant}:{body.label}")
+        if current is not None and api_key.is_key(current.provider):
+            if current.provider != provider:
+                raise BrokerValidationError(
+                    f"{current.account_id} is a {current.provider} key; a replacement "
+                    "is a key of the same provider"
+                )
+            return _rotate_api_key(request, body, authorization, store=store,
+                                   secrets=secrets, current=current)
+        if current is None:
+            owed = owed_key_deletion(request.app.state.broker.db, f"{body.owner_tenant}:{body.label}")
+            if owed is not None and not finish_key_deletion(
+                request.app.state.broker.db, secrets,
+                {**owed, "account_id": f"{body.owner_tenant}:{body.label}"},
+                now=datetime.now(timezone.utc),
+            )["done"]:
+                raise BrokerValidationError(
+                    f"the key deleted from {body.owner_tenant}:{body.label} still has its "
+                    "secret owed a destruction; nothing was stored. The quota sweep retries it"
+                )
+        dedicated = (
+            body.voice_dedicated
+            if body.voice_dedicated is not None
+            else provider == api_key.OPENAI_API
+        )
+        if dedicated and provider != api_key.OPENAI_API:
+            raise BrokerValidationError(
+                "only an OpenAI API key may be the dedicated Voice it key; there is no "
+                "dedicated Anthropic key"
+            )
+        if dedicated or body.share_with_voice_it:
+            _platform_only(
+                request,
+                authorization,
+                "only a platform admin may add an OpenAI API key to the Voice it pool"
+                if dedicated else "only a platform admin may share a key with Voice it",
+            )
+        if dedicated and (body.lend_to or body.lends or body.share_with_voice_it):
+            raise BrokerValidationError(
+                "an OpenAI API key serves Voice it alone and is never lent; send no lend_to"
+            )
+        if body.lend_to:
+            raise BrokerValidationError(
+                "an API key is lent only with a cap: send lends, each with max_agents "
+                "and monthly_spend_cap_usd, not lend_to"
+            )
+        try:
+            validate_label(body.label)
+            key_secret_name(body.owner_tenant, body.label)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        lends = _lends_for(body.lends, owner_tenant=body.owner_tenant, key=True) or {}
+        try:
+            key = api_key.parse_api_key(provider, body.credential)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        # WHO ADDED IT, checked before anything is written, like the key.
+        if body.added_by is None:
+            raise BrokerValidationError(
+                "an API key is recorded with the person who added it; send added_by"
+            )
+        try:
+            added = openai_api_key.added_fields(body.added_by, datetime.now(timezone.utc))
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        existing = store.get(f"{body.owner_tenant}:{body.label}")
+        if existing is not None and existing.provider != provider:
+            raise BrokerValidationError(
+                f"{existing.account_id} is a {existing.provider} account; an API key "
+                "needs a label of its own"
+            )
+        if dedicated:
+            others = [a.account_id for a in store.list()
+                      if a.voice_dedicated and a.account_id != f"{body.owner_tenant}:{body.label}"]
+            if others:
+                raise BrokerValidationError(
+                    f"{others[0]} is already the dedicated Voice it key; a deployment has one"
+                )
+        elif existing is not None and existing.voice_dedicated:
+            raise BrokerValidationError(
+                f"{existing.account_id} is the dedicated Voice it key; a pool key needs a "
+                "label of its own"
+            )
+        check = _check_key_with_vendor(request, provider, key)
+        registered = _store_api_key(
+            request, store=store, secrets=secrets, owner_tenant=body.owner_tenant,
+            label=body.label, provider=provider, key=key, check=check, lends=lends,
+            voice_dedicated=dedicated, share_with_voice_it=body.share_with_voice_it,
+            added=added,
+        )
+        log.info(
+            "audit: an API key was added",
+            extra={"audit": True, "account_id": registered.account_id,
+                   "provider": provider, "voice_dedicated": dedicated,
+                   "pools": list(registered.pools)},
+        )
+        where = (
+            "in the Voice it pool only" if dedicated
+            else f"in {', '.join(registered.pools)}"
+        )
+        return {
+            "account": account_to_api(registered, platform_wide=True),
+            "registered": f"{registered.account_id}: an API key ({provider}), {where}"
+            + (", limited by the provider" if check.outcome == api_key.CHECK_LIMITED else ""),
+            "organisation": None,
+            "expires_at": None,
+            "note": "stored write-only; no route in this service returns key material",
+        }
+
+    def _rotate_api_key(
+        request: Request,
+        body: AccountRegister,
+        authorization: str | None,
+        *,
+        store: Any,
+        secrets: Any,
+        current: Any,
+    ) -> dict[str, Any]:
+        """Replace a key's value under its label (docs/design/llm-providers.md §4.5).
+
+        The new value is validated with the vendor as an add is, then written
+        as a NEW VERSION of the key's one secret. Holders keep the old value
+        until their next turn boundary or process start, so the superseded
+        versions are destroyed ONE HOLD TTL LATER by the quota sweep
+        (`key_rotations`, `destroy_superseded_key_versions`), not at once.
+        Holds, caps, lends, sharing, pools, state and spend counters are
+        untouched: no `register`, only the version and who replaced it and
+        when (`key_added_by`/`key_added_at`, and `key_replaced_at`). A body's
+        lends or sharing are not read here; they change through their routes.
+        """
+        if current.voice_dedicated:
+            _platform_only(request, authorization,
+                           "only a platform admin may replace the dedicated Voice it key")
+        try:
+            key = api_key.parse_api_key(current.provider, body.credential)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        if body.added_by is None:
+            raise BrokerValidationError(
+                "an API key is recorded with the person who added it; send added_by"
+            )
+        now = datetime.now(timezone.utc)
+        try:
+            added = openai_api_key.added_fields(body.added_by, now)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        check = _check_key_with_vendor(request, current.provider, key)
+        secret = store.secret_for(current)
+        try:
+            written = secrets.add_version(secret, api_key.serialise(current.provider, key))
+        except Exception as exc:  # noqa: BLE001 -- the type only, never the value
+            log.error(
+                "could not write a replaced API key's new version",
+                extra={"account_id": current.account_id, "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"could not store the replacement for {current.account_id}: "
+                f"{type(exc).__name__}. The key in use is unchanged."
+            ) from None
+        destroy_after = now + DEFAULT_HOLD_TTL
+        db = request.app.state.broker.db
+        db.collection(KEY_ROTATIONS_COLLECTION).document(current.account_id).set({
+            "account_id": current.account_id,
+            "secret": secret,
+            "keep_version": version_number(str(written or "")),
+            "destroy_after": destroy_after,
+            "replaced_by": added.get("key_added_by"),
+            "replaced_at": now,
+            "done": False,
+        })
+        db.collection(ACCOUNTS_COLLECTION).document(current.account_id).update(
+            {**added, "key_replaced_at": now}
+        )
+        if check.outcome == api_key.CHECK_LIMITED:
+            store.record_health(
+                current.account_id, "rate_limit", window="other",
+                message="the provider answered 429 when the key was replaced",
+                limited_until=now + timedelta(seconds=check.retry_after or 60),
+            )
+        log.info(
+            "audit: an API key was replaced; its superseded version is destroyed after the hold TTL",
+            extra={"audit": True, "account_id": current.account_id,
+                   "replaced_by": added.get("key_added_by"),
+                   "destroy_after": destroy_after.isoformat()},
+        )
+        rotated = store.get(current.account_id) or current
+        return {
+            "account": account_to_api(rotated, platform_wide=True),
+            "registered": f"{current.account_id}: the key was replaced"
+            + (", limited by the provider" if check.outcome == api_key.CHECK_LIMITED else ""),
+            "replaced": True,
+            "superseded_destroyed_after": destroy_after.isoformat(),
+            "organisation": None,
+            "expires_at": None,
+            "note": "stored write-only; no route in this service returns key material",
+        }
+
+    # ------------------------------------------------------------------
+    # Adding an account from a browser
+    # ------------------------------------------------------------------
+    #
+    # Two steps, because Anthropic's OAuth client accepts exactly one redirect
+    # target -- its own callback page, which DISPLAYS a code. A third-party
+    # application cannot register its own redirect, so the browser cannot come
+    # back here and the code the page shows is what closes the loop.
+    #
+    # The PKCE verifier has to survive between the two steps, so it is held
+    # server-side keyed by `state` rather than handed to the browser. A
+    # verifier the client holds is a PKCE flow that proves nothing.
+
+    PENDING_AUTH = "account_auth"
+
+    def _finish_plan_sign_in(
+        request: Request,
+        *,
+        ref: Any,
+        pending: dict[str, Any],
+        owner: str,
+        code: str,
+        store: Any,
+        secrets_store: Any,
+    ) -> dict[str, Any]:
+        """Redeem a ChatGPT plan's code and file the plan as an `openai` account.
+
+        The same order as a Claude sign-in: the caller was proven to be the
+        pending record's owner before this runs, the code is redeemed with the
+        verifier that record holds, both secrets are written before the
+        account document exists, and the pending record is deleted last.
+        """
+        try:
+            payload = request.app.state.plan_token_endpoint.redeem(
+                code=code,
+                verifier=str(pending.get("verifier") or ""),
+                redirect_uri=openai_plan.REDIRECT_URI,
+                state=str(pending.get("state") or ""),
+            )
+            credential = openai_plan.credential_from_sign_in(payload)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        account = _provision_and_register(
+            request,
+            store=store,
+            secrets=secrets_store,
+            owner_tenant=owner,
+            label=str(pending.get("label") or ""),
+            provider=openai_plan.PROVIDER,
+            lend_to=list(pending.get("lend_to") or ()),
+            credential_payload=openai_plan.serialise_plan(credential),
+            access_token=openai_plan.published_value(credential),
+            organisation=credential.organisation,
+        )
+        ref.delete()
+        return {
+            "account": account_to_api(account),
+            "registered": organisation_line(account.account_id, credential.organisation),
+            "organisation": _organisation_to_api(account),
+            "expires_at": credential.expires_at.isoformat(),
+            "note": "stored write-only; no route in this service returns key material",
+        }
+    #: The 403 code for "the caller is not the tenant that started this
+    #: sign-in". swarm-api's BrokerClient matches this exact string.
+    SIGN_IN_OWNER_MISMATCH = "sign_in_owner_mismatch"
+    PENDING_TTL = timedelta(minutes=15)
+
+    @app.post("/v1/accounts/authorize")
+    def begin_account_authorization(
+        request: Request,
+        body: AccountAuthorize,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        _authorize(request, authorization, body.owner_tenant)
+        pool_store = _accounts(request)  # refuse early if the pool is not configured
+        # Before the pending record is written, so a refused label leaves no
+        # sign-in that could never finish. A 422 with the rule's sentence, not
+        # the 500 that read as "the account pool is down" (archived issue 1912).
+        try:
+            validate_label(body.label)
+            if pool_store.get(f"{body.owner_tenant}:{body.label}") is None:
+                # A NEW plan never carries the key mark (§4.1).
+                refuse_plan_label(body.label)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+
+        provider = _account_provider(body.provider)
+        if api_key.is_key(provider):
+            raise BrokerValidationError(
+                "an API key has no sign-in: it is pasted once, through the console's "
+                "one-time link, and stored by this broker"
+            )
+        verifier = new_verifier()
+        state = new_state()
+        if provider == openai_plan.PROVIDER:
+            # A ChatGPT plan (archived issue 2688): its client's one registered redirect is
+            # the person's OWN machine (`localhost:1455`, measured), where
+            # `sc account add --provider openai` listens and catches the code.
+            url = openai_plan.build_authorize_url(
+                state=state, code_challenge=challenge_for(verifier)
+            )
+            redirect_uri = openai_plan.REDIRECT_URI
+        else:
+            url = build_authorize_url(state=state, code_challenge=challenge_for(verifier))
+            redirect_uri = OAUTH_REDIRECT_URI
+
+        request.app.state.broker.db.collection(PENDING_AUTH).document(state).set(
+            {
+                "state": state,
+                "verifier": verifier,
+                "owner_tenant": body.owner_tenant,
+                "label": body.label,
+                "provider": provider,
+                "lend_to": list(body.lend_to),
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
+        return {
+            "authorize_url": url,
+            "state": state,
+            "expires_in_seconds": int(PENDING_TTL.total_seconds()),
+            # Which sign-in this is and where its browser lands, so a client
+            # can tell a Claude sign-in from a plan's -- and refuse to wait on
+            # a localhost callback a Claude page will never make.
+            "provider": provider,
+            "redirect_uri": redirect_uri,
+        }
+
+    @app.post("/v1/accounts/exchange", status_code=201)
+    def finish_account_authorization(
+        request: Request,
+        body: AccountExchange,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        # WHO IS FINISHING THIS, resolved before anything else is read. The
+        # pending record decides where the account lands; this decides whether
+        # the caller may land it there at all. A platform caller speaks for
+        # whichever tenant it names, so it MUST name one -- swarm-api sends the
+        # tenant it resolved for the human through `tenant_for` -- and a missing
+        # one is refused rather than trusted, so a swarm-api older than this
+        # check cannot skip it by not sending the field. A tenant caller is its
+        # own identity and cannot widen that by naming somebody else.
+        try:
+            caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        claimed = (body.expected_owner or "").strip()
+        if is_platform:
+            if not claimed:
+                request.app.state.metrics.auth_failures.labels(
+                    kind="missing_expected_owner"
+                ).inc()
+                raise BrokerAuthError(
+                    "a platform caller must send expected_owner, the tenant it "
+                    "checked the person to be; without it this sign-in cannot "
+                    "be tied to whoever is finishing it"
+                )
+            caller = claimed
+        else:
+            caller = str(caller_tenant or "")
+            if claimed and claimed != caller:
+                request.app.state.metrics.auth_failures.labels(
+                    kind="tenant_mismatch"
+                ).inc()
+                raise BrokerAuthError("caller may not finish a sign-in for another tenant")
+
+        store = _accounts(request)
+        secrets_store = getattr(request.app.state, "secret_store", None)
+        if secrets_store is None:
+            raise BrokerValidationError("this deployment has no secret store configured")
+
+        code, pasted_state = split_pasted_code(body.code)
+        # The state in the paste is advisory; the one the client sent is what
+        # identifies the pending sign-in. They should match, and a mismatch is
+        # worth refusing rather than guessing between them.
+        if pasted_state and pasted_state != body.state:
+            raise BrokerValidationError(
+                "the pasted code belongs to a different sign-in than the one "
+                "this page started. Press Add account and sign in again."
+            )
+
+        ref = request.app.state.broker.db.collection(PENDING_AUTH).document(body.state)
+        snap = ref.get()
+        if not getattr(snap, "exists", False):
+            raise BrokerValidationError(
+                "this sign-in has expired or was already completed. Codes are "
+                "single-use; press Add account to start again."
+            )
+        pending = snap.to_dict() or {}
+
+        # THE CALLER MUST BE THE TENANT THAT STARTED THIS SIGN-IN, compared
+        # BEFORE the code is redeemed and before the age check below, so a
+        # mismatch spends nothing and changes nothing: no redemption, no
+        # credential filed, and the pending record left exactly as it was.
+        #
+        # Left, not deleted, deliberately. Deleting it would let anyone who has
+        # seen a `state` burn somebody else's sign-in for the cost of one
+        # request. Keeping it costs nothing, because nothing was redeemed: the
+        # code is still unspent at Anthropic, it is bound to this record's PKCE
+        # verifier so it is useless anywhere else, and the record still expires
+        # on its own 15-minute TTL. The one case this does not cover is a code
+        # the refused caller produced themselves by signing in on the owner's
+        # authorize URL -- and that code can now only ever be filed into the
+        # owner's tenant by the owner, which is the property being kept.
+        #
+        # ITS OWN CODE, not the generic `forbidden`. swarm-api reads every
+        # other 401/403 from here as its OWN identity being rejected, which is
+        # true of all of them but this one: this is the HUMAN caller's refusal,
+        # and `SIGN_IN_OWNER_MISMATCH` is how swarm-api tells the two apart.
+        owner = str(pending.get("owner_tenant") or "")
+        if not owner or caller != owner:
+            from fastapi.responses import JSONResponse
+
+            request.app.state.metrics.auth_failures.labels(kind="tenant_mismatch").inc()
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "code": SIGN_IN_OWNER_MISMATCH,
+                    "message": (
+                        "this sign-in was started by a different tenant; only "
+                        "that tenant can finish it. Press Add account to start "
+                        "your own."
+                    ),
+                },
+            )
+
+        started = pending.get("created_at")
+        if isinstance(started, datetime):
+            age = datetime.now(timezone.utc) - _aware_utc(started)
+            if age > PENDING_TTL:
+                ref.delete()
+                raise BrokerValidationError(
+                    "this sign-in took too long and the code will have expired. "
+                    "Press Add account to start again."
+                )
+
+        # The pending record decides the tenant, never the request: `owner`
+        # above is read off it, and the caller has just been proven to be it.
+
+        if str(pending.get("provider") or "") == openai_plan.PROVIDER:
+            return _finish_plan_sign_in(
+                request, ref=ref, pending=pending, owner=owner, code=code,
+                store=store, secrets_store=secrets_store,
+            )
+
+        try:
+            payload = request.app.state.token_endpoint.redeem(
+                code=code,
+                verifier=str(pending.get("verifier") or ""),
+                redirect_uri=OAUTH_REDIRECT_URI,
+                # The state the pending record is keyed by, which is the same
+                # value the authorize URL carried. Claude Code sends it on the
+                # token request and the form-encoded version here omitted it.
+                state=body.state,
+            )
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+
+        # Inside its own guard, not the one above: the endpoint can answer 200
+        # with a response this platform cannot use -- an access token and no
+        # refresh token. That is not a transport failure and it is not the
+        # person's mistake, and it must not 500.
+        try:
+            credential = credential_from_token_response(payload)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        # The organisation the person's sign-in AUTHORISED -- which is the one
+        # selected on claude.ai, not necessarily the one they meant (archived issue 2222).
+        organisation = read_organisation(
+            payload, request.app.state.token_endpoint, credential.access_token
+        )
+        account = _provision_and_register(
+            request,
+            store=store,
+            secrets=secrets_store,
+            owner_tenant=owner,
+            label=str(pending.get("label") or ""),
+            provider=str(pending.get("provider") or "anthropic"),
+            lend_to=list(pending.get("lend_to") or ()),
+            credential_payload=json.dumps(
+                {
+                    "accessToken": credential.access_token,
+                    "refreshToken": credential.refresh_token,
+                    "expiresAt": int(credential.expires_at.timestamp() * 1000),
+                }
+            ),
+            access_token=credential.access_token,
+            organisation=organisation,
+        )
+        # Single-use, and deleted only once the account exists: a failure above
+        # leaves the pending record so the person can paste again rather than
+        # having to start the whole sign-in over.
+        ref.delete()
+        return {
+            "account": account_to_api(account),
+            #: What was registered, in words and as fields (archived issue 2222).
+            "registered": organisation_line(account.account_id, organisation),
+            "organisation": _organisation_to_api(account),
+            "expires_at": credential.expires_at.isoformat(),
+            "note": "stored write-only; no route in this service returns key material",
+        }
+
+    # ------------------------------------------------------------------
+    # A ChatGPT plan from a browser, with a device code
+    # ------------------------------------------------------------------
+    #
+    # The plan's PKCE sign-in redirects to the signing-in machine, so a
+    # browser cannot finish it. The codex CLI's `--device-auth` flow shows a
+    # one-time code to type on the vendor's page instead (openai_plan's
+    # docstring says what was read and where). The DEVICE ID the vendor is
+    # polled with is held here, in the pending record keyed by `state`, and
+    # never answered: the browser sees the code to type, the address and the
+    # state. A poll is the exchange's twin -- the same caller rule, the same
+    # owner check before anything is spent, the same filing.
+
+    #: How long a claimed poll keeps others off the vendor, so two polls of
+    #: one approved sign-in cannot both redeem it, and a poll that died
+    #: mid-way does not wedge the sign-in.
+    DEVICE_CLAIM = timedelta(seconds=60)
+
+    def _device_caller(request: Request, authorization: str | None, claimed: str | None) -> str:
+        """Who is polling: `finish_account_authorization`'s rule, unchanged."""
+        try:
+            caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        claimed = (claimed or "").strip()
+        if is_platform:
+            if not claimed:
+                request.app.state.metrics.auth_failures.labels(
+                    kind="missing_expected_owner"
+                ).inc()
+                raise BrokerAuthError(
+                    "a platform caller must send expected_owner, the tenant it "
+                    "checked the person to be; without it this sign-in cannot "
+                    "be tied to whoever is polling it"
+                )
+            return claimed
+        caller = str(caller_tenant or "")
+        if claimed and claimed != caller:
+            request.app.state.metrics.auth_failures.labels(kind="tenant_mismatch").inc()
+            raise BrokerAuthError("caller may not poll a sign-in for another tenant")
+        return caller
+
+    def _claim_device_poll(db: Any, ref: Any, now: datetime) -> dict[str, Any] | None:
+        """The pending record, claimed for this poll in one transaction, or
+        None when another poll holds it or it was filed meanwhile."""
+        from google.cloud import firestore
+
+        transaction = db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> dict[str, Any] | None:
+            snap = _txn_snapshot(txn.get(ref))
+            if not getattr(snap, "exists", False):
+                return None
+            data = snap.to_dict() or {}
+            if data.get("filed_account_id"):
+                return None
+            held = data.get("claimed_at")
+            if isinstance(held, datetime) and now - _aware_utc(held) < DEVICE_CLAIM:
+                return None
+            txn.update(ref, {"claimed_at": now})
+            return data
+
+        return _apply(transaction)
+
+    def _filed_answer(
+        account: Any, organisation: Organisation | None, expires_at: str | None
+    ) -> dict[str, Any]:
+        return {
+            "status": "filed",
+            "account": account_to_api(account),
+            "registered": organisation_line(account.account_id, organisation),
+            "organisation": _organisation_to_api(account),
+            "expires_at": expires_at,
+            "note": "stored write-only; no route in this service returns key material",
+        }
+
+    @app.post("/v1/accounts/device/start")
+    def begin_device_authorization(
+        request: Request,
+        body: AccountAuthorize,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        _authorize(request, authorization, body.owner_tenant)
+        pool_store = _accounts(request)
+        try:
+            validate_label(body.label)
+            if pool_store.get(f"{body.owner_tenant}:{body.label}") is None:
+                refuse_plan_label(body.label)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        if _account_provider(body.provider) != openai_plan.PROVIDER:
+            raise BrokerValidationError(
+                "only a ChatGPT plan signs in with a device code; a Claude "
+                "subscription uses the sign-in that shows a code to paste"
+            )
+        try:
+            device = request.app.state.plan_token_endpoint.start_device()
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        state = new_state()
+        request.app.state.broker.db.collection(PENDING_AUTH).document(state).set(
+            {
+                "state": state,
+                "kind": "device",
+                "device_auth_id": device["device_auth_id"],
+                "user_code": device["user_code"],
+                "interval": int(device["interval"]),
+                "owner_tenant": body.owner_tenant,
+                "label": body.label,
+                "provider": openai_plan.PROVIDER,
+                "lend_to": list(body.lend_to),
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
+        return {
+            "state": state,
+            "user_code": device["user_code"],
+            "verification_uri": openai_plan.DEVICE_VERIFICATION_URI,
+            "expires_in_seconds": int(PENDING_TTL.total_seconds()),
+            "interval_seconds": int(device["interval"]),
+            "provider": openai_plan.PROVIDER,
+        }
+
+    @app.post("/v1/accounts/device/poll")
+    def poll_device_authorization(
+        request: Request,
+        body: AccountDevicePoll,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Any:
+        caller = _device_caller(request, authorization, body.expected_owner)
+        store = _accounts(request)
+        secrets_store = getattr(request.app.state, "secret_store", None)
+        if secrets_store is None:
+            raise BrokerValidationError("this deployment has no secret store configured")
+
+        db = request.app.state.broker.db
+        ref = db.collection(PENDING_AUTH).document(body.state)
+        snap = ref.get()
+        if not getattr(snap, "exists", False):
+            # Expired and dropped, or never started: either way there is
+            # nothing to poll, and saying which would tell a stranger which
+            # states exist.
+            return {"status": "expired"}
+        pending = snap.to_dict() or {}
+        if pending.get("kind") != "device":
+            raise BrokerValidationError(
+                "this sign-in shows a code to paste, not a device code; finish it there"
+            )
+
+        # THE OWNER CHECK, before the vendor is asked and before anything is
+        # changed: a refused caller spends nothing and leaves the sign-in for
+        # its owner, as `finish_account_authorization` does.
+        owner = str(pending.get("owner_tenant") or "")
+        if not owner or caller != owner:
+            from fastapi.responses import JSONResponse
+
+            request.app.state.metrics.auth_failures.labels(kind="tenant_mismatch").inc()
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "code": SIGN_IN_OWNER_MISMATCH,
+                    "message": (
+                        "this sign-in was started by a different tenant; only "
+                        "that tenant can finish it. Press Add plan to start "
+                        "your own."
+                    ),
+                },
+            )
+
+        filed = str(pending.get("filed_account_id") or "")
+        if filed:
+            account = store.get(filed)
+            if account is not None:
+                recorded = (
+                    Organisation(
+                        identity=account.organisation_id,
+                        name=account.organisation_name,
+                        plan=account.organisation_plan,
+                    )
+                    if account.organisation_id
+                    else None
+                )
+                return _filed_answer(account, recorded, pending.get("expires_at"))
+            return {"status": "expired"}
+
+        now = datetime.now(timezone.utc)
+        started = pending.get("created_at")
+        if isinstance(started, datetime) and now - _aware_utc(started) > PENDING_TTL:
+            ref.delete()
+            return {"status": "expired"}
+
+        interval = int(pending.get("interval") or openai_plan.DEVICE_DEFAULT_INTERVAL)
+        claimed = _claim_device_poll(db, ref, now)
+        if claimed is None:
+            # Another poll holds it, or filed it a moment ago: the next poll
+            # reads the outcome.
+            return {"status": "pending", "interval_seconds": interval}
+
+        endpoint = request.app.state.plan_token_endpoint
+        try:
+            approved = endpoint.poll_device(
+                device_auth_id=str(claimed.get("device_auth_id") or ""),
+                user_code=str(claimed.get("user_code") or ""),
+            )
+        except CredentialError as exc:
+            ref.update({"claimed_at": None})
+            raise BrokerValidationError(str(exc)) from None
+        if approved is None:
+            ref.update({"claimed_at": None})
+            return {"status": "pending", "interval_seconds": interval}
+
+        # Approved: the vendor's code is single-use, so whatever happens now
+        # the device sign-in is spent. A failure drops the record and says to
+        # start again; success files the plan exactly as a PKCE sign-in does.
+        try:
+            payload = endpoint.redeem(
+                code=approved["authorization_code"],
+                verifier=approved["code_verifier"],
+                redirect_uri=openai_plan.DEVICE_REDIRECT_URI,
+            )
+            credential = openai_plan.credential_from_sign_in(payload)
+        except CredentialError as exc:
+            ref.delete()
+            raise BrokerValidationError(f"{exc} Press Add plan to start again.") from None
+        try:
+            account = _provision_and_register(
+                request,
+                store=store,
+                secrets=secrets_store,
+                owner_tenant=owner,
+                label=str(claimed.get("label") or ""),
+                provider=openai_plan.PROVIDER,
+                lend_to=list(claimed.get("lend_to") or ()),
+                credential_payload=openai_plan.serialise_plan(credential),
+                access_token=openai_plan.published_value(credential),
+                organisation=credential.organisation,
+            )
+        except Exception:
+            ref.delete()
+            raise
+        expires_at = credential.expires_at.isoformat()
+        # The record stays, without the device id, so a second poll finds the
+        # plan filed instead of starting anything; it ages out with the rest.
+        ref.set(
+            {
+                "state": body.state,
+                "kind": "device",
+                "owner_tenant": owner,
+                "provider": openai_plan.PROVIDER,
+                "filed_account_id": account.account_id,
+                "expires_at": expires_at,
+                "created_at": claimed.get("created_at") or now,
+                "filed_at": now,
+            }
+        )
+        return _filed_answer(account, credential.organisation, expires_at)
+
+    @app.post("/v1/accounts", status_code=201)
+    def register_account(
+        request: Request,
+        body: AccountRegister,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        _authorize(request, authorization, body.owner_tenant)
+        store = _accounts(request)
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is None:
+            raise BrokerValidationError("this deployment has no secret store configured")
+
+        # Parsed BEFORE anything is written. A credential with no refresh token
+        # cannot be kept alive, and the whole promise of this feature is that
+        # the operator logs in once. Refusing it here costs them one error
+        # message; accepting it costs them a pool entry that looks healthy and
+        # dies silently at its first expiry.
+        provider = _account_provider(body.provider)
+        if api_key.is_key(provider):
+            return _register_api_key(
+                request, body, authorization, store=store, secrets=secrets, provider=provider
+            )
+        if body.added_by is not None:
+            raise BrokerValidationError(
+                "added_by is recorded for an OpenAI API key alone; send none for this provider"
+            )
+        if body.voice_dedicated is not None or body.share_with_voice_it:
+            raise BrokerValidationError(
+                "voice_dedicated and share_with_voice_it are an API key's; a plan moves "
+                "between pools through its pools route"
+            )
+        if body.lends is not None and body.lend_to:
+            raise BrokerValidationError("send lends or lend_to, not both")
+        plan_lends = _lends_for(body.lends, owner_tenant=body.owner_tenant, key=False)
+        if provider == openai_plan.PROVIDER:
+            # A ChatGPT plan's pair, or codex's own auth.json (archived issue 2688). Its
+            # organisation is what the pasted id_token says, when it carries one.
+            try:
+                plan = openai_plan.parse_plan_credential(body.credential)
+            except CredentialError as exc:
+                raise BrokerValidationError(str(exc)) from None
+            account = _provision_and_register(
+                request,
+                store=store,
+                secrets=secrets,
+                owner_tenant=body.owner_tenant,
+                label=body.label,
+                provider=provider,
+                lend_to=body.lend_to,
+                lends=plan_lends,
+                credential_payload=openai_plan.serialise_plan(plan),
+                access_token=openai_plan.published_value(plan),
+                organisation=plan.organisation,
+            )
+            return {
+                "account": account_to_api(account),
+                "registered": organisation_line(account.account_id, plan.organisation),
+                "organisation": _organisation_to_api(account),
+                "expires_at": plan.expires_at.isoformat(),
+                "note": "stored write-only; no route in this service returns key material",
+            }
+
+        try:
+            credential = parse_credential(body.credential)
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+
+        # A pasted credential carries no token response, so its organisation
+        # is the profile's to say (archived issue 2222); a deployment without the endpoint
+        # registers it with none.
+        organisation = read_organisation(
+            None,
+            getattr(request.app.state, "token_endpoint", None),
+            credential.access_token,
+        )
+        account = _provision_and_register(
+            request,
+            store=store,
+            secrets=secrets,
+            owner_tenant=body.owner_tenant,
+            label=body.label,
+            provider=body.provider,
+            lend_to=body.lend_to,
+            lends=plan_lends,
+            credential_payload=body.credential,
+            access_token=credential.access_token,
+            organisation=organisation,
+        )
+
+        return {
+            "account": account_to_api(account),
+            "registered": organisation_line(account.account_id, organisation),
+            "organisation": _organisation_to_api(account),
+            "expires_at": credential.expires_at.isoformat(),
+            "note": "stored write-only; no route in this service returns key material",
+        }
+
+    @app.put("/v1/accounts/{account_id}/lending")
+    def set_lending(
+        request: Request,
+        account_id: str,
+        body: AccountLending,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        if account.voice_dedicated:
+            # Even `lend_to: []` would bind the owner's worker as a reader of
+            # `{base}` (`_sync_lending`): the dedicated key's secret stays the
+            # broker's alone, so it has no lending to change.
+            raise BrokerValidationError(
+                f"{account_id} is an OpenAI API key, which serves Voice it alone; it "
+                "is never lent and no worker reads its secret"
+            )
+        if body.lends is not None and body.lend_to is not None:
+            raise BrokerValidationError("send lends or lend_to, not both")
+        lends = _lends_for(body.lends, owner_tenant=account.owner_tenant, key=account.is_api_key)
+        if lends is None and account.is_api_key and body.lend_to:
+            raise BrokerValidationError(
+                f"{account_id} is an API key, lent only with a cap: send lends, each "
+                "with max_agents and monthly_spend_cap_usd"
+            )
+        if lends is None and account.is_api_key:
+            lends = {}
+        borrowers = list(lends) if lends is not None else list(body.lend_to or [])
+        if borrowers and POOL_WORKSPACE not in account.pools:
+            # Reserved for Voice it: never lent, and no borrower is granted
+            # read of its secret.
+            raise BrokerValidationError(
+                f"{account_id} is in the Voice it pool only, and an account reserved "
+                "for Voice it is never lent"
+            )
+        secrets = getattr(request.app.state, "secret_store", None)
+        secret = store.secret_for(account)
+        if secrets is not None:
+            # GRANT FIRST: until this lands, the document must not list a
+            # borrower, or the pool assigns it an account it cannot read.
+            try:
+                _sync_lending(
+                    request,
+                    secrets,
+                    secret=secret,
+                    owner_tenant=account.owner_tenant,
+                    lend_to=borrowers,
+                    revoke=False,
+                )
+            except BrokerValidationError:
+                raise
+            except Exception as exc:
+                log.error(
+                    "could not grant a borrower its account's secret; lending unchanged",
+                    extra={"secret": secret, "error": type(exc).__name__},
+                )
+                raise BrokerValidationError(
+                    f"could not grant the borrowers of {account_id} read access "
+                    f"to its secret: {type(exc).__name__}. Lending is unchanged."
+                ) from None
+        else:
+            # A deployment with no PROJECT_ID has no secret store, and its
+            # account secrets were bound by hand if at all. Said once per
+            # change, so a missing grant is not a silent one.
+            log.warning(
+                "no secret store is configured, so a lending change was "
+                "recorded without granting or revoking any borrower's read "
+                "access to the account's secret",
+                extra={"account_id": account_id},
+            )
+        updated = store.register(
+            account.owner_tenant,
+            account.label,
+            provider=account.provider,
+            lend_to=borrowers,
+            lends=lends,
+        )
+        if secrets is not None:
+            _revoke_unlent(request, secrets, secret=secret, account=updated)
+        log.info(
+            "an account's lends changed",
+            extra={"account_id": account_id, "lends": {
+                t: c.to_firestore() for t, c in updated.lends.items()}},
+        )
+        return {"account": account_to_api(updated)}
+
+    @app.put("/v1/accounts/{account_id}/per-workspace-max")
+    def set_per_workspace_max(
+        request: Request,
+        account_id: str,
+        body: AccountPerWorkspaceMax,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Each workspace's cap on the agents it holds on this account (Q6,
+        both kinds). The lender sets it: the owner's admin or the platform.
+
+        A workspace named here is the owner or a borrower: a cap on a
+        workspace that may not use the account would read as a permission.
+        Lowering a cap closes no hold; the next grant over it is refused
+        inside `acquire_hold`'s transaction.
+        """
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        try:
+            caps = validate_per_workspace_max(body.per_workspace_max)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        allowed = {account.owner_tenant, *account.lends}
+        stranger = sorted(t for t in caps if t not in allowed)
+        if stranger:
+            raise BrokerValidationError(
+                f"per_workspace_max names {stranger[0]}, which neither owns nor borrows {account_id}"
+            )
+        updated = store.set_per_workspace_max(account_id, caps)
+        if updated is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        log.info(
+            "an account's per-workspace caps changed",
+            extra={"account_id": account_id, "per_workspace_max": dict(updated.per_workspace_max)},
+        )
+        return {"account": account_to_api(updated)}
+
+    @app.put("/v1/accounts/{account_id}/spend-cap")
+    def set_spend_cap(
+        request: Request,
+        account_id: str,
+        body: AccountSpendCap,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """A key's monthly spend ceiling, metered from the workers' `cost_usd`
+        estimates (§4.6, Q5), or null for none. A plan has none: its price is
+        flat. Lowering it closes no hold."""
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        if not account.is_api_key:
+            raise BrokerValidationError(
+                f"{account_id} is a plan, whose price is flat; a spend cap is an API key's"
+            )
+        try:
+            cap = None if body.monthly_spend_cap_usd is None else validate_spend_cap(
+                body.monthly_spend_cap_usd)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        updated = store.set_monthly_spend_cap(account_id, cap)
+        if updated is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        log.info(
+            "a key's monthly spend cap changed",
+            extra={"account_id": account_id, "monthly_spend_cap_usd": cap},
+        )
+        return {"account": account_to_api(updated)}
+
+    @app.post("/v1/accounts/carry-over-lends")
+    def carry_over_lends(
+        request: Request,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Write `lends` on every account lent before the field (§4.6):
+        each borrower capped at the account's own `max_agents`, marked not
+        set. Platform only; idempotent. Also lists the plans whose label
+        carries the key mark, which must be none before the delete grant of
+        §8.3 is made."""
+        _platform_only(request, authorization, "only the platform may carry lends over")
+        store = _accounts(request)
+        written = store.carry_over_lends()
+        marked = plan_labels_with_key_mark(store.list())
+        log.info(
+            "audit: today's lends were carried over with a cap",
+            extra={"audit": True, "accounts": written, "plans_with_key_mark": marked},
+        )
+        return {"carried_over": written, "plans_with_key_mark": marked}
+
+    @app.post("/v1/accounts/import-workspace-keys")
+    def import_workspace_keys(
+        request: Request,
+        body: ImportWorkspaceKeys,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Import each workspace's own provider key as a pool key (Q7).
+
+        A COPY (§5.3): the broker reads `swarm-tenant-<tenant>-<vendor>`,
+        validates it as an add is validated, and registers it as that
+        workspace's `*-api` account, labelled `workspace-<vendor>`, lent to
+        nobody, its value written to its own `--key-` secret. The tenant
+        secret stays where it is, `scripts/create-secrets.sh`'s, the outage
+        path. A key that cannot be validated -- not a key at all (a
+        subscription token), refused by the vendor, or not checkable -- is
+        SKIPPED and listed with the reason, never registered half-checked.
+        An account already on the label is skipped, so a repeat is harmless.
+        Platform only. Never answers or logs a value.
+        """
+        _platform_only(request, authorization, "only the platform may import workspace keys")
+        store = _accounts(request)
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is None:
+            raise BrokerValidationError("this deployment has no secret store configured")
+        try:
+            added = openai_api_key.added_fields(body.added_by, datetime.now(timezone.utc))
+        except CredentialError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        wanted = set(body.tenants)
+        imported: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for tenant, vendor in secrets.workspace_provider_keys():
+            if wanted and tenant not in wanted:
+                continue
+            source = f"swarm-tenant-{tenant}-{vendor}"
+            provider = WORKSPACE_KEY_PROVIDER.get(vendor)
+            label = f"workspace-{vendor}"
+            entry = {"tenant_id": tenant, "vendor": vendor, "source": source}
+            if provider is None:
+                skipped.append({**entry, "reason": "no API key kind for this vendor"})
+                continue
+            if store.get(f"{tenant}:{label}") is not None:
+                skipped.append({**entry, "reason": "already imported"})
+                continue
+            try:
+                raw = secrets.access(source)
+            except Exception as exc:  # noqa: BLE001 -- the type only
+                skipped.append({**entry, "reason": f"unreadable: {type(exc).__name__}"})
+                continue
+            try:
+                key = api_key.parse_api_key(provider, raw)
+                check = _check_key_with_vendor(request, provider, key)
+                account = _store_api_key(
+                    request, store=store, secrets=secrets, owner_tenant=tenant,
+                    label=label, provider=provider, key=key, check=check, lends={},
+                    voice_dedicated=False, share_with_voice_it=False,
+                    added={**added, IMPORTED_FROM: source},
+                )
+            except CredentialError:
+                skipped.append({**entry, "reason": "not an API key"})
+                continue
+            except BrokerValidationError as exc:
+                skipped.append({**entry, "reason": str(exc)})
+                continue
+            imported.append({**entry, "account_id": account.account_id,
+                             "limited": check.outcome == api_key.CHECK_LIMITED})
+        log.info(
+            "audit: workspace provider keys were imported as pool keys",
+            extra={"audit": True, "imported": [i["account_id"] for i in imported],
+                   "skipped": [f"{s['source']}: {s['reason']}" for s in skipped]},
+        )
+        return {"imported": imported, "skipped": skipped}
+
+    @app.put("/v1/accounts/{account_id}/model-classes")
+    def set_model_classes(
+        request: Request,
+        account_id: str,
+        body: AccountModelClasses,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Which model classes this account's plan serves. Owner only (R5).
+
+        Empty means every class, the default. Narrowing takes effect at the
+        next assignment and swap: a step already on the account keeps it. It
+        changes no hold, no reading and no lending, and grants nothing -- it
+        can only take an account away from steps it cannot run.
+        """
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        try:
+            validate_model_classes(body.model_classes)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        updated = store.set_model_classes(account_id, body.model_classes)
+        if updated is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        log.info(
+            "an account's served model classes changed",
+            extra={"account_id": account_id, "model_classes": list(updated.model_classes)},
+        )
+        return {"account": account_to_api(updated)}
+
+    @app.put("/v1/accounts/{account_id}/max-agents")
+    def set_max_agents(
+        request: Request,
+        account_id: str,
+        body: AccountMaxAgents,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """How many agents this account may hold at once. Owner only (archived issue 2222).
+
+        DEFAULT_MAX_AGENTS until its owner sets another number. Takes effect at
+        the next assignment and swap: lowering it moves no agent already on the
+        account, and raising it hands out the new slots on the next ask.
+        """
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        try:
+            validate_max_agents(body.max_agents)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        updated = store.set_max_agents(account_id, body.max_agents)
+        if updated is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        log.info(
+            "an account's agent cap changed",
+            extra={"account_id": account_id, "max_agents": updated.max_agents},
+        )
+        return {"account": account_to_api(updated)}
+
+    @app.put("/v1/accounts/{account_id}/name")
+    def set_account_name(
+        request: Request,
+        account_id: str,
+        body: AccountName,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Set or clear this account's Name (archived issue 1913). Owner only.
+
+        Writes the one field: the id, the label, the secret, the holds, the
+        readings, the history and the lending do not change, so a rename never
+        interrupts work on the account. A bad Name is a 422 in
+        `validate_display_name`'s words; null clears it and the label shows.
+        """
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        if body.display_name is not None:
+            try:
+                validate_display_name(body.display_name)
+            except AccountError as exc:
+                raise BrokerValidationError(str(exc)) from None
+        updated = store.set_display_name(account_id, body.display_name)
+        if updated is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        # The account, not the Name: a Name is free text, and a log line is
+        # readable by people the response is not.
+        log.info("an account's Name changed", extra={"account_id": account_id})
+        return {"account": account_to_api(updated)}
+
+    @app.put("/v1/accounts/{account_id}/state")
+    def set_account_state(
+        request: Request,
+        account_id: str,
+        body: AccountStateChange,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        try:
+            state = AccountState(body.state.upper())
+        except ValueError:
+            raise BrokerValidationError(
+                f"unknown account state {body.state!r}; "
+                f"known: {', '.join(s.value for s in AccountState)}"
+            ) from None
+        # The state AND the holds it moves, in one transaction -- see
+        # `set_state_and_moves` for why DRAINING marks every live hold here
+        # rather than leaving it to a sweep.
+        moving = set_state_and_moves(
+            request.app.state.broker.db,
+            account_id,
+            state,
+            body.reason,
+            now=datetime.now(timezone.utc),
+        )
+        if moving:
+            log.info(
+                "an account is draining; its holders move at their next turn boundary",
+                extra={"account_id": account_id, "holders": moving},
+            )
+        return {"account": account_to_api(store.get(account_id)), "moving": moving}
+
+    @app.post("/v1/accounts/{account_id}/refresh")
+    def refresh_account(
+        request: Request,
+        account_id: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Exchange this account's credential now, instead of waiting for the sweep.
+
+        The sweep already does this on a timer and is what makes the pool
+        self-maintaining. This exists because a timer gives an operator no way
+        to ANSWER the question "did that work?" -- they paste a credential,
+        and then wait an unknown number of minutes to find out whether it was
+        accepted. A button that reports back closes that loop.
+
+        It goes through the same CredentialRefresher as the sweep rather than
+        exchanging the token inline. Two code paths that both rotate a
+        credential is precisely how a rotating credential gets corrupted: this
+        service is the single writer, and "single" has to mean one
+        implementation as well as one process.
+        """
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+
+        refresher = getattr(request.app.state, "credential_refresher", None)
+        if refresher is None:
+            raise BrokerValidationError(
+                "this deployment has no credential refresher configured"
+            )
+        # THE ACCOUNT ID, not the label: the outcome's `tenant_id` is whatever
+        # is passed here, and a label is unique only within a tenant (P2).
+        outcome = refresher.refresh_secret(store.secret_for(account), label=account_id)
+        result = outcome.as_dict()
+        # Written back like a sweep's outcome (U27), under the id this route
+        # was asked about. Never fails the refresh the caller just made.
+        try:
+            store.record_refresh(
+                account_id,
+                at=datetime.now(timezone.utc),
+                reason=str(result.get("reason") or ""),
+                expires_at=getattr(outcome, "expires_at", None),
+                organisation=getattr(outcome, "organisation", None),
+            )
+        except Exception as exc:
+            log.error(
+                "could not record an account's refresh outcome",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
+
+        # A refresh that fails because the refresh token is gone is not a
+        # transient error and must not be retried by the sweep every five
+        # minutes. Recording it against the account is what turns "it keeps
+        # failing" into "this one needs a human", which is the only thing an
+        # operator can act on.
+        reason = result.get("reason")
+        if reason in CREDENTIAL_NEEDS_A_HUMAN:
+            store.mark_reauth_required(account_id, f"refresh failed: {reason}")
+        elif reason == "refreshed":
+            # AND THE WAY BACK. A completed exchange is proof the refresh token
+            # works, which is the only thing REAUTH_REQUIRED ever claimed was
+            # false. Leaving the mark would make the pool refuse an account
+            # that demonstrably works, and the sweep cannot lift it --
+            # `due_for_refresh` skips marked accounts, so the state it writes
+            # is one the sweep can never undo.
+            #
+            # Only on `refreshed`, deliberately. `still_valid` says the stored
+            # ACCESS token has hours left; it never presents the refresh token,
+            # so it is silent about the half that died.
+            store.clear_reauth_required(account_id)
+        mark_duplicates(store)
+        return {"refresh": result, "account": account_to_api(store.get(account_id))}
+
+    @app.delete("/v1/accounts/{account_id}")
+    def remove_account(
+        request: Request,
+        account_id: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Any:
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        _authorize(request, authorization, account.owner_tenant)
+        if api_key.is_key(account.provider):
+            return _remove_api_key(request, account, authorization)
+        # A PLAN's removal. The DOCUMENT goes; the secret stays. Deleting a Secret Manager secret
+        # is irreversible and takes its version history with it, and an account
+        # removed by mistake is then unrecoverable rather than re-registerable.
+        # The secret is left to a PERSON, deliberately, and nothing collects it
+        # later: `apps/reconciler/` has no account code, so a comment here that
+        # named it as the cleanup would have been describing a job nobody runs.
+        # The response says "retained" so the caller knows there is one left.
+        #
+        # The account's open hold records close in the same transaction as
+        # the delete, as `account_removed` (see the function).
+        closed = remove_account_and_close_holds(
+            request.app.state.broker.db, account_id, now=datetime.now(timezone.utc)
+        )
+        if closed:
+            log.warning(
+                "removed an account that still had open holds; their records "
+                "are closed as account_removed",
+                extra={"account_id": account_id, "closed": closed},
+            )
+        return {"removed": account_id, "secret": "retained"}
+
+    def _remove_api_key(request: Request, account: Any, authorization: str | None) -> Any:
+        """Delete an API key (docs/design/llm-providers.md §4.4; Q3, the
+        secret destroyed at once on confirmation), in its order:
+
+        1. its holds closed and the `key_deletions/<account id>` record
+           (secret name, who, when; never the value) written in ONE
+           transaction with the document's delete;
+        2. every version of its secret destroyed and the secret deleted, the
+           record marked done, the deletion audited without the value. A
+           failure answers 502 naming the step, and the quota sweep retries
+           the record until it is done.
+
+        Closing first is deliberate: destroying first and then failing the
+        transaction would leave a live account whose secret is gone; this
+        order leaves at worst an orphan secret the record names. The two
+        exceptions are kept: an IMPORTED workspace key (Q7) is a copy, so
+        only its pool secret goes and the workspace's own
+        `swarm-tenant-<tenant>-<vendor>` is never named; the dedicated Voice
+        it key stored under its OLD `--<label>` name (Q9) has its versions
+        destroyed and keeps its empty secret. The broker never revokes the
+        key at the provider (Q4)."""
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is None:
+            raise BrokerValidationError(
+                "this deployment has no secret store configured, so a key's secret "
+                "could not be destroyed; nothing was removed"
+            )
+        store = _accounts(request)
+        db = request.app.state.broker.db
+        secret = store.secret_for(account)
+        whole = secret == key_secret_name(account.owner_tenant, account.label)
+        if not whole and not account.voice_dedicated:
+            raise BrokerValidationError(
+                f"{account.account_id}'s secret is not its key secret; nothing was removed"
+            )
+        doc = db.collection(ACCOUNTS_COLLECTION).document(account.account_id).get()
+        imported_from = ((doc.to_dict() or {}).get(IMPORTED_FROM)
+                         if getattr(doc, "exists", False) else None)
+        try:
+            deleted_by = request.app.state.identity.verified_email(authorization) or None
+        except BrokerAuthError:
+            deleted_by = None
+        now = datetime.now(timezone.utc)
+        record = {
+            "account_id": account.account_id,
+            "secret": secret,
+            "whole": whole,
+            "provider": account.provider,
+            "imported_from": imported_from,
+            "deleted_by": deleted_by,
+            "deleted_at": now,
+            "done": False,
+            "done_at": None,
+            "attempts": 0,
+            "failed_step": None,
+            "error": None,
+        }
+        closed = remove_account_and_close_holds(db, account.account_id, now=now, key_deletion=record)
+        log.info(
+            "audit: an API key was deleted; its secret is destroyed now",
+            extra={"audit": True, "account_id": account.account_id, "secret": secret,
+                   "deleted_by": deleted_by, "holds_closed": closed},
+        )
+        outcome = finish_key_deletion(db, secrets, record, now=now)
+        answer: dict[str, Any] = {"removed": account.account_id, "holds_closed": closed}
+        if imported_from:
+            answer["workspace_secret"] = f"{imported_from} still holds the value"
+        if not outcome["done"]:
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(status_code=502, content={
+                **answer,
+                "code": "key_secret_not_destroyed",
+                "step": outcome["step"],
+                "secret": "owed",
+                "message": (
+                    f"the key is removed but its secret is not yet destroyed: the "
+                    f"{outcome['step']} step failed ({outcome['error']}); the broker's "
+                    "quota sweep retries it until it is"
+                ),
+            })
+        # What became of the secret: deleted whole, or (the old-name Voice it
+        # key) left empty with no version to read.
+        fate = "destroyed" if whole else "emptied"
+        answer["versions_destroyed"] = outcome["versions_destroyed"]
+        return {**answer, "secret": fate}
+
+    # ----------------------------------------------------------------------
+    # Assignment: which account a starting agent runs on, and giving it back.
+    #
+    # These two are the pool's hot path and the only routes a WORKER calls.
+    # Everything above is an operator's. They are deliberately the thinnest
+    # possible pair -- pick, count, hand back the secret NAME; then un-count --
+    # because the broker is the single writer of credentials and a worker that
+    # could do more than this would be a second one.
+
+    def _assignment_tenant(request: Request, authorization: str | None) -> str:
+        """The tenant this caller may be assigned an account for.
+
+        Derived from the caller's identity and never from the request. A
+        PLATFORM caller is refused rather than allowed everything: it has no
+        tenant, so `may_serve` has nothing to check, and "the platform" is not
+        a tenant that any account was ever lent to. Refusing is the same rule
+        as "'not configured' must mean refuse, never accept-anything" -- the
+        alternative would hand out an arbitrary tenant's subscription
+        credential to whatever ran the sweep tick.
+        """
+        try:
+            caller_tenant, _is_platform = request.app.state.identity.resolve(authorization)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        if not caller_tenant:
+            request.app.state.metrics.auth_failures.labels(kind="no_tenant").inc()
+            raise BrokerAuthError(
+                "an account is assigned to a tenant, and this caller has none; "
+                "accounts are assigned to a tenant's worker service account"
+            )
+        return caller_tenant
+
+    # -- the Voice it pool (owner, 2026-11-02) --------------------------------
+
+    @app.put("/v1/accounts/{account_id}/pools")
+    def set_pools(
+        request: Request,
+        account_id: str,
+        body: AccountPools,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Any:
+        """Move an account into or out of the workspace and Voice it pools.
+
+        PLATFORM ONLY: a pool change takes an account away from every
+        workspace it serves, or gives the platform owner's Voice it a
+        workspace's plan, which no one workspace may decide. Confirmed by the
+        label typed back, keeps at least one pool, refuses (409 `pool_in_use`)
+        to remove a pool the account holds a lease of, and is audited in the
+        log with the caller.
+        """
+        from fastapi.responses import JSONResponse
+
+        _platform_only(request, authorization, "only a platform admin may change an account's pools")
+        store = _accounts(request)
+        account = store.get(account_id)
+        if account is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        if body.confirm_label.strip() != account.label:
+            raise BrokerValidationError(
+                f"type the account's label, {account.label!r}, to change its pools"
+            )
+        try:
+            pools = validate_pools(body.pools)
+        except AccountError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        if account.voice_dedicated and pools != (POOL_VOICE_IT,):
+            # Never lent to any agent or workspace: a key in the workspace
+            # pool would be one `may_serve` hands a task.
+            raise BrokerValidationError(
+                f"{account_id} is an OpenAI API key, which serves Voice it alone; it "
+                "stays in the Voice it pool only"
+            )
+        try:
+            moved = set_account_pools(
+                request.app.state.broker.db,
+                account_id,
+                pools=pools,
+                voice_it_people=request.app.state.voice_it_people,
+                now=datetime.now(timezone.utc),
+            )
+        except PoolInUse as exc:
+            return JSONResponse(status_code=409, content={"code": "pool_in_use", "message": str(exc)})
+        except PoolLent as exc:
+            return JSONResponse(status_code=409, content={"code": "pool_lent", "message": str(exc)})
+        if moved is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        before, after = moved
+        log.info(
+            "audit: an account's pools changed",
+            extra={
+                "audit": True,
+                "account_id": account_id,
+                "from_pools": before,
+                "to_pools": after,
+                "caller": request.app.state.identity.verified_email(authorization),
+            },
+        )
+        updated = store.get(account_id)
+        return {"account": account_to_api(updated, platform_wide=True)}
+
+    def _voice_caller(request: Request, authorization: str | None) -> None:
+        """Only swarm-voice leases from the Voice it pool. OIDC off is local
+        development, where every caller is the platform."""
+        identity = request.app.state.identity
+        try:
+            email = identity.verified_email(authorization)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        if not identity.required:
+            return
+        if email not in request.app.state.voice_callers:
+            request.app.state.metrics.auth_failures.labels(kind="not_voice").inc()
+            raise BrokerAuthError("only swarm-voice may lease from the Voice it pool")
+
+    def _voice_credential(request: Request, account: Any) -> dict[str, str]:
+        """The plan's published access token and account id, read by the
+        broker and handed to swarm-voice's process alone (no secret binding
+        for swarm-voice at all). Never logged."""
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is None:
+            raise BrokerValidationError("this broker has no secret store, so it cannot lend a plan to Voice it")
+        if account.provider == "anthropic":
+            # A voice session's front or planner renewing its Claude hold.
+            return _voice_claude_credential(request, account)
+        if account.provider == openai_api_key.PROVIDER:
+            # The key alone: `kind` tells swarm-voice to send `Authorization`
+            # and no `ChatGPT-Account-Id`, which names a plan's account.
+            try:
+                key = openai_api_key.read_key(
+                    secrets.access(_accounts(request).secret_for(account))
+                )
+            except Exception as exc:  # noqa: BLE001 -- the name only, never the value
+                log.error(
+                    "could not read a Voice it pool account's API key",
+                    extra={"account_id": account.account_id, "error": type(exc).__name__},
+                )
+                raise BrokerValidationError(
+                    f"the API key of {account.account_id} could not be read ({type(exc).__name__})"
+                ) from None
+            return {"access_token": key, "kind": openai_api_key.CREDENTIAL_KIND}
+        try:
+            published = json.loads(secrets.access(_accounts(request).secret_for(account)))
+            token = published["access_token"]
+            plan_account = published.get("account_id") or ""
+        except Exception as exc:  # noqa: BLE001 -- the name only, never the value
+            log.error(
+                "could not read a Voice it pool account's plan token",
+                extra={"account_id": account.account_id, "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"the plan of {account.account_id} could not be read ({type(exc).__name__})"
+            ) from None
+        if not isinstance(token, str) or not token:
+            raise BrokerValidationError(f"the plan of {account.account_id} has no access token yet")
+        return {"access_token": token, "account_id": str(plan_account)}
+
+    def _voice_claude_credential(request: Request, account: Any) -> dict[str, str]:
+        """A Claude subscription's token, as its secret holds it (the worker's
+        one shape: the bare OAuth token), for a voice session's front or
+        planner. Handed to swarm-voice's process alone; never logged."""
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is None:
+            raise BrokerValidationError("this broker has no secret store, so it cannot lend an account to Voice it")
+        try:
+            token = str(secrets.access(_accounts(request).secret_for(account)) or "").strip()
+            if api_key.is_key(account.provider):
+                # A key's secret holds the key in its stored shape (§4.1);
+                # `kind` tells swarm-voice to set the key's own variable.
+                return {
+                    "access_token": api_key.read_key(account.provider, token),
+                    "kind": api_key.KIND_OF[account.provider],
+                }
+        except Exception as exc:  # noqa: BLE001 -- the name only, never the value
+            log.error(
+                "could not read a Claude account's token for a voice hold",
+                extra={"account_id": account.account_id, "error": type(exc).__name__},
+            )
+            raise BrokerValidationError(
+                f"the token of {account.account_id} could not be read ({type(exc).__name__})"
+            ) from None
+        if not token:
+            raise BrokerValidationError(f"the account {account.account_id} has no token")
+        return {"access_token": token}
+
+    @app.post("/v1/voice/lease")
+    def voice_lease(
+        request: Request,
+        body: VoiceLease,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Lease a Voice it pool account for one session of `person`.
+
+        THE VOICE IT POOL ONLY: `choose_voice` never offers an account outside
+        it, nor one that does not list the person. None free is a 200 with a
+        reason, as `assign` answers, and swarm-voice refuses the session with
+        a spoken reason. The hold carries no tenant, so it counts toward no
+        workspace's capacity; it is counted on the account, so the account's
+        `max_agents` holds across both pools.
+        """
+        _voice_caller(request, authorization)
+        provider = _account_provider(body.provider)
+        person = body.person.strip().lower()
+        store = _accounts(request)
+        now = datetime.now(timezone.utc)
+        listing = store.list()
+        # THE CHAIN (§5.3): Live walks the keys shared with Voice it, then
+        # the dedicated Voice it key; text walks the pool's plans, then, once
+        # swarm-voice can run text on a key (`key_tier`), the same two.
+        tiers = voice_chain(
+            listing, provider, capability=body.capability, key_tier=body.key_tier
+        )
+        # Minus what the session already left as spent (`exclude`, §5.3).
+        skip = {a for a in body.exclude if a}
+        if skip:
+            tiers = [[a for a in tier if a.account_id not in skip] for tier in tiers]
+        chosen, reason = choose_voice_chain(tiers, listing, person, now)
+        refused = {
+            "account_id": None,
+            "assignment_id": None,
+            "credential": None,
+            "tier": None,
+            "reason": reason,
+            "next_reset_at": None,
+        }
+        if chosen is None:
+            return refused
+        # A hold that loses a race for the chosen account's last slot tries
+        # the next free one, so a session is refused only when none is left.
+        held = None
+        tried: set[str] = set()
+        while chosen is not None:
+            tried.add(chosen.account_id)
+            held = acquire_hold(
+                request.app.state.broker.db,
+                chosen.account_id,
+                tenant_id="",
+                now=now,
+                ttl=VOICE_HOLD_TTL,
+                person=person,
+                voice_session_id=body.voice_session_id,
+            )
+            if held is not None:
+                break
+            chosen, _ = choose_voice_chain(
+                [[a for a in tier if a.account_id not in tried] for tier in tiers],
+                listing,
+                person,
+                now,
+            )
+        if held is None or chosen is None:
+            return {**refused, "reason": VOICE_NONE_AVAILABLE}
+        assignment_id, _assigned = held
+        try:
+            credential = _voice_credential(request, chosen)
+        except BrokerValidationError:
+            # Nothing is handed out, so nothing stays held.
+            release_hold(
+                request.app.state.broker.db,
+                chosen.account_id,
+                assignment_id=assignment_id,
+                tenant_id=None,
+                now=now,
+                voice_session_id=body.voice_session_id,
+            )
+            raise
+        log.info(
+            "leased a Voice it pool account",
+            extra={
+                "account_id": chosen.account_id,
+                "assignment_id": assignment_id,
+                "voice_session_id": body.voice_session_id,
+                "pool": POOL_VOICE_IT,
+                "tier": tier_of(chosen),
+            },
+        )
+        return {
+            "account_id": chosen.account_id,
+            "assignment_id": assignment_id,
+            # Which tier serves the session (§5.3, §5.4): the header's mark.
+            "tier": tier_of(chosen),
+            "label": chosen.label,
+            "display_name": chosen.display_name,
+            "expires_at": (now + VOICE_HOLD_TTL).isoformat(),
+            "credential": credential,
+            "reason": "",
+        }
+
+    @app.post("/v1/voice/lease/{account_id}/renew")
+    def voice_renew(
+        request: Request,
+        account_id: str,
+        body: VoiceHold,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Any:
+        """Keep a session's hold, and hand back the plan's current token (the
+        broker's refresh sweep keeps it fresh). 409 when the hold is gone."""
+        from fastapi.responses import JSONResponse
+
+        _voice_caller(request, authorization)
+        store = _accounts(request)
+        now = datetime.now(timezone.utc)
+        expires = renew_voice_hold(
+            request.app.state.broker.db,
+            account_id,
+            assignment_id=body.assignment_id,
+            voice_session_id=body.voice_session_id,
+            now=now,
+            ttl=VOICE_HOLD_TTL,
+        )
+        account = store.get(account_id) if expires is not None else None
+        if expires is None or account is None:
+            return JSONResponse(
+                status_code=409,
+                content={"code": "not_held", "message": "this session holds no live lease on that account"},
+            )
+        return {"expires_at": expires.isoformat(), "credential": _voice_credential(request, account)}
+
+    @app.post("/v1/voice/lease/{account_id}/release")
+    def voice_release(
+        request: Request,
+        account_id: str,
+        body: VoiceHold,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Give a session's hold back. Idempotent: a second release, or one of
+        a hold that already lapsed, is `released: false`."""
+        _voice_caller(request, authorization)
+        _accounts(request)
+        _assigned, was_held = release_hold(
+            request.app.state.broker.db,
+            account_id,
+            assignment_id=body.assignment_id,
+            tenant_id=None,
+            now=datetime.now(timezone.utc),
+            voice_session_id=body.voice_session_id,
+        )
+        return {"account_id": account_id, "released": bool(was_held)}
+
+    @app.post("/v1/voice/lease/{account_id}/readings")
+    def voice_reading(
+        request: Request,
+        account_id: str,
+        body: VoiceReadingIn,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> Any:
+        """A Voice it text session's reading of the plan it holds: the
+        `x-codex-*` windows swarm_voice.textchat reads off each answer.
+
+        Recorded exactly as a holding worker's reading is
+        (`AccountStore.record_reading`, merged per window, the windows checked
+        by `_reading_windows`), so `choose()` and `choose_voice` see a plan's
+        spend from Voice it as they see it from a task's run.
+
+        ONLY SWARM-VOICE, and only for a LIVE Voice it hold of THIS account,
+        with this assignment id, taken for this session: a reading moves
+        `choose()`, so anything less could steer tasks onto or off a plan.
+        Otherwise 409 `not_held`, as a renewal of a lost hold answers, and
+        nothing is written."""
+        from fastapi.responses import JSONResponse
+
+        _voice_caller(request, authorization)
+        store = _accounts(request)
+        now = datetime.now(timezone.utc)
+        windows = _reading_windows(body.windows, now)
+        data = _raw_account(request.app.state.broker.db, account_id)
+        hold = (
+            _voice_hold(
+                data,
+                now,
+                assignment_id=body.assignment_id,
+                voice_session_id=body.voice_session_id,
+            )
+            if data is not None
+            else None
+        )
+        if hold is None:
+            request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            return JSONResponse(
+                status_code=409,
+                content={"code": "not_held", "message": "this session holds no live lease on that account"},
+            )
+        updated = store.record_reading(account_id, windows, now)
+        return {
+            "account_id": account_id,
+            "recorded": updated is not None,
+            "windows": sorted(windows),
+        }
+
+    @app.get("/v1/voice/pool")
+    def voice_pool(
+        request: Request,
+        person: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Which account `person`'s NEXT Voice it session would lease, without
+        leasing it, for Voice it › Preferences. Platform (swarm-api) only."""
+        _platform_only(request, authorization, "only the platform may ask about the Voice it pool")
+        store = _accounts(request)
+        chosen, reason = choose_voice(
+            store.list(),
+            person.strip().lower(),
+            "openai",
+            datetime.now(timezone.utc),
+            capability=openai_api_key.CAPABILITY_LIVE,
+        )
+        if chosen is None:
+            return {"account": None, "reason": reason}
+        answer: dict[str, Any] = {
+            "account_id": chosen.account_id,
+            "label": chosen.label,
+            "display_name": chosen.display_name,
+            "provider": chosen.provider,
+        }
+        if chosen.provider == openai_api_key.PROVIDER:
+            # Who added the key and when, never the key (Voice it › Settings).
+            added = openai_api_key.added_from(
+                _raw_account(request.app.state.broker.db, chosen.account_id) or {}
+            )
+            answer["key_added_by"] = added["by"]
+            answer["key_added_at"] = added["at"].isoformat() if added["at"] else None
+        return {"account": answer, "reason": reason}
+
+    def _assign_voice_hold(request: Request, authorization: str | None, asked: AccountAssign) -> dict[str, Any]:
+        """A voice session's hold on a Claude account of the person's own
+        workspace (`AccountAssign.holder`; voice-it-own-speech.md §14.1).
+
+        ONLY swarm-voice (`_voice_caller`), and the tenant is `person`'s own
+        workspace, never the body's. NO TASK, so no step class: the class is
+        None, served only by an account that serves every class (R5), exactly
+        as a worker that sends no task id is. Counted on the account's `holds`
+        like a task's, for VOICE_HOLD_TTL at a time: the front renews it every
+        four minutes for the session's life and the planner for its turn,
+        through `/v1/voice/lease/{account_id}/renew`, and both give it back
+        through `.../release` (invariant 3: one agent while it is held). None
+        free is a 200 with the reason, as a task's is; the credential is the
+        account's token, handed to swarm-voice's process and never logged.
+        """
+        _voice_caller(request, authorization)
+        person = (asked.person or "").strip().lower()
+        voice_session_id = asked.voice_session_id or ""
+        try:
+            tenant_id = tenant_id_for_user(person)
+        except ValueError as exc:
+            raise BrokerValidationError(f"{exc}") from None
+        provider = _known_provider(asked.provider)
+        exclude = tuple(a for a in asked.exclude if a)
+        store = _accounts(request)
+        now = datetime.now(timezone.utc)
+        refused: dict[str, Any] = {
+            "account_id": None,
+            "assignment_id": None,
+            "credential": None,
+            "reason": "",
+            "next_reset_at": None,
+        }
+        listing = store.list()
+        # The planner's and the front's chain (§5.3): the workspace's plans,
+        # then its vendor's keys once swarm-voice can set the key's variable
+        # (`key_tier`, lane LP-V1). No tier 3 (Q2): no dedicated Anthropic key.
+        tiers = chain_tiers(
+            listing, tenant_id, chain_providers(provider, key_tier=asked.key_tier), None
+        )
+        chosen, held, caps = walk_chain(
+            tiers, tenant_id, now, exclude=exclude, model_class=None,
+            take=lambda a, refusals: acquire_hold(
+                request.app.state.broker.db,
+                a.account_id,
+                tenant_id=tenant_id,
+                now=now,
+                ttl=VOICE_HOLD_TTL,
+                person=person,
+                voice_session_id=voice_session_id,
+                refusals=refusals,
+            ),
+        )
+        if chosen is None:
+            reason, next_reset = chain_unavailable(
+                tiers, tenant_id, now, exclude=exclude, model_class=None
+            )
+            return {**refused, "reason": reason.value, "caps": caps,
+                    "next_reset_at": next_reset.isoformat() if next_reset else None}
+        assignment_id, assigned = held
+        try:
+            credential = _voice_claude_credential(request, chosen)
+        except BrokerValidationError:
+            # Nothing is handed out, so nothing stays held.
+            release_hold(
+                request.app.state.broker.db,
+                chosen.account_id,
+                assignment_id=assignment_id,
+                tenant_id=None,
+                now=now,
+                voice_session_id=voice_session_id,
+            )
+            raise
+        log.info(
+            "held an account for a voice session",
+            extra={
+                "account_id": chosen.account_id,
+                "assignment_id": assignment_id,
+                "tenant_id": tenant_id,
+                "voice_session_id": voice_session_id,
+                "holder": asked.holder,
+                "assigned": assigned,
+                "tier": tier_of(chosen),
+            },
+        )
+        return {
+            "account_id": chosen.account_id,
+            "assignment_id": assignment_id,
+            "tier": tier_of(chosen),
+            "expires_at": (now + VOICE_HOLD_TTL).isoformat(),
+            "credential": credential,
+            "reason": "",
+            "next_reset_at": None,
+        }
+
+    @app.post("/v1/accounts/assign")
+    def assign_account(
+        request: Request,
+        body: AccountAssign | None = Body(default=None),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Lease the best account this tenant may run on, or say why there is none.
+
+        NOT FINDING ONE IS A 200, and that is the whole shape of this route.
+        `accounts.choose` already documents why it returns None rather than an
+        exhausted account: the caller's correct response is to PARK, which
+        costs nothing and resumes by itself the moment an account frees up,
+        while a 4xx or 5xx here would cost the task one of its three attempts
+        for a condition nobody did anything wrong to cause. An error would also
+        be indistinguishable, at the caller, from the broker being down -- and
+        those two want opposite responses.
+
+        The `reason` is what makes the 200 actionable, and it separates two
+        situations that look identical from the outside:
+
+          * `no_accounts_registered` -- this tenant has no account it may use
+            at all. The pool is not how this deployment runs, so the caller
+            falls back to its per-tenant secret. This is what keeps every
+            existing deployment working unchanged.
+          * `no_account_available` -- accounts exist and none can take a new
+            agent right now. The pool IS how this tenant runs, so the caller
+            parks and comes back.
+
+        `next_reset_at` is the earliest instant ANY candidate could take the
+        agent -- a window clearing, or a tenant's unreadable mark lapsing --
+        never only the earliest of the accounts a window blocks (archived issue 1885: a park
+        sat on another account's seven-day clear, 46 h out, while the account
+        that freed up 53 minutes later had no window to report). `reason`
+        says which kind of wait this is. The two are computed by
+        `accounts.eligibility`, with the SAME arguments `choose()` was just
+        called with, so they cannot disagree about what "unavailable" meant --
+        which they did: `choose()` rejects on `headroom()`, which halves an
+        aged reading, while the instant was computed from the raw remaining
+        with no staleness at all. An account blocked only by that halving was
+        rejected here and reported no blocking window, so the route answered
+        "none available, and no idea when" and the worker fell back to its long
+        poll for precisely the case the known-instant design was written for.
+
+        A null `next_reset_at` therefore does NOT mean one thing, and the
+        reason is what separates them: `pool_paused` is waiting on a person,
+        `no_recent_reading` is waiting on the broker's own next usage poll --
+        minutes, not hours -- and neither is a claim that the accounts are
+        spent. `no_recent_reading` is answered whenever ANY candidate waits on
+        that poll, and may then carry an instant too: a window that clears
+        sooner than the poll. The worker parks until the sooner of the two.
+        """
+        # Built per call rather than as a default argument: a model instance in
+        # a signature default is shared by every request that omits the body.
+        asked = body or AccountAssign()
+        if asked.holder is not None:
+            return _assign_voice_hold(request, authorization, asked)
+        tenant_id = _assignment_tenant(request, authorization)
+        provider = _known_provider(asked.provider)
+        exclude = tuple(a for a in asked.exclude if a)
+        store = _accounts(request)
+        now = datetime.now(timezone.utc)
+
+        # Owned AND lent-to, of this request's provider, serving this step's
+        # model class: exactly the set invariant 9 and owner decision R5
+        # permit. `accounts_serving` is the one statement of it, and the
+        # scheduler's admission asks the same function whether it is empty,
+        # so the two cannot disagree about who the pool serves (archived issue 169). A
+        # class no account serves is therefore `no_accounts_registered`: the
+        # worker falls back to the tenant's own key, which serves every class,
+        # and a tenant with none was parked by admission before any lease.
+        #
+        # THE CHAIN (§5.3): this provider's plans, then its vendor's keys
+        # when the caller can run on one (`key_tier`) and the step's profile
+        # declares the key's variable -- `browser` declares the key alone, so
+        # its chain starts at the key tier. A new attempt always starts at
+        # tier 1.
+        db = request.app.state.broker.db
+        profile, model_class = step_for(db, tenant_id, asked.task_id)
+        providers = chain_providers(
+            provider,
+            key_tier=asked.key_tier,
+            secrets=getattr(profile, "secrets", None) if profile is not None else None,
+        )
+        tiers = chain_tiers(store.list(), tenant_id, providers, model_class)
+
+        # The account store is built from the broker's own Firestore client,
+        # deliberately (see create_app), so this is the same client and the
+        # same database the listing above read from. A candidate that lost
+        # its room between the listing and its transaction is refused there,
+        # writing nothing, and the walk tries the next (§5.5 invariant 2).
+        chosen, held, caps = walk_chain(
+            tiers, tenant_id, now, exclude=exclude, model_class=model_class,
+            take=lambda a, refusals: acquire_hold(
+                db,
+                a.account_id,
+                tenant_id=tenant_id,
+                now=now,
+                task_id=asked.task_id,
+                attempt_id=asked.attempt_id,
+                refusals=refusals,
+            ),
+        )
+        if chosen is None:
+            reason, next_reset = chain_unavailable(
+                tiers, tenant_id, now, exclude=exclude, model_class=model_class
+            )
+            return {
+                "account_id": None,
+                "assignment_id": None,
+                "secret": None,
+                "account": None,
+                "tier": None,
+                "reason": reason.value,
+                "next_reset_at": next_reset.isoformat() if next_reset else None,
+                # The class the pool was asked about, so a decline names it.
+                "model_class": model_class,
+                # Which caps held a candidate (`accounts.CAP_REASONS`): a
+                # borrower at its lend's cap is told so, beside the wait.
+                "caps": caps,
+            }
+        assignment_id, assigned = held
+
+        # NOTHING BELOW MAY FAIL, because the hold above is committed (archived issue 243).
+        # This used to re-read the account with `store.get`, which raises on a
+        # document that went malformed since the listing -- answering 500 over
+        # a hold whose id the caller never learned, so nothing could release
+        # it. Everything the response needs is already here: the account as
+        # `choose()` saw it, and the count the hold's own transaction wrote.
+        current = replace(chosen, assigned=assigned, last_assigned_at=now)
+        log.info(
+            "assigned an account",
+            extra={
+                "account_id": chosen.account_id,
+                "assignment_id": assignment_id,
+                "tenant_id": tenant_id,
+                "provider": chosen.provider,
+                "tier": tier_of(chosen),
+                "model_class": model_class,
+                "borrowed": chosen.owner_tenant != tenant_id,
+                "assigned": assigned,
+            },
+        )
+        return {
+            "account_id": chosen.account_id,
+            # Which tier granted it (§5.3), and the account's `provider` in
+            # `account`, so the worker knows which variable to set.
+            "tier": tier_of(chosen),
+            # The HOLD this worker now has. It carries it back on release, so a
+            # release can only ever give back the assignment it was issued
+            # for, and the hold expires on its own if the worker is killed
+            # before it can release anything.
+            "assignment_id": assignment_id,
+            # THE NAME, NEVER THE VALUE. `{base}` holds only the access token
+            # and the caller reads it from Secret Manager under its own service
+            # account -- so the credential travels over Google's authorized
+            # path rather than through this response body, and this service
+            # keeps the property that no route of its returns key material.
+            "secret": store.secret_for(chosen),
+            "account": account_to_api(current, now=now, viewer=tenant_id),
+            "reason": "",
+            "next_reset_at": None,
+        }
+
+    @app.post("/v1/accounts/{account_id}/release")
+    def release_account(
+        request: Request,
+        account_id: str,
+        body: AccountRelease,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Give one named assignment back. Idempotent.
+
+        TWO CHECKS, NOT ONE. `may_serve` (as `_raw_may_serve`, over the raw
+        document -- see `_raw_account`) still gates the route -- an account
+        lent from tenant A to tenant B is assigned to B's agents, so B is who
+        releases it, and requiring the OWNER would leave every borrowed
+        assignment counted forever and the account sorting last in `choose()`
+        for good. But `may_serve` alone is not proof that this caller held
+        anything: it was the only check here, so any tenant an account was lent
+        to could decrement the owner's counter as often as it liked. The
+        assignment id is the second check, and the hold it names records which
+        tenant it was issued to.
+
+        Releasing twice is not an error and does not take someone else's slot:
+        the second call finds no matching hold and says so. That genuinely
+        happens -- a worker releases on its exit path and the same call is
+        retried after a lost response.
+
+        A worker that never releases at all is covered by the hold's own
+        expiry, pruned by the quota sweep. It is NOT covered by the reconciler,
+        which has no account code; this docstring used to say otherwise.
+        """
+        _accounts(request)  # refuse early if the pool is not configured
+        db = request.app.state.broker.db
+        # The RAW document, never the decoded `Account` (archived issue 243): a hold on a
+        # document that has since gone malformed must still be given back, and
+        # this route needs only the holds, the owner and the lending list.
+        account = _raw_account(db, account_id)
+        if account is None:
+            # Removed while an agent was still on it. There is no hold left to
+            # give back, and refusing would make the worker's exit path look
+            # like a failure for something an operator did on purpose.
+            return {
+                "account_id": account_id,
+                "assigned": None,
+                "reason": "account_removed",
+            }
+
+        try:
+            caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        if not is_platform and not (
+            caller_tenant and _raw_may_serve(account, caller_tenant)
+        ):
+            request.app.state.metrics.auth_failures.labels(kind="tenant_mismatch").inc()
+            raise BrokerAuthError(
+                "caller may not release an account it could not have been assigned"
+            )
+
+        now = datetime.now(timezone.utc)
+        assigned, was_held = release_hold(
+            db,
+            account_id,
+            assignment_id=body.assignment_id,
+            tenant_id=None if is_platform else caller_tenant,
+            now=now,
+            unusable=body.unusable,
+            cost_usd=body.cost_usd,
+        )
+        if body.unusable and was_held:
+            # Refused at assignment, on the account's health record (archived issue 2302).
+            # A fixed sentence, NEVER `body.unusable`: that quotes Secret
+            # Manager's error and names the secret.
+            _accounts(request).record_health(
+                account_id,
+                HEALTH_ASSIGN_REFUSED,
+                tenant_id=caller_tenant or None,
+                message="the worker it was assigned to could not read its credential",
+            )
+            owner = account.get("owner_tenant")
+            owner = owner if isinstance(owner, str) else ""
+            log.error(
+                "a worker could not read the account it was assigned",
+                extra={
+                    "account_id": account_id,
+                    "tenant_id": caller_tenant,
+                    "owner_tenant": owner,
+                    "borrowed": bool(caller_tenant) and caller_tenant != owner,
+                    "detail": body.unusable,
+                },
+            )
+        # NO RENDERED ACCOUNT HERE, deliberately. This used to answer with
+        # `account_to_api(store.get(account_id))` as a courtesy -- but
+        # `release_hold`'s own transaction just rewrote `holds` and `assigned`
+        # on this document (`_hold_payload`, always, whether or not anything
+        # was held), and that rewrite can be exactly what turns a malformed
+        # document decodable: a document bad only in its `assigned` field
+        # decodes clean the moment `assigned` is freshly written, while every
+        # OTHER field the document was planted or hand-edited with -- `reason`
+        # not least -- decodes right along with it and reaches this response.
+        # The caller (`agent_worker.accountlease`) only ever reads `assigned`;
+        # nothing here needs a rendered account, so nothing here reads one.
+        return {
+            "account_id": account_id,
+            "assigned": assigned,
+            # "" when the hold was found and released; `not_held` when it was
+            # not, which is what a duplicate release and a forged id both look
+            # like. Not an error either way -- but not silence either.
+            "reason": "" if was_held else "not_held",
+        }
+
+    # -- what a holding worker may do with its own hold (S13-S15) ----------
+    #
+    # Three routes, each answered ONLY for the worker that holds the account:
+    # authenticated as a tenant's worker service account, and checked against
+    # a live hold with the assignment id, task and attempt it names. A fenced
+    # attempt's holds are released by the reconciler (archived issue 380), so a stale worker
+    # holds nothing and is refused (invariant 5).
+
+    def _holder(
+        request: Request, authorization: str | None, account_id: str, body: _AttemptHold
+    ) -> tuple[str, dict[str, Any], Hold]:
+        """(tenant, raw account, the caller's hold), or 403."""
+        tenant_id = _assignment_tenant(request, authorization)
+        _accounts(request)
+        data = _raw_account(request.app.state.broker.db, account_id)
+        hold = (
+            _attempt_hold(
+                data,
+                datetime.now(timezone.utc),
+                assignment_id=body.assignment_id,
+                tenant_id=tenant_id,
+                task_id=body.task_id,
+                attempt_id=body.attempt_id,
+            )
+            if data is not None
+            else None
+        )
+        if hold is None:
+            request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            raise BrokerAuthError(
+                "this caller holds no live hold on that account for that task and attempt"
+            )
+        return tenant_id, data, hold
+
+    @app.post("/v1/accounts/{account_id}/readings")
+    def record_account_reading(
+        request: Request,
+        account_id: str,
+        body: AccountReadingIn,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """A holding worker's reading of the account it runs on (S15).
+
+        Every claude-code run streams `rate_limit_event` readings and they
+        were thrown away, while the only other writer of `Account.windows` --
+        the usage poller -- shares about five calls per five minutes with every
+        human and laptop on the same accounts. This is where they land.
+
+        ONLY FROM THE HOLDER: a reading moves `choose()`, so a tenant able to
+        report on an account it does not hold could steer every other tenant's
+        agents onto or off it. Merged per window (`Account.with_reading`): a
+        reading of `seven_day` alone keeps the stored `five_hour`.
+
+        REFUSED, 422: a utilization outside 0..1 (the model), a window name
+        that is not one, and a window whose reset is in the past -- a reading
+        that has already expired would be stored as a fresh one.
+        """
+        _holder(request, authorization, account_id, body)
+        now = datetime.now(timezone.utc)
+        windows = _reading_windows(body.windows, now)
+        updated = _accounts(request).record_reading(account_id, windows, now)
+        return {
+            "account_id": account_id,
+            "recorded": updated is not None,
+            "windows": sorted(windows),
+        }
+
+    @app.post("/v1/accounts/{account_id}/hold-status")
+    def account_hold_status(
+        request: Request,
+        account_id: str,
+        body: AccountHoldStatus,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Whether the caller's hold must move (S14). One cheap read.
+
+        A worker asks at most once per turn, never per stream line. `move` is
+        the mark a drain wrote on the hold, or `drain` for an account that is
+        DRAINING whatever its holds say. A POST, so the assignment id is in a
+        body rather than in a URL an access log keeps.
+
+        THE RUNNING SPEND (§4.6). A key holder's read carries `cost_usd`,
+        recorded on its hold in one transaction (`record_running_spend`), so
+        the key's month cap and a borrower's lend cap count a long attempt
+        before it ends. A key whose spend, closed and running, has reached
+        either cap answers `move` `exhausted`: the worker checkpoints and
+        swaps at this turn boundary, and the swap closes the hold with its
+        `cost_usd`, counted once.
+        """
+        tenant_id, data, hold = _holder(request, authorization, account_id, body)
+        now = datetime.now(timezone.utc)
+        if body.cost_usd is not None and api_key.is_key(data.get("provider")):
+            recorded = record_running_spend(
+                request.app.state.broker.db,
+                account_id,
+                assignment_id=body.assignment_id,
+                tenant_id=tenant_id,
+                task_id=body.task_id,
+                attempt_id=body.attempt_id,
+                cost_usd=body.cost_usd,
+                now=now,
+            )
+            if recorded is None:
+                # Released or fenced between the proof and the write.
+                request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+                raise BrokerAuthError(
+                    "this caller holds no live hold on that account for that task and attempt"
+                )
+            data, hold = recorded
+        state = data.get("state")
+        move = hold.move or (SWAP_DRAIN if state == AccountState.DRAINING.value else None)
+        if move is None and _raw_spend_reached(
+            data, _live_holds(data, now), tenant_id, now
+        ) is not None:
+            move = SWAP_EXHAUSTED
+        if move is None:
+            move = _plan_available(request, tenant_id, data, hold)
+        return {"account_id": account_id, "held": True, "move": move, "state": state}
+
+    def _plan_available(
+        request: Request, tenant_id: str, data: dict[str, Any], hold: Hold
+    ) -> str | None:
+        """`plan_available` when the caller holds a KEY and a plan of its
+        vendor would grant this attempt now (Q1, §5.3), else None.
+
+        The availability test is `choose()`'s (§5.1), so a plan the attempt
+        left on a 429 is not offered back before its `limited_until` passes.
+        Only an answer: the swap it leads to re-checks the plan inside its
+        one transaction, and leaves the hold on the key if the plan filled in
+        between -- never two holds, never none. A profile that does not
+        declare the plan's variable (`browser`) is never moved to a plan.
+        """
+        plan_provider = PLAN_PROVIDER_OF.get(str(data.get("provider") or ""))
+        if plan_provider is None or data.get("voice_dedicated") is True:
+            return None
+        profile, model_class = step_for(request.app.state.broker.db, tenant_id, hold.task_id)
+        if plan_provider not in chain_providers(
+            plan_provider,
+            key_tier=False,
+            secrets=getattr(profile, "secrets", None) if profile is not None else None,
+        ):
+            return None
+        now = datetime.now(timezone.utc)
+        plans = accounts_serving(
+            _accounts(request).list(), tenant_id, plan_provider, model_class=model_class
+        )
+        if choose(plans, tenant_id, now, model_class=model_class) is None:
+            return None
+        return SWAP_PLAN_AVAILABLE
+
+    @app.post("/v1/accounts/swap")
+    def swap_account(
+        request: Request,
+        body: AccountSwap,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Move the caller's attempt to another account, in one transaction (S13).
+
+        The answer has the assign route's shape. Swapped: the new account, the
+        new assignment id and the secret NAME. Not swapped -- no other account
+        can take it -- a 200 with the reason and the reset instant, exactly as
+        an assign that found nothing, AND THE CURRENT HOLD UNTOUCHED: the
+        worker falls back to its checkpoint and park and gives it back then.
+
+        A fenced or stale attempt holds nothing and is refused (403) before it
+        learns anything about the pool.
+        """
+        if body.reason not in SWAP_REASONS:
+            raise BrokerValidationError(
+                f"unknown swap reason {body.reason!r}; known: {', '.join(SWAP_REASONS)}"
+            )
+        tenant_id, _data, _hold = _holder(request, authorization, body.account_id, body)
+        provider = _known_provider(body.provider)
+        store = _accounts(request)
+        if body.reason == SWAP_UNUSABLE:
+            # The account being LEFT could not be read by the attempt that was
+            # moved onto it: refused at assignment (archived issue 2302), whatever the move
+            # below finds. Recorded after `_holder`, so only its holder can.
+            store.record_health(
+                body.account_id,
+                HEALTH_ASSIGN_REFUSED,
+                tenant_id=tenant_id,
+                task_id=body.task_id,
+                message="the worker it was moved to could not read its credential",
+            )
+        db = request.app.state.broker.db
+        now = datetime.now(timezone.utc)
+        exclude = {body.account_id, *(a for a in body.exclude if a)}
+        # A swap moves the step to another account of ITS class, never to one
+        # whose plan cannot run it (R5). `_holder` has proved the hold names
+        # this task, so the task id here is the hold's own.
+        #
+        # THE SAME CHAIN AS ASSIGN, minus `exclude` (§5.3): a plan at its
+        # window hands over to a key at the next turn boundary. A move back
+        # (`plan_available`, Q1) walks tier 1 only: never sideways to another
+        # key, and with no plan free the hold stays where it is.
+        profile, model_class = step_for(db, tenant_id, body.task_id)
+        providers = chain_providers(
+            provider,
+            key_tier=body.key_tier and body.reason != SWAP_PLAN_AVAILABLE,
+            secrets=getattr(profile, "secrets", None) if profile is not None else None,
+        )
+        if body.reason == SWAP_PLAN_AVAILABLE:
+            providers = tuple(p for p in providers if not api_key.is_key(p))
+        tiers = chain_tiers(store.list(), tenant_id, providers, model_class)
+
+        def _move(a: Any, _refusals: list[str]) -> Any:
+            try:
+                return swap_hold(
+                    db,
+                    body.account_id,
+                    a.account_id,
+                    assignment_id=body.assignment_id,
+                    tenant_id=tenant_id,
+                    task_id=body.task_id,
+                    attempt_id=body.attempt_id,
+                    reason=body.reason,
+                    now=now,
+                    cost_usd=body.cost_usd,
+                )
+            except HoldNotHeld:
+                request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+                raise BrokerAuthError(
+                    "this caller holds no live hold on that account for that task and attempt"
+                ) from None
+
+        chosen, moved, caps = walk_chain(
+            tiers, tenant_id, now, exclude=exclude, model_class=model_class, take=_move
+        )
+        if chosen is not None:
+            assignment_id, assigned = moved
+            log.info(
+                "moved an attempt to another account",
+                extra={
+                    "from_account_id": body.account_id,
+                    "account_id": chosen.account_id,
+                    "reason": body.reason,
+                    "tenant_id": tenant_id,
+                    "task_id": body.task_id,
+                    "attempt_id": body.attempt_id,
+                    "assigned": assigned,
+                    "tier": tier_of(chosen),
+                },
+            )
+            current = replace(chosen, assigned=assigned, last_assigned_at=now)
+            return {
+                "swapped": True,
+                "from_account_id": body.account_id,
+                "account_id": chosen.account_id,
+                "tier": tier_of(chosen),
+                "assignment_id": assignment_id,
+                "secret": store.secret_for(chosen),
+                "account": account_to_api(current, now=now, viewer=tenant_id),
+                "reason": "",
+                "next_reset_at": None,
+            }
+        why, next_reset = chain_unavailable(
+            tiers, tenant_id, now, exclude=exclude, model_class=model_class
+        )
+        return {
+            "swapped": False,
+            "from_account_id": body.account_id,
+            "account_id": None,
+            "assignment_id": None,
+            "secret": None,
+            "account": None,
+            "tier": None,
+            "reason": why.value,
+            "next_reset_at": next_reset.isoformat() if next_reset else None,
+            "caps": caps,
+        }
+
+    # -- who holds an account, and who held it (archived issue 379) ----------------------
+    #
+    # PLATFORM-ONLY, both of them. They name every tenant's tasks on the
+    # account, which no single tenant may see; the one caller is swarm-api,
+    # which resolves the human's tenant and filters per viewer
+    # (swarm_api/accountholds.py). A worker's token is a tenant's token and is
+    # refused here exactly as `set_hard_max` and the sweep refuse it.
+    #
+    # NEITHER SERVES THE ASSIGNMENT ID. It is what authorises a release, so a
+    # reader holding it could give back somebody else's hold. Nor the secret
+    # name, nor anything else of the account's beyond who owns and borrows it.
+
+    def _platform_only(
+        request: Request,
+        header: str | None,
+        refusal: str = (
+            "only the platform may read an account's holders; they name "
+            "other tenants' work"
+        ),
+    ) -> None:
+        try:
+            _, is_platform = request.app.state.identity.resolve(header)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        if not is_platform:
+            request.app.state.metrics.auth_failures.labels(kind="not_platform").inc()
+            raise BrokerAuthError(refusal)
+
+    def _account_or_refuse(request: Request, account_id: str) -> dict[str, Any]:
+        _accounts(request)  # refuse early if the pool is not configured
+        # RAW, like the release path (archived issue 243): who holds a malformed document is
+        # exactly what an operator repairing it needs to see.
+        data = _raw_account(request.app.state.broker.db, account_id)
+        if data is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        return data
+
+    @app.get("/v1/accounts/{account_id}/holds")
+    def account_holds(
+        request: Request,
+        account_id: str,
+        bearer: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """The LIVE holds on one account, with the task each worker named.
+
+        Expired holds are filtered here with the same `is_expired` the counter
+        uses, so a hold whose worker was killed is not served as a current
+        holder in the minutes before the sweep prunes it.
+        """
+        _platform_only(request, bearer)
+        data = _account_or_refuse(request, account_id)
+        now = datetime.now(timezone.utc)
+        owner = data.get("owner_tenant")
+        lend_to = data.get("lend_to")
+        return {
+            "account_id": account_id,
+            "owner_tenant": owner if isinstance(owner, str) else "",
+            "lend_to": [t for t in lend_to if isinstance(t, str)]
+            if isinstance(lend_to, (list, tuple))
+            else [],
+            "holds": [_hold_to_api(h) for h in _live_holds(data, now)],
+            "observed_at": now.isoformat(),
+        }
+
+    @app.get("/v1/accounts/health")
+    def accounts_health(
+        request: Request,
+        tenant_id: str | None = None,
+        bearer: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Every account's health record in ONE answer (ACCOUNT-HEALTH-PAGE,
+        archived issue 2302): the record `GET /v1/accounts/{id}/health` serves, for each
+        account `tenant_id` may run on -- owned and lent, `may_serve`, the
+        listing's own rule -- or for every account when the platform names no
+        tenant. Each record also carries `owner_tenant`, `lend_to` and `label`,
+        which is what swarm-api decides each account's viewer from.
+
+        One read for the page, not one per account: Capacity › Account health
+        draws every account's lane over 7 days and polls, and a pool of 30
+        would be 30 reads a poll. BOUNDED like the per-account read: each
+        record holds at most `HEALTH_EVENTS_MAX` events and 168 hourly entries,
+        and at most `HEALTH_POOL_ACCOUNTS_MAX` accounts are served
+        (`truncated` says when more were left out).
+
+        PLATFORM-ONLY, for the per-account read's reason: the events name every
+        tenant and task that met an account.
+        """
+        _platform_only(
+            request,
+            bearer,
+            "only the platform may read accounts' health; it names other "
+            "tenants' work",
+        )
+        store = _accounts(request)
+        listing = store.list_reporting()
+        scope = tenant_id or None
+        accounts = [a for a in listing.accounts if scope is None or a.may_serve(scope)]
+        accounts.sort(key=lambda a: a.account_id)
+        served = accounts[:HEALTH_POOL_ACCOUNTS_MAX]
+        records = store.health_many(a.account_id for a in served)
+        now = datetime.now(timezone.utc)
+        return {
+            "tenant_id": scope,
+            "accounts": [
+                {
+                    **health_to_api(a.account_id, a, records.get(a.account_id), now),
+                    "owner_tenant": a.owner_tenant,
+                    "lend_to": list(a.lend_to),
+                    "label": a.label,
+                }
+                for a in served
+            ],
+            "events_max": HEALTH_EVENTS_MAX,
+            "truncated": len(accounts) > len(served),
+            "observed_at": now.isoformat(),
+        }
+
+    @app.get("/v1/accounts/{account_id}/health")
+    def account_health(
+        request: Request,
+        account_id: str,
+        bearer: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """One account's health record (archived issue 2302): counts for the last 1 h / 24 h /
+        7 d by kind, an hourly series for 7 days, the last 50 events newest
+        first, and a one-word status -- `healthy`, `limited`, `erroring` or
+        `reauth_needed`, by the rule in `accountstore.health_status`:
+
+          1. `reauth_needed` when the account is REAUTH_REQUIRED;
+          2. `limited` when a recorded 429 has not reached its reset, or the
+             account's window readings keep it from a new agent;
+          3. `erroring` with 3 or more errors (auth, overloaded, 5xx, network,
+             refused at assignment, refresh failed) in the last hour;
+          4. otherwise `healthy`.
+
+        PLATFORM-ONLY, like the holder reads beside it: the events name every
+        tenant and task that met the account. swarm-api is the one caller; it
+        resolves the human's tenant and filters per viewer.
+        """
+        _platform_only(
+            request,
+            bearer,
+            "only the platform may read an account's health; it names other "
+            "tenants' work",
+        )
+        store = _accounts(request)
+        try:
+            account = store.get(account_id)
+        except MalformedAccountError:
+            # The record is still served: a broken document is exactly the
+            # account whose health an operator wants to read.
+            account = None
+            if _raw_account(request.app.state.broker.db, account_id) is None:
+                raise BrokerValidationError(f"no account {account_id!r}") from None
+        else:
+            if account is None:
+                raise BrokerValidationError(f"no account {account_id!r}")
+        now = datetime.now(timezone.utc)
+        return health_to_api(account_id, account, store.health(account_id), now)
+
+    @app.get("/v1/accounts/{account_id}/holds/history")
+    def account_hold_history(
+        request: Request,
+        account_id: str,
+        start: str | None = Query(default=None, alias="from"),
+        end: str | None = Query(default=None, alias="to"),
+        cursor: str | None = Query(default=None, max_length=80),
+        limit: int = Query(default=HISTORY_PAGE, ge=1, le=HISTORY_PAGE_MAX),
+        bearer: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Recorded spans on one account taken in [from, to), newest first.
+
+        Served from `account_holds`, which the hold transactions write; one
+        query on (account_id ==, assigned_at range, order by assigned_at
+        desc), which is the composite index terraform declares as
+        `account-holds-account-assigned`. A hold from before archived issue 379 has no
+        `assigned_at` and so falls outside every window -- it is not dated, and
+        is not given a date it never had.
+        """
+        _platform_only(request, bearer)
+        _account_or_refuse(request, account_id)
+        now = datetime.now(timezone.utc)
+        until = _instant(end, "to", now) if end else now
+        if start:
+            since = _instant(start, "from", now)
+        else:
+            try:
+                since = until - HISTORY_DEFAULT_SPAN
+            except OverflowError:
+                raise BrokerValidationError("`to` leaves no default window before it") from None
+        if since >= until:
+            raise BrokerValidationError("`from` must be earlier than `to`")
+        if until - since > HOLD_LOG_RETENTION:
+            # No record outlives its TTL, so a longer window can only be a scan
+            # of everything the index holds.
+            raise BrokerValidationError(
+                f"the window `from`..`to` may span at most {HOLD_LOG_RETENTION.days} days"
+            )
+        position = _history_cursor(cursor, now) if cursor else None
+        if position is not None and position[0] >= until:
+            raise BrokerValidationError("the cursor is outside the window")
+
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
+        top = position[0] if position is not None else until
+        skip = position[1] if position is not None else 0
+        query = (
+            request.app.state.broker.db.collection(HOLD_LOG_COLLECTION)
+            .where(filter=FieldFilter("account_id", "==", account_id))
+            .where(filter=FieldFilter("assigned_at", ">=", since))
+            .where(filter=FieldFilter("assigned_at", "<=" if position else "<", top))
+            .order_by("assigned_at", direction="DESCENDING")
+            .limit(limit + skip + 1)
+        )
+        rows = [snap.to_dict() or {} for snap in query.stream()]
+        # The first `skip` rows at the cursor's instant were served on the
+        # previous page. Ties share an instant; skipping by COUNT at that
+        # instant rather than "strictly before it" is what keeps them.
+        rows = rows[skip:]
+        more = len(rows) > limit
+        page = rows[:limit]
+        next_cursor = None
+        if more and page:
+            last = page[-1]["assigned_at"]
+            at_last = sum(1 for r in page if r.get("assigned_at") == last)
+            if position is not None and last == position[0]:
+                at_last += skip
+            next_cursor = f"{_aware_utc(last).isoformat()}|{at_last}"
+        return {
+            "account_id": account_id,
+            "from": since.isoformat(),
+            "to": until.isoformat(),
+            "spans": [_span_to_api(r) for r in page],
+            "next_cursor": next_cursor,
+        }
+
+    @app.post("/v1/holds/release-attempt")
+    def release_fenced_attempt_holds(
+        request: Request,
+        body: AttemptHoldsRelease,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Give back every account hold of one FENCED attempt, now (archived issue 380).
+
+        PLATFORM-ONLY, by the same rule as the sweep and the holders reads: the
+        caller is the reconciler, and it names another tenant's work. A
+        worker's token is refused -- a tenant able to call this could release
+        holds by guessing ids, and the worker's own path is the named,
+        tenant-checked `/v1/accounts/{id}/release`.
+
+        The reconciler calls it only AFTER its fence has committed, so a
+        fence that loses its race (archived issue 372) releases nothing a live worker is
+        still using. Idempotent: a repeat finds nothing and says so.
+        """
+        _platform_only(
+            request,
+            authorization,
+            "only the platform may release another attempt's account holds",
+        )
+        result = _release_attempt_holds_everywhere(
+            request.app.state.broker.db,
+            task_id=body.task_id,
+            attempt_id=body.attempt_id,
+            now=datetime.now(timezone.utc),
+        )
+        if result["released"]:
+            log.warning(
+                "released the account holds of a fenced attempt",
+                extra={
+                    "task_id": body.task_id,
+                    "attempt_id": body.attempt_id,
+                    "released": result["released"],
+                    "accounts": result["accounts"],
+                },
+            )
+        return {"task_id": body.task_id, "attempt_id": body.attempt_id, **result}
+
+    @app.post("/v1/quota/sweep")
+    def sweep(
+        request: Request,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        _, is_platform = request.app.state.identity.resolve(authorization)
+        if not is_platform:
+            request.app.state.metrics.auth_failures.labels(kind="not_platform").inc()
+            raise BrokerAuthError("only the platform may run a quota sweep")
+        result = request.app.state.broker.sweep()
+
+        # THE HOLD BACKSTOP, and it runs on its own -- not inside the refresher
+        # block below, because it has nothing to do with credentials and must
+        # still happen on a deployment that has no refresher configured.
+        #
+        # A worker releases its account on its own exit path, which covers
+        # every orderly exit. It does not cover SIGKILL, an OOM kill, a node
+        # preemption or a Cloud Run task kill. The reconciler releases at the
+        # fences it commits and `ended_holds` below at every ending the
+        # record shows (archived issue 380); an unstamped hold, or one whose documents are
+        # gone, has only this. Without it, `assigned` would drift upward
+        # forever -- and it is `choose()`'s load-spreading tiebreak and the
+        # number an operator reads as "agents on this account", so the pool's
+        # spreading would degrade permanently and silently.
+        account_store = getattr(request.app.state, "account_store", None)
+        if account_store is not None:
+            # Guarded like the two sweeps below and for the same reason -- this
+            # tick is what un-parks throttled tenants, and one unreadable
+            # account document must not stall every tenant's quota recovery.
+            # Its own try block rather than `_sweep_block`, which summarises a
+            # list of refresh outcomes and has nothing to say about holds.
+            try:
+                result["holds"] = _prune_all_holds(
+                    request.app.state.broker.db,
+                    account_store,
+                    datetime.now(timezone.utc),
+                )
+            except Exception as exc:  # pragma: no cover - defence in depth
+                log.error(
+                    "account hold sweep failed",
+                    extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
+                )
+                result["holds"] = {"error": type(exc).__name__}
+            # The holds of attempts that are OVER, ahead of their TTL (archived issue 380):
+            # fenced by anyone, or completed and never released. Its own block
+            # and its own key, so a failure here leaves the TTL backstop above
+            # and its summary exactly as they were.
+            try:
+                result["ended_holds"] = _release_ended_attempt_holds(
+                    request.app.state.broker.db, datetime.now(timezone.utc)
+                )
+            except Exception as exc:  # pragma: no cover - defence in depth
+                log.error(
+                    "ended-attempt hold sweep failed",
+                    extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
+                )
+                result["ended_holds"] = {"error": type(exc).__name__}
+
+        # API KEYS' HOUSEKEEPING (docs/design/llm-providers.md §4.4, §4.5,
+        # §5.2), on this same tick rather than a schedule of its own: the
+        # deleted keys' secrets still owed a destruction, the rotated keys'
+        # superseded versions past their hold TTL, and the hourly probe of
+        # keys marked credit gone (`_claim_probe` keeps it hourly whatever
+        # the tick). Each in its own block, so one failing leaves the others
+        # and the quota recovery above as they were.
+        secrets = getattr(request.app.state, "secret_store", None)
+        if secrets is not None and account_store is not None:
+            db = request.app.state.broker.db
+            now = datetime.now(timezone.utc)
+            for key, run in (
+                ("key_deletions", lambda: finish_owed_key_deletions(db, secrets, now=now)),
+                ("key_rotations", lambda: destroy_superseded_key_versions(db, secrets, now=now)),
+                ("exhausted_probe", lambda: probe_exhausted_keys(
+                    db, account_store, secrets, request.app.state.key_validator, now=now)),
+            ):
+                try:
+                    result[key] = run()
+                except Exception as exc:  # pragma: no cover - defence in depth
+                    log.error(
+                        "an API key housekeeping block failed",
+                        extra={"block": key, "error": type(exc).__name__},
+                    )
+                    result[key] = {"error": type(exc).__name__}
+
+        # The same scheduled tick refreshes subscription credentials, because
+        # this service is the platform's single writer for them -- see
+        # quota_broker.credentials for why more than one writer corrupts a
+        # rotating credential. A refresher is only present when the deployment
+        # has subscription tenants; an API-key-only deployment has none and this
+        # is a no-op.
+        refresher = getattr(request.app.state, "credential_refresher", None)
+        if refresher is not None:
+            # THE CREDENTIAL PHASE RUNS UNDER THE SWEEP LEASE, and only this
+            # phase. See quota_broker.sweeplease for the race it closes. The
+            # quota recompute and the hold backstop above stay outside it on
+            # purpose: both are idempotent, and they are what un-parks
+            # throttled tenants, so a stuck credential sweep must never be able
+            # to delay them.
+            lease = request.app.state.sweep_lease
+            holder = new_holder()
+            try:
+                taken = lease.acquire(holder)
+            except Exception as exc:
+                # FAIL CLOSED. No proof of exclusion, no exchange: skipping one
+                # tick costs five minutes on a token refreshed hours before it
+                # expires, and an unexcluded exchange can cost the token.
+                log.error(
+                    "could not take the sweep lease; skipping the credential phase this tick",
+                    extra={"error": type(exc).__name__, "detail": str(exc)[:200]},
+                )
+                result["sweep_lease"] = {"acquired": False, "error": type(exc).__name__}
+                return result
+            if not taken.acquired:
+                # Not an error: another sweep is doing this work right now --
+                # typically Cloud Scheduler's retry of a tick that is still
+                # running. Answered 200 so the scheduler does not retry this
+                # one as well.
+                log.info(
+                    "another sweep holds the lease; skipping the credential phase this tick",
+                    extra={
+                        "held_by": taken.holder,
+                        "expires_at": taken.expires_at.isoformat() if taken.expires_at else None,
+                    },
+                )
+                result["sweep_lease"] = {
+                    "acquired": False,
+                    "held_by": taken.holder,
+                    "expires_at": taken.expires_at.isoformat() if taken.expires_at else None,
+                }
+                return result
+
+            fence = LeaseFence(lease, holder)
+            outcome = SWEEP_ERROR
+            try:
+                _credential_phase(request, refresher, fence, result)
+                # Recorded on the lease as the sweep's completion (U27), which
+                # is what the Accounts screen reads to say the sweep is alive.
+                failed = any(
+                    isinstance(result.get(block), dict) and "error" in result[block]
+                    for block in ("credentials", "accounts", "usage")
+                )
+                outcome = SWEEP_ERROR if failed else SWEEP_OK
+            finally:
+                released = fence.release(outcome)
+            result["sweep_lease"] = {
+                "acquired": True,
+                "holder": holder,
+                "generation": taken.generation,
+                # True when another sweep took the lease over mid-pass. The
+                # pass stopped before its next exchange, and whatever it had
+                # not reached is the next tick's.
+                "lost": fence.lost,
+                "released": released,
+            }
+        return result
+
+    def _credential_phase(
+        request: Request, refresher: Any, fence: LeaseFence, result: dict[str, Any]
+    ) -> None:
+        """Refresh credentials and poll usage, with `fence` asked before each exchange."""
+        # Credential refresh must never take the quota sweep down with it.
+        # The sweep is what un-parks throttled tenants; if a Secret Manager
+        # permission error could 500 this endpoint, one broken credential
+        # would stall every tenant's quota recovery.
+        # Two sweeps, reported separately. Sharing one try block meant a
+        # bug in either was indistinguishable from a failure of the other,
+        # and the first thing it hid was a missing method on the account
+        # path masking a perfectly good credential result.
+        result["credentials"] = _sweep_block(
+            lambda: refresher.sweep(
+                request.app.state.subscription_tenants(), keep_going=fence
+            ),
+            "subscription credential sweep failed",
+        )
+
+        # Every registered account, whether or not anything is using it.
+        # See quota_broker.accounts.due_for_refresh for why there is no
+        # "in use" filter.
+        #
+        # Its own summariser rather than `_sweep_block`, because this one
+        # WRITES: an account whose refresh token is gone is marked
+        # REAUTH_REQUIRED on its document, which is what stops the retry
+        # loop and what puts the dead account in front of an operator.
+        store = getattr(request.app.state, "account_store", None)
+        if store is None:
+            return
+        result["accounts"] = _sweep_account_pool(
+            refresher, store, datetime.now(timezone.utc), keep_going=fence
+        )
+
+        # Read what each account has LEFT. Separate from the refresh
+        # above and reported separately, for the reason the comment
+        # there gives: sharing a block makes a bug in one
+        # indistinguishable from a failure of the other.
+        #
+        # This is the caller `record_reading` never had. Without it
+        # every account reported full headroom forever, and the assign
+        # floor -- the check that stops an agent starting on an account
+        # with 2% left -- could never fire.
+        #
+        # Budgeted rather than exhaustive: the endpoint allows roughly
+        # five calls per five minutes and shares that with anything else
+        # polling the same accounts. See quota_broker.usagepoll. Under the
+        # lease too, because two concurrent rounds spend that budget twice.
+        poller = getattr(request.app.state, "usage_poller", None)
+        if poller is not None:
+            result["usage"] = _poll_block(
+                lambda: poller.poll_round(store.list(), keep_going=fence),
+                "account usage poll failed",
+            )
+        # IDENTICAL READINGS ON TWO POLLS (archived issue 2222): compared after the poll, so
+        # this round's readings are the ones counted. Every pass, poller or
+        # not, because a worker's reported reading is a reading too.
+        result["possible_duplicates"] = mark_possible_duplicates(store)
+
+    return app
+
+
+def main() -> None:  # pragma: no cover - process entrypoint
+    import uvicorn
+
+    uvicorn.run(
+        "quota_broker.main:create_app",
+        factory=True,
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", "8080")),
+        log_level=os.environ.get("LOG_LEVEL", "info"),
+    )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()
+
+
+__all__ = [
+    "BrokerAuthError",
+    "BrokerMetrics",
+    "BrokerValidationError",
+    "ProviderState",
+    "WorkerIdentity",
+    "acquire_hold",
+    "build_broker",
+    "prune_holds",
+    "release_hold",
+    "set_state_and_moves",
+    "swap_hold",
+    "create_app",
+]

@@ -1,0 +1,1603 @@
+"""The QA target's sign-in, the gate's and the worker's halves (VQ-4; part of archived issue 1933).
+
+docs/design/visual-qa-any-app.md §2.2 to §2.4. The row's red-first tests:
+
+* the password's bytes, URL-encoded and base64 forms reach no agent-bound
+  frame, including a base64 response body;
+* the agent's commands are held during the sign-in, and every password
+  input is cleared before release;
+* an MFA or CAPTCHA page answers `qa_sign_in_challenge` and offers no hand-off;
+* `session_export` excludes the target's origins;
+* `wipe` clears the credential;
+* the worker logs only the target id.
+
+The gate is the real `QaTarget`, `QaTargetGuard`, `SignIn` and `CdpProxy`
+against test_livegate_qa_identity's scripted Chromium, extended with a login
+page whose state the test sets; swarm-api is a recording fake that verifies
+the attempt proof with `swarm_api.qatargets`' own message builder and parses
+the body with its own model. No Chromium, network or cloud credential. Every
+password and username is built at run time from random parts.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import importlib.machinery
+import importlib.util
+import json
+import secrets
+import os
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from urllib.parse import quote, quote_plus
+
+import pytest
+
+from agent_worker import children as children_mod
+from agent_worker import handoff as handoff_mod
+from agent_worker import qa_target
+from agent_worker.hardening import PROTECTED, MemoryProtection
+from agent_worker.livegate import cdpproxy as cdpproxy_mod
+from agent_worker.livegate import ctl as gate_ctl
+from agent_worker.livegate import mask as gate_mask
+from agent_worker.livegate import qatarget as gate_qt
+from agent_worker.livegate.cdppolicy import PolicyPaths
+from agent_worker.livegate.cdpproxy import CdpProxy
+from agent_worker.livegate.session import SessionCarry
+from swarm_api import childkey as api_childkey
+from swarm_api import qaspec as api_qaspec
+from swarm_api import qatargets as api_qt
+
+import test_livegate_qa_identity as qi
+from test_handoff import CDP, COMMAND, CTL, CtlRefused, FakeGateClient, FakeLiveRoutes, _Log
+
+ORIGIN = "https://app.example.com"
+LOGIN_ORIGIN = "https://auth.example.com"
+BASE_URL = f"{ORIGIN}/home"
+
+
+def _target_id() -> str:
+    return "qat_" + secrets.token_hex(8)
+
+
+def _password() -> str:
+    # Spaces, a slash, a plus, an ampersand and a non-ASCII letter: every one
+    # changes under URL encoding. Random in the middle; never one literal.
+    return "p w/" + secrets.token_hex(8) + "+&é"
+
+
+def _username() -> str:
+    return "qa-" + secrets.token_hex(4) + "@example.com"
+
+
+def _args(target_id: str, password: str, username: str | None = None, **over: Any) -> dict[str, Any]:
+    args: dict[str, Any] = {
+        "target_id": target_id, "base_url": BASE_URL, "origins": [ORIGIN, LOGIN_ORIGIN],
+        "environment": "production", "rate": {"navigation_ms": 1000, "requests_per_s": 10},
+        "read_posts": ["/graphql"], "exclusions": {"paths": ["/logout"]}, "mutating": False,
+        "sign_in": {"kind": "own_login", "login_url": f"{LOGIN_ORIGIN}/login", "signed_in_selector": "#account"},
+        "credential": {"username": username or _username(), "password": password},
+    }
+    args.update(over)
+    return args
+
+
+def _forms(password: str) -> list[str]:
+    """What the row names: the bytes, the URL encodings and the base64 encodings."""
+    raw = password.encode()
+    return [password, quote(password, safe=""), quote_plus(password, safe=""),
+            base64.b64encode(raw).decode(), base64.urlsafe_b64encode(raw).decode().rstrip("=")]
+
+
+# --------------------------------------------------------------------------
+# The gate: a login page Chromium
+# --------------------------------------------------------------------------
+
+
+class LoginChromium(qi.FakeChromium):
+    """test_livegate_qa_identity's Chromium, with tabs the gate creates and a
+    login page: `probes` is what the page reads as before the submit, in turn
+    (the last repeats), `after_submit` what it reads as after."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.probes: list[str] = ["form"]
+        self.after_submit = "signed_in"
+        self.submitted = False
+        self.typed: list[tuple[str | None, str]] = []
+        self.on_first_probe: Any = None
+        self.closed: list[str] = []
+        #: A chooser before the form: how many visible controls read each
+        #: start click's text (none when unnamed), the texts clicked in turn,
+        #: and what a click on one does (`on_click`).
+        self.controls: dict[str, int] = {}
+        self.clicked: list[str] = []
+        self.on_click: dict[str, Any] = {}
+        #: What the page reads as, when set: called with whether the gate
+        #: submitted, in place of `probes` and `after_submit`.
+        self.probe_fn: Any = None
+        #: What `_AFTER_CLICK` reads (`moved`, `loading`, `same`), and the
+        #: tab's origin and path (`_WHERE`).
+        self.after_click: Any = "moved"
+        self.where = f"{ORIGIN}/login"
+        #: A fixture page (`_page_node`'s shape), when set: each start click
+        #: runs the gate's own `_START_CLICK` on it under node, and the id of
+        #: each element it clicked is kept in `clicked_ids`.
+        self.page_dom: dict[str, Any] | None = None
+        self.clicked_ids: list[str] = []
+
+    async def send(self, message: dict[str, Any]) -> None:
+        method = message["method"]
+        params = message.get("params", {})
+        session = message.get("sessionId")
+        if method == "Target.createTarget":
+            self.received.append(message)
+            tab = self._next("TAB")
+            self.pages[tab] = params.get("url", "about:blank")
+            self.emit("Target.targetCreated", {"targetInfo": {"targetId": tab, "type": "page"}})
+            self.queue.put_nowait({"id": message["id"], "result": {"targetId": tab}})
+            return
+        if method == "Target.closeTarget":
+            self.received.append(message)
+            self.closed.append(params["targetId"])
+            self.pages.pop(params["targetId"], None)
+            self.queue.put_nowait({"id": message["id"], "result": {"success": True}})
+            return
+        if method == "Runtime.evaluate" and str(params.get("expression", "")).startswith("/*swarm-qa:"):
+            self.received.append(message)
+            op = params["expression"][len("/*swarm-qa:"):].split("*/", 1)[0]
+            if op == "start-click":
+                click = json.loads(params["expression"].rsplit(")(", 1)[1][:-1])
+                if self.page_dom is not None:
+                    count, ids = _on_page(self.page_dom, params["expression"])
+                    self.clicked_ids += ids
+                else:
+                    count = self.controls.get(click["text"], 0)
+                if count == 1:
+                    self.clicked.append(click["text"])
+                    hook = self.on_click.get(click["text"])
+                    if hook is not None:
+                        hook()
+                self.queue.put_nowait({"id": message["id"], "result": {"result": {"value": count}}})
+                return
+            self.queue.put_nowait({"id": message["id"], "result": {"result": {"value": self._page(op)}}})
+            return
+        if method == "Input.insertText":
+            self.typed.append((session, params["text"]))
+        await super().send(message)
+
+    def _page(self, op: str) -> Any:
+        if op == "probe":
+            if self.on_first_probe is not None:
+                hook, self.on_first_probe = self.on_first_probe, None
+                hook()
+            if self.probe_fn is not None:
+                return self.probe_fn(self.submitted)
+            if self.submitted:
+                return self.after_submit
+            return self.probes.pop(0) if len(self.probes) > 1 else self.probes[0]
+        if op == "submit":
+            self.submitted = True
+            return True
+        if op == "clear":
+            return 1
+        if op == "after-click":
+            return self.after_click() if callable(self.after_click) else self.after_click
+        if op == "where":
+            return self.where
+        return True  # focus
+
+    def index(self, predicate: Any) -> list[int]:
+        return [i for i, m in enumerate(self.received) if predicate(m)]
+
+
+class Rig:
+    def __init__(self, tmp: Path) -> None:
+        self.records: list[tuple[str, dict[str, Any]]] = []
+        self.clock = qi.Clock()
+        self.fake = LoginChromium()
+        self.target = gate_qt.QaTarget(self.record, clock=self.clock)
+        self.proxy = CdpProxy(self.fake.send, paths=PolicyPaths(downloads_dir=tmp, uploads_dir=tmp),
+                              record=self.record, qa_target=self.target, qa_sleep=self.sleep,
+                              security_wait_seconds=1.0, wall=self.clock)
+
+    def record(self, event: str, fields: Any) -> None:
+        self.records.append((event, dict(fields)))
+
+    async def sleep(self, seconds: float) -> None:
+        self.clock.now += seconds
+        await asyncio.sleep(0)
+
+    async def sink(self, message: dict[str, Any]) -> None:
+        await self.proxy.on_chromium_message(message)
+
+    async def settle(self) -> None:
+        for _ in range(30):
+            await self.fake.queue.join()
+            await asyncio.sleep(0)
+
+    async def finished(self) -> None:
+        for _ in range(400):
+            await self.settle()
+            if self.target.state in gate_qt.FINAL and not self.proxy._qa_tasks:
+                return
+        raise AssertionError(f"the sign-in never ended: {self.target.status()}")
+
+    def names(self) -> list[str]:
+        return [e for e, _ in self.records]
+
+
+@pytest.fixture
+def tmp() -> Any:
+    path = Path(tempfile.mkdtemp(prefix="qt"))
+    yield path
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def run(body: Any) -> None:
+    asyncio.run(body())
+
+
+def _held_command(conn: Any) -> Any:
+    return lambda m: m["method"] == "Runtime.evaluate" and m.get("sessionId") == conn.browser_session
+
+
+def _is_clear(m: dict[str, Any]) -> bool:
+    """The gate tab's clear, or the return's (`cdpproxy._CLEAR_PASSWORDS`)."""
+    expression = str((m.get("params") or {}).get("expression", ""))
+    return m["method"] == "Runtime.evaluate" and (
+        expression.startswith("/*swarm-qa:clear") or expression == cdpproxy_mod._CLEAR_PASSWORDS)
+
+
+# --------------------------------------------------------------------------
+# The two halves agree
+# --------------------------------------------------------------------------
+
+
+def test_the_worker_speaks_swarm_apis_purpose_and_the_gates_verb():
+    # MUTATION: change qa_target.QA_TARGET_PURPOSE and swarm-api refuses every proof.
+    assert qa_target.QA_TARGET_PURPOSE == api_qt.QA_TARGET_PURPOSE
+    # MUTATION: change qa_target.PROFILE and no QA capture step ever asks for its target.
+    assert qa_target.PROFILE == api_qaspec.CAPTURE_PROFILE
+    # MUTATION: rename livegate.qatarget.OP and the worker's verb is unknown to the gate.
+    assert qa_target.CTL_OP == gate_qt.OP
+    # MUTATION: drop QA_TARGET_OP from handoff.GATE_OPS and Gate.call refuses it.
+    assert qa_target.CTL_OP in handoff_mod.GATE_OPS
+    # MUTATION: drop QA_SIGN_IN_OP from ctl.OPS and the gate answers unknown_op.
+    assert qa_target.CTL_OP in gate_ctl.OPS
+    # MUTATION: change livegate.qatarget.MAX_SIGN_INS and the two halves count differently.
+    assert qa_target.MAX_SIGN_INS == gate_qt.MAX_SIGN_INS == 3
+    # MUTATION: drop a host from CHALLENGE_FRAMES and that CAPTCHA is typed past.
+    assert tuple(gate_qt.CHALLENGE_FRAMES) == tuple(gate_mask.SHOWN_IN_CONTROL)
+
+
+# --------------------------------------------------------------------------
+# The scrub (§2.2 step 5)
+# --------------------------------------------------------------------------
+
+
+def test_the_password_its_url_and_base64_forms_reach_no_agent_bound_frame(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        password, username = _password(), _username()
+        rig.target.handle(_args(_target_id(), password, username))
+        link = qi.FakeLink()
+        conn = await rig.proxy.connect_agent(link)
+        assert conn is not None
+        session = conn.browser_session
+        # "Basic user:password" at each of the three byte alignments the
+        # password can sit at inside a longer base64 text.
+        basics = [base64.b64encode(f"{'u' * pad}{username}:{password}".encode()).decode() for pad in range(3)]
+        assert len({(len(username) + 1 + pad) % 3 for pad in range(3)}) == 3
+        for at, form in enumerate(_forms(password)):
+            rig.fake.emit("Runtime.consoleAPICalled", {"args": [{"value": f"echo {at}: <{form}>"}]}, session)
+        for at, basic in enumerate(basics):
+            rig.fake.emit("Network.requestWillBeSentExtraInfo",
+                          {"requestId": f"N1{at}", "headers": {"Authorization": f"Basic {basic}"}}, session)
+        rig.fake.emit("Network.requestWillBeSent", {"requestId": "N2", "request": {
+            "url": f"{ORIGIN}/login?pw={quote_plus(password)}", "postData": f"password={quote(password, safe='')}",
+            "postDataEntries": [{"bytes": base64.b64encode(f"password={password}".encode()).decode()}]}},
+            session)
+        await rig.settle()
+        # A base64 response body: decoded, scrubbed, re-encoded.
+        reflected = json.dumps({"you_typed": password, "url": quote(password, safe="")}).encode()
+        rig.fake.results["Network.getResponseBody"] = {"body": base64.b64encode(reflected).decode(),
+                                                       "base64Encoded": True}
+        await rig.proxy.on_agent_message(conn, {"id": 7, "method": "Network.getResponseBody",
+                                                "params": {"requestId": "N2"}})
+        await rig.settle()
+        text = json.dumps(link.sent, ensure_ascii=False)
+        for form in _forms(password):
+            # MUTATION: drop a form from qatarget.needles and it reaches the agent here.
+            assert form not in text
+        # MUTATION: drop _aligned_cores from qatarget.needles and the Basic header carries it.
+        assert all(basic not in text for basic in basics) and gate_qt.PLACEHOLDER in text
+        reply = next(m for m in link.sent if m.get("id") == 7)
+        decoded = base64.b64decode(reply["result"]["body"]).decode()
+        # MUTATION: skip QaTarget._scrub_bodies and the decoded body still carries the password.
+        assert password not in decoded and quote(password, safe="") not in decoded
+        assert gate_qt.PLACEHOLDER in decoded
+        entries = next(m for m in link.sent if m.get("method") == "Network.requestWillBeSent")
+        chunk = base64.b64decode(entries["params"]["request"]["postDataEntries"][0]["bytes"]).decode()
+        # MUTATION: skip QaTarget._scrub_entry and the post body chunk carries the password.
+        assert password not in chunk
+        scrubbed = [f for e, f in rig.records if e == "qa_target_scrubbed"]
+        assert scrubbed and all(isinstance(f["count"], int) and f["count"] > 0 for f in scrubbed)
+        # MUTATION: record the matched text in qa_target_scrubbed and this fails.
+        assert password not in json.dumps(rig.records, ensure_ascii=False)
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_base64_body_the_gate_cannot_decode_is_refused_while_a_password_is_held(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.target.handle(_args(_target_id(), _password()))
+        link = qi.FakeLink()
+        conn = await rig.proxy.connect_agent(link)
+        rig.fake.results["Network.getResponseBody"] = {"body": "not base64 !!", "base64Encoded": True}
+        await rig.proxy.on_agent_message(conn, {"id": 8, "method": "Network.getResponseBody",
+                                                "params": {"requestId": "N3"}})
+        await rig.settle()
+        reply = next(m for m in link.sent if m.get("id") == 8)
+        # MUTATION: drop the qa_target_body branch in CdpProxy._on_response and the body is delivered.
+        assert "error" in reply and "result" not in reply
+        await rig.fake.stop()
+
+    run(body)
+
+
+# --------------------------------------------------------------------------
+# The held sign-in (§2.2 steps 3-4)
+# --------------------------------------------------------------------------
+
+
+def test_the_agent_is_held_during_the_sign_in_and_every_password_input_is_cleared_before_release(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        link = qi.FakeLink()
+        conn = await rig.proxy.connect_agent(link)
+        assert conn is not None
+        rig.fake.probes = ["loading", "form"]
+        password, username = _password(), _username()
+
+        def agent_acts() -> None:
+            # The agent sends a command while the gate is on the login page.
+            asyncio.get_running_loop().create_task(rig.proxy.on_agent_message(
+                conn, {"id": 41, "method": "Runtime.evaluate", "params": {"expression": "document.title"}}))
+
+        rig.fake.on_first_probe = agent_acts
+        started = await gate_qt.handle_ctl(rig.target, rig.proxy, _args(_target_id(), password, username))
+        assert started["qa_sign_in"] == "signing_in"
+        await rig.finished()
+        assert rig.target.state == "signed_in" and rig.target.cause is None
+
+        fake = rig.fake
+        (tab,) = fake.closed
+        typed_at = fake.index(lambda m: m["method"] == "Input.insertText")
+        closed_at = fake.index(lambda m: m["method"] == "Target.closeTarget")
+        landed_at = fake.index(lambda m: m["method"] == "Page.navigate" and m["params"]["url"] == BASE_URL)
+        clears = fake.index(_is_clear)
+        (released_at,) = fake.index(_held_command(conn))
+        # The gate typed both fields on its own tab, never the agent's session.
+        assert [t for _, t in fake.typed] == [username, password]
+        assert all(s not in (conn.browser_session, *conn.sessions) for s, _ in fake.typed)
+        # MUTATION: forward agent commands while _qa_signing (skip `pause` in qa_sign_in) and this fails.
+        assert released_at > max(typed_at)
+        # MUTATION: move sign_in.close() after resume() in CdpProxy.qa_sign_in and this fails.
+        assert closed_at and released_at > closed_at[0]
+        # MUTATION: drop _qa_land and the agent's tab is never sent to base_url.
+        assert landed_at and closed_at[0] < landed_at[0] < released_at
+        # The gate's tab cleared before it closed, and the agent's tab before release.
+        before_close = [i for i in clears if i < closed_at[0]]
+        after_close = [i for i in clears if closed_at[0] < i < released_at]
+        # MUTATION: drop the _CLEAR evaluate in SignIn.close and this fails.
+        assert before_close
+        # MUTATION: skip resume()'s password clear (or release before it) and this fails.
+        assert after_close
+        assert not rig.proxy.paused and rig.target.signing_in is False
+        assert any(m.get("id") == 41 for m in link.sent), "the held command is answered after release"
+        assert tab not in fake.pages
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_an_agent_connection_during_the_sign_in_is_told_why_it_waits(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        seen: list[tuple[str, str]] = []
+        rig.fake.on_first_probe = lambda: seen.append(rig.proxy.refusal())
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _args(_target_id(), _password()))
+        await rig.finished()
+        (cause, sentence) = seen[0]
+        # MUTATION: drop the _qa_signing branch in CdpProxy.refusal and the agent reads "hand-off".
+        assert cause == "held_for_qa_sign_in" and "QA target" in sentence
+        await rig.fake.stop()
+
+    run(body)
+
+
+# --------------------------------------------------------------------------
+# MFA and CAPTCHA (§2.4)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("before_submit", [True, False])
+def test_an_mfa_or_captcha_page_answers_qa_sign_in_challenge_and_offers_no_hand_off(tmp, before_submit):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        if before_submit:
+            rig.fake.probes = ["challenge"]
+        else:
+            rig.fake.probes, rig.fake.after_submit = ["form"], "challenge"
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _args(_target_id(), _password()))
+        await rig.finished()
+        status = rig.target.status()
+        # MUTATION: map a "challenge" probe to failed in SignIn.run and this fails.
+        assert status["qa_sign_in"] == "challenge" and status["cause"] == gate_qt.CHALLENGE
+        if before_submit:
+            # MUTATION: type before checking for a challenge and the account is typed into it.
+            assert rig.fake.typed == []
+        # No hand-off: the agent is released, nobody is in control, no person's page was opened.
+        assert not rig.proxy.paused and not rig.proxy.in_control
+        assert not rig.fake.sent("Target.createBrowserContext")
+        # MUTATION: retry after a challenge in SignIn.run and a second submit is pressed.
+        assert len(rig.fake.index(lambda m: str(m["params"].get("expression", "")).startswith(
+            "/*swarm-qa:submit"))) == (0 if before_submit else 1)
+        assert gate_qt.CHALLENGE_SENTENCE.startswith("the target's login asks for MFA or a CAPTCHA")
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_probe_looks_for_a_one_time_code_webauthn_and_every_challenge_frame():
+    probe = gate_qt._PROBE
+    # MUTATION: drop the one-time-code check from _PROBE and an OTP page reads as a form.
+    assert 'one-time-code' in probe
+    # MUTATION: drop the WebAuthn trap and a passkey prompt reads as loading until timeout.
+    assert "__swarmQaWebAuthn" in probe and "__swarmQaWebAuthn" in gate_qt._WEBAUTHN_TRAP
+    for host, path in gate_mask.SHOWN_IN_CONTROL:
+        assert json.dumps(host) in probe and json.dumps(path) in probe
+
+
+def test_a_person_cannot_take_control_while_the_gate_signs_in(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        decisions: list[Any] = []
+
+        def person() -> None:
+            decisions.append(asyncio.get_running_loop().create_task(rig.proxy.take_control("PAGE1")))
+
+        rig.fake.on_first_probe = person
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _args(_target_id(), _password()))
+        await rig.finished()
+        decision = await decisions[0]
+        # MUTATION: drop the _qa_signing check in CdpProxy.take_control and a person drives the login.
+        assert not decision.granted and decision.cause == "qa_sign_in_in_progress"
+        await rig.fake.stop()
+
+    run(body)
+
+
+# --------------------------------------------------------------------------
+# The session carry and the wipe (§2.3)
+# --------------------------------------------------------------------------
+
+
+def test_session_export_and_import_leave_the_targets_origins_out():
+    target = gate_qt.QaTarget(lambda e, f: None)
+    target.handle(_args(_target_id(), _password()))
+    calls: list[tuple[str, Any]] = []
+    jar = {"cookies": [
+        {"name": "app", "value": secrets.token_hex(8), "domain": "app.example.com", "path": "/"},
+        {"name": "auth", "value": secrets.token_hex(8), "domain": "auth.example.com", "path": "/"},
+        {"name": "parent", "value": secrets.token_hex(8), "domain": ".example.com", "path": "/"},
+        {"name": "other", "value": secrets.token_hex(8), "domain": "other.example", "path": "/"},
+    ]}
+    pages = {"targetInfos": [{"targetId": "P1", "type": "page", "url": f"{ORIGIN}/"}]}
+
+    async def call(method: str, params: Any, session: Any) -> dict[str, Any]:
+        calls.append((method, params))
+        if method == "Storage.getCookies":
+            return jar
+        if method == "Target.getTargets":
+            return pages
+        return {}
+
+    async def body() -> None:
+        carry = SessionCarry(call, record=lambda e, f: None, agent_connected=lambda: False,
+                             excluded_origins=target.excluded_origins)
+        exported = await carry.export(park=True)
+        # MUTATION: drop excluded_origins from SessionCarry._excluded_hosts and the target's cookies are carried.
+        assert [c["name"] for c in exported["cookies"]] == ["other"]
+        # MUTATION: skip _excluded_origin for the target and its storage is read and carried.
+        assert exported["origins"] == []
+        assert "Target.attachToTarget" not in [m for m, _ in calls]
+        await carry.import_jar({"v": 1, "cookies": jar["cookies"], "origins": [
+            {"origin": ORIGIN, "localStorage": [["k", "v"]]}]})
+        written = next(p for m, p in calls if m == "Storage.setCookies")
+        assert [c["name"] for c in written["cookies"]] == ["other"]
+
+    run(body)
+
+
+def test_wipe_clears_the_credential_and_refuses_the_verb_from_then_on(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        target_id, password = _target_id(), _password()
+        rig.target.handle(_args(target_id, password))
+        assert rig.target.held
+        rig.target.wipe()
+        # MUTATION: keep _password in QaTarget.wipe and the gate still holds the credential.
+        assert not rig.target.held
+        with pytest.raises(gate_qt.QaTargetRefused):
+            rig.target.credential()
+        assert rig.target.status()["qa_sign_in"] == "wiped"
+        # MUTATION: drop the `wiped` check in QaTarget.handle and a new credential is taken after the wipe.
+        with pytest.raises(gate_qt.QaTargetRefused) as refused:
+            await gate_qt.handle_ctl(rig.target, rig.proxy, _args(target_id, _password()))
+        assert refused.value.code == "wiped"
+        assert password not in json.dumps(rig.records, ensure_ascii=False)
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_verb_refuses_another_target_a_bad_login_origin_and_a_fourth_sign_in():
+    target = gate_qt.QaTarget(lambda e, f: None)
+    first = _target_id()
+    with pytest.raises(gate_qt.QaTargetRefused) as refused:
+        target.handle(_args(first, _password(), sign_in={"kind": "own_login", "login_url": "https://evil.example/x",
+                                                         "signed_in_selector": "#a"}))
+    assert refused.value.code == "login_url"
+    for n in range(3):
+        target.handle(_args(first, _password()))
+        target.finished("signed_in")
+    with pytest.raises(gate_qt.QaTargetRefused) as refused:
+        target.handle(_args(first, _password()))
+    # MUTATION: drop the MAX_SIGN_INS check in QaTarget.handle and a fourth sign-in runs.
+    assert refused.value.code == gate_qt.EXHAUSTED
+    with pytest.raises(gate_qt.QaTargetRefused) as refused:
+        target.handle(_args(_target_id(), _password()))
+    assert refused.value.code == "target_changed"
+
+
+# --------------------------------------------------------------------------
+# The worker
+# --------------------------------------------------------------------------
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.at = 1_800_000_000.0
+
+    def __call__(self) -> float:
+        return self.at
+
+
+class TargetRoutes(FakeLiveRoutes):
+    """swarm-api with `/qa-target`: the proof verified with swarm-api's own
+    message builder, the body parsed with its own model, then the target answered."""
+
+    def __init__(self, db, trace, target_id: str | None, *, own_login: bool = True) -> None:
+        super().__init__(db, trace)
+        self.target_id = target_id
+        self.own_login = own_login
+        self.refuse: Exception | None = None
+        self.issued: list[tuple[str, str]] = []
+
+    def call(self, method, path, *, body=None, headers=None):
+        if not path.endswith("/qa-target"):
+            return super().call(method, path, body=body, headers=headers)
+        headers = dict(headers or {})
+        self.calls.append({"path": path, "body": json.loads(body)})
+        self.trace.append("route:qa-target")
+        message = api_qt.qa_target_message("POST", path, body, headers.get(children_mod.TIMESTAMP_HEADER) or "")
+        proof = headers.get(children_mod.PROOF_HEADER)
+        if not (proof and self.public_key and api_childkey.verify_proof(self.public_key, proof, message)):
+            raise children_mod.ChildApiError(401, "bad_signature", "unproven", retryable=False)
+        parsed = api_qt.QaTargetRequest.model_validate_json(body)
+        assert path == f"/v1/attempts/{parsed.attempt_id}/qa-target"
+        if self.refuse is not None:
+            raise self.refuse
+        if self.target_id is None:
+            return 204, {}
+        sign_in: dict[str, Any] = {"kind": "none"}
+        if self.own_login:
+            username, password = _username(), _password()
+            self.issued.append((username, password))
+            sign_in = {"kind": "own_login", "login_url": f"{LOGIN_ORIGIN}/login", "signed_in_selector": "#account",
+                       "username": username, "password": password}
+        return 200, {"target_id": self.target_id, "revision": 2, "base_url": BASE_URL,
+                     "origins": [ORIGIN, LOGIN_ORIGIN], "environment": "production",
+                     "rate": dict(api_qt.DEFAULT_RATE), "read_posts": [],
+                     "exclusions": {"paths": ["/logout"], "controls": ["delete"]}, "sign_in": sign_in}
+
+    def target_calls(self) -> list[dict[str, Any]]:
+        return [c for c in self.calls if c["path"].endswith("/qa-target")]
+
+
+class TargetGate(FakeGateClient):
+    """The gate, whose `qa_sign_in` is the real `QaTarget.handle`; a poll finds
+    the sign-in ended as `outcome` says."""
+
+    def __init__(self, trace: list[str]) -> None:
+        super().__init__(trace)
+        self.target = gate_qt.QaTarget(lambda e, f: None)
+        self.outcome: tuple[str, str | None] = ("signed_in", None)
+
+    def call(self, op, args):
+        super().call(op, args)
+        if op != gate_qt.OP:
+            return {}
+        if args.get("poll") is True and self.target.state == "signing_in":
+            self.target.finished(*self.outcome)
+        try:
+            return self.target.handle(args)
+        except gate_qt.QaTargetRefused as exc:
+            raise CtlRefused(exc.code) from None
+
+    def handoffs(self) -> list[dict[str, Any]]:
+        return [a for op, a in self.ops if op == gate_qt.OP and not a.get("poll")]
+
+
+class SecretLog(_Log):
+    def __init__(self) -> None:
+        super().__init__()
+        self.secrets: list[str] = []
+
+    def register_secret(self, value):
+        self.secrets.append(value)
+
+
+def _task() -> dict[str, Any]:
+    return {"id": "task_1", "tenant_id": "eng", "state": "RUNNING", "input": {}}
+
+
+def _world(tmp_path: Path, db, *, marked: bool = True, own_login: bool = True, outcome=("signed_in", None),
+           refuse: Exception | None = None, profile: str = "claude-code-browser"):
+    trace: list[str] = []
+    clock = Clock()
+    target_id = _target_id()
+    gate = TargetGate(trace)
+    gate.outcome = outcome
+    routes = TargetRoutes(db, trace, target_id if marked else None, own_login=own_login)
+    routes.refuse = refuse
+    key = children_mod.AttemptKey()
+    routes.public_key = key.public
+    children = SimpleNamespace(_key=key, _api=routes, unavailable=None)
+    cfg = SimpleNamespace(tenant_id="eng", task_id="task_1", attempt_id="att_1", lease_id="lease_1",
+                          generation=3, runner_profile=profile)
+    log = SecretLog()
+    path = handoff_mod.HandoffPath(
+        cfg, logger=log, memory=MemoryProtection(PROTECTED, "test"), children=children, live=True,
+        gate_client=lambda p: gate, environ={"SWARM_GATE_CTL": CTL, "SWARM_CDP_ENDPOINT": CDP}, wall=clock,
+    )
+    path.qa_target._sleep = lambda s: setattr(clock, "at", clock.at + s)
+    path.setup(lambda n: None)
+    db.seed("tasks/task_1", _task())
+    path.start_qa_identity(_task())
+    work = tmp_path / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    env = path.prepare(work)
+    return SimpleNamespace(path=path, routes=routes, gate=gate, work=work, env=env, log=log, clock=clock,
+                           target_id=target_id, trace=trace)
+
+
+def _spool(world) -> Path:
+    return world.work / handoff_mod.SPOOL_DIR_NAME
+
+
+def _everything_readable(world) -> str:
+    parts = [json.dumps(world.env), json.dumps(world.log.lines, default=str, ensure_ascii=False)]
+    for file in _spool(world).rglob("*"):
+        if file.is_file():
+            parts.append(file.read_text())
+    return "\n".join(parts)
+
+
+def test_the_worker_signs_in_before_the_runner_and_logs_only_the_target_id(tmp_path, db):
+    world = _world(tmp_path, db)
+    (call,) = world.routes.target_calls()
+    assert call["body"] == {"tenant_id": "eng", "task_id": "task_1", "attempt_id": "att_1",
+                            "lease_id": "lease_1", "generation": 3}
+    (handed,) = world.gate.handoffs()
+    ((username, password),) = world.routes.issued
+    assert handed["credential"] == {}, "the worker's copy is cleared once the gate answered"
+    assert world.gate.target.credential() == (username, password)
+    assert world.path.qa_target.state == "signed_in"
+    # Gate registered, then swarm-api, then the gate gets the target: all inside prepare.
+    assert world.trace.index("gate:register") < world.trace.index("route:qa-target") \
+        < world.trace.index("gate:qa_sign_in")
+    readable = _everything_readable(world)
+    # MUTATION: log the answer (or the hand-off args) in QaTargetSignIn._ask and this fails.
+    assert password not in readable and username not in readable
+    assert "#account" not in readable, "nor a selector"
+    logged = [kw for _, kw in world.log.lines if kw.get("target_id")]
+    # MUTATION: drop target_id from the "qa target handed to the gate" log line and this fails.
+    assert logged and all(kw["target_id"] == world.target_id for kw in logged)
+    # MUTATION: skip register_secret in QaTargetSignIn._ask and the redaction never learns it.
+    assert world.log.secrets == [password]
+    assert not (_spool(world) / qa_target.NOTICE_NAME).exists()
+
+
+def test_an_attempt_whose_agent_has_no_target_hands_nothing_to_the_gate(tmp_path, db):
+    world = _world(tmp_path, db, marked=False)
+    assert len(world.routes.target_calls()) == 1, "asked once; swarm-api answered 204"
+    # MUTATION: hand a 204 to the gate (or treat it as a failure) in QaTargetSignIn._ask and this fails.
+    assert world.gate.handoffs() == [] and world.path.qa_target.has_target is False
+    assert not (_spool(world) / qa_target.NOTICE_NAME).exists()
+    world.path.tick(world.work, lambda: {})
+    assert len(world.routes.target_calls()) == 1, "never asked again"
+
+
+def test_another_profile_asks_nothing(tmp_path, db):
+    world = _world(tmp_path, db, profile="mock")
+    # MUTATION: drop the PROFILE check in QaTargetSignIn.__init__ and every live attempt asks swarm-api.
+    assert world.routes.target_calls() == [] and world.gate.handoffs() == []
+
+
+def test_a_first_ask_that_says_nothing_of_a_target_writes_no_notice(tmp_path, db):
+    unreachable = children_mod.ChildApiError(None, "api_unavailable", "", retryable=True)
+    world = _world(tmp_path, db, refuse=unreachable)
+    assert world.path.qa_target.cause == qa_target.UNREACHABLE
+    # MUTATION: write the notice whenever the state is failed and an agent with no target is told of one.
+    assert not (_spool(world) / qa_target.NOTICE_NAME).exists()
+
+
+def test_a_refused_target_leaves_the_browser_signed_out_with_a_notice_not_a_failed_task(tmp_path, db):
+    refusal = children_mod.ChildApiError(409, "qa_target_host_pending", "", retryable=False)
+    world = _world(tmp_path, db, refuse=refusal)
+    assert world.gate.handoffs() == [], "nothing reaches the gate"
+    assert world.path.qa_target.cause == "qa_target_host_pending"
+    assert handoff_mod.HANDOFF_ENV in world.env, "the agent still starts: public screens still run"
+    notice = (_spool(world) / qa_target.NOTICE_NAME).read_text()
+    # MUTATION: skip _write_notice in QaTargetSignIn.start and the agent is never told why.
+    assert "qa_target_host_pending" in notice and "swarm-handoff sign-in" in notice
+
+
+def test_a_challenge_notice_names_its_cause_and_offers_neither_a_retry_nor_a_hand_off(tmp_path, db):
+    world = _world(tmp_path, db, outcome=("challenge", gate_qt.CHALLENGE))
+    assert world.path.qa_target.cause == gate_qt.CHALLENGE
+    notice = (_spool(world) / qa_target.NOTICE_NAME).read_text()
+    assert "qa_sign_in_challenge" in notice and "MFA or a CAPTCHA" in notice
+    # MUTATION: offer `swarm-handoff sign-in` after a challenge in qa_target.notice and this fails.
+    assert "swarm-handoff sign-in" not in notice and "never ask for a hand-off" in notice
+
+
+def _load_command() -> Any:
+    loader = importlib.machinery.SourceFileLoader("swarm_handoff_vq4", str(COMMAND))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def _sign_in(world, monkeypatch) -> tuple[int, dict[str, Any]]:
+    """`swarm-handoff sign-in` in a thread while the worker polls."""
+    command = _load_command()
+    monkeypatch.setenv("SWARM_HANDOFF", str(_spool(world)))
+    out: dict[str, Any] = {}
+
+    def agent() -> None:
+        import contextlib
+        import io
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            out["code"] = command.main(["sign-in", "--max-seconds", "10", "--poll", "0.1"])
+        out["answer"] = json.loads(buffer.getvalue().strip().splitlines()[-1])
+
+    thread = threading.Thread(target=agent)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while thread.is_alive() and time.monotonic() < deadline:
+        world.path.tick(world.work, lambda: {})
+        time.sleep(0.05)
+    thread.join(5)
+    return out["code"], out["answer"]
+
+
+def test_swarm_handoff_sign_in_asks_swarm_api_again_and_stops_at_three(tmp_path, db, monkeypatch):
+    world = _world(tmp_path, db)
+    code, answer = _sign_in(world, monkeypatch)
+    # MUTATION: drop `sign-in` from swarm-handoff (or the tick's keep) and the agent cannot sign in again.
+    assert code == 0 and answer["outcome"] == "applied" and answer["signed_in"] is True
+    assert len(world.routes.target_calls()) == 2, "the worker asked swarm-api again"
+    code, _ = _sign_in(world, monkeypatch)
+    assert code == 0 and world.path.qa_target.sign_ins == 3
+    code, answer = _sign_in(world, monkeypatch)
+    # MUTATION: drop the MAX_SIGN_INS check in QaTargetSignIn._answer_requests and a fourth is asked.
+    assert code == 5 and answer["code"] == qa_target.EXHAUSTED
+    assert len(world.routes.target_calls()) == 3
+    assert all(p not in _everything_readable(world) for _, p in world.routes.issued)
+
+
+def test_a_challenge_is_answered_to_swarm_handoff_without_asking_again(tmp_path, db, monkeypatch):
+    world = _world(tmp_path, db, outcome=("challenge", gate_qt.CHALLENGE))
+    code, answer = _sign_in(world, monkeypatch)
+    # MUTATION: re-ask swarm-api after a challenge and the gate types into the MFA page again.
+    assert code == 5 and answer["code"] == gate_qt.CHALLENGE
+    assert len(world.routes.target_calls()) == 1 and len(world.gate.handoffs()) == 1
+
+
+def test_a_public_target_is_handed_over_with_no_credential(tmp_path, db):
+    world = _world(tmp_path, db, own_login=False)
+    (handed,) = world.gate.handoffs()
+    assert "credential" not in handed and handed["sign_in"] == {"kind": "none"}
+    assert world.gate.target.state == "ready" and world.path.qa_target.state == "ready"
+    assert world.log.secrets == []
+
+
+# --------------------------------------------------------------------------
+# Start clicks before the form (§2.2; the owner, 2026-10-23, a peer application's chooser)
+# --------------------------------------------------------------------------
+
+_CHOOSER = [{"text": "Staging", "css": "button"}, {"text": "Sign in"}]
+
+
+def _chooser_args(password: str, username: str | None = None, clicks: Any = None) -> dict[str, Any]:
+    sign_in = {"kind": "own_login", "login_url": f"{ORIGIN}/", "signed_in_selector": "#account",
+               "start_clicks": clicks or _CHOOSER}
+    return _args(_target_id(), password, username, sign_in=sign_in)
+
+
+def _is_start_click(m: dict[str, Any]) -> bool:
+    return str((m.get("params") or {}).get("expression", "")).startswith("/*swarm-qa:start-click")
+
+
+def test_the_start_clicks_happen_in_order_before_the_form_and_the_password_stays_scrubbed(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        link = qi.FakeLink()
+        conn = await rig.proxy.connect_agent(link)
+        assert conn is not None
+        rig.fake.controls = {"Staging": 1, "Sign in": 1}
+        # The form appears only once "Sign in" was clicked (the IdP's page).
+        rig.fake.probes = ["loading"]
+        rig.fake.on_click["Sign in"] = lambda: setattr(rig.fake, "probes", ["form"])
+        password, username = _password(), _username()
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(password, username))
+        # The agent's tab echoes the password while it is held.
+        rig.fake.emit("Runtime.consoleAPICalled", {"args": [{"value": f"<{password}>"}]}, conn.browser_session)
+        await rig.finished()
+        status = rig.target.status()
+        # MUTATION: skip the start-click loop in `SignIn.run` and the form never appears: no_form.
+        assert status["qa_sign_in"] == "signed_in", status
+        # MUTATION: reverse the start clicks (or drop `_parse_start_clicks`) and this fails.
+        assert rig.fake.clicked == ["Staging", "Sign in"]
+        clicks = rig.fake.index(lambda m: _is_start_click(m))
+        typed_at = rig.fake.index(lambda m: m["method"] == "Input.insertText")
+        # MUTATION: run the start clicks after the form steps and this fails.
+        assert clicks and typed_at and max(clicks) < min(typed_at)
+        assert [t for _, t in rig.fake.typed] == [username, password]
+        # The clicks and the typing were the gate's, on its own tab, never the agent's session.
+        assert all(rig.fake.received[i].get("sessionId") not in (conn.browser_session, *conn.sessions)
+                   for i in clicks)
+        await rig.settle()
+        text = json.dumps(link.sent, ensure_ascii=False)
+        for form in _forms(password):
+            # MUTATION: skip QaTarget.scrub for a target with start clicks and the password reaches the agent.
+            assert form not in text
+        assert password not in json.dumps(rig.records, ensure_ascii=False)
+        assert password not in json.dumps(rig.target.status(), ensure_ascii=False)
+        await rig.fake.stop()
+
+    run(body)
+
+
+@pytest.mark.parametrize("count", [0, 2], ids=["missing", "ambiguous"])
+def test_a_missing_or_ambiguous_start_click_ends_the_sign_in_with_a_sentence_naming_it(tmp, count):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {"Staging": 1, "Sign in": count}
+        # The chooser has no form (a page that is already the form skips its clicks).
+        rig.fake.probes = ["loading"]
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password()))
+        await rig.finished()
+        status = rig.target.status()
+        # MUTATION: click the first of several matches (or carry on past a missing one) and this fails.
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.START_CLICK_MISSING
+        assert gate_qt.START_CLICK_MISSING == "qa_sign_in_start_click_missing"
+        # MUTATION: leave `sentence` out of QaTarget.status and the cause names no control.
+        assert "'Sign in'" in status["sentence"]
+        assert rig.fake.clicked == ["Staging"]
+        # Nothing was typed, the gate's tab was closed and the agent released.
+        assert rig.fake.typed == [] and rig.fake.closed and not rig.proxy.paused
+        # MUTATION: wait without a bound (or past START_CLICK_SECONDS) and the clock runs on.
+        assert rig.clock.now - qi.Clock().now <= gate_qt.START_CLICK_SECONDS * 3
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_start_click_toward_an_unapproved_origin_gets_the_left_page_and_no_form(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {"Staging": 1, "Sign in": 1}
+        rig.fake.probes = ["loading"]
+        elsewhere = "https://login." + secrets.token_hex(4) + ".example"
+
+        def leave() -> None:
+            # The click sends the gate's tab to an origin the target was not approved for.
+            guarded = next(sid for sid, s in rig.proxy._qa_guard._sessions.items()
+                           if s.kind == "page" and s.target_id.startswith("TAB"))
+            tab = rig.proxy._qa_guard._sessions[guarded].target_id
+            rig.fake.request(guarded, f"{elsewhere}/auth", frame=tab)
+
+        rig.fake.on_click["Sign in"] = leave
+        password = _password()
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(password))
+        await rig.finished()
+        # MUTATION: let the gate's tab leave the approved origins while signing in (judge) and this fails.
+        assert ("qa_target_left", {"origin": elsewhere}) in rig.records
+        fulfilled = rig.fake.sent("Fetch.fulfillRequest")
+        assert fulfilled and not any(u.startswith(elsewhere) for u, _ in rig.fake.network)
+        assert rig.target.state == "failed" and rig.fake.typed == []
+        assert password not in json.dumps(rig.records, ensure_ascii=False)
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_gate_refuses_a_malformed_start_click_hand_off():
+    target = gate_qt.QaTarget(lambda e, f: None)
+    for clicks in ([{"text": t} for t in "abcd"], [{"text": " padded "}], [{"text": "x", "xpath": "//a"}]):
+        with pytest.raises(gate_qt.QaTargetRefused) as refused:
+            target.handle(_chooser_args(_password(), clicks=clicks))
+        # MUTATION: drop `_parse_start_clicks` from `_parse_sign_in` and a malformed hand-off is taken.
+        assert refused.value.code == "start_clicks"
+
+
+# --------------------------------------------------------------------------
+# Start clicks on fixture pages: only what a person can click counts
+# --------------------------------------------------------------------------
+#
+# A peer application's staging quality-check run of 4 November 2026 (about 21:45 UTC,
+# task_11a0f4181d3245ef8390): the user leg's first capture group ended
+# `qa_sign_in_start_click_missing` on a page reading "Skip to content / Sign
+# in to a peer application / Staging / From your link / Production / Sign in", with
+# two visible elements whose text is exactly 'Sign in'. That cause comes only
+# from the FIRST start click (`SignIn._start_click`): a re-click that names
+# other than one control stops clicking and the sign-in ends
+# `qa_sign_in_no_form`. One match was the button; the other text, such as a
+# span in the heading. The gate's own `_START_CLICK` runs here on fixture
+# pages, under node, in a DOM just large enough for it.
+
+#: A DOM under node for one evaluation: argv[1] the page (`_page_node`'s
+#: shape), argv[2] the expression, argv[3] the page's address. Prints {"value", "clicked": [ids]}.
+_PAGE_PROGRAM = r"""
+const page = JSON.parse(process.argv[1]);
+const clicked = [];
+class El {
+  constructor(spec, parent) {
+    this.tagName = spec.tag.toUpperCase(); this.parentElement = parent;
+    this.attrs = spec.attrs || {}; this.style = spec.style || {};
+    this.parts = (spec.children || []).map((c) => typeof c === 'string' ? c
+      : new (c.tag === 'input' ? HTMLInputElement : El)(c, this));
+    if (this instanceof HTMLInputElement) this.value = this.attrs.value || '';
+  }
+  get hidden() { return this.style.display === 'none' || (this.parentElement && this.parentElement.hidden); }
+  get innerText() {
+    if (this.hidden) return '';
+    return this.parts.map((p) => typeof p === 'string' ? p : (p instanceof HTMLInputElement ? '' : p.innerText))
+      .join('');
+  }
+  getAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attrs, name) ? String(this.attrs[name]) : null; }
+  hasAttribute(name) { return this.getAttribute(name) !== null; }
+  contains(other) { for (let n = other; n; n = n.parentElement) if (n === this) return true; return false; }
+  getClientRects() { return this.hidden ? [] : [{}]; }
+  click() { clicked.push(this.attrs.id || this.tagName.toLowerCase()); }
+  all() { return [this, ...this.parts.filter((p) => typeof p !== 'string').flatMap((p) => p.all())]; }
+}
+class HTMLInputElement extends El {}
+const body = new El(page, null);
+const inherited = (el, key, fallback) => {
+  for (let n = el; n; n = n.parentElement) if (n.style[key] !== undefined) return n.style[key];
+  return fallback;
+};
+globalThis.HTMLInputElement = HTMLInputElement;
+globalThis.getComputedStyle = (el) => ({
+  display: el.style.display || 'inline', visibility: inherited(el, 'visibility', 'visible'),
+  cursor: inherited(el, 'cursor', 'auto'),
+});
+globalThis.window = globalThis;
+globalThis.addEventListener = () => {};
+const at = new URL(process.argv[3] || 'https://app.example.com/');
+globalThis.location = { href: at.href, origin: at.origin, pathname: at.pathname, search: at.search, hash: at.hash };
+// Compound selectors only (a tag, #id, [attr], [attr=v], [attr~=v]), in a
+// comma list: what the gate's probe asks; anything else throws as Chromium does.
+const compile = (sel) => sel.split(',').map((part) => {
+  const s = part.trim();
+  const m = /^([a-z][a-z0-9-]*|\*)?((?:#[A-Za-z0-9_-]+|\[[a-z-]+(?:~?=(?:"[^"]*"|[A-Za-z0-9_-]+))?\])*)$/.exec(s);
+  if (!s || !m || (!m[1] && !m[2])) throw new SyntaxError(sel);
+  const tag = m[1] && m[1] !== '*' ? m[1] : null;
+  const tests = [...m[2].matchAll(/#([A-Za-z0-9_-]+)|\[([a-z-]+)(?:(~?=)(?:"([^"]*)"|([A-Za-z0-9_-]+)))?\]/g)]
+    .map((t) => t[1] !== undefined ? ['id', '=', t[1]] : [t[2], t[3], t[4] !== undefined ? t[4] : t[5]]);
+  return (el) => (!tag || el.tagName.toLowerCase() === tag) && tests.every(([name, op, v]) => {
+    const got = el.getAttribute(name);
+    if (got === null) return false;
+    return !op || (op === '=' ? got === v : got.split(/\s+/).includes(v));
+  });
+});
+globalThis.document = {
+  readyState: 'complete', body, documentElement: body,
+  querySelectorAll(sel) {
+    const all = body.all();
+    if (sel === '*') return all;
+    const tests = compile(sel);
+    return all.filter((el) => tests.some((t) => t(el)));
+  },
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+};
+const value = (0, eval)(process.argv[2]);
+process.stdout.write(JSON.stringify({ value, clicked }));
+"""
+
+
+def _node() -> str:
+    node = shutil.which("node")
+    if node is None:
+        if os.environ.get("CI"):
+            pytest.fail("node is not on PATH in CI, so the start click cannot run on its fixture pages; "
+                        "these must not pass by skipping")
+        pytest.skip("node is not installed here; CI runs the start click on its fixture pages")
+    return node
+
+
+def _on_page(page: dict[str, Any], expression: str, url: str = f"{ORIGIN}/") -> tuple[Any, list[str]]:
+    """The gate's expression evaluated on the fixture page at `url`: its value and the ids it clicked."""
+    done = subprocess.run([_node(), "-e", _PAGE_PROGRAM, json.dumps(page), expression, url],
+                          capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    return out["value"], out["clicked"]
+
+
+def _page_node(tag: str, *children: Any, **attrs: Any) -> dict[str, Any]:
+    style = attrs.pop("style", {})
+    return {"tag": tag, "attrs": attrs, "style": style, "children": list(children)}
+
+
+def _chooser_page(*sign_in: dict[str, Any]) -> dict[str, Any]:
+    """A peer application's chooser as the failing group's page read: a skip link,
+    the heading with its own 'Sign in' span, the environments, and `sign_in`."""
+    return _page_node(
+        "body",
+        _page_node("a", "Skip to content", href="#main", id="skip"),
+        _page_node("h1", _page_node("span", "Sign in", id="heading-span"), " to a peer application", id="heading"),
+        _page_node("div", _page_node("button", "Staging", id="staging"),
+                   _page_node("span", "From your link"), _page_node("button", "Production", id="production")),
+        *sign_in,
+    )
+
+
+def _start_click(page: dict[str, Any], text: str = "Sign in", css: str | None = None) -> tuple[Any, list[str]]:
+    return _on_page(page, gate_qt._js(gate_qt._START_CLICK, {"text": text, "css": css, "now": False}))
+
+
+async def _sign_in_on(rig: Rig, page: dict[str, Any]) -> dict[str, Any]:
+    rig.fake.start(rig.sink)
+    rig.fake.page_dom = page
+    rig.fake.probes = ["loading"]
+    rig.fake.on_click["Sign in"] = lambda: setattr(rig.fake, "probes", ["form"])
+    await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+    await rig.finished()
+    return rig.target.status()
+
+
+def test_the_heading_span_reading_sign_in_is_text_and_the_sign_in_button_is_clicked(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        page = _chooser_page(_page_node("button", "Sign in", id="sign-in"))
+        status = await _sign_in_on(rig, page)
+        # MUTATION: count every exact-text match (drop `clickable` from `_START_CLICK`) and the
+        # heading's span makes two: the sign-in ends qa_sign_in_start_click_missing, as on staging.
+        assert status["qa_sign_in"] == "signed_in", status
+        assert rig.fake.clicked_ids == ["staging", "sign-in"]
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_two_sign_in_buttons_refuse_and_the_sentence_names_both(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        page = _chooser_page(_page_node("button", "Sign in", id="one"),
+                             _page_node("div", "Sign in", role="button", tabindex="0", id="two"))
+        status = await _sign_in_on(rig, page)
+        # MUTATION: click the first clickable match of several and this signs in.
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.START_CLICK_MISSING
+        assert rig.fake.clicked_ids == ["staging"]
+        # MUTATION: leave `named` out of the refusal and the sentence names no element.
+        assert ("start click 'Sign in' found 2 visible controls a person can click with exactly that text "
+                "(button, div (role button))") in status["sentence"], status["sentence"]
+        assert rig.fake.typed == [] and rig.fake.closed and not rig.proxy.paused
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_sign_in_link_with_an_href_is_clicked(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        page = _chooser_page(_page_node("a", _page_node("span", "Sign in"), href="/login", id="sign-in-link"))
+        status = await _sign_in_on(rig, page)
+        assert status["qa_sign_in"] == "signed_in", status
+        # The span inside the link matched; the link, the control around it, was clicked.
+        assert rig.fake.clicked_ids == ["staging", "sign-in-link"]
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_re_click_also_passes_over_the_heading_span_and_clicks_the_button_again(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.page_dom = _chooser_page(_page_node("button", "Sign in", id="sign-in"))
+        presses: list[float] = []
+        rig.fake.on_click["Sign in"] = lambda: presses.append(rig.clock.now)
+        # The first press landed before the page's script ran: nothing happened.
+        rig.fake.after_click = lambda: "moved" if len(presses) >= 2 else "same"
+        rig.fake.probe_fn = lambda submitted: "signed_in" if submitted else (
+            "form" if len(presses) >= 2 else "loading")
+        rig.fake.start(rig.sink)
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+        await rig.finished()
+        status = rig.target.status()
+        # MUTATION: count every exact-text match and the first click already refuses; with the
+        # first click alone fixed, the re-click names two and the sign-in ends qa_sign_in_no_form.
+        assert status["qa_sign_in"] == "signed_in", status
+        assert rig.fake.clicked_ids == ["staging", "sign-in", "staging", "sign-in"]
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_what_counts_as_a_control_a_person_can_click():
+    def heading_and(control: dict[str, Any]) -> dict[str, Any]:
+        return _page_node("body", _page_node("h1", _page_node("span", "Sign in"), " to a peer application"), control)
+
+    clicked = [
+        _page_node("button", _page_node("span", "Sign in"), id="x"),
+        _page_node("a", "Sign in", href="/login", id="x"),
+        _page_node("input", type="submit", value="Sign in", id="x"),
+        _page_node("input", type="BUTTON", value="Sign in", id="x"),
+        _page_node("span", "Sign in", role="link", id="x"),
+        _page_node("summary", "Sign in", id="x"),
+        _page_node("div", "Sign in", tabindex="0", id="x"),
+        _page_node("div", "Sign in", style={"cursor": "pointer"}, id="x"),
+    ]
+    for control in clicked:
+        value, ids = _start_click(heading_and(control))
+        # MUTATION: drop any one kind from `operable` (or the cursor fallback) and its page refuses.
+        assert (value, ids) == (1, ["x"]), control
+    # Not a control: an `a` without an href, a negative tabindex, an input of another type.
+    for plain in (_page_node("a", "Sign in"), _page_node("div", "Sign in", tabindex="-1"),
+                  _page_node("input", type="text", value="Sign in")):
+        value, ids = _start_click(heading_and(plain))
+        assert ids == [] and value["count"] == 2 and value["clickable"] == 0, plain
+        assert [m["tag"] for m in value["matched"]] == ["span", plain["tag"]]
+    # One plain match and nothing clickable is still clicked, as before.
+    assert _start_click(_page_node("body", _page_node("span", "Sign in", id="x"))) == (1, ["x"])
+    # A hidden button is not shown, so the shown one is the one control.
+    page = _page_node("body", _page_node("button", "Sign in", style={"display": "none"}),
+                      _page_node("button", "Sign in", id="x"))
+    assert _start_click(page) == (1, ["x"])
+    # `css` still narrows the candidates.
+    page = _page_node("body", _page_node("button", "Sign in", id="x"), _page_node("a", "Sign in", href="/"))
+    assert _start_click(page, css="button") == (1, ["x"])
+
+
+def test_a_click_with_css_finds_its_control_by_the_css_alone():
+    page = _page_node("body", _page_node("button", "Continue to the app", id="x"),
+                      _page_node("button", "Sign in", id="other"))
+    # MUTATION: require the text to match as well as the css and this finds nothing (0).
+    assert _start_click(page, text="Sign in", css="#x") == (1, ["x"])
+    # Among what the css selects, one reading the text is still the one clicked.
+    assert _start_click(page, text="Sign in", css="button") == (1, ["other"])
+    # The css alone still refuses an ambiguous match.
+    value, ids = _start_click(page, text="Proceed", css="button")
+    assert ids == [] and value["count"] == 2 and value["clickable"] == 2
+
+
+def test_a_text_click_matches_a_control_whose_text_starts_with_it_and_then_a_badge():
+    page = _page_node("body", _page_node("h1", "Welcome back"),
+                      _page_node("button", "Continue ", _page_node("span", "From your link"), id="x"))
+    # MUTATION: match only the whole trimmed text and this finds nothing (0).
+    assert _start_click(page, text="Continue") == (1, ["x"])
+    # The exact text still matches.
+    page = _page_node("body", _page_node("button", "Continue", id="x"))
+    assert _start_click(page, text="Continue") == (1, ["x"])
+    # The words in the middle of a control's text are not a match, nor are they without a space after.
+    for words in ("Please Continue", "Please Continue now", "Continued"):
+        assert _start_click(_page_node("body", _page_node("button", words, id="x")), text="Continue") == (0, [])
+    # Two controls starting with the words are refused, as two exact matches are.
+    page = _page_node("body", _page_node("button", "Continue", id="one"),
+                      _page_node("button", "Continue ", _page_node("span", "From your link"), id="two"))
+    value, ids = _start_click(page, text="Continue")
+    assert ids == [] and value["count"] == 2 and value["clickable"] == 2
+
+
+def test_a_start_click_naming_no_control_still_ends_start_click_missing(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        page = _page_node("body", _page_node("button", "Staging", id="staging"),
+                          _page_node("button", "Please Sign in now", id="x"))
+        status = await _sign_in_on(rig, page)
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.START_CLICK_MISSING
+        assert status["cause"] == "qa_sign_in_start_click_missing"
+        assert rig.fake.clicked_ids == ["staging"]
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_refusal_names_at_most_three_matches_by_tag_and_role_in_plain_characters():
+    page = _page_node("body", *[_page_node("button", "Sign in", role=f"link\t'x{i}") for i in range(5)])
+    value, ids = _start_click(page)
+    assert ids == [] and value["count"] == 5 and value["clickable"] == 5 and len(value["matched"]) == 3
+    sentence = gate_qt._start_click_sentence("Sign in", value, 15)
+    assert sentence == ("the sign-in's start click 'Sign in' found 5 visible controls a person can click with "
+                        "exactly that text (button (role link), button (role link), button (role link)) in 15 s, "
+                        "and the gate clicks only when exactly one is a control a person can click")
+    # What the page sets is cut to letters, digits and hyphens before a sentence says it.
+    odd = {"count": 2, "clickable": 2, "matched": [{"tag": "BUT TON`", "role": "x'y\n" + "z" * 40}, {"tag": ""}]}
+    said = gate_qt._start_click_sentence("Sign in", odd, 15)
+    assert f"(button (role xy{'z' * 22}))" in said and "`" not in said and "\n" not in said
+
+
+# --------------------------------------------------------------------------
+# A role's own home, already signed in, with no login form (part of archived issue 2688)
+# --------------------------------------------------------------------------
+#
+# A peer application's staging quality-check run of 4 November 2026 (re-run 4, 21:52
+# to 22:05 UTC): the reviewer and moderator legs ended `qa_sign_in_no_form`
+# on every capture group while the agent's own tab was signed in. The gate's
+# start click 'Sign in' went to the identity provider, whose session was
+# alive, and it sent the tab straight back to the account's own home: the
+# reviewer's /access-pending ('Staging Signed in', 'Welcome, QA', My queue)
+# and the moderator's / (a 'Staff only' wall on most screens). Neither page
+# draws the target's signed_in_selector, which the five other roles' homes
+# do, and neither is a login form, so `_wait_form` read "loading" until
+# FORM_SECONDS ran out. The gate now takes such a page as signed in only on
+# the page's own evidence: no password or username field, no start-click
+# control, the target's own origin, and an HttpOnly cookie on an approved
+# origin that the sign-in set or changed. Without that cookie the sentence
+# says the page lacks signed_in_selector instead of "no form".
+
+#: The cookie a sign-in sets: HttpOnly, on the target's own origin.
+def _session_cookie(name: str = "app_session") -> dict[str, Any]:
+    return {"name": name, "value": secrets.token_hex(16), "domain": "app.example.com", "path": "/",
+            "httpOnly": True, "secure": True}
+
+
+def _rating_bar(name: str, *order: str) -> dict[str, Any]:
+    """The bar every page of re-run 4 drew (capture-g1's a11y snapshots):
+    one button per environment, the pressed one reading 'Signed in' and the
+    other 'Sign in', each a span inside its button. The buttons show a
+    pointer, so the spans inherit it."""
+    status = {"Staging": "Signed in", "Production": "Sign in"}
+    buttons = [_page_node("button", _page_node("span", env), _page_node("span", status[env]),
+                          style={"cursor": "pointer"}, id=f"bar-{env.lower()}",
+                          **({"aria-pressed": "true"} if env == "Staging" else {}))
+               for env in order]
+    return _page_node("div", _page_node("div", _page_node("div", *buttons, role="group", **{"aria-label": name}),
+                                        role="status"),
+                      role="region", **{"aria-label": f"{name} bar"})
+
+
+def _reviewer_home() -> dict[str, Any]:
+    """The reviewer's /access-pending as capture-g1 recorded it
+    (task_c8ed1edefa524a63843d, access-pending--desktop--light)."""
+    return _page_node(
+        "body",
+        _page_node("a", "Skip to content", href="#main-content"),
+        _page_node("aside", _page_node("nav", _page_node("a", "A peer application", href="/"), _page_node("a", "Home", href="/"),
+                                       _page_node("a", "My queue", href="/rating/queue"),
+                                       _page_node("button", "QR", **{"aria-label": "QR, Account"}))),
+        _rating_bar("Where you are rating", "Staging", "Production"),
+        _page_node("main", _page_node("h1", "Hi QA"), _page_node("button", "Sign out"),
+                   _page_node("h2", "Welcome, QA"), _page_node("h2", "Assignments"),
+                   _page_node("p", "No work assigned yet — it will show up here."),
+                   _page_node("h2", "Progress"), _page_node("h2", "Your ratings")),
+    )
+
+
+def _staff_wall() -> dict[str, Any]:
+    """The reviewer's wall on 14 of 16 routes (capture-g1, -g6, -g7, -g8)."""
+    return _page_node(
+        "body",
+        _page_node("a", "Skip to content", href="#main-content"),
+        _page_node("aside", _page_node("nav", _page_node("a", "Home", href="/"),
+                                       _page_node("a", "My queue", href="/rating/queue"))),
+        _rating_bar("Where you are rating", "Staging", "Production"),
+        _page_node("main", _page_node("p", "This page is for staff."), _page_node("p", "Your work is in My queue."),
+                   _page_node("a", "Open My queue", href="/rating/queue")),
+    )
+
+
+def _moderator_wall() -> dict[str, Any]:
+    """The moderator's 'Staff only' wall (task_7386f88e8e3c47f6a0cb, agents--desktop--light):
+    its bar draws Production first."""
+    return _page_node(
+        "body",
+        _page_node("aside", _page_node("nav", _page_node("a", "Moderation", href="/moderation"),
+                                       _page_node("a", "My flags", href="/moderation/flags"))),
+        _rating_bar("Where you moderate", "Production", "Staging"),
+        _page_node("main", _page_node("h1", "Staff only"), _page_node("a", "Back to Moderation", href="/moderation")),
+    )
+
+
+def _probe(page: dict[str, Any], url: str = f"{ORIGIN}/access-pending", *,
+           marks: Any = ({"text": "Sign in"},), signed: str | None = "#account") -> Any:
+    """The gate's before-submit probe, with the argument `SignIn` gives it, on a fixture page."""
+    argument = {"signed": signed, "user": None, "pass": None, "home": ORIGIN, "marks": list(marks)}
+    return _on_page(page, gate_qt._js(gate_qt._PROBE, argument), url)[0]
+
+
+def test_a_roles_signed_in_home_without_the_selector_reads_as_landed_and_the_start_page_does_not():
+    # MUTATION: return 'loading' for every page that is not the form before the submit and these fail.
+    # MUTATION: count the bar's 'ProductionSign in' button's span as a start-click control (drop
+    # `another` from `_CONTROLS`) and every page of the run reads 'loading', as re-run 4 did.
+    assert _probe(_reviewer_home()) == "landed"
+    assert _probe(_staff_wall(), f"{ORIGIN}/agents") == "landed"
+    assert _probe(_moderator_wall(), f"{ORIGIN}/") == "landed"
+    # The bar's 'Signed in' is not the mark either: a leg whose last click were 'Staging' still lands.
+    assert _probe(_reviewer_home(), marks=({"text": "Staging"},)) == "landed"
+    # The selector, where the page draws it, is still the first answer.
+    home = _reviewer_home()
+    home["children"].append(_page_node("div", "QA", id="account"))
+    assert _probe(home) == "signed_in"
+    # The signed-out start page shows the last start click's control: never landed.
+    assert _probe(_chooser_page(_page_node("button", "Sign in", id="sign-in")), f"{ORIGIN}/") == "loading"
+    # A heading reading 'Sign in' alone is still a sign-in marker (the chooser before its button draws).
+    assert _probe(_chooser_page(), f"{ORIGIN}/") == "loading"
+    # A start page that also draws the bar is still the start page: its own button is the mark.
+    chooser = _chooser_page(_page_node("button", "Sign in", id="sign-in"))
+    chooser["children"].insert(1, _rating_bar("Where you are rating", "Staging", "Production"))
+    assert _probe(chooser, f"{ORIGIN}/") == "loading"
+    # A password field, or a username field, is a login page however the rest reads.
+    for field in (_page_node("input", type="password"), _page_node("input", type="email"),
+                  _page_node("input", autocomplete="username")):
+        page = _reviewer_home()
+        page["children"].append(field)
+        assert _probe(page) == "loading", field
+    # Another origin (the identity provider's page), or an OAuth callback still in the address, is not landed.
+    assert _probe(_reviewer_home(), f"{LOGIN_ORIGIN}/realms/x") == "loading"
+    assert _probe(_reviewer_home(), f"{ORIGIN}/callback?code=x&state=y") == "loading"
+    # An empty page has not drawn itself.
+    assert _probe(_page_node("body"), f"{ORIGIN}/") == "loading"
+
+
+async def _landed_rig(tmp: Path, *, before: list[dict[str, Any]], after: list[dict[str, Any]],
+                      click_lands: bool = True, controls: dict[str, int] | None = None) -> Rig:
+    """A chooser whose 'Sign in' (when `click_lands`) returns the tab to a
+    role's home that reads `landed`; `before` and `after` are the cookies
+    `Network.getCookies` answers before and after the click."""
+    rig = Rig(tmp)
+    rig.fake.start(rig.sink)
+    rig.fake.controls = {"Staging": 1, "Sign in": 1} if controls is None else controls
+    rig.fake.results["Network.getCookies"] = {"cookies": before}
+    rig.fake.probes = ["loading"] if click_lands else ["landed"]
+
+    def land() -> None:
+        rig.fake.probes = ["landed"]
+        rig.fake.results["Network.getCookies"] = {"cookies": after}
+        rig.fake.where = f"{ORIGIN}/access-pending"
+
+    rig.fake.on_click["Sign in"] = land
+    await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+    await rig.finished()
+    return rig
+
+
+def test_a_start_click_that_lands_on_the_roles_home_with_a_new_session_cookie_is_signed_in(tmp):
+    async def body() -> None:
+        rig = await _landed_rig(tmp, before=[], after=[_session_cookie()])
+        status = rig.target.status()
+        # MUTATION: drop the landed branch of `_wait_form` and this ends qa_sign_in_no_form.
+        assert status["qa_sign_in"] == "signed_in", status
+        assert rig.fake.clicked == ["Staging", "Sign in"] and rig.fake.typed == []
+        # The cookies were read on the gate's own tab, for the target's approved origins.
+        reads = [m for m in rig.fake.received if m["method"] == "Network.getCookies"]
+        assert len(reads) >= 2 and all(m.get("sessionId") for m in reads)
+        assert reads[0]["params"]["urls"] == [f"{ORIGIN}/", f"{LOGIN_ORIGIN}/"]
+        # Nothing of a cookie's value is recorded.
+        cookie_values = [c["value"] for c in rig.fake.results["Network.getCookies"]["cookies"]]
+        assert not any(v in json.dumps(rig.records) for v in cookie_values)
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_changed_session_cookie_counts_and_an_unchanged_one_does_not(tmp):
+    async def body() -> None:
+        kept = _session_cookie()
+        refreshed = dict(kept, value=secrets.token_hex(16))
+        rig = await _landed_rig(tmp, before=[kept], after=[refreshed])
+        assert rig.target.status()["qa_sign_in"] == "signed_in"
+        await rig.fake.stop()
+        rig = await _landed_rig(tmp, before=[kept], after=[kept])
+        status = rig.target.status()
+        # MUTATION: count a cookie that was already there and the leg is signed in on a guess.
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.NO_FORM
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_only_an_httponly_cookie_other_than_the_bypass_is_a_sign_ins_evidence(tmp):
+    async def body() -> None:
+        # A preference a script set (the environment toggle) is not a session.
+        scripted = dict(_session_cookie("env"), httpOnly=False)
+        rig = await _landed_rig(tmp, before=[], after=[scripted])
+        # MUTATION: take any new cookie as the session and this is signed in.
+        assert rig.target.status()["qa_sign_in"] == "failed"
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_gates_own_bypass_cookie_is_never_a_sign_ins_evidence(tmp):
+    async def body() -> None:
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {"Staging": 1, "Sign in": 1}
+        rig.fake.results["Network.getCookies"] = {"cookies": []}
+        rig.fake.probes = ["loading"]
+        bypass = {"kind": "cookie", "name": "qa_pass", "value": secrets.token_hex(12)}
+
+        def land() -> None:
+            rig.fake.probes = ["landed"]
+            rig.fake.results["Network.getCookies"] = {"cookies": [dict(_session_cookie("qa_pass"))]}
+
+        rig.fake.on_click["Sign in"] = land
+        args = _chooser_args(_password(), _username())
+        args["challenge_bypass"] = bypass
+        await gate_qt.handle_ctl(rig.target, rig.proxy, args)
+        await rig.finished()
+        # MUTATION: leave the bypass cookie's name in the evidence and this is signed in.
+        assert rig.target.status()["qa_sign_in"] == "failed"
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_landed_page_without_evidence_says_signed_in_selector_is_missing_not_no_form(tmp):
+    async def body() -> None:
+        rig = await _landed_rig(tmp, before=[], after=[])
+        status = rig.target.status()
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.NO_FORM
+        sentence = status["sentence"]
+        # MUTATION: keep the "login form never appeared" sentence for a landed page and this fails.
+        assert "never appeared" not in sentence
+        assert "signed_in_selector" in sentence and f"{ORIGIN}/access-pending" in sentence
+        assert "no login form and no start-click control" in sentence
+        # The worker takes it as its one plain line, under its 400 characters.
+        assert qa_target._SENTENCE.fullmatch(sentence), sentence
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_role_home_before_any_start_click_is_signed_in_only_with_evidence_and_else_said(tmp):
+    async def body() -> None:
+        # The session was alive before the gate's tab opened: login_url sends
+        # it straight to the role's home, where no 'Sign in' control exists.
+        # Opening login_url refreshed the session's cookie: signed in, no click.
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {}
+        before = _session_cookie()
+        rig.fake.results["Network.getCookies"] = {"cookies": [before]}
+        rig.fake.probes = ["landed"]
+        rig.fake.on_first_probe = lambda: rig.fake.results.__setitem__(
+            "Network.getCookies", {"cookies": [dict(before, value=secrets.token_hex(16))]})
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+        await rig.finished()
+        # MUTATION: drop the landed branch of `_start_click` and this ends qa_sign_in_start_click_missing.
+        assert rig.target.status()["qa_sign_in"] == "signed_in", rig.target.status()
+        assert rig.fake.clicked == [] and rig.fake.typed == []
+        await rig.fake.stop()
+        # The same page with the cookie untouched: failed, and the sentence says why.
+        rig = await _landed_rig(tmp, before=[before], after=[before], click_lands=False, controls={})
+        status = rig.target.status()
+        assert status["qa_sign_in"] == "failed" and status["cause"] == gate_qt.START_CLICK_MISSING
+        # MUTATION: keep the start click's "found none" sentence for a landed page and this fails.
+        assert "signed_in_selector" in status["sentence"] and "found none" not in status["sentence"]
+        assert qa_target._SENTENCE.fullmatch(status["sentence"])
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_bars_environment_buttons_are_never_a_start_click_and_never_the_start_page():
+    # Re-run 4's pages: the leg's start clicks are 'Staging' then 'Sign in', and each reads as a
+    # span inside the bar's 'StagingSigned in' or 'ProductionSign in' button.
+    for page in (_reviewer_home(), _staff_wall(), _moderator_wall()):
+        for text in ("Staging", "Sign in"):
+            # MUTATION: drop `another` from `_CONTROLS` and the gate presses the bar's button.
+            assert _start_click(page, text) == (0, []), (text, page["children"][-1])
+    # On a start page that also draws the bar, the chooser's own controls are still the ones clicked.
+    chooser = _chooser_page(_page_node("button", "Sign in", id="sign-in"))
+    chooser["children"].insert(1, _rating_bar("Where you are rating", "Staging", "Production"))
+    assert _start_click(chooser, "Staging") == (1, ["staging"])
+    assert _start_click(chooser) == (1, ["sign-in"])
+    # After the submit, the role's home is the app, not back on the start page.
+    argument = {"signed": "#account", "user": None, "pass": None, "after": True, "home": ORIGIN,
+                "chooser": {"text": "Sign in"}}
+    assert _on_page(_reviewer_home(), gate_qt._js(gate_qt._PROBE, argument), f"{ORIGIN}/access-pending")[0] == "app"
+    assert _on_page(chooser, gate_qt._js(gate_qt._PROBE, argument), f"{ORIGIN}/")[0] == "chooser"
+
+
+def test_the_reviewers_home_as_recorded_is_signed_in_without_pressing_the_bar(tmp):
+    async def body() -> None:
+        # The run's page itself: the session held before the gate's tab opened, and opening
+        # login_url renewed its cookie. The leg's last click, 'Sign in', finds nothing and presses
+        # nothing (its 'Staging' click names `css` "button", which no bar button reads alone).
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.page_dom = _reviewer_home()
+        before = _session_cookie()
+        rig.fake.results["Network.getCookies"] = {"cookies": [before]}
+        rig.fake.probes = ["landed"]
+        rig.fake.on_first_probe = lambda: rig.fake.results.__setitem__(
+            "Network.getCookies", {"cookies": [dict(before, value=secrets.token_hex(16))]})
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username(), [{"text": "Sign in"}]))
+        await rig.finished()
+        assert rig.target.status()["qa_sign_in"] == "signed_in", rig.target.status()
+        # MUTATION: drop `another` from `_CONTROLS` and the bar's Staging button is pressed.
+        assert rig.fake.clicked_ids == [] and rig.fake.typed == []
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_a_cookie_read_the_browser_refuses_is_no_evidence(tmp):
+    async def body() -> None:
+        # An answer that is not a cookie list, before and after the click.
+        rig = Rig(tmp)
+        rig.fake.start(rig.sink)
+        rig.fake.controls = {"Staging": 1, "Sign in": 1}
+        rig.fake.results["Network.getCookies"] = {"cookies": "none"}
+        rig.fake.probes = ["loading"]
+        rig.fake.on_click["Sign in"] = lambda: setattr(rig.fake, "probes", ["landed"])
+        await gate_qt.handle_ctl(rig.target, rig.proxy, _chooser_args(_password(), _username()))
+        await rig.finished()
+        # MUTATION: treat an unreadable jar as empty-then-full and this is signed in.
+        assert rig.target.status()["qa_sign_in"] == "failed"
+        await rig.fake.stop()
+
+    run(body)
+
+
+def test_the_landed_sentence_fits_the_workers_line_at_the_longest_address():
+    class Where:
+        async def call(self, method: str, params: Any = None, session: Any = None) -> Any:
+            return {"result": {"value": "https://" + "a" * (gate_qt.MAX_WHERE * 2)}}
+
+    sign_in = gate_qt.SignIn(Where(), gate_qt.QaTarget(lambda e, f: None))
+    sentence = asyncio.run(sign_in._landed_sentence())
+    # MUTATION: say the start clicks' texts as well and the worker drops the sentence as too long.
+    assert qa_target._SENTENCE.fullmatch(sentence), len(sentence)

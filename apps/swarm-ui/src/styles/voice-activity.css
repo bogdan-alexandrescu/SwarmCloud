@@ -1,0 +1,85 @@
+/* Voice it's crew strip and working card (Roster.tsx, WorkingCard.tsx), ported from the owner's pick of
+   12 November 2026, "Crew strip". */
+.vtc-crew { grid-column: 1 / -1; position: relative; z-index: 4; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 8px; border: 1px solid var(--vt-glass-line); border-radius: var(--r-card); background: var(--vt-glass-dim, var(--vt-glass)); }
+.vtc-ic { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.vtc-chips { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; flex: 0 1 auto; }
+.vtc-chip { --c: var(--info); position: relative; display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+  animation: vtc-in 380ms ease-out both; }
+.vtc-chip.is-ok { --c: var(--ok); }
+.vtc-chip.is-bad { --c: var(--bad); }
+.vtc-chip.is-paused { --c: var(--paused); }
+.vtc-chip.is-idle { --c: var(--text-dim); }
+.vtc-chip-btn { position: relative; display: inline-grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 0 7px; min-width: 0; max-width: 236px; text-align: left;
+  padding: 6px 10px 8px 8px; border-radius: var(--r-card); border: 1px solid color-mix(in srgb, var(--c, var(--info)) 40%, var(--vt-glass-line));
+  background: color-mix(in srgb, var(--c, var(--info)) 7%, var(--vt-glass)); color: var(--text); font: inherit; cursor: pointer; overflow: hidden; }
+.vtc-chip-btn:hover, .vtc-chip-btn[aria-expanded='true'] { border-color: color-mix(in srgb, var(--c, var(--info)) 75%, transparent); }
+.vtc-chip-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.vtc-chip-ic { grid-row: span 2; position: relative; display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%;
+  color: var(--c, var(--info)); background: color-mix(in srgb, var(--c, var(--info)) 16%, transparent); }
+.vtc-chip-ic .vtc-ic { width: 14px; height: 14px; }
+.vtc-chip-live { position: absolute; right: -1px; top: -1px; width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--info));
+  box-shadow: 0 0 0 2px var(--bg); animation: vtc-pulse 1.4s ease-in-out infinite; }
+.vtc-chip-name { font-size: var(--t-meta); font-weight: 600; white-space: nowrap; }
+.vtc-chip-run { font-size: var(--t-meta); color: var(--c, var(--info)); white-space: nowrap; }
+.vtc-chip.is-idle .vtc-chip-run { color: var(--text-dim); }
+.vtc-chip-line { grid-column: 2 / -1; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vtc-chip.is-bad .vtc-chip-run { color: var(--bad-ink, var(--bad)); }
+.vtc-chip.is-ok .vtc-chip-run { color: var(--ok-ink, var(--ok)); }
+.vtc-chip.is-live .vtc-chip-run { color: var(--info-ink, var(--info)); }
+.vtc-chip.is-paused .vtc-chip-run { color: var(--paused-ink, var(--paused)); }
+.vtc-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: color-mix(in srgb, var(--c, var(--info)) 14%, transparent); }
+.vtc-bar > span { display: block; height: 100%; background: var(--c, var(--info)); transition: width 900ms linear; }
+.vtc-chip.is-live .vtc-bar > span { background-image: linear-gradient(90deg, var(--c, var(--info)) 0 60%, color-mix(in srgb, var(--c, var(--info)) 50%, white) 80%, var(--c, var(--info)) 100%);
+  background-size: 200% 100%; animation: vtc-flow 1.6s linear infinite; }
+.vtc-count { font-size: var(--t-meta); color: var(--text-dim); white-space: nowrap; }
+@keyframes vtc-in { from { opacity: 0; transform: translateY(4px) scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes vtc-pulse { 50% { opacity: .35; } }
+@keyframes vtc-flow { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+.vtc-pop { position: absolute; z-index: 5; left: 0; top: calc(100% + 6px); width: max-content; max-width: min(300px, 86vw);
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: var(--r-card);
+  border: 1px solid var(--line); background: var(--surface); box-shadow: 0 8px 24px rgb(0 0 0 / .18); }
+.vtc-pop[hidden] { display: none; }
+.vtc-pop p { margin: 0; }
+.vtc-pop-head { display: flex; align-items: center; gap: 6px; color: var(--c, var(--info)); }
+.vtc-pop-head b { color: var(--text); }
+.vtc-pop-kind { font-size: var(--t-meta); color: var(--text-dim); }
+.vtc-pop-meta { display: flex; align-items: center; gap: 10px; font-size: var(--t-meta); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.vtc-pop-meta .c-btn { margin-left: auto; }
+
+.vtc-work { border: 1px solid color-mix(in srgb, var(--info) 35%, var(--vt-glass-line)); border-radius: var(--r-card);
+  background: color-mix(in srgb, var(--info) 5%, var(--vt-glass)); }
+.vtc-work-head { width: 100%; display: flex; align-items: center; gap: 10px; padding: 7px 10px; border: 0; background: none;
+  color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.vtc-work-head:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; border-radius: var(--r-card); }
+.vtc-work-live { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--info); animation: vtc-pulse 1.4s ease-in-out infinite; }
+.vtc-work-now { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vtc-work-time { flex: none; font-size: var(--t-meta); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.vtc-chev { transition: transform 160ms; color: var(--text-dim); }
+.vtc-chev.is-open { transform: rotate(180deg); }
+.vtc-steps { margin: 0; padding: 2px 10px 10px; list-style: none; display: flex; flex-direction: column; gap: 3px; border-top: 1px solid var(--vt-glass-line);
+  max-height: 15em; overflow-y: auto; }
+.vtc-step { --c: var(--text-dim); display: grid; grid-template-columns: 34px 10px minmax(0, 1fr); align-items: center; gap: 8px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); padding-top: 3px; }
+.vtc-step-at { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.vtc-step-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--info)); }
+.vtc-step-text { color: var(--text); overflow-wrap: anywhere; }
+.vtc-step.is-newest .vtc-step-dot { animation: vtc-pulse 1.4s ease-in-out infinite; box-shadow: 0 0 0 3px color-mix(in srgb, var(--c, var(--info)) 25%, transparent); }
+.vtc-step.is-newest .vtc-step-text { font-weight: 600; }
+
+.vtc-work-more { flex: none; font-size: var(--t-meta); color: var(--text-dim); white-space: nowrap; }
+.vtc-step.is-folded { display: block; color: var(--text-dim); }
+
+@media (prefers-reduced-motion: reduce) {
+  .vtc-crew *, .vtc-crew *::after, .vtc-work *, .vtc-work *::after { animation: none !important; transition: none !important; }
+}
+
+@media (max-width: 760px) {
+  .vtc-chips { flex: 1 1 100%; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .vtc-chip { display: flex; }
+  .vtc-chip-btn { flex: 1; max-width: none; }
+  .vtc-chip-run { justify-self: end; }
+  .vtc-count { display: none; }
+}

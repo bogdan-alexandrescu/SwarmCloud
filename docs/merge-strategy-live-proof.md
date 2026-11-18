@@ -1,0 +1,435 @@
+# Proving the merge strategies against a real repository
+
+`collect`, `direct-pr` and `integrate` are all implemented and all tested
+offline against real git. Exactly one of them has ever run against a real
+repository, and that one pushes nothing.
+
+This document exists because the gap is not a coding agent. Closing it needed a
+credential that did not exist, on a repository somebody owns, with write
+permission somebody has to grant — three decisions, none of them an
+engineer's to take quietly. What follows is what each one is, so the owner can
+decide with the facts rather than authorise "whatever it needs".
+
+**Where this stands (2026-09-25).** The owner has taken the decisions. The
+credential exists: a **classic** personal access token (the decision is recorded
+in section 3), stored by `scripts/create-secrets.sh` as `swarm-tenant-eng-git`,
+version 1, at 23:23Z. When this was written, no platform run had pushed a branch
+or opened a pull request. Every "verified" line below is a read-only observation,
+with the command that produced it and the date it was made.
+
+---
+
+## 1. What has actually run
+
+| strategy | run live? | why |
+|---|---|---|
+| `collect` | yes, with no repository attached | needs no credential and pushes nothing |
+| `direct-pr` | never | needs a git credential with push |
+| `integrate` | never | needs the same, on every step |
+
+`collect` is also the default (`DEFAULT_STRATEGY`, `apps/swarm-api/swarm_api/validation.py`),
+so every dispatch this platform has ever served took the one path that cannot
+push. The other two are proven by `tests/unit/worker/test_strategy_end_to_end.py`,
+which runs clone → agent edit → harvest → commit → push → merge → pull request
+against a real bare repository on disk with only the HTTP forge faked. That is
+the strongest offline proof available; it is not a live one, and the difference
+is in section 4.
+
+---
+
+## 2. The credential that is missing
+
+`resolve_git_token` (`apps/agent-worker/agent_worker/secrets.py`) resolves a
+**per-tenant** token from `swarm-tenant-<tenant>-git`. Deliberately per-tenant:
+a platform-wide clone token would make one malicious repository in one tenant a
+credential compromise for all of them (invariant 9).
+
+Verified read-only on 2026-09-22:
+
+```
+$ gcloud secrets list --project=example-project --filter="name~swarm-tenant" --format="value(name)"
+swarm-tenant-eng-anthropic
+swarm-tenant-eng-anthropic-refresh
+swarm-tenant-eng-openai
+swarm-tenant-eng-openai-refresh
+swarm-tenant-example-tenant-anthropic
+swarm-tenant-example-tenant-anthropic-refresh
+```
+
+No `-git` secret existed for either tenant on that date. So a **private**
+repository could not even be cloned, and a public one cloned unauthenticated.
+That is why `collect` against a public repository was the only combination that
+had worked.
+
+Read again on 2026-09-25 at 23:25Z (`gcloud secrets describe` and
+`get-iam-policy`, metadata only): `swarm-tenant-eng-git` exists, with one
+enabled version and the `component=tenant-credential,provider=git,tenant=eng`
+labels, and **no IAM binding**. So point 1 below is true for `eng`, and point 3
+is not yet true.
+
+Three things have to be true, and the second is the one that gets forgotten:
+
+1. **The secret exists**, created by `scripts/create-secrets.sh`, which owns
+   secret values precisely so plaintext never reaches a Terraform state file.
+2. **The tenant document lists `git`.** `resolve_git_token` returns `None`
+   when `GIT_PROVIDER not in tenant.credentials`, before it asks Secret Manager
+   anything. A secret that exists and a tenant that does not claim it produces
+   the same silent `None` as no secret at all.
+3. **The tenant's service account may read it**
+   (`roles/secretmanager.secretAccessor` on that one secret).
+   `scripts/register-tenant.sh` already does this per `--provider`, so `git`
+   needs no new mechanism. Re-running it to add `git` is not free, though.
+   `--providers` REPLACES the tenant's `credentials`, so it has to name every
+   provider the tenant keeps. A re-run also rewrites `display_name`,
+   `max_active` and `capacity_units` (to defaults of 20 and 40 unless they are
+   given), writes `gcs_prefix` without the trailing slash that terraform writes,
+   and creates the prefix marker object. So make the two changes on their own:
+   `scripts/register-tenant.sh --tenant eng --add-provider git` is exactly the
+   one secret binding and a Firestore PATCH whose update mask is `credentials`
+   alone, conditional on the document not having changed since it was read.
+   Points 2 and 3 are then one command.
+
+**No Terraform change is required**, and that is worth stating because it looks
+like it should be. `terraform/infra/locals.tf` builds `secret_env` from a
+profile's declared providers and mounts those secrets into the Cloud Run Job.
+The git token is **not** mounted: the worker reads it at runtime through the
+Secret Manager client and deletes the credential file it writes before the
+function returns. Adding `git` to a profile's `secret_env` would put the token
+in the agent's own environment — the opposite of what `gitops.py` goes to
+trouble to avoid.
+
+Read 2026-09-25 at 23:09Z (Firestore REST `GET` on `tenants/eng` in database
+`swarm`, read-only): `credentials` is `["anthropic", "openai"]`. Point 2 is
+therefore observed, not only derived. The secret alone is not enough until
+`git` is added there.
+
+---
+
+## 3. What the forge has to grant
+
+`probe_repository` (`apps/agent-worker/agent_worker/forge.py`) asks
+`GET /repos/{owner}/{repo}` and requires `permissions.push === true`. It reads
+the permissions object rather than the `X-OAuth-Scopes` header because that
+header exists for classic PATs only, so a platform trusting it would read every
+fine-grained token as unscoped.
+
+For `example-org/example-repo`, verified read-only and unauthenticated:
+
+```
+$ curl -s https://api.github.com/repos/example-org/example-repo
+private=False  default_branch=main  permissions=None
+```
+
+Public, default branch `main`, and an unauthenticated request carries no
+`permissions` object at all — which is exactly why an unauthenticated probe is
+not attempted: with no token `probe_repository` returns
+`can_push=False, reason="no git credential is registered for this tenant"`
+without making the request.
+
+The minimum grant per strategy:
+
+| strategy | needs |
+|---|---|
+| `collect` | nothing. A public clone, or a token with `Contents: Read` for a private one |
+| `direct-pr` | `Contents: Read and write` **and** `Pull requests: Read and write` |
+| `integrate` | the same, on the one token every step of the workflow shares |
+| issue run | the same, plus `Issues: Read and write` (the plan and status comments), `Checks: Read` and `Actions: Read and write` (the CI loop reads a failing run's log; the merge step re-runs a flaky run's failed jobs, `POST actions/runs/<run>/rerun-failed-jobs`, and without write it fails with `checks_failed`) — [docs/multi-tenancy.md](multi-tenancy.md#what-the-forge-credential-must-be-allowed) |
+
+A fine-grained PAT scoped to that single repository is the smallest thing that
+works. A classic PAT needs `repo`, which is every repository the account can
+see — a much larger blast radius for the same proof.
+
+**Owner decision, 2026-09-25: a classic PAT.** The owner chose a classic
+personal access token deliberately, after being told its scope, because
+SwarmCloud's agents are to reach repositories in both his personal account and
+the example-org organisation. The token `eng`'s workers use therefore reaches every
+repository that account can reach with `repo` scope, not one repository.
+Neither of the following has been checked: whether the example-org organisation
+accepts classic tokens (an organisation can restrict them), and whether it
+requires SAML SSO authorisation per token.
+
+`Contents: write` alone is a real and useful half-step: the branch pushes, the
+pull request fails with a stated reason, and `_publish_git` records
+`published: true` with "the branch was pushed but no pull request was opened".
+That is a legitimate way to test the push path without granting PR rights. It
+exists for fine-grained tokens only. A classic token's `repo` scope carries
+pull-request rights with it, so this half-step is not available with the token
+chosen above.
+
+---
+
+## 4. What a live run would do that the offline tests do not
+
+The offline suite fakes exactly two functions: `probe_repository` and
+`open_pull_request`. So what a live proof adds is precisely those two, plus
+three things no local remote can reproduce:
+
+* **A real token through a real `credential.helper store` file** over HTTPS.
+  Locally the remote is `file://` and the credential file is written, used and
+  deleted without ever being consulted. A malformed entry would pass locally
+  and fail against GitHub.
+* **GitHub's own refusals.** Branch protection on the default branch, a
+  required status check, an org policy forbidding PATs — none of which a bare
+  repository on disk has. Note that `push_branch`'s `protected` list contains
+  only the repository's *default* branch; GitHub's protection **rules** are not
+  consulted, so a rule on some other branch surfaces as a push failure, not as
+  a refusal.
+* **Pushing from a shallow clone over HTTPS.** Verified locally that a depth-1
+  clone pushes cleanly to a `file://` remote and that
+  `fetch --depth=2147483647` unshallows before the integrator merges. Whether
+  GitHub's receive path accepts the same shallow push is **not verified** —
+  it is the single most likely live-only failure.
+
+---
+
+## 5. The proof, if it is authorised
+
+Three runs, in this order, each checking one thing the previous one did not.
+Stop at the first that does not behave as stated.
+
+**Preparation** (one time, by the repository owner):
+
+1. Mint a personal access token. **Done 2026-09-25**: a classic PAT, not the
+   fine-grained single-repository token this step first named (see section 3
+   for why).
+2. `scripts/create-secrets.sh --tenant eng --provider git --stdin`.
+   **Done 2026-09-25 at 23:23Z.**
+3. Add `git` to the `eng` tenant's `credentials` and bind
+   `roles/secretmanager.secretAccessor` for its GSA — `scripts/register-tenant.sh`
+   covers both; confirm the tenant document afterwards.
+
+**Run 1 — `collect`, with a repository attached.** The control. It must clone,
+harvest a patch into the agent's GCS prefix, and leave the remote untouched even
+though the token can now push. Check `git.published == false`, the reason names
+`direct-pr`, and `git ls-remote` shows no new `swarm/` ref.
+
+**Run 2 — `direct-pr`, one agent.** One branch `swarm/<task-id>` and one pull
+request against `main`. Check the branch actually contains the agent's edits:
+an empty diff means `commit_dirty` did not stage uncommitted work, which is the
+common agent behaviour and the reason that function exists. Check also that
+every commit on the branch is authored and committed by the worker's identity
+and carries no `Co-Authored-By` trailer or "Generated with" line. Nothing this
+platform puts on GitHub may carry Claude attribution. The worker-authored-commits change makes the worker
+write every commit it pushes. Until that change is deployed, the proof prompt tells the
+agent not to commit, so the only commit is the worker's.
+
+**Run 3 — `integrate`, a workflow of at least three steps.** swarm-api requires
+exactly one integrator (`validation.py`). The proof is a count and a tree:
+**one** pull request for the whole workflow, whose branch contains every
+contributor's file. Two pull requests is the defect that already happened once.
+
+**Cleanup is part of the proof, not after it.** Each run leaves a real branch
+and a real pull request on a real repository. Close them and delete the
+branches, or the next run's `open_pull_request` adopts the open one it finds
+(which is correct behaviour and would make run 2 look like it did nothing).
+
+---
+
+## 6. What this would cost, stated plainly
+
+A token that can write to every repository its account can reach (a classic
+PAT, section 3), held by a platform that runs agent code written by a language
+model against untrusted repository contents. The
+mitigations are real — the token is per-tenant, it reaches git through a 0600
+file deleted in a `finally`, it is never in argv, the branch name is derived
+from the task id and re-checked before the push, the default branch is refused,
+nothing is ever force-pushed, and hooks are disabled on every git invocation so
+a `.git/hooks/pre-commit` the agent wrote cannot execute.
+
+**The token-bearing commands run in a repository the worker owns, never in the
+clone.** This is the mitigation that closes the widest gap, and it matters most
+now that the token is a classic PAT reaching every repository the account can
+(section 3). A git repository honours its own `.git/config`, and the agent has
+write access to the tree it worked in — so running the push (and the
+integrator's contributor fetch) inside that clone let repository-local
+configuration the agent controls take effect while the token was in hand. Two
+settings are enough to move it:
+
+* `credential.helper` is multi-valued, and git invokes **every** configured
+  helper — so a helper the agent added is handed the credential (git calls it
+  with `store` once the request succeeds), alongside the worker's own.
+* `url.<host>.insteadOf` / `pushInsteadOf` rewrites the destination of a push —
+  *including a URL passed explicitly on the command line* — so the authenticated
+  push, and the credential git sends with it, goes to a host of the agent's
+  choosing. There is **no `-c` override that disables URL rewriting**, and a
+  repository config can `include` another file that reintroduces anything a
+  blocklist stripped. So per-invocation overrides are not a defence you can
+  finish writing.
+
+The fix is therefore structural, not a longer blocklist. `gitops.prepare_publish_repo`
+builds a fresh repository under the worker's private scratch (never checkpointed,
+never uploaded, never named in the agent's environment), `git init`-ed so its
+config is the worker's. The agent's work is transferred in by a **local,
+token-less fetch** of the commits the worker names by sha — the head it computed
+and the clone base it recorded before the agent ran — with
+`transfer.fsckObjects=true`, so no credential is present during the transfer and
+every object arrives checked. The remote is set from the validated
+`repository_url`, never read back from the clone; the credential-helper list is
+reset to the worker's own helper before it is added; and the transport is pinned
+(verified TLS, no proxy, no injected header). The integrator's merges happen in
+this repository too.
+
+**The leak scans and the replay run here as well** (owner decision, 2026-09-29). Three security reviews found the per-commit and final-tree secret scans
+bypassable through state the agent writes under its clone's `.git` — replace
+refs, `info/grafts`, `shallow`, and finally a forged
+`objects/info/commit-graph`, from which `git diff` takes a commit's root tree —
+each closed on its own before the next was found. So the kept-commit list, both
+scans, the fold, the replay (`commit-tree`), the authorship check and the push
+all run in the clean repository, and none of that state reaches them:
+
+* **no alternates.** An earlier version borrowed the clone's object store
+  through `objects/info/alternates`, which brings the clone's commit-graph with
+  it. Objects are fetched instead, and the connectivity check proves each
+  commit's real tree and parents arrived;
+* **the upload side cannot choose the history.** `upload-pack` runs in the clone
+  (git has no other way to read a repository it does not own; it is the one
+  command git documents as safe in an untrusted repository, and it runs no
+  hook) with grafts, replacement and the commit-graph off, and with its shallow
+  boundary read from a file the worker writes holding the recorded base — never
+  the agent's `.git/shallow`. Anything the agent's store or config does there
+  can only make the fetch fail, which publishes nothing;
+* **every worker git runs with `core.commitGraph=false`, `GIT_GRAFT_FILE=/dev/null`
+  and `GIT_NO_REPLACE_OBJECTS=1`** as a second belt. The graft file stays
+  `/dev/null`, and its deprecation advice is switched off with
+  `advice.graftFileDeprecated=false`. The upload side is the exception:
+  upload-pack never reads `advice.*`, so its graft file is
+  `/dev/null/no-grafts`, a path that cannot open. git skips a missing graft
+  file silently, and grafts are off just the same.
+
+What the agent left uncommitted is committed in the publish repository too
+(the live-proof design M1, owner decision 2026-09-28). `git add` in the clone read the clone's
+`.git/config` and the tree's `.gitattributes`, so a filter driver the agent
+defined (`filter.<name>.clean`) ran as the worker after the reap, and no `-c`
+list can switch that class off. So `mirror_worktree` copies the working tree
+into the publish repository -- never anything under `.git`, every link as a
+link, a folder holding a nested repository as an empty folder -- and
+`commit_dirty` stages and commits there, with only the worker's configuration.
+A `.gitattributes` in the tree is data in that repository: the filter and diff
+driver it names are defined nowhere, so git applies none. Two consequences the
+owner accepted on 2026-09-28: regular files are **hard-linked** rather than
+byte-copied where the filesystem allows (a byte copy only where it refuses),
+because the workspace is memory-backed and a copy would double it at the end of
+the attempt; and a folder holding a **nested repository** is published as an
+empty folder, where git in the clone used to record it as an embedded gitlink.
+
+What the agent **excluded stays unpublished**. Its `.git/info/exclude` and the
+file its `core.excludesFile` names are read as data -- never by running git in
+the clone: the exclude file opened component by component with `O_NOFOLLOW`
+and a size cap, the config parsed in Python -- and their patterns are appended
+to the publish repository's own exclude file. `core.excludesFile` is honoured
+only when it names a file inside the workspace with no link on the way (`~/` is
+the agent's HOME, `work/`).
+
+**The harvest reads the publish repository too** (owner item 3). Its patch
+was a `git diff <base>` in the clone, and a diff of the working tree reads each
+file through the clean filter the clone names -- the agent's program, run as
+the worker, before the reap. So the order at the end of an attempt is: reap;
+build the publish repository and copy the working tree into it; take the patch,
+the commit list and the dirty list there; then commit and push from the same
+repository. A reap that leaves agent processes alive stops all of it, harvest
+included.
+
+**HEAD is read as data** (the live-proof design's final review, B1; owner decision 2026-09-29).
+The commit to fetch was resolved with `git rev-parse HEAD^{commit}` in the
+clone, after the reap. A clone the agent turned into a partial clone, with its
+branch pointing at a missing object, made that rev-parse lazy-fetch through the
+agent's promisor remote -- its `uploadpack` program, run as the worker, and a
+process that outlived the reap into the push. `read_head_as_data` now reads
+`.git/HEAD`, the loose ref or `packed-refs` line it names, component by
+component with `O_NOFOLLOW`, regular files only, capped; it accepts only a 40-
+or 64-hex object id and refuses a symbolic ref outside `refs/heads/`. Whether
+the object exists is left to the object-checked fetch, which fails closed.
+
+**The one git process left in the clone is `upload-pack`**, serving the fetch.
+It runs with no system or global configuration, grafts, replace refs and the
+commit-graph off, and every key that names a program pinned: hooks and
+fsmonitor off, `core.alternateRefsCommand=true`, and the lazy-fetch path a
+partial clone would open closed at the transport (`GIT_ALLOW_PROTOCOL=none`,
+`protocol.allow=never`, `GIT_SSH_COMMAND`/`GIT_PROXY_COMMAND=false`, no
+credential helper, `GIT_NO_LAZY_FETCH=1` for gits that know it).
+`uploadpack.packObjectsHook` is left unset on purpose: git-config(1) honours it
+only from protected (system, global or command-line) configuration, and any
+value set on the command line would be run.
+
+**That private scratch is not itself a permission boundary** — it shares a uid
+with the agent (`workspace.py` says so), so the agent can create paths inside it
+during its run. So the publish repository is built at an **unpredictable name**
+(`tempfile.mkdtemp`), generated only after the agent has exited. A constant name
+was a hole in its own right: the agent could pre-plant a symlink there pointing
+at a repository it wrote, and the worker's cleanup (`shutil.rmtree(...,
+ignore_errors=True)` then `mkdir(exist_ok=True)`) cannot delete a symlink and
+silently leaves it, so `git init` and the push would run behind the link, back
+inside the agent's config. `mkdtemp` creates the directory with O_EXCL
+semantics, so the worker never lands on, nor follows, anything the agent planted.
+
+**Owning *where* the token-bearing commands run closes the config vector; it does
+not close a live agent process.** The runner is started `start_new_session=True`
+and stopped by a process-group kill (`procman.py`), so a process the agent
+double-forks and `setsid`s lands in its own session, survives that kill, and
+re-parents to tini — sharing the worker's uid the whole time. Such a process
+needs neither to predict the `mkdtemp` name nor to have written the clone's
+config: it can *watch* `ws.private`, notice the publish repository appear, and
+drop an `insteadOf` into it in the window between its creation and the push, or
+read the 0600 credential file while the push holds it. So before the first
+token-bearing step, `lifecycle._publish_git` calls `procman.reap_foreign_processes`
+once: `os.kill(-1, SIGKILL)` signals every process this uid may signal except PID
+1 (tini) and the worker itself, and a `/proc` scan then confirms nothing the uid
+owns is still alive (a bounded retry covers a fork racing the kill). If anything
+survives, the whole publish is **refused** with a stated reason rather than run
+while agent code can still act. This is safe because by that point the runner is
+already reaped, the resource sampler is a stopped thread, and the worker's own
+git helpers are synchronous — there is no worker-owned subprocess to protect. The
+token-bearing commands also disable submodule recursion
+(`fetch.recurseSubmodules=false`, `submodule.recurse=false`), because git's
+on-demand default would fetch a submodule named in an untrusted contributor
+branch's `.gitmodules` and carry the credential to whatever host it lists.
+
+**Nor does the reap close the worker's own memory.** The worker reads the token
+at the clone and holds it in its heap until the publish, and the agent runs
+beside it for all of that time as the same uid. Where the kernel lets one
+process of a uid ptrace another, or open its `/proc/<pid>/mem`, a running agent
+could read the token out of the worker long before any reap. So the
+entrypoint's first act after its proof-of-life line, before the configuration,
+any client or any credential, is `prctl(PR_SET_DUMPABLE, 0)`, read back from the
+kernel (`agent_worker/hardening.py`). The kernel then refuses ptrace attach and
+`/proc/<pid>/mem` and `environ` to any process without CAP_SYS_PTRACE over the
+worker, and the pod drops every capability. The runner, the agent and git are
+unaffected: a process becomes dumpable again when it execs a program. The cost
+is that the worker leaves no core dump, and an external debugger cannot attach;
+the SIGTERM stack dump remains. If the call fails on Linux, the worker never
+reads the token: the clone runs without it, and the publish is refused with the
+reason. `tests/unit/worker/test_worker_memory_protection.py` starts the real
+entrypoint as a process on Linux CI. It checks that the process is
+non-dumpable by the time it reads its configuration, and that a sibling process
+of the same uid is refused both reads. A control runs the same entrypoint with
+the call disabled and reads the canary out of it. The container's environment
+is also PID 1's, at `/proc/1/environ`, which this does not cover; the worker
+keeps no credential in its environment for that reason.
+
+The property this guarantees: **no configuration, file or ref the agent can
+write can cause the tenant token to be sent anywhere except the forge host of
+the agent's `repository_url` over verified TLS, or be handed to any program other
+than the worker's own credential mechanism.** It is proven offline by
+`tests/unit/worker/test_forge_token_isolation.py` (real git, local `file://`
+remotes, no network): a `url.*.insteadOf` / `pushInsteadOf` the agent writes into
+the clone cannot redirect the push; a symlink the agent pre-plants at the publish
+path cannot either; the repository the push actually runs in carries none of the
+agent's redirect or interception keys (`insteadOf`, `pushInsteadOf`, `http.proxy`,
+`http.sslVerify`, `remote.*.pushurl`, `credential.helper`); and the repository
+the worker authenticates from carries no credential helper the agent wrote (each
+with a control confirming the clone itself would have leaked). A real
+double-forked `setsid` daemon proves the *when*: the worker reaps it (verified
+dead through `/proc`) before it builds the publish repository and before the
+token-bearing push, refuses to publish if a survivor cannot be cleared, and the
+integrator's token-bearing fetch is asserted to disable submodule recursion.
+`tests/unit/worker/test_procman_reap.py` pins the reap mechanism itself and runs
+the real `os.kill(-1, SIGKILL)` inside a private PID namespace, where it cannot
+reach the test runner.
+
+They are mitigations, not a boundary. The token still belongs to a platform that
+runs model-written code, and a compromise of the worker itself is outside what
+any of this protects against. The smallest version of this decision would have
+been a fine-grained PAT on one repository that nothing important depends on, and
+section 5 was first written assuming it; the owner chose a classic PAT instead
+(section 3), so the proofs run with a token that reaches every repository the
+account can reach, and each mitigation above matters in proportion.

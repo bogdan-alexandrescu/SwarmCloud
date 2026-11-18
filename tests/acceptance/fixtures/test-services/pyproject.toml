@@ -1,0 +1,10 @@
+# The acceptance suite's test-services fixture (scripts/acceptance/groups/
+# claude-code.sh). The pre-publish gate runs its tests as `uv run pytest -q
+# -n auto` from here, so pytest and pytest-xdist are its dependencies, locked
+# in uv.lock. The Postgres client is pgwire.py, standard library only. No
+# [build-system]: uv treats the project as virtual and installs nothing of it.
+[project]
+name = "swarmcloud-acceptance-test-services"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["pytest>=8", "pytest-xdist>=3"]

@@ -1,0 +1,708 @@
+# The bootstrap root: the state bucket, the prerequisite APIs, and the keyless
+# CI identity. It runs on LOCAL state because a root cannot create the bucket
+# its own backend lives in -- terraform initialises the backend before it plans
+# a single resource.
+
+mock_provider "google" {}
+
+# terraform/bootstrap/state_bucket.tf imports the state bucket (DAYONE-BOOT-1):
+# a mock provider cannot import, so the bucket's provider values are the
+# override's and its configuration is still planned and asserted.
+override_resource {
+  target = google_storage_bucket.state
+}
+
+variables {
+  # terraform/bootstrap's infra_tenants_tfvars has no default (the real tfvars
+  # is in the state bucket); bootstrap runs read this stand-in's tenants.
+  infra_tenants_tfvars = "../../tests/terraform/tenants_tfvars_fixture/fixture.tfvars"
+
+  project_id = "example-project"
+
+  # Required since IAP membership moved into this root (2026-09-24). It has no
+  # default on purpose: an empty list is refused, and a default would admit
+  # somebody by accident. The value here only has to pass the validations.
+  frontend_iap_members = ["domain:example.com"]
+}
+
+run "state_survives_the_ways_a_platform_is_usually_lost" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  assert {
+    condition     = google_storage_bucket.state.name == "swarm-tfstate-example-project"
+    error_message = "the state bucket carries the swarm prefix and is unique by project id"
+  }
+
+  assert {
+    condition     = google_storage_bucket.state.versioning[0].enabled == true
+    error_message = "versioning is what makes a corrupted or truncated state file recoverable"
+  }
+
+  assert {
+    condition     = google_storage_bucket.state.uniform_bucket_level_access == true
+    error_message = "object ACLs must not be able to widen access to state"
+  }
+
+  assert {
+    condition     = google_storage_bucket.state.public_access_prevention == "enforced"
+    error_message = "state contains every resource id in the platform; no future IAM change may make it public"
+  }
+
+  assert {
+    condition     = google_storage_bucket.state.force_destroy == false
+    error_message = "this bucket holds the state of every other root"
+  }
+
+  assert {
+    condition     = google_storage_bucket.state.soft_delete_policy[0].retention_duration_seconds >= 604800
+    error_message = "a bucket deleted by accident is a platform that can no longer be managed"
+  }
+
+  assert {
+    condition = length([
+      for r in google_storage_bucket.state.lifecycle_rule : r
+      if one(r.action).type == "Delete" && coalesce(one(r.condition).num_newer_versions, 0) > 0
+    ]) == 1
+    error_message = "keep a deep version history, but not an infinite one"
+  }
+
+  # A retention_policy would make objects immutable for its duration, and
+  # terraform rewrites the state object on every single apply.
+  assert {
+    condition     = length(google_storage_bucket.state.retention_policy) == 0
+    error_message = "a retention policy on the state bucket would block terraform's own writes"
+  }
+}
+
+run "too_few_state_versions_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    state_noncurrent_versions_to_keep = 2
+  }
+
+  expect_failures = [var.state_noncurrent_versions_to_keep]
+}
+
+run "ci_is_keyless_and_bound_to_one_repository_and_ref" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "example-org/example-repo"
+  }
+
+  # Without an attribute condition the pool trusts GitHub's issuer -- which is
+  # to say every repository on GitHub, including one created five minutes from
+  # now.
+  assert {
+    condition     = strcontains(google_iam_workload_identity_pool_provider.github[0].attribute_condition, "assertion.repository == \"example-org/example-repo\"")
+    error_message = "the provider must be pinned to this repository"
+  }
+
+  assert {
+    condition     = strcontains(google_iam_workload_identity_pool_provider.github[0].attribute_condition, "assertion.ref == \"refs/heads/main\"")
+    error_message = "without a ref condition a fork's pull request could mint a deploy token"
+  }
+
+  # THERE IS DELIBERATELY NO `assertion.sub` ASSERTION HERE.
+  #
+  # One existed, requiring
+  # `assertion.sub == "repo:example-org/example-repo:ref:refs/heads/main"` in the
+  # rendered condition, to gate a pin checkov could not read through a `join()`
+  # over a `for`. The pin itself was then REMOVED from wif.tf for two measured
+  # reasons: it rejected a legitimate `refs/heads/main` run
+  # (`unauthorized_client: The given credential is rejected by the attribute
+  # condition`), and it could never have admitted `release.yml`'s
+  # environment-gated `deploy` job at all, because GitHub mints those runs with
+  # `sub = repo:<owner>/<name>:environment:<env>` rather than `:ref:`.
+  #
+  # The assertion went with it rather than being widened to accept both context
+  # forms -- at which point it would add nothing the repository and ref clauses
+  # do not already say.
+
+  # AND NOTHING WIDENS IT TO A PULL REQUEST. The single line in this file that
+  # would matter most if it were ever deleted: a PR ref minting a token that
+  # holds resourcemanager.projectIamAdmin on a SHARED project is the failure
+  # this whole pool exists to prevent, and "fix CI by adding refs/pull/*" is
+  # the exact pressure that would do it.
+  assert {
+    condition = !strcontains(
+      google_iam_workload_identity_pool_provider.github[0].attribute_condition,
+      "refs/pull/",
+    )
+    error_message = "the trust policy admits a pull request ref; anyone can open a pull request"
+  }
+
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github[0].oidc[0].issuer_uri == "https://token.actions.githubusercontent.com"
+    error_message = "the issuer must be GitHub's own OIDC endpoint"
+  }
+
+  assert {
+    condition     = google_service_account.deployer[0].account_id == "swarm-tf-deployer"
+    error_message = "CI gets its own swarm-prefixed identity, not a reused one"
+  }
+
+  assert {
+    condition     = alltrue([for m in values(google_service_account_iam_member.deployer_wif) : m.role == "roles/iam.workloadIdentityUser"])
+    error_message = "federation replaces a downloadable key entirely"
+  }
+
+  # State access is granted on the bucket, not on the project, so CI cannot
+  # reach another team's buckets in this shared project.
+  assert {
+    condition     = google_storage_bucket_iam_member.deployer_state[0].bucket == google_storage_bucket.state.name
+    error_message = "the deployer's storage grant is scoped to the state bucket"
+  }
+}
+
+run "ci_is_never_granted_owner" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "example-org/example-repo"
+    deployer_roles    = ["roles/owner"]
+  }
+
+  expect_failures = [var.deployer_roles]
+}
+
+run "a_malformed_repository_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "not-a-repo-spec"
+  }
+
+  expect_failures = [var.github_repository]
+}
+
+run "the_prerequisite_apis_are_the_ones_terraform_itself_needs" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    manage_project_services = true
+  }
+
+  assert {
+    condition = alltrue([
+      for s in ["cloudresourcemanager.googleapis.com", "iam.googleapis.com", "serviceusage.googleapis.com", "storage.googleapis.com", "sts.googleapis.com"] :
+      contains(output.enabled_services, s)
+    ])
+    error_message = "without these, terraform/infra cannot authenticate or even read the project"
+  }
+}
+
+run "api_enablement_can_never_cascade_in_a_shared_project" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/project_services"
+  }
+
+  variables {
+    project_id = "example-project"
+    services   = ["run.googleapis.com", "container.googleapis.com"]
+  }
+
+  # A destroy that disabled container.googleapis.com would take down the other
+  # team's live peer-cluster cluster -- the exact blast radius this platform
+  # is required never to have.
+  assert {
+    condition = alltrue([
+      for k, s in google_project_service.this :
+      s.disable_on_destroy == false && s.disable_dependent_services == false
+    ])
+    error_message = "API disablement must never cascade, and destroy must never disable anything"
+  }
+}
+
+run "turning_api_disablement_on_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/project_services"
+  }
+
+  variables {
+    project_id         = "example-project"
+    services           = ["run.googleapis.com"]
+    disable_on_destroy = true
+  }
+
+  expect_failures = [var.disable_on_destroy]
+}
+
+# The accessor list reaches only the platform's own backends, and the deployer
+# holds no IAP role at all (wif.tf, "WHO MAY PASS IAP").
+run "iap_membership_is_bootstrap_owned_and_the_deployer_has_no_iap_role" {
+  command = plan
+
+  # Without this block the run plans tests/terraform itself, which declares none
+  # of bootstrap's variables or resources -- CI failed "Reference to undeclared
+  # resource" on frontend_accessors.
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    frontend_iap_backends = ["swarm-ui-backend", "swarm-ui-ui-backend"]
+    enable_github_wif     = true
+    github_repository     = "example-org/example-repo"
+    frontend_iap_members  = ["domain:example.com", "serviceAccount:verify@example-project.iam.gserviceaccount.com"]
+  }
+
+  assert {
+    condition     = length(google_iap_web_backend_service_iam_member.frontend_accessors) == 4
+    error_message = "two backends x two members must give four accessor bindings"
+  }
+
+  assert {
+    condition = alltrue([
+      for b in google_iap_web_backend_service_iam_member.frontend_accessors :
+      b.role == "roles/iap.httpsResourceAccessor"
+    ])
+    error_message = "the only IAP role this root grants is the accessor role"
+  }
+
+  # The half of this run's name the two assertions above do not cover. The
+  # deployer's project roles are non-empty here (enable_github_wif = true), so
+  # this cannot pass vacuously over an empty map.
+  assert {
+    condition = length(google_project_iam_member.deployer_roles) > 0 && alltrue([
+      for r in keys(google_project_iam_member.deployer_roles) : !startswith(r, "roles/iap.")
+    ])
+    error_message = "the deployer holds an IAP role; IAP membership is applied by the owner from this root, never by CI"
+  }
+}
+
+run "a_backend_that_is_not_ours_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    frontend_iap_backends = ["swarm-ui-backend", "gkegw1-7hi6-keycloak"]
+  }
+
+  expect_failures = [var.frontend_iap_backends]
+}
+
+# THE CI FIXER FEDERATES AS ITSELF, AND ONLY FROM ITS OWN WORKFLOW FILE ON MAIN.
+#
+# Owner decision, 2026-09-28 (archived pull request 273): ci-fix.yml no longer authenticates as the
+# deployer and hops to SWARM_CI_FIX_SA. It is bound to that account directly,
+# and the principal is the ONE workflow file on main -- not the repository, not
+# repository@ref. A repository-wide principalSet would hand the fixer's
+# identity, and the IAP front door and tenant it carries, to every workflow in
+# the repository that runs on main: release.yml, terraform.yml, anything added
+# next week.
+run "the_ci_fixer_is_bound_to_its_one_workflow_on_main" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  # The pool's name is computed. Known at plan here so the principal it
+  # prefixes can be compared whole, rather than by a substring that would also
+  # match a wider one.
+  override_resource {
+    target          = google_iam_workload_identity_pool.github
+    override_during = plan
+    values = {
+      name = "projects/123456789012/locations/global/workloadIdentityPools/swarm-github"
+    }
+  }
+
+  variables {
+    enable_github_wif      = true
+    github_repository      = "example-org/example-repo"
+    ci_fix_service_account = "swarm-ci-fix@example-project.iam.gserviceaccount.com"
+    frontend_iap_members = [
+      "domain:example.com",
+      "serviceAccount:swarm-ci-fix@example-project.iam.gserviceaccount.com",
+    ]
+  }
+
+  assert {
+    condition     = google_service_account_iam_member.ci_fix_wif[0].member == "principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/example-org/example-repo/.github/workflows/ci-fix.yml@refs/heads/main"
+    error_message = "the fixer's identity must be federated to exactly ci-fix.yml on refs/heads/main, and nothing wider"
+  }
+
+  # Said separately from the equality above, so that relaxing the equality to a
+  # prefix match cannot quietly admit the repository-wide forms.
+  assert {
+    condition     = !strcontains(google_service_account_iam_member.ci_fix_wif[0].member, "/attribute.repository/") && !strcontains(google_service_account_iam_member.ci_fix_wif[0].member, "/attribute.repo_ref/") && !strcontains(google_service_account_iam_member.ci_fix_wif[0].member, "/*")
+    error_message = "a repository-wide principalSet on the fixer hands its identity to every workflow in the repository"
+  }
+
+  assert {
+    condition     = google_service_account_iam_member.ci_fix_wif[0].role == "roles/iam.workloadIdentityUser"
+    error_message = "the fixer federates through workloadIdentityUser; no key, and no token-creator hop from the deployer"
+  }
+
+  assert {
+    condition     = google_service_account_iam_member.ci_fix_wif[0].service_account_id == "projects/example-project/serviceAccounts/swarm-ci-fix@example-project.iam.gserviceaccount.com"
+    error_message = "the binding must sit on the fixer's own service account"
+  }
+
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github[0].attribute_mapping["attribute.job_workflow_ref"] == "assertion.job_workflow_ref"
+    error_message = "a principalSet can only name an attribute the provider maps"
+  }
+
+  # The mapping was added; the trust policy was not touched. Compared whole, so
+  # a clause dropped or an alternative OR-ed in fails here.
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github[0].attribute_condition == "assertion.repository == \"example-org/example-repo\" && (assertion.ref == \"refs/heads/main\")"
+    error_message = "adding the fixer must not loosen the provider's attribute_condition"
+  }
+
+  # The fixer's principal is on the fixer only: no deployer binding names
+  # ci-fix.yml (the deployer's own pin is asserted in the run below).
+  assert {
+    condition     = alltrue([for m in values(google_service_account_iam_member.deployer_wif) : !strcontains(m.member, "/ci-fix.yml@")])
+    error_message = "a deployer binding names ci-fix.yml; the fixer's workflow must not be able to become the deployer"
+  }
+}
+
+# accept.yml federates as its own account, never the deployer (owner decision
+# 2026-10-08, cuts A and C of the release timing report;
+# terraform/bootstrap/acceptance.tf). It starts verification executions and
+# reads release records, so every grant is held to that.
+run "the_acceptance_identity_is_bound_to_accept_yml_on_main_and_can_only_run_jobs" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  override_resource {
+    target          = google_iam_workload_identity_pool.github
+    override_during = plan
+    values = {
+      name = "projects/123456789012/locations/global/workloadIdentityPools/swarm-github"
+    }
+  }
+
+  override_resource {
+    target          = google_project_iam_custom_role.acceptance_runner
+    override_during = plan
+    values = {
+      name = "projects/example-project/roles/swarmAcceptanceRunner"
+    }
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "example-org/example-repo"
+  }
+
+  assert {
+    condition     = google_service_account_iam_member.acceptance_wif[0].member == "principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/example-org/example-repo/.github/workflows/accept.yml@refs/heads/main"
+    error_message = "the acceptance identity must be federated to exactly accept.yml on refs/heads/main, and nothing wider"
+  }
+
+  assert {
+    condition     = google_service_account_iam_member.acceptance_wif[0].role == "roles/iam.workloadIdentityUser"
+    error_message = "accept.yml federates through workloadIdentityUser; no key, and no hop from the deployer"
+  }
+
+  assert {
+    condition     = google_service_account.acceptance[0].account_id != google_service_account.deployer[0].account_id
+    error_message = "the acceptance identity must not be the deployer"
+  }
+
+  # Run and read, never change: no create, update, delete or IAM permission.
+  # The one exception is run.executions.cancel on the runner role, which
+  # accept.yml uses to stop swarm-verify executions an earlier cancelled run
+  # left running; it cannot create or delete anything.
+  assert {
+    condition = alltrue([
+      for p in setunion(google_project_iam_custom_role.acceptance_runner[0].permissions, google_project_iam_custom_role.acceptance_lister[0].permissions) :
+      !can(regex("\\.(create|update|delete|setIamPolicy)$", p))
+    ])
+    error_message = "the acceptance roles may start, read and cancel executions only"
+  }
+
+  assert {
+    condition = alltrue([
+      for p in google_project_iam_custom_role.acceptance_lister[0].permissions : !can(regex("\\.cancel$", p))
+      ]) && alltrue([
+      for p in google_project_iam_custom_role.acceptance_runner[0].permissions :
+      !can(regex("\\.cancel$", p)) || p == "run.executions.cancel"
+    ])
+    error_message = "the only cancel permission is run.executions.cancel, on the runner role"
+  }
+
+  # The runner grant is project-wide and UNCONDITIONED (owner decision
+  # 2026-10-09, archived issue 965): Cloud Run exposes no resource.name to IAM Conditions, so
+  # the old job-name condition matched nothing. What bounds it is the role's
+  # permissions (the two asserts above: no create, update, delete or
+  # setIamPolicy, and run.executions.cancel the only cancel), so those are
+  # held here alongside the absent condition.
+  assert {
+    condition     = length(google_project_iam_member.acceptance_runs_jobs[0].condition) == 0
+    error_message = "the acceptance runner binding must carry no condition: Cloud Run cannot evaluate one, and a condition here denies every job (#965)"
+  }
+
+  assert {
+    condition     = google_project_iam_member.acceptance_runs_jobs[0].role == "projects/example-project/roles/swarmAcceptanceRunner" && google_project_iam_custom_role.acceptance_runner[0].role_id == "swarmAcceptanceRunner"
+    error_message = "the unconditioned project grant must be swarmAcceptanceRunner and nothing broader"
+  }
+
+  # Cloud Logging and Cloud Storage DO evaluate resource.name, so those two
+  # grants keep their conditions.
+  assert {
+    condition     = length(google_project_iam_member.acceptance_reads_verify_logs[0].condition) == 1 && length(google_storage_bucket_iam_member.acceptance_reads_release_records[0].condition) == 1
+    error_message = "the log-view and releases/ grants must stay conditioned"
+  }
+
+  assert {
+    condition     = google_project_iam_member.acceptance_reads_verify_logs[0].condition[0].expression == "resource.name == \"projects/example-project/locations/global/buckets/_Default/views/swarm-verify\""
+    error_message = "the acceptance identity may read the swarm-verify log view and no other log"
+  }
+
+  # The state bucket also holds every root's state: releases/ only.
+  assert {
+    condition     = google_storage_bucket_iam_member.acceptance_reads_release_records[0].role == "roles/storage.objectViewer" && google_storage_bucket_iam_member.acceptance_reads_release_records[0].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-tfstate-example-project/objects/releases/\")"
+    error_message = "the acceptance identity may read releases/ in the state bucket, never a state object"
+  }
+}
+
+run "the_acceptance_identity_is_absent_without_wif" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  assert {
+    condition     = length(google_service_account.acceptance) == 0 && length(google_service_account_iam_member.acceptance_wif) == 0
+    error_message = "no acceptance identity exists while GitHub workload identity is off"
+  }
+}
+
+run "the_ci_fixer_binding_is_absent_until_an_account_is_named" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "example-org/example-repo"
+  }
+
+  assert {
+    condition     = length(google_service_account_iam_member.ci_fix_wif) == 0
+    error_message = "no fixer account named, so nothing may be bound"
+  }
+}
+
+run "the_ci_fixer_can_never_be_the_deployer" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif      = true
+    github_repository      = "example-org/example-repo"
+    ci_fix_service_account = "swarm-tf-deployer@example-project.iam.gserviceaccount.com"
+    frontend_iap_members = [
+      "domain:example.com",
+      "serviceAccount:swarm-tf-deployer@example-project.iam.gserviceaccount.com",
+    ]
+  }
+
+  expect_failures = [google_service_account_iam_member.ci_fix_wif]
+}
+
+run "a_ci_fixer_that_cannot_pass_iap_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif      = true
+    github_repository      = "example-org/example-repo"
+    ci_fix_service_account = "swarm-ci-fix@example-project.iam.gserviceaccount.com"
+  }
+
+  expect_failures = [google_service_account_iam_member.ci_fix_wif]
+}
+
+run "a_malformed_ci_fixer_account_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif      = true
+    github_repository      = "example-org/example-repo"
+    ci_fix_service_account = "serviceAccount:swarm-ci-fix@example-project.iam.gserviceaccount.com"
+  }
+
+  expect_failures = [var.ci_fix_service_account]
+}
+
+# THE DEPLOYER IS BOUND TO THE WORKFLOW FILES THAT AUTHENTICATE AS IT, NOT TO
+# THE REPOSITORY.
+#
+# archived issue 457. The deployer was bound to `attribute.repo_ref/<repo>@refs/heads/main`,
+# which every workflow in the repository presents when it runs on main. With
+# application.yml, terraform.yml and security.yml granting id-token at workflow
+# level, a merged test or conftest could mint a token and become the deployer
+# (docs/merge-step.md M4/R4). Owner decision, 2026-10-02: job-level grants in
+# the workflows AND this pin. Each binding names one workflow FILE on one
+# allowed ref by `attribute.job_workflow_ref`, which GitHub sets from the file
+# the job runs. tests/unit/scripts/test_workflow_id_token_scope.py holds the
+# list in wif.tf equal to the workflows that authenticate as GCP_DEPLOY_SA.
+run "the_deployer_is_bound_to_its_workflow_files_on_main" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  override_resource {
+    target          = google_iam_workload_identity_pool.github
+    override_during = plan
+    values = {
+      name = "projects/123456789012/locations/global/workloadIdentityPools/swarm-github"
+    }
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "example-org/example-repo"
+  }
+
+  # Compared whole, as a set: a file added, dropped or widened fails here.
+  assert {
+    condition = toset([for m in values(google_service_account_iam_member.deployer_wif) : m.member]) == toset([
+      for f in ["application.yml", "hotfix.yml", "iam-refusal-probe.yml", "publish-release.yml", "release.yml", "security.yml", "terraform.yml"] :
+      "principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/example-org/example-repo/.github/workflows/${f}@refs/heads/main"
+    ])
+    error_message = "the deployer must be federated to exactly release.yml, hotfix.yml, application.yml, terraform.yml, security.yml, iam-refusal-probe.yml and publish-release.yml on refs/heads/main"
+  }
+
+  # Said separately from the equality above, so that relaxing it cannot
+  # quietly admit the repository-wide forms archived issue 457 removed.
+  assert {
+    condition = alltrue([
+      for m in values(google_service_account_iam_member.deployer_wif) :
+      !strcontains(m.member, "/attribute.repository/") && !strcontains(m.member, "/attribute.repo_ref/") && !strcontains(m.member, "*")
+    ])
+    error_message = "a repository-wide principalSet on the deployer hands its identity to every workflow on main, the tests included"
+  }
+
+  assert {
+    condition     = alltrue([for m in values(google_service_account_iam_member.deployer_wif) : m.role == "roles/iam.workloadIdentityUser"])
+    error_message = "the pin is workloadIdentityUser; federation replaces a key"
+  }
+
+  # The pin narrows the binding; the pool's trust policy is untouched.
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github[0].attribute_condition == "assertion.repository == \"example-org/example-repo\" && (assertion.ref == \"refs/heads/main\")"
+    error_message = "pinning the deployer must not change the provider's attribute_condition"
+  }
+
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github[0].attribute_mapping["attribute.job_workflow_ref"] == "assertion.job_workflow_ref"
+    error_message = "a principalSet can only name an attribute the provider maps"
+  }
+}
+
+run "the_deployer_pin_covers_every_allowed_ref" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif   = true
+    github_repository   = "example-org/example-repo"
+    github_allowed_refs = ["refs/heads/main", "refs/tags/v1"]
+  }
+
+  assert {
+    condition     = length(google_service_account_iam_member.deployer_wif) == 14
+    error_message = "one binding per (workflow file, allowed ref): seven files on two refs"
+  }
+
+  assert {
+    condition     = contains(keys(google_service_account_iam_member.deployer_wif), "release.yml@refs/tags/v1")
+    error_message = "bindings are keyed <file>@<ref>, readable in plan output"
+  }
+}
+
+# The managed plugins' intake account (bootstrap/plugin_intake.tf) is a
+# platform account, so this root makes it and terraform/infra/plugins.tf only
+# reads it; it is given no project role here.
+run "the_plugin_intake_account_is_made_here_with_no_project_role" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  assert {
+    condition     = google_service_account.plugin_intake.account_id == "swarm-plugin-intake" && startswith(google_service_account.plugin_intake.description, "managed-by=swarm-terraform;")
+    error_message = "terraform/bootstrap makes swarm-plugin-intake, labelled managed-by=swarm-terraform in its description"
+  }
+}
+
+# The managed plugins' bundle build account (bootstrap/plugin_bundler.tf) is a
+# platform account too: this root makes it, with no grant, and
+# terraform/infra/plugin-bundles.tf reads it and grants it what it may do.
+run "the_plugin_bundler_account_is_made_here" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  assert {
+    condition     = google_service_account.plugin_bundler.account_id == "swarm-plugin-bundler" && startswith(google_service_account.plugin_bundler.description, "managed-by=swarm-terraform;")
+    error_message = "terraform/bootstrap makes swarm-plugin-bundler, labelled managed-by=swarm-terraform in its description"
+  }
+}

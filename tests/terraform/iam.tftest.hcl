@@ -1,0 +1,342 @@
+# Read these assertions as the answer to "what could this component do if it
+# were compromised?". The important ones are about what is ABSENT.
+
+mock_provider "google" {}
+
+variables {
+  project_id      = "example-project"
+  artifact_bucket = "swarm-artifacts-example-project"
+  labels          = { "managed-by" = "swarm-terraform" }
+
+  # The swarm's own Autopilot cluster. It has to be named: the container.* roles
+  # are conditioned to it, and this project also holds a live peer-cluster
+  # cluster owned by another team.
+  gke_cluster_name = "swarm-autopilot"
+  gke_location     = "us-central1"
+}
+
+run "one_identity_per_component_and_no_static_keys" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/iam"
+  }
+
+  # The accounts are terraform/bootstrap's since DAYONE-BOOT-2
+  # (platform_service_accounts.tf); this module reads them by id.
+  assert {
+    condition = alltrue([
+      for k, sa in data.google_service_account.platform : startswith(sa.account_id, "swarm-")
+    ])
+    error_message = "every platform service account carries the swarm- prefix"
+  }
+
+  assert {
+    condition     = length(data.google_service_account.platform) == 4
+    error_message = "four components, four identities: api, scheduler, quota-broker, reconciler"
+  }
+
+  assert {
+    condition     = data.google_service_account.tick.account_id == "swarm-tick"
+    error_message = "Cloud Scheduler and Pub/Sub push present their own identity, separate from every component"
+  }
+
+  # A downloadable key outlives the deployment, does not rotate, and cannot be
+  # revoked without knowing every place it was copied to. There is no
+  # google_service_account_key resource anywhere in this repository; this
+  # asserts the module's own plan contains none.
+  assert {
+    condition     = length(output.service_account_emails) == 4
+    error_message = "identity is attached to the workload by Cloud Run and GKE, never by a key file"
+  }
+}
+
+run "the_api_holds_no_compute_permission_at_all" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/iam"
+  }
+
+  # swarm-api accepts a runner profile BY NAME and writes a Firestore document.
+  # Everything that creates infrastructure is downstream of the scheduler
+  # (CONTRACT.md invariant 10), so the API's roles must contain nothing from
+  # run.*, container.* or compute.*.
+  assert {
+    condition = alltrue([
+      for role in output.granted_roles["swarm-api"] :
+      !strcontains(role, "roles/run.") && !strcontains(role, "roles/container.") && !strcontains(role, "roles/compute.")
+    ])
+    error_message = "swarm-api must hold no compute permission: it names a profile, it does not create infrastructure"
+  }
+
+  assert {
+    condition = alltrue([
+      for role in output.granted_roles["swarm-api"] :
+      !strcontains(role, "swarmJobDispatcher") && !strcontains(role, "swarmJobReaper")
+    ])
+    error_message = "the API may neither dispatch nor reap executions"
+  }
+
+  assert {
+    condition     = contains(output.granted_roles["swarm-api"], "roles/serviceusage.serviceUsageConsumer")
+    error_message = "the API needs serviceUsageConsumer to send x-goog-user-project on Cloud Identity calls (CONTRACT.md, verified constraint)"
+  }
+}
+
+run "only_the_reconciler_can_delete" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/iam"
+  }
+
+  # What the reaper and the dispatcher roles CONTAIN is asserted in
+  # platform_roles.tftest.hcl, against terraform/bootstrap, which defines them
+  # since archived issue 79. This run holds who is GRANTED the reaper role, which is still
+  # this module's.
+  assert {
+    condition     = contains(output.granted_roles["swarm-reconciler"], output.job_reaper_role_id)
+    error_message = "the reaper role is attached to the reconciler and to nothing else"
+  }
+
+  assert {
+    condition = length([
+      for account, roles in output.granted_roles : account
+      if contains(roles, output.job_reaper_role_id)
+    ]) == 1
+    error_message = "exactly one identity may delete executions"
+  }
+}
+
+run "firestore_grants_are_unconditioned_because_iam_conditions_do_not_gate_the_data_plane" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/iam"
+  }
+
+  # REVERSED on evidence, 2026-09-16. This used to require an IAM condition
+  # pinning every grant to the swarm database. Firestore does not evaluate IAM
+  # Conditions on the DATA plane -- only for administrative operations -- so the
+  # condition did not restrict document access, it DENIED it: every
+  # control-plane service came up reporting
+  # "firestore unavailable: PermissionDenied". Security Rules are not an
+  # alternative either; server SDKs with admin credentials bypass them.
+  #
+  # So the grant is unconditioned, and the honest boundary is documented in
+  # docs/security.md: a swarm identity can reach any Firestore database in this
+  # project. Today `swarm` is the only one. The real fix is a separate project.
+  assert {
+    condition = alltrue([
+      for k, b in google_project_iam_member.firestore : length(b.condition) == 0
+    ])
+    error_message = "datastore grants must be UNCONDITIONED: an IAM condition here denies the data plane outright rather than scoping it"
+  }
+
+  # The replacement guarantee, since IAM cannot provide the old one: only the
+  # four control-plane identities hold a datastore grant at all. Tenant workers
+  # get the narrowed swarmTenantWorkerFirestore custom role instead, which omits
+  # entities.delete and entities.list -- so a hostile worker can neither
+  # enumerate nor destroy another tenant's documents even though it shares the
+  # database scope. That is the boundary that actually holds.
+  assert {
+    condition = alltrue([
+      for k, b in google_project_iam_member.firestore : b.role == "roles/datastore.user"
+    ])
+    error_message = "the control plane holds roles/datastore.user; anything broader is a regression"
+  }
+}
+
+run "gke_dispatch_cannot_reach_another_teams_cluster" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/iam"
+  }
+
+  # This project is SHARED and holds a live `peer-cluster` cluster owned by
+  # another team. A project-level container.jobs.create covers EVERY cluster in
+  # the project, so an unconditioned binding here would let swarm-scheduler
+  # create workloads in their production cluster and read its Pod logs, and
+  # swarm-reconciler delete their Jobs and Pods.
+  assert {
+    condition = alltrue([
+      for k, b in google_project_iam_member.gke :
+      length(b.condition) == 1 && strcontains(b.condition[0].expression, "clusters/swarm-autopilot")
+    ])
+    error_message = "every container.* grant must be conditioned to the swarm cluster; project-level covers peer-cluster too"
+  }
+
+  assert {
+    # NOTE: match on "clusters/peer-cluster", not "peer-cluster" -- the bare
+    # substring also appears inside the project id example-project, which made
+    # this assertion fail against a perfectly correct condition.
+    condition     = !strcontains(output.gke_role_condition, "clusters/peer-cluster")
+    error_message = "the condition must name the swarm cluster, never another team's"
+  }
+
+  # Only the two components that dispatch and reap hold a container role, and
+  # they hold different ones.
+  assert {
+    condition = alltrue([
+      for k, b in google_project_iam_member.gke : contains(["swarm-scheduler", "swarm-reconciler"], k)
+    ])
+    error_message = "only the dispatcher and the reconciler may touch the cluster"
+  }
+
+  assert {
+    condition = alltrue([
+      for k, b in google_project_iam_member.plain : !strcontains(b.role, "swarmGke")
+    ])
+    error_message = "a container.* role must never ride along in the unconditioned bindings"
+  }
+
+  assert {
+    condition     = contains(output.granted_roles["swarm-scheduler"], output.job_dispatcher_role_id)
+    error_message = "granted_roles must still report every project role, conditioned ones included"
+  }
+}
+
+run "an_unnamed_cluster_with_scoping_on_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/iam"
+  }
+
+  variables {
+    gke_enabled          = true
+    scope_gke_to_cluster = true
+    gke_cluster_name     = ""
+  }
+
+  # Fail-closed: without a cluster name there is nothing to pin the grant to,
+  # and a silently unconditioned container.* binding is the failure mode this
+  # whole condition exists to prevent.
+  expect_failures = [google_project_iam_member.gke]
+}
+
+run "the_gke_roles_disappear_entirely_when_the_cluster_does" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/iam"
+  }
+
+  variables {
+    gke_enabled = false
+  }
+
+  assert {
+    condition     = length(google_project_iam_member.gke) == 0
+    error_message = "with Autopilot off, nothing in the swarm holds a container.* permission at all"
+  }
+
+  assert {
+    condition = alltrue([
+      for account, roles in output.granted_roles : alltrue([
+        for role in roles : !strcontains(role, "swarmGke")
+      ])
+    ])
+    error_message = "a disabled backend must leave no standing grant behind"
+  }
+}
+
+run "the_api_reads_artifacts_but_cannot_write_them" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/iam"
+  }
+
+  assert {
+    condition     = google_storage_bucket_iam_member.api_reader.role == "roles/storage.objectViewer"
+    error_message = "the worker produces artifacts; the API only hands them over"
+  }
+
+  assert {
+    condition     = google_storage_bucket_iam_member.reconciler_admin.role == "roles/storage.objectAdmin"
+    error_message = "the reconciler cleans up artifacts of tasks abandoned before any lifecycle rule reaches them"
+  }
+}
+
+# The ids both roots read (terraform/modules/custom_role_ids). This used to
+# refuse an illegal custom_role_suffix variable on this module; the suffix is a
+# constant in that module now, so what is held is its result -- every id legal
+# for IAM, and every name in this project -- and the module's own output
+# precondition refuses an illegal one at plan.
+run "custom_role_ids_are_legal_and_named_in_this_project" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/custom_role_ids"
+  }
+
+  assert {
+    # 10 platform and forge roles, the five swarmWorkspace* roles (archived issue 847) and
+    # swarmHistoryPurgeDeleter (terraform/bootstrap/history_purge.tf), and
+    # swarmBrowserSessionProvisioner and swarmBrowserLoginRevoker
+    # (terraform/bootstrap/browser_logins.tf, lanes L8b and L8c of archived issue 1030), and
+    # swarmProviderKeyWriter (terraform/bootstrap/provider_keys.tf, KEYS-IAM),
+    # and swarmWorkspaceSecretAccessor (terraform/bootstrap/workspace_secrets.tf,
+    # SEC-IAM), and swarmTypesafeForwarderAccessor
+    # (terraform/bootstrap/typesafe_forwarder.tf, SEC-INJECT-A), and
+    # swarmGithubHooksDedup (terraform/bootstrap/github_hooks_role.tf,
+    # HOOKS-ROLE), and swarmQaJwtSigner (terraform/bootstrap/qa_identity.tf,
+    # QI-IAM), and swarmFrontDoorReader (terraform/bootstrap/workspace_deployer.tf,
+    # FRONT-DOOR-READ), and swarmSpeechOperator
+    # (terraform/bootstrap/platform_service_accounts.tf, Voice it's speech
+    # machine), and swarmPluginBundleRunner
+    # (terraform/bootstrap/plugin_bundle_runner.tf, the managed plugins' bundle
+    # job).
+    condition = length(output.ids) == 26 && alltrue([
+      for id in values(output.ids) : can(regex("^[a-zA-Z0-9_.]{3,64}$", id))
+    ])
+    error_message = "every custom role id must be 3 to 64 letters, digits, underscores or dots"
+  }
+
+  assert {
+    condition = alltrue([
+      for key, name in output.names : name == "projects/example-project/roles/${output.ids[key]}"
+    ])
+    error_message = "a role's name is projects/<project>/roles/<id>; a binding naming anything else names no role"
+  }
+}
+
+# The broker enumerates tenants to find whose subscription credential is due.
+# Enumeration is a list, and a list is all it gets: the ability to READ a
+# credential is granted per-secret by the secret_manager module, on the refresh
+# secrets only. If that separation ever collapses into one project-wide role,
+# a bug in the broker stops being a failed refresh and becomes every tenant's
+# provider key at once.
+run "the_broker_can_provision_account_secrets_and_read_none" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/iam"
+  }
+
+  # swarmSecretLister's exact permission set, and the two payload reads it must
+  # never carry, are asserted in platform_roles.tftest.hcl since the role and
+  # the broker's grant of it moved to terraform/bootstrap (archived issue 79, archived issue 69). This
+  # module grants the broker only what is left below.
+  #
+  # roles/secretmanager.viewer would have done the job and is the obvious
+  # shortcut. It also grants versions.list and versions.get over every secret in
+  # a project this platform shares with other teams.
+  #
+  # HALF OF THAT ARGUMENT WAS SPENT ON 2026-09-22, and saying so is the point of
+  # this note. `versions.list` is now granted project-wide for retention, so the
+  # reason to keep refusing `viewer` is no longer "it reaches other teams'
+  # metadata" -- it is `versions.get`, which reaches their PAYLOADS, and which
+  # platform_roles.tftest.hcl still refuses. A future reader comparing this role to
+  # `viewer` should weigh that one permission, not the pair.
+  assert {
+    condition = !contains(
+      local.plain_roles["swarm-quota-broker"],
+      "roles/secretmanager.viewer"
+    )
+    error_message = "the predefined viewer role reaches secrets belonging to other teams in this project"
+  }
+}

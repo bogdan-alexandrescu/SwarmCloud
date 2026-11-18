@@ -1,0 +1,109 @@
+/**
+ * VISUAL QA Q4 (owner, 2026-10-02): the agent split.
+ *
+ *   * The log dock drew at the TOP of the Details tab whenever the tab was
+ *     short or still reading, and was cut off at the right. The column is a
+ *     full-height flex column whose pane takes the slack. The dock itself is
+ *     gone (U11a, owner decision 2026-10-04): the log is the Logs tab, which
+ *     fills that pane and is never wider than it.
+ *   * The header was clipped at the split's width ("task_0064264e0630462…"
+ *     cut, the tabs "Details Children 0 Att…" cut): the title ellipses and the
+ *     actions keep their width; the tabs scroll sideways if they do not fit.
+ *
+ * MUTATIONS: drop the pane's `flex: 1` or the column's height,
+ * let the title wrap, or let the tabs wrap -- each turns a case red.
+ */
+import { fireEvent, render, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it } from 'vitest'
+
+import { App } from '../App'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
+
+const WIDE: CascadeEnv = { width: 1440 }
+
+afterEach(() => {
+  window.location.hash = ''
+  window.history.replaceState(null, '', '/')
+})
+
+async function split(): Promise<HTMLElement> {
+  // At its Logs address: a running agent opens on Details since archived issue 1646.
+  window.location.hash = '#work/task/task_a073aff5/logs'
+  render(<App />)
+  // A claude-code agent's Logs open on its Transcript, which in the agent's
+  // own pane is the trace (trace/Trace.tsx, part of archived issue 2688); the stream log
+  // these cases measure is the Runner view.
+  const runner = await waitFor(() => {
+    const b = [...document.querySelectorAll<HTMLButtonElement>('.ag-split-pane [aria-label="Which log"] button')].find(
+      (x) => (x.querySelector('.ag-logs-long')?.textContent ?? x.textContent) === 'Runner',
+    )
+    expect(b).toBeDefined()
+    return b!
+  })
+  fireEvent.click(runner)
+  return waitFor(() => {
+    const s = document.querySelector<HTMLElement>('.ag-split')
+    expect(s).not.toBeNull()
+    expect(s!.querySelector('.ag-split-pane > .ag-logs')).not.toBeNull()
+    return s!
+  })
+}
+
+describe('Q4: the open tab takes the column to its foot', () => {
+  it('is the column’s last row, and the column is the viewport’s height at any pane height', async () => {
+    const s = await split()
+    const pane = s.querySelector(':scope > .ag-split-pane')!
+    expect(s.lastElementChild, 'something is docked under the pane').toBe(pane)
+    expect(painted(s, 'display', WIDE)).toBe('flex')
+    expect(painted(s, 'flex-direction', WIDE)).toBe('column')
+    // The Logs pane is the column's height less the stuck tab strip, so once
+    // the head has scrolled away the log reaches the column's foot
+    // (AGENT-HEAD-B, the owner's pick AH1 B, 2026-10-28; qa.g2.inspector.test.tsx).
+    expect(painted(pane, 'height', WIDE)).toBe('calc(100% + 18px - 57px)')
+    // A column with only a max-height is as short as a short pane. In the
+    // grid it is the viewport's height.
+    const host = document.createElement('div')
+    host.innerHTML = '<div class="app has-inspector"><main class="work"></main><div class="drawer ctl-drawer ag-split"></div></div>'
+    document.body.appendChild(host)
+    try {
+      expect(painted(host.querySelector('.ctl-drawer')!, 'height', WIDE) ?? '', 'the column has no height').toMatch(/calc\(100vh/)
+    } finally {
+      host.remove()
+    }
+  })
+
+  it('draws the log no wider than the pane it fills', async () => {
+    const s = await split()
+    const logs = s.querySelector('.ag-split-pane > .ag-logs')!
+    expect(painted(logs, 'min-width', WIDE)).toBe('0')
+    expect(painted(logs.querySelector('.ag-logs-bar')!, 'min-width', WIDE)).toBe('0')
+  })
+})
+
+describe('Q4: the detail header and tabs fit the split', () => {
+  it('ellipses the title and keeps the actions whole', async () => {
+    const s = await split()
+    // TWO LINES, THEN AN ELLIPSIS (walkthrough C, 2026-10-03): the title is
+    // clamped rather than cut at one line, the whole name in its title.
+    const title = s.querySelector('.ag-head-title')!
+    expect(painted(title, '-webkit-line-clamp', WIDE)).toBe('2')
+    expect(painted(title, 'overflow', WIDE)).toBe('hidden')
+    expect(title.getAttribute('title')).toBe(title.textContent)
+    // The title takes the slack and the row WRAPS rather than run the actions
+    // out of the column's `overflow: hidden` (v3 review, 2026-10-04): a
+    // nowrap row clipped the ✕ in 480-640px columns. Each line is measured in
+    // agent.header.actions.test.tsx.
+    expect(painted(title, ['flex', 'flex-grow'], WIDE)).toMatch(/^1\b/)
+    expect(painted(s.querySelector('.ag-head-row')!, 'flex-wrap', WIDE)).toBe('wrap')
+    expect(painted(s.querySelector('.ag-head-actions')!, ['flex', 'flex-shrink'], WIDE)).toMatch(/^(none|0)\b/)
+  })
+
+  it('scrolls the tabs sideways rather than cutting or wrapping them', async () => {
+    const s = await split()
+    const tabs = s.querySelector('.c-tabs[role="tablist"]')!
+    expect(painted(tabs, 'flex-wrap', WIDE)).toBe('nowrap')
+    expect(painted(tabs, ['overflow-x', 'overflow'], WIDE)).toBe('auto')
+    expect(painted(tabs.querySelector('button')!, ['flex', 'flex-shrink'], WIDE)).toMatch(/^(none|0)\b/)
+  })
+})

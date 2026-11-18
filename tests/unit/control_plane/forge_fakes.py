@@ -1,0 +1,409 @@
+"""Fakes for the issue run's forge reads (archived issue 454): the tenant's token, and GitHub.
+
+The secret reader is a fake; GitHub is a fake TRANSPORT under the real
+`forge.GitHubIssues`, so the client's paging, caps, status mapping and host
+pin are the shipped code. Every token is built at runtime.
+"""
+
+from __future__ import annotations
+
+import json
+import secrets
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+from swarm_api import forge
+
+
+def make_token() -> str:
+    return "ghp_" + secrets.token_hex(18)
+
+
+class AnyTenantTokens:
+    """A `-git` secret for every tenant: the tenant's id is in its token."""
+
+    def __init__(self, missing: tuple[str, ...] = ()) -> None:
+        self.missing = set(missing)
+        self.asked: list[str] = []
+        self.issued: dict[str, str] = {}
+
+    def token_for(self, tenant, *, person=None) -> str:
+        secret_id = tenant.secret_name(forge.GIT_PROVIDER)
+        self.asked.append(secret_id)
+        if secret_id in self.missing:
+            raise forge.NoForgeCredential(
+                f"tenant {tenant.tenant_id!r} has no forge credential ({secret_id})"
+            )
+        return self.issued.setdefault(secret_id, make_token())
+
+
+def issue(number: int, title: str = "") -> dict[str, Any]:
+    return {"number": number, "title": title or f"issue {number}"}
+
+
+def pull(number: int, title: str = "") -> dict[str, Any]:
+    return {"number": number, "title": title or f"pull {number}"}
+
+
+class GitHub:
+    """api.github.com's list routes over in-memory data, paged as GitHub pages.
+
+    `issues` is `/issues` as GitHub serves it: pull requests mixed in, marked
+    with a `pull_request` key. `status` maps a path suffix to an HTTP status
+    every matching request answers instead.
+    """
+
+    def __init__(
+        self,
+        *,
+        issues: list[dict[str, Any]] | None = None,
+        pulls: list[dict[str, Any]] | None = None,
+        files: dict[int, list[Any]] | None = None,
+        status: dict[str, int] | None = None,
+        raises: Exception | None = None,
+    ) -> None:
+        self.issues = issues or []
+        self.pulls = pulls or []
+        self.files = files or {}
+        self.status = status or {}
+        self.raises = raises
+        self.calls: list[tuple[str, dict[str, str]]] = []
+
+    def paths(self) -> list[str]:
+        return [urlparse(url).path for url, _ in self.calls]
+
+    def __call__(self, url: str, headers: dict[str, str], timeout: float):
+        self.calls.append((url, dict(headers)))
+        if self.raises is not None:
+            raise self.raises
+        parsed = urlparse(url)
+        path = parsed.path
+        for suffix, status in self.status.items():
+            if path.endswith(suffix):
+                return status, json.dumps({"message": "refused"}).encode()
+        query = parse_qs(parsed.query)
+        page = int(query.get("page", ["1"])[0])
+        per_page = int(query.get("per_page", ["30"])[0])
+        if path.endswith("/issues"):
+            data: list[Any] = self.issues
+        elif path.endswith("/pulls"):
+            # An entry with no `state` is open, as every fixture before the
+            # sweep's recently-merged read (`state=closed`) was written.
+            wanted = query.get("state", ["open"])[0]
+            data = [p for p in self.pulls if wanted == "all" or p.get("state", "open") == wanted]
+        elif path.endswith("/files"):
+            number = int(path.rstrip("/").split("/")[-2])
+            # An entry is a name, or `(name, patch)` for a file the forge sends a patch for.
+            data = [
+                {"filename": e} if isinstance(e, str) else {"filename": e[0], "patch": e[1]}
+                for e in self.files.get(number, [])
+            ]
+        else:
+            return 404, b"{}"
+        chunk = data[(page - 1) * per_page: page * per_page]
+        return 200, json.dumps(chunk).encode()
+
+
+class GitHubWrites:
+    """api.github.com's comment and pull-request routes, in memory, for `GitHubWriter`.
+
+    `comments` is every comment on every issue by id; `pulls` is the pull
+    requests by number. `status` maps an HTTP method to the status every
+    request with it answers instead (`{"POST": 403}`), so a refusal is the
+    shipped client's mapping, not a mocked exception.
+    """
+
+    def __init__(self, *, login: str = "swarm-bot", status: dict[str, int] | None = None) -> None:
+        self.login = login
+        self.status = status or {}
+        #: `(method, path)` -> the status that one route answers instead, so a
+        #: test can refuse one write (closing an issue) and not the others.
+        self.refuse: dict[tuple[str, str], int] = {}
+        #: A method, or one `(method, path)`, whose request RAISES this
+        #: instead of answering -- GitHub unreachable (a `URLError`, a
+        #: timeout), which the shipped client maps, not the test.
+        self.raise_for: dict[Any, BaseException] = {}
+        self.comments: dict[int, dict[str, Any]] = {}
+        self.pulls: dict[int, dict[str, Any]] = {}
+        #: Each issue an `already_on_main` run closed (archived issue 646), by number: the
+        #: fields the PATCH set (`state`, `state_reason`).
+        self.issues: dict[int, dict[str, Any]] = {}
+        # CI (archived issue 454's loop): the default branch's rules, the check runs and
+        # commit statuses at each sha, each check run's annotations, and the
+        # Actions job logs `locate` redirects to and `fetch` serves.
+        self.rules: list[dict[str, Any]] = []
+        self.check_runs: dict[str, list[dict[str, Any]]] = {}
+        self.statuses: dict[str, list[dict[str, Any]]] = {}
+        self.annotations: dict[int, list[dict[str, Any]]] = {}
+        self.job_logs: dict[int, bytes] = {}
+        self.located: list[tuple[str, dict[str, str]]] = []
+        self.fetched: list[tuple[str, dict[str, str]]] = []
+        self.calls: list[tuple[str, str, dict[str, str], bytes | None]] = []
+        self._next = 9000
+        #: The repository itself and its branches by name -> sha (archived issue 748): what
+        #: a pull request opened from an already-pushed branch reads and makes.
+        self.default_branch = "main"
+        self.branches: dict[str, str] = {}
+        #: Lane SPEED-D2: the Actions jobs a re-run was asked of
+        #: (`actions/jobs/<id>/rerun`), in order, and what that route answers
+        #: -- 403 by default, a credential without `actions: write`, so a
+        #: test that never asked for a re-run sees the round it always did.
+        self.reruns: list[int] = []
+        self.rerun_answer = 403
+        #: archived issue 2841: the Actions workflow runs whose failed jobs a re-run was
+        #: asked of (`actions/runs/<id>/rerun-failed-jobs`), in order; that
+        #: route answers `rerun_answer` too.
+        self.run_reruns: list[int] = []
+        #: The Actions workflow runs `GET actions/runs/<id>` reads, by id
+        #: (archived issue 3006: a re-run's latest attempt still `in_progress`); an
+        #: unknown run answers 404.
+        self.runs: dict[int, dict[str, Any]] = {}
+        #: The files each pull request changes, and the files its base
+        #: changed since the branch left it (`compare/<head>...<base>`).
+        self.pull_file_names: dict[int, list[str]] = {}
+        self.base_changed: list[str] = []
+        #: The repository's labels (`GET labels`), and each `POST
+        #: issues/<n>/labels` in order as `(number, labels)` (FR3-HOLDLABEL).
+        self.labels: list[str] = ["bug", "enhancement", "needs-owner"]
+        self.labelled: list[tuple[int, list[str]]] = []
+        #: The repository's Actions variables (`GET actions/variables/<name>`),
+        #: by name: an absent one answers 404, and `variables_answer`, when
+        #: set, is the status every variable read answers instead (archived issue 3312: a
+        #: token without *Variables: Read* is a 403).
+        self.variables: dict[str, str] = {}
+        self.variables_answer: int | None = None
+        #: The commits `GET commits/<sha>` serves (archived issue 3315). Any other sha
+        #: answers `missing_commit`: 404 by default, which the auto-merge head
+        #: walk reads as "not this run's"; 422 is GitHub's "No commit found
+        #: for SHA".
+        self.commits: set[str] = set()
+        self.missing_commit = 404
+
+    def writes(self) -> list[tuple[str, str]]:
+        return [(m, urlparse(u).path) for m, u, _, _ in self.calls if m != "GET"]
+
+    def on_issue(self, number: int) -> list[dict[str, Any]]:
+        return [c for c in self.comments.values() if c["issue"] == number]
+
+    def add_comment(self, number: int, body: str, *, login: str = "") -> int:
+        self._next += 1
+        self.comments[self._next] = {
+            "id": self._next, "issue": number, "body": body,
+            "user": {"login": login or self.login},
+            "html_url": f"https://github.com/o/r/issues/{number}#issuecomment-{self._next}",
+        }
+        return self._next
+
+    def __call__(self, method, url, headers, body, timeout):
+        self.calls.append((method, url, dict(headers), body))
+        if method in self.status:
+            return self.status[method], json.dumps({"message": "refused"}).encode()
+        parsed = urlparse(url)
+        for key in (method, (method, parsed.path)):
+            if key in self.raise_for:
+                raise self.raise_for[key]
+        if (method, parsed.path) in self.refuse:
+            return self.refuse[(method, parsed.path)], json.dumps({"message": "refused"}).encode()
+        parts = parsed.path.strip("/").split("/")  # repos/o/r/...
+        rest = parts[3:]
+        payload = json.loads(body.decode()) if body else {}
+        if rest == ["issues"]:
+            # Opening an issue (the observer's epic) and listing them, newest first.
+            repository = "/".join(parts[1:3])
+            if method == "POST":
+                self._next += 1
+                self.issues[self._next] = {
+                    "number": self._next, "state": "open", "repository": repository,
+                    "title": payload["title"], "body": payload["body"],
+                    "labels": [{"name": name} for name in payload.get("labels", [])],
+                    "html_url": f"https://github.com/{repository}/issues/{self._next}",
+                }
+                return 201, json.dumps(self.issues[self._next]).encode()
+            query = parse_qs(parsed.query)
+            page = int(query.get("page", ["1"])[0])
+            per_page = int(query.get("per_page", ["30"])[0])
+            listed = sorted((i for i in self.issues.values() if i.get("repository") == repository),
+                            key=lambda i: -i["number"])
+            return 200, json.dumps(listed[(page - 1) * per_page: page * per_page]).encode()
+        if rest == ["labels"] and method == "GET":
+            query = parse_qs(parsed.query)
+            page = int(query.get("page", ["1"])[0])
+            per_page = int(query.get("per_page", ["30"])[0])
+            chunk = self.labels[(page - 1) * per_page: page * per_page]
+            return 200, json.dumps([{"name": name} for name in chunk]).encode()
+        if rest[:1] == ["issues"] and len(rest) == 3 and rest[2] == "labels" and method == "POST":
+            number = int(rest[1])
+            self.labelled.append((number, list(payload["labels"])))
+            issue = self.issues.setdefault(number, {"number": number, "state": "open", "labels": []})
+            have = [entry["name"] for entry in issue.setdefault("labels", [])]
+            issue["labels"] += [{"name": n} for n in payload["labels"] if n not in have]
+            return 200, json.dumps(issue["labels"]).encode()
+        if rest[:1] == ["issues"] and len(rest) == 3 and rest[2] == "comments":
+            number = int(rest[1])
+            if method == "POST":
+                cid = self.add_comment(number, payload["body"])
+                return 201, json.dumps(self.comments[cid]).encode()
+            page = int(parse_qs(parsed.query).get("page", ["1"])[0])
+            per_page = int(parse_qs(parsed.query).get("per_page", ["30"])[0])
+            listed = sorted(self.on_issue(number), key=lambda c: c["id"])
+            return 200, json.dumps(listed[(page - 1) * per_page: page * per_page]).encode()
+        if rest[:1] == ["issues"] and len(rest) == 2 and rest[1].isdigit():
+            number = int(rest[1])
+            if method == "PATCH":
+                self.issues.setdefault(number, {"number": number, "state": "open"}).update(payload)
+            return 200, json.dumps(self.issues.get(number, {"number": number, "state": "open"})).encode()
+        if rest[:2] == ["issues", "comments"] and len(rest) == 3:
+            cid = int(rest[2])
+            if cid not in self.comments:
+                return 404, b"{}"
+            if method == "DELETE":
+                del self.comments[cid]
+                return 204, b""
+            self.comments[cid]["body"] = payload["body"]
+            return 200, json.dumps(self.comments[cid]).encode()
+        if rest[:1] == ["pulls"] and len(rest) == 2:
+            number = int(rest[1])
+            if number not in self.pulls:
+                return 404, b"{}"
+            if method == "PATCH":
+                for key in ("body", "title"):
+                    if key in payload:
+                        self.pulls[number][key] = payload[key]
+            return 200, json.dumps(self.pulls[number]).encode()
+        if not rest and method == "GET":
+            return 200, json.dumps({"full_name": "/".join(parts[1:3]),
+                                    "default_branch": self.default_branch}).encode()
+        if rest[:3] == ["git", "ref", "heads"] and method == "GET":
+            name = "/".join(rest[3:])
+            if name not in self.branches:
+                return 404, b"{}"
+            return 200, json.dumps({"ref": f"refs/heads/{name}",
+                                    "object": {"sha": self.branches[name]}}).encode()
+        if rest == ["git", "refs"] and method == "POST":
+            name = payload["ref"].removeprefix("refs/heads/")
+            if name in self.branches:
+                return 422, json.dumps({"message": "Reference already exists"}).encode()
+            self.branches[name] = payload["sha"]
+            return 201, json.dumps({"ref": payload["ref"], "object": {"sha": payload["sha"]}}).encode()
+        if rest == ["pulls"]:
+            if method == "POST":
+                if any(p["head"]["ref"] == payload["head"] and p["state"] == "open"
+                       for p in self.pulls.values()):
+                    return 422, json.dumps({"message": "A pull request already exists"}).encode()
+                self._next += 1
+                self.open_pull(self._next, self.branches.get(payload["head"], ""),
+                               ref=payload["head"], body=payload["body"])
+                self.pulls[self._next].update(title=payload["title"],
+                                              base={"ref": payload["base"]})
+                return 201, json.dumps(self.pulls[self._next]).encode()
+            head = parse_qs(parsed.query).get("head", [""])[0].partition(":")[2]
+            listed = [p for p in self.pulls.values()
+                      if p["head"]["ref"] == head and p["state"] == "open"]
+            return 200, json.dumps(listed[:1]).encode()
+        query = parse_qs(parsed.query)
+        page = int(query.get("page", ["1"])[0])
+        per_page = int(query.get("per_page", ["30"])[0])
+        if rest[:2] == ["actions", "jobs"] and len(rest) == 4 and rest[3] == "rerun":
+            if method != "POST":
+                return 404, b"{}"
+            if self.rerun_answer != 201:
+                return self.rerun_answer, json.dumps({"message": "refused"}).encode()
+            self.reruns.append(int(rest[2]))
+            return 201, b"{}"
+        if rest[:2] == ["actions", "runs"] and len(rest) == 3 and method == "GET":
+            run = self.runs.get(int(rest[2]))
+            if run is None:
+                return 404, json.dumps({"message": "Not Found"}).encode()
+            return 200, json.dumps(run).encode()
+        if (rest[:2] == ["actions", "runs"] and len(rest) == 4
+                and rest[3] == "rerun-failed-jobs"):
+            if method != "POST":
+                return 404, b"{}"
+            if self.rerun_answer != 201:
+                return self.rerun_answer, json.dumps({"message": "refused"}).encode()
+            self.run_reruns.append(int(rest[2]))
+            return 201, b"{}"
+        if rest[:1] == ["pulls"] and len(rest) == 3 and rest[2] == "files":
+            names = self.pull_file_names.get(int(rest[1]), [])
+            chunk = names[(page - 1) * per_page: page * per_page]
+            return 200, json.dumps([{"filename": n} for n in chunk]).encode()
+        if rest[:1] == ["compare"] and len(rest) >= 2:
+            return 200, json.dumps({"files": [{"filename": n} for n in self.base_changed]}).encode()
+        if rest[:2] == ["rules", "branches"]:
+            return 200, json.dumps(self.rules).encode()
+        if rest[:2] == ["actions", "variables"] and len(rest) == 3:
+            if self.variables_answer is not None:
+                return self.variables_answer, json.dumps({"message": "refused"}).encode()
+            if rest[2] not in self.variables:
+                return 404, json.dumps({"message": "Not Found"}).encode()
+            return 200, json.dumps({"name": rest[2], "value": self.variables[rest[2]]}).encode()
+        if rest[:1] == ["commits"] and len(rest) == 2 and method == "GET":
+            if rest[1] not in self.commits:
+                if self.missing_commit == 422:
+                    return 422, json.dumps({"message": f"No commit found for SHA: {rest[1]}"}).encode()
+                return self.missing_commit, b"{}"
+            return 200, json.dumps({"sha": rest[1], "commit": {"message": "a commit"}}).encode()
+        if rest[:1] == ["commits"] and len(rest) == 3 and rest[2] == "check-runs":
+            runs = self.check_runs.get(rest[1], [])
+            chunk = runs[(page - 1) * per_page: page * per_page]
+            return 200, json.dumps({"total_count": len(runs), "check_runs": chunk}).encode()
+        if rest[:1] == ["commits"] and len(rest) == 3 and rest[2] == "status":
+            return 200, json.dumps({"statuses": self.statuses.get(rest[1], [])}).encode()
+        if rest[:1] == ["check-runs"] and len(rest) == 3 and rest[2] == "annotations":
+            return 200, json.dumps(self.annotations.get(int(rest[1]), [])[:per_page]).encode()
+        return 404, b"{}"
+
+    # -- the Actions job log: a redirect from api.github.com, then a token-less read
+
+    LOG_HOST = "https://pipelines.actions.githubusercontent.com/logs/"
+
+    def locate(self, url, headers, timeout):
+        self.located.append((url, dict(headers)))
+        parts = urlparse(url).path.strip("/").split("/")  # repos/o/r/actions/jobs/<id>/logs
+        job_id = int(parts[-2])
+        if job_id not in self.job_logs:
+            return 404, ""
+        return 302, f"{self.LOG_HOST}{job_id}?sig=signed"
+
+    def fetch(self, url, headers, timeout):
+        self.fetched.append((url, dict(headers)))
+        job_id = int(urlparse(url).path.rstrip("/").split("/")[-1])
+        return 200, self.job_logs[job_id]
+
+    # -- helpers for a test's CI
+
+    def open_pull(self, number: int, sha: str, *, ref: str = "swarm/x", body: str = "") -> None:
+        self.pulls[number] = {
+            "number": number, "html_url": f"https://github.com/example-org/widgets/pull/{number}",
+            "head": {"sha": sha, "ref": ref}, "base": {"ref": "main"}, "body": body,
+            "state": "open", "merged": False,
+        }
+
+    def require(self, *contexts: str, app_id: int | None = 15368) -> None:
+        """The default branch requires `contexts`, pinned to `app_id` (None: unpinned)."""
+        self.rules = [{
+            "type": "required_status_checks",
+            "parameters": {"required_status_checks": [
+                {"context": c, **({"integration_id": app_id} if app_id is not None else {})}
+                for c in contexts
+            ]},
+        }]
+
+    def check(
+        self, sha: str, name: str, conclusion: str | None, *, status: str = "completed",
+        check_id: int | None = None, output: dict[str, Any] | None = None,
+        app_id: int = 15368, app_slug: str = "github-actions", run_id: int | None = None,
+    ) -> int:
+        """A check run `name` at `sha`; its id. `run_id`, when given, is the
+        Actions workflow run it is a job of, carried in `details_url` as
+        GitHub gives it (archived issue 2841); otherwise there is no `details_url`."""
+        self._next += 1
+        ident = check_id or self._next
+        self.check_runs.setdefault(sha, []).append({
+            "id": ident, "name": name, "head_sha": sha, "status": status,
+            "conclusion": conclusion, "app": {"id": app_id, "slug": app_slug},
+            "output": output or {"title": None, "summary": None, "text": None},
+            **({"details_url": f"https://github.com/example-org/widgets/actions/runs/"
+                               f"{int(run_id)}/job/{ident}"} if run_id is not None else {}),
+        })
+        return ident

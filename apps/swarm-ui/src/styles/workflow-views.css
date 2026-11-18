@@ -1,0 +1,48 @@
+/* WORKFLOWVIEWS.TSX'S OWN RULES: the timeline, the table and the step
+   inspector it draws for a workflow's page. The section's shared rules stay in
+   workflows.css (Workflows.tsx's sheet); these are the ones only this file's
+   markup carries. A section sheet loads before styles.css, so a rule here
+   that overrides a styles.css one outranks it on specificity, not order. */
+
+/* A SHORT RUN'S LENGTH, BESIDE ITS BAR (visual QA pass 1, overview-agents-88,
+   and its review). It borrows `.wf-tl-cut`'s micro mono face, but not its
+   surface backdrop or its -0.5ch pull: those are for a label written OVER a
+   cut wait, and here they covered the 4px bar the label is for. Its inline
+   `left` (the bar's width plus its 4px floor) is already past the bar. */
+.wf-tl-cut.wf-tl-short {
+  transform: translateY(-50%);
+  background: none;
+  padding: 0;
+}
+
+/* WHOSE REASON WHY IT FAILED IS, WHEN AN OLDER ATTEMPT IS PICKED (visual QA
+   pass 1, overview-agents-68, and its review): a sentence in the body face,
+   on its own line of the card, wrapping at any width. */
+.wf-inspect > .wf-scrub-note {
+  font: var(--t-micro)/var(--lh-micro) var(--font);
+  color: var(--text-dim);
+  white-space: normal;
+}
+
+/* A RUN STILL GOING IS A RUN, NOT A WAIT (visual QA pass 2, ovag2-09). The
+   tint rules in workflows.css (`.wf-tl-span.t-live`) outrank styles.css's
+   `.is-running` fill, so wf_audit_01's running scan-terraform was the pale
+   tint and a 1px outline: the key's `waited` swatch, eight days long. It now
+   takes a finished run's solid core in the live edge hue, drawn as a pseudo-
+   element so the `ctl-sweep` band, which animates the bar's own
+   background-position, still moves; `is-open`'s dashed end stays its open end.
+   The key's `running` swatch is the same core and the same end. */
+.wf-timeline .wf-tl-track > .wf-tl-span.is-running::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 25%;
+  bottom: 25%;
+  background: var(--s-live);
+}
+.wf-tl-swatch.is-running {
+  background-color: var(--s-liveb); box-shadow: inset 0 0 0 1px var(--s-live);
+  background-image: linear-gradient(var(--s-live), var(--s-live)); background-size: 100% 50%; background-position: center; background-repeat: no-repeat;
+  border-right: 2px dashed var(--text);
+}

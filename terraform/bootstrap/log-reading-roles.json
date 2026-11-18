@@ -1,0 +1,182 @@
+{
+  "_what": "Every PREDEFINED IAM role that reads log entries project-wide, as measured on the date below. A role is here when its includedPermissions carry at least one of the three permissions Cloud Logging entries.list accepts: logging.logEntries.list, logging.privateLogEntries.list, logging.views.access. The value is which of the three it carries.",
+  "_how": "GET https://iam.googleapis.com/v1/roles?view=FULL&pageSize=1000, all pages, read-only: 2397 predefined roles. 15 returned no permission list (13 BETA roles, plus roles/gkebackup.crossProjectServiceAgent and roles/spanner.databaseRoleUser), none of them a logging role, and are not judged here. Read by terraform/bootstrap/verify_logs.tf (local.log_reading_roles; var.deployer_roles refuses every role here) and tests/terraform/verify_logs.tftest.hcl.",
+  "_limits": "A DENYLIST MEASURED ON A DATE. Google adds roles and adds permissions to existing ones, so a role absent here may read logs later. local.deployer_roles_reviewed in verify_logs.tf is what refuses a role nobody has weighed; this file is what refuses a known reader even if someone marks it reviewed.",
+  "measured": "2026-09-24",
+  "roles": {
+    "roles/accesscontextmanager.vpcScTroubleshooterViewer": [
+      "logging.logEntries.list"
+    ],
+    "roles/admin": [
+      "logging.logEntries.list",
+      "logging.privateLogEntries.list",
+      "logging.views.access"
+    ],
+    "roles/aiplatform.customCodeServiceAgent": [
+      "logging.views.access"
+    ],
+    "roles/aiplatform.serviceAgent": [
+      "logging.views.access"
+    ],
+    "roles/aiplatform.telemetryServiceAgent": [
+      "logging.logEntries.list"
+    ],
+    "roles/billing.admin": [
+      "logging.logEntries.list",
+      "logging.privateLogEntries.list"
+    ],
+    "roles/cloudbuild.builds.builder": [
+      "logging.logEntries.list",
+      "logging.views.access"
+    ],
+    "roles/cloudbuild.serviceAgent": [
+      "logging.logEntries.list",
+      "logging.views.access"
+    ],
+    "roles/cloudhub.operator": [
+      "logging.logEntries.list"
+    ],
+    "roles/composer.worker": [
+      "logging.logEntries.list",
+      "logging.views.access"
+    ],
+    "roles/datamigration.serviceAgent": [
+      "logging.logEntries.list"
+    ],
+    "roles/dataproc.hubAgent": [
+      "logging.logEntries.list"
+    ],
+    "roles/discoveryengine.admin": [
+      "logging.logEntries.list"
+    ],
+    "roles/discoveryengine.agentspaceAdmin": [
+      "logging.logEntries.list"
+    ],
+    "roles/editor": [
+      "logging.logEntries.list"
+    ],
+    "roles/firebase.admin": [
+      "logging.logEntries.list",
+      "logging.views.access"
+    ],
+    "roles/firebase.developAdmin": [
+      "logging.logEntries.list"
+    ],
+    "roles/firebase.developViewer": [
+      "logging.logEntries.list"
+    ],
+    "roles/firebase.editor": [
+      "logging.logEntries.list",
+      "logging.views.access"
+    ],
+    "roles/firebase.qualityAdmin": [
+      "logging.views.access"
+    ],
+    "roles/firebase.qualityViewer": [
+      "logging.views.access"
+    ],
+    "roles/firebase.viewer": [
+      "logging.logEntries.list",
+      "logging.views.access"
+    ],
+    "roles/firebasecrashlytics.admin": [
+      "logging.views.access"
+    ],
+    "roles/firebasecrashlytics.viewer": [
+      "logging.views.access"
+    ],
+    "roles/hypercomputecluster.serviceAgent": [
+      "logging.logEntries.list"
+    ],
+    "roles/iam.dataScientist": [
+      "logging.logEntries.list"
+    ],
+    "roles/iam.databasesAdmin": [
+      "logging.logEntries.list"
+    ],
+    "roles/iam.devOps": [
+      "logging.logEntries.list",
+      "logging.privateLogEntries.list",
+      "logging.views.access"
+    ],
+    "roles/iam.infrastructureAdmin": [
+      "logging.logEntries.list",
+      "logging.privateLogEntries.list",
+      "logging.views.access"
+    ],
+    "roles/iam.mlEngineer": [
+      "logging.logEntries.list"
+    ],
+    "roles/iam.networkAdmin": [
+      "logging.logEntries.list",
+      "logging.privateLogEntries.list",
+      "logging.views.access"
+    ],
+    "roles/iam.securityAdmin": [
+      "logging.logEntries.list",
+      "logging.privateLogEntries.list"
+    ],
+    "roles/iam.securityAuditor": [
+      "logging.logEntries.list",
+      "logging.privateLogEntries.list"
+    ],
+    "roles/iam.securityReviewer": [
+      "logging.logEntries.list",
+      "logging.privateLogEntries.list"
+    ],
+    "roles/iam.siteReliabilityEngineer": [
+      "logging.logEntries.list"
+    ],
+    "roles/iam.supportUser": [
+      "logging.logEntries.list"
+    ],
+    "roles/logging.admin": [
+      "logging.logEntries.list",
+      "logging.privateLogEntries.list",
+      "logging.views.access"
+    ],
+    "roles/logging.privateLogViewer": [
+      "logging.logEntries.list",
+      "logging.privateLogEntries.list",
+      "logging.views.access"
+    ],
+    "roles/logging.viewAccessor": [
+      "logging.views.access"
+    ],
+    "roles/logging.viewer": [
+      "logging.logEntries.list"
+    ],
+    "roles/owner": [
+      "logging.logEntries.list",
+      "logging.privateLogEntries.list",
+      "logging.views.access"
+    ],
+    "roles/reader": [
+      "logging.logEntries.list"
+    ],
+    "roles/securedlandingzone.serviceAgent": [
+      "logging.logEntries.list"
+    ],
+    "roles/securitycenter.controlServiceAgent": [
+      "logging.logEntries.list"
+    ],
+    "roles/securitycenter.serviceAgent": [
+      "logging.logEntries.list"
+    ],
+    "roles/telcoautomation.admin": [
+      "logging.logEntries.list"
+    ],
+    "roles/telcoautomation.opsAdminTier1": [
+      "logging.logEntries.list"
+    ],
+    "roles/telcoautomation.opsAdminTier4": [
+      "logging.logEntries.list"
+    ],
+    "roles/viewer": [
+      "logging.logEntries.list"
+    ],
+    "roles/writer": [
+      "logging.logEntries.list"
+    ]
+  }
+}

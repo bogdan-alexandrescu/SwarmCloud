@@ -1,0 +1,763 @@
+"""The workspace job's call guard refuses everything not named for one workspace.
+
+docs/workspaces.md §2.5 (lane W3 of archived issue 847). `swarm-workspace-deployer` holds
+project-wide account-IAM power in a project it shares with another team, and
+Google cannot narrow it (§2.4). What bounds it is scripts/lib/workspace-guard.sh:
+every gcloud, kubectl and curl the job makes passes through the shims in
+scripts/lib/guard-bin/ and runs only if one shape in
+scripts/lib/workspace-calls.json matches it whole, with the names of the one
+workspace the job is for.
+
+So these tests hold four things:
+
+* every case in scripts/lib/workspace-guard-cases.json comes out as it says --
+  each rule refusing a call built to trip it and allowing the call it exists for;
+* the guard and the script cannot drift: every gcloud and kubectl command the
+  workspace path names has a rule (allow, refuse-always, or known-unused), and
+  nothing on that path calls the three tools by an absolute path that would
+  step around the shims;
+* the wiring works as a process: a refusal exits 86 before the real binary
+  runs, writes the needs_owner stop file, and latches; report-only runs and
+  records nothing; the owner's report-only cannot be switched on under
+  SWARM_CALL_GUARD_ENFORCE;
+* the names the guard derives agree with the code that makes them: the real
+  kubernetes/render.py manifest passes C7 for its own tenant and fails it for
+  another, the bucket condition lines are register-tenant.sh's, and the forge
+  slot is swarm_api.gittokens's.
+
+Nothing here needs credentials, a network or a cluster; the "real" binaries are
+stand-ins written to a temporary directory.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import re
+import secrets
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from .conftest import placeholder_deployment, write_placeholder_deny_list, write_placeholder_tfvars
+
+REPO = Path(__file__).resolve().parents[3]
+LIB = REPO / "scripts" / "lib"
+GUARD = LIB / "workspace-guard.sh"
+RULES = LIB / "workspace-calls.json"
+CASES = LIB / "workspace-guard-cases.json"
+SHIMS = LIB / "guard-bin"
+REGISTER = REPO / "scripts" / "register-tenant.sh"
+COMMON = LIB / "common.sh"
+APPLY = REPO / "kubernetes" / "apply.sh"
+CLUSTER_NETWORK = REPO / "kubernetes" / "cluster-network.sh"
+
+REFUSED = 86
+WORKSPACE = "w-3f9a2c"
+
+pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
+
+RULE_DOC = json.loads(RULES.read_text())
+CASE_DOC = json.loads(CASES.read_text())
+# The project the self-test's record lives in, read from the record itself, so
+# the env, the calls and the expectation below agree with the cases file.
+PROJECT = CASE_DOC["record"]["name"].split("/")[1]
+_PH_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+assert _PH_SPEC is not None and _PH_SPEC.loader is not None
+placeholders = importlib.util.module_from_spec(_PH_SPEC)
+_PH_SPEC.loader.exec_module(placeholders)
+CALL_CASES = [c["name"] for c in CASE_DOC["cases"]]
+RECORD_CASES = [c["name"] for c in CASE_DOC["expect_refusals"]]
+
+
+def _env(tmp: Path, **extra: str) -> dict[str, str]:
+    """A fixed, credential-free environment, as the self-test uses."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("SWARM_CALL_GUARD", "CLOUDSDK_", "GOOGLE_")) and k != "KUBECONFIG"
+    }
+    env.update(
+        SWARM_ENV_FILE=str(tmp / "no.env"),
+        PROJECT_ID=PROJECT,
+        REGION="us-central1",
+        ENVIRONMENT="dev",
+        FIRESTORE_DATABASE="swarm",
+        GKE_CLUSTER="swarm-autopilot",
+        GKE_LOCATION="us-central1",
+        SWARM_CALL_GUARD=str(tmp / "expect.json"),
+        NO_COLOR="1",
+    )
+    env.pop("ARTIFACT_BUCKET", None)
+    env.update(extra)
+    return env
+
+
+def _guard(*args: str, env: dict[str, str], stdin: str = "") -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(GUARD), *args], input=stdin, capture_output=True, text=True, env=env, timeout=120, check=False
+    )
+
+
+@pytest.fixture(scope="module")
+def self_test() -> dict[str, dict]:
+    """One run of the guard's own self-test, every case, as JSON lines."""
+    out = subprocess.run(
+        [str(GUARD), "self-test", "--json"], capture_output=True, text=True, timeout=600, check=False
+    )
+    rows = [json.loads(line) for line in out.stdout.splitlines() if line.startswith("{")]
+    assert rows, f"the self-test printed no case at all (exit {out.returncode}):\n{out.stderr[-2000:]}"
+    by_name = {row["name"]: row for row in rows}
+    by_name["__exit__"] = {"code": out.returncode, "stderr": out.stderr}
+    return by_name
+
+
+@pytest.fixture()
+def ready(tmp_path: Path) -> dict[str, str]:
+    """An expectation built the way the job builds it: init, then expect --record."""
+    env = _env(tmp_path)
+    assert _guard("init", "--workspace-id", WORKSPACE, env=env).returncode == 0
+    record = tmp_path / "record.json"
+    record.write_text(json.dumps(CASE_DOC["record"]))
+    done = _guard("expect", "--record", str(record), env=env)
+    assert done.returncode == 0, done.stderr
+    return env
+
+
+# --------------------------------------------------------------------------
+# every case
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", CALL_CASES)
+def test_call_case(self_test: dict[str, dict], name: str) -> None:
+    row = self_test.get(name)
+    assert row is not None, f"the self-test never visited {name!r}"
+    assert row["pass"], (
+        f"{row['rule']} must {row['expect']} {name!r} (by {row['by']}); "
+        f"the guard said {row['verdict']} by {row['got_rule']}: {row['reason']}"
+    )
+
+
+@pytest.mark.parametrize("name", RECORD_CASES)
+def test_record_case(self_test: dict[str, dict], name: str) -> None:
+    row = self_test.get(name)
+    assert row is not None, f"the self-test never visited {name!r}"
+    assert row["pass"], f"expect turned {name!r} into an expectation"
+
+
+def test_self_test_exits_zero_and_visits_every_case(self_test: dict[str, dict]) -> None:
+    assert self_test["__exit__"]["code"] == 0, self_test["__exit__"]["stderr"][-3000:]
+    visited = set(self_test) - {"__exit__"}
+    assert visited == set(CALL_CASES) | set(RECORD_CASES)
+
+
+def test_the_rules_are_c0_to_c10() -> None:
+    # C10 (a service's front-door admit, WK-JOB) sits before C9 in the file so
+    # the never-rule stays last; the guard finds C9 by id, so order is prose.
+    ids = [r["id"] for r in RULE_DOC["rules"]]
+    assert sorted(ids, key=lambda i: int(i[1:])) == [f"C{i}" for i in range(11)]
+    assert ids[-1] == "C9"
+
+
+def test_every_rule_has_a_case_to_refuse_and_a_case_to_allow() -> None:
+    seen = {(c["rule"], c["expect"]) for c in CASE_DOC["cases"]}
+    missing = [
+        f"{r['id']} {want}" for r in RULE_DOC["rules"] for want in ("allow", "refuse") if (r["id"], want) not in seen
+    ]
+    assert not missing, f"rules without a case: {missing}"
+
+
+def test_the_wd9_fallback_ships_on() -> None:
+    # On (owner decision 2026-10-12, PR 1217): W0 found that IAM offers no
+    # principal set naming exactly the personal workers, so no principal-set
+    # grant exists and the job itself grants each person's worker its
+    # Firestore, telemetry and bucket-metadata roles (C5, C4's bucket-metadata
+    # shape). Off, a workspace reaches ready and its first task fails on its
+    # first Firestore call. docs/workspaces.md §2.3, WD9.
+    assert RULE_DOC["wd9_fallback"] is True
+
+
+def test_the_self_test_fails_when_a_rule_is_loosened(tmp_path: Path) -> None:
+    """The cases can go red: widen C3's member to anything and a refusal case fails.
+
+    Run against a copy of lib/ so the real rules are never touched.
+    """
+    lib = tmp_path / "scripts" / "lib"
+    shutil.copytree(LIB, lib)
+    shutil.copytree(REPO / "apps" / "common", tmp_path / "apps" / "common")
+    shutil.copytree(REPO / "terraform" / "modules" / "service_account_ids", tmp_path / "terraform" / "modules" / "service_account_ids")
+    rules = json.loads((lib / "workspace-calls.json").read_text())
+    c3 = next(r for r in rules["rules"] if r["id"] == "C3")
+    for shape in c3["shapes"]:
+        shape["flags"]["--member"] = "*"
+    (lib / "workspace-calls.json").write_text(json.dumps(rules))
+    out = subprocess.run(
+        [str(lib / "workspace-guard.sh"), "self-test", "--json", "--case", "act-as for a person"],
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    rows = [json.loads(line) for line in out.stdout.splitlines() if line.startswith("{")]
+    assert rows and rows[0]["pass"] is False and out.returncode != 0, out.stdout + out.stderr
+
+
+# --------------------------------------------------------------------------
+# the script and the guard cannot drift apart
+# --------------------------------------------------------------------------
+
+
+def _code(path: Path) -> str:
+    """The file with comment lines dropped and continuations joined."""
+    lines = [line for line in path.read_text().splitlines() if not line.lstrip().startswith("#")]
+    return re.sub(r"\\\n\s*", " ", "\n".join(lines))
+
+
+GCLOUD_GROUPS = ("auth", "config", "container", "iam", "identity", "projects", "secrets", "storage", "compute", "run")
+
+
+def _gcloud_commands(path: Path) -> set[tuple[str, ...]]:
+    found = set()
+    for match in re.finditer(r"(?<![\w/.$-])gcloud((?:[ \t]+[a-z][a-z0-9-]*)+)", _code(path)):
+        words = tuple(match.group(1).split())
+        if words and words[0] in GCLOUD_GROUPS:
+            found.add(words)
+    return found
+
+
+def _kubectl_commands(path: Path) -> set[tuple[str, ...]]:
+    found = set()
+    pattern = (
+        r'"\$\{(?:KUBECTL|KUBECTL_BIN|kubectl)\}"'
+        r"((?:[ \t]+(?:\"?\$\S+|-n[ \t]+\S+|--context[ \t]+\S+))*)[ \t]+([a-z][a-z-]*)(?:[ \t]+([a-z][a-z-]*))?"
+    )
+    for match in re.finditer(pattern, _code(path)):
+        verb, sub = match.group(2), match.group(3)
+        found.add((verb, sub) if verb == "config" else (verb,))
+    return found
+
+
+def _covered(tool: str, words: tuple[str, ...]) -> bool:
+    for rule in RULE_DOC["rules"]:
+        for shape in rule.get("shapes", []):
+            if shape["tool"] == tool and tuple(words[: len(shape["command"])]) == tuple(shape["command"]):
+                if tool == "kubectl" or len(words) == len(shape["command"]):
+                    return True
+        for unused in rule.get("known_unused", []):
+            if unused["tool"] == tool and tuple(unused["command"]) == words:
+                return True
+        never = rule.get("never")
+        if never:
+            if tool == "gcloud":
+                if any(w in never["gcloud_words"] for w in words):
+                    return True
+                for seq in never["gcloud_sequences"]:
+                    if any(list(words[i : i + len(seq)]) == seq for i in range(len(words))):
+                        return True
+            if tool == "kubectl" and words[0] in never["kubectl_verbs"]:
+                return True
+    return False
+
+
+def test_every_gcloud_command_on_the_workspace_path_has_a_rule() -> None:
+    commands = set()
+    for path in (REGISTER, APPLY, CLUSTER_NETWORK):
+        commands |= _gcloud_commands(path)
+    # Empty is not success: the scan must find what it scans for.
+    assert len(commands) >= 15, f"the gcloud scan found only {sorted(commands)}"
+    assert ("iam", "service-accounts", "create") in commands
+    missing = sorted(" ".join(c) for c in commands if not _covered("gcloud", c))
+    assert not missing, (
+        "register-tenant.sh (or the kubernetes/ scripts it runs) names a gcloud command no rule in "
+        f"scripts/lib/workspace-calls.json decides: {missing}. Add a shape, a C9 word, or a C0 "
+        "known_unused entry saying why --workspace never runs it."
+    )
+
+
+def test_every_kubectl_command_on_the_workspace_path_has_a_rule() -> None:
+    commands = set()
+    for path in (REGISTER, APPLY, CLUSTER_NETWORK):
+        commands |= _kubectl_commands(path)
+    assert {("apply",), ("get",), ("config", "current-context")} <= commands, sorted(commands)
+    missing = sorted(" ".join(c) for c in commands if not _covered("kubectl", c))
+    assert not missing, f"kubectl commands no rule decides: {missing}"
+
+
+def test_nothing_on_the_workspace_path_calls_the_tools_by_absolute_path() -> None:
+    """An absolute path steps around a guard installed on PATH (§2.5).
+
+    kubectl_bin's candidate list names two absolute kubectl paths; it is exempt
+    only because its first statement returns the shim under SWARM_CALL_GUARD.
+    """
+    offenders = []
+    for path in (REGISTER, COMMON, APPLY, CLUSTER_NETWORK):
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            for match in re.finditer(r"/[\w./${}-]*/(gcloud|kubectl|curl)\b", line):
+                if "guard-bin/" in match.group(0):
+                    continue
+                offenders.append((path.name, number, line.strip()))
+    allowed = [o for o in offenders if o[0] == "common.sh" and ("candidates+=" in o[2] or "SWARM_KUBECTL=" in o[2])]
+    assert [o for o in offenders if o not in allowed] == []
+    body = COMMON.read_text().split("kubectl_bin() {", 1)[1]
+    first = next(line.strip() for line in body.splitlines() if line.strip())
+    assert first == 'if [[ -n "${SWARM_CALL_GUARD:-}" ]]; then', first
+
+
+@pytest.mark.parametrize("func,name", [("kubectl_bin", ""), ("prefer_local_bin", "gcloud"), ("prefer_local_bin", "curl")])
+def test_common_sh_resolves_to_the_shim_under_the_guard(tmp_path: Path, func: str, name: str) -> None:
+    script = f'source "{COMMON}"; KUBECTL=/usr/bin/false; {func} {name}'
+    out = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, check=False,
+        env={**os.environ, "SWARM_CALL_GUARD": str(tmp_path / "e.json")},
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == str(SHIMS / (name or "kubectl"))
+
+
+def test_common_sh_runs_no_unguarded_tool_under_the_guard(tmp_path: Path) -> None:
+    out = subprocess.run(
+        ["bash", "-c", f'source "{COMMON}"; prefer_local_bin terraform'], capture_output=True, text=True,
+        check=False, env={**os.environ, "SWARM_CALL_GUARD": str(tmp_path / "e.json")},
+    )
+    assert out.returncode != 0 and out.stdout == ""
+
+
+@pytest.mark.parametrize("tool", ["gcloud", "kubectl", "curl"])
+def test_each_shim_hands_its_call_to_the_guard(tool: str) -> None:
+    shim = SHIMS / tool
+    assert shim.stat().st_mode & stat.S_IXUSR
+    code = [line for line in shim.read_text().splitlines() if line and not line.startswith("#")]
+    assert code == [
+        "set -euo pipefail",
+        f'exec "$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")/.." && pwd)/workspace-guard.sh" run {tool} "$@"',
+    ]
+    assert sorted(p.name for p in SHIMS.iterdir()) == ["curl", "gcloud", "kubectl"]
+
+
+# --------------------------------------------------------------------------
+# the wiring, as processes
+# --------------------------------------------------------------------------
+
+
+def _fake_bins(tmp: Path) -> Path:
+    """Stand-in gcloud and kubectl that record that they ran, and their stdin."""
+    bin_dir = tmp / "realbin"
+    bin_dir.mkdir()
+    for tool in ("gcloud", "kubectl", "curl"):
+        fake = bin_dir / tool
+        fake.write_text(f'#!/usr/bin/env bash\ncat > "{tmp}/{tool}.stdin"\necho "{tool} $*" >> "{tmp}/ran"\n')
+        fake.chmod(0o755)
+    return bin_dir
+
+
+def _shim_env(env: dict[str, str], tmp: Path) -> dict[str, str]:
+    return {**env, "PATH": f"{SHIMS}:{_fake_bins(tmp)}:{os.environ['PATH']}"}
+
+
+def _ran(tmp: Path) -> list[str]:
+    ran = tmp / "ran"
+    return ran.read_text().splitlines() if ran.exists() else []
+
+
+def test_an_allowed_call_runs_the_real_binary(tmp_path: Path, ready: dict[str, str]) -> None:
+    env = _shim_env(ready, tmp_path)
+    out = subprocess.run(
+        ["gcloud", "iam", "service-accounts", "create", "swarm-agent-worker-u-alice", "--project", PROJECT],
+        capture_output=True, text=True, env=env, check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    assert _ran(tmp_path) == [f"gcloud iam service-accounts create swarm-agent-worker-u-alice --project {PROJECT}"]
+    assert not Path(ready["SWARM_CALL_GUARD"] + ".stop").exists()
+
+
+def test_a_refused_call_never_runs_and_records_needs_owner(tmp_path: Path, ready: dict[str, str]) -> None:
+    env = _shim_env(ready, tmp_path)
+    out = subprocess.run(
+        ["gcloud", "iam", "service-accounts", "create", "swarm-agent-worker-u-bob", "--project", PROJECT],
+        capture_output=True, text=True, env=env, check=False,
+    )
+    assert out.returncode == REFUSED
+    assert "REFUSED (rule C2)" in out.stderr
+    assert _ran(tmp_path) == []
+    stop = json.loads(Path(ready["SWARM_CALL_GUARD"] + ".stop").read_text())
+    assert stop["state"] == "needs_owner" and stop["rule"] == "C2" and stop["workspace_id"] == WORKSPACE
+    assert stat.S_IMODE(Path(ready["SWARM_CALL_GUARD"] + ".stop").stat().st_mode) == 0o600
+
+    # Latched: the next call, allowed a moment ago, is refused too.
+    again = subprocess.run(
+        ["gcloud", "iam", "service-accounts", "create", "swarm-agent-worker-u-alice", "--project", PROJECT],
+        capture_output=True, text=True, env=env, check=False,
+    )
+    assert again.returncode == REFUSED and _ran(tmp_path) == []
+    # The first refusal's reason is the one kept.
+    assert json.loads(Path(ready["SWARM_CALL_GUARD"] + ".stop").read_text())["rule"] == "C2"
+
+
+def test_report_only_lets_the_owner_run_and_records_nothing(tmp_path: Path, ready: dict[str, str]) -> None:
+    env = {**_shim_env(ready, tmp_path), "SWARM_CALL_GUARD_MODE": "report-only"}
+    out = subprocess.run(
+        ["gcloud", "iam", "service-accounts", "delete", f"swarm-agent-worker-u-alice@{PROJECT}.iam.gserviceaccount.com"],
+        capture_output=True, text=True, env=env, check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    assert "would refuse (rule C9)" in out.stderr
+    assert len(_ran(tmp_path)) == 1
+    assert not Path(ready["SWARM_CALL_GUARD"] + ".stop").exists()
+
+
+def test_report_only_is_ignored_where_the_job_enforces(tmp_path: Path, ready: dict[str, str]) -> None:
+    env = {**_shim_env(ready, tmp_path), "SWARM_CALL_GUARD_MODE": "report-only", "SWARM_CALL_GUARD_ENFORCE": "1"}
+    out = subprocess.run(
+        ["gcloud", "iam", "service-accounts", "delete", f"swarm-agent-worker-u-alice@{PROJECT}.iam.gserviceaccount.com"],
+        capture_output=True, text=True, env=env, check=False,
+    )
+    assert out.returncode == REFUSED and _ran(tmp_path) == []
+
+
+def test_curl_reaches_the_real_binary_with_its_config_on_stdin(tmp_path: Path, ready: dict[str, str]) -> None:
+    env = _shim_env(ready, tmp_path)
+    # The line fs_request writes, from common.sh's own auth_config, around a
+    # token made here: nothing in this file may look like a credential.
+    config = subprocess.run(
+        ["bash", "-c", f'source "{COMMON}"; auth_config "$1"', "_", secrets.token_hex(20)],
+        capture_output=True, text=True, check=True,
+    ).stdout + "\n"
+    url = (
+        f"https://firestore.googleapis.com/v1/projects/{PROJECT}/databases/swarm/documents/"
+        "workspaces/u-alice?updateMask.fieldPaths=state"
+    )
+    out = subprocess.run(
+        ["curl", "-sS", "-K", "-", "-X", "PATCH", "-H", "Content-Type: application/json",
+         "--data-binary", '{"fields":{}}', url],
+        input=config, capture_output=True, text=True, env=env, check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    assert (tmp_path / "curl.stdin").read_text() == config
+
+
+def test_no_expectation_means_no_call(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    env.pop("SWARM_CALL_GUARD")
+    out = _guard("check", "--", "gcloud", "config", "get-value", "account", env=env)
+    assert out.returncode == REFUSED and "nothing runs unguarded" in out.stderr
+
+
+def test_an_expectation_others_can_write_is_refused(tmp_path: Path, ready: dict[str, str]) -> None:
+    Path(ready["SWARM_CALL_GUARD"]).chmod(0o622)
+    out = _guard("check", "--", "gcloud", "config", "get-value", "account", env=ready)
+    assert out.returncode == REFUSED and "mode 0600" in out.stderr
+
+
+def test_the_expectation_is_private_and_names_the_workspace(ready: dict[str, str]) -> None:
+    path = Path(ready["SWARM_CALL_GUARD"])
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    exp = json.loads(path.read_text())
+    assert exp["workspace_id"] == WORKSPACE and exp["tenant_id"] == "u-alice"
+    assert exp["worker_email"] == f"swarm-agent-worker-u-alice@{PROJECT}.iam.gserviceaccount.com"
+    assert exp["namespace"] == "swarm-tenant-u-alice"
+    assert exp["contexts"] == ["swarm-dev", f"gke_{PROJECT}_us-central1_swarm-autopilot"]
+    assert "principal" not in exp and "alice@example.com" not in path.read_text()
+
+
+def test_init_refuses_a_malformed_workspace_id(tmp_path: Path) -> None:
+    out = _guard("init", "--workspace-id", "u-alice", env=_env(tmp_path))
+    assert out.returncode != 0 and not (tmp_path / "expect.json").exists()
+
+
+def test_init_refuses_a_second_workspace(tmp_path: Path, ready: dict[str, str]) -> None:
+    out = _guard("init", "--workspace-id", "w-000000", env=ready)
+    assert out.returncode != 0
+    assert json.loads(Path(ready["SWARM_CALL_GUARD"]).read_text())["workspace_id"] == WORKSPACE
+
+
+# --------------------------------------------------------------------------
+# the derived names agree with the code that makes the resources
+# --------------------------------------------------------------------------
+
+
+def _render(tenant: str, *extra: str) -> str:
+    out = subprocess.run(
+        [sys.executable, str(REPO / "kubernetes" / "render.py"), "tenant", "--tenant", tenant,
+         "--bound-ksa", "swarm-worker",
+         "--scheduler-uid", "1" * 21, "--reconciler-uid", "2" * 21, *extra],
+        capture_output=True, text=True, check=True, timeout=120,
+    )
+    return out.stdout
+
+
+def test_the_real_tenant_render_passes_c7_for_its_own_tenant(ready: dict[str, str]) -> None:
+    out = _guard("check", "--", "kubectl", "--context", "swarm-dev", "apply", "-f", "-", env=ready, stdin=_render("u-alice"))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "allow C7"
+
+
+def test_the_real_tenant_render_of_another_tenant_is_refused(ready: dict[str, str]) -> None:
+    out = _guard("check", "--", "kubectl", "--context", "swarm-dev", "apply", "-f", "-", env=ready, stdin=_render("u-bob"))
+    assert out.returncode == REFUSED and "rule C7" in out.stderr
+
+
+def test_the_real_tenant_render_with_its_hostname_policy_passes_c7(ready: dict[str, str]) -> None:
+    """kubernetes/apply.sh renders swarm-allow-typesafe-direct on a cluster that
+    serves its kind (docs/runbooks/typesafe-egress.md); the guard admits it
+    for its own tenant, and for no other."""
+    manifest = _render("u-alice", "--fqdn-network-policy")
+    assert "kind: FQDNNetworkPolicy" in manifest, "the render holds no hostname policy; nothing was judged"
+    out = _guard("check", "--", "kubectl", "--context", "swarm-dev", "apply", "-f", "-", env=ready, stdin=manifest)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "allow C7"
+    other = _guard("check", "--", "kubectl", "--context", "swarm-dev", "apply", "-f", "-", env=ready,
+                   stdin=_render("u-bob", "--fqdn-network-policy"))
+    assert other.returncode == REFUSED and "rule C7" in other.stderr
+
+
+def test_only_the_hostname_policy_s_one_name_is_admitted_for_its_kind() -> None:
+    """The guard admits the FQDNNetworkPolicy kind for swarm-allow-typesafe-direct
+    alone: a hostname policy under another name could open egress to any host."""
+    assert "FQDNNetworkPolicy" in RULE_DOC["kube_kinds"]
+    assert RULE_DOC["kube_kind_names"] == {"FQDNNetworkPolicy": ["swarm-allow-typesafe-direct"]}
+
+
+def _assignment_lines(path: Path, names: tuple[str, ...]) -> list[str]:
+    lines = []
+    for line in path.read_text().splitlines():
+        stripped = line.strip().removeprefix("local ")
+        if any(stripped.startswith(f"{n}=") for n in names):
+            lines.append(stripped)
+    return lines
+
+
+def test_the_bucket_conditions_and_role_ids_are_register_tenants() -> None:
+    names = (
+        "OBJECT_PREFIX_EXPR", "LIST_PREFIX_EXPR", "VERDICTS_PREFIX_EXPR", "READ_EXPR", "WRITE_EXPR",
+        "CUSTOM_ROLE_SUFFIX_MODULE", "ROLE_ID_SUFFIX", "FIRESTORE_ROLE_ID", "BUCKET_METADATA_ROLE_ID",
+    )
+    script = _assignment_lines(REGISTER, names)
+    guard = _assignment_lines(GUARD, names)
+    assert len(guard) == len(names), guard
+    assert set(guard) <= set(script), sorted(set(guard) - set(script))
+
+
+def test_the_forge_slot_is_the_one_swarm_api_creates(ready: dict[str, str]) -> None:
+    from swarm_api.gittokens import Scope, provider_suffix
+
+    exp = json.loads(Path(ready["SWARM_CALL_GUARD"]).read_text())
+    suffix = provider_suffix(Scope.USER, user="alice@example.com")
+    assert exp["forge_slot"] == f"swarm-tenant-u-alice-{suffix}"
+    assert exp["forge_slot_twin"] == f"swarm-tenant-u-alice-{suffix}-refresh"
+
+
+def test_curl_runs_with_q_first_so_no_curlrc_joins_the_call(tmp_path: Path, ready: dict[str, str]) -> None:
+    env = _shim_env(ready, tmp_path)
+    out = subprocess.run(
+        ["curl", "-sf", "-H", "Metadata-Flavor: Google",
+         "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"],
+        capture_output=True, text=True, env=env, check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    assert _ran(tmp_path)[0].startswith("curl -q -sf ")
+
+
+@pytest.mark.parametrize(
+    "variable,value",
+    [
+        ("CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT", f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com"),
+        ("CLOUDSDK_CORE_PROJECT", placeholders.SHARED_PROJECT),
+    ],
+)
+def test_gcloud_environment_that_changes_identity_or_project_is_refused(
+    ready: dict[str, str], variable: str, value: str
+) -> None:
+    allowed = ("gcloud", "iam", "service-accounts", "describe",
+               f"swarm-agent-worker-u-alice@{PROJECT}.iam.gserviceaccount.com", "--project", PROJECT)
+    assert _guard("check", "--", *allowed, env=ready).returncode == 0
+    out = _guard("check", "--", *allowed, env={**ready, variable: value})
+    assert out.returncode == REFUSED and variable in out.stderr
+
+
+# --------------------------------------------------------------------------
+# the QA target credential secret, personal workspaces only (VQ3-DEPLOYER-QA)
+# --------------------------------------------------------------------------
+
+QA_SECRET = "swarm-tenant-u-alice-qa"
+API_EMAIL = f"swarm-api@{PROJECT}.iam.gserviceaccount.com"
+
+
+def _kind_env(tmp: Path, tfvars: dict | None = None) -> dict[str, str]:
+    """_env with the placeholder deployment's list and tfvars (TFVARS, or
+    the settings given), served the way config_fetch reads them offline: a group's or a
+    service's expectation reads its label key's prefix from the tfvars."""
+    config = tmp / "deploy-config"
+    write_placeholder_deny_list(config, "example-project", ["dev"])
+    write_placeholder_tfvars(config, ["dev"], tfvars)
+    (tmp / "config-cache").mkdir(mode=0o700, exist_ok=True)
+    return _env(tmp, SWARM_DEPLOY_CONFIG_DIR=str(config), XDG_CACHE_HOME=str(tmp / "config-cache"))
+
+
+def _kind_expect(tmp: Path, kind: str, tfvars: dict | None = None) -> tuple[subprocess.CompletedProcess[str], dict]:
+    env = _kind_env(tmp, tfvars)
+    assert _guard("init", "--workspace-id", WORKSPACE, env=env).returncode == 0
+    record = tmp / f"record-{kind}.json"
+    record.write_text(json.dumps(CASE_DOC["kind_records"][kind]))
+    done = _guard("expect", "--record", str(record), env=env)
+    return done, json.loads(Path(env["SWARM_CALL_GUARD"]).read_text())
+
+
+def _kind_expectation(tmp: Path, kind: str) -> dict:
+    done, exp = _kind_expect(tmp, kind)
+    assert done.returncode == 0, done.stderr
+    return exp
+
+
+@pytest.mark.parametrize("kind", ["group", "service"])
+def test_a_group_or_service_expectation_names_the_deployments_label_key(tmp_path: Path, kind: str) -> None:
+    # The key C7 admits a job-made Namespace by is <label prefix>/workspace, the
+    # prefix the deployment's tfvars give: swarm.<its first allowed domain>.
+    # MUTATION: write a literal key into the guard and this fails.
+    exp = _kind_expectation(tmp_path, kind)
+    assert exp["namespace_label_key"] == f"swarm.{placeholder_deployment.TFVARS['allowed_domains'][0]}/workspace"
+
+
+def _unlabelled_namespace_refusal(tmp: Path, drop_key: bool) -> tuple[subprocess.CompletedProcess[str], dict]:
+    done, exp = _kind_expect(tmp, "group")
+    assert done.returncode == 0, done.stderr
+    assert exp.get("namespace_label") and exp.get("namespace_label_key"), sorted(exp)
+    if drop_key:
+        exp.pop("namespace_label_key")
+    env = _kind_env(tmp)
+    Path(env["SWARM_CALL_GUARD"]).write_text(json.dumps(exp))
+    manifest = f"apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {exp['namespace']}\n"
+    out = _guard("check", "--", "kubectl", "--context", "swarm-dev", "apply", "-f", "-", env=env, stdin=manifest)
+    assert out.returncode == REFUSED and "rule C7" in out.stderr, out.stderr
+    return out, exp
+
+
+def test_an_unlabelled_team_namespace_is_refused_without_printing_the_configured_key(tmp_path: Path) -> None:
+    # The key comes from the deployment's tfvars; the refusal names the label
+    # value the image expects, never the deployment's key.
+    # MUTATION: print \($key) in the reason and this fails.
+    out, exp = _unlabelled_namespace_refusal(tmp_path, drop_key=False)
+    assert exp["namespace_label_key"] not in out.stderr, out.stderr
+
+
+def test_an_expectation_without_a_label_key_refuses_with_one_fixed_sentence(tmp_path: Path) -> None:
+    # MUTATION: interpolate the namespace into the refusal and this fails.
+    out, exp = _unlabelled_namespace_refusal(tmp_path, drop_key=True)
+    assert "the expectation names no namespace label key, so no team Namespace can be admitted" in out.stderr
+    assert exp["namespace"] not in out.stderr, out.stderr
+
+
+def test_a_team_expectation_is_refused_when_the_deployment_names_no_label_prefix(tmp_path: Path) -> None:
+    # Neither label_prefix nor allowed_domains: the key is unknown, so no
+    # expectation is written, rather than one judged against a guessed key.
+    done, exp = _kind_expect(tmp_path, "group", {"platform_owner": "owner@example.com"})
+    assert done.returncode != 0 and "label key cannot be read" in done.stderr, done.stderr
+    assert exp["phase"] == "bootstrap", "an expectation was written"
+
+
+def test_a_personal_expectation_reads_no_label_key(ready: dict[str, str]) -> None:
+    # A person's namespace carries no workspace label, so its expectation needs
+    # no tfvars and names no key.
+    exp = json.loads(Path(ready["SWARM_CALL_GUARD"]).read_text())
+    assert "namespace_label_key" not in exp and "namespace_label" not in exp, sorted(exp)
+
+
+def test_a_personal_expectation_names_its_qa_secret_and_swarm_api(ready: dict[str, str]) -> None:
+    exp = json.loads(Path(ready["SWARM_CALL_GUARD"]).read_text())
+    # MUTATION: derive qa_secret from anything but the record's tenant and this fails.
+    assert exp["qa_secret"] == QA_SECRET
+    # MUTATION: name the worker (or any account but swarm-api) as api_email and this fails.
+    assert exp["api_email"] == API_EMAIL
+
+
+@pytest.mark.parametrize("kind", ["group", "service"])
+def test_a_group_or_service_expectation_names_no_qa_secret(tmp_path: Path, kind: str) -> None:
+    # The deployer's secret binder stops at swarm-tenant-u-: a team tenant's QA
+    # secret is not one it may bind, so the guard admits no call about it.
+    exp = _kind_expectation(tmp_path, kind)
+    # MUTATION: write qa_secret / api_email for every kind and this fails.
+    assert "qa_secret" not in exp and "api_email" not in exp, sorted(exp)
+
+
+def _qa_bind(name: str, member: str, role: str) -> list[str]:
+    return ["gcloud", "secrets", "add-iam-policy-binding", name, "--project", PROJECT,
+            "--member", member, "--role", role]
+
+
+def _qa_create(name: str, *extra: str) -> list[str]:
+    return ["gcloud", "secrets", "create", name, "--project", PROJECT, *extra]
+
+
+_LABELS = "managed-by=swarm-register-tenant,component=qa-target-credential,tenant=u-alice,swarm-tenant=u-alice"
+_WORKER_MEMBER = f"serviceAccount:swarm-agent-worker-u-alice@{PROJECT}.iam.gserviceaccount.com"
+
+QA_CALLS = [
+    # (why, argv, the verdict's rule or None for a refusal)
+    ("A6 reads the QA secret", ["gcloud", "secrets", "describe", QA_SECRET, "--project", PROJECT,
+                                "--format=json"], "C1"),
+    ("A6 reads its policy", ["gcloud", "secrets", "get-iam-policy", QA_SECRET, "--project", PROJECT,
+                             "--format=json"], "C1"),
+    ("another person's QA secret is not read", ["gcloud", "secrets", "describe", "swarm-tenant-u-bob-qa",
+                                                "--project", PROJECT], None),
+    ("A6 creates it, empty and pinned", _qa_create(QA_SECRET, "--replication-policy", "user-managed",
+                                                   "--locations", "us-central1", "--labels", _LABELS), "C6"),
+    ("not replicated automatically", _qa_create(QA_SECRET, "--replication-policy", "automatic",
+                                                "--locations", "us-central1", "--labels", _LABELS), None),
+    ("not without its region", _qa_create(QA_SECRET, "--replication-policy", "user-managed",
+                                          "--labels", _LABELS), None),
+    ("not without its labels", _qa_create(QA_SECRET, "--replication-policy", "user-managed",
+                                          "--locations", "us-central1"), None),
+    ("not created for another person", _qa_create("swarm-tenant-u-bob-qa", "--replication-policy", "user-managed",
+                                                  "--locations", "us-central1", "--labels", _LABELS), None),
+    ("V-1 for swarm-api", _qa_bind(QA_SECRET, f"serviceAccount:{API_EMAIL}",
+                                   "roles/secretmanager.secretVersionAdder"), "C6"),
+    ("V-2 for swarm-api", _qa_bind(QA_SECRET, f"serviceAccount:{API_EMAIL}",
+                                   "roles/secretmanager.secretAccessor"), "C6"),
+    ("never the worker", _qa_bind(QA_SECRET, _WORKER_MEMBER, "roles/secretmanager.secretAccessor"), None),
+    ("never another role", _qa_bind(QA_SECRET, f"serviceAccount:{API_EMAIL}",
+                                    "roles/secretmanager.admin"), None),
+    ("never a version manager", _qa_bind(QA_SECRET, f"serviceAccount:{API_EMAIL}",
+                                         "roles/secretmanager.secretVersionManager"), None),
+    ("never a look-alike account", _qa_bind(QA_SECRET, f"serviceAccount:swarm-api@{placeholders.SHARED_PROJECT}.iam.gserviceaccount.com",
+                                            "roles/secretmanager.secretAccessor"), None),
+    ("never a person", _qa_bind(QA_SECRET, "user:alice@example.com", "roles/secretmanager.secretAccessor"), None),
+    ("never on another person's", _qa_bind("swarm-tenant-u-bob-qa", f"serviceAccount:{API_EMAIL}",
+                                           "roles/secretmanager.secretAccessor"), None),
+    ("never swarm-api on the forge slot", _qa_bind("{forge_slot}", f"serviceAccount:{API_EMAIL}",
+                                                   "roles/secretmanager.secretAccessor"), None),
+]
+
+
+@pytest.mark.parametrize(("why", "argv", "rule"), QA_CALLS, ids=[c[0] for c in QA_CALLS])
+def test_the_qa_secret_shapes_admit_only_the_expectations_own_names(
+        ready: dict[str, str], why: str, argv: list[str], rule: str | None) -> None:
+    exp = json.loads(Path(ready["SWARM_CALL_GUARD"]).read_text())
+    argv = [a.replace("{forge_slot}", exp["forge_slot"]) for a in argv]
+    out = _guard("check", "--", *argv, env=ready)
+    if rule is None:
+        # MUTATION: widen C6's QA binding to "--member": "*" or "--role": "*" and a refusal here allows.
+        assert out.returncode == REFUSED, f"{why}: {out.stdout}{out.stderr}"
+    else:
+        # MUTATION: drop the {qa_secret} shapes from C1/C6 and an allowance here refuses.
+        assert out.returncode == 0 and out.stdout.strip() == f"allow {rule}", f"{why}: {out.stdout}{out.stderr}"
+
+
+@pytest.mark.parametrize("kind", ["group", "service"])
+def test_a_team_workspace_may_not_create_or_bind_a_qa_secret(tmp_path: Path, kind: str) -> None:
+    exp = _kind_expectation(tmp_path, kind)
+    env = _env(tmp_path)
+    name = f"swarm-tenant-{exp['tenant_id']}-qa"
+    for argv in (
+        _qa_create(name, "--replication-policy", "user-managed", "--locations", "us-central1", "--labels", "x=y"),
+        _qa_bind(name, f"serviceAccount:{API_EMAIL}", "roles/secretmanager.secretAccessor"),
+        ["gcloud", "secrets", "describe", name, "--project", PROJECT],
+    ):
+        # A refusal latches every later call; each is judged on its own.
+        Path(env["SWARM_CALL_GUARD"] + ".stop").unlink(missing_ok=True)
+        out = _guard("check", "--", *argv, env=env)
+        # MUTATION: give a team expectation a qa_secret and these are allowed.
+        assert out.returncode == REFUSED, f"{kind} {argv}: {out.stdout}{out.stderr}"

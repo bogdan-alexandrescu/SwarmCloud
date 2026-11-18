@@ -1,0 +1,541 @@
+# The user slots' IAM: who may create, write and read the per-user GitHub
+# credential slots swarm-api creates at onboarding (docs/onboarding.md §3.4
+# items 3-5 and 8; archived issue 780, lane OB2).
+#
+# A user slot is `swarm-tenant-<tenant>-git-u-<16 hex>` (Tenant.secret_name of
+# the user's provider suffix), holding that user's GitHub user access token,
+# with a `-refresh` twin holding the refresh token that mints the next one.
+# Owner decisions, 2026-10-07:
+#
+#   D3  swarm-api creates each user's slot at onboarding -- self-service is the
+#       point of archived issue 780 -- with a project-level create grant that carries no
+#       read. So no slot is in any Terraform state, and no grant can name one.
+#   D7  U1: the tenant's worker account reads every member's slot in its own
+#       tenant; swarm-api's resolver hands each task only its submitter's.
+#       SUPERSEDED by the 2026-10-11 decision below, and its binding,
+#       forge_slot_reader, stays until the broker has been on in dev.
+#   D2  swarm-api refreshes: it reads the -refresh twins and writes both.
+#       It originally never read a base slot -- the split the quota broker
+#       has today. Revised by the owner on 2026-10-08, below.
+#
+# Owner decision 2026-10-08: swarm-api also READS the base slots, so a request
+# acting as the person reuses their current access token instead of
+# refreshing on every call. Measured that morning: the owner's slot reached 35
+# versions within minutes, and since each refresh makes GitHub end the access
+# token it replaces, a task holding the previous version failed 401. Reading
+# the access token adds no power: swarm-api already reads the refresh token,
+# which mints access tokens.
+#
+# Owner decision 2026-10-11 (archived issue 1041): secrets are USER-scoped, which
+# supersedes D7/U1. Every member of a group tenant runs agents as the same
+# worker account, and an agent can mint that account's token from the
+# metadata server, so the worker's read of every member's base slot let Bob's
+# agent read Alice's slot by name; only the worker's code chose the right one.
+# The fix is swarm-api's broker, `POST /v1/attempts/forge-credential`
+# (apps/swarm-api/swarm_api/credbroker.py), which releases a person's slot
+# only to the current attempt of a task they submitted, proven with the
+# attempt key (docs/design/user-scoped-secrets.md). It ships behind its own
+# switch, terraform/infra's `forge_broker` (FORGE_BROKER), OFF by default and
+# off in dev. While it is off, workers read the slot with their own account
+# through `forge_slot_reader` below, exactly as before the broker, so THE
+# BINDING STAYS, unchanged, and IAM alone does not yet keep Alice's slot from
+# Bob's attempt.
+#
+# ROLLOUT ORDER. Removing forge_slot_reader is a later, separate owner step,
+# never the change that ships the broker: first `forge_broker = true` in dev
+# (which needs enable_child_tasks, on in dev since 2026-10-11), then a live
+# user-slot run that clones and pushes through the broker, and only then the
+# bootstrap change that deletes the resource below and the owner's apply of
+# it. Applied before the switch is on, every user-slot task would be
+# PERMISSION_DENIED (docs/design/user-scoped-secrets.md §5;
+# docs/runbooks/github-app.md step 2). Destroying the binding then needs no
+# `removed` block: it is this root's own grant to this platform's account,
+# and touches nothing of the other team's.
+#
+# Owner decision 2026-10-07 (OB3, archived pull request 821): "Disconnect GitHub" disables the
+# user's secret versions, so a disconnected user leaves no usable token behind,
+# and a reconnect re-enables them.
+#
+# These grants make that, and every one but the create is narrowed to one
+# tenant's prefix in
+# the FULL resource-name form IAM evaluates for Secret Manager,
+# `projects/<NUMBER>/secrets/<id>` -- the project number, because the project
+# ID "can't be substituted" there (docs.cloud.google.com/iam/docs/
+# conditions-resource-attributes), the same form modules/iam's
+# broker_version_adder uses:
+#
+#   google_project_iam_custom_role.forge_slot_creator   swarmForgeSlotCreator:
+#       secretmanager.secrets.create and nothing else.
+#   google_project_iam_member.forge_slot_creator        swarm-api holds it,
+#       UNCONDITIONED: creation is checked against the project, which carries
+#       no secret name, so a name condition cannot narrow it. What it buys is
+#       the ability to create an empty secret, anywhere in the project -- not
+#       to read, version, delete or set IAM on one, this platform's or the
+#       other team's.
+#   google_project_iam_member.forge_slot_version_adder  swarm-api,
+#       secretVersionAdder, on `<prefix>` (base slots and their twins): it
+#       publishes the user's token at onboarding and on every refresh.
+#   google_project_iam_custom_role.forge_slot_version_manager
+#                                                       swarmForgeSlotVersionManager:
+#       secretmanager.versions.disable and secretmanager.versions.enable and
+#       nothing else. No versions.destroy (a disconnect is reversible, and a
+#       destroyed version is not), no versions.access (reading is
+#       forge_refresh_reader's, a separate and separately conditioned
+#       grant). There is no predefined role that disables without also
+#       destroying or reading: secretVersionManager carries destroy.
+#   google_project_iam_member.forge_slot_version_manager
+#                                                       swarm-api, that role,
+#       on `<prefix>` -- the version adder's own condition, so it reaches
+#       exactly the slots swarm-api already writes, base and twin alike.
+#   google_project_iam_member.forge_refresh_reader      swarm-api,
+#       secretAccessor, on `<prefix>` -- base slots and -refresh twins alike,
+#       the version adder's own condition (owner decision 2026-10-08): the
+#       refresh token, which the sweep spends, and the current access token,
+#       which a request reuses. The address keeps its old name so the change
+#       reads as an in-place condition change in the plan.
+#   google_project_iam_member.forge_slot_reader         the tenant's WORKER
+#       account, secretAccessor, on its tenant's BASE slots only, never a
+#       -refresh twin (D7/U1). Superseded by the broker and removed only after
+#       the broker has been on in dev (archived issue 1041, above).
+#
+# WHY HERE AND NOT IN terraform/infra (where §3.4 item 4 put the worker's
+# grant, "from the tenancy module"). Every project-level role terraform/infra
+# grants must be on the CI deployer's scoped projectIamAdmin list
+# (deployer_conditions.tf, deployer_grantable_project_roles), and hasOnly()
+# limits WHICH roles CI may grant, never to WHOM. Putting
+# roles/secretmanager.secretAccessor on that list would let CI grant itself,
+# unconditioned, read of every secret in example-project -- the other
+# team's 63 among them. That is why the broker's swarmSecretLister grant moved
+# here (archived issue 69), and these move here for the same reason. The cost is the same as
+# theirs: a new tenant's user-slot grants are an owner bootstrap apply, the
+# one docs/ci.md already requires for its worker account (archived pull request 334).
+#
+# WHY BOTH NAME FORMS IN THE -refresh TEST. accessSecretVersion is checked on
+# the VERSION, whose resource.name is `projects/<n>/secrets/<id>/versions/<v>`
+# -- which never ends in "-refresh". `resource.name.endsWith("-refresh")`
+# alone (§3.4 item 4 as written) would therefore exclude nothing at access
+# time, and the worker would read the refresh twins. So the test is made on
+# the secret id extracted from either form:
+# `resource.name.extract("/secrets/{name}/versions/")` is the id for a version
+# and "" for the secret itself, and `resource.name.endsWith(...)` covers the
+# secret itself.
+#
+# NOT VERIFIED LIVE: that IAM evaluates resource.name for versions.access,
+# versions.add, versions.disable and versions.enable in exactly these forms, and that extract() answers as above for
+# Secret Manager names. The mock-provider tests hold the expressions' text,
+# not IAM's answer. The proof is the runbook's last step
+# (docs/runbooks/github-app.md, step 8): a worker reading a base slot
+# succeeds, and reading the twin is PERMISSION_DENIED.
+#
+# THE OTHER TEAM'S RESOURCES. Every prefix below starts
+# `projects/<n>/secrets/swarm-tenant-`; their secrets are agents-* and
+# peer-app-*, so no condition here can match one. The unconditioned create
+# grant can create a secret with any name, and can do nothing else to it.
+
+variable "enable_forge_user_slots" {
+  description = <<-EOT
+    Define swarmForgeSlotCreator and swarmForgeSlotVersionManager and make
+    the user-slot grants (forge_user_slots.tf): swarm-api creates GitHub user
+    slots at onboarding, refreshes them, and disables and re-enables their
+    versions on disconnect and reconnect; and the tenant's worker reads its
+    members' base slots (forge_slot_reader), until swarm-api's broker
+    (#1041, terraform/infra forge_broker) has been on in dev and that
+    binding is removed as a separate owner step.
+    swarm-api also reads repository (-git-r-) slots for the runner git tools
+    it executes (#1225). Owner decisions D2, D3 and D7 on #780, OB3's disable of
+    2026-10-07, the 2026-10-11 decision that secrets are user-scoped, and Q4
+    on #1225. The accounts must exist (terraform/infra creates swarm-api,
+    register-tenant.sh each worker).
+  EOT
+  type        = bool
+  default     = false
+}
+
+data "google_project" "forge_user_slots" {
+  count      = var.enable_forge_user_slots ? 1 : 0
+  project_id = var.project_id
+}
+
+locals {
+  forge_user_slots_on = var.enable_forge_user_slots ? 1 : 0
+
+  # The project number, for the conditions. "" while the slots are off, when
+  # nothing reads it.
+  forge_project_number = var.enable_forge_user_slots ? data.google_project.forge_user_slots[0].number : ""
+
+  # Named, not read: the account is terraform/infra's (modules/iam), and this
+  # root cannot depend on that one. The id comes from the module both roots
+  # read, as broker_account_id's does in platform_roles.tf.
+  forge_api_member = "serviceAccount:swarm-api@${var.project_id}.iam.gserviceaccount.com"
+
+  # The tenants the release applies, from the same parse of dev.tfvars the
+  # deployer's per-account grants use (deployer_service_accounts.tf). Literal
+  # "swarm-tenant-": Tenant.secret_name's spelling, not a configurable prefix.
+  forge_user_slot_tenants = var.enable_forge_user_slots ? toset(local.infra_tenant_ids) : toset([])
+
+  forge_user_slot_prefixes = {
+    for t in local.forge_user_slot_tenants :
+    t => "projects/${local.forge_project_number}/secrets/swarm-tenant-${t}-git-u-"
+  }
+
+  # `any`: the tenant's user slots, base and -refresh twin. `base`: the base
+  # slots only, the secret id's "-refresh" test made in both resource-name
+  # forms (above).
+  forge_slot_conditions = {
+    for t, p in local.forge_user_slot_prefixes : t => {
+      any  = "resource.name.startsWith(\"${p}\")"
+      base = "resource.name.startsWith(\"${p}\") && !resource.name.endsWith(\"-refresh\") && !resource.name.extract(\"/secrets/{name}/versions/\").endsWith(\"-refresh\")"
+    }
+  }
+
+  # A tenant whose slot names start with another tenant's prefix -- `eng` and
+  # `eng-git-u-x` -- would have its slots inside the other's per-tenant
+  # conditions. For swarm-api's bindings that leaks nothing, since it reaches
+  # both tenants anyway; for forge_slot_reader it would hand one tenant's
+  # WORKER the other's members' slots. Refused either way, because a tenant id
+  # is cheap to rename before it holds anything. Read from the tenant
+  # ids rather than the rendered prefixes, which share an unknown project
+  # number at plan.
+  forge_nested_tenants = [
+    for pair in setproduct(local.forge_user_slot_tenants, local.forge_user_slot_tenants) :
+    "${pair[1]} inside ${pair[0]}"
+    if pair[0] != pair[1] && startswith("swarm-tenant-${pair[1]}-git-u-", "swarm-tenant-${pair[0]}-git-u-")
+  ]
+}
+
+resource "google_project_iam_custom_role" "forge_slot_creator" {
+  count = local.forge_user_slots_on
+
+  project     = var.project_id
+  role_id     = module.custom_role_ids.ids["forge_slot_creator"]
+  title       = "Swarm Forge Slot Creator"
+  description = "managed-by=swarm-terraform; create a GitHub user credential slot at onboarding (#780). Create only: no read, no version, no delete, no IAM."
+  stage       = "GA"
+
+  # secretmanager.secrets.create alone. Not roles/secretmanager.admin, which
+  # reads every secret in the project; there is no predefined role that
+  # creates without reading. Labels and replication are fields of the create
+  # call and need nothing further.
+  permissions = ["secretmanager.secrets.create"]
+}
+
+resource "google_project_iam_member" "forge_slot_creator" {
+  count = local.forge_user_slots_on
+
+  project = var.project_id
+  # Through the resource, so the role exists before it is granted.
+  role   = "projects/${var.project_id}/roles/${google_project_iam_custom_role.forge_slot_creator[0].role_id}"
+  member = local.forge_api_member
+}
+
+resource "google_project_iam_member" "forge_slot_version_adder" {
+  for_each = local.forge_user_slot_tenants
+
+  project = var.project_id
+  role    = "roles/secretmanager.secretVersionAdder"
+  member  = local.forge_api_member
+
+  condition {
+    title       = "swarm forge user slots ${each.key}"
+    description = "managed-by=swarm-terraform; swarm-api publishes tenant ${each.key}'s GitHub user tokens and refresh tokens (#780 D2, D3)."
+    expression  = local.forge_slot_conditions[each.key].any
+  }
+
+  lifecycle {
+    precondition {
+      condition     = length(local.forge_nested_tenants) == 0
+      error_message = "tenant ids ${join(", ", local.forge_nested_tenants)}: one tenant's user-slot names start with another's prefix (swarm-tenant-<t>-git-u-), so that tenant's per-tenant grants would reach them. Rename the tenant."
+    }
+  }
+}
+
+resource "google_project_iam_custom_role" "forge_slot_version_manager" {
+  count = local.forge_user_slots_on
+
+  project     = var.project_id
+  role_id     = module.custom_role_ids.ids["forge_slot_version_manager"]
+  title       = "Swarm Forge Slot Version Manager"
+  description = "managed-by=swarm-terraform; disable a GitHub user slot's versions on disconnect and enable them on reconnect (#780 OB3). No destroy, no access."
+  stage       = "GA"
+
+  # Not roles/secretmanager.secretVersionManager, which also destroys
+  # versions. Disable and enable alone: a disconnect leaves no usable token
+  # and can be undone.
+  permissions = [
+    "secretmanager.versions.disable",
+    "secretmanager.versions.enable",
+  ]
+}
+
+resource "google_project_iam_member" "forge_slot_version_manager" {
+  for_each = local.forge_user_slot_tenants
+
+  project = var.project_id
+  # Through the resource, so the role exists before it is granted.
+  role   = "projects/${var.project_id}/roles/${google_project_iam_custom_role.forge_slot_version_manager[0].role_id}"
+  member = local.forge_api_member
+
+  condition {
+    title       = "swarm forge user slot versions ${each.key}"
+    description = "managed-by=swarm-terraform; swarm-api disables tenant ${each.key}'s GitHub user tokens on disconnect and enables them on reconnect (#780 OB3)."
+    expression  = local.forge_slot_conditions[each.key].any
+  }
+}
+
+resource "google_project_iam_member" "forge_refresh_reader" {
+  for_each = local.forge_user_slot_tenants
+
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = local.forge_api_member
+
+  condition {
+    title       = "swarm forge user slots api ${each.key}"
+    description = "managed-by=swarm-terraform; swarm-api reads tenant ${each.key}'s GitHub user slots: the refresh token to refresh, the current access token to reuse instead of refreshing per call (#780 D2, owner decision 2026-10-08)."
+    expression  = local.forge_slot_conditions[each.key].any
+  }
+
+  # A condition is part of a binding's identity, so changing it replaces the
+  # binding. The new one is made first, so the refresh sweep never loses the
+  # twins between the two.
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+# THE TENANT WORKER'S READ OF ITS MEMBERS' BASE SLOTS (D7/U1). Kept, byte for
+# byte as main has it, while terraform/infra's `forge_broker` is off: the worker
+# reads a person's slot with its own account then (agent_worker.secrets
+# resolve_git_token, `broker.deployed` False). Removing it is the later owner
+# step the header's ROLLOUT ORDER gives -- after the broker has been on in dev
+# and a live run passed -- and not this file's to take early. A personal
+# tenant's worker reads its own slots through the workspace job's binding
+# instead (below); that account is one person's.
+resource "google_project_iam_member" "forge_slot_reader" {
+  for_each = local.forge_user_slot_tenants
+
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${module.service_account_ids.worker_ids[each.key]}@${var.project_id}.iam.gserviceaccount.com"
+
+  condition {
+    title       = "swarm forge user slots ${each.key}"
+    description = "managed-by=swarm-terraform; tenant ${each.key}'s worker reads its own users' GitHub access tokens, never a refresh token (#780 D7, U1)."
+    expression  = local.forge_slot_conditions[each.key].base
+  }
+
+  lifecycle {
+    precondition {
+      condition     = length(local.forge_nested_tenants) == 0
+      error_message = "tenant ids ${join(", ", local.forge_nested_tenants)}: one tenant's user-slot names start with another's prefix (swarm-tenant-<t>-git-u-), so that tenant's worker would read them. Rename the tenant."
+    }
+  }
+}
+
+output "forge_user_slot_grants" {
+  description = "What the user-slot grants are made on, per tenant, for the owner to read a plan against: the prefix each condition narrows to. Empty while enable_forge_user_slots is false."
+  value       = local.forge_user_slot_prefixes
+}
+
+# ---------------------------------------------------------------------------
+# PERSONAL WORKSPACES' SLOTS (docs/workspaces.md §2.3 and §10, lane W4 of archived issue 847)
+# ---------------------------------------------------------------------------
+#
+# A personal workspace is made by the workspace job, not by Terraform (WD3), so
+# its tenant is never in local.forge_user_slot_tenants and the per-tenant grants
+# above never reach it. swarm-api still has to publish, disable, re-enable and
+# refresh that person's GitHub tokens, exactly as it does for a tenant above. So
+# swarm-api gets the same three grants ONCE over every personal tenant's user
+# slots: `projects/<n>/secrets/swarm-tenant-u-<tenant>-git-u-...`, recognised by
+# the `swarm-tenant-u-` prefix (identity.tenant_id_for_user's `u-`) AND a
+# `-git-u-` after it, in either resource-name form -- so a person's provider
+# key, `swarm-tenant-u-<tenant>-anthropic`, is not one of them. They name no
+# person, and Terraform keeps nothing per person (§3.2).
+#
+# The worker's read of its own slots is not here: the job binds each person's
+# worker on its own slots (A6), which a project grant per person would
+# otherwise have to be. That worker account is the person's alone, so its read
+# reaches nobody else's credential; archived issue 1041's broker is for group tenants, whose
+# worker account every member shares.
+#
+# Only while the workspace job exists: before it, no personal tenant has slots
+# that are not already some tenant's above.
+
+locals {
+  forge_personal_slots_on = var.enable_forge_user_slots && var.enable_workspace_deployer
+
+  forge_personal_prefix = "projects/${local.forge_project_number}/secrets/swarm-tenant-u-"
+
+  # Non-empty only when a `-git-u-` follows the personal prefix, for the
+  # secret's own name and for a version's (`.../versions/<v>`) alike.
+  forge_personal_any = "resource.name.startsWith(\"${local.forge_personal_prefix}\") && resource.name.extract(\"/secrets/swarm-tenant-u-{tenant}-git-u-\") != \"\""
+
+  forge_personal_grants = local.forge_personal_slots_on ? {
+    version_adder = {
+      role        = "roles/secretmanager.secretVersionAdder"
+      title       = "swarm forge user slots personal"
+      description = "managed-by=swarm-terraform; swarm-api publishes personal tenants' GitHub user tokens and refresh tokens (#780 D2, D3; #847)."
+      expression  = local.forge_personal_any
+    }
+    version_manager = {
+      role        = "projects/${var.project_id}/roles/${module.custom_role_ids.ids["forge_slot_version_manager"]}"
+      title       = "swarm forge user slot versions personal"
+      description = "managed-by=swarm-terraform; swarm-api disables personal tenants' GitHub user tokens on disconnect and enables them on reconnect (#780 OB3; #847)."
+      expression  = local.forge_personal_any
+    }
+    slot_reader = {
+      role        = "roles/secretmanager.secretAccessor"
+      title       = "swarm forge user slots personal"
+      description = "managed-by=swarm-terraform; swarm-api reads personal tenants' GitHub user slots: the refresh token to refresh, the current access token to reuse instead of refreshing per call (#780 D2, owner decision 2026-10-08; #847)."
+      expression  = local.forge_personal_any
+    }
+  } : {}
+}
+
+resource "google_project_iam_member" "forge_personal_slots" {
+  for_each = local.forge_personal_grants
+
+  project = var.project_id
+  role    = each.value.role
+  member  = local.forge_api_member
+
+  condition {
+    title       = each.value.title
+    description = each.value.description
+    expression  = each.value.expression
+  }
+
+  # The version manager is this file's custom role.
+  depends_on = [google_project_iam_custom_role.forge_slot_version_manager]
+}
+
+# ---------------------------------------------------------------------------
+# EVERY TENANT'S MEMBER SLOTS: K3 (docs/design/workspace-kinds.md §4.5, lane
+# WK-IAM of archived issue 847), behind enable_workspace_kinds
+# ---------------------------------------------------------------------------
+#
+# A group workspace made by the workspace job is in neither list above: not
+# in local.forge_user_slot_tenants (Terraform's), and its id has no `u-`, so
+# forge_personal_any misses it. swarm-api still publishes, refreshes,
+# disables and re-enables its members' GitHub tokens,
+# `swarm-tenant-<g>-git-u-<hash>`, exactly as it does for `eng`'s. So the same
+# three grants once more, over ANY tenant: the `swarm-tenant-` prefix AND a
+# non-empty tenant before `-git-u-`, in either resource-name form, by
+# extract() and never matches() (refused on some services). A tenant's own
+# `-git` team slot, its provider keys and its workspace secrets carry no
+# `-git-u-`, so none is reached.
+#
+# swarm-api's only. No tenant worker gets a prefix read of its members' slots
+# here: a job-made group's members' slots are read through the credential
+# broker (Q6 (a)), because a group's worker is shared by every member. So no
+# nested-tenant precondition either: as with the repository slots below,
+# every binding is swarm-api's, which already reaches every Terraform and
+# personal tenant's -git-u- slots, and a wider match gives it nothing it can
+# hand to a worker.
+
+locals {
+  forge_member_slots_any = "resource.name.startsWith(\"projects/${local.forge_project_number}/secrets/swarm-tenant-\") && resource.name.extract(\"/secrets/swarm-tenant-{t}-git-u-\") != \"\""
+
+  forge_member_slot_grants = var.enable_workspace_kinds && var.enable_forge_user_slots ? {
+    version_adder = {
+      role        = "roles/secretmanager.secretVersionAdder"
+      title       = "swarm forge user slots any tenant"
+      description = "managed-by=swarm-terraform; K3: swarm-api publishes the GitHub user tokens of a job-made group's members (docs/design/workspace-kinds.md §4.5, §4.6)."
+    }
+    version_manager = {
+      role        = "projects/${var.project_id}/roles/${module.custom_role_ids.ids["forge_slot_version_manager"]}"
+      title       = "swarm forge user slot versions any tenant"
+      description = "managed-by=swarm-terraform; K3: swarm-api disables and re-enables a job-made group's members' GitHub user tokens (docs/design/workspace-kinds.md §4.5)."
+    }
+    slot_reader = {
+      role        = "roles/secretmanager.secretAccessor"
+      title       = "swarm forge user slots any tenant"
+      description = "managed-by=swarm-terraform; K3: swarm-api reads a job-made group's members' GitHub user slots, for refresh and for the broker (docs/design/workspace-kinds.md §4.5, Q6 (a))."
+    }
+  } : {}
+}
+
+resource "google_project_iam_member" "forge_member_slots_any_tenant" {
+  for_each = local.forge_member_slot_grants
+
+  project = var.project_id
+  role    = each.value.role
+  member  = local.forge_api_member
+
+  condition {
+    title       = each.value.title
+    description = each.value.description
+    expression  = local.forge_member_slots_any
+  }
+
+  # The version manager is this file's custom role.
+  depends_on = [google_project_iam_custom_role.forge_slot_version_manager]
+}
+
+# ---------------------------------------------------------------------------
+# REPOSITORY SLOTS, READ BY SWARM-API (docs/runner-git-tools.md §2.1, lane G4
+# of archived issue 1225)
+# ---------------------------------------------------------------------------
+#
+# The runner git tools run in swarm-api (owner decision Q4 = A, 2026-10-13):
+# a runner's agent shares a uid with its worker, so the token a mid-task push
+# or fetch uses is read and held only in swarm-api's process. The tools use
+# exactly the slot the task's signed forge_credential names, and one of those
+# is a repository slot, `swarm-tenant-<tenant>-git-r-<16 hex>`
+# (docs/git-tokens.md §2). swarm-api already reads the tenant's `-git` (the
+# per-secret binding in terraform/modules/secret_manager) and its `-git-u-`
+# slots (forge_refresh_reader above, forge_personal_slots below that); until
+# this, no grant reached a `-git-r-` slot, and forge.grant_hint said so.
+#
+# Read only: secretAccessor, nothing that creates, versions or disables. A
+# repository slot is stored by `scripts/create-secrets.sh --stdin`, a human
+# path, and has no -refresh twin. The same prefix narrowing as the user slots,
+# in the same full resource-name form.
+#
+# No nested-tenant precondition, unlike forge_slot_reader: there one tenant's
+# WORKER could read another tenant's slots. Here every binding is swarm-api's,
+# which reads every tenant's -git and -git-u- slots already, so a prefix that
+# also matched another tenant's names would give swarm-api nothing it lacks.
+#
+# Same gate as the user slots: these are swarm-api's forge-slot reads, and an
+# owner bootstrap apply makes them all at once.
+
+locals {
+  forge_repo_slot_conditions = {
+    for t in local.forge_user_slot_tenants :
+    t => "resource.name.startsWith(\"projects/${local.forge_project_number}/secrets/swarm-tenant-${t}-git-r-\")"
+  }
+
+  # A personal tenant's repository slots, recognised as forge_personal_any
+  # recognises its user slots: the `swarm-tenant-u-` prefix AND a `-git-r-`
+  # after the tenant, in either resource-name form.
+  forge_personal_repo_any = "resource.name.startsWith(\"${local.forge_personal_prefix}\") && resource.name.extract(\"/secrets/swarm-tenant-u-{tenant}-git-r-\") != \"\""
+}
+
+resource "google_project_iam_member" "forge_repo_slot_reader" {
+  for_each = local.forge_repo_slot_conditions
+
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = local.forge_api_member
+
+  condition {
+    title       = "swarm forge repository slots api ${each.key}"
+    description = "managed-by=swarm-terraform; swarm-api reads tenant ${each.key}'s GitHub repository slots for the runner git tools it executes (#1225, docs/runner-git-tools.md §2.1)."
+    expression  = each.value
+  }
+}
+
+resource "google_project_iam_member" "forge_personal_repo_slot_reader" {
+  count = local.forge_personal_slots_on ? 1 : 0
+
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = local.forge_api_member
+
+  condition {
+    title       = "swarm forge repository slots personal"
+    description = "managed-by=swarm-terraform; swarm-api reads personal tenants' GitHub repository slots for the runner git tools it executes (#1225, docs/runner-git-tools.md §2.1)."
+    expression  = local.forge_personal_repo_any
+  }
+}

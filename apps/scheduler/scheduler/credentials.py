@@ -1,0 +1,880 @@
+"""Can this tenant run this runner profile, and on which credential? Stated once.
+
+`credential_for` is the ONE statement of the rule. Three call sites ask it and
+nothing else in the control plane restates it:
+
+  * admission (`loop.Scheduler._admit_one`), which parks CREDENTIAL_MISSING
+    when it says no -- before any lease, so nothing is reserved (invariant 1);
+  * the credential sweep (`loop.Scheduler._promote_credentials`), which
+    returns a CREDENTIAL_MISSING park to READY when it says yes;
+  * the Cloud Run Job's secret mount (`dispatch.CloudRunJobDispatcher.
+    _build_job`), which names the tenant's own secret unless the answer is a
+    pool account.
+
+The API does not ask. It used to park a keyless tenant's task at submission
+with its own copy of the rule, and now writes READY and leaves the question
+to admission (swarm_api/service.py).
+
+WHY THIS MODULE EXISTS (archived issue 169). Admission parked every task whose tenant held
+no key for the profile's provider -- "admitting this would start a container
+that can only fail" -- while dispatch had a branch for exactly that tenant:
+"a pool account IS this tenant's credential". Admission ran first, so the
+branch was unreachable and no keyless tenant ever ran on the account pool.
+Each of the three statements read correctly on its own. They disagreed.
+
+WHAT A POOL ACCOUNT CAN SERVE. Narrower than dispatch's comment said, and
+read from the two components that act on it:
+
+  * ONLY THE TENANT THAT OWNS IT AND THE TENANTS IT IS LENT TO. The pool is
+    per-tenant with explicit lending (quota_broker/accounts.py). A deployment
+    having a pool does NOT mean the pool serves every tenant in it: a personal
+    tenant nobody lent an account to gets `no_accounts_registered` from the
+    broker, falls back to its own secret, and has none. Invariant 9 is the
+    reason. `quota_broker.accounts.accounts_serving` states this, and the
+    broker's assign route calls the same function.
+  * ONLY ITS OWN PROVIDER. Same function.
+  * ONLY A PROFILE THAT TAKES A SUBSCRIPTION TOKEN. An anthropic account is a
+    Claude subscription. Its token fills CLAUDE_CODE_OAUTH_TOKEN and nothing
+    else; an openai account is a ChatGPT plan, whose access token and account
+    id fill CODEX_PLAN_ACCESS_TOKEN and CODEX_PLAN_ACCOUNT_ID (contract request
+    130). The worker does not ask the pool for a profile whose `secrets` omit
+    its provider's names (`lifecycle._account_for`, `ACCOUNT_ENVS`).
+    `claude-code` and `codex` declare them. `browser` declares
+    ANTHROPIC_API_KEY only, so no account can run it, however many a tenant is
+    lent.
+  * ONLY ON A DEPLOYMENT WITH A BROKER. With no QUOTA_BROKER_URL no worker is
+    told where the pool is (`dispatch.worker_env`).
+  * ONLY A STEP OF A MODEL CLASS IT SERVES (owner decision R5, 2026-10-17).
+    An account lists the classes its plan can run; empty, the default, is
+    every class. Asked only when admission and the sweep pass the task, and
+    only when the pool is the tenant's credential (`_class_answer`): the
+    broker's assign route filters on the same `Account.serves_class`, so a
+    keyed tenant's step of a class no account serves runs on its key, and a
+    keyless tenant's parks as `no_account_serves_class`, naming the class.
+
+The checks run in the worker's order, and each failure is named in the park's
+event (`account_pool`), using the worker's own words for its declines, so an
+operator reading a CREDENTIAL_MISSING can tell "register a key" from "lend an
+account" from "this profile cannot run on an account at all".
+
+WHAT IT DOES NOT ASK: whether an account has room now, or whether the broker
+can be reached. A spent, paused or unobserved account is a wait the pool owns,
+and the worker parks on it as PROVIDER_QUOTA_EXHAUSTED with the broker's own
+reset instant (`lifecycle._park_no_account`). That is where the broker itself
+draws the line: `no_accounts_registered` means the pool is not how this tenant
+runs, and every other answer means it is, so wait.
+
+SO AN ACCOUNT_POOL ANSWER DOES NOT END A WORKER'S WAIT. It is read from
+Firestore, and it stays "yes" through a broker outage, a refused worker and a
+spent window alike. Two sweeps in `loop.py` therefore also read the park's
+own `next_eligible_at`:
+
+  * the credential sweep promotes a CREDENTIAL_MISSING park answered
+    ACCOUNT_POOL only once that instant has passed. A worker that could not
+    reach the broker falls back to a key the tenant does not have and parks
+    for an hour. Promoting it at once started a container on every drain that
+    could only park again;
+  * the prewarm sweep promotes a PROVIDER_QUOTA_EXHAUSTED park with no
+    `provider:{p}:tenant:{t}` guard pool once that instant has passed, but not
+    before. A tenant served only by a lent account has no such pool, because
+    Terraform makes it from declared `providers`. The sweep used to skip
+    such a task for ever.
+
+WHICH CREDENTIAL IS REPORTED when a tenant has both a key and an account: the
+key, because that is the answer that needs no read. At run time the worker asks
+the pool first and falls back to the key, so a keyed tenant may still run on an
+account. Nothing here depends on which one it uses. The answer decides only
+whether the task may run and which secret a Cloud Run Job may name, and a keyed
+tenant's own secret is always safe to name.
+
+THE GITHUB CONNECTION (docs/onboarding.md §3.3 step 2; archived issue 780, lane OB6). A
+task that works a repository as its submitter reads that person's user slot
+`git-u-<hex>`, kept fresh by swarm-api's refresh sweep. When the sweep could
+not refresh it, the connection document says `refresh_failed`, and a worker
+started on it holds a slot to clone with a token GitHub no longer takes. So
+`credential_for`, given the task and a `ForgeConnections`, also answers "no"
+when the task needs a user slot and the submitter's connection is not
+`active`: `refresh_failed`, `revoked`, missing, or a state this module does
+not know. Admission parks it CREDENTIAL_MISSING before any lease, and the
+credential sweep asks the same question and returns it to READY once the
+connection is `active` again.
+
+Only admission and the sweep pass the task. The Cloud Run Job's secret mount
+does not: it runs after the lease is reserved, and nothing about the forge is
+decided in dispatch.py. It names the provider's secret, never the git one.
+
+WHICH TASK NEEDS A USER SLOT is `needs_user_slot`, and only there. It reads
+the task's `forge_credential` (contract request 54, request E of
+docs/onboarding.md §3.3; owner decision 2026-10-07, lane OB5), which swarm-api
+writes at submission and the spec signature covers: a `git-u-<hex>` suffix is
+a person's user slot, and the connection is asked about. `git` -- or None, a
+task written before the field -- is the tenant token, and a `git-r-<hex>`
+repository token is not a person's either: neither asks about any connection,
+exactly as before onboarding. Until OB5 this was derived the "Without it" way,
+from the signed `submitted_by` and that person's grant; the grant is now the
+worker's to re-read (§3.3 step 4), and the scheduler reads none.
+
+The scheduler does not verify the signature, and need not: a task whose
+`forge_credential` was rewritten fails the worker's spec check before any
+credential is read. What a rewrite could do here is park a task, or admit one
+the worker then refuses -- never hand a worker a credential.
+
+A PERSON'S TOKEN FOR ONE OWNER (D5, archived issue 780). An org whose admin will not
+install the App is reached through the person's fallback token for it, a
+second user slot `git-u-<16 hex of sha256(email|owner)>`
+(`swarm_api.gittokens.owner_suffix`). Its hex is not the person's
+`user_hash`, so it is recognised by recomputing it from the signed
+`submitted_by` and the owner of the signed `repository_url`: a match is the
+submitter's own token for that owner, and runs while their `forge_orgs`
+document says the owner is enabled through it (`method: pat`) -- removing the
+owner deletes that document, and a task signed before the removal parks
+CONNECTION_MISSING. A token has no refresh, so no App connection is asked.
+
+The document shapes are OB3's (`swarm_api.forgeapp`) and §3.1's, read by id
+and never written. The id recipes are RESTATED below because the scheduler's
+image does not carry swarm-api; tests/unit/control_plane/
+test_forge_connection_admission.py holds them to swarm-api's own functions.
+
+A WORKSPACE SECRET A SLOT REQUIRES (docs/design/workspace-secrets.md §4.2;
+lane SEC-ADMIT-PARK, archived issue 1347). The last half of the same question, asked only
+by admission and the sweep, and only once the provider and the connection
+have said yes: does the profile, or a tool its `browser_tool` launches,
+declare a `required` slot that no enabled grant fills? `secret_slots.py`
+states that rule and reads the grants. A no parks CREDENTIAL_MISSING before
+any lease, its event naming each `{consumer, slot}` under `workspace_secrets`
+and never a secret id. The sweep asks it of EVERY CREDENTIAL_MISSING park,
+the worker's backstop park (`workspace-secret:<slots>`) included, so a task
+is promoted only when its key, its connection and its grants all answer yes.
+A repository's secret fills a slot only for an attempt that clones that
+repository (`attempt_repositories`, the release's set, restated below with
+the id recipes; lane SSC-ADMIT-REPO, part of archived issue 2158).
+
+THE MCP SERVERS A TASK NAMES (docs/design/registered-mcp-servers.md §4.10;
+lane MCP-SCHED, part of archived issue 1433). The last half again, asked only by admission
+and the sweep, and only once the grants have said yes: may the task use every
+server its signed `mcp_servers` input names? `mcp_admission.py` states that
+rule and reads the registrations and credential rows. A disabled or refused
+server parks CREDENTIAL_MISSING, code `mcp_server_unavailable`, its event
+naming each server by name only; the sweep promotes it once every server says
+yes. A per-run credential that expired or was destroyed parks a workflow's
+task the same way, with `credential: "mcp"`, until its caller re-stores it
+(the owner 2026-10-26); for a task that is no workflow's it is TERMINAL
+(`CredentialAnswer.terminal`), since nothing can re-store it. A task that names no server reads nothing and records nothing
+new. The reader is built over the database the workspace grants already read
+(`_mcp_reader`), so admission and the sweep ask it with no new argument.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+from dataclasses import dataclass, replace
+from datetime import datetime
+from enum import Enum
+from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import urlsplit
+
+from quota_broker.accounts import DEFAULT_HOLD_TTL, Account, Hold, Unavailable, accounts_serving
+from quota_broker.accountstore import AccountStore
+from swarm_common.models import Task, Tenant
+from swarm_common.profiles import RunnerProfile, step_model_class
+
+from .mcp_admission import McpAnswer, McpRegistrations
+from .secret_slots import MissingSlot, WorkspaceGrants
+
+#: The variable a pool account's token fills.
+#:
+#: RESTATED from `agent_worker.accountlease.ACCOUNT_TOKEN_ENV`, because the
+#: scheduler's image does not carry the worker and cannot import it.
+#: tests/unit/worker/test_pool_credential_parity.py holds the two together by
+#: asking the REAL worker, for every profile in the catalogue, whether it asks
+#: the pool, and comparing that with this module's answer. Contract request 22
+#: asks for one home in `swarm_common.profiles`.
+SUBSCRIPTION_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+
+#: Which variables an account of each provider's pool fills: RESTATED from
+#: `agent_worker.accountlease.ACCOUNT_ENVS` for the same reason, and held to it
+#: by the same parity test. An openai account is a ChatGPT plan (contract
+#: request 130): its access token and account id, never its refresh token.
+ACCOUNT_ENVS: dict[str, tuple[str, ...]] = {
+    "anthropic": (SUBSCRIPTION_TOKEN_ENV,),
+    "openai": ("CODEX_PLAN_ACCESS_TOKEN", "CODEX_PLAN_ACCOUNT_ID"),
+}
+
+
+def takes_pool_account(profile: Any) -> bool:
+    """Whether a profile can run on an account of its provider's pool.
+
+    The worker's `accountlease.takes_account`: the profile declares every
+    variable an account of its provider fills. `claude-code` declares
+    CLAUDE_CODE_OAUTH_TOKEN; `codex` declares the plan's two names; `browser`
+    declares only a metered key, so no account can supply it.
+    """
+    wanted = ACCOUNT_ENVS.get(getattr(profile, "provider", None) or "")
+    declared = tuple(getattr(profile, "secrets", None) or ())
+    return bool(wanted) and all(name in declared for name in wanted)
+
+
+class CredentialSource(str, Enum):
+    """What a task would run on, as far as admission can tell."""
+
+    #: The profile names no provider (`mock`, `generic`).
+    NOT_NEEDED = "not_needed"
+    #: The tenant registered a key for the provider.
+    TENANT_KEY = "tenant_key"
+    #: No key, and an account the tenant owns or is lent serves the profile.
+    ACCOUNT_POOL = "account_pool"
+    #: Neither. The task parks CREDENTIAL_MISSING.
+    MISSING = "missing"
+
+
+class PoolAnswer(str, Enum):
+    """What the account pool said, in the words the worker logs for each case."""
+
+    #: The pool was not consulted: the profile needs no provider, or the
+    #: tenant's own key answered first.
+    NOT_ASKED = "not_asked"
+    #: An account the tenant may use serves this profile's provider.
+    SERVES = "serves"
+    #: This deployment has no quota broker, so no worker is told of a pool.
+    NO_BROKER_CONFIGURED = "no_broker_configured"
+    #: The profile does not declare what its provider's accounts fill
+    #: (`ACCOUNT_ENVS`), so no account can supply its credential. The
+    #: `browser` profile is one.
+    PROFILE_TAKES_NO_SUBSCRIPTION = "profile_takes_no_subscription"
+    #: No account of this provider is owned by or lent to the tenant. The
+    #: broker's own spelling, taken from its enum rather than restated.
+    NO_ACCOUNTS_REGISTERED = Unavailable.NO_ACCOUNTS_REGISTERED.value
+    #: Accounts serve the tenant, and none of them serves the step's model
+    #: class (owner decision R5): every one was narrowed to classes its plan
+    #: can run, and this is not one. The park names the class, so the fix --
+    #: an account that serves it, a key, or a step of another class -- is
+    #: readable from the event.
+    NO_ACCOUNT_SERVES_CLASS = "no_account_serves_class"
+
+
+class ForgeAnswer(str, Enum):
+    """What the submitter's GitHub connection said, for a task that was asked about it."""
+
+    #: Not asked: the caller passed no task (the Job's secret mount), or the
+    #: provider answer had already said no.
+    NOT_ASKED = "not_asked"
+    #: The task needs no user slot (`needs_user_slot`): its signed
+    #: `forge_credential` is `git`, None or a repository token.
+    NO_USER_SLOT = "no_user_slot"
+    #: The connection is `active`: the refresh sweep keeps its token fresh. Or,
+    #: for the submitter's token for one owner (D5), that owner is enabled
+    #: through it.
+    ACTIVE = "active"
+    #: swarm-api's sweep could not refresh the token. The person reconnects.
+    REFRESH_FAILED = "refresh_failed"
+    #: The person disconnected.
+    REVOKED = "revoked"
+    #: A grant names the submitter, and no connection of theirs exists in the
+    #: tenant.
+    CONNECTION_MISSING = "connection_missing"
+    #: The document's `state` is none of OB3's three. Not runnable: a state
+    #: nobody here knows is not evidence of a token that works.
+    UNRECOGNISED = "unrecognised"
+
+
+#: The only connection answers that let a task run.
+_FORGE_RUNNABLE = frozenset({ForgeAnswer.NOT_ASKED, ForgeAnswer.NO_USER_SLOT, ForgeAnswer.ACTIVE})
+
+
+@dataclass(frozen=True)
+class CredentialAnswer:
+    provider: str | None
+    source: CredentialSource
+    pool: PoolAnswer
+    forge: ForgeAnswer = ForgeAnswer.NOT_ASKED
+    #: None when the grants were not asked (no task, an earlier half said no,
+    #: or nothing is required); else the required slots no enabled grant
+    #: fills, empty when every one is.
+    workspace_secrets: tuple[MissingSlot, ...] | None = None
+    #: None when the MCP servers were not asked (no task, an earlier half
+    #: said no, or the task names none); else what every named server said.
+    mcp: McpAnswer | None = None
+    #: The step's model class, set only when the pool was asked about it and
+    #: no account serves it (`PoolAnswer.NO_ACCOUNT_SERVES_CLASS`).
+    model_class: str | None = None
+
+    @property
+    def runnable(self) -> bool:
+        """THE PREDICATE: may this task be admitted at all."""
+        return (
+            self.source is not CredentialSource.MISSING
+            and self.forge in _FORGE_RUNNABLE
+            and not self.workspace_secrets
+            and (self.mcp is None or self.mcp.runnable)
+        )
+
+    @property
+    def terminal(self) -> bool:
+        """No change anyone can make will make this task runnable: a per-run
+        MCP credential of a task that is no workflow's expired or was
+        destroyed (`McpAnswer.terminal`). A workflow's waits for a re-store."""
+        return self.mcp is not None and self.mcp.terminal
+
+    def park_detail(self) -> dict[str, Any]:
+        """What a CREDENTIAL_MISSING park records in its `parked` event.
+
+        `account_pool` is what scripts/prove-gke-dispatch.sh reads to say what
+        would unpark the task: a key, a loan, or -- for a profile no account
+        can run -- a key and nothing else. `forge_connection`, present only
+        when the connection was asked about, names the GitHub half: a person
+        who must reconnect.
+        """
+        detail: dict[str, Any] = {"provider": self.provider, "account_pool": self.pool.value}
+        if self.pool is PoolAnswer.NO_ACCOUNT_SERVES_CLASS:
+            detail["model_class"] = self.model_class
+        if self.forge is not ForgeAnswer.NOT_ASKED:
+            detail["forge_connection"] = self.forge.value
+        if self.workspace_secrets:
+            detail["workspace_secrets"] = [m.to_detail() for m in self.workspace_secrets]
+        if self.mcp is not None and not self.mcp.runnable:
+            detail.update(self.mcp.to_detail())
+        return detail
+
+    def promote_detail(self) -> dict[str, Any]:
+        """What the credential sweep records when it returns a park to READY."""
+        detail: dict[str, Any] = {
+            "reason": "credential_available",
+            "provider": self.provider,
+            "credential": self.source.value,
+        }
+        if self.forge is not ForgeAnswer.NOT_ASKED:
+            detail["forge_connection"] = self.forge.value
+        if self.workspace_secrets is not None:
+            detail["workspace_secrets"] = "granted"
+        if self.mcp is not None:
+            detail["mcp_servers"] = "available"
+        return detail
+
+
+def _accounts_not_wired() -> Sequence[Account]:
+    raise RuntimeError(
+        "this AccountPool was built without a way to read the broker's accounts, "
+        "and a keyless tenant's task needs one to know whether the pool serves it. "
+        "Build it with AccountPool.for_deployment(settings, db) and hand the SAME "
+        "instance to the Scheduler and to CloudRunJobDispatcher (main.build_scheduler "
+        "does), so admission and the Job's secret mount read one answer."
+    )
+
+
+class AccountPool:
+    """The broker's accounts, read the broker's way, at most once per drain.
+
+    Read from Firestore directly, not asked of the broker over HTTP: the
+    scheduler reads documents and never calls a service (settings.py,
+    `quota_broker_url`), and `AccountStore` is the broker's own reader of the
+    same collection in the same database, so the parsing is not restated
+    either.
+
+    READ LAZILY. Only a task for a profile that takes a subscription token, on
+    a deployment with a broker, ever needs it: a keyless tenant's for its
+    credential, and since archived issue 2222 any tenant's, because the worker asks the
+    broker whenever an account serves the tenant, key or no key, and admission
+    now asks first (`loop.Scheduler._pool_question`). A drain of work for
+    profiles that take no subscription token reads nothing extra; any other
+    drain reads the collection once.
+
+    READ ONCE PER DRAIN. `Scheduler.drain` calls `forget()` first, so a loan
+    made or withdrawn between two drains is seen by the second, and every task
+    inside one drain, at admission and at dispatch, is judged on the same list.
+    That is also why the dispatcher must be handed the Scheduler's instance: a
+    second instance would be read on a schedule nobody resets.
+
+    AND IT COUNTS WHAT THIS RUN ALREADY LET THROUGH (archived issue 2222, POOL-WAKE-GATE).
+    The list is read once, so `choose()` over it gives the same answer for
+    every task asked about: one freed slot promoted every park waiting on the
+    pool, each to start a container and park again. Every place this run
+    hands an account's slot to a task -- admission's lease, the finish
+    event's wake, the prewarm sweep -- `claim`s it, and `accounts()` shows
+    the claim as a hold, so the next `choose()` sees one slot fewer. Claims
+    are keyed by task and dropped by `forget()`, at the top of every run: they
+    are this run's arithmetic, never a record. The broker's own hold, taken
+    when the worker asks, is the record.
+    """
+
+    def __init__(
+        self,
+        *,
+        broker_url: str,
+        read_accounts: Callable[[], Sequence[Account]],
+    ) -> None:
+        self._configured = bool(str(broker_url or "").strip())
+        self._read = read_accounts
+        self._accounts: list[Account] | None = None
+        #: task id -> (account id, the hold it stands for), this run only.
+        self._claims: dict[str, tuple[str, Hold]] = {}
+
+    @classmethod
+    def for_deployment(cls, settings: Any, db: Any) -> "AccountPool":
+        """The pool this deployment has: its broker setting, and its `accounts` collection."""
+        return cls(
+            broker_url=str(getattr(settings, "quota_broker_url", "") or ""),
+            read_accounts=AccountStore(db).list,
+        )
+
+    @classmethod
+    def unwired(cls, settings: Any) -> "AccountPool":
+        """Knows whether a broker is configured, and raises if asked who it serves.
+
+        What a CloudRunJobDispatcher built on its own gets. A tenant with a key
+        and a profile with no provider never reach the read, so only a keyless
+        tenant's Job on a deployment with a pool would, and for that one a loud
+        failure is right: the alternative is a second, unsynchronised answer.
+        """
+        return cls(
+            broker_url=str(getattr(settings, "quota_broker_url", "") or ""),
+            read_accounts=_accounts_not_wired,
+        )
+
+    @property
+    def configured(self) -> bool:
+        return self._configured
+
+    def forget(self) -> None:
+        """Drop what was read, and this run's claims. Called at the top of every drain."""
+        self._accounts = None
+        self._claims = {}
+
+    def accounts(self) -> list[Account]:
+        """Every account document, read at most once per drain like `serves`,
+        with this run's claims shown as holds.
+
+        For admission and the two wakes (`loop.Scheduler._admit_one`,
+        `_wake_account_parks`, `_prewarm`), which ask the broker's own
+        `choose()` over the same list, so they cannot disagree within a run --
+        and each sees the slots the others already handed out.
+        """
+        if self._accounts is None:
+            self._accounts = list(self._read())
+        if not self._claims:
+            return list(self._accounts)
+        extra: dict[str, list[Hold]] = {}
+        for account_id, hold in self._claims.values():
+            extra.setdefault(account_id, []).append(hold)
+        return [
+            replace(a, holds=(*a.holds, *extra[a.account_id]),
+                    assigned=a.assigned + len(extra[a.account_id]))
+            if a.account_id in extra else a
+            for a in self._accounts
+        ]
+
+    def claim(self, account_id: str, *, task_id: str, tenant_id: str, now: datetime) -> None:
+        """Count `task_id` as one more agent on `account_id` for the rest of this run.
+
+        One claim per task: a task claimed again (promoted by a wake, then
+        leased by admission) moves its one claim rather than adding a second.
+        """
+        self._claims[task_id] = (account_id, Hold(
+            assignment_id=f"run-claim:{task_id}",
+            tenant_id=tenant_id,
+            expires_at=now + DEFAULT_HOLD_TTL,
+            task_id=task_id,
+            assigned_at=now,
+        ))
+
+    def release_claim(self, task_id: str) -> None:
+        """Drop `task_id`'s claim, so asking about the task does not count it against itself."""
+        self._claims.pop(task_id, None)
+
+    def serves(self, tenant_id: str, provider: str, *, model_class: str | None = "") -> bool:
+        """Whether an account the tenant may use serves `provider` -- and, when
+        `model_class` is given, a step of that class (`Account.serves_class`;
+        None is a class not known). The broker's assign route asks the same
+        function with the same class, so admission and the pool agree."""
+        if self._accounts is None:
+            self._accounts = list(self._read())
+        return bool(
+            accounts_serving(self._accounts, tenant_id, provider, model_class=model_class)
+        )
+
+
+# --------------------------------------------------------------------------
+# The GitHub connection (OB6)
+# --------------------------------------------------------------------------
+
+#: `swarm_api.forgeapp.CONNECTIONS` and `GRANTS`, and OB3's connection states
+#: (`ACTIVE`, `REFRESH_FAILED`, `REVOKED`). Restated: see the module docstring.
+CONNECTIONS = "forge_connections"
+GRANTS = "forge_grants"
+#: `swarm_api.forgeapp.ORGS` and `METHOD_PAT`: an owner a person enabled, and
+#: the method that says it was through their token for it (D5).
+ORGS = "forge_orgs"
+_METHOD_PAT = "pat"
+_STATES = {
+    "active": ForgeAnswer.ACTIVE,
+    "refresh_failed": ForgeAnswer.REFRESH_FAILED,
+    "revoked": ForgeAnswer.REVOKED,
+}
+#: `swarm_api.gittokens.FORGE` and `swarm_api.repositories.FORGE_HOST`.
+_FORGE = "github"
+_FORGE_HOST = "github.com"
+#: `swarm_api.validation.MERGE_FORGE_HOSTS`: the hosts whose repositories
+#: the API names by `owner/repo` and registers under a `repo_id`.
+_GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
+
+
+def _hex16(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _user_key(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def user_hash(email: str) -> str:
+    """`swarm_api.forgeapp.user_hash`: 16 hex of sha256 of the lower-cased email."""
+    return _hex16(_user_key(email))
+
+
+def owner_slot_hash(email: str, owner: str) -> str:
+    """`swarm_api.gittokens.owner_suffix`'s hex: 16 hex of sha256 of
+    `lower(email) + "|" + lower(owner)`."""
+    return _hex16(_user_key(email) + "|" + (owner or "").strip().lower())
+
+
+def connection_id_for(tenant_id: str, email: str) -> str:
+    """`swarm_api.forgeapp.connection_id_for`: `conn_` + 16 hex of tenant + user + forge."""
+    return "conn_" + _hex16(tenant_id + _user_key(email) + _FORGE)
+
+
+def repo_id_for(tenant_id: str, owner: str, repo: str) -> str:
+    """`swarm_api.repositories.repo_id_for`: tenant + `github.com/` + lower-cased owner/repo."""
+    return "repo_" + _hex16(f"{tenant_id}{_FORGE_HOST}/{f'{owner}/{repo}'.lower()}")
+
+
+def github_repository(repository_url: str | None) -> tuple[str, str] | None:
+    """`(owner, repo)` of a GitHub repository URL, else None.
+
+    `swarm_api.validation.merge_repository`'s reading: https or scp-style ssh,
+    a GitHub host with no port, exactly two path parts, `.git` dropped.
+    """
+    text = (repository_url or "").strip()
+    if text.startswith("git@"):
+        text = "ssh://" + text.replace(":", "/", 1)
+    try:
+        parts = urlsplit(text)
+        host = (parts.hostname or "").lower()
+        port = parts.port
+    except ValueError:
+        return None
+    if host not in _GITHUB_HOSTS or port is not None:
+        return None
+    path = [part for part in parts.path.strip("/").split("/") if part]
+    if len(path) != 2:
+        return None
+    owner, repo = path
+    if repo.lower().endswith(".git"):
+        repo = repo[:-4]
+    return (owner, repo) if owner and repo else None
+
+
+#: `swarm_api.repositories.parse_repository`'s pattern: `validation`'s
+#: `_ISSUE_OWNER` / `_ISSUE_REPO`, as GitHub spells owner and repository.
+_OWNER_REPO = re.compile(r"^([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))/([A-Za-z0-9._-]{1,100})$")
+#: `swarm_api.workspace_secrets._GITHUB_URL`: the release reads a task's
+#: primary repository from an https GitHub URL only.
+_RELEASE_GITHUB_URL = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+
+
+def parse_repository(value: Any) -> tuple[str, str] | None:
+    """`swarm_api.repositories.parse_repository`, answering None where it
+    raises: `owner/repo`, `.git` dropped, never `.`, `..` or a dot-led name."""
+    matched = _OWNER_REPO.match(value) if isinstance(value, str) else None
+    if matched is None:
+        return None
+    owner, repo = matched.group(1), matched.group(2)
+    if repo.lower().endswith(".git"):
+        repo = repo[:-4]
+    if repo in ("", ".", "..") or repo.startswith("."):
+        return None
+    return owner, repo
+
+
+def attempt_repositories(task: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """`swarm_api.workspace_secrets.attempt_repositories`, restated (the
+    scheduler's image does not carry swarm-api; tests/unit/control_plane/
+    test_secret_slot_admission.py holds the two equal): the `repo_id`s an
+    attempt clones, its `repository_url`'s first, then each
+    `additional_repositories` entry's, its `repo_id` recomputed from its
+    `repository` and the task's tenant. None when an entry does not match,
+    which the release answers by withholding every repository secret; `()`
+    for an attempt that clones nothing (secrets-scopes.md §2.2)."""
+    tenant_id = task.get("tenant_id")
+    if not isinstance(tenant_id, str) or not tenant_id:
+        return ()
+    out: list[str] = []
+    url = task.get("repository_url")
+    matched = _RELEASE_GITHUB_URL.match(url.strip()) if isinstance(url, str) else None
+    primary = parse_repository(f"{matched.group(1)}/{matched.group(2)}") if matched else None
+    if primary is not None:
+        out.append(repo_id_for(tenant_id, *primary))
+    extras = task.get("additional_repositories")
+    if extras is None:
+        return tuple(out)
+    if not isinstance(extras, list):
+        return None
+    for entry in extras:
+        if not isinstance(entry, Mapping):
+            return None
+        named = parse_repository(entry.get("repository"))
+        repo_id = entry.get("repo_id")
+        if named is None or not isinstance(repo_id, str) \
+                or repo_id != repo_id_for(tenant_id, *named):
+            return None
+        out.append(repo_id)
+    return tuple(dict.fromkeys(out))
+
+
+def grant_id_for(tenant_id: str, email: str, repo_id: str) -> str:
+    """§3.1: `forge_grants/{tenant_id}__{user_hash}__{repo_id}`."""
+    return f"{tenant_id}__{user_hash(email)}__{repo_id}"
+
+
+class ForgeConnections:
+    """The submitter's grant and connection, read by id, at most once per drain each.
+
+    Read lazily: a task with no GitHub repository reads nothing, and a
+    submitter with no grant reads no connection. `forget()` is called at the
+    top of every run, as `AccountPool.forget` is, so a reconnect made between
+    two drains is seen by the second.
+
+    TENANT-SCOPED (invariant 9). Both ids already contain the tenant, and a
+    document is still taken only when its own `tenant_id` is the task's: a
+    document that says otherwise is not this tenant's grant or connection.
+    """
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+        self._docs: dict[tuple[str, str], dict[str, Any] | None] = {}
+
+    def forget(self) -> None:
+        self._docs = {}
+
+    def _read(self, collection: str, doc_id: str, tenant_id: str) -> dict[str, Any] | None:
+        key = (collection, doc_id)
+        if key not in self._docs:
+            snap = self._db.collection(collection).document(doc_id).get()
+            data = snap.to_dict() if snap.exists else None
+            self._docs[key] = data if data and data.get("tenant_id") == tenant_id else None
+        return self._docs[key]
+
+    def grant(self, task: Task, repo_id: str) -> dict[str, Any] | None:
+        """The submitter's grant for this repository in the task's tenant, or None."""
+        return self._read(
+            GRANTS, grant_id_for(task.tenant_id, task.submitted_by, repo_id), task.tenant_id
+        )
+
+    def connection_state(self, task: Task) -> ForgeAnswer:
+        """The submitter's connection in the task's tenant, as a `ForgeAnswer`."""
+        doc = self._read(
+            CONNECTIONS, connection_id_for(task.tenant_id, task.submitted_by), task.tenant_id
+        )
+        if doc is None or _user_key(str(doc.get("user") or "")) != _user_key(task.submitted_by):
+            return ForgeAnswer.CONNECTION_MISSING
+        return _STATES.get(str(doc.get("state") or ""), ForgeAnswer.UNRECOGNISED)
+
+    def owner_token_state(self, task: Task, owner: str) -> ForgeAnswer:
+        """The submitter's token for `owner` (D5): ACTIVE while their
+        `forge_orgs` document in the task's tenant says the owner is enabled
+        through it, CONNECTION_MISSING once it is removed."""
+        doc = self._read(
+            ORGS, f"{task.tenant_id}__{user_hash(task.submitted_by)}__{owner.lower()}",
+            task.tenant_id,
+        )
+        if (
+            doc is None
+            or _user_key(str(doc.get("user") or "")) != _user_key(task.submitted_by)
+            or str(doc.get("owner") or "") != owner.lower()
+            or doc.get("method") != _METHOD_PAT
+        ):
+            return ForgeAnswer.CONNECTION_MISSING
+        return ForgeAnswer.ACTIVE
+
+
+#: A user slot's suffix, `swarm_api.gittokens.provider_suffix(Scope.USER, ...)`:
+#: its hex is the person's `user_hash`. Anchored, like `FORGE_CREDENTIAL`.
+_USER_SLOT = re.compile(r"git-u-([0-9a-f]{16})")
+
+
+def user_slot_hash(task: Task) -> str | None:
+    """The `user_hash` of the user slot the task's `forge_credential` names, or None."""
+    match = _USER_SLOT.fullmatch(task.forge_credential or "")
+    return match.group(1) if match else None
+
+
+def needs_user_slot(task: Task, forge: ForgeConnections | None = None) -> bool:
+    """THE ONE PLACE that decides whether a task runs on its submitter's user slot.
+
+    The task's signed `forge_credential` (contract request 54): a `git-u-`
+    suffix needs the slot; `git`, None or a `git-r-` repository token is the
+    tenant's fallback and does not. Reads no document: `forge` is kept so no
+    caller changes, and is not used.
+    """
+    del forge
+    return user_slot_hash(task) is not None
+
+
+def forge_answer(task: Task, forge: ForgeConnections) -> ForgeAnswer:
+    """What the task's GitHub credential says about running it now.
+
+    The connection is the submitter's (`submitted_by`, signed), and the slot
+    must be theirs: swarm-api names a person's task by that person's own slot,
+    so a slot whose hex is not the submitter's has no connection this task
+    may rely on, and parks as one missing. Theirs is their App slot (hex =
+    `user_hash`) or their token for the repository's owner (hex =
+    `owner_slot_hash`, D5); a token for another owner is not theirs here.
+    """
+    hashed = user_slot_hash(task)
+    if hashed is None:
+        return ForgeAnswer.NO_USER_SLOT
+    if hashed == user_hash(task.submitted_by):
+        return forge.connection_state(task)
+    named = github_repository(getattr(task, "repository_url", None))
+    if named is not None and hashed == owner_slot_hash(task.submitted_by, named[0]):
+        return forge.owner_token_state(task, named[0])
+    return ForgeAnswer.CONNECTION_MISSING
+
+
+def credential_for(
+    profile: RunnerProfile,
+    tenant: Tenant,
+    pool: AccountPool,
+    *,
+    task: Task | None = None,
+    forge: ForgeConnections | None = None,
+    secrets: WorkspaceGrants | None = None,
+    tenant_of: Callable[[str], Tenant | None] | None = None,
+    mcp: McpRegistrations | None = None,
+    now: datetime | None = None,
+) -> CredentialAnswer:
+    """THE RULE. See the module docstring for where each condition comes from.
+
+    `task`, `forge`, `secrets` and `tenant_of` are passed by admission and the
+    credential sweep, and by nobody else: the GitHub connection is asked about
+    only when `task` and `forge` are given, and only once the provider half
+    has said yes; the workspace grants only when `secrets` is given too, and
+    only once the connection has said yes. `tenant_of` reads a personal
+    tenant for Q3 (`secret_slots.WorkspaceGrants._personal`). The MCP
+    servers are asked only when `secrets` is given, and only once the grants
+    have said yes, through `mcp` or, absent it, a reader over the grants'
+    own database; `now` is the clock a per-run credential's expiry is read
+    against.
+    """
+    answer = _provider_answer(profile, tenant, pool)
+    if task is not None:
+        answer = _class_answer(answer, profile, tenant, pool, task)
+    if task is None or forge is None or not answer.runnable:
+        return answer
+    answer = CredentialAnswer(
+        answer.provider, answer.source, answer.pool, forge_answer(task, forge)
+    )
+    if secrets is None or not answer.runnable:
+        return answer
+    missing = secrets.missing(task, profile, tenant, tenant_of or (lambda _tenant_id: None))
+    answer = CredentialAnswer(answer.provider, answer.source, answer.pool, answer.forge, missing)
+    if not answer.runnable:
+        return answer
+    servers = (mcp or _mcp_reader(secrets)).answer(task, profile, now=now)
+    return CredentialAnswer(
+        answer.provider, answer.source, answer.pool, answer.forge, missing, servers
+    )
+
+
+def _mcp_reader(secrets: WorkspaceGrants) -> McpRegistrations:
+    """The MCP reader over the database the grants read.
+
+    Admission and the sweep (`loop.py`) build one `WorkspaceGrants` over the
+    scheduler's Firestore client and pass it to every `credential_for`; the
+    registrations live in the same database. Built per call: it caches
+    nothing, so there is nothing to forget between passes.
+    """
+    return McpRegistrations(secrets._db)
+
+
+def task_model_class(profile: RunnerProfile, task: Task) -> str | None:
+    """The class the task's step runs, by the frozen rule, as the broker reads it.
+
+    `quota_broker.main.step_class_for` resolves the same stored fields with the
+    same `step_model_class`. A class the profile does not accept is refused by
+    swarm-api at submission and by the worker's spec check; here it is None,
+    a class not known, which only an account serving every class takes.
+    """
+    try:
+        return step_model_class(profile, task.model_class)
+    except ValueError:
+        return None
+
+
+def _class_answer(
+    answer: CredentialAnswer,
+    profile: RunnerProfile,
+    tenant: Tenant,
+    pool: AccountPool,
+    task: Task,
+) -> CredentialAnswer:
+    """The pool half again, for THIS step's model class (owner decision R5).
+
+    Asked only when the pool is the tenant's credential: a tenant with its own
+    key runs any class on it, because the broker answers a class no account
+    serves `no_accounts_registered` and the worker falls back to the key. A
+    keyless tenant whose accounts all refuse the class parks here,
+    CREDENTIAL_MISSING, before any lease -- so it holds nothing (invariant 1)
+    and nothing was reserved (invariant 2) -- and the credential sweep
+    promotes it the drain after an owner lets an account serve the class.
+    """
+    if answer.source is not CredentialSource.ACCOUNT_POOL or answer.provider is None:
+        return answer
+    model_class = task_model_class(profile, task)
+    if pool.serves(tenant.tenant_id, answer.provider, model_class=model_class):
+        return answer
+    return CredentialAnswer(
+        answer.provider,
+        CredentialSource.MISSING,
+        PoolAnswer.NO_ACCOUNT_SERVES_CLASS,
+        model_class=model_class,
+    )
+
+
+def _provider_answer(profile: RunnerProfile, tenant: Tenant, pool: AccountPool) -> CredentialAnswer:
+    provider = profile.provider
+    if not provider:
+        return CredentialAnswer(None, CredentialSource.NOT_NEEDED, PoolAnswer.NOT_ASKED)
+    if provider in (tenant.credentials or ()):
+        return CredentialAnswer(provider, CredentialSource.TENANT_KEY, PoolAnswer.NOT_ASKED)
+    # From here the tenant has no key, and the pool is the only way it runs.
+    # The order is the worker's (`lifecycle._account_for`).
+    if not pool.configured:
+        return CredentialAnswer(
+            provider, CredentialSource.MISSING, PoolAnswer.NO_BROKER_CONFIGURED
+        )
+    if not takes_pool_account(profile):
+        return CredentialAnswer(
+            provider, CredentialSource.MISSING, PoolAnswer.PROFILE_TAKES_NO_SUBSCRIPTION
+        )
+    if not pool.serves(tenant.tenant_id, provider):
+        return CredentialAnswer(
+            provider, CredentialSource.MISSING, PoolAnswer.NO_ACCOUNTS_REGISTERED
+        )
+    return CredentialAnswer(provider, CredentialSource.ACCOUNT_POOL, PoolAnswer.SERVES)
+
+
+__all__ = [
+    "ACCOUNT_ENVS",
+    "SUBSCRIPTION_TOKEN_ENV",
+    "AccountPool",
+    "CredentialAnswer",
+    "CredentialSource",
+    "ForgeAnswer",
+    "ForgeConnections",
+    "PoolAnswer",
+    "credential_for",
+    "forge_answer",
+    "needs_user_slot",
+    "takes_pool_account",
+    "task_model_class",
+]

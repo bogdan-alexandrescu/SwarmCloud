@@ -1,0 +1,564 @@
+"""How many index versions a repository keeps, and who says which (lane INDEX-RETENTION, part of archived issue 1693).
+
+Measured 2026-10-20 on peer-app (repo_d754779d0cf31b44): retention never
+ran. The worker read the registration's `index_versions` from Firestore
+itself (`agent_worker.indexrun.kept_commits`), a tenant not switched to the
+state routes got PermissionDenied on every run, and the sweep was then given
+no keep set and retired nothing: 163 manifests and about 880 MB were held
+where swarm-api keeps 20 versions. What is held here:
+
+* `index.keep_versions` is a repository setting: 1-100, default 20 (today's
+  `KEPT_VERSIONS`), refused outside the range or as a string, written through
+  `PATCH /v1/repositories/{repo_id}` like `full_every_days`, and served;
+* `_prune_versions` keeps the repository's value, not the constant, and the
+  promoted version on top;
+* swarm-api, not the worker, decides the kept commits -- the newest
+  `keep_versions` versions, the promoted `current_sha` and the run's own
+  commit, and every version recorded in the last day (2026-11-03) -- and
+  names them in the SIGNED prompt (`KEEP_LINE`), the way it
+  names an incremental run's base (`BASE_LINE`);
+* the worker's sweep report reaches the run and the registration, so the
+  repository page says what was deleted and kept, or why nothing was.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timedelta, timezone
+
+import pytest
+from pydantic import ValidationError
+
+from swarm_api import repoindex, repositories
+
+from .conftest import auth_header
+from .repo_fakes import TenantTokens, make_client
+from .repo_index_fakes import REPOSITORY, IndexGitHub, finish_index_task, fixture_index, sha
+
+ONE, TWO = sha("one"), sha("two")
+T0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def github():
+    return IndexGitHub(heads={"main": ONE})
+
+
+@pytest.fixture
+def client(db, tokens, group_map, objects, github):
+    return make_client(
+        db, tokens, group_map, objects, forge_tokens=TenantTokens(), transport=github
+    )
+
+
+@pytest.fixture
+def repo_id(client) -> str:
+    created = client.post(
+        "/v1/repositories", json={"repository": REPOSITORY}, headers=auth_header("alice")
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["repository"]["repo_id"]
+
+
+def _patch(client, repo_id, index):
+    return client.patch(f"/v1/repositories/{repo_id}", json={"index": index},
+                        headers=auth_header("alice"))
+
+
+def _index_now(client, repo_id):
+    started = client.post(f"/v1/repositories/{repo_id}/index", json={"kind": "full"},
+                          headers=auth_header("alice"))
+    assert started.status_code == 202, started.text
+    return started.json()["run"]["task_id"]
+
+
+def _seed_versions(db, repo_id, count):
+    shas = [sha(f"v{n}") for n in range(count)]
+    for n, commit in enumerate(shas):
+        db.docs[f"repositories/{repo_id}/index_versions/{commit}"] = {
+            "commit_sha": commit, "task_id": f"task_{n}", "recorded_at": T0 + timedelta(hours=n),
+        }
+    return shas  # oldest first
+
+
+def _versions(db, repo_id):
+    prefix = f"repositories/{repo_id}/index_versions/"
+    return {path[len(prefix):] for path in db.docs if path.startswith(prefix)}
+
+
+def _tenant(db, repo_id):
+    return db.docs[f"repositories/{repo_id}"]["tenant_id"]
+
+
+def _service(db):
+    service = repoindex.RepoIndex.__new__(repoindex.RepoIndex)
+    service._db = db
+    service._now = lambda: T0 + timedelta(days=30)
+    return service
+
+
+# --------------------------------------------------------------------------
+# the setting
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("bad", [0, 101, "20", -1, 2.5])
+def test_keep_versions_outside_one_to_a_hundred_or_not_an_integer_is_refused(bad):
+    # MUTATION: drop the Field(ge=, le=) or the StrictInt on keep_versions and this passes nothing.
+    with pytest.raises(ValidationError):
+        repositories.IndexSettings(keep_versions=bad)
+
+
+def test_keep_versions_range_and_default_are_today_s_twenty():
+    # MUTATION: a default other than 20 changes retention for every repository that never set it.
+    assert repositories.KEEP_VERSIONS_DEFAULT == 20 == repoindex.KEPT_VERSIONS
+    assert repositories.KEEP_VERSIONS_RANGE == (1, 100)
+    assert repositories.IndexSettings(keep_versions=1).changes() == {"keep_versions": 1}
+    assert repositories.IndexSettings(keep_versions=100).changes() == {"keep_versions": 100}
+
+
+def test_keep_versions_of_reads_the_setting_or_the_default():
+    # MUTATION: return the constant instead of the stored value.
+    assert repositories.keep_versions_of({"keep_versions": 5}) == 5
+    assert repositories.keep_versions_of({}) == 20
+    assert repositories.keep_versions_of({"keep_versions": "5"}) == 20
+    assert repositories.keep_versions_of({"keep_versions": 0}) == 20
+
+
+def test_a_new_registration_serves_the_default(client, repo_id):
+    # MUTATION: leave keep_versions out of `to_api`'s index and the console reads "not served".
+    body = client.get(f"/v1/repositories/{repo_id}", headers=auth_header("alice")).json()
+    assert body["repository"]["index"]["keep_versions"] == 20
+
+
+def test_keep_versions_is_stored_and_served_through_the_patch(client, db, repo_id):
+    # MUTATION: drop keep_versions from IndexSettings and the PATCH is refused as an extra key.
+    patched = _patch(client, repo_id, {"keep_versions": 5})
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["repository"]["index"]["keep_versions"] == 5
+    assert db.docs[f"repositories/{repo_id}"]["index"]["keep_versions"] == 5
+    # The rest of the schedule is left as it was: the PATCH merges `index` field by field.
+    assert db.docs[f"repositories/{repo_id}"]["index"]["full_every_days"] == 7
+
+
+@pytest.mark.parametrize("bad", [0, 101, "20"])
+def test_a_patch_outside_the_range_is_refused_and_stores_nothing(client, db, repo_id, bad):
+    # MUTATION: validate after storing, and the bad value reaches the document.
+    refused = _patch(client, repo_id, {"keep_versions": bad})
+    assert refused.status_code == 422, refused.text
+    assert "keep_versions" not in db.docs[f"repositories/{repo_id}"]["index"] or \
+        db.docs[f"repositories/{repo_id}"]["index"]["keep_versions"] == 20
+
+
+# --------------------------------------------------------------------------
+# the prune
+# --------------------------------------------------------------------------
+
+def test_the_prune_keeps_the_repositorys_value_and_the_promoted_one(db, repo_id):
+    shas = _seed_versions(db, repo_id, 12)
+    promoted = shas[0]  # the oldest, as a superseded-then-promoted sha could be
+    # MUTATION: prune by KEPT_VERSIONS instead of keep_versions, and all 12 stay.
+    _service(db)._prune_versions(_tenant(db, repo_id), repo_id, keep=promoted, keep_versions=5)
+    assert _versions(db, repo_id) == set(shas[-5:]) | {promoted}
+
+
+def test_the_prune_default_is_still_twenty(db, repo_id):
+    shas = _seed_versions(db, repo_id, 25)
+    # MUTATION: a default other than KEPT_VERSIONS.
+    _service(db)._prune_versions(_tenant(db, repo_id), repo_id, keep=None)
+    assert _versions(db, repo_id) == set(shas[-20:])
+
+
+def test_raising_keep_versions_resurrects_nothing(db, repo_id):
+    shas = _seed_versions(db, repo_id, 8)
+    _service(db)._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=3)
+    _service(db)._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=50)
+    # MUTATION: nothing here can bring a deleted version back; a prune that wrote would.
+    assert _versions(db, repo_id) == set(shas[-3:])
+
+
+def test_promotion_prunes_with_the_registrations_value(client, db, objects, repo_id,
+                                                       monkeypatch):
+    seen = []
+    real = repoindex.RepoIndex._prune_versions
+
+    def spy(self, tenant, repo, keep, keep_versions=repoindex.KEPT_VERSIONS):
+        seen.append(keep_versions)
+        return real(self, tenant, repo, keep, keep_versions)
+
+    monkeypatch.setattr(repoindex.RepoIndex, "_prune_versions", spy)
+    assert _patch(client, repo_id, {"keep_versions": 3}).status_code == 200
+    task_id = _index_now(client, repo_id)
+    finish_index_task(db, objects, task_id, fixture_index(ONE))
+    client.get(f"/v1/repositories/{repo_id}/index", headers=auth_header("alice"))
+    # MUTATION: `_promote_from` calling `_prune_versions(tenant_id, repo_id, keep=...)` without the setting.
+    assert seen == [3]
+
+
+# --------------------------------------------------------------------------
+# the kept commits, named by swarm-api in the signed prompt
+# --------------------------------------------------------------------------
+
+def test_kept_commits_are_the_newest_versions_the_promoted_one_and_the_runs_own():
+    rows = [{"commit_sha": sha(f"v{n}"), "recorded_at": T0 + timedelta(hours=n)}
+            for n in range(25)]
+    current, own = sha("v0"), sha("own")
+    kept = repoindex.kept_commits(rows, keep_versions=20, current_sha=current, own=own)
+    # MUTATION: keep the OLDEST twenty, or forget the promoted or the run's own commit.
+    assert kept == sorted({r["commit_sha"] for r in rows[5:]} | {current, own})
+
+
+def test_a_version_that_names_no_commit_makes_no_keep_set():
+    rows = [{"commit_sha": sha("a"), "recorded_at": T0}, {"recorded_at": T0}]
+    # MUTATION: skipping the broken row would let the sweep delete the objects it stands for.
+    assert repoindex.kept_commits(rows, keep_versions=20, current_sha=None, own=sha("x")) is None
+
+
+def test_a_version_younger_than_the_age_floor_is_never_swept():
+    """A step's base from the last day keeps an index (2026-11-03: 20 kept
+    versions covered only ~15 hours of SwarmCloud's runs)."""
+    now = T0 + timedelta(hours=30)
+    rows = [{"commit_sha": sha(f"v{n}"), "recorded_at": T0 + timedelta(hours=n)}
+            for n in range(31)]  # one an hour, the newest `now - 0 h`
+    floor = now - timedelta(hours=repositories.KEEP_VERSIONS_MIN_AGE_HOURS)
+    young = {r["commit_sha"] for r in rows if r["recorded_at"] >= floor}
+    kept = repoindex.kept_commits(rows, keep_versions=5, current_sha=None, own=sha("own"),
+                                  now=now)
+    # MUTATION: keep by count alone and 20 of the last day's versions are swept.
+    assert set(kept) == young | {sha("own")}
+    assert len(young) > 5
+
+
+def test_the_age_floor_keeps_no_more_than_the_most_a_repository_may_keep():
+    now = T0 + timedelta(hours=1)
+    rows = [{"commit_sha": sha(f"v{n}"), "recorded_at": now - timedelta(seconds=n)}
+            for n in range(150)]
+    kept = repoindex.kept_commits(rows, keep_versions=5, current_sha=None, own=sha("own"),
+                                  now=now)
+    high = repositories.KEEP_VERSIONS_RANGE[1]
+    assert set(kept) == {r["commit_sha"] for r in rows[:high]} | {sha("own")}
+
+
+def test_the_prune_spares_the_last_days_versions(db, repo_id):
+    shas = _seed_versions(db, repo_id, 40)  # one an hour from T0
+    rows = [dict(db.docs[f"repositories/{repo_id}/index_versions/{c}"]) for c in shas]
+    service = _service(db)
+    service._now = lambda: T0 + timedelta(hours=39)
+    service._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=5)
+    # MUTATION: prune by count alone and only hours 35..39 stay. The newest
+    # 25 (hours 15..39) are younger than a day; the prune and the sweep's
+    # keep set agree on them.
+    assert _versions(db, repo_id) == set(shas[15:])
+    assert set(repoindex.kept_commits(rows, keep_versions=5, current_sha=None, own=shas[-1],
+                                      now=T0 + timedelta(hours=39))) == set(shas[15:])
+
+
+# --------------------------------------------------------------------------
+# a version a live workflow pins (owner's pick `record-pins`, archived pull request 3105)
+# --------------------------------------------------------------------------
+
+def _pin(db, repo_id, commit, *, holder="workflows", holder_id="wf_long", tenant="eng"):
+    db.docs[f"repositories/{repo_id}/index_pins/"
+            f"{repoindex.pin_id(holder, holder_id, commit)}"] = {
+        "commit_sha": commit, "holder": holder, "holder_id": holder_id, "tenant_id": tenant,
+    }
+
+
+def _pins(db, repo_id):
+    prefix = f"repositories/{repo_id}/index_pins/"
+    return {path[len(prefix):] for path in db.docs if path.startswith(prefix)}
+
+
+def test_kept_commits_keep_a_pinned_commit_however_old():
+    now = T0 + timedelta(days=30)
+    rows = [{"commit_sha": sha(f"v{n}"), "recorded_at": T0 + timedelta(hours=n)}
+            for n in range(10)]
+    kept = repoindex.kept_commits(rows, keep_versions=2, current_sha=None, own=sha("own"),
+                                  now=now, pinned={sha("v0"), "not a sha"})
+    # MUTATION: `pinned` ignored, and the month-old version a workflow reads is swept.
+    assert kept == sorted({sha("v0"), sha("v8"), sha("v9"), sha("own")})
+
+
+def test_the_prune_keeps_a_version_a_running_workflow_pins(db, repo_id):
+    shas = _seed_versions(db, repo_id, 10)  # a month older than the service's now
+    db.docs["workflows/wf_long"] = {"workflow_id": "wf_long", "tenant_id": "eng",
+                                    "state": "RUNNING"}
+    _pin(db, repo_id, shas[0])
+    service = _service(db)
+    service._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=2)
+    # MUTATION: `_prune_versions` not reading the pins prunes shas[0] by count.
+    assert _versions(db, repo_id) == {shas[0], *shas[-2:]}
+    assert len(_pins(db, repo_id)) == 1
+
+
+@pytest.mark.parametrize("holder", [
+    {"workflow_id": "wf_long", "tenant_id": "eng", "state": "SUCCEEDED"},
+    {"workflow_id": "wf_long", "tenant_id": "eng", "state": "CANCELLED"},
+    {"workflow_id": "wf_long", "tenant_id": "research", "state": "RUNNING"},
+    None,
+])
+def test_a_settled_workflows_pin_is_dropped_and_its_version_pruned(db, repo_id, holder):
+    shas = _seed_versions(db, repo_id, 10)
+    if holder is not None:
+        db.docs["workflows/wf_long"] = holder
+    _pin(db, repo_id, shas[0])
+    service = _service(db)
+    service._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=2)
+    # MUTATION: a pin outliving its workflow keeps the version for ever.
+    assert _versions(db, repo_id) == set(shas[-2:])
+    assert _pins(db, repo_id) == set()
+
+
+def test_a_task_outside_a_workflow_pins_until_it_ends(db, repo_id):
+    shas = _seed_versions(db, repo_id, 10)
+    db.docs["tasks/task_alone"] = {"tenant_id": "eng", "state": "RUNNING"}
+    _pin(db, repo_id, shas[0], holder="tasks", holder_id="task_alone")
+    service = _service(db)
+    service._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=2)
+    assert shas[0] in _versions(db, repo_id)
+    db.docs["tasks/task_alone"]["state"] = "FAILED"
+    service._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=2)
+    assert shas[0] not in _versions(db, repo_id)
+
+
+def test_unreadable_pins_prune_nothing(db, repo_id, monkeypatch):
+    shas = _seed_versions(db, repo_id, 10)
+    service = _service(db)
+
+    def unreadable(self, repo):
+        raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr(repoindex.RepoIndex, "_pinned_commits", unreadable)
+    service._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=2)
+    # MUTATION: pruning on without the pins deletes a version a step may read.
+    assert _versions(db, repo_id) == set(shas)
+
+
+def test_the_signed_keep_line_names_a_pinned_commit(client, db, repo_id):
+    shas = _seed_versions(db, repo_id, 6)
+    db.docs["workflows/wf_long"] = {"workflow_id": "wf_long", "tenant_id": "eng",
+                                    "state": "RUNNING"}
+    _pin(db, repo_id, shas[0])
+    assert _patch(client, repo_id, {"keep_versions": 2}).status_code == 200
+    task = db.docs[f"tasks/{_index_now(client, repo_id)}"]
+    [line] = [line for line in task["input"]["prompt"].splitlines()
+              if line.startswith(repoindex.KEEP_LINE)]
+    # MUTATION: `_kept_for_run` not passing the pins, and the bucket sweep
+    # deletes the graph the workflow's next step is pinned to.
+    assert shas[0] in line.split(": ", 1)[1].split()
+
+
+def test_the_signed_prompt_names_the_kept_commits(client, db, objects, repo_id, github):
+    first = _index_now(client, repo_id)
+    # The very first run keeps only its own commit: there is nothing else yet.
+    prompt = db.docs[f"tasks/{first}"]["input"]["prompt"]
+    assert f"\n{repoindex.KEEP_LINE}{ONE}\n" in prompt
+    finish_index_task(db, objects, first, fixture_index(ONE))
+    client.get(f"/v1/repositories/{repo_id}/index", headers=auth_header("alice"))
+
+    github.heads["main"] = TWO
+    second = _index_now(client, repo_id)
+    task = db.docs[f"tasks/{second}"]
+    lines = [line for line in task["input"]["prompt"].splitlines()
+             if line.startswith(repoindex.KEEP_LINE)]
+    # MUTATION: a keep line in `metadata` (unsigned) instead of the prompt (signed `input`).
+    assert lines == [f"{repoindex.KEEP_LINE}{' '.join(sorted({ONE, TWO}))}"]
+    assert repoindex.KEEP_LINE.strip() not in str(task.get("metadata"))
+
+
+def test_the_kept_commits_follow_keep_versions(client, db, objects, repo_id, github):
+    shas = _seed_versions(db, repo_id, 6)
+    assert _patch(client, repo_id, {"keep_versions": 2}).status_code == 200
+    task = db.docs[f"tasks/{_index_now(client, repo_id)}"]
+    [line] = [line for line in task["input"]["prompt"].splitlines()
+              if line.startswith(repoindex.KEEP_LINE)]
+    # MUTATION: KEPT_VERSIONS in place of the repository's keep_versions.
+    assert line.split(": ", 1)[1].split() == sorted({*shas[-2:], ONE})
+
+
+def test_the_worker_and_the_api_name_the_same_keep_line():
+    from agent_worker import indexrun
+
+    # MUTATION: either side renaming its prefix alone.
+    assert repoindex.KEEP_LINE == indexrun.KEEP_LINE
+
+
+# --------------------------------------------------------------------------
+# what the sweep did, on the run and on the registration
+# --------------------------------------------------------------------------
+
+def _sweep_summary(**record):
+    return {"repo_index_phases": [
+        {"phase": "graph_write", "status": "ok", "seconds": 90.0},
+        {"phase": "index_sweep", **record},
+    ]}
+
+
+def test_retention_is_read_from_the_sweep_phase():
+    summary = _sweep_summary(status="ok", seconds=12.5, retention={
+        "kept_commits": 21, "deleted_copies": 140, "deleted_indexes": 140, "deleted_blobs": 900,
+        "deleted_bytes": 700_000_000, "held_copies": 23, "held_bytes": 180_000_000,
+        "truncated": True, "secret": "not a count",
+    })
+    got = repoindex.retention_of(summary)
+    # MUTATION: serving the record as written, an unknown key and all.
+    assert got == {"status": "ok", "reason": None, "kept_commits": 21, "deleted_copies": 140,
+                   "deleted_indexes": 140, "deleted_blobs": 900,
+                   "deleted_bytes": 700_000_000, "held_copies": 23,
+                   "held_bytes": 180_000_000, "truncated": True}
+    skipped = repoindex.retention_of(_sweep_summary(
+        status="skipped", seconds=0.0, reason="the signed prompt names no kept commits"))
+    assert skipped["status"] == "skipped"
+    assert skipped["reason"] == "the signed prompt names no kept commits"
+    assert repoindex.retention_of({"repo_index_phases": []}) is None
+    assert repoindex.retention_of(None) is None
+
+
+def test_the_run_and_the_registration_say_what_the_sweep_did(client, db, objects, repo_id):
+    task_id = _index_now(client, repo_id)
+    finish_index_task(db, objects, task_id, fixture_index(ONE))
+    db.docs[f"tasks/{task_id}"]["result_summary"].update(_sweep_summary(
+        status="ok", seconds=12.5,
+        retention={"kept_commits": 1, "deleted_copies": 162, "deleted_bytes": 860_000_000,
+                   "held_copies": 1, "held_bytes": 5_000_000}))
+
+    client.get(f"/v1/repositories/{repo_id}/index", headers=auth_header("alice"))
+
+    runs = client.get(f"/v1/repositories/{repo_id}/index/runs",
+                      headers=auth_header("alice")).json()["runs"]
+    # MUTATION: `run_to_api` without `retention`, or `_settle_run` not recording it.
+    assert runs[0]["retention"]["deleted_copies"] == 162
+    assert runs[0]["retention"]["deleted_bytes"] == 860_000_000
+    served = client.get(f"/v1/repositories/{repo_id}",
+                        headers=auth_header("alice")).json()["repository"]["index"]
+    assert served["retention"]["held_copies"] == 1
+    assert served["retention"]["task_id"] == task_id
+
+
+# --------------------------------------------------------------------------
+# versions a running workflow's graph tickets pinned (archived issue 3116)
+# --------------------------------------------------------------------------
+
+PINNED_WORKFLOW = "wf_pins_retention"
+PIN_STEP = "task_pins_step"
+
+
+def _pinning_workflow(db, repo_id, commit, *, state="RUNNING", tenant=None):
+    """A workflow whose one step holds a graph ticket for `commit`, as
+    `graph_ticket.GraphTicketService._pin` leaves it."""
+    tenant = tenant or _tenant(db, repo_id)
+    db.docs[f"workflows/{PINNED_WORKFLOW}"] = {
+        "workflow_id": PINNED_WORKFLOW, "tenant_id": tenant, "state": state,
+        "steps": [{"step_id": "work", "runner_profile": "mock", "depends_on": [],
+                   "task_id": PIN_STEP}],
+        "on_step_failure": "fail_workflow", "cancel_requested": False,
+        "created_at": T0, "updated_at": T0,
+        "graph_pins": {repo_id: [commit]}, "graph_pin_repos": [repo_id],
+    }
+    db.docs[f"tasks/{PIN_STEP}"] = {"task_id": PIN_STEP, "tenant_id": tenant,
+                                    "state": "RUNNING", "workflow_id": PINNED_WORKFLOW}
+
+
+def test_a_version_a_running_workflow_pins_is_kept_past_both_rules(db, repo_id):
+    shas = _seed_versions(db, repo_id, 12)  # hours 0..11 from T0; now is T0 + 30 days
+    pinned = shas[0]
+    _pinning_workflow(db, repo_id, pinned)
+    rows = [dict(db.docs[f"repositories/{repo_id}/index_versions/{c}"]) for c in shas]
+    now = T0 + timedelta(days=30)
+    # MUTATION: retention reading no pins sweeps the oldest version under a running step.
+    _service(db)._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=5)
+    assert _versions(db, repo_id) == set(shas[-5:]) | {pinned}
+    kept = repoindex.kept_commits(
+        rows, keep_versions=5, current_sha=None, own=shas[-1], now=now,
+        pinned=repoindex.pinned_commits(db, _tenant(db, repo_id), repo_id))
+    assert set(kept) == set(shas[-5:]) | {pinned}
+
+
+def test_the_index_runs_keep_line_names_the_pinned_version(db, repo_id):
+    shas = _seed_versions(db, repo_id, 12)
+    _pinning_workflow(db, repo_id, shas[0])
+    record = dict(db.docs[f"repositories/{repo_id}"])
+    record["index"] = {**(record.get("index") or {}), "keep_versions": 5}
+    kept = _service(db)._kept_for_run(_tenant(db, repo_id), record, shas[-1])
+    # MUTATION: `_kept_for_run` not passing the pins lets the bucket sweep delete
+    # the objects of a version the registration still holds.
+    assert shas[0] in kept
+    assert shas[1] not in kept
+
+
+def test_after_the_workflow_settles_the_pinned_version_is_swept(db, repo_id):
+    from swarm_api.rollup import derived_state_write
+
+    shas = _seed_versions(db, repo_id, 12)
+    _pinning_workflow(db, repo_id, shas[0])
+    # The step finishes: its transition's write settles the workflow and clears the pin.
+    finished = {**db.docs[f"tasks/{PIN_STEP}"], "state": "SUCCEEDED"}
+    txn = db.transaction()
+    ref, patch = derived_state_write(txn, db, tenant_id=_tenant(db, repo_id),
+                                     workflow_id=PINNED_WORKFLOW, now=T0,
+                                     changed={PIN_STEP: finished})
+    ref.update(patch)
+    workflow = db.docs[f"workflows/{PINNED_WORKFLOW}"]
+    # MUTATION: a settle write without `settled_unpin` leaves the pin behind.
+    assert workflow["state"] == "SUCCEEDED"
+    assert workflow["graph_pins"] == {} and workflow["graph_pin_repos"] == []
+    _service(db)._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=5)
+    assert _versions(db, repo_id) == set(shas[-5:])
+
+
+def test_a_settled_workflows_leftover_pin_holds_nothing(db, repo_id):
+    shas = _seed_versions(db, repo_id, 12)
+    _pinning_workflow(db, repo_id, shas[0], state="FAILED")
+    # MUTATION: reading pins without the workflow's state keeps a settled workflow's
+    # version for ever.
+    assert repoindex.pinned_commits(db, _tenant(db, repo_id), repo_id) == set()
+    _service(db)._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=5)
+    assert _versions(db, repo_id) == set(shas[-5:])
+
+
+def test_another_tenants_workflow_never_pins_this_repository(db, repo_id):
+    shas = _seed_versions(db, repo_id, 12)
+    _pinning_workflow(db, repo_id, shas[0], tenant="someone-else")
+    # MUTATION: dropping the tenant check lets another workspace hold this one's versions.
+    assert repoindex.pinned_commits(db, _tenant(db, repo_id), repo_id) == set()
+
+
+def test_pins_that_cannot_be_read_delete_nothing(db, repo_id, monkeypatch):
+    shas = _seed_versions(db, repo_id, 12)
+
+    def unreadable(*_args, **_kwargs):
+        raise RuntimeError("the pins query failed")
+
+    monkeypatch.setattr(repoindex, "pinned_commits", unreadable)
+    # MUTATION: treating an unread pin set as empty sweeps a running step's version.
+    _service(db)._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=5)
+    assert _versions(db, repo_id) == set(shas)
+    record = dict(db.docs[f"repositories/{repo_id}"])
+    assert _service(db)._kept_for_run(_tenant(db, repo_id), record, shas[-1]) is None
+
+
+def test_a_crash_between_pin_and_settle_is_cleared_by_the_reconcilers_repair(db, repo_id):
+    """The worker crashed after its ticket; the step ended without the
+    workflow's state being written. The reconciler's `state_drift` repair
+    settles it, and the pin goes with that write."""
+    from reconciler.store import ControlStore
+    from swarm_common.states import TaskState
+
+    shas = _seed_versions(db, repo_id, 12)
+    _pinning_workflow(db, repo_id, shas[0])
+    db.docs[f"tasks/{PIN_STEP}"]["state"] = "FAILED"
+    assert repoindex.pinned_commits(db, _tenant(db, repo_id), repo_id) == {shas[0]}
+    store = ControlStore(db, logger=logging.getLogger("test"))
+    # MUTATION: `write_derived_workflow_state` without `settled_unpin` leaves the pin.
+    assert store.write_derived_workflow_state(
+        PINNED_WORKFLOW, expected=TaskState.RUNNING, to=TaskState.FAILED) is None
+    workflow = db.docs[f"workflows/{PINNED_WORKFLOW}"]
+    assert workflow["graph_pins"] == {} and workflow["graph_pin_repos"] == []
+    _service(db)._prune_versions(_tenant(db, repo_id), repo_id, keep=None, keep_versions=5)
+    assert _versions(db, repo_id) == set(shas[-5:])
+
+
+def test_no_retention_default_changes():
+    # MUTATION: a pin rule that changed what the rules keep by default.
+    assert repoindex.KEPT_VERSIONS == 20
+    assert repositories.KEEP_VERSIONS_MIN_AGE_HOURS == 24
+    assert repositories.KEEP_VERSIONS_RANGE == (1, 100)

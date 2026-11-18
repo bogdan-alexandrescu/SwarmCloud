@@ -1,0 +1,752 @@
+"""Secret Manager access for the one service that WRITES tenant credentials.
+
+The agent-worker also reads tenant secrets, but only ever reads, and only its
+own tenant's. This store is different in two ways that matter:
+
+  * it adds versions, so the broker's service account holds
+    `secretmanager.secretVersionAdder` on tenant credential secrets; and
+  * it enumerates tenants, so it holds `secretmanager.secrets.list` on the
+    project.
+
+Neither is granted to workers. A worker that could enumerate secrets could
+enumerate tenants, and a worker that could add versions could overwrite another
+tenant's credential with one it controls.
+
+BEING THE ONLY WRITER IS ALSO WHAT MAKES RETENTION THIS MODULE'S JOB. Every
+publish in this platform goes through `add_version` -- the refresher's two
+halves, and account registration's two -- so a superseded version is expired
+here, once, rather than at four call sites that would drift apart. A rotation
+that leaves its predecessor ENABLED has not rotated: the old credential is
+still retrievable by anything holding `secretAccessor`, which is exactly what
+`scripts/create-secrets.sh:226` says the rotation exists to prevent. Measured
+on 2026-09-22, `swarm-tenant-example-tenant-anthropic` held 1,816 ENABLED versions
+and zero destroyed, and only `latest` has ever been read -- so 1,815 live
+credentials had no consumer and no expiry. See `RETAINED_VERSIONS`.
+
+Discovery goes through LABELS rather than by taking the secret name apart.
+`swarm-tenant-example-tenant-anthropic-refresh` splits ambiguously -- tenant ids
+contain dashes (`u-<user>` is the personal-tenant form) -- and a mis-split would
+refresh under the wrong tenant id and publish the result to a secret belonging
+to someone else. The labels are written by the same script that creates the
+secret, so they cannot disagree with it.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any, Callable, Iterator, Sequence
+
+from .credentials import REFRESH_SUFFIX
+
+#: The only role this service ever grants on a secret: read a payload, nothing
+#: else. Not admin, not versionManager -- an accessor cannot rotate, relabel or
+#: delete the secret it can read.
+ACCESSOR_ROLE = "roles/secretmanager.secretAccessor"
+
+log = logging.getLogger(__name__)
+
+#: Set by scripts/create-secrets.sh on every tenant credential it writes.
+CREDENTIAL_LABEL = "component=tenant-credential"
+
+#: How many ENABLED versions of a platform secret survive a publish.
+#:
+#: THREE, and the number is argued from how the readers actually behave and
+#: from who else writes -- not from taste:
+#:
+#:   * NOTHING IN THIS PLATFORM EVER READS AN OLDER VERSION. Every reader
+#:     resolves `latest`: `SecretManagerStore.access` below pins
+#:     `/versions/latest`, `agent_worker.secrets.SecretManagerClient.access`
+#:     defaults to it, and the Cloud Run mount `scheduler.dispatch` builds sets
+#:     `version="latest"`. A worker that started before a publish is holding
+#:     the PAYLOAD it already resolved, not a reference to a version, so
+#:     destroying that version cannot fail an attempt that is mid-flight. On
+#:     reader behaviour alone the honest answer would be one.
+#:   * ROLLBACK NEEDS ONE STEP BACK. Undoing a bad publish means re-publishing
+#:     what was there before, and that means still being able to read it. That
+#:     is the second.
+#:   * THE REFRESHER IS NOT THE ONLY WRITER. `swarm_api.credentials` adds
+#:     versions to a tenant's provider secret, and every human holding
+#:     `secretVersionAdder` can add one by hand. Keeping exactly one would let
+#:     a refresh landing a second after an operator's rotation destroy the
+#:     operator's version. The third is that race.
+#:
+#: Three turns ~1,752 versions a year per account into three. Getting it wrong
+#: upwards costs two versions; getting it wrong downwards costs a credential
+#: nobody can get back, so the asymmetry is spent on the safe side.
+RETAINED_VERSIONS = 3
+
+#: The secret names this platform owns, and the ONLY ones a version may ever be
+#: destroyed from.
+#:
+#: THIS IS THE MOST IMPORTANT LINE IN THIS FILE. `example-project` is
+#: SHARED: another team's cluster, VPC and secrets live in the same project, and
+#: the broker's `swarmSecretLister` grant is project-WIDE rather than per-secret
+#: (docs/audits/2026-09-22/track-c-secret-iam-findings.md, Finding 1). Nothing
+#: outside this expression stands between a retention bug and another team's
+#: credentials, and Secret Manager's delayed destruction gives them a day to
+#: notice rather than a way to refuse.
+#:
+#: Anchored with `\A`/`\Z` rather than `^`/`$` -- `$` also matches before a
+#: trailing newline, so `^...$` would accept `"swarm-tenant-eng-anthropic\n"`
+#: and with it whatever a caller had appended. The body admits only the
+#: characters a Secret Manager secret id may contain, so `/` cannot appear and a
+#: name cannot re-point the resource path at another secret or another project,
+#: and the leading anchor is what refuses `peer-cluster-swarm-tenant-x`.
+_PLATFORM_SECRET_NAME = re.compile(r"\Aswarm-(?:tenant|account)-[A-Za-z0-9_-]+\Z")
+
+#: The ONLY secrets whose readers follow an account's `lend_to`: a pool
+#: account's ACCESS-token half, `swarm-account-<tenant>--<label>`. Narrower than
+#: `_PLATFORM_SECRET_NAME` on purpose. A tenant's own key (`swarm-tenant-*`) is
+#: never lent, and the `-refresh` half holds the pair a borrower must never
+#: read -- with it, a pod could mint successors forever. The broker's
+#: `setIamPolicy` is project-WIDE in a SHARED project, so this expression is
+#: what keeps a lending bug off every other secret, the other team's included.
+_LENDABLE_SECRET_NAME = re.compile(
+    rf"\Aswarm-account-[A-Za-z0-9_-]+(?<!{re.escape(REFRESH_SUFFIX)})\Z"
+)
+
+#: The ONLY secrets this service may DELETE: an API key's one secret,
+#: `swarm-account-<tenant>--key-<label>` (docs/design/llm-providers.md §4.4).
+#: The same shape as the IAM condition the owner applied in bootstrap
+#: (`terraform/bootstrap/account_key_secrets.tf`): a non-empty tenant with no
+#: `--` in it, then `--key-`. A plan's secret, its `-refresh` half, every
+#: `swarm-tenant-*` secret and every name outside the platform's family are
+#: refused here before the API is asked, so a bug cannot lean on IAM alone.
+_KEY_SECRET_NAME = re.compile(
+    r"\Aswarm-account-[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*--key-[A-Za-z0-9_-]+\Z"
+)
+
+#: How many times a reader sync re-reads the policy after another writer's
+#: setIamPolicy made its etag stale. Two lending changes to one account racing
+#: is the only realistic writer, so a small bound is plenty.
+_POLICY_WRITE_ATTEMPTS = 3
+
+#: A version's own resource name, as Secret Manager returns it. Parsed rather
+#: than trusted: the project and the secret in it are re-checked against the
+#: secret being pruned, so a wrong `parent`, a paging bug or a client that
+#: returned somebody else's versions cannot become a destroy.
+_VERSION_NAME = re.compile(
+    r"\Aprojects/(?P<project>[^/]+)/secrets/(?P<secret>[^/]+)/versions/(?P<number>[0-9]+)\Z"
+)
+
+#: A secret's own resource name as `get_secret` returns it: always with the
+#: project NUMBER, whatever the request was addressed with. How the store learns
+#: its project's number when it was not configured (archived issue 1819).
+_SECRET_NAME_BY_NUMBER = re.compile(r"\Aprojects/(?P<number>[0-9]+)/secrets/(?P<secret>[^/]+)\Z")
+
+
+def owned_by_this_platform(name: str) -> bool:
+    """Whether `name` is a secret this platform created and may expire.
+
+    Exported because it is worth testing directly and worth being able to cite
+    from elsewhere -- never worth restating. A second spelling of this rule is
+    how the shared project gets a destroy it did not authorise.
+    """
+    return bool(_PLATFORM_SECRET_NAME.match(name))
+
+
+def is_key_secret(name: str) -> bool:
+    """Whether `name` is an API key's own secret, the one kind this service
+    may delete (`_KEY_SECRET_NAME`)."""
+    return bool(_KEY_SECRET_NAME.match(name))
+
+
+def version_number(name: str) -> int | None:
+    """The number in a version's resource name, or None when it does not parse."""
+    match = _VERSION_NAME.match(name or "")
+    return int(match.group("number")) if match else None
+
+
+def _version_state(version: Any) -> str:
+    """The state name, for a real enum or a plain string.
+
+    Anything this cannot read comes back as "" and is therefore NOT enabled,
+    which means it is neither counted towards the retained set nor destroyed.
+    Unreadable metadata must not authorise a destroy.
+    """
+    state = getattr(version, "state", None)
+    if state is None:
+        return ""
+    return str(getattr(state, "name", state))
+
+
+class SecretMissing(KeyError):
+    """No such secret, or it has no versions yet.
+
+    Distinct from every other failure on purpose: a tenant with no refresh
+    secret is the NORMAL case (they use a static API key), while a tenant whose
+    refresh secret cannot be read because Secret Manager returned 503 is an
+    incident. Collapsing the two makes an outage look like an empty fleet.
+    """
+
+
+class SecretManagerStore:
+    def __init__(
+        self,
+        project_id: str,
+        *,
+        client: Any | None = None,
+        project_number: str | None = None,
+    ) -> None:
+        if not project_id:
+            raise ValueError("project_id is required")
+        if project_number is not None and not project_number.isdigit():
+            raise ValueError("project_number must be the project's numeric id")
+        self._project_id = project_id
+        self._client = client
+        #: Secret Manager RETURNS resource names with the project NUMBER --
+        #: `projects/123456789012/secrets/...` -- even for a request addressed
+        #: by ID, so retention has to recognise both. Until archived issue 1819 it compared
+        #: the number with the ID, refused every pass, and in the live
+        #: deployment never destroyed a version. Configured, or resolved once
+        #: from the API by `_this_project_number`; never read off a listing,
+        #: because a listing cannot vouch for itself.
+        self._project_number = project_number
+        #: secret name -> the error type the retention warning was last emitted
+        #: for. A missing IAM binding is ONE fact, not one fact per publish, and
+        #: `_warned` in `quota_broker.credentials` makes the same choice for the
+        #: same reason. The deduplication is of the LOG only: the pass itself is
+        #: attempted again on every publish, because the next sweep retrying is
+        #: what stops a transient failure leaving a secret growing forever.
+        self._retention_warned: dict[str, str] = {}
+
+    @property
+    def parent(self) -> str:
+        return f"projects/{self._project_id}"
+
+    def _secret_client(self) -> Any:
+        if self._client is None:
+            from google.cloud import secretmanager  # lazy: keeps import cost off startup
+
+            self._client = secretmanager.SecretManagerServiceClient()
+        return self._client
+
+    def access(self, name: str) -> str:
+        from google.api_core import exceptions as gexc
+
+        client = self._secret_client()
+        try:
+            response = client.access_secret_version(
+                request={"name": f"{self.parent}/secrets/{name}/versions/latest"}
+            )
+        except gexc.NotFound:
+            raise SecretMissing(name) from None
+        except gexc.FailedPrecondition:
+            # The secret exists but has no enabled version -- created and never
+            # populated. Same practical meaning as missing, same handling.
+            raise SecretMissing(name) from None
+        return response.payload.data.decode("utf-8")
+
+    def ensure_secret(
+        self,
+        name: str,
+        *,
+        labels: dict[str, str],
+        accessors: Sequence[str],
+        region: str,
+    ) -> bool:
+        """Create the secret if it is absent, and bind its readers. Idempotent.
+
+        Returns True when it created one, False when it already existed.
+
+        WHY THIS LIVES HERE RATHER THAN IN TERRAFORM. A pool account's secret
+        name contains a LABEL the operator chooses at registration time, so
+        there is no name for terraform to declare in advance. Something at
+        request time has to make it, and that something must be the single
+        writer for subscription credentials -- two components creating and
+        rotating the same secret is how a rotating credential gets bricked.
+
+        CREATION AND BINDING ARE ONE OPERATION, deliberately. A secret created
+        without an accessor binding is one the tenant's pod cannot read, and
+        that failure does not surface here: it surfaces much later, inside a
+        job, as an unexplained auth error. Splitting them would make a
+        half-provisioned account a state this platform can be in.
+
+        The binding is ADDITIVE -- read, append, write. Replacing the policy
+        would drop any grant made outside this call, and on a re-registration
+        that would quietly revoke a tenant that had been lent the account.
+
+        Replication is user-managed and pinned to `region` because that is what
+        every other secret in this platform uses; automatic replication would
+        put the tenant's credential in regions the deployment never chose.
+        """
+        from google.api_core import exceptions as gexc
+        from google.cloud import secretmanager
+
+        client = self._secret_client()
+        created = False
+        try:
+            client.create_secret(
+                request={
+                    "parent": self.parent,
+                    "secret_id": name,
+                    "secret": secretmanager.Secret(
+                        replication=secretmanager.Replication(
+                            user_managed=secretmanager.Replication.UserManaged(
+                                replicas=[
+                                    secretmanager.Replication.UserManaged.Replica(
+                                        location=region
+                                    )
+                                ]
+                            )
+                        ),
+                        labels=dict(labels),
+                    ),
+                }
+            )
+            created = True
+        except gexc.AlreadyExists:
+            # Re-registering an existing label is the supported way to replace
+            # a credential, so this is an ordinary path and not a conflict.
+            pass
+
+        if accessors:
+            self._grant_accessors(name, accessors)
+        return created
+
+    def _grant_accessors(self, name: str, members: Sequence[str]) -> None:
+        client = self._secret_client()
+        resource = f"{self.parent}/secrets/{name}"
+        policy = client.get_iam_policy(request={"resource": resource})
+
+        binding = None
+        for existing in policy.bindings:
+            if existing.role == ACCESSOR_ROLE:
+                binding = existing
+                break
+        if binding is None:
+            binding = policy.bindings.add()
+            binding.role = ACCESSOR_ROLE
+
+        present = set(binding.members)
+        missing = [m for m in members if m not in present]
+        if not missing:
+            # Nothing to do, and saying so matters: setIamPolicy on an
+            # unchanged policy still burns a write quota and still races any
+            # other writer of the same policy.
+            return
+        binding.members.extend(missing)
+        client.set_iam_policy(request={"resource": resource, "policy": policy})
+
+    def set_worker_readers(
+        self,
+        name: str,
+        *,
+        readers: Sequence[str],
+        manages: Callable[[str], bool],
+        revoke: bool = True,
+    ) -> tuple[list[str], list[str]]:
+        """Make the worker accessors of one account secret exactly `readers`.
+
+        Returns (added, removed). Idempotent: an unchanged policy is not
+        written, because setIamPolicy on an unchanged policy still burns a
+        write quota and still races any other writer of the same policy.
+
+        WHY THIS EXISTS. Lending an account changed Firestore and nothing else,
+        so a borrower was ASSIGNED an account its worker could not read --
+        measured 2026-10-06, when every `smoke` attempt on `eng:team` read
+        PermissionDenied. `ensure_secret` binds the owner's worker at
+        provisioning; this is what follows `lend_to` after that.
+
+        ONLY MEMBERS `manages` CLAIMS ARE EVER REMOVED -- tenant worker service
+        accounts. The broker, a human group, terraform's own grants and every
+        conditional binding are left exactly as they were, so an unlend
+        cannot lock out anything but the tenant it names. A reader `manages`
+        does not claim is refused rather than granted, since this call could
+        never take it back.
+
+        `revoke=False` is the first half of a lending change: grants land
+        BEFORE the account document says the borrower may use it, revokes
+        AFTER it says it may not, so at no instant does the pool assign an
+        account to a worker that cannot read it.
+        """
+        if not _LENDABLE_SECRET_NAME.match(name):
+            raise ValueError(
+                f"{name!r} is not a pool account's access-token secret; only "
+                "those follow an account's lending"
+            )
+        wanted = list(dict.fromkeys(readers))
+        unmanaged = [m for m in wanted if not manages(m)]
+        if unmanaged:
+            raise ValueError(
+                f"{len(unmanaged)} reader(s) are not tenant worker service "
+                "accounts, and a reader sync only grants what it can revoke"
+            )
+
+        from google.api_core import exceptions as gexc
+
+        client = self._secret_client()
+        resource = f"{self.parent}/secrets/{name}"
+        for attempt in range(_POLICY_WRITE_ATTEMPTS):
+            policy = client.get_iam_policy(request={"resource": resource})
+            binding = None
+            for existing in policy.bindings:
+                if existing.role == ACCESSOR_ROLE and not existing.condition.expression:
+                    binding = existing
+                    break
+            present = list(binding.members) if binding is not None else []
+            added = [m for m in wanted if m not in present]
+            removed = (
+                [m for m in present if manages(m) and m not in wanted] if revoke else []
+            )
+            if not added and not removed:
+                return [], []
+            if binding is None:
+                binding = policy.bindings.add()
+                binding.role = ACCESSOR_ROLE
+            keep = [m for m in present if m not in removed]
+            del binding.members[:]
+            binding.members.extend(keep + added)
+            if not binding.members:
+                policy.bindings.remove(binding)
+            try:
+                client.set_iam_policy(request={"resource": resource, "policy": policy})
+            except gexc.Aborted:
+                if attempt + 1 >= _POLICY_WRITE_ATTEMPTS:
+                    raise
+                continue
+            return added, removed
+        raise AssertionError("unreachable: the loop returns or raises")
+
+    def add_version(self, name: str, payload: str) -> str:
+        """Publish `payload`, then expire what it superseded. Returns the new
+        version's resource name ("" when the API named none), which a key's
+        rotation keeps (`destroy_versions_before`).
+
+        RETENTION RUNS AFTER THE WRITE AND CANNOT FAIL IT. The credential
+        landing is the point; expiring its predecessors is housekeeping, and a
+        `PermissionDenied` on housekeeping must not turn a successful rotation
+        into a failed one -- the caller would report the tenant as unrefreshed
+        and the next sweep would publish the same token again, which is the
+        version leak this retention exists to end, rebuilt one layer up.
+        """
+        from google.api_core import exceptions as gexc
+        from google.cloud import secretmanager
+
+        client = self._secret_client()
+        try:
+            created = client.add_secret_version(
+                request={
+                    "parent": f"{self.parent}/secrets/{name}",
+                    "payload": secretmanager.SecretPayload(data=payload.encode("utf-8")),
+                }
+            )
+        except gexc.NotFound:
+            # Refusing loudly beats creating the secret here. A secret this
+            # service invents has no tenant labels and no accessor binding, so
+            # the worker that needs it could not read it, and the failure would
+            # surface later as an unexplained auth error inside a job.
+            raise SecretMissing(name) from None
+
+        written = str(getattr(created, "name", "") or "")
+        self._expire_superseded(name, written)
+        return written
+
+    def _checked_versions(self, secret: str) -> list[tuple[int, str, str]]:
+        """Every version of `secret` as (number, resource name, state), each
+        re-checked as retention checks it: its name parses and names THIS
+        project and THIS secret. Any surprise raises `ValueError` and nothing
+        is destroyed. `SecretMissing` when the secret is gone."""
+        from google.api_core import exceptions as gexc
+
+        client = self._secret_client()
+        listed: list[tuple[int, str, str]] = []
+        try:
+            for version in client.list_secret_versions(
+                request={"parent": f"{self.parent}/secrets/{secret}"}
+            ):
+                name = str(getattr(version, "name", "") or "")
+                match = _VERSION_NAME.match(name)
+                if match is None or match.group("secret") != secret:
+                    raise ValueError("a listed version does not name this secret")
+                project = match.group("project")
+                if project != self._project_id and project != self._this_project_number(secret):
+                    raise ValueError("a listed version names another project")
+                listed.append((int(match.group("number")), name, _version_state(version)))
+        except gexc.NotFound:
+            raise SecretMissing(secret) from None
+        return listed
+
+    def _destroy(self, names: Sequence[str]) -> int:
+        from google.api_core import exceptions as gexc
+
+        client = self._secret_client()
+        destroyed = 0
+        for name in names:
+            try:
+                client.destroy_secret_version(request={"name": name})
+            except (gexc.NotFound, gexc.FailedPrecondition):
+                # Destroyed by a concurrent pass between the listing and here.
+                continue
+            destroyed += 1
+        return destroyed
+
+    def destroy_all_versions(self, secret: str) -> int:
+        """Destroy EVERY version of a pool account's secret not already
+        destroyed, and return how many. A deleted API key's first step
+        (docs/design/llm-providers.md §4.4), and the whole of the delete for
+        the dedicated Voice it key stored under its old `--<label>` name (Q9),
+        which keeps its empty secret.
+
+        Only a pool account's access-token secret (`_LENDABLE_SECRET_NAME`):
+        never a `swarm-tenant-*` secret, so an imported key's workspace
+        secret cannot be reached from here, and never a `-refresh` half. A
+        secret already gone has nothing left to destroy: 0."""
+        if not _LENDABLE_SECRET_NAME.match(secret) or not owned_by_this_platform(secret):
+            raise ValueError("only a pool account's own secret has its versions destroyed")
+        try:
+            versions = self._checked_versions(secret)
+        except SecretMissing:
+            return 0
+        return self._destroy([name for _, name, state in versions if state != "DESTROYED"])
+
+    def destroy_versions_before(self, secret: str, keep: int | None) -> int:
+        """After a key's rotation and its hold TTL (§4.5): destroy every
+        version older than version `keep`, the one the rotation wrote, and
+        return how many. With `keep` unknown, the newest enabled version is
+        kept. Refused (ValueError) unless the kept version is listed and
+        enabled, so this can never leave the key with nothing to read."""
+        if not is_key_secret(secret) and not _LENDABLE_SECRET_NAME.match(secret):
+            raise ValueError("only a pool account's own secret is rotated")
+        versions = self._checked_versions(secret)
+        enabled = sorted(n for n, _, state in versions if state == "ENABLED")
+        if keep is None:
+            keep = enabled[-1] if enabled else None
+        if keep is None or keep not in enabled:
+            raise ValueError("the version a rotation wrote is not enabled; nothing was destroyed")
+        return self._destroy(
+            [name for n, name, state in versions if n < keep and state != "DESTROYED"]
+        )
+
+    def delete_key_secret(self, secret: str) -> bool:
+        """Delete an API key's secret itself (§4.4), after its versions are
+        destroyed. The one delete this service makes, under the owner's
+        conditioned `swarmAccountKeyDeleter` grant, and refused here for any
+        name that grant would refuse. False when it was already gone."""
+        if not is_key_secret(secret):
+            raise ValueError("only an API key's own secret (--key-) is ever deleted")
+        from google.api_core import exceptions as gexc
+
+        try:
+            self._secret_client().delete_secret(request={"name": f"{self.parent}/secrets/{secret}"})
+        except gexc.NotFound:
+            return False
+        return True
+
+    def _expire_superseded(self, secret: str, just_written: str) -> None:
+        """Destroy every ENABLED version older than the newest RETAINED_VERSIONS.
+
+        WHY THIS IS SECURITY AND NOT TIDINESS. Only `latest` is ever read, so a
+        superseded version has no consumer -- but it stays RETRIEVABLE by every
+        principal holding `secretAccessor` on the secret until something
+        destroys it. `swarm-tenant-example-tenant-anthropic` held 1,816 enabled
+        versions on 2026-09-22: 1,815 past credentials, all live, none needed.
+        A credential that rotates and leaves its predecessor enabled has not
+        rotated.
+
+        FOUR THINGS ARE CHECKED IN CODE BEFORE ANYTHING IS DESTROYED, and each
+        one refuses the WHOLE pass rather than skipping a version, because a
+        retention pass that has already been surprised once is not one to keep
+        running:
+
+          1. the secret is one this platform owns (`owned_by_this_platform`);
+          2. every version's own resource name parses, and names THIS project
+             and THIS secret -- re-derived from the API's answer rather than
+             from the local variable, so a wrong parent or a paging bug is
+             caught here instead of in another team's audit log. THIS project
+             is its ID or its NUMBER, and the number is the one the API gave
+             for the ID (`_this_project_number`), never one a listing names;
+          3. the version this publish just wrote is not in the destroy set;
+          4. at least one enabled version survives.
+
+        NOTHING RECORDS THAT A SECRET HAS BEEN PRUNED. The set is recomputed
+        from a live listing on every publish, so a destroy that failed for any
+        reason is simply attempted again by the next one -- which is what keeps
+        a transient failure from becoming permanent growth. The corollary is
+        this design's honest limit: a secret nothing ever publishes to again is
+        never pruned again. That is the right trade, because a secret nothing
+        publishes to is a secret that is not growing.
+        """
+        try:
+            self._destroy_stale_versions(secret, just_written)
+        except Exception as exc:  # noqa: BLE001 -- housekeeping may never fail a publish
+            self._warn_retention(secret, type(exc).__name__)
+
+    def _destroy_stale_versions(self, secret: str, just_written: str) -> None:
+        if not owned_by_this_platform(secret):
+            # Not an exception: this is a refusal, and it is the one refusal in
+            # this file that must be impossible to mistake for an outage.
+            log.error(
+                "refusing to expire versions of a secret this platform does "
+                "not own; the project may be shared with another team, and "
+                "retention never leaves the swarm-tenant-*/swarm-account-* names",
+                extra={"secret": secret},
+            )
+            return
+
+        client = self._secret_client()
+        parent = f"{self.parent}/secrets/{secret}"
+        enabled: list[tuple[int, str]] = []
+        for version in client.list_secret_versions(request={"parent": parent}):
+            name = str(getattr(version, "name", "") or "")
+            match = _VERSION_NAME.match(name)
+            if match is None:
+                log.error(
+                    "a secret version came back with a resource name this "
+                    "cannot parse, so nothing was expired",
+                    extra={"secret": secret},
+                )
+                return
+            if match.group("secret") != secret:
+                log.error(
+                    "a version listed under one secret names another, so "
+                    "nothing was expired",
+                    extra={"secret": secret, "listed_under": match.group("secret")},
+                )
+                return
+            project = match.group("project")
+            if project != self._project_id and project != self._this_project_number(secret):
+                log.error(
+                    "a version listed under this secret names another project, "
+                    "so nothing was expired",
+                    extra={"secret": secret, "listed_project": project},
+                )
+                return
+            # DISABLED and DESTROYED versions are already unreadable, so they
+            # are neither a risk worth expiring nor a survivor worth counting.
+            # Counting them would let three dead versions shield live ones from
+            # retention, and destroying one raises FailedPrecondition.
+            if _version_state(version) == "ENABLED":
+                enabled.append((int(match.group("number")), name))
+
+        enabled.sort(reverse=True)
+        keep, stale = enabled[:RETAINED_VERSIONS], enabled[RETAINED_VERSIONS:]
+        if not stale:
+            return
+        if not keep:
+            log.error(
+                "retention would have left this secret with no enabled "
+                "version, so nothing was expired",
+                extra={"secret": secret, "enabled": len(enabled)},
+            )
+            return
+        if just_written and any(name == just_written for _, name in stale):
+            log.error(
+                "retention selected the version this publish just wrote, so "
+                "nothing was expired; the credential is live and unaffected",
+                extra={"secret": secret},
+            )
+            return
+
+        for _, name in stale:
+            client.destroy_secret_version(request={"name": name})
+        self._retention_warned.pop(secret, None)
+        log.info(
+            "expired superseded secret versions",
+            extra={"secret": secret, "destroyed": len(stale), "kept": len(keep)},
+        )
+
+    def _this_project_number(self, secret: str) -> str:
+        """This project's number, from configuration or asked of the API once.
+
+        `get_secret` is addressed by the store's own project ID, and Secret
+        Manager answers with the secret's name in number form, so the number
+        it returns is the number OF THAT ID -- the API's word, not the
+        listing's. The answer must name exactly `secret` and a number, or the
+        pass is refused by the exception rather than guessed at. Cached: a
+        project's number never changes.
+        """
+        if self._project_number is None:
+            client = self._secret_client()
+            answer = client.get_secret(request={"name": f"{self.parent}/secrets/{secret}"})
+            match = _SECRET_NAME_BY_NUMBER.match(str(getattr(answer, "name", "") or ""))
+            if match is None or match.group("secret") != secret:
+                raise ValueError(
+                    "Secret Manager did not answer with this secret's name by "
+                    "project number, so the project number is unknown"
+                )
+            self._project_number = match.group("number")
+        return self._project_number
+
+    def _warn_retention(self, secret: str, error: str) -> None:
+        """Say once per process, per secret, per error type, what went wrong.
+
+        Named rather than counted. `PermissionDenied` here means the broker
+        holds neither `secretmanager.versions.list` nor
+        `secretmanager.versions.destroy` on this secret -- which was true of
+        the live policy on 2026-09-22 -- and that is a binding somebody has to
+        grant, not something a retry resolves. Anything else is transient, and
+        the next publish tries again either way.
+        """
+        if self._retention_warned.get(secret) == error:
+            return
+        self._retention_warned[secret] = error
+        log.warning(
+            "could not expire superseded versions of this secret, so its past "
+            "credentials stay retrievable; the broker needs "
+            "secretmanager.versions.list and secretmanager.versions.destroy "
+            "on it. The publish itself succeeded and the next one retries",
+            extra={"secret": secret, "error": error},
+        )
+
+    def subscription_tenants(self) -> list[tuple[str, str]]:
+        """Every (tenant_id, provider) pair that has a refresh credential."""
+        pairs: list[tuple[str, str]] = []
+        for secret in self._list():
+            name = secret.name.rsplit("/", 1)[-1]
+            if not name.endswith(REFRESH_SUFFIX):
+                continue
+            labels = dict(getattr(secret, "labels", {}) or {})
+            tenant, provider = labels.get("tenant"), labels.get("provider")
+            if not tenant or not provider:
+                # Pre-dates the labels, or was created by hand. Skipped rather
+                # than guessed at, and named so an operator can relabel it.
+                log.warning(
+                    "refresh secret has no tenant/provider labels and is skipped",
+                    extra={"secret": name},
+                )
+                continue
+            pairs.append((tenant, provider))
+        return sorted(set(pairs))
+
+    def workspace_provider_keys(self) -> list[tuple[str, str]]:
+        """Every (tenant_id, vendor) whose own provider secret,
+        `swarm-tenant-<tenant>-<vendor>`, `scripts/create-secrets.sh` wrote
+        (its `component=tenant-credential` labels), for the import of Q7.
+        Names only: the value is read by the import, one secret at a time,
+        and never listed. A secret whose name is not exactly what its labels
+        derive is skipped, so a label cannot point the import at another
+        secret."""
+        pairs: list[tuple[str, str]] = []
+        for secret in self._list():
+            name = secret.name.rsplit("/", 1)[-1]
+            if name.endswith(REFRESH_SUFFIX):
+                continue
+            labels = dict(getattr(secret, "labels", {}) or {})
+            tenant, vendor = labels.get("tenant"), labels.get("provider")
+            if not tenant or vendor not in ("anthropic", "openai"):
+                continue
+            if name != f"swarm-tenant-{tenant}-{vendor}":
+                continue
+            pairs.append((tenant, vendor))
+        return sorted(set(pairs))
+
+    def _list(self) -> Iterator[Any]:
+        client = self._secret_client()
+        return iter(
+            client.list_secrets(
+                request={"parent": self.parent, "filter": f"labels.{CREDENTIAL_LABEL}"}
+            )
+        )
+
+
+__all__ = [
+    "CREDENTIAL_LABEL",
+    "RETAINED_VERSIONS",
+    "SecretManagerStore",
+    "SecretMissing",
+    "is_key_secret",
+    "owned_by_this_platform",
+    "version_number",
+]

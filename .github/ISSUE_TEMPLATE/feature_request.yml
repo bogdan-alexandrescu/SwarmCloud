@@ -1,0 +1,142 @@
+# Adopted from a peer application's feature form on 2026-09-24 (owner's request):
+# the shape is theirs, the content is SwarmCloud's. The rules around filing and
+# closing are in CLAUDE.md, "Issues".
+#
+# The `surface` options are held to the nav by
+# tests/unit/scripts/test_issue_forms.py, exactly as bug_report.yml's are.
+name: Feature or change request
+description: Something SwarmCloud should do, or should do differently.
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        SwarmCloud runs coding agents as ephemeral cloud jobs: waiting costs nothing,
+        and nothing runs without a lease. Requests are easiest to act on when they start
+        from the thing you were trying to do, not from the feature you had in mind.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: >
+        The task, not the solution. What were you doing when you hit the wall, and what
+        did you do instead?
+      placeholder: |
+        I want to know how long each step of a workflow waited for capacity versus how
+        long it ran, but I have to open every agent's inspector and subtract timestamps
+        by hand.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to see?
+      description: Rough is fine. A sketch, a sentence, or a description of the screen or command you wish existed.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where would this live?
+      description: Best guess. "Not sure / new surface" is a legitimate answer.
+      multiple: true
+      options:
+        - "Web UI · Overview (/overview)"
+        - "Web UI · Work › Agents (/agents)"
+        - "Web UI · Work › Workflows (/workflows)"
+        - "Web UI · Work › Runs (/runs)"
+        - "Web UI · Work › Timeline (/timeline)"
+        - "Web UI · Work › Start an agent (/submit/task)"
+        - "Web UI · Work › Submit a workflow (/submit/workflow)"
+        - "Web UI · Work › Submit from a GitHub issue (/submit/issue)"
+        - "Web UI · Automate › Schedules (/automate/schedules)"
+        - "Web UI · Automate › Approvals (/automate/approvals)"
+        - "Web UI · Capacity › Pools (/capacity/pools)"
+        - "Web UI · Capacity › Runtimes (/capacity/runtimes)"
+        - "Web UI · Capacity › By runner profile (/capacity/pools/profiles)"
+        - "Web UI · Capacity › Holders (/capacity/holders)"
+        - "Web UI · Capacity › LLM Providers (/capacity/llm-providers/plans)"
+        - "Web UI · Capacity › Account health (/capacity/account-health)"
+        - "Web UI · Capacity › Provider quota (/capacity/accounts/quota)"
+        - "Web UI · Capacity › Jev usage (/capacity/jev-usage)"
+        - "Web UI · Capacity › API reads (/capacity/api-reads)"
+        - "Web UI · Config › GitHub access (/config/github)"
+        - "Web UI · Config › Repositories (/config/repositories)"
+        - "Web UI · Config › Secrets (/config/secrets)"
+        - "Web UI · Config › MCP servers (/config/mcp-servers)"
+        - "Web UI · Config › Plugins (/config/plugins)"
+        - "Web UI · Config › Workspace Settings (/config/workspace)"
+        - "Web UI · Admin › Pool limits (/admin/limits)"
+        - "Web UI · Admin › Runner sizes (/admin/runner-sizes)"
+        - "Web UI · Admin › Tenants (/admin/tenants)"
+        - "Web UI · Admin › Platform counts (/admin/counts)"
+        - "Web UI · Admin › Platform secrets (/admin/platform-secrets)"
+        - "Web UI · Admin › Plugins (/admin/plugins)"
+        - "Web UI · Admin › Setup (/admin/setup)"
+        - "Web UI · Admin › Health (/admin/setup/health)"
+        - "Web UI · Admin › Platform people (/admin/people)"
+        - "Web UI · Admin › Workspaces (/admin/workspaces)"
+        - "Web UI · Voice it › Talk (/voice/talk)"
+        - "Web UI · Voice it › Projects (/voice/projects)"
+        - "Web UI · Voice it › Preferences (/voice/preferences)"
+        - "Web UI · Voice it › Settings (/voice/settings)"
+        - "Web UI · Voice it › Telemetry (/voice/telemetry)"
+        - "Web UI · Agent inspector — one agent beside the Agents list"
+        - "Web UI · Checkpoint browser — the agent's Checkpoints tab"
+        - "Web UI · Settings › Profile (/settings/profile)"
+        - "Web UI · Help (/help)"
+        - "Web UI · Navigation, layout or theme — every page"
+        - "API — /v1 (apps/swarm-api)"
+        - "Claude Code plugin or MCP bridge — /sc and the swarm_* tools (plugin, apps/swarm-mcp)"
+        - "Scheduler — admission and dispatch (apps/scheduler)"
+        - "Reconciler — lease repair and reclaim (apps/reconciler)"
+        - "Quota broker (apps/quota-broker)"
+        - "Worker on Cloud Run (apps/agent-worker, images/agent-runtime-base)"
+        - "Worker on GKE — browser (apps/agent-worker, images/agent-runtime-browser, kubernetes)"
+        - "Release pipeline or CI (.github/workflows)"
+        - "Terraform or infrastructure (terraform)"
+        - "Scripts or make targets (scripts, Makefile)"
+        - "Docs (docs)"
+        - "Not sure / new surface"
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you do it today?
+      description: >
+        The manual workaround, the script, the thing you gave up on. This tells us how much
+        the gap actually costs, and sometimes reveals the feature already half-exists.
+    validations:
+      required: false
+
+  - type: textarea
+    id: done
+    attributes:
+      label: How would you know it worked?
+      description: >
+        What you'd be able to do afterwards that you can't do now. One concrete example
+        beats a list of requirements.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraint check
+      description: >
+        SwarmCloud's invariants (CONTRACT.md) are non-negotiable, so a request that needs
+        one relaxed needs a conversation first. Tick anything your idea might need.
+      options:
+        - label: "A caller choosing an image, a command, resources or backend parameters — callers pick a `runner_profile` by name and nothing else (invariant 10)"
+        - label: "Spot capacity — Spot cannot coexist with Autopilot extended run time, so it is off everywhere (invariant 6)"
+        - label: "Bursting — `requests == limits`, because bursting is what gets a container OOM-killed (invariant 7)"
+        - label: "Pending pods, or any running infrastructure, holding a backlog — QUEUED, PARKED and READY cost nothing (invariant 1)"
+        - label: "A change to the frozen contract in `apps/common/swarm_common/` — that is a request in `docs/contract-change-requests.md`, not a code change"
+        - label: "Touching the other team's resources in the shared project (the deployment's never-touch list)"
+        - label: "None of the above, as far as I can tell"

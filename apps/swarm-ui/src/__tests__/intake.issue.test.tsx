@@ -1,0 +1,452 @@
+// /submit/issue (intake-tenants.html 1A, picked 2026-10-02), against the live
+// API shapes of archived pull request 511: `GET /v1/issues/preview` (routes/issues.py, forge.py)
+// and `POST /v1/runs` (routes/runs.py, schemas.RunCreate).
+//
+// WHAT EACH CASE HOLDS:
+//   * the issue is SHOWN before anything is created -- title, body as served,
+//     labels, open/closed, comment count, the canonical link;
+//   * each refusal the preview route serves has its own form, keyed on the
+//     server's `code` (forge.py: not_found, no_access, is_pull_request,
+//     no_forge_credential, read_failed; validation_failed for a malformed
+//     reference), and none of them prints a figure it did not read;
+//   * a CLOSED issue warns and needs "Plan it anyway", never a refusal;
+//   * auto-merge is drawn OFF and DISABLED -- before a read, decided by the read;
+//     after it, the API's answer and reason -- unless the preview reports it
+//     available (QA1-FIX-12 chrome-C29: no "not available yet" before anything was asked);
+//   * fix rounds are 3 by default within 1-5;
+//   * the body POSTed is exactly RunCreate's fields, and the page lands on the
+//     new run.
+
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+
+import { expectNoFigures } from './setup'
+
+const WAIT = { timeout: 4000 }
+const JSON_HEADERS = { 'content-type': 'application/json' }
+const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
+
+const admission = {
+  units: 1, headroom: 4, basis: 'measured', blockers: [], binding: [],
+  counterfactual: [], complete: true, unread: [], uncapped: [],
+}
+const pool = (name: string) => ({
+  name, hard_limit: 10, adaptive_target: null, quota_derived_limit: null, effective_limit: 10,
+  active: 2, available: 8, enabled: true, updated_at: '2026-10-02T10:00:00Z',
+})
+const CAPACITY = {
+  pools: [pool('global'), pool('tenant:eng'), pool('resource:standard')],
+  runner_profiles: {
+    'claude-code': { resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'anthropic', units: 1,
+      pools: ['global', 'tenant:eng', 'resource:standard'], admission },
+    codex: { resource_class: 'standard', backend: 'CLOUD_RUN_JOB', provider: 'openai', units: 1,
+      pools: ['global', 'tenant:eng', 'resource:standard'], admission },
+  },
+  tenant_id: 'eng',
+  generated_at: '2026-10-02T10:00:00Z',
+}
+const PROVIDERS = {
+  tenant_id: 'eng',
+  providers: [{ provider: 'anthropic', credential_registered: true }],
+  generated_at: '2026-10-02T10:00:00Z',
+}
+
+function preview(over: Record<string, unknown> = {}, top: Record<string, unknown> = {}) {
+  return {
+    issue: {
+      ref: 'example-org/infra#512', owner: 'example-org', repo: 'infra', number: 512,
+      url: 'https://github.com/example-org/infra/issues/512',
+      repository_url: 'https://github.com/example-org/infra',
+      title: 'The workflow list shows no cost column',
+      body: 'What are you trying to do?\nSee what a finished workflow cost.',
+      body_truncated: false, body_redacted: false,
+      labels: ['enhancement', 'ui'], state: 'open', comments: 4,
+      ...over,
+    },
+    tenant_id: 'eng',
+    ...top,
+  }
+}
+
+type Reply = { status: number; body: unknown }
+
+interface Served {
+  calls: { method: string; url: string; body: unknown }[]
+}
+
+function serve(previewReply: Reply, runReply: Reply = { status: 201, body: { run: { id: 'run_new' } } }): Served {
+  const served: Served = { calls: [] }
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    const method = init?.method ?? 'GET'
+    served.calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : null })
+    const reply = (r: Reply) => new Response(JSON.stringify(r.body), { status: r.status, headers: JSON_HEADERS })
+    if (url.startsWith('/v1/capacity')) return reply({ status: 200, body: CAPACITY })
+    if (url.startsWith('/v1/providers')) return reply({ status: 200, body: PROVIDERS })
+    if (url.startsWith('/v1/issues/preview')) return reply(previewReply)
+    if (url.startsWith('/v1/runs') && method === 'POST') return reply(runReply)
+    return reply({ status: 404, body: { code: 'not_found', message: `no stub for ${url}` } })
+  }) as unknown as typeof fetch
+  return served
+}
+
+async function mount(go = vi.fn()) {
+  vi.stubEnv('VITE_LIVE', '1')
+  vi.resetModules()
+  const { IssueSubmitScreen } = await import('../IssueSubmit')
+  const utils = render(<IssueSubmitScreen go={go} />)
+  await screen.findByRole('heading', { name: 'Submit from a GitHub issue', level: 1 }, WAIT)
+  await screen.findByRole('radiogroup', { name: 'runner' }, WAIT)
+  return { ...utils, go }
+}
+
+async function readIssue(ref: string) {
+  fireEvent.change(screen.getByLabelText('Issue reference'), { target: { value: ref } })
+  fireEvent.click(screen.getByRole('button', { name: 'Read' }))
+}
+
+const planButton = () => screen.getByRole('button', { name: 'Plan this issue' }) as HTMLButtonElement
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
+
+describe('step 1: the issue is read and shown before anything is created', () => {
+  it('shows title, body, labels, state, comments and the link, read through the preview route', async () => {
+    const served = serve({ status: 200, body: preview() })
+    const { container } = await mount()
+    expect(planButton().disabled, 'the button is live before any issue was read').toBe(true)
+    await readIssue('example-org/infra#512')
+    const card = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('.in-preview')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    const asked = served.calls.find((c) => c.url.startsWith('/v1/issues/preview'))!
+    expect(new URL(asked.url, 'http://x').searchParams.get('issue')).toBe('example-org/infra#512')
+    expect(visible(card.querySelector('h3'))).toBe('The workflow list shows no cost column')
+    expect(visible(card)).toContain('See what a finished workflow cost.')
+    expect(visible(card)).toContain('open')
+    expect(visible(card)).toContain('4 comments')
+    // The issue's labels are canonical tags: labels someone attached.
+    const chips = [...card.querySelectorAll('.c-tag')].map(visible)
+    expect(chips).toEqual(['enhancement', 'ui'])
+    const link = within(card).getByRole('link', { name: /example-org\/infra#512/ })
+    expect(link.getAttribute('href')).toBe('https://github.com/example-org/infra/issues/512')
+    expect(planButton().disabled).toBe(false)
+  })
+
+  it('says when the body was cut or masked, as the API flagged it', async () => {
+    serve({ status: 200, body: preview({ body_truncated: true, body_redacted: true }) })
+    const { container } = await mount()
+    await readIssue('example-org/infra#512')
+    const card = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('.in-preview')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    expect(visible(card)).toMatch(/first part of the body/)
+    expect(visible(card)).toMatch(/masked/)
+  })
+
+  it('a closed issue warns and needs "Plan it anyway"; it is never refused', async () => {
+    serve({ status: 200, body: preview({ state: 'closed' }) })
+    const { container } = await mount()
+    await readIssue('example-org/infra#512')
+    const warn = await screen.findByText(/This issue is closed\./, undefined, WAIT)
+    expect(container.querySelector('.in-refusal'), 'a closed issue was drawn as a refusal').toBeNull()
+    expect(planButton().disabled, 'a closed issue can be planned without saying so').toBe(true)
+    fireEvent.click(within(warn.closest('.in-closed') as HTMLElement).getByRole('button', { name: 'Plan it anyway' }))
+    expect(planButton().disabled).toBe(false)
+    // And it can be taken back without reading the issue again (live QA SUB-12).
+    fireEvent.click(within(warn.closest('.in-closed') as HTMLElement).getByRole('button', { name: 'Undo' }))
+    expect(planButton().disabled).toBe(true)
+    expect(within(warn.closest('.in-closed') as HTMLElement).getByRole('button', { name: 'Plan it anyway' })).toBeTruthy()
+  })
+
+  const REFUSALS: Array<[string, number, RegExp]> = [
+    ['not_found', 404, /not found or not visible/i],
+    ['no_access', 403, /forge credential was refused/i],
+    ['is_pull_request', 422, /is a pull request/i],
+    ['no_forge_credential', 409, /no forge credential/i],
+    ['read_failed', 502, /did not finish/i],
+    ['validation_failed', 422, /not an issue reference/i],
+  ]
+  for (const [code, status, words] of REFUSALS) {
+    it(`draws the ${code} refusal in its own words, with no figure it did not read`, async () => {
+      serve({ status, body: { code, message: `server says ${code}` } })
+      const { container } = await mount()
+      await readIssue('example-org/infra#512')
+      const refusal = await waitFor(() => {
+        const el = container.querySelector<HTMLElement>('.in-refusal')
+        expect(el).not.toBeNull()
+        return el!
+      }, WAIT)
+      expect(refusal.getAttribute('data-code')).toBe(code)
+      expect(visible(refusal)).toMatch(words)
+      // The server's own sentence is kept: it names the tenant and the secret.
+      // Not for a malformed reference (QA G4-25): that sentence names the
+      // API's fields (`repository_url`), which this form does not have.
+      if (code === 'validation_failed') expect(visible(refusal)).not.toContain(`server says ${code}`)
+      else expect(visible(refusal)).toContain(`server says ${code}`)
+      expect(container.querySelector('.in-preview')).toBeNull()
+      expect(planButton().disabled).toBe(true)
+      // No count, no state: nothing was read. `#295` and the reference's own
+      // number are the only digits on the page that are not a measurement.
+      expectNoFigures(refusal, ['512', `server says ${code}`])
+    })
+  }
+
+  it('a pull request points at the task form', async () => {
+    serve({ status: 422, body: { code: 'is_pull_request', message: 'a pull request' } })
+    const { go } = await mount()
+    await readIssue('example-org/infra#498')
+    fireEvent.click(await screen.findByRole('button', { name: 'Start an agent instead' }, WAIT))
+    expect(go).toHaveBeenCalledWith('work/new')
+  })
+
+  it('a failed read offers to read again, and says the state is unknown', async () => {
+    const served = serve({ status: 502, body: { code: 'read_failed', message: 'GitHub answered HTTP 500' } })
+    await mount()
+    await readIssue('example-org/infra#512')
+    const again = await screen.findByRole('button', { name: 'Read again' }, WAIT)
+    expect(visible(again.closest('.in-refusal'))).toMatch(/unknown/)
+    fireEvent.click(again)
+    await waitFor(() => expect(served.calls.filter((c) => c.url.startsWith('/v1/issues/preview'))).toHaveLength(2), WAIT)
+  })
+
+  it('a reference edited after its read must be read again', async () => {
+    serve({ status: 200, body: preview() })
+    const { container } = await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(container.querySelector('.in-preview')).not.toBeNull(), WAIT)
+    fireEvent.change(screen.getByLabelText('Issue reference'), { target: { value: 'example-org/infra#513' } })
+    expect(container.querySelector('.in-preview'), 'the old issue stayed under a new reference').toBeNull()
+    expect(planButton().disabled).toBe(true)
+  })
+})
+
+// QA G4-25 (2026-10-07): "foo bar" went to the server, came back naming
+// `repository_url`, and the dock counted a failed read. A reference is parsed
+// here first, in the API's own two shapes, and Read waits until it parses.
+describe('the reference is parsed before it is sent (G4-25)', () => {
+  it('parses owner/repo#N and the issue URL, and refuses anything else', async () => {
+    const { parseIssueRef } = await import('../IssueSubmit')
+    expect(parseIssueRef('example-org/infra#512')).toEqual({ owner: 'example-org', repo: 'infra', number: 512 })
+    expect(parseIssueRef('  https://github.com/example-org/infra/issues/512  ')).toEqual({ owner: 'example-org', repo: 'infra', number: 512 })
+    expect(parseIssueRef('https://www.github.com/example-org/infra/issues/7/')).toEqual({ owner: 'example-org', repo: 'infra', number: 7 })
+    expect(parseIssueRef('https://github.com/example-org/infra/issues/7?x=1#c')).toEqual({ owner: 'example-org', repo: 'infra', number: 7 })
+    // A pull request URL parses: the server answers it with its own refusal,
+    // which points at the task form.
+    expect(parseIssueRef('https://github.com/example-org/infra/pull/9')).not.toBeNull()
+    for (const bad of ['foo bar', 'infra#512', 'example-org/infra', 'example-org/infra#0', 'example-org/infra#1000000',
+      'http://github.com/example-org/infra/issues/5', 'https://gitlab.com/example-org/infra/issues/5',
+      'https://github.com/example-org/infra', 'example-org/.git#5', '']) {
+      expect(parseIssueRef(bad), bad).toBeNull()
+    }
+  })
+
+  it('never sends "foo bar": Read stays disabled and the field says what it takes', async () => {
+    const served = serve({ status: 422, body: { code: 'validation_failed', message: 'repository_url must be an https URL' } })
+    const { container } = await mount()
+    fireEvent.change(screen.getByLabelText('Issue reference'), { target: { value: 'foo bar' } })
+    const read = screen.getByRole('button', { name: 'Read' }) as HTMLButtonElement
+    expect(read.disabled, 'Read is live for a reference that cannot parse').toBe(true)
+    fireEvent.keyDown(screen.getByLabelText('Issue reference'), { key: 'Enter' })
+    fireEvent.click(read)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(served.calls.filter((c) => c.url.startsWith('/v1/issues/preview')), 'an unparsed reference was sent').toEqual([])
+    expect(visible(container)).toMatch(/owner\/repo#N/)
+    expect(visible(container)).not.toContain('repository_url')
+    fireEvent.change(screen.getByLabelText('Issue reference'), { target: { value: 'example-org/infra#512' } })
+    expect(read.disabled).toBe(false)
+  })
+})
+
+describe('steps 2 and 3: the runner and what it may do on its own', () => {
+  it('offers claude-code by name and holds every other runner back with the reason', async () => {
+    serve({ status: 200, body: preview() })
+    await mount()
+    const group = screen.getByRole('radiogroup', { name: 'runner' })
+    const cc = group.querySelector<HTMLInputElement>('input[value="claude-code"]')!
+    expect(cc.checked).toBe(true)
+    // ONLY THE USABLE CHOICE (walkthrough D): the rest are behind "Other
+    // runners", each with a one-line reason, and none is a radio.
+    expect(group.querySelector('input[value="codex"]')).toBeNull()
+    const more = document.querySelector('details.sbf-runners-more')!
+    const codex = [...more.querySelectorAll('li')].find((li) => li.querySelector('.sbf-runner-name')?.textContent === 'codex')!
+    expect(codex, 'codex is not listed as unavailable').toBeTruthy()
+    expect(codex.querySelector('.sbf-runner-why')?.textContent).toMatch(/^(Issue runs always use claude-code|Not enabled yet\. Use claude-code)$/)
+  })
+
+  it('plan approval defaults to Required; auto-merge is off and disabled, requiring #295; fix rounds 3 in 1-5', async () => {
+    serve({ status: 200, body: preview() })
+    await mount()
+    const required = screen.getByRole('radio', { name: /Required/ }) as HTMLInputElement
+    const auto = screen.getByRole('radio', { name: /Auto/ }) as HTMLInputElement
+    expect(required.checked).toBe(true)
+    expect(auto.checked).toBe(false)
+    const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
+    expect(merge.checked).toBe(false)
+    expect(merge.disabled).toBe(true)
+    // Before a read nothing was asked (QA1-FIX-12 chrome-C29): the read decides it.
+    expect(visible(merge.closest('.in-merge'))).toContain('Decided when the issue is read')
+    const rounds = screen.getByLabelText('Fix rounds when checks go red') as HTMLInputElement
+    expect(rounds.value).toBe('3')
+    expect(rounds.min).toBe('1')
+    expect(rounds.max).toBe('5')
+  })
+
+  it('auto-merge stays disabled when the preview says it is unavailable, and shows the API\'s reason', async () => {
+    const reason = 'auto_merge requires #295 phase 2, which issue runs do not compile yet'
+    serve({ status: 200, body: preview({}, { auto_merge: { available: false, requires: '#295', reason } }) })
+    const { container } = await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
+    expect(merge.disabled).toBe(true)
+    expect(visible(container.querySelector('.in-merge'))).toContain('Not available for this run')
+    expect(visible(container.querySelector('.in-merge'))).toContain(reason)
+  })
+
+  it('auto-merge can be switched on only when the API reports it available, and is sent', async () => {
+    const served = serve({ status: 200, body: preview({}, { auto_merge: { available: true, requires: '#295', reason: null } }) })
+    const { container } = await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
+    expect(merge.disabled).toBe(false)
+    expect(merge.checked).toBe(false)
+    fireEvent.click(merge)
+    expect(merge.checked).toBe(true)
+    expect(visible(container.querySelector('.in-send'))).toMatch(/auto-merge\s*on/)
+    fireEvent.click(planButton())
+    await waitFor(() => expect(served.calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect(served.calls.find((c) => c.method === 'POST')!.body).toMatchObject({ auto_merge: true })
+  })
+
+  it('live QA SUB-2: a repository whose preview serves default: true starts the switch on, says so, and sends it', async () => {
+    const served = serve({ status: 200, body: preview({}, { auto_merge: { available: true, default: true, requires: '#295', reason: null } }) })
+    const { container } = await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
+    expect(merge.checked, 'the served default was ignored').toBe(true)
+    expect(visible(container.querySelector('.in-merge'))).toContain('On (default)')
+    expect(visible(container.querySelector('.in-send'))).toMatch(/auto-merge\s*on/)
+    // Turned off by hand, it is off and not called the default.
+    fireEvent.click(merge)
+    expect(merge.checked).toBe(false)
+    expect(visible(container.querySelector('.in-merge'))).not.toContain('(default)')
+    fireEvent.click(merge)
+    fireEvent.click(planButton())
+    await waitFor(() => expect(served.calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect(served.calls.find((c) => c.method === 'POST')!.body).toMatchObject({ auto_merge: true })
+  })
+
+  it('live QA SUB-2: an untouched switch sends the served default, and default: false stays off', async () => {
+    const served = serve({ status: 200, body: preview({}, { auto_merge: { available: true, default: true, requires: '#295', reason: null } }) })
+    await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    fireEvent.click(planButton())
+    await waitFor(() => expect(served.calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect(served.calls.find((c) => c.method === 'POST')!.body).toMatchObject({ auto_merge: true })
+
+    // The control: the same form under default: false sends false.
+    document.body.innerHTML = ''
+    const off = serve({ status: 200, body: preview({}, { auto_merge: { available: true, default: false, requires: '#295', reason: null } }) })
+    const { container } = await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    expect(visible(container.querySelector('.in-merge'))).toContain('Off (default)')
+    fireEvent.click(planButton())
+    await waitFor(() => expect(off.calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect(off.calls.find((c) => c.method === 'POST')!.body).toMatchObject({ auto_merge: false })
+  })
+
+  it('a preview that does not say is read as unavailable: nothing switches it on', async () => {
+    const served = serve({ status: 200, body: preview() })
+    await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
+    expect(merge.disabled).toBe(true)
+    fireEvent.click(planButton())
+    await waitFor(() => expect(served.calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect(served.calls.find((c) => c.method === 'POST')!.body).toMatchObject({ auto_merge: false })
+  })
+
+  it('the summary repeats the choices', async () => {
+    serve({ status: 200, body: preview() })
+    const { container } = await mount()
+    const side = () => visible(container.querySelector('.in-send'))
+    expect(side()).toContain('Not ready to send')
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(side()).toContain('Ready to send'), WAIT)
+    // The number first, the repository on its own row (live QA SUB-9).
+    expect(side()).toContain('#512 · open')
+    expect(side()).toContain('example-org/infra')
+    expect(side()).toContain('claude-code')
+    expect(side()).toContain('waits for approval')
+    // A preview that does not say: off, and the summary says the API did not offer it.
+    expect(side()).toContain('off · not offered by this API')
+    expect(side()).toContain('up to 3')
+    fireEvent.click(screen.getByRole('radio', { name: /Auto/ }))
+    fireEvent.change(screen.getByLabelText('Fix rounds when checks go red'), { target: { value: '5' } })
+    // The wording follows the choice now (browser QA N13, qa.u11b.submit.test.tsx).
+    expect(side()).toContain('approved as soon as it is written')
+    expect(side()).toContain('up to 5')
+  })
+})
+
+describe('submit creates the run', () => {
+  it('POSTs RunCreate exactly and lands on the run', async () => {
+    const served = serve({ status: 200, body: preview() })
+    const { go } = await mount()
+    await readIssue('https://github.com/example-org/infra/issues/512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    fireEvent.change(screen.getByLabelText('Fix rounds when checks go red'), { target: { value: '2' } })
+    fireEvent.click(planButton())
+    await waitFor(() => expect(go).toHaveBeenCalledWith('work/runs?run=run_new'), WAIT)
+    const post = served.calls.find((c) => c.method === 'POST')!
+    expect(post.url).toBe('/v1/runs')
+    // The reference AS THE PREVIEW SERVED IT, so what is planned is what was shown.
+    expect(post.body).toEqual({ issue: 'example-org/infra#512', plan_approval: 'required', auto_merge: false, fix_rounds: 2 })
+  })
+
+  it('live QA SUB-13: Enter in the fix-rounds field confirms the number and plans nothing', async () => {
+    const served = serve({ status: 200, body: preview() })
+    await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    const rounds = screen.getByLabelText('Fix rounds when checks go red')
+    fireEvent.change(rounds, { target: { value: '2' } })
+    // `fireEvent` returns false when the handler prevented the default: the
+    // implicit submission Enter would start in a browser.
+    expect(fireEvent.keyDown(rounds, { key: 'Enter' }), 'Enter in fix rounds would submit the form').toBe(false)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(served.calls.filter((c) => c.method === 'POST')).toEqual([])
+  })
+
+  it('a fix-round count outside 1-5 is not sent', async () => {
+    const served = serve({ status: 200, body: preview() })
+    await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    fireEvent.change(screen.getByLabelText('Fix rounds when checks go red'), { target: { value: '9' } })
+    expect(planButton().disabled).toBe(true)
+    expect(served.calls.some((c) => c.method === 'POST')).toBe(false)
+  })
+
+  it('a refused submission says so and does not navigate', async () => {
+    serve({ status: 200, body: preview() },
+      { status: 422, body: { code: 'auto_merge_unavailable', message: 'auto_merge requires the merge chain (#295)' } })
+    const { go } = await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    fireEvent.click(planButton())
+    await screen.findByText(/auto_merge requires the merge chain/, undefined, WAIT)
+    expect(go).not.toHaveBeenCalled()
+  })
+})

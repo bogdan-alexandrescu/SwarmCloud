@@ -1,0 +1,66 @@
+# The CI deployer may ACT AS the service accounts this root attaches to what it
+# deploys -- each one individually, never project-wide.
+#
+# Release 36023801562 (2026-09-24) was the first release to get past planning, and
+# its apply failed on all five Cloud Run services with
+#
+#     Error 403: Permission 'iam.serviceaccounts.actAs' denied on service account
+#     swarm-api@... / swarm-scheduler@... / swarm-reconciler@... / ...
+#
+# Deploying a service or job that runs as account X requires actAs on X. Every
+# earlier deploy ran from a laptop as a project owner, who has it implicitly, so
+# the grant was never needed until the release did the deploying.
+#
+# NOT roles/iam.serviceAccountUser on the project: that would let CI act as every
+# service account in example-project, including the other team's twelve.
+# These bindings are on OUR accounts only -- every platform account modules/iam
+# creates (keys are static, so a fresh project still plans), the tick account the
+# scheduler jobs mint OIDC tokens as, the rollup-sweeper account the
+# workflow-rollup jobs mint theirs as, the schedule-tick account the schedule
+# tick mints its own as, and swarm-verify. Tenant worker accounts get
+# the same grant through modules/tenancy's dispatcher_members (main.tf), so a new
+# tenant is covered the day it is created.
+#
+# The deployer grants these to itself: it holds roles/iam.serviceAccountAdmin,
+# which includes setIamPolicy, ON EACH OF THESE ACCOUNTS -- since 2026-09-29
+# (archived pull request 334) no longer on the project. terraform/bootstrap/deployer_service_accounts.tf
+# grants it per account, on the list modules/service_account_ids spells for both
+# roots plus the tenants dev.tfvars names, so every account in
+# local.deployer_acts_as below, and every tenant worker, is covered; an account
+# that is not on that list cannot get this binding, and its apply 403s. That is
+# stated here rather than hidden -- admin on an account is still enough to act
+# as it, which is why scoping individual roles is only as strong as the scoping
+# of the IAM-admin roles themselves.
+#
+# FIRST APPLY. A service update in the same apply as its new binding can race IAM
+# propagation and fail once; re-running the failed release jobs clears it. A
+# module-level depends_on would buy ordering but not propagation, and it defers
+# data sources to apply time (see the note above module "frontend" in main.tf).
+locals {
+  deployer_member = var.deployer_service_account == "" ? "" : "serviceAccount:${var.deployer_service_account}"
+
+  deployer_acts_as = var.deployer_service_account == "" ? {} : merge(
+    module.iam.service_account_emails,
+    {
+      "swarm-tick"   = module.iam.tick_service_account
+      "swarm-verify" = local.verify_email
+      # The workflow-rollup jobs mint OIDC tokens as this account (D17).
+      "swarm-rollup-sweeper" = module.scheduler.rollup_sweeper_email
+      # The schedule tick's job (lane S4) mints OIDC tokens as this account
+      # (docs/schedules.md SD10). Creating a job that does needs actAs on it.
+      "swarm-schedule-tick" = module.scheduler.schedule_tick_email
+      # swarm-discovery's service (discovery.tf) and swarm-doctor's job
+      # (doctor.tf) run as these bootstrap-made accounts (DAYONE-TF-2).
+      "swarm-discovery" = local.discovery_email
+      "swarm-doctor"    = local.doctor_email
+    },
+  )
+}
+
+resource "google_service_account_iam_member" "deployer_acts_as" {
+  for_each = local.deployer_acts_as
+
+  service_account_id = "projects/${var.project_id}/serviceAccounts/${each.value}"
+  role               = "roles/iam.serviceAccountUser"
+  member             = local.deployer_member
+}

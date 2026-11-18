@@ -1,0 +1,1351 @@
+"""NOTE: job names carry the "job" segment because terraform/infra/locals.tf
+creates them as `${name_prefix}-job-${tenant}-${profile}`. The dispatcher must
+match exactly; see tests/unit/control_plane/test_job_name_matches_terraform.py.
+
+What the dispatchers actually ask the platform to create.
+
+No network here: the real `run_v2` protobuf types and the real manifest builder
+run, and the assertions are about the resource that would be submitted. These
+are the contract rules that are invisible until production breaks:
+
+  * requests == limits, so nothing bursts and gets OOM-killed under node pressure
+  * no Spot, anywhere -- Spot Pods cannot use Autopilot extended run time
+  * the container's service account is the TENANT's, and the secret it mounts is
+    the tenant's own, because Cloud Run fixes the service account on the JOB
+  * retries are the platform's, never the backend's, or a retry would re-run the
+    agent under a stale fencing generation
+  * the environment carries IDENTIFIERS ONLY: no image, no command, no sizing
+"""
+
+from __future__ import annotations
+
+import dataclasses
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from swarm_common.models import Lease, Task, Tenant
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, resolve_backend
+from swarm_common.states import TaskState
+
+from scheduler.dispatch import (
+    BackendRouter,
+    CloudRunJobDispatcher,
+    DispatchError,
+    GkeJobDispatcher,
+    GkeTarget,
+    gke_ephemeral_storage_gib,
+    job_id_for,
+    sanitize_name,
+    worker_env,
+)
+
+from .conftest import PROJECT, scheduler_settings
+
+NOW = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def settings():
+    return scheduler_settings()
+
+
+@pytest.fixture
+def tenant() -> Tenant:
+    return Tenant(
+        tenant_id="eng",
+        kind="group",
+        principal="eng@example.com",
+        created_at=NOW,
+        service_account=f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com",
+        gcs_prefix=f"gs://{PROJECT}-swarm-artifacts/tenants/eng",
+        namespace="swarm-tenant-eng",
+    )
+
+
+def make_task(profile_name: str = "claude-code") -> Task:
+    profile = RUNNER_PROFILES[profile_name]
+    return Task(
+        id="task_abc123",
+        tenant_id="eng",
+        created_at=NOW,
+        updated_at=NOW,
+        state=TaskState.LEASED,
+        runner_profile=profile_name,
+        resource_class=profile.resource_class,
+        input={},
+        submitted_by="alice@example.com",
+        provider=profile.provider,
+        timeout_seconds=1800,
+    )
+
+
+def make_lease(task: Task) -> Lease:
+    return Lease(
+        lease_id="lease_1",
+        task_id=task.id,
+        attempt_id="att_1",
+        tenant_id=task.tenant_id,
+        generation=3,
+        pools=["global"],
+        units=1,
+        state=TaskState.LEASED,
+        created_at=NOW,
+        dispatch_deadline=NOW + timedelta(minutes=5),
+        expires_at=NOW + timedelta(minutes=2),
+    )
+
+
+# -- naming ---------------------------------------------------------------
+
+def test_names_are_cloud_run_and_k8s_safe():
+    assert job_id_for("eng", "claude-code") == "swarm-job-eng-claude-code"
+    assert sanitize_name("Swarm", "TEAM_Alpha", "codex") == "swarm-team-alpha-codex"
+    long = sanitize_name("swarm", "x" * 200, "browser")
+    assert len(long) <= 63 and long[0].isalpha()
+
+
+def test_similar_long_names_do_not_collide():
+    a = sanitize_name("swarm", "t" * 70 + "-alpha")
+    b = sanitize_name("swarm", "t" * 70 + "-beta")
+    assert a != b, "truncation alone would collide; the hash tail must differ"
+
+
+def test_a_name_that_sanitizes_to_nothing_is_an_error():
+    with pytest.raises(DispatchError):
+        sanitize_name("---")
+
+
+# -- worker environment ---------------------------------------------------
+
+def test_worker_environment_carries_identifiers_only(settings, tenant):
+    task = make_task()
+    env = worker_env(task=task, lease=make_lease(task), tenant=tenant, settings=settings)
+
+    assert env["TASK_ID"] == task.id
+    assert env["GENERATION"] == "3"
+    assert env["RUNNER_PROFILE"] == "claude-code"
+    assert env["TENANT_ID"] == "eng"
+    assert env["FIRESTORE_DATABASE"] == "swarm", "never the (default) database"
+
+    forbidden = {"IMAGE", "COMMAND", "ARGS", "CPU", "MEMORY", "BACKEND", "RESOURCE_CLASS"}
+    assert not (forbidden & set(env)), (
+        "a worker must read what to run from the frozen catalogue, not the environment"
+    )
+    assert not any("KEY" in name or "SECRET" in name for name in env), (
+        "key material is mounted from Secret Manager, never passed as a value"
+    )
+
+
+# -- Cloud Run ------------------------------------------------------------
+
+class FakeOperation:
+    def __init__(self, name: str = "projects/p/locations/l/jobs/j/executions/e-1") -> None:
+        self.metadata = type("Meta", (), {"name": name})()
+
+    def result(self, timeout=None):
+        return self.metadata
+
+
+class FakeJobsClient:
+    """Cloud Run's JobsClient, holding real `run_v2.Job` messages.
+
+    `get_job` returns a real Job, as the API does, because the dispatcher now
+    READS the Job it fetches: a Job created before 2026-09-24 still carries the
+    `command` override that replaced the worker lifecycle, and `ensure_job` has
+    to see it to remove it. `jobs` seeds such a Job; a name in `existing` with no
+    seeded Job gets an empty one, which has no container to override anything.
+    `calls` records the order of API calls, so a test can tell "cleared, then
+    ran" from "ran, then cleared".
+    """
+
+    def __init__(self, existing: set[str] | None = None, *, jobs: dict | None = None) -> None:
+        self.jobs: dict = dict(jobs or {})
+        self.existing = set(existing or ()) | set(self.jobs)
+        self.created: list[dict] = []
+        self.updated: list = []
+        self.runs: list[dict] = []
+        self.calls: list[str] = []
+
+    def get_job(self, request):
+        from google.api_core import exceptions as gexc
+        from google.cloud import run_v2
+
+        self.calls.append("get_job")
+        if request.name not in self.existing:
+            raise gexc.NotFound(request.name)
+        if request.name in self.jobs:
+            return self.jobs[request.name]
+        return run_v2.Job(name=request.name)
+
+    def create_job(self, request):
+        self.calls.append("create_job")
+        self.created.append({"job_id": request.job_id, "job": request.job,
+                             "parent": request.parent})
+        name = f"{request.parent}/jobs/{request.job_id}"
+        self.existing.add(name)
+        self.jobs[name] = request.job
+        return FakeOperation()
+
+    def update_job(self, request):
+        self.calls.append("update_job")
+        self.updated.append(request.job)
+        self.jobs[request.job.name] = request.job
+        return FakeOperation()
+
+    def run_job(self, request):
+        self.calls.append("run_job")
+        self.runs.append({"name": request.name, "overrides": request.overrides})
+        return FakeOperation()
+
+
+def test_cloud_run_job_is_sized_from_the_catalogue_with_requests_equal_to_limits(
+    settings, tenant
+):
+    dispatcher = CloudRunJobDispatcher(settings, client=FakeJobsClient())
+    profile = RUNNER_PROFILES["claude-code"]
+    job = dispatcher._build_job(profile, tenant)
+
+    container = job.template.template.containers[0]
+    rc = RESOURCE_CLASSES[profile.resource_class]
+    assert container.resources.limits["cpu"] == str(int(rc.cpu))
+    assert container.resources.limits["memory"] == f"{rc.memory_gib}Gi"
+    # INVERTED 2026-09-24. This line used to assert
+    # `list(container.command) == list(profile.command)` -- it pinned the very
+    # override that replaced the image ENTRYPOINT (the worker lifecycle) with
+    # the bare runner. See test_no_backend_overrides_the_image_entrypoint below.
+    # (`RunnerProfile.command` is `runner_argv` since contract request 18.)
+    assert list(container.command) == []
+    assert list(container.args) == []
+    assert container.image.endswith(f"/{profile.image}:{settings.worker_image_tag}")
+
+
+def test_cloud_run_job_runs_as_the_tenant_and_mounts_the_tenants_own_secret(
+    settings, tenant
+):
+    dispatcher = CloudRunJobDispatcher(settings, client=FakeJobsClient())
+    profile = RUNNER_PROFILES["claude-code"]
+    job = dispatcher._build_job(profile, tenant)
+
+    template = job.template.template
+    assert template.service_account == tenant.service_account
+
+    secret_envs = [e for e in template.containers[0].env if e.value_source.secret_key_ref.secret]
+
+    # claude-code accepts EITHER metered API access or a Claude subscription
+    # token, so both names are projected and the tenant supplies whichever they
+    # actually have. cliagent._credential_env picks the one that is set and
+    # passes only that to the child.
+    assert [e.name for e in secret_envs] == ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+
+    # The property that actually matters: every credential comes from THIS
+    # tenant's own secret. A job mounting another tenant's secret would hand one
+    # tenant another's provider credential, which is the whole isolation story.
+    for env in secret_envs:
+        assert env.value_source.secret_key_ref.secret.startswith("swarm-tenant-eng-")
+        assert "research" not in env.value_source.secret_key_ref.secret
+
+
+def test_cloud_run_job_never_retries_on_its_own(settings, tenant):
+    dispatcher = CloudRunJobDispatcher(settings, client=FakeJobsClient())
+    job = dispatcher._build_job(RUNNER_PROFILES["mock"], tenant)
+    assert job.template.template.max_retries == 0, (
+        "a backend-level retry would re-run the agent under a stale generation"
+    )
+
+
+def test_cloud_run_workspace_is_the_memory_tmpfs_terraform_gives_its_jobs(settings, tenant):
+    # INVERTED 2026-10-01 (gap audit D7). This asserted the workspace was NOT
+    # memory-backed -- it pinned the Preview disk-backed volume, on BETA, that
+    # CONTRACT.md's "Correction (workspace storage)" says this platform does
+    # not use. The field-by-field comparison with terraform's module is
+    # tests/unit/scheduler/test_scheduler_job_matches_terraform_job.py.
+    from google.cloud import run_v2
+
+    from scheduler.dispatch import workspace_size_gib
+
+    dispatcher = CloudRunJobDispatcher(settings, client=FakeJobsClient())
+    profile = RUNNER_PROFILES["claude-code"]
+    job = dispatcher._build_job(profile, tenant)
+
+    volume = job.template.template.volumes[0]
+    assert volume.name == "workspace"
+    assert volume.empty_dir.medium == run_v2.EmptyDirVolumeSource.Medium.MEMORY
+    assert volume.empty_dir.size_limit == (
+        f"{workspace_size_gib(RESOURCE_CLASSES[profile.resource_class])}Gi"
+    )
+
+
+def test_the_job_is_created_once_per_tenant_and_profile(settings, tenant):
+    client = FakeJobsClient()
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task()
+    lease = make_lease(task)
+    profile = RUNNER_PROFILES["claude-code"]
+
+    dispatcher.dispatch(task=task, lease=lease, profile=profile, tenant=tenant)
+    dispatcher.dispatch(task=task, lease=lease, profile=profile, tenant=tenant)
+
+    assert len(client.created) == 1, "the Job resource is reused across executions"
+    assert client.created[0]["job_id"] == "swarm-job-eng-claude-code"
+    assert len(client.runs) == 2
+
+
+def test_execution_overrides_carry_the_attempt_identity(settings, tenant):
+    client = FakeJobsClient()
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task()
+    lease = make_lease(task)
+
+    name = dispatcher.dispatch(
+        task=task, lease=lease, profile=RUNNER_PROFILES["claude-code"], tenant=tenant
+    )
+    assert name.endswith("executions/e-1")
+
+    override = client.runs[0]["overrides"].container_overrides[0]
+    env = {e.name: e.value for e in override.env}
+    assert override.name == "worker"
+    assert env["LEASE_ID"] == "lease_1"
+    assert env["ATTEMPT_ID"] == "att_1"
+    assert env["GENERATION"] == "3"
+    # CHANGED 2026-09-24: this asserted `== task.timeout_seconds`, which pinned
+    # the race in which Cloud Run's timeout and the lifecycle's own deadline
+    # fire together and the lifecycle's SIGTERM path parks the task instead of
+    # failing it. The lifecycle's deadline is still the task's (TASK_TIMEOUT_SECONDS
+    # below); the backend's is later. See
+    # test_the_cloud_run_timeout_lets_the_lifecycle_time_out_on_its_own.
+    assert env["TASK_TIMEOUT_SECONDS"] == str(task.timeout_seconds)
+    assert client.runs[0]["overrides"].timeout.seconds > task.timeout_seconds
+
+
+def test_a_cloud_run_api_error_becomes_a_dispatch_error(settings, tenant):
+    from google.api_core import exceptions as gexc
+
+    class Broken(FakeJobsClient):
+        def run_job(self, request):
+            raise gexc.ServiceUnavailable("backend is down")
+
+    dispatcher = CloudRunJobDispatcher(settings, client=Broken({f"{PROJECT}"}))
+    task = make_task("mock")
+    with pytest.raises(DispatchError):
+        dispatcher.dispatch(
+            task=task, lease=make_lease(task), profile=RUNNER_PROFILES["mock"], tenant=tenant
+        )
+
+
+# -- GKE -------------------------------------------------------------------
+
+class FakeBatchApi:
+    def __init__(self) -> None:
+        self.created: list[tuple[str, dict]] = []
+
+    def create_namespaced_job(self, namespace, body):
+        self.created.append((namespace, body))
+        return {"metadata": {"name": body["metadata"]["name"]}}
+
+
+def test_browser_work_goes_to_gke_with_a_real_dev_shm(settings, tenant):
+    api = FakeBatchApi()
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=api)
+    profile = RUNNER_PROFILES["browser"]
+    assert resolve_backend(profile) is Backend.GKE_AUTOPILOT
+
+    task = make_task("browser")
+    dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    namespace, body = api.created[0]
+    assert namespace == "swarm-tenant-eng", "a tenant's pods live in that tenant's namespace"
+    volumes = {v["name"]: v for v in body["spec"]["template"]["spec"]["volumes"]}
+    assert volumes["dshm"]["emptyDir"]["medium"] == "Memory"
+    assert volumes["dshm"]["emptyDir"]["sizeLimit"] == "2Gi", (
+        "the 64MiB default /dev/shm is what crashes headless Chromium"
+    )
+
+
+def test_gke_memory_requests_equal_limits_and_cpu_bursts_to_the_class_limit(settings, tenant):
+    api = FakeBatchApi()
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=api)
+    task = make_task("browser")
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["browser"], tenant=tenant
+    )
+
+    container = api.created[0][1]["spec"]["template"]["spec"]["containers"][0]
+    requests, limits = container["resources"]["requests"], container["resources"]["limits"]
+    rc = RESOURCE_CLASSES["browser"]
+    # Invariant 7 as amended by contract request RS-1 (SIZES-SCHED-1): memory
+    # and disk request == limit; CPU requests the class and bursts to its
+    # limit, as millicores.
+    assert requests["memory"] == limits["memory"] == f"{rc.memory_gib}Gi"
+    assert requests["ephemeral-storage"] == limits["ephemeral-storage"]
+    # MUTATION: render one `resources` dict for both directions in
+    # GkeJobDispatcher._manifest and the limit reads "4000m".
+    assert requests["cpu"] == f"{int(rc.cpu * 1000)}m"
+    assert limits["cpu"] == f"{int(rc.cpu_limit_cores * 1000)}m"
+
+
+def test_gke_job_has_no_spot_selector_and_no_backend_retries(settings, tenant):
+    api = FakeBatchApi()
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=api)
+    task = make_task("browser")
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["browser"], tenant=tenant
+    )
+
+    body = api.created[0][1]
+    rendered = repr(body)
+    assert "spot" not in rendered.lower(), (
+        "Spot Pods cannot use Autopilot extended run time; Spot is disabled platform-wide"
+    )
+    assert body["spec"]["backoffLimit"] == 0
+    assert body["spec"]["template"]["spec"]["restartPolicy"] == "Never"
+    # CHANGED 2026-09-24 from `== task.timeout_seconds`: that equality is the
+    # race in which the Job controller kills the pod before the lifecycle's own
+    # timeout fires. See test_the_gke_deadline_lets_the_lifecycle_time_out_on_its_own.
+    assert body["spec"]["activeDeadlineSeconds"] > task.timeout_seconds
+
+
+# -- the image ENTRYPOINT is the worker lifecycle; nothing may replace it ------
+#
+# Incident wf_ebb3ab2d65664707a559 (2026-09-24). Every GKE Job the scheduler
+# created carried `command: ["python", "-m", "agent_worker.runners.browser"]`
+# -- `RunnerProfile.command`, copied onto the CONTAINER. A Kubernetes `command`
+# replaces the image ENTRYPOINT, and the ENTRYPOINT of both worker images is
+# `tini -- python -m agent_worker`: the worker LIFECYCLE, which checks the
+# fencing generation, honours a cancel, heartbeats, checkpoints, starts the
+# runner as a supervised child, writes the terminal state and releases the
+# lease. With the override none of that ran. The pods printed a bare runner
+# traceback, never wrote to the control plane, and left five leases holding
+# every browser slot on the platform.
+#
+# `RunnerProfile.runner_argv` -- called `command` until contract request 18
+# renamed it on 2026-09-24, precisely because the old name read as a container
+# command -- is the lifecycle's CHILD argv (`lifecycle._runner_argv`), never a
+# container command. The lifecycle learns which runner to start from
+# RUNNER_PROFILE in its environment, which both dispatchers set.
+#
+# `kubernetes/worker-templates/worker-job.yaml` already said this in its header,
+# and `tests/unit/worker/test_kubernetes_manifests.py` already asserted it -- of
+# the rendered YAML, which nothing dispatches. Nothing asserted it of the code
+# that does. These do, for every profile in the catalogue, on both backends,
+# because a profile that is on Cloud Run today is one catalogue edit away from
+# GKE and the reverse.
+
+ALL_PROFILES = sorted(RUNNER_PROFILES)
+#: The profiles that start a runner child. A `worker_action` profile (contract
+#: requests 33 and 35) and a `control_plane` profile (contract request 93) have
+#: an empty `runner_argv` by contract, so there is no runner for the lifecycle
+#: to resolve and no command a pre-fix Job could carry.
+RUNNER_STARTING_PROFILES = sorted(
+    name for name, profile in RUNNER_PROFILES.items()
+    if profile.worker_action is None and not profile.control_plane
+)
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_the_gke_manifest_never_overrides_the_image_entrypoint(settings, tenant, profile_name):
+    """THE ONE THAT WOULD HAVE CAUGHT IT: `GkeJobDispatcher._manifest` itself.
+
+    MUTATION: put `"command": list(profile.runner_argv)` back into the container
+    dict in `GkeJobDispatcher._manifest` and this fails for every profile.
+    """
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=FakeBatchApi())
+    task = make_task(profile_name)
+    manifest = dispatcher._manifest(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES[profile_name], tenant=tenant
+    )
+    containers = manifest["spec"]["template"]["spec"]["containers"]
+    assert [c["name"] for c in containers] == ["worker"]
+    worker = containers[0]
+    assert "command" not in worker, (
+        f"the GKE container for {profile_name!r} sets command={worker.get('command')!r}, "
+        "which REPLACES the image ENTRYPOINT (tini -- python -m agent_worker) -- the "
+        "worker lifecycle. The runner then runs bare: no fencing check, no cancel, no "
+        "heartbeat, no checkpoint, no terminal state, no lease release."
+    )
+    assert "args" not in worker, (
+        "`args` replaces the image CMD and is appended to the ENTRYPOINT; the worker "
+        "images declare no CMD and the lifecycle takes no arguments"
+    )
+    # And the lifecycle is told WHICH runner to start, by name, in the
+    # environment -- the only channel it reads (WorkerConfig.from_env).
+    env = {e["name"]: e["value"] for e in worker["env"]}
+    assert env["RUNNER_PROFILE"] == profile_name
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_the_cloud_run_job_never_overrides_the_image_entrypoint(settings, tenant, profile_name):
+    """The same defect, latent on Cloud Run.
+
+    Terraform's Jobs carry `command = null` (modules/cloud_run_jobs/main.tf),
+    which is why Cloud Run tasks ran the lifecycle and GKE tasks did not. But
+    `ensure_job` creates a Job ITSELF whenever `get_job` returns NotFound -- a
+    new tenant, a new profile, a smaller resource class -- and `_build_job` put
+    the override on every one of those. The first task on such a Job would have
+    run exactly as the GKE pods did.
+
+    Both halves are checked: the Job the scheduler creates, and the
+    per-execution override it sends with `run_job`. A ContainerOverride can
+    carry `args`, which would be appended to the ENTRYPOINT.
+
+    MUTATION: put `command=list(profile.runner_argv)` back into `_build_job`.
+    """
+    client = FakeJobsClient()
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    profile = RUNNER_PROFILES[profile_name]
+    task = make_task(profile_name)
+
+    dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    assert len(client.created) == 1, "the fake starts with no Job, so the scheduler creates one"
+    container = client.created[0]["job"].template.template.containers[0]
+    assert list(container.command) == [], (
+        f"the Cloud Run Job the scheduler creates for {profile_name!r} sets "
+        f"command={list(container.command)!r}, replacing the worker lifecycle"
+    )
+    assert list(container.args) == []
+    job_env = {e.name: e.value for e in container.env}
+    assert job_env["RUNNER_PROFILE"] == profile_name
+
+    override = client.runs[0]["overrides"].container_overrides[0]
+    assert list(override.args) == [], "an execution override must not append to the ENTRYPOINT"
+    run_env = {e.name: e.value for e in override.env}
+    assert run_env["RUNNER_PROFILE"] == task.runner_profile
+
+
+@pytest.mark.parametrize("profile_name", RUNNER_STARTING_PROFILES)
+def test_the_lifecycle_resolves_its_runner_from_the_environment_the_dispatcher_sets(
+    settings, tenant, profile_name, monkeypatch
+):
+    """The other half of removing the override: the runner still gets started.
+
+    Taking `command` off the container is only safe if the lifecycle, reading
+    nothing but the environment the dispatcher built, arrives at the runner the
+    frozen catalogue names. This feeds the GKE manifest's own env entries to
+    `WorkerConfig.from_env` and asks `lifecycle._runner_argv` what it would
+    start. It is green today and must stay green: it is the guard that the fix
+    above did not quietly stop the agent from running at all.
+    """
+    import sys
+
+    from agent_worker.config import WorkerConfig
+    from agent_worker.lifecycle import _runner_argv
+
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=FakeBatchApi())
+    profile = RUNNER_PROFILES[profile_name]
+    task = make_task(profile_name)
+    manifest = dispatcher._manifest(
+        task=task, lease=make_lease(task), profile=profile, tenant=tenant
+    )
+    for entry in manifest["spec"]["template"]["spec"]["containers"][0]["env"]:
+        monkeypatch.setenv(entry["name"], entry["value"])
+
+    config = WorkerConfig.from_env()
+    assert config.runner_profile == profile_name
+    argv = _runner_argv(config)
+    assert argv[1:] == list(profile.runner_argv[1:])
+    assert argv[0] in (profile.runner_argv[0], sys.executable)
+
+
+# -- the backend's deadline is a backstop; the lifecycle's own must fire first --
+#
+# Review of archived pull request 31, 2026-09-24. With the lifecycle running on GKE, the Job's
+# `activeDeadlineSeconds` was `task.timeout_seconds` -- counted from Job
+# CREATION, so it includes Autopilot node provisioning and the image pull. The
+# lifecycle's deadline is the same number of seconds counted from
+# `Worker.__init__` (lifecycle.py), which is minutes later. So the Job
+# controller always won: it SIGTERMed the pod, and the lifecycle's SIGTERM path
+# (`_handle_interruption`) parked the task PARKED/SCHEDULED_RETRY instead of
+# its timeout path failing it. Nothing in the platform promotes a
+# SCHEDULED_RETRY park, so the task -- and its workflow -- never finished.
+# Cloud Run had the same race with a margin of seconds.
+#
+# The property: even a lifecycle that starts as LATE as the platform allows
+# (the reconciler reclaims any attempt with no heartbeat by the dispatch
+# deadline, `dispatch_timeout_seconds` after the lease) reaches its own
+# deadline, stops its child and does its bounded after-deadline work (the
+# child's termination grace and the git harvest) before the backend's deadline.
+# The worker's numbers come from `WorkerConfig.from_env` fed the environment the
+# dispatcher built, not from this file.
+
+
+def _lifecycle_config(env: dict[str, str], monkeypatch):
+    from agent_worker.config import WorkerConfig
+
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    return WorkerConfig.from_env()
+
+
+def _assert_the_backend_outlasts_the_lifecycle(deadline, config, settings, where):
+    latest_start = settings.core.dispatch_timeout_seconds
+    after_deadline = config.termination_grace_seconds + config.git_harvest_timeout_seconds
+    needed = config.timeout_seconds + latest_start + after_deadline
+    assert deadline > needed, (
+        f"{where} is {deadline}s; the lifecycle's own timeout path needs more than "
+        f"{needed}s from dispatch ({config.timeout_seconds}s task timeout + "
+        f"{latest_start}s latest start before the reconciler reclaims + "
+        f"{after_deadline}s to stop the child and harvest). Anything shorter and the "
+        "backend SIGTERMs the pod first, and the lifecycle PARKS the task as "
+        "SCHEDULED_RETRY -- which nothing promotes -- instead of failing it."
+    )
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_the_gke_deadline_lets_the_lifecycle_time_out_on_its_own(
+    settings, tenant, profile_name, monkeypatch
+):
+    """MUTATION: set `activeDeadlineSeconds` back to `task.timeout_seconds`."""
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=FakeBatchApi())
+    task = make_task(profile_name)
+    manifest = dispatcher._manifest(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES[profile_name], tenant=tenant
+    )
+    pod = manifest["spec"]["template"]["spec"]
+    env = {e["name"]: e["value"] for e in pod["containers"][0]["env"]}
+    config = _lifecycle_config(env, monkeypatch)
+    deadline = manifest["spec"]["activeDeadlineSeconds"]
+
+    # The lifecycle's deadline is still exactly the task's: the headroom is the
+    # BACKEND's, never extra run time for the agent.
+    assert config.timeout_seconds == task.timeout_seconds
+    assert deadline > config.timeout_seconds + pod["terminationGracePeriodSeconds"]
+    _assert_the_backend_outlasts_the_lifecycle(
+        deadline, config, settings, f"the {profile_name!r} Job's activeDeadlineSeconds"
+    )
+
+
+@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+def test_the_cloud_run_timeout_lets_the_lifecycle_time_out_on_its_own(
+    settings, tenant, profile_name, monkeypatch
+):
+    """Both the per-execution override the scheduler sends, and the Job's own
+    template timeout, which is what an execution started by hand gets.
+
+    MUTATION: set the override's `timeout` back to `task.timeout_seconds`.
+    """
+    client = FakeJobsClient()
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    profile = RUNNER_PROFILES[profile_name]
+    task = make_task(profile_name)
+    dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    overrides = client.runs[0]["overrides"]
+    env = {e.name: e.value for e in overrides.container_overrides[0].env}
+    config = _lifecycle_config(env, monkeypatch)
+    assert config.timeout_seconds == task.timeout_seconds
+    _assert_the_backend_outlasts_the_lifecycle(
+        overrides.timeout.seconds, config, settings,
+        f"the {profile_name!r} execution override's timeout",
+    )
+
+    # A hand-run execution carries no TASK_TIMEOUT_SECONDS, so the lifecycle
+    # falls back to the profile's own timeout.
+    monkeypatch.delenv("TASK_TIMEOUT_SECONDS")
+    hand_run = _lifecycle_config({}, monkeypatch)
+    assert hand_run.timeout_seconds == profile.timeout_seconds
+    _assert_the_backend_outlasts_the_lifecycle(
+        client.created[0]["job"].template.template.timeout.seconds, hand_run, settings,
+        f"the {profile_name!r} Cloud Run Job's template timeout",
+    )
+
+
+# -- a Job created BEFORE the fix still overrides the ENTRYPOINT ------------
+#
+# Review of archived pull request 31, 2026-09-24. Removing `command=` from `_build_job` only
+# changes Jobs created from now on. `ensure_job` returned as soon as `get_job`
+# succeeded and never looked at the Job, and a per-execution
+# `ContainerOverride` has `args`, `env` and `clear_args` but no `command`, so
+# `run_job` cannot clear it either. Every Job the scheduler created before the
+# fix -- any non-default resource class (`swarm-job-<t>-<p>-<class>`), any
+# provider outside a tenant's terraform `providers` -- would have gone on
+# running the bare runner: no fencing, no checkpoint, no heartbeat, no lease
+# release.
+
+
+def _job_with_the_old_override(settings, tenant, profile_name, *, command=True, args=False):
+    """The Job `_build_job` created before the fix: its own shape, plus the
+    override it used to carry."""
+    profile = RUNNER_PROFILES[profile_name]
+    builder = CloudRunJobDispatcher(settings, client=object())
+    job = builder._build_job(profile, tenant)
+    job.name = builder.job_name(job_id_for(tenant.tenant_id, profile_name))
+    container = job.template.template.containers[0]
+    if command:
+        container.command = list(profile.runner_argv)
+    if args:
+        container.args = ["--verbose"]
+    assert list(container.command) == (list(profile.runner_argv) if command else [])
+    return job
+
+
+@pytest.mark.parametrize("profile_name", RUNNER_STARTING_PROFILES)
+def test_an_existing_job_that_overrides_the_entrypoint_is_cleared_before_it_runs(
+    settings, tenant, profile_name
+):
+    """MUTATION: make `ensure_job` return straight after `get_job` again."""
+    seeded = _job_with_the_old_override(settings, tenant, profile_name)
+    before = seeded.template.template.containers[0]
+    image, env_names = before.image, [e.name for e in before.env]
+    client = FakeJobsClient(jobs={seeded.name: seeded})
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task(profile_name)
+
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES[profile_name], tenant=tenant
+    )
+
+    assert client.calls == ["get_job", "update_job", "run_job"], (
+        f"the pre-fix Job for {profile_name!r} still carries the command override; it "
+        f"must be cleared BEFORE an execution starts. Calls made: {client.calls}"
+    )
+    assert client.created == [], "the Job exists; it is corrected, not recreated"
+    updated = client.updated[0]
+    assert updated.name == seeded.name
+    for container in updated.template.template.containers:
+        assert list(container.command) == []
+        assert list(container.args) == []
+    # Nothing else about the Job is touched: same image, same environment
+    # (including the tenant's own secret references), same identity.
+    worker = updated.template.template.containers[0]
+    assert worker.image == image
+    assert [e.name for e in worker.env] == env_names
+    assert updated.template.template.service_account == tenant.service_account
+
+    # Corrected once, not on every dispatch.
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES[profile_name], tenant=tenant
+    )
+    assert client.calls.count("update_job") == 1
+
+
+def test_an_existing_job_that_only_sets_args_is_cleared_too(settings, tenant):
+    """`args` is appended to the ENTRYPOINT, and the lifecycle takes none."""
+    seeded = _job_with_the_old_override(settings, tenant, "mock", command=False, args=True)
+    client = FakeJobsClient(jobs={seeded.name: seeded})
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task("mock")
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["mock"], tenant=tenant
+    )
+    assert client.calls == ["get_job", "update_job", "run_job"]
+    assert list(client.updated[0].template.template.containers[0].args) == []
+
+
+def test_an_existing_job_that_cannot_be_corrected_is_refused_not_run(settings, tenant):
+    """Running the bare runner is never the fallback.
+
+    MUTATION: swallow the update_job error in `ensure_job` and carry on.
+    """
+    from google.api_core import exceptions as gexc
+
+    class RefusesUpdate(FakeJobsClient):
+        def update_job(self, request):
+            self.calls.append("update_job")
+            raise gexc.PermissionDenied("run.jobs.update denied")
+
+    seeded = _job_with_the_old_override(settings, tenant, "mock")
+    client = RefusesUpdate(jobs={seeded.name: seeded})
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task("mock")
+
+    with pytest.raises(DispatchError) as exc:
+        dispatcher.dispatch(
+            task=task, lease=make_lease(task), profile=RUNNER_PROFILES["mock"], tenant=tenant
+        )
+    assert exc.value.code == "cloud_run_job_overrides_entrypoint"
+    assert "run_job" not in client.calls, "a Job that runs the bare runner must never run"
+
+
+def test_an_existing_job_with_no_override_is_not_rewritten(settings, tenant):
+    """The common case -- every terraform Job -- costs no write at all.
+
+    Green before and after the fix by design: it guards the fix against
+    turning into an update on every dispatch.
+    """
+    seeded = _job_with_the_old_override(settings, tenant, "mock", command=False)
+    client = FakeJobsClient(jobs={seeded.name: seeded})
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    task = make_task("mock")
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["mock"], tenant=tenant
+    )
+    assert client.calls == ["get_job", "run_job"]
+
+
+def test_a_pre_fix_scheduler_job_at_an_old_image_is_rewritten_once_for_both_fixes(
+    settings, tenant
+):
+    """A Job the scheduler created before 2026-09-24 is usually BOTH at once.
+
+    It carries the `command` override (this fix) AND an image from before the
+    digest map (archived pull request 24, whose `_refresh_image` moves a `managed-by=swarm-scheduler`
+    Job to the digest before it runs). The rebuild comes from `_build_job`, which
+    sets no command, so that ONE write fixes both. Clearing the override on the
+    Job as FETCHED afterwards would be a second write carrying the pre-rebuild
+    Job: its old image, and against the real API its now-stale etag.
+
+    MUTATION: in `ensure_job`, call `_clear_entrypoint_override` whatever
+    `_refresh_image` returned.
+    """
+    profile = RUNNER_PROFILES["mock"]
+    seeded = _job_with_the_old_override(settings, tenant, "mock")
+    assert seeded.labels["managed-by"] == "swarm-scheduler"
+    old_image = seeded.template.template.containers[0].image
+    digest = f"{settings.artifact_registry_host}/{profile.image}@sha256:{'c' * 64}"
+    pinned = scheduler_settings(worker_image_refs={profile.image: digest})
+    client = FakeJobsClient(jobs={seeded.name: seeded})
+    dispatcher = CloudRunJobDispatcher(pinned, client=client)
+    task = make_task("mock")
+
+    dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    assert client.calls == ["get_job", "update_job", "run_job"], (
+        "one write moves the image to the digest AND drops the override; "
+        f"calls made: {client.calls}"
+    )
+    worker = client.jobs[seeded.name].template.template.containers[0]
+    assert worker.image == digest, (
+        f"the Job runs {worker.image!r}; it was at {old_image!r} and must end at the digest"
+    )
+    assert list(worker.command) == []
+    assert list(worker.args) == []
+
+
+def test_gke_without_configuration_refuses_rather_than_guessing(settings, tenant):
+    dispatcher = GkeJobDispatcher(settings, target=None)
+    task = make_task("browser")
+    with pytest.raises(DispatchError) as exc:
+        dispatcher.dispatch(
+            task=task, lease=make_lease(task), profile=RUNNER_PROFILES["browser"], tenant=tenant
+        )
+    assert "GKE_ENDPOINT" in str(exc.value)
+
+
+# -- routing ---------------------------------------------------------------
+
+def test_router_sends_each_profile_to_its_resolved_backend(settings, tenant):
+    jobs = FakeJobsClient()
+    api = FakeBatchApi()
+    router = BackendRouter(
+        cloud_run=CloudRunJobDispatcher(settings, client=jobs),
+        gke=GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"), batch_api=api),
+        settings=settings,
+    )
+
+    # mock stands for Cloud Run: claude-code is on GKE since contract request 53.
+    for profile_name in ("mock", "browser"):
+        profile = RUNNER_PROFILES[profile_name]
+        task = make_task(profile_name)
+        router.dispatch(
+            task=task,
+            lease=make_lease(task),
+            profile=profile,
+            tenant=tenant,
+            backend=resolve_backend(profile),
+        )
+
+    assert len(jobs.runs) == 1
+    assert len(api.created) == 1
+
+
+def test_router_refuses_a_disabled_backend(settings, tenant):
+    from .conftest import core_settings
+
+    disabled = scheduler_settings(core=core_settings(enable_gke_autopilot=False))
+    router = BackendRouter(cloud_run=None, gke=object(), settings=disabled)
+    with pytest.raises(DispatchError):
+        router.for_backend(Backend.GKE_AUTOPILOT)
+
+
+def test_router_refuses_an_unresolved_backend(settings):
+    router = BackendRouter(cloud_run=object(), gke=object(), settings=settings)
+    with pytest.raises(DispatchError):
+        router.for_backend(Backend.AUTO)
+
+
+# -- the container is sized from the TASK's class, not the profile's --------
+
+def make_overridden_task(profile_name: str, resource_class: str) -> Task:
+    """A workflow step that named a SMALLER named class than its profile.
+
+    `validate_resource_class_override` permits nothing larger, and admission has
+    always charged the task's class: `pool_names_for(resource_class=
+    task.resource_class)` and `RESOURCE_CLASSES[task.resource_class].units` both
+    read it inside the frozen transaction.
+    """
+    task = make_task(profile_name)
+    task.resource_class = resource_class
+    return task
+
+
+def test_cloud_run_sizes_the_container_from_the_task_not_the_profile(settings, tenant):
+    client = FakeJobsClient()
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    # Since contract request 79 `browser` is standard's size, so the profile is
+    # given `large` (8 cpu / 32 GiB / 16 GiB) here: a container sized from the
+    # profile would then differ from one sized from the task in every field.
+    profile = dataclasses.replace(RUNNER_PROFILES["browser"], resource_class="large")
+    task = make_overridden_task("browser", "standard")       # standard: 4 cpu / 8 GiB / 4 GiB
+
+    dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    job = client.created[0]["job"]
+    container = job.template.template.containers[0]
+    rc = RESOURCE_CLASSES["standard"]
+    assert container.resources.limits["cpu"] == str(int(rc.cpu))
+    assert container.resources.limits["memory"] == f"{rc.memory_gib}Gi"
+    assert job.template.template.volumes[0].empty_dir.size_limit == f"{rc.disk_gib}Gi"
+
+
+def test_an_overridden_class_gets_its_own_cloud_run_job(settings, tenant):
+    """Cloud Run pins sizing on the JOB, so one Job cannot express two sizes.
+
+    Without this the smaller class is charged at admission and the container runs
+    at the profile's full size anyway -- capacity reserved against a pool that
+    does not govern the workload, at the wrong weight.
+    """
+    assert job_id_for("eng", "browser") == "swarm-job-eng-browser"
+    assert job_id_for("eng", "browser", "browser") == "swarm-job-eng-browser", (
+        "the profile's own class is the common case and keeps one Job per "
+        "(tenant, profile)"
+    )
+    assert job_id_for("eng", "browser", "standard") == "swarm-job-eng-browser-standard"
+
+    client = FakeJobsClient()
+    dispatcher = CloudRunJobDispatcher(settings, client=client)
+    profile = RUNNER_PROFILES["browser"]
+    for task in (make_task("browser"), make_overridden_task("browser", "standard")):
+        dispatcher.dispatch(task=task, lease=make_lease(task), profile=profile, tenant=tenant)
+
+    assert [job["job_id"] for job in client.created] == [
+        "swarm-job-eng-browser",
+        "swarm-job-eng-browser-standard",
+    ]
+
+
+def test_gke_sizes_the_container_from_the_task_not_the_profile(settings, tenant):
+    api = FakeBatchApi()
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=api)
+    task = make_overridden_task("browser", "standard")
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["browser"], tenant=tenant
+    )
+
+    container = api.created[0][1]["spec"]["template"]["spec"]["containers"][0]
+    rc = RESOURCE_CLASSES["standard"]
+    # MUTATION: read the CPU limit from the profile's class and a shrunk step
+    # bursts to the class it did not pay for.
+    assert container["resources"]["requests"]["cpu"] == f"{int(rc.cpu * 1000)}m"
+    assert container["resources"]["limits"]["cpu"] == f"{int(rc.cpu_limit_cores * 1000)}m"
+    assert container["resources"]["limits"]["memory"] == f"{rc.memory_gib}Gi"
+    # The pod's whole local disk, which on GKE also holds /tmp and HOME: not
+    # disk_gib for `standard` since contract request 53. See
+    # tests/unit/control_plane/test_gke_workspace_fits.py.
+    assert container["resources"]["limits"]["ephemeral-storage"] == (
+        f"{gke_ephemeral_storage_gib(rc)}Gi"
+    )
+    for resource in ("memory", "ephemeral-storage"):
+        assert container["resources"]["requests"][resource] == container["resources"]["limits"][resource]
+
+
+# -- pod hardening ---------------------------------------------------------
+
+def gke_pod_spec(settings, tenant, profile_name: str = "browser") -> dict:
+    api = FakeBatchApi()
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=api)
+    task = make_task(profile_name)
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES[profile_name], tenant=tenant
+    )
+    return api.created[0][1]["spec"]["template"]["spec"]
+
+
+def test_gke_pod_runs_non_root_with_no_privilege_escalation(settings, tenant):
+    """Untrusted agent code, on a cluster shared with other tenants' pods.
+
+    kubernetes/namespaces/tenant-namespace.yaml holds Pod Security Admission at
+    `enforce: baseline` rather than `restricted` because this manifest used to
+    carry no securityContext at all.
+    """
+    spec = gke_pod_spec(settings, tenant)
+
+    pod = spec["securityContext"]
+    assert pod["runAsNonRoot"] is True
+    assert pod["runAsUser"] == 10001
+    assert pod["seccompProfile"] == {"type": "RuntimeDefault"}
+
+    container = spec["containers"][0]["securityContext"]
+    assert container["allowPrivilegeEscalation"] is False
+    assert container["privileged"] is False
+    assert container["readOnlyRootFilesystem"] is True
+    assert container["capabilities"] == {"drop": ["ALL"]}
+    assert container["seccompProfile"] == {"type": "RuntimeDefault"}
+
+
+def test_gke_pod_gets_no_kubernetes_api_token(settings, tenant):
+    """The worker never calls the Kubernetes API, and a mounted token is the
+    first thing a prompt injection or a malicious repository reaches for."""
+    assert gke_pod_spec(settings, tenant)["automountServiceAccountToken"] is False
+
+
+def test_gke_pod_runs_as_the_ksa_the_workload_identity_binding_was_issued_for(
+    settings, tenant
+):
+    """The KSA is not derived from the tenant id.
+
+    Terraform binds `<pool>[<namespace>/<ksa_name>]` with `ksa_name` defaulting
+    to `swarm-agent-worker`; the NAMESPACE is what makes the binding per-tenant.
+    A pod asking for any other KSA gets no Google identity at all, so it cannot
+    read its tenant's secret, its GCS prefix or Firestore.
+    """
+    spec = gke_pod_spec(settings, tenant)
+    assert spec["serviceAccountName"] == "swarm-agent-worker"
+
+
+def test_the_ksa_name_is_configurable_for_a_differently_provisioned_cluster(
+    settings, tenant
+):
+    from .conftest import scheduler_settings
+
+    other = scheduler_settings(worker_ksa_name="swarm-worker")
+    assert gke_pod_spec(other, tenant)["serviceAccountName"] == "swarm-worker"
+
+
+def test_the_worker_has_writable_paths_under_a_read_only_root(settings, tenant):
+    """readOnlyRootFilesystem is only safe if every written path is a volume."""
+    spec = gke_pod_spec(settings, tenant)
+    mounts = {m["mountPath"] for m in spec["containers"][0]["volumeMounts"]}
+    assert {"/workspace", "/dev/shm", "/tmp", "/home/swarm"} <= mounts
+    volumes = {v["name"] for v in spec["volumes"]}
+    assert {"workspace", "dshm", "tmp", "home"} <= volumes
+
+
+def test_the_worker_checkpoint_gets_a_grace_period(settings, tenant):
+    """The worker checkpoints on SIGTERM; the 30s default would lose the upload."""
+    assert gke_pod_spec(settings, tenant)["terminationGracePeriodSeconds"] == 120
+
+
+# -- the GKE path injects no key material ----------------------------------
+
+def test_gke_job_does_not_reference_a_kubernetes_secret_that_nothing_creates(
+    settings, tenant
+):
+    """A secretKeyRef needs a Kubernetes Secret, and nothing in this repository
+    ever creates one -- not terraform, not a SecretProviderClass, not
+    external-secrets. Every such pod fails CreateContainerConfigError while the
+    scheduler records it as DISPATCHED and holds the lease to the deadline.
+
+    The worker reads the key from Secret Manager itself under the identity this
+    pod's KSA assumes (agent_worker/secrets.py), so no injection is needed.
+    """
+    spec = gke_pod_spec(settings, tenant)
+    env = spec["containers"][0]["env"]
+
+    assert all("valueFrom" not in entry for entry in env), (
+        "the GKE path must not project from a Kubernetes Secret"
+    )
+    assert "secretKeyRef" not in repr(spec)
+    assert not any("KEY" in entry["name"] or "SECRET" in entry["name"] for entry in env)
+    # The identifiers the worker needs are still there.
+    names = {entry["name"] for entry in env}
+    assert {"TASK_ID", "TENANT_ID", "RUNNER_PROFILE", "GENERATION"} <= names
+
+
+# -- a tenant with no identity never starts a container ---------------------
+
+def test_neither_backend_will_run_work_for_a_tenant_that_can_have_no_service_account(
+    settings
+):
+    """Cloud Run falls back to the project's DEFAULT compute service account
+    when a Job names none, which is shared and far more privileged than a
+    worker. The account is derived from the tenant id (archived issue 1457), so what is
+    refused is an id with no valid account -- `swarm-agent-worker-` plus 12
+    characters is over GCP's 30 -- whatever the record says. It belongs back
+    in READY with a clear error."""
+    unprovisioned = Tenant(
+        tenant_id="newteam-long",
+        kind="group",
+        principal="newteam@example.com",
+        created_at=NOW,
+        service_account=None,
+        namespace="swarm-tenant-newteam",
+    )
+    task = make_task("mock")
+
+    with pytest.raises(DispatchError) as cloud_run:
+        CloudRunJobDispatcher(settings, client=FakeJobsClient()).dispatch(
+            task=task, lease=make_lease(task), profile=RUNNER_PROFILES["mock"],
+            tenant=unprovisioned,
+        )
+    assert cloud_run.value.code == "tenant_identity_missing"
+
+    browser = make_task("browser")
+    with pytest.raises(DispatchError) as gke:
+        GkeJobDispatcher(
+            settings, target=GkeTarget("https://k8s", "/ca.pem"), batch_api=FakeBatchApi()
+        ).dispatch(
+            task=browser, lease=make_lease(browser), profile=RUNNER_PROFILES["browser"],
+            tenant=unprovisioned,
+        )
+    assert gke.value.code == "tenant_identity_missing"
+
+
+def test_a_dispatch_error_carries_a_code_separate_from_its_message(settings, tenant):
+    """The message is for the operator's log; only the code reaches the tenant."""
+    from google.api_core import exceptions as gexc
+
+    class Broken(FakeJobsClient):
+        def run_job(self, request):
+            raise gexc.ServiceUnavailable(
+                f"denied for {tenant.service_account} on swarm-tenant-eng-anthropic"
+            )
+
+    dispatcher = CloudRunJobDispatcher(settings, client=Broken())
+    task = make_task("mock")
+    with pytest.raises(DispatchError) as exc:
+        dispatcher.dispatch(
+            task=task, lease=make_lease(task), profile=RUNNER_PROFILES["mock"], tenant=tenant
+        )
+    assert exc.value.code == "cloud_run_run_job_failed"
+    assert tenant.service_account in str(exc.value), "the log keeps the detail"
+    assert tenant.service_account not in exc.value.code
+
+
+# -- admission and dispatch agree, end to end ------------------------------
+
+def real_backend_scheduler(db, settings, batch_api):
+    """The real drain loop over the real dispatchers, with fake backend clients."""
+    from scheduler.loop import Scheduler
+    from scheduler.metrics import SchedulerMetrics
+    from scheduler.store import SchedulerStore
+
+    return Scheduler(
+        settings=settings,
+        store=SchedulerStore(db),
+        router=BackendRouter(
+            cloud_run=CloudRunJobDispatcher(settings, client=FakeJobsClient()),
+            gke=GkeJobDispatcher(
+                settings, target=GkeTarget("https://k8s", "/ca.pem"), batch_api=batch_api
+            ),
+            settings=settings,
+        ),
+        metrics=SchedulerMetrics(),
+    )
+
+
+def test_the_pool_that_is_charged_is_the_pool_that_governs_the_container(db, settings):
+    """CONTRACT.md invariants 2 and 10, through the real drain loop.
+
+    Before: a `browser` step overridden to `standard` reserved `resource:standard`
+    at 1 unit and then ran an 8 cpu / 16 GiB container, so `resource:browser` --
+    the pool that actually governed the workload -- was never in the lease's
+    `required` list. An admin drain or cap on it did not stop the task, and the
+    weighted global budget was charged half of what was running.
+    """
+    from .conftest import seed_pool, seed_task, seed_tenant
+
+    api = FakeBatchApi()
+    seed_tenant(db, "eng", credentials=("anthropic",), max_active=20)
+    seed_pool(db, "global", hard_limit=100)
+    seed_pool(db, "resource:standard", hard_limit=10)
+    seed_pool(db, "resource:browser", hard_limit=10)
+    seed_task(
+        db,
+        task_id="task_override",
+        tenant_id="eng",
+        runner_profile="browser",
+        resource_class="standard",
+        provider="anthropic",
+    )
+
+    report = real_backend_scheduler(db, settings, api).drain()
+    assert report.dispatched == 1, report.to_dict()
+
+    lease = next(d for path, d in db.docs.items() if path.startswith("leases/"))
+    container = api.created[0][1]["spec"]["template"]["spec"]["containers"][0]
+    charged = RESOURCE_CLASSES["standard"]
+
+    assert "resource:standard" in lease["pools"]
+    assert lease["units"] == charged.units
+    assert container["resources"]["requests"]["cpu"] == f"{int(charged.cpu * 1000)}m"
+    assert container["resources"]["limits"]["memory"] == f"{charged.memory_gib}Gi"
+    assert db.docs["pools/resource:standard"]["active"] == charged.units
+    assert db.docs["pools/resource:browser"]["active"] == 0
+
+
+def test_a_cap_on_the_class_that_runs_really_stops_the_task(db, make_scheduler):
+    """The other half: capping `resource:standard` at 0 refuses the overridden
+    step, because that is the class its container is sized at."""
+    from .conftest import seed_pool, seed_task, seed_tenant
+
+    seed_tenant(db, "eng", credentials=("anthropic",), max_active=20)
+    seed_pool(db, "global", hard_limit=100)
+    seed_pool(db, "resource:standard", hard_limit=0)
+    seed_task(
+        db,
+        task_id="task_override",
+        tenant_id="eng",
+        runner_profile="browser",
+        resource_class="standard",
+        provider="anthropic",
+    )
+
+    report = make_scheduler().drain()
+
+    assert report.leased == 0
+    assert report.denied == 1
+    blocked = db.docs["tasks/task_override"]["blocked_by"]
+    assert [entry["pool"] for entry in blocked] == ["resource:standard"]
+
+
+# ---------------------------------------------------------------------------
+# The 403 that means 404
+# ---------------------------------------------------------------------------
+
+
+class ForbiddenBatchApi:
+    """What the kubernetes client raises for a 403.
+
+    `.status` is what `ApiException` carries; the message is what the API server
+    sent. Both are supplied because the classifier reads the status first and
+    falls back to the text, and a test that only supplied one would leave half
+    of it unexercised.
+    """
+
+    def __init__(self, namespace: str) -> None:
+        self.namespace = namespace
+
+    def create_namespaced_job(self, namespace, body):
+        error = Exception(
+            "(403)\nReason: Forbidden\njobs.batch is forbidden: User "
+            "\"117405034245659033603\" cannot create resource \"jobs\" in API group "
+            f"\"batch\" in the namespace \"{namespace}\": requires one of "
+            "[\"container.jobs.create\"] permission(s) in Cloud IAM or a Kubernetes "
+            "RBAC role with verb \"create\" for resource \"jobs\"."
+        )
+        error.status = 403
+        raise error
+
+
+class BrokenBatchApi:
+    def create_namespaced_job(self, namespace, body):
+        raise Exception("HTTPSConnectionPool(host=...): Max retries exceeded")
+
+
+def test_a_403_on_jobs_batch_says_the_namespace_may_simply_not_exist(settings, tenant):
+    """The message an operator meets first must not send them to IAM.
+
+    Kubernetes authorises before it resolves, so this exact 403 is also what a
+    Job created into a namespace that DOES NOT EXIST comes back as -- there is
+    no 404. On 2026-09-23 that sent three investigations at IAM while the real
+    cause was two spellings of the namespace, and all seven `browser` tasks the
+    platform had ever accepted had failed the same way over two days.
+
+    `loop.py` logs `str(exc)` on its `dispatch failed` line, so everything
+    asserted here is what reaches the log.
+
+    THE MUTATION THIS CATCHES: remove the `_is_forbidden` branch from
+    `GkeJobDispatcher.dispatch` and the message goes back to the bare upstream
+    text, which names a permission and nothing else.
+    """
+    dispatcher = GkeJobDispatcher(
+        settings,
+        target=GkeTarget("https://k8s", "/ca.pem"),
+        batch_api=ForbiddenBatchApi("swarm-tenant-eng"),
+    )
+    task = make_task("browser")
+    with pytest.raises(DispatchError) as raised:
+        dispatcher.dispatch(
+            task=task, lease=make_lease(task), profile=RUNNER_PROFILES["browser"], tenant=tenant
+        )
+
+    message = str(raised.value)
+    # The namespace it TRIED, named. Without it the reader cannot even tell
+    # which namespace to go and look for.
+    assert "swarm-tenant-eng" in message
+    # And the ambiguity, stated. A reader who takes the upstream message at face
+    # value goes to IAM, which is what happened.
+    assert "DOES NOT EXIST" in message
+    assert "403" in message and "404" in message
+    # A command that settles it, and the page with the diagnosis.
+    assert "kubectl get ns swarm-tenant-eng" in message
+    assert "docs/gke-dispatch-403.md" in message
+    # A distinct code, so the two cases are separable in metrics and in
+    # `task.last_error` -- which is the only part of this a tenant is given.
+    assert raised.value.code == "gke_create_job_forbidden"
+
+
+def test_a_dispatch_failure_that_is_not_a_403_keeps_the_plain_code(settings, tenant):
+    """The extra sentence is a diagnosis of ONE failure, not a banner.
+
+    A connection error has nothing to do with namespaces, and attaching the
+    namespace advice to it would train people to ignore the advice.
+    """
+    dispatcher = GkeJobDispatcher(
+        settings, target=GkeTarget("https://k8s", "/ca.pem"), batch_api=BrokenBatchApi()
+    )
+    task = make_task("browser")
+    with pytest.raises(DispatchError) as raised:
+        dispatcher.dispatch(
+            task=task, lease=make_lease(task), profile=RUNNER_PROFILES["browser"], tenant=tenant
+        )
+
+    assert raised.value.code == "gke_create_job_failed"
+    assert "DOES NOT EXIST" not in str(raised.value)
+    # The namespace is still named: it is context for any dispatch failure.
+    assert "swarm-tenant-eng" in str(raised.value)
+
+
+def test_the_403_classifier_reads_the_status_and_falls_back_to_the_text():
+    """Both signals, because the client reports a 403 both ways.
+
+    `ApiException` carries `.status`; a wrapped or re-raised error may carry
+    only the message. A classifier that read one of them would silently stop
+    classifying the day the client version changed -- and this repository has
+    already lost a working check to a kubernetes client that quietly ignored
+    what it was handed.
+    """
+    by_status = Exception("something opaque")
+    by_status.status = 403
+    assert GkeJobDispatcher._is_forbidden(by_status)
+
+    by_text = Exception('jobs.batch is forbidden: User "1" cannot create resource "jobs"')
+    assert GkeJobDispatcher._is_forbidden(by_text)
+
+    not_403 = Exception("Internal error occurred")
+    not_403.status = 500
+    assert not GkeJobDispatcher._is_forbidden(not_403)
+
+    # A non-numeric status must not raise out of the classifier: it falls back
+    # to the text, and the text here says nothing about forbidden.
+    weird = Exception("timeout")
+    weird.status = "unknown"
+    assert not GkeJobDispatcher._is_forbidden(weird)
+
+
+def test_a_finished_gke_job_frees_its_quota_slot_after_ten_minutes(settings, tenant):
+    """the owner 2026-10-28: ttlSecondsAfterFinished 3600 -> 600.
+
+    A finished Job keeps its `count/jobs.batch` slot until its TTL expires. On
+    2026-10-28 ~09:30-11:15Z eng's 240 slots filled with FINISHED Jobs and 28
+    steps were refused `gke_job_quota_exceeded`. MUTATION: put 3600 back in
+    dispatch.py's manifest and this reads 3600.
+    """
+    api = FakeBatchApi()
+    dispatcher = GkeJobDispatcher(settings, target=GkeTarget("https://k8s", "/ca.pem"),
+                                  batch_api=api)
+    task = make_task("browser")
+    dispatcher.dispatch(
+        task=task, lease=make_lease(task), profile=RUNNER_PROFILES["browser"], tenant=tenant
+    )
+
+    assert api.created[0][1]["spec"]["ttlSecondsAfterFinished"] == 600

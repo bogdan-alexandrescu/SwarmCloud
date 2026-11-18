@@ -1,0 +1,647 @@
+#!/usr/bin/env bash
+# Judge a terraform plan against the shared-project rules. ONE implementation.
+#
+# A shared project can hold another team's live GKE cluster, their VPC, their
+# buckets and their service accounts, so every plan -- apply or destroy -- has
+# to satisfy two assertions:
+#
+#   1. no change may touch anything on SHARED_DENY_LIST;
+#   2. everything this repository creates must carry managed-by=swarm-terraform,
+#      and everything it deletes must already carry it (or be of a type that
+#      physically cannot, from scripts/lib/unlabelable-types.json).
+#
+# Assertion 2's forward half is the one that gets skipped, and it is the one that
+# matters most later: `make destroy` REFUSES to delete an unlabelled resource, so
+# an unlabelled resource that merges is one nobody can ever clean up.
+#
+# This script exists because that rule was previously restated three times -- in
+# destroy.sh, in an awk regex in .github/workflows/release.yml, and in a jq
+# filter in .github/workflows/terraform.yml -- and the copies disagreed. The awk
+# copy exempted only `google_project_iam*`, so a plan deleting a
+# `google_storage_bucket_iam_member` (which happens whenever a tenant is removed
+# or a tenant's provider list changes) was blocked from production by a rule
+# nobody had decided on. The terraform.yml copy checked the deny-list and simply
+# never implemented the label half its own comment promised.
+#
+# It also answers the one other question a release asks of a plan: DOES IT
+# CHANGE IAM? (owner decision, 2026-09-28, archived issue 268). A dev release whose plan does
+# is applied only in the `dev-iam` environment, behind the owner's review.
+# `--classify-iam` prints exactly `true` or `false` on stdout and, with
+# `--summary FILE`, appends the IAM rows as a markdown table for the reviewer.
+# The rule is scripts/lib/iam-plan.jq, stated there once.
+#
+# Usage:
+#   scripts/lib/plan-guard.sh --plan terraform/infra/plan.json            # apply
+#   scripts/lib/plan-guard.sh --plan build/dev.plan.json --mode destroy
+#   scripts/lib/plan-guard.sh --plan terraform/infra/plan.json --classify-iam \
+#       [--summary "$GITHUB_STEP_SUMMARY"] [--out build/plan-iam.json]
+#   scripts/lib/plan-guard.sh --self-test
+#
+# Exit 0 = the plan is allowed. Exit 2 = it is not. Exit 1 = it could not be
+# judged, which is also a refusal: this fails closed. --classify-iam exits 0
+# with its answer, or 1 without one: a plan it cannot read is never "false".
+#
+# --classify-iam writes its classification JSON to `--out FILE` when given, or
+# otherwise to a fresh `mktemp` file under build/ made for that one invocation.
+# It used to be the fixed path build/plan-iam.json, which every concurrent
+# invocation in the same checkout -- pytest-xdist workers being the case that
+# found it -- overwrote and truncated at once, so a reader could see another
+# invocation's half-written or unrelated JSON. Nothing outside this script
+# reads that path: release.yml takes the answer from stdout and the table from
+# `--summary`, never from the classification file itself.
+
+set -euo pipefail
+# --self-test judges fixture plans and reads no project: that mode touches no project and says so, so common.sh
+# (no default project, the Day One project-defaults lane) does not stop on an unset PROJECT_ID.
+# Every other mode still needs one.
+for arg in "$@"; do
+  [[ "${arg}" != "--self-test" ]] || SWARM_NO_PROJECT=1
+done
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=common.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+
+PLAN=""
+MODE="apply"
+SELF_TEST=0
+CLASSIFY_IAM=0
+SUMMARY=""
+CLASSIFY_OUT=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --plan|-p)   PLAN="$2"; shift 2 ;;
+    --mode|-m)   MODE="$2"; shift 2 ;;
+    --self-test) SELF_TEST=1; shift ;;
+    --classify-iam) CLASSIFY_IAM=1; shift ;;
+    --summary)   SUMMARY="$2"; shift 2 ;;
+    --out)       CLASSIFY_OUT="$2"; shift 2 ;;
+    -h|--help)   sed -n '2,42p' "$0"; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+require_cmd jq
+GUARD_JQ="${SWARM_LIB_DIR}/destroy-guard.jq"
+TYPES_JSON="${SWARM_LIB_DIR}/unlabelable-types.json"
+IAM_JQ="${SWARM_LIB_DIR}/iam-plan.jq"
+[[ -f "${GUARD_JQ}" ]]   || die "missing ${GUARD_JQ}"
+[[ -f "${TYPES_JSON}" ]] || die "missing ${TYPES_JSON}"
+[[ -f "${IAM_JQ}" ]]     || die "missing ${IAM_JQ}"
+
+# The allow-list of types that cannot carry a label. Read from the file so that
+# destroy.sh and both workflows are judging by the same list.
+unlabelable_types() { jq -c '.types' "${TYPES_JSON}"; }
+
+# The deny-list in the form destroy-guard.jq takes it. `guard_deny_json` lives in
+# common.sh, once, with the reasoning for both of its transformations; this file
+# and scripts/destroy.sh used to carry that pipeline each, which made the list a
+# guard judges by a thing with two implementations.
+deny_json() { guard_deny_json; }
+
+# judge PLAN_JSON VERDICT_OUT
+judge() {
+  local plan="$1" out="$2"
+  jq -f "${GUARD_JQ}" \
+    --argjson deny "$(deny_json)" \
+    --argjson allow_types "$(unlabelable_types)" \
+    --arg project "${PROJECT_ID}" \
+    --arg prefix "$(guard_name_prefix)" \
+    "${plan}" >"${out}"
+}
+
+# ---------------------------------------------------------------------------
+# Does the plan change IAM? iam-plan.jq decides; these read its answer.
+# ---------------------------------------------------------------------------
+
+# classify_iam PLAN_JSON OUT -- the classification, as JSON, into OUT.
+classify_iam() {
+  jq -f "${IAM_JQ}" "$1" >"$2"
+}
+
+# iam_answer CLASSIFICATION -> prints `true` or `false`; exits non-zero on
+# anything else.
+#
+# SLURPED, so that an EMPTY classification is a refusal on every jq. jq 1.6
+# (still what some machines have) runs a filter over no input at all, prints
+# nothing and exits 0 even under -e; slurping turns no input into [], which
+# fails the length check below. And `.iam` is compared with `== true` and
+# `== false` both, never `.iam // false`: in jq `false // x` is x, and a
+# missing `.iam` must not read as either answer.
+iam_answer() {
+  jq -e -r -s '
+    if length == 1 and (.[0] | type) == "object"
+       and (.[0].rows | type) == "array"
+       and ((.[0].iam == true and (.[0].rows | length) > 0)
+            or (.[0].iam == false and (.[0].rows | length) == 0))
+    then (if .[0].iam == true then "true" else "false" end)
+    else error("the IAM classification is unusable") end' "$1"
+}
+
+# write_iam_summary CLASSIFICATION ANSWER FILE -- markdown for the reviewer,
+# appended to FILE ($GITHUB_STEP_SUMMARY in release.yml). Every row, because
+# the reviewer approves what this lists and nothing else.
+write_iam_summary() {
+  local classification="$1" answer="$2" out="$3"
+  {
+    if [[ "${answer}" == "true" ]]; then
+      echo "### This plan changes IAM: it is applied only after the owner approves \`dev-iam\`"
+      echo
+      echo "$(jq -r '.rows | length' "${classification}") IAM change(s). The apply waits for review and then applies"
+      echo "this same saved plan, checked by its sha256 -- never a new plan."
+      echo
+      # Role and address only (the owner's pick, 2026-11-14): this summary is
+      # public, like every Actions summary of this repository, and the member,
+      # bucket and account names come from the private tfvars.
+      echo "| address | type | actions | role |"
+      echo "|---|---|---|---|"
+      # A literal | inside a cell ends the cell; GitHub reads \| as the character.
+      jq -r '.rows[]
+        | [.address, .type, (.actions | join("+")), .role]
+        | map(gsub("\\|"; "\\|"))
+        | "| `\(.[0])` | `\(.[1])` | \(.[2]) | `\(.[3])` |"' "${classification}"
+    else
+      echo "### This plan changes no IAM: it is applied in \`dev\` without review"
+    fi
+    echo
+  } >>"${out}"
+}
+
+# THE GUARD'S OWN FAIL-OPEN BUG, found on 2026-09-19. Every check in `report`
+# was:
+#
+#     n="$(jq -r '.denylist_touches | length' "${verdict}")"
+#     if [[ "${n}" -gt 0 ]]; then ... abort=1; fi
+#
+# `[[ "" -gt 0 ]]` is FALSE. So an empty or malformed verdict -- a jq that wrote
+# nothing, a truncated file, a renamed key -- left `n` empty, all four checks
+# fell through, and the guard approved the plan in silence. The header of this
+# file promises the opposite: "Exit 1 = it could not be judged, which is also a
+# refusal: this fails closed." This is the control between a terraform plan and
+# another team's live GKE cluster (CLAUDE.md rule 2), so "could not read" must
+# never be spelled the same way as "nothing to report".
+#
+# VALIDATED HERE, NOT INSIDE THE COUNTS, and that distinction is the whole fix.
+# The first attempt put a `die` in a helper called as `n="$(helper ...)"`. A
+# command substitution runs in a SUBSHELL, so the die killed the substitution
+# and `report` carried on with an empty n -- reproducing the original bug inside
+# its own fix, and caught only because the new self-test cases below failed.
+# This runs as a plain statement, where die ends the process.
+require_valid_verdict() {
+  local verdict="$1" field err
+
+  # `-n` and `input`, not a plain filter: jq 1.6 runs a filter over an EMPTY
+  # file zero times and `-e` then exits 0, so an empty verdict read as valid
+  # (jq 1.7 exits 4). `input` on no input is an error under every version.
+  if ! err="$(jq -n -e 'input | type == "object"' "${verdict}" 2>&1)"; then
+    hr
+    err "the plan guard's verdict is not readable JSON:"
+    printf '%s\n' "${err}" | head -n 3 | sed 's/^/     /' >&2
+    die "refusing a plan this guard was unable to evaluate -- unreadable is not the same as clean"
+  fi
+
+  for field in denylist_touches offenders wrong_project unlabelled_creations foreign_touches; do
+    # `null | length` is 0 in jq, so a missing or renamed field would otherwise
+    # read as a clean zero. The type is checked too: a scalar has a length.
+    if ! jq -e --arg f "${field}" 'has($f) and (.[$f] | type == "array")' \
+         "${verdict}" >/dev/null 2>&1; then
+      hr
+      err "the plan guard's verdict has no usable '${field}' array"
+      die "refusing a plan this guard was unable to evaluate -- unreadable is not the same as clean"
+    fi
+  done
+}
+
+# report VERDICT_JSON MODE -> 0 allowed, 2 refused
+report() {
+  local verdict="$1" mode="$2" abort=0 n
+
+  # Before anything is counted. A verdict that cannot be read is a refusal.
+  require_valid_verdict "${verdict}"
+
+  # THE ALLOWLIST HALF, REPORTED AND NOT ENFORCED -- yet.
+  #
+  # The check below refuses a change naming one of the resources someone wrote
+  # down in SHARED_DENY_LIST. (This comment used to say "21 resources" while the
+  # array held 20; a count restated in prose drifts, so the count now lives only
+  # in common.sh, with the inventory floors in
+  # scripts/lib/destroy-guard-proof-cases.json to catch the list shrinking.)
+  # This refuses the inverse: a change to a resource that never says it is
+  # OURS. It closes the hole a blocklist cannot -- anything the other team
+  # creates TOMORROW is on no list, and `offenders` reads deletions only while
+  # unlabelable types (IAM bindings, API enablements) are exempt from the label
+  # rule entirely.
+  #
+  # IT DOES NOT ABORT YET, and that is deliberate rather than timid.
+  # destroy-guard.jq states the reason a few lines from a different rule: "a
+  # guard that is wrong about ordinary applies is one people learn to bypass,
+  # which is worse than not having it." This predicate has still never seen a
+  # real APPLY plan -- the measurement below is a destroy plan, which exercises
+  # `is_ours` over every resource this platform owns but not over a creation --
+  # and the deploy pipeline reached a working
+  # state for the first time on 2026-09-24 after six failed attempts. A false
+  # positive here would abort it, and the guard would be what got blamed.
+  #
+  # MEASURED, 2026-09-24. A real dev destroy plan (264 deletions, generated by
+  # the read-only `destroy.sh --dry-run` path) was judged by this guard for the
+  # first time, and this check flags 178 of the 264. Every one of them is ours,
+  # in two classes that need different fixes:
+  #
+  #   * 114 have no `name` field at all in `terraform show -json` -- IAM members,
+  #     API enablements, bucket and secret bindings. `is_ours` falls back to
+  #     `name_of`, which yields "", and `"" | startswith($prefix)` is false.
+  #     These are also the unlabelable types, so managed-by cannot rescue them;
+  #   * 64 have a name that this platform genuinely uses and that is not
+  #     prefixed: the Firestore database `swarm` (no separator), camelCase IAM
+  #     custom roles (`swarmImagePuller`), Firestore documents keyed by pool id,
+  #     log-based metrics named after the event, Firestore indexes with
+  #     server-generated ids.
+  #
+  # SO THE PROMOTION CONDITION IS NOT MET, and setting `abort=1` today would
+  # refuse every plan this platform produces -- including the teardown of dev.
+  # `is_ours` has to learn both classes first; it is a design change, not a flag
+  # flip. scripts/verify-destroy-guard.sh section 4b re-measures this against a
+  # real plan and fails if someone promotes the check while it still flags us,
+  # and tests/integration/test_destroy_guard_real_plan.py asserts the same thing
+  # offline against the recording. Re-run the proof before touching this:
+  #
+  #     make destroy-guard-proof            # read-only; applies nothing
+  #
+  # TO MAKE IT FATAL: when a real plan reports this empty, set `abort=1` in the
+  # branch below. That is then the entire change, and this comment is where to
+  # come back to.
+  n="$(jq -r '.foreign_touches | length' "${verdict}")"
+  if [[ "${n}" -gt 0 ]]; then
+    hr
+    warn "${n} change(s) target a resource that does not identify itself as ours:"
+    jq -r '.foreign_touches[] | "    \(.address | gsub("\\[\"[^\"]*@[^\"]*\"\\]"; "[\"<an address>\"]"))  (\(.type))  \(.actions|join("+"))  name: \(.name)"' \
+      "${verdict}" >&2
+    warn "NOT FATAL YET -- see the comment above this check in scripts/lib/plan-guard.sh"
+  else
+    ok "every change targets a resource that identifies itself as ours"
+  fi
+
+  n="$(jq -r '.denylist_touches | length' "${verdict}")"
+  if [[ "${n}" -gt 0 ]]; then
+    hr
+    err "STOP. ${n} change(s) target resources that belong to another team:"
+    jq -r '.denylist_touches[] | "    \(.address | gsub("\\[\"[^\"]*@[^\"]*\"\\]"; "[\"<an address>\"]"))  (\(.type))  \(.actions|join("+"))  matched: \(.matched|join(", "))"' \
+      "${verdict}" >&2
+    abort=1
+  fi
+
+  n="$(jq -r '.offenders | length' "${verdict}")"
+  if [[ "${n}" -gt 0 ]]; then
+    hr
+    err "STOP. ${n} resource(s) marked for DELETION do not carry managed-by=swarm-terraform:"
+    jq -r '.offenders[] | "    \(.address | gsub("\\[\"[^\"]*@[^\"]*\"\\]"; "[\"<an address>\"]"))\n        type:   \(.type)\n        reason: \(.reason)"' \
+      "${verdict}" >&2
+    err "Either they are not ours, or Terraform is missing the label. Fix the labels; do not bypass this."
+    abort=1
+  fi
+
+  n="$(jq -r '.wrong_project | length' "${verdict}")"
+  if [[ "${n}" -gt 0 ]]; then
+    hr
+    err "STOP. Resource(s) in the plan live in a different project than ${PROJECT_ID}:"
+    jq -r '.wrong_project[] | "    \(.address | gsub("\\[\"[^\"]*@[^\"]*\"\\]"; "[\"<an address>\"]")) -> \(.project)"' "${verdict}" >&2
+    abort=1
+  fi
+
+  if [[ "${mode}" == "apply" ]]; then
+    n="$(jq -r '.unlabelled_creations | length' "${verdict}")"
+    if [[ "${n}" -gt 0 ]]; then
+      hr
+      err "STOP. ${n} resource(s) this plan CREATES or UPDATES carry no managed-by=swarm-terraform:"
+      jq -r '.unlabelled_creations[] | "    \(.address | gsub("\\[\"[^\"]*@[^\"]*\"\\]"; "[\"<an address>\"]"))\n        type:   \(.type)\n        reason: \(.reason)"' \
+        "${verdict}" >&2
+      err "make destroy refuses to delete an unlabelled resource, so merging this creates"
+      err "something nobody can clean up later -- in a project holding another team's production."
+      abort=1
+    fi
+  fi
+
+  if [[ "${mode}" == "destroy" ]]; then
+    n="$(jq -r '.unexpected_mutations | length' "${verdict}")"
+    if [[ "${n}" -gt 0 ]]; then
+      hr
+      err "STOP. A destroy plan that also creates or updates resources means state and reality disagree:"
+      jq -r '.unexpected_mutations[] | "    \(.address | gsub("\\[\"[^\"]*@[^\"]*\"\\]"; "[\"<an address>\"]"))  \(.actions | join("+"))"' "${verdict}" >&2
+      abort=1
+    fi
+  fi
+
+  [[ "${abort}" -eq 0 ]] || return 2
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# A log-based metric is never REPLACED by an apply.
+# ---------------------------------------------------------------------------
+#
+# Measured 2026-10-22 on release 39712409927 (02:37Z): PR 1911 added a label to
+# `metric_descriptor.labels` of the google_logging_metric.events entry for the
+# metric swarm/generation-fenced.
+# A new label forces replacement, so the plan was delete-then-create, and GCP
+# refused the delete: "Error 400: Cannot delete metric swarm/generation-fenced.
+# That metric is still used in an alerting policy." Every release from main
+# failed until a hand `gcloud logging metrics update` added the label in place,
+# which GCP allows, so the next plan had no replace (archived issue 1822).
+#
+# EVERY metric replace is refused, not only one an alert policy names: whether
+# an alert uses a metric is a fact about the live project (a policy filter is a
+# string, and one may be created outside this plan), and a replaced metric
+# also loses its history. The way through is the live update first, in the same
+# PR's runbook step; this refusal says so.
+
+# metric_replacements PLAN_JSON OUT -- every google_logging_metric the plan
+# replaces (delete and create, in either order Terraform writes them), as a JSON
+# array into OUT. `-n` and `input`: an empty or non-object plan is an error on
+# every jq, never an empty array (see require_valid_verdict).
+metric_replacements() {
+  jq -n -e 'input
+    | if type == "object" then . else error("not a terraform plan") end
+    | [(.resource_changes // [])[]
+       | select(.type == "google_logging_metric")
+       | select(any(.change.actions[]?; . == "delete") and any(.change.actions[]?; . == "create"))
+       | {address, name: (.change.before.name // .change.after.name // "?")}]' "$1" >"$2"
+}
+
+# report_metric_replacements REPLACEMENTS_JSON -> 0 none, 2 refused
+report_metric_replacements() {
+  local replacements="$1" n
+  n="$(jq -r 'if type == "array" then length else error("unusable") end' "${replacements}")" \
+    || die "the log-based metric check of this plan is unreadable -- refusing a plan this guard was unable to evaluate"
+  if [[ "${n}" -eq 0 ]]; then
+    ok "no log-based metric is replaced"
+    return 0
+  fi
+  hr
+  err "STOP. ${n} log-based metric(s) this plan REPLACES (delete, then create):"
+  jq -r '.[] | "    \(.address | gsub("\\[\"[^\"]*@[^\"]*\"\\]"; "[\"<an address>\"]"))  (metric \(.name))"' "${replacements}" >&2
+  err "GCP refuses to delete a metric an alerting policy uses (Error 400, release 39712409927), so the apply"
+  err "would fail half-way. A label added to metric_descriptor.labels forces this replace."
+  err "Add the label live first, as this PR's runbook step -- GCP updates a metric's labels in place:"
+  err "    gcloud logging metrics update <metric> --project=${PROJECT_ID} --config-from-file=<metric with the new label and its extractor>"
+  err "Then this plan reads 'update' (or nothing) for the metric and applies."
+  return 2
+}
+
+# ---------------------------------------------------------------------------
+# Self-test. The guard decides whether a plan may touch a shared project, so it
+# is verified from fixtures rather than trusted -- and the fixtures are the cases
+# that were actually got wrong before.
+# ---------------------------------------------------------------------------
+if [[ "${SELF_TEST}" -eq 1 ]]; then
+  step "Plan-guard self-test"
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-plan-guard.XXXXXX")"
+  trap 'rm -rf "${WORK}"' EXIT INT TERM
+  # The placeholder never-touch list, through the same loader and rules as a
+  # deployment's: peer-bucket below is on it.
+  deny_list_use_example "${WORK}"
+
+  cat >"${WORK}/plan.json" <<'FIXTURE_JSON'
+{"resource_changes":[
+ {"address":"labelled.bucket","type":"google_storage_bucket",
+  "change":{"actions":["create"],"before":null,
+    "after":{"name":"swarm-artifacts-example-project","project":"example-project",
+             "labels":{"managed-by":"swarm-terraform"}}}},
+ {"address":"unlabelled.topic","type":"google_pubsub_topic",
+  "change":{"actions":["create"],"before":null,
+    "after":{"name":"swarm-scheduler-wake","project":"example-project",
+             "labels":{"component":"scheduler"}}}},
+ {"address":"iam.edge","type":"google_storage_bucket_iam_member",
+  "change":{"actions":["create"],"before":null,
+    "after":{"bucket":"swarm-artifacts-example-project","project":"example-project",
+             "member":"serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"}}},
+ {"address":"unknown.labels","type":"google_cloud_run_v2_service",
+  "change":{"actions":["create"],"before":null,
+    "after":{"name":"swarm-api","project":"example-project"},
+    "after_unknown":{"labels":true}}},
+ {"address":"iam.edge.delete","type":"google_secret_manager_secret_iam_binding",
+  "change":{"actions":["delete"],
+    "before":{"secret_id":"swarm-tenant-eng-anthropic","project":"example-project"}}},
+ {"address":"firestore.doc.delete","type":"google_firestore_document",
+  "change":{"actions":["delete"],
+    "before":{"collection":"pools","document_id":"global","database":"swarm",
+              "project":"example-project"}}},
+ {"address":"theirs.binding","type":"google_storage_bucket_iam_member",
+  "change":{"actions":["create"],"before":null,
+    "after":{"bucket":"peer-bucket","project":"example-project",
+             "member":"serviceAccount:swarm-agent-worker-eng@example-project.iam.gserviceaccount.com"}}}
+]}
+FIXTURE_JSON
+
+  judge "${WORK}/plan.json" "${WORK}/verdict.json"
+
+  FAILED=0
+  check() {
+    local label="$1" expr="$2" want="$3" got
+    got="$(jq -r "${expr}" <"${WORK}/verdict.json")"
+    if [[ "${got}" == "${want}" ]]; then ok "${label}: ${got}"; else err "${label}: expected ${want}, got ${got}"; FAILED=1; fi
+  }
+
+  check "a labelled creation passes" \
+    '[.unlabelled_creations[].address] | index("labelled.bucket") == null' true
+  check "an unlabelled creation is caught" \
+    '[.unlabelled_creations[].address] | index("unlabelled.topic") != null' true
+  check "an IAM edge needs no label (create)" \
+    '[.unlabelled_creations[].address] | index("iam.edge") == null' true
+  check "labels unknown at plan time are not a finding" \
+    '[.unlabelled_creations[].address] | index("unknown.labels") == null' true
+  # The four cases below are the ones release.yml's awk regex got wrong.
+  check "a non-project IAM edge deletion is exempt (release.yml regression)" \
+    '[.offenders[].address] | index("iam.edge.delete") == null' true
+  check "google_firestore_document deletion is exempt (make destroy regression)" \
+    '[.offenders[].address] | index("firestore.doc.delete") == null' true
+  check "a binding CREATED on another team's bucket is caught" \
+    '[.denylist_touches[].address] | index("theirs.binding") != null' true
+  check "our own bucket is not a deny-list hit" \
+    '[.denylist_touches[].address] | index("labelled.bucket") == null' true
+
+  # ---------------------------------------------------------------------
+  # The guard's own fail-open bug. Every case above feeds `report` a WELL-FORMED
+  # verdict, which is exactly why this survived: the bug was never in the
+  # judging, it was in reading the judgement. These four feed it broken input
+  # and require a refusal.
+  # ---------------------------------------------------------------------
+  guard_refuses() {
+    local label="$1" content="$2" tmp rc=0
+    tmp="$(mktemp "${TMPDIR:-/tmp}/plan-guard-selftest.XXXXXX")"
+    printf '%s' "${content}" >"${tmp}"
+    # Subshell: `report` calls die on refusal, which must not kill the self-test.
+    ( report "${tmp}" apply ) >/dev/null 2>&1 || rc=$?
+    rm -f "${tmp}"
+    if [[ "${rc}" -ne 0 ]]; then
+      ok "${label}"
+    else
+      err "${label} -- THE GUARD APPROVED IT"
+      FAILED=1
+    fi
+  }
+
+  guard_refuses "an empty verdict is refused, not approved" ""
+  guard_refuses "a truncated verdict is refused" '{"denylist_touches": [], "offen'
+  guard_refuses "a verdict missing a field is refused" '{"denylist_touches": []}'
+  guard_refuses "a verdict that is not an object is refused" '"nope"'
+
+  # ---------------------------------------------------------------------
+  # --classify-iam. "false" applies a dev plan with nobody asked, so the cases
+  # are the one that would be missed (a FORGET, which deletes nothing live),
+  # the routine release that must not be stopped, and inputs that must be
+  # refused rather than answered.
+  # ---------------------------------------------------------------------
+  iam_case() {
+    local label="$1" want="$2" content="$3" got rc=0
+    printf '%s' "${content}" >"${WORK}/iam-plan.json"
+    # Subshell and `|| rc=$?`: a refusal must not end the self-test.
+    got="$( { classify_iam "${WORK}/iam-plan.json" "${WORK}/iam.json" \
+              && iam_answer "${WORK}/iam.json"; } 2>/dev/null )" || rc=$?
+    if [[ "${want}" == "refused" ]]; then
+      if [[ "${rc}" -ne 0 ]]; then ok "${label}: refused"; else err "${label}: expected a refusal, got '${got}'"; FAILED=1; fi
+    elif [[ "${rc}" -eq 0 && "${got}" == "${want}" ]]; then
+      ok "${label}: ${got}"
+    else
+      err "${label}: expected ${want}, got '${got}' (exit ${rc})"; FAILED=1
+    fi
+  }
+
+  iam_case "a forgotten custom role is an IAM change" true \
+    '{"format_version":"1.2","resource_changes":[
+      {"address":"module.iam.google_project_iam_custom_role.job_dispatcher","type":"google_project_iam_custom_role",
+       "change":{"actions":["forget"],"after":null,
+         "before":{"project":"example-project","role_id":"swarmJobDispatcher"}}}]}'
+  iam_case "an image digest update is not an IAM change" false \
+    '{"format_version":"1.2","resource_changes":[
+      {"address":"module.cloud_run.google_cloud_run_v2_service.this","type":"google_cloud_run_v2_service",
+       "change":{"actions":["update"],"before":{"name":"swarm-api"},"after":{"name":"swarm-api"}}},
+      {"address":"module.iam.google_project_iam_member.plain","type":"google_project_iam_member",
+       "change":{"actions":["no-op"],"before":{},"after":{}}}]}'
+  iam_case "a replaced bucket binding is an IAM change" true \
+    '{"format_version":"1.2","resource_changes":[
+      {"address":"b","type":"google_storage_bucket_iam_binding",
+       "change":{"actions":["delete","create"],"before":{},"after":{"role":"roles/storage.objectViewer"}}}]}'
+  iam_case "a plan with no changes is not an IAM change" false '{"format_version":"1.2"}'
+  iam_case "an empty plan file is refused, not answered" refused ""
+  iam_case "an object that is not a plan is refused" refused '{}'
+  iam_case "a change with no actions is refused" refused \
+    '{"format_version":"1.2","resource_changes":[{"address":"x","type":"google_project_iam_member"}]}'
+
+  # ---------------------------------------------------------------------
+  # A replaced log-based metric (release 39712409927). Refused in both orders
+  # Terraform writes a replace, and an unreadable plan is refused too; an
+  # in-place update, a destroy's deletion and another type's replace are not
+  # this rule's business.
+  # ---------------------------------------------------------------------
+  metric_case() {
+    local label="$1" want="$2" content="$3" rc=0
+    printf '%s' "${content}" >"${WORK}/metric-plan.json"
+    # Subshell and `|| rc=$?`: a refusal (die, or return 2) must not end the self-test.
+    ( metric_replacements "${WORK}/metric-plan.json" "${WORK}/metric.json" \
+        && report_metric_replacements "${WORK}/metric.json" ) >"${WORK}/metric.out" 2>&1 || rc=$?
+    case "${want}" in
+      allowed)
+        if [[ "${rc}" -eq 0 ]]; then ok "${label}"; else err "${label}: refused (exit ${rc})"; FAILED=1; fi ;;
+      refused)
+        if [[ "${rc}" -eq 2 ]] && grep -qF 'events["example"]' "${WORK}/metric.out" \
+             && grep -qF 'gcloud logging metrics update' "${WORK}/metric.out"; then
+          ok "${label}"
+        else
+          err "${label}: expected exit 2 naming the metric and the live update, got exit ${rc}"; FAILED=1
+        fi ;;
+      unreadable)
+        if [[ "${rc}" -ne 0 ]]; then ok "${label}"; else err "${label} -- THE GUARD APPROVED IT"; FAILED=1; fi ;;
+    esac
+  }
+
+  metric_change() {
+    printf '{"format_version":"1.2","resource_changes":[{"address":"%s","type":"%s","change":{"actions":%s,"before":{"name":"swarm/example"},"after":{"name":"swarm/example"}}}]}' \
+      "$1" "$2" "$3"
+  }
+  # A neutral key: an event type spelled in a script is a contract restatement
+  # (tests/unit/common/test_startup_progress_contract.py).
+  fenced='module.monitoring.google_logging_metric.events[\"example\"]'
+  metric_case "a replaced log-based metric is refused (delete, create)" refused \
+    "$(metric_change "${fenced}" google_logging_metric '["delete","create"]')"
+  metric_case "a replaced log-based metric is refused (create, delete)" refused \
+    "$(metric_change "${fenced}" google_logging_metric '["create","delete"]')"
+  metric_case "an in-place log-based metric update is allowed" allowed \
+    "$(metric_change "${fenced}" google_logging_metric '["update"]')"
+  metric_case "a destroy's log-based metric deletion is not a replace" allowed \
+    "$(metric_change "${fenced}" google_logging_metric '["delete"]')"
+  metric_case "a replaced alert policy is not this rule's" allowed \
+    "$(metric_change module.monitoring.google_monitoring_alert_policy.x google_monitoring_alert_policy '["delete","create"]')"
+  metric_case "a plan with no changes replaces no metric" allowed '{"format_version":"1.2"}'
+  metric_case "an empty plan is refused, not read as no replace" unreadable ""
+  metric_case "a plan that is not an object is refused" unreadable '"nope"'
+
+  hr
+  [[ "${FAILED}" -eq 0 ]] || die "PLAN-GUARD SELF-TEST FAILED -- do not trust the workflow gates until this passes"
+  ok "plan-guard self-test passed"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+[[ -n "${PLAN}" ]] || die "--plan <terraform show -json output> is required"
+[[ -f "${PLAN}" ]] || die "no such plan file: ${PLAN}"
+
+if [[ "${CLASSIFY_IAM}" -eq 1 ]]; then
+  if [[ -n "${CLASSIFY_OUT}" ]]; then
+    CLASSIFICATION="${CLASSIFY_OUT}"
+    mkdir -p "$(dirname -- "${CLASSIFICATION}")"
+  else
+    # A per-invocation file, not a fixed name: two invocations sharing a
+    # checkout (concurrent CI steps, or pytest-xdist workers running the unit
+    # tests) must never write over one another's classification.
+    mkdir -p "${BUILD_DIR}"
+    CLASSIFICATION="$(mktemp "${BUILD_DIR}/plan-iam.XXXXXX")"
+  fi
+  step "Does this plan change IAM?"
+  classify_iam "${PLAN}" "${CLASSIFICATION}" || die "could not classify ${PLAN} -- refusing to answer rather than answering 'false'"
+  # `|| die` on the assignment itself: its status is the substitution's, so an
+  # unusable classification ends the script here, with nothing on stdout.
+  ANSWER="$(iam_answer "${CLASSIFICATION}")" || die "the IAM classification of ${PLAN} is unusable: ${CLASSIFICATION}"
+  if [[ "${ANSWER}" == "true" ]]; then
+    warn "$(jq -r '.rows | length' "${CLASSIFICATION}") IAM change(s):"
+    jq -r '.rows[] | "    \(.address | gsub("\\[\"[^\"]*@[^\"]*\"\\]"; "[\"<an address>\"]"))  (\(.type))  \(.actions | join("+"))  role: \(.role)"' \
+      "${CLASSIFICATION}" >&2
+  else
+    ok "no IAM change"
+  fi
+  [[ -z "${SUMMARY}" ]] || write_iam_summary "${CLASSIFICATION}" "${ANSWER}" "${SUMMARY}"
+  printf '%s\n' "${ANSWER}"
+  exit 0
+fi
+[[ -z "${SUMMARY}" ]] || die "--summary is written only with --classify-iam"
+[[ -z "${CLASSIFY_OUT}" ]] || die "--out is written only with --classify-iam"
+case "${MODE}" in
+  apply|destroy) ;;
+  *) die "--mode must be 'apply' or 'destroy', got '${MODE}'" ;;
+esac
+
+VERDICT="${BUILD_DIR}/plan-guard-verdict.json"
+judge "${PLAN}" "${VERDICT}"
+METRIC_REPLACEMENTS="${BUILD_DIR}/plan-guard-metric-replacements.json"
+metric_replacements "${PLAN}" "${METRIC_REPLACEMENTS}" \
+  || die "could not read ${PLAN}'s log-based metric changes -- refusing a plan this guard was unable to evaluate"
+
+step "Shared-project guard (${MODE})"
+info "$(jq -r '"\(.total_changes) change(s), \(.deletions) deletion(s)"' "${VERDICT}")"
+
+# Both checks always run, so one refusal never hides the other's findings.
+REFUSED=0
+report "${VERDICT}" "${MODE}" || REFUSED=1
+report_metric_replacements "${METRIC_REPLACEMENTS}" || REFUSED=1
+
+if [[ "${REFUSED}" -eq 0 ]]; then
+  ok "no deny-listed resource is touched"
+  # Says only what aborted on: `offenders` and `unlabelled_creations` skip
+  # the unlabelable types, and `foreign_touches` only warns (see its comment
+  # in report()), so this line must not claim every change was attributed.
+  ok "every labelable deletion is ours and every labelable creation carries managed-by=swarm-terraform (unlabelable types are exempt; any unattributed change is listed above as a warning)"
+  exit 0
+fi
+
+hr
+err "REFUSED. Full verdict: ${VERDICT}"
+exit 2

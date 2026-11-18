@@ -1,0 +1,1061 @@
+# Alert policies.
+#
+# Every policy here fires on something a human would actually act on. Note what
+# is deliberately NOT alerted: a large PARKED or QUEUED backlog. Those states
+# cost nothing (CONTRACT.md invariant 1), so paging on them would train the team
+# to ignore the pager on exactly the days the platform is working as designed.
+
+locals {
+  # One email channel per alert address, keyed by a hash of it, never the
+  # address: a resource's address reaches the repository's public Actions logs
+  # and summaries, and alert_emails comes from the private tfvars.
+  email_channels = { for e in toset(var.alert_emails) : substr(sha256(e), 0, 12) => e }
+
+  # The policies name the hashed channels only. The address-keyed channels the
+  # first alert release made were kept for one release while every policy moved
+  # to these (Cloud Monitoring refuses to delete a channel a policy still names);
+  # the 2026-11-15 release moved all 21, and this one deletes the old ones.
+  notification_channels = concat(
+    [for k, c in google_monitoring_notification_channel.email : c.id if contains(keys(local.email_channels), k)],
+    var.extra_notification_channels,
+  )
+
+  # Every policy takes its channels from its own severity (archived issue 1817, the owner's
+  # option (b) of 2026-10-21): CRITICAL and ERROR page the urgent channels as
+  # well as the ordinary ones, WARNING only records to the ordinary ones. A
+  # severity missing from this map is a plan error, not a policy that quietly
+  # reaches nobody. tests/terraform/observability.tftest.hcl reads each
+  # policy's `severity` and holds its channels to this map.
+  channels_by_severity = {
+    CRITICAL = concat(local.notification_channels, var.urgent_notification_channels)
+    ERROR    = concat(local.notification_channels, var.urgent_notification_channels)
+    WARNING  = local.notification_channels
+  }
+
+  alert_docs_suffix = "\n\nEnvironment: ${var.environment}. Managed by swarm-terraform; edit terraform/modules/monitoring rather than the console."
+
+  # The project is shared. Naming the four swarm services explicitly, and pinning
+  # the region, keeps these policies off another team's Cloud Run services --
+  # a prefix match would catch anything they happen to call swarm-something.
+  swarm_services_filter = "resource.labels.service_name = one_of(${join(", ", [for s in var.service_names : "\"${s}\""])})"
+  region_filter         = "resource.labels.location = \"${var.region}\""
+}
+
+resource "google_monitoring_notification_channel" "email" {
+  # Keyed by the hash (locals above). The address stays in the channel's
+  # attributes, which no public log prints.
+  for_each = local.email_channels
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-${replace(each.value, "@", "-at-")}"
+  type         = "email"
+
+  labels = {
+    email_address = each.value
+  }
+
+  user_labels = var.labels
+}
+
+# ---------------------------------------------------------------------------
+# The one-minute safety tick stopped.
+#
+# This is the single most important policy in the file. Pub/Sub is the fast wake
+# path; the tick is what bounds staleness when Pub/Sub fails. If the tick dies
+# quietly, the platform looks healthy right up until someone notices their tasks
+# have been READY for an hour.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "safety_tick_absent" {
+  # Also gated on its own flag, which is now only a switch. It used to be
+  # WAITING for `cloudscheduler.googleapis.com/job/attempt_count` to exist; that
+  # metric is not one Google publishes, so the wait could not end. The metric
+  # below is a logs-based one this module creates in the same apply, and the
+  # reference to it orders the two. See metrics.tf for the measurement.
+  count = var.create_alerts && var.enable_safety_tick_alert ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-safety-tick-stopped"
+  combiner     = "OR"
+  severity     = "CRITICAL"
+
+  conditions {
+    display_name = "No scheduler tick delivered in 10 minutes"
+
+    condition_absent {
+      filter = join(" AND ", [
+        "resource.type = \"cloud_scheduler_job\"",
+        "resource.labels.job_id = \"${var.safety_tick_job}\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.safety_tick_attempts.name}\"",
+      ])
+
+      duration = "600s"
+
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_SUM"
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["CRITICAL"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "The one-minute safety tick has not been delivered for ten minutes. Pub/Sub may still be waking the scheduler, so the queue is not necessarily stalled -- but the bound on staleness is gone. Check the Cloud Scheduler job (a failed attempt logs AttemptFinished at ERROR with a status) and the swarm-scheduler service logs. If the swarm was paused with scripts/pause-swarm.sh and its scheduler step, the tick is paused too and this is expected.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "86400s"
+  }
+
+  user_labels = var.labels
+}
+
+# ---------------------------------------------------------------------------
+# Control-plane 5xx.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "service_errors" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-control-plane-5xx"
+  combiner     = "OR"
+  severity     = "ERROR"
+
+  conditions {
+    display_name = "5xx rate above threshold on a swarm Cloud Run service"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"run.googleapis.com/request_count\"",
+        "metric.labels.response_code_class = \"5xx\"",
+        local.swarm_services_filter,
+        local.region_filter,
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.error_rate_threshold
+      duration        = "300s"
+
+      aggregations {
+        alignment_period     = "60s"
+        per_series_aligner   = "ALIGN_RATE"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.labels.service_name"]
+      }
+
+      trigger {
+        count = 1
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["ERROR"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "A swarm control-plane service is returning 5xx. Check the revision logs; a Firestore contention storm and a bad deploy look the same from here, so compare against the admission-denied metric before rolling back.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "3600s"
+  }
+
+  user_labels = var.labels
+
+  # THE GUARD (archived issue 1817). Until 2026-10-21 every one of the 21 policies had an
+  # empty channel list, because alert_emails was [] and nothing said so: the
+  # 10-20 GKE dispatch outage fired and reached nobody. With
+  # require_alert_channels true, alerts on and no channel anywhere is a failed
+  # plan. It lives on this policy because it exists whenever any policy does
+  # (create_alerts), so create_alerts = false is never refused. Only one of
+  # the lists needs to be set: urgent alone still reaches a person for
+  # CRITICAL and ERROR. require_alert_channels is false until the operator's
+  # change that commits the console-made channel ids sets it, so this cannot
+  # turn the release plan red before then.
+  lifecycle {
+    precondition {
+      condition = !(
+        var.require_alert_channels &&
+        length(local.notification_channels) == 0 &&
+        length(var.urgent_notification_channels) == 0
+      )
+      error_message = "require_alert_channels is true but no alert policy has a notification channel: set extra_notification_channels and/or urgent_notification_channels to the ids of channels made in the console (docs/operations.md, \"Alert notification channels\"). #1817: 21 policies reached nobody."
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Execution failures.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "job_failures" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-job-executions-failing"
+  combiner     = "OR"
+  severity     = "WARNING"
+
+  conditions {
+    display_name = "Failed Cloud Run Job executions"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_job\"",
+        "metric.type = \"run.googleapis.com/job/completed_execution_count\"",
+        "metric.labels.result = \"failed\"",
+        "resource.labels.job_name = starts_with(\"${var.name_prefix}-\")",
+        local.region_filter,
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.job_failure_threshold
+      duration        = "300s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["resource.labels.job_name"]
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["WARNING"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "Agent executions are failing faster than the retry policy absorbs. Look at the attempt records in Firestore for exit codes and at the peak-RSS metric for OOM near misses before assuming the runner image is at fault.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "3600s"
+  }
+
+  user_labels = var.labels
+}
+
+# ---------------------------------------------------------------------------
+# Fencing races. Should be flat zero.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "generation_fenced" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-generation-fencing"
+  combiner     = "OR"
+  severity     = "WARNING"
+
+  conditions {
+    display_name = "Workers exiting on a stale fencing generation"
+
+    condition_threshold {
+      # The verification and acceptance tenants fence at startup by design:
+      # 215 of the 270 fences in the 7 days archived issue 1817 measured were
+      # verify-remote's own. Filtered on the metric's tenant_id label
+      # (metrics.tf, EXTRACT(jsonPayload.labels.tenant_id)) so a real race in
+      # any other tenant still fires.
+      #
+      # And on its submitter_service label (FENCE-SUBMITTER, part of archived issue 1822):
+      # verify-remote submits as eng, so its fences carry eng's tenant id
+      # (eng 347, smoke 57 over the 7 days measured 2026-10-22), and only the
+      # submitter tells them from eng's real races. A fence whose line names
+      # no submitter has an empty label and is still counted.
+      filter = join(" AND ", concat(
+        [
+          "resource.type = \"cloud_run_job\"",
+          "metric.type = \"logging.googleapis.com/user/${google_logging_metric.events["generation_fenced"].name}\"",
+        ],
+        length(var.fencing_alert_excluded_tenants) == 0 ? [] : [
+          "NOT metric.label.tenant_id = one_of(${join(", ", [for t in var.fencing_alert_excluded_tenants : "\"${t}\""])})",
+        ],
+        length(var.fencing_alert_excluded_submitters) == 0 ? [] : [
+          "NOT metric.label.submitter_service = one_of(${join(", ", [for s in var.fencing_alert_excluded_submitters : "\"${s}\""])})",
+        ],
+      ))
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "300s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["WARNING"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "Fencing is doing its job, but it should rarely have to. A sustained rate means two attempts for the same task are being dispatched -- look for a reconciler reclaiming leases that were still alive, or a dispatch timeout set below real cold-start time.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "86400s"
+  }
+
+  user_labels = var.labels
+}
+
+# ---------------------------------------------------------------------------
+# Dead letters: tasks and wake messages.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "dead_letter_backlog" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-wake-messages-dead-lettered"
+  combiner     = "OR"
+  severity     = "ERROR"
+
+  conditions {
+    display_name = "Undelivered messages on the wake dead-letter subscription"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = \"pubsub_subscription\"",
+        "resource.labels.subscription_id = \"${var.dead_letter_subscription}\"",
+        "metric.type = \"pubsub.googleapis.com/subscription/num_undelivered_messages\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "300s"
+
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_MAX"
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["ERROR"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "Wake messages are being dead-lettered, so the scheduler push endpoint is rejecting them. The one-minute safety tick is carrying the platform in the meantime; latency is degraded, throughput is not.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "86400s"
+  }
+
+  user_labels = var.labels
+}
+
+resource "google_monitoring_alert_policy" "wake_backlog" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-scheduler-not-draining"
+  combiner     = "OR"
+  severity     = "ERROR"
+
+  conditions {
+    display_name = "Wake subscription backlog sustained"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = \"pubsub_subscription\"",
+        "resource.labels.subscription_id = \"${var.wake_subscription}\"",
+        "metric.type = \"pubsub.googleapis.com/subscription/num_undelivered_messages\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = var.undelivered_wake_threshold
+      duration        = "600s"
+
+      aggregations {
+        alignment_period   = "60s"
+        per_series_aligner = "ALIGN_MAX"
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["ERROR"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "Wake messages are arriving faster than the scheduler acknowledges them. Check whether the drain loop is hitting its bound every pass -- that is the expected shape under genuine saturation and is not itself a fault.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "3600s"
+  }
+
+  user_labels = var.labels
+}
+
+# ---------------------------------------------------------------------------
+# Checkpointing stopped.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "tasks_dead_lettered" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-tasks-dead-lettered"
+  combiner     = "OR"
+  severity     = "WARNING"
+
+  conditions {
+    display_name = "Tasks exhausted every attempt"
+
+    condition_threshold {
+      # A dead-letter can be written by the worker (Cloud Run Jobs or a GKE pod)
+      # or by the scheduler (a Cloud Run service), so the restriction names all
+      # three. Monitoring REQUIRES a resource.type restriction, and naming only
+      # one would silently drop the other two sources.
+      filter = join(" AND ", [
+        "resource.type = one_of(\"cloud_run_job\", \"cloud_run_revision\", \"k8s_container\")",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.events["dead_lettered"].name}\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "600s"
+
+      aggregations {
+        alignment_period     = "600s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.labels.tenant_id"]
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["WARNING"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "Tasks have exhausted their attempts and been dead-lettered. These never retry on their own; somebody has to look at them.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "86400s"
+  }
+
+  user_labels = var.labels
+}
+
+# ---------------------------------------------------------------------------
+# A BACKEND THAT CANNOT DISPATCH AT ALL
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. On 2026-09-23 a thirty-step workflow failed and the split was
+# exactly along backend lines: 22 Cloud Run steps succeeded, all 6 GKE steps
+# failed. Every `browser` task the platform had ever accepted -- seven, over two
+# days -- had failed the same way, and nothing said so. `make smoke` was green
+# throughout because it only ever submitted a `mock` task, which is Cloud Run.
+#
+# The counters to catch it already existed. `swarm_scheduler_dispatch_failures_total`
+# is labelled by backend and was incrementing the whole time; nothing watched
+# it. A metric nobody alerts on is a metric nobody has.
+#
+# THRESHOLD IS ZERO, DELIBERATELY. A dispatch failure is not a task failure: the
+# lease is returned and the work is retried, so a handful are survivable and
+# invisible to a user. What is not survivable is a backend that refuses EVERY
+# dispatch, and the only honest threshold between those two is "more than none,
+# sustained". 900s of continuous failure on one backend is not a blip.
+#
+# GROUPED BY BACKEND, which is the whole point: an aggregate across backends
+# stays comfortably low while one of them is totally dead, because the healthy
+# one dominates the sum. That aggregation is precisely how this hid.
+resource "google_monitoring_alert_policy" "dispatch_failing_by_backend" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-dispatch-failing-on-a-backend"
+  combiner     = "OR"
+  severity     = "ERROR"
+
+  conditions {
+    display_name = "A dispatch backend is refusing work"
+
+    condition_threshold {
+      # A logs-based metric, not the Prometheus counter: the counter has no
+      # descriptor until a failure is exported, so an alert on it cannot be
+      # created before the failure it exists for. metrics.tf, dispatch_failures.
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.dispatch_failures.name}\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "900s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        # The label that makes a dead backend visible instead of averaged away.
+        group_by_fields = ["metric.labels.backend"]
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["ERROR"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = <<-DOC
+      One dispatch backend is failing every attempt while the others may be fine.
+
+      Check which: the alert groups by `backend`, so the firing series names it.
+
+      * `GKE_AUTOPILOT` — the `browser` and `claude-code` profiles use it
+        (`claude-code` since contract request 53, 2026-10-08). Confirm the tenant namespace exists (`swarm-tenant-<id>`, and note
+        the scheduler and `kubernetes/render.py` must agree on that spelling),
+        that `kubernetes/rbac/dispatcher-rbac.yaml` is applied in it, and that
+        the scheduler holds `container.jobs.create`. Kubernetes authorises
+        before it resolves, so a MISSING NAMESPACE reports as
+        `jobs.batch is forbidden` — a 403 about permissions, never a 404. Do
+        not spend the investigation on IAM before checking the namespace exists.
+      * `CLOUD_RUN_JOB` — check `run.jobs.create` on the scheduler and the
+        Artifact Registry image tag the profile resolves to.
+
+      `dispatch ok` and `dispatch failed` are both logged per attempt with the
+      backend on the line.${local.alert_docs_suffix}
+    DOC
+  }
+
+  alert_strategy {
+    auto_close = "3600s"
+  }
+
+  user_labels = var.labels
+}
+
+# ---------------------------------------------------------------------------
+# THE RECONCILER CANNOT SEE A BACKEND, OR IS HOLDING A LEASE IT CANNOT PROVE DEAD
+# ---------------------------------------------------------------------------
+#
+# WHY THIS EXISTS. From 2026-09-16 the reconciler's GKE listing failed on
+# essentially every pass -- a cluster-scope `list jobs` its namespaced Role
+# could never authorise -- and nothing paged. On 2026-09-24 that blindness held
+# five dead leases of workflow wf_ebb3ab2d65664707a559 for hours: 10 units on
+# every one of seven pools, `resource:browser` at its hard limit, the workflow
+# stuck RUNNING and a user's cancel ignored. The reconciler said so on every
+# pass, in two log lines, and each pass still reported `findings=0` -- the same
+# number a healthy pass reports. `/reconcile` answers 200 either way, so the
+# 5xx policy above could not see it either; turning a blind pass into a 5xx
+# was considered and not done, because it would make Cloud Scheduler retry a
+# pass that cannot succeed and page on the symptom rather than the cause.
+#
+# So the two lines themselves are counted, and this policy watches the counts:
+#
+#   * "backend unavailable; skipping its findings" -- a whole backend was
+#     unreadable. More than ten such passes in fifteen minutes (the tick is
+#     */1, so fifteen passes) is not a blip. Grouped by backend, so one blind backend is not
+#     averaged away by a healthy one.
+#   * "not repairing: ..." -- one lease detected as dead and held back because
+#     the backend that would prove it could not be read. The SAME lease refused
+#     on every pass for more than thirty minutes is a stranded slot, however
+#     healthy the backend looks overall -- which is exactly the per-namespace
+#     case the first condition cannot see.
+#
+# THE MESSAGES ARE THE EMITTER'S, VERBATIM. reconciler/repair.py spells them
+# once, as BACKEND_UNAVAILABLE and NOT_REPAIRING, and
+# tests/unit/control_plane/test_reconciler_gke_namespaced.py parses this file
+# and asserts each string is in the `filter` of the metric below that counts it
+# (a comment quoting it, like this one, does not count): a log-based metric
+# whose filter matches nothing is a number that stays at zero and an alert that
+# never fires.
+locals {
+  reconciler_services = coalescelist(
+    [for s in var.service_names : s if endswith(s, "-reconciler")],
+    ["${var.name_prefix}-reconciler"],
+  )
+
+  # Logging query syntax, not Monitoring's: `field=(a OR b)`, not one_of().
+  reconciler_log_filter = join(" AND ", [
+    "resource.type=\"cloud_run_revision\"",
+    "resource.labels.service_name=(${join(" OR ", [for s in local.reconciler_services : "\"${s}\""])})",
+    "resource.labels.location=\"${var.region}\"",
+    # reconciler.logs.StructuredLogger stamps every line with this component.
+    "jsonPayload.component=\"reconciler\"",
+  ])
+}
+
+resource "google_logging_metric" "reconciler_backend_unavailable" {
+  project = var.project_id
+  name    = "${var.name_prefix}/reconciler-backend-unavailable"
+
+  description = "A reconciliation pass could not list a backend at all and made no conclusions about anything on it."
+
+  filter = join(" AND ", [
+    local.reconciler_log_filter,
+    "jsonPayload.message=\"backend unavailable; skipping its findings\"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "backend"
+      value_type = "STRING"
+    }
+  }
+
+  # A per-call field, so top level: StructuredLogger spreads keyword fields
+  # into the record rather than under a nested `labels` object.
+  label_extractors = {
+    backend = "EXTRACT(jsonPayload.backend)"
+  }
+}
+
+resource "google_logging_metric" "reconciler_not_repairing" {
+  project = var.project_id
+  name    = "${var.name_prefix}/reconciler-not-repairing"
+
+  description = "The reconciler detected a dead lease and held it back because the backend or namespace that would prove it was unreadable."
+
+  filter = join(" AND ", [
+    local.reconciler_log_filter,
+    "jsonPayload.message=\"not repairing: the backend that would hold this execution was unreadable\"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    # One series per held lease. Cardinality is bounded by the number of
+    # leases held back at once, which is zero on a healthy platform.
+    labels {
+      key        = "lease_id"
+      value_type = "STRING"
+    }
+
+    labels {
+      key        = "backend"
+      value_type = "STRING"
+    }
+  }
+
+  label_extractors = {
+    lease_id = "EXTRACT(jsonPayload.lease_id)"
+    backend  = "EXTRACT(jsonPayload.backend)"
+  }
+}
+
+resource "google_monitoring_alert_policy" "reconciler_blind" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-reconciler-cannot-see-a-backend"
+  combiner     = "OR"
+  severity     = "ERROR"
+
+  conditions {
+    display_name = "A backend was unreadable on 3 or more reconciliation passes in 15 minutes"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.reconciler_backend_unavailable.name}\"",
+      ])
+
+      # More than 10 in a trailing 15-minute window: most of the fifteen
+      # passes of a */1 tick. It was more than 2, all three passes of the */5
+      # tick, and the window is kept so the alert still means "blind for most
+      # of a quarter of an hour", not "blind for three minutes". Not all 15:
+      # a pass that overruns its tick answers 409 and logs nothing, and one
+      # skipped pass must not hide a backend that stayed blind.
+      comparison      = "COMPARISON_GT"
+      threshold_value = 10
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "900s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.labels.backend"]
+      }
+    }
+  }
+
+  conditions {
+    display_name = "The same lease held back as unprovable for more than 30 minutes"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.reconciler_not_repairing.name}\"",
+      ])
+
+      # Refused at least once in every trailing 10-minute window (two passes,
+      # so one late tick does not reset it), continuously for 30 minutes.
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "1800s"
+
+      aggregations {
+        alignment_period     = "600s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.labels.lease_id"]
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["ERROR"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = <<-DOC
+      The reconciler is holding leases it believes are dead because it cannot
+      read the backend that would prove it. Those leases keep their capacity on
+      every pool they hold, so admission for that tenant, profile or resource
+      class stalls behind them -- and a cancel on those tasks cannot complete.
+
+      Read the latest pass: `findings_suppressed`, `suppressed[]` (kind, lease,
+      task, backend, namespace) and `unreadable_namespaces` in
+      `reconciler_passes`, or the `reconciliation pass complete` log line.
+
+      * `GKE_AUTOPILOT` — the reconciler reads tenant namespaces one at a time
+        under the namespaced `swarm-reaper` Role. A 403 there means the
+        namespace does not exist OR its `swarm-reaper` RoleBinding does not
+        name the reconciler by BOTH email and numeric uniqueId; Kubernetes
+        authorises before it resolves, so the two look identical. Do not add a
+        ClusterRole.
+      * `CLOUD_RUN_JOB` — check the reconciler's `run.executions.list`.
+
+      Runbook: docs/troubleshooting.md, "A task is stuck in LEASED or
+      DISPATCHED".${local.alert_docs_suffix}
+    DOC
+  }
+
+  alert_strategy {
+    auto_close = "3600s"
+  }
+
+  # Merged, not just inherited: this policy must carry the marker `make
+  # destroy` keys on even if a caller passes labels without it.
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}
+
+# ---------------------------------------------------------------------------
+# A step spec did not verify (contract request 34, decision 9).
+#
+# ONE IS ENOUGH. A refusal is either an agent rewriting a parked step's
+# document -- the attack archived issue 342 is about -- or a platform bug that fails real
+# work; neither is noise, and neither is fixed by waiting. Not pinned to
+# cloud_run_job: a GKE browser pod verifies the same way and its refusal pages
+# too (the metric's filter already names both workers' resource types).
+#
+# TWO CONDITIONS, ONE POLICY. The second is the upstream half: a merge or
+# post-verdict worker refusing an upstream step's spec (MERGE_REFUSED /
+# VERDICT_REFUSED with an `upstream:` reason; metrics.tf,
+# spec_upstream_invalid). It is the same attack one step later -- an agent
+# rewrote a step the chain depends on -- so it pages the same people.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "spec_signature_invalid" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-spec-signature-invalid"
+  combiner     = "OR"
+  severity     = "CRITICAL"
+
+  conditions {
+    display_name = "A worker refused a task whose step spec did not verify"
+
+    condition_threshold {
+      # Run 36655830725 (main 4bb7564): "Error creating AlertPolicy: googleapi:
+      # Error 400: ... must specify a restriction on resource.type". Monitoring
+      # requires one on every log-based metric's condition; naming only one
+      # type would silently drop the other worker (the tasks_dead_lettered
+      # policy above explains the same requirement). Both types here match the
+      # metric's own filter (metrics.tf), so a version signed by either
+      # backend still pages.
+      filter = join(" AND ", [
+        "resource.type = one_of(\"cloud_run_job\", \"k8s_container\")",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.spec_signature_invalid.name}\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.tenant_id", "metric.label.job_name", "metric.label.reason"]
+      }
+    }
+  }
+
+  conditions {
+    display_name = "A merge or post-verdict worker refused an upstream step's spec"
+
+    condition_threshold {
+      # The same resource.type restriction as the condition above, for the
+      # same reason (run 36655830725).
+      filter = join(" AND ", [
+        "resource.type = one_of(\"cloud_run_job\", \"k8s_container\")",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.spec_upstream_invalid.name}\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.tenant_id", "metric.label.job_name", "metric.label.end_cause", "metric.label.reason"]
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["CRITICAL"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "A worker refused to run a task because its step spec did not verify (end cause `spec_signature_invalid`). Every occurrence is an agent rewriting a parked step's task document or a platform bug. Read the worker's ERROR line (`spec signature invalid: refusing to run this task`): `spec_check.reason` says which check failed and `spec_check.task_id` which task. `unsigned` after the legacy window, or `foreign_key_version` right after a key rotation, is a rollout problem (docs/runbooks/spec-signing-rollout.md); `signature_mismatch` or `not_canonical` on a task nobody resubmitted is the attack -- look at who wrote the task document after its submission. The second condition is a merge or post-verdict worker refusing an UPSTREAM step's spec (end cause `merge_refused` or `verdict_refused`, `spec_check.reason` = `upstream:<task id>:<why>`): the same reading applies to the named upstream task, and nothing reached the forge.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "86400s"
+  }
+
+  # Merged, not just inherited, like the policy above: this one must carry the
+  # marker `make destroy` keys on even if a caller passes labels without it.
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}
+
+# ---------------------------------------------------------------------------
+# A merge or post-verdict worker action ended unmerged or unposted (the four
+# end causes; metrics.tf, worker_action_ended).
+#
+# TWO CONDITIONS, ONE POLICY, split the way the end causes are: _refused means
+# a condition for merging or posting was not met and nothing changed on the
+# forge; _failed means the action was allowed and the forge did not do it.
+# They are read differently (a stale head or a red check against a forge
+# outage), so each condition says which it is. Either way the workflow's last
+# step did not land and is never retried on its own, so ONE is enough, as for
+# a dead-lettered task -- and WARNING, as for a dead-lettered task: somebody
+# has to look. The one refusal that may be an attack, `spec_unverified` (an
+# upstream step's spec did not verify), is named in the documentation below.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "worker_action_ended" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-worker-action-ended"
+  combiner     = "OR"
+  severity     = "WARNING"
+
+  conditions {
+    display_name = "A merge or post-verdict was refused (merge_refused, verdict_refused)"
+
+    condition_threshold {
+      # Monitoring requires a resource.type restriction on a log-based
+      # metric's condition (run 36655830725); both worker types, matching the
+      # metric's own filter.
+      filter = join(" AND ", [
+        "resource.type = one_of(\"cloud_run_job\", \"k8s_container\")",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.worker_action_ended.name}\"",
+        "metric.label.end_cause = one_of(\"merge_refused\", \"verdict_refused\")",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.tenant_id", "metric.label.end_cause"]
+      }
+    }
+  }
+
+  conditions {
+    display_name = "A merge or post-verdict failed at the forge (merge_failed, verdict_failed)"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = one_of(\"cloud_run_job\", \"k8s_container\")",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.worker_action_ended.name}\"",
+        "metric.label.end_cause = one_of(\"merge_failed\", \"verdict_failed\")",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.tenant_id", "metric.label.end_cause"]
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["WARNING"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "A merge or post-verdict step ended without merging its pull request or posting its review. Read the worker's ERROR line `worker action ended`: `end_cause` says which action and whether it was refused (`merge_refused`, `verdict_refused`: a condition was not met and nothing changed on the forge) or failed (`merge_failed`, `verdict_failed`: the action was allowed and the forge did not do it), and `code` says why. The task's `result_summary.merge.refusal` or `result_summary.verdict.refusal` carries the same code and message. These are never retried on their own. A `code` of `spec_unverified` means an upstream step's spec did not verify: read it as the spec-signature alert says (an agent rewrote a step the chain depends on, or a platform bug) and look at the named upstream task. See docs/merge-step.md section 6.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "86400s"
+  }
+
+  # Merged, not just inherited, like the spec-signature policy: this one must
+  # carry the marker `make destroy` keys on even if a caller passes labels
+  # without it.
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}
+
+# ---------------------------------------------------------------------------
+# A SCHEDULE NEEDS A PERSON (docs/schedules.md §4.9, lane S4)
+# ---------------------------------------------------------------------------
+#
+# One policy, two conditions, on the existing alert channel (alert_emails), as
+# §4.9 says: "the same alert". Either fires it. Both are one event being
+# enough: an auto-paused schedule fires nothing until a member resumes it, and
+# a hold that needs the owner waits for the owner and nobody else. Neither
+# holds capacity while it waits (invariant 1), so the cost of the wait is
+# lateness, which is what the email is for.
+resource "google_monitoring_alert_policy" "schedule_needs_attention" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-schedule-needs-attention"
+  combiner     = "OR"
+  severity     = "WARNING"
+
+  conditions {
+    display_name = "A schedule was auto-paused (schedule_auto_paused)"
+
+    condition_threshold {
+      # Monitoring requires a resource.type restriction on a log-based
+      # metric's condition; swarm-api is a Cloud Run service.
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.schedule_auto_paused.name}\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.code"]
+      }
+    }
+  }
+
+  conditions {
+    display_name = "A scheduled run needs the owner (schedule_needs_owner)"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.schedule_needs_owner.name}\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.tenant_id"]
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["WARNING"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "A schedule needs a person. **Auto-paused:** the schedule tick paused a schedule and it fires nothing until a member resumes it; the series names the pause code, and swarm-api's WARNING line `schedule <id> auto_paused: <code>` names the schedule. Admin › Schedules shows it with its tenant and reason. Resume it once the cause is fixed; its catch-up policy decides what the missed slots do. **Needs the owner:** a scheduled run met a hard stop only the owner may lift; the series names the tenant and the inbox item is marked owner. Neither holds capacity while it waits. See docs/schedules.md sections 1.3, 4.4 and 4.9.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "86400s"
+  }
+
+  # Merged, not just inherited, as worker_action_ended's: the marker `make
+  # destroy` keys on must be there even if a caller passes labels without it.
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}
+
+# ---------------------------------------------------------------------------
+# An approved personal workspace is waiting (metrics.tf, workspace_stuck).
+#
+# ONE IS ENOUGH: a person who was told "approved" is waiting on a build that
+# is not coming, and on 2026-10-09 that wait lasted 19 hours unseen. The sweep
+# logs each stuck record once an hour, so a 30-minute window catches every
+# one, and a record that stays stuck re-notifies hourly rather than going
+# quiet after the first page. WARNING, like a dead-lettered task: nothing is
+# broken for anyone else, but a person is blocked until someone looks.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "workspace_stuck" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-workspace-stuck"
+  combiner     = "OR"
+  severity     = "WARNING"
+
+  conditions {
+    display_name = "An approved personal workspace has waited with nothing building it"
+
+    condition_threshold {
+      # Monitoring requires a resource.type restriction on a log-based
+      # metric's condition, matching the metric's own filter.
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.workspace_stuck.name}\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "1800s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.reason"]
+      }
+    }
+  }
+
+  notification_channels = local.channels_by_severity["WARNING"]
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "An approved personal workspace is waiting and nothing is building it. Read swarm-api's `workspace_stuck` log entries (jsonPayload.event): `workspace_id` is the record (open it in Admin -> People), `minutes_waiting` how long. `reason` says why: `publishing_off` means WORKSPACE_APPLY_PUBLISH is off (terraform var.workspace_apply_publish), so no approval is ever sent to the workspace job -- turn it on in the same release as the owner's bootstrap apply with enable_workspace_deployer (docs/workspaces.md section 10); `never_dispatched` means no publish was attempted for 15 minutes; `dispatched_unclaimed` means a publish is more than 30 minutes old and no build claimed it -- check the swarm-workspace-apply topic and its Cloud Build trigger. Retry from People once the cause is fixed. See docs/workspaces.md section 2.2.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "86400s"
+  }
+
+  # Merged, not just inherited, like the worker-action policy: this one must
+  # carry the marker `make destroy` keys on even if a caller passes labels
+  # without it.
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}

@@ -1,0 +1,2933 @@
+"""The Kubernetes manifests, held to the same invariants as the Python.
+
+A YAML file that nobody executes in CI is a file that drifts. Everything in
+`kubernetes/` is rendered here by the real renderer and then checked against the
+frozen contract: sizing comes from `RESOURCE_CLASSES`, the secret name comes
+from `Tenant.secret_name`, and the properties the platform depends on --
+requests == limits, no Spot tolerations, no mounted API token, a default-deny
+NetworkPolicy in both directions -- are asserted rather than reviewed.
+
+The checks that matter most are the ones about ABSENCE. A missing `egress:` key,
+a toleration nobody noticed, an `automountServiceAccountToken` that quietly went
+back to its default: none of those make a manifest fail to apply, and all of
+them are the difference between isolation and the appearance of it.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import ipaddress
+import re
+from pathlib import Path
+from typing import Any
+
+import pytest
+import yaml
+
+from quota_broker.accounts import AccountError, validate_label
+from scheduler.dispatch import LIVE_DISPLAY_SHARE, gke_disk, gke_ephemeral_storage_gib, with_live_display
+from scheduler.dispatch import sanitize_name as dispatcher_sanitize_name
+from swarm_common.identity import _TENANT_SAFE
+from swarm_common.models import Tenant, utcnow
+from swarm_common.profiles import CPU_BURST_MAX_RATIO, RESOURCE_CLASSES, RUNNER_PROFILES
+
+REPO = Path(__file__).resolve().parents[3]
+KUBERNETES = REPO / "kubernetes"
+_PLACEHOLDERS_SPEC = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
+_PLACEHOLDERS = importlib.util.module_from_spec(_PLACEHOLDERS_SPEC)
+_PLACEHOLDERS_SPEC.loader.exec_module(_PLACEHOLDERS)
+#: The label-key prefix the suite renders with: the placeholder organisation's
+#: swarm.<org_domain> (kubernetes/label_prefix.py; tests/unit/conftest.py).
+LABEL_PREFIX = f"swarm.{_PLACEHOLDERS.ORG_DOMAIN}"
+
+TENANT = "eng"
+PROJECT = "example-project"
+
+#: The control plane's numeric uniqueIds in that project. See the assertion at
+#: the bottom of this file for why a RoleBinding needs them at all.
+SCHEDULER_UID = "117405034245659033603"
+RECONCILER_UID = "108023754768362642341"
+
+
+def _load_renderer() -> Any:
+    """Import kubernetes/render.py by path; it is a script, not a package."""
+    spec = importlib.util.spec_from_file_location("swarm_k8s_render", KUBERNETES / "render.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+render = _load_renderer()
+
+
+def documents(text: str) -> list[dict[str, Any]]:
+    return [doc for doc in yaml.safe_load_all(text) if doc]
+
+
+def by_kind(docs: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:
+    return [d for d in docs if d.get("kind") == kind]
+
+
+def one(docs: list[dict[str, Any]], kind: str, name: str | None = None) -> dict[str, Any]:
+    matches = [d for d in by_kind(docs, kind) if name is None or d["metadata"]["name"] == name]
+    assert len(matches) == 1, f"expected exactly one {kind} {name or ''}, got {len(matches)}"
+    return matches[0]
+
+
+def tenant_values(*argv: str) -> dict[str, str]:
+    """The values `kubernetes/apply.sh --tenant eng` actually renders with.
+
+    BUILT BY THE RENDERER, NOT BY THIS FILE. The dict used to be written out
+    here, key by key, which made the suite a second definition of what a tenant
+    namespace is -- and it had already drifted once: `NAMESPACE` read
+    `f"swarm-{TENANT}"` while the scheduler dispatched into `swarm-tenant-eng`,
+    so the tests asserted against the renderer's own mistake and agreed with
+    it. A hand-written fixture also cannot notice a placeholder ADDED to a
+    manifest: `render.substitute` would refuse the render, but only if some
+    test rendered that file, and only the ones listed here ever were.
+
+    Parsing the real arguments instead means every default in
+    `add_tenant_arguments` is exercised, and a new placeholder is supplied (or
+    fails loudly) exactly as it would be in production.
+    """
+    parser = argparse.ArgumentParser()
+    render.add_tenant_arguments(parser)
+    args = parser.parse_args(["--tenant", TENANT, "--project", PROJECT, *argv])
+    return render.tenant_values(args)
+
+
+@pytest.fixture(scope="module")
+def tenant_docs() -> list[dict[str, Any]]:
+    return documents(render.render_files(render.TENANT_FILES, tenant_values()))
+
+
+def render_job(profile: str = "browser", **overrides: Any) -> dict[str, Any]:
+    argv = [
+        "job",
+        "--tenant",
+        TENANT,
+        "--profile",
+        profile,
+        "--task",
+        overrides.get("task", "task_9f3a"),
+        "--attempt",
+        overrides.get("attempt", "att_7b21"),
+        "--lease",
+        overrides.get("lease", "lease_c4"),
+        "--generation",
+        str(overrides.get("generation", 3)),
+    ]
+    import io
+    import contextlib
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        render.main(argv)
+    docs = documents(buffer.getvalue())
+    assert len(docs) == 1
+    return docs[0]
+
+
+# ---------------------------------------------------------------------------
+# The namespace
+# ---------------------------------------------------------------------------
+
+
+def test_the_namespace_carries_the_labels_every_other_component_selects_on(tenant_docs):
+    ns = one(tenant_docs, "Namespace")
+    labels = ns["metadata"]["labels"]
+    # scripts/status.sh and scripts/configure-kubectl.sh select on this exact
+    # value, and scripts/register-tenant.sh re-applies it with --overwrite on
+    # every run. Choosing a different one here would flip-flop the label.
+    assert labels["managed-by"] == "swarm-terraform"
+    # The reconciler's namespace GC requires the tenant label alongside it.
+    assert labels["swarm-tenant"] == TENANT
+    # The admission policy bindings select namespaces on this.
+    assert labels["app.kubernetes.io/part-of"] == "swarm"
+
+
+def test_the_namespace_is_gc_eligible_by_the_reconcilers_own_rule(tenant_docs):
+    """The manifest and the reconciler must agree about what it may collect."""
+    from reconciler.backends import is_namespace_gc_eligible, is_swarm_managed
+
+    labels = one(tenant_docs, "Namespace")["metadata"]["labels"]
+    assert is_swarm_managed(labels)
+    assert is_namespace_gc_eligible(labels)
+
+
+def test_pod_security_admission_enforces_restricted_by_default(tenant_docs):
+    """The browser profile runs Chromium with its own sandbox off, on the
+    argument that the isolation is the pod. That argument is only true while the
+    pod controls are ENFORCED rather than audited, so this label is load-bearing
+    for the one profile that runs on this path."""
+    labels = one(tenant_docs, "Namespace")["metadata"]["labels"]
+    assert labels["pod-security.kubernetes.io/enforce"] == "restricted"
+    assert labels["pod-security.kubernetes.io/audit"] == "restricted"
+    assert labels["pod-security.kubernetes.io/warn"] == "restricted"
+
+
+def test_lowering_enforcement_stays_possible_for_an_incident(tenant_docs):
+    """`baseline` is an escape hatch, not a setting to leave in place -- and
+    audit and warn stay at `restricted` when it is used, so lowering enforcement
+    leaves a trail."""
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        render.main(["tenant", "--tenant", TENANT, "--pss-enforce", "baseline"])
+    labels = one(documents(buffer.getvalue()), "Namespace")["metadata"]["labels"]
+    assert labels["pod-security.kubernetes.io/enforce"] == "baseline"
+    assert labels["pod-security.kubernetes.io/audit"] == "restricted"
+
+
+def test_the_dispatchers_gke_manifest_satisfies_restricted():
+    """The namespace enforces `restricted`, so a dispatcher manifest that does
+    not satisfy it produces Pending pods for every browser task -- a failure that
+    reads as a scheduling problem. Checking the dispatcher's OWN manifest here is
+    what makes a regression on that side fail in CI instead of in a cluster.
+
+    `apps/scheduler` belongs to another track; this only reads it.
+    """
+    from scheduler.dispatch import CONTAINER_SECURITY_CONTEXT, POD_SECURITY_CONTEXT
+
+    assert POD_SECURITY_CONTEXT["runAsNonRoot"] is True
+    assert POD_SECURITY_CONTEXT["runAsUser"] == 10001
+    assert POD_SECURITY_CONTEXT["seccompProfile"]["type"] == "RuntimeDefault"
+
+    assert CONTAINER_SECURITY_CONTEXT["allowPrivilegeEscalation"] is False
+    assert CONTAINER_SECURITY_CONTEXT["privileged"] is False
+    assert CONTAINER_SECURITY_CONTEXT["runAsNonRoot"] is True
+    assert CONTAINER_SECURITY_CONTEXT["capabilities"]["drop"] == ["ALL"]
+    assert CONTAINER_SECURITY_CONTEXT["seccompProfile"]["type"] == "RuntimeDefault"
+
+    # The Job template this directory owns must set the same fields, or the two
+    # paths would be hardened differently for the same workload.
+    spec = render_job("browser")["spec"]["template"]["spec"]
+    assert spec["securityContext"]["runAsNonRoot"] is True
+    assert spec["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+    container = spec["containers"][0]["securityContext"]
+    assert container["allowPrivilegeEscalation"] is False
+    assert container["capabilities"]["drop"] == ["ALL"]
+
+
+# ---------------------------------------------------------------------------
+# Quota and limits
+# ---------------------------------------------------------------------------
+
+
+def test_the_quota_forbids_everything_a_worker_never_creates(tenant_docs):
+    hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
+    for forbidden in (
+        "count/services",
+        "count/deployments.apps",
+        "count/statefulsets.apps",
+        "count/daemonsets.apps",
+        "count/cronjobs.batch",
+    ):
+        assert hard[forbidden] == "0", forbidden
+    assert int(hard["pods"]) > 0
+
+
+def test_the_quota_admits_one_cache_claim_per_job_on_the_cache_class_alone(tenant_docs):
+    """CACHE-PVC: every worker pod's `cache` is a generic ephemeral volume, whose
+    PVC the ephemeral-volume controller creates in the tenant's namespace and
+    which the quota counts. At `count/persistentvolumeclaims: "0"` every pod
+    would wait forever for a claim the API server refused to create.
+
+    One claim per Job, not per running pod: the claim is the POD's, deleted with
+    it, and a finished Job keeps its pod for ttlSecondsAfterFinished (an hour),
+    which is exactly why count/jobs.batch is 200 against 100 pods. Storage is
+    held to that many CACHE_VOLUME_GIB claims on CACHE_STORAGE_CLASS, and every
+    other class Autopilot ships is held to no claim at all.
+
+    MUTATION: put `count/persistentvolumeclaims` back to "0", or size the storage
+    from the pods quota, and this fails.
+    """
+    from scheduler.dispatch import CACHE_STORAGE_CLASS, CACHE_VOLUME_GIB
+
+    hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
+    jobs = int(hard["count/jobs.batch"])
+    storage = f"{jobs * CACHE_VOLUME_GIB}Gi"
+
+    assert hard["count/persistentvolumeclaims"] == str(jobs)
+    assert hard["requests.storage"] == storage
+    scoped = f"{CACHE_STORAGE_CLASS}.storageclass.storage.k8s.io"
+    assert hard[f"{scoped}/persistentvolumeclaims"] == str(jobs)
+    assert hard[f"{scoped}/requests.storage"] == storage
+    for other in ("standard", "standard-rwo", "premium-rwo"):
+        assert hard[f"{other}.storageclass.storage.k8s.io/persistentvolumeclaims"] == "0", other
+
+
+def test_the_cache_storage_class_is_pd_balanced_deleted_and_bound_at_first_consumer(policy_docs):
+    """CACHE-PVC: no StorageClass existed in terraform/ or kubernetes/, so this
+    repository adds one, applied with the cluster-scoped policies
+    (`kubernetes/apply.sh --policies`). Delete, so a disk never outlives its
+    pod; WaitForFirstConsumer, so the disk is made in the zone the pod landed
+    in, not one Autopilot then has to schedule the pod into."""
+    from scheduler.dispatch import CACHE_STORAGE_CLASS
+
+    assert "storage/cache-storage-class.yaml" in render.POLICY_FILES
+    sc = one(policy_docs, "StorageClass", CACHE_STORAGE_CLASS)
+    assert sc["provisioner"] == "pd.csi.storage.gke.io"
+    assert sc["parameters"]["type"] == "pd-balanced"
+    assert sc["reclaimPolicy"] == "Delete"
+    assert sc["volumeBindingMode"] == "WaitForFirstConsumer"
+    assert sc["metadata"]["labels"]["managed-by"] == "swarm-terraform"
+
+
+def test_the_cache_storage_class_formats_xfs_and_the_quota_counts_it(policy_docs, tenant_docs):
+    """archived issue 4061: the cache's ext4 default gave a 20 GiB disk 16 KiB per inode,
+    1,310,720 inodes, and a run of small files used every one with 14 GB
+    free. xfs allocates inodes as files are made, so the disk runs out of
+    space before it runs out of inodes. StorageClass parameters are immutable,
+    so the fix is a NEW class: the retired one is still applied, unchanged,
+    for the claims running pods already hold, and the quota and the
+    dispatcher name the new one.
+
+    MUTATION: drop the fstype line, or leave CACHE_STORAGE_CLASS on the
+    retired class, and this fails.
+    """
+    from scheduler.dispatch import CACHE_STORAGE_CLASS, RETIRED_CACHE_STORAGE_CLASS
+
+    sc = one(policy_docs, "StorageClass", CACHE_STORAGE_CLASS)
+    assert sc["parameters"]["csi.storage.k8s.io/fstype"] == "xfs"
+    assert CACHE_STORAGE_CLASS != RETIRED_CACHE_STORAGE_CLASS
+    old = one(policy_docs, "StorageClass", RETIRED_CACHE_STORAGE_CLASS)
+    assert "csi.storage.k8s.io/fstype" not in old["parameters"]
+    assert old["parameters"]["type"] == sc["parameters"]["type"]
+    hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
+    assert f"{CACHE_STORAGE_CLASS}.storageclass.storage.k8s.io/persistentvolumeclaims" in hard
+
+
+def test_the_dispatcher_needs_no_claim_permission_for_the_cache(tenant_docs):
+    """The cache's PVC is created by the ephemeral-volume controller from the pod
+    spec, under the controller's own identity, so the scheduler that creates
+    the Job is granted nothing new -- and must not be: a Role that may create
+    claims could create one on any class."""
+    rules = one(tenant_docs, "Role", "swarm-dispatcher")["rules"]
+    granted = {r for rule in rules for r in rule["resources"]}
+    assert "persistentvolumeclaims" not in granted, granted
+    assert granted == {"jobs", "pods", "pods/log", "events"}, granted
+
+
+def test_every_tenant_namespace_gets_the_owners_flat_quota(tenant_docs):
+    """Owner decision 2026-10-07 (contract request 53): flat for every tenant,
+    100 pods to match the GKE_AUTOPILOT backend ceiling of 100. It was 8 pods
+    and 64 vCPU, which held a tenant to 8 GKE pods whatever the pools admitted.
+
+    MUTATION: put any default in render.py's `add_tenant_arguments` back to its
+    old value (8, 64, 128Gi, 320Gi) and this fails naming the resource.
+    """
+    hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
+    expected = {"pods": "100", "cpu": "400", "memory": "800Gi", "ephemeral-storage": "1000Gi"}
+
+    assert hard["pods"] == expected["pods"]
+    for resource in ("cpu", "memory", "ephemeral-storage"):
+        assert hard[f"requests.{resource}"] == expected[resource], resource
+    for resource in ("memory", "ephemeral-storage"):
+        assert hard[f"limits.{resource}"] == expected[resource], resource
+    # MUTATION: render `limits.cpu` from __QUOTA_CPU__ again in
+    # tenant-namespace.yaml and this reads 400, not 800.
+    assert hard["limits.cpu"] == "800"
+
+
+def _cores(quantity: str) -> float:
+    """A Kubernetes CPU quantity ("8000m", "8", 8) in cores."""
+    text = str(quantity)
+    return int(text[:-1]) / 1000 if text.endswith("m") else float(text)
+
+
+def _live_pod(rc: Any) -> list[dict[str, Any]]:
+    """Every container of a live-browser pod of class `rc`, as the dispatcher renders it."""
+    job = {"spec": {"template": {"metadata": {"labels": {}}, "spec": {
+        "containers": [{"name": "worker", "image": "agent-runtime-browser@sha256:" + "0" * 64,
+                        "volumeMounts": [], "env": []}],
+        "volumes": [],
+    }}}}
+    spec = with_live_display(job, rc=rc)["spec"]["template"]["spec"]
+    return spec["containers"] + spec.get("initContainers", [])
+
+
+def _pod_cpu_shapes() -> list[tuple[str, float, float]]:
+    """(what, CPU request, CPU limit) of every GKE pod shape the dispatcher renders:
+    each class's plain worker pod and each class's live-browser pod, summed
+    over its containers (the display is a native sidecar, so it runs beside
+    the worker and the quota and the LimitRange count both)."""
+    shapes = [(f"{name} worker", rc.cpu, rc.cpu_limit_cores) for name, rc in RESOURCE_CLASSES.items()]
+    for name in LIVE_DISPLAY_SHARE:
+        containers = _live_pod(RESOURCE_CLASSES[name])
+        shapes.append((
+            f"{name} live",
+            sum(_cores(c["resources"]["requests"]["cpu"]) for c in containers),
+            sum(_cores(c["resources"]["limits"]["cpu"]) for c in containers),
+        ))
+    return shapes
+
+
+def test_quota_memory_and_disk_limits_equal_requests_and_cpu_limits_are_the_burst_ratio(tenant_docs):
+    """Memory and disk are request == limit on every container (invariant 7),
+    so their quota lines are the same number. CPU bursts to at most
+    CPU_BURST_MAX_RATIO x its request (contract request RS-1), so limits.cpu
+    must be that multiple of requests.cpu: at limits.cpu == requests.cpu a
+    namespace ran out of limits.cpu at half the pods its requests admitted,
+    and a leased task's pod was refused with 'exceeded quota: limits.cpu'.
+
+    MUTATION: render `limits.cpu` from __QUOTA_CPU__ in tenant-namespace.yaml
+    and the CPU assertion fails, 400 against 800.
+    """
+    hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
+    for resource in ("memory", "ephemeral-storage"):
+        assert hard[f"requests.{resource}"] == hard[f"limits.{resource}"], resource
+    assert _cores(hard["limits.cpu"]) == CPU_BURST_MAX_RATIO * _cores(hard["requests.cpu"])
+
+
+def test_the_quota_never_runs_out_of_cpu_limits_before_cpu_requests(tenant_docs):
+    """The requests line is the one sized to the pods ceiling. For every pod
+    shape the dispatcher renders, the number of pods limits.cpu admits is at
+    least the number requests.cpu admits, so the limit is never what refuses
+    a pod a lease already paid for.
+
+    MUTATION: render `limits.cpu` from __QUOTA_CPU__ in tenant-namespace.yaml
+    and every bursting shape fails (standard worker: 50 pods by limits, 100
+    by requests).
+    """
+    hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
+    requests_cpu, limits_cpu = _cores(hard["requests.cpu"]), _cores(hard["limits.cpu"])
+    shapes = _pod_cpu_shapes()
+    assert len(shapes) == len(RESOURCE_CLASSES) + len(LIVE_DISPLAY_SHARE), shapes
+    for what, request, limit in shapes:
+        assert limits_cpu / limit >= requests_cpu / request, (what, request, limit, hard)
+
+
+def test_the_quota_fits_the_pod_ceiling_of_every_gke_profile(tenant_docs):
+    """100 pods (the GKE_AUTOPILOT ceiling, owner 2026-10-07) of every GKE
+    profile's class fit both CPU lines: the request at 4 cores, the limit at
+    8 (claude-code, the canary's profile, is `standard`).
+
+    MUTATION: render `limits.cpu` from __QUOTA_CPU__ in tenant-namespace.yaml
+    and claude-code's 100 pods need 800 cores of a 400-core limits line.
+    """
+    hard = one(tenant_docs, "ResourceQuota")["spec"]["hard"]
+    pods = int(hard["pods"])
+    gke = {p.resource_class for p in RUNNER_PROFILES.values() if p.backend.value == "GKE_AUTOPILOT"}
+    assert "standard" in gke, gke
+    # The ceiling is in UNITS: every pool admission charges counts a task at
+    # its class's units (contract request 79), so the 100 the GKE_AUTOPILOT
+    # pool admits are 100 standard pods or 25 `large` ones (4 units each,
+    # claude-code-large since contract request 113), never 100 of them.
+    for name in sorted(gke):
+        rc = RESOURCE_CLASSES[name]
+        admitted = pods // rc.units
+        # MUTATION: drop `// rc.units` and `large` needs 800 cores of a 400-core line.
+        assert admitted * rc.cpu <= _cores(hard["requests.cpu"]), name
+        assert admitted * rc.cpu_limit_cores <= _cores(hard["limits.cpu"]), name
+
+
+def test_the_limit_range_default_cannot_produce_a_burstable_pod(tenant_docs):
+    """A default request below the default limit is the OOM-kill configuration.
+
+    It is also invisible: a pod that omits resources entirely inherits both
+    numbers from here, so if they differ, invariant 7 is broken for every pod
+    this repository did not write.
+    """
+    container = next(
+        item
+        for item in one(tenant_docs, "LimitRange")["spec"]["limits"]
+        if item["type"] == "Container"
+    )
+    assert container["default"] == container["defaultRequest"]
+
+
+def test_the_limit_range_ceiling_fits_the_frozen_resource_classes(tenant_docs):
+    container = next(
+        item
+        for item in one(tenant_docs, "LimitRange")["spec"]["limits"]
+        if item["type"] == "Container"
+    )
+    largest_cpu = max(rc.cpu for rc in RESOURCE_CLASSES.values())
+    largest_memory = max(rc.memory_gib for rc in RESOURCE_CLASSES.values())
+    assert float(container["max"]["cpu"]) >= largest_cpu
+    assert int(container["max"]["memory"].removesuffix("Gi")) >= largest_memory
+
+
+def test_the_limit_range_ceiling_admits_every_rendered_cpu_limit(tenant_docs):
+    """LimitRange `max` binds the LIMIT, and a CPU limit is now up to
+    CPU_BURST_MAX_RATIO x the request (RS-1): `large` renders 16 cores. A
+    ceiling sized to the requests (8) has the API server refuse that pod.
+
+    MUTATION: put Container `max.cpu` back to "8" in tenant-namespace.yaml and
+    the container assertion fails for `large` (16); put Pod `max.cpu` back to
+    "8" and the pod assertion fails for the large worker pod (16).
+    """
+    limits = one(tenant_docs, "LimitRange")["spec"]["limits"]
+    container = next(item for item in limits if item["type"] == "Container")
+    pod = next(item for item in limits if item["type"] == "Pod")
+
+    container_limits = [("worker " + name, rc.cpu_limit_cores) for name, rc in RESOURCE_CLASSES.items()]
+    for name in LIVE_DISPLAY_SHARE:
+        container_limits += [(f"{name} live {c['name']}", _cores(c["resources"]["limits"]["cpu"]))
+                             for c in _live_pod(RESOURCE_CLASSES[name])]
+    for what, limit in container_limits:
+        assert _cores(container["max"]["cpu"]) >= limit, (what, limit)
+    for what, _request, limit in _pod_cpu_shapes():
+        assert _cores(pod["max"]["cpu"]) >= limit, (what, limit)
+
+
+# ---------------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------------
+
+
+def test_no_service_account_mounts_a_kubernetes_api_token(tenant_docs):
+    accounts = by_kind(tenant_docs, "ServiceAccount")
+    assert accounts, "the tenant namespace must define its service accounts"
+    for account in accounts:
+        assert account.get("automountServiceAccountToken") is False, account["metadata"]["name"]
+
+
+def test_the_default_service_account_is_disarmed_too(tenant_docs):
+    """A pod created by hand during an incident is exactly when `default` gets
+    used, so it cannot be left with a mounted token."""
+    default = one(tenant_docs, "ServiceAccount", "default")
+    assert default["automountServiceAccountToken"] is False
+
+
+def _tenant_render(*argv: str) -> list[dict[str, Any]]:
+    """What `render.py tenant` prints for eng, through `main()` -- the path
+    `kubernetes/apply.sh` takes, flags and all."""
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        render.main(["tenant", "--tenant", TENANT, "--project", PROJECT, *argv])
+    return documents(buffer.getvalue())
+
+
+def _service_account_subjects(docs: list[dict[str, Any]]) -> set[str]:
+    return {
+        subject["name"]
+        for binding in by_kind(docs, "RoleBinding")
+        for subject in binding.get("subjects", [])
+        if subject.get("kind") == "ServiceAccount"
+    }
+
+
+#: The older worker KSA, as `scripts/register-tenant.sh` spells it in KSAS.
+#: Written out rather than read from the renderer: it is the name that is (or
+#: is not) bound in IAM, which is a fact outside this repository's control.
+OLDER_KSA = "swarm-worker"
+
+
+def test_the_older_ksa_is_not_rendered_where_nothing_binds_it():
+    """`swarm-worker` in a namespace whose GSA does not bind it is an account
+    that carries the Workload Identity annotation and gets no Google identity.
+
+    MEASURED 2026-09-25 on eng, a terraform tenant: the only
+    roles/iam.workloadIdentityUser member on swarm-agent-worker-eng@ is
+    `[swarm-tenant-eng/swarm-agent-worker]`, and no pod or Job in
+    swarm-tenant-eng names `swarm-worker`. The renderer created it anyway, for
+    every tenant, because nothing told it which KSAs were bound.
+
+    A render with no `--bound-ksa` is a render for a namespace where nothing is
+    known to be bound, so it must carry neither the account nor a RoleBinding
+    subject for it -- while the account the dispatcher runs its pods as stays.
+
+    THE MUTATION THIS CATCHES: put `swarm-worker` back into
+    service-accounts/worker-serviceaccount.yaml, or make `tenant_files` include
+    the older identity unconditionally.
+    """
+    docs = _tenant_render()
+    accounts = {a["metadata"]["name"] for a in by_kind(docs, "ServiceAccount")}
+    assert OLDER_KSA not in accounts, (
+        f"{OLDER_KSA} was rendered for a namespace where nothing binds it: {sorted(accounts)}"
+    )
+    assert OLDER_KSA not in _service_account_subjects(docs), (
+        f"a RoleBinding still names {OLDER_KSA}, which this render does not create"
+    )
+    assert render.DEFAULT_KSA_NAME in accounts
+
+
+def test_the_older_ksa_is_rendered_where_its_binding_exists():
+    """Where the binding exists -- a tenant `scripts/register-tenant.sh`
+    provisioned, which binds both names -- the account is still created, with
+    the same hardening as every other worker account, and still bound to the
+    empty worker Role so the namespace's RBAC names every account a pod could
+    run as.
+    """
+    docs = _tenant_render("--bound-ksa", render.DEFAULT_KSA_NAME, "--bound-ksa", OLDER_KSA)
+    account = one(docs, "ServiceAccount", OLDER_KSA)
+    assert account["automountServiceAccountToken"] is False
+    annotation = account["metadata"]["annotations"]["iam.gke.io/gcp-service-account"]
+    assert annotation == f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com"
+    assert account["metadata"]["namespace"] == f"{render.NAMESPACE_PREFIX}{TENANT}"
+
+    bound_to_worker_role = {
+        subject["name"]
+        for binding in by_kind(docs, "RoleBinding")
+        if binding["roleRef"]["kind"] == "Role" and binding["roleRef"]["name"] == "swarm-worker"
+        for subject in binding.get("subjects", [])
+    }
+    assert OLDER_KSA in bound_to_worker_role
+
+    # Bound to something ELSE is not bound: only the older name is conditional,
+    # and an unrelated bound KSA must not pull it in.
+    unrelated = _tenant_render("--bound-ksa", render.DEFAULT_KSA_NAME, "--bound-ksa", "swarm-eng")
+    assert OLDER_KSA not in {a["metadata"]["name"] for a in by_kind(unrelated, "ServiceAccount")}
+
+
+def test_a_bound_ksa_name_is_validated_before_it_is_used():
+    """`--bound-ksa` decides which documents are rendered, so it is held to the
+    same pattern as every other KSA name that reaches this renderer."""
+    with pytest.raises(SystemExit) as raised:
+        _tenant_render("--bound-ksa", "swarm-worker\n  evil: true")
+    # Named, not merely an exit: argparse's own exit for an unknown flag is a
+    # SystemExit too, and that is what this raised before the flag existed.
+    assert "--bound-ksa" in str(raised.value), str(raised.value)
+
+
+def test_the_older_ksa_is_one_register_tenant_binds():
+    """The conditional is only honest if the name it waits for is the name the
+    one provisioning path that binds it actually binds."""
+    text = (REPO / "scripts" / "register-tenant.sh").read_text()
+    match = re.search(r"^KSAS=\(([^)]*)\)", text, re.M)
+    assert match, "no KSAS=(...) array in scripts/register-tenant.sh"
+    bound = set(re.findall(r'"([^"]+)"', match.group(1)))
+    assert render.LEGACY_KSA_NAME == OLDER_KSA
+    assert {OLDER_KSA, render.DEFAULT_KSA_NAME} <= bound, sorted(bound)
+
+
+def test_register_tenant_binds_before_it_renders():
+    """apply.sh renders `swarm-worker` only where IAM already binds it, so
+    `register-tenant.sh` has to issue its Workload Identity bindings BEFORE it
+    calls apply.sh -- otherwise a tenant's first registration renders the
+    namespace without the account the script is about to bind, and the account
+    only appears on some later re-apply.
+
+    Checked on the script's text, not by running it: the Kubernetes branch runs
+    only against a reachable cluster, and what has to hold is an ordering of two
+    statements in one branch.
+    """
+    text = (REPO / "scripts" / "register-tenant.sh").read_text()
+    bind = text.find("--role roles/iam.workloadIdentityUser")
+    apply = text.find('"${APPLY_SH}" "${APPLY_ARGS[@]}"')
+    assert bind != -1, "register-tenant.sh no longer issues a workloadIdentityUser binding"
+    assert apply != -1, "register-tenant.sh no longer calls kubernetes/apply.sh"
+    assert bind < apply, (
+        "register-tenant.sh calls kubernetes/apply.sh before it binds the KSAs, so the "
+        "render cannot see the bindings it decides the older KSA by"
+    )
+
+
+def test_the_identity_apply_reads_bindings_for_is_the_one_the_render_annotates(tenant_docs):
+    """apply.sh reads Workload Identity bindings off the tenant GSA and asks the
+    renderer which GSA that is (`render.py identity`) rather than deriving the
+    name a second time. Held to the render itself: the namespace, the GSA the
+    dispatcher's KSA is annotated with, and that KSA's name.
+    """
+    import contextlib
+    import io
+
+    def identity(*argv: str) -> list[str]:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            render.main(["identity", "--tenant", TENANT, "--project", PROJECT, *argv])
+        return buffer.getvalue().split()
+
+    namespace, gsa, ksa = identity()
+    assert namespace == one(tenant_docs, "Namespace")["metadata"]["name"]
+    assert ksa == render.DEFAULT_KSA_NAME
+    account = one(tenant_docs, "ServiceAccount", ksa)
+    assert gsa == account["metadata"]["annotations"]["iam.gke.io/gcp-service-account"]
+
+    # register-tenant.sh passes --gsa; the identity follows it.
+    custom = f"custom-{TENANT}@{PROJECT}.iam.gserviceaccount.com"
+    assert identity("--gsa", custom)[1] == custom
+
+
+def test_every_worker_service_account_is_bound_to_workload_identity(tenant_docs):
+    for account in by_kind(tenant_docs, "ServiceAccount"):
+        if account["metadata"]["name"] == "default":
+            continue
+        annotation = account["metadata"]["annotations"]["iam.gke.io/gcp-service-account"]
+        assert annotation.endswith(f"@{PROJECT}.iam.gserviceaccount.com")
+
+
+def test_workers_are_granted_no_kubernetes_api_access_at_all(tenant_docs):
+    # NAMED, because the namespace now holds three Roles: the worker's (empty,
+    # below), and the control plane's swarm-dispatcher / swarm-reaper added
+    # with rbac/dispatcher-rbac.yaml. An unnamed `one()` used to be
+    # unambiguous and silently became "assert there is only one Role".
+    role = one(tenant_docs, "Role", "swarm-worker")
+    # `not`, not `== []`: the manifest OMITS `rules` rather than writing an
+    # empty list, because the API server stores [] as null and client-side apply
+    # then re-sends [] on every run -- see
+    # test_nothing_apply_sends_carries_an_empty_list_the_api_server_drops.
+    assert not role.get("rules"), "a worker needs nothing from the Kubernetes API"
+
+
+def test_the_reaper_reads_events_and_gains_nothing_else(tenant_docs):
+    """A Job refused its pod leaves no pod to read, only the Job controller's
+    `FailedCreate` event; the reconciler reads it when this Role lets it, and
+    otherwise asks once and stays quiet (`GkeBackend._failed_create`).
+
+    EXACT, not a subset check: `get` and `list` on core `events` are the whole
+    addition -- no `watch`, no write, nothing else new -- and only in the
+    namespace the Role already lives in (it is a Role, rendered per tenant
+    namespace; `test_nothing_here_is_cluster_scoped` holds the rest).
+
+    MUTATION: drop the events rule from swarm-reaper, or add `watch` to it,
+    and this names the Role's rules.
+    """
+    role = one(tenant_docs, "Role", "swarm-reaper")
+    assert role["metadata"]["namespace"].startswith("swarm-tenant-"), role["metadata"]
+    rules = [(tuple(r["apiGroups"]), tuple(r["resources"]), tuple(r["verbs"])) for r in role["rules"]]
+    assert rules == [
+        (("batch",), ("jobs",), ("get", "list", "watch", "delete")),
+        (("",), ("pods",), ("get", "list", "watch", "delete")),
+        (("",), ("events",), ("get", "list")),
+    ], rules
+
+
+def test_nothing_here_is_cluster_scoped(tenant_docs):
+    kinds = {d["kind"] for d in tenant_docs}
+    assert "ClusterRole" not in kinds
+    assert "ClusterRoleBinding" not in kinds
+
+
+@pytest.mark.parametrize(
+    "bound", [(), ("swarm-agent-worker", "swarm-worker")], ids=["nothing-bound", "older-ksa-bound"]
+)
+def test_the_role_binding_covers_every_account_a_pod_could_use(bound):
+    """Every ServiceAccount in the namespace that a pod could run as, DERIVED
+    from what was rendered rather than listed again here -- in both shapes a
+    tenant render takes, with and without the older `swarm-worker` identity.
+
+    The empty `swarm-worker` Role is what makes a worker pod hold no Kubernetes
+    API access at all. An account created but left out of the binding is not a
+    loophole -- it is bound to nothing, so it has nothing -- but it is a
+    divergence between the files, and the list of names here had already gone
+    stale once against `__KSA_NAME__`. The reverse, a subject naming an account
+    the render does not create, is worse: it binds whatever someone later
+    creates under that name.
+    """
+    argv = [arg for name in bound for arg in ("--bound-ksa", name)]
+    docs = _tenant_render(*argv)
+    subjects = {
+        subject["name"]
+        for binding in by_kind(docs, "RoleBinding")
+        if binding["roleRef"]["kind"] == "Role" and binding["roleRef"]["name"] == "swarm-worker"
+        for subject in binding.get("subjects", [])
+    }
+    created = {
+        a["metadata"]["name"]
+        for a in by_kind(docs, "ServiceAccount")
+        # `default` is deliberately not bound: no pod should run as it, and
+        # binding it would grant whatever it is that nothing may have.
+        if a["metadata"]["name"] != "default"
+    }
+    assert subjects == created, (
+        f"the worker Role is bound to {sorted(subjects)} but the render creates "
+        f"{sorted(created)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Network
+# ---------------------------------------------------------------------------
+
+
+def test_the_default_policy_denies_both_directions(tenant_docs):
+    policy = one(tenant_docs, "NetworkPolicy", "swarm-default-deny")
+    assert policy["spec"]["podSelector"] == {}
+    assert set(policy["spec"]["policyTypes"]) == {"Ingress", "Egress"}
+    # The absence of these keys is the denial. An empty list would also deny,
+    # but a key present is a key someone appends to.
+    assert "ingress" not in policy["spec"]
+    assert "egress" not in policy["spec"]
+
+
+def test_no_policy_ever_allows_ingress(tenant_docs):
+    """A worker listens on nothing, so every inbound connection is a mistake."""
+    for policy in by_kind(tenant_docs, "NetworkPolicy"):
+        assert not policy["spec"].get("ingress"), policy["metadata"]["name"]
+
+
+def test_egress_is_allowed_to_every_pod_not_just_labelled_ones(tenant_docs):
+    """The dispatcher labels its pods `swarm-task`/`swarm-tenant` and nothing
+    else. An egress policy keyed on any other label would match no pod, leave
+    the default deny in force, and break every browser task with a DNS timeout.
+    """
+    policy = one(tenant_docs, "NetworkPolicy", "swarm-allow-worker-egress")
+    assert policy["spec"]["podSelector"] == {}
+
+
+# The egress policy carries four values that belong to the CLUSTER, not to this
+# repository: its pod range, its service range, the kube-dns Service IP and the
+# NodeLocal DNSCache address. They are INPUTS -- kubernetes/apply.sh reads each
+# one from the live cluster (kubernetes/cluster-network.sh says where) and
+# passes it -- so these tests render with inputs too, and assert that the
+# policy FOLLOWS them.
+#
+# Neither network below is swarm-autopilot's, on purpose. A test that rendered
+# with the live values would agree with a template that had them typed in,
+# which is the defect: on 2026-09-24 the live policy had been rendered from the
+# renderer's defaults (pods 10.0.0.0/8, services 34.118.224.0/20), and its only
+# DNS rule reached kube-dns PODS, which a Cloud DNS + NodeLocal DNSCache cluster
+# never sends a pod's query to. Every lookup a worker made was dropped, and the
+# worker ran 390 s without printing a byte.
+
+#: A cluster whose ranges are all private space.
+PRIVATE_NETWORK = {
+    "pod_cidr": "10.120.0.0/14",
+    "service_cidr": "10.124.0.0/20",
+    "cluster_dns_ip": "10.124.0.10",
+    "node_local_dns_ip": "169.254.20.10",
+}
+
+#: A cluster whose pod and service ranges are PUBLIC space, which no fixed
+#: `except` entry covers -- GKE Autopilot's DEFAULT service range is public --
+#: and whose node-local address is not GKE's usual one. A template with any of
+#: these typed in, or with 169.254.20.10 typed in, fails against this network.
+PUBLIC_NETWORK = {
+    "pod_cidr": "35.200.0.0/14",
+    "service_cidr": "34.118.224.0/20",
+    "cluster_dns_ip": "34.118.224.10",
+    "node_local_dns_ip": "169.254.25.10",
+}
+
+NETWORK_SOURCE = f"gke/{PROJECT}/us-central1/swarm-test"
+
+NETWORKS = pytest.mark.parametrize(
+    "network", [PRIVATE_NETWORK, PUBLIC_NETWORK], ids=["private", "public"]
+)
+
+#: The ranges excepted from the internet rule whatever the cluster is: every
+#: private range, link-local and carrier-grade NAT. Platform facts, not cluster
+#: facts, which is why they may be written into the template.
+ALWAYS_EXCEPTED = {
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "169.254.0.0/16",
+    "100.64.0.0/10",
+}
+
+#: The offline render's marker. Deliberately spelled out here rather than read
+#: from the renderer, so the test fails if the renderer stops saying it.
+OFFLINE_SOURCE = "offline-render-not-for-apply"
+
+
+def network_argv(network: dict[str, str]) -> list[str]:
+    return [
+        "--pod-cidr", network["pod_cidr"],
+        "--service-cidr", network["service_cidr"],
+        "--cluster-dns-ip", network["cluster_dns_ip"],
+        "--node-local-dns-ip", network["node_local_dns_ip"],
+        "--network-source", NETWORK_SOURCE,
+    ]
+
+
+def egress_policy(*argv: str) -> dict[str, Any]:
+    docs = documents(render.render_files(render.TENANT_FILES, tenant_values(*argv)))
+    return one(docs, "NetworkPolicy", "swarm-allow-worker-egress")
+
+
+def _ports(rule: dict[str, Any]) -> set[tuple[str, int]]:
+    return {(p.get("protocol", "TCP"), p["port"]) for p in rule.get("ports", [])}
+
+
+def _allows(rule: dict[str, Any], protocol: str, port: int) -> bool:
+    """A rule with no `ports` allows every port; otherwise the pair must be listed."""
+    return not rule.get("ports") or (protocol, port) in _ports(rule)
+
+
+def _ip_rules_reaching(policy: dict[str, Any], address: str) -> list[dict[str, Any]]:
+    """Every egress rule with an ipBlock peer that admits `address`."""
+    ip = ipaddress.ip_address(address)
+    found = []
+    for rule in policy["spec"]["egress"]:
+        for peer in rule.get("to", []):
+            block = peer.get("ipBlock")
+            if not block or ip not in ipaddress.ip_network(block["cidr"]):
+                continue
+            if any(ip in ipaddress.ip_network(e) for e in block.get("except", [])):
+                continue
+            found.append(rule)
+            break
+    return found
+
+
+@NETWORKS
+def test_dns_reaches_the_rendered_node_local_and_kube_dns_addresses(network):
+    """Pod DNS on this cluster goes to NodeLocal DNSCache, not to kube-dns pods.
+
+    swarm-autopilot runs Cloud DNS with NodeLocal DNSCache (Autopilot enables it
+    and it cannot be disabled). A pod's resolver is the hostNetwork
+    `node-local-dns` agent, which listens on the node-local address AND on the
+    kube-dns Service IP, and forwards to Cloud DNS -- never to the kube-dns
+    pods. So the rule that must exist is an ipBlock to both addresses on
+    UDP and TCP 53, with the addresses the cluster reported rather than any
+    written here.
+
+    THE DEFECT THIS PINS: the rendered policy had only the kube-dns podSelector
+    rule, which on this cluster matches no DNS traffic, and the renderer had no
+    way to be told either address.
+    """
+    policy = egress_policy(*network_argv(network))
+    for key in ("node_local_dns_ip", "cluster_dns_ip"):
+        address = network[key]
+        rules = _ip_rules_reaching(policy, address)
+        assert any(_allows(r, "UDP", 53) and _allows(r, "TCP", 53) for r in rules), (
+            f"no egress rule reaches {key}={address} on UDP and TCP 53; every name "
+            "lookup a worker makes is dropped, silently (anetd runs with "
+            "--policy-deny-response=none)"
+        )
+        # And the /32 that grants it opens DNS and nothing else: the node-local
+        # address is the NODE, and the kube-dns IP is a Service.
+        exact = [
+            r for r in rules
+            if any(p.get("ipBlock", {}).get("cidr") == f"{address}/32" for p in r.get("to", []))
+        ]
+        assert exact, f"{address}/32 is not an ipBlock peer of any rule"
+        for rule in exact:
+            assert _ports(rule) == {("UDP", 53), ("TCP", 53)}, (
+                f"the rule reaching {address}/32 opens {sorted(_ports(rule))}, not only DNS"
+            )
+
+
+def test_the_kube_dns_pod_selector_rule_is_kept(tenant_docs):
+    """The owner's decision (2026-09-24, form (a)) ADDS the ipBlock rule and keeps
+    this one: it is what reaches DNS on a cluster that does run kube-dns pods."""
+    policy = one(tenant_docs, "NetworkPolicy", "swarm-allow-worker-egress")
+    kube_dns = [
+        rule
+        for rule in policy["spec"]["egress"]
+        for peer in rule.get("to", [])
+        if peer.get("namespaceSelector", {}).get("matchLabels", {}).get("kubernetes.io/metadata.name")
+        == "kube-system"
+        and peer.get("podSelector", {}).get("matchLabels", {}).get("k8s-app") == "kube-dns"
+    ]
+    assert kube_dns, "the kube-dns podSelector rule is gone"
+    assert all(_ports(r) == {("UDP", 53), ("TCP", 53)} for r in kube_dns)
+
+
+def test_the_metadata_server_is_reached_on_the_ports_gke_documents_for_dataplane_v2(tenant_docs):
+    """169.254.169.254/32 on TCP 80 and 8080, and not 988.
+
+    GKE's network-policy doc, for Dataplane V2 clusters: "allow egress to
+    169.254.169.254/32 on ports 80 and 8080". Port 988 on .254 was here as "the
+    Workload Identity endpoint"; on this cluster the metadata server's 988 is on
+    169.254.169.252, and GKE lists .252:988 only for clusters WITHOUT Dataplane
+    V2. So .254:988 matched nothing, and the worker's one metadata request that
+    did arrive (2026-09-24, 22:56:14Z) came in on port 80.
+    """
+    policy = one(tenant_docs, "NetworkPolicy", "swarm-allow-worker-egress")
+    metadata = _ip_rules_reaching(policy, "169.254.169.254")
+    assert metadata, "Workload Identity tokens come from the metadata server"
+    ports = set().union(*(_ports(r) for r in metadata))
+    assert ports == {("TCP", 80), ("TCP", 8080)}, (
+        f"169.254.169.254 is reachable on {sorted(ports)}; GKE documents TCP 80 and "
+        "8080 for Dataplane V2, and 988 on this address matches nothing"
+    )
+
+
+@NETWORKS
+def test_the_internet_rule_carves_out_the_rendered_ranges_and_all_private_space(network):
+    """The cross-tenant hop is pod-to-pod, and it is carved out here.
+
+    NetworkPolicy has no selector for "not in this cluster", so an ipBlock with
+    an except list is the only way to say it. Two sets are excepted:
+
+      * every private, link-local and CGNAT range, ALWAYS. These used to arrive
+        through the pod-CIDR default (10.0.0.0/8); rendering the real pod range
+        instead must not quietly un-except the rest of 10/8 -- the nodes, and
+        everything else in the VPC.
+      * the cluster's own pod and service ranges, AS RENDERED. They are
+        redundant on a private cluster and the only protection on a public one
+        (the `public` case below).
+
+    Replaces a test that pinned 34.118.224.0/20 -- a value that is not this
+    cluster's, asserted against a default nothing overrode.
+    """
+    policy = egress_policy(*network_argv(network))
+    internet = [
+        peer["ipBlock"]
+        for rule in policy["spec"]["egress"]
+        for peer in rule.get("to", [])
+        if peer.get("ipBlock", {}).get("cidr") == "0.0.0.0/0"
+    ]
+    assert len(internet) == 1, f"expected one 0.0.0.0/0 peer, found {len(internet)}"
+    excepted = internet[0]["except"]
+    wanted = ALWAYS_EXCEPTED | {network["pod_cidr"], network["service_cidr"]}
+    assert wanted <= set(excepted), f"not excepted: {sorted(wanted - set(excepted))}"
+    assert len(excepted) == len(set(excepted)), f"duplicate except entries: {excepted}"
+
+    # The property, not just the spelling: no rule that is not a DNS rule
+    # admits any address of the pod or service range.
+    for key in ("pod_cidr", "service_cidr"):
+        probe = str(next(ipaddress.ip_network(network[key]).hosts()))
+        leaking = [
+            r for r in _ip_rules_reaching(policy, probe)
+            if not _ports(r) <= {("UDP", 53), ("TCP", 53)}
+        ]
+        assert not leaking, f"{key} address {probe} is reachable on {[_ports(r) for r in leaking]}"
+
+
+@NETWORKS
+def test_the_policy_records_the_network_it_was_rendered_for(network):
+    """`kubectl get netpol -o yaml` answers "rendered for which cluster?".
+
+    The live policy on 2026-09-24 could not: nothing on it said its ranges were
+    renderer defaults. scripts/lib/check-cluster-network-parity.sh compares these
+    annotations, and the spec, with the live cluster.
+    """
+    annotations = egress_policy(*network_argv(network))["metadata"].get("annotations") or {}
+    assert annotations.get(f"{LABEL_PREFIX}/network-source") == NETWORK_SOURCE
+    assert annotations.get(f"{LABEL_PREFIX}/pod-cidr") == network["pod_cidr"]
+    assert annotations.get(f"{LABEL_PREFIX}/service-cidr") == network["service_cidr"]
+    assert annotations.get(f"{LABEL_PREFIX}/cluster-dns-ip") == network["cluster_dns_ip"]
+    assert annotations.get(f"{LABEL_PREFIX}/node-local-dns-ip") == network["node_local_dns_ip"]
+
+
+def test_a_render_without_the_cluster_network_says_so(capsys):
+    """An OFFLINE render (make lint, CI's checkov, a hand-run look) cannot know the
+    cluster, and must not pretend to.
+
+    It renders documentation addresses (RFC 5737), marks the policy
+    `offline-render-not-for-apply`, and says so on stderr. The old behaviour was
+    to render 10.0.0.0/8 and 34.118.224.0/20 silently -- plausible values, for
+    some cluster -- and that is exactly what reached swarm-autopilot.
+    """
+    values = tenant_values()
+    assert values.get("NETWORK_SOURCE") == OFFLINE_SOURCE, (
+        "a render with no network inputs does not mark itself as offline"
+    )
+    documentation = [
+        ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")
+    ]
+    for key in ("POD_CIDR", "SERVICE_CIDR", "CLUSTER_DNS_IP", "NODE_LOCAL_DNS_IP"):
+        value = ipaddress.ip_network(values[key])
+        assert any(value.subnet_of(d) for d in documentation), (
+            f"offline {key}={values[key]} is not a documentation address; an offline "
+            "render must not carry a value that could pass for a real cluster's"
+        )
+
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        render.main(["tenant", "--tenant", TENANT])
+    assert OFFLINE_SOURCE in capsys.readouterr().err, "the offline render printed no warning"
+    policy = one(documents(buffer.getvalue()), "NetworkPolicy", "swarm-allow-worker-egress")
+    assert policy["metadata"]["annotations"][f"{LABEL_PREFIX}/network-source"] == OFFLINE_SOURCE
+
+
+def test_a_partial_network_is_refused():
+    """Half a network is the RC3 shape: some values from the cluster, the rest
+    from somewhere else. The renderer names what is missing."""
+    with pytest.raises(SystemExit) as raised:
+        tenant_values("--pod-cidr", PRIVATE_NETWORK["pod_cidr"])
+    assert "--cluster-dns-ip" in str(raised.value)
+
+
+def test_a_kube_dns_ip_outside_the_service_range_is_refused():
+    """The kube-dns Service IP is a ClusterIP, so it lies inside the service
+    range. One that does not is a swapped argument or a value from another
+    cluster, and rendering it would allow DNS to an address nothing answers."""
+    argv = network_argv({**PRIVATE_NETWORK, "cluster_dns_ip": "10.120.0.10"})
+    with pytest.raises(SystemExit) as raised:
+        tenant_values(*argv)
+    assert "service range" in str(raised.value)
+
+
+def test_no_cluster_address_is_typed_into_the_egress_template():
+    """The template may name platform facts -- private ranges, the metadata
+    server, the Google API VIPs -- and nothing that belongs to one cluster.
+
+    A cluster address typed in here would be rendered into every tenant of every
+    cluster, and would agree with the one cluster it was measured on for exactly
+    as long as nobody looked. Comments may cite measured values; YAML may not.
+    """
+    text = (KUBERNETES / "network-policies" / "allow-egress.yaml").read_text()
+    for token in ("POD_CIDR", "SERVICE_CIDR", "CLUSTER_DNS_IP", "NODE_LOCAL_DNS_IP"):
+        assert f"__{token}__" in text, f"__{token}__ is not rendered into the egress policy"
+
+    platform = ALWAYS_EXCEPTED | {
+        "0.0.0.0/0",
+        "169.254.169.254/32",
+        "199.36.153.4/30",
+        "199.36.153.8/30",
+    }
+    yaml_only = "\n".join(line.split("#", 1)[0] for line in text.splitlines())
+    literals = set(re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}(?:/\d{1,2})?\b", yaml_only))
+    assert literals <= platform, f"cluster addresses typed into the template: {sorted(literals - platform)}"
+
+
+# ---------------------------------------------------------------------------
+# Worker Job templates
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("profile", ["mock", "claude-code", "browser"])
+def test_a_rendered_job_never_asks_for_spot_capacity(profile):
+    job = render_job(profile)
+    spec = job["spec"]["template"]["spec"]
+    assert "tolerations" not in spec, "Spot and extended run time are incompatible"
+    assert "nodeSelector" not in spec
+
+
+@pytest.mark.parametrize("profile", ["mock", "claude-code", "browser"])
+def test_a_rendered_job_sets_memory_and_disk_requests_equal_to_limits(profile):
+    job = render_job(profile)
+    rc = RESOURCE_CLASSES[RUNNER_PROFILES[profile].resource_class]
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    requests, limits = container["resources"]["requests"], container["resources"]["limits"]
+    # Invariant 7 as amended by contract request RS-1 (SIZES-SCHED-1): memory
+    # and disk never burst; CPU requests the class and bursts to its limit.
+    assert requests["memory"] == limits["memory"]
+    assert requests["ephemeral-storage"] == limits["ephemeral-storage"]
+    # ...and the numbers come from the frozen catalogue, not from this file.
+    # MUTATION: render `__CPU__` on the templates' limits line and this reads "4000m".
+    assert requests["cpu"] == f"{int(rc.cpu * 1000)}m"
+    assert limits["cpu"] == f"{int(rc.cpu_limit_cores * 1000)}m"
+    assert container["resources"]["limits"]["memory"] == f"{rc.memory_gib}Gi"
+    # The pod's whole local disk -- workspace, /tmp and HOME -- is the
+    # dispatcher's number, not disk_gib (contract request 53).
+    assert container["resources"]["limits"]["ephemeral-storage"] == (
+        f"{gke_ephemeral_storage_gib(rc)}Gi"
+    )
+    workspace = next(
+        v for v in job["spec"]["template"]["spec"]["volumes"] if v["name"] == "workspace"
+    )
+    assert workspace["emptyDir"]["sizeLimit"] == f"{gke_disk(rc).workspace_gib}Gi"
+
+
+@pytest.mark.parametrize("profile", ["mock", "claude-code", "browser"])
+def test_a_rendered_job_never_overrides_the_container_command(profile):
+    """The image's ENTRYPOINT starts the WORKER, which validates the fencing
+    generation, restores a checkpoint and then starts the runner as a supervised
+    child. Overriding `command` with the profile's command starts the runner
+    directly -- no fencing check, no checkpointing, no heartbeat, no lease
+    release. The profile's command is the runner's entrypoint, not the
+    container's.
+    """
+    container = render_job(profile)["spec"]["template"]["spec"]["containers"][0]
+    assert "command" not in container
+    assert "args" not in container
+
+
+@pytest.mark.parametrize("profile", ["mock", "browser"])
+def test_a_rendered_job_refuses_kubernetes_level_retries(profile):
+    """A retry is a new attempt with a new generation, minted by the scheduler.
+    A Kubernetes retry re-runs the agent under the old one."""
+    job = render_job(profile)
+    assert job["spec"]["backoffLimit"] == 0
+    assert job["spec"]["template"]["spec"]["restartPolicy"] == "Never"
+
+
+@pytest.mark.parametrize("profile", ["mock", "browser"])
+def test_a_rendered_job_is_not_evictable_during_a_scale_down(profile):
+    job = render_job(profile)
+    annotation = "cluster-autoscaler.kubernetes.io/safe-to-evict"
+    assert job["metadata"]["annotations"][annotation] == "false"
+    assert job["spec"]["template"]["metadata"]["annotations"][annotation] == "false"
+
+
+@pytest.mark.parametrize("profile", ["mock", "browser"])
+def test_a_rendered_job_runs_non_root_with_no_capabilities(profile):
+    spec = render_job(profile)["spec"]["template"]["spec"]
+    assert spec["securityContext"]["runAsNonRoot"] is True
+    assert spec["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+    # uid 10001 is the user the runtime images create.
+    assert spec["securityContext"]["runAsUser"] == 10001
+    container = spec["containers"][0]
+    security = container["securityContext"]
+    assert security["allowPrivilegeEscalation"] is False
+    assert security["privileged"] is False
+    assert security["capabilities"]["drop"] == ["ALL"]
+    assert security["readOnlyRootFilesystem"] is True
+
+
+@pytest.mark.parametrize("profile", ["mock", "browser"])
+def test_a_read_only_root_still_has_somewhere_to_write(profile):
+    """readOnlyRootFilesystem is only safe if every path the toolchain writes to
+    is mounted. npm, uv and git all write under $HOME."""
+    spec = render_job(profile)["spec"]["template"]["spec"]
+    mounts = {m["mountPath"] for m in spec["containers"][0]["volumeMounts"]}
+    assert {"/workspace", "/tmp", "/home/swarm"} <= mounts
+    volumes = {v["name"] for v in spec["volumes"]}
+    assert {m["name"] for m in spec["containers"][0]["volumeMounts"]} <= volumes
+
+
+@pytest.mark.parametrize("profile", ["mock", "browser"])
+def test_a_rendered_job_mounts_no_api_token(profile):
+    spec = render_job(profile)["spec"]["template"]["spec"]
+    assert spec["automountServiceAccountToken"] is False
+
+
+def test_the_browser_job_sizes_dev_shm():
+    """Chromium's renderers talk through /dev/shm; the 64 MiB runtime default is
+    what makes headless Chrome crash under load, and Cloud Run cannot size it --
+    which is the whole reason the browser profile runs on GKE."""
+    spec = render_job("browser")["spec"]["template"]["spec"]
+    dshm = next(v for v in spec["volumes"] if v["name"] == "dshm")
+    assert dshm["emptyDir"]["medium"] == "Memory"
+    assert dshm["emptyDir"]["sizeLimit"] == "2Gi"
+    assert any(m["mountPath"] == "/dev/shm" for m in spec["containers"][0]["volumeMounts"])
+
+
+@pytest.mark.parametrize("profile", ["mock", "generic", "claude-code", "codex", "browser"])
+def test_no_rendered_job_puts_a_provider_key_in_the_containers_environment(profile):
+    """Not even the profiles that need one.
+
+    Every process in the container runs as uid 10001, so a variable in the
+    worker's environment is readable at /proc/1/environ by the runner child, by
+    anything the agent spawns and by a `cat` in a generic task. Projecting the
+    key here would hand it to all of them, and the env allowlist in
+    `workspace.child_env` cannot take back what PID 1 was started with.
+
+    The worker resolves the key itself, from Secret Manager, as the tenant's own
+    GSA -- see `lifecycle._build_child_env` -- and puts it only into the
+    environment of the single child that needs it.
+    """
+    container = render_job(profile)["spec"]["template"]["spec"]["containers"][0]
+    names = [entry["name"] for entry in container["env"]]
+    assert all("valueFrom" not in entry for entry in container["env"])
+    for secret_name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GIT_TOKEN"):
+        assert secret_name not in names
+
+
+def test_a_rendered_job_names_no_kubernetes_secret_because_none_is_created():
+    """`secretKeyRef` names a KUBERNETES Secret, and nothing in this repository
+    creates one: a tenant's provider key lives in Secret Manager as
+    `swarm-tenant-<tenant>-<provider>`, which the worker reads through Workload
+    Identity. A reference to a Secret that does not exist is not a leak, it is a
+    pod stuck in CreateContainerConfigError."""
+    expected = Tenant(
+        tenant_id=TENANT, kind="group", principal="eng@example.com", created_at=utcnow()
+    ).secret_name("anthropic")
+    assert expected == f"swarm-tenant-{TENANT}-anthropic"
+    for profile in ("claude-code", "browser"):
+        rendered = yaml.safe_dump(render_job(profile))
+        assert "secretKeyRef" not in rendered
+        assert expected not in rendered
+
+
+def test_the_mock_profile_needs_no_credential_at_all():
+    """Every smoke, concurrency and quota test runs `mock`. It must work for a
+    tenant that has registered no provider key, so its Job must reference no
+    secret."""
+    container = render_job("mock")["spec"]["template"]["spec"]["containers"][0]
+    assert all("valueFrom" not in entry for entry in container["env"])
+    assert RUNNER_PROFILES["mock"].provider is None
+
+
+def test_no_rendered_job_injects_a_gcs_prefix_the_worker_does_not_read():
+    """`WorkerConfig.from_env` never looks up GCS_PREFIX; the worker derives
+    `tenants/<tenant>/tasks/<task>/attempts/<attempt>` from identifiers it
+    already has. The value this template used to inject was `tenants/<tenant>`,
+    three levels short -- a dead variable that pointed an operator chasing
+    artifacts at the wrong path."""
+    for profile in ("mock", "browser"):
+        container = render_job(profile)["spec"]["template"]["spec"]["containers"][0]
+        assert "GCS_PREFIX" not in [entry["name"] for entry in container["env"]]
+
+
+def test_a_rendered_job_carries_the_identifiers_the_reconciler_reads():
+    """The reconciler matches an execution to a lease through these variables.
+
+    It reads them from the environment rather than from labels because a label
+    value has been through name sanitisation: `task_9f3a` becomes `task-9f3a`,
+    which matches no Firestore document, and an execution whose task cannot be
+    found is treated as an orphan and terminated.
+    """
+    from reconciler.backends import ATTEMPT_ENV, GENERATION_ENV, TASK_ENV, TENANT_ENV
+
+    container = render_job("browser")["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"]: e.get("value") for e in container["env"]}
+    assert env[TASK_ENV] == "task_9f3a"
+    assert env[ATTEMPT_ENV] == "att_7b21"
+    assert env[TENANT_ENV] == TENANT
+    assert env[GENERATION_ENV] == "3"
+
+
+def test_a_rendered_job_passes_no_image_command_or_sizing_from_a_caller():
+    """Invariant 10, checked at the manifest: the only caller-derived values in
+    the environment are identifiers."""
+    container = render_job("browser")["spec"]["template"]["spec"]["containers"][0]
+    env = {e["name"] for e in container["env"]}
+    for forbidden in ("IMAGE", "COMMAND", "ARGS", "CPU", "MEMORY", "RESOURCE_CLASS", "BACKEND"):
+        assert forbidden not in env
+
+
+# ---------------------------------------------------------------------------
+# Admission policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def policy_docs() -> list[dict[str, Any]]:
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        render.main(["policies"])
+    return documents(buffer.getvalue())
+
+
+#: The workspace deployer's policies (policies/workspace-provisioner-scope.yaml)
+#: are scoped by CALLER, not by namespace: a namespace selector would let the
+#: deployer escape by writing a namespace without the label. Each matches only
+#: requests by the deployer, which test_workspace_provisioner_scope.py holds
+#: equal to the subjects its ClusterRoleBinding names.
+_SCOPED_BY_CALLER = re.compile(r"^swarm-workspace-deployer-")
+
+
+def test_every_policy_is_bound_and_scoped_to_swarm_namespaces(policy_docs):
+    policies = {d["metadata"]["name"] for d in by_kind(policy_docs, "ValidatingAdmissionPolicy")}
+    bindings = by_kind(policy_docs, "ValidatingAdmissionPolicyBinding")
+    assert {b["spec"]["policyName"] for b in bindings} == policies
+    for binding in bindings:
+        if _SCOPED_BY_CALLER.match(binding["spec"]["policyName"]):
+            policy = one(policy_docs, "ValidatingAdmissionPolicy", binding["spec"]["policyName"])
+            conditions = policy["spec"]["matchConditions"]
+            assert [c["expression"].split(" in ")[0].strip() for c in conditions[:1]] == [
+                "request.userInfo.username"
+            ], "an unscoped binding must be scoped by its caller instead"
+            # The network policy content checks (archived issue 3941) narrow further, to the
+            # tenant namespaces by name; nothing may widen the caller's scope.
+            assert [c["expression"].strip() for c in conditions[1:]] in (
+                [], ["has(request.namespace) && request.namespace.startsWith('swarm-tenant-')"]
+            ), conditions
+            continue
+        selector = binding["spec"]["matchResources"]["namespaceSelector"]["matchLabels"]
+        assert selector == {"app.kubernetes.io/part-of": "swarm"}, (
+            "an unscoped binding would apply to other teams' namespaces in this "
+            "shared cluster"
+        )
+
+
+def test_the_hard_constraints_deny_and_fail_closed(policy_docs):
+    for name in ("swarm-worker-pod-constraints", "swarm-worker-job-constraints"):
+        policy = one(policy_docs, "ValidatingAdmissionPolicy", name)
+        assert policy["spec"]["failurePolicy"] == "Fail"
+        binding = one(policy_docs, "ValidatingAdmissionPolicyBinding", name)
+        assert binding["spec"]["validationActions"] == ["Deny"]
+
+
+def test_the_pod_hardening_policy_denies_and_fails_closed(policy_docs):
+    """It warned rather than denied while the dispatcher's manifest could not
+    satisfy it. That manifest now sets both securityContext blocks and mounts no
+    API token, so the check that the browser profile's `chromium_sandbox=False`
+    argument rests on is a refusal rather than a log line."""
+    policy = one(policy_docs, "ValidatingAdmissionPolicy", "swarm-worker-pod-hardening")
+    assert policy["spec"]["failurePolicy"] == "Fail"
+    binding = one(policy_docs, "ValidatingAdmissionPolicyBinding", "swarm-worker-pod-hardening")
+    assert "Deny" in binding["spec"]["validationActions"]
+    # Audit too: a pod created by a controller rather than by a person shows up
+    # only in the API server's audit log.
+    assert "Audit" in binding["spec"]["validationActions"]
+
+
+def test_the_hardening_policy_still_checks_every_field_restricted_requires(policy_docs):
+    policy = one(policy_docs, "ValidatingAdmissionPolicy", "swarm-worker-pod-hardening")
+    expressions = " ".join(v["expression"] for v in policy["spec"]["validations"])
+    for field in (
+        "automountServiceAccountToken",
+        "allowPrivilegeEscalation",
+        "capabilities",
+        "runAsNonRoot",
+        "seccompProfile",
+    ):
+        assert field in expressions
+
+
+def test_no_policy_in_this_directory_is_advisory_any_more(policy_docs):
+    """An admission policy that only warns is a control an operator believes
+    they have. Every binding here denies."""
+    for binding in by_kind(policy_docs, "ValidatingAdmissionPolicyBinding"):
+        actions = binding["spec"]["validationActions"]
+        assert "Deny" in actions, binding["metadata"]["name"]
+    for policy in by_kind(policy_docs, "ValidatingAdmissionPolicy"):
+        assert policy["spec"]["failurePolicy"] == "Fail", policy["metadata"]["name"]
+
+
+def test_each_policy_matches_exactly_one_kind(policy_docs):
+    """A policy's CEL is compiled against the schema of what it matches, so an
+    expression reaching `spec.template.spec` cannot also type-check against a
+    Pod. One kind per policy removes the question.
+
+    The one exception reads no schema at all: a policy whose every expression
+    reads `request` and never `object` has nothing to type-check per kind
+    (swarm-workspace-deployer-scope, which must see every kind the deployer
+    writes)."""
+    for policy in by_kind(policy_docs, "ValidatingAdmissionPolicy"):
+        spec = policy["spec"]
+        expressions = [v["expression"] for v in spec.get("variables", []) + spec["validations"]]
+        if not any(re.search(r"\b(object|oldObject)\b", e) for e in expressions):
+            continue
+        resources = {
+            resource
+            for rule in policy["spec"]["matchConstraints"]["resourceRules"]
+            for resource in rule["resources"]
+        }
+        assert len(resources) == 1, policy["metadata"]["name"]
+
+
+def test_spot_and_backoff_are_the_rules_that_deny(policy_docs):
+    pods = one(policy_docs, "ValidatingAdmissionPolicy", "swarm-worker-pod-constraints")
+    jobs = one(policy_docs, "ValidatingAdmissionPolicy", "swarm-worker-job-constraints")
+    pod_expressions = " ".join(v["expression"] for v in pods["spec"]["validations"])
+    job_expressions = " ".join(v["expression"] for v in jobs["spec"]["validations"])
+
+    assert "gke-spot" in pod_expressions and "gke-spot" in job_expressions
+    assert "gke-preemptible" in pod_expressions
+    assert "backoffLimit" in job_expressions
+    assert "hostPath" in pod_expressions
+    # Quantity comparison, not string equality: "4" and "4000m" are the same
+    # amount of CPU and different strings.
+    assert "quantity(" in pod_expressions
+
+
+def test_cpu_may_burst_to_twice_its_request_and_memory_may_not(policy_docs):
+    """Invariant 7 as amended by contract request RS-1 (2026-10-20): memory
+    request == limit, and a CPU limit lies between its request and twice it.
+    Both policies still demanded CPU equality when SIZES-SCHED-1 (PR 1742)
+    rendered limit 8 over request 4, and refused every GKE job from about
+    19:24Z on 2026-10-20 until the policies were changed."""
+    lim, req = "quantity(c.resources.limits['cpu'])", "quantity(c.resources.requests['cpu'])"
+    mem_req, mem_lim = "quantity(c.resources.requests['memory'])", "quantity(c.resources.limits['memory'])"
+    for name in ("swarm-worker-pod-constraints", "swarm-worker-job-constraints"):
+        policy = one(policy_docs, "ValidatingAdmissionPolicy", name)
+        flat = re.sub(r"\s+", "", " ".join(v["expression"] for v in policy["spec"]["validations"]))
+        # MUTATION: requiring cpu requests == limits again turns this red.
+        assert f"{req}.compareTo({lim})==0" not in flat, name
+        # MUTATION: letting a cpu limit fall below its request turns this red.
+        assert f"{lim}.compareTo({req})>=0" in flat, name
+        # MUTATION: dropping the 2x ceiling (no request added to itself) turns this red.
+        assert f"{lim}.compareTo({req}.add({req}))<=0" in flat, name
+        # MUTATION: relaxing memory to anything but equality turns this red.
+        assert f"{mem_req}.compareTo({mem_lim})==0" in flat, name
+
+
+def test_the_rendered_browser_job_satisfies_the_advisory_policy(policy_docs):
+    """The template is what the advisories describe; if it did not pass them,
+    flipping the binding to Deny could never be a one-line change."""
+    spec = render_job("browser")["spec"]["template"]["spec"]
+    assert spec["automountServiceAccountToken"] is False
+    for container in spec["containers"]:
+        assert container["securityContext"]["allowPrivilegeEscalation"] is False
+        assert "ALL" in container["securityContext"]["capabilities"]["drop"]
+        assert container["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+        assert container["securityContext"]["runAsNonRoot"] is True
+
+
+# ---------------------------------------------------------------------------
+# The renderer itself
+# ---------------------------------------------------------------------------
+
+
+def test_an_unsubstituted_placeholder_is_a_hard_error():
+    """`name: __NAMESPACE__` is a valid-looking string that would create a real
+    namespace called `__NAMESPACE__`."""
+    with pytest.raises(SystemExit):
+        render.substitute("name: __NAMESPACE__\n", {})
+
+
+#: Inputs chosen to separate a real copy of the dispatcher's `sanitize_name`
+#: from a plausible one: every branch of it is here. The uppercase and dotted
+#: cases exercise the character class, the long ones exercise truncation and the
+#: appended digest (the part that stops two long tenant names colliding), the
+#: leading-digit case exercises the `s` prefix, and the dash cases exercise the
+#: collapse and the strip.
+SANITIZE_MATRIX = (
+    ("swarm", "eng"),
+    ("task_9f3a",),
+    ("swarm", "u-alice"),
+    ("swarm", "job", "eng", "claude-code"),
+    ("swarm", "", "eng"),
+    ("Eng.Team",),
+    ("eng--team",),
+    ("--eng--",),
+    ("9lives",),
+    ("tenant_with_underscores", "and.dots"),
+    ("a" * 80,),
+    ("x" * 70, "y" * 70),
+)
+
+
+def test_the_renderer_agrees_with_the_dispatcher_about_names():
+    """Both sanitise the same way; the service account name depends on it.
+
+    This used to assert three hardcoded strings, which is not the same claim:
+    it would have stayed green through any change made to BOTH copies, and
+    through any change to the dispatcher alone. The dispatcher is called here so
+    that a change on either side fails, which is the only version of this test
+    that is about agreement.
+    """
+    assert render.sanitize_name("swarm", "eng") == "swarm-eng"
+    assert render.sanitize_name("task_9f3a") == "task-9f3a"
+    assert render.sanitize_name("swarm", "u-alice") == "swarm-u-alice"
+    for parts in SANITIZE_MATRIX:
+        assert render.sanitize_name(*parts) == dispatcher_sanitize_name(*parts), parts
+
+
+def test_the_renderer_slugifies_with_the_frozen_character_class():
+    """The reconciler reverse-maps a Job label to a Firestore id by re-slugging it
+    (`reconciler/detect.py` `sanitised()`), so a renderer with its own idea of
+    which characters survive produces attempts the reconciler cannot resolve --
+    it then either reclaims a live one or misses an orphan.
+
+    The source is read for the import because `re.compile` CACHES: a local
+    `re.compile(r"[^a-z0-9-]+")` returns the very same object the frozen module
+    compiled, so `render._NAME_SAFE is _TENANT_SAFE` stays true even after the
+    import is replaced by a fourth copy. An identity assertion here would be a
+    test that passes while the thing it is about has been undone.
+    """
+    assert render._NAME_SAFE.pattern == _TENANT_SAFE.pattern
+    for raw in ("task_9f3a", "Eng.Team", "a b", "x/y", "u-alice", "9lives", "caf\u00e9"):
+        assert render._NAME_SAFE.sub("-", raw.lower()) == _TENANT_SAFE.sub("-", raw.lower())
+
+    source = (KUBERNETES / "render.py").read_text()
+    assert "from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE" in source
+    assert "_NAME_SAFE = re.compile" not in source
+
+
+def test_the_renderer_enforces_the_brokers_account_label_rule():
+    """`--account` is operator-supplied, and this file's whole purpose is to
+    validate every interpolated value before it reaches the YAML.
+
+    It carried the generic 63-character RFC1123 pattern while
+    `quota_broker.accounts` enforces a 40-character one, so it accepted labels
+    that could never have been registered -- a value the renderer waved through
+    and the rest of the platform would refuse. The pattern object itself is the
+    broker's now; these cases assert the consequence, so that swapping it back
+    for a copy fails even if the copy starts out identical."""
+    assert render._VALUE_PATTERNS["ACCOUNT_LABEL"] is render._ACCOUNT_LABEL
+
+    longest_legal = "a" * 40
+    assert validate_label(longest_legal) == longest_legal
+    assert render.check_values({"ACCOUNT_LABEL": longest_legal})
+
+    for refused in ("a" * 41, "a" * 63, "-leading", "trailing-", "Upper", "under_score", ""):
+        with pytest.raises(AccountError):
+            validate_label(refused)
+        with pytest.raises(SystemExit):
+            render.check_values({"ACCOUNT_LABEL": refused})
+
+
+def _render_v2_job(*extra: str) -> dict[str, Any]:
+    """The gvisor shape, which is the template that carries `__ACCOUNT_LABEL__`.
+
+    `restricted` is refused for it on purpose (the v2 pod runs as root), so the
+    namespace level is passed explicitly rather than left at the default.
+    """
+    import contextlib
+    import io
+
+    argv = [
+        "job",
+        "--tenant", TENANT,
+        "--profile", "claude-code",
+        "--task", "task_9f3a",
+        "--attempt", "att_7b21",
+        "--lease", "lease_c4",
+        "--generation", "3",
+        "--runtime", "gvisor",
+        "--pss-enforce", "baseline",
+        *extra,
+    ]
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        render.main(argv)
+    docs = documents(buffer.getvalue())
+    assert len(docs) == 1
+    return docs[0]
+
+
+def _account_annotation(doc: dict[str, Any]) -> str:
+    for meta in (doc["spec"]["template"]["metadata"], doc["metadata"]):
+        value = meta.get("annotations", {}).get(f"{LABEL_PREFIX}/account")
+        if value is not None:
+            return value
+    raise AssertionError("the v2 job no longer records which account it is burning")
+
+
+def test_a_rendered_job_records_an_account_the_broker_could_have_issued():
+    """The default is `unassigned`, which has to satisfy the same rule: a default
+    the broker would refuse is a manifest that only renders because nobody
+    checked it. And a label past the broker's cap must not reach the YAML at
+    all -- it did before this, because the renderer allowed 63 characters."""
+    default = _account_annotation(_render_v2_job())
+    assert default == "unassigned"
+    assert validate_label(default) == default
+
+    longest_legal = "a" * 40
+    assert _account_annotation(_render_v2_job("--account", longest_legal)) == longest_legal
+
+    with pytest.raises(SystemExit):
+        _render_v2_job("--account", "a" * 41)
+
+
+# ---------------------------------------------------------------------------
+# The control plane's own access to a tenant namespace
+# ---------------------------------------------------------------------------
+#
+# Without these the GKE backend cannot dispatch at all. On 2026-09-23 every
+# `browser` task the platform had ever accepted -- seven, over two days --
+# failed with `jobs.batch is forbidden`, and nothing in this suite would have
+# noticed, because the namespace it renders had no control-plane RBAC in it to
+# assert on.
+
+
+def test_the_scheduler_may_create_jobs_in_a_tenant_namespace(tenant_docs):
+    role = one(tenant_docs, "Role", "swarm-dispatcher")
+    verbs = {v for rule in role["rules"] if "jobs" in rule["resources"] for v in rule["verbs"]}
+    assert "create" in verbs, (
+        "the scheduler cannot create a Job, which is the whole of dispatching to GKE"
+    )
+    assert "get" in verbs and "list" in verbs, "it must be able to read back what it created"
+
+
+def test_the_scheduler_can_never_delete_a_job(tenant_docs):
+    """Reaping is the reconciler's. Keeping them apart means a mistake in one
+    is not an escalation into the other -- the same reasoning worker-rbac.yaml
+    gives for its own pair, and the same split as the swarmGkeDispatcher /
+    swarmGkeReaper IAM roles."""
+    role = one(tenant_docs, "Role", "swarm-dispatcher")
+    for rule in role["rules"]:
+        assert "delete" not in rule["verbs"], f"swarm-dispatcher may delete {rule['resources']}"
+
+
+def test_the_reconciler_may_delete_but_never_create(tenant_docs):
+    role = one(tenant_docs, "Role", "swarm-reaper")
+    verbs = {v for rule in role["rules"] if "jobs" in rule["resources"] for v in rule["verbs"]}
+    assert "delete" in verbs, "the reconciler cannot reap a finished Job"
+    for rule in role["rules"]:
+        assert "create" not in rule["verbs"], f"swarm-reaper may create {rule['resources']}"
+
+
+def test_the_control_plane_bindings_name_the_real_service_accounts(tenant_docs):
+    """A RoleBinding to a subject that does not exist applies cleanly and
+    grants nothing, so a typo here fails looking exactly like success.
+
+    THIS ASSERTION WAS WRITTEN FOR EXACTLY THE DEFECT THAT LATER HAPPENED, AND
+    ITS LITERAL FORM BLOCKED THE FIX. It required the subject list to be
+    `== [expected]` -- exactly one entry. On 2026-09-24 every GKE dispatch was
+    found to be failing because the binding named the scheduler by EMAIL while
+    GKE, for a service account authenticating with an OAuth access token,
+    presents the caller as its numeric uniqueId. The fix binds both names, so the
+    list is two entries, and this test went red on the change it had been written
+    to demand.
+
+    Re-pointed at the property it was always about: no subject that is not a
+    known control-plane identity, and nothing but `User`. The COUNT was never the
+    thing -- a second subject naming the same account cannot grant anything the
+    first did not, because RBAC subjects are a list.
+
+    ONE FACT PER TEST. How MANY subjects there are, and why, belongs to
+    `test_an_unsupplied_unique_id_renders_a_duplicate_and_never_a_placeholder`,
+    which pins the fallback. Keeping a count here as well would be a third copy
+    of the same spec -- and the two tests stating it two ways is precisely why
+    this file could not pass itself for one commit. (Reasoning from the
+    mirrored-copy-audit lane, which reached this assertion independently.)
+
+    AND THE SLOT COUNT IS ASSERTED ANYWAY, which is the one thing neither of the
+    two lanes that re-pointed this independently had seen: with no uniqueId
+    supplied, BOTH slots fall back to the email, so the SET of names is
+    `{email}` whether there are two slots or one. A set-based assertion cannot
+    see a DROPPED slot -- the fallback makes it look like a missing duplicate.
+    Only the count can. (From the gke-incident-record lane.)
+    """
+    for binding_name, account in (
+        ("swarm-dispatcher", f"swarm-scheduler@{PROJECT}.iam.gserviceaccount.com"),
+        ("swarm-reaper", f"swarm-reconciler@{PROJECT}.iam.gserviceaccount.com"),
+    ):
+        binding = one(tenant_docs, "RoleBinding", binding_name)
+        subjects = binding["subjects"]
+        # BINDS SOMEBODY AT ALL, from the audit lane: an empty subject list is
+        # a RoleBinding that validates, applies, and authorises nobody -- the
+        # same failure as a wrong subject, reached by having none.
+        assert subjects, f"{binding_name} binds nobody at all"
+        names = [s["name"] for s in subjects]
+
+        assert account in names, (
+            f"{binding_name} does not name {account}; a binding to an identity "
+            f"that does not exist applies cleanly and authorises nobody"
+        )
+
+        # THE SET IS CLOSED. Every subject must be either the account's email or
+        # its numeric uniqueId -- nothing else may appear in a binding that
+        # decides who can create a Job in a tenant's namespace. This is the half
+        # of the original `== [expected]` that mattered, kept.
+        uid = SCHEDULER_UID if binding_name == "swarm-dispatcher" else RECONCILER_UID
+        unexpected = [n for n in names if n not in {account, uid}]
+        assert not unexpected, (
+            f"{binding_name} names {unexpected}, which is neither {account} nor "
+            f"its uniqueId. Nothing else belongs in this binding."
+        )
+
+        # And no placeholder survived substitution -- a literal `__X__` subject
+        # applies cleanly and grants nothing, the same failure by another route.
+        assert not [n for n in names if "__" in n], (
+            f"{binding_name} has an unsubstituted placeholder subject: {names}"
+        )
+        # THE SLOT COUNT, because the set of names cannot carry it. `tenant_docs`
+        # supplies no uniqueIds, so both slots hold the email and a deleted slot
+        # is invisible to any assertion about names. See the docstring.
+        assert len(subjects) == 2, (
+            f"RoleBinding {binding_name} has {len(subjects)} subject(s); it must have "
+            f"one slot per spelling of its account -- the email and the numeric "
+            f"uniqueId -- because GKE names the caller differently depending on how "
+            f"it authenticated. See kubernetes/rbac/dispatcher-rbac.yaml."
+        )
+        # `User`, not `ServiceAccount`: the scheduler runs on Cloud Run as a
+        # Google identity and has no Kubernetes ServiceAccount of its own.
+        assert {s["kind"] for s in subjects} == {"User"}
+
+
+def test_the_namespace_the_renderer_builds_is_the_one_the_scheduler_dispatches_into(tenant_docs):
+    """THE BUG THIS PINS. `render.py` used NAMESPACE_PREFIX = "swarm-" while
+    apps/scheduler/scheduler/dispatch.py uses "swarm-tenant-{tenant}", so the
+    provisioner created `swarm-eng` and the dispatcher wrote into
+    `swarm-tenant-eng`. Kubernetes authorises before it resolves, so the
+    missing namespace surfaced as `jobs.batch is forbidden` -- a 403 about
+    permissions, never a 404 -- and sent three investigations at IAM."""
+    from scheduler.dispatch import GkeTarget  # noqa: PLC0415
+
+    template = GkeTarget.namespace_template
+    expected = template.format(tenant=TENANT)
+    namespace = one(tenant_docs, "Namespace")["metadata"]["name"]
+    assert namespace == expected, (
+        f"the renderer builds {namespace} and the scheduler dispatches into {expected}; "
+        "a Job created into a namespace that does not exist is reported as forbidden, "
+        "not as missing"
+    )
+
+
+def test_every_gsa_rbac_subject_is_also_bound_by_numeric_unique_id():
+    """THE EIGHT-MONTH BUG, AS A RULE.
+
+    Every GKE dispatch this platform ever attempted failed with
+
+        jobs.batch is forbidden: User "117405034245659033603" cannot create
+        resource "jobs" in API group "batch" in the namespace "swarm-tenant-eng"
+
+    while `swarm-dispatcher`'s RoleBinding named
+    `swarm-scheduler@example-project.iam.gserviceaccount.com` and nothing
+    else. Both were correct descriptions of the same identity and only one of
+    them was the SUBJECT: the scheduler reaches the Kubernetes API with a Google
+    OAuth access token (dispatch.py's `install_google_bearer_token`), and on that
+    path GKE resolves the caller to the service account's numeric uniqueId. The
+    RoleBinding applied cleanly, validated, diffed clean, and authorised nobody.
+
+    Nothing offline could have caught that -- the manifest was valid and the
+    identity existed. What CAN be caught offline is the asymmetry: a binding that
+    names a Google service account by only ONE of its two names. That is what
+    this asserts, for every RoleBinding the tenant render produces, so neither
+    spelling can be dropped again.
+
+    MUTATION: delete either `__SCHEDULER_UID__` or `__RECONCILER_UID__` subject
+    from kubernetes/rbac/dispatcher-rbac.yaml. This names the binding and the
+    account whose second spelling went missing.
+    """
+    # RENDERED WITH THE uniqueIds SUPPLIED, which is what apply.sh does. The
+    # module fixture renders with the DEFAULTS, and the default is the email --
+    # so asserting this against that fixture would pass on a duplicate email
+    # subject and prove nothing about the numeric form. Rendering explicitly here
+    # is the difference between checking the fallback and checking the fix.
+    tenant_docs = documents(
+        render.render_files(
+            render.TENANT_FILES,
+            tenant_values(
+                "--scheduler-uid", SCHEDULER_UID,
+                "--reconciler-uid", RECONCILER_UID,
+            ),
+        )
+    )
+
+    gsa_suffix = ".iam.gserviceaccount.com"
+    uid_by_account = {
+        f"swarm-scheduler@{PROJECT}{gsa_suffix}": SCHEDULER_UID,
+        f"swarm-reconciler@{PROJECT}{gsa_suffix}": RECONCILER_UID,
+    }
+
+    bindings = by_kind(tenant_docs, "RoleBinding")
+    assert bindings, "the tenant render produced no RoleBinding; this test would check nothing"
+
+    checked = 0
+    for binding in bindings:
+        names = {str(s.get("name", "")) for s in binding.get("subjects", [])}
+        for account, uid in uid_by_account.items():
+            if account not in names:
+                continue
+            checked += 1
+            assert uid in names, (
+                f"RoleBinding {binding['metadata']['name']} binds {account} by email "
+                f"but not by its uniqueId {uid}. GKE presents a service account "
+                f"authenticating with an OAuth access token by uniqueId, so this "
+                f"binding applies cleanly and authorises nobody -- which is exactly "
+                f"how every GKE dispatch failed before 2026-09-24."
+            )
+
+    # NOT AN EMPTY SWEEP. If the subject spellings change shape, the loop above
+    # matches nothing and passes silently -- the failure mode this repository
+    # keeps paying for. Two bindings name a control-plane account: swarm-dispatcher
+    # (the scheduler) and swarm-reaper (the reconciler).
+    assert checked == 2, (
+        f"expected to check 2 control-plane bindings, checked {checked}. The subject "
+        f"spellings changed and this assertion stopped looking at anything."
+    )
+
+# ---------------------------------------------------------------------------
+# The dispatcher RBAC, and the substitutions that make it real
+# ---------------------------------------------------------------------------
+#
+# Everything below is about the SEAM rather than the objects: the objects are
+# checked above. A RoleBinding whose subject is the literal string
+# `__SCHEDULER_GSA__` applies cleanly, reports success, and grants nothing --
+# so "the manifest is correct" and "the manifest that reached the cluster is
+# correct" are different claims, and only the second one matters.
+
+
+def test_every_placeholder_in_the_tenant_manifests_is_supplied_and_validated():
+    """A placeholder with no value is a literal in a live object.
+
+    THE MUTATION THIS CATCHES: delete `SCHEDULER_GSA` from `tenant_values()`
+    (or from `_VALUE_PATTERNS`) and this fails, naming the placeholder and the
+    file. Without it the first symptom is a scheduler that is still 403 after
+    an apply that reported success -- indistinguishable from the RBAC never
+    having been applied at all.
+    """
+    # The label-key prefix is no tenant's value: render.py fills it in every
+    # manifest from the deployment's setting (kubernetes/label_prefix.py).
+    supplied = set(tenant_values()) | {"LABEL_PREFIX"}
+    placeholders: dict[str, set[str]] = {}
+    # EVERY file a tenant render can include, not only the unconditional ones:
+    # the older KSA's file is rendered only where that KSA is bound, and a
+    # placeholder missing from it would surface only on those tenants.
+    every_file = render.tenant_files([render.LEGACY_KSA_NAME])
+    assert set(render.TENANT_FILES) < set(every_file), (
+        "the older KSA's files are not in the conditional set; this test would "
+        "check them by accident or not at all"
+    )
+    for name in every_file:
+        text = (KUBERNETES / name).read_text()
+        for token in re.findall(r"__([A-Z0-9_]+)__", text):
+            placeholders.setdefault(token, set()).add(name)
+
+    # The file this is really about must actually be in the set, or this test
+    # passes by checking nothing -- the failure mode section 4 of
+    # check-contract-parity.sh calls out by name.
+    assert "rbac/dispatcher-rbac.yaml" in render.TENANT_FILES
+    for token in ("NAMESPACE", "TENANT_ID", "SCHEDULER_GSA", "RECONCILER_GSA"):
+        assert token in placeholders, (
+            f"__{token}__ is no longer in any tenant manifest; if the RBAC moved, "
+            "point this test at it rather than letting it pass on an empty set"
+        )
+
+    missing = {t: sorted(f) for t, f in placeholders.items() if t not in supplied}
+    assert not missing, f"placeholders with no value from tenant_values(): {missing}"
+
+    unvalidated = sorted(t for t in placeholders if t not in render._VALUE_PATTERNS)
+    assert not unvalidated, (
+        f"placeholders interpolated with no pattern in _VALUE_PATTERNS: {unvalidated}. "
+        "substitute() is a str.replace over YAML, so an unvalidated value is YAML "
+        "injection into the objects that isolate tenants from one another."
+    )
+
+
+def test_a_missing_substitution_is_refused_rather_than_rendered(tenant_docs):
+    """The renderer must fail, not emit `name: __SCHEDULER_GSA__`.
+
+    A binding to a placeholder is a binding that silently grants nothing: the
+    subject is a syntactically valid Kubernetes user name, so the RoleBinding
+    applies, `kubectl get` shows it, and every dispatch keeps failing 403 --
+    the failure that is already impossible to tell from a missing namespace.
+    """
+    values = tenant_values()
+    values.pop("SCHEDULER_GSA")
+    with pytest.raises(SystemExit) as raised:
+        render.render_files(render.TENANT_FILES, values)
+    assert "SCHEDULER_GSA" in str(raised.value)
+
+    # And the happy path really does substitute it, so the assertion above is
+    # not passing because the token was never in the file.
+    binding = one(tenant_docs, "RoleBinding", "swarm-dispatcher")
+    assert binding["subjects"][0]["name"].startswith("swarm-scheduler@")
+    assert "__" not in binding["subjects"][0]["name"]
+
+
+def test_an_unvalidated_placeholder_is_refused_before_it_reaches_the_yaml():
+    """`check_values` refuses a key with no pattern rather than interpolating it."""
+    values = tenant_values()
+    values["BRAND_NEW_TOKEN"] = "anything"
+    with pytest.raises(SystemExit) as raised:
+        render.check_values(values)
+    assert "BRAND_NEW_TOKEN" in str(raised.value)
+
+
+def test_a_namespace_outside_the_platform_prefix_is_refused():
+    """`--namespace swarm-eng` is one word away from re-creating the outage.
+
+    `kubernetes/apply.sh` forwards unrecognised arguments straight to the
+    renderer, so this flag can isolate a namespace the scheduler never writes
+    to -- and the resulting dispatch failure is a 403 naming a permission, not
+    a 404 naming the namespace.
+
+    THE MUTATION THIS CATCHES: drop the prefix check in `tenant_values()` and
+    the old spelling renders cleanly again.
+    """
+    with pytest.raises(SystemExit) as raised:
+        tenant_values("--namespace", f"swarm-{TENANT}")
+    assert render.NAMESPACE_PREFIX in str(raised.value)
+
+    # A different namespace INSIDE the prefix is still allowed: the flag exists
+    # for a namespace neither provisioning path derived, and closing it
+    # entirely would be a different change from closing the outage.
+    inside = tenant_values("--namespace", f"{render.NAMESPACE_PREFIX}{TENANT}-canary")
+    assert inside["NAMESPACE"] == f"{render.NAMESPACE_PREFIX}{TENANT}-canary"
+
+
+def test_the_service_account_the_renderer_creates_is_the_one_the_dispatcher_names(
+    tenant_docs,
+):
+    """THE BUG THIS PINS, and it is the failure that comes AFTER the RBAC.
+
+    Nothing in `terraform/` creates a Kubernetes object -- there is no
+    kubernetes provider in this repository -- so the ServiceAccounts rendered
+    here are the only ones a tenant namespace has. `dispatch.py` puts
+    `serviceAccountName: swarm-agent-worker` in every GKE pod spec and
+    `terraform/modules/tenancy` issues the Workload Identity binding for that
+    same name, while this renderer created `swarm-worker` and `swarm-<tenant>`.
+
+    A pod naming a ServiceAccount that does not exist is admitted and then
+    never scheduled: the Job controller reports `serviceaccount ... not found`
+    on the Job events and no pod ever appears, which reads as a scheduling
+    problem rather than a missing object.
+
+    THE MUTATION THIS CATCHES: put `DEFAULT_KSA_NAME` back to
+    `sanitize_name("swarm", tenant)` and this fails.
+    """
+    from scheduler.dispatch import GkeJobDispatcher  # noqa: PLC0415
+
+    class _Settings:
+        worker_ksa_name = ""
+
+    wanted = GkeJobDispatcher(_Settings()).ksa_for(
+        Tenant(
+            tenant_id=TENANT,
+            kind="group",
+            principal="eng@example.com",
+            created_at=utcnow(),
+        )
+    )
+    created = {d["metadata"]["name"] for d in by_kind(tenant_docs, "ServiceAccount")}
+    assert wanted in created, (
+        f"the dispatcher runs its pods as {wanted!r} and this namespace only has "
+        f"{sorted(created)}; the Job is created and the pod is never scheduled"
+    )
+
+    # And it carries the Workload Identity annotation, or the pod runs with no
+    # Google identity at all and cannot read its tenant secret, its GCS prefix
+    # or Firestore.
+    account = one(tenant_docs, "ServiceAccount", wanted)
+    annotation = account["metadata"]["annotations"]["iam.gke.io/gcp-service-account"]
+    assert annotation.startswith(f"swarm-agent-worker-{TENANT}@")
+    assert account["automountServiceAccountToken"] is False
+
+
+def test_an_unsupplied_unique_id_renders_a_duplicate_and_never_a_placeholder():
+    """The fallback, asserted as the property that makes it safe.
+
+    `--scheduler-uid` cannot be derived from the project id -- IAM assigns it --
+    so render.py has to accept it as a flag and has to do SOMETHING when it is
+    absent. Three options existed and two of them are traps:
+
+      a fabricated number   a live RoleBinding subject naming an identity that
+                            does not exist. Applies cleanly, reads as a grant,
+                            authorises nobody. This is the exact failure the
+                            email-only binding already caused.
+      the raw placeholder   `__SCHEDULER_UID__` as a subject name. Same outcome,
+                            and it is what `test_every_placeholder...` below
+                            exists to stop.
+      the email             a duplicate of the subject already present. RBAC
+                            subjects are a list; a repeat authorises nothing new.
+
+    The third is chosen, and this is what holds it there.
+
+    MUTATION: change the fallback in `tenant_values` to a literal number, or
+    remove it so the placeholder survives. Either way this names the subject.
+    """
+    docs = documents(render.render_files(render.TENANT_FILES, tenant_values()))
+    bindings = by_kind(docs, "RoleBinding")
+    assert bindings, "the tenant render produced no RoleBinding"
+
+    seen = 0
+    for binding in bindings:
+        for subject in binding.get("subjects", []):
+            name = str(subject.get("name", ""))
+            assert "__" not in name, (
+                f"RoleBinding {binding['metadata']['name']} has an unsubstituted "
+                f"placeholder as a subject: {name!r}. It applies cleanly and grants "
+                f"nothing."
+            )
+            # Anything numeric here would be a fabricated identity: nothing
+            # supplied a uniqueId in this render.
+            assert not name.isdigit(), (
+                f"RoleBinding {binding['metadata']['name']} names a numeric subject "
+                f"{name!r} although no uniqueId was supplied. A made-up uniqueId is "
+                f"a subject that does not exist."
+            )
+            if name.endswith(".iam.gserviceaccount.com"):
+                seen += 1
+
+    assert seen >= 4, (
+        f"expected at least 4 service-account subjects across the control-plane "
+        f"bindings (two accounts, each bound twice by the fallback), saw {seen}. "
+        f"Fewer means the second subject is not being rendered at all."
+    )
+
+
+def test_the_yaml_templates_and_the_scheduler_agree_on_the_container_environment():
+    """TWO IMPLEMENTATIONS OF ONE JOB SPEC, and they had stopped agreeing.
+
+    `apps/scheduler/scheduler/dispatch.py` builds the GKE Job manifest as a
+    Python dict and says so in its own comment: it "mirrors
+    kubernetes/worker-templates/worker-job-browser.yaml field for field". The
+    YAML is what `render.py` renders, what `make lint` validates and what an
+    operator reads during an incident. The Python is what actually dispatches.
+
+    They disagreed on the one variable that decided whether a browser task could
+    run at all. `SWARM_ARTIFACTS_DIR` was in neither, the runner fell back to
+    `/artifacts`, and `readOnlyRootFilesystem: true` turned that into
+
+        OSError: [Errno 30] Read-only file system: '/artifacts'
+
+    Nothing could have caught it, because nothing compared the two. A template
+    that is documented as mirroring another file, with no assertion holding it
+    there, is a copy waiting to drift -- this repository's most expensive
+    recurring defect, and this is the third instance of it found in two days
+    (the namespace prefix and the RBAC subject were the others).
+
+    ASSERTED AS THE ENV KEY SET, not the values: the values are per-task
+    (TASK_ID, GENERATION) and the templates carry placeholders for them. What
+    must hold is that neither side names a variable the other does not, because
+    that is exactly the shape of the defect.
+
+    SCOPED TO THE `worker` CONTAINER, which this test did NOT do when it was
+    written, and that gap was already a live defect. `worker-job-v2.yaml` had an
+    init container (`install-credential`, since removed) as well, and the commit
+    that fixed the Errno 30 added `SWARM_ARTIFACTS_DIR` to the INIT container --
+    which wrote one credential file and never touched an artifacts directory --
+    while the `worker` container, the one that runs the agent and creates the
+    directory, had none. Reading the template as one document sees the name present and
+    passes. "Set" and "set on the wrong container" are different facts, and on
+    v2 the second one is not even loud: v2 leaves `readOnlyRootFilesystem`
+    false on purpose, so `mkdir /artifacts` succeeds, the artifact tree lands on
+    the container's writable layer instead of in the `workspace` emptyDir that
+    carries `sizeLimit: __DISK__`, and the first large artifact set evicts the
+    pod for ephemeral-storage pressure mid-attempt.
+
+    MUTATION: delete `SWARM_ARTIFACTS_DIR` from `worker_env` in dispatch.py, or
+    from any one of the three templates. This names the variable and the side it
+    is missing from. MUTATION FOR THE SCOPING: move `SWARM_ARTIFACTS_DIR` in
+    `worker-job-v2.yaml` from the `worker` container into an init container
+    added for the purpose -- where it actually was, on `install-credential`,
+    before that container was removed -- and this fails naming v2. Before the
+    scoping it passed.
+    """
+    import re as _re
+
+    scheduler = (
+        Path(__file__).resolve().parents[3]
+        / "apps/scheduler/scheduler/dispatch.py"
+    ).read_text()
+
+    # The shared builder, sliced out so a mention elsewhere in the file cannot
+    # satisfy this.
+    start = scheduler.index("    env = {\n")
+    end = scheduler.index("    return env", start)
+    body = scheduler[start:end]
+    from_python = set(_re.findall(r'^\s*"([A-Z][A-Z0-9_]*)":', body, _re.M))
+    assert from_python, "could not read any env key out of dispatch.py's worker_env"
+
+    # Every GKE template's container env, read the same way.
+    templates = sorted((KUBERNETES / "worker-templates").glob("*.yaml"))
+    assert templates, "no worker templates found; this test would check nothing"
+
+    for template in templates:
+        whole = template.read_text()
+        # The `worker` container only, from its `- name: worker` entry to the
+        # pod's `volumes:` key. An init container's environment is not the
+        # agent's, and a variable that decides where the agent writes is only
+        # set if it is set on the container that runs it.
+        start = whole.find("\n        - name: worker\n")
+        assert start >= 0, f"{template.name}: no container named worker"
+        end = whole.find("\n      volumes:", start)
+        text = whole[start:] if end < 0 else whole[start:end]
+        names = set(_re.findall(r"^\s*- name: ([A-Z][A-Z0-9_]*)\s*$", text, _re.M))
+        assert names, f"{template.name}: no container env names found"
+
+        # A template may carry variables the scheduler does not set. What it may
+        # NOT do is omit one the scheduler relies on the container having. (A
+        # variable the browser IMAGE sets belongs in neither -- that is what
+        # test_no_worker_job_restates_a_variable_the_browser_image_sets holds.
+        # PLAYWRIGHT_BROWSERS_PATH, once this comment's example, was one.)
+        missing = {
+            key
+            for key in from_python
+            if key in _TEMPLATE_RELEVANT and key not in names
+        }
+        assert not missing, (
+            f"{template.name} does not set {sorted(missing)}, which "
+            f"dispatch.py's worker_env does. The YAML is what `make lint` "
+            f"validates and what an operator reads; the Python is what "
+            f"dispatches. A variable in one and not the other is how "
+            f"SWARM_ARTIFACTS_DIR went missing from both and stopped every "
+            f"browser task from starting."
+        )
+
+
+#: The env keys whose ABSENCE from a template is a defect rather than a
+#: difference. Deliberately narrow: most of `worker_env` is per-task identity
+#: (TASK_ID, GENERATION, LEASE_ID) which the templates carry as `__TOKEN__`
+#: placeholders under the same names, and asserting the whole set would make this
+#: test fail on any placeholder rename rather than on a real divergence. These
+#: are the ones that change where the runner WRITES or what it talks to.
+_TEMPLATE_RELEVANT = frozenset({"SWARM_ARTIFACTS_DIR", "ARTIFACT_BUCKET"})
+
+
+# ---------------------------------------------------------------------------
+# The YAML and the dispatcher are ONE Job spec, asserted as one
+# ---------------------------------------------------------------------------
+#
+# Incident wf_ebb3ab2d65664707a559, 2026-09-24. `worker-job.yaml` said in its
+# header that `command` is ABSENT and why, and
+# `test_a_rendered_job_never_overrides_the_container_command` above asserted
+# it -- of the RENDERED YAML. Nothing dispatches the rendered YAML. The Job that
+# actually reached the cluster is built in code by `GkeJobDispatcher._manifest`,
+# which carried `command: list(profile.command)`, so every GKE pod ran the bare
+# runner instead of the worker lifecycle: no fencing, no cancel, no heartbeat,
+# no lease release. Five leases held every browser slot until an operator
+# intervened.
+#
+# The two copies were documented as mirroring each other ("field for field",
+# dispatch.py's POD_SECURITY_CONTEXT comment) and nothing held them there --
+# the same shape as the namespace prefix, the RBAC subject and
+# SWARM_ARTIFACTS_DIR before this. So instead of asserting the same property
+# twice, once per copy, this renders both from the same inputs and asserts
+# they agree on everything that changes what the pod DOES. A field added to one
+# and not the other now fails here, naming the field.
+
+_EVICT = "cluster-autoscaler.kubernetes.io/safe-to-evict"
+
+#: Pod labels something selects on: the reconciler's managed-family selector
+#: and its tenant/task lookup. Decorative labels (app.kubernetes.io/*) are not
+#: compared; they differ and nothing reads them.
+_SELECTED_POD_LABELS = ("managed-by", "swarm-tenant", "swarm-task")
+
+#: The same identifiers on both sides, so per-task fields (the Job name, the
+#: task label) are comparable.
+_IDS = {"task_id": "task_9f3a", "attempt": "att_7b21", "lease_id": "lease_c4", "generation": 3}
+
+
+def _gke_profiles() -> list[str]:
+    from swarm_common.profiles import Backend, resolve_backend  # noqa: PLC0415
+
+    return sorted(
+        name
+        for name, profile in RUNNER_PROFILES.items()
+        if resolve_backend(profile) is Backend.GKE_AUTOPILOT
+    )
+
+
+def _rendered_job(profile_name: str) -> dict[str, Any]:
+    return render_job(
+        profile_name,
+        task=_IDS["task_id"],
+        attempt=_IDS["attempt"],
+        lease=_IDS["lease_id"],
+        generation=_IDS["generation"],
+    )
+
+
+def _dispatcher_job(profile_name: str) -> dict[str, Any]:
+    """What `GkeJobDispatcher._manifest` sends, for the inputs `render_job` gets."""
+    from datetime import timedelta  # noqa: PLC0415
+
+    from scheduler.dispatch import GkeJobDispatcher, GkeTarget  # noqa: PLC0415
+    from scheduler.settings import SchedulerSettings  # noqa: PLC0415
+    from swarm_common.config import Settings  # noqa: PLC0415
+    from swarm_common.models import Lease, Task  # noqa: PLC0415
+    from swarm_common.states import TaskState  # noqa: PLC0415
+
+    profile = RUNNER_PROFILES[profile_name]
+    now = utcnow()
+    settings = SchedulerSettings(
+        core=Settings(project_id=PROJECT, artifact_bucket=f"{PROJECT}-swarm-artifacts"),
+        project_id=PROJECT,
+        region="us-central1",
+        artifact_registry_host=f"us-central1-docker.pkg.dev/{PROJECT}/swarm-images",
+        worker_image_tag="latest",
+    )
+    tenant = Tenant(
+        tenant_id=TENANT,
+        kind="group",
+        principal="eng@example.com",
+        created_at=now,
+        service_account=f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com",
+        namespace=f"swarm-tenant-{TENANT}",
+    )
+    task = Task(
+        id=_IDS["task_id"],
+        tenant_id=TENANT,
+        created_at=now,
+        updated_at=now,
+        state=TaskState.LEASED,
+        runner_profile=profile_name,
+        resource_class=profile.resource_class,
+        input={},
+        submitted_by="alice@example.com",
+        provider=profile.provider,
+        # render.py's default: `--timeout` unset means the profile's own.
+        timeout_seconds=profile.timeout_seconds,
+    )
+    lease = Lease(
+        lease_id=_IDS["lease_id"],
+        task_id=_IDS["task_id"],
+        attempt_id=_IDS["attempt"],
+        tenant_id=TENANT,
+        generation=_IDS["generation"],
+        pools=["global"],
+        units=1,
+        state=TaskState.LEASED,
+        created_at=now,
+        dispatch_deadline=now + timedelta(minutes=5),
+        expires_at=now + timedelta(minutes=2),
+    )
+    dispatcher = GkeJobDispatcher(
+        settings, target=GkeTarget("https://k8s", "/ca.pem"), batch_api=object()
+    )
+    return dispatcher._manifest(task=task, lease=lease, profile=profile, tenant=tenant)
+
+
+def _behaviour(job: dict[str, Any]) -> dict[str, Any]:
+    """Every field of a worker Job that changes what the pod does.
+
+    Deliberately NOT compared: the container environment (per-task values, and
+    `test_the_yaml_templates_and_the_scheduler_agree_on_the_container_environment`
+    owns the names that matter), `imagePullPolicy` (the YAML's IfNotPresent is
+    the API server's default for a non-`latest` tag), the image TAG (a deploy
+    input, not a property of the spec), and decorative labels and annotations.
+    """
+    import json  # noqa: PLC0415
+
+    metadata = job.get("metadata") or {}
+    spec = job.get("spec") or {}
+    template = spec.get("template") or {}
+    template_meta = template.get("metadata") or {}
+    pod = template.get("spec") or {}
+    containers = pod.get("containers") or []
+    worker = next((c for c in containers if c.get("name") == "worker"), {})
+    image = str(worker.get("image", ""))
+    return {
+        "Job name": metadata.get("name"),
+        "namespace": metadata.get("namespace"),
+        f"Job annotation {_EVICT}": (metadata.get("annotations") or {}).get(_EVICT),
+        # The one the cluster autoscaler actually reads. A Job's own annotations
+        # are not copied onto its pods, so the Job-level one alone protects
+        # nothing (GKE Autopilot extended run time is requested on the POD).
+        f"pod annotation {_EVICT}": (template_meta.get("annotations") or {}).get(_EVICT),
+        "pod selector labels": {
+            key: (template_meta.get("labels") or {}).get(key) for key in _SELECTED_POD_LABELS
+        },
+        "backoffLimit": spec.get("backoffLimit"),
+        "completions": spec.get("completions"),
+        "parallelism": spec.get("parallelism"),
+        "activeDeadlineSeconds": spec.get("activeDeadlineSeconds"),
+        "ttlSecondsAfterFinished": spec.get("ttlSecondsAfterFinished"),
+        "restartPolicy": pod.get("restartPolicy"),
+        "serviceAccountName": pod.get("serviceAccountName"),
+        "automountServiceAccountToken": pod.get("automountServiceAccountToken"),
+        "terminationGracePeriodSeconds": pod.get("terminationGracePeriodSeconds"),
+        "pod securityContext": pod.get("securityContext"),
+        "tolerations": pod.get("tolerations"),
+        "nodeSelector": pod.get("nodeSelector"),
+        "initContainers": pod.get("initContainers"),
+        "container names": [c.get("name") for c in containers],
+        "worker command": worker.get("command"),
+        "worker args": worker.get("args"),
+        "worker image repository": image.rsplit("/", 1)[-1].split("@")[0].split(":")[0],
+        "worker resources": worker.get("resources"),
+        "worker securityContext": worker.get("securityContext"),
+        "worker volumeMounts": sorted(
+            (m.get("name"), m.get("mountPath")) for m in worker.get("volumeMounts") or []
+        ),
+        "volumes": sorted(json.dumps(v, sort_keys=True) for v in pod.get("volumes") or []),
+    }
+
+
+@pytest.mark.parametrize("profile", _gke_profiles())
+def test_the_rendered_job_and_the_dispatched_job_are_the_same_job(profile):
+    """ONE spec, two producers: they must agree on everything the pod does.
+
+    Red on 2026-09-24 for two fields, both on the dispatcher's side:
+
+      * `worker command` -- the override that replaced the lifecycle;
+      * `pod annotation safe-to-evict` -- the dispatcher put
+        `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"` on the JOB
+        only. The autoscaler reads it from the POD, and a Job's annotations are
+        not propagated to the pods it creates, so every dispatched browser pod
+        was evictable in a scale-down while the code's own comment said it was
+        not. The YAML had it on both.
+
+    MUTATIONS: re-add `"command"` to `_manifest`'s container; drop the pod
+    template's `annotations`; change any securityContext field, volume, mount,
+    grace period or retry setting on one side only. Each fails here naming the
+    field.
+    """
+    from_yaml = _behaviour(_rendered_job(profile))
+    from_code = _behaviour(_dispatcher_job(profile))
+    differing = {
+        key: {"yaml": from_yaml[key], "dispatcher": from_code[key]}
+        for key in from_yaml
+        if from_yaml[key] != from_code[key]
+    }
+    assert not differing, (
+        f"the {profile!r} Job that render.py writes and the one "
+        f"GkeJobDispatcher._manifest dispatches disagree on {sorted(differing)}: "
+        f"{differing}. The YAML is what an operator reads and `make lint` checks; "
+        f"the dispatcher's is what runs. See incident wf_ebb3ab2d65664707a559."
+    )
+
+
+def test_there_is_a_gke_profile_to_compare():
+    """The parity test above is parametrised over the GKE profiles; if the
+    catalogue ever had none, it would silently check nothing."""
+    assert _gke_profiles(), "no runner profile resolves to GKE_AUTOPILOT"
+
+
+@pytest.mark.parametrize("profile", sorted(RUNNER_PROFILES))
+def test_neither_copy_of_the_job_overrides_the_image_entrypoint(profile):
+    """For EVERY profile, both producers, because a profile on Cloud Run today is
+    one catalogue edit from GKE.
+
+    The image ENTRYPOINT is `tini -- python -m agent_worker`, the worker
+    lifecycle. `RunnerProfile.runner_argv` (called `command` until contract
+    request 18) is the lifecycle's CHILD argv; as a container `command` it
+    replaces the lifecycle with the bare runner.
+    """
+    for source, job in (
+        ("render.py", _rendered_job(profile)),
+        ("GkeJobDispatcher._manifest", _dispatcher_job(profile)),
+    ):
+        for container in job["spec"]["template"]["spec"]["containers"]:
+            assert "command" not in container, (
+                f"{source} sets command={container['command']!r} on {container['name']!r} "
+                f"for {profile!r}, replacing the worker lifecycle"
+            )
+            assert "args" not in container, f"{source} sets args on {container['name']!r}"
+
+
+# ---------------------------------------------------------------------------
+# The Job's deadline is a backstop, and it must fire AFTER the lifecycle's own
+# ---------------------------------------------------------------------------
+#
+# Review of archived pull request 31, 2026-09-24. Every template set `activeDeadlineSeconds` and
+# the worker's TASK_TIMEOUT_SECONDS from the same `__TIMEOUT_SECONDS__`. The
+# Job's deadline counts from Job creation -- node provisioning and the image
+# pull included -- and the lifecycle's from its own start, minutes later, so the
+# Job controller always SIGTERMed the pod first. The lifecycle's SIGTERM path
+# parks the task as SCHEDULED_RETRY, which nothing promotes; its timeout path,
+# which would have FAILED the task, never ran. The dispatcher's copy is held to
+# the same property in tests/unit/control_plane/test_dispatch_manifests.py, and
+# the parity test above holds the two copies equal.
+
+
+def _rendered_jobs_for_the_deadline() -> list[tuple[str, dict[str, Any]]]:
+    jobs = [(f"{name} (render.py)", render_job(name)) for name in sorted(RUNNER_PROFILES)]
+    jobs.append(("claude-code (render.py --runtime gvisor)", _render_v2_job()))
+    return jobs
+
+
+def test_every_rendered_deadline_lets_the_lifecycle_time_out_on_its_own():
+    """MUTATION: point `activeDeadlineSeconds` back at `__TIMEOUT_SECONDS__` in
+    any one of the three templates."""
+    import dataclasses  # noqa: PLC0415
+
+    from agent_worker.config import WorkerConfig  # noqa: PLC0415
+    from swarm_common.config import Settings  # noqa: PLC0415
+
+    # The worker's own defaults, read from the dataclass rather than restated:
+    # the part of its timeout path that runs AFTER its deadline.
+    defaults = {f.name: f.default for f in dataclasses.fields(WorkerConfig)}
+    after_deadline = (
+        defaults["termination_grace_seconds"] + defaults["git_harvest_timeout_seconds"]
+    )
+    # The latest a lifecycle can start and still be running: the reconciler
+    # reclaims any attempt with no heartbeat by the dispatch deadline.
+    latest_start = Settings(project_id=PROJECT).dispatch_timeout_seconds
+
+    checked = 0
+    for where, job in _rendered_jobs_for_the_deadline():
+        pod = job["spec"]["template"]["spec"]
+        worker = next(c for c in pod["containers"] if c["name"] == "worker")
+        env = {e["name"]: e.get("value") for e in worker.get("env") or []}
+        task_timeout = int(env["TASK_TIMEOUT_SECONDS"])
+        deadline = int(job["spec"]["activeDeadlineSeconds"])
+        needed = task_timeout + latest_start + after_deadline
+        assert deadline > task_timeout + int(pod["terminationGracePeriodSeconds"]), where
+        assert deadline > needed, (
+            f"{where}: activeDeadlineSeconds is {deadline}s, and the lifecycle's own "
+            f"timeout path needs more than {needed}s from Job creation "
+            f"({task_timeout}s + {latest_start}s latest start + {after_deadline}s to "
+            "stop the child and harvest). The Job controller would SIGTERM it first "
+            "and the task would PARK instead of failing."
+        )
+        checked += 1
+    # Every profile plus the gvisor shape: all three templates were visited.
+    assert checked == len(RUNNER_PROFILES) + 1
+
+
+# ---------------------------------------------------------------------------
+# A variable the browser image sets is set there and nowhere else
+# ---------------------------------------------------------------------------
+#
+# Lane review, 2026-09-24. `worker-job-browser.yaml` carried its own
+# `PLAYWRIGHT_BROWSERS_PATH` although `images/agent-runtime-browser/Dockerfile`
+# already sets it with `ENV`, in the same file whose `RUN playwright install`
+# puts the browser there. Two copies of one value is the shape
+# docs/mirrored-values.md records as this repository's most expensive defect:
+# the namespace prefix, the RBAC subject and SWARM_ARTIFACTS_DIR each drifted
+# that way. This copy had in fact ALREADY diverged from the Job that runs --
+# `GkeJobDispatcher._manifest` never set it, so the YAML an operator reads said
+# something the dispatched pod did not.
+#
+# The image is the right single home: the path is only correct when stated next
+# to the command that installs into it. Nothing a Job spec can say makes it more
+# true, and a Job spec that says a different path makes it false. The runner
+# child gets it because the lifecycle carries PLAYWRIGHT_BROWSERS_PATH by NAME
+# from its own environment (archived pull request 37, test_image_env_reaches_the_runner.py), and its
+# own environment has it from the image -- no Job copy is involved.
+#
+# SCOPE: the browser Dockerfile's OWN `runtime` stage. The base image's ENV is
+# not held to this here, and one of its variables would fail it today:
+# WORKSPACE_ROOT, which agent-runtime-base sets and every template restates
+# beside the volume mount it has to match. That one is an open question, not a
+# settled exception.
+
+
+def _browser_image_own_env() -> tuple[Path, dict[str, str]]:
+    """The ENV `agent-runtime-browser`'s own stage sets, parsed ONCE in this suite.
+
+    Borrowed from test_image_env_reaches_the_runner.py rather than written again:
+    a second Dockerfile parser in a test about second copies would be one more
+    thing to drift, and that one already skips heredoc bodies (the launch check
+    is a `RUN python - <<'PY'` whose body starts `from playwright`, which a
+    case-insensitive reader would otherwise take for a new FROM stage).
+    """
+    from test_image_env_reaches_the_runner import (  # noqa: PLC0415
+        BROWSER_DOCKERFILE,
+        _stage_env,
+    )
+
+    return BROWSER_DOCKERFILE, _stage_env(BROWSER_DOCKERFILE, "runtime")
+
+
+def _every_worker_job() -> list[tuple[str, dict[str, Any]]]:
+    """Every worker Job either producer writes, for every profile.
+
+    Every profile rather than the GKE ones: a profile on Cloud Run today is one
+    catalogue edit from GKE, and render.py renders a Job for all of them.
+    """
+    jobs = [(f"{name} (render.py)", _rendered_job(name)) for name in sorted(RUNNER_PROFILES)]
+    jobs.append(("claude-code (render.py --runtime gvisor)", _render_v2_job()))
+    jobs += [
+        (f"{name} (GkeJobDispatcher._manifest)", _dispatcher_job(name))
+        for name in sorted(RUNNER_PROFILES)
+    ]
+    return jobs
+
+
+def test_the_browser_image_sets_where_its_browser_lives():
+    """The anchor for the two tests below: if the image stopped setting it, they
+    would pass by checking for a variable nothing defines."""
+    dockerfile, env = _browser_image_own_env()
+    assert env.get("PLAYWRIGHT_BROWSERS_PATH"), (
+        f"{dockerfile.relative_to(REPO)} no longer sets "
+        f"PLAYWRIGHT_BROWSERS_PATH with ENV (read: {sorted(env)}). It is the one "
+        "place the browser bundle's path is stated, next to the `playwright "
+        "install` that puts it there."
+    )
+
+
+def test_no_worker_job_restates_a_variable_the_browser_image_sets():
+    """MUTATION: add `PLAYWRIGHT_BROWSERS_PATH` (or `PLAYWRIGHT_SKIP_BROWSER_GC`)
+    to the `env:` of any container in any of the three templates, or to
+    `worker_env` in dispatch.py. This fails naming the Job and the container."""
+    dockerfile, image_env = _browser_image_own_env()
+    assert image_env, f"read no ENV at all from {dockerfile}"
+
+    jobs = _every_worker_job()
+    restated: dict[str, list[str]] = {}
+    containers_seen = 0
+    for where, job in jobs:
+        pod = job["spec"]["template"]["spec"]
+        for container in [*(pod.get("initContainers") or []), *pod["containers"]]:
+            containers_seen += 1
+            names = {entry["name"] for entry in container.get("env") or []}
+            clash = sorted(names & image_env.keys())
+            if clash:
+                restated[f"{where}, container {container['name']!r}"] = clash
+    # Two producers for every profile, plus the gvisor shape.
+    assert len(jobs) == 2 * len(RUNNER_PROFILES) + 1
+    assert containers_seen >= len(jobs)
+    assert not restated, (
+        f"these Jobs set variables images/agent-runtime-browser/Dockerfile "
+        f"already sets with ENV: {restated}. The image is the only place they "
+        "are stated -- the path is where its own `playwright install` put the "
+        "browser -- and a second copy is a value that can disagree with the "
+        "first (docs/mirrored-values.md). The runner child gets it because the "
+        "lifecycle carries it by name from the environment the image gave it."
+    )
+
+
+def test_the_browser_bundle_path_is_written_down_once():
+    """The VALUE, not just the name: a Job that stopped naming the variable but a
+    lifecycle that hard-coded the path into the child's environment would be the
+    same second copy under a different spelling.
+
+    Read from the Dockerfile rather than restated here, so this file is not a
+    third copy. COMMENT LINES ARE NOT COUNTED: a comment that names the path
+    (lifecycle.py's explanation of why the variable is carried does) can go
+    stale, but it cannot send Playwright anywhere; a value in code or config
+    can. MUTATION: write the path as a value into any Python module under apps/,
+    any file under kubernetes/ or any Terraform file.
+    """
+    value = _browser_image_own_env()[1]["PLAYWRIGHT_BROWSERS_PATH"]
+    skip = {"node_modules", ".terraform", "__pycache__", ".venv", "dist"}
+    scanned = 0
+    hits: list[str] = []
+    for root, patterns in (
+        (REPO / "apps", ("*.py",)),
+        (KUBERNETES, ("*.yaml", "*.yml", "*.py", "*.sh", "*.rego")),
+        (REPO / "terraform", ("*.tf", "*.tfvars")),
+    ):
+        for pattern in patterns:
+            for path in sorted(root.rglob(pattern)):
+                if skip.intersection(path.parts):
+                    continue
+                scanned += 1
+                for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+                    if value in line and not line.lstrip().startswith(("#", "//")):
+                        hits.append(f"{path.relative_to(REPO)}:{number}: {line.strip()}")
+    assert scanned > 50, f"scanned only {scanned} files; the walk is not reaching the tree"
+    assert not hits, (
+        f"{value!r} is stated outside images/agent-runtime-browser/Dockerfile:\n  "
+        + "\n  ".join(hits)
+        + "\nRefer to the image's PLAYWRIGHT_BROWSERS_PATH instead of copying the path."
+    )
+
+
+# ---------------------------------------------------------------------------
+# What `kubectl apply` re-sends on every run
+# ---------------------------------------------------------------------------
+#
+# THE MEASUREMENT. On 2026-09-25 (~02:5xZ) `kubernetes/apply.sh --tenant eng
+# --confirm` reported `role.rbac.authorization.k8s.io/swarm-worker configured`
+# although the dry-run diff before it listed only two NetworkPolicies. Read back
+# from swarm-autopilot afterwards (read-only):
+#
+#   Role swarm-worker           last-applied `"rules":[]`, live `rules: null`,
+#                               resourceVersion and managedFields time unchanged
+#                               since creation (2026-09-24T02:56:01Z) -- the
+#                               "configured" wrote nothing.
+#   NetworkPolicy               last-applied `"ingress":[]`, live has NO
+#   swarm-deny-cross-tenant-    `ingress` key, and metadata.generation 4 --
+#   ingress                     while swarm-default-deny, applied by the same
+#                               runs but carrying no empty list, is still at 1.
+#
+# THE MECHANISM. The API server stores objects as protobuf, where an empty
+# repeated field and an absent one are the same bytes, so `rules: []` comes back
+# as `rules: null` (the field has no omitempty) and `ingress: []` comes back as
+# nothing (it has omitempty). Client-side apply computes its patch from the LIVE
+# object to the manifest; `null` -> `[]` and absent -> `[]` are both changes, so
+# every run sends `{"rules":[]}` / `{"spec":{"ingress":[]}}` and prints
+# "configured". For the Role the server then finds nothing to write, which is
+# why `kubectl diff` -- a server dry run compared with the live object -- showed
+# nothing. For the NetworkPolicy the registry compares specs with
+# reflect.DeepEqual, where nil != [], so it bumps the generation and writes on
+# every apply; that generation bump is the second "NetworkPolicy" in the diff.
+#
+# So the render is deterministic and the diff was accurate; the manifests were
+# asking for something the server cannot store. An empty map is NOT the same
+# case -- `podSelector: {}` is a struct the server echoes back as `{}` -- which
+# is why this is about lists.
+
+
+def _empty_lists(node: Any, path: str = "") -> list[str]:
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            found += _empty_lists(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        if not node:
+            found.append(path or ".")
+        for index, value in enumerate(node):
+            found += _empty_lists(value, f"{path}[{index}]")
+    return found
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["policies"],
+        ["tenant", "--tenant", TENANT],
+        [
+            "tenant", "--tenant", TENANT,
+            "--bound-ksa", "swarm-agent-worker", "--bound-ksa", "swarm-worker",
+        ],
+    ],
+    ids=["policies", "tenant", "tenant-with-older-ksa"],
+)
+def test_nothing_apply_sends_carries_an_empty_list_the_api_server_drops(argv):
+    """Every object `kubernetes/apply.sh` sends, rendered exactly as it sends
+    it, must be free of empty lists -- or `kubectl apply` reports it
+    "configured" on every run, and the one run where it really changes is
+    indistinguishable from the rest.
+
+    Spell "no rules" / "no ingress" by omitting the key. For a Role that is the
+    same empty rule set; for a NetworkPolicy whose policyTypes includes Ingress
+    it is the same deny-all (swarm-default-deny already spells it that way).
+
+    MUTATION: put `rules: []` back on rbac/worker-rbac.yaml's Role, or
+    `ingress: []` back on swarm-deny-cross-tenant-ingress, and this names the
+    object and the field.
+    """
+    import contextlib
+    import io
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        render.main(argv)
+    docs = documents(buffer.getvalue())
+    assert docs, f"render.py {' '.join(argv)} produced nothing to check"
+
+    offenders = [
+        f"{doc['kind']}/{doc['metadata']['name']}: {path}"
+        for doc in docs
+        for path in _empty_lists(doc)
+    ]
+    assert not offenders, (
+        "these fields are empty lists, which the API server stores as null/absent, so "
+        "client-side apply re-sends them and reports the object `configured` on every "
+        "run (and a NetworkPolicy's generation climbs):\n  " + "\n  ".join(offenders)
+    )
+
+
+# ---------------------------------------------------------------------------
+# The step-spec verification keys (contract request 34, section 3)
+# ---------------------------------------------------------------------------
+#
+# A GKE worker verifies swarm-api's signature with public keys from its
+# Job's `env:` -- the scheduler's own settings, since 2026-10-08, held in
+# tests/unit/control_plane/test_spec_signing_dispatch_env.py -- or, as the
+# fallback, the `swarm-spec-verify-keys` ConfigMap in its tenant's namespace,
+# mounted read-only. No TEMPLATE carries them (a placeholder away from a
+# tenant-writable copy): the render below, and a dispatcher whose settings
+# have none, set no SPEC_* name. The fact that matters is the ABSENCE of a
+# write grant on that ConfigMap to anything the tenant runs as: the worker
+# Role, any subject bound to it, and the tenant's GSA named either way a
+# Kubernetes subject can name it -- by email AND by numeric uniqueId, because
+# an email-only check reads as passing while a uniqueId binding authorises.
+
+SPEC_KEYS_CONFIG_MAP = "swarm-spec-verify-keys"
+SPEC_KEYS_MOUNT = "/etc/swarm/spec-verify-keys"
+SPEC_SETTINGS = {"SPEC_VERIFY_KEYS", "SPEC_SIGNING_KEY", "SPEC_SIGNATURE_MODE", "SPEC_LEGACY_CUTOVER"}
+_WRITE_VERBS = {"update", "patch", "delete", "create", "*"}
+#: The control plane's GSAs, by the uniqueId their RoleBindings name.
+_CONTROL_PLANE_UIDS = {SCHEDULER_UID, RECONCILER_UID}
+
+
+def _all_rbac_docs() -> list[dict[str, Any]]:
+    docs = list(_tenant_render("--bound-ksa", "swarm-agent-worker", "--bound-ksa", "swarm-worker"))
+    for path in sorted((KUBERNETES / "rbac").glob("*.yaml")):
+        text = path.read_text()
+        docs.extend(documents(text.replace("__", "x")))
+    return docs
+
+
+def _grants_config_map_write(role: dict[str, Any]) -> bool:
+    for rule in role.get("rules") or []:
+        resources = set(rule.get("resources") or [])
+        verbs = set(rule.get("verbs") or [])
+        if resources & {"configmaps", "*"} and verbs & _WRITE_VERBS:
+            return True
+    return False
+
+
+def _is_tenant_gsa(subject: dict[str, Any]) -> bool:
+    name = str(subject.get("name", ""))
+    if re.fullmatch(r"swarm-agent-worker-[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com", name):
+        return True
+    # A numeric subject is a GSA's uniqueId; only the control plane's may appear.
+    return name.isdigit() and name not in _CONTROL_PLANE_UIDS
+
+
+def test_the_browser_job_mounts_the_spec_keys_read_only_and_sets_no_env():
+    for source, job in (
+        ("render.py", _rendered_job("browser")),
+        ("GkeJobDispatcher._manifest", _dispatcher_job("browser")),
+    ):
+        pod = job["spec"]["template"]["spec"]
+        worker = next(c for c in pod["containers"] if c["name"] == "worker")
+        names = {e["name"] for e in worker.get("env") or []}
+        assert not SPEC_SETTINGS & names, (source, sorted(SPEC_SETTINGS & names))
+        mounts = [m for m in worker.get("volumeMounts") or [] if m.get("mountPath") == SPEC_KEYS_MOUNT]
+        assert len(mounts) == 1, (source, worker.get("volumeMounts"))
+        assert mounts[0].get("readOnly") is True, (source, mounts[0])
+        volume = next(v for v in pod["volumes"] if v["name"] == mounts[0]["name"])
+        assert volume["configMap"]["name"] == SPEC_KEYS_CONFIG_MAP, (source, volume)
+
+
+def test_the_browser_job_names_itself_for_the_workers_self_consistency_check():
+    for source, job in (
+        ("render.py", _rendered_job("browser")),
+        ("GkeJobDispatcher._manifest", _dispatcher_job("browser")),
+    ):
+        worker = job["spec"]["template"]["spec"]["containers"][0]
+        env = {e["name"]: e.get("value") for e in worker.get("env") or []}
+        assert env.get("RUNNER_JOB_NAME") == job["metadata"]["name"], source
+
+
+def test_the_browser_job_hands_its_worker_the_execution_name_the_dispatcher_records():
+    """archived issue 1804: without it a GKE worker recorded its pod's HOSTNAME as the
+    attempt's execution_name, which neither the gate nor cancel could find.
+    Both producers, so the YAML an operator reads says what dispatches."""
+    for source, job in (
+        ("render.py", _rendered_job("browser")),
+        ("GkeJobDispatcher._manifest", _dispatcher_job("browser")),
+    ):
+        worker = job["spec"]["template"]["spec"]["containers"][0]
+        env = {e["name"]: e.get("value") for e in worker.get("env") or []}
+        meta = job["metadata"]
+        # MUTATION: drop SWARM_EXECUTION_NAME from worker-job-browser.yaml, or
+        # render it as `__JOB_NAME__` alone, and render.py fails here.
+        assert env.get("SWARM_EXECUTION_NAME") == f"{meta['namespace']}/{meta['name']}", source
+
+
+def test_the_worker_role_stays_empty_with_the_config_map_mounted(tenant_docs):
+    """A volume mount is fetched by the kubelet, never the pod's token, and
+    that token is not mounted. Nothing is added to the worker Role."""
+    assert not one(tenant_docs, "Role", "swarm-worker").get("rules")
+
+
+def test_no_role_binding_grants_the_tenant_write_on_the_spec_keys():
+    docs = _all_rbac_docs()
+    writers = {
+        (d["kind"], d["metadata"]["name"])
+        for d in docs
+        if d["kind"] in ("Role", "ClusterRole") and _grants_config_map_write(d)
+    }
+    worker_subjects = {
+        (s.get("kind"), s.get("name"))
+        for b in by_kind(docs, "RoleBinding")
+        if b["roleRef"]["kind"] == "Role" and b["roleRef"]["name"] == "swarm-worker"
+        for s in b.get("subjects") or []
+    }
+    assert worker_subjects, "no subject is bound to swarm-worker: the check below would see nothing"
+    assert ("Role", "swarm-worker") not in writers
+    for binding in by_kind(docs, "RoleBinding") + by_kind(docs, "ClusterRoleBinding"):
+        ref = (binding["roleRef"]["kind"], binding["roleRef"]["name"])
+        if ref not in writers:
+            continue
+        for subject in binding.get("subjects") or []:
+            key = (subject.get("kind"), subject.get("name"))
+            assert key not in worker_subjects, (binding["metadata"]["name"], subject)
+            assert not _is_tenant_gsa(subject), (binding["metadata"]["name"], subject)
+
+
+def test_the_gsa_check_recognises_both_spellings():
+    """The check above must not be email-only (or uniqueId-only)."""
+    assert _is_tenant_gsa({"name": f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com"})
+    assert _is_tenant_gsa({"name": "112233445566778899001"})
+    assert not _is_tenant_gsa({"name": SCHEDULER_UID})
+
+
+#: The one cluster-scoped grant in kubernetes/, and why it exists: the
+#: workspace deployer creates a person's namespace, and RBAC can grant that only
+#: cluster-wide (docs/workspaces.md §2.3). Its scope admission policy narrows it
+#: to swarm-tenant-u-*; test_workspace_provisioner_scope.py holds the two
+#: together. Every other file stays namespaced.
+_CLUSTER_GRANT_FILE = "rbac/provisioner-rbac.yaml"
+
+
+def test_no_cluster_role_binding_exists_anywhere_in_kubernetes():
+    """The ConfigMap must not become the first exception to this invariant --
+    and the workspace deployer's ClusterRole, the one exception there is, binds
+    the deployer and nobody else."""
+    found: dict[str, set[tuple[str, str]]] = {}
+    for path in sorted(KUBERNETES.rglob("*.yaml")):
+        for doc in documents(path.read_text().replace("__", "x")):
+            if doc.get("kind") in ("ClusterRole", "ClusterRoleBinding"):
+                rel = str(path.relative_to(KUBERNETES))
+                found.setdefault(rel, set()).add((doc["kind"], doc["metadata"]["name"]))
+    assert found == {
+        _CLUSTER_GRANT_FILE: {
+            ("ClusterRole", "swarm-workspace-deployer"),
+            ("ClusterRoleBinding", "swarm-workspace-deployer"),
+        }
+    }
+    binding = one(
+        documents((KUBERNETES / _CLUSTER_GRANT_FILE).read_text().replace("__", "x")),
+        "ClusterRoleBinding",
+        "swarm-workspace-deployer",
+    )
+    assert {s["name"] for s in binding["subjects"]} == {
+        "xWORKSPACE_DEPLOYER_GSAx",
+        "xWORKSPACE_DEPLOYER_UIDx",
+    }
+
+
+_PROBES = ("livenessProbe", "readinessProbe", "startupProbe")
+_HOOKS = ("postStart", "preStop")
+_CONTAINER_GROUPS = ("initContainers", "containers", "ephemeralContainers")
+
+
+def _container_commands(node: Any, where: str) -> list[tuple[str, list[str]]]:
+    """Every command a container under NODE runs, with where it is stated.
+
+    A container's own `command:`, its exec probes and its exec lifecycle hooks,
+    for init, regular and ephemeral containers alike. `args:` is not a command:
+    it is handed to whichever binary `command:` (or the image ENTRYPOINT) names.
+    """
+    found: list[tuple[str, list[str]]] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in _CONTAINER_GROUPS and isinstance(value, list):
+                for container in value:
+                    if not isinstance(container, dict):
+                        continue
+                    name = f"{where} {key}/{container.get('name', '?')}"
+                    if container.get("command"):
+                        found.append((f"{name}.command", container["command"]))
+                    for probe in _PROBES:
+                        handler = container.get(probe) or {}
+                        if "exec" in handler:
+                            found.append((f"{name}.{probe}", handler["exec"]["command"]))
+                    for hook in _HOOKS:
+                        handler = (container.get("lifecycle") or {}).get(hook) or {}
+                        if "exec" in handler:
+                            found.append((f"{name}.lifecycle.{hook}", handler["exec"]["command"]))
+            else:
+                found.extend(_container_commands(value, where))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(_container_commands(item, where))
+    return found
+
+
+def test_every_command_a_worker_template_runs_is_a_binary_some_image_installs():
+    """worker-job-v2.yaml once probed /usr/local/bin/swarm-healthcheck, which no
+    Dockerfile installed: the kubelet's exec fails, three failures kill the
+    container, and every gVisor attempt dies a minute in. A probe is held to
+    the images, because nothing else runs the binary before a pod does.
+
+    WIDENED FROM PROBES TO EVERY COMMAND (epic archived issue 888, EPX-B9). The probe-only
+    version passed while the same template's init container ran
+    /usr/local/bin/swarm-install-credential, which no image installs either, so
+    every pod rendered with `--runtime gvisor` failed at init. A probe is one
+    of several places a pod spec names a binary; `command:` on an init, regular
+    or ephemeral container and an exec lifecycle hook are the others, and each
+    fails the pod the same way.
+
+    A relative command is refused rather than looked up: which binary it names
+    depends on the image's PATH, which a Dockerfile grep cannot settle.
+
+    MUTATION: give any container in any worker template
+    `command: ["/usr/local/bin/swarm-not-installed"]`. This fails naming the
+    template, the container and the binary.
+    """
+    dockerfiles = "\n".join(p.read_text() for p in sorted((REPO / "images").glob("*/Dockerfile")))
+    templates = sorted((KUBERNETES / "worker-templates").glob("*.yaml"))
+    assert templates, "no worker templates found"
+    missing = []
+    for path in templates:
+        for doc in documents(path.read_text().replace("__", "x")):
+            for where, command in _container_commands(doc, path.name):
+                binary = command[0]
+                if not binary.startswith("/") or not re.search(rf"{re.escape(binary)}(?![\w.-])", dockerfiles):
+                    missing.append(f"{where}: {binary}")
+    assert not missing, (
+        f"worker templates run a binary no images/*/Dockerfile installs: {missing}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# SWARM_SCRATCH_VOLUMES: the worker's local scratch volumes, in every copy (archived issue 2436)
+# ---------------------------------------------------------------------------
+
+
+def _worker_env(job: dict[str, Any]) -> dict[str, str]:
+    containers = job["spec"]["template"]["spec"]["containers"]
+    worker = next(c for c in containers if c["name"] == "worker")
+    return {e["name"]: e.get("value", "") for e in worker.get("env", [])}
+
+
+def _disk_emptydirs(job: dict[str, Any]) -> str:
+    """The job's own disk emptyDirs mounted in `worker`, spelled as SWARM_SCRATCH_VOLUMES is."""
+    pod = job["spec"]["template"]["spec"]
+    worker = next(c for c in pod["containers"] if c["name"] == "worker")
+    mounts = {m["name"]: m["mountPath"] for m in worker["volumeMounts"]}
+    entries = []
+    for volume in pod["volumes"]:
+        empty = volume.get("emptyDir")
+        if empty is None or "medium" in empty or volume["name"] not in mounts:
+            continue
+        assert empty["sizeLimit"].endswith("Gi"), volume
+        entries.append(f"{volume['name']}={mounts[volume['name']]}:{empty['sizeLimit'][:-2]}")
+    return ",".join(sorted(entries))
+
+
+@pytest.mark.parametrize("profile", _gke_profiles())
+def test_a_rendered_job_names_the_same_scratch_volumes_as_the_dispatcher(profile):
+    """The YAML templates tell the worker what the dispatcher tells it.
+
+    `render_job` fills `__SCRATCH_VOLUMES__` from the dispatcher's own
+    `scratch_volumes_value(gke_disk(rc))`, so the value is derived; this holds
+    that the template carries it on the `worker` container, that it equals the
+    dispatched Job's for the same class, and that it names exactly the
+    template's own disk emptyDirs -- a template whose volumes moved without its
+    variable would report the wrong path when one of them evicts.
+
+    The gvisor template's HOME is a volume named `work` at /work, not `home` at
+    /home/swarm, so it is held to its OWN volumes, not to the dispatcher's.
+
+    MUTATION: drop SWARM_SCRATCH_VOLUMES from any one template, or render it
+    with a hand-written value; rename a template's `tmp` volume.
+    """
+    from scheduler.dispatch import SCRATCH_VOLUMES_ENV, scratch_volumes_value  # noqa: PLC0415
+
+    rendered = _worker_env(_rendered_job(profile))
+    dispatched = _worker_env(_dispatcher_job(profile))
+    expected = scratch_volumes_value(gke_disk(RESOURCE_CLASSES[RUNNER_PROFILES[profile].resource_class]))
+    assert rendered.get(SCRATCH_VOLUMES_ENV) == dispatched.get(SCRATCH_VOLUMES_ENV) == expected, (
+        f"{profile}: render.py says {rendered.get(SCRATCH_VOLUMES_ENV)!r}, the dispatcher "
+        f"{dispatched.get(SCRATCH_VOLUMES_ENV)!r}, scratch_volumes_value {expected!r}"
+    )
+    job = _rendered_job(profile)
+    assert ",".join(sorted(expected.split(","))) == _disk_emptydirs(job), profile
+
+    v2 = _render_v2_job()
+    told = _worker_env(v2).get(SCRATCH_VOLUMES_ENV)
+    assert told is not None, "worker-job-v2.yaml does not tell the worker its scratch volumes"
+    assert ",".join(sorted(told.split(","))) == _disk_emptydirs(v2), (
+        f"worker-job-v2.yaml says {told!r}; its own disk emptyDirs are {_disk_emptydirs(v2)!r}"
+    )

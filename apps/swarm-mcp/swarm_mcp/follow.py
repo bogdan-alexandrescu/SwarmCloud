@@ -1,0 +1,1416 @@
+"""What a remote agent has produced SINCE a cursor.
+
+WHY A CURSOR AND NOT A STREAM. `server.py` explains that an MCP tool call
+returns exactly once, so a tool cannot print a log line while an agent is still
+writing it. `client.py:25` adds the other half: a long-lived `tail` inside a
+subprocess dies, and the 401 it dies with looks like a permission problem. Both
+rule out a held connection. What is left, and what this module is, is a
+RESUMABLE CURSOR: each call answers "what is new since this cursor" and hands
+back the next one, so a session can poll between other work and narrate
+progress without holding anything open. It is not streaming and does not
+pretend to be; it is the shape that survives a process that may be killed
+between any two calls.
+
+THE FOUR PROPERTIES THIS OWES ITS CALLER, all of which are load-bearing:
+
+1. INCREMENTAL. Nothing is ever handed back twice. The cursor is a byte
+   position in each STREAM (not in the object holding it) plus a count of
+   events already delivered, so two consecutive calls partition the output
+   rather than overlapping it. Where an exact slice is impossible -- see
+   `_deliver_from_window` on redaction -- the code repeats a bounded, NAMED
+   number of bytes rather than dropping any, because a silent drop is
+   indistinguishable from an agent that went quiet.
+
+2. BOUNDED, AND SAYING SO. A run that produced 50MB cannot be allowed to
+   arrive in one answer. Every call carries a log-byte budget; when it is
+   spent, the streams and tasks that were not read say `skipped_budget` and
+   `truncation` names each one and the cursor that resumes it. A silent
+   truncation reads as "that was all the output", which is the exact class of
+   defect this repository keeps finding, so truncation is never a field a
+   reader has to go looking for: it is a list of sentences.
+
+3. HONEST ABOUT ABSENCE. "No events yet", "this task does not exist" and "the
+   read failed" are three different facts and are reported as three different
+   statuses. Collapsing any of them into an empty list is how a broken read
+   gets reported as a quiet agent.
+
+4. FAN-OUT. Several tasks in one call, because the case this exists for is
+   five or six agents running together and a session that polls each one
+   separately spends its whole turn on bookkeeping.
+
+WHAT THE TWO ROUTES UNDERNEATH ACTUALLY OFFER, because the design is shaped by
+their limits rather than by what would have been convenient:
+
+  * `GET /v1/tasks/{id}/events` orders ASCENDING by `at` and applies `limit` as
+    a HEAD -- the first N, not the last N -- and offers no page token. So the
+    cursor into it is a COUNT of rows already consumed, and the route's own
+    `max_page_size` is a ceiling past which later events are not reachable at
+    all. `_events` reports when a page came back exactly full, because that is
+    the only signal a client gets that the route may be holding more.
+  * `GET /v1/tasks/{id}/logs` pages by BYTE OFFSET INTO AN OBJECT and reports
+    `total_bytes`, `next_offset` and `truncated` in the RAW object's
+    coordinates. There are two objects per stream: `logs/<stream>.log`, the
+    complete record written once at exit, and `logs/live/<stream>.tail.log`, a
+    bounded 256KB window republished every few seconds while the agent runs.
+    They do not share a coordinate system -- the live object is
+    `#swarm-tail offset=W size=S\\n` followed by stream bytes `[W, S)` -- so the
+    cursor is kept in STREAM coordinates and translated on the way in. That
+    translation is what makes the live-to-final handover free: the completed
+    record IS the stream from byte zero, so the same cursor addresses it.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+from .client import TERMINAL, SwarmClient, SwarmError
+from .invocation import terminal_command
+from .render import clock, parse_time, task_label
+
+#: Both streams, in the order they are read and reported. Matches
+#: `swarm_api.inspect.STREAMS`; asking for both in one request is not possible
+#: because the route takes ONE offset for every stream it returns and the two
+#: streams are at different positions.
+STREAMS = ("stdout", "stderr")
+
+#: The agent CLI's OWN streams (`swarm_api.agent_streams.AGENT_STREAMS`, #184).
+#: `stdout`/`stderr` above are the RUNNER process's -- its JSON log lines --
+#: and a claude-code agent's `stream-json` is `agent_stdout`. The route answers
+#: `not_applicable` for them on a runner that starts no agent CLI (the mock,
+#: the browser runner), which is a fourth answer beside ok, absent and
+#: unreadable, and is reported as itself. `progress.watch` reads these first
+#: and falls back to `STREAMS` for such a task; everything else here reads
+#: `STREAMS`, exactly as before.
+AGENT_STREAMS = ("agent_stdout", "agent_stderr")
+
+#: How many bytes of log text one call may hand back, across every task and
+#: stream in it. Roughly 5k tokens -- enough to narrate real progress, small
+#: enough that six agents polled every few seconds do not fill a session.
+DEFAULT_LOG_BUDGET = 20_000
+
+#: How many NEW events one call reports per task. Events are small and are the
+#: skeleton of the narration, so this is generous; anything past it is withheld
+#: and SAID, never dropped.
+DEFAULT_EVENT_PAGE = 50
+
+#: An event `detail` is a small dict in every writer in this repository
+#: (`error_code`, `correlation_id`, a park reason). It is passed through, but a
+#: blob that turned out not to be small would blow the budget the log half is
+#: careful about, so it is cut here -- and the cut is reported in the event.
+MAX_EVENT_DETAIL_CHARS = 1_000
+
+#: The live tail object is at most `live_log_tail_bytes` (256KB by default).
+#: A read of it is sized from the cursor rather than fixed, but never above
+#: this, so a stream that somehow published more cannot turn one poll into a
+#: multi-megabyte download.
+MAX_LIVE_READ = 320 * 1024
+
+#: HOW A COMMAND IS SPELLED is decided in `invocation.terminal_command`, and
+#: only there. This module held the one spelling from 2026-09-24 -- `uv run`,
+#: after three places had handed a model a bare `swarm tail` that no shell had
+#: on its PATH -- and one fixed spelling was still the defect: right in a
+#: checkout, `Failed to spawn: swarm` on a plugin-only install (archived issue 189).
+#: `terminal_command` is imported above so the modules that take it from
+#: `follow` keep one name for it.
+
+
+def follow_command(task_ids: list[str]) -> str:
+    """The terminal command that tails these tasks live, or "" for none.
+
+    EMPTY RATHER THAN A BARE COMMAND when there is nothing to follow. `swarm
+    tail ` with the ids missing is worse than absent, because it still looks
+    runnable; `swarm_dispatch` already refuses to emit that shape and this is
+    where the refusal belongs so every caller inherits it.
+    """
+    followable = [str(t) for t in task_ids if t]
+    if not followable:
+        return ""
+    return terminal_command(f"swarm tail {' '.join(followable)}")
+
+
+def console_link(document: Any) -> str | None:
+    """The console link the API served on a task, workflow or step, or None.
+
+    THE API IS THE ONE SOURCE (owner decision 2026-10-01). swarm-api puts
+    `links.console` on every task, workflow and workflow step it serves --
+    `swarm_api.codec` builds it from the deployment's configured console
+    origin -- and every answer here prints that string as served. Nothing in
+    this package spells the console's host or its paths: a host restated in
+    the bridge, the CLI and the plugin is three places to drift, and the first
+    one wrong is a link that opens another deployment's console or nothing.
+
+    None for a null link (a deployment with no console, or a step with no task
+    yet), for an API too old to send `links`, and for anything that is not a
+    non-empty string. A caller OMITS the field then; it never invents one.
+    """
+    if not isinstance(document, dict):
+        return None
+    links = document.get("links")
+    if not isinstance(links, dict):
+        return None
+    link = links.get("console")
+    if isinstance(link, str) and link.strip():
+        return link.strip()
+    return None
+
+
+def with_console(answer: dict[str, Any], document: Any) -> dict[str, Any]:
+    """`answer`, with `console` set from `document`'s served link -- or left out.
+
+    Left out, not set to null: an absent key is "this deployment served no
+    link", and a null one would invite a caller to fill it in.
+    """
+    link = console_link(document)
+    if link is not None:
+        answer["console"] = link
+    return answer
+
+
+def waiting_brief(document: Any) -> dict[str, Any] | None:
+    """A waiting task's `{reason, summary, next_check_at}`, from the API's `waiting` (archived issue 1782).
+
+    WAIT-API builds `waiting` from what the platform recorded -- a merge
+    step's pull request and pending checks, a pool's units, a provider's
+    window -- and puts it into one sentence, `summary`. The plugin carries
+    that sentence and the next check, never the `detail` and `history`: those
+    are the console page's, and a row re-reads its reply on every turn.
+
+    None when there is no sentence to carry: a task that is not waiting, and
+    an API older than WAIT-API, which serves no `waiting` at all. Every reader
+    then keeps the line it printed before.
+
+    None, too, when the API's reason is not the task's park reason: a READY
+    step still marked DEPENDENCY_INCOMPLETE is waiting for a parent, and the
+    API's READY sentence ("every pool has room") would send the reader to
+    capacity instead -- the park reason stays the answer there.
+    """
+    waiting = document.get("waiting") if isinstance(document, dict) else None
+    if not isinstance(waiting, dict):
+        return None
+    park = document.get("park_reason")
+    if park and waiting.get("reason") != park:
+        return None
+    summary = waiting.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        return None
+    return {
+        "reason": waiting.get("reason"),
+        "summary": " ".join(summary.split()),
+        "next_check_at": waiting.get("next_check_at"),
+    }
+
+
+def new_cursor(streams: tuple[str, ...] = STREAMS) -> dict[str, Any]:
+    """The cursor for a task nothing has been read from yet.
+
+    Written out in full rather than defaulted field by field, so that a caller
+    handing back a cursor from an older version of this tool gets the missing
+    pieces filled in by `_normalise` instead of a KeyError mid-poll.
+    """
+    return {
+        "events": 0,
+        "attempt_id": None,
+        "streams": {
+            name: {"pos": 0, "source": None, "complete": False, "window_start": 0}
+            for name in streams
+        },
+    }
+
+
+def _normalise(raw: Any, streams: tuple[str, ...] = STREAMS) -> dict[str, Any]:
+    """A cursor that came back from a model, made safe to use.
+
+    The cursor crosses a tool boundary, which means it arrives as whatever the
+    caller sent: a string where an int belongs, a missing stream, a negative
+    offset. None of those may raise in the middle of a poll, and none of them
+    may silently read as zero either -- a position that quietly became zero
+    would re-deliver a whole run's output as if it were new. So each field is
+    coerced, and anything uncoercible falls back to the fresh value, which
+    re-reads rather than skips.
+    """
+    cur = new_cursor(streams)
+    if not isinstance(raw, dict):
+        return cur
+    cur["events"] = _non_negative_int(raw.get("events"))
+    attempt = raw.get("attempt_id")
+    cur["attempt_id"] = attempt if isinstance(attempt, str) and attempt else None
+    held = raw.get("streams")
+    if isinstance(held, dict):
+        for name in streams:
+            got = held.get(name)
+            if not isinstance(got, dict):
+                continue
+            cur["streams"][name] = {
+                "pos": _non_negative_int(got.get("pos")),
+                "source": got.get("source") if got.get("source") in ("live", "final") else None,
+                "complete": bool(got.get("complete")),
+                "window_start": _non_negative_int(got.get("window_start")),
+            }
+    return cur
+
+
+def _non_negative_int(value: Any) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return number if number > 0 else 0
+
+
+class _Budget:
+    """The call's log-byte allowance, and the record of what it cost.
+
+    A class rather than a running integer because the REPORTING is the point.
+    Every place that declines to read something, or reads only part of it,
+    calls `withheld` -- and `truncation` is a list of sentences naming what was
+    left behind and how to get it. A boolean nobody reads would be worth
+    nothing: the failure mode being designed against is a reader concluding
+    "that was all the output", and only a sentence prevents that.
+
+    IT IS A FLOOR ON WHAT IS READ, NOT A CEILING ON ONE WINDOW. The API clamps
+    `limit_bytes` UP to its own `min_log_bytes` (4KB by default), because a
+    window too small to hold a line can only ever be withheld -- so the last
+    stream read in a call can overshoot the remaining allowance by one of
+    those. Nothing is cut mid-window to hide that: a window arrives whole or is
+    not started, since a partial one cannot be turned back into a byte position
+    once read-time redaction has shortened it. `spent` is therefore what really
+    came back, and the answer reports it as `log_bytes_returned`.
+    """
+
+    def __init__(self, limit: int) -> None:
+        self.limit = max(0, int(limit))
+        self.spent = 0
+        self.truncation: list[str] = []
+
+    def room(self) -> int:
+        return max(0, self.limit - self.spent)
+
+    def charge(self, text: str) -> int:
+        size = len(text.encode("utf-8"))
+        self.spent += size
+        return size
+
+    def withheld(self, message: str) -> None:
+        self.truncation.append(message)
+
+    def mark(self) -> tuple[int, int]:
+        """A point to come back to, for a read whose answer gets discarded.
+
+        There is exactly one of those: the read that discovers, from its own
+        response, that the attempt underneath it changed. Its bytes are thrown
+        away, so charging them would make `log_bytes_returned` overstate what
+        the caller got -- and any sentence it added to `truncation` would name
+        output that was never withheld, which is the same lie in the other
+        direction.
+        """
+        return self.spent, len(self.truncation)
+
+    def rollback(self, mark: tuple[int, int]) -> None:
+        self.spent, cut = mark
+        del self.truncation[cut:]
+
+    @property
+    def truncated(self) -> bool:
+        return bool(self.truncation)
+
+
+# --------------------------------------------------------------------------
+# The entry point
+# --------------------------------------------------------------------------
+
+def follow(
+    client: SwarmClient,
+    task_ids: list[str],
+    *,
+    cursor: dict[str, Any] | None = None,
+    max_log_bytes: int = DEFAULT_LOG_BUDGET,
+    max_new_events: int = DEFAULT_EVENT_PAGE,
+    include_heartbeats: bool = False,
+    streams: tuple[str, ...] = STREAMS,
+) -> dict[str, Any]:
+    """Everything these tasks have produced since `cursor`, and the next cursor.
+
+    `cursor` is `{task_id: {...}}` exactly as a previous call returned it. An
+    absent or unknown task id starts from the beginning of that task, which is
+    what a caller following a task it has just dispatched wants.
+
+    The return is JSON-serialisable throughout, because it crosses a tool
+    boundary and the caller has to hand `cursor` back verbatim.
+    """
+    incoming = cursor if isinstance(cursor, dict) else {}
+    budget = _Budget(max_log_bytes)
+    page = max(1, int(max_new_events))
+
+    reports: list[dict[str, Any]] = []
+    next_cursor: dict[str, Any] = {}
+    running: list[str] = []
+
+    for task_id in task_ids:
+        cur = _normalise(incoming.get(task_id), streams)
+        report, cur = _follow_one(
+            client,
+            task_id,
+            cur,
+            budget=budget,
+            page=page,
+            include_heartbeats=include_heartbeats,
+            streams=streams,
+        )
+        reports.append(report)
+        next_cursor[task_id] = cur
+        if not report["terminal"]:
+            running.append(task_id)
+
+    return {
+        "tasks": reports,
+        "cursor": next_cursor,
+        "still_running": running,
+        "all_finished": not running,
+        "log_bytes_returned": budget.spent,
+        "log_budget": budget.limit,
+        "truncated": budget.truncated,
+        "truncation": budget.truncation,
+        "note": (
+            "Call again with `cursor` to get only what is new; nothing above is "
+            "returned twice. `truncated` being true means this answer is NOT the "
+            "whole output -- read `truncation`, which names what was withheld."
+        ),
+    }
+
+
+def _follow_one(
+    client: SwarmClient,
+    task_id: str,
+    cur: dict[str, Any],
+    *,
+    budget: _Budget,
+    page: int,
+    include_heartbeats: bool,
+    streams: tuple[str, ...] = STREAMS,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One task. The state read comes first because everything else depends on it.
+
+    A task that cannot be READ is not a task with no output. `client.task`
+    raises for a 404 (no such task, or someone else's), for an edge refusal and
+    for a transport failure, and all three are reported as `read: failed` with
+    the message and, where there was one, the HTTP status -- never as an empty
+    events list, which is what a caller would otherwise see and believe.
+    """
+    try:
+        task = client.task(task_id)
+    except SwarmError as exc:
+        return (
+            {
+                "task_id": task_id,
+                "read": "failed",
+                "error": str(exc),
+                "http_status": exc.status,
+                "state": None,
+                # NOT true: a task whose state could not be read has not been
+                # shown to have finished, and a caller that stopped polling on
+                # it would stop on a task that is still running.
+                "terminal": False,
+                "events": {"status": "unknown", "detail": "the task itself could not be read"},
+                "logs": {"status": "unknown", "detail": "the task itself could not be read"},
+            },
+            cur,
+        )
+
+    state = task.get("state")
+    terminal = state in TERMINAL
+
+    events, cur = _events(client, task_id, cur, page=page, include_heartbeats=include_heartbeats)
+    logs, cur = _logs(client, task_id, cur, terminal=terminal, budget=budget, streams=streams)
+
+    return (
+        with_console({
+            "task_id": task_id,
+            "read": "ok",
+            "state": state,
+            "terminal": terminal,
+            # The workflow step this task is, or None. Carried so a reader --
+            # and `render` -- can name the step rather than only an id nobody
+            # wrote down (archived issue 88, SC-F15).
+            "step_id": task.get("step_id"),
+            "runner_profile": task.get("runner_profile"),
+            "park_reason": task.get("park_reason"),
+            # Why it waits, in the API's own sentence (archived issue 1782): what
+            # `progress.state_line` writes instead of the bare park reason.
+            "waiting": waiting_brief(task),
+            # What a READY task is waiting on, as the scheduler recorded it --
+            # `progress.state_line` names it, so a row waiting for capacity
+            # says which pool refused rather than only that it waits.
+            "blocked_by": task.get("blocked_by") or [],
+            "last_error": task.get("last_error"),
+            # What a finished task produced, for its closing line -- the same
+            # line `tail` prints (archived issue 193). None while it runs, and when it
+            # recorded no git summary at all.
+            "git": git_brief(task) if terminal else None,
+            "events": events,
+            "logs": logs,
+        }, task),
+        cur,
+    )
+
+
+# --------------------------------------------------------------------------
+# Events
+# --------------------------------------------------------------------------
+
+def _events(
+    client: SwarmClient,
+    task_id: str,
+    cur: dict[str, Any],
+    *,
+    page: int,
+    include_heartbeats: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """New events, and only new ones.
+
+    THE CURSOR IS A COUNT, NOT A TIMESTAMP, and that is forced by the route.
+    `store.list_events` orders ascending by `at` and takes `limit` as a head,
+    so row N of the answer is row N of the task's history for every limit that
+    reaches it. A count therefore indexes it exactly, and two events written in
+    the same microsecond -- which a timestamp cursor would either duplicate or
+    drop -- are just two rows.
+
+    WHAT THE COUNT CANNOT DO is reach past the route's `max_page_size`. There
+    is no page token, so once a task has produced more events than the route
+    will return, the later ones are not reachable through this API at all. The
+    only signal a client gets is a page that came back EXACTLY full, so that is
+    reported as `page_was_full` with the sentence a reader needs, rather than
+    being left to look like a task that went quiet.
+    """
+    delivered = cur["events"]
+    want = delivered + page
+    try:
+        rows = client.events(task_id, limit=want)
+    except SwarmError as exc:
+        # A failed read is never an empty list. `cli._latest_attempt` states
+        # this rule for attempts; it is the same rule here.
+        return (
+            {
+                "status": "unreadable",
+                "detail": str(exc),
+                "new": [],
+                "delivered_total": delivered,
+                "page_was_full": False,
+            },
+            cur,
+        )
+
+    fresh = rows[delivered:]
+    cur = dict(cur)
+    cur["events"] = delivered + len(fresh)
+
+    shown = [_event_row(e) for e in fresh]
+    if not include_heartbeats:
+        shown = [row for row in shown if row["type"] != "heartbeat"]
+
+    if not rows:
+        status = "none_yet"
+        detail = (
+            "this task has no events yet. It exists and was read successfully -- "
+            "this is an empty history, not a failed read."
+        )
+    elif not fresh:
+        status = "up_to_date"
+        detail = None
+    else:
+        status = "ok"
+        detail = None
+
+    out: dict[str, Any] = {
+        "status": status,
+        "detail": detail,
+        "new": shown,
+        "delivered_total": cur["events"],
+        "page_was_full": len(rows) == want,
+    }
+    if out["page_was_full"]:
+        out["page_detail"] = (
+            f"the events route returned exactly the {want} rows asked for, so it may "
+            "be holding more; call again. Note the route has NO page token and clamps "
+            "at the API's max_page_size, so once this count stops growing it may mean "
+            "the ceiling was reached rather than that the task went quiet."
+        )
+    if not include_heartbeats and len(shown) < len(fresh):
+        out["heartbeats_hidden"] = len(fresh) - len(shown)
+    return out, cur
+
+
+def event_type(event: dict[str, Any]) -> Any:
+    """The type an event RECORDS -- its `type` field, passed through as served,
+    except for one legacy shape.
+
+    That shape differs from its field. Before 2026-09-24 the API wrote a
+    flag-only cancel -- the task still held its lease, nothing was cancelled --
+    as `type: cancelled, detail.phase: cancel_requested`. Contract request 17
+    gave it its own type, `cancel_requested`, and a current API serves stored
+    history that way (`swarm_api.codec.stored_event_type`). This plugin can be
+    pointed at an API older than itself, which serves the raw row, so the same
+    reading is applied here: narrating that row as "cancelled" is exactly what
+    showed four DISPATCHED tasks as cancelled in incident wf_ebb3ab2d65664707a559.
+
+    Only that shape. A `cancelled` with `phase: cancelled`, or with no phase at
+    all (the scheduler's cascade, the worker, the reconciler), is a real cancel.
+    """
+    kind = event.get("type")
+    detail = event.get("detail")
+    if kind == "cancelled" and isinstance(detail, dict) and detail.get("phase") == "cancel_requested":
+        return "cancel_requested"
+    return kind
+
+
+def event_label(event: dict[str, Any]) -> str:
+    """What one printed event line names: its type, and for a start-up step the step.
+
+    `startup_progress` (contract request 74) is one type for seven steps --
+    `pod_scheduled` through `first_frame`, its `detail.step` -- so a line that
+    printed the type alone would print the same words seven times. Each step
+    is one line, `startup_progress pod_scheduled`. Every other type prints as
+    `event_type` reads it.
+    """
+    kind = event_type(event) or "?"
+    detail = event.get("detail")
+    if kind == "startup_progress" and isinstance(detail, dict):
+        step = detail.get("step")
+        if isinstance(step, str) and step:
+            return f"{kind} {step}"
+    return str(kind)
+
+
+def _event_row(event: dict[str, Any]) -> dict[str, Any]:
+    row = {
+        "at": event.get("at"),
+        "type": event_type(event),
+        "attempt_id": event.get("attempt_id"),
+        "generation": event.get("generation"),
+        "detail": event.get("detail"),
+    }
+    encoded = json.dumps(row.get("detail"), default=str)
+    if len(encoded) > MAX_EVENT_DETAIL_CHARS:
+        row["detail"] = encoded[:MAX_EVENT_DETAIL_CHARS]
+        row["detail_truncated"] = (
+            f"this event's detail was {len(encoded)} characters and was cut to "
+            f"{MAX_EVENT_DETAIL_CHARS}; read it in full with `swarm_status` or the "
+            "events route"
+        )
+    return row
+
+
+# --------------------------------------------------------------------------
+# Logs
+# --------------------------------------------------------------------------
+
+def _logs(
+    client: SwarmClient,
+    task_id: str,
+    cur: dict[str, Any],
+    *,
+    terminal: bool,
+    budget: _Budget,
+    streams: tuple[str, ...] = STREAMS,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Both streams, each from where this cursor left off.
+
+    THE ATTEMPT IS PART OF THE CURSOR. A retry is a new attempt with a new
+    fencing generation and a new set of objects, so a byte position from the
+    previous attempt addresses nothing in the new one. When the route reports a
+    different attempt from the one the cursor was built against, the positions
+    are reset to zero and the reset is SAID -- silently continuing would splice
+    the second attempt's output onto the first at an arbitrary byte.
+    """
+    cur = {**cur, "streams": {k: dict(v) for k, v in cur["streams"].items()}}
+    rows: list[dict[str, Any]] = []
+    attempt_id: str | None = None
+    attempt_status: str | None = None
+    notes: list[str] = []
+    already_reset = False
+    no_attempt_yet = False
+
+    for name in streams:
+        state = cur["streams"][name]
+
+        if state["complete"]:
+            rows.append(
+                _row(
+                    name,
+                    "complete",
+                    source="final",
+                    detail=(
+                        "the completed log has been delivered in full; nothing further "
+                        "will ever be written to it"
+                    ),
+                    to=state["pos"],
+                )
+            )
+            continue
+
+        if no_attempt_yet:
+            # The first stream already established that this task has never
+            # run. Asking the same question about the other stream -- and
+            # about the other object behind it -- is three more requests for an
+            # answer already in hand, and a task polled every few seconds
+            # before it is admitted is the commonest poll there is.
+            rows.append(
+                _row(
+                    name,
+                    "absent",
+                    detail="this task has no attempt yet, so no log object can exist",
+                    to=state["pos"],
+                )
+            )
+            continue
+
+        if budget.room() <= 0:
+            budget.withheld(
+                f"{task_id} {name}: not read at all -- this call's {budget.limit}-byte log "
+                f"budget was already spent. Call again with the returned cursor, or raise "
+                f"max_log_bytes."
+            )
+            rows.append(
+                _row(
+                    name,
+                    "skipped_budget",
+                    detail="not read: the call's log budget was spent before this stream",
+                    to=state["pos"],
+                )
+            )
+            continue
+
+        mark = budget.mark()
+        row, state, body = _read_stream(
+            client, task_id, name, state, terminal=terminal, budget=budget
+        )
+
+        if body is not None:
+            attempt = body.get("attempt") or {}
+            attempt_status = attempt.get("status") or attempt_status
+            no_attempt_yet = attempt_status == "no_attempt_yet"
+            seen = body.get("attempt_id")
+            if isinstance(seen, str) and seen:
+                attempt_id = seen
+                if cur["attempt_id"] and seen != cur["attempt_id"] and not already_reset:
+                    # A RETRY. Every position this cursor holds was measured
+                    # against the previous attempt's objects, and the new
+                    # attempt's streams start at zero -- so continuing from
+                    # them would splice one attempt's output onto the other at
+                    # an arbitrary byte. Both streams are reset, this one is
+                    # re-read from the start of the new attempt, and the reset
+                    # is stated rather than inferred from a jump in the output.
+                    already_reset = True
+                    # The read above addressed the OLD attempt's byte
+                    # positions, so whatever it returned is not this attempt's
+                    # output and must not be charged or reported.
+                    budget.rollback(mark)
+                    cur["attempt_id"] = seen
+                    cur["streams"] = {
+                        key: {"pos": 0, "source": None, "complete": False, "window_start": 0}
+                        for key in streams
+                    }
+                    notes.append(
+                        f"attempt {seen} is now the latest one and is not the attempt this "
+                        "cursor was built against, so every stream position was reset to "
+                        "the start of the new attempt. What follows is the new attempt's "
+                        "output, not a continuation of the previous one."
+                    )
+                    state = cur["streams"][name]
+                    row, state, body = _read_stream(
+                        client, task_id, name, state, terminal=terminal, budget=budget
+                    )
+
+        cur["streams"][name] = state
+        rows.append(row)
+
+    if attempt_id:
+        cur["attempt_id"] = attempt_id
+
+    status = "ok"
+    detail = None
+    statuses = {row["status"] for row in rows}
+    if statuses == {"absent"} and attempt_status == "no_attempt_yet":
+        status = "no_attempt_yet"
+        detail = (
+            "this task has no attempt yet, so no log object can exist. It is queued, "
+            "parked or waiting on capacity -- this is not a failed read."
+        )
+    elif statuses == {"not_applicable"}:
+        status = "not_applicable"
+        detail = (
+            "this runner starts no agent CLI, so it has no agent streams; its own "
+            "output is `stdout` and `stderr`"
+        )
+    elif statuses == {"unreadable"}:
+        status = "unreadable"
+        detail = "neither stream could be read; see each stream's detail"
+    elif statuses == {"absent"}:
+        status = "absent"
+        detail = "an attempt exists but has published no log objects yet"
+
+    return (
+        {
+            "status": status,
+            "detail": detail,
+            "attempt_id": attempt_id,
+            "attempt_status": attempt_status,
+            "notes": notes,
+            "streams": rows,
+        },
+        cur,
+    )
+
+
+def _row(
+    stream: str,
+    status: str,
+    *,
+    source: str | None = None,
+    text: str | None = None,
+    detail: str | None = None,
+    frm: int | None = None,
+    to: int | None = None,
+) -> dict[str, Any]:
+    """The constant shape every stream row has.
+
+    `text` is None -- never "" -- in every non-ok case, for the reason
+    `swarm_api.inspect._entry` gives: a reader that renders text without
+    reading status must see nothing rather than an empty log, which looks like
+    a successful read of a silent agent.
+    """
+    return {
+        "stream": stream,
+        "status": status,
+        "source": source,
+        "text": text,
+        "bytes": 0,
+        "from": frm,
+        "to": to,
+        "gap_bytes": 0,
+        "repeat_bytes": 0,
+        "more_bytes": 0,
+        "detail": detail,
+    }
+
+
+def _read_stream(
+    client: SwarmClient,
+    task_id: str,
+    stream: str,
+    state: dict[str, Any],
+    *,
+    terminal: bool,
+    budget: _Budget,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+    """One stream, from `state["pos"]` onwards.
+
+    WHICH OBJECT IS TRIED FIRST depends on the task, not on a preference. While
+    the task runs, only the live tail exists. Once it is terminal the completed
+    record is the better answer -- it is the whole stream and it never moves --
+    but it is not guaranteed: a worker killed before its upload leaves only the
+    tail. So terminal reads try `final` then `live`, and running reads try
+    `live` then `final`, and an `absent` from the first is the only thing that
+    moves on to the second. An UNREADABLE is returned as-is, exactly as the
+    route refuses to substitute one object for another after a failed read.
+    """
+    order = ("final", "live") if terminal else ("live", "final")
+    last_absent: dict[str, Any] | None = None
+    last_body: dict[str, Any] | None = None
+
+    for source in order:
+        if source == "final":
+            row, new_state, body = _read_final(client, task_id, stream, state, budget=budget)
+        else:
+            row, new_state, body = _read_live(client, task_id, stream, state, budget=budget)
+        if body is not None:
+            last_body = body
+        if row["status"] == "absent":
+            last_absent = row
+            if ((body or {}).get("attempt") or {}).get("status") == "no_attempt_yet":
+                # Not "this object has not appeared yet" but "there has never
+                # been an attempt to write one". The other object cannot exist
+                # either, so asking for it is a request whose answer is known.
+                return row, new_state, body
+            continue
+        return row, new_state, body
+
+    assert last_absent is not None
+    return last_absent, dict(state), last_body
+
+
+def _read_final(
+    client: SwarmClient,
+    task_id: str,
+    stream: str,
+    state: dict[str, Any],
+    *,
+    budget: _Budget,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+    """The completed record, paged by byte offset.
+
+    NO TRANSLATION IS NEEDED HERE, and that is the whole reason the cursor is
+    kept in stream coordinates. The completed log IS the stream from byte zero,
+    so a position built while watching the live tail addresses the completed
+    record exactly -- the handover from one object to the other costs nothing
+    and loses nothing.
+    """
+    state = dict(state)
+    pos = state["pos"]
+    body, row = _fetch(client, task_id, stream, source="final", offset=pos, limit=budget.room())
+    if row["status"] != "ok":
+        return row, state, body
+
+    served = body["_served"]
+    total = served.get("total_bytes") or 0
+    frm = int(served.get("offset") or 0)
+    returned = int(served.get("returned_bytes") or 0)
+    text = served.get("content") or ""
+
+    if total < pos:
+        # The live tail showed more than the completed record holds. The
+        # worker caps what it uploads, so this is a real state, and reporting
+        # it as "nothing new" would say the agent stopped talking.
+        row = _row(
+            stream,
+            "ok",
+            source="final",
+            text="",
+            detail=(
+                f"the completed log is {total} bytes but this cursor had already been "
+                f"shown {pos} bytes from the live tail; the record is shorter than the "
+                "window was. Nothing further is available."
+            ),
+            frm=pos,
+            to=pos,
+        )
+        state["complete"] = True
+        state["source"] = "final"
+        return row, state, body
+
+    gap = frm - pos if frm > pos else 0
+    out = _row(stream, "ok", source="final", text=text, frm=frm, to=frm + returned)
+    out["bytes"] = budget.charge(text)
+    out["gap_bytes"] = gap
+    if served.get("detail"):
+        out["detail"] = served["detail"]
+
+    nxt = served.get("next_offset")
+    if nxt is None:
+        state["complete"] = True
+        state["pos"] = frm + returned
+    else:
+        state["complete"] = False
+        state["pos"] = int(nxt)
+        out["more_bytes"] = max(0, total - int(nxt))
+        budget.withheld(
+            f"{task_id} {stream}: {out['more_bytes']} bytes of the completed log were not "
+            f"returned (this call's budget or the route's window ended at byte {nxt}). "
+            "Call again with the returned cursor to continue from exactly there."
+        )
+    state["source"] = "final"
+    if gap:
+        budget.withheld(
+            f"{task_id} {stream}: {gap} bytes were skipped by the route's token-boundary "
+            f"alignment between byte {pos} and byte {frm}; they are not recoverable "
+            "through this route."
+        )
+    return out, state, body
+
+
+def _read_live(
+    client: SwarmClient,
+    task_id: str,
+    stream: str,
+    state: dict[str, Any],
+    *,
+    budget: _Budget,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+    """The live tail, translated out of object coordinates into stream ones.
+
+    THE OBJECT MOVES UNDER THE READER. The worker republishes the whole object
+    every few seconds and it holds only the last 256KB, so an offset into it
+    means a different stream byte after each flush. The header it writes --
+    `#swarm-tail offset=W size=S` -- is what makes that tractable: W is the
+    stream byte the window starts at and S is how long the stream is. The API
+    parses it out and serves it as `tail_window`.
+
+    ONE READ, FROM OFFSET ZERO, so the header and the bytes come from the SAME
+    object generation. Reading the header in one request and the wanted bytes
+    in another would be a race that silently stitches two non-adjacent windows
+    together -- which is precisely the lie `cli.cmd_tail`'s gap header exists
+    to prevent, so it is not a race this code is allowed to run.
+
+    The read is SIZED rather than fixed: the window start seen last time bounds
+    how far into it the cursor now is, so the request asks for the overlap plus
+    the budget instead of pulling all 256KB every poll.
+    """
+    state = dict(state)
+    pos = state["pos"]
+    overlap = max(0, pos - state.get("window_start", 0))
+    want = min(MAX_LIVE_READ, overlap + max(budget.room(), 1))
+
+    body, row = _fetch(client, task_id, stream, source="live", offset=0, limit=want)
+    if row["status"] != "ok":
+        return row, state, body
+
+    served = body["_served"]
+    window = served.get("tail_window") or {}
+    start = int(window.get("object_offset") or 0)
+    size = int(window.get("stream_size") or 0)
+    returned = int(served.get("returned_bytes") or 0)
+    text = served.get("content") or ""
+
+    if not window:
+        # No header: an object written by something other than this platform's
+        # worker, or a worker old enough to predate the header. The only safe
+        # reading is that the object IS the stream, which is true for a file
+        # that never exceeded the window.
+        size = int(served.get("total_bytes") or returned)
+
+    state["window_start"] = start
+    state["source"] = "live"
+
+    if pos >= size:
+        return (
+            _row(
+                stream,
+                "up_to_date",
+                source="live",
+                detail=f"nothing new; the stream is {size} bytes and this cursor is at {pos}",
+                frm=pos,
+                to=pos,
+            ),
+            state,
+            body,
+        )
+
+    if pos > start + returned and size > pos:
+        # The cursor is past everything this window read, which can only happen
+        # when the window slid further than the sizing estimate allowed for.
+        # Saying so is the honest move: delivering the head of the window
+        # instead would repeat output already shown and hide the real bytes.
+        budget.withheld(
+            f"{task_id} {stream}: this call read {returned} bytes of a live window that "
+            f"starts at stream byte {start}, but the cursor is at {pos}; the new output "
+            f"between {pos} and {size} was not reached. Raise max_log_bytes."
+        )
+        return (
+            _row(
+                stream,
+                "behind",
+                source="live",
+                detail=(
+                    f"the live window is {size - start} bytes and this call could not read "
+                    f"far enough into it to reach byte {pos}; raise max_log_bytes"
+                ),
+                frm=pos,
+                to=pos,
+            ),
+            state,
+            body,
+        )
+
+    out = _deliver_from_window(
+        stream, text, start=start, returned=returned, pos=pos, budget=budget
+    )
+    state["pos"] = start + returned
+    if out["gap_bytes"]:
+        budget.withheld(
+            f"{task_id} {stream}: {out['gap_bytes']} bytes were produced between polls and "
+            f"the 256KB live window moved past them before this call read it. They are "
+            "gone; poll more often, or read the completed log once the task finishes."
+        )
+    more = max(0, size - (start + returned))
+    if more:
+        out["more_bytes"] = more
+        budget.withheld(
+            f"{task_id} {stream}: {more} bytes of live output past byte {start + returned} "
+            "were not returned by this call. Call again with the returned cursor."
+        )
+    return out, state, body
+
+
+def _deliver_from_window(
+    stream: str,
+    text: str,
+    *,
+    start: int,
+    returned: int,
+    pos: int,
+    budget: _Budget,
+) -> dict[str, Any]:
+    """The part of one live window the caller has not already been given.
+
+    THE SLICE IS OVER REDACTED TEXT, WHICH IS SHORTER THAN THE RAW BYTES IT
+    STANDS FOR. The API redacts at read time and states that its byte
+    accounting refers to the RAW object for exactly this reason, so cutting the
+    text at `pos - start` would cut too far in and DROP output -- silently, and
+    only on runs that printed something matching a redaction rule, which is the
+    worst possible distribution for a bug.
+
+    The shortfall is knowable in total (`returned` minus the redacted text's
+    length) even though its distribution inside the window is not, so the cut
+    is moved back by the whole shortfall. The result never drops a byte and at
+    worst REPEATS up to `shortfall` bytes, which is reported as
+    `repeat_bytes`. Choosing repetition over loss is deliberate: a repeat is
+    visible to the reader, a drop is not.
+    """
+    if pos <= start:
+        gap = start - pos if pos > 0 else 0
+        out = _row(stream, "ok", source="live", text=text, frm=start, to=start + returned)
+        out["bytes"] = budget.charge(text)
+        out["gap_bytes"] = gap
+        if gap:
+            out["detail"] = (
+                f"{gap} bytes were missed: the live window now starts at stream byte "
+                f"{start} and this cursor was at {pos}"
+            )
+        return out
+
+    shortfall = max(0, returned - len(text.encode("utf-8")))
+    cut = max(0, (pos - start) - shortfall)
+    fresh = text.encode("utf-8")[cut:].decode("utf-8", errors="replace")
+    out = _row(stream, "ok", source="live", text=fresh, frm=pos, to=start + returned)
+    out["bytes"] = budget.charge(fresh)
+    if shortfall:
+        out["repeat_bytes"] = shortfall
+        out["detail"] = (
+            f"up to {shortfall} bytes of this window may repeat output already shown: "
+            "read-time redaction shortened the text, so the cut was moved back by the "
+            "whole shortfall rather than risk dropping new output"
+        )
+    return out
+
+
+def _fetch(
+    client: SwarmClient,
+    task_id: str,
+    stream: str,
+    *,
+    source: str,
+    offset: int,
+    limit: int,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """One call to the logs route, with the stream entry lifted out of it.
+
+    Returns `(body, row)`. `body` carries `_served`, the entry for this stream,
+    so a caller does not search the list twice. The row is already the answer
+    for every case except `ok`.
+    """
+    try:
+        body = client.logs(
+            task_id,
+            stream=stream,
+            source=source,
+            offset=max(0, offset),
+            limit_bytes=max(1, limit),
+        )
+    except SwarmError as exc:
+        return None, _row(
+            stream,
+            "unreadable",
+            source=source,
+            detail=f"the logs route failed: {exc}",
+        )
+
+    entries = body.get("streams") or []
+    served = next((e for e in entries if e.get("stream") == stream), None)
+    if served is None:
+        return body, _row(
+            stream,
+            "unreadable",
+            source=source,
+            detail=(
+                f"the logs route answered without a `{stream}` entry; it returned "
+                f"{[e.get('stream') for e in entries]}"
+            ),
+        )
+
+    body = {**body, "_served": served}
+    status = served.get("status")
+    if status == "ok":
+        return body, _row(stream, "ok", source=served.get("source"))
+    if status == "absent":
+        return body, _row(
+            stream, "absent", source=served.get("source"), detail=served.get("detail")
+        )
+    if status == "not_applicable":
+        # Not a failed read: the route KNOWS this runner has no agent child.
+        return body, _row(stream, "not_applicable", detail=served.get("detail"))
+    return body, _row(
+        stream,
+        "unreadable",
+        source=served.get("source"),
+        detail=served.get("detail") or "the logs route reported an unreadable object",
+    )
+
+
+# --------------------------------------------------------------------------
+# Rendering, for the terminal
+# --------------------------------------------------------------------------
+
+def no_log_line(task_id: str, attempt_id: str | None) -> str:
+    """A finished attempt with NEITHER a completed log nor a live tail, as observed.
+
+    ONE SENTENCE FOR `follow` AND `tail`, because both said the same wrong
+    thing: "its output is MISSING, not empty". That is one reading of two
+    absent objects, and the worker gives ordinary ones. `_upload_outputs`
+    writes the completed log only from a capture file the runner creates
+    (`procman.StreamCapture`), so an attempt that fails during its startup
+    has neither object. A worker stopped before its upload leaves only the
+    live tail. There is no tail for an agent that printed nothing, or that
+    printed only after the worker's last live flush, which is always the
+    case for a short run. The objects alone cannot tell these apart. So the
+    line names what was looked for, and says where the reason the attempt
+    ended is recorded.
+    """
+    where = f" for attempt {attempt_id}" if attempt_id else ""
+    how = f" -- {terminal_command(f'swarm result {task_id}')} says how it ended" if task_id else ""
+    return (
+        f"no log object exists{where}, live or completed: its agent may never have "
+        f"started, or its worker stopped before uploading{how}"
+    )
+
+
+# ONE SENTENCE PER FACT, FOR `tail` AND `follow` BOTH (archived issue 193). The two read
+# different things -- `tail` the objects directly, `follow` the API -- and
+# they reach the same facts, but each had its own wording for them: a finished
+# step was `OK` in one and `SUCCEEDED` in the other, and an empty completed log
+# was "printed nothing -- its completed log is empty, and an empty stream gets
+# no live log" in one and "printed nothing -- its logs exist and are empty" in
+# the other. One fact worded two ways reads as two facts. Both commands take
+# their closing lines from here.
+
+#: A task not yet running has nothing to publish.
+NO_ATTEMPT_YET = "no output yet -- no attempt has started"
+
+#: An attempt exists and has published no log object yet. `tail` used to say
+#: nothing at all for this state, which is what an agent that printed nothing
+#: looks like too.
+NO_LOG_YET = "no output yet -- the attempt has published no log"
+
+#: A finished task that never had an attempt.
+NEVER_STARTED = "never started, so it printed nothing"
+
+
+def empty_log_line(attempt_id: str | None) -> str:
+    """A finished attempt whose completed log exists and holds no bytes."""
+    who = f"attempt {attempt_id}" if attempt_id else "its attempt"
+    return f"{who} printed nothing -- its completed log is empty"
+
+
+def terminal_line(state: Any, git: dict[str, Any] | None = None) -> str:
+    """The closing line of a finished task: its state, as every screen spells it.
+
+    `SUCCEEDED`, not `OK` -- `sc task`, `status` and `workflow-status` all print
+    the state name, and `tail` alone printed `OK`. What the task produced
+    follows, from its `result_summary.git`, when there is anything to say.
+    """
+    git = git if isinstance(git, dict) else {}
+    summary = ""
+    if git.get("commit_count"):
+        summary = (
+            f" · {git['commit_count']} commit(s) "
+            f"+{git.get('insertions', 0)}/-{git.get('deletions', 0)}"
+        )
+    elif git.get("dirty_count"):
+        summary = f" · {git['dirty_count']} file(s) changed, uncommitted"
+    pr = git.get("pull_request")
+    if isinstance(pr, dict) and pr.get("number") is not None:
+        summary += f" · PR #{pr['number']}"
+    return f"{state}{summary}"
+
+
+def git_brief(task: dict[str, Any]) -> dict[str, Any] | None:
+    """The part of a task's `result_summary.git` its closing line reads, or None.
+
+    Carried on the follow report, rather than the whole summary, because the
+    whole summary lists up to a hundred commits with their subjects and the
+    report crosses a tool boundary on every poll.
+    """
+    git = (task.get("result_summary") or {}).get("git")
+    if not isinstance(git, dict) or not git:
+        return None
+    brief = {key: git.get(key) for key in ("commit_count", "insertions", "deletions", "dirty_count")}
+    pr = git.get("pull_request")
+    if isinstance(pr, dict):
+        brief["pull_request"] = {"number": pr.get("number"), "url": pr.get("url")}
+    return brief
+
+
+#: Sorts an event whose `at` could not be read AFTER every timed one, without
+#: comparing None with a datetime.
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def time_order(at: Any) -> tuple[bool, datetime]:
+    """The sort key that puts one poll's events in the order they happened.
+
+    `tail` sorted each poll's events by `at` across tasks (archived issue 88, SC-F9), and
+    `follow` printed them task by task (archived issue 194), so one poll came out in two
+    orders. Both sort with this key now; Python's sort is stable, so events at
+    the same instant keep the order they were read in.
+    """
+    when = parse_time(at)
+    return (when is None, when or _EPOCH)
+
+
+def quiet_line(task: dict[str, Any], cursor: dict[str, Any] | None) -> str | None:
+    """The one line that tells "printed nothing" from "nothing to read yet".
+
+    AN EMPTY LOG AND A MISSING ONE LOOKED THE SAME: both printed nothing at
+    all (archived issue 88, SC-F19), so a reader could not tell an agent that ran and said
+    nothing from one whose log was never published, or from one that never
+    ran. The follow report already holds the difference -- a stream read from
+    the completed record and found empty, a log object that is absent, a task
+    with no attempt -- and this names it.
+
+    None whenever output HAS been delivered for this task, or the case cannot
+    be judged from this report (an unreadable stream prints its own line).
+    """
+    logs = task.get("logs") or {}
+    rows = {row.get("stream"): row for row in logs.get("streams") or []}
+    positions = ((cursor or {}).get("streams") or {})
+    # The streams this report read -- the runner's two, or the agent's.
+    names = list(rows) or list(positions) or list(STREAMS)
+    if any(int((positions.get(name) or {}).get("pos") or 0) > 0 for name in names):
+        return None
+    if any(row.get("status") == "ok" and row.get("text") for row in rows.values()):
+        return None
+    status = logs.get("status")
+    if not task.get("terminal"):
+        if status == "no_attempt_yet":
+            return NO_ATTEMPT_YET
+        if status == "absent":
+            return NO_LOG_YET
+        return None
+    if status == "no_attempt_yet":
+        return NEVER_STARTED
+    if status == "absent":
+        return no_log_line(str(task.get("task_id") or ""), logs.get("attempt_id"))
+    complete = [bool((positions.get(name) or {}).get("complete")) for name in names]
+    settled_streams = [
+        complete[i] or (rows.get(name) or {}).get("status") in ("absent", "not_applicable")
+        for i, name in enumerate(names)
+    ]
+    if any(complete) and all(settled_streams):
+        return empty_log_line(logs.get("attempt_id"))
+    return None
+
+
+def settled(task: dict[str, Any]) -> bool:
+    """Finished, read, and nothing held back: safe to stop polling this task.
+
+    `swarm follow` re-read every task on every poll until ALL of them had
+    finished, and printed each finished task's terminal line every time --
+    111 lines for five steps on 2026-09-25, one of them 20 times (archived issue 88, SC-F8).
+    A task is dropped from the poll once it is terminal AND this report
+    withheld nothing of it: a stream skipped for budget, a live window the
+    cursor could not reach, bytes left past `next_offset` or an events page
+    that came back exactly full are all still owed, and stopping there would
+    lose them.
+    """
+    if task.get("read") != "ok" or not task.get("terminal"):
+        return False
+    if (task.get("events") or {}).get("page_was_full"):
+        return False
+    for row in (task.get("logs") or {}).get("streams") or []:
+        if row.get("status") in ("skipped_budget", "behind") or row.get("more_bytes"):
+            return False
+    return True
+
+
+def render(
+    report: dict[str, Any],
+    *,
+    memo: dict[str, set[str]] | None = None,
+    narrate: Callable[[str], list[str]] | None = None,
+) -> list[str]:
+    """The same answer as lines, so a human sees exactly what the model sees.
+
+    Deliberately not a second implementation of anything: it reads the report
+    `follow` already built. A renderer that went back to the client would be a
+    second definition of "what is new", which is how a CLI and a tool start
+    disagreeing.
+
+    `memo` is what a caller polling in a loop passes back each time, so the
+    lines that describe a task rather than something NEW about it -- its
+    terminal state, and the one "no output yet" / "printed nothing" line --
+    are printed once per task and not once per poll. Without it every call
+    prints them, which is right for a single call.
+
+    Every event line carries its time (`render.clock`), and every line is
+    labelled `[<step> <last 8>]` for a workflow step and `[<last 8>]` otherwise
+    -- one truncation, the same as `tail` and `sc agents` (archived issue 88, SC-F15/F19).
+
+    ONE ORDER ACROSS TASKS, AS `tail` PRINTS IT (archived issue 194). A poll's events are
+    printed first, every task's together, sorted by `at` with `time_order`;
+    then each task's log text and closing lines. Walked task by task, step b's
+    CANCELLED printed above step d's earlier checkpoint in the same poll, while
+    `tail` -- and Firestore -- had them the other way round. A closing line
+    carries no time of its own, so it goes after every event of the poll it
+    closes rather than among them.
+
+    `narrate`, when given, turns each log line into the lines to print instead
+    -- `progress.narrate`, which reads a claude-code `stream-json` line as what
+    it means. Without it every log line is printed as it came, which is what
+    `swarm follow` in a terminal wants.
+    """
+    said = memo if memo is not None else {}
+    cursors = report.get("cursor") or {}
+    lines: list[str] = []
+    labels = {
+        task["task_id"]: task_label(task["task_id"], task.get("step_id"))
+        for task in report["tasks"]
+    }
+    events = [
+        (time_order(event.get("at")), labels[task["task_id"]], event)
+        for task in report["tasks"]
+        if task["read"] != "failed"
+        for event in task["events"].get("new") or []
+    ]
+    events.sort(key=lambda item: item[0])
+    # WHERE TO WATCH IT, once per task and first: the console link the API
+    # served (`console_link`), printed as served and never rebuilt. A task the
+    # API served no link for prints no line at all.
+    for task in report["tasks"]:
+        link = task.get("console")
+        seen = said.setdefault(task["task_id"], set())
+        if link and "console" not in seen:
+            seen.add("console")
+            lines.append(f"[{labels[task['task_id']]}] console: {link}")
+    for _, label, event in events:
+        lines.append(f"[{label}] {clock(event.get('at'))} · {event_label(event)}")
+    for task in report["tasks"]:
+        task_id = task["task_id"]
+        label = labels[task_id]
+        seen = said.setdefault(task_id, set())
+        if task["read"] == "failed":
+            lines.append(f"[{label}] ! {task['error']}")
+            continue
+        if task["events"]["status"] == "unreadable":
+            lines.append(f"[{label}] ! events unreadable: {task['events']['detail']}")
+        for row in task["logs"].get("streams") or []:
+            if row["status"] == "ok" and row["text"]:
+                for line in row["text"].splitlines():
+                    for said_line in (narrate(line) if narrate is not None else [line]):
+                        lines.append(f"[{label}] {said_line}")
+            elif row["status"] in ("unreadable", "behind", "skipped_budget"):
+                lines.append(f"[{label}] ! {row['stream']}: {row['detail']}")
+        for note in task["logs"].get("notes") or []:
+            lines.append(f"[{label}] ⟲ {note}")
+        quiet = quiet_line(task, cursors.get(task_id))
+        if quiet is not None:
+            # One while it runs and one once it has finished, never one a poll.
+            key = "quiet:finished" if task["terminal"] else "quiet:running"
+            if key not in seen:
+                seen.add(key)
+                lines.append(f"[{label}] {quiet}")
+        if task["terminal"] and "terminal" not in seen:
+            seen.add("terminal")
+            lines.append(f"[{label}] {terminal_line(task['state'], task.get('git'))}")
+    for message in report["truncation"]:
+        lines.append(f"… {message}")
+    return lines

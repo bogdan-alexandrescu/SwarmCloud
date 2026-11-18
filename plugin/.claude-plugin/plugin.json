@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "sc",
+  "version": "0.5.87",
+  "description": "SwarmCloud from inside a Claude Code session. Two skills: `sc` reads the cluster -- the account pool and its quota windows, which pool actually binds each runner profile, what is running, what is wrong -- and never writes. `delegate` owns the decision to run work remotely instead of locally, dispatches it by runner-profile NAME from the frozen catalogue, reports a failure as something actionable rather than a task id, and brings the result back into the working tree. It writes, so it says when it asks first. Eight agents and a workflow run a Claude Code workflow's steps in SwarmCloud while each still shows as a running row: `sc:remote` runs one step remotely, and `/sc:swarmcloud` runs a whole SwarmCloud workflow spec with an `sc:step` row per step, gives each single dispatched task an `sc:task` row and a run of its own, titled `SC · <label>`, and, with the `rows` setting at its default `summary`, follows a whole workflow with ONE `sc:summary` row, titled `SC ∴ <name> · N steps`, that names every step on its own line by the console's stage, and `sc:wait` spaces a row's retries while the bridge is down. `/sc check` reports this project's stuck or stale SwarmCloud work that THIS Claude Code session started (every submission is tagged with the session; other sessions' work in the same tenant is never a candidate) and attaches rows for its running workflows that have none, and `/sc watch` runs that check every 30 minutes (CronCreate), re-armed by the SessionStart hook and armed by itself whenever the session attaches to or starts SwarmCloud work, unless `/sc watch off` was saved for the project. With `/sc layout pane` (or the `layout` setting) a SwarmCloud pane beside the chat (`/sc-pane`, proposal B: stages on the left, a stage's agents and then one agent's details on the right) reads SwarmCloud with one direct MCP call per click and spends no model tokens, and each workflow keeps ONE quiet `sc:finish` row that writes a line only when its stage changes, so its finish is still noticed; with `/sc layout band` the same levels sit in a strip above the prompt with a summary line below it (`SC 6 running · 1 waits on you`), re-read once a minute while anything runs, with no /workflows row at all: a finished workflow or a step waiting on a person queues one `/sc status` chat turn. The pane and the band need Claude Code's function hooks. `delegate` works through the plugin's own MCP server, which fetches the swarm-mcp bridge from GitHub at the tag matching this version and needs only uv. The `sc` skill and /sc run the installed `sc` and `swarm` commands, so they need those two on PATH, where SwarmCloud's install puts them.",
+  "author": {
+    "name": "SwarmCloud"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "deployment_url": {
+      "type": "string",
+      "title": "SwarmCloud deployment URL",
+      "description": "The address of YOUR SwarmCloud deployment -- the load balancer for a team deployment (e.g. https://swarm.example.com), or the *.run.app address for a solo one. Your platform operator knows it.",
+      "required": true
+    },
+    "oauth_client_id": {
+      "type": "string",
+      "title": "OAuth client ID (Desktop app)",
+      "description": "Optional: leave empty and the plugin reads it from the deployment's discovery document (https://<deployment>/.well-known/swarmcloud). A value set here wins. It is the deployment's Desktop app OAuth client ID (ends in .apps.googleusercontent.com), which your operator allowlists on IAP; with it you sign in as yourself with `sc login`. Empty for a solo deployment without IAP."
+    },
+    "oauth_client_secret": {
+      "type": "string",
+      "title": "OAuth client secret (Desktop app)",
+      "description": "Optional: leave empty unless your operator gives you one. The deployment's discovery document serves it when its Desktop client needs it, and a client that accepts PKCE alone needs none. A value set here wins. It is the secret of that same Desktop app OAuth client (starts GOCSPX-), stored in your system's secure credential store, never in settings.json.",
+      "sensitive": true
+    },
+    "default_target": {
+      "type": "string",
+      "title": "Default target for dispatched work",
+      "description": "Where the dispatching tools send work when a call does not say: cloud (dispatch it to SwarmCloud), local (send nothing; the work runs in this session), or hybrid (a unit that names a runner profile goes to the cloud unless the call declares needs_local -- filesystem, keychain or interactive -- in which case it stays local). A call's own target overrides this for that call only. Any other value stops the plugin's server at start-up.",
+      "default": "hybrid"
+    },
+    "auto_attach": {
+      "type": "boolean",
+      "title": "Show running SwarmCloud workflows and tasks at session start",
+      "description": "When on, a new or resumed session in which this plugin is configured lists your tenant's SwarmCloud workflows that are still running, and your single tasks that are (read-only, a few seconds at most, silent when none run or SwarmCloud cannot be reached) -- this session's, and the work still running for this project (this checkout's origin repository) whichever session started it -- and is told to run /sc attach --all first (/sc attach --all --project when the project's work is named), which shows them as live [SwarmCloud] rows. Turn off to start sessions without it; /sc attach --all still works by hand.",
+      "default": true
+    },
+    "tenant": {
+      "type": "string",
+      "title": "Tenant",
+      "description": "The tenant every call acts in; empty uses your default: the workspace chosen in Settings › Profile, else your personal workspace when it is ready. Name a group's tenant id here to keep the plugin's tools and its session-start check in that group (the swarm_tenants tool, or `swarm tenants`, lists the tenants you may choose). It reaches the plugin as SWARM_TENANT; a SWARM_TENANT already set in the environment Claude Code was started with wins over this setting.",
+      "sensitive": false
+    },
+    "max_live_rows": {
+      "type": "number",
+      "title": "Live rows followed by /sc attach --all",
+      "description": "How many running SwarmCloud workflows, and how many of your running single tasks, /sc attach --all shows as live rows (each workflow's unfinished steps are one row each). Default 100; any value is held to 1-200. The ones a cap leaves out are the ones furthest from finishing, listed with the command that follows each. Claude Code's /workflows panel is its own UI: the plugin cannot add scrolling to it, so every row is one compact line, closest to finish first (steps done of the total, then how long the current step has run), grouped by workspace.",
+      "default": 100,
+      "min": 1,
+      "max": 200
+    },
+    "rows": {
+      "type": "string",
+      "title": "How a SwarmCloud workflow is shown",
+      "description": "summary (the default): ONE live [SwarmCloud] row per SwarmCloud workflow, whose count line sums up the step counts (running, queued, done, failed, the pull requests and the console link) and changes only when they change, followed by every step the platform runs -- the ones it appends included -- on a line of its own, grouped by the console's stages, with its state and console link, written again only when a step's state changes; a step that fails or waits for a person is named on a line of its own. One agent instead of one per step, so a workflow of any size is live at once. Single tasks are not batched by any value: each has its own row and its own run, titled `SC · <label>`. per-step: one row per unfinished step, split over several runs titled `rows 1-8`, `rows 9-16`... because Claude Code runs at most min(16, CPU cores - 2) agents per workflow run; max_live_rows still caps the total. `/sc attach <wf_id> --per-step` uses per-step for one attach. Any other value is summary.",
+      "default": "summary"
+    },
+    "layout": {
+      "type": "string",
+      "title": "How SwarmCloud work is followed",
+      "description": "rows (the default): today's /workflows rows, as the `rows` setting says. pane: the SwarmCloud pane beside the chat (/sc-pane), which reads SwarmCloud with one direct call per click and spends no model tokens, plus ONE quiet /workflows row per workflow that writes a line only when its stage changes and notices its finish. band: the same levels in a strip above the prompt, with one summary line below it, and NO /workflows row: the strip re-reads the list once a minute while anything runs (no model tokens) and queues one `/sc status` chat turn when a workflow finishes or a step waits on you; it opens at session start with this session's and this project's running work. `/sc layout rows|pane|band` saves a choice for one project, which wins over this setting, and switches without restarting the session: rows already running keep going until they end, and the switch queues `/sc attach --all` (one chat turn) so rows in the new layout start beside them. In the pane layout the pane opens at session start, not read yet, until its Refresh; `/sc layout band` starts no rows and queues no attach. The pane and the band need Claude Code's function hooks (early access: CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1). Any other value is rows.",
+      "default": "rows"
+    }
+  },
+  "mcpServers": {
+    "swarmcloud": {
+      "command": "uv",
+      "args": [
+        "tool",
+        "run",
+        "--from",
+        "${SWARM_MCP_FROM:-swarm-mcp @ git+https://github.com/bogdan-alexandrescu/SwarmCloud@sc-v0.5.87#subdirectory=apps/swarm-mcp}",
+        "swarm-mcp"
+      ],
+      "env": {
+        "SWARM_PLUGIN_DEPLOYMENT_URL": "${user_config.deployment_url}",
+        "SWARM_PLUGIN_OAUTH_CLIENT_ID": "${user_config.oauth_client_id}",
+        "SWARM_PLUGIN_DEFAULT_TARGET": "${user_config.default_target}",
+        "SWARM_TENANT": "${SWARM_TENANT:-${user_config.tenant}}",
+        "SWARM_SC_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}",
+        "CLAUDE_PROJECT_DIR": "${CLAUDE_PROJECT_DIR:-}",
+        "SWARM_PLUGIN_MAX_LIVE_ROWS": "${user_config.max_live_rows}",
+        "SWARM_PLUGIN_ROWS": "${user_config.rows}",
+        "SWARM_PLUGIN_LAYOUT": "${user_config.layout}",
+        "SWARM_PLUGIN_OAUTH_CLIENT_SECRET": "${user_config.oauth_client_secret}"
+      }
+    }
+  }
+}

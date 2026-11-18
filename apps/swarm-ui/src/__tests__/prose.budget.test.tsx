@@ -1,0 +1,208 @@
+// THE APP-WIDE RATCHET IS proseapp.tsx (THE OWNER'S RULE, 2026-11-05): every
+// page the nav reaches shows no more words or arrowed links than it did on the
+// change's base. This file keeps its own screen-level budget.
+//
+// THE PROSE BUDGET, AS A NUMBER.
+//
+// The owner's directive is "remove prose from views, just features, data and
+// functionality ... no text everywhere". Every previous pass at that was
+// argued in adjectives and reverted, so this file makes the claim countable:
+// it mounts the real screen in jsdom, reads what a reader would actually SEE,
+// and holds the word count under a ceiling.
+//
+// WHAT COUNTS AS A WORD A READER SEES. The same exclusions
+// `honesty.prose.test.tsx` makes, and for the same reasons:
+//
+//   * `[data-help-description]` is the visually-hidden copy every `<HelpCard>`
+//     renders so assistive technology gets the explanation at the label. It is
+//     in `textContent` whether the card is open or shut, so counting it would
+//     report that nothing moved.
+//   * `<style>` and `<script>` are not read by anyone.
+//
+// An `aria-label` is an ATTRIBUTE and is therefore not counted here. That is
+// deliberate and it is the whole mechanism of the migration: the invariant
+// stays perceivable as a visual encoding on the surface, and the sentence that
+// used to carry it moves to the accessible name and the `?` topic. This file
+// counts the surface; `honesty.prose.test.tsx` is what proves the invariant
+// still reads without hovering anything.
+//
+// THE CEILING IS A RATCHET, NOT A TARGET. It exists so the next well-meaning
+// paragraph has to argue with a failing test instead of with a reviewer.
+
+import { describe, expect, it, vi } from 'vitest'
+import { render } from '@testing-library/react'
+
+import type { Result } from '../fetch'
+import type { SpendRollup } from '../api'
+import type { Account, AccountsPage, Capacity, Stats, TaskPage } from '../types'
+
+const api = vi.hoisted(() => ({
+  loadCapacity: vi.fn(),
+  loadTasks: vi.fn(),
+  loadLeases: vi.fn(),
+  loadProviders: vi.fn(),
+  loadAccountPool: vi.fn(),
+  loadWorkflows: vi.fn(),
+  loadStats: vi.fn(),
+  loadSpend: vi.fn(),
+}))
+// `TASK_PAGE_LIMIT` BESIDE THE READS: Overview names the full page it asks
+// for (archived issue 168), and a factory mock throws on any export it does not declare.
+vi.mock('../api', () => ({ ...api, TASK_PAGE_LIMIT: 200 }))
+
+const { OverviewScreen } = await import('../Overview')
+
+function ok<T>(data: T): Result<T> {
+  return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-09-23T10:00:00Z' }
+}
+
+function account(over: Partial<Account>): Account {
+  return {
+    account_id: 'eng:laptop',
+    owner_tenant: 'eng',
+    label: 'laptop',
+    provider: 'anthropic-subscription',
+    state: 'AVAILABLE',
+    reason: '',
+    lend_to: [],
+    assigned: 0,
+    windows: {},
+    observed_at: null,
+    stale: false,
+    unreadable_by: [],
+    unreadable_now: [],
+    last_assigned_at: null,
+    ...over,
+  }
+}
+
+const NEVER_POLLED = account({ account_id: 'eng:never', label: 'never' })
+const MEASURED_ZERO = account({
+  account_id: 'eng:fresh',
+  label: 'fresh',
+  observed_at: new Date().toISOString(),
+  windows: {
+    five_hour: { utilization: 0, resets_at: '2099-01-01T00:00:00Z', reset: false },
+    seven_day: { utilization: 0, resets_at: '2099-01-01T00:00:00Z', reset: false },
+  },
+})
+
+const EMPTY_TASKS: TaskPage = { tasks: [], next_page_token: null }
+const EMPTY_STATS: Stats = {
+  tenant_id: 'eng',
+  tasks_by_state: {},
+  dispatch_paused: false,
+  limits: {},
+  generated_at: '2026-09-23T10:00:00Z',
+}
+const CAPACITY: Capacity = {
+  pools: [],
+  runner_profiles: {},
+  tenant_id: 'eng',
+  generated_at: '2026-09-23T10:00:00Z',
+}
+
+function spend(over: Partial<SpendRollup> = {}): SpendRollup {
+  return {
+    tenantId: 'eng',
+    tasksOnPage: 4,
+    tasksWithAttempts: 4,
+    tasksSampled: 4,
+    failedReads: 0,
+    failedDetail: null,
+    attempts: 4,
+    attemptsWithCost: 0,
+    attemptsWithTokens: 0,
+    costUsd: null,
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: null,
+    cacheCreationTokens: null,
+    from: '2026-09-23T09:00:00Z',
+    to: '2026-09-23T10:00:00Z',
+    ...over,
+  }
+}
+
+function accountsPage(accounts: Account[]): AccountsPage {
+  return { accounts, tenant_id: 'eng', unreadable_documents: [], unreadable_document_count: 0 }
+}
+
+/** What a reader can see, with the help copy and the stylesheet taken out. */
+function visibleWords(): number {
+  const clone = document.body.cloneNode(true) as HTMLElement
+  for (const el of [...clone.querySelectorAll('[data-help-description], style, script')]) {
+    el.remove()
+  }
+  const text = (clone.textContent ?? '').replace(/\s+/g, ' ').trim()
+  return text === '' ? 0 : text.split(' ').length
+}
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 40; i++) await new Promise((r) => setTimeout(r, 5))
+}
+
+describe('the prose budget', () => {
+  it('holds Overview under its word ceiling on the healthy path', async () => {
+    api.loadCapacity.mockResolvedValue(ok(CAPACITY))
+    api.loadTasks.mockResolvedValue(ok(EMPTY_TASKS))
+    api.loadLeases.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadProviders.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadWorkflows.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    api.loadStats.mockResolvedValue(ok(EMPTY_STATS))
+    api.loadAccountPool.mockResolvedValue(ok(accountsPage([NEVER_POLLED, MEASURED_ZERO])))
+    api.loadSpend.mockResolvedValue(ok(spend()))
+
+    render(<OverviewScreen />)
+    await settle()
+
+    const words = visibleWords()
+    console.log(`OVERVIEW RENDERED WORDS: ${words}`)
+    expect(words).toBeLessThanOrEqual(OVERVIEW_CEILING)
+  })
+})
+
+/**
+ * The ceiling, and where it came from.
+ *
+ * MEASURED, both numbers, on this exact fixture: the screen this pass replaced
+ * rendered 309 words and the rebuilt one renders 64. 110 is that figure with
+ * room for a fixture that lists a few more rows, a longer tenant id and a
+ * couple of problem headlines -- and deliberately NOT room for another
+ * paragraph, which is the smallest thing this is meant to stop.
+ *
+ * WHAT THE 245 WORDS WERE. The eight check notes joined with ' · ' (about 90
+ * of them, on the healthy path, saying nothing was wrong eight different
+ * ways), five tile `sub` lines defining their own terms, four empty-state
+ * paragraphs and four provenance paragraphs under the spend figures. None of
+ * them was a measurement; every one of them shipped unconditionally on the
+ * landing screen.
+ *
+ * RAISED TO 153 WITH O1 (2026-10-02), AND NOT FOR A PARAGRAPH. The owner's
+ * pick draws more of the platform, so this fixture now renders 151 words, and
+ * every one added is a label or a provenance clause beside a figure (the
+ * account line's "read just now" is the age of its one figure, which the
+ * house rule puts beside it): the lifecycle band's three
+ * heads and three qualifiers and its eleven state words under their marks,
+ * five card titles each with the destination it opens, Headroom's three
+ * sub-heads, and the cost card's four token rows named in words. The empty
+ * states were cut to the fewest words that still name their scope
+ * ("None among the 0 newest"). Two words of room, so the next sentence still
+ * has to argue with this test.
+ *
+ * RAISED TO 160 WITH THE archived issue 503 PAGE HEAD, AND NOT FOR A WORD OF PROSE. The
+ * head's line used to run its words together -- this counter read `—8/8`,
+ * `reads?poll` and `20srefresh` as three words, which is the "nowrefresh" the
+ * visual QA filed as Q2. The canonical head separates them with ` · `, so the
+ * same line now counts `— · 8/8 reads? · poll 20s · refresh`: 158, every
+ * added token a separator or a word that was glued to its neighbour. Two
+ * tokens of room, as before.
+ *
+ * LOWERED TO 139 WITH THE CHECKS' `why` (the owner's pick, 2026-11-05): the
+ * never-polled account's card ended its detail on "— no reading has ever
+ * arrived, so their utilisation is unknown rather than zero and they cannot be
+ * counted as headroom." -- 21 tokens with the dash, now the card title's
+ * tooltip. This fixture measured 144 before and 123 after; the ceiling goes
+ * down by the same 21.
+ */
+const OVERVIEW_CEILING = 139

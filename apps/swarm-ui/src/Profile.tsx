@@ -1,0 +1,1053 @@
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type FormEvent, type MouseEvent, type ReactNode } from 'react'
+import { loadMe, loadMyTenants, loadProfile, putPreferences, NOTIFICATION_TOPICS, REMINDER_CADENCES, type TenantChoice } from './api'
+import { Banner, Button, ButtonLink, Card, acknowledge } from './components'
+import { chooseTenant, chosenTenant, subscribeTenant, type ApiError } from './fetch'
+import { atLeast, roleOf, type RoleName } from './roles'
+import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
+import { PageHead } from './Shell'
+import { displayNameOf, nameTenants, noteOwnName, OWN_WORKSPACE_LABEL, type NamedTenantChoice } from './Spine'
+import { WORKSPACE_SETUP_ADDRESS, addressToPath } from './paths'
+import { humaniseUntil, timeAgo } from './types'
+import { accountName } from './accountName'
+import { UTC, allZones, browserZone, canonicalZone, formatClock, notePerson, setZone, zoneSaved } from './timezone'
+import { useTimeZone } from './useTimeZone'
+import './styles/keys.css'
+import type {
+  Me,
+  NotificationTopic,
+  Preferences,
+  Profile,
+  ProfileClaudeAccount,
+  ProfileGitHub,
+  ProfileKeyStatus,
+  ProfileQuotaWindow,
+  ProfileWorkspace,
+  ReminderCadence,
+} from './types'
+
+/**
+ * SETTINGS › PROFILE (lane PROFILE-PAGE, part of archived issue 1505;
+ * docs/design/user-profile.md §4.1). Everything that is about the signed-in
+ * person, in five cards, from ONE read (`GET /v1/profile`):
+ *
+ *   1. you and your workspaces -- email, display name, platform role once,
+ *      each workspace with your role in it, and your default workspace;
+ *   2. your connections -- exactly GitHub and the TypeSafe key (Q6: there are
+ *      no SwarmCloud API keys, so the page never offers a row for them);
+ *   3. what reaches your bell, and how often reminders repeat;
+ *   4. the time zone every time in the console is shown in (VQ-023);
+ *   5. your Claude accounts.
+ *
+ * THE PAGES THAT OWN A THING STAY ITS SOURCE. Each summary links to its owning
+ * page: Admin › Workspaces › <workspace> › Setup, Config › GitHub access,
+ * Settings › API keys, Capacity › Accounts. Each link is the page's own Config
+ * path (CONFIG-COPY; part of archived issue 2157), never the old address its redirect reads.
+ * A GitHub row for a workspace other than the acting one switches workspace
+ * first (`chooseTenant`, with the panel's own toast), because Access is
+ * scoped to the acting workspace and the address never selects one.
+ *
+ * A SECTION THE API COULD NOT READ SAYS SO. It is absent from the response
+ * and named in `unavailable`; it is drawn as "could not be read", never as an
+ * empty list, which would tell a person their token or account is gone. With
+ * `preferences` unavailable every editor is disabled, because a save could
+ * only overwrite what the page did not see.
+ *
+ * THE ROLE IS DRAWN AS GIVEN (Q7). `role.name` comes from
+ * `workspace_role.py::role_in`, and the roles build (archived issue 1518) may serve any
+ * name; nothing here branches on it, so a new role needs no page change.
+ *
+ * AND THE STORED ROLE WINS WHERE THERE IS ONE (docs/design/workspace-roles.md
+ * §4.11, lane ROLES-UI-GATES; part of archived issue 1518). `GET /v1/tenants/mine` carries
+ * each workspace's stored `role: {name, source}`; this page draws it with its
+ * source, "member (workspace default)", and a platform admin's reach entry --
+ * a group workspace they are not in, so absent from `GET /v1/profile` -- as
+ * "admin (platform admin)". Where the entry carries no `role` (an older API,
+ * or a role the server could not read) the derived role above is drawn, never
+ * a guessed stored one. `storedRoleWords` is that one seam.
+ *
+ * A SAVE REPLACES THE WHOLE SET AT THE REVISION READ. Each editor sends its
+ * own change with the other fields as last read, and `revision`; a 409 means
+ * another tab saved first, and the page reads again rather than guessing.
+ */
+
+const PROFILE_ROUTE = 'GET /v1/profile'
+
+/** The selected workspace's Setup tab (Config › Workspace Settings › Workspace setup until the admin routes lane), at its own path. */
+const SETUP_PATH = addressToPath(WORKSPACE_SETUP_ADDRESS)
+
+/**
+ * The words for SETUP_PATH: Admin › Workspaces › <the acting workspace's
+ * name> › Setup, the name as its page's breadcrumb draws it.
+ */
+function setupLabel(p: Profile): string {
+  const ws = p.workspaces.find((w) => w.is_acting)
+  const name = ws === undefined ? null : ws.kind === 'user' ? OWN_WORKSPACE_LABEL : (displayNameOf(ws.display_name) ?? ws.tenant_id)
+  return workspacePageWords(name, 'Setup')
+}
+/** Config › GitHub access (Work › Access until CONFIG-NAV), at its own path. */
+const ACCESS_PATH = addressToPath('config/github')
+const ACCESS_LABEL = 'Config › GitHub access'
+
+/**
+ * THE (i) (owner's standing rule, 5 November 2026: no explanatory prose on the
+ * surface). A sentence that explains a label lives here, beside the label,
+ * shown on hover, focus or a tap and gone on Escape or blur. It is the
+ * button's description, so a screen reader hears it from the button itself,
+ * and `data-help-description` keeps it out of what the prose tests count as
+ * the page's words, as HelpNote's hidden node is kept out. `end` anchors the
+ * card to the button's right edge, for an (i) at the right of a row, so it
+ * does not run off a 390px screen.
+ */
+export function AboutTip({ label, tip, end = false }: { label: string; tip: string; end?: boolean }) {
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  return (
+    <span className={`c-tip-host pf-tip${end ? ' is-end' : ''}`} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button
+        type="button"
+        className="ctl-q-glyph"
+        aria-label={`About ${label}`}
+        aria-describedby={id}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onClick={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setOpen(false)
+        }}
+      >
+        i
+      </button>
+      <span role="tooltip" id={id} className="c-tip" data-help-description="" hidden={!open}>
+        {tip}
+      </span>
+    </span>
+  )
+}
+
+/** Where a stored role came from, in the words §4.11 shows beside it. */
+const ROLE_SOURCE_WORDS: Readonly<Record<string, string>> = {
+  override: 'set for you by name',
+  default: 'workspace default',
+  personal: 'your personal workspace',
+  platform_admin: 'platform admin',
+}
+
+/**
+ * THE ROLE SEAM (§4.11): "member (workspace default)" for a `/v1/tenants/mine`
+ * entry that carries a stored role, or null when it carries none, which is
+ * the caller's cue to draw the derived role instead. A source this build has
+ * no words for is drawn as given.
+ */
+export function storedRoleWords(choice: TenantChoice | undefined): string | null {
+  if (choice === undefined) return null
+  const name = roleOf(choice)
+  if (name === null) return null
+  const source = choice.role?.source ?? ''
+  if (source === '') return name
+  return `${name} (${ROLE_SOURCE_WORDS[source] ?? source})`
+}
+
+/**
+ * Every workspace's `/v1/tenants/mine` entry, read once beside the profile.
+ * Empty while it is read and when it failed: every row then draws its derived
+ * role, which is what this page drew before the stored roles existed.
+ * Admin › People and roles reads it too, for the workspaces' names.
+ */
+export function useStoredRoles(): TenantChoice[] {
+  const [choices, setChoices] = useState<TenantChoice[]>([])
+  useEffect(() => {
+    let live = true
+    void Promise.resolve(loadMyTenants()).then((r) => {
+      if (live && (r.status === 'ok' || r.status === 'stale') && Array.isArray(r.data)) setChoices(r.data)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  return choices
+}
+
+/**
+ * A GROUP WORKSPACE'S NAME, AS THE SWITCHER DRAWS IT (visual QA VQ-056, owner
+ * 2026-10-26; part of archived issue 2391). `GET /v1/profile` and `GET /v1/admin/people`
+ * name a workspace with no stored name by its group email, so Profile and
+ * Admin › People and roles read 'eng@…' where the switcher read 'Engineering'.
+ * The switcher's rule (`nameTenants`, `displayNameOf`): its `/v1/tenants/mine`
+ * name, an address counting as no name, else the name `served` here when it
+ * is not an address, else the workspace's id. The id alone is the switcher's
+ * own last resort, so it yields to a real name served here.
+ */
+export function groupWorkspaceName(tenantId: string, served: string | null | undefined, named: readonly NamedTenantChoice[]): string {
+  const switcher = named.find((c) => c.tenant_id === tenantId)?.display_name
+  return displayNameOf(switcher === tenantId ? null : switcher) ?? displayNameOf(served) ?? tenantId
+}
+
+/** `GET /v1/tenants/me` as this build reads it: the selected workspace's stored role, absent from an older API. */
+type MeWithRole = Me & { role?: { name?: unknown; source?: unknown } }
+
+/**
+ * THE CALLER'S STORED ROLE IN THE SELECTED WORKSPACE, from `GET
+ * /v1/tenants/me` (§4.3), read again on every workspace switch. Null while it
+ * is read, when the read failed, and when the answer carries no `role`: each
+ * is "not known", and an unknown role disables nothing -- the server decides,
+ * as it did before the roles build. A known role is never widened.
+ */
+export function useWorkspaceRole(): { tenant: string; role: string } | null {
+  const chosen = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
+  const [known, setKnown] = useState<{ tenant: string; role: string } | null>(null)
+  useEffect(() => {
+    let live = true
+    setKnown(null)
+    void sharedRoleRead(chosen).then((next) => {
+      if (live) setKnown(next)
+    })
+    return () => {
+      live = false
+    }
+  }, [chosen])
+  return known
+}
+
+/**
+ * How long one `GET /v1/tenants/me` answers every gate on the page. A
+ * schedule list draws a gate per row, and each asking alone was a read per
+ * row; a role an admin changes is drawn within this, and the server decides
+ * meanwhile.
+ */
+const ROLE_READ_REUSE_MS = 30_000
+
+let meRead: { tenant: string | null; at: number; answer: Promise<MeWithRole | null> } | null = null
+
+/**
+ * One `GET /v1/tenants/me` for the selected workspace, reused for
+ * ROLE_READ_REUSE_MS by every gate and every workspace name on the page.
+ */
+function sharedMeRead(chosen: string | null): Promise<MeWithRole | null> {
+  const now = Date.now()
+  if (meRead !== null && meRead.tenant === chosen && now - meRead.at < ROLE_READ_REUSE_MS) return meRead.answer
+  // Called inside a promise, so a read that throws before it returns (not only
+  // one that rejects) leaves the role unknown -- no gate, the server decides --
+  // instead of an error thrown out of every screen that draws a gate.
+  const answer = Promise.resolve().then(() => loadMe({ frame: true })).then(
+    (r) => (r.status === 'ok' || r.status === 'stale' ? (r.data as MeWithRole) : null),
+    () => null,
+  )
+  meRead = { tenant: chosen, at: now, answer }
+  return answer
+}
+
+function sharedRoleRead(chosen: string | null): Promise<{ tenant: string; role: string } | null> {
+  return sharedMeRead(chosen).then((me) => {
+    const name = me?.role?.name
+    if (me === null || typeof name !== 'string' || name === '') return null
+    return { tenant: me.tenant?.tenant_id ?? chosen ?? 'this workspace', role: name }
+  })
+}
+
+/**
+ * THE SELECTED WORKSPACE'S NAME, as its own page's breadcrumb draws it
+ * (WorkspacePage): "Your workspace" for the person's own, else its display
+ * name, else its id. Null while `GET /v1/tenants/me` is read and when it
+ * failed, read again on every workspace switch.
+ */
+export function useWorkspaceName(): string | null {
+  const chosen = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
+  const [known, setKnown] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    setKnown(null)
+    void sharedMeRead(chosen).then((me) => {
+      if (!live) return
+      const t = me?.tenant
+      if (t === undefined || t === null || typeof t.tenant_id !== 'string') return setKnown(null)
+      setKnown(t.kind === 'user' ? OWN_WORKSPACE_LABEL : (displayNameOf(t.display_name) ?? t.tenant_id))
+    })
+    return () => {
+      live = false
+    }
+  }, [chosen])
+  return known
+}
+
+/**
+ * WHERE A WORKSPACE'S SETUP AND SETTINGS ARE, IN WORDS (admin routes lane;
+ * part of archived issue 2688): the selected workspace's own page, Admin › Workspaces ›
+ * <its name> › Setup or Settings. Config › Workspace Settings left the Config
+ * panel for that page; "this workspace" while its name is not known.
+ */
+export function workspacePageWords(name: string | null, tab: 'Setup' | 'Settings'): string {
+  return `Admin › Workspaces › ${name ?? 'this workspace'} › ${tab}`
+}
+
+/**
+ * workspacePageWords for the selected workspace, its name read where the
+ * words are drawn, so a page that does not draw them makes no read.
+ */
+export function WorkspaceTabWords({ tab }: { tab: 'Setup' | 'Settings' }) {
+  return <>{workspacePageWords(useWorkspaceName(), tab)}</>
+}
+
+/**
+ * THE ROLE SENTENCE (§4.8): "Your role in eng is viewer; members decide here"
+ * when the caller's stored role is below `floor`, else null. A screen
+ * disables the action and draws this beside it. The API is the gate; this
+ * only stops offering a click it would refuse (`role_member_required`).
+ */
+export function useRoleGate(floor: RoleName, verb: string): string | null {
+  const known = useWorkspaceRole()
+  if (known === null || atLeast(known.role, floor)) return null
+  return `Your role in ${known.tenant} is ${known.role}; ${floor}s ${verb} here.`
+}
+
+const TOPIC_WORDS: Readonly<Record<NotificationTopic, string>> = {
+  approval: 'Approvals waiting for you',
+  waiting_step: 'Workflow steps waiting for you',
+  question: 'Agents asking you something',
+  failed: 'Failed runs',
+  finished: 'Finished runs',
+  account: 'Your accounts and connections',
+  admin: 'Admin requests (admins only)',
+}
+
+const REMINDER_WORDS: Readonly<Record<ReminderCadence, string>> = {
+  as_set: 'As each item sets it',
+  every_4h: 'Every 4 hours',
+  daily: 'Once a day',
+  never: 'Never',
+}
+
+const GITHUB_STATE: Readonly<Record<string, string>> = {
+  active: 'Connected',
+  refresh_failed: 'Renewal failed',
+  revoked: 'Revoked',
+  not_connected: 'Not connected',
+}
+
+const IGNORED_WORDS: Readonly<Record<string, string>> = {
+  not_a_member: 'you are no longer a member of it',
+  not_ready: 'your personal workspace is not ready',
+  unknown: 'it is not one of your workspaces',
+}
+
+const USES_WORDS = { user: 'your key', tenant: 'the workspace key', none: 'no key' } as const
+
+// What each (i) on this page says; every sentence was a visible paragraph before the no-prose rule.
+const NAME_TIP =
+  'Shown to other people beside your email, and used to name your agents’ commits. Letters, spaces and . ’ - only; up to 64 characters.'
+const SUGGESTED_TIP = 'Suggested from your sign-in. Others see your email alone until you save a name.'
+const DEFAULT_TIP = 'Where the console and /sc open when you have not picked a workspace. A switch in the panel lasts for that tab only.'
+const BELL_TIP =
+  'Anything may be muted. A muted item that needs you still shows as a quiet count under the bell, and still waits in Approvals.'
+const ZONE_TIP =
+  'Every time in the console is shown in this zone, with its name beside it, and “today” on Overview starts at its midnight. Kept with your profile, so it follows you to every browser you sign in to.'
+
+/** The display name's (i): what the name is for, and, while the field holds only a suggestion, where it came from. */
+function nameTip(p: Profile): string {
+  const suggested = p.identity.display_name === null && p.identity.display_name_suggested !== null
+  return suggested ? `${NAME_TIP} ${SUGGESTED_TIP}` : NAME_TIP
+}
+
+/** "Section could not be read", said in place of the section. */
+function Unreadable({ what }: { what: string }) {
+  return (
+    <p className="ur-small" role="status" data-unreadable="">
+      {`${what} could not be read just now. Refresh to try again.`}
+    </p>
+  )
+}
+
+/** The words a save's refusal is shown in: the API's own message, verbatim. */
+function refusal(e: ApiError): string {
+  return e.message
+}
+
+/** A link into a workspace-scoped page: switch to `ws` first when it is not the acting one. */
+function switchFirst(ws: ProfileWorkspace | undefined) {
+  return (e: MouseEvent<HTMLAnchorElement>) => {
+    if (ws === undefined || ws.is_acting || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+    chooseTenant(ws.tenant_id)
+    acknowledge(
+      <>
+        Now acting as <b>{ws.display_name}</b>.
+      </>,
+    )
+  }
+}
+
+export function ProfileScreen() {
+  const profile = useUrRead(loadProfile, 'profile')
+  return (
+    <div className="pf-page">
+      <PageHead title="Profile">
+        <UrRefresh reads={[profile]} />
+      </PageHead>
+      <UrRegion state={profile.state} route={PROFILE_ROUTE} what="Your profile" onRetry={profile.reload}>
+        {(d) => <ProfileCards profile={d} onReload={profile.reload} />}
+      </UrRegion>
+    </div>
+  )
+}
+
+/** The five cards for one read. Exported for tests that draw a fixture directly. */
+export function ProfileCards({ profile, onReload }: { profile: Profile; onReload: () => void }) {
+  // The last read, updated in place by a save's answer so a second save in a
+  // row carries the revision the first one produced.
+  const [p, setP] = useState(profile)
+  useEffect(() => setP(profile), [profile])
+  // The panel's signed-in line shows this name's first word (Spine.tsx
+  // `noteOwnName`): this page's read and save tell it, so it needs no read.
+  useEffect(() => {
+    if (p.identity.email !== '') noteOwnName(p.identity.email, p.identity.display_name)
+  }, [p.identity.email, p.identity.display_name])
+  // The zone is kept per person (`timezone.ts`): this read says who.
+  useEffect(() => notePerson(p.identity.email), [p.identity.email])
+  const [changed, setChanged] = useState<string | null>(null)
+  // Each group workspace by its name (`groupWorkspaceName`), everywhere on the
+  // page; `p` stays as read, so a save sends nothing it did not read.
+  const choices = useStoredRoles()
+  const shown = useMemo(() => {
+    const named = nameTenants(choices, null)
+    return {
+      ...p,
+      workspaces: p.workspaces.map((w) => (w.kind === 'user' ? w : { ...w, display_name: groupWorkspaceName(w.tenant_id, w.display_name, named) })),
+    }
+  }, [p, choices])
+
+  const prefsUnreadable = p.unavailable.includes('preferences') || p.revision === null || p.notifications === undefined
+  const stored: Preferences = p.notifications?.preferences ?? { muted: [], reminder: 'as_set' }
+  const storedDefault = p.default_workspace.source === 'profile' ? p.default_workspace.tenant_id : null
+
+  /** Save one change with everything else as last read. */
+  async function save(change: Change): Promise<SaveOutcome> {
+    if (prefsUnreadable || p.revision === null) return { refused: 'Your preferences could not be read; retry shortly.' }
+    const r = await putPreferences({
+      display_name: change.display_name !== undefined ? change.display_name : p.identity.display_name,
+      default_workspace: change.default_workspace !== undefined ? change.default_workspace : storedDefault,
+      notifications: change.notifications ?? stored,
+      revision: p.revision,
+    })
+    if (r.status === 'error') {
+      if (r.error.httpStatus === 409) {
+        setChanged('Your preferences were changed in another tab or window, so nothing was saved. The page has read them again: make your change once more.')
+        onReload()
+        return 'reloaded'
+      }
+      return { refused: refusal(r.error) }
+    }
+    if (r.status === 'ok' || r.status === 'stale') {
+      const saved = r.data
+      setChanged(null)
+      setP((was) => ({
+        ...was,
+        identity: { ...was.identity, ...saved.identity },
+        default_workspace: saved.default_workspace,
+        notifications: saved.notifications,
+        revision: saved.revision,
+        workspaces: was.workspaces.map((w) => ({ ...w, is_default: w.tenant_id === saved.default_workspace.tenant_id })),
+      }))
+    }
+    return 'saved'
+  }
+
+  return (
+    <>
+      {prefsUnreadable && (
+        <Banner tone="warn" title="Your preferences could not be read; retry shortly.">
+          You can still see who you are and your workspaces. Your name, default workspace and notifications cannot be changed
+          until the preferences can be read, so nothing you did not see is overwritten.
+        </Banner>
+      )}
+      {changed !== null && <Banner tone="info" title={changed} role="alert" />}
+      <div role="region" aria-label="You and your workspaces" data-profile-section="you">
+        <YouCard p={shown} choices={choices} disabled={prefsUnreadable} save={save} />
+      </div>
+      <div role="region" aria-label="Your connections" data-profile-section="connections">
+        <GitHubCard p={shown} />
+        <TypeSafeCard p={shown} />
+      </div>
+      <div role="region" aria-label="Notifications" data-profile-section="notifications">
+        <NotificationsCard p={p} stored={stored} disabled={prefsUnreadable} save={save} />
+      </div>
+      <div role="region" aria-label="Time zone" data-profile-section="time-zone">
+        <TimeZoneCard email={p.identity.email} />
+      </div>
+      <div role="region" aria-label="Claude accounts" data-profile-section="claude-accounts">
+        <ClaudeAccountsCard p={p} />
+      </div>
+    </>
+  )
+}
+
+interface Change {
+  display_name?: string | null
+  default_workspace?: string | null
+  notifications?: Preferences
+}
+
+/** A save stored the change, was refused with the API's words, or met a newer revision and read again. */
+type SaveOutcome = 'saved' | 'reloaded' | { refused: string }
+
+type Save = (change: Change) => Promise<SaveOutcome>
+
+/** Run one editor's save and say what happened to it. */
+function useSave(save: Save) {
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+  async function run(change: Change) {
+    if (busy) return
+    setBusy(true)
+    setFailed(null)
+    setSaved(false)
+    const out = await save(change)
+    setBusy(false)
+    if (out === 'saved') setSaved(true)
+    else if (out !== 'reloaded') setFailed(out.refused)
+  }
+  return { busy, failed, saved, setSaved, run }
+}
+
+/** "Saved" and its reach, shown under an editor after its save. */
+function Saved() {
+  return (
+    <p className="pk-saved" role="status">
+      Saved. It applies to new sessions within a minute.
+    </p>
+  )
+}
+
+// -- 1. You and your workspaces -----------------------------------------------------
+
+/** What the name editor says as it is typed: the rules of §4.4, in words. */
+function nameHint(value: string): string | null {
+  const v = value.trim().replace(/\s+/g, ' ')
+  if (v === '') return null
+  if (v.length > 64) return 'At most 64 characters.'
+  if (/[0-9]/.test(v)) return 'No digits.'
+  if (v.includes('@')) return 'No @: a name cannot hold an email address.'
+  if (!/^[\p{L}\p{M} .'-]+$/u.test(v)) return "Only letters, spaces and . ' - are allowed."
+  return null
+}
+
+function YouCard({ p, choices, disabled, save }: { p: Profile; choices: readonly TenantChoice[]; disabled: boolean; save: Save }) {
+  // A platform admin's reach entries (§4.2.2): group workspaces they are not
+  // in, so `GET /v1/profile` does not list them. Admin there by rule.
+  const reach = choices.filter((c) => c.via === 'platform_admin' && !p.workspaces.some((w) => w.tenant_id === c.tenant_id))
+  const named = useMemo(() => nameTenants(choices, null), [choices])
+  const id = useId()
+  const initial = p.identity.display_name ?? p.identity.display_name_suggested ?? ''
+  const [name, setName] = useState(initial)
+  useEffect(() => setName(initial), [initial])
+  const { busy, failed, saved, setSaved, run } = useSave(save)
+  const hint = nameHint(name)
+
+  function submit(e: FormEvent | MouseEvent, value: string | null) {
+    e.preventDefault()
+    if (!disabled) void run({ display_name: value })
+  }
+
+  const needsSetup = p.workspaces.every((w) => !(w.kind === 'user' && w.selectable))
+  return (
+    <Card title="You" action={<ButtonLink size="sm" className="pf-head-act" href={SETUP_PATH}>{setupLabel(p)}</ButtonLink>}>
+      <dl className="pf-facts">
+        <dt>Email</dt>
+        <dd>{p.identity.email}</dd>
+        <dt>Platform role</dt>
+        <dd>{p.identity.platform_role ?? (p.identity.is_admin_unresolved ? 'could not be read' : 'none')}</dd>
+      </dl>
+      <form className="pk-form" aria-label="Change your display name" onSubmit={(e) => submit(e, name.trim() === '' ? null : name)}>
+        <div className="pk-form-row">
+          <label htmlFor={`${id}-n`}>Display name</label>
+          <AboutTip label="Display name" tip={nameTip(p)} />
+        </div>
+        <div className="pk-form-row">
+          <input
+            id={`${id}-n`}
+            className="ur-search"
+            value={name}
+            maxLength={128}
+            autoComplete="name"
+            disabled={disabled}
+            onChange={(e) => {
+              setName(e.target.value)
+              setSaved(false)
+            }}
+          />
+          <Button kind="primary" size="sm" type="submit" busy={busy ? 'Saving…' : false} disabled={disabled || hint !== null}>
+            Save name
+          </Button>
+          {p.identity.display_name !== null && (
+            <Button size="sm" disabled={disabled || busy} onClick={(e) => submit(e, null)}>
+              Show my email only
+            </Button>
+          )}
+        </div>
+        {hint !== null && <p className="ur-small">{hint}</p>}
+      </form>
+      {saved && <Saved />}
+      {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
+      <h3>Workspaces</h3>
+      <ul className="pf-list" aria-label="Your workspaces">
+        {p.workspaces.map((w) => {
+          const stored = storedRoleWords(choices.find((c) => c.tenant_id === w.tenant_id))
+          return (
+            <li key={w.tenant_id} data-tenant={w.tenant_id}>
+              <b>{w.display_name}</b>
+              {' · '}
+              <span className="pf-role">{stored ?? w.role.name}</span>
+              {w.role.via !== null && <span className="ur-small">{` via ${w.role.via}`}</span>}
+              {w.kind === 'user' && w.state !== null && w.state !== 'ready' && <span className="ur-small">{` · ${w.state}`}</span>}
+              {w.is_acting && <span className="ur-small"> · you are here</span>}
+              {w.is_default && <span className="ur-small"> · default</span>}
+            </li>
+          )
+        })}
+        {reach.map((c) => (
+          <li key={c.tenant_id} data-tenant={c.tenant_id} data-via="platform_admin">
+            <b>{groupWorkspaceName(c.tenant_id, c.display_name, named)}</b>
+            {' · '}
+            <span className="pf-role">{storedRoleWords(c) ?? 'admin (platform admin)'}</span>
+            <span className="ur-small"> · not a member; reached as a platform admin</span>
+          </li>
+        ))}
+      </ul>
+      {needsSetup && <p className="ur-small">You have no ready personal workspace. Request one on {setupLabel(p)}.</p>}
+      {p.workspaces.length === 0 && <p className="ur-small">You are not in any workspace yet.</p>}
+      <DefaultEditor p={p} disabled={disabled} save={save} />
+    </Card>
+  )
+}
+
+function DefaultEditor({ p, disabled, save }: { p: Profile; disabled: boolean; save: Save }) {
+  const id = useId()
+  const current = p.default_workspace.source === 'profile' ? (p.default_workspace.tenant_id ?? '') : ''
+  const [pick, setPick] = useState(current)
+  useEffect(() => setPick(current), [current])
+  const { busy, failed, saved, setSaved, run } = useSave(save)
+  const choices = p.workspaces.filter((w) => w.selectable)
+
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    if (!disabled) void run({ default_workspace: pick === '' ? null : pick })
+  }
+
+  const ignored = p.default_workspace.ignored
+  return (
+    <form className="pk-form" aria-label="Change your default workspace" onSubmit={(e) => submit(e)}>
+      <div className="pk-form-row">
+        <label htmlFor={`${id}-d`}>Default workspace</label>
+        <AboutTip label="Default workspace" tip={DEFAULT_TIP} />
+      </div>
+      <div className="pk-form-row">
+        <select id={`${id}-d`} className="ur-search" value={pick} disabled={disabled} onChange={(e) => {
+            setSaved(false)
+            setPick(e.target.value)
+          }}>
+          <option value="">Your personal workspace, else your first group</option>
+          {choices.map((w) => (
+            <option key={w.tenant_id} value={w.tenant_id}>
+              {w.display_name}
+            </option>
+          ))}
+        </select>
+        <Button kind="primary" size="sm" type="submit" busy={busy ? 'Saving…' : false} disabled={disabled || pick === current}>
+          Save default
+        </Button>
+      </div>
+      {ignored !== null && (
+        <p className="ur-small">{`Your saved default is not in use because ${IGNORED_WORDS[ignored] ?? ignored}.`}</p>
+      )}
+      {saved && <Saved />}
+      {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
+    </form>
+  )
+}
+
+// -- 2. Connections: exactly GitHub and TypeSafe (Q6) ------------------------------
+
+function GitHubRow({ row, ws }: { row: ProfileGitHub; ws: ProfileWorkspace | undefined }) {
+  const state = row.state ?? 'not_connected'
+  const facts: string[] = [GITHUB_STATE[state] ?? state]
+  if (row.forge_login !== null) facts.push(`@${row.forge_login}`)
+  if (row.method !== null) facts.push(row.method)
+  if (row.access_expires_at !== null) {
+    const left = new Date(row.access_expires_at).getTime() - Date.now()
+    facts.push(left > 0 ? `token expires in ${wholeDuration(left)}` : 'token expired')
+  }
+  if (row.refreshed_at !== null) facts.push(`renewed ${timeAgo(row.refreshed_at)}`)
+  return (
+    <li data-tenant={row.tenant_id}>
+      <b>{ws?.display_name ?? row.tenant_id}</b>
+      {' · '}
+      {facts.join(' · ')}
+      {row.failure?.recovery != null && <span className="ur-small">{` ${row.failure.recovery}`}</span>}{' '}
+      <ButtonLink size="sm" href={ACCESS_PATH} onClick={switchFirst(ws)}>
+        {ws === undefined || ws.is_acting ? `Open ${ACCESS_LABEL}` : `Open ${ACCESS_LABEL} in ${ws.display_name}`}
+      </ButtonLink>
+    </li>
+  )
+}
+
+function GitHubCard({ p }: { p: Profile }) {
+  const rows = p.connections.github
+  return (
+    <Card title="GitHub" action={<ButtonLink size="sm" className="pf-head-act" href={ACCESS_PATH}>{ACCESS_LABEL}</ButtonLink>}>
+      {rows === undefined || p.unavailable.includes('github') ? (
+        <Unreadable what="Your GitHub connections" />
+      ) : (
+        <ul className="pf-list" aria-label="GitHub, one row per workspace">
+          {rows.map((row) => (
+            <GitHubRow key={row.tenant_id} row={row} ws={p.workspaces.find((w) => w.tenant_id === row.tenant_id)} />
+          ))}
+        </ul>
+      )}
+    </Card>
+  )
+}
+
+function keyWords(s: ProfileKeyStatus): string {
+  if (!s.set) return 'Not set'
+  const parts = ['Set']
+  if (s.set_at !== null) parts.push(timeAgo(s.set_at))
+  if (s.set_by !== null) parts.push(`by ${s.set_by}`)
+  const head = parts.join(' ')
+  return s.version === null ? head : `${head} · version ${s.version}`
+}
+
+function TypeSafeCard({ p }: { p: Profile }) {
+  const ts = p.connections.typesafe
+  // A group workspace by its name, as the list above draws it; the personal one by its id, as before.
+  const actingRow = ts === undefined ? undefined : p.workspaces.find((w) => w.tenant_id === ts.acting_workspace.tenant_id)
+  const acting = actingRow !== undefined && actingRow.kind !== 'user' ? actingRow.display_name : (ts?.acting_workspace.tenant_id ?? '')
+  return (
+    <Card title="TypeSafe key" action={<ButtonLink size="sm" className="pf-head-act" href="/config/secrets">Config › Secrets</ButtonLink>}>
+      {ts === undefined || p.unavailable.includes('typesafe') ? (
+        <Unreadable what="Your TypeSafe key status" />
+      ) : (
+        <dl className="pf-facts">
+          <dt>Your key</dt>
+          <dd>{ts.personal === null ? 'No ready personal workspace to keep it in' : keyWords(ts.personal)}</dd>
+          <dt>{`The key for ${acting}`}</dt>
+          <dd>{ts.acting_workspace.set ? 'Set' : 'Not set'}</dd>
+          <dt>{`Your agents in ${acting} would use`}</dt>
+          <dd>{USES_WORDS[ts.uses]}</dd>
+        </dl>
+      )}
+    </Card>
+  )
+}
+
+// -- 3. Notifications ---------------------------------------------------------------
+
+function NotificationsCard({ p, stored, disabled, save }: { p: Profile; stored: Preferences; disabled: boolean; save: Save }) {
+  const id = useId()
+  const [muted, setMuted] = useState<NotificationTopic[]>(stored.muted)
+  const [reminder, setReminder] = useState<ReminderCadence>(stored.reminder)
+  const storedKey = `${stored.muted.join(',')}|${stored.reminder}`
+  useEffect(() => {
+    setMuted(stored.muted)
+    setReminder(stored.reminder)
+    // `storedKey` names the stored set; the array is new on every render.
+  }, [storedKey])
+  const { busy, failed, saved, setSaved, run } = useSave(save)
+  const topics = p.notifications?.topics ?? [...NOTIFICATION_TOPICS]
+  const dirty = `${NOTIFICATION_TOPICS.filter((t) => muted.includes(t)).join(',')}|${reminder}` !== storedKey
+
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    if (!disabled) void run({ notifications: { muted: NOTIFICATION_TOPICS.filter((t) => muted.includes(t)), reminder } })
+  }
+
+  return (
+    <Card title="Notifications" action={<AboutTip label="What reaches your bell" tip={BELL_TIP} />}>
+      <form className="pk-form" aria-label="Change your notifications" onSubmit={(e) => submit(e)}>
+        {/* One topic per row, box first (visual QA 5b:QA-011, archived issue 1680): the
+            labels were bare inline text, so each box sat straight after the
+            previous topic's words. The rows are MCP servers' option rows. */}
+        <fieldset className="jb-options" disabled={disabled}>
+          <legend>What reaches your bell</legend>
+          {topics.map((t) => (
+            <label key={t} className="jb-option pf-topic">
+              <input
+                type="checkbox"
+                checked={!muted.includes(t)}
+                disabled={disabled}
+                onChange={(e) => {
+                  setSaved(false)
+                  setMuted((was) => (e.target.checked ? was.filter((x) => x !== t) : [...was, t]))
+                }}
+              />
+              <span className="jb-text">{TOPIC_WORDS[t]}</span>
+            </label>
+          ))}
+        </fieldset>
+        <label htmlFor={`${id}-r`}>Remind me again about something I have read</label>
+        <div className="pk-form-row">
+          <select
+            id={`${id}-r`}
+            className="ur-search"
+            value={reminder}
+            disabled={disabled}
+            onChange={(e) => {
+              setSaved(false)
+              setReminder(REMINDER_CADENCES.find((c) => c === e.target.value) ?? 'as_set')
+            }}
+          >
+            {REMINDER_CADENCES.map((c) => (
+              <option key={c} value={c}>
+                {REMINDER_WORDS[c]}
+              </option>
+            ))}
+          </select>
+          <Button kind="primary" size="sm" type="submit" busy={busy ? 'Saving…' : false} disabled={disabled || !dirty}>
+            Save notifications
+          </Button>
+        </div>
+      </form>
+      {saved && <Saved />}
+      {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
+    </Card>
+  )
+}
+
+// -- 4. Time zone -----------------------------------------------------------------
+
+type ZoneKind = 'utc' | 'browser' | 'other'
+
+function kindOf(zone: string, browser: string): ZoneKind {
+  return zone === UTC ? 'utc' : zone === browser ? 'browser' : 'other'
+}
+
+/**
+ * THE PERSON'S TIME ZONE (VQ-023, owner decision 2026-10-26): UTC, this
+ * browser's zone, or any IANA zone from a searchable list. Every time in the
+ * console is shown in it, labelled, and Overview's "today" starts at its
+ * midnight. Kept with the person's profile (`time_zone` in
+ * `PUT /v1/profile/preferences`), so it follows them to every browser they
+ * sign in to; this browser keeps a copy only to draw the first paint in it.
+ * The card says "Saved" only once the server has saved it (`zoneSaved`): a
+ * failed save is said, with the zone kept in this browser only and a way to
+ * try again (owner decision 2026-10-26, PR 2496). It is never disabled with
+ * the other preferences: a pick still applies here when they cannot be read,
+ * and only a page that could not read who you are cannot keep it.
+ */
+function TimeZoneCard({ email }: { email: string }) {
+  const id = useId()
+  const zone = useTimeZone()
+  const browser = browserZone()
+  const zones = useMemo(allZones, [])
+  const [kind, setKind] = useState<ZoneKind>(kindOf(zone, browser))
+  const [other, setOther] = useState(kindOf(zone, browser) === 'other' ? zone : '')
+  // Where the last pick is kept: on its way to the profile, in it, or in this browser only.
+  const [save, setSave] = useState<{ state: 'idle' | 'saving' | 'saved' | 'local'; zone: string }>({ state: 'idle', zone: UTC })
+  const [refused, setRefused] = useState<string | null>(null)
+  // Only the latest pick's answer is said: an earlier save finishing late is not this one.
+  const latest = useRef(0)
+  // The page learns the stored zone after its first draw: follow it.
+  useEffect(() => {
+    setKind(kindOf(zone, browser))
+    if (kindOf(zone, browser) === 'other') setOther(zone)
+  }, [zone, browser])
+  const wanted = kind === 'utc' ? UTC : kind === 'browser' ? browser : other.trim()
+  const canonical = canonicalZone(wanted)
+  const disabled = email === ''
+  const dirty = canonical !== zone
+
+  function pick(next: ZoneKind) {
+    setKind(next)
+    setSave({ state: 'idle', zone })
+    setRefused(null)
+  }
+
+  function keep(z: string) {
+    const stored = setZone(z)
+    if (stored === null) {
+      setRefused(`\u201c${z}\u201d is not a time zone this browser knows. Pick one from the list, for example Europe/London.`)
+      return
+    }
+    setRefused(null)
+    const mine = ++latest.current
+    setSave({ state: 'saving', zone: stored })
+    void zoneSaved().then((ok) => {
+      if (mine === latest.current) setSave({ state: ok ? 'saved' : 'local', zone: stored })
+    })
+  }
+
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    if (disabled) return
+    keep(wanted)
+  }
+
+  return (
+    <Card title="Time zone" action={<AboutTip label="Time zone" tip={ZONE_TIP} />}>
+      <form className="pk-form" aria-label="Change your time zone" onSubmit={(e) => submit(e)}>
+        <fieldset className="jb-options" disabled={disabled}>
+          <legend>Show times in</legend>
+          <label className={`jb-option pf-topic${kind === 'utc' ? ' is-on' : ''}`}>
+            <input type="radio" name={`${id}-zone`} value="utc" checked={kind === 'utc'} onChange={() => pick('utc')} />
+            <span className="jb-text">UTC (the default)</span>
+          </label>
+          {browser !== UTC && (
+            <label className={`jb-option pf-topic${kind === 'browser' ? ' is-on' : ''}`}>
+              <input type="radio" name={`${id}-zone`} value="browser" checked={kind === 'browser'} onChange={() => pick('browser')} />
+              <span className="jb-text">{`This browser\u2019s zone, ${browser}`}</span>
+            </label>
+          )}
+          <label className={`jb-option pf-topic${kind === 'other' ? ' is-on' : ''}`}>
+            <input type="radio" name={`${id}-zone`} value="other" checked={kind === 'other'} onChange={() => pick('other')} />
+            <span className="jb-text">Another zone</span>
+          </label>
+        </fieldset>
+        {kind === 'other' && (
+          <>
+            <label htmlFor={`${id}-z`}>{`Search ${zones.length} zones by city or region`}</label>
+            <input
+              id={`${id}-z`}
+              className="ur-search pk-input"
+              list={`${id}-zl`}
+              value={other}
+              placeholder="America/Los_Angeles"
+              autoComplete="off"
+              spellCheck={false}
+              disabled={disabled}
+              onChange={(e) => {
+                setOther(e.target.value)
+                setSave({ state: 'idle', zone })
+                setRefused(null)
+              }}
+            />
+            <datalist id={`${id}-zl`}>
+              {zones.map((z) => (
+                <option key={z} value={z} />
+              ))}
+            </datalist>
+          </>
+        )}
+        <div className="pk-form-row">
+          <Button
+            kind="primary"
+            size="sm"
+            type="submit"
+            busy={save.state === 'saving' ? 'Saving…' : false}
+            disabled={disabled || !dirty || wanted === ''}
+          >
+            Save time zone
+          </Button>
+          <span className="ur-small" aria-live="polite">
+            {canonical !== null ? `Now ${formatClock(Date.now(), canonical)}` : wanted === '' ? '' : 'Not a zone this browser knows'}
+          </span>
+        </div>
+        {disabled && <p className="ur-small">Your email could not be read, so a zone cannot be kept for you. Reload to try again.</p>}
+      </form>
+      {save.state === 'saved' && (
+        <p className="pk-saved" role="status">
+          {`Saved. Every time is now shown in ${save.zone}.`}
+        </p>
+      )}
+      {save.state === 'local' && (
+        <Banner
+          tone="warn"
+          role="alert"
+          title={`${save.zone} could not be saved with your profile, so it is kept in this browser only.`}
+          actions={
+            <Button size="sm" onClick={() => keep(save.zone)}>
+              Try again
+            </Button>
+          }
+        >
+          Times here are shown in it now; another browser shows the zone your profile holds until it is saved.
+        </Banner>
+      )}
+      {refused !== null && <Banner tone="bad" title={refused} role="alert" />}
+    </Card>
+  )
+}
+
+// -- 5. Claude accounts ------------------------------------------------------------
+
+const HOUR_MS = 3_600_000
+
+/**
+ * A duration that never breaks inside itself (visual QA
+ * 6:overview-automate-017, archived issue 1680): at 390 '3d 22h' and '6h 00m' broke after
+ * their first figure, so each figure is joined to the next with U+00A0.
+ */
+function wholeDuration(ms: number): string {
+  return humaniseUntil(ms).replace(/ /g, '\u00a0')
+}
+
+/**
+ * One quota window in words: '5‑hour 42%, resets in 2h 30m'. The label is
+ * written with U+2011 by its caller, so '5‑' and 'hour' stay on one line.
+ *
+ * A RESET FURTHER AWAY THAN THE WINDOW IS LONG IS AN OLD READING (visual QA
+ * 6:overview-automate-016, archived issue 1680): a 5-hour window cannot reset in 19h 43m,
+ * so the reading is from an earlier window and its countdown is not drawn.
+ */
+export function windowWords(label: string, lengthMs: number, w: ProfileQuotaWindow | undefined): string | null {
+  if (w === undefined || w.utilization === null) return null
+  const pct = `${label} ${Math.round(w.utilization * 100)}%`
+  if (w.resets_at === null) return pct
+  const left = new Date(w.resets_at).getTime() - Date.now()
+  if (left > lengthMs) return `${pct}, reading out of date`
+  return left > 0 ? `${pct}, resets in ${wholeDuration(left)}` : pct
+}
+
+function AccountRow({ a }: { a: ProfileClaudeAccount }) {
+  const facts: (string | null)[] = [
+    a.relation === 'own' ? 'yours' : 'lent to you',
+    a.state,
+    windowWords('5\u2011hour', 5 * HOUR_MS, a.windows.five_hour),
+    windowWords('7\u2011day', 7 * 24 * HOUR_MS, a.windows.seven_day),
+    a.lent_to_count !== null && a.lent_to_count > 0 ? `you lend it to ${a.lent_to_count}` : null,
+    a.stale ? 'figures may be out of date' : null,
+  ]
+  return (
+    <li>
+      <b>{accountName({ label: a.label ?? '', display_name: a.display_name }) || a.account_id || 'an account'}</b>
+      {' · '}
+      {facts.filter((f): f is string => f !== null).join(' · ')}
+    </li>
+  )
+}
+
+function ClaudeAccountsCard({ p }: { p: Profile }) {
+  const c = p.claude_accounts
+  const actingGroup = p.workspaces.some((w) => w.is_acting && w.kind === 'group')
+  let body: ReactNode
+  if (c === undefined || p.unavailable.includes('claude_accounts')) {
+    body = <Unreadable what="Your Claude accounts" />
+  } else if (c.personal_workspace === null) {
+    body = (
+      <p className="ur-small">
+        {/* The period sits inside the link: .c-link is inline-flex, so once this long label wraps
+            it becomes a block and a period after </a> lands on a line of its own at 390px. */}
+        You have no personal workspace yet, which is where your own accounts live. <a className="c-link" href={SETUP_PATH}>Request one on {setupLabel(p)}.</a>
+      </p>
+    )
+  } else {
+    body = (
+      <>
+        {c.accounts.length === 0 ? (
+          <p className="ur-small">{`${c.personal_workspace} has no Claude accounts of its own and none lent to it.`}</p>
+        ) : (
+          <ul className="pf-list" aria-label="Your Claude accounts">
+            {c.accounts.map((a, i) => (
+              <AccountRow key={a.account_id ?? `account-${i}`} a={a} />
+            ))}
+          </ul>
+        )}
+        {c.unreadable_document_count > 0 && (
+          <p className="ur-small">{`${c.unreadable_document_count} account record${c.unreadable_document_count === 1 ? '' : 's'} could not be read, so this list may be short.`}</p>
+        )}
+      </>
+    )
+  }
+  return (
+    <Card title="Claude accounts" action={<ButtonLink size="sm" className="pf-head-act" href="/capacity/llm-providers/plans">LLM Providers</ButtonLink>}>
+      {body}
+      {actingGroup && <p className="ur-small">This workspace&rsquo;s shared accounts are on Capacity › Accounts.</p>}
+    </Card>
+  )
+}

@@ -1,0 +1,22 @@
+/* Capacity › Pools › By runner profile, the Runs out first entries (visual
+   QA pass 1, capacity-15, 2026-10-28). The matrix's other rules are in
+   styles/capacity.css; these out-rank its `.cap-mx-bind` rules on purpose.
+
+   THE WHOLE POOL NAME, NOT A 21ch BOX. The 21ch entry (V195, 2026-10-27)
+   cut `CLOUD_RUN_JOB (5/20)` to `CLOUD_R… (5/20)` on a table with width to
+   spare. The entry now sizes to its content, so where the table has room
+   the name is whole on one line. Where it has none, the NAME wraps -- at a
+   space or hyphen first, inside a word only when a word cannot fit
+   (`overflow-wrap: anywhere`, which also lets the column give back width,
+   so the matrix still fits its 1039px scroller at 1440: FIT in
+   vqa2.r16.capacity.test.tsx). The use and the fits are each one unbroken
+   piece that never shrinks -- `(5/5) fits ⏎0` (V195) cannot come back --
+   and on a cramped table the entry wraps BETWEEN its pieces, so the
+   column's floor is its widest piece, `(120000/125000)`, not all three. */
+.cap-mx td.cap-mx-first > .cap-mx-bind { inline-size: auto; max-inline-size: 100%; flex-wrap: wrap; row-gap: 0; }
+.cap-mx td.cap-mx-first > .cap-mx-bind > .cap-mx-bind-pool {
+  white-space: normal; overflow-wrap: anywhere; overflow: visible; text-overflow: clip;
+}
+/* `fits N` IN THE BODY FONT: in DM Mono its f reads as ƒ (`ƒits`). The
+   shorthand also sets the style upright. */
+.cap-mx td.cap-mx-first > .cap-mx-bind > small { font: var(--t-micro)/var(--lh-micro) var(--font); }

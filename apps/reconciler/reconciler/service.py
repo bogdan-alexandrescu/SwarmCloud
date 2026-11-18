@@ -1,0 +1,228 @@
+"""The reconciler as a Cloud Run service on a Cloud Scheduler trigger.
+
+Cloud Scheduler POSTs to `/reconcile` with an OIDC token, and Pub/Sub pushes
+a cancelled task's attempt to `/stop-execution` with the same identity (archived issue 627).
+Cloud Run's IAM check
+(`roles/run.invoker`, granted only to the scheduler's service account) is the
+authentication boundary, and this service adds a second, cheap one: when
+`RECONCILER_ALLOWED_INVOKERS` is set, the caller's verified email must be in it.
+Defence in depth for a service whose job is to terminate other people's work.
+
+Only one pass runs at a time. Two concurrent passes would both see the same
+stale lease, both invalidate, both terminate and both release -- and the second
+release is the one that decrements a pool below its true active count. The
+frozen release function is idempotent per lease, so the damage is bounded, but
+serialising is free and removes the question.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+from typing import Any
+
+from fastapi import Body, FastAPI, Header, HTTPException, Response
+from swarm_common.config import Settings
+from swarm_common.logging_setup import configure_logging
+
+from .backends import Backend, CloudRunBackend, GkeBackend, NamespacedBackend
+from .checkpoints import GcsCheckpointStore
+from .config import ReconcilerConfig
+from .logs import build_logger
+from .plugingc import build_plugin_collector
+from .repair import ReconcileReport, Reconciler
+from .stopexec import ExecutionStopper, parse_push
+from .store import ControlStore
+
+_PASS_LOCK = threading.Lock()
+
+
+def _firestore_client(settings: Settings) -> Any:
+    from google.cloud import firestore
+
+    return firestore.Client(project=settings.project_id, database=settings.firestore_database)
+
+
+def build_backends(
+    config: ReconcilerConfig, logger: Any
+) -> list[Backend | NamespacedBackend]:
+    backends: list[Backend | NamespacedBackend] = []
+    if config.enable_cloud_run:
+        backends.append(
+            CloudRunBackend(
+                config.project_id,
+                config.region,
+                job_name_prefix=config.job_name_prefix,
+                logger=logger,
+            )
+        )
+    if config.enable_gke:
+        backends.append(GkeBackend(namespace_prefix=config.namespace_prefix, logger=logger))
+    return backends
+
+
+def build_checkpoint_store(config: ReconcilerConfig, logger: Any) -> Any:
+    """The artifact bucket, or None when this environment has not named one.
+
+    None disables checkpoint collection. That is the honest behaviour for a
+    missing bucket: the alternative is a collector that lists nothing, finds
+    nothing and reports a clean sweep of a bucket it never opened.
+    """
+    if not config.enable_checkpoint_gc or not config.artifact_bucket:
+        logger.info(
+            "checkpoint collection disabled",
+            enabled=config.enable_checkpoint_gc,
+            bucket=config.artifact_bucket or "(unset)",
+        )
+        return None
+    return GcsCheckpointStore(config.artifact_bucket, project_id=config.project_id)
+
+
+def build_reconciler(config: ReconcilerConfig, settings: Settings, logger: Any) -> Reconciler:
+    db = _firestore_client(settings)
+    return Reconciler(
+        store=ControlStore(db, logger=logger),
+        backends=build_backends(config, logger),
+        config=config,
+        logger=logger,
+        checkpoint_store=build_checkpoint_store(config, logger),
+        plugin_gc=build_plugin_collector(config, db, logger),
+    )
+
+
+def build_stopper(config: ReconcilerConfig, settings: Settings, logger: Any) -> ExecutionStopper:
+    """The `/stop-execution` worker: the same backends a pass uses, keyed by name."""
+    return ExecutionStopper(
+        store=ControlStore(_firestore_client(settings), logger=logger),
+        backends={backend.name: backend for backend in build_backends(config, logger)},
+        logger=logger,
+    )
+
+
+def _verify_invoker(authorization: str | None, logger: Any) -> None:
+    allowed = [
+        entry.strip()
+        for entry in os.environ.get("RECONCILER_ALLOWED_INVOKERS", "").split(",")
+        if entry.strip()
+    ]
+    if not allowed:
+        return                      # Cloud Run IAM is the only gate, by configuration
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    token = authorization.split(" ", 1)[1]
+    try:
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token
+
+        claims = id_token.verify_oauth2_token(token, google_requests.Request())
+    except Exception as exc:
+        logger.warning("rejected an invoker with an unverifiable token", error=str(exc))
+        raise HTTPException(status_code=401, detail="token verification failed") from exc
+    email = claims.get("email", "")
+    if email not in allowed:
+        logger.warning("rejected an invoker not on the allowlist", email=email)
+        raise HTTPException(status_code=403, detail="caller is not an allowed invoker")
+
+
+def create_app(
+    reconciler: Reconciler | None = None,
+    logger: Any | None = None,
+    stopper: ExecutionStopper | None = None,
+) -> FastAPI:
+    # FIRST, before anything can log. Nothing configured the root logger, so
+    # every record this service produced was discarded -- which is why a
+    # failing drain showed only uvicorn access lines and never a reason.
+    configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
+
+    logger = logger or build_logger()
+    app = FastAPI(title="swarm-reconciler", version="0.1.0")
+    state: dict[str, Any] = {"reconciler": reconciler, "last_report": None, "stopper": stopper}
+
+    def _get_reconciler() -> Reconciler:
+        if state["reconciler"] is None:
+            settings = Settings.from_env()
+            state["reconciler"] = build_reconciler(
+                ReconcilerConfig.from_env(settings), settings, logger
+            )
+        return state["reconciler"]
+
+    def _get_stopper() -> ExecutionStopper:
+        if state["stopper"] is None:
+            settings = Settings.from_env()
+            state["stopper"] = build_stopper(ReconcilerConfig.from_env(settings), settings, logger)
+        return state["stopper"]
+
+    @app.get("/healthz")
+    def healthz() -> dict[str, str]:
+        return {"status": "ok", "service": "swarm-reconciler"}
+
+    @app.get("/readyz")
+    def readyz() -> dict[str, Any]:
+        last: ReconcileReport | None = state["last_report"]
+        return {
+            "status": "ok",
+            "last_pass_at": last.started_at.isoformat() if last else None,
+            # `full` or `incremental` (`Reconciler._snapshot`).
+            "last_pass_sweep": last.sweep if last else None,
+            "last_pass_findings": last.findings if last else None,
+            # Leases past their TTL for longer than HELD_LEASE_ALERT_MINUTES on
+            # the last pass: anything but 0 is capacity being held on purpose
+            # that somebody should look at (repair.HELD_PAST_TTL).
+            "last_pass_held_past_ttl": len(last.held_past_ttl) if last else None,
+            # The plugin copy sweep, when the last pass ran it (`plugingc`).
+            "last_pass_plugin_gc": last.plugin_gc if last else None,
+        }
+
+    @app.post("/reconcile")
+    def reconcile(
+        response: Response, authorization: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        _verify_invoker(authorization, logger)
+        if not _PASS_LOCK.acquire(blocking=False):
+            # Cloud Scheduler retries; a concurrent pass is not an error.
+            response.status_code = 409
+            return {"status": "already_running"}
+        try:
+            report = _get_reconciler().run_once()
+            state["last_report"] = report
+            return {"status": "ok", **report.as_dict()}
+        finally:
+            _PASS_LOCK.release()
+
+    @app.post("/stop-execution")
+    def stop_execution(
+        response: Response,
+        envelope: Any = Body(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """A cancelled task's execution, stopped now (archived issue 627; `stopexec`).
+
+        Pushed by Pub/Sub from EXECUTION_CANCEL_TOPIC, which only swarm-api may
+        publish to. Not under the pass lock: it releases nothing, and a stop
+        racing a pass's own stop of the same execution is the same idempotent
+        call twice. Every decision is acknowledged; only a failed read or a
+        stop call that raised answers 503, so Pub/Sub retries it.
+        """
+        _verify_invoker(authorization, logger)
+        ids = parse_push(envelope)
+        if ids is None:
+            # Acked, not retried: a malformed message is malformed every time.
+            logger.warning("ignored a malformed stop request")
+            return {"status": "malformed"}
+        try:
+            outcome = _get_stopper().stop(**ids)
+        except Exception as exc:
+            logger.error(
+                "stop request failed; Pub/Sub will retry it",
+                task_id=ids["task_id"],
+                attempt_id=ids["attempt_id"],
+                error=type(exc).__name__,
+            )
+            response.status_code = 503
+            return {"status": "retry"}
+        return {"status": outcome}
+
+    return app
+
+
+app = create_app()

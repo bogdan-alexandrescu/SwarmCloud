@@ -1,0 +1,503 @@
+# Terraform checks on every pull request that touches infrastructure.
+#
+# This workflow PLANS and never applies. Applying is release.yml's job, behind a
+# GitHub Environment approval, because the project is SHARED with another team:
+# a plan that would delete another team's cluster must be read by a person
+# before anyone can approve it.
+#
+# Authentication is Workload Identity Federation. There are no downloadable
+# service account keys in this repository, and none should ever be added -- a key
+# is a credential with no expiry, no rotation and no record of where it was
+# copied. See terraform/bootstrap/wif.tf, where the attribute condition pins both
+# the repository and the allowed refs.
+
+name: terraform
+
+on:
+  # Also on main, so a direct push is tested too. Without this the suite only
+  # ever ran on pull requests, and a repository whose history landed straight
+  # on main had never run its own tests once.
+  #
+  # Never on a lane branch (owner decision 2026-11-02, CI once per head, part
+  # of archived issue 2688): application.yml no longer runs on a `swarm/**` push, so no
+  # ci-gate there waits for this run, and a lane head is tested by its pull
+  # request's run alone (application.yml says why).
+  push:
+    branches: [main]
+  # A LANE'S PULL REQUEST RUNS NOTHING (owner direction, 12 November 2026:
+  # no testing on lane pull requests, only on the merge train's run on its
+  # way to main, to cut CI wait time; docs/ci.md "A lane's pull request runs
+  # no checks"). A pull request whose head is a `swarm/` branch of this
+  # repository skips every job here: each job's `if:` ends with
+  # `&& !(<that pull request>)`, a job skipped by its own `if:` reports a
+  # passing required check, and application.yml's ci-gate waits for no
+  # run of this workflow there.
+  # The train's pull request (`train/`), main, a queue entry, a fork and any
+  # other branch run exactly what they ran before.
+  # tests/unit/scripts/test_fast_checks_on_lane_prs.py.
+  pull_request:
+    paths:
+      - "terraform/**"
+      - "tests/terraform/**"
+      - "scripts/lib/plan-guard.sh"
+      - "scripts/lib/destroy-guard.jq"
+      - "scripts/lib/unlabelable-types.json"
+      - ".github/workflows/terraform.yml"
+  # A MERGE QUEUE ENTRY (owner decision 2026-10-06, docs/ci.md "Merging
+  # through the merge queue"). ci-gate is required and waits for this
+  # workflow's run at the entry's commit, so it runs there with NO path
+  # filter -- a filtered-out run is one ci-gate waits ten minutes for and then
+  # fails the entry on (tests/unit/scripts/test_merge_queue_workflows.py).
+  # Never raised while the queue is off.
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to plan"
+        type: choice
+        options: [dev, prod]
+        default: dev
+
+# Least privilege at workflow level (archived issue 457, docs/merge-step.md M4/R4).
+# `id-token: write` lets a job mint a Google identity token through workload
+# identity federation, so it is declared only on the jobs that authenticate to
+# Google (`plan`). `test` and `checkov` run the merged repository's own
+# code and must not be able to mint one.
+# A job-level `permissions:` block REPLACES this one.
+permissions:
+  contents: read
+  # No `pull-requests: write`. It was granted "to post the plan summary" by a
+  # step that could never run (see the `plan` job), so every run carried a
+  # write token nothing used.
+
+concurrency:
+  # Terraform takes a state lock. Two runs of the same environment would have one
+  # of them waiting on a lock for its whole timeout.
+  group: terraform-${{ github.event.inputs.environment || 'dev' }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TERRAFORM_VERSION: "1.16.2"
+  TFLINT_VERSION: "v0.64.0"
+  CHECKOV_VERSION: "3.3.17"
+  TF_ROOT: terraform/infra
+
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted runner pool's VMs through the one guarded
+# `runs-on` expression: a fork's pull request, or the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
+# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
+jobs:
+  offline:
+    # SUB-MINUTE CHECKS SHARE A JOB (CI-FOLD, archived issue 1799; owner approval
+    # 2026-10-21; docs/ci.md "Sub-minute checks share a job"). `fmt /
+    # validate / tflint` and `terraform test` each paid a VM create and boot
+    # (~52 s) to install the same terraform. They run here as steps named
+    # `<the old job's name> · <what it does>`, every one `!cancelled()` so one
+    # check failing never hides the other's answer, and any failed step fails
+    # this job. The `verdict` step gives each check one result, and the old
+    # job ids -- `validate` (which main's `plan` needs) and `test` -- stay as
+    # name-keepers on ubuntu-24.04. Offline: no backend, no credentials.
+    #
+    # Step ids are the contract: `setup-*` is the shared setup, every step of
+    # a check is `<old job id>-*`, and the last is `verdict`
+    # (tests/unit/scripts/test_ci_fold.py).
+    name: offline checks (fmt / validate / tflint, terraform test)
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
+    outputs:
+      validate: ${{ steps.verdict.outputs.validate }}
+      test: ${{ steps.verdict.outputs.test }}
+    steps:
+      - name: setup · checkout
+        id: setup-checkout
+        uses: actions/checkout@v5
+
+      - name: setup · terraform
+        id: setup-terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      # --- fmt / validate / tflint --------------------------------------------
+      - name: fmt / validate / tflint · terraform fmt
+        id: validate-fmt
+        if: ${{ !cancelled() }}
+        # BOTH roots. `terraform fmt` takes one directory, and this step used to
+        # name only `terraform`, so tests/terraform/ -- the 87 assertions the
+        # `terraform test` job below depends on -- was the one Terraform in the
+        # tree whose formatting nothing checked. `make lint` does the same two.
+        run: |
+          set -euo pipefail
+          terraform fmt -check -recursive -diff terraform
+          terraform fmt -check -recursive -diff tests/terraform
+
+      - name: fmt / validate / tflint · terraform init (no backend)
+        id: validate-init
+        if: ${{ !cancelled() }}
+        # -backend=false validates configuration without touching remote state,
+        # so this job needs no cloud credentials at all.
+        run: terraform -chdir=${{ env.TF_ROOT }} init -backend=false -input=false
+
+      - name: fmt / validate / tflint · terraform validate
+        id: validate-validate
+        if: ${{ !cancelled() }}
+        run: terraform -chdir=${{ env.TF_ROOT }} validate
+
+      - name: fmt / validate / tflint · validate every module in isolation
+        id: validate-modules
+        if: ${{ !cancelled() }}
+        # A module that only validates through the root can hide a broken
+        # variable default that a future caller would hit.
+        run: |
+          set -euo pipefail
+          for dir in terraform/modules/*/ terraform/bootstrap/; do
+            echo "==> ${dir}"
+            terraform -chdir="${dir}" init -backend=false -input=false >/dev/null
+            terraform -chdir="${dir}" validate
+          done
+
+      - name: fmt / validate / tflint · setup tflint
+        id: validate-setup-tflint
+        if: ${{ !cancelled() }}
+        uses: terraform-linters/setup-tflint@v6
+        with:
+          tflint_version: ${{ env.TFLINT_VERSION }}
+
+      - name: fmt / validate / tflint · tflint
+        id: validate-tflint
+        if: ${{ !cancelled() }}
+        run: |
+          tflint --init --chdir=terraform
+          tflint --chdir=terraform --recursive --format=compact
+
+      # --- terraform test ------------------------------------------------------
+      - name: terraform test · terraform test
+        id: test-run
+        if: ${{ !cancelled() }}
+        # 86 assertions over the promises the docs lean on -- no secret version
+        # is ever written by terraform, a public accessor is refused, a plaintext
+        # push endpoint is refused, a tenant can only reach its own objects, a
+        # tenant id too long for a service account is refused.
+        #
+        # Every run block is `command = plan` against a mock_provider, so this
+        # creates nothing and needs no credentials. The suite existed and was
+        # wired into nothing -- not make test, not make lint, not any workflow --
+        # so 86 working assertions sat outside the gate CLAUDE.md names as the
+        # completeness check, and would have rotted the first time a module
+        # changed. `make test` runs the same command.
+        run: |
+          set -euo pipefail
+          terraform -chdir=tests/terraform init -input=false
+          terraform -chdir=tests/terraform test
+
+      - name: verdict · each folded check's own result, for its name-keeper
+        # One result per check, by step id: `success` only when every shared
+        # `setup-*` step succeeded, none of the check's own `<old job id>-*`
+        # steps failed or was cancelled, and at least one of them ran;
+        # `skipped` when none ran; `failure` otherwise. Each name-keeper
+        # passes on `success` alone (docs/ci.md "Sub-minute checks share a
+        # job"). The same text in application.yml, security.yml and
+        # terraform.yml; tests/unit/scripts/test_ci_fold.py holds them equal.
+        id: verdict
+        if: always()
+        env:
+          STEPS: ${{ toJSON(steps) }}
+          CHECKS: validate test
+        run: |
+          set -euo pipefail
+          read -r -a checks <<< "${CHECKS}"
+          for check in "${checks[@]}"; do
+            result="$(printf '%s\n' "${STEPS}" | jq -r --arg check "${check}" '
+              [to_entries[] | select(.key | startswith("setup-")) | .value.outcome] as $setup
+              | [to_entries[] | select(.key | startswith($check + "-")) | .value.outcome] as $own
+              | if ($setup | length) == 0 or any($setup[]; . != "success") then "failure"
+                elif any($own[]; . == "failure" or . == "cancelled") then "failure"
+                elif any($own[]; . == "success") then "success"
+                else "skipped" end')"
+            echo "${check}: ${result}"
+            echo "${check}=${result}" >> "${GITHUB_OUTPUT}"
+          done
+
+  validate:
+    # NAME-KEEPER (CI-FOLD, archived issue 1799): the `fmt / validate / tflint · ...` steps of
+    # `offline` run the check; this passes only on its verdict `success`.
+    name: fmt / validate / tflint
+    runs-on: ubuntu-24.04
+    needs: offline
+    if: always() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
+    steps:
+      - name: the folded check passed in `offline`
+        env:
+          CHECK: fmt / validate / tflint
+          VERDICT: ${{ needs.offline.outputs.validate }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
+
+  test:
+    # NAME-KEEPER (CI-FOLD, archived issue 1799): the `terraform test · ...` steps of
+    # `offline` run the check; this passes only on its verdict `success`.
+    name: terraform test
+    runs-on: ubuntu-24.04
+    needs: offline
+    if: always() && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
+    steps:
+      - name: the folded check passed in `offline`
+        env:
+          CHECK: terraform test
+          VERDICT: ${{ needs.offline.outputs.test }}
+        run: |
+          set -euo pipefail
+          if [ "${VERDICT}" = "success" ]; then
+            echo "'${CHECK}' passed in its folded job"
+            exit 0
+          fi
+          echo "::error::'${CHECK}' did not pass: its folded job's verdict is '${VERDICT:-none}'"
+          exit 1
+
+  plan-not-run:
+    # NOT a no-op. A skipped job is invisible in the checks list, and this
+    # repository's rule is that a bound check says what it did not cover rather
+    # than going quiet -- silence has meant "did not run" here far more often
+    # than "nothing to report".
+    name: plan (not run on a pull request)
+    # ON ubuntu-24.04 SINCE CI-FOLD (archived issue 1799): it writes a fixed summary and
+    # runs nothing else, so a VM create and boot (~52 s) bought it nothing.
+    runs-on: ubuntu-24.04
+    # A merge queue entry cannot plan either (its ref is not main), so it
+    # says so there too.
+    # A lane push cannot plan either (the plan's `if:`), and says so too.
+    if: (github.event_name == 'pull_request' || github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref != 'refs/heads/main')) && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
+    steps:
+      - name: say what was not checked
+        run: |
+          set -euo pipefail
+          {
+            echo "### terraform plan was not run"
+            echo
+            echo "A pull request's OIDC ref is \`refs/pull/${{ github.event.number }}/merge\`."
+            echo "The workload identity pool is pinned to \`refs/heads/main\`, so no token"
+            echo "is minted here and no plan is possible. That pin is the security boundary:"
+            echo "the deployer holds \`resourcemanager.projectIamAdmin\` on a shared project."
+            echo
+            echo "**Checked on this pull request (offline, no credentials):**"
+            echo "- \`terraform fmt -check\`, \`validate\`, \`tflint\`"
+            echo "- \`checkov\`"
+            echo "- \`terraform test\` over \`tests/terraform\` (86 assertions, mock provider)"
+            echo
+            echo "**Not checked here:** what the plan would do to the live project."
+            echo "That runs on \`main\`, and \`release.yml\` applies it behind an"
+            echo "environment approval with the plan attached to read first."
+            echo
+            echo "A merge queue entry's ref, \`gh-readonly-queue/main/...\`, is not main"
+            echo "either: the same holds there."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  checkov:
+    name: checkov
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: ${{ !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: install checkov
+        run: pip install "checkov==${CHECKOV_VERSION}"
+
+      - name: scan
+        # Inline `checkov:skip=` comments in the Terraform carry the reasoning
+        # for each accepted finding, so they are reviewable in a diff.
+        run: checkov -d terraform --quiet --compact --framework terraform
+
+  # WHY A PULL REQUEST DOES NOT PLAN.
+  #
+  # A plan needs a real cloud token. GitHub's OIDC claim for a `pull_request`
+  # run is `refs/pull/<n>/merge`, and terraform/bootstrap/wif.tf pins the pool
+  # to `refs/heads/main` -- deliberately, in two independent places, because
+  # the deployer holds resourcemanager.projectIamAdmin on a SHARED project. A
+  # pull request that could mint that token is a pull request that could grant
+  # itself anything, and anyone can open a pull request. application.yml's
+  # `build` job states the same rule at more length: `github_allowed_refs` MUST
+  # NEVER INCLUDE refs/pull/*, and "fix CI by adding it" is the exact pressure
+  # this job existing-but-red would create. It is gated off instead.
+  #
+  # So this job is skipped on a pull request rather than failed. Every OFFLINE
+  # check still runs there and gates the merge: fmt, validate, tflint, checkov,
+  # and the 86-assertion `terraform test` suite against a mock provider. What a
+  # pull request cannot tell you is what the plan would do to the live project,
+  # which is why release.yml applies behind an environment approval with the
+  # plan attached for a person to read.
+  #
+  # `plan-not-run` below says all of that in the run itself, so a green
+  # pull request is not mistaken for a planned one.
+  plan:
+    name: plan (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-24.04
+    needs: [validate]
+    # Not on a merge queue entry either: its OIDC ref is
+    # `refs/heads/gh-readonly-queue/main/...`, which the pool rejects, and a
+    # red plan would fail ci-gate on every entry (docs/ci.md "Merging
+    # through the merge queue").
+    # Nor on a lane push (`swarm/**`, LANE CI-EARLY): main's push and a
+    # dispatch are the only plans, as before lane branches ran this workflow.
+    if: (github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
+    environment: ${{ github.event.inputs.environment || 'dev' }}-plan
+    # Authenticates to Google through workload identity: the only reason this
+    # job holds id-token (the workflow grants it to no one by default).
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # Read by scripts/lib/plan-guard.sh (through scripts/lib/common.sh) to
+      # decide which project a resource is allowed to live in.
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+      # The configuration root lives in the state bucket (gs://<bucket>/config),
+      # where scripts/lib/resolve.sh fetches this environment's tfvars from.
+      TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: fetch this environment's tfvars
+        # THE REAL TFVARS ARE NOT IN THE CHECKOUT (docs/design/
+        # generic-repository.md, sections 2.2-2.3): they are this deployment's
+        # values, kept under config/<env>/ in the state bucket. resolve.sh
+        # fetches them through config_fetch, the read a laptop's `make tf-plan`
+        # makes, into the runner's temporary directory -- outside the checkout,
+        # so no step can upload or commit them -- and fails, naming the object,
+        # when the file is missing: never a plan with no inputs, never a
+        # tracked fallback. Only the path is passed on.
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+        run: |
+          set -euo pipefail
+          file="$(XDG_CACHE_HOME="${RUNNER_TEMP}" ./scripts/lib/resolve.sh tfvars "${ENVIRONMENT}")"
+          echo "SWARM_TFVARS_FILE=${file}" >> "$GITHUB_ENV"
+
+      - name: terraform init
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+        run: |
+          terraform -chdir=${{ env.TF_ROOT }} init -input=false -reconfigure \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=infra/${ENVIRONMENT}"
+
+      - name: pin the images terraform last applied
+        # terraform/infra takes every image by digest (`image_refs`) and
+        # refuses to plan an image with none. A plan of main is a plan of the
+        # infrastructure, not a deploy, so it pins exactly what is applied --
+        # the `image_refs` output in state, or what the channel points at when
+        # the state predates that output -- and shows no image churn at all.
+        # (It used to plan with the tfvars alone, i.e. every service and job
+        # onto `image_tag = "bootstrap"`, which does not exist.)
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+        run: ./scripts/lib/image-refs.sh --applied --out "${GITHUB_WORKSPACE}/build/image-refs.tfvars.json"
+
+      - name: terraform plan
+        id: plan
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+        run: |
+          set -euo pipefail
+          # -out is relative to -chdir, but a shell redirection is not, so both
+          # derived files are written explicitly under the root.
+          #
+          # -lock-timeout=900s, not 120s (archived issue 1874). This job's concurrency group
+          # serialises terraform.yml's own runs, not a release's apply, so the
+          # two meet only at the state lock: a main plan that starts during a
+          # release's "pin, plan, guard, classify and apply" waits for it. That
+          # step held the lock 108-518 s in the six successful releases read on
+          # 2026-10-21, and a 120 s wait turned main red for 7b0f769a, a commit
+          # that broke nothing. 900 s is what hotfix.yml's apply already waits.
+          # The private values the release passes too (scripts/lib/private-tfvars.sh),
+          # so main's plan shows no change to the never-touch list or the alerts.
+          ./scripts/lib/private-tfvars.sh --out "${GITHUB_WORKSPACE}/build/private.tfvars.json"
+          plan_rc=0
+          terraform -chdir=${{ env.TF_ROOT }} plan -input=false -lock-timeout=900s \
+            -var-file="${SWARM_TFVARS_FILE}" \
+            -var-file="${GITHUB_WORKSPACE}/build/image-refs.tfvars.json" \
+            -var-file="${GITHUB_WORKSPACE}/build/private.tfvars.json" \
+            -out=plan.tfplan -no-color > "${TF_ROOT}/plan.txt" 2>&1 || plan_rc=$?
+          # The plan text holds values from the private tfvars (members, domains,
+          # addresses), and this repository's logs are public: stdout AND stderr
+          # (a failed plan's diagnostics quote values too) go to the file, and
+          # only its summary line and each error's headline reach the log; only
+          # resource addresses reach the run summary.
+          grep -E '^(Plan:|No changes)|^((│|\|) )?Error:' "${TF_ROOT}/plan.txt" || true
+          if [ "${plan_rc}" -ne 0 ]; then
+            echo "::error title=terraform plan failed::exit ${plan_rc}; its error headlines are above, the rest is not printed (the logs are public)"
+            exit "${plan_rc}"
+          fi
+          terraform -chdir=${{ env.TF_ROOT }} show -json plan.tfplan > "${TF_ROOT}/plan.json"
+
+      - name: shared-project guard
+        # The same assertion make destroy makes, applied to a CREATE plan: no
+        # change may target a resource owned by another team, and everything we
+        # create must carry managed-by=swarm-terraform so it can be safely
+        # destroyed later. An unlabelled resource is one nobody can clean up.
+        #
+        # Both halves are now actually enforced, by the same implementation
+        # `make destroy` uses. This step used to state both in its comment and
+        # implement only the first: the jq body was a single `select($deny |
+        # index($name))` with no label predicate anywhere in it, so the
+        # forward-looking half -- the half that matters later, because an
+        # unlabelled resource merging into a shared project is permanently
+        # undestroyable -- was documented as enforced and was not.
+        #
+        # The deny-list is also no longer a six-entry copy of SHARED_DENY_LIST
+        # pasted into the workflow. plan-guard.sh sources the real one from
+        # scripts/lib/common.sh, so the twelve service accounts the copy omitted
+        # are covered too, and a resource added to the list is protected here the
+        # same day. Names are matched across both halves of a change, so an IAM
+        # binding CREATED on another team's bucket is caught -- a create deletes
+        # nothing and the old before-only scan could not see it.
+        run: ./scripts/lib/plan-guard.sh --plan terraform/infra/plan.json --mode apply
+
+      - name: summarise
+        # Resource addresses and their actions only, never the plan text: the
+        # text holds the private tfvars' values and the run summary is public.
+        run: |
+          {
+            echo "### Terraform plan (${{ github.event.inputs.environment || 'dev' }})"
+            echo
+            grep -E '^(Plan:|No changes)' terraform/infra/plan.txt || true
+            echo
+            echo '```'
+            jq -r '.resource_changes[]? | select(.change.actions != ["no-op"] and .change.actions != ["read"]) | "\(.change.actions | join(",")) \(.address | gsub("\\[\"[^\"]*@[^\"]*\"\\]"; "[\"<an address>\"]"))"' terraform/infra/plan.json | head -n 500
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # NO "COMMENT ON THE PR" STEP, and none should be added back to this job.
+      # One sat here, gated `github.event_name == 'pull_request'` inside a job
+      # gated `!= 'pull_request'`: it could never run, on any event, and it was
+      # the only reason this workflow asked for `pull-requests: write`. The plan
+      # is in the run summary (above, addresses only). A pull
+      # request has no plan to post -- see "WHY A PULL REQUEST DOES NOT PLAN".
+      # tests/unit/scripts/test_workflow_step_reachability.py fails on a step
+      # its own job can never reach.

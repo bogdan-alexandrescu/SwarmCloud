@@ -1,0 +1,1956 @@
+// THE TIMELINE AS AN OUTCOME LEDGER (archived issue 185), AS BEHAVIOUR -- and the tenants table.
+//
+// The page used to read the newest 200-2,000 tasks and label whatever span
+// they covered; every case that pinned that window (TS-8's "All N tasks",
+// TS-10's People table, TS-11/12's metric strip and Token spend, TS-22's
+// two-basis legend) described a design the owner retired on 2026-09-25 and is
+// replaced here by the decision that retired it:
+//
+//   * a real span, 14d by default, applied by the server and written to the
+//     hash, with every bucket drawn and measured zeroes before the first task;
+//   * the success rate -- succeeded over succeeded + failed + dead-lettered,
+//     cancels excluded -- as the page's one figure, with k of n, its Wilson
+//     interval and what it leaves out;
+//   * four lanes on one axis (rate, decided, cancelled on its own scale,
+//     throughput as the one submission-time series), a readout that is the
+//     legend, and a Table twin;
+//   * eight cards, "Token spend" renamed "Reported cost · not a bill", and the
+//     Rows control gone.
+//
+// The api module is replaced with the CONTRACT's payload (`ledgerFixture`,
+// built in the exact response shape of GET /v1/outcomes), because the route
+// is built in a parallel lane: these tests are what hold the UI to the
+// contract rather than to whatever the route happens to return first.
+//
+// WHAT HAS BEEN SEEN RED, AND WHAT HAS NOT. The first commit of these cases
+// (52e84ff) went red at `tsc`, not in vitest: against the row-window page the
+// file did not compile, so run 36190161144 proves the ledger's module and
+// props were missing and NO assertion below was seen failing there. The
+// assertions were proven afterwards, in CI, two ways, and the pull request
+// names each run:
+//
+//   * a MUTATION commit broke five honesty rules one line each -- 0.0 % for
+//     nothing decided (headline and Table), no partial mark, an unread bucket
+//     drawn as zeroes, no real-zero tick -- and this file went red on each;
+//   * the cases added by the review fix-up (partial and not-read cards, the
+//     legend's numbers against its marks, the pinned scale, the live card's
+//     age, the headline's interval, the strips that do not fit) were pushed
+//     before the code that satisfies them, and went red in vitest. One of
+//     them -- the live card's "not filtered by tenant" -- went red on a gap
+//     in its stats fixture before reaching its assertion, so a second
+//     MUTATION commit dropped that disclosure and the fixed case went red on
+//     the assertion itself.
+//
+// A case in neither group -- for example the absence of `Last N tasks`, which
+// holds with or without the ledger -- is NOT proven to catch anything.
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+
+import type { Result } from '../fetch'
+import { HELP } from '../help'
+import { ledgerFixture } from '../outcomes.fixture'
+import { outcomesQuery, parseView, rowsQuery, serializeView, type EndedRow, type EndedRows, type Outcomes, type OutcomeBucket } from '../outcomes'
+import type { Me, Stats, Task, TaskPage, Tenant } from '../types'
+import { painted } from './marks'
+
+const api = vi.hoisted(() => ({
+  loadOutcomes: vi.fn(),
+  loadMe: vi.fn(),
+  loadRunnerProfiles: vi.fn(),
+  loadStats: vi.fn(),
+  loadTasksInState: vi.fn(),
+  loadTenants: vi.fn(),
+  loadTaskWindow: vi.fn(),
+}))
+vi.mock('../api', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../api')>()
+  return { ...real, ...api }
+})
+
+const { ActivityScreen, TenantsScreen } = await import('../Activity')
+const { IDLE_POLL_MS } = await import('../Agents')
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+const ok = <T,>(data: T): Result<T> => ({ status: 'ok', data, fetchedAt: Date.now() })
+
+function me(admin: boolean): Me {
+  return {
+    tenant: {
+      tenant_id: 'eng', kind: 'group', principal: 'eng@example.com', display_name: null,
+      created_at: '2026-09-01T00:00:00Z', max_active: 10, capacity_units: 20, monthly_budget_usd: null,
+      enabled: true, credentials: [], service_account: null, gcs_prefix: null, namespace: null,
+    },
+    principal: { email: 'a@example.com', domain: 'example.com', groups: [], is_admin: admin },
+    environment: 'dev',
+    environment_declared: true,
+  }
+}
+
+/**
+ * The live counts, read 40 s before the test asks: the card must say how old
+ * they are. An admin's read also carries the platform-wide counts, which the
+ * card draws in platform scope (absent for everyone else -- absent, not zero).
+ */
+function stats(admin: boolean): Stats {
+  const byState = {
+    SUBMITTED: 0, QUEUED: 2, PARKED: 3, READY: 1, LEASED: 1, DISPATCHED: 0,
+    STARTING: 0, RUNNING: 2, SUCCEEDED: 272, FAILED: 28, CANCELLED: 416, DEAD_LETTERED: 0,
+  }
+  return {
+    tenant_id: 'eng',
+    dispatch_paused: false,
+    tasks_by_state: byState,
+    ...(admin ? { platform_tasks_by_state: { ...byState, PARKED: 14 } } : {}),
+    limits: {},
+    generated_at: new Date(Date.now() - 40_000).toISOString(),
+  }
+}
+
+/** A bucket the server could not read: every count null (the contract's rule). */
+function unread(b: OutcomeBucket, reason: OutcomeBucket['unread_reason'] = 'derive_budget'): OutcomeBucket {
+  return {
+    ...b, state: 'unread', unread_reason: reason, submitted: null, ended: null, succeeded: null,
+    failed: null, dead_lettered: null, cancelled: null, rate: null, failure_classes: null, cost: null,
+  }
+}
+
+/** The fixture with bucket 8 (20 Sep) not read, and totals summed over the other 13 -- as the route serves it. */
+function oneUnread(): Outcomes {
+  const d = ledgerFixture()
+  d.buckets[8] = unread(d.buckets[8]!)
+  d.totals = { ...d.totals, complete: false, buckets_read: 13 }
+  return d
+}
+
+/**
+ * A span of which NOTHING was read -- every tenant-day past the derive budget.
+ * The route's totals are then sums over no bucket: zeroes and nulls that
+ * measure nothing, and the page must not draw one of them as a reading.
+ */
+function nothingRead(): Outcomes {
+  const d = ledgerFixture()
+  const none = { total: 0, requested: 0, after_failure: 0, after_cancel: 0, workflow_sweep: 0, other: 0 }
+  const zeroClasses = Object.fromEntries(Object.keys(d.totals.failure_classes).map((k) => [k, 0])) as Outcomes['totals']['failure_classes']
+  const noCost = { sum_usd: null, attempts: 0, reporting: 0 }
+  d.buckets = d.buckets.map((b) => unread(b))
+  d.totals = {
+    ...d.totals,
+    complete: false, buckets_read: 0, submitted: 0, ended: 0, succeeded: 0, failed: 0, dead_lettered: 0,
+    cancelled: none, rate: null, failure_classes: zeroClasses,
+    cost: {
+      ...noCost,
+      by_outcome: { succeeded: noCost, failed: noCost, dead_lettered: noCost, cancelled: noCost },
+      per_succeeded_task: { n: 0, of: 0, p50_usd: null, p95_usd: null, max_usd: null, values_usd: null },
+      retries: noCost,
+      declared: { ...noCost, profiles: [] },
+    },
+  }
+  d.retries = {
+    tries: ['0', '1', '2', '3+'].map((attempts) => ({ attempts, tasks: 0, succeeded: 0, failed: 0, dead_lettered: 0, cancelled: 0 })),
+    needed_retry: { k: 0, of: 0 },
+    rescued: 0,
+    failed_after_retry: 0,
+    not_final: { attempts: 0, by_exit: [] },
+    admissions_without_attempt_doc: 0,
+  }
+  d.latency = { ...d.latency, by_profile: [] }
+  d.groups = { ...d.groups, rows_total: 0, rows: [] }
+  d.workflows_failed = { ...d.workflows_failed, with_ended_steps: 0, with_failed_steps: 0, rows_total: 0, rows: [], failing_steps: [] }
+  d.coverage = { ...d.coverage, days: { total: 15, sealed: 0, live: 0, unread: 15 } }
+  return d
+}
+
+/** The fixture stretched to 30 day buckets, the 30d span's shape, for what depends on the bucket count. */
+function thirtyDays(): Outcomes {
+  const d = ledgerFixture()
+  const first = Date.parse('2026-08-27T00:00:00+03:00')
+  const iso = (ms: number) => new Date(ms).toISOString()
+  const pad = Array.from({ length: 16 }, (_, i) => ({
+    ...d.buckets[0]!,
+    start: iso(first + i * 86_400_000),
+    end: iso(first + (i + 1) * 86_400_000),
+  }))
+  d.buckets = [...pad, ...d.buckets]
+  d.totals = { ...d.totals, buckets: 30, buckets_read: 30 }
+  return d
+}
+
+function parked(id: string, reason: string): Task {
+  return { id, state: 'PARKED', park_reason: reason } as unknown as Task
+}
+
+function serve(payload: Outcomes | Result<Outcomes>, opts: { admin?: boolean } = {}): void {
+  const r: Result<Outcomes> = 'status' in payload ? payload : ok(payload)
+  api.loadOutcomes.mockResolvedValue(r)
+  api.loadMe.mockResolvedValue(ok(me(opts.admin === true)))
+  api.loadRunnerProfiles.mockResolvedValue(ok(['browser', 'claude-code', 'codex', 'generic', 'mock']))
+  api.loadStats.mockImplementation(() => Promise.resolve(ok(stats(opts.admin === true))))
+  api.loadTasksInState.mockResolvedValue(
+    ok<TaskPage>({ tasks: [parked('p1', 'CREDENTIAL_MISSING'), parked('p2', 'CREDENTIAL_MISSING'), parked('p3', 'PROVIDER_QUOTA_EXHAUSTED')], next_page_token: null }),
+  )
+  api.loadTenants.mockResolvedValue(
+    ok({ tenants: ['eng', 'personal', 'verify'].map((tenant_id) => ({ tenant_id }) as Tenant) }),
+  )
+}
+
+async function timeline(
+  payload: Outcomes | Result<Outcomes> = ledgerFixture(),
+  props: { view?: string | null; onView?: (q: string) => void } = {},
+  opts: { admin?: boolean } = {},
+): Promise<HTMLElement> {
+  serve(payload, opts)
+  const { container } = render(<ActivityScreen {...props} />)
+  await waitFor(() => expect(container.querySelector('.ol-ledger, .ctl-empty')).not.toBeNull())
+  return container as HTMLElement
+}
+
+/** The query the ledger was last read with. */
+function lastQuery(): URLSearchParams {
+  const calls = api.loadOutcomes.mock.calls
+  expect(calls.length, 'the ledger was never read').toBeGreaterThan(0)
+  return calls[calls.length - 1]![0] as URLSearchParams
+}
+
+/** One drawing's columns: tests read the wide one, the way chart.narrow.test.tsx does. */
+function cols(root: HTMLElement, drawing: 'wide' | 'mid' | 'narrow' = 'wide'): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(`.ol-drawing.is-${drawing} .ol-col`)]
+}
+
+function drawing(root: HTMLElement, key: 'wide' | 'mid' | 'narrow' = 'wide'): Element {
+  const d = root.querySelector(`.ol-drawing.is-${key}`)
+  expect(d, `no ${key} drawing`).not.toBeNull()
+  return d!
+}
+
+/** A bucket's marks in one drawing, by index. */
+function bucketMarks(root: HTMLElement, i: number, key: 'wide' | 'mid' | 'narrow' = 'wide'): Element | null {
+  return drawing(root, key).querySelector(`.ol-bucket[data-i="${i}"]`)
+}
+
+/**
+ * The readout's figures, in order: rate, succeeded, failed (FAILED +
+ * DEAD_LETTERED, archived issue 123; dead-lettered is its qualifier, not a figure),
+ * cancelled (all causes, no key), requested or other (the flat bars' key),
+ * after a failure (the outline's key), after a cancel (the outlined bars' key,
+ * archived issue 185 decision 2), submitted, finished.
+ */
+function readout(root: HTMLElement): string[] {
+  return [...root.querySelectorAll('.ol-legend .ol-n')].map((n) => (n.textContent ?? '').trim())
+}
+
+/** The figure of the readout entry whose key carries `key`: the number that key's mark draws. */
+function keyed(root: HTMLElement, key: string): string {
+  const li = [...root.querySelectorAll('.ol-legend .ol-li')].find((x) => x.querySelector(`.ol-k.${key}`) !== null)
+  expect(li, `no legend entry keyed ${key}`).toBeTruthy()
+  return (li!.querySelector('.ol-n')?.textContent ?? '').trim()
+}
+
+function card(root: HTMLElement, title: RegExp): HTMLElement {
+  const h = [...root.querySelectorAll('.ol-card .ctl-card-title')].find((el) => title.test(el.textContent ?? ''))
+  expect(h, `no card titled ${title}`).toBeTruthy()
+  return h!.closest('.ol-card') as HTMLElement
+}
+
+/** An element's text as drawn: without the help descriptions a label publishes to screen readers only. */
+function visibleText(el: Element): string {
+  const copy = el.cloneNode(true) as Element
+  for (const hidden of copy.querySelectorAll('[data-help-description]')) hidden.remove()
+  return copy.textContent ?? ''
+}
+
+const DAY = (iso: string) => new Date(iso).toLocaleString(undefined, { timeZone: 'Europe/Bucharest', day: 'numeric', month: 'short' })
+
+beforeEach(() => {
+  for (const fn of Object.values(api)) fn.mockReset()
+  try {
+    window.localStorage.clear()
+  } catch {
+    // no storage in this environment; the page must not need it
+  }
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+// ---------------------------------------------------------------------------
+// The read: a real span, applied by the server, written to the hash
+// ---------------------------------------------------------------------------
+
+describe('the read', () => {
+  it('asks for 14 days by default, in the viewer’s zone, with the previous span for the delta', async () => {
+    await timeline()
+    const q = lastQuery()
+    expect(q.get('span'), 'the owner’s default span is 14d').toBe('14d')
+    expect(q.get('tz'), 'tz is required by the contract').toBe(Intl.DateTimeFormat().resolvedOptions().timeZone)
+    expect(q.get('compare')).toBe('previous')
+    expect(q.get('bucket')).toBe('auto')
+    // Tenant scope sends no tenant: the route takes it from the caller (invariant 9).
+    expect(q.has('scope')).toBe(false)
+    expect(q.has('tenant')).toBe(false)
+    expect(q.has('exclude_tenant')).toBe(false)
+  })
+
+  it('reads the span the hash names, and writes a new span to the hash', async () => {
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: 'span=30d', onView })
+    expect(lastQuery().get('span')).toBe('30d')
+    const seg = within(root.querySelector<HTMLElement>('.ol-span')!)
+    expect(seg.getByRole('button', { name: '30d' }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(seg.getByRole('button', { name: '7d' }))
+    expect(onView).toHaveBeenLastCalledWith('span=7d')
+  })
+
+  it('offers 24h, 7d, 14d, 30d, 90d and a from–to range, and no Rows control', async () => {
+    const root = await timeline()
+    const seg = root.querySelector<HTMLElement>('.ol-span')!
+    expect([...seg.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['24h', '7d', '14d', '30d', '90d', 'from–to'])
+    expect(within(seg).getByRole('button', { name: '14d' }).getAttribute('aria-pressed')).toBe('true')
+    // THE ROWS CONTROL AND ITS RULE ARE RETIRED (owner decision on archived issue 185).
+    const labels = [...root.querySelectorAll('label')].map((l) => (l.textContent ?? '').trim())
+    expect(labels.some((l) => l.startsWith('Rows')), 'the Rows control is still drawn').toBe(false)
+    expect(root.textContent, 'the window bar still claims a row window').not.toMatch(/Last \d+ tasks|All \d+ tasks|older tasks exist/)
+  })
+
+  it('sends a from–to range as since and an exclusive until', async () => {
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: '', onView })
+    fireEvent.click(within(root.querySelector<HTMLElement>('.ol-span')!).getByRole('button', { name: 'from–to' }))
+    const range = root.querySelector<HTMLElement>('.ol-range')!
+    const [from, to] = [...range.querySelectorAll('input')]
+    fireEvent.change(from!, { target: { value: '2026-09-01' } })
+    fireEvent.change(to!, { target: { value: '2026-09-10' } })
+    fireEvent.click(within(range).getByRole('button', { name: 'apply' }))
+    // "to 10 Sep" includes the 10th, so the route's exclusive until is the 11th.
+    expect(onView).toHaveBeenLastCalledWith('since=2026-09-01&until=2026-09-11')
+  })
+
+  it('shows the server’s bucket choice, and offers month only at 60 days or more', async () => {
+    const root = await timeline()
+    const select = [...root.querySelectorAll('label')].find((l) => l.textContent?.startsWith('Group by'))!.querySelector('select')!
+    expect(select.querySelector('option[value="auto"]')!.textContent).toBe('auto · day')
+    const month = select.querySelector<HTMLOptionElement>('option[value="month"]')!
+    expect(month.disabled, 'month over 14 days draws one lonely column').toBe(true)
+    expect(month.textContent).toContain('span under 60 days')
+  })
+
+  it('remembers the last view in this browser, and opens a bare #work/timeline on it', async () => {
+    window.localStorage.setItem('swarm.timeline.view', 'span=90d')
+    const onView = vi.fn()
+    await timeline(ledgerFixture(), { view: null, onView })
+    expect(lastQuery().get('span')).toBe('90d')
+    expect(onView, 'the remembered view is not written back to the address').toHaveBeenCalledWith('span=90d')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The headline: one figure, with its denominator and what it excludes
+// ---------------------------------------------------------------------------
+
+describe('the headline', () => {
+  it('reads 90.7 % with 272 of 300 decided, its interval, and the cancels it excludes', async () => {
+    const root = await timeline()
+    const fig = root.querySelector<HTMLElement>('.ol-headline .ol-figure')!
+    expect(fig.textContent).toBe('90.7 %')
+    expect(fig.classList.contains('ctl-figure'), 'the rate is not at the figure step').toBe(true)
+    expect(root.querySelector('.ol-kofn')!.textContent).toBe('272 of 300 decided')
+    expect(fig.getAttribute('aria-label')).toContain('95 % interval 86.8–93.5 %')
+    expect(root.querySelector('.ol-head .ctl-card-note')!.textContent).toBe('excludes 416 cancelled')
+    // The one `?` on the screen follows the label it explains (AH-24).
+    expect(root.querySelector('.ol-head button[aria-label^="Help: "]')).not.toBeNull()
+  })
+
+  it('drops the delta when the previous span decided nothing, and says why', async () => {
+    const root = await timeline()
+    expect(root.querySelector('.ol-delta')!.textContent).toBe('prev 14d: no finished work, so no delta')
+  })
+
+  it('drops the delta when the previous span is partial', async () => {
+    const d = ledgerFixture()
+    d.previous = { ...d.previous!, complete: false, succeeded: 200, failed: 20, rate: { k: 200, n: 220, p: 0.9091, lo: 0.86, hi: 0.94 } }
+    const root = await timeline(d)
+    expect(root.querySelector('.ol-delta')!.textContent).toBe('prev 14d partial, no delta')
+  })
+
+  it('prints the delta in points when both spans are whole', async () => {
+    const d = ledgerFixture()
+    d.previous = { ...d.previous!, complete: true, succeeded: 150, failed: 20, rate: { k: 150, n: 170, p: 0.8824, lo: 0.82, hi: 0.92 } }
+    const root = await timeline(d)
+    expect(root.querySelector('.ol-delta')!.textContent).toBe('prev 14d 88.2 % · +2.4 pts')
+  })
+
+  it('says "no finished work", never 0 %, when nothing was decided', async () => {
+    const d = ledgerFixture()
+    d.totals = { ...d.totals, succeeded: 0, failed: 0, rate: null }
+    const root = await timeline(d)
+    const fig = root.querySelector('.ol-headline .ol-figure')!
+    expect(fig.textContent).toBe('no finished work')
+    expect(fig.textContent).not.toMatch(/\d/)
+    expect(root.querySelector('.ol-headline')!.textContent).not.toMatch(/0 %/)
+  })
+
+  it('marks every total partial, with k of n buckets, when a bucket was not read', async () => {
+    const d = ledgerFixture()
+    d.totals = { ...d.totals, complete: false, buckets_read: 13 }
+    const root = await timeline(d)
+    const partial = root.querySelector('.ol-headline .ol-partial')!
+    expect(partial.querySelector('.ctl-mark.is-partial')).not.toBeNull()
+    expect(partial.textContent).toContain('13 of 14 days')
+  })
+
+  it('prints the 95 % interval under the figure, where it can be read, in the chart and in the Table', async () => {
+    // archived issue 185: "the success-rate figure with k of n decided, its interval, and
+    // what it excludes". An interval only in an aria-label is one a sighted
+    // reader never sees, and the readout that also carries it is not drawn
+    // under Table.
+    for (const view of ['', 'table=1']) {
+      const root = await timeline(ledgerFixture(), { view })
+      const line = root.querySelector('.ol-headline .ol-interval')
+      expect(line, `no visible interval with view "${view}"`).not.toBeNull()
+      expect(line!.textContent).toBe('95 % interval 86.8–93.5 %')
+      cleanup()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Partial and not read: every total is summed over the READ buckets only
+// ---------------------------------------------------------------------------
+
+/** The cards that draw the outcomes payload -- every card but the live one. */
+const LEDGER_CARDS = [
+  /^Why agents failed/,
+  /^Retries and attempts/,
+  /^Time to result/,
+  /^Reliability/,
+  /^Workflows that failed/,
+  /^Reported cost/,
+  /^Why agents were cancelled/,
+]
+
+describe('partial and not read', () => {
+  it('marks every card and the readout’s span totals partial, with the buckets read, when one bucket was not read', async () => {
+    const root = await timeline(oneUnread())
+    for (const title of LEDGER_CARDS) {
+      const note = card(root, title).querySelector('.ctl-card-note')!
+      expect(note.querySelector('.ctl-mark.is-partial'), `${title} does not say it is partial`).not.toBeNull()
+      expect(note.textContent, `${title} does not say how much was read`).toContain('13 of 14 days')
+    }
+    const head = root.querySelector('.ol-readout-head')!
+    expect(head.querySelector('.ctl-mark.is-partial'), 'the readout prints span totals as whole figures').not.toBeNull()
+    expect(head.textContent).toContain('13 of 14 days')
+    // The live card is not a sum over buckets, so it is not marked.
+    expect(card(root, /^Not finished yet/).querySelector('.ctl-card-note .ctl-mark.is-partial')).toBeNull()
+  })
+
+  it('says an empty card covers only the buckets read, never "a real zero", when the span is partial', async () => {
+    const d = oneUnread()
+    d.latency = { ...d.latency, by_profile: [] }
+    d.groups = { ...d.groups, rows_total: 0, rows: [] }
+    d.workflows_failed = { ...d.workflows_failed, rows_total: 0, rows: [] }
+    const root = await timeline(d)
+    for (const title of [/^Time to result/, /^Reliability/, /^Workflows that failed/]) {
+      const c = card(root, title)
+      expect(c.querySelector('.ctl-mark.is-zero'), `${title} calls a partial span's nothing a real zero`).toBeNull()
+      expect(c.querySelector('.ctl-empty .ctl-mark.is-partial'), `${title} has no partial empty state`).not.toBeNull()
+      expect(c.querySelector('.ctl-empty')!.textContent).toContain('13 of 14 days')
+    }
+  })
+
+  it('draws a span with nothing read as not read everywhere: no digit, no zero, no "real zero"', async () => {
+    const root = await timeline(nothingRead())
+    // The headline: the not-read mark, and no figure at all.
+    const headline = root.querySelector('.ol-headline')!
+    expect(headline.querySelector('.ctl-mark.is-unread'), 'the headline draws nothing read as a measurement').not.toBeNull()
+    expect(visibleText(headline)).not.toMatch(/\d/)
+    expect(headline.textContent).not.toContain('no finished work')
+    expect(root.querySelector('.ol-head .ctl-card-note')!.textContent, 'the note counts cancels nobody read').not.toMatch(/\d/)
+    // The readout: no count.
+    const legend = root.querySelector('.ol-legend')!
+    expect(legend.querySelector('.ctl-mark.is-unread')).not.toBeNull()
+    expect(legend.querySelectorAll('.ol-n')).toHaveLength(0)
+    expect(legend.textContent).not.toMatch(/\d/)
+    // No lane prints a scale maximum it never measured.
+    for (const l of drawing(root).querySelectorAll('.ol-lane-label')) expect(l.textContent).not.toMatch(/max \d/)
+    // Every card that draws the payload: the not-read mark, no digit, no zero.
+    for (const title of LEDGER_CARDS) {
+      const c = card(root, title)
+      expect(c.querySelector('.ctl-mark.is-unread'), `${title} has no not-read mark`).not.toBeNull()
+      expect(visibleText(c), `${title} prints a digit over a span nobody read`).not.toMatch(/\d/)
+      expect(c.querySelector('.ctl-util-track.is-zero, .ctl-mark.is-zero'), `${title} draws a measured zero`).toBeNull()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The lanes
+// ---------------------------------------------------------------------------
+
+describe('the ledger', () => {
+  it('draws every bucket from since to until, the empty days before the first task as measured zeroes', async () => {
+    const root = await timeline()
+    const c = cols(root)
+    expect(c, 'one column per bucket, none omitted').toHaveLength(14)
+    // 12-15 Sep: nothing ended. Each lane draws the real-zero tick, not a gap.
+    for (const i of [0, 1, 2, 3]) {
+      const marks = bucketMarks(root, i)!
+      expect(marks.querySelectorAll('.ol-zero').length, `day ${i} draws no real-zero tick`).toBe(3)
+      expect(marks.querySelector('.ol-m-ok, .ol-m-bad, .ol-m-fin')).toBeNull()
+    }
+    // …and no rate point: a rate over nothing is a gap, never 0 %.
+    const points = [...drawing(root).querySelectorAll('.ol-m-pt')].map((p) => Number(p.getAttribute('data-i')))
+    expect(points).not.toContain(0)
+    expect(points).not.toContain(3)
+    expect(points[0]).toBe(4)
+  })
+
+  it('names each column with its full day and every count, and draws no value only in a hover', async () => {
+    const root = await timeline()
+    const c = cols(root)
+    const twentySecond = c[10]!
+    expect(twentySecond.getAttribute('role')).toBe('img')
+    expect(twentySecond.hasAttribute('title')).toBe(false)
+    const name = twentySecond.getAttribute('aria-label') ?? ''
+    expect(name.startsWith(DAY('2026-09-22T00:00:00+03:00'))).toBe(true)
+    expect(name).toContain('25 succeeded, 8 failed')
+    expect(name).toContain('305 cancelled, 8 after a failure')
+    expect(name).toContain('338 submitted')
+  })
+
+  it('keeps 22 Sep’s 8 failures visible beside its 305 cancels: failures hang from the decided lane, cancels have their own scale', async () => {
+    const root = await timeline()
+    const marks = bucketMarks(root, 10)!
+    const bad = marks.querySelector('.ol-m-bad')!
+    expect(Number(bad.getAttribute('height')), 'the failed column is a sliver').toBeGreaterThanOrEqual(4)
+    // The cut is TS-4's failed form: solid `--bad` with the 2px ground cut.
+    expect(marks.querySelector('.ol-m-cut')).not.toBeNull()
+    // Cancels are in lane 3, with its own max printed.
+    expect(marks.querySelector('.ol-m-ended')).not.toBeNull()
+    expect(marks.querySelector('.ol-m-after'), 'the cancels a failure caused have no outline mark').not.toBeNull()
+    const labels = [...drawing(root).querySelectorAll('.ol-lane-label')].map((t) => t.textContent ?? '')
+    expect(labels[2]).toBe('Cancelled · own scale · max 305')
+  })
+
+  it('draws succeeded in TS-4’s solid form up, and failed down from the same zero', async () => {
+    const root = await timeline()
+    const marks = bucketMarks(root, 13)!
+    const okBar = marks.querySelector('.ol-m-ok')!
+    const bad = marks.querySelector('.ol-m-bad')!
+    const top = Number(okBar.getAttribute('y')) + Number(okBar.getAttribute('height'))
+    expect(Number(bad.getAttribute('y')), 'succeeded and failed do not share a baseline').toBeCloseTo(top, 0)
+  })
+
+  it('draws a point hollow under five decided, filled at five or more, and the current bucket hollow at a dash', async () => {
+    const root = await timeline()
+    const pt = (i: number) => drawing(root).querySelector(`.ol-m-pt[data-i="${i}"]`)!
+    expect(pt(4).classList.contains('is-hollow'), '16 Sep decided 1: its point reads as a measurement').toBe(true)
+    expect(pt(6).classList.contains('is-hollow'), '18 Sep decided 18').toBe(false)
+    // 25 Sep is in progress: hollow, reached by a dashed segment.
+    expect(pt(13).classList.contains('is-hollow')).toBe(true)
+    expect(drawing(root).querySelector('.ol-m-rate.is-so-far')).not.toBeNull()
+    expect(bucketMarks(root, 13)!.querySelector('.ol-so-far'), 'the current bucket has no dashed edge').not.toBeNull()
+  })
+
+  it('draws the throughput lane as submitted against finished, labelled as the only submission-time lane', async () => {
+    const root = await timeline()
+    const labels = [...drawing(root).querySelectorAll('.ol-lane-label')].map((t) => t.textContent ?? '')
+    expect(labels[3]).toMatch(/submitted \(by submit time, the only lane on submission time\) vs finished · max 338/)
+    expect(drawing(root).querySelector('.ol-lane.is-flow .ol-m-sub'), 'no submitted line').not.toBeNull()
+    expect(bucketMarks(root, 10)!.querySelector('.ol-m-fin'), 'no finished column on 22 Sep').not.toBeNull()
+    // The narrow drawing carries a short label that still names its basis.
+    const narrow = [...drawing(root, 'narrow').querySelectorAll('.ol-lane-label')].map((t) => t.textContent ?? '')
+    expect(narrow[3]).toContain('by submit time')
+  })
+
+  it('draws a bucket that was not read as one hatched band over every lane, with no digit and no marks', async () => {
+    const d = ledgerFixture()
+    const b = d.buckets[8]!
+    d.buckets[8] = {
+      ...b, state: 'unread', unread_reason: 'derive_budget', submitted: null, ended: null, succeeded: null,
+      failed: null, dead_lettered: null, cancelled: null, rate: null, failure_classes: null, cost: null,
+    } satisfies OutcomeBucket
+    d.totals = { ...d.totals, complete: false, buckets_read: 13 }
+    const root = await timeline(d)
+    const band = drawing(root).querySelector('.ol-unread[data-i="8"]')!
+    expect(band, 'the unread bucket is not hatched').not.toBeNull()
+    expect(band.getAttribute('fill')).toMatch(/^url\(#/)
+    expect(bucketMarks(root, 8), 'an unread bucket drew marks').toBeNull()
+    const name = cols(root)[8]!.getAttribute('aria-label') ?? ''
+    expect(name).toContain('not read')
+    expect(name.replace(DAY(b.start), '')).not.toMatch(/\d/)
+    // The rate line breaks around it.
+    expect(drawing(root).querySelectorAll('.ol-lane.is-rate [data-run]').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('draws three drawings at their own widths, the narrow one never under its 26px column floor', async () => {
+    const root = await timeline()
+    const widths = ['wide', 'mid', 'narrow'].map((k) => Number(drawing(root, k as 'wide').getAttribute('data-drawn')))
+    expect(widths).toEqual([1080, 640, 300])
+    // 14 day buckets at the phone's 26px floor do not fit in 300: the plot grows and scrolls instead of
+    // shrinking, beside a 38px scale column that does not scroll.
+    const narrowSvg = drawing(root, 'narrow').querySelector('.ol-plot .ol-svg')!
+    expect(Number(narrowSvg.getAttribute('width'))).toBeGreaterThanOrEqual(14 * 26 + 8)
+    expect(Number(drawing(root, 'narrow').querySelector('.ol-gutter')!.getAttribute('width'))).toBe(38)
+    const pitch = parseFloat(cols(root, 'narrow')[1]!.style.left) - parseFloat(cols(root, 'narrow')[0]!.style.left)
+    expect(pitch).toBeGreaterThanOrEqual(26)
+    // Every drawing is presentational; the columns carry the names.
+    for (const k of ['wide', 'mid', 'narrow'] as const) {
+      expect(drawing(root, k).querySelector('svg')!.getAttribute('aria-hidden')).toBe('true')
+      expect(drawing(root, k).querySelector('.ol-cols')!.getAttribute('role')).toBe('group')
+    }
+  })
+
+  it('keeps each lane’s scale and label outside the plot that scrolls, so opening at the newest end hides neither', async () => {
+    // wireframe_390 keeps the scale column (100┤ … 0┤ … ok ┤ … cx ┤) pinned
+    // while older days sit behind the fade. Drawn inside the scroller, the
+    // ticks scrolled off the left edge on open and the lane labels -- the
+    // throughput lane's `by created_at` among them -- went with them.
+    const d = ledgerFixture()
+    d.bucket = 'hour'
+    const start = Date.parse('2026-09-24T15:00:00+03:00')
+    d.buckets = Array.from({ length: 24 }, (_, i) => ({
+      ...d.buckets[13]!,
+      start: new Date(start + i * 3_600_000).toISOString(),
+      end: new Date(start + (i + 1) * 3_600_000).toISOString(),
+      in_progress: i === 23,
+      state: i === 23 ? ('open' as const) : ('sealed' as const),
+    }))
+    const root = await timeline(d)
+    for (const key of ['wide', 'mid', 'narrow'] as const) {
+      const dr = drawing(root, key)
+      const plot = dr.querySelector('.ol-plot')
+      expect(plot, `the ${key} drawing has no scroller of its own`).not.toBeNull()
+      const labels = [...dr.querySelectorAll('.ol-lane-label')]
+      expect(labels, `the ${key} drawing lost a lane label`).toHaveLength(4)
+      for (const l of labels) expect(l.closest('.ol-plot'), `${key}: "${l.textContent}" scrolls with the plot`).toBeNull()
+      const ticks = [...dr.querySelectorAll('.ol-tick:not(.ol-axis-label)')]
+      expect(ticks.map((t) => t.textContent)).toEqual(expect.arrayContaining(['100%', '50%', '0%', '0']))
+      for (const t of ticks) expect(t.closest('.ol-plot'), `${key}: the tick "${t.textContent}" scrolls with the plot`).toBeNull()
+      // The time axis is the one set of labels that DOES scroll: it names the columns under it.
+      expect(dr.querySelectorAll('.ol-plot .ol-axis-label').length).toBeGreaterThan(0)
+    }
+    expect(drawing(root, 'narrow').querySelectorAll('.ol-lane-label')[3]!.textContent).toContain('by submit time')
+  })
+
+  it('labels a phone’s hourly axis every third hour on the clock and every day, and nothing between', async () => {
+    const d = ledgerFixture()
+    const start = Date.parse('2026-09-24T10:00:00+03:00')
+    d.bucket = 'hour'
+    d.buckets = Array.from({ length: 30 }, (_, i) => {
+      const s = new Date(start + i * 3_600_000).toISOString()
+      const e = new Date(start + (i + 1) * 3_600_000).toISOString()
+      return { ...d.buckets[13]!, start: s, end: e, in_progress: false, state: 'sealed' as const }
+    })
+    const root = await timeline(d)
+    const labels = [...drawing(root, 'narrow').querySelectorAll('.ol-axis-label')]
+    expect(labels.length).toBeGreaterThanOrEqual(8)
+    for (const l of labels) {
+      const i = Math.round((Number(l.getAttribute('x')) - 38 - 13) / 26)
+      const at = new Date(start + i * 3_600_000)
+      const hour = Number(at.toLocaleString('en-GB', { timeZone: 'Europe/Bucharest', hour: '2-digit', hourCycle: 'h23' }))
+      const isDate = l.textContent === DAY(at.toISOString())
+      expect(isDate || hour % 3 === 0, `column ${i} (${hour}:00) is labelled "${l.textContent}" on a phone`).toBe(true)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The readout is the legend (TS-9)
+// ---------------------------------------------------------------------------
+
+describe('the readout', () => {
+  it('reads out the span’s totals by default, with every cancel cause and the submitted count', async () => {
+    const root = await timeline()
+    expect(readout(root)).toEqual(['90.7 %', '272', '28', '416', '401', '15', '0', '730', '716'])
+    const legend = root.querySelector<HTMLElement>('.ol-legend')!
+    expect(legend.textContent).toContain('272 of 300 · 95 % 86.8–93.5 %')
+    expect(legend.textContent).toContain('requested 401 · other 0')
+    expect(legend.textContent).toContain('incl. workflow sweep 3')
+    expect(legend.textContent).toContain('by submit time')
+    // Not a live region: the focused column's name already says the counts.
+    expect(legend.getAttribute('aria-live')).toBeNull()
+    expect(root.querySelector('.ol-at')!.textContent).toBe('all 14 days')
+  })
+
+  it('swaps to one bucket on hover, tap or focus, and back on "all", Escape or leaving', async () => {
+    const root = await timeline()
+    const c = cols(root)
+    fireEvent.mouseEnter(c[10]!)
+    expect(readout(root)).toEqual(['75.8 %', '25', '8', '305', '297', '8', '0', '338', '338'])
+    expect(root.querySelector('.ol-at')!.textContent).toContain(DAY('2026-09-22T00:00:00+03:00'))
+    expect(c[10]!.classList.contains('is-picked')).toBe(true)
+    fireEvent.click(within(root.querySelector<HTMLElement>('.ol-actions')!).getByRole('button', { name: 'all' }))
+    expect(readout(root)[1]).toBe('272')
+
+    fireEvent.click(c[6]!)
+    expect(readout(root)[1]).toBe('18')
+    fireEvent.keyDown(c[6]!, { key: 'Escape' })
+    expect(readout(root)[1]).toBe('272')
+
+    act(() => c[4]!.focus())
+    expect(readout(root)[1]).toBe('1')
+    fireEvent.mouseLeave(root.querySelector('.ol-chart-readout')!)
+    expect(readout(root)[1]).toBe('272')
+  })
+
+  it('prints beside each key the number its mark draws, and the same number the column and the Table say', async () => {
+    // THE READOUT IS THE LEGEND (TS-9), so a key and its number describe one
+    // mark. 22 Sep: the outline draws after_failure + workflow_sweep (5 + 3)
+    // and the flat bars requested + other (297 + 0); the readout printed 5
+    // beside the outline and 305 beside the flat bars, while the column's name
+    // and the Table said 8.
+    const root = await timeline(ledgerFixture(), { view: '' })
+    const b = ledgerFixture().buckets[10]!
+    fireEvent.mouseEnter(cols(root)[10]!)
+    const outline = keyed(root, 'is-after')
+    const flat = keyed(root, 'is-ended')
+    expect(outline).toBe(String(b.cancelled!.after_failure + b.cancelled!.workflow_sweep))
+    expect(flat).toBe(String(b.cancelled!.requested + b.cancelled!.other))
+    expect(cols(root)[10]!.getAttribute('aria-label')).toContain(`${outline} after a failure`)
+    cleanup()
+    const table = await timeline(ledgerFixture(), { view: 'table=1' })
+    const row = table.querySelectorAll('.ol-table tbody tr')[10]!
+    // The Cancelled cell is four columns since QA1-FIX-13: all, requested or other, after a failure, after a cancel.
+    expect([...row.children].slice(4, 7).map((c) => (c.textContent ?? '').trim())).toEqual([String(b.cancelled!.total), flat, outline])
+    const head = [...table.querySelectorAll('.ol-table thead th')].map((th) => th.textContent ?? '')
+    expect(head).toEqual(expect.arrayContaining(['Cancelled', 'requested or other', 'after a failure', 'after a cancel']))
+  })
+
+  it('is one tab stop, starting on the newest bucket, moved by the arrows, Home and End', async () => {
+    const root = await timeline()
+    const c = cols(root)
+    const stops = () => c.filter((x) => x.getAttribute('tabindex') === '0')
+    expect(stops()).toEqual([c[13]])
+    act(() => c[13]!.focus())
+    fireEvent.keyDown(c[13]!, { key: 'ArrowLeft' })
+    expect(document.activeElement).toBe(c[12])
+    fireEvent.keyDown(c[12]!, { key: 'Home' })
+    expect(document.activeElement).toBe(c[0])
+    fireEvent.keyDown(c[0]!, { key: 'End' })
+    expect(document.activeElement).toBe(c[13])
+  })
+
+  it('says "so far" on the current bucket and "settling" on one that has only just ended', async () => {
+    const d = ledgerFixture()
+    d.buckets[12] = { ...d.buckets[12]!, state: 'open', in_progress: false }
+    const root = await timeline(d)
+    fireEvent.mouseEnter(cols(root)[13]!)
+    expect(root.querySelector('.ol-at')!.textContent).toContain('so far')
+    fireEvent.mouseEnter(cols(root)[12]!)
+    expect(root.querySelector('.ol-legend')!.textContent).toContain('settling, final 15 min after the bucket')
+  })
+
+  it('reads out an unread bucket as not read, with no count at all', async () => {
+    const d = ledgerFixture()
+    d.buckets[8] = {
+      ...d.buckets[8]!, state: 'unread', unread_reason: 'read_failed', submitted: null, ended: null, succeeded: null,
+      failed: null, dead_lettered: null, cancelled: null, rate: null, failure_classes: null, cost: null,
+    }
+    const root = await timeline(d)
+    fireEvent.mouseEnter(cols(root)[8]!)
+    const legend = root.querySelector('.ol-legend')!
+    expect(legend.querySelector('.ctl-mark.is-unread')).not.toBeNull()
+    expect(legend.querySelectorAll('.ol-n')).toHaveLength(0)
+    expect(legend.textContent).not.toMatch(/\d/)
+  })
+
+  it('zooms the page to a picked day, and a chip goes back to the span it came from', async () => {
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: '', onView })
+    fireEvent.mouseEnter(cols(root)[10]!)
+    const zoom = within(root.querySelector<HTMLElement>('.ol-actions')!).getByRole('button', { name: /^zoom to / })
+    fireEvent.click(zoom)
+    const q = new URLSearchParams(onView.mock.calls[onView.mock.calls.length - 1]![0] as string)
+    expect(q.get('since')).toBe('2026-09-22T00:00:00+03:00')
+    expect(q.get('until')).toBe('2026-09-23T00:00:00+03:00')
+    expect(q.has('back')).toBe(true)
+  })
+
+  it('links a day’s failures to that day’s failed tasks on this page, not to the Agents list (#116)', async () => {
+    const root = await timeline()
+    fireEvent.mouseEnter(cols(root)[10]!)
+    const link = root.querySelector<HTMLAnchorElement>('.ol-actions .ol-drill')!
+    const q = new URLSearchParams(link.getAttribute('href')!.replace(/^#work\/timeline\/outcomes\?/, ''))
+    expect(q.get('rows')).toBe('failed')
+    expect(q.get('at')).toBe('2026-09-22T00:00:00+03:00')
+    expect(link.textContent).toContain('8 failed that day')
+    expect(link.textContent).not.toMatch(/not limited to/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The Table twin
+// ---------------------------------------------------------------------------
+
+describe('the head and the facts line (QA1-FIX-13)', () => {
+  it('stamps the head with the browser’s read, not the ledger’s generated_at (runs-submit-12)', async () => {
+    const d = ledgerFixture()
+    d.generated_at = new Date(Date.now() - 8 * 86_400_000).toISOString()
+    const root = await timeline(d)
+    const head = root.querySelector('.c-refresh')!.textContent ?? ''
+    // MUTATION: feed RefreshControl `Date.parse(data.generated_at)` again and this reads "read 8 d ago".
+    expect(head).not.toMatch(/\bd ago/)
+    expect(head).toMatch(/read \d+ ?s ago/)
+  })
+
+  it('says the time basis in words, the field in its title (runs-submit-39)', async () => {
+    const root = await timeline()
+    const by = [...root.querySelectorAll('.ol-facts .ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'by')!
+    // MUTATION: print `<code>{data.basis.outcomes}</code>` again.
+    expect(by.textContent).toBe('byfinish time')
+    expect(by.querySelector('[title="completed_at"]')).not.toBeNull()
+  })
+
+  it('says a submit-time basis in words too, the field in its title (runs-submit-39)', async () => {
+    const d = ledgerFixture()
+    d.basis = { ...d.basis, outcomes: 'created_at' }
+    const root = await timeline(d)
+    const by = [...root.querySelectorAll('.ol-facts .ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'by')!
+    // MUTATION: drop the created_at branch from `basisWords` and this reads "bycreated_at".
+    expect(by.textContent).toBe('bysubmit time')
+    expect(by.querySelector('[title="created_at"]')).not.toBeNull()
+  })
+})
+
+describe('the Table toggle', () => {
+  it('swaps the drawing for the same buckets as a scrolling table, and writes it to the hash', async () => {
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: 'table=1', onView })
+    expect(root.querySelector('.ol-drawing'), 'the drawing is still shown under Table').toBeNull()
+    const table = root.querySelector('.ol-table')!
+    expect(table.classList.contains('ctl-table') && table.classList.contains('is-scroll')).toBe(true)
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(14)
+    const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent)
+    // The one submission-time column names its basis under Table too, where no lane label is drawn.
+    expect(heads).toContain('Submitted by submit time')
+    expect(heads).toContain('Rate k of n, 95 % range')
+    const toggle = root.querySelector<HTMLButtonElement>('.ol-table-toggle')!
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(toggle)
+    expect(onView).toHaveBeenLastCalledWith('')
+  })
+
+  it('says "nothing decided" rather than 0 % for a day with nothing decided', async () => {
+    const root = await timeline(ledgerFixture(), { view: 'table=1' })
+    const first = root.querySelector('.ol-table tbody tr')!
+    expect(first.textContent).toContain('nothing decided')
+    expect(first.textContent).not.toMatch(/0\.0 %/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The toolbar's scope, tenant and profile filters
+// ---------------------------------------------------------------------------
+
+describe('scope and filters', () => {
+  it('gives a non-admin no scope control, and names their workspace in the facts line', async () => {
+    const root = await timeline()
+    await waitFor(() => expect(api.loadMe).toHaveBeenCalled())
+    expect(root.querySelector('.ol-scope')).toBeNull()
+    const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    // The reader's word is workspace (VQ-056); the id is still the tenant id, the fixture's u-owner.
+    expect(facts).toContain('workspaceu-owner')
+    expect(facts).toContain('byfinish time')
+  })
+
+  it('gives an admin the scope, and excludes the verify tenant in one click', async () => {
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: 'scope=platform', onView }, { admin: true })
+    await waitFor(() => expect(root.querySelector('.ol-scope')).not.toBeNull())
+    expect(lastQuery().get('scope')).toBe('platform')
+    const verify = await waitFor(() => {
+      const b = root.querySelector<HTMLButtonElement>('.ol-verify')
+      expect(b).not.toBeNull()
+      return b!
+    })
+    expect(verify.textContent).toBe('exclude verify')
+    // THE READER'S WORD IS WORKSPACE (VQ-056): the scope, the picker and the
+    // platform fact say it; the hash and the query keep `tenant`.
+    const scope = [...root.querySelector('.ol-scope')!.querySelectorAll('button')].map((b) => b.textContent)
+    expect(scope).toEqual(['my workspace', 'platform'])
+    const picker = [...root.querySelectorAll<HTMLElement>('.tl-pick summary')].map((p) => p.textContent ?? '')
+    // No count on an unnarrowed picker, as on Lanes (runs2-19).
+    expect(picker).toContain('Workspace all')
+    expect(root.querySelector('.ol-toolbar')!.textContent).not.toMatch(/tenant/i)
+    expect(root.querySelector('.ol-facts')!.textContent).not.toMatch(/tenant/i)
+    fireEvent.click(verify)
+    // An exclusion, not an include list: a tenant created tomorrow is still counted.
+    expect(onView).toHaveBeenLastCalledWith('exclude_tenant=verify')
+  })
+
+  it('offers every runner profile the catalogue serves, never a hardcoded list', async () => {
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: '', onView })
+    await waitFor(() => expect(api.loadRunnerProfiles).toHaveBeenCalled())
+    const pick = [...root.querySelectorAll<HTMLElement>('.tl-pick')].find((p) => p.textContent?.startsWith('Profile'))!
+    await waitFor(() => expect(pick.querySelectorAll('input[type="checkbox"]')).toHaveLength(5))
+    // By its label, not by role: the list sits in a closed <details>, which a
+    // role query may treat as hidden depending on the DOM's UA sheet.
+    const box = [...pick.querySelectorAll('label')].find((l) => l.textContent?.trim() === 'claude-code')!.querySelector('input')!
+    fireEvent.click(box)
+    expect(onView).toHaveBeenLastCalledWith('profile=claude-code')
+  })
+
+  it('renders a 403 on platform scope as the admin state, never as a failure', async () => {
+    const root = await timeline({
+      status: 'error',
+      error: { kind: 'admin_required', httpStatus: 403, code: 'forbidden', message: 'admin group membership is required for this operation' },
+    }, { view: 'scope=platform' })
+    const empty = root.querySelector('.ctl-empty')!
+    expect(empty.classList.contains('is-admin')).toBe(true)
+    expect(empty.classList.contains('is-failed')).toBe(false)
+    // The way back names the reader's own workspace, never a tenant (VQ-056).
+    expect(empty.querySelector('button.c-link')!.textContent).toBe('my workspace')
+    expect(empty.textContent).not.toMatch(/tenant/i)
+    expect(empty.innerHTML).not.toMatch(/tenant/i)
+    expect(root.querySelector('.ol-ledger')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The states the page must never collapse
+// ---------------------------------------------------------------------------
+
+describe('reading, failing and re-reading', () => {
+  it('holds the chart’s geometry with the moving pending sweep while the first read is in flight', async () => {
+    serve(ledgerFixture())
+    api.loadOutcomes.mockReturnValue(new Promise(() => {}))
+    const { container } = render(<ActivityScreen />)
+    expect(container.querySelector('.ol-pending.ctl-pending')).not.toBeNull()
+    expect(container.querySelector('.ol-figure')).toBeNull()
+  })
+
+  it('draws no number anywhere when the read fails', async () => {
+    const root = await timeline({
+      status: 'error',
+      error: { kind: 'server_error', httpStatus: 500, code: 'internal', message: 'the aggregate could not be read' },
+    })
+    const empty = root.querySelector('.ctl-empty.is-failed')
+    expect(empty, 'a failed read is not the failed empty state').not.toBeNull()
+    expect(root.querySelector('.ol-ledger, .ol-cards')).toBeNull()
+    expect(root.querySelector('.ol-body')).toBeNull()
+  })
+
+  it('dims the last drawing rather than blanking it while a new filter is read', async () => {
+    const root = await timeline(ledgerFixture(), { view: '' })
+    api.loadOutcomes.mockReturnValue(new Promise(() => {}))
+    fireEvent.click(within(root.querySelector<HTMLElement>('.ol-span')!).getByRole('button', { name: '30d' }))
+    await waitFor(() => expect(root.querySelector('.ol-body.ctl-stale-body')).not.toBeNull())
+    expect(root.querySelector('.ol-figure')!.textContent).toBe('90.7 %')
+  })
+
+  it('carries its read cost and age in a provenance foot, honestly on a cache hit', async () => {
+    const d = ledgerFixture()
+    const root = await timeline(d)
+    expect(root.querySelector('.ol-prov')!.textContent).toContain('34 reads')
+    expect(root.querySelector('.ol-prov')!.textContent).toContain('cached 60 s')
+    const hit = await timeline({ ...ledgerFixture(), cached: true })
+    const provs = [...hit.querySelectorAll('.ol-prov')]
+    expect(provs[provs.length - 1]!.textContent).toContain('0 reads this request')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Parity with what GET /v1/outcomes actually serves (archived pull request 196 against archived pull request 197)
+// ---------------------------------------------------------------------------
+//
+// A parity pass read the route's code beside this page's and found four
+// places where the page said something the route does not: a cache claim on a
+// payload the route never caches, a count of rollup documents called "days",
+// a basis the page restated instead of reading, and a submitter the route
+// sends as '' drawn as a blank. Each case below was pushed before the code
+// that satisfies it.
+
+describe('what the route serves, said as the route means it', () => {
+  it('says a partial payload was not cached: the route caches only a complete one', async () => {
+    // swarm_api.outcomes.read caches when totals.complete and previous.complete,
+    // so a re-read continues a partial build instead of serving its gaps.
+    const root = await timeline(oneUnread())
+    const prov = root.querySelector('.ol-prov')!.textContent ?? ''
+    expect(prov, 'a partial payload claims the 60 s cache').not.toContain('cached 60 s')
+    expect(prov).toContain('not cached')
+    cleanup()
+    const d = ledgerFixture()
+    d.previous = { ...d.previous!, complete: false }
+    const prev = await timeline(d)
+    expect(prev.querySelector('.ol-prov')!.textContent).toContain('not cached')
+  })
+
+  it('counts coverage.days in its own unit: UTC days in workspace scope, workspace-days in platform scope', async () => {
+    // 12-25 Sep in Bucharest touches the UTC days 11-25: 15 rollup documents
+    // for 14 local days, and in platform scope one per tenant per day.
+    const root = await timeline()
+    const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    expect(facts).toContain('sealed14 of 15 days (UTC) · today so far')
+    const prov = root.querySelector('.ol-prov')!.textContent ?? ''
+    expect(prov).toContain('14 UTC days sealed')
+    expect(prov, 'a live day need not be today: yesterday is live through the seal grace').toContain('1 live')
+    cleanup()
+    const d = ledgerFixture()
+    d.scope = { kind: 'platform', tenants: ['eng', 'personal', 'verify'], excluded: [], tenants_complete: true }
+    d.coverage = { ...d.coverage, days: { total: 45, sealed: 42, live: 3, unread: 0 } }
+    const platform = await timeline(d, { view: 'scope=platform' }, { admin: true })
+    const pf = [...platform.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    expect(pf, '45 workspace-days read as "45 days" over a 14-day span').toContain('sealed42 of 45 workspace-days (UTC) · today so far')
+    expect(platform.querySelector('.ol-prov')!.textContent).toContain('42 workspace-days sealed')
+  })
+
+  it('says a platform listing cut at its limit in workspaces, not tenants', async () => {
+    const d = ledgerFixture()
+    d.scope = { kind: 'platform', tenants: ['eng', 'personal'], excluded: ['verify'], tenants_complete: false }
+    const root = await timeline(d, { view: 'scope=platform' }, { admin: true })
+    const fact = [...root.querySelectorAll<HTMLElement>('.ol-facts .ctl-fact')].find((f) => f.querySelector('b')?.textContent === 'platform')!
+    expect(fact.textContent).toContain('2 workspaces · verify excluded')
+    expect(fact.querySelector('.ctl-mark')!.getAttribute('aria-label')).toBe(
+      'The workspace listing stopped at its limit, so workspaces past it are not in these figures.',
+    )
+    expect(fact.innerHTML).not.toMatch(/tenant/i)
+  })
+
+  it('prints each series’ basis in the route’s word, never its own', async () => {
+    // Not values the route sends today: values that prove the words are READ.
+    const d = ledgerFixture()
+    d.basis = { outcomes: 'ended_at', submitted: 'arrived_at' }
+    const root = await timeline(d)
+    const labels = [...drawing(root).querySelectorAll('.ol-lane-label')].map((t) => t.textContent ?? '')
+    expect(labels[3]).toContain('by arrived_at')
+    expect(drawing(root, 'narrow').querySelectorAll('.ol-lane-label')[3]!.textContent).toContain('by arrived_at')
+    expect(root.querySelector('.ol-legend')!.textContent).toContain('by arrived_at')
+    const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    expect(facts).toContain('byended_at')
+    // An unknown basis keeps its field name, and the field is its title too (QA1-FIX-13).
+    // MUTATION: drop the `title` from the facts line's basis span.
+    expect(root.querySelector('.ol-facts .ctl-fact [title="ended_at"]')?.textContent).toBe('ended_at')
+    cleanup()
+    const table = await timeline(d, { view: 'table=1' })
+    const heads = [...table.querySelectorAll('.ol-table thead th')].map((th) => th.textContent)
+    expect(heads).toContain('Submitted by arrived_at')
+  })
+
+  it('draws a submitter the route did not record as an absence, never as a blank', async () => {
+    // The route's tuples carry submitted_by as '' when a task has none, so a
+    // group row's key and a workflow row's submitter can both be ''.
+    const d = ledgerFixture()
+    d.groups = { ...d.groups, by: 'submitted_by', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: '' }] }
+    d.workflows_failed = {
+      ...d.workflows_failed,
+      rows_total: 1,
+      rows: [{ ...d.workflows_failed.rows[0]!, submitted_by: '' }],
+    }
+    const root = await timeline(d, { view: 'group=submitted_by' })
+    const head = card(root, /^Reliability/).querySelector('tbody tr th')!
+    expect(head.textContent?.trim(), 'a row with no name reads as a blank').toBe('not recorded')
+    const who = card(root, /^Workflows that failed/).querySelector('tbody tr td')!
+    expect(who.textContent, 'no submitter reads as a blank').toBe('—')
+  })
+
+  it('refuses a range the route would refuse, with the reason, and sends nothing', async () => {
+    // The route answers 422 to a since in the future and to a span over 400 days.
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: '', onView })
+    fireEvent.click(within(root.querySelector<HTMLElement>('.ol-span')!).getByRole('button', { name: 'from–to' }))
+    const range = root.querySelector<HTMLElement>('.ol-range')!
+    const [from, to] = [...range.querySelectorAll('input')]
+    const apply = within(range).getByRole('button', { name: 'apply' }) as HTMLButtonElement
+    fireEvent.change(from!, { target: { value: '2024-01-01' } })
+    fireEvent.change(to!, { target: { value: '2026-09-10' } })
+    expect(apply.disabled, 'a 984-day range is offered').toBe(true)
+    expect(range.textContent).toContain('at most 400 days')
+    fireEvent.change(from!, { target: { value: '2099-01-01' } })
+    fireEvent.change(to!, { target: { value: '2099-01-02' } })
+    expect(apply.disabled, 'a range starting in 2099 is offered').toBe(true)
+    expect(range.textContent).toContain('in the future')
+    fireEvent.change(from!, { target: { value: '2026-09-01' } })
+    fireEvent.change(to!, { target: { value: '2026-09-10' } })
+    expect(apply.disabled).toBe(false)
+    const calls = onView.mock.calls.length
+    fireEvent.click(apply)
+    expect(onView.mock.calls.length).toBe(calls + 1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The eight cards
+// ---------------------------------------------------------------------------
+
+describe('the eight cards', () => {
+  it('draws the eight cards the owner decided, and no Token spend', async () => {
+    const root = await timeline()
+    const titles = [...root.querySelectorAll('.ol-card .ctl-card-title')].map((t) => t.firstChild?.textContent)
+    // VOCAB-AGENTS (QA-109, part of archived issue 1680): the cards count agents, the
+    // Agents page's word. MUTATION: put back `title="Why tasks failed"` in Ledger.tsx.
+    expect(titles).toEqual([
+      'Why agents failed',
+      'Retries and attempts',
+      'Time to result, by profile',
+      'Reliability by runner profile',
+      'Workflows that failed, and where',
+      'Reported cost',
+      'Not finished yet',
+      'Why agents were cancelled',
+    ])
+    expect(root.textContent, '"Token spend" survived the rename').not.toMatch(/Token spend/)
+  })
+
+  it('Why agents failed: every class in the server’s fixed order, a zero drawn as its count with no bar', async () => {
+    const root = await timeline()
+    const c = card(root, /^Why agents failed/)
+    const rows = [...c.querySelectorAll('.ol-row')]
+    expect(rows.map((r) => r.getAttribute('data-row'))).toEqual([
+      'runner error', 'timeout', 'lost worker', 'could not start', 'inputs unavailable', 'outputs missing',
+      'dispatch failed', 'spec signature invalid', 'verdict refused', 'verdict failed', 'merge refused',
+      'merge failed', 'publish refused', 'budget exceeded', 'fix loop exhausted', 'other', 'no reason recorded',
+      'failed on purpose',
+    ])
+    // Contract request 118 (owner 2026-10-27): the fixture's one budget stop on
+    // 25 Sep is its own row, after publish refused, and no longer an "other".
+    // Contract request 126 (owner 2026-10-27): a fix loop that ended without a
+    // MERGE is its own row after it, drawn as 0 in a fixture that has none.
+    expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual([
+      '1', '0', '7', '0', '0', '6', '8', '0', '0', '0', '0', '0', '0', '1', '0', '5', '0', '0',
+    ])
+    // A 0 ROW DRAWS NO BAR (visual QA VQ-022, 2026-10-26): the zero tick read
+    // as a small non-zero bar. The row and its "0" are drawn; the bar is not.
+    const timeout = rows[1]!
+    expect(timeout.querySelector('.ctl-util-track'), 'a zero class draws a bar stub').toBeNull()
+    expect(timeout.querySelector('.ol-row-none')).not.toBeNull()
+    expect(c.querySelector('.ctl-card-note')!.textContent).toBe('28 · by class')
+  })
+
+  it('Workflows that failed: the not-read mark in Steps keeps its row, and a cut list says so', async () => {
+    const d = ledgerFixture()
+    d.workflows_failed = { ...d.workflows_failed, rows_total: 27 }
+    const root = await timeline(d)
+    const c = card(root, /^Workflows that failed/)
+    expect(c.querySelector('caption')!.textContent).toBe('showing 3 of 27')
+    const rows = [...c.querySelectorAll('tbody tr')]
+    expect(rows).toHaveLength(3)
+    expect(rows[2]!.querySelector('.ctl-mark.is-unread'), 'an unreadable workflow lost its mark').not.toBeNull()
+    expect(c.querySelector('.ctl-card-foot')!.textContent).toContain('most-failing steps: synthesis 4 · review 2 · build 1')
+  })
+
+  it('Workflows that failed: says "standalone agents only" when the kind filter leaves no step', async () => {
+    const d = ledgerFixture()
+    d.workflows_failed = { ...d.workflows_failed, applicable: false, rows: [], rows_total: 0 }
+    const root = await timeline(d)
+    expect(card(root, /^Workflows that failed/).textContent).toContain('standalone agents only')
+  })
+
+  it('Retries and attempts: admissions, not runs, and a null exit is its own row', async () => {
+    const root = await timeline()
+    const c = card(root, /^Retries and attempts/)
+    expect(c.querySelector('.ctl-card-note')!.textContent).toBe('admissions, not runs')
+    expect(c.textContent).toContain('needed a retry · 18 of 318 that ran (6 %)')
+    expect(c.textContent).toContain('no exit recorded 9')
+    // VOCAB-AGENTS: each try's meter counts agents. MUTATION: put back `${t.tasks} tasks:` in Ledger.tsx.
+    const meters = [...c.querySelectorAll('.ol-meter[role="img"]')].map((m) => m.getAttribute('aria-label') ?? '')
+    expect(meters.length, 'no try meter was drawn, so this measured nothing').toBeGreaterThan(0)
+    for (const m of meters) expect(m).toMatch(/^\d+ agents?: \d+ succeeded/)
+  })
+
+  it('Time to result: no all-profiles row, a dash for nothing decided, max under 20 and the values under 5', async () => {
+    const root = await timeline()
+    const c = card(root, /^Time to result/)
+    const profiles = [...c.querySelectorAll('.ol-lat-row')].map((r) => r.getAttribute('data-profile'))
+    expect(profiles).toEqual(['mock', 'claude-code', 'codex'])
+    expect(c.textContent).not.toMatch(/all profiles/i)
+    const codex = c.querySelector('.ol-lat-row[data-profile="codex"]')!
+    expect(codex.querySelectorAll('.ol-lat-none .ctl-em')).toHaveLength(2)
+    expect(codex.textContent).toContain('timeout varies')
+    const mockFailed = c.querySelector('.ol-lat-row[data-profile="mock"] .ol-lat-line[data-outcome="failed"]')!
+    expect(mockFailed.textContent).toContain('wait 3s, 4s')
+    const ccFailed = c.querySelector('.ol-lat-row[data-profile="claude-code"] .ol-lat-line[data-outcome="succeeded"]')!
+    expect(ccFailed.textContent).toContain('p95')
+    expect(c.querySelector('.ol-lat-row[data-profile="claude-code"] .ol-lat-timeout')).not.toBeNull()
+    expect(codex.querySelector('.ol-lat-timeout')).toBeNull()
+  })
+
+  it('Reliability: all-cancelled and nothing-ended are phrases, low n is a hollow ring, cost never invents $0.00', async () => {
+    const root = await timeline()
+    const c = card(root, /^Reliability/)
+    const row = (k: string) => c.querySelector(`tbody tr[data-key="${k}"]`)!
+    expect(row('codex').textContent).toContain('— all cancelled')
+    expect(row('generic').querySelector('.ol-ring'), 'two decided draws no hollow ring').not.toBeNull()
+    expect(row('generic').textContent).not.toContain('$0.00')
+    expect(row('generic').querySelector('.ol-cost.is-absent .ctl-em')).not.toBeNull()
+    expect(row('claude-code').querySelector('.ol-cost .ctl-mark.is-partial'), '181 of 190 reported is drawn as a total').not.toBeNull()
+    expect(row('mock').textContent).toContain('declared')
+  })
+
+  it('Reliability: the group-by writes the hash, and a tenant grouping is offered only in platform scope', async () => {
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: '', onView })
+    const seg = card(root, /^Reliability/).querySelector<HTMLElement>('.ol-group')!
+    expect([...seg.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['runner profile', 'person', 'model', 'model class'])
+    fireEvent.click(within(seg).getByRole('button', { name: 'person' }))
+    expect(onView).toHaveBeenLastCalledWith('group=submitted_by')
+  })
+
+  it('Reported cost: the partial figure, by agent end, k of n attempts, and "Reported cost · not a bill"', async () => {
+    const root = await timeline()
+    const c = card(root, /^Reported cost/)
+    expect(c.querySelector('.ctl-figure')!.textContent).toBe('$383.84')
+    expect(c.querySelector('.ol-figure-line .ctl-mark.is-partial')).not.toBeNull()
+    expect(c.querySelector('.ctl-card-note')!.textContent).toBe('by agent end · 209 of 612 attempts')
+    expect(c.querySelector('.ctl-card-foot')!.textContent).toBe('Reported cost · not a bill')
+    expect(c.textContent).toContain('p50 $1.62 · p95 $5.80')
+  })
+
+  it('Reported cost: says "not reported", never $0.00, when no attempt reported', async () => {
+    const d = ledgerFixture()
+    d.totals = { ...d.totals, cost: { ...d.totals.cost, sum_usd: null, reporting: 0 } }
+    const root = await timeline(d)
+    const fig = card(root, /^Reported cost/).querySelector('.ol-figure-line')!
+    expect(fig.textContent).toContain('not reported')
+    expect(fig.textContent).not.toMatch(/\$/)
+    expect(fig.querySelector('.ctl-mark.is-absent')).not.toBeNull()
+  })
+
+  it('Not finished yet: live, without the span, with the parks that need a person in warn ink', async () => {
+    const root = await timeline()
+    const c = card(root, /^Not finished yet/)
+    await waitFor(() => expect(c.querySelector('.ol-open-counts')).not.toBeNull())
+    // A FRESH READ IS SILENT ABOUT ITS AGE (archived issue 98, owner ruling 2026-10-07): the
+    // stats were generated 40 s before the page asked, which is fresh, so the
+    // note says only what it does not apply; the head's refresh carries the age.
+    // MUTATION: print `read 40s ago` here again.
+    expect(c.querySelector('.ctl-card-note')!.textContent).toBe('span not applied')
+    expect(c.querySelector('.ol-open-counts')!.textContent).toContain('3 parked · 3 running · 2 queued · 1 ready')
+    const person = c.querySelector('.ol-person')!
+    expect(person.classList.contains('is-warn')).toBe(true)
+    // In words, not enums (QA G3-24): `reasonCopy`'s, with the token in the title.
+    expect(person.textContent).toContain('No provider key is registered for this workspace 2')
+    expect(c.textContent).toContain('clears itself The provider quota is spent. Parked until it resets 1')
+    expect(c.textContent).not.toContain('PROVIDER_QUOTA_EXHAUSTED')
+  })
+
+  it('Not finished yet: says its counts are not filtered by profile when a profile filter is set', async () => {
+    const root = await timeline(ledgerFixture(), { view: 'profile=mock' })
+    const c = card(root, /^Not finished yet/)
+    await waitFor(() => expect(c.querySelector('.ol-open-counts')).not.toBeNull())
+    expect(c.textContent).toContain('not filtered by profile')
+  })
+
+  it('Not finished yet: says its platform counts are not filtered by workspace when the view excludes one', async () => {
+    const root = await timeline(ledgerFixture(), { view: 'exclude_tenant=verify' }, { admin: true })
+    const c = card(root, /^Not finished yet/)
+    await waitFor(() => expect(c.querySelector('.ol-open-counts')).not.toBeNull())
+    expect(c.querySelector('.ol-open-counts')!.textContent).toContain('not filtered by workspace')
+  })
+
+  it('Not finished yet: re-reads its live counts when a filter changes, not only on refresh', async () => {
+    const root = await timeline(ledgerFixture(), { view: '' })
+    await waitFor(() => expect(api.loadStats).toHaveBeenCalledTimes(1))
+    fireEvent.click(within(root.querySelector<HTMLElement>('.ol-span')!).getByRole('button', { name: '30d' }))
+    await waitFor(() => expect(api.loadStats, 'a filter change left the live counts as old as the page').toHaveBeenCalledTimes(2))
+    expect(api.loadTasksInState).toHaveBeenCalledTimes(2)
+  })
+
+  it('Not finished yet: re-reads its live counts on the idle poll while the page stays open', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    await timeline()
+    await waitFor(() => expect(api.loadStats).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      vi.advanceTimersByTime(IDLE_POLL_MS + 1_000)
+    })
+    await waitFor(() => expect(api.loadStats, 'the live card was never re-read').toHaveBeenCalledTimes(2))
+  })
+
+  it('Workflows that failed: draws the step composition in the ledger’s TS-4 forms, succeeded solid --ok', async () => {
+    // Owner decision on archived issue 185: succeeded is TS-4's solid --ok on this page.
+    // The card drew the Workflows row's `.wf-seg`, whose succeeded is
+    // --text-dim, so the page had two greens-that-are-not for one outcome.
+    const root = await timeline()
+    const c = card(root, /^Workflows that failed/)
+    expect(c.querySelector('.wf-seg'), 'the card still draws the Workflows row’s segments').toBeNull()
+    const track = c.querySelector('.ol-steps .ol-meter')!
+    expect(track.querySelector('.ol-seg.succeeded')).not.toBeNull()
+    expect(track.querySelector('.ol-seg.failed')).not.toBeNull()
+    expect(track.querySelector('.ol-seg.cancelled')).not.toBeNull()
+  })
+
+  it('draws a card’s mini strips in the band its bucket count needs, so the sheet can drop them where they do not fit', async () => {
+    const root = await timeline(thirtyDays())
+    const strips = [...card(root, /^Why agents failed/).querySelectorAll('.ol-strip')]
+    // One per class in the route's vocabulary: eighteen since "fix loop
+    // exhausted" (contract request 126, owner 2026-10-27), seventeen since "budget
+    // exceeded" (contract request 118, owner 2026-10-27), sixteen since "failed on
+    // purpose" (archived issue 631, the caller asked for the failure), fifteen since "publish
+    // refused" (contract request 29), fourteen since the worker actions'
+    // four (contract requests 33 and 35), ten since "spec signature invalid"
+    // (contract request 34), nine since "inputs unavailable" (archived issue 185,
+    // decision 4).
+    expect(strips).toHaveLength(ledgerFixture().vocab.failure_classes.length)
+    expect(strips).toHaveLength(18)
+    for (const s of strips) {
+      expect(s.classList.contains('is-n31'), `a 30-bucket strip is not in the ≤31 band: ${s.getAttribute('class')}`).toBe(true)
+      expect(Number(s.getAttribute('width'))).toBe(30 * 6)
+    }
+    cleanup()
+    const fourteen = await timeline()
+    for (const s of card(fourteen, /^Why agents were cancelled/).querySelectorAll('.ol-strip')) {
+      expect(s.classList.contains('is-n14')).toBe(true)
+    }
+  })
+
+  it('Why agents were cancelled: every cause in the server’s order', async () => {
+    const root = await timeline()
+    const c = card(root, /^Why agents were cancelled/)
+    const rows = [...c.querySelectorAll('.ol-row')]
+    expect(rows.map((r) => r.getAttribute('data-row'))).toEqual([
+      'requested', 'after a failure', 'after a cancel', 'workflow sweep', 'other',
+    ])
+    expect(rows.map((r) => r.querySelector('.ol-row-n')!.textContent)).toEqual(['401', '12', '0', '3', '0'])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The help it links, which has to be true of the page it is linked from
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The figures open the rows behind them (archived issue 116), and add up (archived issue 123)
+// ---------------------------------------------------------------------------
+
+describe('timeline figures open the rows behind them (#116) and add up (#123)', () => {
+  it('links each of a day’s segments -- failed, cancelled, succeeded -- to that day’s tasks in that state', async () => {
+    const d = ledgerFixture()
+    const b = d.buckets[10]!
+    const root = await timeline(d)
+    fireEvent.mouseEnter(cols(root)[10]!)
+    const links = [...root.querySelectorAll<HTMLAnchorElement>('.ol-actions .ol-drill')]
+    const asked = links.map((a) => new URLSearchParams(a.getAttribute('href')!.split('?')[1]))
+    expect(asked.map((q) => q.get('rows'))).toEqual(['failed', 'cancelled', 'succeeded'])
+    for (const q of asked) expect(q.get('at')).toBe(b.start)
+    expect(links[1]!.textContent).toContain(`${b.cancelled!.total} cancelled that day`)
+    expect(links[2]!.textContent).toContain(`${b.succeeded} succeeded that day`)
+  })
+
+  it('counts dead-lettered as failed on the drill-down, the one definition the drawing uses', async () => {
+    const d = ledgerFixture()
+    d.buckets[10] = { ...d.buckets[10]!, failed: 3, dead_lettered: 2 }
+    const root = await timeline(d)
+    fireEvent.mouseEnter(cols(root)[10]!)
+    expect(root.querySelector('.ol-actions .ol-drill')!.textContent).toContain('5 failed that day')
+  })
+
+  it('makes each Reliability row a link that narrows the page to that profile, and writes the hash', async () => {
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: '', onView })
+    const link = card(root, /^Reliability/).querySelector<HTMLAnchorElement>('tbody tr[data-key="claude-code"] th a')
+    expect(link, 'the profile row is static').not.toBeNull()
+    expect(link!.getAttribute('href')).toBe('#work/timeline/outcomes?profile=claude-code')
+    fireEvent.click(link!)
+    expect(onView).toHaveBeenLastCalledWith('profile=claude-code')
+  })
+
+  it('narrows a person row to that submitter, and draws no link for work with no submitter recorded', async () => {
+    const d = ledgerFixture()
+    d.groups = {
+      ...d.groups,
+      by: 'submitted_by',
+      rows_total: 2,
+      rows: [{ ...d.groups.rows[0]!, key: 'a@example.com' }, { ...d.groups.rows[1]!, key: '' }],
+    }
+    const root = await timeline(d, { view: 'group=submitted_by' })
+    const c = card(root, /^Reliability/)
+    const href = c.querySelector('tbody tr[data-key="a@example.com"] th a')!.getAttribute('href')!
+    const q = new URLSearchParams(href.replace(/^#work\/timeline\/outcomes\?/, ''))
+    expect(q.getAll('submitted_by')).toEqual(['a@example.com'])
+    expect(q.get('group')).toBe('submitted_by')
+    expect(c.querySelector('tbody tr[data-key=""] th a'), 'a filter on "nobody" is offered').toBeNull()
+  })
+
+  it('narrows a tenant row to that tenant, in platform scope', async () => {
+    const d = ledgerFixture()
+    d.groups = { ...d.groups, by: 'tenant_id', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: 'personal' }] }
+    const root = await timeline(d, { view: 'scope=platform&group=tenant_id' }, { admin: true })
+    const href = card(root, /^Reliability/).querySelector('tbody tr[data-key="personal"] th a')!.getAttribute('href')!
+    const q = new URLSearchParams(href.replace(/^#work\/timeline\/outcomes\?/, ''))
+    expect(q.getAll('tenant')).toEqual(['personal'])
+    expect(q.get('group')).toBe('tenant_id')
+  })
+
+  it('prints Succeeded beside Failed and Cancelled, so every row’s Ended adds up without arithmetic', async () => {
+    const root = await timeline()
+    const c = card(root, /^Reliability/)
+    const heads = [...c.querySelectorAll('thead th')].map((th) => (th.textContent ?? '').trim())
+    const at = (name: RegExp) => heads.findIndex((h) => name.test(h))
+    const [ended, succeeded, failed, cancelled] = [/^Ended$/, /^Succeeded$/, /^Failed/, /^Cancelled/].map(at)
+    expect(succeeded, 'no Succeeded column').toBeGreaterThan(-1)
+    const rows = [...c.querySelectorAll('tbody tr')]
+    // Four profiles, the remainder the headline counts and no profile row
+    // does, and the headline itself (QA2-FIX-16, runs2-23): each adds up.
+    expect(rows.length).toBe(6)
+    for (const r of rows) {
+      const cells = [...r.children].map((x) => (x.textContent ?? '').trim())
+      const n = (i: number) => Number((cells[i] ?? '').split(' ')[0])
+      expect(n(succeeded!) + n(failed!) + n(cancelled!), `${r.getAttribute('data-key')} does not add up`).toBe(n(ended!))
+    }
+  })
+
+  it('reads out succeeded, failed (dead-lettered included) and cancelled that sum to finished, for the span and for one bucket', async () => {
+    const root = await timeline()
+    const sum = () => {
+      const r = readout(root).map(Number)
+      return { parts: r[1]! + r[2]! + r[3]!, finished: r[8]! }
+    }
+    const span = sum()
+    expect(span.parts).toBe(span.finished)
+    fireEvent.mouseEnter(cols(root)[10]!)
+    const day = sum()
+    expect(day.parts).toBe(day.finished)
+  })
+
+  it('keys failed as FAILED + DEAD_LETTERED in the readout, the number its mark draws, so the parts sum to finished', async () => {
+    // Bucket 10 ends 25 succeeded, 8 failed and 305 cancelled: 338. Three of
+    // the 8 are dead-lettered, which the drawing already counts as failed.
+    const d = ledgerFixture()
+    d.buckets[10] = { ...d.buckets[10]!, failed: 5, dead_lettered: 3 }
+    const root = await timeline(d)
+    fireEvent.mouseEnter(cols(root)[10]!)
+    expect(keyed(root, 'is-bad'), 'the failed key prints FAILED alone').toBe('8')
+    expect(root.querySelector('.ol-legend')!.textContent).toContain('incl. dead-lettered 3')
+    const r = readout(root).map(Number)
+    expect(r[1]! + r[2]! + r[3]!, 'succeeded + failed + cancelled').toBe(r[8])
+  })
+
+  it('prints one Failed column in the Table, FAILED + DEAD_LETTERED, so every bucket row adds up to Finished', async () => {
+    const d = ledgerFixture()
+    d.buckets[10] = { ...d.buckets[10]!, failed: 5, dead_lettered: 3 }
+    const root = await timeline(d, { view: 'table=1' })
+    // The head's leaves, left to right: the Cancelled group head spans its four columns (QA1-FIX-13).
+    const [top, under] = [...root.querySelectorAll<HTMLTableRowElement>('.ol-table thead tr')].map((r) => [...r.cells])
+    const heads = top!.flatMap((th) => (th.colSpan > 1 ? under!.splice(0, th.colSpan) : [th])).map((th) => (th.textContent ?? '').trim())
+    const at = (name: RegExp) => heads.findIndex((h) => name.test(h))
+    const [succeeded, failed, cancelled, finished] = [/^Succeeded$/, /^Failed incl\. dead-lettered$/, /^all$/, /^Finished$/].map(at)
+    expect(failed, `no single Failed column in ${heads.join(' | ')}`).toBeGreaterThan(-1)
+    const rows = [...root.querySelectorAll('.ol-table tbody tr')].filter((r) => r.getAttribute('data-state') !== 'unread')
+    expect(rows.length).toBeGreaterThan(0)
+    for (const r of rows) {
+      const cells = [...r.children].map((x) => (x.textContent ?? '').trim())
+      const n = (i: number) => Number((cells[i] ?? '').split(' ')[0])
+      expect(n(succeeded!) + n(failed!) + n(cancelled!), `${cells[0]} does not add up`).toBe(n(finished!))
+    }
+    const row = root.querySelectorAll('.ol-table tbody tr')[10]!
+    expect((row.children[failed!]!.textContent ?? '').trim()).toBe('8 · 3 dead-lettered')
+  })
+
+  it('writes a person filter in the case the address reads it back in, so the link does not land unfiltered', async () => {
+    const d = ledgerFixture()
+    d.groups = { ...d.groups, by: 'submitted_by', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: 'Ana@Example.com' }] }
+    const onView = vi.fn()
+    const root = await timeline(d, { view: 'group=submitted_by', onView })
+    const link = card(root, /^Reliability/).querySelector<HTMLAnchorElement>('tbody tr th a')!
+    fireEvent.click(link)
+    expect(new URLSearchParams(onView.mock.calls.at(-1)![0] as string).getAll('submitted_by')).toEqual(['ana@example.com'])
+  })
+
+  it('leaves a modified click to the browser, so a row can open in a new tab', async () => {
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: '', onView })
+    onView.mockClear()
+    const link = card(root, /^Reliability/).querySelector<HTMLAnchorElement>('tbody tr[data-key="claude-code"] th a')!
+    fireEvent.click(link, { ctrlKey: true })
+    expect(onView).not.toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// One click on "Failed 21" shows those 21 tasks (archived issue 116)
+// ---------------------------------------------------------------------------
+
+/** One ended task as `rows=` serves it. Ids are built, never copied from a real run. */
+function endedRow(i: number, over: Partial<EndedRow> = {}): EndedRow {
+  return {
+    id: `task_${String(i).padStart(4, '0')}${'a'.repeat(20)}`,
+    tenant_id: 'eng',
+    state: 'FAILED',
+    completed_at: '2026-09-22T13:00:00+03:00',
+    runner_profile: 'claude-code',
+    submitted_by: 'a@example.com',
+    workflow_id: null,
+    step_id: null,
+    failure_class: 'timeout',
+    cancel_cause: null,
+    ...over,
+  }
+}
+
+function endedRows(over: Partial<EndedRows> = {}): EndedRows {
+  return {
+    outcome: 'failed',
+    at: '2026-09-22T00:00:00+03:00',
+    end: '2026-09-23T00:00:00+03:00',
+    unread_reason: null,
+    group: 'runner_profile',
+    key: null,
+    total: 0,
+    rows_max: 500,
+    rows: [],
+    ...over,
+  }
+}
+
+/** The ledger for the page's read, and `rows` for any read that asks for a figure's rows. */
+function serveRows(d: Outcomes, rows: EndedRows | Result<Outcomes>): void {
+  serve(d)
+  api.loadOutcomes.mockImplementation((q: URLSearchParams) =>
+    Promise.resolve(
+      q.has('rows') ? ('status' in rows ? rows : ok({ ...d, ended_rows: rows } as Outcomes)) : ok(d),
+    ),
+  )
+}
+
+/** The reads that asked for a figure's rows. */
+function rowReads(): URLSearchParams[] {
+  return api.loadOutcomes.mock.calls.map((c) => c[0] as URLSearchParams).filter((q) => q.has('rows'))
+}
+
+/** The sections each figure's-rows read named beside it. */
+function rowSections(): unknown[] {
+  return api.loadOutcomes.mock.calls.filter((c) => (c[0] as URLSearchParams).has('rows')).map((c) => c[1])
+}
+
+async function rowsCard(root: HTMLElement): Promise<HTMLElement> {
+  await waitFor(() => expect(root.querySelector('.ol-rows tbody, .ol-rows [role="status"]')).not.toBeNull())
+  return root.querySelector<HTMLElement>('.ol-rows')!
+}
+
+describe('a figure lists the tasks behind it (#116)', () => {
+  it('one click on a day’s "21 failed" shows those 21 tasks, each a link to its agent', async () => {
+    const d = ledgerFixture()
+    d.buckets[10] = { ...d.buckets[10]!, failed: 21, dead_lettered: 0 }
+    const rows = Array.from({ length: 21 }, (_, i) => endedRow(i))
+    const root = await timeline(d)
+    serveRows(d, endedRows({ total: 21, rows }))
+    fireEvent.mouseEnter(cols(root)[10]!)
+    const link = [...root.querySelectorAll<HTMLAnchorElement>('.ol-actions .ol-drill')].find((a) => /21 failed/.test(a.textContent ?? ''))
+    expect(link, 'no "21 failed" link').toBeTruthy()
+    fireEvent.click(link!)
+    const c = await rowsCard(root)
+    const listed = [...c.querySelectorAll('tbody tr')]
+    expect(listed).toHaveLength(21)
+    // A path, never the legacy `#work/task/` hash (live QA RT-30).
+    expect(listed[0]!.querySelector('a')!.getAttribute('href')).toBe(`/agents/recent/${encodeURIComponent(rows[0]!.id)}`)
+    expect(c.querySelector('.ctl-card-title')!.textContent).toMatch(/^21 failed · /)
+    // The read asked for exactly that figure, under the page's own filters.
+    const q = rowReads().at(-1)!
+    expect(q.get('rows')).toBe('failed')
+    expect(q.get('rows_at')).toBe(d.buckets[10]!.start)
+    expect(q.get('tz')).toBe((api.loadOutcomes.mock.calls[0]![0] as URLSearchParams).get('tz'))
+    expect(rowSections().at(-1)).toEqual(['totals'])
+  })
+
+  it('states the window it lists, and says when the list is the newest part of a longer one', async () => {
+    const d = ledgerFixture()
+    serveRows(d, endedRows({ total: 740, rows_max: 2, rows: [endedRow(1), endedRow(2)] }))
+    const { container } = render(<ActivityScreen view="rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={() => {}} />)
+    const c = await rowsCard(container as HTMLElement)
+    const note = c.querySelector('.ol-rows-note')!.textContent ?? ''
+    // MUTATION (VOCAB-AGENTS): put back `every task that ended` in TimelineRows.tsx.
+    expect(note).toMatch(/every agent that ended failed in /)
+    expect(note).toMatch(/completed_at/)
+    expect(note).toMatch(/newest 2 of 740 listed/)
+    expect(c.querySelector('.ctl-card-title')!.textContent).toMatch(/^740 failed/)
+  })
+
+  it('heads a platform figure’s workspace column, and its row’s key, as workspace (VQ-056)', async () => {
+    const d = ledgerFixture()
+    d.scope = { kind: 'platform', tenants: ['eng', 'personal'], excluded: [], tenants_complete: true }
+    serve(d, { admin: true })
+    const rows = endedRows({ total: 1, group: 'tenant_id', key: 'eng', rows: [endedRow(3)] })
+    api.loadOutcomes.mockImplementation((q: URLSearchParams) => Promise.resolve(ok(q.has('rows') ? ({ ...d, ended_rows: rows } as Outcomes) : d)))
+    const { container } = render(
+      <ActivityScreen view="scope=platform&group=tenant_id&rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00&rows_key=eng" onView={() => {}} />,
+    )
+    const c = await rowsCard(container as HTMLElement)
+    const heads = [...c.querySelectorAll('thead th')].map((th) => th.textContent)
+    expect(heads).toEqual(['Agent', 'Workspace', 'Profile', 'Submitted by', 'Ended', 'Why'])
+    expect(c.querySelector('tbody td')!.textContent).toBe('eng')
+    expect(c.querySelector('.ol-rows-note')!.textContent).toContain(' · workspace eng')
+    expect(c.textContent).not.toMatch(/tenant/i)
+  })
+
+  it('opens from the address, so the list behind a figure is a link', async () => {
+    const d = ledgerFixture()
+    serveRows(d, endedRows({ total: 1, rows: [endedRow(7, { state: 'DEAD_LETTERED' })] }))
+    const { container } = render(<ActivityScreen view="rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={() => {}} />)
+    const c = await rowsCard(container as HTMLElement)
+    expect(c.querySelectorAll('tbody tr')).toHaveLength(1)
+    expect(c.textContent).toContain('dead-lettered')
+    expect(rowReads().at(-1)!.get('rows_at')).toBe('2026-09-22T00:00:00+03:00')
+  })
+
+  it('links the span’s failed figure too, when no bucket is picked', async () => {
+    const d = ledgerFixture()
+    const failed = d.totals.failed + d.totals.dead_lettered
+    const root = await timeline(d)
+    const link = root.querySelector<HTMLAnchorElement>('.ol-span-drill .ol-drill')!
+    expect(link.textContent).toContain(`${failed} failed in the span`)
+    const q = new URLSearchParams(link.getAttribute('href')!.split('?')[1])
+    expect(q.get('rows')).toBe('failed')
+    expect(q.has('at')).toBe(false)
+  })
+
+  it('makes a person’s Failed cell a link to that person’s failed tasks', async () => {
+    const d = ledgerFixture()
+    d.groups = { ...d.groups, by: 'submitted_by', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: 'a@example.com', failed: 3, dead_lettered: 1 }] }
+    const root = await timeline(d, { view: 'group=submitted_by' })
+    const c = card(root, /^Reliability/)
+    const cell = c.querySelector<HTMLAnchorElement>('tbody tr[data-key="a@example.com"] .ol-cell-link[href*="rows=failed"]')
+    expect(cell, 'the Failed cell is static').not.toBeNull()
+    expect(cell!.textContent).toBe('4')
+    const q = new URLSearchParams(cell!.getAttribute('href')!.split('?')[1])
+    expect(q.get('rows_key')).toBe('a@example.com')
+    expect(q.get('group')).toBe('submitted_by')
+    expect(q.has('at')).toBe(false)
+  })
+
+  it('draws no cell link for the work with no submitter recorded, nor for a zero', async () => {
+    const d = ledgerFixture()
+    d.groups = {
+      ...d.groups,
+      by: 'submitted_by',
+      rows_total: 2,
+      rows: [{ ...d.groups.rows[0]!, key: '' }, { ...d.groups.rows[1]!, key: 'b@example.com', failed: 0, dead_lettered: 0 }],
+    }
+    const root = await timeline(d, { view: 'group=submitted_by' })
+    const c = card(root, /^Reliability/)
+    expect(c.querySelector('tbody tr[data-key=""] .ol-cell-link')).toBeNull()
+    expect(c.querySelector('tbody tr[data-key="b@example.com"] .ol-cell-link[href*="rows=failed"]')).toBeNull()
+  })
+
+  it('says a bucket that left the span is gone, rather than drawing nothing', async () => {
+    const d = ledgerFixture()
+    const refused: Result<Outcomes> = {
+      status: 'error',
+      error: { kind: 'invalid', httpStatus: 422, code: 'validation_failed', message: 'rows_at must be the start of one of this span’s buckets', detail: { parameter: 'rows_at', reason: 'not_a_bucket' } },
+    }
+    serveRows(d, refused)
+    const { container } = render(<ActivityScreen view="rows=failed&at=2026-08-01T00%3A00%3A00%2B03%3A00" onView={() => {}} />)
+    const c = await rowsCard(container as HTMLElement)
+    expect(c.textContent).toMatch(/not in this span any more/)
+  })
+
+  it('remembers the filters but not an open figure, so a bare Timeline does not reopen it', async () => {
+    const d = ledgerFixture()
+    const root = await timeline(d, { view: 'span=7d' })
+    serveRows(d, endedRows({ total: 1, rows: [endedRow(1)] }))
+    fireEvent.click(root.querySelector<HTMLAnchorElement>('.ol-span-drill .ol-drill')!)
+    await rowsCard(root)
+    expect(window.localStorage.getItem('swarm.timeline.view')).toBe('span=7d')
+  })
+
+  it('closes an open bucket’s rows on a zoom, since the zoomed buckets no longer start there', async () => {
+    const d = ledgerFixture()
+    serveRows(d, endedRows({ total: 1, rows: [endedRow(1)] }))
+    const onView = vi.fn()
+    const { container } = render(<ActivityScreen view="rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={onView} />)
+    const root = container as HTMLElement
+    await rowsCard(root)
+    fireEvent.mouseEnter(cols(root)[10]!)
+    fireEvent.click(within(root.querySelector<HTMLElement>('.ol-actions')!).getByRole('button', { name: /^zoom to / }))
+    const q = new URLSearchParams(onView.mock.calls.at(-1)![0] as string)
+    expect(q.has('since')).toBe(true)
+    expect(q.has('rows') || q.has('at')).toBe(false)
+  })
+
+  it('closes, and the address forgets the figure', async () => {
+    const d = ledgerFixture()
+    serveRows(d, endedRows({ total: 1, rows: [endedRow(1)] }))
+    const onView = vi.fn()
+    const { container } = render(<ActivityScreen view="span=7d&rows=failed&at=2026-09-22T00%3A00%3A00%2B03%3A00" onView={onView} />)
+    const c = await rowsCard(container as HTMLElement)
+    fireEvent.click(within(c).getByRole('button', { name: 'close' }))
+    const q = new URLSearchParams(onView.mock.calls.at(-1)![0] as string)
+    expect(q.get('span')).toBe('7d')
+    expect(q.has('rows') || q.has('at') || q.has('rows_key')).toBe(false)
+  })
+})
+
+describe('the rows address (#116)', () => {
+  it('round-trips the figure, and drops a bucket or row named without one', () => {
+    const v = parseView('rows=cancelled&at=2026-09-22T00%3A00%3A00%2B03%3A00&rows_key=a%40example.com&group=submitted_by')
+    expect([v.rows, v.at, v.rowsKey]).toEqual(['cancelled', '2026-09-22T00:00:00+03:00', 'a@example.com'])
+    expect(parseView(serializeView(v))).toEqual(v)
+    const bare = parseView('at=2026-09-22&rows_key=x&rows=dead')
+    expect([bare.rows, bare.at, bare.rowsKey]).toEqual([null, null, null])
+    expect(serializeView(bare)).toBe('')
+  })
+
+  it('asks the route for the figure on top of the page’s own query, and nothing when none is open', () => {
+    const v = parseView('span=7d&profile=codex&rows=succeeded&rows_key=codex')
+    const q = rowsQuery(v, 'Europe/Bucharest')!
+    expect(q.get('rows')).toBe('succeeded')
+    expect(q.get('rows_key')).toBe('codex')
+    expect(q.has('rows_at')).toBe(false)
+    const page = outcomesQuery(v, 'Europe/Bucharest')
+    for (const [k, val] of page) expect(q.getAll(k)).toContain(val)
+    expect(page.has('rows'), 'the page’s own read carries the figure, so every card would re-read').toBe(false)
+    expect(rowsQuery(parseView('span=7d'), 'UTC')).toBeNull()
+  })
+})
+
+describe('the help the Timeline links', () => {
+  it('has a success-rate topic that says cancels are left out and nothing decided is a gap', () => {
+    const t = HELP['success-rate']
+    const all = [t.short, ...t.long].join(' ')
+    expect(all).toMatch(/Cancels are counted/)
+    expect(all).toMatch(/Wilson/)
+    expect(all).toMatch(/gap/)
+  })
+
+  it('no longer tells a reader the Timeline reads a window of Rows (AG-19 retired with the window)', () => {
+    const t = HELP['event-paging']
+    const all = [t.title, t.short, ...t.long].join(' ')
+    expect(all).not.toMatch(/Rows/)
+    expect(all).not.toMatch(/Timeline screen/)
+  })
+
+  it('names the failure classes the way the card it explains does: agents (VOCAB-AGENTS, QA-109)', () => {
+    const t = HELP['failure-classes']
+    // MUTATION: put back `title: 'Why a task failed, by class'` in help.ts.
+    expect(t.title).toBe('Why an agent failed, by class')
+    expect(t.short).toMatch(/^Each failed or dead-lettered agent gets one class/)
+    // The orphan count the Timeline draws is "N finished agents carry no end time".
+    // MUTATION: put back `A task that ended with no end time` in help.ts's outcome-buckets.
+    expect(HELP['outcome-buckets'].long.join(' ')).toMatch(/An agent that ended with no end time recorded .* how many such agents exist/)
+    // MUTATION: put back `for a task that ended before causes` in failure-classes' short.
+    expect(t.short).toMatch(/for an agent that ended before causes were recorded/)
+  })
+
+  it('describes Reported cost as per attempt, by agent end, and not a bill', () => {
+    const all = HELP['tokens-reported'].long.join(' ')
+    expect(all).toMatch(/Reported cost/)
+    // VOCAB-AGENTS: the words of the card note it explains ("by agent end").
+    // MUTATION: put back `where the task ended` in help.ts's tokens-reported.
+    expect(all).toMatch(/every attempt of every agent, and places it in the bucket where the agent ended/)
+    expect(all).toMatch(/not a bill/)
+    expect(all).not.toMatch(/Token spend/)
+  })
+})
+
+describe('VOCAB-AGENTS (QA-109, part of #1680): the Timeline cards and lines count agents', () => {
+  it('Reported cost: the per-succeeded line and its empty case say agent, in one word', async () => {
+    const d = ledgerFixture()
+    d.totals = {
+      ...d.totals,
+      cost: { ...d.totals.cost, per_succeeded_task: { n: 0, of: 0, p50_usd: null, p95_usd: null, max_usd: null, values_usd: null } },
+    }
+    const c = card(await timeline(d), /^Reported cost/)
+    // MUTATION: put back `per succeeded task` in CostCard (Ledger.tsx).
+    expect(c.textContent).toContain('per succeeded agent — no succeeded agent fully reported')
+    expect(c.textContent).not.toMatch(/\btasks?\b/)
+  })
+
+  it('Reported cost: the outcome split is labelled by the agent that spent it', async () => {
+    const c = card(await timeline(), /^Reported cost/)
+    // MUTATION: put back `the task that spent it` in CostCard's Outcome4 label.
+    expect(c.querySelector('.ol-bought .ol-meter[role="img"]')?.getAttribute('aria-label')).toBe(
+      'reported cost split by the outcome of the agent that spent it',
+    )
+  })
+
+  it('Time to result and Reliability: a real empty span says no agent ended', async () => {
+    const d = ledgerFixture()
+    d.latency = { ...d.latency, by_profile: [] }
+    d.groups = { ...d.groups, rows_total: 0, rows: [] }
+    const root = await timeline(d)
+    // MUTATION: put back `no task that was not cancelled ended` in LatencyCard.
+    expect(card(root, /^Time to result/).querySelector('.ctl-empty .ctl-mark')!.getAttribute('aria-label')).toContain(
+      'No agent that was not cancelled ended in this span.',
+    )
+    // MUTATION: put back `no task ended under these filters` in ReliabilityCard.
+    expect(card(root, /^Reliability/).querySelector('.ctl-empty .ctl-mark')!.getAttribute('aria-label')).toContain(
+      'No agent ended under these filters in this span.',
+    )
+  })
+
+  it('the orphan line and the provenance foot count agents', async () => {
+    const d = ledgerFixture()
+    d.coverage = { ...d.coverage, terminal_without_completed_at: 2, reopened: 3 }
+    const root = await timeline(d)
+    const orphan = [...root.querySelectorAll('.ctl-panel-note')].find((n) => /carry no end time/.test(n.textContent ?? ''))
+    // MUTATION: put back `finished tasks carry no end time` in Activity.tsx's LedgerSection.
+    expect(orphan?.textContent).toMatch(/2 finished agents carry no end time/)
+    // MUTATION: put back `re-ended tasks counted once` in Activity.tsx's Provenance.
+    expect(root.querySelector('.ol-prov')!.textContent).toContain('3 re-ended agents counted once')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The tenants table (unchanged by archived issue 185)
+// ---------------------------------------------------------------------------
+
+describe('the tenants table', () => {
+  it('AH-20: wraps the credential tags so they do not run together', async () => {
+    const tenant: Tenant = {
+      tenant_id: 'eng',
+      kind: 'group',
+      principal: 'eng@example.com',
+      display_name: null,
+      created_at: '2026-09-24T09:00:00Z',
+      max_active: 10,
+      capacity_units: 20,
+      monthly_budget_usd: null,
+      enabled: true,
+      credentials: ['anthropic', 'openai'],
+      service_account: 'swarm-eng@example-project.iam.gserviceaccount.com',
+      gcs_prefix: null,
+      namespace: null,
+    }
+    api.loadTenants.mockResolvedValue({
+      status: 'ok',
+      data: { tenants: [tenant] },
+      fetchedAt: Date.now(),
+    } satisfies Result<{ tenants: Tenant[] }>)
+    const { container } = render(<TenantsScreen />)
+    // The tenant's row head: the principal is drawn in pieces since G5-12.
+    await screen.findByRole('rowheader', { name: 'eng' }, { timeout: 5000 })
+    const cell = container.querySelector('td[data-label="Credentials"]')!
+    expect(cell.querySelectorAll('.tags > .tag'), 'two tags with nothing spacing them').toHaveLength(2)
+  })
+})
+
+// VQA-L13 (archived issue 1038). V106: a lane's caption sat in the 24-26px gap 4-6px under
+// the lane above's baseline, so it read as that lane's foot note. V109: the
+// Outcomes tables scroll inside their card, and at 400 were cut mid-value at
+// its edge with nothing saying the row went on.
+// MUTATION: put the drawings' lane gap back to 24/26, or render a card's
+// table in a plain `div` instead of `MoreRight`.
+describe('VQA-L13: lane captions and table edges', () => {
+  it('V106: sets every caption well clear of the lane above’s baseline, in all three drawings', async () => {
+    const root = await timeline()
+    for (const key of ['wide', 'mid', 'narrow'] as const) {
+      const dr = drawing(root, key)
+      const tops = [...dr.querySelectorAll<HTMLElement>('.ol-lane-label')].map((l) => parseFloat(l.style.top))
+      // The baselines, in drawing order: lane 1's 0 %, lane 2's zero, lane 3's foot, lane 4's foot.
+      const bases = [...dr.querySelectorAll('.ol-svg .ol-base')].map((l) => Number(l.getAttribute('y1')))
+      expect(tops, `${key}: four captions`).toHaveLength(4)
+      expect(bases, `${key}: four baselines`).toHaveLength(4)
+      // Lane 2's caption under lane 1's 0 % rule, lane 4's under lane 3's foot.
+      for (const [cap, base] of [
+        [1, 0],
+        [3, 2],
+      ] as const) {
+        expect(tops[cap]! - bases[base]!, `${key}: caption ${cap + 1} sits on the lane above's baseline`).toBeGreaterThanOrEqual(10)
+      }
+    }
+  })
+
+  it('V109: fades a card table’s right edge while columns are off it, and only then', async () => {
+    const root = await timeline()
+    for (const title of [/^Reliability by/, /^Workflows that failed/]) {
+      const s = card(root, title).querySelector<HTMLElement>('.ctl-table.is-scroll')!
+      expect(s, `${title}: no scroller`).not.toBeNull()
+      Object.defineProperty(s, 'clientWidth', { value: 356, configurable: true })
+      Object.defineProperty(s, 'scrollWidth', { value: 820, configurable: true })
+      act(() => {
+        fireEvent.scroll(s)
+      })
+      expect(s.classList.contains('has-more'), `${title}: columns off the edge and no cue`).toBe(true)
+      expect(painted(s, 'mask-image', { width: 400 }) ?? '', `${title}: the cue paints nothing`).toMatch(/^linear-gradient\(to left/)
+      Object.defineProperty(s, 'scrollLeft', { value: 464, configurable: true })
+      act(() => {
+        fireEvent.scroll(s)
+      })
+      expect(s.classList.contains('has-more'), `${title}: the last column is in view and still dimmed`).toBe(false)
+      expect(painted(s, 'mask-image', { width: 400 })).toBeNull()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// VISUAL QA PASS 2 (lane QA2-FIX-10, part of archived issue 2694)
+// ---------------------------------------------------------------------------
+
+describe('one time zone and no raw field names (runs2-17)', () => {
+  it('says the sealed days are UTC beside the zone, not as a second zone inside the count', async () => {
+    const root = await timeline()
+    const facts = [...root.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    expect(facts).toContain('zoneEurope/Bucharest')
+    // MUTATION: put back `dayDocWords` in the sealed fact -> "14 of 15 UTC days" and this fails.
+    expect(facts).toContain('sealed14 of 15 days (UTC) · today so far')
+    cleanup()
+    const d = ledgerFixture()
+    d.scope = { kind: 'platform', tenants: ['eng', 'personal', 'verify'], excluded: [], tenants_complete: true }
+    d.coverage = { ...d.coverage, days: { total: 45, sealed: 42, live: 3, unread: 0 } }
+    const platform = await timeline(d, { view: 'scope=platform' }, { admin: true })
+    const pf = [...platform.querySelectorAll('.ol-facts .ctl-fact')].map((f) => f.textContent)
+    expect(pf).toContain('sealed42 of 45 workspace-days (UTC) · today so far')
+  })
+
+  it('names the throughput lane’s basis "submit time" in the label and the legend, never created_at', async () => {
+    const root = await timeline()
+    const labels = [...drawing(root).querySelectorAll('.ol-lane-label')].map((t) => t.textContent ?? '')
+    // MUTATION: print `basis.submitted` raw in `laneLabels` -> "by created_at" and this fails.
+    expect(labels[3]).toContain('submitted (by submit time, the only lane on submission time) vs finished')
+    expect(drawing(root, 'narrow').querySelectorAll('.ol-lane-label')[3]!.textContent).toContain('by submit time')
+    // MUTATION: print `data.basis.submitted` raw in the legend -> fails.
+    const legend = root.querySelector('.ol-legend')!
+    expect(legend.textContent).toContain('by submit time')
+    expect(legend.querySelector('[title="created_at"]')).not.toBeNull()
+    expect(drawing(root).textContent).not.toContain('created_at')
+  })
+})
+
+describe('Outcomes draws its filters in the Lanes chip row (runs2-19)', () => {
+  it('draws Group by, Profile and Submitted by as the Lanes filter chips', async () => {
+    const root = await timeline()
+    const sheet = root.querySelector<HTMLElement>('#ol-sheet')!
+    const chip = (word: string) => [...sheet.querySelectorAll<HTMLElement>('.tl-flt')].find((c) => c.textContent?.startsWith(word))
+    // MUTATION: draw them in the old `.ol-field` / `.ol-pick` boxes -> fails.
+    expect(chip('Group by')?.tagName).toBe('LABEL')
+    expect(chip('Group by')!.querySelector('select')).not.toBeNull()
+    expect(chip('Submitted by')?.querySelector('input')).not.toBeNull()
+    const profile = chip('Profile')!
+    expect(profile.tagName).toBe('DETAILS')
+    expect(profile.classList.contains('tl-pick')).toBe(true)
+    expect(profile.querySelector('.tl-pop')).not.toBeNull()
+    expect(sheet.querySelector('.ol-pick, .ol-field')).toBeNull()
+  })
+
+  it('counts nothing on an unnarrowed Profile, as Lanes does, and names the picks once narrowed', async () => {
+    const root = await timeline()
+    await waitFor(() => expect(api.loadRunnerProfiles).toHaveBeenCalled())
+    const summary = () => root.querySelector('#ol-sheet details.tl-pick summary')!.textContent
+    // MUTATION: put back `all ${profileOptions.length}` -> "Profile all 5" and this fails.
+    await waitFor(() => expect(root.querySelectorAll('#ol-sheet details.tl-pick input[type="checkbox"]')).toHaveLength(5))
+    expect(summary()).toBe('Profile all')
+    cleanup()
+    const narrowed = await timeline(ledgerFixture(), { view: 'profile=claude-code' })
+    const pick = narrowed.querySelector('#ol-sheet details.tl-pick')!
+    expect(pick.querySelector('summary')!.textContent).toBe('Profile claude-code')
+    // A set filter wears the Lanes chip's `is-on`.
+    expect(pick.classList.contains('is-on')).toBe(true)
+  })
+
+  it("styles only Submitted by's text field, not the picker's checkboxes (review of runs2-19)", async () => {
+    const root = await timeline()
+    await waitFor(() => expect(root.querySelector('#ol-sheet details.tl-pick input[type="checkbox"]')).not.toBeNull())
+    const box = root.querySelector<HTMLElement>('#ol-sheet details.tl-pick input[type="checkbox"]')!
+    const field = root.querySelector<HTMLElement>('#ol-sheet .tl-flt input[type="search"]')!
+    // MUTATION: put back the bare `.ol-toolbar .tl-flt input` -> each checkbox
+    // is 16ch wide and borderless, far from its label, and this fails.
+    expect(painted(box, 'width', { width: 1440 })).toBeNull()
+    expect(painted(box, 'border', { width: 1440 })).toBeNull()
+    expect(painted(field, 'width', { width: 1440 })).toBe('16ch')
+  })
+
+  it("holds the popover's ceiling in the stylesheet and Group by at Lanes' width (review of runs2-19)", async () => {
+    const root = await timeline()
+    const pop = root.querySelector<HTMLElement>('#ol-sheet .tl-pop')!
+    // MUTATION: put back the inline `style={{ maxHeight }}` -> fails.
+    expect(pop.getAttribute('style')).toBeNull()
+    expect(painted(pop, 'max-height', { width: 1440 })).toBe('min(70vh, 480px)')
+    // MUTATION: drop the select's width -> it is as wide as 'month (span under
+    // 60 days)', about 100px wider than Lanes' Group by, and this fails.
+    const select = root.querySelector<HTMLElement>('#ol-sheet label.tl-flt select')!
+    expect(painted(select, 'width', { width: 1440 })).toBe('8.5em')
+  })
+})

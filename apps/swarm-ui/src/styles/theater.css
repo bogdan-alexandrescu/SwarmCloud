@@ -1,0 +1,285 @@
+/* THEATER MODE (docs/design/live-browser.md §6, LB-5; lane LB-L11b): the
+   Browser tab's session full screen, as the chosen mockup draws it (lane
+   LB-UX2a): a top bar (the LIVE pill, prev, next and
+   Esc · back to tab; the device chips are the right column's, one set), a left column (hand-off checklist, Timeline, Logs),
+   the canvas in the middle, a right column (DEVICE, OTHER LIVE), and a
+   bottom bar (the recording's scrubber, Take control). Tokens only; the
+   type scale is the tokens'.
+
+   ABOVE THE SCRIM, BELOW THE TOASTS. `.c-scrim` is 50 and `.c-toasts` 60
+   (styles.css): a dialog the theater opens (a typed confirmation) must sit
+   over it, and a toast must still be read in it. */
+.th-root {
+  position: fixed; inset: 0; z-index: 55;
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr) minmax(200px, 240px);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'head head head'
+    'left center right'
+    'bottom bottom bottom';
+  background: var(--bg); color: var(--text);
+  font-family: var(--font);
+}
+.th-root:focus { outline: none; }
+
+.th-head {
+  grid-area: head;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px;
+  padding: 8px 16px; border-bottom: 1px solid var(--line);
+}
+.th-title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600;
+}
+.th-close { flex: none; }
+.th-pill {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0;
+  padding: 2px 10px 2px 4px; border: 1px solid var(--line); border-radius: var(--r-pill);
+}
+.th-pill-live {
+  padding: 0 6px; border-radius: var(--r-pill);
+  background: var(--s-liveb); color: var(--s-live);
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 700;
+}
+.th-pill-live.is-ended { background: var(--surface-2); color: var(--text-dim); }
+/* A REPLAY RELABELS THE PILL (QA12-13): it states what the stage shows. */
+.th-pill-live.is-replay { background: color-mix(in srgb, var(--sk-ac) 18%, transparent); color: var(--sk-ac); }
+/* While you hold control the flag says so (QA12-05), in the control colour. */
+.th-flag.is-yours { background: var(--sk-acs); color: var(--sk-ac); }
+
+/* THE THEATER'S OWN BUTTONS (QA12-15: `.ctl-btn` had no rule, so prev, next,
+   Esc, replay and live drew as the browser's default buttons). The console's
+   small button, from the same tokens, so both themes follow without a
+   theme block here. */
+.ctl-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  height: var(--h-sm); padding: 0 10px;
+  border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl);
+  background: var(--surface); color: var(--text);
+  font: 550 var(--t-meta)/var(--lh-flush) var(--font);
+  white-space: nowrap; cursor: pointer; flex: none;
+}
+.ctl-btn:hover:not(:disabled) { background: var(--surface-2); }
+.ctl-btn:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ctl-btn:disabled { opacity: .45; cursor: not-allowed; }
+.ctl-btn[aria-pressed='true'] { background: var(--sk-acs); border-color: var(--sk-ac); color: var(--sk-ac); }
+.th-flag {
+  padding: 0 6px; border-radius: var(--r-ctl);
+  background: color-mix(in srgb, var(--s-warn) 18%, transparent); color: var(--s-warn);
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ---- the left column ----------------------------------------------------- */
+.th-left {
+  grid-area: left;
+  display: flex; flex-direction: column; min-height: 0;
+  border-right: 1px solid var(--line); background: var(--surface);
+}
+.th-tabs { display: flex; gap: 4px; padding: 8px 12px 0; border-bottom: 1px solid var(--line); }
+.th-tab {
+  padding: 6px 8px; border: 0; border-bottom: 2px solid transparent; background: none;
+  color: var(--text-dim); cursor: pointer;
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.th-tab.is-on { border-bottom-color: var(--sk-ac); color: var(--text); font-weight: 600; }
+.th-left-body { flex: 1; min-height: 0; overflow: auto; padding: 8px 12px; }
+.th-left-body[hidden] { display: none; }
+
+.th-acts { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.th-act {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 8px;
+  font-size: var(--t-micro); line-height: var(--lh-micro);
+}
+.th-act-at { color: var(--text-faint); font-family: var(--mono); }
+.th-act-what { font-family: var(--mono); color: var(--text); }
+.th-act.is-control .th-act-what { font-family: var(--font); color: var(--s-warn); font-weight: 600; }
+/* LB-R2: a 280 px column wraps a URL rather than cutting it off; a method
+   name breaks at its dot (<wbr>), and only a name too long for the line on
+   its own breaks anywhere else. */
+.th-act-url, .th-act-len {
+  grid-column: 2; min-width: 0; overflow-wrap: anywhere;
+  color: var(--text-dim);
+}
+.th-act.is-input .th-act-what { font-family: var(--font); }
+.th-proto { min-width: 0; }
+.th-proto > summary { cursor: pointer; color: var(--text-dim); font-family: var(--font); }
+.th-proto-calls {
+  margin: 2px 0 0; padding: 0; list-style: none; display: grid; gap: 2px;
+  font-family: var(--mono); color: var(--text-dim); overflow-wrap: anywhere;
+}
+.th-proto-toggle {
+  justify-self: start; margin: 0 0 6px; padding: 2px 8px;
+  border: 1px solid var(--line); border-radius: var(--r-xs); background: none;
+  color: var(--text-dim); cursor: pointer;
+  font-size: var(--t-micro); line-height: var(--lh-micro);
+}
+.th-proto-toggle[aria-pressed='true'] { color: var(--text); border-color: var(--sk-ac); }
+
+.th-handoff { display: grid; gap: 8px; }
+.th-handoff-reason { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+.th-handoff-meta {
+  margin: 0; display: flex; flex-wrap: wrap; gap: 4px 12px;
+  color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.th-handoff-meta time { color: var(--s-warn); font-weight: 600; }
+.th-steps {
+  margin: 0; padding: 0; list-style: none; display: grid; gap: 6px;
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.th-step { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 6px; }
+.th-step-mark {
+  width: 16px; height: 16px; border: 1px solid var(--line); border-radius: var(--r-xs);
+  display: inline-flex; align-items: center; justify-content: center;
+  /* --lh-flush: the box is the 16px mark above; the glyph centres in it, not in a line. */
+  font-size: var(--t-micro); line-height: var(--lh-flush);
+}
+.th-step.is-done .th-step-mark { border-color: var(--s-live); background: var(--s-liveb); color: var(--s-live); }
+.th-step.is-done .th-step-body { color: var(--text-dim); }
+/* The green "I'm done, return control": the same return as the bottom bar's. */
+.th-done {
+  justify-self: start; padding: 6px 12px; border: 1px solid var(--s-live); border-radius: var(--r-ctl);
+  background: var(--s-live); color: var(--s-liveb); cursor: pointer;
+  font: inherit; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600;
+}
+.th-done:disabled { background: none; color: var(--text-faint); border-color: var(--line); cursor: not-allowed; }
+/* The checklist's Take control (THEATER-TAKE) is the tab's, asks and all.
+   Its ask is drawn in the column's flow: absolute, it would hang off the
+   column's left edge and be clipped by the column's scroll box. */
+.th-take { justify-self: start; }
+.th-handoff .live-ask { position: static; width: auto; }
+
+/* ---- the canvas ---------------------------------------------------------- */
+.th-center {
+  grid-area: center;
+  display: flex; flex-direction: column; min-width: 0; min-height: 0;
+}
+.th-strip { flex: none; }
+/* DURING A REPLAY THE STRIP STILL READS THE LIVE PAGE (QA12-13), so it is
+   dimmed and says so; the stage carries the replay's own tag. */
+.th-strip.is-replay > :not(.th-strip-tag) { opacity: .55; }
+.th-strip-tag {
+  display: block; padding: 2px 12px; color: var(--text-dim);
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600;
+}
+.th-replay-tag {
+  flex: none; margin: 0; padding: 4px 12px; background: var(--sk-acs); color: var(--sk-ac);
+  font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600;
+}
+/* The borrowed screen keeps the tab's own rules; the stage only gives it the
+   room. noVNC scales its canvas to the element it was attached to. */
+.th-stage {
+  flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+  overflow: hidden; background: var(--surface-2);
+}
+.th-stage[hidden] { display: none; }
+.th-stage > * { width: 100%; height: 100%; }
+.th-replay { flex: 1; min-height: 0; width: 100%; background: var(--surface-2); }
+
+/* ---- the right column ---------------------------------------------------- */
+.th-right {
+  grid-area: right;
+  display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: auto;
+  padding: 12px; border-left: 1px solid var(--line); background: var(--surface);
+}
+.th-h {
+  margin: 0 0 6px; color: var(--text-faint);
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 700;
+}
+.th-device-now { margin: 0 0 8px; display: flex; align-items: center; gap: 8px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+/* A device outline: the shape of the preset, dashed when nothing reported one. */
+.th-outline { flex: none; display: inline-block; border: 1.5px solid var(--text-dim); border-radius: 2px; }
+.th-outline.is-desktop { width: 18px; height: 12px; }
+.th-outline.is-tablet { width: 12px; height: 16px; border-radius: 3px; }
+.th-outline.is-phone { width: 9px; height: 16px; border-radius: 3px; }
+.th-outline.is-unknown { width: 14px; height: 14px; border-style: dashed; border-color: var(--text-faint); }
+/* Rotated (QA12-24): the outline turns with the device. */
+.th-outline.is-tablet.is-landscape { width: 16px; height: 12px; }
+.th-outline.is-phone.is-landscape { width: 16px; height: 9px; }
+/* THE DEVICE LIST (LB-V2, visual QA pass 5: the tab's chip row, dropped in
+   a 200-240px column, clipped "iPhone SE"). The tab's own device bar, stacked:
+   one full-width row per device, its outline before its name, the current
+   one marked; rotate and touch wrap under it. Nothing is wider than the
+   column at 1440 or 1024. */
+.th-device-ctl { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.th-device-ctl .live-chips { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; }
+.th-device-ctl .live-chip { display: flex; justify-content: flex-start; gap: 8px; width: 100%; min-width: 0; text-align: left; }
+.th-device-ctl .live-chip[aria-pressed="true"] { background: color-mix(in srgb, var(--sk-ac) 12%, transparent); }
+.th-device-ctl .live-chip::before {
+  content: ''; flex: none; display: inline-block; box-sizing: border-box;
+  border: 1.5px solid currentColor; border-radius: 3px;
+  width: 14px; height: 14px; border-style: dashed;
+}
+.th-device-ctl .live-chip[data-outline="desktop"]::before { width: 18px; height: 12px; border-radius: 2px; border-style: solid; }
+.th-device-ctl .live-chip[data-outline="tablet"]::before { width: 12px; height: 16px; border-style: solid; }
+.th-device-ctl .live-chip[data-outline="phone"]::before { width: 9px; height: 16px; border-style: solid; }
+.th-device-ctl .live-chip[data-outline="tablet"][data-orientation="landscape"]::before { width: 16px; height: 12px; }
+.th-device-ctl .live-chip[data-outline="phone"][data-orientation="landscape"]::before { width: 16px; height: 9px; }
+.th-device-ctl .live-control-error { flex-basis: 100%; overflow-wrap: anywhere; }
+.th-agent-list { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.th-agent {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 4px 6px; border-radius: var(--r-ctl);
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.th-agent.is-needs { box-shadow: inset 2px 0 0 var(--s-warn); }
+.th-agent-name, .th-agent-go { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The task's short id beside the step's name (QA12-24): two rows can share a step name. */
+.th-agent-id { flex: none; color: var(--text-faint); font-family: var(--mono); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.th-agent-go {
+  padding: 0; border: 0; background: none; color: var(--sk-ac); cursor: pointer; text-align: left;
+  font: inherit;
+}
+
+/* ---- the bottom bar ------------------------------------------------------ */
+.th-bottom {
+  grid-area: bottom;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 16px; border-top: 1px solid var(--line); background: var(--surface);
+}
+.th-spacer { flex: 1; }
+/* The bar's Take control asks upward (THEATER-TAKE): the tab's rule opens the
+   ask below its button, which for the bar is below the screen's edge. */
+.th-bottom .live-ask {
+  top: auto; bottom: 100%; margin-bottom: 6px;
+  /* Capped so the ask's top never rises past the screen's (QA12-03). */
+  max-height: calc(100vh - 80px); overflow-y: auto;
+}
+.th-live-dot { color: var(--s-live); }
+/* The scrubber: the segments laid end to end under a range input that owns
+   the keyboard and the pointer. */
+.th-scrub { position: relative; flex: 1 1 240px; min-width: 160px; height: 20px; }
+.th-scrub-track {
+  position: absolute; inset: 7px 0; display: flex; gap: 2px;
+  border-radius: var(--r-pill); overflow: hidden; background: var(--surface-2);
+}
+.th-scrub-seg { flex: 1; background: var(--line); }
+.th-scrub-seg.is-on { background: var(--sk-ac); }
+.th-scrub-input { position: absolute; inset: 0; width: 100%; margin: 0; background: transparent; accent-color: var(--sk-ac); }
+.th-scrub-input:disabled { opacity: 0.4; }
+
+.th-note { margin: 0; color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.th-note.is-bad { color: var(--s-bad); }
+
+/* ---- a phone: the canvas first, the columns under it --------------------- */
+@media (max-width: 640px) {
+  .th-root {
+    grid-template-columns: minmax(0, 1fr);
+    /* THE SCREEN ROW HAS A FLOOR (QA12-02). `minmax(0, 1fr)` in a grid that
+       scrolls resolved the 1fr to nothing at 390 px: the head, bar and both
+       columns took the height and the canvas drew at 0x0. */
+    grid-template-rows: auto minmax(55vh, 1fr) auto auto auto;
+    grid-template-areas: 'head' 'center' 'bottom' 'left' 'right';
+    overflow: auto;
+  }
+  .th-center { min-height: 55vh; }
+  .th-left, .th-right { border: 0; border-top: 1px solid var(--line); max-height: 40vh; }
+  /* THE ASK IS PINNED TO THE VIEWPORT (QA12-03). Here the bar wraps, so the
+     control can start a line at the left edge, and an ask right-aligned to
+     it would open past the screen's left side. */
+  .th-bottom .live-ask {
+    position: fixed; top: auto; left: 8px; right: 8px; bottom: 8px; width: auto;
+    max-height: calc(100vh - 16px); overflow-y: auto; margin: 0;
+  }
+}

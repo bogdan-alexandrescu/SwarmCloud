@@ -1,0 +1,2223 @@
+"""Firestore access for the admission controller.
+
+The hot path is deliberately narrow: one ordered query for READY work, one read
+per pool inside the admission transaction, and nothing else. Every wider sweep
+(dependency promotion, prewarm) is bounded and runs once per drain, not once per
+task.
+
+Composite indexes this module relies on (owned by the terraform track). Both of
+these exist today as `tasks-state-priority-created` and
+`tasks-tenant-state-priority-created`:
+
+    tasks:  state ASC, priority DESC, created_at ASC
+    tasks:  tenant_id ASC, state ASC, priority DESC, created_at ASC
+
+`parked_tasks` and `parent_ends` use equality filters only, which Firestore
+serves from single-field indexes by merge join, so they need no composite index.
+So do `workflow_steps_in_state` (tenant_id, workflow_id, state, all `==`), the
+point read in `workflow_on_step_failure`, and `tasks_in_state` (state `==`),
+which only the read-only `on_step_failure_audit` uses.
+
+EVERY WRITE THAT MOVES A TASK IS GUARDED, and that costs reads on purpose.
+`park`, `promote_to_ready`, `cancel`, `cancel_if_not_started`,
+`record_blockers`, `mark_dispatched` and
+`return_to_ready_after_failed_dispatch` each decide from a snapshot the drain
+read earlier -- the READY slice, a sweep's PARKED rows, the lease admission
+handed back. They used to write with a blind `update`, so anything another
+process committed in between was overwritten by a decision about a document
+that no longer existed: a user's cancel parked or promoted back into the queue,
+another scheduler's lease cancelled or promoted over (and then leased a second
+time), a RUNNING worker rewound to DISPATCHED, a re-leased task returned to
+READY with its new lease orphaned (incident wf_ebb3ab2d65664707a559, F-9).
+
+Each is now ONE transaction that re-reads the task and writes only if it is
+still in the state the decision was made against. When it is not, the write is
+SKIPPED -- never forced -- and the caller gets a `GuardedWrite` saying so, which
+the loop logs and counts (`DrainReport.stale_writes`,
+`swarm_scheduler_stale_writes_total{write, reason}`). That is one extra read per
+park, promotion, cancel or denial and three per dispatch, against a hot path
+that was otherwise "one query and the pool reads": the price of not
+overwriting, and small beside the admission transaction each dispatch already
+pays.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any, Callable, Iterable, Sequence
+
+from google.api_core.exceptions import Aborted
+from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
+from google.cloud.firestore_v1.field_path import FieldPath
+
+from swarm_common.admission import (
+    AdmissionConfig,
+    AdmissionDenied,
+    AdmissionRequest,
+    _snapshot,
+    acquire_lease_in_transaction,
+    acquire_leases_in_transaction,
+    release_lease_in_transaction,
+)
+from swarm_common.models import (
+    Attempt,
+    EndCause,
+    Lease,
+    QuotaState,
+    SlotPool,
+    Task,
+    TaskEvent,
+    Tenant,
+    Workflow,
+    new_id,
+    retries_exhausted,
+    utcnow,
+)
+from swarm_common.states import (
+    CONCURRENCY_STATES,
+    PENDING_STATES,
+    TERMINAL_STATES,
+    EventType,
+    InvalidTransition,
+    ParkReason,
+    TaskState,
+    assert_transition,
+)
+
+from swarm_rollup import derived_state_write
+
+from .awaitinput import AWAIT_INPUT_KEY, wait_window
+from .children import cancel_end_cause
+from .codec import (
+    as_datetime,
+    pool_from_dict,
+    quota_from_dict,
+    task_from_dict,
+    tenant_from_dict,
+)
+from .reviewgate import is_requirements_check
+
+log = logging.getLogger(__name__)
+
+TASKS = "tasks"
+TENANTS = "tenants"
+POOLS = "pools"
+QUOTA = "quota"
+LEASES = "leases"
+ATTEMPTS = "attempts"
+CONTROL = "control"
+EVENTS = "events"
+WORKFLOWS = "workflows"
+#: A field of the workflow DOCUMENT, beside the frozen `Workflow`'s: the task
+#: ids a step re-run replaced. Written by swarm-api
+#: (`swarm_api.store.Store.rerun_workflow_steps`); the same name there.
+SUPERSEDED_TASK_IDS = "superseded_task_ids"
+CONTROL_DOC = "dispatch"
+#: The runner-size setting (docs/design/runner-sizes.md §4.3): the pointer
+#: beside `control/settings`, and one immutable document per version, its id
+#: the version zero-padded to 6. Written only by swarm-api's admin route.
+RUNNER_SIZES_DOC = "runner_sizes"
+RUNNER_SIZE_VERSIONS = "runner_size_versions"
+
+
+def runner_size_version_id(version: int) -> str:
+    return f"{version:06d}"
+
+#: What a workflow document with no `on_step_failure` field means: the frozen
+#: dataclass default, read from the dataclass rather than restated. The API
+#: decodes a missing field the same way (`swarm_api.codec.workflow_from_dict`),
+#: and the scheduler must act on the value the tenant is shown.
+_ON_STEP_FAILURE_DEFAULT: str = Workflow.__dataclass_fields__["on_step_failure"].default
+
+#: Why a guarded write was skipped. Stable codes: they are the `reason` label on
+#: `swarm_scheduler_stale_writes_total`, so a dashboard can tell "somebody
+#: cancelled it" from "the reconciler fenced this attempt".
+#:
+#:   task_missing         the document is gone;
+#:   state_changed        it is no longer in the state the decision was made
+#:                        from (cancelled, leased by another scheduler, advanced
+#:                        by its worker, finished);
+#:   park_reason_changed  still PARKED, but for a different reason than the one
+#:                        a promotion was decided on;
+#:   lease_superseded     the task has moved to a newer generation or another
+#:                        lease -- the reconciler fenced this attempt.
+TASK_MISSING = "task_missing"
+STATE_CHANGED = "state_changed"
+PARK_REASON_CHANGED = "park_reason_changed"
+LEASE_SUPERSEDED = "lease_superseded"
+
+#: States in which the task's next move belongs to its WORKER. A failed dispatch
+#: that finds its own lease here must not release it: the create call reported
+#: failure (a timeout, say) but the execution exists and is running under it.
+_WORKER_OWNED = frozenset(
+    {TaskState.DISPATCHED.value, TaskState.STARTING.value, TaskState.RUNNING.value}
+)
+_TERMINAL = frozenset(state.value for state in TERMINAL_STATES)
+_HOLDS_CAPACITY = frozenset(state.value for state in CONCURRENCY_STATES)
+#: States a step has "not started" in: they hold no capacity (invariant 1), so
+#: `cancel_if_not_started` may cancel from any of them. `_NOT_STARTED` names
+#: that precondition in a skip's log line and in its `GuardedWrite.expected`.
+_NOT_STARTED_VALUES = frozenset(state.value for state in PENDING_STATES)
+_NOT_STARTED = "/".join(sorted(_NOT_STARTED_VALUES))
+
+#: The event a task's return is announced with when this store finishes a
+#: reclaim the reconciler left half done -- the same mapping the reconciler's
+#: own repair announces with (`reconciler/repair.py`, `_EVENT_FOR_REPAIR`).
+_EVENT_FOR_RETURN = {
+    TaskState.READY: EventType.READY,
+    TaskState.FAILED: EventType.FAILED,
+    TaskState.CANCELLED: EventType.CANCELLED,
+}
+
+#: The first PLATFORM_REFUSED park's wait, and the longest any park waits
+#: (the owner's brief, 2026-10-28): 30 s, doubling per consecutive refusal, held at
+#: ten minutes. A quota slot frees when a finished Job's ten-minute TTL runs
+#: out (`dispatch.FINISHED_JOB_TTL_SECONDS`), so a longer cap would leave work
+#: parked behind a quota that has already freed; a shorter first wait would
+#: lease capacity again for a create the same full quota refuses.
+PLATFORM_REFUSAL_FIRST_SECONDS = 30
+PLATFORM_REFUSAL_MAX_SECONDS = 600
+
+
+def platform_refusal_backoff(parks: int) -> timedelta:
+    """Park n (1-based) waits 30 s x 2**(n-1), at most ten minutes:
+    30 s, 1, 2, 4, 8, then 10 min for every park after."""
+    n = max(1, int(parks))
+    if n > 16:  # 30 x 2**15 is already far past the cap; no huge integers.
+        return timedelta(seconds=PLATFORM_REFUSAL_MAX_SECONDS)
+    return timedelta(
+        seconds=min(PLATFORM_REFUSAL_FIRST_SECONDS * 2 ** (n - 1), PLATFORM_REFUSAL_MAX_SECONDS)
+    )
+
+
+#: What `return_to_ready_after_failed_dispatch` found when the reconciler had
+#: fenced this attempt and the task still points at its lease.
+_RECLAIM_PENDING = "pending"    # lease unreleased: left for the reconciler
+_RECLAIM_FINISHED = "finished"  # lease released, task not returned: finished here
+
+
+@dataclass(frozen=True)
+class GuardedWrite:
+    """What one guarded transition did.
+
+    `applied` False means nothing was written to the task: it had moved on
+    since the drain read it, and the decision made from that read no longer
+    applies. `reason` is one of the codes above, `expected` the state the write
+    required and `found` the state the transaction read (None when the document
+    is gone). `target` is the state written, when one was.
+    """
+
+    write: str
+    applied: bool
+    expected: str
+    found: str | None
+    reason: str | None = None
+    target: str | None = None
+
+
+@dataclass(frozen=True)
+class ParentEnd:
+    """One `depends_on` parent as the dependency rule reads it: its state, and
+    -- for one that ended -- why (contract request 23).
+
+    The state alone decides WHETHER a dependant is cancelled. The cause is what
+    decides the dependant's own `end_cause`: a CANCELLED parent may itself be a
+    failure's cascade (`failed_parent`) or the fail_workflow sweep's, and then
+    what it passes down is a failure, not a cancel (the review of archived pull request 217).
+    `end_cause` is the stored string, unparsed, so a value this image does not
+    know stays distinguishable from none at all.
+    """
+
+    state: TaskState
+    end_cause: str | None = None
+    cancel_requested: bool = False
+    #: When it ended: where the hold on a MERGE verdict's integrator starts
+    #: (archived issue 748, `Scheduler._held_for_control_publish`).
+    completed_at: datetime | None = None
+    #: An issue run's requirements check (archived issue 2524): when it FAILED, its
+    #: dependant review is not cancelled (`reviewgate.check_ended_without_list`).
+    requirements_check: bool = False
+
+
+@dataclass(frozen=True)
+class _Settled:
+    """`return_to_ready_after_failed_dispatch`'s transaction, as data, so the
+    event and the log line are written once, after it commits -- never once per
+    retried attempt of the body."""
+
+    outcome: GuardedWrite
+    released: bool
+    attempt_count: int = 0
+    max_attempts: int = 0
+    exhausted: bool = False
+    #: Set only when the reconciler had fenced this attempt and the task still
+    #: points at its lease: `_RECLAIM_PENDING` or `_RECLAIM_FINISHED`.
+    reclaim: str | None = None
+    #: The task's generation as the transaction read it, for the log line.
+    task_generation: int | None = None
+    #: Set only when this write parked the task PLATFORM_REFUSED: the
+    #: consecutive refusals it now carries (contract request 123).
+    platform_refusals: int | None = None
+
+
+def _lease_refusal(stored: dict[str, Any] | None, lease: Lease) -> str | None:
+    """Why a write made on behalf of `lease` no longer applies, or None.
+
+    The two writes that follow admission require the task to be exactly what
+    admission left: LEASED, pointing at this lease, at this generation. The
+    generation is checked first because it is what the reconciler moves FIRST
+    (`invalidate_generation`, then release, then repair), so a reclaim in
+    progress reads as superseded rather than as a state it has not reached yet.
+
+    Superseded is therefore NOT the same as "this lease backs nothing". A task
+    still pointing at the lease at a newer generation is a reclaim that has not
+    finished, and `return_to_ready_after_failed_dispatch` must not release it
+    on this code alone -- see its docstring.
+    """
+    if stored is None:
+        return TASK_MISSING
+    held = stored.get("current_lease_id") or None
+    if int(stored.get("current_generation", 0)) != lease.generation:
+        return LEASE_SUPERSEDED
+    if held is not None and held != lease.lease_id:
+        return LEASE_SUPERSEDED
+    if stored.get("state") != TaskState.LEASED.value:
+        return STATE_CHANGED
+    if held is None:
+        return LEASE_SUPERSEDED
+    return None
+
+
+class SchedulerStore:
+    def __init__(self, db: Any, *, now: Callable[[], datetime] = utcnow) -> None:
+        self._db = db
+        self._now = now
+        #: Called once per `acquire_lease` with (outcome, runs, latency_ms).
+        #: `Scheduler` points it at `SchedulerMetrics.observe_admission`; the
+        #: store does not import the metrics, so a bench or a test that builds
+        #: a bare store gets the log fields and nothing else.
+        self.admission_observer: Callable[[str, int, float], None] | None = None
+
+    @property
+    def db(self) -> Any:
+        return self._db
+
+    # -- control ----------------------------------------------------------
+
+    def dispatch_paused(self) -> bool:
+        snap = self._db.collection(CONTROL).document(CONTROL_DOC).get()
+        if not snap.exists:
+            return False
+        return bool(snap.to_dict().get("dispatch_paused", False))
+
+    def runner_size_documents(self) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """The runner-size pointer and the version document it names, raw.
+
+        (None, None) with no pointer: the code defaults. The version document
+        is None when the pointer's `current_version` is not a positive whole
+        number or names a document that does not exist; `sizes.parse_version`
+        judges both, and logs why. Two point reads, once per admission pass.
+        """
+        pointer = self._db.collection(CONTROL).document(RUNNER_SIZES_DOC).get()
+        if not pointer.exists:
+            return None, None
+        data = pointer.to_dict() or {}
+        version = data.get("current_version")
+        if isinstance(version, bool) or not isinstance(version, int) or version <= 0:
+            return data, None
+        snap = (self._db.collection(RUNNER_SIZE_VERSIONS)
+                .document(runner_size_version_id(version)).get())
+        return data, (snap.to_dict() if snap.exists else None)
+
+    # -- queries ----------------------------------------------------------
+
+    def ready_tasks(self, limit: int) -> list[Task]:
+        """READY work, highest priority first and oldest first within a priority.
+
+        Ordering here is the DATABASE's contribution to fairness; the
+        round-robin interleave in `fairness.py` is the scheduler's. Both are
+        needed: this query decides which slice of a large backlog we look at,
+        the interleave decides the order we try that slice in.
+        """
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("state", "==", TaskState.READY.value))
+            .order_by("priority", direction=firestore.Query.DESCENDING)
+            .order_by("created_at", direction=firestore.Query.ASCENDING)
+            .limit(limit)
+        )
+        return [task_from_dict(snap.to_dict()) for snap in query.stream()]
+
+    def ready_tasks_for_tenant(self, tenant_id: str, limit: int) -> list[Task]:
+        """One tenant's own READY work, in the same order as the global query.
+
+        This is the escape hatch from a priority flood. `ready_tasks` returns the
+        globally highest-priority slice, so a tenant holding more than
+        `candidate_batch_size` high-priority tasks fills that slice completely
+        and every other tenant vanishes from it -- at which point the
+        round-robin interleave has nothing of theirs to interleave and the aging
+        bonus has nothing to lift. Asking per tenant is what makes "one tenant
+        cannot starve others" true of the QUEUE rather than only of the slice.
+
+        Served by the `tasks-tenant-state-priority-created` composite index.
+        """
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("state", "==", TaskState.READY.value))
+            .order_by("priority", direction=firestore.Query.DESCENDING)
+            .order_by("created_at", direction=firestore.Query.ASCENDING)
+            .limit(limit)
+        )
+        return [task_from_dict(snap.to_dict()) for snap in query.stream()]
+
+    def enabled_tenant_ids(self, limit: int) -> list[str]:
+        """Tenants that may currently be admitted, oldest registration first.
+
+        One small document per tenant, read once per drain rather than once per
+        pass. A disabled tenant is skipped here so the top-up never spends a
+        query discovering work it would refuse to admit anyway.
+        """
+        out: list[str] = []
+        for snap in self._db.collection(TENANTS).limit(limit).stream():
+            data = snap.to_dict() or {}
+            if data.get("enabled", True):
+                out.append(str(data.get("tenant_id") or snap.id))
+        return out
+
+    def parked_tasks(self, reason: ParkReason, limit: int) -> list[Task]:
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
+            .where(filter=FieldFilter("park_reason", "==", reason.value))
+            .limit(limit)
+        )
+        return [task_from_dict(snap.to_dict()) for snap in query.stream()]
+
+    def parked_page(self, reason: ParkReason, limit: int, after: str | None) -> list[Task]:
+        """One page of the parks on `reason`, in document-id order, after `after`.
+
+        `parked_tasks` has no order, so Firestore answers it with the same first
+        `limit` documents on every drain: once that many parks wait on something
+        that has not cleared, every park after them is never looked at. A sweep
+        that must reach all of them carries the last id of one page into the
+        next drain's `after`, and starts again from the top when a page comes
+        back short. Equality filters ordered by document id are served by the
+        built-in single-field indexes; no composite index is needed.
+        """
+        doc_id = FieldPath.document_id()
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
+            .where(filter=FieldFilter("park_reason", "==", reason.value))
+            .order_by(doc_id)
+        )
+        if after is not None:
+            query = query.start_after({doc_id: after})
+        return [task_from_dict(snap.to_dict()) for snap in query.limit(limit).stream()]
+
+    def dependants_waiting_on(self, parent: Task, limit: int) -> list[Task]:
+        """`parent`'s own tenant's tasks PARKED on DEPENDENCY_INCOMPLETE that name it.
+
+        The finish event's half of `Scheduler._promote_dependencies` (archived issue 636):
+        the same tasks that sweep would reach, narrowed to one parent.
+
+        ONE FILTER IN THE QUERY, the rest in memory. `depends_on
+        array_contains` alone is served by the built-in single-field index, so
+        this needs no composite index and cannot fail on one still building
+        after a release. Its answer is bounded by how many tasks name this one
+        parent, which a workflow's step limit caps. Tenant, state and park
+        reason are checked on what it returns: a task of another tenant that
+        names this id is never touched (invariant 9).
+        """
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("depends_on", "array_contains", parent.id))
+            .limit(limit)
+        )
+        out: list[Task] = []
+        for snap in query.stream():
+            task = task_from_dict(snap.to_dict())
+            if (
+                task.tenant_id == parent.tenant_id
+                and task.state is TaskState.PARKED
+                and task.park_reason is ParkReason.DEPENDENCY_INCOMPLETE
+            ):
+                out.append(task)
+        return out
+
+    def get_task(self, task_id: str) -> Task | None:
+        snap = self._db.collection(TASKS).document(task_id).get()
+        if not snap.exists:
+            return None
+        return task_from_dict(snap.to_dict())
+
+    def task_document(self, task_id: str, *, tenant_id: str) -> dict[str, Any] | None:
+        """One task document as stored, or None when it is missing or another tenant's.
+
+        Through the tenant gate `parent_ends` applies (archived issue 453): a review's
+        runtime is resolved from its own tenant's parents only (archived issue 2322), so a
+        document rewritten to name another tenant reads as unreadable, which
+        resolves to the browser.
+        """
+        if not isinstance(task_id, str) or not task_id:
+            return None
+        snap = self._db.collection(TASKS).document(task_id).get()
+        if not snap.exists:
+            return None
+        data = snap.to_dict() or {}
+        if data.get("tenant_id") != tenant_id:
+            log.warning(
+                "a runtime resolution names a task of another tenant; not read",
+                extra={"tenant_id": tenant_id, "parent_task_id": task_id},
+            )
+            return None
+        return data
+
+    def parent_ends(self, task_ids: Sequence[str], *, tenant_id: str) -> dict[str, ParentEnd]:
+        """A task's parents: each one's state and, for one that ended, why.
+
+        `depends_on` is capped at the workflow step limit, so this is a bounded
+        number of point reads, not a scan. The cause rides on the read the state
+        already needed: no document is read for it (the review of archived pull request 217).
+
+        THROUGH THE TENANT GATE (archived issue 453). Only a parent of `tenant_id` -- the
+        dependant's own tenant -- is read; another tenant's document is left
+        out, exactly like a missing one, so it is neither a SUCCEEDED parent
+        nor a failed one. And a `state` the contract does not name is left out
+        too, rather than raising. Those are the worker's own rules
+        (`ControlPlane.fetch_parent_states`, which refuses another tenant's
+        parent and reads an unknown state as "not SUCCEEDED") and the
+        reconciler's (`detect._dependencies_met`). When this read was looser,
+        a parent whose task document had been rewritten -- a `tenant_id`
+        forged onto a SUCCEEDED parent -- was promoted here and refused by the
+        worker, every drain: promote -> lease -> park. And reading another
+        tenant's parent cancelled this tenant's child on that tenant's failure
+        and copied its `end_cause` across (invariant 9).
+        """
+        ends: dict[str, ParentEnd] = {}
+        for task_id in dict.fromkeys(task_ids):
+            snap = self._db.collection(TASKS).document(task_id).get()
+            if snap.exists:
+                data = snap.to_dict() or {}
+                if data.get("tenant_id") != tenant_id:
+                    # Ids only: whose document it is stays out of the log too.
+                    log.warning(
+                        "a dependency names a task of another tenant; not read",
+                        extra={"tenant_id": tenant_id, "parent_task_id": task_id},
+                    )
+                    continue
+                try:
+                    state = TaskState(data.get("state"))
+                except ValueError:
+                    log.warning(
+                        "a dependency's state is not one the contract names; not SUCCEEDED",
+                        extra={"tenant_id": tenant_id, "parent_task_id": task_id},
+                    )
+                    continue
+                cause = data.get("end_cause")
+                ends[task_id] = ParentEnd(
+                    state=state,
+                    end_cause=str(cause) if cause is not None else None,
+                    cancel_requested=bool(data.get("cancel_requested")),
+                    completed_at=as_datetime(data.get("completed_at")),
+                    requirements_check=is_requirements_check(data.get("metadata")),
+                )
+        return ends
+
+    def workflow_on_step_failure(
+        self,
+        tenant_id: str,
+        workflow_id: str,
+        *,
+        enforced_since: datetime | None = None,
+    ) -> str | None:
+        """The workflow's `on_step_failure`, or None when there is no policy to act on.
+
+        None when the document is missing, and when it belongs to a different
+        tenant than the step asking. The API never writes either, so both mean a
+        corrupt or forged task. The caller falls back to the rule that needs no
+        policy (cancel the dependents of a failed parent) rather than guessing
+        `fail_workflow`, because a cancel cannot be undone.
+
+        None as well, under a cutoff (`enforced_since`, from
+        ON_STEP_FAILURE_ENFORCED_SINCE), for a workflow created before it. Such
+        a workflow was submitted while the setting was documented as not
+        honoured, so it keeps the dependency rule it was submitted under. A
+        document with no readable `created_at` is treated the same way under a
+        cutoff: when it was submitted cannot be told, and a cancel cannot be
+        undone.
+
+        A document that exists but has no field reads as the frozen default,
+        which is what the API shows the tenant for the same document.
+        """
+        snap = self._db.collection(WORKFLOWS).document(workflow_id).get()
+        if not snap.exists:
+            log.warning(
+                "workflow %s named by a step of tenant %s has no document; "
+                "on_step_failure cannot be applied", workflow_id, tenant_id,
+            )
+            return None
+        data = snap.to_dict() or {}
+        if data.get("tenant_id") != tenant_id:
+            log.warning(
+                "workflow %s belongs to tenant %r, not %r; its on_step_failure is "
+                "not applied to that tenant's step", workflow_id, data.get("tenant_id"),
+                tenant_id,
+            )
+            return None
+        if enforced_since is not None:
+            try:
+                created_at = as_datetime(data.get("created_at"))
+            except (TypeError, ValueError):
+                created_at = None
+            if created_at is None or created_at < enforced_since:
+                log.debug(
+                    "workflow %s was created at %s, before on_step_failure was "
+                    "enforced (%s); only the dependency rule applies to it",
+                    workflow_id, created_at, enforced_since.isoformat(),
+                )
+                return None
+        value = data.get("on_step_failure")
+        if value is None:
+            return _ON_STEP_FAILURE_DEFAULT
+        return str(value).strip().lower()
+
+    def tasks_in_state(self, state: TaskState, limit: int) -> list[Task]:
+        """Every tenant's tasks in one state, up to `limit`. Equality filter only.
+
+        Used by the read-only `on_step_failure_audit`, never by a drain: a drain
+        reaches waiting work through the queries above, each scoped to the one
+        thing it is looking for.
+        """
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("state", "==", state.value))
+            .limit(limit)
+        )
+        return [task_from_dict(snap.to_dict()) for snap in query.stream()]
+
+    def workflow_superseded_task_ids(self, tenant_id: str, workflow_id: str) -> frozenset[str]:
+        """The task ids a step re-run replaced in this workflow (swarm-api's
+        `steprerun`): tasks that still name the workflow but are no step of
+        it any more. Empty for a missing document, another tenant's, and every
+        workflow nobody re-ran a step of. One point read."""
+        snap = self._db.collection(WORKFLOWS).document(workflow_id).get()
+        if not snap.exists:
+            return frozenset()
+        data = snap.to_dict() or {}
+        if data.get("tenant_id") != tenant_id:
+            return frozenset()
+        return frozenset(str(t) for t in (data.get(SUPERSEDED_TASK_IDS) or []) if t)
+
+    def workflow_steps_in_state(
+        self, tenant_id: str, workflow_id: str, state: TaskState, limit: int
+    ) -> list[Task]:
+        """This tenant's steps of one workflow in one state.
+
+        Scoped by `tenant_id` as well as `workflow_id`, so nothing a workflow
+        sweep does can reach another tenant's task, even one whose document names
+        this workflow (invariant 9). Equality filters only, so no composite
+        index is needed. The query is bounded by the workflow step limit and
+        does not grow with history.
+        """
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("workflow_id", "==", workflow_id))
+            .where(filter=FieldFilter("state", "==", state.value))
+            .limit(limit)
+        )
+        return [task_from_dict(snap.to_dict()) for snap in query.stream()]
+
+    def get_tenant(self, tenant_id: str) -> Tenant | None:
+        snap = self._db.collection(TENANTS).document(tenant_id).get()
+        if not snap.exists:
+            return None
+        return tenant_from_dict(snap.to_dict())
+
+    def pools(self) -> dict[str, SlotPool]:
+        return {
+            snap.id: pool_from_dict(snap.id, snap.to_dict())
+            for snap in self._db.collection(POOLS).stream()
+        }
+
+    def active_by_tenant(self) -> dict[str, int]:
+        """Live lease count per tenant, read from the tenant pools.
+
+        The pool's `active` is the authoritative count -- it is only ever
+        mutated inside the admission and release transactions -- so this needs
+        no aggregation query over tasks.
+        """
+        out: dict[str, int] = {}
+        for name, pool in self.pools().items():
+            if name.startswith("tenant:") and ":tenant:" not in name:
+                out[name.split(":", 1)[1]] = pool.active
+        return out
+
+    def quota_states(self, limit: int = 500) -> list[QuotaState]:
+        return [
+            quota_from_dict(snap.to_dict())
+            for snap in self._db.collection(QUOTA).limit(limit).stream()
+        ]
+
+    # -- transitions ------------------------------------------------------
+    #
+    # Every method below returns a `GuardedWrite`. None of them forces a write
+    # onto a task that has moved on since the drain read it; see the module
+    # docstring for what used to happen when they did.
+
+    def _workflow_write(
+        self, txn: Any, task_id: str, tenant_id: str, doc: dict[str, Any], now: datetime
+    ) -> tuple[Any, dict[str, Any]] | None:
+        """The task's workflow's derived state, for THIS transaction to write (archived issue 2838).
+
+        `doc` is the task as this transaction will leave it. Reads only, so the
+        caller calls it after its guard's reads and before its first write, and
+        applies the returned update beside the task's own: the step's state and
+        the workflow's commit together or not at all, and a guard that refuses
+        the step's write writes neither. Before this, a scheduler transition
+        (READY->LEASED, a woken park, a `fail_workflow` cancel) left the stored
+        state behind the derived one until the reconciler's `state_drift`
+        repair, pass after pass. The rule is `swarm_rollup.derive`, the one the
+        API and the reconciler apply.
+        """
+        return derived_state_write(
+            txn, self._db, tenant_id=tenant_id, workflow_id=doc.get("workflow_id"),
+            now=now, changed={task_id: doc},
+        )
+
+    def _write_if_unchanged(
+        self,
+        write: str,
+        task: Task,
+        patch: dict[str, Any],
+        *,
+        same_park_reason: bool = False,
+        patch_from: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> GuardedWrite:
+        """Apply `patch` only if the task is still in `task.state`.
+
+        `patch_from(stored)` adds fields computed from the document AS READ
+        INSIDE the transaction, so a field it rewrites whole (a review's
+        `metadata`, archived issue 2322) cannot drop a key written between the caller's
+        read and this write.
+
+        One transaction: the re-read and the write commit together or not at
+        all. A concurrent writer either commits first -- and this re-runs, sees
+        it, and skips -- or commits after, and sees this. `same_park_reason`
+        also requires the stored park reason to be the one the caller read: a
+        promotion is a decision about WHY the task was parked, not only that it
+        was.
+
+        `cancel_requested` is deliberately NOT part of this precondition. The
+        API never flags a SUBMITTED/QUEUED/READY/PARKED task -- it cancels it
+        outright (`swarm_api.store.request_cancel`) -- so a cancel landing
+        between the drain's read and these writes changes the STATE, which is
+        checked. A PARKED task that does carry the flag -- a worker that hits a
+        quota park before its next poll of the flag would leave one; the worker's
+        park does not clear it -- must still be promotable: READY is where the
+        drain's `_admit_one` cancels it, and refusing the promotion would leave
+        it PARKED for ever.
+        """
+        task_ref = self._db.collection(TASKS).document(task.id)
+        expected = task.state.value
+        expected_reason = task.park_reason.value if task.park_reason else None
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> GuardedWrite:
+            snap = _snapshot(txn.get(task_ref))
+            stored = (snap.to_dict() or {}) if snap.exists else None
+            found = stored.get("state") if stored is not None else None
+            if stored is None:
+                reason = TASK_MISSING
+            elif found != expected:
+                reason = STATE_CHANGED
+            elif same_park_reason and (stored.get("park_reason") or None) != expected_reason:
+                reason = PARK_REASON_CHANGED
+            else:
+                written = {**patch, **patch_from(stored)} if patch_from is not None else patch
+                workflow = (
+                    self._workflow_write(txn, task.id, task.tenant_id, {**stored, **written},
+                                         written.get("updated_at") or self._now())
+                    if "state" in written else None
+                )
+                txn.update(task_ref, written)
+                if workflow is not None:
+                    txn.update(*workflow)
+                return GuardedWrite(write, True, expected, found, None, patch.get("state"))
+            return GuardedWrite(write, False, expected, found, reason)
+
+        outcome = _apply(transaction)
+        if not outcome.applied:
+            self._log_skip(outcome, task)
+        return outcome
+
+    def _log_skip(
+        self,
+        outcome: GuardedWrite,
+        task: Task,
+        *,
+        lease: Lease | None = None,
+        level: int = logging.INFO,
+        consequence: str = "nothing written",
+    ) -> None:
+        """One line per skipped write, naming what was expected and found.
+
+        INFO by default: under concurrency a skip is the guard doing its job (a
+        user cancelled, another scheduler got there first). The two writes that
+        follow admission log WARNING, because a skip there means a container was
+        started or refused for an attempt that is no longer current.
+        """
+        log.log(
+            level,
+            "skipped %s task=%s%s: expected %s, found %s (%s); %s",
+            outcome.write,
+            task.id,
+            f" lease={lease.lease_id} generation={lease.generation}" if lease else "",
+            outcome.expected,
+            outcome.found or "no document",
+            outcome.reason,
+            consequence,
+        )
+
+    def record_blockers(self, task: Task, blockers: list[dict[str, Any]]) -> GuardedWrite:
+        """Surface why a READY task was not admitted, without changing state.
+
+        The task stays READY. Parking it would be wrong -- the platform being
+        busy is not a durable condition -- and blocking the loop on it would let
+        one full pool stall every other tenant's work.
+
+        Guarded like the transitions: a denial of `not_ready` is admission
+        telling this drain that another scheduler has just LEASED the task, and
+        written unconditionally it became that LEASED task's `blocked_by` -- the
+        field the console shows as why a task is waiting.
+        """
+        return self._write_if_unchanged(
+            "record_blockers", task, {"blocked_by": blockers, "updated_at": self._now()}
+        )
+
+    def park(self, task: Task, reason: ParkReason, *, next_eligible_at: datetime | None = None,
+             detail: dict[str, Any] | None = None,
+             blocked_by: list[dict[str, Any]] | None = None,
+             platform_refusals: int | None = None,
+             last_error: str | None = None) -> GuardedWrite:
+        """READY -> PARKED, guarded on the state read.
+
+        `blocked_by`, when given, is written as the task's `blocked_by`, in the
+        shape a worker's park writes it (`lifecycle._park_no_account`): what
+        `loop.account_park_provider` reads to know a park waits on the account
+        pool, and what swarm-api's waiting line reads (archived issue 2222).
+
+        `platform_refusals` and `last_error`, when given, are written as the
+        task's: a PLATFORM_REFUSED park made before any lease (a missing
+        plugin bundle, `loop._prepare_admission`) counts its refusals and
+        names its code as the failed-dispatch park does, so its backoff
+        doubles the same way. The guard makes the count the one read + 1.
+        """
+        assert_transition(task.state, TaskState.PARKED)
+        patch: dict[str, Any] = {
+            "state": TaskState.PARKED.value,
+            "park_reason": reason.value,
+            "updated_at": self._now(),
+        }
+        if next_eligible_at is not None:
+            patch["next_eligible_at"] = next_eligible_at
+        if blocked_by is not None:
+            patch["blocked_by"] = blocked_by
+        if platform_refusals is not None:
+            patch["platform_refusals"] = platform_refusals
+        if last_error is not None:
+            patch["last_error"] = last_error[:1000]
+        outcome = self._write_if_unchanged("park", task, patch)
+        if outcome.applied:
+            self.append_event(task, EventType.PARKED, {"reason": reason.value, **(detail or {})})
+        return outcome
+
+    def park_awaiting_input(self, task: Task, *, max_seconds: int) -> GuardedWrite:
+        """READY -> PARKED(AWAITING_INPUT), with the wait's window, in one guarded write.
+
+        The await-input step's park (docs/design/human-steps.md §4.4). Guarded
+        like every transition here on the state the caller read, which is READY:
+        the promotion `Scheduler._resolve_dependency` has just written, or the
+        READY task admission was handed. A READY -> PARKED write is the only
+        way in, because PARKED -> PARKED is refused by `assert_transition`.
+
+        `next_eligible_at` is the park instant, as HUMAN_REQUIRED and
+        CHILDREN_INCOMPLETE record theirs. `metadata.await_input` gets
+        `opened_at` and `expires_at` (`awaitinput.wait_window`), computed from
+        the stored metadata inside the transaction, so the window is read and
+        written in the same commit and no reader re-derives it. Nothing is
+        reserved or released: the task holds no lease in READY or PARKED
+        (invariant 1).
+        """
+        assert_transition(task.state, TaskState.PARKED)
+        task_ref = self._db.collection(TASKS).document(task.id)
+        expected = task.state.value
+        transaction = self._db.transaction()
+        written: dict[str, Any] = {}
+
+        @firestore.transactional
+        def _apply(txn: Any) -> GuardedWrite:
+            snap = _snapshot(txn.get(task_ref))
+            stored = (snap.to_dict() or {}) if snap.exists else None
+            found = stored.get("state") if stored is not None else None
+            if stored is None:
+                return GuardedWrite("park", False, expected, found, TASK_MISSING)
+            if found != expected:
+                return GuardedWrite("park", False, expected, found, STATE_CHANGED)
+            now = self._now()
+            metadata = dict(stored.get("metadata") or {})
+            window = wait_window(metadata, now, max_seconds=max_seconds)
+            metadata[AWAIT_INPUT_KEY] = window
+            patch = {
+                "state": TaskState.PARKED.value,
+                "park_reason": ParkReason.AWAITING_INPUT.value,
+                "next_eligible_at": now,
+                "blocked_by": [],
+                "metadata": metadata,
+                "updated_at": now,
+            }
+            workflow = self._workflow_write(txn, task.id, task.tenant_id, {**stored, **patch}, now)
+            txn.update(task_ref, patch)
+            if workflow is not None:
+                txn.update(*workflow)
+            written.clear()
+            written.update(window)
+            return GuardedWrite("park", True, expected, found, None, TaskState.PARKED.value)
+
+        outcome = _apply(transaction)
+        if not outcome.applied:
+            self._log_skip(outcome, task)
+            return outcome
+        self.append_event(
+            task,
+            EventType.PARKED,
+            {
+                "reason": ParkReason.AWAITING_INPUT.value,
+                "opened_at": written["opened_at"].isoformat(),
+                "expires_at": written["expires_at"].isoformat(),
+            },
+        )
+        return outcome
+
+    def promote_to_ready(
+        self,
+        task: Task,
+        *,
+        detail: dict[str, Any] | None = None,
+        patch_from: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        event_detail: Callable[[], dict[str, Any]] | None = None,
+    ) -> GuardedWrite:
+        """PARKED -> READY, guarded on the state and the park reason read.
+
+        `patch_from` adds fields to the same guarded write, computed from the
+        stored document inside the transaction (a `browser_if_ui` step's
+        resolved profile, archived issue 2322: resolved before it is admitted, never
+        after). `event_detail()`, read once the write applied, is merged into
+        the READY event's detail, so the event says what was written.
+
+        PARKED ONLY. The table also allows FAILED -> READY, and this guard
+        would happily match a FAILED snapshot (its park reason is None both
+        sides), so a FAILED task handed here would be retried. Nothing the
+        scheduler ends FAILED before a lease may be (`fail_before_lease`), so
+        the edge is refused here rather than trusted to every caller.
+        """
+        if task.state is not TaskState.PARKED:
+            raise InvalidTransition(task.state, TaskState.READY)
+        assert_transition(task.state, TaskState.READY)
+        outcome = self._write_if_unchanged(
+            "promote",
+            task,
+            {
+                "state": TaskState.READY.value,
+                "park_reason": None,
+                "next_eligible_at": None,
+                "blocked_by": [],
+                "updated_at": self._now(),
+            },
+            same_park_reason=True,
+            patch_from=patch_from,
+        )
+        if outcome.applied:
+            extra = event_detail() if event_detail is not None else {}
+            self.append_event(task, EventType.READY, {**(detail or {}), **extra})
+        return outcome
+
+    def dead_letter_parked(
+        self, task: Task, reason: str, *, detail: dict[str, Any] | None = None
+    ) -> GuardedWrite:
+        """End a PARKED task that may not be retried: PARKED -> DEAD_LETTERED.
+
+        For a park whose task has used its last attempt. Returning it to READY
+        would lease attempt N+1 of N, because admission does not check the
+        retry cap (`swarm_common.models.retries_exhausted` says why the rule
+        lives where it does). PARKED -> FAILED exists (contract request 99)
+        but only for a task that can never run (`fail_before_lease`); a spent
+        retry has always ended DEAD_LETTERED, and still does.
+
+        Guarded exactly as `promote_to_ready` is, on the state AND the park
+        reason the caller read. The task holds no capacity in PARKED, so there
+        is no lease to release and none is touched. `end_cause` is written as
+        null: no `EndCause` value names this ending, and the contract says a
+        writer ending a task for a reason with no value writes None.
+        """
+        assert_transition(task.state, TaskState.DEAD_LETTERED)
+        now = self._now()
+        outcome = self._write_if_unchanged(
+            "dead_letter",
+            task,
+            {
+                "state": TaskState.DEAD_LETTERED.value,
+                "next_eligible_at": None,
+                "blocked_by": [],
+                "completed_at": now,
+                "last_error": reason[:1000],
+                "end_cause": None,
+                "updated_at": now,
+            },
+            same_park_reason=True,
+        )
+        if outcome.applied:
+            self.append_event(task, EventType.DEAD_LETTERED, {"reason": reason, **(detail or {})})
+        return outcome
+
+    def fail_before_lease(
+        self, task: Task, error: str, *, detail: dict[str, Any] | None = None,
+        end_cause: EndCause | None = None,
+    ) -> GuardedWrite:
+        """End a READY or PARKED task that can never run: -> FAILED, no lease.
+
+        Contract request 99 (accepted by the owner 2026-10-18), for
+        registered-mcp-servers.md §4.10: a per-run MCP credential that expired
+        or was revoked cannot be replaced, because the caller who supplied it
+        is not online to supply another. Admission holds such a task READY and
+        the credential sweep holds it PARKED, so those are the two sources.
+
+        ONE GUARDED WRITE, AND NOTHING ELSE. The task holds no lease in READY
+        or PARKED (invariant 1), so there is none to release and none is
+        taken; no pool is read or moved, so no reservation is half-made
+        (invariant 2); it never passes through LEASED, so concurrency never
+        counts it (invariant 3). Guarded on the state AND the park reason the
+        caller read, as `promote_to_ready` is: if another scheduler leased it
+        meanwhile, FAILED over LEASED would be a terminal task holding a lease.
+
+        NEVER RETRIED. `error` is the terminal code (`mcp_credential_expired`
+        or `mcp_credential_missing`), and `attempt_count` is left alone: no
+        attempt ran. `promote_to_ready` refuses a FAILED task, and no other
+        writer reads one back to READY. `end_cause` is None for those: no
+        `EndCause` value names that ending, and the contract says such a
+        writer writes None.
+
+        A fix loop's person-park that nobody answered within 7 days is the
+        other source (docs/design/fix-loop.md §4.5, the owner Q3 (c)): PARKED ->
+        FAILED with `end_cause` FIX_LOOP_EXHAUSTED, as a person's "stop"
+        ends it. The loop is `control_plane` and never held a lease either.
+        """
+        if task.state not in (TaskState.READY, TaskState.PARKED):
+            raise InvalidTransition(task.state, TaskState.FAILED)
+        assert_transition(task.state, TaskState.FAILED)
+        now = self._now()
+        outcome = self._write_if_unchanged(
+            "fail_before_lease",
+            task,
+            {
+                "state": TaskState.FAILED.value,
+                "park_reason": None,
+                "next_eligible_at": None,
+                "blocked_by": [],
+                "completed_at": now,
+                "last_error": error[:1000],
+                "end_cause": end_cause.value if end_cause is not None else None,
+                "updated_at": now,
+            },
+            same_park_reason=True,
+        )
+        if outcome.applied:
+            self.append_event(task, EventType.FAILED, {"reason": error, **(detail or {})})
+        return outcome
+
+    def skip_before_lease(
+        self, task: Task, reason: str, *, detail: dict[str, Any] | None = None
+    ) -> GuardedWrite:
+        """READY -> CANCELLED for a step that would buy nothing (archived issue 2524, NOOP-PRECHECK).
+
+        With `result_summary.skipped.reason`, the worker's own marker for a
+        step that did not run. CANCELLED, not SUCCEEDED: the frozen table has
+        no READY -> SUCCEEDED. The task holds nothing in READY, so, exactly as
+        `cancel`, there is no lease to release, and the write is guarded on
+        the state read: CANCELLED over LEASED would be a terminal task holding
+        a live lease. `end_cause` is None: no `EndCause` value names it.
+        """
+        if task.state is not TaskState.READY:
+            raise InvalidTransition(task.state, TaskState.CANCELLED)
+        assert_transition(task.state, TaskState.CANCELLED)
+        now = self._now()
+        outcome = self._write_if_unchanged(
+            "skip_before_lease",
+            task,
+            {
+                "state": TaskState.CANCELLED.value,
+                "park_reason": None,
+                "blocked_by": [],
+                "completed_at": now,
+                "last_error": reason[:1000],
+                "end_cause": None,
+                "result_summary": {"skipped": {"reason": reason[:1000]}},
+                "updated_at": now,
+            },
+        )
+        if outcome.applied:
+            self.append_event(task, EventType.CANCELLED,
+                              {"reason": reason, "skipped": True, **(detail or {})})
+        return outcome
+
+    def mark_dispatched(
+        self, task: Task, lease: Lease, execution_name: str, backend: str
+    ) -> GuardedWrite:
+        """Record that the backend accepted the execution for `lease`.
+
+        THE TASK moves LEASED -> DISPATCHED only if it is still LEASED on this
+        lease at this generation. Two writers can get there first:
+
+          * its WORKER. A container that starts before this write lands finds
+            the task at LEASED and walks it to RUNNING itself
+            (`ControlPlane.advance_to_running`). DISPATCHED over RUNNING was not
+            just a wrong label: DISPATCHED -> SUCCEEDED is illegal, so the
+            worker could no longer finish its own task;
+          * the RECONCILER, when the create call outlived the dispatch deadline:
+            it fenced the generation, released the lease and returned the task
+            to READY. DISPATCHED over that is a task claiming capacity it does
+            not hold, that no drain will ever look at again.
+
+        THE LEASE moves on its own condition -- unreleased and still LEASED --
+        and so it moves in the first case too. After a lease's first heartbeat
+        the reconciler treats one still at LEASED past its dispatch deadline as
+        overdue (`reconciler/detect.py`, `overdue_dispatch`), so leaving it
+        there would reap a healthy worker. A released lease is never relabelled.
+
+        THE ATTEMPT always records its execution when the attempt exists: it is
+        a fact about this attempt, which only this admission minted.
+
+        `cancel_requested` does not stop this write. The API flags a LEASED task
+        and waits for "the worker or the reconciler"; the execution now exists,
+        and its worker is what honours the flag. The update touches only
+        `state`, so the flag survives.
+        """
+        assert_transition(TaskState.LEASED, TaskState.DISPATCHED)
+        now = self._now()
+        task_ref = self._db.collection(TASKS).document(task.id)
+        lease_ref = self._db.collection(LEASES).document(lease.lease_id)
+        attempt_ref = self._db.collection(ATTEMPTS).document(lease.attempt_id)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> GuardedWrite:
+            # Every read before any write: Firestore refuses a read after a
+            # write inside one transaction.
+            task_snap = _snapshot(txn.get(task_ref))
+            lease_snap = _snapshot(txn.get(lease_ref))
+            attempt_snap = _snapshot(txn.get(attempt_ref))
+            stored = (task_snap.to_dict() or {}) if task_snap.exists else None
+            found = stored.get("state") if stored is not None else None
+            reason = _lease_refusal(stored, lease)
+            if reason is None:
+                dispatched: dict[str, Any] = {
+                    "state": TaskState.DISPATCHED.value,
+                    "updated_at": now,
+                }
+                if stored and stored.get("platform_refusals"):
+                    # The platform took this one: the PLATFORM_REFUSED count is
+                    # of CONSECUTIVE refusals (contract request 123), so a
+                    # later refusal starts the backoff from 30 s again.
+                    dispatched["platform_refusals"] = 0
+                txn.update(task_ref, dispatched)
+            held = (lease_snap.to_dict() or {}) if lease_snap.exists else None
+            if (
+                held is not None
+                and held.get("released_at") is None
+                and held.get("state") == TaskState.LEASED.value
+            ):
+                txn.update(lease_ref, {"state": TaskState.DISPATCHED.value})
+            if attempt_snap.exists:
+                txn.update(attempt_ref, {"execution_name": execution_name})
+            return GuardedWrite(
+                "mark_dispatched",
+                reason is None,
+                TaskState.LEASED.value,
+                found,
+                reason,
+                TaskState.DISPATCHED.value if reason is None else None,
+            )
+
+        outcome = _apply(transaction)
+        if outcome.applied:
+            self.append_event(
+                task,
+                EventType.DISPATCHED,
+                {"execution_name": execution_name, "backend": backend},
+                attempt_id=lease.attempt_id,
+                lease_id=lease.lease_id,
+                generation=lease.generation,
+            )
+        elif outcome.reason == STATE_CHANGED and outcome.found in _WORKER_OWNED:
+            # The ordinary race, and a benign one now that it is not overwritten.
+            self._log_skip(
+                outcome,
+                task,
+                lease=lease,
+                consequence=(
+                    f"its worker got there first; execution {execution_name} is recorded "
+                    "on the attempt and the task is left to the worker"
+                ),
+            )
+        else:
+            self._log_skip(
+                outcome,
+                task,
+                lease=lease,
+                level=logging.WARNING,
+                consequence=(
+                    f"execution {execution_name} was started for an attempt that is no "
+                    "longer current; the worker's fencing check stops it unless it has "
+                    "already finished"
+                ),
+            )
+        return outcome
+
+    def return_to_ready_after_failed_dispatch(
+        self,
+        task: Task,
+        lease: Lease,
+        error_code: str,
+        *,
+        correlation_id: str | None = None,
+        retry_delay_seconds: int = 30,
+        platform_refusal: bool = False,
+    ) -> GuardedWrite:
+        """Dispatch failed after the lease was taken: give the capacity back.
+
+        `platform_refusal` is True when the PLATFORM refused the dispatch -- an
+        admission policy or webhook, or the namespace's Job quota
+        (`dispatch.PLATFORM_REFUSAL_CODES`). Then a task found LEASED on this
+        lease is PARKED/`PLATFORM_REFUSED` instead of READY, in the same
+        transaction and under the same guards, with the lease released: its
+        `attempt_count` is put back to its value before the lease (a refusal
+        says nothing about the agent, so it spends no attempt),
+        `platform_refusals` goes up by one and `next_eligible_at` is
+        `platform_refusal_backoff(platform_refusals)` away. It is NEVER FAILED
+        for this cause (the owner, 2026-09-14: "never fail workflows when quotas are
+        reached. just pause them and resume them when new quota is
+        refreshed"); past `PLATFORM_REFUSED_MAX_PARKS` it stays parked, at
+        the longest backoff, and is logged as trouble. A requested cancel
+        still ends it CANCELLED. Contract request 123,
+        docs/design/dispatch-refusals.md.
+
+        The returned `GuardedWrite` is `applied` with `target == "FAILED"`
+        exactly when this write left the task FAILED: its last attempt, or a
+        reclaim finished here on the last attempt. The drain needs that answer:
+        a FAILED workflow step under `on_step_failure: fail_workflow` must stop
+        its siblings in the SAME drain, and a verdict the drain read before
+        this write would say the workflow was healthy.
+
+        Leaving the lease in place would hold a slot that no container will ever
+        occupy, and the reconciler would not reclaim it until the dispatch
+        deadline passed -- minutes of a pool sitting idle but full.
+
+        `next_eligible_at` is pushed out by a short backoff so the same drain
+        does not immediately re-lease the task and fail again: a backend that is
+        refusing one dispatch is usually about to refuse the next, and a tight
+        retry would burn the whole run's lease budget on one broken task.
+
+        `error_code` is a STABLE CODE, not the upstream exception text. This
+        field is returned to the tenant by `codec.task_to_api`, and a Cloud Run
+        or Kubernetes error echoes the resource it was given -- the tenant
+        service account email, the job name, the secret names in the manifest.
+        The correlation id (the attempt id) is what ties the tenant's copy to the
+        operator's log line, which has the full message.
+
+        THE TASK IS WRITTEN ONLY IF IT IS STILL WHAT ADMISSION LEFT: LEASED, on
+        this lease, at this generation. This used to read the task inside its
+        transaction and then write READY whatever it read (archived pull request 31's review; F-9).
+        A dispatch can take minutes to fail, and in that time:
+
+          * the reconciler fences the attempt past its dispatch deadline and a
+            second admission re-leases the task. READY with
+            `current_lease_id=None` over that orphaned the NEW lease -- its slot
+            held by nothing -- and the next drain leased the task again;
+          * the create call reports failure (a timeout) although the execution
+            exists, and its worker walks the task to RUNNING. READY over RUNNING
+            admits a second worker onto the same attempt;
+          * that worker finishes, or an operator cancels the task by hand.
+            READY over SUCCEEDED runs finished work again; over CANCELLED it
+            un-cancels it.
+
+        AND THE LEASE IS DECIDED IN THE SAME TRANSACTION, on the same read. It
+        used to be released first, unconditionally, so the RUNNING case above
+        also handed back a slot a live container occupied (CONTRACT invariants
+        1 and 3). Now, by what the transaction finds:
+
+          task found                         lease          task
+          ---------------------------------  -------------  ------------------
+          LEASED on this lease, this         released       READY / FAILED /
+            generation                                        CANCELLED
+          DISPATCHED/STARTING/RUNNING on     kept           left: its worker
+            this lease, this generation                       releases it
+          on this lease, generation fenced,  kept           left: the
+            lease unreleased                                  reconciler's
+                                                              reclaim is running
+                                                              or stopped short
+          on this lease, generation fenced,  (released      READY / FAILED /
+            lease released                     already)       CANCELLED
+          anything else: another lease,      released       left
+            none, terminal, gone
+
+        THE TWO FENCED ROWS ARE A RECLAIM THE RECONCILER HAS NOT FINISHED. Only
+        its `invalidate_generation` bumps a generation without also minting a
+        new lease, and only its `repair_task_state` then clears
+        `current_lease_id`, so a task still pointing at this lease at a newer
+        generation is between those two steps -- running, or stopped by an
+        unconfirmed kill or a dead instance. archived pull request 45's first version released
+        here and walked away, and a task in a concurrency state on a released
+        lease is invisible to every reconciler rule: its snapshot reads only
+        unreleased leases. Main recovered from the same interleaving by writing
+        READY blind.
+
+          * lease UNRELEASED: kept, and the task is left. It is the reconciler's
+            evidence -- `detect_stale_leases` reports a superseded, unreleased
+            lease with nothing running under it as ORPHAN_LEASE, and an
+            execution still running under it as OBSOLETE_GENERATION -- and the
+            reconciler releases it only once it has confirmed the kill. This
+            store cannot confirm anything: releasing here is what handed back
+            the slots of a container the reconciler had deliberately kept ("did
+            NOT release: termination was not confirmed").
+          * lease RELEASED: the reconciler got as far as its own release, which
+            it makes only after the kill is confirmed or when nothing was
+            running, and no rule of its will ever bring it back for step 4. So
+            this finishes step 4 with `repair_task_state`'s rule, from whatever
+            concurrency state the task is in.
+
+        `release_lease_in_transaction` is idempotent, so a lease the reconciler
+        already released is not decremented twice. The event is still written
+        after the commit, so an event write that fails cannot keep the pools.
+
+        THE ATTEMPT'S END IS WRITTEN IN THE SAME TRANSACTION (archived issue 630), whenever
+        this dispatch's attempt is over -- the task was returned off its lease
+        here, or a later generation superseded it with no reclaim pending --
+        with cause `dispatch_failed` and the stable code. A failed dispatch
+        started no container, so nothing else would write it. See
+        `_end_attempt` for what is never written.
+
+        `cancel_requested` IS part of the decision. The API flags a LEASED task
+        and leaves it to "the worker or the reconciler"; when the dispatch
+        fails there is no worker, and READY was a second hop through the next
+        drain -- one that recorded FAILED instead whenever the attempt was the
+        last. It ends CANCELLED here, as the reconciler's `repair_task_state`
+        ends the same case: the user's decision survives exhausted attempts.
+        """
+        now = self._now()
+        reference = correlation_id or lease.attempt_id
+        public = f"{error_code} (attempt {reference})"
+        release_reason = f"dispatch_failed: {error_code}"[:200]
+
+        # THE CAP IS ENFORCED HERE TOO, and its absence was a real outage.
+        # This path returns a task to READY after a dispatch failure, and it
+        # used to do so unconditionally -- so a task whose dispatch kept failing
+        # retried for ever. The backoff below spaces the attempts out and the
+        # docstring reasons about it carefully; nothing counted them.
+        # `task_d18d8d8b044d469cb43c` reached 83 attempts against a cap of 3 on
+        # 2026-09-23, re-dispatching every 30s for hours on
+        # gke_create_job_failed, and was stopped by hand.
+        #
+        # The rule lives in swarm_common so the reconciler's repair path and
+        # this one cannot disagree again -- they are separate images and cannot
+        # import each other, so a shared predicate is the only home that is not
+        # a restatement.
+        #
+        # AND THE COUNT IS READ FROM THE DOCUMENT, inside a transaction, never
+        # from `task`. `task` is the snapshot the drain loop read while the task
+        # was still READY; `acquire_lease_in_transaction` then incremented
+        # `attempt_count` in Firestore and nowhere else. Checking the cap
+        # against `task.attempt_count` was therefore always one attempt behind:
+        # the third failed dispatch of three read 2, returned the task to
+        # READY, and the next drain leased it a FOURTH time.
+        # `task_b568a623be8645eb87c6` ended FAILED at attempt_count 4 against a
+        # cap of 3 on 2026-09-24 exactly this way. The reconciler's repair path
+        # has always read the document (reconciler/store.py); this one now does
+        # too, and the unit tests that fed it the post-increment count -- and so
+        # agreed with the bug -- feed it what the loop actually holds.
+        task_ref = self._db.collection(TASKS).document(task.id)
+        lease_ref = self._db.collection(LEASES).document(lease.lease_id)
+        attempt_ref = self._db.collection(ATTEMPTS).document(lease.attempt_id)
+        transaction = self._db.transaction()
+
+        def _end_attempt(
+            txn: Any, attempt: dict[str, Any] | None, stored: dict[str, Any] | None,
+            *, returned: bool,
+        ) -> None:
+            """Record the end of THIS dispatch's attempt, in this transaction (archived issue 630).
+
+            `_admit_one` writes the attempt before it dispatches, and a failed
+            dispatch started no container, so nothing else would ever write its
+            `completed_at`: it stayed open for ever and was counted as running
+            by every figure read from attempts. Written only when the attempt
+            is over:
+
+              * this transaction returned the task off the lease (READY,
+                FAILED, CANCELLED, or a reclaim finished here); or
+              * the task is past this lease's generation and no reclaim is
+                pending -- the attempt was superseded while the dispatch hung.
+
+            Never a running worker's (the task advanced on this lease at this
+            generation: its worker writes its own end), never a pending
+            reclaim's (the reconciler's fence writes it), never an attempt
+            of another task or generation, and never one already ended
+            (invariant 5). No exit code is known; the cause heads `error`,
+            with the stable code and never the upstream text.
+            """
+            if attempt is None or attempt.get("completed_at") is not None:
+                return
+            if attempt.get("task_id") != task.id:
+                return
+            try:
+                generation = int(attempt.get("generation", -1))
+            except (ValueError, TypeError, OverflowError):
+                return
+            if generation != lease.generation:
+                return
+            if not returned:
+                if stored is None:
+                    return
+                try:
+                    current = int(stored.get("current_generation", 0))
+                except (ValueError, TypeError, OverflowError):
+                    return
+                if current <= lease.generation:
+                    return
+            txn.update(
+                attempt_ref,
+                {
+                    "completed_at": now,
+                    "exit_code": None,
+                    "error": f"{EndCause.DISPATCH_FAILED.value}: {error_code}"[:2000],
+                    "tenant_id": attempt.get("tenant_id") or task.tenant_id,
+                },
+            )
+
+        def _return_plan(
+            stored: dict[str, Any], found: str, reclaim: str | None
+        ) -> tuple[dict[str, Any], TaskState, int, int, bool, int | None]:
+            """The task's way off this lease: READY, or CANCELLED when a
+            cancel was requested, or FAILED when retries are spent. One rule for
+            the ordinary return and for finishing a reclaim, as
+            `repair_task_state` applies one rule to every state it repairs.
+
+            Decided before anything is written, and writes nothing: the
+            workflow's derived state over it is READ before the release's
+            writes (archived issue 2838), and Firestore refuses a read after a write."""
+            attempt_count = int(stored.get("attempt_count", 0))
+            max_attempts = int(stored.get("max_attempts", task.max_attempts))
+            # A platform refusal parks only from LEASED on this lease at this
+            # generation: the one state the refused create can have left the
+            # task in. A reclaim finished here takes the ordinary return: the
+            # reconciler's fence, not the refusal, decided that attempt.
+            parks = (
+                platform_refusal
+                and reclaim is None
+                and found == TaskState.LEASED.value
+                and not stored.get("cancel_requested")
+            )
+            refusals: int | None = None
+            if parks:
+                # The attempt admission counted is given back: the refused
+                # create started nothing, and counting it is how the merge
+                # steps of 2026-10-20 used 10 of 10 without running once.
+                attempt_count = max(0, attempt_count - 1)
+                refusals = int(stored.get("platform_refusals") or 0) + 1
+            exhausted = retries_exhausted(attempt_count, max_attempts)
+            if stored.get("cancel_requested"):
+                target = TaskState.CANCELLED
+            elif parks:
+                target = TaskState.PARKED
+            elif exhausted:
+                target = TaskState.FAILED
+            else:
+                target = TaskState.READY
+            assert_transition(TaskState(found), target)
+            payload: dict[str, Any] = {
+                "state": target.value,
+                "current_lease_id": None,
+                "last_error": (
+                    f"cancelled on request; {public}" if target is TaskState.CANCELLED else public
+                )[:1000],
+                "updated_at": now,
+            }
+            if target.value in _TERMINAL:
+                # A terminal task needs a completion time; it will never be
+                # eligible again, so a next_eligible_at would be a lie about a
+                # retry that is not coming. CLEARED, not merely omitted: every
+                # task that reaches its last attempt through this path carries
+                # the retry time the PREVIOUS failure wrote, and an update that
+                # leaves the field alone leaves that promise on a FAILED task.
+                payload["completed_at"] = now
+                payload["next_eligible_at"] = None
+                # Why it ended, typed (contract request 23): a requested cancel
+                # or the dispatch that kept failing, never the text's words.
+                # A child its parent's cascade flagged ends CHILD_CASCADE
+                # (contract request 41), with the worker's rule.
+                payload["end_cause"] = (
+                    cancel_end_cause(stored.get("metadata"))
+                    if target is TaskState.CANCELLED
+                    else EndCause.DISPATCH_FAILED
+                ).value
+            elif target is TaskState.PARKED:
+                assert refusals is not None
+                payload["park_reason"] = ParkReason.PLATFORM_REFUSED.value
+                payload["attempt_count"] = attempt_count
+                payload["platform_refusals"] = refusals
+                payload["next_eligible_at"] = now + platform_refusal_backoff(refusals)
+            else:
+                payload["next_eligible_at"] = now + timedelta(
+                    seconds=max(0, retry_delay_seconds)
+                )
+            return payload, target, attempt_count, max_attempts, exhausted, refusals
+
+        def _workflow_of(
+            txn: Any, stored: dict[str, Any], payload: dict[str, Any]
+        ) -> tuple[Any, dict[str, Any]] | None:
+            return self._workflow_write(txn, task.id, task.tenant_id, {**stored, **payload}, now)
+
+        def _returned(
+            txn: Any,
+            stored: dict[str, Any],
+            found: str,
+            reclaim: str | None,
+            plan: tuple[dict[str, Any], TaskState, int, int, bool, int | None],
+            workflow: tuple[Any, dict[str, Any]] | None,
+            *,
+            released: bool,
+        ) -> _Settled:
+            """Write the planned return, and the workflow's derived state with it."""
+            payload, target, attempt_count, max_attempts, exhausted, refusals = plan
+            txn.update(task_ref, payload)
+            if workflow is not None:
+                txn.update(*workflow)
+            return _Settled(
+                GuardedWrite(
+                    "return_to_ready", True, TaskState.LEASED.value, found, None, target.value
+                ),
+                released,
+                attempt_count,
+                max_attempts,
+                exhausted,
+                reclaim,
+                int(stored.get("current_generation", 0)),
+                refusals,
+            )
+
+        @firestore.transactional
+        def _settle(txn: Any) -> _Settled:
+            # Every read before any write: the task, then its lease, then --
+            # inside `release_lease_in_transaction` -- the lease again and its
+            # pools. Firestore refuses a read after a write in one transaction.
+            snap = _snapshot(txn.get(task_ref))
+            lease_snap = _snapshot(txn.get(lease_ref))
+            attempt_snap = _snapshot(txn.get(attempt_ref))
+            attempt = (attempt_snap.to_dict() or {}) if attempt_snap.exists else None
+            stored = (snap.to_dict() or {}) if snap.exists else None
+            found = stored.get("state") if stored is not None else None
+            refusal = _lease_refusal(stored, lease)
+            points_here = (
+                stored is not None
+                and (stored.get("current_lease_id") or None) == lease.lease_id
+            )
+
+            if (
+                stored is not None
+                and found in _HOLDS_CAPACITY
+                and refusal == LEASE_SUPERSEDED
+                and points_here
+            ):
+                # Still on this lease, so what superseded it is the GENERATION:
+                # the reconciler fenced this attempt and has not returned the
+                # task. See the docstring's two fenced rows.
+                held = (lease_snap.to_dict() or {}) if lease_snap.exists else None
+                if held is not None and held.get("released_at") is None:
+                    return _Settled(
+                        GuardedWrite(
+                            "return_to_ready", False, TaskState.LEASED.value, found, refusal
+                        ),
+                        False,
+                        reclaim=_RECLAIM_PENDING,
+                        task_generation=int(stored.get("current_generation", 0)),
+                    )
+                plan = _return_plan(stored, found, _RECLAIM_FINISHED)
+                workflow = _workflow_of(txn, stored, plan[0])
+                settled = _returned(txn, stored, found, _RECLAIM_FINISHED, plan, workflow,
+                                    released=False)
+                _end_attempt(txn, attempt, stored, returned=True)
+                return settled
+
+            worker_owns_it = refusal == STATE_CHANGED and found in _WORKER_OWNED and points_here
+            returns = refusal is None and stored is not None and found is not None
+            plan = _return_plan(stored, found, None) if returns else None
+            # Read before the release below writes (archived issue 2838).
+            workflow = _workflow_of(txn, stored, plan[0]) if plan is not None else None
+            released = False
+            if not worker_owns_it:
+                released = release_lease_in_transaction(
+                    txn, db=self._db, lease_id=lease.lease_id, reason=release_reason, now=now
+                )
+            if refusal is not None or stored is None or found is None:
+                if not worker_owns_it:
+                    _end_attempt(txn, attempt, stored, returned=False)
+                return _Settled(
+                    GuardedWrite("return_to_ready", False, TaskState.LEASED.value, found, refusal),
+                    released,
+                )
+            assert plan is not None
+            settled = _returned(txn, stored, found, None, plan, workflow, released=released)
+            _end_attempt(txn, attempt, stored, returned=True)
+            return settled
+
+        settled = _settle(transaction)
+        outcome = settled.outcome
+        failure = {
+            "reason": "dispatch_failed",
+            "error_code": error_code,
+            "correlation_id": reference,
+        }
+        if settled.reclaim == _RECLAIM_FINISHED:
+            # Not a lease_released event: the reconciler released it, and said
+            # so in this timeline when it did. What nothing has said yet is that
+            # the task came off the lease, which is what its own repair would
+            # have announced.
+            target = TaskState(outcome.target)
+            detail: dict[str, Any] = {
+                **failure,
+                "completed_reclaim": True,
+                "from_state": outcome.found,
+                "fenced_generation": lease.generation,
+                "task_generation": settled.task_generation,
+                "attempt_count": settled.attempt_count,
+                "max_attempts": settled.max_attempts,
+                "retries_exhausted": settled.exhausted,
+            }
+            if target is TaskState.CANCELLED:
+                detail["phase"] = "cancelled"
+            self.append_event(
+                task,
+                _EVENT_FOR_RETURN[target],
+                detail,
+                lease_id=lease.lease_id,
+                generation=lease.generation,
+            )
+            log.warning(
+                "finished a reclaim for task=%s lease=%s generation=%s: the task is at "
+                "generation %s on this lease, which the reconciler released without "
+                "returning the task; %s -> %s",
+                task.id,
+                lease.lease_id,
+                lease.generation,
+                settled.task_generation,
+                outcome.found,
+                outcome.target,
+            )
+            return outcome
+
+        if outcome.applied:
+            self.append_event(
+                task,
+                EventType.LEASE_RELEASED,
+                {
+                    **failure,
+                    # The numbers the cap was decided on, so a task that went
+                    # FAILED here says why in its own timeline.
+                    "attempt_count": settled.attempt_count,
+                    "max_attempts": settled.max_attempts,
+                    "retries_exhausted": settled.exhausted,
+                    "to_state": outcome.target,
+                },
+                lease_id=lease.lease_id,
+                generation=lease.generation,
+            )
+            if outcome.target == TaskState.PARKED.value:
+                refusals = settled.platform_refusals or 0
+                self.append_event(
+                    task,
+                    EventType.PARKED,
+                    {
+                        **failure,
+                        "park_reason": ParkReason.PLATFORM_REFUSED.value,
+                        "platform_refusals": refusals,
+                        "retry_in_seconds": int(
+                            platform_refusal_backoff(refusals).total_seconds()
+                        ),
+                        "attempt_spent": False,
+                        "from_state": TaskState.LEASED.value,
+                    },
+                    lease_id=lease.lease_id,
+                    generation=lease.generation,
+                )
+            if outcome.target == TaskState.CANCELLED.value:
+                # The API's flag-only cancel wrote `cancelled` with
+                # phase=cancel_requested; this is the one that says it happened.
+                self.append_event(
+                    task,
+                    EventType.CANCELLED,
+                    {**failure, "phase": "cancelled", "from_state": TaskState.LEASED.value},
+                    lease_id=lease.lease_id,
+                    generation=lease.generation,
+                )
+            return outcome
+
+        if settled.released and outcome.reason != TASK_MISSING:
+            # The capacity really came back here, so the task's own timeline
+            # says so -- and that its state was left alone.
+            self.append_event(
+                task,
+                EventType.LEASE_RELEASED,
+                {
+                    **failure,
+                    "task_state_written": False,
+                    "skip_reason": outcome.reason,
+                    "found_state": outcome.found,
+                },
+                lease_id=lease.lease_id,
+                generation=lease.generation,
+            )
+        if settled.reclaim == _RECLAIM_PENDING:
+            consequence = (
+                f"the reconciler fenced this attempt (the task is at generation "
+                f"{settled.task_generation} on this lease) and has not released it; the "
+                "lease and the task are left for the reconciler, which releases only once "
+                "it has confirmed nothing runs under the lease"
+            )
+        elif settled.released:
+            consequence = "its lease was released (it backed nothing); the task was left alone"
+        elif outcome.found in _WORKER_OWNED:
+            consequence = (
+                "the task advanced on this lease, so its execution exists and a worker "
+                "holds it; the lease is left for that worker to release"
+            )
+        else:
+            consequence = "its lease had already been released; the task was left alone"
+        self._log_skip(outcome, task, lease=lease, level=logging.WARNING, consequence=consequence)
+        return outcome
+
+    def cancel(
+        self,
+        task: Task,
+        reason: str,
+        detail: dict[str, Any] | None = None,
+        *,
+        end_cause: EndCause | None,
+    ) -> GuardedWrite:
+        """Terminate a task that can never become runnable.
+
+        `end_cause` is REQUIRED, not defaulted: every caller knows why it is
+        cancelling -- a requested cancel, or a parent that failed or was
+        cancelled -- and a default would let a new caller write a cause it did
+        not decide (contract request 23). It is None, passed explicitly, for
+        the one cascade the scheduler cannot name: a parent cancelled before
+        causes were recorded, with no flag (`loop._parent_cause`). The field is
+        written as null then, so the outcome ledger splits it by the chain.
+
+        Only called for tasks that hold NO capacity, so there is no lease to
+        release: a task holding a lease is cancelled through the worker or the
+        reconciler, which are the only components that know whether a container
+        is still running.
+
+        Which is exactly why it is guarded. The drain decided from a READY or
+        PARKED snapshot; if another scheduler admitted the task since, CANCELLED
+        over LEASED is a terminal task holding a live lease -- the case the
+        paragraph above rules out -- and if the user cancelled it since, this
+        rewrote why it ended and recorded a second cancellation.
+        """
+        assert_transition(task.state, TaskState.CANCELLED)
+        now = self._now()
+        outcome = self._write_if_unchanged(
+            "cancel",
+            task,
+            {
+                "state": TaskState.CANCELLED.value,
+                "park_reason": None,
+                "blocked_by": [],
+                "completed_at": now,
+                "last_error": reason[:1000],
+                "end_cause": end_cause.value if end_cause is not None else None,
+                "updated_at": now,
+            },
+        )
+        if outcome.applied:
+            self.append_event(task, EventType.CANCELLED, {"reason": reason, **(detail or {})})
+        return outcome
+
+    def cancel_if_not_started(
+        self,
+        task: Task,
+        reason: str,
+        detail: dict[str, Any] | None = None,
+        *,
+        end_cause: EndCause = EndCause.WORKFLOW_SWEEP,
+    ) -> GuardedWrite:
+        """Cancel a step only if it STILL has not started, in whatever pending state it is now.
+
+        `applied` True means it was cancelled. False means it had started, had
+        finished or was gone when the transaction read it: nothing is written,
+        the skip is logged like every other guarded write, and the loop counts
+        it in `stale_writes` (`write="cancel_if_not_started"`).
+
+        WHY NOT `cancel`. `cancel` is guarded too (archived pull request 45), but on the EXACT
+        state the caller read. That is the right precondition for a decision
+        about one task: "this READY task was cancel-requested", "this PARKED
+        task's parent failed". The workflow sweep's decision is about the
+        WORKFLOW -- every step that has not started goes -- so a step the sweep
+        read READY that a concurrent drain has since parked (a missing key, a
+        quota park) is still a step to cancel. `cancel` would skip it as
+        `state_changed` and leave it to a later touch point, which for a
+        MANUAL_PAUSE park may never come. So the precondition here is "still in
+        a state that holds no capacity", not "still in the state I read".
+
+        What that precondition rules out is the race the sweep sits beside. The
+        sweep cancels READY steps, and a concurrent drain can lease one between
+        the sweep's query and its write. CANCELLED over a LEASED task is wrong
+        in two ways. First, the lease stays counted in every pool it reserved
+        until the reconciler's `detect_orphan_leases` finds a terminal task
+        holding it. Second, the drain that took the lease goes on to dispatch,
+        so a step of a failed workflow starts after all.
+
+        So the state is re-read INSIDE the transaction. The write happens only
+        while the step is still SUBMITTED, QUEUED, READY or PARKED, which are
+        exactly the states that hold no capacity (invariant 1).
+        `acquire_lease_in_transaction` reads the same document in its own
+        transaction and refuses anything that is not READY, so whichever commits
+        second sees the first. The two can never both win.
+        """
+        task_ref = self._db.collection(TASKS).document(task.id)
+        now = self._now()
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _cancel(txn: Any) -> GuardedWrite:
+            snap = _snapshot(txn.get(task_ref))
+            stored = (snap.to_dict() or {}) if snap.exists else None
+            found = stored.get("state") if stored is not None else None
+            if stored is None:
+                return GuardedWrite(
+                    "cancel_if_not_started", False, _NOT_STARTED, None, TASK_MISSING
+                )
+            if found not in _NOT_STARTED_VALUES:
+                return GuardedWrite(
+                    "cancel_if_not_started", False, _NOT_STARTED, found, STATE_CHANGED
+                )
+            assert_transition(TaskState(found), TaskState.CANCELLED)
+            patch = {
+                "state": TaskState.CANCELLED.value,
+                "park_reason": None,
+                "blocked_by": [],
+                "next_eligible_at": None,
+                "completed_at": now,
+                "last_error": reason[:1000],
+                "end_cause": end_cause.value,
+                "updated_at": now,
+            }
+            workflow = self._workflow_write(txn, task.id, task.tenant_id, {**stored, **patch}, now)
+            txn.update(task_ref, patch)
+            if workflow is not None:
+                txn.update(*workflow)
+            return GuardedWrite(
+                "cancel_if_not_started",
+                True,
+                _NOT_STARTED,
+                found,
+                None,
+                TaskState.CANCELLED.value,
+            )
+
+        outcome = _cancel(transaction)
+        if not outcome.applied:
+            self._log_skip(
+                outcome,
+                task,
+                consequence="it started or finished after the sweep read it; left alone",
+            )
+            return outcome
+        self.append_event(
+            task,
+            EventType.CANCELLED,
+            {"reason": reason, "from_state": outcome.found, **(detail or {})},
+        )
+        return outcome
+
+    def append_event(
+        self,
+        task: Task,
+        type: EventType,
+        detail: dict[str, Any] | None = None,
+        *,
+        attempt_id: str | None = None,
+        lease_id: str | None = None,
+        generation: int | None = None,
+    ) -> TaskEvent:
+        event = TaskEvent(
+            event_id=new_id("ev"),
+            task_id=task.id,
+            tenant_id=task.tenant_id,
+            type=type,
+            at=self._now(),
+            attempt_id=attempt_id,
+            lease_id=lease_id,
+            generation=generation,
+            detail=dict(detail or {}),
+        )
+        payload = {
+            "event_id": event.event_id,
+            "task_id": event.task_id,
+            "tenant_id": event.tenant_id,
+            "type": event.type.value,
+            "at": event.at,
+            "attempt_id": event.attempt_id,
+            "lease_id": event.lease_id,
+            "generation": event.generation,
+            "detail": event.detail,
+        }
+        (
+            self._db.collection(TASKS)
+            .document(task.id)
+            .collection(EVENTS)
+            .document(event.event_id)
+            .set(payload)
+        )
+        return event
+
+    def create_attempt(self, task: Task, lease: Lease, backend: str) -> Attempt:
+        attempt = Attempt(
+            attempt_id=lease.attempt_id,
+            task_id=task.id,
+            tenant_id=task.tenant_id,
+            generation=lease.generation,
+            lease_id=lease.lease_id,
+            backend=backend,
+            created_at=self._now(),
+        )
+        self._db.collection(ATTEMPTS).document(attempt.attempt_id).set(
+            {
+                "attempt_id": attempt.attempt_id,
+                "task_id": attempt.task_id,
+                "tenant_id": attempt.tenant_id,
+                "generation": attempt.generation,
+                "lease_id": attempt.lease_id,
+                "backend": attempt.backend,
+                "created_at": attempt.created_at,
+                "execution_name": None,
+                "started_at": None,
+                "completed_at": None,
+                "exit_code": None,
+                "error": None,
+                "checkpoints": [],
+                "oom_near_miss": False,
+            }
+        )
+        return attempt
+
+    def pin_attempt_size(self, attempt_id: str, fields: dict[str, Any]) -> None:
+        """Record on the attempt the size admission charged and the pod is
+        rendered at (`sizes.Sized.attempt_fields`, contract request 111).
+
+        Merged onto the document `create_attempt` has just written, before
+        the dispatch, so the record exists before any worker can read it.
+        """
+        self._db.collection(ATTEMPTS).document(attempt_id).set(dict(fields), merge=True)
+
+    # -- admission --------------------------------------------------------
+
+    def acquire_lease(
+        self,
+        task: Task,
+        *,
+        units: int,
+        backend: str,
+        config: AdmissionConfig,
+    ) -> Lease:
+        """Admit one task. Raises AdmissionDenied if it cannot be admitted.
+
+        The frozen `acquire_lease_in_transaction` is called INSIDE
+        `firestore.transactional`, which is what makes the last-slot race
+        resolve to exactly one winner: if another scheduler mutated a pool this
+        function read, Firestore aborts and re-runs the whole body against fresh
+        reads rather than committing a stale increment.
+
+        THOSE RE-RUNS ARE THE CONTENTION SIGNAL, so they are counted (S32,
+        spec §8 row 6). Every admission logs one record with
+        `admission_outcome` (leased / denied / aborted / error),
+        `admission_runs` (times the body ran), `admission_reruns` (runs - 1)
+        and `admission_latency_ms` (the whole transactional call). A scheduler
+        fighting over `global` otherwise looks like an idle one, only slower.
+        `scripts/bench-contention.sh` reads these same fields, so the bench
+        measures what production logs rather than a parallel count.
+
+        Levels: a lease, a re-run or a non-denial failure is INFO or above; a
+        clean first-run denial is DEBUG, because a full pool denies every
+        READY task on every pass and that is not contention. The same
+        three numbers go to `admission_observer` when one is set: `Scheduler`
+        sets it to `SchedulerMetrics.observe_admission`, which feeds
+        `swarm_scheduler_admission_seconds{outcome}` and
+        `swarm_scheduler_admission_reruns_total{outcome}`.
+        """
+        transaction = self._db.transaction()
+        runs = 0
+
+        @firestore.transactional
+        def _acquire(txn: Any) -> Lease:
+            nonlocal runs
+            runs += 1
+            # READY -> LEASED moves the workflow's derived state (to RUNNING),
+            # so it is written in this transaction (archived issue 2838). Read FIRST: the
+            # frozen admission reads and then writes, and Firestore refuses a
+            # read after a write. Applied only once a lease was granted, so a
+            # denial writes neither; a sibling step moving meanwhile aborts
+            # the commit and this re-derives.
+            workflow = (
+                self._workflow_write(
+                    txn, task.id, task.tenant_id,
+                    {"workflow_id": task.workflow_id, "tenant_id": task.tenant_id,
+                     "state": TaskState.LEASED.value},
+                    self._now(),
+                )
+                if task.workflow_id else None
+            )
+            lease = acquire_lease_in_transaction(
+                txn,
+                db=self._db,
+                task=task,
+                units=units,
+                backend=backend,
+                config=config,
+            )
+            if workflow is not None:
+                txn.update(*workflow)
+            return lease
+
+        started = time.monotonic()
+        outcome = "error"
+        lease_id: str | None = None
+        try:
+            lease = _acquire(transaction)
+            outcome = "leased"
+            lease_id = lease.lease_id
+            return lease
+        except AdmissionDenied:
+            outcome = "denied"
+            raise
+        except Aborted:
+            # `firestore.transactional` retries an Aborted only from commit. An
+            # ABORTED returned by a transactional READ (a contended pool doc)
+            # propagates raw, and that is contention at its worst, not an error.
+            outcome = "aborted"
+            raise
+        except ValueError as exc:
+            # `firestore.transactional` wraps the last Aborted in a ValueError
+            # once `max_attempts` runs have all been aborted: saturation.
+            if isinstance(exc.__cause__, Aborted):
+                outcome = "aborted"
+            raise
+        finally:
+            latency_ms = (time.monotonic() - started) * 1000.0
+            if self.admission_observer is not None:
+                try:
+                    self.admission_observer(outcome, runs, latency_ms)
+                except Exception:  # noqa: BLE001 -- a metric never decides admission
+                    log.exception("admission observer failed")
+            if outcome == "aborted":
+                level = logging.WARNING
+            elif outcome == "denied" and runs <= 1:
+                level = logging.DEBUG
+            else:
+                level = logging.INFO
+            log.log(
+                level,
+                "admission %s task=%s runs=%d latency_ms=%.1f",
+                outcome,
+                task.id,
+                runs,
+                latency_ms,
+                extra={
+                    "admission_outcome": outcome,
+                    "admission_runs": runs,
+                    "admission_reruns": max(0, runs - 1),
+                    "admission_latency_ms": latency_ms,
+                    "task_id": task.id,
+                    "tenant_id": task.tenant_id,
+                    "lease_id": lease_id,
+                    "backend": backend,
+                },
+            )
+
+    def acquire_leases(
+        self,
+        requests: Sequence[AdmissionRequest],
+        *,
+        config: AdmissionConfig,
+    ) -> list[Lease | AdmissionDenied]:
+        """Admit a batch of tasks in ONE transaction. One outcome per request, in order.
+
+        WHY (the owner, 2026-11-06, after the load analysis). `acquire_lease` is one
+        transaction per task, and every one of them writes `pools/global` and
+        the other shared pools: 52 writes in the busiest minute against
+        Firestore's sustained ceiling of about one write per second per
+        document, and ready-to-leased p99 of 476 s overall, 1,680 s for browser
+        and 2,843 s for large, most of it spent losing that document to the
+        next transaction. Here every pool document the batch needs is READ
+        ONCE and WRITTEN ONCE, with the sum of what the admitted tasks take.
+
+        EACH TASK IS STILL ALL-OR-NOTHING (invariant 2). The requests are
+        judged in the order given -- the drain's priority and fairness order
+        -- each against the pools as the tasks before it in this batch left
+        them, by the frozen `evaluate_capacity`. A task that fits takes its
+        share in EVERY pool it needs; one that does not takes nothing, stays
+        READY, and gets its `AdmissionDenied`; the rest of the batch still
+        admits. Firestore commits the batch whole or not at all, so no task
+        is ever half-reserved: an abort writes nothing for any of them.
+
+        THE ADMISSION IS THE FROZEN `acquire_leases_in_transaction` (contract
+        request 140, the owner's pick on PR 3493), which shares its per-task
+        checks, lease document and task write with `acquire_lease_in_transaction`
+        rather than this store restating them: the task is re-read and must be
+        READY with no cancel requested; the fencing generation is
+        `current_generation + 1` (invariant 5). Concurrency still counts from
+        the LEASED task (invariant 3). A two-scheduler race is the same race as
+        before: each pool it read is in the read set, so a commit by anyone
+        else aborts this one and Firestore re-runs it against fresh reads.
+        This store adds only the workflows' derived state, read through the
+        frozen function's `before_writes` hook.
+
+        A request repeated in one batch is admitted once; its repeat is denied
+        `not_ready`, as it would be by the next transaction.
+
+        One log record and one `admission_observer` call per TRANSACTION,
+        with `admission_batch` (requests) and `admission_leased` beside the
+        fields `acquire_lease` logs: the contention signal is the transaction's
+        re-runs, whatever it admits.
+        """
+        if not requests:
+            return []
+        transaction = self._db.transaction()
+        runs = 0
+
+        @firestore.transactional
+        def _acquire(txn: Any) -> list[Lease | AdmissionDenied]:
+            nonlocal runs
+            runs += 1
+            now = self._now()
+            workflows: list[Any] = []
+
+            def _read_workflows(outcomes: list[Lease | AdmissionDenied]) -> None:
+                # READY -> LEASED moves each workflow's derived state (archived issue 2838),
+                # as `acquire_lease` writes it; one write per workflow, derived
+                # with every step of it this batch admits. Read here, after
+                # the frozen admission's reads and before its first write:
+                # Firestore refuses a read after a write.
+                changed: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+                for request, outcome in zip(requests, outcomes):
+                    task = request.task
+                    if isinstance(outcome, Lease) and task.workflow_id:
+                        changed.setdefault((task.tenant_id, task.workflow_id), {})[task.id] = {
+                            "workflow_id": task.workflow_id, "tenant_id": task.tenant_id,
+                            "state": TaskState.LEASED.value,
+                        }
+                workflows.extend(
+                    derived_state_write(
+                        txn, self._db, tenant_id=tenant_id, workflow_id=workflow_id,
+                        now=now, changed=docs,
+                    )
+                    for (tenant_id, workflow_id), docs in changed.items()
+                )
+
+            outcomes = acquire_leases_in_transaction(
+                txn,
+                db=self._db,
+                requests=requests,
+                config=config,
+                now=now,
+                before_writes=_read_workflows,
+            )
+            for workflow in workflows:
+                if workflow is not None:
+                    txn.update(*workflow)
+            return outcomes
+
+        started = time.monotonic()
+        outcome = "error"
+        leased = 0
+        try:
+            outcomes = _acquire(transaction)
+            leased = sum(1 for o in outcomes if isinstance(o, Lease))
+            outcome = "leased" if leased else "denied"
+            return outcomes
+        except Aborted:
+            outcome = "aborted"
+            raise
+        except ValueError as exc:
+            if isinstance(exc.__cause__, Aborted):
+                outcome = "aborted"
+            raise
+        finally:
+            latency_ms = (time.monotonic() - started) * 1000.0
+            if self.admission_observer is not None:
+                try:
+                    self.admission_observer(outcome, runs, latency_ms)
+                except Exception:  # noqa: BLE001 -- a metric never decides admission
+                    log.exception("admission observer failed")
+            if outcome == "aborted":
+                level = logging.WARNING
+            elif outcome == "denied" and runs <= 1:
+                level = logging.DEBUG
+            else:
+                level = logging.INFO
+            log.log(
+                level,
+                "admission batch %s requests=%d leased=%d runs=%d latency_ms=%.1f",
+                outcome,
+                len(requests),
+                leased,
+                runs,
+                latency_ms,
+                extra={
+                    "admission_outcome": outcome,
+                    "admission_runs": runs,
+                    "admission_reruns": max(0, runs - 1),
+                    "admission_latency_ms": latency_ms,
+                    "admission_batch": len(requests),
+                    "admission_leased": leased,
+                    "task_ids": [r.task.id for r in requests],
+                },
+            )
+
+    def release_lease(self, lease_id: str, *, reason: str) -> bool:
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _release(txn: Any) -> bool:
+            return release_lease_in_transaction(
+                txn, db=self._db, lease_id=lease_id, reason=reason
+            )
+
+        return _release(transaction)
+
+    # -- misc -------------------------------------------------------------
+
+    def iter_chunks(self, items: Iterable[Any], size: int) -> Iterable[list[Any]]:
+        chunk: list[Any] = []
+        for item in items:
+            chunk.append(item)
+            if len(chunk) >= size:
+                yield chunk
+                chunk = []
+        if chunk:
+            yield chunk

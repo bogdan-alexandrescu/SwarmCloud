@@ -1,0 +1,145 @@
+# Checked-in build config for agent-runtime-browser.
+#
+# It exists because the generated one cannot work. `scripts/build-images.sh`
+# generates a config that passes only `--build-arg GIT_SHA` and
+# `--build-arg BUILD_TIME`, so the Dockerfile fell through to its default
+# `ARG BASE_IMAGE=agent-runtime-base:latest`. There is no local
+# `agent-runtime-base:latest` in a Cloud Build worker, so `FROM ${BASE_IMAGE}`
+# failed with a manifest-unknown pull error and the browser image never built --
+# and `browser` is the ONLY profile on the GKE path, so that failure takes out
+# the entire Autopilot path.
+#
+# `find_recipe()` prefers `images/<target>/cloudbuild.yaml` over the Dockerfile,
+# so this file is what runs. `build-images.sh` passes `_IMAGE`, `_TAG` and
+# `_TARGET` -- not `_DOCKERFILE`, which this file defaults below. The base image
+# ref is DERIVED from `_IMAGE` rather than restated, so it cannot drift from
+# whatever registry and project the caller is building into.
+#
+# BASE_IMAGE is passed BY DIGEST, which is what the Dockerfile's header claims.
+# The digest is read back from the image that was just pulled, so it is the
+# digest that actually exists in the registry rather than one a previous build
+# reported.
+#
+# THE BASE IS THE CODEX-LESS ONE (BROWSER-NO-CODEX, owner decision
+# 2026-10-13; docs/browser-startup-speed.md §2.3). `agent-runtime-base-nocodex`
+# is images/agent-runtime-base/Dockerfile built a second time, by
+# build-images.sh, with `--build-arg INSTALL_CODEX=0`: codex is 129.7 MB of the
+# base's npm layer, `claude-code-browser` never runs it, and this image could
+# not drop it -- deleting an inherited layer's files only adds a whiteout.
+# Every other image built on the base (agent-runtime-indexer) keeps codex.
+#
+# ORDERING: this build pulls `agent-runtime-base-nocodex:${_TAG}`, so that base
+# must already be pushed. `build-images.sh` submits builds CONCURRENTLY, so list
+# order no longer guarantees that; its `build_after()` holds this image back
+# until agent-runtime-base-nocodex has FINISHED building in the same run, and
+# does not submit it at all if that base failed. A unit test reads this file for the
+# base it pulls and fails if `build_after()` does not say so.
+# A targeted `scripts/build-images.sh agent-runtime-browser` at a tag whose base
+# was never built fails in step 1, loudly, naming the ref it could not find --
+# which is the failure worth having, rather than a `FROM` error deep in a layer.
+#
+# `$$` is a literal dollar for the shell; `${_VAR}` is a Cloud Build
+# substitution. Mixing them up is the classic way a config like this silently
+# builds the wrong thing, so every shell variable below is spelled `$$name`.
+timeout: 3600s
+options:
+  machineType: E2_HIGHCPU_8
+  # CLOUD_LOGGING_ONLY keeps builds working when the legacy Cloud Build bucket
+  # is absent and when a user-specified build service account is in use.
+  logging: CLOUD_LOGGING_ONLY
+  # build-images.sh passes `_TARGET` to every config it submits, and this one
+  # has no use for it. Loose substitution keeps an unreferenced key from failing
+  # the build.
+  substitution_option: ALLOW_LOOSE
+
+substitutions:
+  _IMAGE: ""
+  _TAG: ""
+  _DOCKERFILE: images/agent-runtime-browser/Dockerfile
+
+steps:
+  # 0. Stage the tool mirror (DEVB-INSTALL, part of archived issue 1030). The Dockerfile
+  #    reads the pinned dev-browser binary from build/tool-mirror, as
+  #    agent-runtime-base reads its release files (docs/runbooks/build-mirror.md).
+  #    A generated config gets this step from scripts/lib/build-mirror.sh's
+  #    tool_mirror_step_yaml; a checked-in one is submitted as it is, so the
+  #    step is here, and it reads the SAME manifest at build time rather than
+  #    restating a row of it. Every row is copied -- a few hundred MB inside
+  #    the region -- so a row added for this image cannot be missed by a
+  #    filter. The bucket is common.sh's default name for this project; the
+  #    Dockerfile checks the dev-browser file against its sha256 again, so a
+  #    wrong object fails the build either way. A missing object fails here,
+  #    named, and the fix is `scripts/refresh-build-mirror.sh`.
+  - id: tool-mirror
+    name: gcr.io/cloud-builders/gcloud
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        bucket='swarm-build-mirror-${PROJECT_ID}'
+        manifest=images/agent-runtime-base/tool-mirror.sha256
+        rm -rf build/tool-mirror
+        while read -r sha obj; do
+          [ -n "$${obj}" ] || continue
+          mkdir -p "build/tool-mirror/$$(dirname "$${obj}")"
+          gcloud storage cp "gs://$${bucket}/$${obj}" "build/tool-mirror/$${obj}" || {
+            echo "build mirror object gs://$${bucket}/$${obj} is missing or unreadable: run scripts/refresh-build-mirror.sh (docs/runbooks/build-mirror.md)" >&2
+            exit 1
+          }
+        done < "$${manifest}"
+        (cd build/tool-mirror && sha256sum -c --strict -) < "$${manifest}" || {
+          echo "a build mirror object does not match its sha256 in $${manifest}: run scripts/refresh-build-mirror.sh --force" >&2
+          exit 1
+        }
+
+  # 1. Resolve the base image to a digest. Pulling first is deliberate: it turns
+  #    "the base for this tag was never built" into a clear failure here rather
+  #    than into a confusing `FROM` error inside the build.
+  - id: resolve-base
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -eu
+      - -c
+      - |
+        image='${_IMAGE}'
+        tag='${_TAG}'
+        registry="$${image%/*}"
+        base="$${registry}/agent-runtime-base-nocodex:$${tag}"
+        echo "resolving base image $${base}"
+        docker pull "$${base}"
+        digest="$$(docker image inspect --format '{{index .RepoDigests 0}}' "$${base}")"
+        echo "base resolved to $${digest}"
+        printf '%s' "$${digest}" > /workspace/base-image-ref
+
+  # 2. Build the browser image on that exact digest.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    # BuildKit is REQUIRED, not a preference: the Dockerfile declares
+    # `# syntax=docker/dockerfile:1.7` and uses a heredoc for the Chromium
+    # smoke check. The legacy builder ignores the syntax directive and parses
+    # the heredoc's Python as Dockerfile instructions, so
+    # `from playwright.sync_api import ...` fails as
+    # "FROM requires either one or three arguments".
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - -eu
+      - -c
+      - |
+        base="$$(cat /workspace/base-image-ref)"
+        # The project's mirrors, which build-images.sh passes as substitutions
+        # (recipe_mirror_subs; the Dockerfile names no project, the Day One image lane).
+        docker build \
+          --platform linux/amd64 \
+          -f '${_DOCKERFILE}' \
+          -t '${_IMAGE}:${_TAG}' \
+          --build-arg "BASE_IMAGE=$${base}" \
+          --build-arg "GIT_SHA=${_TAG}" \
+          --build-arg "BUILDKIT_SYNTAX=${_BUILDKIT_SYNTAX}" \
+          .
+
+images:
+  - ${_IMAGE}:${_TAG}

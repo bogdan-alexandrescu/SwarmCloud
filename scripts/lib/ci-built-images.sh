@@ -1,0 +1,580 @@
+#!/usr/bin/env bash
+# The images CI already built for a commit: wait for that build if it is still
+# running, fetch the record of what it built, and say plainly when there is
+# nothing to reuse.
+#
+# OWNER DECISION, 2026-09-24. Every push to main built all eight images TWICE:
+# application.yml's `build images` job, and release.yml's own build, competing
+# for Cloud Build in a project whose build quota is shared with another team --
+# and the release waited behind the duplicate. Measured on commit 94ee043:
+# application.yml built it 16:33:09-16:41:51 (run 36027980122), and release
+# 36027980448 built the same commit again 16:39:24-16:48:17 before it promoted
+# anything. Now application.yml builds once per commit on main and uploads its
+# build manifest (build/images-<env>.json: every image's digest, the tag, the
+# commit and the environment it was built for) as the artifact
+# `images-<env>`, and the release promotes exactly those digests.
+#
+# This script is how a release finds them. It answers one question -- did CI
+# build THIS commit for THIS environment, and what did it build? -- and it
+# never answers "no" when the truth is "I could not tell":
+#
+#   exit 0  yes. The build manifest is at --out, and it records this commit
+#           and this environment.
+#   exit 3  CI never built this commit for this environment, and
+#           `--if-absent build` says the caller will build it. That is a
+#           release dispatched by hand for a commit application.yml never
+#           built, and build-images.sh then builds it exactly as CI would have.
+#   exit 1  anything else, with the reason on the last line: CI's build
+#           FAILED; it succeeded but a test job that gates the release
+#           (CI_RELEASE_TEST_JOBS, common.sh) failed, was cancelled or never
+#           ran in its run; it has not started by CI_BUILD_WAIT, or is still in
+#           progress at CI_BUILD_WAIT_RUNNING; CI never built
+#           the commit and `--if-absent fail`; the GitHub API could not be
+#           read; or the record describes another commit or environment.
+#
+# A FAILED BUILD IS NOT "NEVER BUILT", even under `--if-absent build`. The
+# release would submit the same recipes from the same commit, and the failure
+# would come back one Cloud Build later -- the duplicate this exists to remove.
+# Re-run the failed job if it was a flake.
+#
+# "NEVER BUILT" means one of:
+#   * no application.yml run for the commit on the branch appeared within
+#     CI_BUILD_APPEAR seconds;
+#   * its run was cancelled before any job started (GitHub then lists no jobs
+#     at all), or its build job was cancelled part-way or skipped. On main that is now usually a newer push:
+#     since #2438 application.yml runs all of main in ONE group with
+#     cancel-in-progress, because one run per commit queued 27-78 runs at once
+#     and stalled every release. The newer commit's build includes this one's
+#     change, so release.yml's and hotfix.yml's `after` steps read a cancelled
+#     run on a moved main as superseded, green. This script still says "never
+#     built": whether that is a supersession is the caller's question, asked
+#     of main, not of the record;
+#   * the build succeeded but recorded nothing for THIS environment. That is
+#     every prod release: application.yml builds for dev, and swarm-ui bakes
+#     its environment into the bundle when it is compiled (VITE_SWARM_ENV,
+#     scripts/build-images.sh), so a dev build is not a prod build. It is also
+#     a record older than the artifact's retention.
+#
+# A pull request's run of the same commit is never reused: it builds nothing
+# (its OIDC ref cannot mint a token), and it is not the branch being released.
+#
+# --previous: THE BUILD BEFORE THIS ONE (owner decision 2026-10-08, observer
+# proposal H; docs/ci.md "Main builds only the images a commit changed").
+# application.yml's `build images` asks this before it builds, so that
+# build-images.sh --incremental rebuilds only the images the commit changed
+# and re-tags the previous digests of the rest. It answers a different
+# question -- what is the newest record CI made, on BRANCH, of a commit that
+# is an ANCESTOR of --sha? -- and never waits for a build still running:
+#
+#   exit 0  the record is at --out, checked to name its own run's commit and
+#           this environment
+#   exit 3  there is none to build on, with the reason on the last line: no
+#           completed run of an ancestor in the newest CI_PREVIOUS_LOOK runs
+#           built and kept a record, or this checkout has no history to tell
+#           an ancestor by (a shallow clone)
+#   exit 1  the API could not be read after CI_PREVIOUS_TRIES tries (default
+#           2, CI_PREVIOUS_POLL 5s apart)
+#
+# The caller builds everything on 3 and on 1 alike: a full build is the safe
+# answer to "I could not tell", only a slower one. That is also why --previous
+# does not retry with the lookup's 5 x 30s: two minutes of retries on the
+# critical path of every build, to avoid a build that costs ~10. --sha itself is never
+# "previous": a re-run of its build means it is to be built again.
+#
+# Usage:
+#   scripts/lib/ci-built-images.sh --sha <40 hex> --environment dev --out build/images-dev.json
+#                                  [--if-absent fail|build] [--repo owner/name]
+#                                  [--workflow application.yml] [--job 'build images']
+#                                  [--branch main]
+#        scripts/lib/ci-built-images.sh --previous --sha <40 hex> --environment dev --out FILE
+#
+# Needs `gh` authenticated for the repository -- GH_TOKEN, with actions: read.
+# CI_BUILD_WAIT (default 2700s) bounds the wait for a build that is queued or
+# not started, CI_BUILD_WAIT_RUNNING (default 5400s) the wait for one whose job
+# is in progress,
+# CI_BUILD_APPEAR (default 300s) the wait for its run to appear at all, and
+# CI_BUILD_POLL (default 30s) is the interval between looks. --previous uses
+# CI_PREVIOUS_TRIES and CI_PREVIOUS_POLL instead (see above).
+
+set -euo pipefail
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=common.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
+
+SHA=""
+ENV_NAME="${ENVIRONMENT}"
+OUT=""
+IF_ABSENT="fail"
+REPO="${GITHUB_REPOSITORY:-}"
+# The workflow and job that build on main. tests/unit/scripts/test_ci_built_images.py
+# reads application.yml and fails if no job there answers to this name, so a
+# rename cannot turn every release into "never built".
+WORKFLOW="${CI_BUILD_WORKFLOW:-application.yml}"
+JOB="${CI_BUILD_JOB:-build images}"
+BRANCH="${CI_BUILD_BRANCH:-main}"
+# 45 minutes, for a build that has NOT STARTED (its run queued). Measured 5
+# November 2026 (issue 3336): `build images` started 18 to 44 minutes after
+# its push, because it needed main's test jobs and they queue behind the merge
+# train's and the pull requests' CI, then ran about 19 minutes. Since the
+# owner's pick on PR 3344 it needs none of them and starts with its run; the
+# tests gate the release here instead, and a build that succeeded while they
+# still run is waited for as one in progress (WAIT_RUNNING). Main's application runs share one
+# group with cancel-in-progress (#2438), so a newer push cancels the run waited
+# for and ends the wait at once, "never built", not at 45; a build not started
+# by 45 is stuck behind something, and the message says what was pending.
+WAIT="${CI_BUILD_WAIT:-2700}"
+# 90 minutes, for a build whose job is IN PROGRESS: it has a runner and is
+# building, so the wait goes on until it ends rather than giving up at
+# CI_BUILD_WAIT. Release 41992304818 (5 November, 08:09Z) failed "timed out
+# after 2700s" on a build that started at 08:53Z and succeeded at 09:12Z. 90
+# is a start at the 45-minute edge plus a 19-minute build, twice over: a build
+# still running then is hung, and this is the hard ceiling.
+WAIT_RUNNING="${CI_BUILD_WAIT_RUNNING:-5400}"
+# The run is created within seconds of the push that also started the release;
+# five minutes is for GitHub having a slow day, not for anything expected.
+APPEAR="${CI_BUILD_APPEAR:-300}"
+# 30s: each look is two API calls, and the token's budget is 1,000 an hour for
+# the repository. A 45-minute wait at this interval spends under 200, and the
+# 90-minute ceiling for a build in progress under 400.
+POLL="${CI_BUILD_POLL:-30}"
+# Consecutive failed reads before giving up. A transient 502 is retried; an API
+# that stays unreadable is reported as unreadable, never as a missing build.
+API_TRIES="${CI_BUILD_API_TRIES:-5}"
+# --previous reads at most this many of BRANCH's newest completed runs. Each
+# one it looks into costs two API calls (its jobs, its artifacts); 20 covers
+# a day of merges, and a record older than that is past build-images.sh's
+# seven-day reuse limit more often than not.
+PREVIOUS_LOOK="${CI_PREVIOUS_LOOK:-20}"
+# --previous's own retry: a failed read falls back to a full build, never to a
+# wrong answer, so it is retried once, briefly, rather than CI_BUILD_API_TRIES
+# times CI_BUILD_POLL apart (archived issue 888 box 93). Long enough to ride out a single
+# 502; an API down for longer costs one full build, not two minutes of waiting.
+PREVIOUS_TRIES="${CI_PREVIOUS_TRIES:-2}"
+PREVIOUS_POLL="${CI_PREVIOUS_POLL:-5}"
+PREVIOUS=0
+IF_ABSENT_SET=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --sha)         SHA="$2"; shift 2 ;;
+    --environment) ENV_NAME="$2"; shift 2 ;;
+    --out)         OUT="$2"; shift 2 ;;
+    --if-absent)   IF_ABSENT="$2"; IF_ABSENT_SET=1; shift 2 ;;
+    --previous)    PREVIOUS=1; shift ;;
+    --repo)        REPO="$2"; shift 2 ;;
+    --workflow)    WORKFLOW="$2"; shift 2 ;;
+    --job)         JOB="$2"; shift 2 ;;
+    --branch)      BRANCH="$2"; shift 2 ;;
+    # The header, up to the first line that is not a comment: a hand-kept
+    # line range drifted every time the header grew (archived issue 888 box 92).
+    -h|--help)     awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 0 ;;
+    *)             die "unknown argument: $1" ;;
+  esac
+done
+
+[[ "${SHA}" =~ ^[0-9a-f]{40}$ ]] \
+  || die "--sha must be a full 40-character commit id, not '${SHA}': runs are found by it exactly"
+[[ -n "${OUT}" ]] || die "--out FILE is required"
+[[ -n "${ENV_NAME}" ]] || die "--environment is required"
+case "${IF_ABSENT}" in
+  fail|build) ;;
+  *) die "--if-absent takes 'fail' or 'build', not '${IF_ABSENT}'" ;;
+esac
+[[ "${REPO}" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] \
+  || die "no repository to ask: set GITHUB_REPOSITORY or pass --repo owner/name"
+[[ "${PREVIOUS}" -eq 0 || "${IF_ABSENT_SET}" -eq 0 ]] \
+  || die "--previous never builds and never waits; it takes no --if-absent"
+for knob in WAIT WAIT_RUNNING APPEAR API_TRIES PREVIOUS_LOOK PREVIOUS_TRIES; do
+  name="CI_BUILD_${knob}"
+  [[ "${knob}" != PREVIOUS_* ]] || name="CI_${knob}"
+  [[ "${!knob}" =~ ^[0-9]+$ ]] || die "${name} must be a whole number of seconds (or tries, or runs), not '${!knob}'"
+done
+[[ "${POLL}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "CI_BUILD_POLL must be a number of seconds, not '${POLL}'"
+[[ "${PREVIOUS_POLL}" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
+  || die "CI_PREVIOUS_POLL must be a number of seconds, not '${PREVIOUS_POLL}'"
+
+require_cmd gh jq
+
+# What application.yml uploads, and the file inside it.
+ARTIFACT="images-${ENV_NAME}"
+RECORD="images-${ENV_NAME}.json"
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-ci-images.XXXXXX")"
+trap 'rm -rf "${WORK}"' EXIT
+API_ERR="${WORK}/api.err"
+
+# CI_RELEASE_TEST_JOBS (common.sh) as a JSON array, for jq.
+TEST_JOBS_JSON="$(printf '%s\n' "${CI_RELEASE_TEST_JOBS[@]}" | jq -R . | jq -cs .)"
+
+ERROR_TITLE="release images"
+[[ "${PREVIOUS}" -eq 0 ]] || ERROR_TITLE="previous build"
+
+# A red job's last line is the one a reader sees; on Actions it is also raised
+# as an annotation, so it shows on the run's summary page without opening logs.
+fail_with() {
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    printf '::error title=%s::%s\n' "${ERROR_TITLE}" "$*" >&2
+  fi
+  die "$*"
+}
+
+summary() {
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    printf '%s\n' "$*" >>"${GITHUB_STEP_SUMMARY}" 2>/dev/null || true
+  fi
+}
+
+# gh's reason for the last failed read, one line, credentials masked.
+api_reason() {
+  redact <"${API_ERR}" | tr -d '\r' | grep -v '^[[:space:]]*$' | head -n 1 || true
+}
+
+# gh api PATH > FILE. Non-zero when the API could not be read, with the reason
+# in API_ERR. stdin is closed: this runs inside a `while read` over a file.
+api() {
+  gh api -H "Accept: application/vnd.github+json" "$1" </dev/null >"$2" 2>"${API_ERR}"
+}
+
+# ---------------------------------------------------------------------------
+# One look at CI. Sets VERDICT and returns 0, or returns non-zero when the API
+# could not be read (the caller retries, and never reads that as "absent").
+#
+#   reuse    the record is at OUT
+#   wait     a build of this commit is queued or running (V_RUNNING=1 when
+#            its job is in progress: started and not finished)
+#   none     no run of WORKFLOW for this commit on BRANCH exists yet
+#   failed   the newest decided run's build failed
+#   unbuilt  the newest decided run never built this commit for ENV_NAME
+#   untested the newest decided run built it, but a CI_RELEASE_TEST_JOBS job
+#            in it failed, was cancelled or never ran
+#
+# Runs are read NEWEST FIRST and the first reusable one wins: a successful
+# build of this commit is a successful build of this commit, even if a newer
+# run of it is still going. Otherwise a pending run is waited for, and only
+# when every run has decided does the newest decide the answer.
+# ---------------------------------------------------------------------------
+VERDICT=""; V_URL=""; V_WHY=""; V_RUNNING=0
+
+survey() {
+  VERDICT=""; V_URL=""; V_WHY=""; V_RUNNING=0
+  api "repos/${REPO}/actions/workflows/${WORKFLOW}/runs?head_sha=${SHA}&per_page=100" "${WORK}/runs.json" || return 1
+  # "-" for an empty field: tab is IFS whitespace, so `read` would collapse two
+  # adjacent tabs and shift every later field left by one.
+  jq -r --arg b "${BRANCH}" --arg sha "${SHA}" '
+      [ (.workflow_runs // [])[]
+        | select(.head_sha == $sha and .head_branch == $b and .event != "pull_request") ]
+      | sort_by(.id) | reverse | .[]
+      | [ (.id | tostring), (.status // "-"), (.conclusion // "-"), (.html_url // "-") ]
+      | @tsv' "${WORK}/runs.json" >"${WORK}/runs.tsv" || return 1
+  if [[ ! -s "${WORK}/runs.tsv" ]]; then
+    VERDICT="none"
+    return 0
+  fi
+
+  local run_id run_status run_conclusion run_url state detail url tstate tdetail turl
+  local pending=0 pending_url="" pending_why="" running=0 first="" first_url="" first_why=""
+  while IFS=$'\t' read -r run_id run_status run_conclusion run_url; do
+    api "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=100" "${WORK}/jobs.json" || return 1
+    # Matched by name, or by name + " / " -- how GitHub names a job that calls a
+    # reusable workflow -- so the build can move into one without this missing it.
+    IFS=$'\t' read -r state detail url < <(jq -r --arg n "${JOB}" '
+        [ (.jobs // [])[] | select(.name == $n or (.name | startswith($n + " / "))) ] as $j
+        | [ $j[] | .conclusion // "-" ] as $c
+        | if ($j | length) == 0 then ["missing", ((.jobs // []) | length | tostring), "-"]
+          elif any($j[]; .status != "completed") then
+            ["running", ([$j[] | .status] | unique | join(",")), ($j[0].html_url // "-")]
+          elif all($c[]; . == "success") then ["success", "success", ($j[0].html_url // "-")]
+          elif all($c[]; . == "success" or . == "cancelled" or . == "skipped") then
+            ["unbuilt", ($c | unique | join(",")), ($j[0].html_url // "-")]
+          else
+            ["failed", ($c | unique | join(",")),
+             ([$j[] | select(.conclusion != "success")][0].html_url // "-")]
+          end
+        | @tsv' "${WORK}/jobs.json") || return 1
+
+    # THE TESTS GATE THE RELEASE (owner pick, PR 3344). The build no longer
+    # waits for main's test jobs, so a build that succeeded is reused only
+    # once every CI_RELEASE_TEST_JOBS job of the same run passed (or was
+    # skipped by its own paths). Still running, or not listed yet in a run
+    # that has not finished: wait. Failed or cancelled: `untested`, never
+    # "never built" -- a dispatched release must not build a commit whose
+    # tests failed.
+    if [[ "${state}" == success ]]; then
+      IFS=$'\t' read -r tstate tdetail turl < <(jq -r --argjson t "${TEST_JOBS_JSON}" --arg rs "${run_status}" --arg ru "${run_url}" '
+          (.jobs // []) as $all
+          | [ $t[] as $n | { name: $n, j: [ $all[] | select(.name == $n) ] } ] as $g
+          | [ $g[] | select((.j | length) > 0 and any(.j[]; .status == "completed" and .conclusion != "success" and .conclusion != "skipped")) ] as $bad
+          | if ($bad | length) > 0 then
+              ["untested",
+               ([ $bad[] | "\(.name) (\([.j[] | .conclusion // "-"] | unique | join(",")))" ] | join(", ")),
+               ([ $bad[0].j[] | select(.conclusion != "success" and .conclusion != "skipped") ][0].html_url // $ru)]
+            elif all($g[]; (.j | length) > 0 and all(.j[]; .status == "completed")) then ["passed", "-", "-"]
+            elif $rs == "completed" and any($g[]; (.j | length) == 0) then
+              ["untested", "run finished without " + ([ $g[] | select((.j | length) == 0) | .name ] | join(", ")), $ru]
+            else
+              ["running", ([ $g[] | select((.j | length) == 0 or any(.j[]; .status != "completed")) | .name ] | join(", ")), $ru]
+            end
+          | @tsv' "${WORK}/jobs.json") || return 1
+      case "${tstate}" in
+        running)
+          # The build is done and the run is alive: wait as for a build in
+          # progress (WAIT_RUNNING), not as for one not started.
+          pending=1; pending_url="${turl}"; running=1
+          pending_why="'${JOB}' succeeded; waiting for the tests that gate the release: ${tdetail}"
+          continue ;;
+        untested) state=untested; detail="${tdetail}"; url="${turl}" ;;
+      esac
+    fi
+
+    case "${state}" in
+      untested) detail="its '${JOB}' job succeeded, but the tests that gate the release did not pass: ${detail}" ;;
+      success)
+        local found=""
+        if ! found="$(artifact_state "${run_id}")"; then return 1; fi
+        if [[ "${found}" == present ]]; then
+          fetch "${run_id}" "${url}" "${SHA}" || return 1
+          VERDICT="reuse"; V_URL="${url}"
+          return 0
+        fi
+        state=unbuilt
+        if [[ "${found}" == expired ]]; then
+          detail="its build succeeded, but the ${ARTIFACT} record has expired"
+        else
+          detail="its build succeeded but recorded nothing for ${ENV_NAME} (no ${ARTIFACT} artifact): it built for another environment"
+        fi
+        ;;
+      running)
+        pending=1; pending_url="${url}"; pending_why="${detail}"
+        # `detail` is the job's statuses: in_progress is a build that has a
+        # runner; queued, waiting or pending is one that has not started.
+        [[ ",${detail}," != *",in_progress,"* ]] || running=1
+        continue ;;
+      missing)
+        if [[ "${run_status}" != completed ]]; then
+          # The run is queued (behind the previous commit's, on main) or its
+          # build is waiting on the checks it needs; either way it has not
+          # decided yet.
+          pending=1; pending_url="${run_url}"; pending_why="run ${run_status}, build job not started"
+          continue
+        fi
+        state=unbuilt; url="${run_url}"
+        # `detail` is how many jobs the run lists at all. NONE, on a cancelled
+        # run, is a run cancelled before it started -- GitHub creates no jobs
+        # for a run cancelled while pending -- which is a different thing to
+        # fix from a run whose jobs ran and none answered to JOB (a rename).
+        if [[ "${detail}" == 0 && "${run_conclusion}" == cancelled ]]; then
+          detail="run ${run_id} was cancelled before any job started, so it built nothing"
+        else
+          detail="run ${run_id} finished (${run_conclusion}) without a job named '${JOB}'"
+        fi
+        ;;
+      unbuilt) detail="its '${JOB}' job was ${detail} and recorded no build" ;;
+      failed)  detail="its '${JOB}' job concluded ${detail}" ;;
+    esac
+
+    if [[ -z "${first}" ]]; then
+      first="${state}"; first_url="${url}"; first_why="${detail}"
+    fi
+  done <"${WORK}/runs.tsv"
+
+  if [[ "${pending}" -eq 1 ]]; then
+    VERDICT="wait"; V_URL="${pending_url}"; V_WHY="${pending_why}"; V_RUNNING="${running}"
+  else
+    VERDICT="${first}"; V_URL="${first_url}"; V_WHY="${first_why}"
+  fi
+  return 0
+}
+
+# present | expired | absent, for this environment's record in a run.
+artifact_state() {
+  api "repos/${REPO}/actions/runs/$1/artifacts?name=${ARTIFACT}&per_page=100" "${WORK}/artifacts.json" || return 1
+  jq -r --arg a "${ARTIFACT}" '
+      [ (.artifacts // [])[] | select(.name == $a) ] as $m
+      | if any($m[]; .expired != true) then "present"
+        elif ($m | length) > 0 then "expired"
+        else "absent" end' "${WORK}/artifacts.json"
+}
+
+# Download the record from run $1 (job URL $2) and check it describes commit
+# $3 and this environment before it goes anywhere near OUT. A download that fails is an
+# unreadable API (returns 1, retried); a record that is WRONG is fatal here and
+# now -- rebuilding over it would hide whatever produced it.
+fetch() {
+  local run_id="$1" job_url="$2" want="$3" dir="${WORK}/record-$1" record got_commit got_env count
+  rm -rf "${dir}"
+  mkdir -p "${dir}"
+  gh run download "${run_id}" --repo "${REPO}" --name "${ARTIFACT}" --dir "${dir}" \
+    </dev/null >/dev/null 2>"${API_ERR}" || return 1
+  record="${dir}/${RECORD}"
+  if [[ ! -f "${record}" ]]; then
+    fail_with "the ${ARTIFACT} artifact of ${job_url} holds no ${RECORD} (it holds: $(cd "${dir}" && find . -type f | sed 's|^\./||' | tr '\n' ' '))"
+  fi
+  if ! jq -e 'type == "object" and ((.images // null) | type) == "array"' "${record}" >/dev/null 2>&1; then
+    fail_with "${RECORD} from ${job_url} is not a build manifest (no images array)"
+  fi
+  got_commit="$(jq -r '.commit // ""' "${record}")"
+  got_env="$(jq -r '.environment // ""' "${record}")"
+  count="$(jq '.images | length' "${record}")"
+  # PROVENANCE. The run was chosen by its head sha, and this checks the record
+  # agrees -- it is the manifest, not the run, that names the digests promoted.
+  if [[ "${got_commit}" != "${want}" ]]; then
+    fail_with "${RECORD} from ${job_url} says it was built from '${got_commit:-no commit at all}', not ${want}; refusing to release or build on images whose record does not name this commit"
+  fi
+  if [[ "${got_env}" != "${ENV_NAME}" ]]; then
+    fail_with "${RECORD} from ${job_url} was built for '${got_env:-no environment}', not '${ENV_NAME}'; swarm-ui bakes its environment in at build time, so it is not these images"
+  fi
+  if [[ "${count}" -eq 0 ]]; then
+    fail_with "${RECORD} from ${job_url} lists no images; a build that recorded nothing cannot be released"
+  fi
+  mkdir -p "$(dirname -- "${OUT}")"
+  cp "${record}" "${OUT}.tmp"
+  mv -f "${OUT}.tmp" "${OUT}"
+  ok "${count} image(s) ${WORKFLOW} recorded for ${want} (${ENV_NAME}): ${job_url}"
+}
+
+absent() {
+  if [[ "${IF_ABSENT}" == build ]]; then
+    warn "CI never built ${SHA} for ${ENV_NAME}: $1"
+    info "--if-absent build: the caller builds it"
+    summary "**Images:** built by this run -- ${WORKFLOW} never built \`${SHA:0:12}\` for ${ENV_NAME} ($1)."
+    exit 3
+  fi
+  # THE ADVICE NAMES WHAT A DISPATCH ACTUALLY RELEASES. The deployer trusts
+  # refs/heads/main alone (terraform/bootstrap, github_allowed_refs), so a
+  # dispatched release runs at whatever main points at NOW -- this commit only
+  # if nothing has landed since. What releases THIS commit is a re-run: of
+  # CI's run, which builds it, and then of this release, which reuses it.
+  fail_with "CI never built ${SHA} for ${ENV_NAME}: $1. A release on a push promotes only what ${WORKFLOW} built for its commit and submits no build of its own, so nothing is promoted. To ship this commit: re-run ${WORKFLOW}'s run for it so it builds, then re-run this release. To dispatch release.yml instead: it builds what CI did not, but it releases main's head -- the only ref the deployer trusts -- so it ships this commit together with everything merged after it."
+}
+
+# ---------------------------------------------------------------------------
+# --previous: the newest record of an ancestor, read once, never waited for.
+# ---------------------------------------------------------------------------
+# Sets VERDICT to reuse (the record is at OUT) or none (V_WHY says why), and
+# returns non-zero when the API could not be read.
+survey_previous() {
+  VERDICT=""; V_URL=""; V_WHY=""
+  local seen=0 looked=0 run_id run_sha run_url state url found
+  api "repos/${REPO}/actions/workflows/${WORKFLOW}/runs?branch=${BRANCH}&status=completed&exclude_pull_requests=true&per_page=100" \
+    "${WORK}/runs.json" || return 1
+  jq -r --arg b "${BRANCH}" --arg sha "${SHA}" '
+      [ (.workflow_runs // [])[]
+        | select(.head_branch == $b and .event != "pull_request" and .head_sha != $sha) ]
+      | sort_by(.id) | reverse | .[]
+      | [ (.id | tostring), .head_sha, (.html_url // "-") ] | @tsv' "${WORK}/runs.json" >"${WORK}/runs.tsv" || return 1
+  while IFS=$'\t' read -r run_id run_sha run_url; do
+    [[ "${looked}" -lt "${PREVIOUS_LOOK}" ]] || break
+    looked=$((looked + 1))
+    # A commit this checkout does not have, or one that is not behind --sha
+    # (a later merge whose run finished first), is not a base to build on.
+    if ! git -C "${REPO_ROOT}" merge-base --is-ancestor "${run_sha}" "${SHA}" </dev/null >/dev/null 2>&1; then
+      continue
+    fi
+    seen=$((seen + 1))
+    api "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=100" "${WORK}/jobs.json" || return 1
+    IFS=$'\t' read -r state url < <(jq -r --arg n "${JOB}" '
+        [ (.jobs // [])[] | select(.name == $n or (.name | startswith($n + " / "))) ] as $j
+        | if ($j | length) > 0 and all($j[]; .status == "completed" and .conclusion == "success")
+          then ["success", ($j[0].html_url // "-")] else ["no", "-"] end
+        | @tsv' "${WORK}/jobs.json") || return 1
+    [[ "${state}" == success ]] || continue
+    if ! found="$(artifact_state "${run_id}")"; then return 1; fi
+    [[ "${found}" == present ]] || continue
+    fetch "${run_id}" "${url}" "${run_sha}" || return 1
+    VERDICT="reuse"; V_URL="${url}"
+    return 0
+  done <"${WORK}/runs.tsv"
+  VERDICT="none"
+  V_WHY="none of the newest ${looked} completed ${WORKFLOW} run(s) on ${BRANCH} (${seen} of them of an ancestor of ${SHA:0:12}) has a successful '${JOB}' job with an ${ARTIFACT} record"
+  return 0
+}
+
+if [[ "${PREVIOUS}" -eq 1 ]]; then
+  step "The newest ${WORKFLOW} build of an ancestor of ${SHA} (${ENV_NAME})"
+  if ! git -C "${REPO_ROOT}" cat-file -e "${SHA}^{commit}" 2>/dev/null; then
+    info "this checkout does not have ${SHA}'s history, so no ancestor can be told apart; nothing to build on"
+    exit 3
+  fi
+  if [[ "$(git -C "${REPO_ROOT}" rev-parse --is-shallow-repository 2>/dev/null || true)" == true ]]; then
+    info "this checkout is shallow, so an ancestor cannot be told apart from a stranger; nothing to build on (check out with fetch-depth: 0)"
+    exit 3
+  fi
+  FAILED_READS=0
+  while :; do
+    rc=0
+    survey_previous || rc=$?
+    if [[ "${rc}" -eq 0 ]]; then break; fi
+    FAILED_READS=$((FAILED_READS + 1))
+    reason="$(api_reason)"
+    warn "could not read the GitHub API (${FAILED_READS} of ${PREVIOUS_TRIES}): ${reason:-no reason given}"
+    if [[ "${FAILED_READS}" -ge "${PREVIOUS_TRIES}" ]]; then
+      fail_with "could not read ${WORKFLOW}'s runs on ${BRANCH} after ${PREVIOUS_TRIES} tries (${reason:-no reason given}); with no previous build known, every image is built"
+    fi
+    sleep "${PREVIOUS_POLL}"
+  done
+  if [[ "${VERDICT}" == reuse ]]; then
+    exit 0
+  fi
+  info "nothing to build on: ${V_WHY}"
+  exit 3
+fi
+
+# ---------------------------------------------------------------------------
+# Look until there is an answer.
+# ---------------------------------------------------------------------------
+step "Images ${WORKFLOW} built for ${SHA} (${ENV_NAME})"
+START="$(date +%s)"
+FAILED_READS=0
+LAST_NOTE=""
+
+while :; do
+  rc=0
+  survey || rc=$?
+  WAITED=$(( $(date +%s) - START ))
+
+  if [[ "${rc}" -ne 0 ]]; then
+    FAILED_READS=$((FAILED_READS + 1))
+    reason="$(api_reason)"
+    warn "could not read the GitHub API (${FAILED_READS} of ${API_TRIES}): ${reason:-no reason given}"
+    if [[ "${FAILED_READS}" -ge "${API_TRIES}" ]]; then
+      fail_with "could not read ${WORKFLOW}'s runs for ${SHA} after ${API_TRIES} tries (${reason:-no reason given}); an unreadable API is not a missing build, so nothing is reused and nothing is built"
+    fi
+    sleep "${POLL}"
+    continue
+  fi
+  FAILED_READS=0
+
+  case "${VERDICT}" in
+    reuse)
+      summary "**Images:** reused from ${V_URL} -- no second Cloud Build."
+      exit 0 ;;
+    wait)
+      note="waiting for ${V_URL} (${V_WHY})"
+      if [[ "${note}" != "${LAST_NOTE}" ]]; then info "${note}"; LAST_NOTE="${note}"; fi
+      # A build in progress is waited for to its end, up to WAIT_RUNNING; one
+      # queued or not started gives up at WAIT. A newer push cancelling it
+      # still ends the wait at once: the run then reads cancelled, "unbuilt".
+      if [[ "${V_RUNNING}" -eq 1 ]]; then
+        if [[ "${WAITED}" -ge "${WAIT_RUNNING}" ]]; then
+          fail_with "timed out after ${WAIT_RUNNING}s waiting for ${WORKFLOW}'s '${JOB}' job for ${SHA}, which is still in progress (${V_WHY}): ${V_URL}"
+        fi
+      elif [[ "${WAITED}" -ge "${WAIT}" ]]; then
+        fail_with "timed out after ${WAIT}s waiting for ${WORKFLOW}'s '${JOB}' job for ${SHA}, which is still pending (${V_WHY}): ${V_URL}"
+      fi ;;
+    none)
+      note="no ${WORKFLOW} run for ${SHA} on ${BRANCH} yet"
+      if [[ "${note}" != "${LAST_NOTE}" ]]; then info "${note}"; LAST_NOTE="${note}"; fi
+      if [[ "${WAITED}" -ge "${APPEAR}" ]]; then
+        absent "no ${WORKFLOW} run for it on ${BRANCH} appeared within ${APPEAR}s"
+      fi ;;
+    failed)
+      fail_with "${WORKFLOW}'s build of ${SHA} failed -- ${V_WHY}: ${V_URL}. The release promotes only what that job built, so there is nothing to promote, and building again here would repeat the failure behind a second Cloud Build. Re-run that job if it was a flake; otherwise fix the build and push." ;;
+    unbuilt)
+      absent "${V_WHY} (${V_URL})" ;;
+    untested)
+      fail_with "${WORKFLOW}'s run for ${SHA}: ${V_WHY}: ${V_URL}. A release ships only a commit main's tests passed, so nothing is promoted, and nothing is built here either. Re-run the failed jobs if it was a flake; otherwise fix the commit and push." ;;
+    *)
+      fail_with "internal: no verdict after reading ${WORKFLOW}'s runs for ${SHA}" ;;
+  esac
+  sleep "${POLL}"
+done

@@ -1,0 +1,540 @@
+"""A task's `input` carries what its runner profile declares, from every caller (archived issue 142).
+
+WHAT WAS MISSING. The review of archived pull request 201 said it in one line: the API accepted
+any input. The plugin's bridge refused a key its profile did not declare, but
+the bridge is one client. A script posting to /v1/tasks, the web UI's Submit
+form and a workflow step sent whatever they liked, and two of the things they
+could send were not data at all:
+
+  * `{"quota_exhausted": true}` to the mock made a task that parked on every
+    attempt, and a park does not spend an attempt, so it never ended;
+  * `{"model": ...}` to claude-code selects the model the agent runs, which
+    tests/unit/mcp/test_model_flag_is_attribution_only.py exists to stop.
+
+THE RULE (contract request 25, accepted by the owner on archived issue 142, 2026-09-25).
+`RunnerProfile.inputs` in the frozen catalogue declares the keys of `input`
+besides `prompt` that a caller may set, each with its kind and bounds. The API
+reads that declaration -- it keeps no table of its own -- and refuses anything
+else with 422 `invalid_input`, naming the key, and for a declared key the
+bound it broke. Nothing is created.
+
+WHAT IS HELD HERE, at each of the three doors a caller has: POST /v1/tasks,
+POST /v1/tasks/batch, and a step of POST /v1/workflows.
+
+EVERY PROFILE DECLARES (contract request 32, archived issue 218, accepted by the owner on
+2026-09-29). Until then `browser` and `generic` were `inputs=None` and bounded
+by size only, so a `generic` task with no `command`, or a browser `goto` to a
+private address, was admitted, leased and started before it failed. They
+declare every key their runners read now, `generic`'s `command` is required,
+and the API holds them to it at every door like the mock.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+from typing import Any
+
+import pytest
+
+from swarm_common.profiles import RUNNER_PROFILES
+
+from .conftest import auth_header
+
+
+def _task(client, profile: str, input: Any):
+    return client.post(
+        "/v1/tasks", headers=auth_header("alice"),
+        json={"runner_profile": profile, "input": input},
+    )
+
+
+def _batch(client, profile: str, input: Any):
+    return client.post(
+        "/v1/tasks/batch", headers=auth_header("alice"),
+        json={"tasks": [{"runner_profile": "mock", "input": {"prompt": "fine"}},
+                        {"runner_profile": profile, "input": input}]},
+    )
+
+
+def _step(client, profile: str, input: Any):
+    return client.post(
+        "/v1/workflows", headers=auth_header("alice"),
+        json={"steps": [
+            {"step_id": "first", "runner_profile": "mock", "input": {"prompt": "fine"}},
+            {"step_id": "second", "runner_profile": profile, "input": input,
+             "depends_on": ["first"]},
+        ]},
+    )
+
+
+DOORS = {"POST /v1/tasks": _task, "POST /v1/tasks/batch": _batch, "a workflow step": _step}
+
+
+def _raw(client, path: str, body: str):
+    """A body sent as TEXT, for the values `json=` would not write the way a
+    caller can: `NaN` and `Infinity`, which Python's json.loads -- and so the
+    API -- reads as floats."""
+    return client.post(
+        path,
+        headers={**auth_header("alice"), "content-type": "application/json"},
+        content=body,
+    )
+
+
+def _tasks(db) -> list[str]:
+    """Task documents, not the events and other subcollections under them."""
+    return [key for key in db.docs if key.startswith("tasks/") and key.count("/") == 1]
+
+
+def _refused(response, key: str) -> dict:
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["code"] == "invalid_input", body
+    assert body["detail"]["key"] == key, body
+    assert key in body["message"], body
+    return body
+
+
+# -- an undeclared key -----------------------------------------------------------
+
+#: The keys the owner decided the mock does NOT declare: they write platform
+#: records rather than shape a run -- the attempt's spend, whose quota document
+#: a park writes, a simulated credential refusal and its text, a simulated rate
+#: limit's text and reset time -- and `attempt_count`, which the lifecycle
+#: writes from the task document and the mock bounds its park by.
+MOCK_WITHHELD = (
+    "spend",
+    "provider",
+    "credential_revoked_times",
+    "credential_detail",
+    "quota_detail",
+    "reset_at",
+    "attempt_count",
+)
+
+#: What the operational scripts sent the mock until this change, which it
+#: ignored: every one of them is refused now, and scripts/lib/check-contract-
+#: parity.sh holds the scripts to the declaration so a smoke run finds out in
+#: CI rather than against a deployment.
+IGNORED_BEFORE = ("message", "run_id", "index")
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("key", MOCK_WITHHELD + IGNORED_BEFORE)
+def test_the_mock_refuses_a_key_it_does_not_declare_at_every_door(client, db, door, key):
+    response = DOORS[door](client, "mock", {"prompt": "x", key: "anything"})
+    body = _refused(response, key)
+    assert "mock" in body["message"], body
+    assert not _tasks(db), "a refused submission created a task"
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("key", ["model", "max_turns", "sleep_seconds", "timeout_seconds"])
+def test_claude_code_refuses_every_key_but_its_declared_issue(client, db, door, key):
+    """`model` is the one that matters: the CLI runners read `input.model` and
+    pass it as `--model`. The top-level `model` field is attribution only.
+    `issue` is claude-code's one declared input (contract request 28, archived issue 265),
+    held in test_issue_input.py."""
+    response = DOORS[door](client, "claude-code", {"prompt": "x", key: 3})
+    _refused(response, key)
+    assert not _tasks(db)
+
+
+def test_a_refused_step_is_named(client, db):
+    body = _refused(_step(client, "mock", {"prompt": "x", "spend": {}}), "spend")
+    assert body["detail"]["step_id"] == "second", body
+    assert "second" in body["message"], body
+    assert not _tasks(db), "one refused step must refuse the whole workflow"
+
+
+# -- a declared key out of its bounds ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "key,value,bound",
+    [
+        ("retry_after_seconds", 0, "1..3600"),
+        ("retry_after_seconds", 3601, "1..3600"),
+        ("retry_after_seconds", 2.5, "1..3600"),
+        ("retry_after_seconds", True, "1..3600"),
+        ("retry_after_seconds", "60", "1..3600"),
+        ("exit_code", 0, "1..255"),
+        ("exit_code", 256, "1..255"),
+        ("exit_code", 77, "77"),
+        ("exit_code", 78, "78"),
+        ("exit_code", 143, "143"),
+        ("sleep_seconds", -1, "0..3600"),
+        ("sleep_seconds", 3600.5, "0..3600"),
+        ("cpu_burn_seconds", -0.1, "0..3600"),
+        ("cpu_burn_seconds", 3601, "0..3600"),
+        ("steps", 0, "1..1000"),
+        ("steps", 1001, "1..1000"),
+        ("quota_exhausted", "yes", "boolean"),
+        ("fail", 1, "boolean"),
+        ("artifact_name", "../escape.txt", "filename"),
+    ],
+)
+def test_a_declared_key_out_of_its_bounds_is_refused_naming_the_bound(client, db, key, value, bound):
+    body = _refused(_task(client, "mock", {"prompt": "x", key: value}), key)
+    assert bound in body["detail"]["expected"], body
+    assert bound in body["message"], body
+    assert not _tasks(db)
+
+
+@pytest.mark.parametrize("door", ["/v1/tasks", "/v1/workflows"])
+@pytest.mark.parametrize("key", ["retry_after_seconds", "sleep_seconds", "cpu_burn_seconds"])
+@pytest.mark.parametrize("literal", ["NaN", "Infinity", "-Infinity"])
+def test_nan_and_infinity_are_not_numbers(client, db, door, key, literal):
+    """Every comparison with NaN is False, so a bound written `value < minimum`
+    passes it; `sleep_seconds: Infinity` is a mock that sleeps until its
+    timeout. json.loads accepts both spellings, so the API receives them."""
+    one = '{"prompt": "x", "%s": %s}' % (key, literal)
+    if door == "/v1/tasks":
+        body = '{"runner_profile": "mock", "input": %s}' % one
+    else:
+        body = '{"steps": [{"step_id": "a", "runner_profile": "mock", "input": %s}]}' % one
+    _refused(_raw(client, door, body), key)
+    assert not _tasks(db)
+
+
+# -- a number Firestore cannot store ---------------------------------------------------
+
+#: Python reads a JSON integer of any length, and Firestore stores a signed
+#: 64-bit one. Before every declared number had a ceiling, the API accepted
+#: `steps: 10**30` and the task write raised on encoding it: a 500 at the
+#: store instead of a 422 at the door.
+HUGE = 10**30
+PAST_INT64 = 2**63
+NUMERIC_MOCK_INPUTS = ("steps", "sleep_seconds", "cpu_burn_seconds", "retry_after_seconds", "exit_code")
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("key", NUMERIC_MOCK_INPUTS)
+@pytest.mark.parametrize("value", [HUGE, PAST_INT64, -HUGE], ids=["1e30", "2**63", "-1e30"])
+def test_a_huge_integer_is_refused_at_the_door_not_at_the_write(client, db, door, key, value):
+    body = _refused(DOORS[door](client, "mock", {"prompt": "x", key: value}), key)
+    assert body["detail"]["expected"], body
+    assert not _tasks(db), "a refused submission created a task"
+
+
+def test_a_refusal_does_not_echo_a_huge_number_back(client, db):
+    """`InputRefused` names the key and the bound, and repeats a value no
+    longer than it has to: three hundred digits are not a clue."""
+    body = _refused(_task(client, "mock", {"prompt": "x", "steps": 10**300}), "steps")
+    assert len(body["message"]) < 300, body["message"]
+    assert "1..1000" in body["message"], body["message"]
+
+
+def test_every_declared_number_has_a_floor_and_a_ceiling_firestore_can_store():
+    """THE RULE IS STRUCTURAL, not a habit of whoever writes the next input:
+    `RunnerInput` refuses a number declared without both bounds, and an integer
+    whose bounds leave the signed 64-bit range. This walks the catalogue so a
+    declaration that slipped past it would still be caught here."""
+    lowest, highest = -(2**63), 2**63 - 1
+    checked = 0
+    for name, profile in RUNNER_PROFILES.items():
+        for key, spec in (profile.inputs or {}).items():
+            if spec.kind not in ("number", "integer"):
+                continue
+            checked += 1
+            assert spec.minimum is not None and spec.maximum is not None, (
+                f"{name}.{key} is a {spec.kind} with no "
+                f"{'floor' if spec.minimum is None else 'ceiling'}"
+            )
+            if spec.kind == "integer":
+                assert lowest <= spec.minimum and spec.maximum <= highest, f"{name}.{key}"
+    assert checked >= len(NUMERIC_MOCK_INPUTS), f"checked {checked} numeric inputs"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"kind": "integer", "minimum": 1},
+        {"kind": "number", "maximum": 5},
+        {"kind": "integer"},
+        {"kind": "number"},
+        {"kind": "integer", "minimum": 0, "maximum": 2**63},
+        {"kind": "integer", "minimum": -(2**63) - 1, "maximum": 0},
+    ],
+    ids=["no-ceiling", "no-floor", "integer-unbounded", "number-unbounded",
+         "ceiling-past-int64", "floor-past-int64"],
+)
+def test_the_catalogue_refuses_a_number_it_could_not_store(kwargs):
+    from swarm_common.profiles import RunnerInput
+
+    with pytest.raises(ValueError):
+        RunnerInput(**kwargs)
+
+
+#: What `browser` and `generic` were sent while they were `inputs=None`, and
+#: the API bounded them by size alone: each was admitted and failed, or ran
+#: something other than asked, inside the pod. Each is refused at the door now.
+REFUSED_SINCE_REQUEST_32 = {
+    "a generic task with no command": ("generic", {"paths": ["tests"]}, "command"),
+    "a command outside the catalogue": ("generic", {"command": "sh"}, "command"),
+    "an argv by another name": ("generic", {"command": "pytest", "argv": ["-x"]}, "argv"),
+    "a make target that is a flag": ("generic", {"command": "make", "target": "-k"}, "target"),
+    "a limit of zero": ("generic", {"command": "pytest", "timeout_seconds": 0}, "timeout_seconds"),
+    "a limit past the ceiling": ("generic", {"command": "pytest", "max_stdout_bytes": 10**9}, "max_stdout_bytes"),
+    "a nested value nobody reads": (
+        "generic", {"command": "pytest", "paths": ["tests"], "extra": {"deep": [1, -PAST_INT64 - 1]}}, "extra",
+    ),
+    "the metadata server": ("browser", {"url": "http://169.254.169.254/computeMetadata/v1/"}, "url"),
+    "a private goto": ("browser", {"actions": [{"type": "goto", "url": "http://10.0.0.1/"}]}, "actions"),
+    "a credentialled url": ("browser", {"url": "https://user:pw@example.com/"}, "url"),
+    "a click with no selector": ("browser", {"actions": [{"type": "click"}]}, "actions"),
+    "a wait past the runner's clamp": ("browser", {"actions": [{"type": "wait", "seconds": 600}]}, "actions"),
+    "a timeout of zero": ("browser", {"url": "https://example.com", "timeout_ms": 0}, "timeout_ms"),
+    "a viewport Firestore cannot store": (
+        "browser", {"url": "https://example.com", "viewport_width": HUGE}, "viewport_width",
+    ),
+}
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("case", REFUSED_SINCE_REQUEST_32)
+def test_browser_and_generic_are_held_to_their_declarations_at_every_door(client, db, door, case):
+    name, input, key = REFUSED_SINCE_REQUEST_32[case]
+    response = DOORS[door](client, name, {"prompt": "x", **input})
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert key in body["message"], body
+    assert not _tasks(db), "a refused submission created a task"
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize("input_shape", ["url", "goto"])
+def test_a_credentialled_url_is_refused_without_its_userinfo_at_every_door(client, db, door, input_shape):
+    """Contract request 57 (archived issue 349): the 422 used to repeat 40 characters of the
+    value, which is `user:password@` for a URL that carries one. Built at
+    runtime, so no line here looks like a credential."""
+    secret = "hunter" + "2pw"
+    url = f"http://user:{secret}@example.com/"
+    if input_shape == "url":
+        input, key = {"url": url}, "url"
+    else:
+        input, key = {"actions": [{"type": "goto", "url": url}]}, "actions"
+    response = DOORS[door](client, "browser", {"prompt": "x", **input})
+    assert response.status_code == 422, response.text
+    assert key in response.json()["message"], response.text
+    assert secret not in response.text, response.text
+    assert "user:" not in response.text, response.text
+    assert not _tasks(db), "a refused submission created a task"
+
+
+def test_metadata_with_an_integer_firestore_cannot_store_is_refused(client, db):
+    response = client.post(
+        "/v1/tasks", headers=auth_header("alice"),
+        json={"runner_profile": "mock", "input": {"prompt": "x"}, "metadata": {"run": {"n": HUGE}}},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"]["path"] == "metadata.run.n", response.text
+    assert not _tasks(db)
+
+
+@pytest.mark.parametrize("value", [2**53 - 1, -(2**53 - 1)], ids=["max-safe", "min-safe"])
+def test_the_edges_of_the_signable_range_are_storable(client, value):
+    """Contract request 34 narrows what a task may carry to what its canonical
+    form (RFC 8785 / I-JSON) can sign: +/-(2**53 - 1). Both ends are kept."""
+    response = client.post(
+        "/v1/tasks", headers=auth_header("alice"),
+        json={"runner_profile": "mock", "input": {"prompt": "x"}, "metadata": {"run": {"n": value}}},
+    )
+    assert response.status_code == 201, response.text
+
+
+@pytest.mark.parametrize("value", [2**53, 2**63 - 1, -(2**63)], ids=["past-safe", "int64-max", "int64-min"])
+def test_an_integer_firestore_can_store_but_no_signature_can_cover_is_refused(client, db, value):
+    """Past +/-(2**53 - 1) Firestore still stores it, but swarm-api cannot sign
+    it canonically (contract request 34), so it is a 422, never an unsigned task."""
+    response = client.post(
+        "/v1/tasks", headers=auth_header("alice"),
+        json={"runner_profile": "browser", "input": {"url": "https://example.com", "n": value}},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "invalid_input", response.text
+    assert not _tasks(db)
+
+
+# -- what is accepted -----------------------------------------------------------------
+
+
+EVERY_MOCK_INPUT = {
+    "prompt": "all of it",
+    "sleep_seconds": 120,
+    "cpu_burn_seconds": 0.5,
+    "steps": 3,
+    "fail": True,
+    "fail_message": "on purpose",
+    "exit_code": 2,
+    "artifact_text": "hello",
+    "artifact_name": "out.txt",
+    "quota_exhausted": True,
+    "retry_after_seconds": 60,
+}
+
+
+@pytest.mark.parametrize("door", DOORS)
+def test_the_mock_takes_every_input_it_declares(client, db, door):
+    response = DOORS[door](client, "mock", EVERY_MOCK_INPUT)
+    assert response.status_code == 201, response.text
+    stored = [db.docs[k]["input"] for k in _tasks(db)]
+    assert EVERY_MOCK_INPUT in stored, "the input is stored as it was sent"
+
+
+#: What a profile needs besides its prompt: `generic`'s one required key.
+REQUIRED_BESIDES_THE_PROMPT = {"generic": {"command": "pytest"}}
+
+
+#: Every profile a caller may submit as a TASK. A worker action is not one:
+#: `merge`, available since contract request 47, is a workflow's final step
+#: and is refused on its own as misplaced
+#: (test_merge_step_submission.py::test_a_merge_task_on_its_own_is_refused_as_misplaced_not_disabled).
+#: Nor is a `control_plane` profile: `await-input`, available since request D
+#: (entry 105), is a workflow step or nothing
+#: (`swarm_api.validation.refuse_control_plane_outside_workflow`).
+TASK_PROFILES = sorted(
+    n for n, p in RUNNER_PROFILES.items()
+    if p.available and p.worker_action is None and not p.control_plane
+)
+
+
+@pytest.mark.parametrize("name", TASK_PROFILES)
+def test_the_prompt_is_every_available_profiles(client, name):
+    response = _task(client, name, {"prompt": "the instructions", **REQUIRED_BESIDES_THE_PROMPT.get(name, {})})
+    assert response.status_code == 201, response.text
+
+
+def test_the_only_required_key_is_generics_command():
+    """Guards the table above: a newly required key must be added to it."""
+    required = {
+        name: sorted(key for key, spec in p.inputs.items() if spec.required)
+        for name, p in RUNNER_PROFILES.items()
+    }
+    assert {name: keys for name, keys in required.items() if keys} == {"generic": ["command"]}, required
+
+
+@pytest.mark.parametrize("door", DOORS)
+def test_a_generic_task_without_its_command_is_refused_naming_it(client, db, door):
+    body = _refused(DOORS[door](client, "generic", {"prompt": "x"}), "command")
+    assert "expected" not in body["detail"], "a missing key has no bound it broke"
+    assert not _tasks(db)
+
+
+EVERY_BROWSER_INPUT = {
+    "prompt": "look",
+    "url": "https://example.com",
+    "actions": [
+        {"type": "goto", "url": "https://example.com/a", "wait_until": "networkidle"},
+        {"type": "click", "selector": "#go"},
+        {"type": "fill", "selector": "#q", "text": "swarm"},
+        {"type": "press", "selector": "#q", "key": "Enter"},
+        {"type": "wait_for", "selector": ".done", "timeout_ms": 5000},
+        {"type": "wait", "seconds": 2},
+        {"type": "screenshot", "name": "a.png", "full_page": False},
+        {"type": "extract", "selector": "main", "name": "main.txt"},
+    ],
+    "timeout_ms": 30000,
+    "launch_timeout_ms": 60000,
+    "viewport_width": 800,
+    "viewport_height": 600,
+    "user_agent": "SwarmCloud-test/1.0",
+    "extract_text": False,
+    "screenshot": True,
+}
+
+EVERY_GENERIC_INPUT = {
+    "prompt": "test it",
+    "command": "pytest",
+    "paths": ["tests", "tests/unit/test_x.py"],
+    "working_directory": "repo",
+    "timeout_seconds": 600,
+    "grace_seconds": 5,
+    "max_stdout_bytes": 1024,
+    "max_stderr_bytes": 1024,
+}
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize(
+    "name,input", [("browser", EVERY_BROWSER_INPUT), ("generic", EVERY_GENERIC_INPUT)], ids=["browser", "generic"],
+)
+def test_browser_and_generic_take_every_input_they_declare(client, db, door, name, input):
+    """Every declared key, every action shape: the declaration refuses none of
+    what the runner reads, and the input is stored as it was sent."""
+    response = DOORS[door](client, name, input)
+    assert response.status_code == 201, response.text
+    stored = [db.docs[k]["input"] for k in _tasks(db)]
+    assert input in stored, "the input is stored as it was sent"
+
+
+# -- one rule, one answer ------------------------------------------------------------
+
+#: Inputs whose answer differs by profile: a key only the mock declares, one
+#: only the browser runner reads, one only the generic runner reads, and the
+#: key the CLI runners would pass as `--model`.
+ONE_ANSWER_INPUTS = {
+    "the prompt alone": {"prompt": "x"},
+    "a mock knob": {"prompt": "x", "sleep_seconds": 1},
+    "a browser url": {"prompt": "x", "url": "https://example.com"},
+    "a generic command": {"prompt": "x", "command": "pytest"},
+    "a model": {"prompt": "x", "model": "x"},
+}
+
+
+@pytest.mark.parametrize("sent", ONE_ANSWER_INPUTS)
+@pytest.mark.parametrize("name", TASK_PROFILES)
+def test_the_api_and_the_shared_rule_give_one_answer_for_every_profile(client, db, name, sent):
+    """THE RULE HAS ONE HOME, `swarm_common.profiles.check_inputs`, which the
+    API and the bridge both call. The review of archived pull request 213 found the API deciding the
+    not-declared-yet case for itself, ahead of the call: the shared function
+    refused every key for `browser` and `generic` while the API accepted every
+    key, so a caller that trusted the one rule got the opposite of the API's
+    answer. Whatever a profile declares, the two answer alike."""
+    from swarm_common.profiles import InputRefused, check_inputs
+
+    input = ONE_ANSWER_INPUTS[sent]
+    try:
+        check_inputs(RUNNER_PROFILES[name], {k: v for k, v in input.items() if k != "prompt"})
+        rule = 201
+    except InputRefused:
+        rule = 422
+    response = _task(client, name, input)
+    assert response.status_code == rule, (
+        f"the shared rule answers {rule} for {name} with {sent}, the API "
+        f"{response.status_code}: {response.text}"
+    )
+    assert bool(_tasks(db)) == (rule == 201)
+
+
+def test_there_is_no_not_declared_yet_any_more():
+    """Request 32 returned `RunnerProfile.inputs` to the type request 25 was
+    accepted with: a mapping, never None. So a profile cannot be built
+    undeclared, and the shared rule has no branch that hands input back
+    unchecked."""
+    with pytest.raises((TypeError, AttributeError, ValueError)):
+        dataclasses.replace(RUNNER_PROFILES["mock"], inputs=None)
+    assert all(p.inputs is not None for p in RUNNER_PROFILES.values())
+
+
+def test_the_api_reads_the_catalogue_and_keeps_no_table_of_its_own(client, monkeypatch):
+    """ONE SOURCE. Change the declaration and the API's answer changes with it:
+    a key the catalogue starts declaring is accepted, and one it stops
+    declaring is refused, with no edit to swarm-api."""
+    from swarm_common.profiles import RunnerInput
+
+    redeclared = dataclasses.replace(
+        RUNNER_PROFILES["mock"], inputs={"colour": RunnerInput("string", means="a test key")}
+    )
+    monkeypatch.setitem(RUNNER_PROFILES, "mock", redeclared)
+
+    assert _task(client, "mock", {"prompt": "x", "colour": "red"}).status_code == 201
+    _refused(_task(client, "mock", {"prompt": "x", "sleep_seconds": 1}), "sleep_seconds")
+
+
+def test_the_refusal_says_what_the_profile_does_declare(client):
+    body = _refused(_task(client, "mock", {"image": "evil:latest"}), "image")
+    declared = body["detail"]["declared"]
+    assert "sleep_seconds" in declared and "quota_exhausted" in declared, declared
+    json.dumps(body)  # the envelope is plain JSON: no NaN, no object reprs

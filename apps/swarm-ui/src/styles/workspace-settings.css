@@ -1,0 +1,109 @@
+/* CONFIG › WORKSPACE SETTINGS (WS-SETTINGS-PAGE; part of archived issue 2157, proposal E
+   S6a-S6f): each part's lead, the Settings part's two cards, and the
+   workspace's facts. Tokens only, so it reads in both themes. */
+
+/* The page's column: the parts, the lead and the cards one gap apart. */
+.ws-page { display: flex; flex-direction: column; gap: var(--ctl-s3, 12px); min-width: 0; }
+/* THE TABS AT THE SAME HEIGHT AS EVERY CONFIG PAGE'S (QA2-FIX-27, config2-17,
+   part of archived issue 2694). `.c-phead` keeps a 12px bottom margin, and a flex item's
+   margin does not collapse into the column's 12px gap -- here or in
+   `.cfg-page`, which this box dissolves into from 760px (config.css) -- so
+   Settings / Workspace setup drew 12px lower (y 89) than GitHub access,
+   Repositories and Secrets (y 77), whose heads drop it (`.ur-page`,
+   repositories.css; `.sec-page`, secrets.css). The gap is the one gap.
+   People and roles (`.wp-page`, styled below) is the same box and the same
+   head, so it drops it too. */
+.ws-page > .c-phead, .wp-page > .c-phead { margin-bottom: 0; }
+
+/* A part's lead: one line of what it is about and its one next action (S6). */
+.ws-lead { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; padding: 14px 18px; border-radius: var(--r-card); background: var(--sk-acs); border: 1px solid var(--sk-acl, var(--line)); min-width: 0; }
+.ws-lead.is-ok { background: var(--s-liveb); border-color: var(--line); }
+.ws-lead-t { flex: 1 1 240px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ws-lead-k { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--sk-ac, var(--text)); }
+.ws-lead.is-ok .ws-lead-k { color: var(--s-live); }
+.ws-lead-t b { font: 600 var(--t-lead)/var(--lh-lead) var(--font); color: var(--text); overflow-wrap: anywhere; }
+.ws-lead-s { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.ws-lead-a { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Settings: This workspace beside Code intelligence; stacked under 900px. */
+.ws-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ctl-s3, 12px); align-items: start; min-width: 0; }
+@media (max-width: 899px) {
+  .ws-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Workspace setup (S6b): the checklist beside After the checklist and On
+   Overview; Add a new workspace (S6c): the form beside what creating it
+   does. Two to one, as the mock-up's g21; stacked under 1100px, where the
+   checklist's step buttons would crowd a half-width column. */
+.ws-grid.is-setup,
+.ws-grid.is-form { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+@media (max-width: 1099px) {
+  .ws-grid.is-setup,
+  .ws-grid.is-form { grid-template-columns: minmax(0, 1fr); }
+}
+.ws-col { display: flex; flex-direction: column; gap: var(--ctl-s3, 12px); min-width: 0; }
+.ws-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+/* A step row (After the checklist, What creating it does): its mark, its
+   label over its line, and its button at the end. */
+.ws-steps { list-style: none; margin: 0; padding: 0; }
+.ws-step { display: flex; align-items: flex-start; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+.ws-step:last-child { border-bottom: 0; }
+.ws-step-t { flex: 1 1 auto; display: flex; flex-direction: column; gap: 1px; min-width: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.ws-step-t b { font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.ws-step-t small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.ws-step > .c-btn { flex: none; }
+/* The mark: a ring; a filled tick-coloured disc when done, a dot when next,
+   dashed when nothing measured it (the strip's marks, ConfigSetup.tsx). */
+.ws-mark { flex: none; width: 18px; height: 18px; margin-top: 1px; border-radius: 50%; border: 2px solid var(--text-dim); display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; }
+.ws-step.is-done .ws-mark { background: var(--s-live); border-color: var(--s-live); }
+.ws-step.is-done .ws-mark::after { content: ""; width: 5px; height: 9px; margin-top: -2px; border: solid var(--surface); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.ws-step.is-next .ws-mark { border-color: var(--sk-ac, var(--s-live)); }
+.ws-step.is-next .ws-mark::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--sk-ac, var(--s-live)); }
+.ws-step.is-failed .ws-mark { border-color: var(--s-bad); }
+.ws-step.is-stale .ws-mark { border-color: var(--s-warn); }
+.ws-step.is-unknown .ws-mark { border-style: dashed; }
+
+/* The inline new-workspace form: its fields one gap apart, its button under them. */
+.nw-inline > form { display: flex; flex-direction: column; gap: var(--ctl-s3, 12px); min-width: 0; }
+.nw-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: var(--ctl-s3, 12px); }
+
+/* The workspace's facts: a label column and its values. */
+.ws-kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.ws-kv dt { color: var(--text-dim); }
+.ws-kv dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+
+/* The Writing flows switch (part of archived issue 2688) wore the browser's 0.5ex side
+   margins, a length off the spacing scale the sweep cannot turn into px; the
+   space after it holds it apart from its word. Longhands and a plain selector,
+   config.css's form for the same fix. */
+[data-qa-writing-flows] input[type='checkbox'] { margin-left: 0; margin-right: 0; }
+
+/* The parts stay one row on a phone (S6d-S6f). Three parts at the shared
+   12px padding came to 380px with the bold current one, past a 390 phone's
+   358px column, and the shared phone rule wrapped them onto two rows. */
+@media (max-width: 560px) {
+  .ws-page .c-tabs.cfg-parts { flex-wrap: nowrap; }
+  .ws-page .c-tabs.cfg-parts > a { padding-left: 8px; padding-right: 8px; box-shadow: none; }
+}
+
+/* Rename (WORKSPACE-ADMIN-FIELDS, S6a): the form opens under the facts, the
+   input the card's width, its two buttons wrapping under it on a phone. */
+.ws-rename { display: flex; flex-direction: column; gap: 8px; margin-top: var(--ctl-s3, 12px); padding-top: var(--ctl-s3, 12px); border-top: 1px solid var(--line); min-width: 0; }
+.ws-rename .ur-hint, .ws-rename .ur-small { margin: 0; }
+.ws-rename-a { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Config › People and roles as S5b's cards (CONFIG-PEOPLE-S5; part of archived issue 2391).
+   The Roles card's head carries its read-only chip (S5g) and the refresh,
+   right-aligned together; the row of Give a person their own role and Role
+   events is `.ws-grid` above, one column under 900px (S5e). */
+.wp-card-a { margin-left: auto; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+/* The segmented role control's name, in the size and tone of `.pk-form label`. */
+.wp-label { font-size: var(--t-micro); color: var(--text-dim); }
+/* The caller's own roster row says "you" after the address, as S5g's does. */
+.wp-you { font-size: var(--t-micro); font-weight: 400; color: var(--text-dim); }
+@media (max-width: 719px) {
+  /* A stacked roster row (keys.css `.mcp-servers`) draws no column name over
+     an empty value: the caller's own row has no reason and nothing to return. */
+  .wp-page .mcp-servers > tbody > tr > td:empty { display: none; }
+}

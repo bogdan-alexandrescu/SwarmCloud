@@ -1,0 +1,8 @@
+# The generic runner's `uv-sync` fixture: a project with no dependencies, so
+# `uv sync --frozen` has a lockfile to honour and nothing to download. No
+# [build-system]: uv treats the project as virtual and installs nothing of it.
+[project]
+name = "swarmcloud-acceptance-generic"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []

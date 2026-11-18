@@ -1,0 +1,1425 @@
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useReducer,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+  type RefObject,
+} from 'react'
+import { createPortal } from 'react-dom'
+import { tabStops } from './focus'
+import { HELP, type TopicId } from './help'
+
+/**
+ * THE `?`, AND THE CARD BEHIND IT (docs/web-ui/ui-audit-and-build-prompt.md §B7.2).
+ *
+ * A 14px `?` in the faint colour, inline, AFTER the label it explains and
+ * never after a value -- a glyph tucked against a number reads as a footnote
+ * marker on the number, which is how "12 ?" becomes a figure nobody trusts.
+ *
+ * ONE SLOT, AND IT IS THE OWNER'S RULE (AH-24, 2026-09-25): after the label or
+ * heading, never after a value. The QA pass found the glyph in about eight
+ * different slots, including after values -- `● running ? ● live` on the agent
+ * headline, `masked 4 … ?` on an artifact, `6/8 sampled ?` on the Workflows
+ * board. The rule names no exception, and none is made. Where a line had no
+ * label of its own, the 2026-09-25 pass applied it in one of two ways: the
+ * value got the key it was missing (`state ? ● running` on the agent
+ * headline, as the facts strip under it keys every value), or the glyph went
+ * to the heading the line sits under (`Backends ?` over Runtimes' unread row;
+ * the page's own title on Workflows, where it explains the whole screen).
+ * design-system.md §8.4 carries the rule.
+ *
+ * ------------------------------------------------------------------------
+ * A `?` IS RATIONED. THERE IS AT MOST ONE PER RENDERED SCREEN (B7.4).
+ * ------------------------------------------------------------------------
+ * Counted 2026-09-24 across the fifteen routes: 139 help anchors in the source
+ * and 82 of them on screen at once, nineteen on Runtimes alone. That is not a
+ * well-documented console, it is a console whose labels were not carrying their
+ * weight -- every one of those glyphs is something a reader has to notice, hover
+ * and read to learn what the layout could have said outright. Three of them
+ * explained a column whose own header already carried the unit.
+ *
+ * So an explanation now goes to whichever of these fits, in this order, and
+ * only reaches the last one if the first three genuinely cannot hold it:
+ *
+ *   1. THE LABEL. "Capacity holders" became "Holders" the moment its section
+ *      was named Capacity, and the same move was available nearly everywhere.
+ *   2. THE COLUMN HEAD, when the thing being explained is a unit or a basis.
+ *      `In use (units)` and `Could start (min across pools)` cannot be scrolled
+ *      away from the figures they govern, which a `?` beside them could not
+ *      improve on -- it could only repeat.
+ *   3. THE SCREEN'S INDEX -- `<HelpLinks>` below, `.ctl-card-foot`, or the
+ *      page title's `?` opening several topics (`<HelpCard topics>`, VQ-033).
+ *      A platform concept (the quota windows, absent vs zero, fencing
+ *      generations, all-or-nothing reservation) is one topic with one
+ *      destination, `#help/<id>`, linked once per screen rather than pinned to
+ *      every figure that happens to obey it.
+ *   4. A `?`. One per screen, on the screen's own subject, in the same place
+ *      every time so it is learnable rather than hunted for.
+ *
+ * `tests/help.test.ts` counts the anchors and fails over the ceiling, because
+ * the last four passes at this each reintroduced a handful and nothing noticed.
+ * WHAT IS NOT NEGOTIABLE while doing any of the above: this console draws THREE
+ * marks -- a measured value, a stale one (`~12%`, the last reading, too old to
+ * trust) and an unmeasured one (`—`) -- and no label may be shortened in a way
+ * that lets "nobody measured this" read as "this is zero". Where a shorter
+ * label would blur that, the `?` stays and the label does not change.
+ *
+ * A label that gives up its `?` keeps its SENTENCE: see `HelpNote` below.
+ *
+ * IT OPENS ON HOVER, ON FOCUS, AND ON CLICK, AND THE LAST TWO ARE NOT
+ * OPTIONAL. Hover does not exist on a touch device and does not survive a
+ * screenshot. An operator pasting a screen into an incident channel at 3am
+ * publishes exactly what hover hides -- which is the failure mode the honesty
+ * rules on these screens exist to prevent. So:
+ *
+ *   hover   opens after 120ms, closes when the pointer leaves
+ *   focus   opens immediately, so the keyboard reaches everything the mouse does
+ *   click   PINS it, so it survives the pointer leaving and can be read,
+ *           selected and tabbed into. Escape and an outside click dismiss.
+ *
+ * WHY THIS FILE IS SPLIT IN THREE. `helpTransition` is the whole behaviour and
+ * it is a pure function; `HelpCardView` renders one state and has none; the
+ * hook joins them and owns the timer. That split is not tidiness -- it is what
+ * makes "opens on focus, not only on hover" a test rather than a claim. A
+ * component with the behaviour welded into it can only be checked by driving a
+ * real browser, and this repository's offline gate cannot install one.
+ *
+ * STYLING IS INLINE, ON PURPOSE. styles.css belongs to another track this
+ * pass (the same call `AgentDetail.tsx` already made for its attempt card). An
+ * inline style adds no selector and therefore cannot restyle another screen.
+ * Every value is an existing token, so it still flips with the theme.
+ */
+
+// ---------------------------------------------------------------------------
+// The behaviour, as a pure function
+// ---------------------------------------------------------------------------
+
+export type HelpEvent =
+  | { kind: 'pointer-enter' }
+  /** The 120ms hover delay elapsed with the pointer still on the trigger. */
+  | { kind: 'hover-settled' }
+  | { kind: 'pointer-leave' }
+  | { kind: 'focus' }
+  | { kind: 'blur' }
+  | { kind: 'click' }
+  | { kind: 'escape' }
+  | { kind: 'outside-click' }
+
+export interface HelpState {
+  /** The card is on screen. */
+  open: boolean
+  /** Click-pinned. Survives the pointer leaving and the trigger losing focus. */
+  pinned: boolean
+  /** A pointer is on the trigger or the card. */
+  hovered: boolean
+  /** The trigger holds focus, as far as this state machine is concerned. */
+  focused: boolean
+}
+
+export const HELP_CLOSED: HelpState = {
+  open: false,
+  pinned: false,
+  hovered: false,
+  focused: false,
+}
+
+/** 120ms (§B7.2). Long enough that crossing the glyph does not flash a card. */
+export const HOVER_DELAY_MS = 120
+
+/**
+ * Every transition, in one place, with no DOM and no timer.
+ *
+ * `open` is derived at the end of each branch rather than set ad hoc, because
+ * the bug this shape prevents is a card that is open for a reason that has
+ * since gone away -- pinned then unpinned while the pointer sat elsewhere.
+ */
+export function helpTransition(state: HelpState, event: HelpEvent): HelpState {
+  switch (event.kind) {
+    case 'pointer-enter':
+      // Hovering does NOT open it yet. `hover-settled` does, once the delay
+      // has passed and the pointer is still here.
+      return { ...state, hovered: true }
+
+    case 'hover-settled':
+      // The pointer may have left while the timer ran. If it did, the timer
+      // firing must not open a card under a pointer that is gone.
+      return state.hovered ? { ...state, open: true } : state
+
+    case 'pointer-leave':
+      return { ...state, hovered: false, open: state.pinned || state.focused }
+
+    case 'focus':
+      return { ...state, focused: true, open: true }
+
+    case 'blur':
+      return { ...state, focused: false, open: state.pinned || state.hovered }
+
+    case 'click':
+      // A click on a pinned card closes it -- the second press of a toggle.
+      return state.pinned
+        ? { ...state, pinned: false, open: state.hovered || state.focused }
+        : { ...state, pinned: true, open: true }
+
+    case 'escape':
+    case 'outside-click':
+      // A FULL reset, focus included, although the button may still hold DOM
+      // focus after Escape. Keeping `focused: true` here would let the next
+      // pointer-leave re-derive `open` as true and spring the card back open
+      // immediately after it was dismissed. The DOM keeps focus where it is;
+      // the next deliberate focus or click reopens.
+      return HELP_CLOSED
+  }
+}
+
+/** `role="tooltip"` when hovered or focused, `role="dialog"` when pinned (§B7.2). */
+export function helpRole(state: HelpState): 'dialog' | 'tooltip' {
+  return state.pinned ? 'dialog' : 'tooltip'
+}
+
+/**
+ * The handlers the trigger carries, built from a dispatch and nothing else.
+ *
+ * Exported so a test can assert what each one sends WITHOUT a browser. This is
+ * the single wiring between an interaction and the state machine; if `onFocus`
+ * or `onClick` ever stops being here, the card is hover-only again and
+ * `tests/helpcard.test.ts` fails by name.
+ */
+export interface HelpTriggerProps {
+  onFocus: () => void
+  onBlur: () => void
+  onClick: () => void
+  onKeyDown: (e: { key: string }) => void
+}
+
+export function helpTriggerProps(dispatch: (e: HelpEvent) => void): HelpTriggerProps {
+  return {
+    onFocus: () => dispatch({ kind: 'focus' }),
+    onBlur: () => dispatch({ kind: 'blur' }),
+    onClick: () => dispatch({ kind: 'click' }),
+    onKeyDown: (e) => {
+      if (e.key === 'Escape') dispatch({ kind: 'escape' })
+    },
+  }
+}
+
+/** Hover lives on the WRAPPER so the card itself counts as hovered. */
+export interface HelpHoverProps {
+  onPointerEnter: () => void
+  onPointerLeave: () => void
+}
+
+export function helpHoverProps(dispatch: (e: HelpEvent) => void): HelpHoverProps {
+  return {
+    onPointerEnter: () => dispatch({ kind: 'pointer-enter' }),
+    onPointerLeave: () => dispatch({ kind: 'pointer-leave' }),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The hook: the state machine, the 120ms timer, and the outside click
+// ---------------------------------------------------------------------------
+
+/** Anything that can say whether a node is inside it. An element, in practice. */
+interface Container {
+  contains(other: Node | null): boolean
+}
+
+/**
+ * Whether a press landed inside one of `inside` -- the card or its trigger --
+ * and is therefore NOT the outside press that dismisses a pinned card (AH-6).
+ *
+ * Pure, and duck-typed on `contains`, so `tests/helpcard.test.tsx` can prove it
+ * under node without a DOM.
+ */
+export function pressedInside(target: unknown, inside: ReadonlyArray<Container | null>): boolean {
+  if (target === null || typeof target !== 'object') return false
+  return inside.some((el) => el !== null && el.contains(target as Node))
+}
+
+/**
+ * How long an outside press may take to become its click before the swallow
+ * below gives up. A tap's click follows its pointerdown by the length of the
+ * press -- well under this for any tap -- and a press that becomes a scroll or
+ * a drag is cancelled and never clicks at all; without a limit that press would
+ * leave the listener armed to eat the reader's next, unrelated click.
+ */
+const SWALLOW_CLICK_MS = 750
+
+/**
+ * THE TAP THAT DISMISSES A CARD DOES NOTHING ELSE (archived issue 137).
+ *
+ * On a phone the only "outside" left to tap is whatever the card is lying on,
+ * and more often than not that is a button. The capturing `pointerdown` below
+ * closes the card, but the `click` the same tap produces then lands on the
+ * control underneath and presses it: the reader asked to shut a tooltip and
+ * submitted a form. So an outside press that dismisses arms ONE capturing
+ * `click` listener on the document, which cancels that click before anything
+ * in the tree sees it and removes itself -- on that click, on the next press
+ * (which means this one was cancelled and will never click), or after
+ * `SWALLOW_CLICK_MS` if neither comes.
+ *
+ * Module-level, not in the effect: the card's close unregisters the effect's
+ * listeners in the same render, and this has to outlive that.
+ */
+function swallowNextClick(doc: Document): void {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const disarm = () => {
+    doc.removeEventListener('click', onClick, true)
+    doc.removeEventListener('pointerdown', disarm, true)
+    if (timer !== null) clearTimeout(timer)
+    timer = null
+  }
+  const onClick = (e: Event) => {
+    e.preventDefault()
+    e.stopPropagation()
+    disarm()
+  }
+  doc.addEventListener('click', onClick, true)
+  // Added while the dismissing pointerdown is being dispatched, so that press
+  // does not reach it: the DOM runs the listener list as it stood when the
+  // event arrived at the document.
+  doc.addEventListener('pointerdown', disarm, true)
+  timer = setTimeout(disarm, SWALLOW_CLICK_MS)
+}
+
+export function useHelpDisclosure(delayMs: number = HOVER_DELAY_MS) {
+  const [state, dispatch] = useReducer(helpTransition, HELP_CLOSED)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * The card and its trigger, owned HERE because the outside-press listener
+   * below is here and has to know them. Whoever renders the card attaches
+   * these; a press inside either is not "outside".
+   */
+  const cardRef = useRef<HTMLSpanElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+
+  const clear = useCallback(() => {
+    if (timer.current !== null) {
+      clearTimeout(timer.current)
+      timer.current = null
+    }
+  }, [])
+
+  const send = useCallback(
+    (e: HelpEvent) => {
+      // Any event other than the pointer arriving cancels a pending open: a
+      // click that lands 40ms into the delay must not be undone by the timer
+      // firing 80ms later and re-opening what the click just closed.
+      if (e.kind === 'pointer-enter') {
+        clear()
+        timer.current = setTimeout(() => {
+          timer.current = null
+          dispatch({ kind: 'hover-settled' })
+        }, delayMs)
+      } else {
+        clear()
+      }
+      dispatch(e)
+    },
+    [clear, delayMs],
+  )
+
+  useEffect(() => clear, [clear])
+
+  // Escape and outside-click, while it is pinned. Registered only when pinned
+  // so a page of forty cards adds no listeners at rest.
+  useEffect(() => {
+    if (!state.pinned) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') dispatch({ kind: 'escape' })
+    }
+    // AN OUTSIDE PRESS HAS TO BE OUTSIDE (AH-6). This dismissed on EVERY
+    // pointerdown in the document and never looked where it landed. Two
+    // defects followed: pressing "Full explanation" unmounted the card
+    // between pointerdown and click, so the link never navigated; and
+    // pressing the `?` of a pinned card closed it on pointerdown and re-pinned
+    // it on the click that followed, so the control that opened the card could
+    // not shut it. A press on the card or its trigger is theirs to handle.
+    const onDown = (e: Event) => {
+      if (pressedInside(e.target, [cardRef.current, triggerRef.current])) return
+      // Only a press that DISMISSES arms the swallow; one inside the card or
+      // on its `?` returned above, so its click still reaches the link or
+      // the trigger (AH-6).
+      swallowNextClick(document)
+      dispatch({ kind: 'outside-click' })
+    }
+    document.addEventListener('keydown', onKey)
+    // Capture, so the press is seen wherever in the tree the card was
+    // portalled to, and before anything underneath can stop it.
+    document.addEventListener('pointerdown', onDown, true)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('pointerdown', onDown, true)
+    }
+  }, [state.pinned])
+
+  return {
+    state,
+    send,
+    trigger: helpTriggerProps(send),
+    hover: helpHoverProps(send),
+    cardRef,
+    triggerRef,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The tab bridge, shared by both cards
+// ---------------------------------------------------------------------------
+
+/** The part of a keydown `useCardBridge`'s handlers read. */
+interface BridgeKey {
+  key: string
+  shiftKey: boolean
+  currentTarget: EventTarget | null
+  preventDefault: () => void
+  stopPropagation: () => void
+}
+
+/**
+ * THE TAB BRIDGE, AND THE DEFECT THAT MADE IT NECESSARY.
+ *
+ * A card is PORTALLED to `document.body` so it can escape a stacking context
+ * -- that fixed nine cards which opened where nobody could read them. It also
+ * took the card OUT OF DOM ORDER, and DOM order IS tab order. A card's tab
+ * stop (its link) then sat after every other control on the page: Tab from
+ * the `?` walked the whole rest of the screen before reaching the explanation
+ * belonging to the label the reader was standing on. Unpinned it was worse
+ * than out of order -- it was gone, because tabbing off the trigger blurs it,
+ * `blur` derives `open` as `pinned || hovered`, and the card the reader was
+ * tabbing towards closed underneath them.
+ *
+ * Nothing in CSS can fix that; tab order is the document's, not the box's. So
+ * the trigger bridges it: while the card is open, Tab moves focus to the
+ * card's first stop and PINS the card on the way, so the blur that follows
+ * cannot close it. Leaving the card dismisses it: Shift+Tab returns focus to
+ * the `?`, and Tab goes on to the stop after the `?` -- which is exactly what
+ * an inline card would cost, so the portal is no longer paid for in Tab
+ * presses (QA-022).
+ *
+ * A HOOK, SO BOTH CARDS HAVE IT. It lived inside `HelpCardView`, so it bridged
+ * the topic cards and nothing else. The head's section card had no stop to
+ * bridge to until it gained its way into Help (AH-5); written twice, the two
+ * copies would drift the way the placement code once did, so it is written
+ * once and `SectionQuestion` (App.tsx) calls it too.
+ *
+ * `data-focus-return` on a card is not decoration. It names the trigger the
+ * card hands focus back to, and `src/__tests__/keyboard.test.tsx` asserts that
+ * EVERY tab stop living outside the app root sits inside an element carrying
+ * one, and that the id resolves to a real element.
+ */
+export function useCardBridge(
+  state: HelpState,
+  trigger: HelpTriggerProps,
+  cardRef: RefObject<HTMLElement | null>,
+  triggerRef: RefObject<HTMLButtonElement | null>,
+) {
+  /** Focus is inside the card, so a dismissal has somewhere to return it from. */
+  const inside = useRef(false)
+  /**
+   * Suppress exactly one `focus` on the trigger.
+   *
+   * WITHOUT THIS THE WIDGET IS THE TRAP IT WAS BUILT TO REMOVE. Returning
+   * focus to the `?` fires its `onFocus`, which dispatches `focus`, which
+   * reopens the card -- and the next Tab bridges straight back into it. The
+   * flag is cleared immediately after `.focus()` because `HTMLElement.focus()`
+   * dispatches synchronously in every engine and in jsdom, so it can never
+   * survive to swallow a genuine focus later.
+   */
+  const returning = useRef(false)
+  const wasOpen = useRef(false)
+
+  const focusTriggerSilently = () => {
+    const el = triggerRef.current
+    if (!el || el.ownerDocument.activeElement === el) return
+    returning.current = true
+    el.focus()
+    returning.current = false
+  }
+
+  const dismissToTrigger = () => {
+    inside.current = false
+    // The same event the trigger's own Escape sends, so there is one dismissal
+    // path rather than two that can disagree about `pinned`.
+    trigger.onKeyDown({ key: 'Escape' })
+    focusTriggerSilently()
+  }
+
+  /*
+   * TAB OFF THE CARD GOES ON, NOT BACK (QA-022, visual QA 2026-10-20). Leaving
+   * forwards used to come back through `dismissToTrigger`, so every `?` cost
+   * THREE Tab stops -- the `?`, the card's link, then the `?` again -- and a
+   * page with six of them made its reader press Tab eighteen times to cross
+   * them. The stop after the card, in reading order, is the one after its
+   * `?`: the card was portalled out of DOM order, not moved in the reader's
+   * mind. So the forward exit dismisses the same way and lands there.
+   * Shift+Tab still returns to the `?`, which is where backwards leads.
+   * With nothing after the `?` (the last control on the page) it falls back
+   * to the `?`, as before, rather than dropping focus on `<body>`.
+   */
+  const dismissForward = () => {
+    const el = triggerRef.current
+    const card = cardRef.current
+    const stops = el === null ? [] : tabStops(el.ownerDocument.body).filter((s) => card === null || !card.contains(s))
+    const next = el === null ? undefined : stops[stops.indexOf(el) + 1]
+    if (next === undefined) {
+      dismissToTrigger()
+      return
+    }
+    inside.current = false
+    trigger.onKeyDown({ key: 'Escape' })
+    next.focus()
+  }
+
+  /*
+   * A DISMISSAL THE CARD DID NOT INITIATE still has to bring focus back.
+   *
+   * Escape is caught by a listener on `document` while the card is pinned, and
+   * an outside click by a capturing `pointerdown` -- neither goes through the
+   * card. Both unmount a node that currently holds focus, and removing the
+   * focused node leaves `document.activeElement` on `<body>`: the reader is
+   * silently teleported to the top of the document. `inside` is still true at
+   * that point, because nothing fires `blur` for a node that was removed.
+   */
+  /*
+   * A PINNED CARD THAT FOCUS NEVER ENTERED has the same problem from the other
+   * side (AUT-13, ADM-12, live QA 2026-10-11): a click that does not focus
+   * the button it lands on -- Safari's, or an automation driver's -- pins the
+   * card with focus on `<body>`, and Escape left it there. Dismissing a card
+   * the reader pinned returns focus to its `?` when nothing else holds it. A
+   * card that was only hovered open is left alone: moving focus on a hover
+   * would steal it.
+   */
+  const wasPinned = useRef(false)
+  useEffect(() => {
+    const doc = triggerRef.current?.ownerDocument
+    const adrift = doc !== undefined && (doc.activeElement === null || doc.activeElement === doc.body)
+    if (wasOpen.current && !state.open && (inside.current || (wasPinned.current && adrift))) {
+      inside.current = false
+      focusTriggerSilently()
+    }
+    wasOpen.current = state.open
+    wasPinned.current = state.pinned
+    // `focusTriggerSilently` closes over refs only, so it needs no dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.open, state.pinned])
+
+  const leaveCard = (e: BridgeKey) => {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      // ESCAPE CLOSES THE INNERMOST THING. These cards are rendered inside the
+      // agent drawer, which also closes on Escape -- one keystroke taking both
+      // away is a reader who dismissed a tooltip and lost the agent they were
+      // reading. Stopping here also stops the `document` listener
+      // `useHelpDisclosure` registers while pinned, which is correct: the
+      // dismissal below has already been sent.
+      e.stopPropagation()
+      dismissToTrigger()
+      return
+    }
+    if (e.key !== 'Tab' || cardRef.current === null) return
+    const stops = tabStops(cardRef.current)
+    const atFirst = stops[0] === e.currentTarget
+    const atLast = stops[stops.length - 1] === e.currentTarget
+    // With one stop in the card both are true, so Shift+Tab comes back to the
+    // `?` and Tab goes on past it (`dismissForward`). A card that grows a
+    // second control keeps natural Tab between them and only bridges at the
+    // edges.
+    if ((e.shiftKey && atFirst) || (!e.shiftKey && atLast)) {
+      e.preventDefault()
+      // The widget handled this key, so nothing above it should also act on
+      // it. These cards render inside the agent drawer, whose own Tab handler
+      // wraps focus at the drawer's edges -- and the `?` the card is about to
+      // hand focus back to may well BE one of those edges.
+      e.stopPropagation()
+      if (e.shiftKey) dismissToTrigger()
+      else dismissForward()
+    }
+  }
+
+  return {
+    /** Close the card and hand focus back to the `?`: the phone close control. */
+    close: dismissToTrigger,
+    /** Spread onto the `?` AFTER the disclosure's own trigger props. */
+    trigger: {
+      onFocus: () => {
+        if (returning.current) return
+        trigger.onFocus()
+      },
+      onKeyDown: (e: BridgeKey) => {
+        if (e.key === 'Tab' && !e.shiftKey && state.open && cardRef.current !== null) {
+          const first = tabStops(cardRef.current)[0]
+          if (first !== undefined) {
+            e.preventDefault()
+            // Handled here; see `leaveCard` for why nothing above may also act
+            // on this key.
+            e.stopPropagation()
+            // PIN BEFORE MOVING. The blur that `first.focus()` causes derives
+            // `open` as `pinned || hovered`, and a card opened by focus alone
+            // is neither -- so without this the card closes in the same tick
+            // as focus arrives inside it.
+            if (!state.pinned) trigger.onClick()
+            inside.current = true
+            first.focus()
+            return
+          }
+        }
+        // See `leaveCard`: Escape belongs to the innermost open thing, and
+        // these cards sit inside a drawer that also closes on Escape.
+        if (e.key === 'Escape' && state.open) e.stopPropagation()
+        trigger.onKeyDown(e)
+      },
+    },
+    /** Spread onto every tab stop inside the card. */
+    stop: {
+      onFocus: () => {
+        inside.current = true
+      },
+      onBlur: () => {
+        inside.current = false
+      },
+      onKeyDown: leaveCard,
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The view: one state in, markup out, no behaviour
+// ---------------------------------------------------------------------------
+
+const WRAP: CSSProperties = {
+  position: 'relative',
+  display: 'inline-block',
+  verticalAlign: 'baseline',
+  lineHeight: 0,
+}
+
+const GLYPH: CSSProperties = {
+  // A real <button>: a <span> with a click handler is not reachable by Tab,
+  // which would make "opens on focus" untrue for the people who need it most.
+  appearance: 'none',
+  // A DISC, NOT A RING -- the substitution design-system.md §13.3 made for
+  // `.ctl-q-glyph`, applied to the other `?`. This was a 1px `--line` ring,
+  // which is a bordered pill: 14 of them in the agent drawer, 19 on Runtimes,
+  // 16 on Accounts, the largest remaining source of pill radii on those screens
+  // (§11.3, §12.5). The ring separated nothing, so it goes; the fill carries
+  // the affordance instead, and the ink comes up from --text-faint to
+  // --text-dim because the glyph lost the edge that was half its presence.
+  // `prose.hygiene.test.tsx` holds both halves: no border, and still a fill.
+  //
+  // THE FILL IS THE PAGE HEAD'S `?` FILL (admin-008, visual QA run 2). It was
+  // --surface-2, which in light is #eef4fa on a #f3f6f9 page, 1.02:1 -- the
+  // disc this comment says carries the affordance was not there. The
+  // --ctl-q-fill pair is styles.css's answer for `.ctl-q-glyph`; this takes it
+  // rather than a second copy. `--help-glyph-fill` is the one seam an inline
+  // style leaves for `:hover`: the `.help-glyph:hover` rule in styles.css sets
+  // it to --ctl-q-fill-hover, and at rest it is unset, so the fallback paints.
+  // `background-color`, not the `background` shorthand: jsdom drops a
+  // shorthand carrying var(), so the tests would read no fill back.
+  backgroundColor: 'var(--help-glyph-fill, var(--ctl-q-fill))',
+  border: 0,
+  borderRadius: '999px',
+  color: 'var(--text-dim)',
+  cursor: 'help',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  fontWeight: 600,
+  fontSize: 'var(--t-meta)',
+  // --lh-flush: the box is the 14px circle below.
+  lineHeight: 'var(--lh-flush)',
+  fontFamily: 'var(--mono)',
+  height: '14px',
+  width: '14px',
+  // THE DISC HOLDS ITS OWN HEIGHT (CH-7). `:where(.app button)` gives every
+  // button in the app a 28px min-height -- the control floor -- and this set
+  // `height` alone, so the floor won and the disc rendered as a 14x28 pill.
+  // An inline min-height equal to the size beats any sheet rule without
+  // `!important`, and it is the same number as `height` so it cannot drift
+  // into making the glyph taller than it says it is.
+  minHeight: '14px',
+  marginLeft: '5px',
+  padding: 0,
+  verticalAlign: 'middle',
+  // The phone hit area below is positioned against the disc.
+  position: 'relative',
+}
+
+/**
+ * CH-8 (the HelpCard half). §7.2 asks for a 44px touch target at phone width,
+ * and a 14px disc is a third of that. Growing the DISC would make the `?` the
+ * loudest mark in the line it annotates, so the TARGET grows instead: an empty
+ * box centred on the disc, inside the button, so a press on it IS a press on
+ * the button. Drawn only at 560px and under, where a finger is what presses it;
+ * on a wide screen a 44px target would reach over the label beside it.
+ */
+const HIT: CSSProperties = {
+  position: 'absolute',
+  top: '50%',
+  left: '50%',
+  width: '44px',
+  height: '44px',
+  transform: 'translate(-50%, -50%)',
+}
+
+/** §7.2's phone width: the widths at which a target has to take a fingertip. */
+const PHONE_QUERY = '(max-width: 560px)'
+
+function subscribePhone(onChange: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(PHONE_QUERY)
+  query.addEventListener('change', onChange)
+  return () => query.removeEventListener('change', onChange)
+}
+
+/**
+ * Whether the viewport is phone-width. False where there is no `matchMedia` --
+ * jsdom has none, and neither does `renderToStaticMarkup` under node -- which
+ * is the wide-screen answer and draws nothing extra.
+ *
+ * EXPORTED for the Agents list, which reads a 50-row page at this width
+ * (Agents.tsx, `PHONE_PAGE_LIMIT`): one definition of "phone", so the page
+ * size and the layout cannot disagree about which width is one.
+ */
+export function phoneWidth(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia(PHONE_QUERY).matches
+  )
+}
+
+function usePhoneWidth(): boolean {
+  return useSyncExternalStore(subscribePhone, phoneWidth, () => false)
+}
+
+/**
+ * THE CARD DOES NOT DECIDE WHICH WAY IT OPENS; `useEdgeSafePlacement` does.
+ *
+ * This carried `left: 0` and nothing else, so every card opened rightward from
+ * its anchor whatever sat to the right of it. Measured 2026-09-24 by opening
+ * all 82 of them: nine were unusable. Three on Runtimes opened 98, 84 and 11px
+ * past the viewport; two on Workflows opened 278 and 309px past it, which is
+ * not a clipped card but an invisible one. One on Pools was painted over by a
+ * sibling, and two on Submit opened below the fold with one of those also
+ * under a button.
+ *
+ * Anchors near the right edge need to open LEFTWARD and anchors near the
+ * bottom need to open UPWARD. CSS alone cannot see that -- anchor positioning
+ * would, and is not available here -- so the decision is measured once on open
+ * and written as an inline offset. `left`/`right`/`top`/`bottom` are therefore
+ * deliberately absent below: the hook supplies exactly one horizontal and one
+ * vertical anchor, and a default here would fight it.
+ */
+const CARD: CSSProperties = {
+  /* `position` and the offsets come from `useEdgeSafePlacement`, which portals
+     this to <body> and places it in VIEWPORT coordinates. It has to leave the
+     anchor's subtree: on Pools the card sat at z-index 200 and was still
+     painted over by `.cap-families`, a `position: static; z-index: auto` div,
+     because an ancestor of the anchor opens a stacking context that ranks
+     below it. No z-index on a trapped element can win that -- the comparison
+     never reaches the top level. Portalling is the only fix that generalises
+     to the next panel someone wraps in a transform or a filter. */
+  // ABOVE THE SIBLINGS, not just above the parent's children. At 40 a card on
+  // Pools was painted over by a panel that establishes its own stacking
+  // context, so the card's z-index was being compared inside a context the
+  // panel had already won. 200 clears every in-page surface in this app; the
+  // dock and the drawer are higher still and are meant to be.
+  zIndex: 200,
+  width: 'max-content',
+  minWidth: '240px',
+  maxWidth: '360px',
+  background: 'var(--surface)',
+  border: '1px solid var(--line)',
+  borderRadius: 'var(--radius)',
+  // THE POPOVER TOKEN, WHICH FOLLOWS THE THEME (CH-9). This was
+  // `rgba(0,0,0,.28)` in both themes -- the dark theme's drop, which reads as
+  // grime on the light background -- while `--ctl-shadow-pop`, named in the
+  // sheet for exactly this surface and corrected per theme, was used nowhere.
+  boxShadow: 'var(--ctl-shadow-pop)',
+  padding: 'var(--ctl-s3)',
+  textAlign: 'left',
+  lineHeight: 1.5,
+  cursor: 'auto',
+}
+
+/**
+ * THE WAY OUT OF A PINNED CARD ON A PHONE (archived issue 137). There is no Escape key on a
+ * phone and no hover to leave, and tapping away lands on whatever the card is
+ * covering. So a pinned card at phone width carries a close control at §7.2's
+ * 44px -- a fingertip, not a glyph -- in its top corner, floated so the title
+ * wraps beside it rather than under it. The negative margins pull it into the
+ * card's padding, so the target is 44px without the card growing by as much.
+ * Drawn only when pinned: a card opened by hover or focus closes itself.
+ */
+const CLOSE: CSSProperties = {
+  float: 'right',
+  width: '44px',
+  height: '44px',
+  margin: 'calc(-1 * var(--ctl-s3)) calc(-1 * var(--ctl-s3)) 0 var(--ctl-s2)',
+  padding: 0,
+  border: 0,
+  background: 'none',
+  color: 'var(--text-dim)',
+  fontSize: 'var(--t-body)',
+  lineHeight: 1,
+  cursor: 'pointer',
+}
+
+/**
+ * Which way a card may open without leaving the viewport.
+ *
+ * Measured against the GLYPH rather than the card: the card is what we are
+ * placing, so its own position is the thing in flux, while the anchor is
+ * fixed. `useLayoutEffect` so the flip happens before paint -- in an effect
+ * the card would be seen off-screen for a frame and then jump.
+ *
+ * Re-measured on scroll and resize because both move the anchor under a card
+ * that is already open; a card correct when it opened is not correct after the
+ * page moves beneath it.
+ *
+ * THE CARD'S OWN REF IS A PARAMETER, AND IT HAS TO BE.
+ *
+ * This hook used to find the card with
+ * `ref.current.querySelector('[role="tooltip"], [role="note"]')`, where `ref`
+ * is the ANCHOR. Both consumers portal their card to `document.body` -- that
+ * portal is the fix that rescued nine cards from stacking contexts they could
+ * not escape -- so the card is not in the anchor's subtree and that query
+ * returned `null` every single time. The height below was therefore ALWAYS the
+ * 220px fallback, which is precisely the estimate the comment there says was
+ * measured wrong by 16px on Submit. The measurement had been written, wired to
+ * the wrong element, and silently never taken.
+ *
+ * The role list was independently wrong as well: `helpRole` returns `dialog`
+ * or `tooltip` and nothing in this file has ever rendered `role="note"`, so a
+ * PINNED card would have been missed even inside the right subtree. Two faults
+ * on one line, agreeing on the same wrong answer, which is why neither showed.
+ *
+ * Passing the ref in rather than re-querying is what makes it unable to happen
+ * again: a caller that portals its card still hands over the element, and a
+ * caller that forgets gets the documented estimate instead of a silent null.
+ * `cardRef` is optional so that the fallback stays reachable and honest.
+ */
+export function useEdgeSafePlacement(
+  open: boolean,
+  cardRef?: RefObject<HTMLElement | null>,
+): [RefObject<HTMLSpanElement>, CSSProperties] {
+  const ref = useRef<HTMLSpanElement>(null)
+  const [place, setPlace] = useState<CSSProperties>({ visibility: 'hidden' })
+
+  useLayoutEffect(() => {
+    if (!open) return
+    const measure = () => {
+      const node = ref.current
+      if (!node) return
+      const anchor = node.getBoundingClientRect()
+      // The widest the card is allowed to be, from CARD's own maxWidth. Read as
+      // a number rather than trusting the rendered width: on the first pass the
+      // card may not have been laid out yet.
+      const CARD_MAX = 360
+      const MARGIN = 8
+      const overflowsRight = anchor.left + CARD_MAX + MARGIN > window.innerWidth
+      const overflowsLeft = anchor.right - CARD_MAX - MARGIN < 0
+      // Both sides overflow only on a viewport narrower than the card, where
+      // the honest answer is to pin it to the left margin and let maxWidth
+      // (min(44ch, 86vw) in the sheet) do the rest.
+      // VIEWPORT COORDINATES, because the card is portalled to <body> and is
+      // `position: fixed` -- it has no positioned ancestor to be relative to.
+      // CLAMPED ON BOTH BRANCHES, and the second one is why. The right-flip
+      // read `anchor.right - CARD_MAX` with no upper bound, which is correct
+      // only while the anchor is on screen. The rail becomes a horizontal
+      // SCROLLER below 900px, so a glyph scrolled off to the right reports an
+      // `anchor.right` of ~1049 in a 390px viewport and the card opened 299px
+      // past the edge -- the flip meant to keep it in view was the thing that
+      // threw it out. One clamp applied to whichever side wins.
+      const wanted = overflowsRight && !overflowsLeft ? anchor.right - CARD_MAX : anchor.left
+      const maxLeft = Math.max(MARGIN, window.innerWidth - CARD_MAX - MARGIN)
+      const horizontal: CSSProperties = { left: Math.min(Math.max(MARGIN, wanted), maxLeft) }
+
+      // Vertical: below unless it would not fit there and fits better above.
+      //
+      // MEASURED, NOT ESTIMATED. A constant here was wrong by 16px on Submit --
+      // the card cleared a 220px guess and then hung below the fold anyway,
+      // because these cards are as tall as their content and one of them has a
+      // values list. On the first pass the card is not laid out yet, so the
+      // estimate is the fallback and the real height replaces it the moment
+      // there is one; `measure` re-runs on scroll and resize, so the second
+      // pass is never far away.
+      //
+      // READ OFF THE CARD'S OWN REF, not looked up under the anchor: see the
+      // note on this hook's signature for why the lookup could never find it.
+      const card = cardRef?.current ?? null
+      const cardH = card?.getBoundingClientRect().height || 220
+      const roomBelow = window.innerHeight - anchor.bottom - 6
+      // CLAMPED, so "below the fold" cannot happen at all: if it fits below it
+      // goes below, if it fits better above it goes above, and if neither has
+      // room it is pinned inside the viewport rather than hanging out of it.
+      // The +16px overflow on Submit was a card that fit NEITHER way; flipping
+      // it merely moved which edge it escaped from.
+      const below = anchor.bottom + 6
+      const above = anchor.top - 6 - cardH
+      const top =
+        cardH <= roomBelow ? below
+        : above >= MARGIN ? above
+        : Math.max(MARGIN, Math.min(below, window.innerHeight - cardH - MARGIN))
+
+      setPlace({ position: 'fixed', ...horizontal, top })
+    }
+    measure()
+    window.addEventListener('scroll', measure, true)
+    window.addEventListener('resize', measure)
+    return () => {
+      window.removeEventListener('scroll', measure, true)
+      window.removeEventListener('resize', measure)
+    }
+    // `cardRef` is a ref OBJECT: its identity is stable for the component's
+    // life, so listing it re-runs nothing. It is listed because leaving a used
+    // value out of a dep array is how the next edit to this effect gets a stale
+    // one, and because the lint rule that would say so is the only thing
+    // standing between this hook and the bug it just had.
+  }, [open, cardRef])
+
+  return [ref, place]
+}
+
+// NO CAPITALS AND NO TRACKING (CH-3). This title was forced to uppercase and
+// tracked `.04em` through an inline style -- the one place the stylesheet's
+// "nothing shouts" rule (§B5.2, `typescale.test.ts`) could not see. The title
+// is a sentence someone wrote; mono plus `--text-faint` is the label rank, and
+// capitals were a third channel on the same distinction.
+//
+// SANS, AS EVERY OTHER POPOVER'S HEADING IS (U10a D31, owner QA 2026-10-04):
+// a topic card's title was mono beside the section question card's sans
+// `.ctl-q-title`, so two `?` popovers on one page headed themselves in two
+// faces. The title is a sentence, and mono is for ids, values and code (Q1).
+// One heading style: 600, --t-meta, --text-faint, the sans face.
+const CARD_TITLE: CSSProperties = {
+  display: 'block',
+  margin: '0 0 4px',
+  fontWeight: 600,
+  fontSize: 'var(--t-meta)',
+  lineHeight: 'var(--lh-meta)',
+  fontFamily: 'var(--font)',
+  color: 'var(--text-faint)',
+}
+
+const CARD_BODY: CSSProperties = {
+  display: 'block',
+  margin: 0,
+  fontSize: 'var(--t-body)',
+  lineHeight: 'var(--lh-body)',
+  color: 'var(--text-dim)',
+  // 52ch (§B7.2). A help card wider than a paragraph is a paragraph.
+  maxWidth: '52ch',
+}
+
+const CARD_VALUES: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '4px',
+  margin: '8px 0 0',
+  padding: 0,
+  listStyle: 'none',
+}
+
+const CARD_VALUE: CSSProperties = {
+  border: '1px solid var(--line)',
+  borderRadius: 'var(--ctl-radius-sm)',
+  padding: '1px 6px',
+  fontWeight: 500,
+  fontSize: 'var(--t-meta)',
+  lineHeight: 'var(--lh-meta)',
+  fontFamily: 'var(--mono)',
+  color: 'var(--text-dim)',
+  background: 'var(--surface-2)',
+  // THE API'S ENUMS, BROUGHT INTO THE CONSOLE'S REGISTER (CH-3). The values
+  // are state names, strategies and carriers exactly as their owner spells
+  // them -- `LEASED` -- and a card of raw capitals shouts every one. This is
+  // what §B5.2 says `text-transform` is FOR: a string the API chose, made
+  // quieter, with the string itself untouched so it is still the owner's
+  // spelling for a copy, a search and the anti-drift test in help.test.ts.
+  textTransform: 'lowercase',
+}
+
+const CARD_LINK: CSSProperties = {
+  display: 'inline-block',
+  marginTop: '8px',
+  fontSize: 'var(--t-micro)',
+  lineHeight: 'var(--lh-micro)',
+  color: 'var(--text-dim)',
+}
+
+const HIDDEN: CSSProperties = {
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+}
+
+/**
+ * THE EXPLANATION WITHOUT THE WIDGET.
+ *
+ * A `<span>` that is never drawn, carrying one topic's short form at the id a
+ * label points its `aria-describedby` at. It renders no `?`, opens nothing and
+ * holds no state.
+ *
+ * IT EXISTS BECAUSE THE `?` WAS RATIONED AND THE SCREEN READER WAS NOT. B7.4
+ * cut this console from 139 help anchors to under twenty, and the honest cost
+ * of deleting a `?` from a label is that the label loses the sentence it was
+ * publishing to assistive technology -- the sighted reader keeps the mark, the
+ * unit in the column head and the footer link, and the screen-reader user was
+ * the only one who lost anything. So the button goes and the description stays:
+ * `<HelpNote>` is what a label carries once its `?` is gone.
+ *
+ * ONE RENDERER FOR THE HIDDEN NODE, which is the other reason this is a
+ * component rather than a copied `<span>`. `HelpCardView` below renders this
+ * same element, so the attribute every prose test strips by
+ * (`data-help-description`) is written in exactly one place. A second spelling
+ * of it would be invisible until a word-count gate started counting the whole
+ * help corpus as screen text and passing for the wrong reason -- which is the
+ * failure `honesty.prose.test.tsx` was written against.
+ *
+ * `data-help-description` MARKS IT, and that attribute is not decoration. This
+ * node is in `document.body.textContent` whether any card is open or shut, so a
+ * test asking "what can a reader see with every card closed" reads the whole
+ * explanation back out of it and passes for the wrong reason. `visibleText()`
+ * in `src/__tests__/honesty.prose.test.tsx` strips it by this attribute, and so
+ * does every `prose.budget*` ceiling.
+ */
+export function HelpNote({ topic, id }: { topic: TopicId; id: string }) {
+  return (
+    // `hidden`, NOT ONLY CLIPPED (QA-070, visual QA 2026-10-20). Clipped to a
+    // pixel it was still RENDERED, and a rendered node is name-from-content:
+    // a `?` inside an `<h2>` -- Submit's "Choose a runner" -- named the
+    // heading with ~330 characters of help, so a screen reader's heading list
+    // read the whole explanation as the heading. `hidden` takes it out of the
+    // name computation and out of the accessibility tree, and accname reads a
+    // hidden node all the same when it is reached through `aria-describedby`
+    // -- which is the only way this text is meant to be heard. `HIDDEN` stays
+    // as well, for an author sheet that overrides `[hidden]`.
+    <span id={id} data-help-description="" hidden style={HIDDEN}>
+      {HELP[topic].short}
+    </span>
+  )
+}
+
+export interface HelpCardViewProps {
+  topic: TopicId
+  state: HelpState
+  /**
+   * The id the EXPLAINED element points its `aria-describedby` at. The short
+   * text is rendered into a node with this id whether the card is open or not,
+   * so a screen reader gets the explanation from the label itself and never
+   * has to find and open a popup to hear it.
+   */
+  descriptionId: string
+  cardId: string
+  trigger: HelpTriggerProps
+  hover: HelpHoverProps
+  /**
+   * The card and trigger elements, when the disclosure driving this view owns
+   * them -- `useHelpDisclosure` does, because its outside-press listener has to
+   * know what is inside (AH-6). Left out, the view keeps its own, which is
+   * what the static-markup tests do.
+   */
+  cardRef?: RefObject<HTMLSpanElement> | undefined
+  triggerRef?: RefObject<HTMLButtonElement> | undefined
+}
+
+export function HelpCardView({
+  topic,
+  state,
+  descriptionId,
+  cardId,
+  trigger,
+  hover,
+  cardRef: givenCardRef,
+  triggerRef: givenTriggerRef,
+}: HelpCardViewProps) {
+  const t = HELP[topic]
+  const values = t.values?.() ?? []
+  const ownCardRef = useRef<HTMLSpanElement>(null)
+  const ownTriggerRef = useRef<HTMLButtonElement>(null)
+  // DECLARED BEFORE THE PLACEMENT HOOK because the hook measures the card
+  // through it. It is the same ref the tab bridge uses; the card node carries
+  // one ref, not two.
+  const cardRef = givenCardRef ?? ownCardRef
+  const triggerRef = givenTriggerRef ?? ownTriggerRef
+  const [anchorRef, placement] = useEdgeSafePlacement(state.open, cardRef)
+  // The portal and the bridge that pays for it: see `useCardBridge`.
+  const bridge = useCardBridge(state, trigger, cardRef, triggerRef)
+  const phone = usePhoneWidth()
+  const triggerId = `${cardId}-t`
+  // THE PINNED CARD IS A DIALOG, AND A DIALOG HAS A NAME (a11y-keyboard-003,
+  // visual QA run 2): its own title, as App.tsx's section card is named.
+  // Derived from `cardId`, which is already unique per card (HelpCard builds
+  // it from `useId`) because the trigger's `aria-controls` needs it to be.
+  const titleId = `${cardId}-title`
+
+  const cardNode = (
+    <span
+      id={cardId}
+      role={helpRole(state)}
+      aria-labelledby={titleId}
+      data-focus-return={triggerId}
+      style={{ ...CARD, ...placement }}
+      ref={cardRef}
+    >
+      {state.pinned && phone && (
+        <button type="button" aria-label="Close help" style={CLOSE} onClick={bridge.close} {...bridge.stop}>
+          <span aria-hidden="true">&times;</span>
+        </button>
+      )}
+      <strong id={titleId} style={CARD_TITLE}>
+        {t.title}
+      </strong>
+      <span style={CARD_BODY}>{t.short}</span>
+      {values.length > 0 && (
+        <ul style={CARD_VALUES}>
+          {values.map((v) => (
+            <li key={v.term} style={CARD_VALUE} title={v.note}>
+              {v.term}
+            </li>
+          ))}
+        </ul>
+      )}
+      <a href={`#${t.anchor}`} style={CARD_LINK} {...bridge.stop}>
+        Full explanation &rarr;
+      </a>
+    </span>
+  )
+
+  return (
+    <span style={WRAP} {...hover} ref={anchorRef}>
+      <button
+        type="button"
+        id={triggerId}
+        ref={triggerRef}
+        // `help-glyph` carries the one thing an inline style cannot say to
+        // the browser's focus scroll in the sheet beside `.ctl-q-glyph`'s:
+        // the scroll margin that keeps the `?` out from under the sticky
+        // trail bar (QA-022, styles.css).
+        className="help-glyph"
+        style={GLYPH}
+        // `Help: <title>` (AH-4). This was built as "What <title> means",
+        // which only reads as English for a title that is a noun phrase:
+        // "What what reserves capacity means", "What absent is not zero
+        // means". The title said to be help works for every title there is.
+        aria-label={`Help: ${t.title}`}
+        aria-expanded={state.open}
+        aria-controls={state.open ? cardId : undefined}
+        {...trigger}
+        {...bridge.trigger}
+      >
+        ?{phone && <span aria-hidden="true" style={HIT} />}
+      </button>
+
+      <HelpNote topic={topic} id={descriptionId} />
+
+      {/* PORTALLED ONLY WHERE THERE IS A DOCUMENT TO PORTAL INTO.
+          `tests/run.mjs` renders this component to a STRING with no DOM, and
+          `createPortal(…, document.body)` throws `document is not defined`
+          there. Rendered inline in that case the markup is identical in every
+          respect those tests assert -- they read the card's text, its role and
+          its values, none of which the portal changes. What the portal changes
+          is which stacking context the node lands in, and a string has none. */}
+      {state.open &&
+        (typeof document === 'undefined' ? cardNode : createPortal(cardNode, document.body))}
+    </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The component screens use
+// ---------------------------------------------------------------------------
+
+/**
+ * ONE `?` THAT OPENS SEVERAL TOPICS: a screen's index, behind the `?` beside
+ * its title (VQ-033, the owner's answer 2026-10-26 08:20-08:30Z, "Move the topics
+ * behind the page's one ?"). Pools, Accounts and Provider quota ended in a
+ * `Reading this screen:` row of underlined monospace links -- the help-link
+ * block the agent-details-v3 decision replaced with one `?` per card -- and
+ * their topics are properties of the WHOLE screen, so the one place a glyph
+ * may carry them is the page's own title (AH-24).
+ *
+ * THE CARD IS THE FOOTER'S INDEX, NOT THE TOPICS' CARDS STACKED. Each entry is
+ * the topic's subject, as the footer printed it, linking to `#help/<id>`, and
+ * its title -- the claim the footer only gave on hover, which a phone never
+ * makes -- under it. Eight `short`s of up to sixty words each would be a card
+ * that scrolls, which §B7.2 calls a paragraph that moved house.
+ *
+ * NOTHING MEASURED MAY DEPEND ON IT, as the footer's rule was: the marks on
+ * the screen say a missing figure from a zero with every card closed.
+ */
+/**
+ * A SECTION'S QUESTION, LEADING A SCREEN'S INDEX (VQ-033 with Q2). Pools,
+ * Accounts and Provider quota are Capacity pages, and their head `?` was the
+ * section's question before their footer moved behind it. The footer's topics
+ * did not replace the question, they joined it: so the card asks the section's
+ * question first, in `SectionQuestion`'s (App.tsx) own markup and name
+ * ("Help: Capacity answers"), and lists the topics under it -- one glyph, the
+ * same disc every other page head draws.
+ */
+export interface HelpTopicsLead {
+  /** The section's label: the card says "<label> answers". */
+  label: string
+  question: string
+}
+
+export interface HelpTopicsViewProps {
+  topics: readonly TopicId[]
+  /** The card's heading, and what its `?` is named after "Help:". */
+  title: string
+  /** The section's question, when the page head has one to lead with. */
+  lead?: HelpTopicsLead | undefined
+  state: HelpState
+  cardId: string
+  trigger: HelpTriggerProps
+  hover: HelpHoverProps
+  cardRef?: RefObject<HTMLSpanElement> | undefined
+  triggerRef?: RefObject<HTMLButtonElement> | undefined
+}
+
+const TOPIC_LIST: CSSProperties = {
+  display: 'block',
+  margin: 0,
+  padding: 0,
+  listStyle: 'none',
+  maxWidth: '52ch',
+}
+
+const TOPIC_ITEM: CSSProperties = {
+  display: 'block',
+  margin: '6px 0 0',
+}
+
+// The footer's link face, without the footer's mono: the subject is words, not
+// an id (Q1), and it sits in the card's sans like every popover's text.
+const TOPIC_LINK: CSSProperties = {
+  fontSize: 'var(--t-meta)',
+  lineHeight: 'var(--lh-meta)',
+  fontWeight: 500,
+  color: 'var(--text-dim)',
+}
+
+const TOPIC_CLAIM: CSSProperties = {
+  display: 'block',
+  fontSize: 'var(--t-micro)',
+  lineHeight: 'var(--lh-micro)',
+  color: 'var(--text-faint)',
+}
+
+export function HelpTopicsView({
+  topics,
+  title: ownTitle,
+  lead,
+  state,
+  cardId,
+  trigger,
+  hover,
+  cardRef: givenCardRef,
+  triggerRef: givenTriggerRef,
+}: HelpTopicsViewProps) {
+  const ownCardRef = useRef<HTMLSpanElement>(null)
+  const ownTriggerRef = useRef<HTMLButtonElement>(null)
+  const cardRef = givenCardRef ?? ownCardRef
+  const triggerRef = givenTriggerRef ?? ownTriggerRef
+  const [anchorRef, placement] = useEdgeSafePlacement(state.open, cardRef)
+  const bridge = useCardBridge(state, trigger, cardRef, triggerRef)
+  const phone = usePhoneWidth()
+  const triggerId = `${cardId}-t`
+  const titleId = `${cardId}-title`
+  const title = lead === undefined ? ownTitle : `${lead.label} answers`
+
+  const cardNode = (
+    <span
+      id={cardId}
+      role={helpRole(state)}
+      aria-labelledby={titleId}
+      data-focus-return={triggerId}
+      // LED BY THE SECTION, IT IS THE SECTION'S CARD: `.ctl-q-card` draws its
+      // box, as it draws every other page head's, so the two cannot drift.
+      className={lead === undefined ? undefined : 'ctl-q-card'}
+      style={lead === undefined ? { ...CARD, ...placement } : placement}
+      ref={cardRef}
+    >
+      {state.pinned && phone && (
+        <button type="button" aria-label="Close help" style={CLOSE} onClick={bridge.close} {...bridge.stop}>
+          <span aria-hidden="true">&times;</span>
+        </button>
+      )}
+      {lead === undefined ? (
+        <strong id={titleId} style={CARD_TITLE}>
+          {title}
+        </strong>
+      ) : (
+        <>
+          <strong id={titleId} className="ctl-q-title">
+            {title}
+          </strong>
+          <span className="ctl-q-body">{lead.question}</span>
+        </>
+      )}
+      <ul style={TOPIC_LIST}>
+        {topics.map((id) => (
+          <li key={id} style={TOPIC_ITEM}>
+            <a href={`#${HELP[id].anchor}`} style={TOPIC_LINK} {...bridge.stop}>
+              {HELP[id].subject}
+            </a>
+            <span style={TOPIC_CLAIM}>{HELP[id].title}</span>
+          </li>
+        ))}
+      </ul>
+    </span>
+  )
+
+  // The section's disc and its phone hit area come from `.ctl-q-glyph`
+  // (styles.css); without a lead the glyph is a topic card's, inline.
+  return (
+    <span className={lead === undefined ? undefined : 'ctl-q'} style={lead === undefined ? WRAP : undefined} {...hover} ref={anchorRef}>
+      <button
+        type="button"
+        id={triggerId}
+        ref={triggerRef}
+        className={lead === undefined ? 'help-glyph' : 'ctl-q-glyph'}
+        style={lead === undefined ? GLYPH : undefined}
+        aria-label={`Help: ${title}`}
+        aria-expanded={state.open}
+        aria-controls={state.open ? cardId : undefined}
+        {...trigger}
+        {...bridge.trigger}
+      >
+        ?{lead === undefined && phone && <span aria-hidden="true" style={HIT} />}
+      </button>
+      {state.open &&
+        (typeof document === 'undefined' ? cardNode : createPortal(cardNode, document.body))}
+    </span>
+  )
+}
+
+/**
+ * `<HelpCard topic="absent-vs-zero" describedById={id} />`
+ *
+ * `describedById` is the id this card's short text is published at. The caller
+ * puts it on the element being explained, as `aria-describedby`. It is a
+ * parameter rather than something generated here because the association runs
+ * from the LABEL to the description, and only the caller owns the label.
+ * Callers with nothing to associate may leave it out; the description node is
+ * then referenced by the trigger itself.
+ *
+ * `<HelpCard topics={[...]} />` is the screen-index form (`HelpTopicsView`):
+ * one `?` whose card lists several topics, each linked. It publishes no
+ * description -- an index has no one sentence to publish. Given a `lead`, the
+ * card asks that section's question first and the `?` is the section's.
+ */
+export function HelpCard(
+  props:
+    | { topic: TopicId; describedById?: string }
+    | { topics: readonly TopicId[]; title?: string; lead?: HelpTopicsLead | undefined },
+) {
+  const auto = useId()
+  const { state, trigger, hover, cardRef, triggerRef } = useHelpDisclosure()
+  if ('topics' in props) {
+    return (
+      <HelpTopicsView
+        topics={props.topics}
+        title={props.title ?? 'Reading this screen'}
+        lead={props.lead}
+        state={state}
+        cardId={`${auto}-card`}
+        trigger={trigger}
+        hover={hover}
+        cardRef={cardRef}
+        triggerRef={triggerRef}
+      />
+    )
+  }
+  return (
+    <HelpCardView
+      topic={props.topic}
+      state={state}
+      descriptionId={props.describedById ?? `${auto}-desc`}
+      cardId={`${auto}-card`}
+      trigger={trigger}
+      hover={hover}
+      cardRef={cardRef}
+      triggerRef={triggerRef}
+    />
+  )
+}
+
+// ---------------------------------------------------------------------------
+// The footer a migrated panel carries in place of its legend
+// ---------------------------------------------------------------------------
+
+const LINKS: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  alignItems: 'baseline',
+  gap: '4px var(--ctl-s2)',
+  margin: 'var(--ctl-s3) 0 0',
+  paddingTop: 'var(--ctl-s3)',
+  borderTop: '1px solid var(--line)',
+  // Longhands, not a `font:` shorthand: jsdom does not expand a shorthand
+  // carrying a custom property into longhands, so the DOM half of
+  // typescale.test.ts would read nothing back from it. 1.45 is --lh-micro
+  // rather than the 1.7 this was written with; the row gap above already
+  // supplies the separation the looser line-height was doing by hand.
+  fontSize: 'var(--t-micro)',
+  lineHeight: 'var(--lh-micro)',
+  fontFamily: 'var(--mono)',
+  color: 'var(--text-faint)',
+}
+
+const LINK: CSSProperties = { color: 'var(--text-dim)' }
+
+/**
+ * A `<section className="section legend">` block, after its prose has moved.
+ *
+ * WHY A LIST OF LINKS RATHER THAN NOTHING. The legends this replaces were the
+ * only index of what a screen's marks mean, and deleting one takes the index
+ * out along with the essay. So the subjects stay on the surface -- two to six
+ * words each, asserted by `help.guidance.test.tsx` -- and the paragraphs live
+ * at `#help/<id>`.
+ *
+ * NOTHING MEASURED MAY DEPEND ON IT. A screen that needs this footer followed
+ * before an absent figure can be told from a zero has moved a fact rather than
+ * an explanation, and `src/__tests__/honesty.prose.test.tsx` renders those
+ * screens with every card closed and asserts otherwise.
+ *
+ * `AgentDetail.tsx` grew this shape first, as its own `AttemptLegend`. That
+ * file belongs to the exemplar lane, so this is the same markup lifted rather
+ * than that component reused.
+ *
+ * Inline styles for the reason the rest of this file gives: `styles.css`
+ * belongs to another track this pass, and an inline style adds no selector and
+ * therefore cannot restyle another screen. Every value is an existing token.
+ */
+export function HelpLinks({
+  topics,
+  label = 'Reading this screen:',
+}: {
+  topics: readonly TopicId[]
+  label?: string
+}) {
+  return (
+    <p style={LINKS}>
+      <span>{label}</span>
+      {topics.map((id) => (
+        // THE SUBJECT, NOT THE CLAIM (archived issue 131). The claim ran to twelve words on
+        // some topics, and a footer of claims read as a wall of sentences;
+        // the subject is two to six words, and the claim stays on hover.
+        <a key={id} href={`#${HELP[id].anchor}`} style={LINK} title={HELP[id].title}>
+          {HELP[id].subject}
+        </a>
+      ))}
+    </p>
+  )
+}

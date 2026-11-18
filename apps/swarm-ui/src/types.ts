@@ -1,0 +1,7402 @@
+// Shapes returned by swarm-api. Field names mirror
+// apps/swarm-api/swarm_api/codec.py exactly -- if one changes there, this is
+// the copy that has to follow, and there is no check that notices. Keep the
+// comment references so the next person can find the source.
+
+import { currentZone, formatClock, formatDateTime, isToday } from './timezone'
+
+/** `pool_to_api` in codec.py. */
+export interface Pool {
+  name: string
+  /**
+   * null when the pool document carries no `hard_limit` at all (archived issue 374): the
+   * ceiling was never set, which is not the same as set to 0. Everything
+   * derived from it (`effective_limit`, `available`) is null with it. Render
+   * it as the `limit-unset` verdict (`blockerCeiling`), never as a number.
+   */
+  hard_limit: number | null
+  /** AIMD target. null when nothing has ever lowered it. */
+  adaptive_target: number | null
+  /** Ceiling derived from provider quota. null when unknown. */
+  quota_derived_limit: number | null
+  /** min(hard_limit, adaptive_target, quota_derived_limit), floored at 0. */
+  effective_limit: number | null
+  /**
+   * WEIGHTED UNITS IN USE, NOT AGENTS. Admission increments by the resource
+   * class's `units` -- standard 1, browser 1 (2 until contract request 79),
+   * large 4 -- so `active: 8` may be two large agents or eight standard ones.
+   * Never label this "agents".
+   */
+  active: number
+  available: number | null
+  enabled: boolean
+  updated_at: string
+  /**
+   * Which input holds `effective_limit` (the applied value) below `hard_limit`
+   * (the ceiling), and what dates it (archived issue 3047). Empty when the ceiling applies.
+   * Served by /v1/capacity only.
+   */
+  lowered_by?: PoolLoweredBy[]
+}
+
+/** One input that lowers a pool's applied limit (archived issue 3047). */
+export interface PoolLoweredBy {
+  input: 'adaptive_target' | 'quota_derived_limit' | 'override'
+  value: number
+  /**
+   * When the value was set: the adaptive target's last change
+   * (`target_changed_at`), else the override's audit instant or the rate limit
+   * that last cut it; `set_by` says which made it, `climb` for a target that
+   * rose after the last cut. Null where no record dates it.
+   */
+  set_at: string | null
+  set_by?: 'override' | 'rate_limit' | 'climb' | null
+  /** The broker's quota document's last write: any success bumps it. */
+  quota_written_at?: string | null
+  /** The override's audit action (`adaptive_target_reset`, `hard_max_set`). */
+  action?: string
+  /** The adaptive target's last rate limit, the instant that cut it. */
+  last_rate_limited_at?: string | null
+  /** The provider state behind a quota-derived value. */
+  provider_state?: string
+}
+
+/** One field of a pool's last admin change: the value before and after (archived issue 133). */
+export interface PoolChangeEntry<T> {
+  /** null when the pool did not exist, or carried no value, before the write. */
+  from: T | null
+  to: T
+}
+
+/**
+ * A pool as `GET /v1/admin/pools` serves it: the `/v1/capacity` shape plus
+ * who last changed it through an admin route, when, and what changed (archived issue 133).
+ * ADMIN-ONLY: `/v1/capacity` serves pools to every tenant member and never
+ * carries these, because an admin's email is not tenant data. All three are
+ * null for a pool no admin route has changed.
+ */
+export interface AdminPool extends Pool {
+  admin_changed_by: string | null
+  admin_changed_at: string | null
+  admin_change: { hard_limit?: PoolChangeEntry<number>; enabled?: PoolChangeEntry<boolean> } | null
+}
+
+/** `service.capacity()`. */
+export interface Capacity {
+  pools: Pool[]
+  runner_profiles: Record<string, RunnerProfile>
+  /** Present since the admission block was added. The caller's own tenant. */
+  tenant_id?: string
+  /**
+   * False when the pool listing hit its page size, so a required pool missing
+   * from `pools` may exist and be full rather than being unconfigured. The
+   * server has already folded this into each profile's `admission.unread`;
+   * it is carried here so a screen can say WHY a figure is unavailable.
+   */
+  pools_complete?: boolean
+  /** `headroom.blocked_reason_groups()`. Served so nothing here restates it. */
+  blocked_reason_groups?: Record<string, string[]>
+  /** The instant the pool counts below were read. Everything derived from them
+   * is a statement about this moment and no other. */
+  generated_at: string
+}
+
+export interface RunnerProfile {
+  resource_class: string
+  backend: string
+  provider: string | null
+  units: number
+  pools: string[]
+  /**
+   * What one agent of this profile takes in each of `pools`: `units` in a
+   * compute pool, 1 in a provider pool (contract request 129, archived issue 2950). Read
+   * it through `unitsIn`, never `units` in every pool -- that divides a
+   * provider pool's room by 4 for a large agent.
+   *
+   * OPTIONAL because an API older than the field does not send it, and that
+   * API's admission took `units` in every pool, so `unitsIn` falls back to
+   * `units` -- the true share there, not a guess.
+   */
+  pool_units?: Record<string, number>
+  /**
+   * Whether this profile may be dispatched at all.
+   *
+   * OPTIONAL, and absent means AVAILABLE. An older API does not send the field,
+   * and defaulting an unknown answer to "disabled" would empty the picker
+   * against a deployment that is working fine. The submit gate refuses a
+   * disabled profile regardless, so the cost of guessing wrong here is a
+   * refused submission rather than a task that should not have run.
+   */
+  available?: boolean
+  /** Why it is refused. Served whenever `available` is false. */
+  disabled_reason?: string
+  /**
+   * Computed by `swarm_api/headroom.py` from `evaluate_capacity` itself.
+   * Optional because an older API does not send it, and an absent block must
+   * render as "not measured" rather than as a zero.
+   */
+  admission?: ProfileAdmission
+  /**
+   * What this profile's RUNNER refuses to start without (`swarm_api/
+   * runnerinputs.py`). Optional for the same reason `admission` is: an API
+   * older than the field sends none, and that is "this API did not say",
+   * NOT "this profile needs nothing" -- the two have different remedies and
+   * `requiredInputKeys` keeps them apart.
+   */
+  input_contract?: RunnerInputContract
+}
+
+/**
+ * The keys a runner demands on `input`, each of which must be present and a
+ * non-empty string. `claude-code` and `codex` demand `prompt` and raise
+ * "requires a non-empty string input.prompt" without it, minutes into an
+ * attempt that has already consumed a slot and mounted a credential.
+ */
+export interface RunnerInputContract {
+  required_keys: string[]
+}
+
+/**
+ * The required keys for a profile, or null when this API did not say.
+ *
+ * NULL IS NOT AN EMPTY LIST. An empty list is a measured "nothing is
+ * required"; null is an unread rule, and a form must say so rather than
+ * silently applying no check -- the same distinction `headroomFor` keeps for
+ * an unread pool.
+ */
+export function requiredInputKeys(profile: RunnerProfile | undefined): string[] | null {
+  const contract = profile?.input_contract
+  if (contract === undefined || !Array.isArray(contract.required_keys)) return null
+  return contract.required_keys.filter((k): k is string => typeof k === 'string')
+}
+
+/**
+ * How a headroom number was arrived at. `swarm_api/headroom.py`.
+ *
+ * Three cases one integer cannot tell apart, with three different remedies:
+ * a measurement, nothing capping this at all, and a pool nobody could read.
+ */
+export type HeadroomBasis = 'measured' | 'uncapped' | 'unknown'
+
+/** One pool refusing a profile. `evaluate_capacity` + the remedy group. */
+export interface ProfileBlocker {
+  pool: string
+  reason: string
+  /** null for `POOL_LIMIT_UNSET` (archived issue 374): the pool has no limit set, which is not 0. */
+  limit: number | null
+  active: number
+  /** 'needs_action' | 'no_room' | null when the reason is in neither. */
+  group: string | null
+}
+
+/**
+ * What ONE relaxed ceiling would have bought, at the instant `generated_at`
+ * names. A prediction, and the place a screen like this most easily starts
+ * lying: a lease can be released between the read and the render.
+ */
+export interface Counterfactual {
+  pool: string
+  /** 'resume' for a paused pool, 'raise' for one at its ceiling. */
+  action: 'resume' | 'raise' | string
+  headroom_after: number | null
+  basis_after: HeadroomBasis
+  /** null when either side is unbounded: that is not a delta. */
+  delta: number | null
+  /** What would bind INSTEAD. Empty means nothing else would. */
+  next_binding: string[]
+}
+
+/** `analyse_profile` in `swarm_api/headroom.py`. */
+export interface ProfileAdmission {
+  units: number
+  /** null means NOT MEASURED. Read `basis` to learn which kind. */
+  headroom: number | null
+  basis: HeadroomBasis
+  /** EVERY pool refusing a task right now, in the order a task clears them. */
+  blockers: ProfileBlocker[]
+  /** Every pool capping the next task beyond what fits. */
+  binding: string[]
+  counterfactual: Counterfactual[]
+  /** False means the list below is incomplete and must say so. */
+  complete: boolean
+  /** Required pools whose state could not be established. */
+  unread: string[]
+  /** Required pools that are not configured, therefore unlimited. */
+  uncapped: string[]
+}
+
+/** The kind of pool, parsed from its name. `global` has no prefix. */
+export type PoolKind = 'global' | 'tenant' | 'provider' | 'resource' | 'runner' | 'backend'
+
+export function poolKind(name: string): PoolKind {
+  if (name === 'global') return 'global'
+  const prefix = name.split(':')[0]
+  switch (prefix) {
+    case 'tenant':
+      return 'tenant'
+    case 'provider':
+      return 'provider'
+    case 'resource':
+      return 'resource'
+    case 'runner':
+      return 'runner'
+    case 'backend':
+      return 'backend'
+    default:
+      return 'global'
+  }
+}
+
+/**
+ * The pool a tenant's quota document for one provider feeds (CP-8, archived issue 85).
+ *
+ * `quota_broker/service.py` `apply_to_pools` writes a document's derived cap
+ * onto exactly this pool, and `pool_names_for` puts it in every task's list
+ * for that provider. Provider quota names it on each row, so a reader can see
+ * that the document's cap is ONE input to a pool whose own ceiling may be
+ * lower. `scripts/lib/check-contract-parity.sh` section 5 reads this template
+ * literal and holds it to `pool_names_for`, so the signature and the one-line
+ * body stay exactly this shape.
+ */
+export function providerTenantPool(provider: string, tenant: string): string {
+  return `provider:${provider}:tenant:${tenant}`
+}
+
+/**
+ * A BACKEND POOL IN WORDS (QA1 capacity-14, 2026-10-28): `CLOUD_RUN_JOB` was
+ * the API's enum printed as a name. These are words.ts `backendWord`'s words,
+ * restated because words.ts imports this module through StatePill; `AUTO` is
+ * a choice, never a pool. Exported so a test holds the two maps together
+ * (qa1b13.types.help.styles.test.tsx): a backend added to one alone fails it.
+ */
+export const BACKEND_POOL_WORD: Readonly<Record<string, string>> = {
+  CLOUD_RUN_JOB: 'Cloud Run',
+  GKE_AUTOPILOT: 'GKE Autopilot',
+}
+
+/** `provider:anthropic:tenant:u-owner` -> `anthropic · u-owner`. */
+export function poolLabel(name: string): string {
+  if (name === 'global') return 'global'
+  // The raw key stays in each table's mono sub-line.
+  if (name.startsWith('backend:')) {
+    const id = name.slice('backend:'.length)
+    return BACKEND_POOL_WORD[id] ?? id
+  }
+  const parts = name.split(':')
+  if (parts.length <= 2) return parts[1] ?? name
+  // provider:X:tenant:Y
+  return `${parts[1]} · ${parts[3] ?? parts[2]}`
+}
+
+/**
+ * `poolLabel`, qualified by kind wherever another pool in `among` would print
+ * the same word (CP-15).
+ *
+ * `poolLabel` drops the kind, which is right almost everywhere and wrong in
+ * exactly one shape this platform has: `resource:browser` and
+ * `runner:browser` both print `browser`. A blocker list then read "Lift
+ * browser" twice and "browser and browser still binds" -- two different
+ * ceilings, owned by two different settings, under one name. Where that
+ * happens both are qualified, `browser · resource` and `browser · runner`;
+ * where it does not, nothing changes, so the short label stays the common
+ * case.
+ *
+ * `among` is whatever set the labels will be READ together in -- a blocker's
+ * pools, a profile's pools, every pool on a screen. Two pools of the SAME kind
+ * that still print one label differ only in the part `poolLabel` drops, so
+ * those fall back to the raw name, the one spelling left that cannot collide.
+ */
+export function poolLabelAmong(name: string, among: readonly string[]): string {
+  const label = poolLabel(name)
+  const rivals = among.filter((other) => other !== name && poolLabel(other) === label)
+  if (rivals.length === 0) return label
+  const kind = poolKind(name)
+  return rivals.some((other) => poolKind(other) === kind) ? name : `${label} · ${kind}`
+}
+
+/** What `headroomFor` hands a screen. Every field comes off the response. */
+export interface Headroom {
+  /**
+   * How many more agents of this profile could be admitted. NULL MEANS NOT
+   * MEASURED and must render as an em dash -- `basis` says which kind of
+   * not-measured it is. A 0 here is a measured zero.
+   */
+  agents: number | null
+  basis: HeadroomBasis
+  /** The first binding pool, for the columns that have room for one name. */
+  binding: string | null
+  /** EVERY pool refusing a task right now. The fix for the single-name bug. */
+  blockers: ProfileBlocker[]
+  counterfactual: Counterfactual[]
+  /** False when a required pool could not be read: the list is incomplete. */
+  complete: boolean
+  /** Required pools nobody could read. Non-empty => `complete` is false. */
+  unread: string[]
+  /** Required pools that are not configured, therefore unlimited. */
+  missing: string[]
+}
+
+/**
+ * How many more agents of one runner profile could be admitted right now.
+ *
+ * THIS FUNCTION NO LONGER COMPUTES ANYTHING. It reads `profile.admission`,
+ * which `swarm_api/headroom.py` produced by calling `evaluate_capacity` -- the
+ * same function the admission transaction calls.
+ *
+ * It used to re-derive the rule here, and that is where the bug was: the
+ * conjunction is "clear EVERY pool at once", so `evaluate_capacity` returns a
+ * LIST of everything that refused, and this function kept only the running
+ * minimum. `binding = name` overwrote on each new minimum, so with
+ * `resource:large` and `provider:anthropic` both at their ceilings the screen
+ * named one, an operator raised it, and nothing moved.
+ *
+ * Serving it instead of restating it was chosen over pinning the restatement
+ * with a parity check, for the reason `docs/contract-change-requests.md`
+ * already records under "Why these requests keep arising": shell and jq
+ * restatements are held to the Python by check-contract-parity.sh, Terraform's
+ * by a tftest, and TypeScript by nothing at all -- neither `make lint` nor
+ * `make test` runs `tsc`. A parity check can pin a table of constants; it
+ * cannot pin an algorithm, and the counterfactual is an algorithm.
+ *
+ * TRAP D still holds and still has to be rendered: the `pools` list on a
+ * runner profile is the CALLING TENANT'S, including for an admin, because
+ * service.capacity() calls pool_names_for(tenant_id=ctx.tenant_id)
+ * unconditionally. So this answers "how many more could I submit", never "how
+ * much capacity does the platform have". Every caller must render the tenant
+ * beside the number.
+ */
+export function headroomFor(profile: RunnerProfile): Headroom {
+  const a = profile.admission
+  if (!a) {
+    // An API that does not send the block. NOT a zero: this screen does not
+    // know, and inventing the old client-side sum here would reintroduce the
+    // restatement that the block exists to delete.
+    return {
+      agents: null,
+      basis: 'unknown',
+      binding: null,
+      blockers: [],
+      counterfactual: [],
+      complete: false,
+      unread: [...profile.pools],
+      missing: [],
+    }
+  }
+  return {
+    agents: a.headroom,
+    basis: a.basis,
+    binding: a.binding[0] ?? a.blockers[0]?.pool ?? null,
+    blockers: a.blockers,
+    counterfactual: a.counterfactual,
+    complete: a.complete,
+    unread: a.unread,
+    missing: a.uncapped,
+  }
+}
+
+/**
+ * A task's weight, PER POOL (contract request 129, archived issue 2950): a large agent
+ * takes its 4 resource units in a compute pool and 1 in a provider pool.
+ *
+ *  - a number: the resource units, with nothing served per pool. Taken in
+ *    every pool, which is what an API older than the request admitted by.
+ *  - `{ units, pool_units }`: a `RunnerProfile` as `/v1/capacity` serves it,
+ *    or a task's served `waiting_for` rows (`taskWeight`). `pool_units` names
+ *    the share in each pool; a pool it does not name takes `units`.
+ *
+ * The share is never worked out here from the pool's kind: the rule is
+ * admission's (`swarm_common.models.pool_units_for`), and the API serves its
+ * answer. A copy of it here would be the drift check-contract-parity.sh exists
+ * to catch, one layer further out.
+ */
+export interface PoolWeight {
+  units: number
+  pool_units?: Record<string, number> | null
+}
+export type Weight = number | PoolWeight | null
+
+/** What `weight` takes in `pool`, or null when the weight is unknown. */
+export function unitsIn(weight: Weight, pool: string | undefined): number | null {
+  if (weight === null) return null
+  if (typeof weight === 'number') return weight
+  const share = pool === undefined ? undefined : weight.pool_units?.[pool]
+  if (typeof share === 'number' && Number.isFinite(share) && share > 0) return share
+  return typeof weight.units === 'number' && weight.units > 0 ? weight.units : null
+}
+
+/**
+ * What one agent of `profile` costs, in words: "4 units in each of 5 pools",
+ * or, where the served shares differ (contract request 129, archived issue 2950), one
+ * clause per share, largest first -- "4 units in each of 4 pools, 1 unit in
+ * each of 2 pools". "In each of", never "x", which reads as a total; each
+ * noun agrees with its count.
+ */
+export function costInWords(profile: Pick<RunnerProfile, 'units' | 'pools' | 'pool_units'>): string {
+  const counts = new Map<number, number>()
+  for (const p of profile.pools) {
+    const share = unitsIn(profile, p) ?? profile.units
+    counts.set(share, (counts.get(share) ?? 0) + 1)
+  }
+  if (counts.size === 0) counts.set(profile.units, 0)
+  return Array.from(counts.entries())
+    .sort((a, b) => b[0] - a[0])
+    .map(([u, n]) => `${u} unit${u === 1 ? '' : 's'} in each of ${n} pool${n === 1 ? '' : 's'}`)
+    .join(', ')
+}
+
+/**
+ * A waiting task's weight per pool: its class `units` (`classUnits`), and the
+ * share in each pool its served `waiting_for` rows name -- each row's `units`
+ * is what the task takes in THAT pool (swarm_api/waiting.py). With no rows
+ * served it is `units` as it was, in every pool.
+ */
+export function taskWeight(task: Pick<Task, 'waiting_for'>, units: Weight): Weight {
+  if (units === null || typeof units !== 'number') return units
+  const rows = task.waiting_for?.pools
+  if (!Array.isArray(rows) || rows.length === 0) return units
+  const pool_units: Record<string, number> = {}
+  for (const r of rows) {
+    if (r && typeof r.pool === 'string' && typeof r.units === 'number') pool_units[r.pool] = r.units
+  }
+  return { units, pool_units }
+}
+
+/**
+ * Per pool, what one lease holds: its served `pool_units` (contract request
+ * 129), else `units` in each of its pools -- what a lease reserved before the
+ * request, or served by an API older than it, took and gives back. Null for a
+ * row with no pools or no usable units, which holds nothing this can count.
+ */
+export function leaseHeld(lease: Pick<LeaseRow, 'pools' | 'units' | 'pool_units'>): Record<string, number> | null {
+  if (!Array.isArray(lease.pools)) return null
+  const units = typeof lease.units === 'number' && Number.isFinite(lease.units) ? lease.units : null
+  const served = lease.pool_units !== null && typeof lease.pool_units === 'object' ? lease.pool_units : null
+  const held: Record<string, number> = {}
+  for (const p of lease.pools) {
+    const share = served?.[p]
+    if (typeof share === 'number' && Number.isFinite(share)) held[p] = share
+    else if (units !== null) held[p] = units
+    else return null
+  }
+  return held
+}
+
+/**
+ * The two groups, split by REMEDY: somebody must act, versus waiting is a
+ * valid answer. Read off the response when the server sent it.
+ *
+ * The fallback is not a second opinion about the split -- it is the statement
+ * that this screen does not know, which renders as an ungrouped list rather
+ * than as a confident one. A hard-coded copy here would be exactly the
+ * TypeScript restatement `admission` was added to remove.
+ *
+ * ONE EXCEPTION, AND IT IS DECIDED BY THE NUMBERS, NOT BY A REASON. The
+ * server groups by reason (`headroom.py`), and the reason cannot see the
+ * ceiling: a `resource:` pool an operator set to 0 refuses with the same
+ * reason as one at 4 of 4, and so arrives filed under `no_room` -- "waiting
+ * is a valid answer" -- above a pool no wait will ever reopen (live,
+ * 2026-09-24). A pool only a person writes, capped at zero, with no limit
+ * set, or capped below one task's units, is drawn under `needs_action`. A provider pool at zero is NOT moved: its quota state can
+ * zero it and a cooldown ends by itself. See `blockerCeiling`.
+ */
+export function blockerGroup(
+  // A served `ProfileBlocker`, a task's `blocked_by` entry, or a pool read as
+  // one (`poolGroup`): the verdict reads the reason, the pool and the limit,
+  // and the served `group` only when one was sent.
+  blocker: { reason: string; pool?: string; limit?: unknown; active?: unknown; group?: unknown },
+  groups: Record<string, string[]> | undefined,
+  units: Weight = null,
+): 'needs_action' | 'no_room' | null {
+  // OWNER DECISION 2026-10-01: a pool with no limit set (`limit-unset`) and a
+  // pool whose limit is above 0 but below the task's units (`below-units`,
+  // needs `units`) are filed under needs_action exactly as a pool set to zero
+  // is: nobody has set a usable ceiling, and no wait will reopen it. A pool an
+  // operator PAUSED is the fourth (`needsAPerson`): the server files
+  // MANUAL_PAUSE there by reason, and a pool read with no served group
+  // (`poolGroup`) has only the ceiling to go on.
+  const ceiling = blockerCeiling(blocker, units)
+  if (needsAPerson(ceiling)) return 'needs_action'
+  // DRIFT (owner decision 2026-10-01): a pool carrying more than its ceiling
+  // (a limit lowered under live work, or a slot never released) is not a wait.
+  // Admission cannot produce it, so a person has to look (`overCeiling`).
+  if (typeof blocker.active === 'number' && typeof blocker.limit === 'number' && blocker.active > blocker.limit) {
+    return 'needs_action'
+  }
+  if (blocker.group === 'needs_action') return 'needs_action'
+  if (blocker.group === 'no_room') return 'no_room'
+  if (groups) {
+    if (groups.needs_action?.includes(blocker.reason)) return 'needs_action'
+    if (groups.no_room?.includes(blocker.reason)) return 'no_room'
+  }
+  return null
+}
+
+/**
+ * NEEDS ACTION, READ OFF ONE POOL (owner decision 2026-10-01): the Capacity
+ * board's top group. The pool is put to `blockerGroup` as the refusal it
+ * would give -- `MANUAL_PAUSE` when paused, `POOL_LIMIT_UNSET` when no limit
+ * is set, otherwise its ceiling -- so the board and the Agents list file a
+ * pool by one rule: paused, set to zero by a person, no limit set, over its
+ * ceiling (drift: a limit lowered under live work), or below
+ * one task of its class (`units`, the class weight for a `resource:` pool and
+ * null where no one class is known) is `needs_action`. A full pool is not:
+ * waiting is the answer there. A provider pool at zero is not either: its
+ * quota can zero it and a cooldown ends by itself (`blockerCeiling`).
+ */
+export function poolGroup(pool: Pool, units: Weight = null): 'needs_action' | 'no_room' | null {
+  const reason = pool.enabled === false ? 'MANUAL_PAUSE' : pool.effective_limit === null ? POOL_LIMIT_UNSET : ''
+  return blockerGroup({ pool: pool.name, reason, limit: pool.effective_limit, active: pool.active }, undefined, units)
+}
+
+/**
+ * NEEDS ACTION, READ OFF ONE WAITING TASK (owner decision 2026-10-01): the
+ * Agents list's Waiting split. A task needs action when any pool refusing it
+ * is one `blockerGroup` files there (weighed against the task's `units`), or
+ * when its why line already asks a person to act (`whyNeedsAction`: a park
+ * no timer ends, a credential to sign in). Everything else is `no_room`:
+ * waiting is a valid answer.
+ */
+export function taskGroup(task: Task, units: Weight = null): 'needs_action' | 'no_room' {
+  // Each blocker is weighed by the task's share in ITS pool (`taskWeight`).
+  units = taskWeight(task, units)
+  if (whyNeedsAction(task, units)) return 'needs_action'
+  for (const b of task.blocked_by ?? []) {
+    if (blockerGroup(b, undefined, units) === 'needs_action') return 'needs_action'
+  }
+  return 'no_room'
+}
+
+/**
+ * Whether a pool's number is about the whole platform or only this tenant.
+ *
+ * Trap E: /v1/stats counts are tenant-scoped while the `global` pool is
+ * platform-wide (service.py:276 vs :296-310). Putting "4 agents" from one
+ * beside "7 units" from the other is a scope error dressed as a comparison.
+ * So every number declares its scope and may only sit beside a number of the
+ * same scope.
+ */
+export function poolScope(name: string): 'platform' | 'tenant' {
+  const kind = poolKind(name)
+  if (kind === 'tenant') return 'tenant'
+  // provider:X:tenant:Y is the per-tenant slice of a provider.
+  if (name.includes(':tenant:')) return 'tenant'
+  return 'platform'
+}
+
+/**
+ * The order pools are grouped in, matching `pool_names_for`
+ * (models.py:82-107). The grouping teaches the CONJUNCTION -- a task must
+ * clear every pool in its list at the same moment -- rather than hiding it.
+ */
+export const POOL_FAMILY_ORDER: readonly PoolKind[] = [
+  'global', 'tenant', 'resource', 'runner', 'backend', 'provider',
+]
+
+/**
+ * Each family's heading, as Capacity › Pools draws it. Here so that Pool
+ * limits, which groups the same pools the same way (archived issue 132), draws the same
+ * words over them: a family called one thing on the board and another on the
+ * screen that edits it is two names for one group. ONE TABLE, imported by
+ * both screens: Capacity.tsx held its own copy until archived issue 132, and two copies of
+ * the same words are two copies that can drift.
+ *
+ * THESE ARE POOL FAMILIES, NOT NAV LABELS, and `runner` keeps the contract's
+ * noun on purpose: it groups the pools whose scope is a runner profile. The
+ * TAB one along used to be called "Runner profiles" too and is now "Profile
+ * headroom" -- that rename was about telling a per-tenant measurement from the
+ * platform-wide catalogue beside it in the rail, and it does not reach in
+ * here. A pool family named after the thing it is scoped by is unambiguous on
+ * the capacity board, where every other row is `Workspaces`, `Backends` or
+ * `Providers`.
+ *
+ * `tenant` IS TITLED `Workspaces` (owner, 2026-10-26, TENANT-WORDING-C's
+ * question 0): the console calls a tenant a workspace everywhere a reader
+ * meets it, so the family reads `Workspaces` and its tables `Workspaces
+ * ceilings`. Only the title moved: the `tenant:` pool key, the PoolKind and
+ * Admin › Tenants keep their names.
+ */
+export const FAMILY_TITLE: Readonly<Record<PoolKind, string>> = {
+  global: 'Global',
+  tenant: 'Workspaces',
+  resource: 'Resource classes',
+  runner: 'Runner profiles',
+  backend: 'Backends',
+  provider: 'Providers',
+}
+
+/**
+ * `active` above `effective_limit`. Not merely "full": it means the pool is
+ * carrying more than its ceiling allows, which admission cannot produce and
+ * which therefore indicates drift -- a limit lowered under running work, or a
+ * counter that was never released. `make pool-check` exists to find this.
+ */
+export function overCeiling(pool: Pool): boolean {
+  // No ceiling was ever set (archived issue 374): there is nothing to be over.
+  if (pool.effective_limit === null) return false
+  return pool.active > pool.effective_limit
+}
+
+/**
+ * Which configured value is BINDING on this pool right now, in words. This is
+ * the "set by" column: knowing a pool is capped at 6 is useless without
+ * knowing whether that is the operator's number, AIMD backing off, or the
+ * provider's quota.
+ */
+export function setBy(pool: Pool): { term: string; detail: string } {
+  const { hard_limit, adaptive_target, quota_derived_limit, effective_limit } = pool
+  if (hard_limit === null) {
+    return { term: 'no limit set', detail: 'This pool has no hard limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.' }
+  }
+  // THE ZERO A QUOTA STATE FORCES (archived issue 128). `quota_derived_limit_for`
+  // (quota_broker/aimd.py) returns 0 for EXHAUSTED, DISABLED and COOLDOWN, and
+  // for a `cooldown_until` still in the future, so this pool admits nothing
+  // until the state clears -- a different remedy from a provider cap that is
+  // merely lower, which is what `provider quota` says. The pool document does
+  // not carry the state, so the detail names the one other way to a 0 (a quota
+  // cap configured at 0) rather than claiming which it was.
+  if (quota_derived_limit === 0 && effective_limit === 0 && hard_limit > 0) {
+    return {
+      // PLAIN WORDS (QA2-FIX-14, capacity-21): the term was `quota state`,
+      // the broker's own name for the document, and the detail spelled the
+      // three states in capitals. The term says what happened to the quota.
+      term: 'provider quota closed',
+      detail: `The provider's quota is used up, turned off or cooling down, which holds this at 0 until it clears; configured is ${hard_limit}. Provider quota shows which, and the one other way to this 0: a quota cap set to 0.`,
+    }
+  }
+  if (quota_derived_limit !== null && quota_derived_limit === effective_limit && quota_derived_limit < hard_limit) {
+    return { term: 'provider quota', detail: `Provider quota caps this at ${quota_derived_limit}; configured is ${hard_limit}.` }
+  }
+  if (adaptive_target !== null && adaptive_target === effective_limit && adaptive_target < hard_limit) {
+    return { term: 'lowered automatically after errors', detail: `Lowered automatically to ${adaptive_target} after provider errors; configured is ${hard_limit}.` }
+  }
+  return { term: 'configured', detail: `The configured hard limit of ${hard_limit} is what applies.` }
+}
+
+/**
+ * Why a pool's ceiling is lower than its configured limit, or null if it is not.
+ * Worth surfacing: a pool sitting at `effective_limit < hard_limit` is being
+ * held down by something, and which something is the whole diagnosis.
+ */
+export function limitedBy(pool: Pool): 'adaptive' | 'quota' | null {
+  if (pool.effective_limit === null || pool.hard_limit === null) return null
+  if (pool.effective_limit >= pool.hard_limit) return null
+  const adaptive = pool.adaptive_target
+  const quota = pool.quota_derived_limit
+  if (quota !== null && quota === pool.effective_limit) return 'quota'
+  if (adaptive !== null && adaptive === pool.effective_limit) return 'adaptive'
+  return null
+}
+
+// --------------------------------------------------------------------------
+// Tasks and workflows
+// --------------------------------------------------------------------------
+
+/**
+ * `Task.human_wait` as `codec.human_wait_to_api` serves it (§4.1, §4.2): the
+ * agent's reason (redacted before it was stored), the host it expects, when it
+ * asked, when the hold ends, and who holds control. Instants are ISO strings.
+ */
+export interface HumanWait {
+  reason: string | null
+  expect: string | null
+  requested_at: string | null
+  deadline: string | null
+  /** The person in control (lane L9 writes it), or null while nobody is. */
+  controller: { email: string; since?: string | null; renew_by?: string | null } | null
+}
+
+/** `task_to_api` in codec.py. Trimmed to what the UI actually renders. */
+/** One answer the owner gave to an agent's question, as stored on the task (TASK-ANSWERS). */
+export interface OwnerAnswerVersion {
+  /** One of the question's option labels, or null for a free-text answer. */
+  choice: string | null
+  /** The owner's own words ("Other…"), redacted, or null. */
+  text: string | null
+  by: string | null
+  at: string | null
+  /**
+   * Where it was answered (ANSWER-SYNC, part of archived issue 1644): `console`, or
+   * `claude-code` for a pick the plugin's swarm_task_answer posted from a
+   * Claude Code session. Null on an answer stored before it was recorded, and
+   * OPTIONAL: an API older than ANSWER-SYNC does not send it.
+   */
+  via?: AnswerVia | null
+  /** The Claude Code session it was answered in, or null. Optional as `via` is. */
+  session?: string | null
+}
+
+/**
+ * `AnswerBody.via` in agent_questions.py: where an answer was given --
+ * `github-comment` for one taken from the issue's comment, `voice-it` for one
+ * given in a Voice it session (`voice/grant.py`'s `VIA`).
+ */
+export type AnswerVia = 'console' | 'claude-code' | 'github-comment' | 'voice-it'
+
+/**
+ * The owner's answer to one question (`codec.owner_answer_to_api`), with the
+ * answers it replaced, oldest first.
+ */
+export interface OwnerAnswer extends OwnerAnswerVersion {
+  question_index: number
+  question: string | null
+  history: OwnerAnswerVersion[]
+}
+
+/**
+ * `Task.start_problem` as `codec.start_problem_to_api` serves it (F1-POD):
+ * the worst container of a pod that is not starting. `message` is kubelet's,
+ * one line of at most 300 characters, masked by the API. `pod_started` is
+ * whether kubelet acknowledged the pod or any container in it ran.
+ */
+export interface StartProblem {
+  container: string | null
+  reason: string | null
+  restarts: number
+  message: string | null
+  pod_started: boolean
+  attempt_id?: string | null
+  seen_at: string | null
+}
+
+/**
+ * `GET/PUT /v1/admin/settings` (`Store.get_platform_settings`): the platform
+ * settings an admin edits at run time, each at its default when unset. The
+ * two limits on a step's additional repositories (archived issue 1434) are read by swarm-api
+ * at every submission and by the worker at every clone, so a change applies to
+ * the next one with no deploy. Their accepted ranges are the API's
+ * (`store.PLATFORM_SETTINGS_RANGES`), and a value outside one is refused 422
+ * naming it; this file does not restate them.
+ */
+export interface PlatformSettings {
+  merge_by_default: boolean
+  /** The most additional repositories one step may read. */
+  max_additional_repositories: number
+  /** The GiB one step's additional repositories may total. */
+  additional_repositories_budget_gib: number
+  /**
+   * List prices by model (archived issue 1481), that swarm-api prices a stopped attempt's
+   * usage at. A model with no entry prices nothing: its cost is "not
+   * reported", never a guessed figure (`swarm_api.modelprices`).
+   */
+  model_prices: Record<string, ModelPrice>
+  updated_at: string | null
+  updated_by: string | null
+  /** `missing`: every value above is a default nobody has set. */
+  settings_document: 'present' | 'missing'
+}
+
+/**
+ * One model's entry in `PlatformSettings.model_prices` (`modelprices.entry`):
+ * USD per million tokens of each kind, where the figure was read, the day it
+ * was read, and the admin who last changed it (null for the seed, which the
+ * worker's code held before prices became data).
+ */
+export interface ModelPrice {
+  input: number
+  output: number
+  cache_read: number
+  cache_write: number
+  currency: 'USD'
+  /** `console` for an admin's edit, `pricing-page` for the weekly refresh, `code` for the seed. */
+  source: string
+  /** YYYY-MM-DD. */
+  as_of: string
+  updated_by: string | null
+  /**
+   * A model priced by prompt length (Haiku 5.5), its tiers in rising order:
+   * the first at the four rates above, the last with no ceiling. Absent for
+   * a model priced at one set of rates (`modelprices.tiers_problem`).
+   */
+  tiers?: ModelPriceTier[]
+}
+
+/** The four per-million-token rates of a `ModelPrice`, in the order the table draws them. */
+export const MODEL_PRICE_RATES = ['input', 'output', 'cache_read', 'cache_write'] as const
+export type ModelPriceRate = (typeof MODEL_PRICE_RATES)[number]
+
+/** One tier of `ModelPrice.tiers`: the rates of a prompt up to `up_to_prompt_tokens` tokens (null: no ceiling). */
+export type ModelPriceTier = Record<ModelPriceRate, number> & { up_to_prompt_tokens: number | null }
+
+/** `GET /v1/settings/model-prices`: the price table, read-only, for every signed-in member. */
+export interface ModelPriceTable {
+  model_prices: Record<string, ModelPrice>
+}
+
+/**
+ * What `PUT /v1/admin/settings` takes for one model (`schemas.ModelPriceRequest`).
+ * No `updated_by`, which swarm-api stamps from the token, and no `source` or
+ * `currency`, which default to `console` and `USD` there.
+ */
+export type ModelPriceChange = Record<ModelPriceRate, number> & { as_of: string }
+
+/** One entry of `Task.additional_repositories`, as `additional_repositories_to_api` serves it. */
+export interface TaskAdditionalRepository {
+  name: string
+  repository: string
+  repo_id: string
+  ref: string
+  commit: string
+  /** Where the agent finds it, relative to its own checkout. */
+  path: string
+  forge_credential_source: string
+}
+
+export interface Task {
+  id: string
+  tenant_id: string
+  state: TaskState
+  runner_profile: string
+  resource_class: string
+  provider: string | null
+  priority: number
+  created_at: string
+  updated_at: string
+  started_at: string | null
+  completed_at: string | null
+  submitted_by: string | null
+  /** The submitter's display name (`people.add_names`); null when none is set. */
+  submitted_by_name?: string | null
+  attempt_count: number
+  max_attempts: number
+  /**
+   * Contract request 123: consecutive dispatches the cluster refused (Job
+   * quota or an admission policy). Each parks PLATFORM_REFUSED without
+   * spending an attempt; a dispatch that succeeds resets it to 0.
+   */
+  platform_refusals?: number
+  park_reason: ParkReason | string | null
+  blocked_by: BlockedEntry[] | null
+  workflow_id: string | null
+  step_id: string | null
+  depends_on: string[] | null
+  /**
+   * Contract request 14 (docs/design/child-tasks.md §6.3). The task whose
+   * agent submitted this one, and that parent's attempt; set by swarm-api from
+   * the submitting attempt, null for everything else. OPTIONAL: an API older
+   * than the change does not send them. Not `depends_on`: a parent can cancel
+   * its children and awaits them, a dependency does neither.
+   */
+  parent_task_id?: string | null
+  parent_attempt_id?: string | null
+  /** archived issue 780 OB7: the slot the task's GitHub token is read from, by name. */
+  forge_credential?: string | null
+  /** `read` or `write`; null when the task names no GitHub credential. */
+  forge_access?: 'read' | 'write' | null
+  /** "the submitter's GitHub credential", "tenant token, service submission", "owner's GitHub connection, service submission" (INDEX-CRED), or null. */
+  forge_credential_source?: string | null
+  /**
+   * Contract request 95 (docs/design/multi-repository-steps.md §4.1): the
+   * repositories this task reads beside its own, each pinned to a commit.
+   * Null when it reads none. OPTIONAL: an older API does not send it.
+   */
+  additional_repositories?: TaskAdditionalRepository[] | null
+  cancel_requested: boolean
+  repository_url: string | null
+
+  // The rest of what task_to_api actually sends. This file declared 21 of its
+  // 31 keys, and the ten below are exactly the ones the remaining screens are
+  // built on -- last_error for the trouble board, result_summary for run
+  // output, latest_checkpoint for the attempt timeline, next_eligible_at for
+  // parked work.
+  model: string | null
+  /**
+   * The model class the task runs (contract request 104, archived issue 1435), RESOLVED:
+   * the stored class, or its profile's default when none was stored, which
+   * `model_class_defaulted` then says. Null on a profile that runs no Claude
+   * model. OPTIONAL: an older API does not send it.
+   */
+  model_class?: string | null
+  model_class_defaulted?: boolean
+  timeout_seconds: number | null
+  /**
+   * Contract request 131: the `timeout_seconds` the spec asked for when the
+   * API stored a lower one (the profile's cap, or a child's parent's), else
+   * null. A record only: the limit is `timeout_seconds`. OPTIONAL: an older
+   * API does not send it.
+   */
+  timeout_seconds_asked?: number | null
+  /**
+   * Contract request 133: the task's resolved turn cap, which the worker
+   * passes to the agent CLI, or null for none. OPTIONAL: an older API does
+   * not send it.
+   */
+  max_turns?: number | null
+  /** When a PARKED task becomes eligible again. Null unless it is parked. */
+  next_eligible_at: string | null
+  /**
+   * MASKED, like `input` (owner decision, 2026-09-26: masked everywhere). The
+   * caller's keys come through the API's masker; the platform's own
+   * (`dispatch`, `input_from`, `expected_outputs`, which submission refuses
+   * from callers) as stored. `metadata_redaction_count` is how many masks it
+   * took.
+   */
+  metadata: Record<string, unknown> | null
+  /**
+   * A single task's own description (archived issue 2688): plain text of at most 600
+   * characters, masked as its metadata is. Null for a workflow's step, which
+   * inherits nothing; OPTIONAL, as an API older than the field sends none.
+   */
+  description?: string | null
+  repository_ref: string | null
+  /**
+   * THE MASKED INPUT. `GET /v1/tasks/{id}` serves the input the API masked at
+   * read time, never the input as submitted -- even to the tenant that
+   * submitted it (owner decision, 2026-09-26). Screens still draw the
+   * `/input` copy, which carries the prompt and the rest as blocks.
+   */
+  input: unknown
+  /**
+   * How many credential-shaped strings the API masked in `input` and in
+   * `metadata`. OPTIONAL: an API older than the change sends neither, and
+   * serves both unmasked, so absent is not zero.
+   */
+  input_redaction_count?: number | null
+  metadata_redaction_count?: number | null
+  /**
+   * MASKED too, since the archived pull request 229 review: the agent's stderr tail and its own
+   * summary text, by the input's masker, string by string (an artifact's
+   * `name` and `uri` as stored). Each count is how many masks that took;
+   * optional for the reason the two above are.
+   */
+  last_error: string | null
+  last_error_redaction_count?: number | null
+  result_summary: Record<string, unknown> | null
+  result_summary_redaction_count?: number | null
+  /** Userinfo that could carry a credential is masked whole; submission refuses it now. */
+  repository_url_redaction_count?: number | null
+  latest_checkpoint: string | null
+  /**
+   * Contract request 70 (LB-C), docs/design/live-browser.md §4.1: set while a
+   * RUNNING browser task holds its pod for a person, null otherwise. Cleared
+   * when the hold parks, so a PARKED(HUMAN_REQUIRED) task carries none.
+   * OPTIONAL: an API older than LB-L12 does not send it. Read through
+   * `handoffOf` (Handoff.tsx), never raw.
+   */
+  human_wait?: HumanWait | null
+  /**
+   * F1-POD: why the current attempt's GKE pod is not starting, as the
+   * reconciler last read it (`reconciler.startproblem`); null when nothing is
+   * recorded. Kept on a cancelled task, which is how `elapsed()` tells "started,
+   * did not reach running" from "never ran". OPTIONAL: an older API does not
+   * send it. Drawn by `PodStartProblem`.
+   */
+  start_problem?: StartProblem | null
+  /**
+   * TASK-ANSWERS (part of archived issue 1206): the owner's answers to the agent's
+   * questions, in question order, lifted by the API out of
+   * `metadata.owner_answers`; `[]` when none is answered. OPTIONAL: an older
+   * API does not send it. The card reads them from `GET /questions` instead,
+   * beside each question.
+   */
+  owner_answers?: OwnerAnswer[]
+  /**
+   * Contract request 23 (archived pull request 217). Written by every terminal writer beside
+   * `completed_at`. Null on SUCCEEDED and on a task that ended before this
+   * field existed. One of `END_CAUSES` from this build's contract; typed as a
+   * string because a newer API may send a value this build does not know.
+   */
+  end_cause?: string | null
+  /**
+   * archived issue 362. Which pool refuses this READY task NOW, read live on the GET by
+   * `swarm_api/waiting.py` from the task's own pools. Null for every other
+   * state; OPTIONAL because an older API does not send it. `blocked_by` is
+   * the scheduler's record from its LAST pass; this is the current reading.
+   */
+  waiting_for?: WaitingFor | null
+  /**
+   * archived issue 1782 (WAIT-API). Why a PARKED, READY or QUEUED task waits, built by
+   * `swarm_api/waiting_detail.py` from what the platform recorded -- never
+   * read from GitHub or a provider. `GET /v1/tasks/{id}` serves it in full;
+   * a listing row serves `WaitingRow`. Null for every other state; OPTIONAL
+   * because an older API does not send it.
+   */
+  waiting?: Waiting | WaitingRow | null
+  /**
+   * archived issue 379. The subscription account the LATEST attempt runs on, derived by
+   * `swarm_api/task_accounts.py` from this task's own account events. OPTIONAL
+   * and nullable: an older API does not send it, and a route that did not
+   * read it sends null. Read it through `accountText`, never raw.
+   */
+  account?: TaskAccount | null
+  /**
+   * archived issue 179. The worker's last beat, from the task's current LEASE (the worker
+   * never writes it to the task), read by `swarm_api/heartbeats.py` on
+   * `GET /v1/tasks` and `GET /v1/tasks/{id}` for LEASED, DISPATCHED, STARTING
+   * and RUNNING. Null when the lease has NEVER beaten -- never the lease's
+   * creation time -- and null for every other state. OPTIONAL because an
+   * older API does not send it. Read it through `silentWorkerLine`
+   * (Agents.tsx), and only when `heartbeat` is `'read'`.
+   */
+  heartbeat_at?: string | null
+  /** The reconciler's grace, resolved server-side; null where `heartbeat` is. */
+  heartbeat_grace_seconds?: number | null
+  /**
+   * What the reading is: `'read'` (the lease was read), `'not read'` (the
+   * read failed -- a null `heartbeat_at` then means unknown, never silent),
+   * `'no lease'`, or null for a task that holds no lease.
+   */
+  heartbeat?: 'read' | 'not read' | 'no lease' | string | null
+  /**
+   * WHETHER A BROWSER RUNTIME USED ITS BROWSER (BROWSER-USE-FLAG, archived issue 2322), the
+   * worker's verdict lifted out of `result_summary` by
+   * `codec.browser_use_to_api`, on the list rows too. True or false only on a
+   * browser runtime that ended with its counts read; NULL IS NOT FALSE: it is
+   * a runtime with no browser, an agent not ended, one that predates the
+   * record, or counts the worker could not read (`browser_use.unknown_because`).
+   * Read it through `browserUseOf` (BrowserUse.tsx). OPTIONAL: an older API
+   * does not send it.
+   */
+  browser_used?: boolean | null
+  /** Its counts and seconds; null when the worker recorded none. */
+  browser_use?: BrowserUse | null
+  /**
+   * EVERY ATTEMPT'S COST AND TIME (lane review P1, 2026-10-05), from
+   * `swarm_api/attempt_totals.py` on `GET /v1/tasks/{id}` and the workflow
+   * read. `result_summary` and `started_at` describe only the LAST attempt;
+   * these sum all of them. OPTIONAL because an older API and the list routes
+   * do not send them. `cost_usd_total` null is NOT MEASURED, never $0;
+   * `cost_incomplete` true makes it a floor ("at least"). `attempts_read:
+   * 'failed'` means the attempts were not read and every figure is null.
+   */
+  attempts?: number | null
+  attempts_with_cost?: number | null
+  cost_usd_total?: number | null
+  cost_incomplete?: boolean | null
+  duration_s_total?: number | null
+  duration_incomplete?: boolean | null
+  first_started_at?: string | null
+  last_attempt_cost_usd?: number | null
+  last_attempt_duration_s?: number | null
+  attempts_read?: 'ok' | 'failed'
+
+  /**
+   * THE FENCING GENERATION. `models.py:177`, now served by `task_to_api`.
+   *
+   * It increments on admission (`admission.py:186`) AND on a reconciler fence
+   * (`reconciler/store.py:220-227`), so `current_generation > attempt_count`
+   * is exactly "a stale worker was fenced out" -- the only cheap signal that
+   * CONTRACT invariant 5 has fired. `AttemptRow.generation` is a different and
+   * narrower thing: the generation ONE attempt was minted with.
+   *
+   * NOT OPTIONAL and 0 IS AN ANSWER: the API sends it on every task, and zero
+   * means never admitted. Read `> attempt_count` rather than truthiness.
+   */
+  current_generation: number
+  /**
+   * The lease holding this task's capacity, or null if it holds none.
+   *
+   * Null on a QUEUED, PARKED, READY or terminal task -- those cost nothing
+   * (invariant 1). It is the join key onto `LeaseRow`, and comparing that
+   * row's `generation` against `current_generation` above is how a stalled
+   * task is diagnosed: a task at generation 2 whose named lease is still at
+   * generation 1 and unreleased is holding a slot for work that will never
+   * run. That is the twenty-minute DISPATCHED stall on
+   * task_b5dc2568713a40158851, which no screen could explain because neither
+   * number reached the browser.
+   */
+  current_lease_id: string | null
+
+  /**
+   * `codec.dispatch_of`, lifted out of `metadata.dispatch` by the API.
+   *
+   * OPTIONAL ON PURPOSE, and it is the one field in this interface whose
+   * absence means something. `task_to_api` always sends it -- filling the
+   * API's defaults for a task submitted before the feature existed -- so a
+   * missing key here is not an old TASK, it is an older API than this bundle.
+   * Those are different and `dispatchOf` below keeps them different: an old
+   * task reads `collect`, an old API reads "not reported".
+   */
+  dispatch?: TaskDispatch | null
+
+  /**
+   * The step's `contract_acceptance` (jev-contract.md sections 5.4 and 8.2),
+   * served on the detail only and only where Jev judged the step's work
+   * contract: read by `ContractJev.contractAcceptance`, drawn as Jev's.
+   */
+  contract_acceptance?: unknown
+}
+
+/**
+ * `current_generation` and `current_lease_id` USED TO BE MISSING HERE, and this
+ * block used to say so: "task_to_api does not send it, so no screen can show it
+ * and no screen should imply it". That was true, and it was the standing reason
+ * not to build the fencing indicator -- the same shape as the comment that kept
+ * the cost columns off the attempts table by blaming a worker fix that had
+ * already shipped. `task_to_api` serves both now and they are typed on `Task`
+ * above; a screen that wants the fence glyph has the numbers.
+ */
+
+// --------------------------------------------------------------------------
+// Dispatch: how a caller's work gets merged
+// --------------------------------------------------------------------------
+//
+// Mirrors `swarm_api/validation.py`. Two fields chosen at submit time; neither
+// is an execution parameter, so invariant 10 is untouched -- they say what
+// happens to the work AFTER the agent has produced it.
+//
+// THE CARRIER VOCABULARY IS `checkpoints`, NOT `patches`. Typing the wrong word
+// here is not a cosmetic slip: `_accepted_value` refuses an unknown carrier at
+// submission, so every submission from this screen would 422. `patches` is a
+// real trap because the WORKER uses it -- `lifecycle._dispatch_carrier` accepts
+// `("patches", "branches")` and swarm-api accepts `("checkpoints", "branches")`,
+// a live disagreement recorded in docs/contract-change-requests.md. This file
+// mirrors the API, because the API is what this browser talks to.
+
+/** `validation.DISPATCH_STRATEGIES`, in the order every refusal lists them. */
+export const DISPATCH_STRATEGIES = ['collect', 'direct-pr', 'integrate'] as const
+export type DispatchStrategy = (typeof DISPATCH_STRATEGIES)[number]
+
+/** `validation.DISPATCH_CARRIERS`. */
+export const DISPATCH_CARRIERS = ['checkpoints', 'branches'] as const
+export type DispatchCarrier = (typeof DISPATCH_CARRIERS)[number]
+
+/** `validation.DEFAULT_STRATEGY` / `DEFAULT_CARRIER` -- today's behaviour. */
+export const DEFAULT_STRATEGY: DispatchStrategy = 'collect'
+export const DEFAULT_CARRIER: DispatchCarrier = 'checkpoints'
+
+export type DispatchRole = 'contributor' | 'integrator'
+
+/** The four keys `codec.dispatch_of` returns. */
+export interface TaskDispatch {
+  strategy: DispatchStrategy
+  carrier: DispatchCarrier
+  /** Only an `integrate` workflow's steps have one. */
+  role: DispatchRole | null
+  /** Upstream TASK ids the integrator must apply, in topological order. */
+  integrates: string[]
+}
+
+function isStrategy(v: unknown): v is DispatchStrategy {
+  return typeof v === 'string' && (DISPATCH_STRATEGIES as readonly string[]).includes(v)
+}
+
+function isCarrier(v: unknown): v is DispatchCarrier {
+  return typeof v === 'string' && (DISPATCH_CARRIERS as readonly string[]).includes(v)
+}
+
+/**
+ * What this task CHOSE, or null when this API did not say.
+ *
+ * Null is the whole reason this is a function rather than a field read. Three
+ * situations arrive as "no usable `dispatch` object" and only one of them is
+ * an answer:
+ *
+ *  - the API sent the block: that is the answer, however old the task is.
+ *    `dispatch_of` already substituted `collect`/`checkpoints` for a task that
+ *    predates the feature, and that substitution is CORRECT -- an absent block
+ *    means the worker will harvest and push nothing, which is what collect is.
+ *  - the API sent no `dispatch` key at all: a deployment older than the field.
+ *    Rendering `collect` here would invent a caller's choice out of a version
+ *    skew, and "nothing was pushed because you asked for collect" is a
+ *    different sentence from "nothing was pushed and we cannot say why".
+ *  - the API sent a value neither vocabulary knows: same answer, same reason.
+ *
+ * So the second and third return null and every caller has to say so.
+ */
+export function dispatchOf(task: Task): TaskDispatch | null {
+  const d = task.dispatch
+  if (typeof d !== 'object' || d === null || Array.isArray(d)) return null
+  if (!isStrategy(d.strategy) || !isCarrier(d.carrier)) return null
+  const role = d.role === 'contributor' || d.role === 'integrator' ? d.role : null
+  return {
+    strategy: d.strategy,
+    carrier: d.carrier,
+    role,
+    integrates: Array.isArray(d.integrates) ? d.integrates.filter((t) => typeof t === 'string') : [],
+  }
+}
+
+/**
+ * `DispatchOptions.needs_repository`, restated -- and deliberately only ever
+ * used to WARN.
+ *
+ * validation.py is the decider and names its own refusal; a copy here that
+ * disabled the submit button would, on drifting, block a submission the API
+ * would have accepted. Warning fails the other way: the worst a stale copy can
+ * do is show a caution that turns out to be wrong.
+ */
+export function needsRepository(strategy: DispatchStrategy, carrier: DispatchCarrier): boolean {
+  return strategy === 'direct-pr' || strategy === 'integrate' || carrier === 'branches'
+}
+
+/**
+ * WHAT PICKING THIS ACTUALLY PRODUCES, in pull requests, for `steps` steps.
+ *
+ * This is the reason the control exists. `integrate` on a six-step workflow is
+ * ONE pull request and `direct-pr` on the same six steps is SIX, and a caller
+ * who cannot see that at the moment of choosing is picking between three words.
+ *
+ * `pullRequests` is a CEILING, not a promise, and `atMost` says which. A step
+ * whose agent changed nothing publishes nothing -- `_harvest_git` reports
+ * "changed nothing" and the run ends -- so `direct-pr` over six steps opens
+ * between zero and six. `integrate` is exactly one or none, because there is
+ * only ever one step that opens one.
+ */
+export interface DispatchConsequence {
+  pullRequests: number
+  atMost: boolean
+  pushes: boolean
+  /** The headline, with the real step count already in it. */
+  headline: string
+  /**
+   * THE WORKFLOW CARD'S SHORT VALUE (WF-13, epic archived issue 83): a lowercase phrase that
+   * reads after the card's `opens` key -- "opens no pull request and pushes
+   * nothing". The headline is two sentences for a form where a choice is being
+   * made, and after a key it read "opens No pull request. Nothing is pushed."
+   * Built in the same switch, and its ceiling word ("up to") comes from
+   * `atMost`, so it never claims more than the count does.
+   */
+  opens: string
+  /** What happens to the work itself. */
+  detail: string
+}
+
+export function consequenceOf(
+  strategy: DispatchStrategy,
+  steps: number,
+  /** The form it is said on (QA G4-29): a lone task has no steps to count. */
+  scale: 'task' | 'workflow' = 'workflow',
+): DispatchConsequence {
+  const n = Math.max(1, steps)
+  const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`
+  // THE CARD'S VALUE TAKES ITS CEILING WORD FROM THE ARM'S OWN `atMost` (WF-13):
+  // a count that can come out lower reads "up to", one that cannot is stated
+  // as it is. Read off the object rather than written into each string, so the
+  // phrase cannot claim more than the count it sits beside.
+  const withOpens = (c: Omit<DispatchConsequence, 'opens'>, what: string): DispatchConsequence => ({
+    ...c,
+    opens: `${c.atMost ? 'up to ' : ''}${what}`,
+  })
+  switch (strategy) {
+    case 'collect':
+      return withOpens(
+        {
+          pullRequests: 0,
+          atMost: false,
+          pushes: false,
+          headline: 'No pull request. Nothing is pushed.',
+          detail:
+            `Each of the ${plural(n, 'step')} harvests its patch into the agent's own GCS ` +
+            'prefix and the run ends there. Nothing reaches the repository, so this is ' +
+            'the only strategy that works with a read-only token.',
+        },
+        'no pull request and pushes nothing',
+      )
+    case 'direct-pr':
+      // ONE TASK, ONE BRANCH (QA G4-29): the task form read "Up to 1 pull
+      // request — one per step." on a form that has no steps. Still a ceiling:
+      // an agent that changed nothing opens none.
+      if (scale === 'task') {
+        return withOpens(
+          {
+            pullRequests: 1,
+            atMost: true,
+            pushes: true,
+            headline: 'One pull request, from this agent’s branch — none if it changed nothing.',
+            detail:
+              'The agent pushes its own branch and opens one pull request from it. An agent that ' +
+              'changed nothing opens none, which is why this is a ceiling and not a count.',
+          },
+          '1 pull request, from this agent’s branch',
+        )
+      }
+      return withOpens(
+        {
+          pullRequests: n,
+          atMost: true,
+          pushes: true,
+          headline: `Up to ${plural(n, 'pull request')} — one per step.`,
+          detail:
+            `Every step pushes its own branch and opens its own pull request, so ${plural(n, 'step')} ` +
+            `means ${plural(n, 'review')} to do and ${plural(n, 'branch')} to merge. A step whose agent ` +
+            'changed nothing opens none, which is why this is a ceiling and not a count.',
+        },
+        plural(n, 'pull request'),
+      )
+    case 'integrate':
+      // "Exactly one or none": the integrator is the only step that opens a
+      // pull request, and it opens none if nothing changed -- `atMost` is true,
+      // so the card says "up to 1".
+      return withOpens(
+        {
+          pullRequests: 1,
+          atMost: true,
+          pushes: true,
+          headline: 'Exactly one pull request for the whole workflow.',
+          detail:
+            n < 2
+              ? 'One final step receives the others’ work and opens the single pull ' +
+                'request. There are no other steps here yet, so there is nothing to integrate.'
+              : `The final step merges the other ${plural(n - 1, 'step')}’ branches into its own ` +
+                'and opens one pull request against the repository. Those steps push a branch each ' +
+                'and open nothing.',
+        },
+        '1 pull request, for all steps',
+      )
+  }
+}
+
+/** Label and one-line gloss for each strategy, for a picker. */
+export const STRATEGY_LABEL: Readonly<Record<DispatchStrategy, string>> = {
+  collect: 'Collect',
+  'direct-pr': 'A PR per step',
+  integrate: 'One PR for all steps',
+}
+
+/**
+ * A strategy's label on the form it is offered on (QA G4-29). On the task
+ * form `direct-pr` is one pull request, so "A PR per step" named steps the
+ * form does not have; everywhere else -- a workflow, a task's read-back --
+ * the label is `STRATEGY_LABEL`'s.
+ */
+export function strategyLabel(strategy: DispatchStrategy, scale: 'task' | 'workflow'): string {
+  return scale === 'task' && strategy === 'direct-pr' ? 'Open a pull request' : STRATEGY_LABEL[strategy]
+}
+
+/**
+ * THE SENTENCE THAT KEEPS THE CARRIER CONTROL HONEST.
+ *
+ * `carrier` is validated at submission, stored on the task, and read back by
+ * the API -- and then nothing does anything with it. `_dispatch_carrier` in
+ * agent-worker has no caller in production code; its only references are its
+ * own definition and one test. So the only effect `branches` has TODAY is that
+ * `needs_repository` becomes true and the submission is refused without a
+ * repository URL. Saying "work travels between steps as pushed branches" would
+ * describe a mechanism that is not wired up, which is precisely the kind of
+ * claim this UI exists to not make.
+ */
+export const CARRIER_NOTE =
+  'Recorded on the agent and returned by the API, but no worker code reads it yet. ' +
+  'Choosing branches changes one thing today: it makes a repository URL required.'
+
+export const CARRIER_DETAIL: Readonly<Record<DispatchCarrier, string>> = {
+  checkpoints:
+    'The default. Intended to carry a step’s work to the next one as the checkpoint ' +
+    'tarballs the worker already writes every few minutes.',
+  branches:
+    'Intended to carry a step’s work to the next one as a pushed branch, which outlives ' +
+    'the platform. Requires a repository URL.',
+}
+
+/** `_event_to_api`, routes/tasks.py. */
+export interface TaskEvent {
+  event_id: string
+  task_id: string
+  type: string
+  at: string
+  attempt_id: string | null
+  lease_id: string | null
+  generation: number | null
+  /** Every string in it masked by the task's masker (the archived pull request 229 review); keys as written. */
+  detail: Record<string, unknown> | null
+  detail_redaction_count?: number | null
+}
+
+/**
+ * What the worker puts in `task.result_summary` (lifecycle.py:946-960, written
+ * through control.py:663-664).
+ *
+ * WHY THIS AND NOT `GET /v1/tasks/{id}/artifacts`: that route reads a
+ * Firestore `artifacts` subcollection (store.py:513) that NOTHING IN THIS
+ * REPOSITORY WRITES. `ARTIFACTS = "artifacts"` is declared once in swarm-api's
+ * store and read once, and grep across apps/ finds no writer. The endpoint
+ * therefore returns an empty list for every task forever. A panel built on it
+ * would render "no artifacts" for a run that produced twenty.
+ *
+ * The artifacts are real -- they are uploaded to the tenant's own GCS prefix
+ * and recorded here, by reference. Nothing is inlined and no download URL is
+ * minted: the reader uses their own credentials against GCS, which keeps the
+ * tenant boundary in one place.
+ */
+export interface ResultSummary {
+  artifacts?: ArtifactRef[]
+  artifact_bytes?: number
+  /** `{stdout: "gs://...", stderr: "gs://..."}`. A stream that failed to upload is absent. */
+  logs?: Record<string, string>
+  /**
+   * Files written to `$SWARM_ARTIFACTS_DIR` and not uploaded, the first 50:
+   * over `max_artifact_bytes`, an upload that failed, a name that is not UTF-8
+   * (archived pull request 225), or a name longer than a manifest entry may carry (archived issue 228). A name of
+   * the last two kinds is spelled for reading and cut short, never an address.
+   * Present only when there was one. The files past the FILE cap are not here:
+   * see `artifacts_over_cap`. Each entry is `{name, cause}` (archived issue 165: `cap`,
+   * `upload_error`, `refused`); a summary from before causes holds bare names.
+   * The listing route serves the same `{name, cause}` entries.
+   */
+  artifacts_skipped?: Array<string | { name: string; cause: string }>
+  checkpoint?: { checkpoint_id?: string; [k: string]: unknown }
+  /**
+   * What the agent did to the repository, and what happened to it.
+   * `lifecycle.py::_harvest_git`. Absent when the task cloned nothing.
+   *
+   * THE FIELD THAT MATTERS MOST HERE IS `publish_reason`, and it is present on
+   * success as well as failure. "No pull request" has at least six distinct
+   * causes -- the token cannot push, the attempt parked, the agent changed
+   * nothing, the forge is unknown, the push was rejected, the PR call failed --
+   * and they need completely different responses. A panel that rendered a
+   * missing PR as a single "none" would be the same failure the rest of this
+   * UI is built to avoid.
+   */
+  git?: GitSummary
+  /** Token and cost numbers live at `runner.usage`, untyped. See the note below. */
+  runner?: { usage?: Record<string, number | string[]>; [k: string]: unknown }
+  /**
+   * The files the worker staged into this step's workspace before the agent
+   * ran. Read it through `stagedInputsOf`, which is where the three things an
+   * absence here can mean are kept apart.
+   */
+  staged_inputs?: StagedInputRef[]
+  /**
+   * Which artifacts are the agent CLI's own streams (#184), or null for a
+   * runner with no agent CLI (mock, browser). Absent on a summary written
+   * before the change.
+   */
+  agent_streams?: AgentStreams | null
+  /**
+   * What a claude-code or codex task with NO repository uploaded from its
+   * working folder, as `workdir/<path>` entries of `artifacts` (#184, owner
+   * decision of 2026-09-26), and what it did not. Absent on a repository task
+   * and on every other runner. Read it through `workdirNotUploadedOf`, which
+   * checks each entry rather than trusting the shape.
+   */
+  workdir_outputs?: WorkdirOutputs
+  /**
+   * How many files `$SWARM_ARTIFACTS_DIR` held past the per-attempt file cap,
+   * and so were not uploaded (archived issue 228, owner decision of 2026-09-26: at most 500
+   * files, because each is an entry in the task's Firestore document, which
+   * holds 1 MiB). The worker's log names every one, 100 to a line; the
+   * summary counts them and lists none. Present only when there were some,
+   * beside `artifacts_cap_files`, the cap they were over. Read both through
+   * `artifactsOverCapOf`.
+   */
+  artifacts_over_cap?: number
+  artifacts_cap_files?: number
+  [k: string]: unknown
+}
+
+/**
+ * The files `$SWARM_ARTIFACTS_DIR` held past its file cap, from a summary:
+ * how many, and the cap as the worker applied it. `null` when the summary
+ * records none -- every file fitted, or it was written before archived issue 228 -- which
+ * is not a count of zero. `cap` is null when the summary does not carry it,
+ * so a reader never restates a number the worker owns.
+ */
+export function artifactsOverCapOf(
+  summary: ResultSummary | null | undefined,
+): { count: number; cap: number | null } | null {
+  const count: unknown = summary?.artifacts_over_cap
+  if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) return null
+  const cap: unknown = summary?.artifacts_cap_files
+  return { count, cap: typeof cap === 'number' && Number.isFinite(cap) && cap > 0 ? cap : null }
+}
+
+/**
+ * `result_summary.workdir_outputs`, as `Worker._upload_workdir_outputs`
+ * writes it. `not_uploaded` is the FIRST 50 files the worker did not upload,
+ * each with its reason ("over cap", a core dump, a name that is not UTF-8, a
+ * registered secret it could not redact...); `not_uploaded_count` is all of
+ * them, and the worker's log names every one. These are never in
+ * `artifacts_skipped`, whose readers call a name there dropped at the
+ * artifacts folder's size cap.
+ */
+export interface WorkdirOutputs {
+  prefix?: string
+  uploaded?: number
+  uploaded_bytes?: number
+  not_uploaded?: WorkdirNotUploaded[]
+  not_uploaded_count?: number
+  symlinks_skipped?: number
+  working_folder_is_symlink?: boolean
+  cap_files?: number
+  cap_bytes?: number
+}
+
+/** One working-folder file the worker did not upload, and why. */
+export interface WorkdirNotUploaded {
+  /** `workdir/<path>`. A name that was not UTF-8 is spelled as its bytes (`caf\xe9.txt`). */
+  name: string
+  bytes: number | null
+  reason: string
+}
+
+/**
+ * The working-folder files a summary lists as not uploaded, and how many
+ * there were in all. `null` when the summary has no such record -- a
+ * repository task, another runner, or a summary from before #184 -- which is
+ * not the same as a record of none. An entry that is not a named file is
+ * dropped here and still counted in `total`, which comes from the worker.
+ */
+export function workdirNotUploadedOf(
+  summary: ResultSummary | null | undefined,
+): { listed: WorkdirNotUploaded[]; total: number } | null {
+  const block: unknown = summary?.workdir_outputs
+  if (block === null || typeof block !== 'object') return null
+  const { not_uploaded: entries, not_uploaded_count: count } = block as { not_uploaded?: unknown; not_uploaded_count?: unknown }
+  const raw: unknown[] = Array.isArray(entries) ? entries : []
+  const listed = raw.filter((e): e is WorkdirNotUploaded => {
+    if (e === null || typeof e !== 'object') return false
+    const { name, reason } = e as { name?: unknown; reason?: unknown }
+    return typeof name === 'string' && typeof reason === 'string'
+  })
+  const total = typeof count === 'number' && Number.isFinite(count) && count >= listed.length ? count : listed.length
+  return { listed, total }
+}
+
+/**
+ * ONE FILE THE WORKER STAGED INTO A STEP'S WORKSPACE, as it is sent.
+ *
+ * `agent_worker/inputs.py::StagedInput.as_dict`, written into
+ * `result_summary.staged_inputs` by the summary block in `lifecycle.py` -- and
+ * ONLY there, which is the fact every reader of it has to hold:
+ *
+ *  - `result_summary` is written by `finish()`. A step that is still running
+ *    HAS staged its inputs (staging happens before the agent starts) and has not
+ *    REPORTED them. Absence on a live step is "not reported yet", never "not
+ *    staged".
+ *  - the key is written only when something was staged. A finished step that
+ *    declared no `input_from` has no key at all, and that is not a missing
+ *    report.
+ *  - a declared input that cannot be staged FAILS the attempt (`inputs.py`:
+ *    "fails the attempt instead of warning"), so a step never silently ran
+ *    without one.
+ *
+ * `task_id` IS THE UPSTREAM TASK, NOT A STEP. `service.py` rewrites the
+ * workflow's `{upstream_step: filename}` into `metadata.input_from` keyed by the
+ * upstream step's TASK id, so drawing this back into the graph (viz #9) is a
+ * join through `WorkflowStep.task_id`. It is optional because viz #9 names the
+ * case where it is missing: such an input came from the submission, not from
+ * nowhere.
+ */
+export interface StagedInputRef {
+  task_id?: string | null
+  filename: string
+  /** Relative to the work directory, which is the agent's current directory. */
+  path: string
+  bytes: number
+  uri?: string
+  /** A restored checkpoint already held the file, so this attempt did not fetch it. */
+  from_checkpoint?: boolean
+}
+
+/** One staged input, after `stagedInputsOf` has checked its shape. */
+export interface StagedInput {
+  /** The upstream TASK id, or null when the input came from the submission. */
+  upstreamTaskId: string | null
+  filename: string
+  path: string
+  /** Null when the entry carried no finite size -- never a zero. */
+  bytes: number | null
+  uri: string | null
+  fromCheckpoint: boolean
+}
+
+/**
+ * What a task's result says it staged.
+ *
+ * TWO ARMS, NOT ONE ARRAY, because `[]` and "no key" are different sentences:
+ * `reported` with an empty list is a worker that wrote the key and staged
+ * nothing; `unreported` is a task with no result yet, or a worker that had
+ * nothing to write, or one older than the field -- and which of those it is
+ * depends on the step's own state and declaration, which only the caller has.
+ *
+ * `malformed` counts entries that could not be read as a staged file. They are
+ * COUNTED rather than dropped: `result_summary` is untyped JSON, and an entry
+ * this reader skipped without a trace would be a file that arrived and was
+ * never shown.
+ */
+export type StagedInputs =
+  | { kind: 'unreported' }
+  | { kind: 'reported'; inputs: StagedInput[]; malformed: number }
+
+export function stagedInputsOf(task: Task): StagedInputs {
+  const summary = task.result_summary
+  if (summary === null || typeof summary !== 'object') return { kind: 'unreported' }
+  const raw: unknown = (summary as ResultSummary).staged_inputs
+  if (raw === undefined || raw === null) return { kind: 'unreported' }
+  if (!Array.isArray(raw)) return { kind: 'reported', inputs: [], malformed: 1 }
+  const inputs: StagedInput[] = []
+  let malformed = 0
+  for (const entry of raw as unknown[]) {
+    if (entry === null || typeof entry !== 'object') {
+      malformed += 1
+      continue
+    }
+    const e = entry as Record<string, unknown>
+    if (typeof e.filename !== 'string' || e.filename === '') {
+      malformed += 1
+      continue
+    }
+    inputs.push({
+      upstreamTaskId: typeof e.task_id === 'string' && e.task_id !== '' ? e.task_id : null,
+      filename: e.filename,
+      path: typeof e.path === 'string' && e.path !== '' ? e.path : e.filename,
+      bytes: typeof e.bytes === 'number' && Number.isFinite(e.bytes) ? e.bytes : null,
+      uri: typeof e.uri === 'string' && e.uri !== '' ? e.uri : null,
+      fromCheckpoint: e.from_checkpoint === true,
+    })
+  }
+  return { kind: 'reported', inputs, malformed }
+}
+
+export interface GitCommit {
+  sha: string
+  subject: string
+  author: string
+  committed_at: string
+  files_changed: number
+  insertions: number
+  deletions: number
+  /** git prints `-` for both counts on a binary change; those are counted here
+   *  instead of folded into a 0/0 line count that would read as "changed
+   *  nothing". */
+  binary_files: number
+}
+
+export interface GitSummary {
+  /** The commit the clone landed on. Null when a resumed attempt lost its marker. */
+  base?: string | null
+  head?: string | null
+  commits?: GitCommit[]
+  commit_count?: number
+  insertions?: number
+  deletions?: number
+  /** Changed-but-uncommitted paths. The COMMON case: most agents never commit. */
+  dirty?: string[]
+  dirty_count?: number
+  dirty_truncated?: boolean
+  /**
+   * One row per file of the patch's diff (`git diff -M <base>`, committed and
+   * uncommitted work together), so counts are known before the patch is read
+   * and even when it was omitted. Capped at 500 rows (`MAX_FILES_LISTED` in
+   * `gitops.py`); `files_truncated` says the cap was hit. Absent on a summary
+   * written before the field, or when there was no base to diff against.
+   * A binary file has `binary: true` and null counts. Paths only, never content.
+   */
+  files?: Array<{
+    path: string
+    /** The path before a rename, else null. */
+    old_path: string | null
+    status: 'A' | 'M' | 'D' | 'R'
+    insertions: number | null
+    deletions: number | null
+    binary: boolean
+  }>
+  files_truncated?: boolean
+  /** Artifact name of the patch, matched against `artifacts[]` to get its URI. */
+  patch?: string | null
+  patch_bytes?: number
+  /** True when a patch was produced and DISCARDED for exceeding the cap. A
+   *  truncated patch applies cleanly and silently drops the rest of the
+   *  change, so none is written. Not the same as "no patch". */
+  patch_omitted?: boolean
+  patch_note?: string
+  note?: string
+  error?: string
+  repository?: string
+  default_branch?: string | null
+  can_push?: boolean
+  branch?: string
+  pushed_head?: string
+  /** True when the WORKER made one of the commits, because the agent left work
+   *  uncommitted and it would otherwise never have reached the branch. */
+  auto_committed?: boolean
+  published?: boolean
+  publish_reason?: string
+  /**
+   * WHERE THE CLONE'S BASE WAS PINNED (agent-detail-2.html A4). Not written by
+   * any worker on main: the shape is the mock-up's reading of the brief --
+   * `{pinned: true, sha, from}` (from: the upstream step or task the commit was
+   * taken from) or `{pinned: false, reason}`. Absent is "not recorded", which
+   * the Code card says as that and never as "not pinned".
+   */
+  base_pin?: GitBasePin | null
+  pull_request?: { number: number; url: string; state: string; created: boolean }
+
+  /**
+   * WHAT THE RUN ITSELF RECORDED ABOUT ITS DISPATCH, written by `_publish` in
+   * agent_worker/lifecycle.py. Both are partial by design, so neither may be
+   * read as "the dispatch":
+   *
+   *  - `strategy` is written on the `collect` early return ONLY. Every other
+   *    strategy gets past that branch and the field is never set.
+   *  - `role` is written once the strategy is known to be `integrate`, and is
+   *    null on the other two.
+   *
+   * `task.dispatch` is the complete record and `dispatchOf` reads it. These are
+   * preferred over it where present for one reason: they say what the attempt
+   * ACTUALLY DID, which is the subject of the panel that renders them.
+   */
+  strategy?: string | null
+  role?: string | null
+
+  /** `merge_branches`' outcome, written on an integrator only. */
+  integrated?: {
+    merged?: string[]
+    conflicted?: string[]
+    missing?: string[]
+    complete?: boolean
+  }
+}
+
+/** `result_summary.git.base_pin`; see `GitSummary.base_pin`. */
+export type GitBasePin =
+  | { pinned: true; sha: string; from?: string | null; upstream_task_id?: string | null }
+  | { pinned: false; reason?: string | null }
+
+export interface ArtifactRef {
+  name: string
+  bytes: number
+  uri: string
+}
+
+/**
+ * Reads `result_summary.runner.usage` if it is there.
+ *
+ * Three things must stay true of anything rendered from this:
+ *  - only claude-code and codex produce it; mock, generic and browser report
+ *    nothing, and NOTHING IS NOT ZERO. Render an em dash, never $0.00.
+ *  - result_summary is written only by finish(), so a RUNNING agent has no
+ *    figure and a PARKED one never will for the attempt it lost -- that path
+ *    puts the summary in the event detail and in blocked_by instead.
+ *  - it is an untyped dict, so nothing can query or index it. A "top spenders"
+ *    figure is a client-side sum over one page, not an aggregate.
+ */
+export function usageOf(task: Task): Record<string, number | string[]> | null {
+  const runner = (task.result_summary as ResultSummary | null)?.runner
+  const usage = runner?.usage
+  return usage && typeof usage === 'object' ? usage : null
+}
+
+/**
+ * The models the CLI's stream reports, when the pinned one is NOT among them;
+ * null otherwise (docs/design/model-per-step.md §4.6, archived issue 1435).
+ *
+ * The worker's own rule (`lifecycle.py::_note_model_mismatch`), so the console
+ * and the worker's `model_mismatch` log never disagree: the pin missing from
+ * `usage.models` is a mismatch, and another model BESIDE the pin is not -- the
+ * CLI also reports the small model it runs for its own housekeeping. A `[...]`
+ * context suffix (`<model>[1m]`) is the same model. Null when either side was
+ * not recorded: an absent record is not a disagreement.
+ *
+ * `usage` is the task's `result_summary`, written once at the end, so it is
+ * the LAST attempt's stream and is compared with that attempt only.
+ */
+export function modelMismatch(pinned: string | null | undefined, task: Task): string[] | null {
+  if (typeof pinned !== 'string' || pinned === '') return null
+  const models = usageOf(task)?.['models']
+  if (!Array.isArray(models) || models.length === 0) return null
+  const reported = models.map(String).sort()
+  return reported.some((m) => m.split('[', 1)[0] === pinned) ? null : reported
+}
+
+/** `GET /v1/tenants/me`, routes/tenants.py:24-38. */
+export interface Me {
+  tenant: Tenant
+  principal: {
+    email: string
+    domain: string
+    groups: string[]
+    is_admin: boolean
+  }
+  /**
+   * WHICH ENVIRONMENT THE API ANSWERING THIS CONSOLE RUNS AS -- the value it
+   * ACTS on (`hardened` derives from it), not a display label.
+   *
+   * Read together with `environment_declared`, never alone: the frozen
+   * `Settings.from_env` fills in "dev" when ENVIRONMENT is unset, so "dev"
+   * here is two different facts. Brand.tsx's badge takes it only when it was
+   * declared.
+   */
+  environment: string
+  /**
+   * False when nobody set ENVIRONMENT and the default filled in. A client must
+   * read that as UNKNOWN, not as dev: a defaulted "dev" on a production
+   * console is the exact badge the header exists not to draw
+   * (swarm_api/settings.py `ApiSettings.environment_declared`).
+   */
+  environment_declared: boolean
+}
+
+/**
+ * A row-bounded window of tasks, plus what span those rows turned out to
+ * cover.
+ *
+ * THE ONE DESIGN RULE for activity: bound by ROWS, label by the SPAN those
+ * rows actually covered. The platform can serve "the most recent N tasks for
+ * this tenant" cheaply and exactly; it cannot serve "everything in August" at
+ * all -- list_tasks applies exactly one inequality, decoded from the page
+ * token. So the control says "Last 500 tasks" and the header reports
+ * "14 Sep 09:12 -> 19 Sep 08:44 (4d 23h)". If the tenant is busy that span is
+ * six hours; if quiet, three months. Both are true. "Last 7 days" would be a
+ * lie the moment the window truncates.
+ */
+export interface TaskWindow {
+  tasks: Task[]
+  /** True when a next_page_token remained, so older tasks exist beyond this. */
+  moreExist: boolean
+  /** How many pages were actually fetched, for the provenance line. */
+  pages: number
+  /** Oldest and newest created_at in the window, or null when empty. */
+  from: string | null
+  to: string | null
+}
+
+export type Bucket = 'hour' | 'day' | 'week' | 'month'
+
+/**
+ * Floor a timestamp to a bucket boundary IN THE VIEWER'S LOCAL ZONE.
+ *
+ * A day boundary silently in UTC moves seven hours of a Pacific engineer's
+ * work into the wrong day, which is the kind of wrong that never gets
+ * reported because it looks plausible.
+ */
+export function bucketStart(iso: string, bucket: Bucket): number | null {
+  const t = new Date(iso)
+  if (Number.isNaN(t.getTime())) return null
+  const d = new Date(t)
+  d.setMinutes(0, 0, 0)
+  if (bucket === 'hour') return d.getTime()
+  d.setHours(0)
+  if (bucket === 'day') return d.getTime()
+  if (bucket === 'week') {
+    // ISO-8601: weeks start Monday.
+    const dow = (d.getDay() + 6) % 7
+    d.setDate(d.getDate() - dow)
+    return d.getTime()
+  }
+  d.setDate(1)
+  return d.getTime()
+}
+
+/**
+ * Usage is only meaningful when PRESENT AND NON-EMPTY. `?? 0` here would
+ * render "this engineer spent nothing", which is worse than omitting the
+ * number -- a zero reads as a fact.
+ */
+export function hasUsage(task: Task): boolean {
+  const u = usageOf(task)
+  return u !== null && Object.keys(u).length > 0
+}
+
+/**
+ * `lease_to_api`. One row of "who is holding capacity right now".
+ *
+ * NOTE `dispatch_state`, not `state`. Nothing ever writes STARTING or RUNNING
+ * to a lease -- the worker advances the TASK through those and touches the
+ * lease only to heartbeat -- so a column labelled "state" would show
+ * DISPATCHED for an agent that has been running for an hour.
+ */
+export interface LeaseRow {
+  lease_id: string
+  task_id: string
+  attempt_id: string
+  tenant_id: string
+  generation: number
+  pools: string[]
+  units: number
+  /**
+   * What the lease holds in each of `pools` (contract request 129, archived issue 2950):
+   * what release gives back, the provider pools at 1 for a lease reserved
+   * since the request and at `units` for one reserved before it. Read it
+   * through `leaseHeld`. Optional for a console beside an older API, whose
+   * leases all hold `units` in every pool.
+   */
+  pool_units?: Record<string, number>
+  dispatch_state: 'LEASED' | 'DISPATCHED' | string
+  created_at: string
+  dispatch_deadline: string
+  expires_at: string
+  heartbeat_at: string | null
+  released_at: string | null
+  release_reason: string | null
+  released: boolean
+  expired: boolean
+  dispatch_overdue: boolean
+  /** Computed server-side. Falls back to created_at when never beaten. */
+  silent_seconds: number
+  heartbeat_ever: boolean
+  /** Denormalised from the task, so this is not an N+1. */
+  last_error: string | null
+}
+
+/**
+ * THE THRESHOLDS ARRIVE WITH THE DATA and the UI must colour from them.
+ *
+ * 90 and 120 are the reconciler's, and the grace is not even a constant --
+ * it derives from the heartbeat interval. A `const GRACE = 90` here would be
+ * the restatement drift check-contract-parity.sh exists to catch, one layer
+ * further out, and it would colour a row amber at a threshold the reconciler
+ * does not act on.
+ */
+export interface LeasePage {
+  leases: LeaseRow[]
+  /** The next page's token, or null on the last page (archived issue 632 F8: leases page past 200). */
+  next_page_token?: string | null
+  thresholds: { heartbeat_grace_seconds: number; lease_timeout_seconds: number }
+  evaluated_at: string
+  active_only: boolean
+  tenant_id: string | null
+  /** Weighted units, not agents. Summed over `leases` -- the rows served. */
+  units_held: number
+  /**
+   * Per pool, what the served rows' leases hold (contract request 129,
+   * archived issue 2950): the drift check's per-pool input against each pool's `active`.
+   * NOT `units_held` in every pool -- a provider pool holds 1 per new lease.
+   * Optional for a console beside an older API; Holders.tsx then sums the
+   * rows by `leaseHeld`.
+   */
+  units_held_by_pool?: Record<string, number>
+  /**
+   * LIVE LEASES, UNDER THE SAME TENANT FILTER, THAT THESE ROWS LEFT OUT.
+   *
+   * The field to read before calling a `units_held` / `pool.active` delta
+   * evidence of anything: only at 0 is no live lease missing from the rows
+   * (routes/admin.py `list_leases`, store.py `LeaseScan`). Computed where the
+   * query runs, not inferred from the page length -- `leases.length === limit`
+   * is false in exactly the case that matters, a window of released leases
+   * filtered down to nothing.
+   *
+   * REQUIRED because this API serves it on every response, and
+   * test_ui_api_field_contract.py holds the two together. A reader still
+   * checks it is a number (Holders.tsx `leaseCoverage`): a console served
+   * beside an older API receives no such key, and absent is not zero.
+   */
+  active_beyond_window: number
+  /**
+   * The window was full and more lay behind it. For an `active_only` read
+   * that is more live leases than the limit; for a history read it is "older
+   * documents exist", which is true for ever once an environment has made
+   * more admissions than the limit, because lease documents are never
+   * deleted. Kept for a pager -- NOT the drift check's signal.
+   */
+  truncated: boolean
+  /** How many rows the route's `state` and `overdue_only` filters ran over. */
+  examined: number
+}
+
+/**
+ * How a lease row reads, given the thresholds the API just sent. `starting`
+ * is a lease whose worker has not beaten yet and is still inside its dispatch
+ * deadline: booting, not silent, and not a reason for anyone to act.
+ */
+export type Liveliness = 'alive' | 'starting' | 'silent' | 'presumed-dead'
+
+export function leaseLiveliness(
+  row: LeaseRow,
+  thresholds: LeasePage['thresholds'],
+): { kind: Liveliness; copy: string } {
+  // A BOOTING AGENT IS NOT A SILENT ONE (G5-01, QA 2026-10-07). Before the
+  // first beat the reconciler judges the lease by `dispatch_overdue` alone, as
+  // `LeaseHeartbeat` below says. Checking `expired` first drew two Cloud Run
+  // cold starts red "presumed dead" at 2m 38s: their 120 s TTL had run out,
+  // their 8-minute dispatch deadline had not, and both were RUNNING by the
+  // next read. A never-beaten lease is never `silent` either -- its
+  // `silent_seconds` counts from creation, not from a beat that went quiet.
+  if (!row.heartbeat_ever) {
+    if (row.dispatch_overdue) {
+      return {
+        kind: 'presumed-dead',
+        copy: 'Never beat, and its dispatch deadline has passed. The reconciler will reclaim this lease on its next pass.',
+      }
+    }
+    return {
+      kind: 'starting',
+      copy: 'No heartbeat yet: the worker is still starting. Until the first beat the reconciler judges this lease by its dispatch deadline alone.',
+    }
+  }
+  // Past expires_at is a SECOND, INDEPENDENT signal, not a later stage of the
+  // first: the lease TTL has run out as well as the heartbeat going quiet.
+  if (row.expired) {
+    return {
+      kind: 'presumed-dead',
+      copy: 'The lease TTL has run out as well. This slot is held by something that is almost certainly gone.',
+    }
+  }
+  if (row.silent_seconds >= thresholds.heartbeat_grace_seconds) {
+    return {
+      kind: 'silent',
+      copy: 'This is already the reconciler\u2019s trigger. Its next pass will reclaim this lease, and that pass is up to five minutes away.',
+    }
+  }
+  return { kind: 'alive', copy: 'Beating normally. Nothing will touch this.' }
+}
+
+/**
+ * One row of `GET /v1/leases` (routes/leases.py, archived issue 179): the current lease
+ * heartbeat of one of the caller's slot-holding tasks. Tenant-scoped, so a
+ * member who is not an admin reads it -- unlike `LeaseRow`, which only
+ * `/v1/admin/leases` serves.
+ *
+ * `heartbeat_at` and `silent_seconds` are NULL until the worker's first beat,
+ * never the lease's creation time: "never beat" and "beat long ago" are
+ * different facts, and a booting agent is not a silent one. Before the first
+ * beat the reconciler judges the lease by `dispatch_overdue` alone.
+ */
+export interface LeaseHeartbeat {
+  task_id: string
+  lease_id: string
+  attempt_id: string
+  generation: number
+  /** LEASED, DISPATCHED, STARTING or RUNNING -- a row exists for no other. */
+  task_state: TaskState
+  /** The LEASE's state, only ever LEASED or DISPATCHED; see `LeaseRow`. */
+  dispatch_state: 'LEASED' | 'DISPATCHED' | string
+  created_at: string
+  dispatch_deadline: string
+  expires_at: string
+  heartbeat_at: string | null
+  /** Seconds since `heartbeat_at`, at the page's `read_at`; null if never beaten. */
+  silent_seconds: number | null
+  /**
+   * The reconciler's rule, judged server-side: beaten at least once and quiet
+   * for longer than `thresholds.heartbeat_grace_seconds`.
+   */
+  silent: boolean
+  expired: boolean
+  dispatch_overdue: boolean
+}
+
+/**
+ * `GET /v1/leases`. The thresholds arrive with the data for the reason
+ * `LeasePage` says: the grace is the reconciler's, resolved server-side, and
+ * a constant here would warn at a boundary the reconciler does not act on.
+ */
+export interface LeaseHeartbeatPage {
+  tenant_id: string
+  /** The clock each row's `silent_seconds` was taken against. */
+  read_at: string
+  thresholds: { heartbeat_grace_seconds: number; lease_timeout_seconds: number }
+  heartbeats: LeaseHeartbeat[]
+}
+
+/**
+ * The page's rows whose worker has gone silent, by task id -- what a list row
+ * looks itself up in to decide whether it draws a `--warn` why line. Only
+ * `silent` decides it, so a lease that has never beaten (a booting worker) is
+ * never in the map.
+ */
+export function silentWorkersByTask(page: LeaseHeartbeatPage): Map<string, LeaseHeartbeat> {
+  const out = new Map<string, LeaseHeartbeat>()
+  for (const row of page.heartbeats) {
+    if (row.silent) out.set(row.task_id, row)
+  }
+  return out
+}
+
+/** One container of `AttemptRow.sized_live_split` (`check_sized_live_split`). */
+export interface SizedContainer {
+  cpu_request: number
+  cpu_limit: number
+  memory_gib: number
+}
+
+/**
+ * The kind of credential `AttemptRow.account_id` is (`CREDENTIAL_TIERS`,
+ * contract request 152): a plan the broker refreshes or a metered API key.
+ */
+export type CredentialTier = 'plan' | 'api_key'
+
+/** `attempt_to_api`. The per-attempt record result_summary cannot give you. */
+export interface AttemptRow {
+  attempt_id: string
+  task_id: string
+  tenant_id: string
+  generation: number
+  lease_id: string
+  backend: string
+  execution_name: string | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+  exit_code: number | null
+  /** The stderr tail `last_error` is, masked by the task's masker (the archived pull request 229 review). */
+  error: string | null
+  error_redaction_count?: number | null
+  peak_rss_bytes: number | null
+  peak_disk_bytes: number | null
+  oom_near_miss: boolean
+  checkpoints: string[]
+  input_tokens: number | null
+  output_tokens: number | null
+  cache_read_input_tokens: number | null
+  cache_creation_input_tokens: number | null
+  cost_usd: number | null
+  /**
+   * THE ATTEMPT'S CPU, typed on its document (contract request #15, accepted
+   * on #184 on 2026-09-25) and served on every row. Every runner the attempt
+   * started, combined; 1.0 is one whole vCPU.
+   *
+   *  - `cpu_seconds`      CPU time its runners consumed;
+   *  - `peak_cpu_cores`   the busiest sampling interval;
+   *  - `mean_cpu_cores`   cpu_seconds over RUNNER wall time;
+   *  - `cpu_limit_cores`  what they are a fraction of: the container's cgroup
+   *                       `cpu.max`, else the catalogue cpu of the class it
+   *                       was sized with; `cpu_limit_source` says which.
+   *
+   * The worker rewrites them with each periodic reading while a runner runs
+   * and when each runner is reaped, so on a running attempt they are LIVE,
+   * and `cpu_measured_at` dates them (request #26).
+   *
+   * NULL is not measured, never 0. OPTIONAL, and a missing key is a different
+   * fact again: an API older than the typed fields, which says nothing about
+   * the attempt. These replaced archived pull request 188's `usage` block (`attempts?include=usage`),
+   * which read the figures off HEARTBEAT events; that block is not read.
+   */
+  cpu_seconds?: number | null
+  peak_cpu_cores?: number | null
+  mean_cpu_cores?: number | null
+  cpu_limit_cores?: number | null
+  /**
+   * WHEN AND FROM WHERE (contract request #26, accepted on #184, 2026-09-26):
+   *
+   *  - `cpu_measured_at`          the worker's clock when it last wrote the four;
+   *  - `cpu_limit_source`         `cgroup` (the container's `cpu.max`) or
+   *                               `resource_class` (the catalogue cpu of the class
+   *                               it was sized with);
+   *  - `cpu_reading_age_seconds`  the reading's age by the API's clock at its
+   *                               `read_at` -- aged on the server, never here.
+   *
+   * Null on every attempt from before the change: not recorded. OPTIONAL, and a
+   * missing key is an API older than the fields.
+   */
+  cpu_measured_at?: string | null
+  cpu_limit_source?: string | null
+  cpu_reading_age_seconds?: number | null
+  /**
+   * Contract request 103 (archived issue 1435): the model ID this attempt's agent was
+   * started with. Null: no model, or not recorded. Absent: an older API.
+   */
+  model?: string | null
+  /**
+   * Contract request 111 (RS-4, part of archived issue 1689): the size the scheduler
+   * RENDERED this attempt at, read by Details as "4 cores guaranteed, bursts
+   * to 8" (AgentDetail.tsx `sizedCpuWords`). `size_version` 0 is the code
+   * defaults; `sized_live_split` is a live pod's two containers, null on every
+   * other attempt. Null: not recorded (admitted before RS-4). Absent: an older
+   * API.
+   */
+  size_version?: number | null
+  sized_cpu_request?: number | null
+  sized_cpu_limit?: number | null
+  sized_memory_gib?: number | null
+  sized_disk_gib?: number | null
+  sized_live_split?: Record<string, SizedContainer> | null
+  /**
+   * Contract request 152 (docs/design/llm-providers.md section 8.2): the
+   * account and the credential tier this attempt RAN on, the one it kept
+   * last, written by the worker. `credential_source` is `account_pool` or
+   * `tenant_secret`; `credential_tier` is null when the source is not the
+   * pool. Null: not recorded, never "tenant secret" or "plan". Absent: an
+   * older API.
+   */
+  account_id?: string | null
+  credential_source?: string | null
+  credential_tier?: CredentialTier | null
+  /**
+   * archived issue 379. THIS attempt's account and the accounts it gave back. Served beside
+   * the rows as `accounts_by_attempt` (so a row stays `GET /v1/attempts`'s
+   * shape) and joined on by `loadAgentRun`. Absent: not read.
+   */
+  account?: TaskAccount | null
+}
+
+/**
+ * One page of `GET /v1/attempts` (routes/attempts.py): the tenant's attempts,
+ * newest first, `since` inclusive and `until` exclusive on `created_at`.
+ * `next_page_token` says older rows exist, NEVER how many -- so a count of
+ * the pages left is unknown, not zero. `coverage` counts this page's rows
+ * only (`scope: "page"`); the Lanes page does not sum cost, so it is typed
+ * loosely.
+ */
+export interface AttemptsPage {
+  tenant_id: string
+  read_at: string
+  attempts: AttemptRow[]
+  next_page_token: string | null
+  coverage: { scope: 'page' } & Record<string, unknown>
+}
+
+/**
+ * One page of `GET /v1/tasks/{id}/events` asked for with `order` and
+ * `page_token` (routes/tasks.py, redesign-v2 S1). A null token is the last
+ * page in that order.
+ */
+export interface TaskEventsPage {
+  events: TaskEvent[]
+  next_page_token: string | null
+}
+
+// --------------------------------------------------------------------------
+// Requested vs utilised
+// --------------------------------------------------------------------------
+
+/**
+ * One entry of `GET /v1/resource-classes`, which serves `RESOURCE_CLASSES`
+ * from the frozen catalogue.
+ *
+ * THE POINT OF THE ROUTE. An attempt has always recorded what it USED
+ * (`peak_rss_bytes`, `peak_disk_bytes`) and nothing served what it was GIVEN,
+ * so "peak RSS 6.1 GiB" was a figure with no scale -- comfortable on `large`,
+ * one prompt from an OOM kill on `standard`, and no way to tell which.
+ *
+ * The numbers are NOT hand-copied into this file on purpose. A served value
+ * cannot drift at all, which is strictly better than a copy something watches:
+ * an asserted copy still has to be edited in two places when a class is resized.
+ * See the same reasoning in Holders.tsx's ClassMix.
+ *
+ * (`check-contract-parity.sh` now has a TypeScript section and does assert the
+ * copies this file does keep -- RESOURCE_UNITS, the state sets, the reason and
+ * provider unions, the pool families. That is the second-best answer, used where
+ * a route is not available. It is not a reason to start copying.)
+ */
+export interface ResourceClassSpec {
+  name: string
+  /** The CPU REQUEST: guaranteed, charged and billed. The old name of `cpu_request`. */
+  cpu: number
+  /** The same request under its own name (SIZES-API, runner-sizes design §4.5). */
+  cpu_request?: number
+  /** What a GKE pod may burst to; Cloud Run renders the request alone. */
+  cpu_limit?: number
+  /** Request AND limit: memory never bursts. */
+  memory_gib: number
+  /** A SLICE OF memory_gib, not capacity on top of it: the workspace is a tmpfs. */
+  disk_gib: number
+  /** Weighted capacity units admission counts. Never a number of agents. */
+  units: number
+  /** The admin size version these numbers are from; 0 is the code defaults. */
+  size_version?: number
+}
+
+/**
+ * ADMIN › RUNNER SIZES (SIZES-UI; part of archived issue 1689): `swarm_api.runnersizes`'
+ * shapes, docs/design/runner-sizes.md §4.5. One class's size as a version
+ * stores it. `units` is derived by the API (`units_for`) and never sent;
+ * `disk_gib` is shown, never edited (owner Q5).
+ */
+export interface RunnerShare {
+  cpu_request: number
+  cpu_limit: number
+  memory_gib: number
+}
+
+export interface RunnerSize extends RunnerShare {
+  disk_gib: number
+  units: number
+  /** The browser class's alone: the live pod's two containers. */
+  live_split?: { worker: RunnerShare; display: RunnerShare }
+}
+
+/** `GET /v1/admin/runner-sizes`, and every write's answer (`runnersizes.served`). */
+export interface RunnerSizesDoc {
+  /** The pointer's version; what a write's `base_version` must equal. 0: none written. */
+  current_version: number
+  /** The version whose sizes are in effect: 0 when none is written or it is malformed. */
+  in_effect_version: number
+  malformed: boolean
+  classes: Record<string, RunnerSize>
+  defaults: Record<string, RunnerSize>
+  /** The frozen bounds, served so a keystroke is checked against what `check_size` refuses with. */
+  bounds: {
+    cpu_request: { min: number; max: number; step: number }
+    cpu_burst_max_ratio: number
+    memory_gib: { min: number; max: number }
+    memory_per_cpu: { min: number; max: number }
+    live_split: { worker_min_cpu: number; worker_min_memory_gib: number; display_min_cpu: number; display_min_memory_gib: number }
+  }
+  /** Per class: GKE profiles that follow a resize, Cloud Run ones fixed at the code default (owner Q3). */
+  followers: Record<string, { follows: string[]; fixed: string[] }>
+  prices: { vcpu_hour: number; gib_hour: number; source: string }
+  updated_at: string | null
+  updated_by: string | null
+}
+
+/** One refusal, the frozen `SizeRefusal` as served. `field` may be dotted: `live_split.worker.cpu_limit`. */
+export interface RunnerSizeRefusal {
+  class: string
+  field: string
+  value: number | null
+  bound: string
+}
+
+/**
+ * One class's 7-day use (`recent_use`, §4.9). Every share is NULL where no
+ * record that feeds it exists -- LIVE-UTIL's samples, a measured limit -- and
+ * null is "no data", never 0%.
+ */
+export interface RunnerRecentUse {
+  attempts: number
+  since: string
+  memory_peak_gib_max: number | null
+  memory_peak_gib_p95: number | null
+  cpu_mean_cores_median: number | null
+  share_idle: number | null
+  share_above_request: number | null
+  share_at_limit: number | null
+  share_at_limit_long: number | null
+  throttled_share: number | null
+  oom_near_miss: number
+  by_size_version: {
+    size_version: number
+    attempts: number
+    wall_minutes_median: number | null
+    wall_minutes_median_long: number | null
+    memory_peak_gib_max: number | null
+    share_at_limit: number | null
+    throttled_share: number | null
+  }[]
+}
+
+/** `POST /v1/admin/runner-sizes:preview`: what a body would do; nothing written. */
+export interface RunnerSizesPreview {
+  base_version: number
+  valid: boolean
+  refusals: RunnerSizeRefusal[]
+  /** `*_after` is null for a class the body leaves refused. */
+  classes: Record<string, { units_before: number; units_after: number | null; cost_hour_before: number; cost_hour_after: number | null }>
+  pools: { pool: string; hard_limit: number; admits_before: Record<string, number>; admits_after: Record<string, number | null> }[]
+  /** Only the classes the body names, or every class for an empty body. */
+  recent_use: Record<string, RunnerRecentUse>
+  /** The classes a save needs `confirm_below_recent_peak` for (owner Q6). */
+  below_recent_peak: string[]
+}
+
+/** One row of `GET /v1/admin/runner-sizes/versions`: the audit. */
+export interface RunnerSizeVersion {
+  version: number
+  previous_version: number | null
+  created_at: string | null
+  created_by: string | null
+  reason: string | null
+  changed: { class: string; field: string; from: number | null; to: number | null }[] | null
+  restored_from: number | null
+}
+
+/** A change, by class then field; a live share's fields under `live_split.<role>`. */
+export type RunnerSizeChanges = Record<string, Record<string, number | Record<string, Record<string, number>>>>
+
+/**
+ * One entry of `GET /v1/runtimes` -- `routes/platform.py:90-181`.
+ *
+ * WHAT A RUNNER PROFILE NAME MEANS, served rather than copied. Invariant 10
+ * makes the name a caller's ENTIRE vocabulary: they send `runner_profile` and
+ * nothing else, so `claude-code` on its own does not say where it runs, how big
+ * it is, how long it may run, or which credential it spends. This is the route
+ * that answers that, and it is the remedy `docs/contract-change-requests.md`
+ * ends on -- "where one reader is TypeScript, nothing ends it today, and a
+ * route that serves the value is the only remedy this repository has actually
+ * made work". Nothing below is a value; every field is a hole the API fills.
+ */
+export interface Runtime {
+  /** The exact string to send as `runner_profile`. */
+  name: string
+  /**
+   * Whether this profile may be dispatched at all.
+   *
+   * The catalogue serves DISABLED profiles too, on purpose: a task that names
+   * `codex` still needs its image, backend and resource class to be rendered,
+   * and omitting the entry would make an existing run unreadable rather than
+   * merely unrepeatable. This flag is what a submit form filters on.
+   */
+  available: boolean
+  /** Why it is refused. Empty when `available` is true. */
+  disabled_reason: string
+  image: string
+  /**
+   * The Node release the image carries, e.g. "24.22.3" (archived issue 3929); null for a
+   * control_plane profile, which runs no image; absent from a platform from
+   * before it was served.
+   */
+  node_version?: string | null
+  /**
+   * DECLARED. `AUTO` is a value the frozen `Backend` enum permits, and a caller
+   * shown only "AUTO" learns nothing about where the task runs.
+   */
+  backend: string
+  /**
+   * What `resolve_backend` turned `backend` into -- never `AUTO`. Shown
+   * alongside `backend` rather than instead of it, because a caller shown only
+   * this one cannot tell that the PLATFORM, not the profile, chose it.
+   */
+  resolved_backend: string
+  /**
+   * null is not "unknown": the runtime consumes no external provider's quota,
+   * so it runs for a tenant who has registered no credential at all.
+   */
+  provider: string | null
+  /** Environment variable NAMES. The route reads no environment and no secret store. */
+  secrets: string[]
+  /**
+   * true  -> the names in `secrets` are INTERCHANGEABLE; supply exactly one.
+   * false -> all of them are required.
+   * The list without this flag is actively misleading -- it would tell a tenant
+   * who pays for a Claude subscription to buy metered API access as well.
+   */
+  secrets_any_of: boolean
+  timeout_seconds: number
+  resource_class: string
+  /**
+   * The model classes a step on this profile may send as `model_class`, BY
+   * NAME (docs/design/model-per-step.md §4.4, archived issue 1435). `[]` on a profile that
+   * runs no Claude model. Runtimes draws them as chips, and the workflow form
+   * offers exactly these in a step's class select. OPTIONAL, all three: an
+   * API older than the fields sends none, and is read as offering no class.
+   */
+  model_classes?: string[]
+  /** What a step naming no class runs; null when `model_classes` is empty. */
+  default_model_class?: string | null
+  /**
+   * Class -> the model ID it runs, from the deployment's terraform pin. `{}`
+   * on a classless profile, and on a deployment that pins none yet -- where
+   * only the default may be named (`model_class_not_yet_available`).
+   */
+  models?: Record<string, string>
+  /**
+   * The class resolved inline. Field-identical to a `/v1/resource-classes`
+   * entry, and `test_sizing_agrees_with_the_resource_classes_route` asserts the
+   * two routes never disagree -- so the same type is reused rather than a
+   * second one declared that could drift from it.
+   */
+  resources: ResourceClassSpec
+  /**
+   * WHAT THE AGENT'S CONTAINER GETS (archived issue 3118), beside `resources` and not in it:
+   * `resources` is the class, and a live-browser pod splits it between the
+   * agent and the display. Null when the platform cannot say; absent from a
+   * platform from before the split was served.
+   */
+  agent_memory_gib?: number | null
+  /** The display container's share; null on a pod with no display. */
+  display_memory_gib?: number | null
+  /** The pod's total, which `resources.memory_gib` is too. */
+  pod_memory_gib?: number | null
+}
+
+/** GiB, binary. The ceilings are GiB, so a GB (1e9) denominator would overstate
+ *  every utilisation figure by 7.4% -- against a ceiling with no burst headroom
+ *  that is the difference between "fine" and "near miss". */
+export const GIB = 1024 ** 3
+
+/**
+ * Bytes as a figure a person reads, or an em dash when there is no measurement.
+ * NEVER "0 B" for an absent one: the whole point of this UI is that nothing
+ * measured and nothing used are different claims.
+ */
+export function bytesLabel(bytes: number | null | undefined): string {
+  if (typeof bytes !== 'number' || !Number.isFinite(bytes)) return '—'
+  if (bytes >= GIB) return `${(bytes / GIB).toFixed(2)} GiB`
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KiB`
+  return `${bytes} B`
+}
+
+// --------------------------------------------------------------------------
+// Checkpoints
+// --------------------------------------------------------------------------
+
+/**
+ * One checkpoint of one attempt, assembled from TWO records because neither is
+ * complete on its own.
+ *
+ *  - `attempt.checkpoints` is the authoritative LIST, and it is `list[str]`:
+ *    ids and nothing else (models.py:215, written by
+ *    `control.record_checkpoint`).
+ *  - the `checkpoint_completed` EVENT for that id carries `{checkpoint_id,
+ *    uri, size_bytes, seq}` -- the only place the size and the location exist
+ *    per checkpoint.
+ *
+ * So a row with an id and no uri is not a broken checkpoint. It means the
+ * event that described it is not on the page of events we were handed, which
+ * happens for real: this screen reads one page of events, OLDEST first, and
+ * does not follow the page token the events route returns (help topic
+ * `event-paging`), and a worker heartbeats throughout, so the later
+ * checkpoints of a long attempt are exactly the ones whose events fall off
+ * the end. `uriKnown` is what lets the screen say that instead of drawing a
+ * blank cell.
+ *
+ * CONTENTS ARE NOT RECORDED ANYWHERE. Only the id, the size and the uri. A
+ * file listing would need a new route and a manifest read out of GCS.
+ */
+export interface CheckpointRow {
+  checkpoint_id: string
+  /** null when no `checkpoint_completed` event for this id is on this page. */
+  bytes: number | null
+  uri: string | null
+  seq: number | null
+  /** When the event was written, if we have the event. */
+  at: string | null
+  /**
+   * True when only an event names this id and the attempt document does not.
+   * Worth keeping separate: the document is written by a read-modify-write, so
+   * an id present in one record and not the other is a real inconsistency and
+   * not a paging artefact.
+   */
+  eventOnly: boolean
+}
+
+function detailString(e: TaskEvent, key: string): string | null {
+  const v = e.detail?.[key]
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function detailNumber(e: TaskEvent, key: string): number | null {
+  const v = e.detail?.[key]
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+/**
+ * Every checkpoint of one attempt, ids from the attempt document enriched with
+ * whatever the event page could supply.
+ *
+ * Events whose `attempt_id` is null are SKIPPED rather than attributed here.
+ * The worker sets `attempt_id` on every event it emits (control.emit), so a
+ * null one did not come from this attempt's worker, and guessing would put
+ * another attempt's checkpoint under this one's heading.
+ */
+export function checkpointsFor(
+  attempt: AttemptRow,
+  events: TaskEvent[] | null,
+): CheckpointRow[] {
+  const fromEvents = new Map<string, { bytes: number | null; uri: string | null; seq: number | null; at: string }>()
+  for (const e of events ?? []) {
+    if (e.type !== 'checkpoint_completed') continue
+    if (e.attempt_id !== attempt.attempt_id) continue
+    const id = detailString(e, 'checkpoint_id')
+    if (id === null) continue
+    fromEvents.set(id, {
+      bytes: detailNumber(e, 'size_bytes'),
+      uri: detailString(e, 'uri'),
+      seq: detailNumber(e, 'seq'),
+      at: e.at,
+    })
+  }
+
+  const rows: CheckpointRow[] = attempt.checkpoints.map((id) => {
+    const found = fromEvents.get(id)
+    fromEvents.delete(id)
+    return {
+      checkpoint_id: id,
+      bytes: found?.bytes ?? null,
+      uri: found?.uri ?? null,
+      seq: found?.seq ?? null,
+      at: found?.at ?? null,
+      eventOnly: false,
+    }
+  })
+  // Whatever is left was described by an event the attempt document does not
+  // list. Dropping it would hide a checkpoint that demonstrably completed.
+  for (const [id, found] of fromEvents) {
+    rows.push({ checkpoint_id: id, ...found, eventOnly: true })
+  }
+  return rows
+}
+
+/** The checkpoint this attempt RESUMED from, which a previous attempt wrote. */
+export interface RestoredFrom {
+  checkpoint_id: string
+  /** The attempt that wrote it. Null when the event did not record it. */
+  from_attempt: string | null
+  bytes: number | null
+  /** How many files came back out of the archive. */
+  files: number | null
+}
+
+export function restoredFrom(attempt: AttemptRow, events: TaskEvent[] | null): RestoredFrom | null {
+  for (const e of events ?? []) {
+    if (e.type !== 'checkpoint_restored') continue
+    if (e.attempt_id !== attempt.attempt_id) continue
+    const id = detailString(e, 'checkpoint_id')
+    if (id === null) continue
+    return {
+      checkpoint_id: id,
+      from_attempt: detailString(e, 'from_attempt'),
+      bytes: detailNumber(e, 'bytes'),
+      files: detailNumber(e, 'files'),
+    }
+  }
+  return null
+}
+
+// --------------------------------------------------------------------------
+// Live readings from the heartbeat
+// --------------------------------------------------------------------------
+
+/**
+ * The newest `heartbeat` event belonging to one attempt.
+ *
+ * WHY THIS EXISTS. `attempt.peak_rss_bytes` is written by
+ * `control.record_resource_usage` at the END of an attempt, so a RUNNING agent
+ * has none and its resource panel would be entirely em dashes -- for exactly
+ * the agent someone is watching because they are worried about it. The worker
+ * puts `{elapsed_seconds, peak_rss_bytes, checkpoints}` in every fifth
+ * heartbeat event (lifecycle._heartbeat), which is a real measurement of a
+ * live process.
+ *
+ * It is NOT the same claim as the final figure and must never be rendered as
+ * one: it is the high-water mark AS OF that event, and this screen reads one
+ * page of events, oldest-first, without following the page token the route
+ * returns, so on a long attempt the newest heartbeat
+ * available here can be old. Every caller therefore renders `at` beside it.
+ */
+export interface HeartbeatReading {
+  at: string
+  peakRssBytes: number | null
+  elapsedSeconds: number | null
+  checkpoints: number | null
+}
+
+export function newestHeartbeat(
+  attempt: AttemptRow,
+  events: TaskEvent[] | null,
+): HeartbeatReading | null {
+  let best: HeartbeatReading | null = null
+  let bestAt = -Infinity
+  for (const e of events ?? []) {
+    if (e.type !== 'heartbeat') continue
+    if (e.attempt_id !== attempt.attempt_id) continue
+    const t = new Date(e.at).getTime()
+    if (!Number.isFinite(t) || t <= bestAt) continue
+    bestAt = t
+    best = {
+      at: e.at,
+      peakRssBytes: detailNumber(e, 'peak_rss_bytes'),
+      elapsedSeconds: detailNumber(e, 'elapsed_seconds'),
+      checkpoints: detailNumber(e, 'checkpoints'),
+    }
+  }
+  return best
+}
+
+/**
+ * The outcome chip for one attempt.
+ *
+ * Exit 0 is the only success. A null exit code is THREE different things
+ * depending on what else the document says -- never a zero, and never a
+ * failure. `AttemptTimeline.tsx` carries a private copy of this; it should
+ * switch to this one, which is why this lives here rather than in the screen.
+ */
+export function attemptOutcome(a: AttemptRow): { label: string; tone: Tone | 'unknown' } {
+  if (a.exit_code === 0) return { label: 'exit 0', tone: 'ok' }
+  if (a.exit_code !== null) return { label: `exit ${a.exit_code}`, tone: 'bad' }
+  if (a.started_at === null) return { label: 'never started', tone: 'unknown' }
+  if (a.completed_at === null) return { label: 'running', tone: 'live' }
+  return { label: 'ended, no exit code', tone: 'wait' }
+}
+
+/** How long one attempt ran, in words. Not a number: three of the four cases
+ *  are not durations at all and a "0s" for any of them would be a lie. */
+export function attemptRan(a: AttemptRow, now: number): string {
+  if (a.started_at === null) return 'never started'
+  const started = new Date(a.started_at).getTime()
+  if (!Number.isFinite(started)) return 'start time unreadable'
+  if (a.completed_at === null) return `${formatDuration(now - started)} so far`
+  const done = new Date(a.completed_at).getTime()
+  if (!Number.isFinite(done)) return 'finish time unreadable'
+  return formatDuration(done - started)
+}
+
+/** `SubmissionService.stats`, service.py:271-288. */
+export interface Stats {
+  tenant_id: string
+  /** One key per TaskState -- count_tasks_by_state iterates the whole enum. */
+  tasks_by_state: Record<string, number>
+  dispatch_paused: boolean
+  limits: Record<string, number>
+  generated_at: string
+  /** ADMIN ONLY. Absent for everyone else -- absent is not zero. */
+  platform_tasks_by_state?: Record<string, number>
+}
+
+/** `GET /v1/admin/dispatch`, routes/admin.py:70-75. Admin-gated. */
+export interface DispatchControl {
+  dispatch_paused: boolean
+  updated_at: string | null
+  updated_by: string | null
+  reason: string | null
+}
+
+/** `SubmissionService.providers`, service.py:334-350. */
+export interface ProviderEntry {
+  provider: string
+  /**
+   * True when the tenant's own key OR a pool account it owns or is lent
+   * serves this provider -- admission's rule (archived issue 76). Never key material.
+   */
+  credential_registered: boolean
+  /**
+   * Which one: `tenant_key` (asked first, as admission does) or
+   * `account_pool`; null when neither. Optional: served after archived issue 76.
+   */
+  credential_source?: 'tenant_key' | 'account_pool' | null
+  /**
+   * The profiles that credential can run. A pool account runs only a profile
+   * that takes a subscription token, so it can be fewer than runner_profiles.
+   */
+  runnable_profiles?: string[]
+  runner_profiles: string[]
+  /** null when no quota document exists for this tenant yet. Not zeros. */
+  quota: QuotaState | null
+}
+
+export interface ProvidersPage {
+  tenant_id: string
+  providers: ProviderEntry[]
+  /**
+   * How the account pool was read for this page: `unreadable` means a false
+   * credential_registered may still be served by a lent account.
+   */
+  account_pool?: 'read' | 'not_asked' | 'not_configured' | 'unreadable'
+  generated_at: string
+}
+
+/**
+ * `ProviderState`, models.py:259-265. SIX values, not five.
+ *
+ * THROTTLED is the one most easily missed and it is the common case during a
+ * squeeze, so a chip that falls through to "unknown" for it mislabels exactly
+ * the condition the panel exists for.
+ *
+ * UNKNOWN means "no worker has reported on this provider recently". That is
+ * not the same as healthy and gets its own grey.
+ */
+export type ProviderStateName =
+  | 'AVAILABLE' | 'THROTTLED' | 'EXHAUSTED' | 'COOLDOWN' | 'DISABLED' | 'UNKNOWN'
+
+export function providerTone(state: string): Tone | 'unknown' {
+  switch (state) {
+    case 'AVAILABLE': return 'ok'
+    case 'THROTTLED': return 'wait'
+    case 'COOLDOWN': return 'wait'
+    case 'EXHAUSTED': return 'bad'
+    case 'DISABLED': return 'bad'
+    default: return 'unknown'
+  }
+}
+
+/**
+ * The two park reasons that need a person. Everything else is the platform
+ * working as designed (CONTRACT.md invariant 1), which is why this panel is
+ * grey and never red: parked work costs nothing.
+ */
+export const NEEDS_A_HUMAN: ReadonlySet<string> = new Set([
+  'CREDENTIAL_MISSING', 'BUDGET_EXHAUSTED',
+])
+
+/**
+ * Reasons that are NOT BlockedReason members. `record_blockers` stores
+ * whatever AdmissionDenied carried, and three of those are bare strings from
+ * the pre-flight checks (admission.py:148,155,157). They mean something quite
+ * different from a capacity refusal, so they get their own group rather than
+ * being swallowed by an enum lookup.
+ */
+export const PRE_CAPACITY_REASONS: ReadonlySet<string> = new Set([
+  'task_missing', 'not_ready', 'cancel_requested',
+])
+
+/** `tenant_to_api`, codec.py:283. Thirteen fields, all of them. */
+export interface Tenant {
+  tenant_id: string
+  kind: 'group' | 'user' | string
+  principal: string
+  display_name: string | null
+  created_at: string
+  max_active: number
+  capacity_units: number
+  monthly_budget_usd: number | null
+  enabled: boolean
+  /** Providers this tenant has registered a key for. */
+  credentials: string[]
+  /**
+   * null means NO IDENTITY, not an empty string. Render it as such -- a blank
+   * cell here reads as "fine" and it is the opposite.
+   */
+  service_account: string | null
+  gcs_prefix: string | null
+  namespace: string | null
+}
+
+/**
+ * `quota_to_api` = asdict(QuotaState) + the state enum value + effective_limit.
+ * Every nullable field here is genuinely unknown rather than zero, which is
+ * why they are typed `| null` and must render as an em dash.
+ *
+ * `state` reuses `ProviderStateName` rather than spelling the members again.
+ * The second spelling had drifted: it listed `'HEALTHY'`, which is not a member
+ * of `ProviderState` and is written nowhere in this platform, and it omitted
+ * `AVAILABLE`, `THROTTLED` and `UNKNOWN`, which are three of the six that are.
+ * `| string` made the mistake invisible -- the union widens to `string`, so
+ * nothing ever failed to compile -- and it is kept, deliberately, for the same
+ * reason `park_reason` keeps it: a value the server adds must still decode and
+ * render as itself rather than crash the row. `check-contract-parity.sh` now
+ * asserts `ProviderStateName` against the frozen enum, so there is one
+ * restatement left and something watching it.
+ */
+export interface QuotaState {
+  provider: string
+  tenant_id: string
+  state: ProviderStateName | string
+  updated_at: string
+  configured_hard_max: number
+  adaptive_target: number | null
+  quota_derived_limit: number | null
+  requests_remaining: number | null
+  tokens_remaining: number | null
+  reset_at: string | null
+  cooldown_until: string | null
+  last_429_at: string | null
+  retry_after_seconds: number | null
+  success_count: number
+  rate_limit_count: number
+  effective_limit: number
+  /**
+   * The pool this row's cap feeds, `provider:<provider>:tenant:<tenant>`, as
+   * `/v1/capacity` serves it, read in the same request (G5-02). Its
+   * `effective_limit` is what admission enforces; this row's own
+   * `effective_limit` is one input to it. null: no such pool document exists.
+   * Absent: an API older than the one that serves it -- not the same as null.
+   */
+  feeds_pool?: Pool | null
+}
+
+/**
+ * `swarm_common.states`. Twelve states, and the groupings below are the ones
+ * that carry meaning rather than being pretty categories.
+ */
+export type TaskState =
+  | 'SUBMITTED' | 'QUEUED' | 'PARKED' | 'READY' | 'LEASED' | 'DISPATCHED'
+  | 'STARTING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'DEAD_LETTERED'
+
+/**
+ * Three of the twelve are never written to a task document. `service.py:122`
+ * walks the real state machine but stores only the end state, creating tasks
+ * directly at READY or PARKED; QUEUED is the creation state of a WORKFLOW, not
+ * a task; and `finish()` is only ever called with SUCCEEDED / FAILED /
+ * CANCELLED, so DEAD_LETTERED is an enum member, two membership tests and an
+ * unreachable branch.
+ *
+ * So these must never appear in a filter, a legend or a histogram. A bucket
+ * that cannot fill reads as "nothing is broken" rather than "this cannot
+ * happen", which is the wrong lesson. DEAD_LETTERED must still be DECODED --
+ * the scheduler lists it in _FAILED_PARENT_STATES -- but decoding a string is
+ * not the same as offering it as a choice.
+ */
+export const NEVER_WRITTEN: ReadonlySet<TaskState> = new Set<TaskState>([
+  'SUBMITTED', 'QUEUED', 'DEAD_LETTERED',
+])
+
+/** The nine a task document can actually hold. Filters and legends use this. */
+export const REAL_STATES: readonly TaskState[] = [
+  'READY', 'PARKED', 'LEASED', 'DISPATCHED', 'STARTING', 'RUNNING',
+  'SUCCEEDED', 'FAILED', 'CANCELLED',
+]
+
+/**
+ * CONTRACT.md invariant 1 and 3: only these four consume capacity. QUEUED,
+ * PARKED and READY cost nothing. A UI that colours "in flight" by intuition
+ * rather than by this set teaches the wrong mental model of what costs money.
+ */
+export const CONCURRENCY_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
+  'LEASED', 'DISPATCHED', 'STARTING', 'RUNNING',
+])
+
+export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
+  'SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED',
+])
+
+/**
+ * CONTRACT.md invariant 1, the other side: the three states that WAIT and
+ * cost nothing. No lease, no pool slot, no infrastructure demand. Overview's
+ * Waiting figure and its "Waiting, and why" region both count this set.
+ */
+export const WAITING_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
+  'QUEUED', 'READY', 'PARKED',
+])
+
+/**
+ * A task state's tone, which is what its MARK is drawn from (design-system.md
+ * §6.6).
+ *
+ *   ok     SUCCEEDED                      the neutral disc
+ *   bad    FAILED, DEAD_LETTERED          the diamond
+ *   live   the four concurrency states    the haloed, pulsing disc
+ *   wait   QUEUED, READY, PARKED          the caution triangle
+ *   ended  CANCELLED                      the neutral flat bar (CH-22)
+ *
+ * `ended` IS A TONE OF ITS OWN (CH-22, owner decision 2026-09-25). CANCELLED
+ * was `wait`, so Agents drew it as the caution TRIANGLE and Workflows as a
+ * blue disc with an amber word: a task somebody chose to stop, drawn as work
+ * still waiting. It is terminal and it is not a verdict -- the flat bar, grey,
+ * the one `is-info` modifier (not a second one) -- and at 390, where the word
+ * is hidden, cancelled, queued and succeeded are three different shapes.
+ */
+export type Tone = 'ok' | 'bad' | 'live' | 'wait' | 'ended'
+
+export function stateTone(state: TaskState): Tone {
+  if (state === 'SUCCEEDED') return 'ok'
+  if (state === 'FAILED' || state === 'DEAD_LETTERED') return 'bad'
+  if (state === 'CANCELLED') return 'ended'
+  if (CONCURRENCY_STATES.has(state)) return 'live'
+  return 'wait'
+}
+
+/**
+ * Colour is never the only signal. Roughly 8% of male viewers cannot separate
+ * PARKED amber from FAILED red, so every chip carries a glyph and the state
+ * word as well.
+ */
+export function stateGlyph(state: TaskState): string {
+  switch (state) {
+    case 'SUCCEEDED': return '\u2713'
+    case 'FAILED': return '\u2717'
+    case 'CANCELLED': return '\u2300'
+    case 'PARKED': return '\u23f8'
+    case 'READY': return '\u25cb'
+    default: return '\u25cf'
+  }
+}
+
+/**
+ * `models.py:175` -- `list[dict[str, Any]]`, NOT a list of strings. This file
+ * used to say `string[]`, which would have rendered "[object Object]" the
+ * first time a blocked task appeared.
+ *
+ * Two unrelated writers produce it and the shapes differ:
+ *
+ *  - Admission denial (`admission.py:97-114`) always writes all four keys, on
+ *    both the at-limit and the paused-pool branch:
+ *      { pool, reason, limit, active }
+ *  - A worker park (`agent_worker/control.py:595-602`) writes
+ *      { reason, ...detail }
+ *    where `detail` is arbitrary. On the interrupted path it is the ENTIRE
+ *    artifact/log/checkpoint summary, so an entry can legitimately contain an
+ *    `artifacts` array.
+ *
+ * So: key off `reason`, treat everything else as optional enrichment, and
+ * never render the entry as JSON -- that is how a paragraph of GCS URIs ends
+ * up inside a table cell.
+ */
+export interface BlockedEntry {
+  reason: string
+  pool?: string
+  limit?: number
+  active?: number
+  [key: string]: unknown
+}
+
+/**
+ * One required pool in `waiting_for.pools`, in lead order: `paused` (checked
+ * first) > `unknown` > `zero` / `below_units` > `full`, then `open`.
+ *
+ * `unknown` means the pool was not read, or its document has no
+ * `hard_limit`: `limit` is null, and it is NEVER drawn as 0 or as full. A
+ * required pool with no document is uncapped and is not listed at all.
+ */
+export type WaitingState = 'paused' | 'unknown' | 'zero' | 'below_units' | 'full' | 'open'
+
+export interface WaitingPool {
+  pool: string
+  state: WaitingState
+  active: number | null
+  limit: number | null
+  /**
+   * What the task takes in THIS pool (contract request 129, archived issue 2950): its
+   * resource units in a compute pool, 1 in a provider pool. Not the task's
+   * size applied to every pool.
+   */
+  units: number
+  /** `evaluate_capacity`'s reason for a refusing pool; null when open or unknown. */
+  reason: string | null
+}
+
+/** `waiting_for(...)` in swarm_api/waiting.py. */
+export interface WaitingFor {
+  as_of: string
+  /** null: an unknown pool could be the one refusing, so nothing is claimed. */
+  admissible_now: boolean | null
+  /** Always false: a READY task costs nothing (invariant 1). */
+  holds_capacity: boolean
+  lead: WaitingPool | null
+  pools: WaitingPool[]
+  complete: boolean
+}
+
+/**
+ * archived issue 1782: what a waiting task is waiting on. `reason` is the ParkReason, or
+ * READY_CAPACITY, QUEUED. A fact that was not recorded is null, never guessed.
+ */
+export type WaitingReason =
+  | 'READY_CAPACITY'
+  | 'QUEUED'
+  | 'PROVIDER_QUOTA_EXHAUSTED'
+  | 'PROVIDER_COOLDOWN'
+  | 'PROVIDER_OUTAGE'
+  | 'SCHEDULED_RETRY'
+  | 'DEPENDENCY_INCOMPLETE'
+  | 'CHILDREN_INCOMPLETE'
+  | 'MANUAL_PAUSE'
+  | 'BUDGET_EXHAUSTED'
+  | 'CREDENTIAL_MISSING'
+  | 'CI_PENDING'
+  | 'HUMAN_REQUIRED'
+  | 'AWAITING_INPUT'
+  | (string & {})
+
+/** A list row's and a workflow step's form of `waiting`. */
+export interface WaitingRow {
+  reason: WaitingReason
+  /** One plain sentence: "CI on archived pull request 1779: 5 checks pending (...); re-checked 2 times; next check 02:46Z". */
+  summary: string
+}
+
+/** One entry of `waiting.history`, newest last, at most 20. */
+export interface WaitingHistoryEntry {
+  at: string
+  /** queued | parked | ready | running | retrying | quota_exhausted | wake | eligible */
+  kind: string
+  text: string
+}
+
+/** `waiting` in full, as `GET /v1/tasks/{id}` serves it. */
+export interface Waiting extends WaitingRow {
+  /** When this wait began, from the events; null when not recorded. */
+  since: string | null
+  /** The time the scheduler may next act; null for a park only a person or another task ends. */
+  next_check_at: string | null
+  /** Plain words: what ends the wait. */
+  resumes_when: string
+  /**
+   * Per reason (docs/api.md "Why a task is waiting"). CI_PENDING:
+   * pull_request {number, url}, head, code, pending, failed, wakes,
+   * attempts_counted, last_checked_at, held_last_check_at (the tick's last
+   * check while the scheduler holds the wait; next_check_at is then null),
+   * wake_requested_at, train_since.
+   * READY_CAPACITY:
+   * waiting_for, pool, pool_state, active, limit, units, place_in_line,
+   * place_in_line_unavailable, last_pass. Provider parks: provider, account,
+   * provider_state, source, account_pool_reason, wait_seconds, until.
+   * SCHEDULED_RETRY: last_error (masked), attempt, next_attempt,
+   * max_attempts, next_try_at, cause. DEPENDENCY_INCOMPLETE: waiting_on
+   * [{task_id, step_id, state}], states_read. CHILDREN_INCOMPLETE: children
+   * [{task_id, state}], unfinished, total, states_read. AWAITING_INPUT:
+   * who_may_answer, opened_at, expires_at, answer_command. HUMAN_REQUIRED:
+   * who_may_answer, expires_at, answer_route, cause -- or, for a merge held
+   * by the owner's questions (park_phase owner_questions, archived issue 2313): park_phase,
+   * questions [{task_id, step_id, question_index, question}], unreadable,
+   * who_may_answer, and answer_route only when unreadable. CREDENTIAL_MISSING:
+   * provider, secret_names, account_pool, forge_connection,
+   * workspace_secrets, mcp_servers -- names only. BUDGET_EXHAUSTED: budget.
+   * MANUAL_PAUSE: paused_by, paused_at, error.
+   */
+  detail: Record<string, unknown>
+  history: WaitingHistoryEntry[]
+  /** False on a route that read no events: an empty history is then "not read". */
+  history_read: boolean
+  read_at: string
+}
+
+/**
+ * The lead line: "tenant:eng  20/20 units", "tenant:eng paused",
+ * "tenant:eng: limit unknown". Null when nothing refuses the task.
+ *
+ * An unknown pool prints no number at all -- not 0, and not a fraction that
+ * would read as full -- because nothing was measured.
+ */
+export function waitingLead(w: WaitingFor | null | undefined): string | null {
+  const lead = w?.lead
+  if (!lead) return null
+  switch (lead.state) {
+    case 'paused':
+      return `${lead.pool} paused`
+    case 'unknown':
+      return `${lead.pool}: limit unknown`
+    case 'open':
+      return null
+    default:
+      if (typeof lead.active === 'number' && typeof lead.limit === 'number') {
+        return `${lead.pool}  ${lead.active}/${lead.limit} units`
+      }
+      return `${lead.pool}: limit unknown`
+  }
+}
+
+/** The lead line as the "why" answer: "waiting for: tenant:eng  20/20 units". */
+export function waitingLine(task: Task): string | null {
+  if (task.state !== 'READY') return null
+  const lead = waitingLead(task.waiting_for)
+  return lead === null ? null : `waiting for: ${lead}`
+}
+
+/**
+ * Whether the lead pool needs a person, by the same partition `needsAPerson`
+ * keeps: a paused pool, one at 0, or one below the task's weight admits
+ * nothing until somebody acts. Full clears by waiting; unknown claims nothing.
+ */
+function waitingNeedsAPerson(w: WaitingFor | null | undefined): boolean {
+  const s = w?.lead?.state
+  return s === 'paused' || s === 'zero' || s === 'below_units'
+}
+
+/**
+ * `swarm_common.models.EndCause`, in the frozen order: why a task ended
+ * FAILED or CANCELLED. Held to the enum by section 5 of
+ * scripts/lib/check-contract-parity.sh, so a value added there (contract
+ * request 29 added `publish_refused` and request 41 `child_cascade`,
+ * 2026-10-02; request 118 `budget_exceeded`, 2026-10-27; request 126
+ * `fix_loop_exhausted`, 2026-10-28) is added here too.
+ */
+export type EndCause =
+  | 'timeout' | 'cannot_start' | 'lost_worker' | 'outputs_missing'
+  | 'inputs_unavailable' | 'dispatch_failed' | 'runner_error' | 'cancel_requested'
+  | 'failed_parent' | 'cancelled_parent' | 'workflow_sweep' | 'spec_signature_invalid'
+  | 'merge_refused' | 'merge_failed' | 'verdict_refused' | 'verdict_failed'
+  | 'publish_refused' | 'child_cascade' | 'budget_exceeded' | 'fix_loop_exhausted'
+
+export const END_CAUSES: readonly EndCause[] = [
+  'timeout', 'cannot_start', 'lost_worker', 'outputs_missing',
+  'inputs_unavailable', 'dispatch_failed', 'runner_error', 'cancel_requested',
+  'failed_parent', 'cancelled_parent', 'workflow_sweep', 'spec_signature_invalid',
+  'merge_refused', 'merge_failed', 'verdict_refused', 'verdict_failed',
+  'publish_refused', 'child_cascade', 'budget_exceeded', 'fix_loop_exhausted',
+]
+
+/**
+ * `ParkReason`, states.py. CHILDREN_INCOMPLETE is contract request 40: a
+ * parent whose agent awaits the child tasks it submitted
+ * (docs/design/child-tasks.md). CI_PENDING is contract request 49: a merge
+ * step waiting for its pull request's checks (docs/merge-step.md, 2026-10-06).
+ * HUMAN_REQUIRED is contract request 68: a live-browser hand-off whose hold
+ * expired with nobody in control (docs/design/live-browser.md section 4.3).
+ * AWAITING_INPUT is contract request 92: an `await-input` workflow step
+ * waiting for an answer from a tenant member (docs/design/human-steps.md).
+ * FIX_ROUNDS_RUNNING is contract request 125: a `fix-loop` workflow step
+ * while its review-fix rounds run (docs/design/fix-loop.md).
+ * PLATFORM_REFUSED is contract request 123: the cluster refused the dispatch
+ * (an admission policy, or the namespace's Job quota), and the scheduler
+ * retries it on a backoff (docs/design/dispatch-refusals.md).
+ */
+export type ParkReason =
+  | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
+  | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
+  | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
+  | 'CI_PENDING' | 'HUMAN_REQUIRED' | 'AWAITING_INPUT'
+  | 'FIX_ROUNDS_RUNNING' | 'PLATFORM_REFUSED'
+
+/**
+ * The same fourteen as a value, so a test can compare the list against
+ * `swarm_common.states.ParkReason` and the three sets below can be checked for
+ * covering it. A union type erases at build time and can be checked against
+ * nothing.
+ */
+export const PARK_REASONS = [
+  // ONE PER LINE, and not for taste. `SCHEDULED_RETRY` and `MANUAL_PAUSE` are
+  // spelled identically in `BlockedReason`, a different enum, and
+  // `test_no_screen_declares_its_own_grouping_of_reasons` reads any LINE
+  // carrying two of those names as a screen inventing its own blocker
+  // grouping. Wrapping these three declarations one-per-line keeps that check
+  // able to do its job instead of teaching it about a second enum.
+  'PROVIDER_QUOTA_EXHAUSTED',
+  'PROVIDER_COOLDOWN',
+  'PROVIDER_OUTAGE',
+  'SCHEDULED_RETRY',
+  'DEPENDENCY_INCOMPLETE',
+  'MANUAL_PAUSE',
+  'BUDGET_EXHAUSTED',
+  'CREDENTIAL_MISSING',
+  'CHILDREN_INCOMPLETE',
+  'CI_PENDING',
+  'HUMAN_REQUIRED',
+  'AWAITING_INPUT',
+  'FIX_ROUNDS_RUNNING',
+  'PLATFORM_REFUSED',
+] as const
+
+/**
+ * WHAT ENDS A PARK. The three sets below partition `PARK_REASONS`, and the
+ * partition is the only thing that decides how loudly a parked step is
+ * reported.
+ *
+ * A PARKED task holds NO capacity -- CONTRACT invariant 1 gives demand to
+ * LEASED, DISPATCHED, STARTING and RUNNING only -- so none of this is a
+ * capacity problem and none of the copy derived from it may say it is. Parking
+ * is how this platform declines to pay for a wait. What a reader needs to know
+ * is not "how much is this costing" (nothing) but "will it come back by
+ * itself", and that has exactly three answers.
+ */
+
+/**
+ * Nothing will clear these. No timer runs out, no provider recovers: a person
+ * registers a key, raises a budget or resumes a pool, or the work waits
+ * forever. `next_eligible_at` is null on all three, which is the field-level
+ * form of the same fact.
+ */
+export const PARK_NEEDS_A_PERSON: ReadonlySet<string> = new Set<ParkReason>([
+  'CREDENTIAL_MISSING',
+  'BUDGET_EXHAUSTED',
+  'MANUAL_PAUSE',
+  // A live-browser hand-off nobody answered within the hold (contract request
+  // 68). Only a person promotes it, from the console, when they are ready to
+  // sign in; no sweep or timer does, and past a day it is dead-lettered.
+  'HUMAN_REQUIRED',
+  // An `await-input` workflow step waiting for an answer from a member of
+  // its tenant (contract request 92, docs/design/human-steps.md §4.5). Only
+  // an answer moves it on; its declared expiry (at most a day) ends it, and
+  // never resumes the work a person was asked about. No apostrophes in this
+  // comment: test_overview_workflow_checks.py reads the quoted names.
+  'AWAITING_INPUT',
+])
+
+/**
+ * These end on their own -- a quota window resets, a cooldown expires, a
+ * provider comes back, a retry falls due. `next_eligible_at` carries when,
+ * where the writer knew it. Worth watching, not worth waking anyone.
+ *
+ * PROVIDER_OUTAGE is here rather than above deliberately. An outage is not
+ * something an operator of THIS platform can fix, and moving it into the
+ * act-now group would send someone to a screen with no control on it.
+ */
+export const PARK_CLEARS_ITSELF: ReadonlySet<string> = new Set<ParkReason>([
+  'PROVIDER_QUOTA_EXHAUSTED',
+  'PROVIDER_COOLDOWN',
+  'PROVIDER_OUTAGE',
+  'SCHEDULED_RETRY',
+  // A parent awaiting the child tasks its agent submitted (contract request
+  // 40). It ends on its own: the scheduler promotes it when they end, and
+  // past `child_await_max_seconds` (a day) it cancels the outstanding ones and
+  // promotes it anyway (docs/design/child-tasks.md §5 F7).
+  'CHILDREN_INCOMPLETE',
+  // A merge step waiting for the checks on its pull request (contract request
+  // 49). It ends on its own: the swarm-api wake tick marks it once the checks
+  // settle, and past its fallback instant the scheduler wakes it anyway
+  // (docs/merge-step.md, 2026-10-06, §1).
+  'CI_PENDING',
+  // A fix-loop step while its review-fix rounds run as steps of their own
+  // (contract request 125). It ends on its own when a round says MERGE or
+  // the rounds run out; only then may it park for a person, as HUMAN_REQUIRED
+  // (docs/design/fix-loop.md §4.5).
+  'FIX_ROUNDS_RUNNING',
+  // The cluster refused the dispatch: an admission policy or the Job quota
+  // (contract request 123). The scheduler retries it on its own, 30 s
+  // doubling to ten minutes, and never fails it for this.
+  'PLATFORM_REFUSED',
+])
+
+/**
+ * The ordinary state of a workflow step that is waiting its turn, and the one
+ * reason that is NOT a problem on its own.
+ *
+ * A three-step chain has two steps parked like this for its whole life and
+ * nothing is wrong. Raising it would mean every healthy workflow lit the
+ * attention panel, which trains a reader to ignore the panel -- the exact
+ * failure the panel exists to avoid. It becomes interesting only when the
+ * workflow holding it has stopped moving, and that is `workflowCheck`'s
+ * question, asked once, over the workflow rather than over each step.
+ */
+export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
+  'DEPENDENCY_INCOMPLETE',
+])
+
+/**
+ * Copy for every reason that is ever actually written -- the seven from
+ * admission plus the thirteen ParkReasons.
+ *
+ * `BlockedReason.BUDGET_LIMIT`, `QUOTA_EXHAUSTED`, `COOLDOWN`, `DEPENDENCY`
+ * and `SCHEDULED_RETRY` are members of the enum that nothing ever writes as a
+ * blocker, so they are deliberately absent: a legend promising them describes
+ * a platform that does not exist.
+ *
+ * The distinction worth preserving is whose problem it is. TENANT_LIMIT means
+ * you are at your own ceiling and only an admin can move it; the global and
+ * resource-class limits mean the platform is busy and waiting is the answer.
+ * That is why the field is surfaced verbatim rather than collapsed to "busy".
+ *
+ * The keys keep the contract's enum names (`TENANT_LIMIT`); the sentences say
+ * "workspace", the console's word for a tenant (owner, 2026-10-26, VQ-056).
+ */
+export const REASON_COPY: Readonly<Record<string, string>> = {
+  GLOBAL_CONCURRENCY_LIMIT: 'The platform is at its overall limit. Waiting is the answer.',
+  TENANT_LIMIT: 'Your workspace is at its own limit. Only an admin can raise it.',
+  PROVIDER_CONCURRENCY_LIMIT: 'This provider is at its concurrency limit.',
+  RESOURCE_CLASS_LIMIT: 'This resource class is busy platform-wide.',
+  RUNNER_LIMIT: 'This runner profile is at its limit.',
+  BACKEND_LIMIT: 'This backend is at its limit.',
+  MANUAL_PAUSE: 'An operator paused this pool. It will not admit work until resumed.',
+  PROVIDER_QUOTA_EXHAUSTED: 'The provider quota is spent. Parked until it resets.',
+  PROVIDER_COOLDOWN: 'Backing off after provider errors.',
+  PROVIDER_OUTAGE: 'The provider is unavailable.',
+  SCHEDULED_RETRY: 'Waiting for a scheduled retry.',
+  DEPENDENCY_INCOMPLETE: 'Waiting on an earlier step in its workflow.',
+  CHILDREN_INCOMPLETE: 'Waiting for the child agents it submitted. Holds no capacity.',
+  CI_PENDING: 'Waiting for the pull request checks to finish. Holds no capacity.',
+  BUDGET_EXHAUSTED: 'The budget for this work is spent.',
+  CREDENTIAL_MISSING: 'No provider key is registered for this workspace.',
+  HUMAN_REQUIRED: 'The agent asked for a person and nobody came in time. Holds no capacity until someone says they are ready.',
+  AWAITING_INPUT: 'A workflow step waits for a member of its workspace to answer. Holds no capacity; it ends on the first answer or at its declared expiry.',
+  FIX_ROUNDS_RUNNING: 'A fix loop waits while its review and fix rounds run as steps of their own. Holds no capacity.',
+  PLATFORM_REFUSED: 'The cluster refused to start it (its job quota is full, or a policy said no). Holds no capacity; retried automatically, at most ten minutes apart.',
+  POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
+}
+
+/**
+ * Copy for a reason, falling back to the RAW STRING rather than blanking the
+ * cell. `codec.blocked_reason_values()` exists but is wired to no route, so
+ * this table is shipped client-side and will go stale; printing the unknown
+ * value is what makes that visible instead of silent.
+ */
+export function reasonCopy(reason: string): string {
+  return REASON_COPY[reason] ?? reason
+}
+
+/**
+ * WHAT A BLOCKER'S CEILING SAYS ABOUT ITS POOL, which the reason alone cannot.
+ *
+ * THE DEFECT, measured on the live console on 2026-09-24: a READY `browser`
+ * task whose pool had been set to `hard_limit 0` read "This resource class is
+ * busy platform-wide. (0/0)". Nothing was busy. Admission (`evaluate_capacity`,
+ * swarm_common/admission.py) writes ONE reason per kind of pool whatever the
+ * numbers -- `resource:browser` refusing at 4 of 4 and at 0 of 0 are both
+ * RESOURCE_CLASS_LIMIT -- so `REASON_COPY` alone sends the reader to the one
+ * remedy that cannot work, waiting. The ceiling the blocker carries (`limit`,
+ * the pool's `effective_limit`) is what tells the two apart:
+ *
+ *  - `paused`: the pool is switched off (`enabled: false`), which admission
+ *    writes as MANUAL_PAUSE. Only the admin pool routes write `enabled`. Its
+ *    `limit` may be the `UNLIMITED_HARD_LIMIT` sentinel (swarm_api/store.py)
+ *    for a pool created only to carry the flag, so no ceiling is printed.
+ *  - `set-to-zero`: a limit of 0 on a pool only a person writes. A
+ *    non-provider pool's effective limit is its `hard_limit` alone: the quota
+ *    broker's adaptive and quota-derived caps land on `provider:` pools only
+ *    (quota_broker/service.py `_write_pool`). Waiting cannot clear it.
+ *  - `zero`: a limit of 0 on a `provider:` pool, or on a blocker that names no
+ *    pool. The broker lowers provider pools on quota state, and a cooldown
+ *    ends by itself, so nobody is named and the server's grouping stands.
+ *  - `full`: a positive ceiling reached -- the only case "busy" is true of.
+ *
+ * TWO MORE, ADDED FOR archived issue 66, AND ONLY WHEN `units` (the caller's task's weight,
+ * read from `GET /v1/resource-classes` -- never the bundled `RESOURCE_UNITS`
+ * table) IS KNOWN:
+ *
+ *  - `below-units`: a limit above 0 and below one task's `units`, on a pool
+ *    only a person writes. Admission refuses when `active + units > limit`,
+ *    so a large task (4 units) under a limit of 1 is refused at 0 of 1 in
+ *    use, on every drain, forever (archived issue 66 found it on a browser task, which
+ *    weighed 2 until contract request 79) -- the fact `set-to-zero` is,
+ *    arriving with the full pool's reason and a positive limit.
+ *  - `below-units-quota`: the same on a `provider:` pool, whose limit the
+ *    quota broker also moves. The task still cannot be admitted at this
+ *    limit, but nobody is named, for the reason `zero` names nobody.
+ *
+ * With `units` null or absent (the catalogue unread, or the caller has none
+ * to give) this is exactly what it was before archived issue 66: a positive limit is
+ * always `full`.
+ *
+ * ONE MORE, FOR archived issue 374: `limit-unset`, a pool whose document carries no
+ * `hard_limit` at all. The scheduler names that refusal `POOL_LIMIT_UNSET`
+ * with `limit: null` (scheduler/codec.py): admission reads the missing key as
+ * 0 and refuses, but nobody set the pool to zero, so neither `set-to-zero`
+ * nor `full` is true of it. A person has to set a limit.
+ */
+export type Ceiling =
+  | 'paused'
+  | 'set-to-zero'
+  | 'zero'
+  | 'full'
+  | 'below-units'
+  | 'below-units-quota'
+  | 'limit-unset'
+
+/** The scheduler's blocker reason for a pool with no `hard_limit` (archived issue 374). */
+export const POOL_LIMIT_UNSET = 'POOL_LIMIT_UNSET'
+
+export function blockerCeiling(
+  b: { reason: string; pool?: string; limit?: unknown },
+  units: Weight = null,
+): Ceiling {
+  if (b.reason === 'MANUAL_PAUSE') return 'paused'
+  if (b.reason === POOL_LIMIT_UNSET) return 'limit-unset'
+  if (b.limit !== 0) {
+    // What the task takes in THIS pool, not its size in every pool: a
+    // provider pool's limit of 2 is not below a large agent (archived issue 2950).
+    const share = unitsIn(units, b.pool)
+    if (share !== null && typeof b.limit === 'number' && b.limit > 0 && b.limit < share) {
+      return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'below-units-quota' : 'below-units'
+    }
+    return 'full'
+  }
+  return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'zero' : 'set-to-zero'
+}
+
+/** The ceilings no amount of waiting clears: a person has to act. */
+export function needsAPerson(c: Ceiling): boolean {
+  return c === 'paused' || c === 'set-to-zero' || c === 'below-units' || c === 'limit-unset'
+}
+
+/**
+ * The sentence for a blocker whose ceiling its reason's copy would
+ * misdescribe, or null when `reasonCopy` is true of it (`full`).
+ *
+ * `subject` is what the sentence is about: the pool's name where the line has
+ * nothing else naming it (the agents list), or "This pool" beside a row that
+ * already prints the name. `units` is the task's weight (archived issue 66); null keeps the
+ * pre-archived issue 66 sentences exactly, including for a `full` pool that is actually too
+ * small (the catalogue was not read, so nothing is claimed about the weight).
+ */
+export function ceilingCopy(
+  b: { reason: string; pool?: string; limit?: unknown; active?: unknown },
+  subject: string = b.pool ?? 'This pool',
+  units: Weight = null,
+): string | null {
+  const c = blockerCeiling(b, units)
+  if (c === 'full') return null
+  const share = unitsIn(units, b.pool)
+  // WHAT IS STILL HELD. A pool lowered to zero under running work keeps the
+  // units it already leased until they are released; admission never admits
+  // past a ceiling, so they were admitted before it came down.
+  const n = typeof b.active === 'number' && b.active > 0 ? b.active : 0
+  const held = n > 0 ? ` ${n} unit${n === 1 ? '' : 's'} still held by work admitted earlier.` : ''
+  switch (c) {
+    case 'paused':
+      return `${subject} is paused by operator. It admits nothing until somebody resumes it.${held}`
+    case 'set-to-zero':
+      return `${subject} is paused by operator (limit 0). It admits nothing until somebody raises its limit.${held}`
+    case 'limit-unset':
+      return `${subject} has no limit set, so its ceiling was never read and it admits nothing. Waiting cannot clear it: somebody has to set its limit.${held}`
+    case 'zero': {
+      const who =
+        b.pool !== undefined && poolKind(b.pool) === 'provider'
+          ? " A provider pool's limit also falls with its quota state, so this does not say who set it."
+          : ' The blocker names no pool, so this does not say who set it.'
+      return `${subject} is at limit 0 and admits nothing until that limit rises.${who}${held}`
+    }
+    case 'below-units':
+    case 'below-units-quota': {
+      const limit = b.limit as number
+      const fact =
+        `${subject} has a limit of ${limit} unit${limit === 1 ? '' : 's'}, below the ${share} units one agent ` +
+        'of this profile takes in it, so the agent can never be admitted at this limit.'
+      return c === 'below-units'
+        ? `${fact} Waiting cannot clear it: somebody has to raise the limit to at least ${share}.${held}`
+        : `${fact} A provider pool's limit also falls with its quota state, so this does not say who set it; it admits this profile once the limit reaches ${share}.${held}`
+    }
+  }
+}
+
+/**
+ * The blocker a one-line reason should name. The line has room for one pool,
+ * and admission lists every refusing pool in the order the profile names them
+ * -- so `global` at its ceiling can come before a pool capped at zero, and the
+ * first entry would say "waiting is the answer" about a task no wait will
+ * start. The first pool a person must act on wins; otherwise the first.
+ *
+ * `units` (archived issue 66) is the task's weight, so a pool too small to ever admit it
+ * counts as one a person must act on same as a pool paused or set to zero.
+ */
+function leadBlocker(
+  list: readonly BlockedEntry[] | null | undefined,
+  units: Weight = null,
+): BlockedEntry | undefined {
+  if (!list || list.length === 0) return undefined
+  return list.find((b) => needsAPerson(blockerCeiling(b, units))) ?? list[0]
+}
+
+/** The one-line "why is this not running" for a task, or null if it is. */
+export function whyNotRunning(task: Task): string | null {
+  // archived issue 362: the live reading, when the API served one, before the last pass's record.
+  const waiting = waitingLine(task)
+  if (waiting !== null) return waiting
+  const first = leadBlocker(task.blocked_by)
+  if (first?.reason) {
+    const ceiling = ceilingCopy(first)
+    if (ceiling !== null) return ceiling
+    const where = first.pool ? ` (${first.pool})` : ''
+    const at =
+      typeof first.limit === 'number' && typeof first.active === 'number'
+        ? ` -- ${first.active} of ${first.limit} in use`
+        : ''
+    return `${reasonCopy(first.reason)}${where}${at}`
+  }
+  if (task.park_reason) return reasonCopy(task.park_reason)
+  return null
+}
+
+/**
+ * `GET /v1/tasks`, routes/tasks.py:64-95.
+ *
+ * The key is `next_page_token`. This file said `next_cursor`, which the API
+ * has never sent, so paging could never have advanced past the first page.
+ *
+ * `tenant_id` comes back too and is worth keeping: every row is the caller's
+ * own tenant, so the scope belongs in the page header once rather than in a
+ * column on every row.
+ */
+export interface TaskPage {
+  tasks: Task[]
+  next_page_token?: string | null
+  tenant_id?: string
+}
+
+/**
+ * The frozen catalogue, profiles.py RESOURCE_CLASSES. Bundled client-side
+ * because it is frozen and five entries long (medium: contract request 147;
+ * builder: contract request 135);
+ * the alternative is a request per render to learn something that cannot
+ * change without a contract change.
+ */
+export const RESOURCE_UNITS: Readonly<Record<string, number>> = {
+  standard: 1,
+  browser: 1,
+  medium: 2,
+  builder: 2,
+  large: 4,
+}
+
+/**
+ * When a parked task falls due again, as a reader takes it in (V060).
+ *
+ * The raw ISO string ("Eligible again 2026-10-11T02:50:58.413Z") was printed
+ * here until the visual QA of archived issue 1038: UTC, milliseconds and a `T` in a sentence
+ * a person reads. It now goes through `clockTime` -- the one formatter every
+ * start and submit time on the Agents list uses -- with the wait still to go,
+ * so the row and the inspector beside it print the instant the same way.
+ * Null for a missing or unparseable value: never an invented time.
+ */
+export function eligibleAgain(iso: string | null | undefined, now: number = Date.now()): string | null {
+  const at = clockTime(iso, now)
+  if (at === null) return null
+  const left = new Date(iso as string).getTime() - now
+  return left > 0 ? `Eligible again at ${at.text} (in ${humaniseUntil(left)}).` : `Eligible again since ${at.text}.`
+}
+
+/** The cascade's "did not succeed" -- scheduler/loop.py `_FAILED_PARENT_STATES`. */
+const CASCADE_PARENT_STATES: ReadonlySet<TaskState> = new Set<TaskState>(['FAILED', 'CANCELLED', 'DEAD_LETTERED'])
+
+/** The first parent, in `depends_on` order, that is in hand and did not succeed. */
+function failedParentTask(dependsOn: readonly string[], taskById: ReadonlyMap<string, Task> | null): Task | null {
+  if (taskById === null) return null
+  for (const id of dependsOn) {
+    const parent = taskById.get(id)
+    if (parent !== undefined && CASCADE_PARENT_STATES.has(parent.state)) return parent
+  }
+  return null
+}
+
+/** What a cascade line calls a parent: its step id, its title, its id. */
+function taskName(t: Task): string {
+  if (t.step_id) return t.step_id
+  const title = t.metadata?.title
+  return typeof title === 'string' && title.trim() !== '' ? title.trim() : t.id
+}
+
+/**
+ * Column 3, "Why". First match wins.
+ *
+ * The CANCELLED cascade case is the subtle one. When a workflow parent fails,
+ * the scheduler cancels the child (scheduler/loop.py:438-442). Do not
+ * string-match its message -- compute it. In this table the parents' states
+ * are not loaded, only `depends_on` ids, so the discriminator that works with
+ * what the row actually has is `cancel_requested`: the scheduler's cascade
+ * writes state, park_reason, blocked_by, completed_at and last_error and
+ * NEVER sets cancel_requested (scheduler/store.py:303-323), while every human
+ * cancel does, including a whole-workflow cancel which fans out through
+ * request_cancel per step. That survives an upstream copy change.
+ *
+ * `units` (archived issue 66) is the task's weight -- its resource class's `units`, read by
+ * the caller from `GET /v1/resource-classes` (`classUnits`/`useResourceClasses`
+ * in Blockers.tsx) and never from the bundled `RESOURCE_UNITS` table -- so a
+ * pool whose limit is positive but below it is told apart from a genuinely
+ * full one. Null (the default, and what an unread catalogue gives) keeps the
+ * pre-archived issue 66 reading exactly.
+ *
+ * `taskById` (visual QA run 4, N23) is the rows the caller read, by id. A
+ * cascade cancel names the parent that did not succeed -- the first in
+ * `depends_on` order whose row is in hand and FAILED, CANCELLED or
+ * DEAD_LETTERED, the scheduler's `_FAILED_PARENT_STATES` -- by its step id,
+ * then its title, then its id. With no such parent in hand (or no map, the
+ * default) it keeps "An upstream step did not succeed.": the parent was not
+ * read, and naming nothing is the honest answer. No read is added for it.
+ */
+export function whyAgent(
+  task: Task,
+  units: Weight = null,
+  taskById: ReadonlyMap<string, Task> | null = null,
+): string {
+  units = taskWeight(task, units)
+  if (task.state === 'PARKED') {
+    const base = task.park_reason ? reasonCopy(task.park_reason) : 'Parked.'
+    const again = eligibleAgain(task.next_eligible_at)
+    return again ? `${base} ${again}` : base
+  }
+  // archived issue 362: the live reading of the task's own pools wins over `blocked_by`,
+  // which is only as fresh as the scheduler's last pass over it.
+  const waiting = waitingLine(task)
+  if (waiting !== null) return waiting
+  if (task.state === 'READY' && task.blocked_by?.length) {
+    const b = leadBlocker(task.blocked_by, units)
+    if (!b) return ''
+    // A pool paused, capped at zero, or too small for this task's weight is
+    // not "busy", and "(0/0)" or "(0/1000000)" beside it is a fraction that
+    // describes nothing. See `blockerCeiling`.
+    const ceiling = ceilingCopy(b, undefined, units)
+    if (ceiling !== null) return ceiling
+    // Only show the fraction when BOTH keys are present. An admission blocker
+    // always carries them; a worker park's arbitrary detail may not.
+    const at =
+      typeof b.active === 'number' && typeof b.limit === 'number'
+        ? ` (${b.active}/${b.limit})`
+        : ''
+    return `${reasonCopy(b.reason)}${at}`
+  }
+  if (task.state === 'FAILED') return task.last_error ?? 'Failed.'
+  if (task.state === 'CANCELLED') {
+    if (!task.cancel_requested && task.depends_on?.length) {
+      const parent = failedParentTask(task.depends_on, taskById)
+      return parent === null ? 'An upstream step did not succeed.' : `Cancelled: ${taskName(parent)} failed.`
+    }
+    return 'Cancelled by request.'
+  }
+  return ''
+}
+
+/**
+ * AG-14 (owner decision, 2026-09-25). WHETHER `whyAgent`'s LINE ASKS A PERSON
+ * TO ACT -- which is the only thing its `--warn` ink is allowed to say.
+ *
+ * Every why line was painted `--warn`, so a step waiting on the step before
+ * it -- what a healthy chain says about most of its steps for its whole life
+ * -- was the same yellow as a failure, and a colour on every line said
+ * nothing about any of them. The decision: warn for failures, for work that
+ * can never be admitted, for sign-in needed, and for stuck or silent workers;
+ * routine waits (queued, parked on quota, waiting on a dependency) and
+ * cancellations in plain ink.
+ *
+ * NOTHING NEW IS CLASSIFIED HERE. "Needs a person" is the partition this file
+ * already keeps and the trouble board already reads: `PARK_NEEDS_A_PERSON`
+ * (a missing credential, a spent budget, an operator pause -- no timer ends
+ * any of them) and `needsAPerson(blockerCeiling(...))` (a pool paused or set
+ * to zero by a person, which admits nothing until somebody acts: "can never
+ * be admitted"). The branches mirror `whyAgent`'s, so a line and its ink are
+ * decided from the same fields.
+ *
+ * STUCK OR SILENT WORKERS HAVE NO BRANCH HERE, because this reads a task
+ * document and a worker's silence is not on it: `whyAgent` writes nothing for
+ * a task that holds a slot, and the heartbeat is written to the lease. The
+ * inspector, which reads the task's events, writes its own `--warn` line for
+ * a worker `livenessOf` calls silent (`SilentWorker` in AgentDetail.tsx); the
+ * Agents list draws its own from the lease heartbeat `GET /v1/tasks` carries
+ * on each slot-holding row (archived issue 179, `silentWorkerLine` in Agents.tsx).
+ *
+ * WHAT "CAN NEVER BE ADMITTED" COVERS, stated because it is wider than one
+ * reason: a pool paused (MANUAL_PAUSE, as a blocker or as a park) or set to
+ * zero by a person, a pool whose limit is positive but below what this task's
+ * resource class weighs (archived issue 66, `units`), and a spent budget (BUDGET_EXHAUSTED)
+ * -- none admits the task again until somebody acts. "Sign-in needed" is
+ * CREDENTIAL_MISSING.
+ */
+export function whyNeedsAction(task: Task, units: Weight = null): boolean {
+  units = taskWeight(task, units)
+  if (task.state === 'FAILED') return true
+  if (task.state === 'PARKED') {
+    return task.park_reason !== null && PARK_NEEDS_A_PERSON.has(String(task.park_reason))
+  }
+  if (waitingLine(task) !== null) return waitingNeedsAPerson(task.waiting_for)
+  if (task.state === 'READY' && task.blocked_by?.length) {
+    const b = leadBlocker(task.blocked_by, units)
+    if (!b) return false
+    return needsAPerson(blockerCeiling(b, units)) || PARK_NEEDS_A_PERSON.has(b.reason)
+  }
+  return false
+}
+
+/**
+ * What an `elapsed` figure is a measure of. A caller choosing the LABEL for the
+ * figure -- `run` in the inspector's facts strip, a column head -- reads this
+ * rather than parsing the text: a `run` key over a `never-ran` figure is the
+ * AG-3 contradiction all over again.
+ *
+ *   ran        a finished task that started: from its last start to its end
+ *   running    STARTING or RUNNING now; the figure is this attempt's run so
+ *              far and is still growing
+ *   waiting    live and not running. Only when NOTHING HAS STARTED AND NO
+ *              SLOT IS HELD (READY, PARKED, QUEUED, SUBMITTED with no
+ *              `started_at`) is there a figure: the task's age, all of it a
+ *              wait, as `waiting 4m 0s`, ticking. LEASED and DISPATCHED, and
+ *              any live state after an earlier attempt started, print the
+ *              state word alone and do not tick -- see `elapsed` for why. So
+ *              `waiting` does NOT imply a figure, and it does not imply that
+ *              nothing ran: `task.started_at !== null` is what says an
+ *              earlier attempt did.
+ *   never-ran  finished without ever starting; there is no run to time
+ *   unknown    no span the document can time: no creation time, a finished
+ *              task whose end was never recorded, or STARTING or RUNNING
+ *              with no start recorded
+ */
+export type ElapsedPhase = 'ran' | 'running' | 'waiting' | 'never-ran' | 'unknown'
+
+/**
+ * The two states in which the task document's `started_at` is THIS attempt's
+ * start, so `now - started_at` is time run. The worker writes `started_at` on
+ * DISPATCHED -> STARTING and nothing clears it, so in every other live state a
+ * `started_at` present is an earlier attempt's. `stepviews.ts` and `dag.ts`
+ * draw the same line for the same reason.
+ */
+const RUN_STATES: ReadonlySet<TaskState> = new Set<TaskState>(['STARTING', 'RUNNING'])
+
+/**
+ * Column 6, "Elapsed".
+ *
+ * `started_at` is written on DISPATCHED -> STARTING, so a LEASED or
+ * DISPATCHED task legitimately has none. That must never read "0s" or
+ * "Invalid Date" -- and `completed_at` can be null on a row that went
+ * terminal between two polls, so the terminal branch cannot assume it.
+ *
+ * WALL TIME IS NEVER REPORTED AS RUN TIME (AG-3). A terminal task that never
+ * started -- cancelled while it waited, failed at admission -- used to fall
+ * back from `started_at` to `created_at`, and the drawer printed that
+ * created-to-completed span as `run 27m 57s` beside a `never ran` chip. There
+ * is no run to time, so the answer is the words `never ran`.
+ *
+ * THE WORD SAYS WHAT AN UNSTARTED TASK IS DOING (AG-12). It was `queued` for
+ * every one of them, which on LEASED and DISPATCHED -- states that HOLD A POOL
+ * SLOT, in the tab that means exactly that -- contradicted the tab it sat in.
+ * A concurrency state is named by its own state word; everything else
+ * unstarted costs nothing and reads `waiting`. The word comes from the state,
+ * not from a list typed here.
+ *
+ * A STATE WORD IN FRONT OF A DURATION READS AS TIME IN THAT STATE, and the
+ * task document holds that time for NO state: nothing records when a task was
+ * leased, dispatched, parked or made ready. (`updated_at` is not it: it also
+ * moves on writes that change no state -- the scheduler's `record_blockers`, a
+ * cancel request, a checkpoint.)
+ * AG-12's first form printed the age after the word -- `leased 3h 0m` for a
+ * task that queued three hours and was leased a second ago -- which is what a
+ * stuck lease looks like, and an operator chases it. So the concurrency states
+ * print the word alone. The age is the inspector's `age` fact.
+ *
+ * A START ON THE DOCUMENT IS NOT A RUN IN PROGRESS. `started_at` survives a
+ * park, a promote back to READY and a reclaim -- nothing on the platform
+ * clears it -- so a task that ran, hit quota and parked forty minutes ago
+ * still carries its start. Timed from there it read `41m 0s`, ticking, phase
+ * `running`, on a task holding no capacity and running nothing. Only in
+ * `RUN_STATES` is the start this attempt's, so only there is the figure run
+ * time.
+ *
+ * AND THE AGE IS NOT A WAIT ONCE SOMETHING HAS RUN. The first fix for the
+ * above timed a task between attempts from `created_at` and printed `waiting
+ * 50m 0s`: fifty minutes of waiting for a task that ran for thirty-six of them.
+ * The age includes every earlier run and the document does not say how much,
+ * so between attempts there is no figure to give: the text is the state word,
+ * and nothing ticks. Only a task that has never started and holds no slot has
+ * a wait the document can time, and for it the whole age is one.
+ *
+ * NOTE ON WIDTH. Every form here fits the Agents list's `[age]` track, whose
+ * floor `shell.test.tsx` derives from this function over every state, started
+ * or not: the longest is `waiting 99d 23h`, 15 characters.
+ *
+ * WHAT THE TASK DOCUMENT CANNOT TELL APART. For a finished task the figure is
+ * last start to end. A task cancelled while PARKED, after an earlier attempt
+ * started, has a start and an end and nothing that says it was parked in
+ * between, so that span includes the parked time. The attempt documents
+ * could settle it -- since archived issue 163 a park writes the attempt's end, exit 75 with
+ * the park reason -- but the task is the only read the Agents list makes, so
+ * the list labels that figure instead (`CANCEL_SPAN` in Agents.tsx).
+ */
+/**
+ * F1-POD: a terminal task with no recorded start whose pod DID start -- a
+ * sidecar crash-looped, the worker never ran, and it was cancelled. "never
+ * ran" said the pod never existed, and on 2026-10-11 nobody could tell why the
+ * task had been stuck. There is still no run to time, so the phase stays
+ * `never-ran`; only the words change.
+ */
+export const STARTED_NOT_RUNNING = 'started, did not reach running'
+
+export function elapsed(
+  task: Task,
+  now: number,
+): { text: string; ticking: boolean; phase: ElapsedPhase } {
+  const ms = (v: string | null) => (v ? new Date(v).getTime() : NaN)
+  const created = ms(task.created_at)
+  const started = ms(task.started_at)
+  const completed = ms(task.completed_at)
+
+  if (TERMINAL_STATES.has(task.state)) {
+    if (!Number.isFinite(started)) {
+      const text = task.start_problem?.pod_started === true ? STARTED_NOT_RUNNING : 'never ran'
+      return { text, ticking: false, phase: 'never-ran' }
+    }
+    // A finished task with no recorded end has no run length, and counting on
+    // to `now` would put a growing figure on a task that is over. Every
+    // terminal write sets `completed_at` with the state, so this is an older
+    // document or a writer that forgot; the figure is an absence either way.
+    return Number.isFinite(completed)
+      ? { text: formatDuration(completed - started), ticking: false, phase: 'ran' }
+      : { text: '\u2014', ticking: false, phase: 'unknown' }
+  }
+  if (RUN_STATES.has(task.state)) {
+    // STARTING or RUNNING with no start recorded: the worker writes the two in
+    // one update, so this is an older document or a writer that forgot. The
+    // age is not a run length, and the state chip already says RUNNING.
+    return Number.isFinite(started)
+      ? { text: formatDuration(now - started), ticking: true, phase: 'running' }
+      : { text: '\u2014', ticking: false, phase: 'unknown' }
+  }
+  if (Number.isFinite(started) || CONCURRENCY_STATES.has(task.state)) {
+    // Between attempts, or holding a slot before this attempt starts. The
+    // document has no time for either; see above.
+    return { text: task.state.toLowerCase(), ticking: false, phase: 'waiting' }
+  }
+  if (Number.isFinite(created)) {
+    return { text: `waiting ${formatDuration(now - created)}`, ticking: true, phase: 'waiting' }
+  }
+  return { text: '\u2014', ticking: false, phase: 'unknown' }
+}
+
+/**
+ * A span of milliseconds as a human duration. EXPORTED because `dag.ts` needs
+ * the same words on a workflow node that `elapsed` puts in the Agents table:
+ * two formatters would drift, and "68s" here beside "1m 8s" there is exactly
+ * the kind of disagreement that makes a reader distrust both.
+ */
+export function formatDuration(msSpan: number): string {
+  const s = Math.max(0, Math.round(msSpan / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${s % 60}s`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ${m % 60}m`
+  return `${Math.floor(h / 24)}d ${h % 24}h`
+}
+
+/**
+ * A rollup over the tasks ON THE CURRENT PAGE, for the "group by workflow"
+ * header on Agents. NOT a workflow's state.
+ *
+ * THE CLAIM THAT USED TO BE HERE IS NO LONGER TRUE, which is worth saying
+ * plainly rather than quietly deleting: this comment said `workflow.state` was
+ * written once as QUEUED and never updated, so rendering it would label every
+ * finished workflow "queued" forever. That was correct when it was written and
+ * is now fixed. `GET /v1/workflows` derives the state from the steps on every
+ * read, serves it as `state`, and writes the stored copy back
+ * (apps/swarm-api/swarm_api/rollup.py). `Workflow.state` is now the value to
+ * render.
+ *
+ * This function survives because it answers a DIFFERENT question: Agents groups
+ * whatever tasks the current page happens to contain, which is not the same set
+ * as a workflow's steps, and the heading says "in this page" for that reason.
+ * Its vocabulary deliberately does NOT match the server's -- it collapses
+ * CANCELLED into 'failed' and has no DEAD_LETTERED case -- so do not reach for
+ * it to describe a workflow. If a workflow's state is wanted on that screen, the
+ * workflow route serves one.
+ */
+export function rollupState(states: TaskState[]): 'running' | 'succeeded' | 'failed' | 'waiting' {
+  if (states.some((s) => CONCURRENCY_STATES.has(s))) return 'running'
+  if (states.some((s) => s === 'FAILED' || s === 'CANCELLED')) return 'failed'
+  if (states.length > 0 && states.every((s) => s === 'SUCCEEDED')) return 'succeeded'
+  return 'waiting'
+}
+
+/**
+ * The three parts of a workflow's state as `swarm_api.rollup` computes them.
+ *
+ * DERIVED SERVER-SIDE AND ONLY READ HERE. Nothing in this file may re-implement
+ * the precedence rule: `check-contract-parity.sh` does not cover TypeScript, so
+ * a copy would drift in silence -- which is the failure this whole feature was
+ * written to stop happening to `workflow.state` itself.
+ */
+export interface WorkflowRollupCounts {
+  /** TaskState value -> count, plus `unstarted` and `unreadable`. */
+  [key: string]: number
+}
+
+export interface WorkflowRollup {
+  /** A TaskState value, or 'UNKNOWN' when a step could not be read. */
+  state: string
+  /** False when any step's state could not be established. */
+  complete: boolean
+  reason: string
+  counts: WorkflowRollupCounts
+  unreadable_steps: string[]
+  unstarted_steps: string[]
+  steps_read: number
+}
+
+/**
+ * The comparison between the stored copy and the derived one.
+ *
+ * `agrees` is THREE-VALUED and the third value is the point: null means the two
+ * were not compared, because the derivation was incomplete. Rendering that as a
+ * disagreement would manufacture a finding out of a failed read -- the same
+ * caution the accounting-drift panel in Holders.tsx carries.
+ */
+export interface WorkflowDrift {
+  stored: string
+  derived: string
+  agrees: boolean | null
+  reason: string
+  steps_read: number
+  unreadable_steps: string[]
+  /** The server wrote the derived value back. `agrees` stays as observed. */
+  repaired: boolean
+}
+
+/** `workflow_to_api`, codec.py. Every field it actually sends. */
+export interface Workflow {
+  workflow_id: string
+  /**
+   * The DERIVED state -- what the steps say, not what the document holds. Safe
+   * to render directly; it is 'UNKNOWN' when a step could not be read, which is
+   * why this is `string` rather than `TaskState`.
+   */
+  state: string
+  tenant_id: string
+  /** The value in Firestore. Present so the cache can be audited. */
+  stored_state: string
+  /** 'derived' on a read route, 'stored' on the create response. */
+  state_source: 'derived' | 'stored'
+  /** Absent only where `state_source` is 'stored'. */
+  rollup?: WorkflowRollup
+  drift?: WorkflowDrift
+  created_at: string
+  /**
+   * WHEN THE DOCUMENT LAST CHANGED, which on a workflow means WHEN ITS DERIVED
+   * STATE LAST CHANGED -- and that is a stronger fact than it looks.
+   *
+   * Only two writers touch it: `Store.set_workflow_state` (store.py:733-737),
+   * which the rollup calls ONLY when the derived value disagrees with the
+   * stored one, and `cancel_workflow`. `rollup._persist` refuses to write a
+   * value that already agrees precisely so that "`updated_at` keeps meaning
+   * 'the document changed' rather than 'something looked at it'"
+   * (rollup.py:602-605).
+   *
+   * So this is a progress timestamp, and it is the only one on this API that
+   * is. A STEP TASK's `updated_at` is not: `scheduler/store.py:192-201` rewrites
+   * `blocked_by` with a fresh `updated_at` on every pass in which a READY task
+   * was not admitted, so a task that has been stuck at the front of a full pool
+   * for an hour looks like it changed a minute ago. Anything asking "has this
+   * moved" must ask the workflow, never the step.
+   */
+  updated_at: string
+  submitted_by: string | null
+  /** The submitter's display name (`people.add_names`); null when none is set. */
+  submitted_by_name?: string | null
+  priority: number
+  on_step_failure: string
+  cancel_requested: boolean
+  steps: WorkflowStep[]
+  /**
+   * The pull requests this workflow waits for before any step starts (lane
+   * SPEED-D3, the spec's `after`). ABSENT on every workflow submitted without
+   * one. Read off its step tasks by the API (`prgate.wait_for_api`), which
+   * also writes `text`: the sentence the list row and the page head print.
+   */
+  after_pull_requests?: WorkflowPullRequestWait
+  /**
+   * The pull request the issue run that started this workflow opened, with
+   * the run's last stored CI reading (`swarm_api.workflowpr`, archived pull request 3901). Null
+   * when no issue run started it; ABSENT from an older API.
+   */
+  pull_request?: WorkflowPullRequestChecks | null
+}
+
+/** `workflow.pull_request` (archived pull request 3901): the run's pull request and its last CI reading. */
+export interface WorkflowPullRequestChecks {
+  number: number
+  /** http(s) only, else null. */
+  url: string | null
+  head_sha: string | null
+  /** `forgechecks`' state at `head_sha`; null when no reading was stored. */
+  checks: 'green' | 'pending' | 'red' | 'none' | null
+  check_counts: { passed: number; failed: number; pending: number; skipped: number } | null
+  checked_at: string | null
+  merged: boolean | null
+}
+
+/** `workflow.after_pull_requests` (SPEED-D3). */
+export interface WorkflowPullRequestWait {
+  /** `waiting` until every one merged (`merged`), or one closed unmerged (`closed`). */
+  state: 'waiting' | 'merged' | 'closed'
+  /** `owner/repo`, the workflow's own repository; null when the gate names none. */
+  repository: string | null
+  pull_requests: number[]
+  /** Those not yet read merged. */
+  pending: number[]
+  merged: number[]
+  /** The one read closed without merging, when `state` is `closed`. */
+  closed: number | null
+  /** "waiting for archived pull request 41 to merge", "archived pull request 41 was closed without being merged", "archived pull request 41 merged". */
+  text: string
+  checked_at?: string | null
+  released_at?: string | null
+}
+
+/** What a workflow's heading prints, and whether it is a confirmed answer. */
+export interface WorkflowHeaderState {
+  /** The word shown. Never a stored value dressed as a fact. */
+  word: string
+  tone: Tone | 'unknown'
+  glyph: string
+  /** True only when THIS read derived the state from the step tasks. */
+  derived: boolean
+  /** The hover sentence. Says which record the word came from, always. */
+  title: string
+}
+
+/**
+ * THE ONLY READER OF A WORKFLOW'S STATE FOR DISPLAY.
+ *
+ * The defect this exists to make unrepeatable: the workflow card printed
+ * `workflow.state.toLowerCase()` in its heading while the step chips under it
+ * read succeeded, failed and cancelled. Both were in one card, in one typeface,
+ * and nothing said which to believe.
+ *
+ * `workflow.state` LOOKS like the answer and is not, because the same field name
+ * carries two different meanings depending on which server answered:
+ *
+ *  - `state_source: 'derived'` -- codec.py served `rollup.state`, computed from
+ *    the step tasks on this read. This is the answer.
+ *  - `state_source: 'stored'`, or the field missing entirely -- the value is the
+ *    cache in Firestore. Nothing advanced that cache before `rollup.py` existed,
+ *    so it reads QUEUED for the workflow's whole life. An API deployed before
+ *    that change sends exactly this: `state: "QUEUED"`, no `state_source`, no
+ *    `rollup`. That is not hypothetical -- it is what the live deployment
+ *    returned for `wf_5e5ad3b6f7da4299a839` on 2026-09-22 while five of its six
+ *    steps were dispatched, and it is the payload that produced the screenshot.
+ *
+ * So an UNDERIVED read prints no state at all. It says the state was not derived
+ * and names the stored copy as a stored copy. Printing "queued" there would
+ * reproduce the exact contradiction, and would do it against the server half the
+ * fleet is still running.
+ *
+ * The rollup's own vocabulary is preserved rather than flattened: `complete:
+ * false` means a step could not be read, and `rollup.state` is then the string
+ * 'UNKNOWN', which is not a TaskState and must not be toned as one.
+ */
+export function workflowHeaderState(workflow: Workflow): WorkflowHeaderState {
+  const rollup = workflow.rollup
+  if (workflow.state_source !== 'derived' || !rollup) {
+    return {
+      word: 'state not derived',
+      tone: 'unknown',
+      glyph: '?',
+      derived: false,
+      title:
+        `This API did not derive the state from the steps on this read, so no ` +
+        `state is claimed here. The stored copy says ` +
+        `${workflow.stored_state ?? workflow.state}; nothing has confirmed it, ` +
+        `and until rollup.py is deployed that copy stays at whatever it was ` +
+        `written as. Read the step chips below instead.`,
+    }
+  }
+  if (!rollup.complete) {
+    const n = rollup.unreadable_steps.length
+    return {
+      word: 'state unread',
+      tone: 'unknown',
+      glyph: '?',
+      derived: true,
+      title:
+        `The state was derived but ${n} step${n === 1 ? '' : 's'} could not be ` +
+        `read (${rollup.reason}), so the derivation is incomplete. This is not ` +
+        `an idle workflow -- it is a workflow whose state nothing could establish.`,
+    }
+  }
+  const state = rollup.state as TaskState
+  return {
+    word: state.toLowerCase(),
+    tone: stateTone(state),
+    glyph: stateGlyph(state),
+    derived: true,
+    title:
+      `Derived from ${rollup.steps_read} step agent${rollup.steps_read === 1 ? '' : 's'} ` +
+      `on this read (${rollup.reason}). The step chips below are the same records ` +
+      `this was computed from, so they agree with it by construction.`,
+  }
+}
+
+/**
+ * `GET /v1/workflows`, routes/workflows.py:64-84.
+ *
+ * `rollup_report` is the page's own provenance and is the reason this is a
+ * declared shape rather than an inline `{ workflows }`. A page whose step-read
+ * budget ran out carries rows that read UNKNOWN because the route stopped
+ * reading, not because anything is wrong with those workflows, and a screen
+ * that cannot tell those apart is this repository's defining bug.
+ */
+export interface WorkflowPage {
+  workflows: Workflow[]
+  next_page_token?: string | null
+  tenant_id?: string
+  rollup_report?: WorkflowRollupReport
+}
+
+/** `SweepReport.to_api`, rollup.py:463-478. */
+export interface WorkflowRollupReport {
+  examined: number
+  written: number
+  agreed: number
+  disagreed: number
+  unknown: number
+  /** The LIST was cut short, so these counts are not a census of the tenant. */
+  truncated: boolean
+  step_reads: number
+  /** The route stopped reading step tasks. Rows below it read UNKNOWN. */
+  step_read_budget_exhausted: boolean
+}
+
+/**
+ * codec.py:354-365. NOTE WHAT IS NOT HERE: there is no `state`.
+ *
+ * This file used to declare one, and the DAG view coloured its nodes from it.
+ * The fixtures supplied it, so it looked right in development and would have
+ * rendered every node grey and "unknown" against the real API -- the exact
+ * failure docs/web-ui warns about, a field no live code path writes.
+ *
+ * A step's state is DERIVED: join `task_id` to the task documents that
+ * `GET /v1/workflows/{id}` returns alongside the workflow
+ * (routes/workflows.py:50-57), or, for the list screen, to a task page. Use
+ * `stepState()` below so the join is in one place and its failure is visible.
+ */
+export interface WorkflowStep {
+  step_id: string
+  runner_profile: string
+  resource_class: string
+  /** The DAG edges. Real ones -- this is a tree, not a star. */
+  depends_on: string[]
+  /**
+   * A MAP, upstream step_id -> artifact filename to stage into this step's
+   * workspace. `models.WorkflowStep.input_from` is `dict[str, str]` and
+   * `codec.workflow_to_api` serves it as it stands, so this was declared
+   * `string | null` against an object that is never a string and never null --
+   * and the fixtures supplied a string, so it looked right in development and
+   * would have been wrong against every real response. A step may stage from
+   * SEVERAL upstreams, which the old type could not express at all.
+   */
+  input_from: Record<string, string>
+  timeout_seconds?: number | null
+  task_id?: string | null
+  /** The step's model class, resolved as its task's is (`Task.model_class`, archived issue 1435). Absent: an older API. */
+  model_class?: string | null
+  model_class_defaulted?: boolean
+  /** archived issue 1782: a waiting step's one line, off its task. Null: not waiting, or no task read. */
+  waiting?: WaitingRow | null
+  /**
+   * The step's input, MASKED by its TASK's masker (the archived pull request 229 review), so a
+   * literal the workflow's metadata names is masked here as on the task. Null
+   * when the route read none of the workflow's step tasks.
+   */
+  input?: unknown
+  /** How many masks that took. Absent from an API older than the change. */
+  input_redaction_count?: number | null
+  /** `task` (its own task's masker), `workflow` (a sibling's copy of the metadata) or `not_read`. */
+  input_masked_by?: 'task' | 'workflow' | 'not_read'
+}
+
+/**
+ * The derived state of a step, and the three ways it can be absent -- which
+ * are not the same thing and must not render alike:
+ *
+ *  - `unstarted`: the step has no task_id. The workflow has not reached it.
+ *  - `unknown`:   it has a task_id we have no task document for. Either the
+ *                 task page did not include it, or the fetch failed. The UI
+ *                 must SAY the state could not be read, never imply idleness.
+ *  - a TaskState: the join succeeded.
+ */
+export type StepState =
+  | { kind: 'unstarted' }
+  | { kind: 'unknown'; taskId: string }
+  | { kind: 'state'; state: TaskState; task: Task }
+
+export function stepState(
+  step: WorkflowStep,
+  taskById: ReadonlyMap<string, Task> | null,
+): StepState {
+  if (!step.task_id) return { kind: 'unstarted' }
+  const task = taskById?.get(step.task_id)
+  if (!task) return { kind: 'unknown', taskId: step.task_id }
+  return { kind: 'state', state: task.state, task }
+}
+
+// ---------------------------------------------------------------------------
+// The fix loop  (docs/design/fix-loop.md §4, §6.2)
+// ---------------------------------------------------------------------------
+// A `fix-loop` workflow step is a control-plane task: never leased, PARKED
+// throughout (FIX_ROUNDS_RUNNING while its rounds run, HUMAN_REQUIRED when a
+// person must answer). Each round is an agent of its own, appended to the
+// workflow as a pointer step `review-fix:<k>` / `re-review:<k>`. Everything
+// below is read off the loop's own task, as swarm-api's `fixloop` writes it;
+// nothing is invented where the read has nothing.
+
+/** `validation.FIX_LOOP_PROFILE`. */
+export const FIX_LOOP_PROFILE = 'fix-loop'
+/** `validation.FIX_LOOP_MIN_ROUNDS` / `MAX` / `DEFAULT`: the signed `max_rounds`, re-capped on every read. */
+export const FIX_LOOP_MIN_ROUNDS = 1
+export const FIX_LOOP_MAX_ROUNDS = 5
+export const FIX_LOOP_DEFAULT_ROUNDS = 3
+/** `fixloop.FIX_LOOP_ROUNDS_CEILING`: no loop runs more, with every round a person added (Q4 (a)). */
+export const FIX_LOOP_ROUNDS_CEILING = 10
+
+/** `fixloop.PERSON_PHASES`: why a loop is parked for a person (§4.4, §4.5). */
+export const FIX_LOOP_PERSON_PHASES = [
+  'fix_loop_exhausted',
+  'fix_changed_nothing',
+  'round_failed',
+  'review_unreadable',
+  'round_refused',
+] as const
+export type FixLoopPersonPhase = (typeof FIX_LOOP_PERSON_PHASES)[number]
+
+/** A round's pointer step id: `swarm_rollup.FIX_ROUND_STEP_RE`'s two loop kinds. */
+export const FIX_LOOP_ROUND_STEP = /^(review-fix|re-review):([1-9][0-9]{0,2})$/
+
+/** One entry of `metadata.fix_loop_state.rounds` (`fixloop.claim_round`, `_record`). */
+export interface FixLoopRoundEntry {
+  round?: number
+  kind?: 'fix' | 'review'
+  task_id?: string | null
+  workflow_id?: string | null
+  head?: string | null
+  start_head?: string | null
+  pushed_head?: string | null
+  verdict?: string | null
+  findings_count?: number | null
+  /** The round's task state, recorded once it ended; absent while it runs. */
+  state?: string | null
+  error?: string | null
+}
+
+/** One entry of `metadata.fix_loop_state.added` (`fixloop.add_rounds`). */
+export interface FixLoopAdded {
+  by: string
+  at: string
+  rounds: number
+  note?: string
+}
+
+/** `metadata.fix_loop_state`: the loop's own, tenant-writable record. */
+export interface FixLoopState {
+  rounds?: FixLoopRoundEntry[]
+  added?: FixLoopAdded[]
+}
+
+/** `result_summary.fix_loop` (`fixloop._summary`). */
+export interface FixLoopSummary {
+  rounds: FixLoopRoundEntry[]
+  final_review: string | null
+  final_head: string | null
+  verdict: string | null
+  findings_count: number | null
+  phase: string | null
+  stopped_by?: string
+}
+
+/** `POST /v1/workflows/{id}/fix-loop/rounds` (routes/fix_loop.py `AddRounds`). */
+export interface FixLoopAddRoundsBody {
+  rounds?: number
+  note?: string
+}
+
+/** `POST /v1/workflows/{id}/fix-loop/end` (`EndLoop`): `stop` is its one outcome. */
+export interface FixLoopEndBody {
+  outcome: 'stop'
+}
+
+/** Both routes answer `{fix_loop: ...}`: `fixloop.add_rounds` or `fixloop.stop`. */
+export interface FixLoopAnswer {
+  fix_loop: {
+    task_id: string
+    max_rounds?: number
+    park_phase?: string | null
+    state?: string | null
+    end_cause?: string
+  }
+}
+
+/** What the workflow page draws for a loop step: round k of N, and what it waits on. */
+export interface FixLoopRead {
+  /** The last round claimed; 0 before the first. */
+  readonly round: number
+  /** The rounds it may run: the signed `max_rounds` plus those added. Null when the signed block was not read. */
+  readonly of: number | null
+  /** The half that is running, while the rounds run; null otherwise. */
+  readonly running: 'fix' | 'review' | null
+  /** PARKED HUMAN_REQUIRED on a loop phase: the two actions are offered. */
+  readonly waiting: boolean
+  /** The person's park phase while waiting, else the summary's last phase. */
+  readonly phase: string | null
+  /** The last verdict read, and its finding count. */
+  readonly verdict: string | null
+  readonly findings: number | null
+}
+
+function record(v: unknown): Record<string, unknown> | null {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+function wholeNumber(v: unknown): number | null {
+  return typeof v === 'number' && Number.isInteger(v) ? v : null
+}
+
+/** `fixloop._person_entry`: the park entry a person answers, or null. */
+function personEntry(task: Task): Record<string, unknown> | null {
+  if (task.state !== 'PARKED' || task.park_reason !== 'HUMAN_REQUIRED') return null
+  for (const entry of task.blocked_by ?? []) {
+    const e = record(entry)
+    if (
+      e !== null &&
+      (FIX_LOOP_PERSON_PHASES as readonly unknown[]).includes(e.park_phase) &&
+      record(e.fix_loop) !== null
+    ) {
+      return e
+    }
+  }
+  return null
+}
+
+/**
+ * `fixloop.max_rounds`: the signed `max_rounds`, re-capped to 1-5 (absent or
+ * not a whole number: the default), plus the rounds people added, never past
+ * the ceiling. Null when the task carries no signed block to read.
+ */
+export function fixLoopRoundsOf(task: Task): number | null {
+  const block = record(record(record(task.metadata)?.dispatch)?.fix_loop)
+  if (block === null) return null
+  const asked = wholeNumber(block.max_rounds) ?? FIX_LOOP_DEFAULT_ROUNDS
+  const signed = Math.min(Math.max(asked, FIX_LOOP_MIN_ROUNDS), FIX_LOOP_MAX_ROUNDS)
+  const added = record(record(task.metadata)?.fix_loop_state)?.added
+  let more = 0
+  for (const a of Array.isArray(added) ? added : []) {
+    const n = wholeNumber(record(a)?.rounds)
+    if (n !== null && n > 0) more += n
+  }
+  return Math.min(signed + more, FIX_LOOP_ROUNDS_CEILING)
+}
+
+/** A loop step's read, or null for a task that is not a `fix-loop` step. */
+export function fixLoopOf(task: Task): FixLoopRead | null {
+  if (task.runner_profile !== FIX_LOOP_PROFILE) return null
+  const summary = record(record(task.result_summary)?.fix_loop)
+  const stateRounds = record(record(task.metadata)?.fix_loop_state)?.rounds
+  // The metadata's record is the live one; an ended loop's summary copies it.
+  const raw = Array.isArray(stateRounds) ? stateRounds : Array.isArray(summary?.rounds) ? summary.rounds : []
+  const rounds = raw.map(record).filter((r): r is Record<string, unknown> => r !== null)
+  let round = 0
+  for (const r of rounds) round = Math.max(round, wholeNumber(r.round) ?? 0)
+  const last = rounds[rounds.length - 1] ?? null
+  const live = task.state === 'PARKED' && task.park_reason === 'FIX_ROUNDS_RUNNING'
+  const running =
+    live && last !== null && typeof last.task_id === 'string' && last.state == null
+      ? last.kind === 'fix'
+        ? 'fix'
+        : last.kind === 'review'
+          ? 'review'
+          : null
+      : null
+  const entry = personEntry(task)
+  let verdict: string | null = null
+  let findings: number | null = null
+  for (const r of rounds) {
+    if (typeof r.verdict === 'string') {
+      verdict = r.verdict
+      findings = wholeNumber(r.findings_count)
+    }
+  }
+  return {
+    round,
+    of: fixLoopRoundsOf(task),
+    running,
+    waiting: entry !== null,
+    // A summary outlives the park that wrote it (a person's added round leaves
+    // it), so its phase is read only once the loop has ended.
+    phase:
+      entry !== null
+        ? String(entry.park_phase)
+        : TERMINAL_STATES.has(task.state) && typeof summary?.phase === 'string'
+          ? summary.phase
+          : null,
+    verdict: verdict ?? (typeof summary?.verdict === 'string' ? summary.verdict : null),
+    findings: verdict !== null ? findings : wholeNumber(summary?.findings_count),
+  }
+}
+
+/** A round's pointer step id as its kind and number; null for any other step. */
+export function fixLoopRoundOf(stepId: string): { kind: 'fix' | 'review'; round: number } | null {
+  const m = FIX_LOOP_ROUND_STEP.exec(stepId)
+  if (m === null) return null
+  return { kind: m[1] === 'review-fix' ? 'fix' : 'review', round: Number(m[2]) }
+}
+
+// ---------------------------------------------------------------------------
+// The account pool  (Settings -> Accounts)
+// ---------------------------------------------------------------------------
+// Shapes returned by `account_to_api` in
+// apps/quota-broker/quota_broker/main.py, which swarm-api proxies verbatim.
+//
+// NO KEY MATERIAL APPEARS HERE, and there is deliberately no field for its
+// length either. `Credential.redacted()` exposes `access_token_len`, which is
+// fine in a debug log and is not fine in a browser: a length is a real hint
+// about a secret and nothing on this screen needs it. If a field like that
+// ever turns up in the payload, it does not get a home in this file.
+
+/** `AccountState` in quota_broker/accounts.py. Four members, no others. */
+export type AccountStateName = 'AVAILABLE' | 'PAUSED' | 'DRAINING' | 'REAUTH_REQUIRED'
+
+/**
+ * One rate-limit window as the provider reported it.
+ *
+ * `utilization` is 0-1, NOT a percentage -- 0.87 is 87%. Multiplying is this
+ * file's job precisely once, in `readingOf`, so no component can forget.
+ */
+export interface AccountWindow {
+  utilization: number
+  resets_at: string
+  /**
+   * The server's own answer to "has this window already passed its reset",
+   * computed at response time. Trusted rather than recomputed here: the
+   * browser's clock is not the platform's, and a reading that flips between
+   * reset and not-reset depending on whose clock is read is worse than either.
+   */
+  reset: boolean
+}
+
+export interface Account {
+  /** `<owner_tenant>:<label>`. Opaque; never split for display. */
+  account_id: string
+  owner_tenant: string
+  label: string
+  /**
+   * The account's Name (archived issue 1913): display text its owner gave it, shown in place
+   * of `label` through `accountName` -- never an id, never matched on. Null is
+   * no Name; ABSENT is a broker older than the field, and reads the same.
+   */
+  display_name?: string | null
+  provider: string
+  /** Widened to `string`: an unknown state must render as unknown, not crash. */
+  state: AccountStateName | string
+  /** Why it is in that state, written for the human who has to act on it. */
+  reason: string
+  /** Tenants the owner has explicitly lent this account to. Empty is the default. */
+  lend_to: string[]
+  /** Agents currently holding it. Advisory -- the lease is authoritative. */
+  assigned: number
+  /**
+   * Keyed by the PROVIDER's window names, not a fixed pair. accounts.py:143
+   * says so explicitly: "the windows are the provider's to define, and a new
+   * one appearing must not need a schema change to be recorded". So this
+   * screen reads `five_hour` and `seven_day` by name for its two columns and
+   * lists anything else it finds rather than dropping it on the floor.
+   */
+  windows: Record<string, AccountWindow>
+  /** When a reading last arrived. NULL MEANS NONE HAS, which is not zero. */
+  observed_at: string | null
+  /**
+   * True when no reading is recent enough to trust (DEFAULT_STALE_AFTER, 30
+   * minutes). Computed server-side because a reading's age is what decides
+   * whether to believe it, and the server owns the clock.
+   */
+  stale: boolean
+  /**
+   * Tenants that were handed this account and reported they could not read its
+   * secret. THE RECORD, with no ages in it -- a report five minutes old and
+   * one three days old are the same string here.
+   */
+  unreadable_by: string[]
+  /**
+   * THE VERDICT: the tenants the broker will refuse to hand this account to
+   * right now. `accounts.choose()` skips an account that is unreadable for the
+   * asking tenant, and `Account.is_unreadable_for` forgets a report after
+   * thirty minutes, so this is time-limited and computed server-side for the
+   * same reason `stale` and `reset` are -- the server owns the clock.
+   *
+   * WHY THE SCREEN MUST READ IT. An account nobody can read looks, on a
+   * listing that ignores this, exactly like a healthy idle one: full headroom,
+   * zero agents, and every task for that tenant failing somewhere else. The
+   * broker added the field to stop that; discarding it here puts it back.
+   */
+  unreadable_now: string[]
+  /**
+   * When an agent was last handed this account. NULL MEANS NEVER, which is the
+   * shape of "this account is registered and no worker can reach the broker at
+   * all" -- indistinguishable, without this, from a healthy idle account.
+   */
+  last_assigned_at: string | null
+}
+
+/** `GET /v1/accounts`. `tenant_id` is the scope the server actually applied. */
+export interface AccountsPage {
+  accounts: Account[]
+  /** null when a platform caller asked for every tenant. */
+  tenant_id: string | null
+  /**
+   * Account documents the store could not parse, narrowed to the ones this
+   * caller may see. A document id is `<owner_tenant>:<label>`, so the broker
+   * filters it rather than naming another tenant's accounts to a borrower.
+   */
+  unreadable_documents: string[]
+  /**
+   * How many there were in TOTAL, unfiltered. This is the number that makes
+   * the shortfall sayable to every caller: `accounts` is short by exactly this
+   * much, and a page that reports only the rows it received presents an
+   * incomplete pool as the whole one.
+   */
+  unreadable_document_count: number
+}
+
+/** `RefreshOutcome.as_dict()` in quota_broker/credentials.py. */
+export interface RefreshResult {
+  tenant_id: string
+  provider: string
+  /** THE ONLY FIELD THAT SAYS IT WORKED. The HTTP status does not. */
+  refreshed: boolean
+  /** One of the eleven reasons in credentials.py. Never rendered raw. */
+  reason: string
+  expires_at: string | null
+}
+
+/** `POST /v1/accounts/{id}/refresh`. A 200 carries a FAILED refresh too. */
+export interface RefreshResponse {
+  refresh: RefreshResult
+  account: Account
+}
+
+export const FIVE_HOUR = 'five_hour'
+export const SEVEN_DAY = 'seven_day'
+
+/**
+ * Colour for a state chip.
+ *
+ * Returns its own union rather than `Tone`, because two of these are not tones
+ * the rest of the app has: PAUSED is deliberate and gets the purple every
+ * other paused thing here gets, and an unrecognised state gets grey rather
+ * than falling through to a colour that would assert something.
+ */
+export type AccountTone = 'ok' | 'paused' | 'wait' | 'bad' | 'unknown'
+
+export function accountTone(state: string): AccountTone {
+  switch (state) {
+    case 'AVAILABLE': return 'ok'
+    case 'PAUSED': return 'paused'
+    case 'DRAINING': return 'wait'
+    case 'REAUTH_REQUIRED': return 'bad'
+    default: return 'unknown'
+  }
+}
+
+/** The one state only a person can clear. The sweep stops trying on it. */
+export function needsAHuman(a: Account): boolean {
+  return a.state === 'REAUTH_REQUIRED'
+}
+
+/**
+ * Whether the broker will currently refuse to hand this account to `tenantId`.
+ *
+ * READ, NEVER DERIVED. The rule is `Account.is_unreadable_for`, it is
+ * time-limited, and the only clock that may decide it is the platform's --
+ * `unreadable_now` is that verdict, already taken. `unreadable_by` is the raw
+ * record and is deliberately NOT what this asks: it carries no ages, so a
+ * five-minute-old onboarding blip and a three-day-old report read alike.
+ *
+ * A null scope is a platform caller looking at every tenant's accounts. There
+ * is no single asking tenant then, so there is no verdict to give and this
+ * answers false rather than inventing one. The row still says who reported it.
+ */
+export function unreadableFor(a: Account, tenantId: string | null): boolean {
+  if (tenantId === null) return false
+  return (a.unreadable_now ?? []).includes(tenantId)
+}
+
+/**
+ * Registered, and no agent has ever been handed it.
+ *
+ * On its own this is the ordinary shape of an account added a minute ago. On
+ * EVERY account at once it is the shape of workers that cannot reach the
+ * broker at all, which the broker logs and nothing else can see -- so the
+ * screen has to be able to say it per row for the panel to be able to count.
+ */
+export function neverAssigned(a: Account): boolean {
+  return a.last_assigned_at === null
+}
+
+/**
+ * What is actually known about one window, as five cases that must not render
+ * alike.
+ *
+ * This is the whole screen in one function. A missing reading is not zero; a
+ * stale reading is not a current one; a window that has already reset is
+ * describing a window that no longer exists. `cs status` marks the last two
+ * with `~` for exactly this reason, and a figure printed without that mark is
+ * a claim that it is current.
+ */
+export type AccountReading =
+  /** No reading has EVER arrived for this account. Not zero -- unmeasured. */
+  | { kind: 'never' }
+  /** Readings exist, but not for this window. The provider did not report it. */
+  | { kind: 'absent' }
+  /** The window passed its reset, so the figure describes a window that refilled. */
+  | { kind: 'reset'; pct: number; resetsAt: string }
+  /** A real figure, too old to trust. Shown, marked, never presented as current. */
+  | { kind: 'stale'; pct: number; resetsAt: string; observedAt: string }
+  /** Measured, recent, and safe to read as a fact. */
+  | { kind: 'live'; pct: number; resetsAt: string; observedAt: string }
+
+export function readingOf(a: Account, key: string): AccountReading {
+  if (a.observed_at === null) return { kind: 'never' }
+  const w = a.windows[key]
+  if (!w || typeof w.utilization !== 'number' || !Number.isFinite(w.utilization)) {
+    return { kind: 'absent' }
+  }
+  const pct = Math.max(0, Math.min(100, w.utilization * 100))
+  // `reset` outranks `stale`: a fresh reading of a window that has since
+  // refilled is still describing the window before it.
+  if (w.reset) return { kind: 'reset', pct, resetsAt: w.resets_at }
+  if (a.stale) return { kind: 'stale', pct, resetsAt: w.resets_at, observedAt: a.observed_at }
+  return { kind: 'live', pct, resetsAt: w.resets_at, observedAt: a.observed_at }
+}
+
+/** True for the two cases `cs status` prefixes with `~`. */
+export function isProjected(r: AccountReading): boolean {
+  return r.kind === 'stale' || r.kind === 'reset'
+}
+
+/**
+ * The window that will actually stop you, which is what CLEARS is about.
+ *
+ * The BINDING window, not the five-hour and not an average: an account at 5%
+ * on its five-hour and 90% on its weekly is stopped by the weekly, and
+ * averaging them to 47% would send agents at an account that is about to
+ * refuse. `Account._binding_remaining` in accounts.py picks the same way, and
+ * treats a window past its reset as full again -- so a window that has reset
+ * cannot be the binding one while another still has room.
+ *
+ * Returns null when there is nothing to pick from, which is a real answer:
+ * CLEARS then renders as an em dash rather than a time nobody measured.
+ */
+export function bindingWindow(a: Account): { key: string; window: AccountWindow } | null {
+  let best: { key: string; window: AccountWindow } | null = null
+  let leastRemaining = Infinity
+  for (const [key, w] of Object.entries(a.windows)) {
+    if (!w || typeof w.utilization !== 'number' || !Number.isFinite(w.utilization)) continue
+    const remaining = w.reset ? 1 : Math.max(0, 1 - w.utilization)
+    if (remaining < leastRemaining) {
+      leastRemaining = remaining
+      best = { key, window: w }
+    }
+  }
+  return best
+}
+
+/**
+ * A duration the way somebody reads a clock, not the way a computer counts it.
+ *
+ * Ported field-for-field from `shortDur` in claudeswitch's
+ * internal/render/status.go, including the zero-padded minutes, because this
+ * column and that one are meant to be the same column. "81h49m" is arithmetic;
+ * "3d 10h" is an answer.
+ */
+export function humaniseUntil(ms: number): string {
+  if (!Number.isFinite(ms)) return '—'
+  if (ms <= 0) return 'now'
+  const s = Math.floor(ms / 1000)
+  const m = Math.floor(s / 60)
+  const h = Math.floor(m / 60)
+  if (h >= 48) return `${Math.floor(h / 24)}d ${h % 24}h`
+  if (h >= 1) return `${h}h ${String(m % 60).padStart(2, '0')}m`
+  if (m >= 1) return `${m}m`
+  return `${s}s`
+}
+
+/** Time until an ISO instant, humanised. Null in, em dash out. */
+export function clearsIn(iso: string | null | undefined, now: number): string {
+  if (!iso) return '—'
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return '—'
+  return humaniseUntil(t - now)
+}
+
+/**
+ * Time SINCE an instant, humanised. The past-facing twin of `humaniseUntil`.
+ *
+ * It lived in Shell.tsx, which is a components file, and moved here when
+ * `checks.ts` needed it: the derived-checks layer is pure by construction --
+ * no React, no DOM -- and an import from a `.tsx` module would have put a
+ * renderer in its dependency graph. Shell.tsx re-exports it, so every existing
+ * `import { timeAgo } from './Shell'` is unchanged.
+ *
+ * It floors at zero, so it must NEVER be pointed at a future instant: a reset
+ * two hours away renders "just now", which is the opposite of the truth. That
+ * is what `clearsIn` above is for.
+ */
+export function timeAgo(when: Date | string | number, now: number = Date.now()): string {
+  const t =
+    typeof when === 'number'
+      ? when
+      : typeof when === 'string'
+        ? new Date(when).getTime()
+        : when.getTime()
+  if (!Number.isFinite(t)) return 'at an unknown time'
+  const s = Math.max(0, Math.round((now - t) / 1000))
+  if (s < 5) return 'just now'
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.round(s / 60)}m ago`
+  // DAYS, above 48 hours. This used to end at hours, so a reading four days old
+  // printed "96h ago" -- arithmetic a reader has to do before they can react to
+  // it, on exactly the figures where age is the whole point. The threshold is
+  // `humaniseUntil`'s, so a duration and an age agree about where hours stop
+  // being the readable unit.
+  const h = Math.round(s / 3600)
+  if (h < 48) return `${h}h ago`
+  // WHOLE DAYS, FLOORED, as `formatDuration` floors them (visual QA pass 2
+  // overview-agents-42, part of archived issue 2694): rounded, an agent submitted 9d 21h
+  // ago read `submitted 10d ago` under a head that said `9d 21h`.
+  return `${Math.floor(h / 24)}d ago`
+}
+
+/**
+ * An age as a bare span -- `40s`, `14m`, `3h`, `5d` -- for a mark or a range
+ * that says `old` after it (`5d old`, `readings 2m–14m old`).
+ *
+ * `timeAgo`'s buckets and rounding, so the two never disagree about the same
+ * instant, without its "just now": a range reading "just now–14m" is not
+ * something anyone says, and under five seconds is still a number of seconds.
+ */
+export function ageSpan(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
+  if (s < 60) return `${s}s`
+  if (s < 3600) return `${Math.round(s / 60)}m`
+  const h = Math.round(s / 3600)
+  if (h < 48) return `${h}h`
+  return `${Math.floor(h / 24)}d`
+}
+
+// --------------------------------------------------------------------------
+// When it started, and on which account (archived issue 376, archived issue 379)
+// --------------------------------------------------------------------------
+
+/**
+ * An instant as a reader scans a list for it, in THE PERSON'S ZONE
+ * (`timezone.ts`; UTC until they pick one in Profile), labelled:
+ * `14:05:09 PDT` when it is today there and `Oct 24 14:05 PDT` when it is
+ * older, with the full ISO UTC timestamp and its age (`timeAgo`) for the
+ * hover.
+ *
+ * ONE FORMATTER for every start and submit time on the Agents list, the agent
+ * inspector, the workflow board and the step inspector (archived issue 376), so a row and
+ * the drawer beside it can never print the same instant two ways. Null for a
+ * missing or unparseable value: the caller says what the absence means
+ * ("never started"), this never invents a time.
+ *
+ * THE ZONE, NOT THE BROWSER'S CLOCK (VQ-023; owner, 2026-10-26, lane
+ * TZ-CLOCKTIME, part of archived issue 2391). This read `getHours()` until then: the
+ * browser's zone, unlabelled, beside an Overview and a Timeline that say UTC
+ * or the person's zone, so one instant read as two times a page apart.
+ * "Today" is the zone's day (`isToday`, from `startOfDay`), the same day
+ * Overview counts. The words are `timezone.ts`'s own: today keeps the
+ * second, as it always did, and an older instant is `formatDateTime`'s date
+ * before `formatClock`'s time -- the month by name, so `10-24` is never read
+ * the American way round. `zone` is for a caller that holds one (a test);
+ * every other caller follows the setting.
+ */
+export function clockTime(
+  iso: string | null | undefined,
+  now: number = Date.now(),
+  zone: string = currentZone(),
+): { text: string; title: string } | null {
+  if (!iso) return null
+  const t = new Date(iso)
+  if (!Number.isFinite(t.getTime())) return null
+  // "Oct 24 14:05:09 PDT": the date, the time to the second, then the label.
+  const [month, day, hms, ...label] = formatDateTime(t, zone).split(' ')
+  const text = isToday(t, now, zone) ? `${hms} ${label.join(' ')}` : `${month} ${day} ${formatClock(t, zone)}`
+  return { text, title: `${t.toISOString()} (${timeAgo(t.getTime(), now)})` }
+}
+
+/**
+ * When a task started, with when it was submitted (archived issue 376).
+ *
+ * `started_at` is written at each attempt's DISPATCHED -> STARTING, so on a
+ * retried task it is the LATEST attempt's start; the hover says so rather than
+ * calling it the first. A task with none reads `never started` -- finished,
+ * cancelled or still waiting -- and its submit time is still beside it: never
+ * blank, never a time made up from another field.
+ */
+export function startedOf(
+  task: Pick<Task, 'started_at' | 'created_at' | 'attempt_count'>,
+  now: number = Date.now(),
+  zone: string = currentZone(),
+): { text: string; title: string; never: boolean; submitted: string; submittedTitle: string } {
+  const sub = clockTime(task.created_at, now, zone)
+  const submitted = sub?.text ?? 'not recorded'
+  const submittedTitle = sub ? `submitted ${sub.title}` : 'no submit time was recorded'
+  const start = clockTime(task.started_at, now, zone)
+  if (start === null) {
+    return { text: 'never started', title: `never started; ${submittedTitle}`, never: true, submitted, submittedTitle }
+  }
+  const which = task.attempt_count > 1 ? `latest attempt (of ${task.attempt_count}) started` : 'started'
+  return { text: start.text, title: `${which} ${start.title}; ${submittedTitle}`, never: false, submitted, submittedTitle }
+}
+
+/**
+ * The Agents list's STARTED sort (archived issue 376): started rows by their start, newest
+ * first unless `asc`; rows that never started always after them, newest
+ * submitted first, so flipping the order never buries the started ones.
+ */
+export function compareStarted(a: Task, b: Task, asc = false): number {
+  const sa = a.started_at ? Date.parse(a.started_at) : NaN
+  const sb = b.started_at ? Date.parse(b.started_at) : NaN
+  const ha = Number.isFinite(sa)
+  const hb = Number.isFinite(sb)
+  if (ha !== hb) return ha ? -1 : 1
+  if (ha && hb && sa !== sb) return asc ? sa - sb : sb - sa
+  return Date.parse(b.created_at) - Date.parse(a.created_at)
+}
+
+/** `swarm_api/task_accounts.py`'s statuses. */
+export type TaskAccountStatus =
+  | 'assigned'
+  | 'not_assigned_yet'
+  | 'not_assigned'
+  | 'no_model_call'
+  | 'not_pooled'
+  | 'unread'
+
+/**
+ * `task.browser_use` (BROWSER-USE-FLAG, archived issue 2322; `codec.browser_use_to_api`).
+ * Each count is a non-negative integer or null (not read). `tool_calls` is
+ * every browser call, `mcp_calls` and `command_calls` its two kinds;
+ * `images` the images under the agent's artifacts. `complete` says the
+ * stream was read whole; `unknown_because` is set only when `browser_used`
+ * is null on a browser runtime.
+ */
+export interface BrowserUse {
+  tool_calls: number | null
+  mcp_calls: number | null
+  command_calls: number | null
+  images: number | null
+  seconds: number | null
+  complete: boolean
+  unknown_because: 'not_reported' | 'stream_unread' | 'stream_cut' | null
+}
+
+/** One account an attempt was handed and gave back (archived issue 379). */
+export interface AccountSwap {
+  account_id: string
+  /** `unreadable`: the worker could not read the account's credential. */
+  cause: string
+}
+
+/** `task.account` and each `accounts_by_attempt` entry (archived issue 379). No credential, ever. */
+export interface TaskAccount {
+  status: TaskAccountStatus | string
+  account_id: string | null
+  provider: string | null
+  attempt_id: string | null
+  generation: number | null
+  /** The account given back immediately before `account_id`, or null. */
+  swapped_from: string | null
+  swaps: AccountSwap[]
+}
+
+const ACCOUNT_WORDS: Readonly<Record<string, string>> = {
+  not_assigned_yet: 'not assigned yet',
+  not_assigned: 'not assigned',
+  no_model_call: 'no model call',
+  not_pooled: 'not on the pool',
+  unread: 'not read',
+}
+
+/**
+ * `acct-eng-02` after `acct-eng-01` prints as `02`: the part after their
+ * shared prefix, cut back to a `-` so a number is never split.
+ */
+function accountTail(from: string, to: string): string {
+  let i = 0
+  while (i < from.length && i < to.length && from[i] === to[i]) i++
+  const cut = to.lastIndexOf('-', i - 1)
+  return cut >= 0 && cut < to.length - 1 ? to.slice(cut + 1) : to
+}
+
+/**
+ * What an account cell says, and its hover (archived issue 379).
+ *
+ * `acct-eng-02`; after a swap `acct-eng-01 → 02 (swapped: unreadable)`. The
+ * words for every other status are the API's answer, never a guess: `no model
+ * call` (the profile calls none), `not assigned yet` (this attempt has asked
+ * for nothing yet), `not assigned` (it ended without one), `not on the pool`
+ * (the profile never asks the pool), `not read` (the read failed or stopped
+ * short, or the API did not send the field).
+ */
+export function accountText(account: TaskAccount | null | undefined): { text: string; title: string; known: boolean } {
+  if (account === null || account === undefined) {
+    return { text: 'not read', title: 'The account was not read on this request.', known: false }
+  }
+  const swaps = account.swaps ?? []
+  const swapNote = swaps.length > 0 ? ` Gave back: ${swaps.map((s) => `${s.account_id} (${s.cause})`).join(', ')}.` : ''
+  if (account.status === 'assigned' && account.account_id) {
+    const id = account.account_id
+    const from = account.swapped_from
+    const cause = swaps.at(-1)?.cause ?? 'swapped'
+    const text = from ? `${from} → ${accountTail(from, id)} (swapped: ${cause})` : id
+    const gen = account.generation !== null ? ` on attempt generation ${account.generation}` : ''
+    return { text, title: `Running on ${id}${account.provider ? ` (${account.provider})` : ''}${gen}.${swapNote}`, known: true }
+  }
+  const words = ACCOUNT_WORDS[account.status] ?? account.status.replace(/_/g, ' ')
+  return { text: words, title: `${words}.${swapNote}`.trim(), known: false }
+}
+
+/**
+ * A workflow's start, DERIVED from its earliest step's `started_at` (archived issue 376) --
+ * the workflow document records none.
+ *
+ *   started   the earliest start among the step tasks read; `partial` when a
+ *             step's task was not in the read, so an earlier start may exist;
+ *   never     every step's task was read and none has started;
+ *   unread    no step task was read, so nothing can be said.
+ */
+export function workflowStart(
+  workflow: Pick<Workflow, 'steps'>,
+  taskById: ReadonlyMap<string, Pick<Task, 'started_at' | 'state'>> | null,
+):
+  | { kind: 'started'; at: string; partial: boolean }
+  | { kind: 'never'; settled: boolean }
+  | { kind: 'unread' } {
+  if (taskById === null) return { kind: 'unread' }
+  let earliest: string | null = null
+  let earliestMs = Infinity
+  let read = 0
+  let missing = 0
+  let live = 0
+  for (const step of workflow.steps) {
+    const task = step.task_id ? taskById.get(step.task_id) : undefined
+    if (task === undefined) {
+      missing++
+      continue
+    }
+    read++
+    if (!TERMINAL_STATES.has(task.state)) live++
+    const ms = task.started_at ? Date.parse(task.started_at) : NaN
+    if (Number.isFinite(ms) && ms < earliestMs) {
+      earliestMs = ms
+      earliest = task.started_at
+    }
+  }
+  if (earliest !== null) return { kind: 'started', at: earliest, partial: missing > 0 }
+  if (read === 0 || missing > 0) return { kind: 'unread' }
+  // `settled`: every step has finished, so nothing will start -- `never
+  // started`. While a step is still live it is `not started yet`, which is
+  // what the step inspector says of a dispatched attempt (U2).
+  return { kind: 'never', settled: live === 0 }
+}
+
+/** A workflow's start and submit, as the row and the open card print them (archived issue 376). */
+export function workflowStartText(
+  workflow: Pick<Workflow, 'steps' | 'created_at'>,
+  taskById: ReadonlyMap<string, Pick<Task, 'started_at' | 'state'>> | null,
+  now: number = Date.now(),
+): { text: string; title: string; submitted: string; submittedTitle: string; kind: 'never' | 'unread' | 'at' } {
+  const sub = clockTime(workflow.created_at, now)
+  const submitted = sub?.text ?? 'not recorded'
+  const submittedTitle = sub ? `submitted ${sub.title}` : 'no submit time was recorded'
+  const start = workflowStart(workflow, taskById)
+  if (start.kind === 'never') {
+    const text = start.settled ? 'never started' : 'not started yet'
+    return { text, title: `no step has started; ${submittedTitle}`, submitted, submittedTitle, kind: 'never' }
+  }
+  if (start.kind === 'unread') {
+    return { text: 'start not read', title: `the step agents were not read, so the start is unknown; ${submittedTitle}`, submitted, submittedTitle, kind: 'unread' }
+  }
+  const at = clockTime(start.at, now)
+  const text = at?.text ?? 'start not read'
+  const partial = start.partial ? ' among the steps read (some were not)' : ''
+  return { text, title: `first step started ${at?.title ?? start.at}${partial}; ${submittedTitle}`, submitted, submittedTitle, kind: at === null ? 'unread' : 'at' }
+}
+
+/**
+ * THE QUOTA BROKER'S SWEEP INTERVAL, stated once (CP-9, archived issue 85).
+ *
+ * It is the `quota-refresh` Cloud Scheduler job: the scheduler module's
+ * `quota_refresh_schedule`, `*\/5 * * * *` (terraform/modules/scheduler/
+ * variables.tf), which the root does not override. Every five minutes the
+ * broker's `sweep` retires expired cooldowns and re-asserts every provider
+ * pool. `scripts/lib/check-contract-parity.sh` section 7 holds this number to
+ * that cron, so a changed schedule with this constant left behind fails there
+ * rather than quietly calling current readings stale.
+ *
+ * A SWEEP, NOT A REPORT (archived pull request 159 review). This was `QUOTA_REPORT_INTERVAL_
+ * SECONDS`, and the screen called it "the broker's reporting interval". No
+ * such report exists: the sweep rewrites a document only when its state or
+ * its derived cap changed, and `updated_at` moves when a WORKER reports -- at
+ * the end of a clean run, or on a 429 (`update_quota_state`). An AVAILABLE
+ * document nobody reports on keeps the `updated_at` of the last worker report
+ * or state change, which is what `Reported` prints.
+ *
+ * WHICH TICK THE OWNER'S "TWICE THE BROKER'S REPORTING INTERVAL" MEANT IS AN
+ * OPEN QUESTION TO THE OWNER (archived issue 85, CP-9): the sweep, a worker-report cadence
+ * (there is no fixed one), or a fixed age. Until it is answered the threshold
+ * stays twice the sweep, and the words say so rather than naming a report.
+ */
+export const QUOTA_SWEEP_INTERVAL_SECONDS = 300
+
+/**
+ * A quota reading older than this is drawn with the stale mark and its age,
+ * never with the ok verdict: twice the broker's sweep interval, the closest
+ * config value to the owner's rule (2026-09-25; see above for what is still
+ * open). One missed tick is a late tick; two is a reading nothing has
+ * confirmed since. On a quiet tenant that is most rows at rest: nothing has
+ * reported on them since, which is the true age of what they say.
+ */
+export const QUOTA_STALE_AFTER_MS = 2 * QUOTA_SWEEP_INTERVAL_SECONDS * 1000
+
+/**
+ * How old a quota document's reading is, and whether that is past
+ * `QUOTA_STALE_AFTER_MS`. `ageMs` is null when `updated_at` is missing or
+ * unparseable -- an age nobody recorded, which is not a fresh one, so it is
+ * stale too.
+ */
+export function quotaReadingAge(
+  q: Pick<QuotaState, 'updated_at'>,
+  now: number,
+): { stale: boolean; ageMs: number | null } {
+  const at = q.updated_at ? new Date(q.updated_at).getTime() : Number.NaN
+  if (!Number.isFinite(at)) return { stale: true, ageMs: null }
+  const ageMs = Math.max(0, now - at)
+  return { stale: ageMs > QUOTA_STALE_AFTER_MS, ageMs }
+}
+
+/*
+ * `BAR_CELLS` AND `barFilled` LIVED HERE AND ARE GONE (CP-25, archived issue 85). They drew
+ * Accounts' five-cell bar the way claudeswitch's `miniBar` does -- round to the
+ * nearest fifth, clamp -- which put a second proportion primitive beside
+ * §6.4's one and rounded 42% to three cells. The owner's decision collapsed it
+ * into the canonical `UsageTrack` (components/UsageBar.tsx) at the exact percentage. What
+ * the table still shares with `cs status` is the figure, the `~` and the
+ * window labels.
+ */
+
+// ---------------------------------------------------------------------------
+// Adding an account: the two-step sign-in
+// ---------------------------------------------------------------------------
+// Shapes returned by `begin_account_authorization` and
+// `finish_account_authorization` in apps/quota-broker/quota_broker/main.py.
+//
+// WHY A PERSON STILL PASTES SOMETHING, since "just a button" is the obvious
+// ask. Anthropic's OAuth client accepts exactly one redirect target -- its own
+// callback page, which DISPLAYS a code. A third-party application cannot
+// register `https://swarm.example.com/callback`, so the browser cannot be
+// redirected back here and the code on that page is what closes the loop. One
+// short string replaces a keychain item; that is the whole distance this can
+// travel, and the screen says so rather than leaving it looking like an
+// oversight.
+//
+// NO KEY MATERIAL APPEARS HERE EITHER. The PKCE verifier is held server-side
+// keyed by `state` and never reaches the browser -- a verifier the client holds
+// is a PKCE flow that proves nothing -- so there is no field for it and there
+// must not be one.
+
+/** What `POST /v1/accounts/authorize` answers with. */
+export interface AccountAuthorization {
+  /** The page a person opens to sign in. Always the provider's own host. */
+  authorize_url: string
+  /**
+   * What identifies this sign-in to the server. Sent back with the code.
+   *
+   * Also rendered on the callback page after a `#`, which is why the paste
+   * field accepts the whole thing: the server splits it and refuses a paste
+   * whose state belongs to a DIFFERENT sign-in rather than guessing between
+   * two open tabs.
+   */
+  state: string
+  /**
+   * How long the server holds the pending sign-in.
+   *
+   * NULL WHEN THE SERVER DID NOT SAY. It is not defaulted to a plausible
+   * fifteen minutes: a countdown to a deadline nobody reported is a number
+   * invented in the browser, and this screen's whole discipline is that a
+   * figure on it was measured somewhere.
+   */
+  expires_in_seconds: number | null
+}
+
+/** What `POST /v1/accounts/exchange` answers with on 201. No key material. */
+export interface AccountExchangeResponse {
+  account: Account
+  /**
+   * When the ACCESS half expires -- hours, not days. The pair outlives it:
+   * the broker's sweep exchanges the refresh half for a successor
+   * indefinitely, which is what makes "you sign in once" true rather than
+   * aspirational. The screen has to say that, because an expiry in eight
+   * hours otherwise reads as "do this again tonight".
+   */
+  expires_at: string | null
+  note?: string
+}
+
+/**
+ * The host the provider will send the person to, taken from the URL the SERVER
+ * built rather than from a constant here.
+ *
+ * `OAUTH_REDIRECT_URI` lives in quota_broker/oauth.py and nothing checks that a
+ * TypeScript copy of it still matches -- `check-contract-parity.sh` covers the
+ * shell and jq restatements of the frozen contract, not this file. So the copy
+ * that tells somebody which page will show them a code reads the value out of
+ * the authorize URL itself, and says "the page Claude sends you to" when it
+ * cannot. A wrong host name in that sentence sends a person hunting a page
+ * they will never see.
+ */
+export function callbackHostOf(authorizeUrl: string): string | null {
+  try {
+    const redirect = new URL(authorizeUrl).searchParams.get('redirect_uri')
+    return redirect ? new URL(redirect).host : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * A HINT ABOUT A PASTE, never a gate on one.
+ *
+ * The server is the only authority on what a code is: it splits `<code>#<state>`
+ * itself, and `split_pasted_code` is the one implementation of that rule. A
+ * second one here would disagree with it the first time the callback page
+ * changed shape, and it would disagree by REFUSING something the platform
+ * would have accepted -- which is the expensive direction to be wrong in.
+ *
+ * So this returns a sentence to show BESIDE the field, and the submit button
+ * stays live whatever it says. It only recognises the two pastes that are
+ * definitely not a code: a URL (the address bar instead of the page) and a
+ * query string (the part after the `?`). Everything else returns null.
+ */
+export function pastedCodeHint(pasted: string): string | null {
+  const v = pasted.trim()
+  if (v === '') return null
+  if (/^https?:\/\//i.test(v)) {
+    return 'That looks like a URL rather than a code. The code is the short string the callback page prints on the page itself, not the address bar. Sending it anyway is safe — the platform will say what it made of it.'
+  }
+  if (/^[?&]?code=/i.test(v)) {
+    return 'That looks like a query string. The code is the value, without the `code=` in front of it. Sending it anyway is safe — the platform will say what it made of it.'
+  }
+  return null
+}
+
+// --------------------------------------------------------------------------
+// Checkpoint and log inspection
+//
+// `GET /v1/tasks/{id}/checkpoints` and `GET /v1/tasks/{id}/logs`, added when
+// the server-side seam for them was built. Both endpoints answer in THREE
+// states rather than two, and these types keep that: a field that could not be
+// read is `null` and carries a `_detail` beside it, never a zero and never an
+// empty string. A screen that renders `content ?? ''` shows nothing rather
+// than an empty log that reads as a silent agent.
+// --------------------------------------------------------------------------
+
+// NOTE the names. `CheckpointRow` is already taken, by the type the UI built
+// to work around NOT having this route: it is assembled from
+// `checkpoint_completed` EVENTS, and its own comment says "CONTENTS ARE NOT
+// RECORDED ANYWHERE ... a file listing would need a new route and a manifest
+// read out of GCS". That route now exists, and `CheckpointRecord` below is
+// what it serves -- named after the worker's own `CheckpointRecord` dataclass,
+// which is what the manifest is a serialisation of.
+
+/** Was the manifest -- the worker's commit marker -- there and readable? */
+export type ManifestStatus = 'present' | 'absent' | 'unreadable'
+
+export interface CheckpointFile {
+  name: string
+  key: string
+  bytes: number
+  /**
+   * The object's own GCS `updated`, from the same listing (archived issue 172). Null when
+   * the store reported no time -- never the checkpoint's `created_at`, which
+   * is the manifest's claim and not the bucket's. Absent from an API older
+   * than archived issue 172.
+   */
+  object_updated_at?: string | null
+}
+
+export interface CheckpointRecord {
+  checkpoint_id: string
+  attempt_id: string
+  /** False means NO ATTEMPT DOCUMENT was found, not that the attempt never ran. */
+  attempt_known: boolean
+  attempt_created_at: string | null
+  attempt_completed_at: string | null
+  prefix: string
+  uri: string
+  /** True when `task.latest_checkpoint` names exactly this checkpoint. */
+  is_latest_pointer: boolean
+  /** What is in the bucket under this prefix, from the listing -- no download. */
+  objects: CheckpointFile[]
+  stored_bytes: number
+  manifest: ManifestStatus
+  manifest_detail: string | null
+  created_at: string | null
+  seq: number | null
+  generation: number | null
+  label: string | null
+  archive_bytes: number | null
+  archive_sha256: string | null
+  /** Files inside the archive, from the manifest. Null when it was not readable. */
+  file_count: number | null
+  /**
+   * Would a retry restore from this? NULL, not false, when the manifest could
+   * not be read -- "cannot resume" and "cannot tell" are different sentences.
+   */
+  resumable: boolean | null
+  resumable_detail: string | null
+}
+
+/** What `task.latest_checkpoint` currently names. `outside_this_task` is a
+ *  finding: a resuming worker would ignore such a pointer entirely. */
+export interface LatestCheckpointPointer {
+  pointer: string | null
+  status: 'unset' | 'present' | 'missing' | 'outside_this_task'
+  checkpoint_id: string | null
+  detail?: string
+}
+
+export interface CheckpointsPage {
+  task_id: string
+  tenant_id: string
+  prefix: string
+  checkpoints: CheckpointRecord[]
+  count: number
+  total_found: number
+  next_page_token: string | null
+  /** The listing SUCCEEDED. This is what makes an empty array an answer. */
+  listed: boolean
+  /** The scan limit cut the prefix short. Never silent. */
+  truncated: boolean
+  latest_checkpoint: LatestCheckpointPointer
+}
+
+/**
+ * Which object was served: the completed record, the live tail, or -- for the
+ * agent CLI's own streams on an attempt that ran before their final copies
+ * existed -- the artifact the runner wrote (`artifact`, #184's legacy
+ * fallback: `claude-code.stdout.log` on `task_73b5f4d9ca3641fbb914`).
+ */
+export type LogSource = 'final' | 'live' | 'artifact'
+/**
+ * `not_applicable` is the fourth answer #184 added, and only for the agent
+ * streams: the runner has no agent CLI (mock, browser), so no such stream was
+ * ever going to exist. It is not `absent`, which is a stream that should have
+ * been uploaded and was not.
+ */
+export type LogStatus = 'ok' | 'absent' | 'unreadable' | 'not_applicable'
+
+/**
+ * `stdout` and `stderr` are the RUNNER PROCESS's streams -- the platform's
+ * wrapper around the agent, whose stderr holds lines like `child started`.
+ * `agent_stdout` and `agent_stderr` are the agent CLI's own (#184). The first
+ * pair was shown for months under "Output, as the agent wrote it", which it is
+ * not.
+ */
+export type LogStreamName = 'stdout' | 'stderr' | 'agent_stdout' | 'agent_stderr'
+
+export interface LogStream {
+  stream: LogStreamName
+  source: LogSource | null
+  status: LogStatus
+  detail: string | null
+  key: string | null
+  uri: string | null
+  /** Null for absent and unreadable. NEVER `''` -- that is a real, empty log. */
+  content: string | null
+  /** Null when nothing could be read. Never 0, which is a real, empty object. */
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  next_offset: number | null
+  truncated: boolean
+  /** True when read-time redaction actually replaced something in this window. */
+  redacted: boolean
+  redaction_count: number
+  /** From the `#swarm-tail` header, for a live window: where it sits in the
+   *  stream, so a reader can tell a gap from a continuation. `published_at` is
+   *  the header's `at=` (#184), absent on a tail written before it existed. */
+  tail_window: { object_offset: number; stream_size: number; published_at?: string | null } | null
+  /**
+   * The object's own GCS `updated` time, and the age the SERVER computed from
+   * it at `read_at` (#184). A live tail is republished every interval even when
+   * nothing changed, so this is the publisher's liveness, not new output.
+   * OPTIONAL because an API older than #184 sends neither; null means the
+   * server could not tell, which is different from not saying.
+   */
+  object_updated_at?: string | null
+  age_seconds?: number | null
+  /**
+   * Bytes of this window that are not UTF-8 (archived pull request 188 review): JSON cannot carry
+   * them, so the server shows each as U+FFFD, COUNTS them here and says so in
+   * `detail`. Null when nothing was read; absent on an API older than it.
+   */
+  invalid_utf8_bytes?: number | null
+}
+
+/** Which attempt a log, transcript or answer read describes. */
+export interface LogAttempt {
+  status: 'latest' | 'requested' | 'unknown_attempt' | 'no_attempt_yet'
+  known: boolean
+  generation: number | null
+  created_at: string | null
+  completed_at: string | null
+  exit_code: number | null
+}
+
+export interface TaskLogs {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  /** When the server read the objects (#184). Every `age_seconds` is from here. */
+  read_at?: string
+  streams: LogStream[]
+  prefix: string
+  /** Stated by the server rather than assumed here. A deployment where
+   *  redaction somehow stopped would otherwise look identical to a working one. */
+  redaction: { applied_at_read_time: boolean; rules: number }
+}
+
+// ---------------------------------------------------------------------------
+// The Artifacts tab (#184): the listing, the transcript, the answer
+// ---------------------------------------------------------------------------
+
+/**
+ * What kind of file an artifact is, as the SERVER decides it from the NAME --
+ * one table, `checkpoint_content.content_type_for` plus its image extensions.
+ * A hint for choosing a viewer, not a verdict about the bytes: the content
+ * route's NUL sniff and the raw route's magic-byte sniff stay authoritative.
+ * `.svg` is text, never an image.
+ */
+export type ArtifactKindName = 'markdown' | 'json' | 'ndjson' | 'log' | 'text' | 'image' | 'binary'
+
+/** Which agent stream an artifact IS, by exact name against `result_summary.agent_streams`. */
+export type AgentStreamRole = 'agent_stdout' | 'agent_stderr' | 'agent_transcript'
+
+/**
+ * One entry of `GET /v1/tasks/{id}/artifacts`. The three #184 fields are
+ * OPTIONAL: an API older than that change serves `{name, bytes, uri}` only, and
+ * the viewer then falls back to the name rule it always used (`artifactKind`).
+ */
+export interface ArtifactEntry extends ArtifactRef {
+  /** Null when the stored uri is not under this task. */
+  attempt_id?: string | null
+  kind?: ArtifactKindName | null
+  content_type?: string | null
+  role?: AgentStreamRole | null
+}
+
+/** One `artifacts_skipped` entry as the listing route serves it (archived issue 165). */
+export interface SkippedArtifact {
+  name: string
+  cause: string | null
+}
+
+/**
+ * The listing. `complete` is false -- and `artifacts` empty -- until the task's
+ * result summary is written at the end of its last attempt: artifacts are
+ * uploaded then, never live, so an empty incomplete list is "not yet", never
+ * "none".
+ */
+export interface ArtifactListing {
+  task_id: string
+  artifacts: ArtifactEntry[]
+  /**
+   * Each file written and not uploaded, with the cause the worker recorded
+   * (archived issue 165): `cap`, `upload_error`, `refused`, or null for a name from an
+   * older summary.
+   */
+  artifacts_skipped: SkippedArtifact[]
+  /**
+   * Files past the 500-file cap, counted and not named (archived issue 227): null until
+   * `complete`, 0 when none were. `complete` means the manifest is written,
+   * not that nothing was left out.
+   */
+  artifacts_over_cap?: number | null
+  artifact_bytes: number | null
+  complete: boolean
+  /** The attempt the manifest describes: the final one, and only it. */
+  attempt_id?: string | null
+}
+
+/** What `result_summary.agent_streams` names, or null for a runner with no agent CLI. */
+export interface AgentStreams {
+  stdout: string | null
+  stderr: string | null
+  transcript: string | null
+  /**
+   * Why no transcript artifact was written, when one was not:
+   *  - `too_large`: the transcript was over 4,000,000 characters;
+   *  - `capture_truncated`: the stdout it is built from was cut at the output
+   *    cap (the capture kept its start and its end), so a transcript built
+   *    from it would present a cut run as a whole one (archived pull request 188 review).
+   */
+  transcript_skipped: 'too_large' | 'capture_truncated' | null
+  /**
+   * Whether the output cap cut that agent stream (archived pull request 188 review): the capture
+   * kept its start and its end and wrote a notice where it dropped the middle.
+   * Null is NOT REPORTED -- never "not cut". Absent on a summary written
+   * before the change.
+   */
+  stdout_truncated?: boolean | null
+  stderr_truncated?: boolean | null
+}
+
+export type TranscriptStepKind =
+  | 'init'
+  | 'text'
+  | 'thinking'
+  | 'tool_call'
+  | 'tool_result'
+  | 'result'
+  | 'rate_limit'
+  | 'system'
+  /**
+   * A codex turn's token usage (CODEX-ROWS, part of archived issue 2459). `meta` carries
+   * `input_tokens`, `cached_input_tokens`, `output_tokens` and `turn` as
+   * numbers; a figure codex did not report is ABSENT, never 0. `text` is the
+   * same usage in words, for a reader that does not know the kind.
+   */
+  | 'usage'
+  /**
+   * A codex error (CODEX-ROWS): `text` is the message; `meta.subtype` is
+   * `turn_failed` or `error`; a reconnect carries `meta.retry_attempt` and
+   * `meta.retry_limit`.
+   */
+  | 'error'
+  | 'other'
+
+/**
+ * ONE STEP OF THE AGENT'S TRANSCRIPT, parsed and redacted by the SERVER
+ * (`GET /v1/tasks/{id}/transcript`). Every string was redacted after JSON
+ * decoding and capped at 16 KiB; a capped field is named in
+ * `truncated_fields`. `raw` is present only when the read asked for it.
+ */
+export interface TranscriptStep {
+  id: string
+  line_offset: number
+  block: number
+  kind: TranscriptStepKind
+  role: 'assistant' | 'user' | 'system' | null
+  /** Set on a sub-agent's steps: the tool call that spawned it. */
+  parent_tool_use_id: string | null
+  text: string | null
+  /**
+   * `input` is the tool input as pretty JSON TEXT, never an object. Every
+   * string here is null when the event did not carry one as a string
+   * (`transcript._Scrubber.text`), so an id is never assumed: two null ids are
+   * not a call and its result.
+   */
+  tool: { id: string | null; name: string | null; input: string | null } | null
+  /** `is_error` is null when the event carried no boolean there: not said, which is not `false`. */
+  tool_result: { tool_use_id: string | null; is_error: boolean | null; content: string | null; images: number } | null
+  meta: Record<string, unknown> | null
+  truncated_fields: string[]
+  raw: string | null
+}
+
+export type TranscriptFormat = 'claude-stream-json' | 'claude-json' | 'codex-exec-json' | 'ndjson' | 'text'
+
+/** The object a transcript read parsed: the same one `/logs?stream=agent_stdout` would choose. */
+export interface TranscriptStream {
+  stream: 'agent_stdout'
+  source: LogSource | null
+  status: LogStatus
+  detail: string | null
+  uri: string | null
+  object_updated_at: string | null
+  age_seconds: number | null
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  next_offset: number | null
+  truncated: boolean
+  tail_window: { object_offset: number; stream_size: number; published_at?: string | null } | null
+}
+
+export interface TaskTranscript {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  read_at: string
+  stream: TranscriptStream
+  /** Sniffed from the content by the server, never trusted from the worker. */
+  format: TranscriptFormat | null
+  /** Null unless the stream was read AND its format parses. Never `[]` for "could not tell". */
+  steps: TranscriptStep[] | null
+  /** True only for a final or artifact read from offset 0 to the end. */
+  complete: boolean
+  /** The window does not start at the first step: earlier steps are not in it. */
+  window_starts_mid_stream: boolean
+  /** Lines that did not parse. Counted, never silently dropped. */
+  skipped_lines: number
+  answer_in_window: boolean
+  /**
+   * Whether the agent's stdout capture was cut at its size cap (archived pull request 188 review):
+   * the capture kept the start and the end of the run and dropped the middle,
+   * with a notice line where (a `system` step, `meta.subtype:
+   * "capture_truncated"`). True makes `complete` false and puts the reason in
+   * `stream.detail`; false is known whole; null is nothing can be said.
+   * OPTIONAL: an API older than the change does not send it.
+   */
+  capture_truncated?: boolean | null
+  redaction: { applied_at_read_time: boolean; rules: number }
+  redaction_count: number
+}
+
+/**
+ * THE AGENT'S FINAL ANSWER (`GET /v1/tasks/{id}/answer`): the `result` of the
+ * LAST `type:"result"` event in its stdout, or -- only when there is none --
+ * the runner's summary, which is capped at 2,000 characters and says so with
+ * `complete: false`.
+ *
+ *  - `not_yet`    the attempt is still running and no result event exists yet.
+ *  - `absent`     the attempt ended and neither source exists.
+ *  - `unreadable` an object read failed; nothing may be concluded.
+ */
+export type AnswerStatus = 'ok' | 'not_yet' | 'absent' | 'unreadable'
+
+export interface TaskAnswer {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  read_at: string
+  status: AnswerStatus
+  source: 'agent_result_event' | 'runner_summary' | null
+  object: {
+    stream: 'agent_stdout'
+    source: LogSource
+    uri: string | null
+    object_updated_at: string | null
+  } | null
+  format: 'markdown' | 'text' | null
+  /** Null for every status but `ok`. `''` is a real, empty answer. */
+  content: string | null
+  /** false when the answer is known to be cut (the runner summary at its cap); null when nothing says. */
+  complete: boolean | null
+  /** The agent itself reported an error (e.g. `error_max_turns`). Still status `ok`. */
+  is_error: boolean | null
+  subtype: string | null
+  stop_reason: string | null
+  terminal_reason: string | null
+  num_turns: number | null
+  bytes: number | null
+  redacted: boolean
+  redaction_count: number
+  /**
+   * Whether the agent's stdout capture was cut at its size cap (archived pull request 188 review),
+   * decided as the transcript decides it. The capture keeps the END of the
+   * run, where the result event is, so a cut capture can still answer whole;
+   * `detail` then says the rest of the run was not all kept. OPTIONAL: an API
+   * older than the change does not send it.
+   */
+  capture_truncated?: boolean | null
+  /** The server's sentence about this read -- on `ok` too, where it says a capture was cut or why a summary stands in. */
+  detail: string | null
+}
+
+// ---------------------------------------------------------------------------
+// The task's input, masked -- `GET /v1/tasks/{id}/input` (#184 follow-up)
+// ---------------------------------------------------------------------------
+
+/** One text of the copy: what `redaction.redact` made of it, and how many masks that took. */
+export interface MaskedText {
+  text: string
+  redaction_count: number
+}
+
+/**
+ * THE TASK'S INPUT AS A SCREEN MAY DRAW IT. The owner decided on 2026-09-25
+ * that Inputs and Details show "a read-time-redacted copy of the task's input,
+ * with 'masked N', like every other output" -- so neither draws `task.input`,
+ * which `GET /v1/tasks/{id}` still serves exactly as submitted.
+ *
+ *  - `prompt`  `input.prompt` when it is a string (possibly ''), masked as a
+ *              decoded string, as `/answer` masks its text;
+ *  - `rest`    the input without that prompt, as its JSON text, masked; null
+ *              when nothing else was submitted;
+ *  - `full`    the whole input as its JSON text, masked.
+ *
+ * `prompt_key` says what shape the input has, so a screen never goes back to
+ * the raw document to find out: `string`, `missing` (legitimate -- the key is
+ * a convention of the CLI and mock runners), or `other` (not text).
+ * `redaction_count` is `full`'s: every mask in the input, counted once.
+ */
+export interface TaskInputCopy {
+  task_id: string
+  tenant_id: string
+  read_at: string
+  prompt_key: 'string' | 'missing' | 'other'
+  prompt: MaskedText | null
+  rest: MaskedText | null
+  full: MaskedText
+  /**
+   * THE TASK'S METADATA, masked by the same masker as the input (the owner's
+   * "mask it everywhere", 2026-09-26). OPTIONAL: an API older than the change
+   * does not send it, and Details then says the masked metadata is not served
+   * rather than drawing `task.metadata`.
+   */
+  metadata?: MaskedMetadata
+  redacted: boolean
+  redaction_count: number
+  redaction: { applied_at_read_time: boolean; rules: number }
+}
+
+/**
+ * `GET /v1/tasks/{id}/input`'s `metadata`: the task's metadata as an object,
+ * the caller's keys masked, with the count, and the keys served as stored
+ * because only the platform writes them (`dispatch`, `input_from`,
+ * `expected_outputs`: submission refuses them from every caller).
+ */
+export interface MaskedMetadata {
+  value: Record<string, unknown>
+  redaction_count: number
+  platform_keys: string[]
+}
+
+// ---------------------------------------------------------------------------
+// Artifact CONTENT -- `GET /v1/tasks/{id}/artifacts/content?name=`
+// ---------------------------------------------------------------------------
+
+/**
+ * Four answers, and the fourth is the one a viewer keeps getting wrong.
+ *
+ *  - `ok`         the object was read. `content` is a string, possibly `''`,
+ *                 which is a real empty artifact and not a failure.
+ *  - `absent`     the manifest lists it and the object is not in the bucket.
+ *  - `unreadable` the bucket could not be read. Nothing may be concluded.
+ *  - `binary`     it is not text, so the server deliberately served no bytes.
+ *                 NOT an error, and not an empty document either: rendering it
+ *                 as either turns "this file is a tarball" into "this agent
+ *                 produced nothing".
+ */
+export type ArtifactContentStatus = 'ok' | 'absent' | 'unreadable' | 'binary'
+
+export interface ArtifactContent {
+  task_id: string
+  tenant_id: string
+  attempt_id: string
+  artifact: { name: string | null; bytes: number | null; uri: string | null }
+  status: ArtifactContentStatus
+  /** Why, in a sentence, whenever the status alone does not carry it. */
+  detail: string | null
+  key: string | null
+  uri: string | null
+  /** Null for every non-`ok` status. NEVER `''` -- that is a real empty file. */
+  content: string | null
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  /** Where the next window starts. Null means this window reached the end. */
+  next_offset: number | null
+  /** True when bytes were withheld by the cap. The viewer must SAY so. */
+  truncated: boolean
+  redacted: boolean
+  redaction_count: number
+  redaction: { applied_at_read_time: boolean; rules: number }
+  /**
+   * The name table's answer for this artifact (#184), the same one the listing
+   * serves. OPTIONAL: an API older than #184 sends neither. On the checkpoint
+   * per-file route `content_type: null` is the allowlist REFUSING the name,
+   * which is why the viewer reads it only on that route.
+   */
+  content_type?: string | null
+  kind?: ArtifactKindName | null
+  /**
+   * Bytes of this window that are not UTF-8 (archived pull request 188 review), each shown as
+   * U+FFFD because JSON cannot carry them, and said in `detail`. The raw route
+   * serves them exactly. Null when no window was read; absent on an older API.
+   */
+  invalid_utf8_bytes?: number | null
+}
+
+/**
+ * How a viewer presents one artifact, decided from its NAME alone -- the
+ * FALLBACK, used only when the listing served no `kind` (an API older than
+ * #184, or the Details pane's list, which reads the task's own manifest).
+ * The Artifacts tab chooses by the server's `kind` instead: one table, on the
+ * server, rather than a second copy of it here.
+ */
+export type ArtifactKind = 'markdown' | 'transcript' | 'diff' | 'text'
+
+export function artifactKind(name: string): ArtifactKind {
+  const lower = name.toLowerCase()
+  if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown'
+  // A PATCH BY NAME (archived issue 104): `swarm-work.patch`, the worker's own, and the
+  // `change.diff` a workflow step writes for its dependant to stage. The
+  // server's name table calls both `text`, which is true of the bytes and
+  // says nothing about how to read them, so this rule is asked first for
+  // every text-like kind (ArtifactViewer.tsx `Rendered`).
+  if (lower.endsWith('.patch') || lower.endsWith('.diff')) return 'diff'
+  // `claude-transcript.json` and `codex-transcript.json` -- `spec.transcript_name`
+  // in the two cliagent runners. Matched on the suffix rather than on either
+  // exact name, so a third runner's transcript renders as a transcript too.
+  if (lower.endsWith('transcript.json')) return 'transcript'
+  return 'text'
+}
+
+/**
+ * A diff BY ITS CONTENT, for a file whose name does not say (archived issue 104): `git diff`
+ * output starts `diff --git`, and a plain unified diff has `@@ -a,b +c,d @@`
+ * hunk headers. The hunk has to be the whole header shape, at the start of a
+ * line: an `@@` in prose, or a decorator in code, is not one.
+ */
+export function looksLikeDiff(content: string): boolean {
+  if (content.startsWith('diff --git ')) return true
+  return /^@@ -\d+(,\d+)? \+\d+(,\d+)? @@/m.test(content)
+}
+
+/**
+ * WHICH STATES A STOP CONTROL MAY BE OFFERED ON.
+ *
+ * `Store.request_cancel` raises a 409 for the four terminal states and accepts
+ * everything else, so this is that rule stated once on the client -- a button
+ * that 409s is a button that should not have been drawn.
+ *
+ * It is NOT `CONCURRENCY_STATES`: a QUEUED or PARKED task is perfectly
+ * cancellable and cancelling it is free, which is exactly the case where an
+ * operator most wants the control.
+ */
+export function canBeStopped(task: { state: TaskState; cancel_requested?: boolean }): boolean {
+  return !TERMINAL_STATES.has(task.state) && task.cancel_requested !== true
+}
+
+/**
+ * Whether stopping this task will end an ATTEMPT that is already under way.
+ *
+ * The distinction the confirmation turns on. A task holding capacity has a
+ * live container: `request_cancel` only sets a flag, the worker acts on it at
+ * its next heartbeat, and `lifecycle` checkpoints and uploads before it exits
+ * -- so the work is kept. A task in QUEUED/READY/PARKED has no attempt at all,
+ * goes straight to CANCELLED, and has nothing to keep.
+ */
+export function stoppingEndsALiveAttempt(task: { state: TaskState }): boolean {
+  return CONCURRENCY_STATES.has(task.state)
+}
+
+
+/**
+ * "1 account", "2 accounts". A count and its noun, agreeing.
+ *
+ * Here rather than in a screen because BOTH Overview.tsx and the pure
+ * checks.ts need it, and the second copy is not hypothetical: "1 accounts, all
+ * with a current reading" was on a shipped screenshot. The sentence was true
+ * and a reader stops trusting a sentence that cannot count to one -- which
+ * matters more than usual beside a figure being read as a measurement.
+ *
+ * checks.ts already has its own `countOf`, counting a workflow's steps by
+ * state. Different question, so this has a different name rather than a
+ * clashing one.
+ */
+export function pluralise(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`
+}
+
+// ---------------------------------------------------------------------------
+// Issue runs and the issue preview (archived issue 454; intake-tenants.html 1A)
+// ---------------------------------------------------------------------------
+//
+// THE API'S OWN SHAPES, from swarm-api on main (archived pull request 511): `IssueRef.to_dict`
+// (validation.py), `forge.preview` (routes/issues.py) and `IssueRun.to_api`
+// (issueruns.py). The run document is issueruns' own and not the frozen
+// contract's, so these are declared here and nowhere in swarm_common.
+
+/** `issueruns.RunState`, as the API names it. */
+export type IssueRunState =
+  | 'PLANNING'
+  | 'PLANNED'
+  | 'APPROVED'
+  | 'RUNNING'
+  /** The workflow opened its pull request; its CI is being read at the head. */
+  | 'CHECKING'
+  /** CI was red: one continuation is fixing it (a fix round). */
+  | 'FIXING'
+  | 'DONE'
+  | 'FAILED'
+  | 'REJECTED'
+  | 'CANCELLED'
+  /** The planner found the issue not ready and said why (`IssueRun.not_ready`). Terminal. */
+  | 'NOT_READY'
+
+/** `IssueRef.to_dict()`: the reference in its short form and the two URLs. */
+export interface IssueRefDoc {
+  /** `owner/repo#N`, the form a run stores. */
+  ref: string
+  owner: string
+  repo: string
+  number: number
+  /** The issue's canonical link. */
+  url: string
+  repository_url: string
+}
+
+/** `forge.preview`: the issue, masked and bounded, read with the TENANT's credential. */
+export interface IssuePreview extends IssueRefDoc {
+  title: string
+  /** As served: masked (`body_redacted`) and cut at the server's bound (`body_truncated`). */
+  body: string
+  body_truncated: boolean
+  body_redacted: boolean
+  labels: string[]
+  /** `open` or `closed`. A closed issue is served, not refused. */
+  state: string
+  comments: number
+}
+
+/** `issueruns.auto_merge_availability()`: whether POST /v1/runs takes `auto_merge: true` now. */
+export interface AutoMergeAvailability {
+  available: boolean
+  /** The step it waits for, `#295`. */
+  requires: string
+  /** Why not, in the API's words; null when available. */
+  reason: string | null
+}
+
+/** `GET /v1/issues/preview`. */
+export interface IssuePreviewRead {
+  issue: IssuePreview
+  tenant_id: string
+  /** Absent from servers before archived issue 454's console step: read as unavailable. */
+  auto_merge?: AutoMergeAvailability | null
+}
+
+/**
+ * `issueruns.PlanStep`: an id, a title and a prompt, and optionally the earlier
+ * steps it needs, the files it touches, the tests it adds and an estimate. Text
+ * only (invariant 10). The optional fields are absent, not null, on a plan that
+ * did not set them.
+ */
+export interface PlanStepDoc {
+  step_id: string
+  title: string
+  prompt: string
+  /** Earlier step ids this step builds on. Absent in a plan that runs as a chain; the digest covers it. */
+  depends_on?: string[]
+  files?: string[] | null
+  tests?: string[] | null
+  estimate?: string | null
+}
+
+/** `issueruns.PlanOverlap`: work in flight the planner found this plan collides with. */
+export interface PlanOverlap {
+  /** `owner/repo#N`. */
+  ref: string
+  kind: 'issue' | 'pull_request'
+  /**
+   * The planner's verdict (archived issue 587): `none` when the plan does nothing about the
+   * overlap, `required` when the plan or a person must act. Absent on a plan
+   * stored before the field, whose verdict is read off `note`.
+   */
+  action?: 'none' | 'required'
+  note: string
+}
+
+/** `issueruns.PlanSpec`. Every field past `steps` is optional (plans stored before archived issue 454's planning step). */
+export interface RunPlan {
+  summary: string
+  steps: PlanStepDoc[]
+  mode?: 'single' | 'workflow' | null
+  /** Every requirement the issue states; what decides `Closes #N` against `part of #N`. */
+  requirements?: string[] | null
+  overlaps?: PlanOverlap[] | null
+  estimate?: string | null
+  /** Drawn when a plan has them; absent from today's schema. */
+  risks?: string[]
+}
+
+/** One open pull request in `IssueRun.open_work`, masked. */
+export interface OpenWorkPull {
+  number: number
+  title: string
+  /** Null when its files were not read (past a cap, the time budget, or a failed read). */
+  files: string[] | null
+  files_truncated: boolean
+}
+
+/** `forge.read_open_work`: the repository's open work when the run was created. */
+export interface OpenWork {
+  repository: string
+  read_at: string | null
+  issues: { number: number; title: string }[]
+  issues_truncated: boolean
+  pull_requests: OpenWorkPull[]
+  pull_requests_truncated: boolean
+}
+
+/**
+ * `IssueRun.issue_read`: what the issue said when the run was created -- the
+ * preview's read (`forge.preview`), masked and with the body bounded to the
+ * preview's length, kept on the run at submission (lane U9 item 4).
+ */
+export interface IssueReadDoc {
+  title: string
+  labels: string[]
+  state: 'open' | 'closed'
+  comments: number
+  url: string
+  body: string
+  body_truncated: boolean
+  body_redacted: boolean
+  read_at: string | null
+}
+
+/** One transition, as `IssueRun.history` serves it. */
+export interface RunTransition {
+  at: string | null
+  from: IssueRunState | null
+  to: IssueRunState
+  by: string
+}
+
+/** `IssueRun.to_api()`. */
+export interface IssueRun {
+  id: string
+  tenant_id: string
+  state: IssueRunState
+  terminal: boolean
+  issue: IssueRefDoc
+  plan_approval: 'required' | 'auto'
+  auto_merge: boolean
+  fix_rounds: number
+  planner_task_id: string
+  plan: RunPlan | null
+  /** `sha256:<hex>` of the plan; what an approval must carry (D3). */
+  plan_digest: string | null
+  plan_revision: number
+  plan_edited_by: string | null
+  /** `issueruns.plan_shape`: `8 steps in 4 stages (1 → 3 → 3 → 1), then review and fix`; null without a plan. */
+  plan_shape?: string | null
+  /** Null until approval creates the workflow. */
+  workflow_id: string | null
+  created_by: string
+  created_at: string
+  updated_at: string
+  approved_by: string | null
+  approved_at: string | null
+  approved_digest: string | null
+  rejected_by: string | null
+  rejection_reason: string | null
+  error: string | null
+  history: RunTransition[]
+  /** Null when the read failed (`issue_read_error`), absent or null on a run created before runs kept it. */
+  issue_read?: IssueReadDoc | null
+  /** The forge read that failed at submission: its code and the API's message. */
+  issue_read_error?: { code: string; message: string } | null
+  /** Null on runs created before the open-work read; absent from older servers. */
+  open_work?: OpenWork | null
+  /** The run's pull request once its workflow opened one; absent from older servers. */
+  pull_request?: RunPullRequest | null
+  /** The CI loop (`issueci`): absent from servers before it. */
+  pr_task_id?: string | null
+  /** The fix round in progress or last spent, 0 before the first; capped by `fix_rounds`. */
+  ci_fix_round?: number
+  /** Each fix round's continuation workflow, in order. */
+  ci_fix_workflows?: string[]
+  /** The head sha every required check was green at; set on DONE. */
+  green_sha?: string | null
+  /** The red checks' output, redacted and bounded (8 KB) by the server. */
+  failure_excerpt?: string | null
+  /** The write-back (`issuesync`): the plan comment's and the status comment's ids on the issue. */
+  plan_comment_id?: number | null
+  status_comment_id?: number | null
+  /** The last write-back's failure, masked and bounded by the server (`failure_text`); null once one lands. */
+  writeback_error?: string | null
+  /**
+   * The review's requirements finding: true writes `Closes #N` into the pull
+   * request, false writes `part of #N`, null is not decided yet.
+   */
+  requirements_met?: boolean | null
+  requirements_unmet?: string[]
+  requirements_note?: string | null
+  /**
+   * True once the write-back closed the issue (`issuesync`): only an
+   * `already_on_main` run with every requirement met is closed by the run
+   * itself. Null or absent: this run did not close it, which says nothing of
+   * a merge's `Closes #N`.
+   */
+  issue_closed?: boolean | null
+  /** The planner's NOT_READY verdict (`issueruns.NotReadyVerdict`), masked; null on any other run. */
+  not_ready?: RunNotReady | null
+  /** Why an `auto` run's approval waits, e.g. `territory_overlap: run_<id>`; null when nothing holds it. */
+  hold?: string | null
+  /** The member a run the issue sweeper created (`created_by: issue-sweep`) submits as. */
+  on_behalf_of?: string | null
+}
+
+/** `IssueRun.to_api().not_ready`: why the planner found the issue not ready. */
+export interface RunNotReady {
+  /** `already_done`, `owner_decision`, `blocked`, `too_vague`, `security_deferred`, `epic` or `other`; null when unsaid. */
+  kind: string | null
+  reason: string | null
+  /** What would make it ready, one per entry. */
+  needs: string[]
+}
+
+/** `IssueRun.to_api().pull_request`. */
+export interface RunPullRequest {
+  number: number | null
+  url: string | null
+  head_sha?: string | null
+  /** The last CI reading at `head_sha`; null before the first. */
+  checks?: 'pending' | 'green' | 'red' | 'none' | null
+  /**
+   * archived issue 503: whether the CI loop's last read found it merged, and when (ISO,
+   * UTC). Null on a run it never read, or one stored before it was served --
+   * never false for "not known".
+   */
+  merged?: boolean | null
+  merged_at?: string | null
+  /** The last reading's count per bucket (`forgechecks.CiReading.counts`); null before one was recorded. */
+  check_counts?: RunCheckCounts | null
+  /** Each check that reading evaluated, capped by the server (~50); `check_list_truncated` says so. */
+  check_list?: RunCheck[] | null
+  check_list_truncated?: boolean | null
+  /** The first failing check's link, else the first pending one's, else the first; null when GitHub gave none. */
+  ci_url?: string | null
+  /** RT-4: when the CI loop last read (ISO, UTC), whether or not the read worked; null before the first. */
+  checked_at?: string | null
+  /**
+   * RT-4: why the last CI read -- or the move after a read that worked --
+   * failed, masked and bounded by the server; null once a read lands.
+   */
+  read_error?: string | null
+}
+
+/** `pull_request.check_counts`: neutral, skipped and cancelled runs count as skipped. */
+export interface RunCheckCounts {
+  passed: number
+  failed: number
+  pending: number
+  skipped: number
+}
+
+/** One entry of `pull_request.check_list`: a check run's html/details url or a status's target url. */
+export interface RunCheck {
+  name: string
+  state: keyof RunCheckCounts | null
+  url: string | null
+}
+
+/** `GET /v1/runs`: newest first, as the server orders them. */
+export interface IssueRunPage {
+  runs: IssueRun[]
+  next_page_token: string | null
+  tenant_id: string
+}
+
+/**
+ * One row of `GET /v1/runs?view=summary` (RT-7, `issueruns.run_summary`):
+ * the run WITHOUT its plan, history, open work, index context, verification,
+ * failure excerpt and unmet requirements -- the keys absent -- with
+ * `issue_read` cut to its title, state, url and read time and `pull_request`
+ * without `check_list`. A full `IssueRun` is one too, so anything typed on
+ * this reads either.
+ */
+export type IssueRunSummary = Omit<
+  IssueRun,
+  'plan' | 'history' | 'open_work' | 'failure_excerpt' | 'requirements_unmet' | 'issue_read' | 'pull_request'
+> & {
+  issue_read?: Pick<IssueReadDoc, 'title' | 'state' | 'url' | 'read_at'> | null
+  pull_request?: Omit<RunPullRequest, 'check_list'> | null
+}
+
+/** `GET /v1/runs?view=summary`: the page the Runs list and Submit's recent list read. */
+export interface IssueRunSummaryPage {
+  runs: IssueRunSummary[]
+  next_page_token: string | null
+  tenant_id: string
+  view?: 'summary'
+}
+
+/** `GET /v1/runs/{id}` and every plan action's answer. */
+export interface IssueRunRead {
+  run: IssueRun
+}
+
+/** `schemas.RunCreate`: everything a caller may choose. No runner, no image (invariant 10). */
+export interface RunCreateBody {
+  issue: string
+  plan_approval: 'required' | 'auto'
+  auto_merge: boolean
+  fix_rounds: number
+}
+
+// ---------------------------------------------------------------------------
+// Connect GitHub: the SwarmCloud GitHub App's user authorisation (archived issue 780, OB3)
+// ---------------------------------------------------------------------------
+//
+// Typed from apps/swarm-api/swarm_api/routes/forgeapp.py and
+// `forgeapp.connection_to_api`. NO FIELD HERE HOLDS A VALUE: the server never
+// answers the user access token, the refresh token, the `code` or the `state`
+// after `authorize` issued it, so there is nothing to declare for any of them.
+
+/** Where the authorisation was started from (`forgeapp.SURFACES`). */
+export type GitHubAuthorizeSurface = 'console' | 'plugin'
+
+/** `POST /v1/onboarding/github/authorize`. The `state` rides inside the URL and is never read here. */
+export interface GitHubAuthorization {
+  /** github.com's authorise page, carrying the App's client id and a single-use state. */
+  authorize_url: string
+  /** How long the state lasts (ten minutes, `forgeapp.STATE_TTL`). */
+  expires_in_seconds: number
+}
+
+/** `forgeapp.ExchangeBody`: the callback's `state` with its `code`, or with GitHub's `error`. */
+export type GitHubExchangeBody = { state: string; code: string } | { state: string; error: string } | { state: string }
+
+/** `forgeapp.connection_to_api`: names, times and states. */
+export interface GitHubConnection {
+  connection_id: string | null
+  forge: string | null
+  /** `app_user` for a connection made through the App. */
+  method: string | null
+  forge_login: string | null
+  forge_user_id: number | null
+  token_id: string | null
+  secret_name: string | null
+  /** `active`, `refresh_failed` or `revoked` (`forgeapp.ACTIVE`, `REFRESH_FAILED`, `REVOKED`). */
+  state: string | null
+  failure: string | null
+  access_expires_at: string | null
+  refresh_expires_at: string | null
+  refreshed_at: string | null
+  refreshing: boolean
+  created_at: string | null
+  connected_at: string | null
+  revoked_at: string | null
+}
+
+/** `POST /v1/onboarding/github/exchange`. */
+export interface GitHubExchangeResponse {
+  connection: GitHubConnection
+}
+
+/** `DELETE /v1/onboarding/github`. */
+export interface GitHubDisconnectResponse {
+  connection: GitHubConnection
+  /** Whether GitHub confirmed the authorisation ended; the local half disconnects either way. */
+  github_revoked: boolean
+  /** What GitHub said, in a sentence, with the page to revoke it by hand when it did not answer. */
+  github: string
+  /** Secret name -> versions disabled, or a sentence when they were not. */
+  slot_versions_disabled: Record<string, number | string>
+  grants_deleted: number
+}
+
+/** The `detail` of a refused exchange (`forgeapp.AuthorisationRefused`): a §2.3 code and its copy. */
+export interface GitHubRefusalDetail {
+  failure_code: string
+  recovery: string
+}
+
+// The onboarding checklist, `GET /v1/onboarding` (swarm_api/onboarding.py
+// `derive`): six steps, each derived on every read, never set.
+
+export type OnboardingStepName = 'signed_in' | 'workspace' | 'claude_account' | 'github_connected' | 'app_installed' | 'orgs_enabled' | 'repos_chosen' | 'access_verified' | 'ready'
+
+export type OnboardingStepState = 'todo' | 'in_progress' | 'done' | 'failed' | 'stale'
+
+/** One §2.3 problem a step found, with its copy word for word. */
+export interface OnboardingIssue {
+  code: string
+  copy: string
+  owner?: string
+  repository?: string
+  url?: string
+  store_command?: string
+}
+
+export interface OnboardingStep {
+  step: OnboardingStepName
+  state: OnboardingStepState
+  code: string | null
+  copy: string | null
+  checked_at: string | null
+  /** Per step; `GitHubConnectedEvidence` and `OrgsEnabledEvidence` are the two the console reads. */
+  evidence: Record<string, unknown>
+  issues: OnboardingIssue[]
+  /**
+   * `workspace` and `claude_account` only (archived issue 847): true while WORKSPACE_GATE is
+   * on and the caller's tenant is one the gate judges. A step that is not
+   * required never holds back `next_step` or `complete`.
+   */
+  required?: boolean
+}
+
+/**
+ * `app_installed`'s evidence (`onboarding._installed_step`, archived issue 780 2026-10-08):
+ * whether the GitHub App is installed on any owner the person reaches.
+ * `needed` is false for a connection that is a token, not the App.
+ */
+export interface AppInstalledEvidence {
+  needed: boolean
+  /** False when the installations could not be read: never "installed nowhere". */
+  read?: boolean
+  source?: 'enabled' | 'github' | null
+  login?: string | null
+  installed?: string[]
+  not_installed?: string[]
+  install_url?: string | null
+  /** The App's display name as the deployment configures it (GITHUB_APP_NAME); null when unset. */
+  app_name?: string | null
+}
+
+/** `github_connected`'s evidence: the record the caller acts through, or none. */
+export interface GitHubConnectedEvidence {
+  /** `user` is the caller's own slot, `tenant` the tenant token, null neither. */
+  via: 'user' | 'tenant' | null
+  token_id?: string | null
+  secret_name?: string | null
+  /** `app_user` for the App's connection; a PAT kind for a stored token. */
+  kind?: string | null
+  forge_login?: string | null
+  token_state?: string | null
+  verified_at?: string | null
+  probe_attempted_at?: string | null
+  probe_complete?: boolean | null
+  probe_error?: string | null
+  expires_at?: string | null
+}
+
+/** One owner `orgs_enabled` found: the account, an org it reads, or one that refused it. */
+export interface OnboardingOwner {
+  owner: string
+  owner_type: 'User' | 'Organization'
+  source: 'account' | 'orgs' | 'refusal' | 'registration'
+  reach: 'reachable' | 'sso_required' | 'classic_blocked'
+  registered: number
+}
+
+export interface OrgsEnabledEvidence {
+  owners: OnboardingOwner[]
+  orgs_read: boolean
+  orgs_capped: boolean
+  sso_hidden_orgs: number
+  read_at: string | null
+}
+
+/** `GET /v1/onboarding`. */
+export interface OnboardingDoc {
+  tenant_id: string
+  user: string
+  user_hash: string
+  derived_at: string
+  steps: OnboardingStep[]
+  next_step: OnboardingStepName | null
+  complete: boolean
+  /** The person hid the checklist (`POST /v1/onboarding/dismiss`); every step is served all the same. */
+  dismissed?: boolean
+  dismissed_at?: string | null
+  source: string
+}
+
+/** `POST /v1/onboarding/dismiss`: `{dismissed}` in, the caller's own flag out. */
+export interface OnboardingDismissal {
+  tenant_id: string
+  user_hash: string
+  dismissed: boolean
+  dismissed_at: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Personal workspaces (archived issue 847, docs/workspaces.md §1, §6.3)
+// ---------------------------------------------------------------------------
+//
+// Typed from apps/swarm-api/swarm_api/workspaces.py (`view`),
+// routes/workspaces.py, people.py (`everyone`, `_row`, `_admin_view`,
+// `lendable`) and admins.py. Field for field what the routes send; nothing
+// here is derived on the client. No route carries a credential, an image, a
+// command or a resource spec (invariant 10).
+
+/** `workspaces.STATES`, plus `none` when there is no record. */
+export type WorkspaceState = 'none' | 'requested' | 'approved' | 'applying' | 'needs_owner' | 'ready' | 'denied' | 'failed'
+
+/** One step of the workspace job (§4.2's ids A1-A9), written by the job only. */
+export interface WorkspaceJobStep {
+  state: 'todo' | 'running' | 'done' | 'failed' | 'held'
+  at?: string | null
+  code?: string | null
+}
+
+/**
+ * `workspaces/{tenant_id}.kind` (docs/design/workspace-kinds.md §4.1): swarm-api's, not the frozen contract's
+ * `Tenant.kind`. A record with no `kind` is `personal`, as `workspaces.kind_of` reads it.
+ */
+export type WorkspaceKind = 'personal' | 'group' | 'service'
+
+/** `GET /v1/workspace`: the caller's own record (`workspaces.view`). Only `state`, `setup_url` and `setup_command` are sent with no record. */
+export interface WorkspaceView {
+  state: WorkspaceState
+  setup_url: string
+  setup_command: string
+  /** Absent from an API older than WK-RECORD; the console reads absent as `personal`. */
+  kind?: WorkspaceKind
+  /** At most 60 characters (`workspaces.MAX_DISPLAY_NAME`); the API defaults it to the address's local part. */
+  display_name?: string | null
+  workspace_id?: string | null
+  tenant_id?: string | null
+  request_id?: string | null
+  requested_at?: string | null
+  requested_via?: string | null
+  /** `auto` is true when nobody clicked: the requester is an admin, whose own request is approved automatically (docs/workspaces.md §1.3, owner 2026-10-09). */
+  decision?: { verdict: string | null; reason: string | null; at: string | null; auto?: boolean } | null
+  /** Set on a `requested` record that is not approved automatically because the person's tenant predates self-service setup and is being migrated (§3.3); `copy` is the server's sentence. */
+  held?: { reason: string; copy: string } | null
+  limits?: Record<string, number>
+  steps?: Record<string, WorkspaceJobStep>
+  /** `copy` is §4.3's, served from the code, word for word. */
+  failure?: { code: string | null; step: string | null; retryable: boolean | null; at: string | null; copy: string } | null
+  ready_at?: string | null
+  request_again_at?: string | null
+  /**
+   * `workspaces.provisioning`, computed on read: whether this deployment builds workspaces at all, and why an
+   * `approved` record is not moving (null while it is). Absent from an older API.
+   */
+  provisioning?: WorkspaceProvisioning
+}
+
+/** Why an approved workspace is waiting: the API's stuck rule (`workspaces.waiting_because`). */
+export type WorkspaceWaitReason = 'publishing_off' | 'never_dispatched' | 'dispatched_unclaimed'
+
+export interface WorkspaceProvisioning {
+  available: boolean
+  waiting_because: WorkspaceWaitReason | null
+  /** Null when the record is not approved. */
+  approved_minutes_ago: number | null
+}
+
+/** `POST /v1/workspace/loan-request`. */
+export interface LoanRequestAnswer {
+  state: string | null
+  workspace_id: string | null
+  request_id: string | null
+  requested_at: string | null
+}
+
+/** A record as an admin sees it (`people._admin_view`): the person's view, less the tenant id, with the dispatch. */
+export interface AdminWorkspaceView extends WorkspaceView {
+  /** The person's, the group's or the service account's address the record was filed for. Never `requested_by`, which stays in Firestore. */
+  principal?: string | null
+  dispatch?: {
+    attempts: number | null
+    last_attempt_at: string | null
+    last_published_at: string | null
+    last_ok: boolean | null
+    mode: string | null
+  } | null
+  run?: Record<string, unknown> | null
+  retried_at?: string | null
+  /** Only on a `needs_owner` record: the step the call guard stopped at. */
+  needs_owner_step?: string | null
+}
+
+/**
+ * `POST /v1/admin/workspaces` (WK-RECORD, design §4.2.2): what Admin › Tenants › New workspace sends -- a kind, an
+ * address and a label, and nothing else. `limits` is the API's per-kind default when absent, so the dialog never
+ * sends it, and no image, command, resource spec or backend parameter is a field here (invariant 10).
+ */
+export interface NewWorkspaceBody {
+  kind: WorkspaceKind
+  principal: string
+  /** Null lets the API take the address's local part. */
+  display_name: string | null
+}
+
+/** `people._claude_account`: where the person's Claude account comes from. */
+export interface PersonClaudeAccount {
+  source: 'own' | 'lent' | 'provider_key' | 'none'
+  own: number
+  lent: number
+  lent_by: string[]
+  /** Which accounts are lent to them, and by whom (PEOPLE-LOAN-VIEW). Absent from an older API. */
+  lent_accounts?: PersonLentAccount[]
+  provider_key: boolean
+}
+
+/** One account lent to a person: ids and names only, never the account's secret. */
+export interface PersonLentAccount {
+  account_id: string
+  label: string | null
+  owner_tenant: string
+  /** The owner tenant's display name, or its id when it has none. */
+  owner_name: string | null
+  state: string | null
+  /** The account's Name (archived issue 1913), null or absent when it has none; display text only, the id stays the account. */
+  display_name?: string | null
+}
+
+/** One row of `GET /v1/admin/people` (`people._row`). */
+export interface PersonRow {
+  email: string
+  /**
+   * The person's display name (user-profile.md §4.4), served beside `email`
+   * since PROFILE-NAMES-API; null when they set none, absent from an older
+   * API. A label only: the email is who the person is.
+   */
+  display_name?: string | null
+  teams: string[]
+  github: 'connected' | 'expired' | 'none'
+  workspace: AdminWorkspaceView
+  claude_account: PersonClaudeAccount
+  /**
+   * `state` is `requested`, `lent` or `declined` (LOAN-DECLINE). A decided
+   * request carries when, and a declined one the reason the person is shown;
+   * never who decided (the audit says).
+   */
+  loan_request: { state: string | null; requested_at: string | null; decided_at?: string | null; reason?: string | null } | null
+  /**
+   * Loans lent while their workspace was not ready, not granted yet
+   * (`people.People._row`, LOAN-NEW): applied by the first read that sees it
+   * ready, or the sweep. `last_error` is the broker's refusal of the last try.
+   * Absent from an older API.
+   */
+  pending_loans?: { account_id: string; owner_tenant: string; since: string | null; last_error: string | null }[]
+  first_seen: string | null
+  last_seen: string | null
+  last_submitted: string | null
+  last_active: string | null
+  /** The person's cell in each of `PeopleDoc.workspaces`, by tenant id (`PeopleRoleCell`). Absent from an older API. */
+  roles?: Record<string, PeopleRoleCell>
+}
+
+/**
+ * ONE CELL OF THE PERSON × WORKSPACE GRID (ADMIN-PEOPLE-ROLES; part of archived issue 2157,
+ * `people.role_cell`): their own role there, else the workspace's default when
+ * they were last seen in it, else `none`; null when that workspace's roles
+ * could not be read, which the grid draws as a dash, never as a role.
+ */
+export type PeopleRoleCell = 'admin' | 'member' | 'viewer' | 'none' | null
+
+/** One column of the grid: a group workspace (`people.role_columns`). */
+export interface PeopleWorkspaceColumn {
+  tenant_id: string
+  group: string
+  display_name: string
+  default_role: string | null
+  /** Its roles could not be read; every cell in it is null. */
+  unavailable: boolean
+}
+
+/**
+ * `GET /v1/admin/people` for a WORKSPACE admin (`scope: workspaces`,
+ * `people.in_workspaces`): only the workspaces they administer, and of each
+ * person only their cells and when they were last seen. Nothing of anyone's
+ * own workspace, account or loan, and none of the platform's sections.
+ */
+export interface ScopedPersonRow {
+  email: string
+  display_name?: string | null
+  roles: Record<string, PeopleRoleCell>
+  last_active: string | null
+}
+
+export interface ScopedPeopleDoc {
+  scope: 'workspaces'
+  workspaces: PeopleWorkspaceColumn[]
+  workspaces_error?: string | null
+  people: ScopedPersonRow[]
+  count: number
+  pending: number
+}
+
+/** One `admin_audit` entry: a workspace action names a workspace id, an admin change an email. */
+export interface AdminAuditEntry {
+  action: string
+  target_workspace_id?: string | null
+  target_email?: string | null
+  by: string
+  at: string | null
+  detail?: Record<string, unknown>
+}
+
+/** An account this admin may lend (`people.lendable`): a group tenant's, or the admin's own. */
+export interface LendableAccount {
+  account_id: string
+  owner_tenant: string
+  label: string | null
+  state: string | null
+  lend_to: string[]
+  /** The account's Name (archived issue 1913), null or absent when it has none; display text only, the id stays the account. */
+  display_name?: string | null
+}
+
+/** `GET /v1/admin/people`. `lendable_accounts` is null, with `lendable_error`, when the broker did not answer. */
+export interface PeopleDoc {
+  people: PersonRow[]
+  count: number
+  pending: number
+  audit: AdminAuditEntry[]
+  lendable_accounts: LendableAccount[] | null
+  lendable_error: string | null
+  /** Whether this deployment builds workspaces, and how many approved records wait on it. Absent from an older API. */
+  provisioning?: { available: boolean; approved_waiting: number }
+  /** `AdminRoles.holders`: the owner first. Null, with the reason, when the roles were not read; absent from an older API. */
+  admins?: AdminHolder[] | null
+  admins_error?: string | null
+  /** Who it was read as (ADMIN-PEOPLE-ROLES): `platform` here; a workspace admin's is a `ScopedPeopleDoc`. Absent from an older API. */
+  scope?: 'platform'
+  /** The grid's columns, every registered group workspace; null, with the reason, when they were not read; absent from an older API. */
+  workspaces?: PeopleWorkspaceColumn[] | null
+  workspaces_error?: string | null
+}
+
+/** One `admin_roles/` holder. An ADMIN_GROUPS member has no document and is not listed. */
+export interface AdminHolder {
+  email: string
+  role: 'owner' | 'admin'
+  granted_by: string | null
+  granted_at: string | null
+}
+
+/** `people._dispatch`: whether the workspace id reached Pub/Sub. A failed publish is not a failed approval. */
+export interface WorkspaceDispatch {
+  published: boolean
+  mode: string
+  reason: string | null
+}
+
+/** approve, retry: the record and its dispatch. deny: the record only. */
+export interface WorkspaceActionAnswer {
+  workspace: AdminWorkspaceView
+  dispatch?: WorkspaceDispatch
+  /** Approve and retry: whether anything was sent to build it, said plainly. Absent from an older API. */
+  sent_for_building?: boolean
+  message?: string
+}
+
+/** `PUT /v1/admin/workspaces/{workspace_id}/limits`. */
+export interface WorkspaceLimitsAnswer {
+  workspace: AdminWorkspaceView
+  tenant_written: boolean
+  dispatch: WorkspaceDispatch
+}
+
+/** `PUT /v1/admin/people/{workspace_id}/loan`. */
+export interface WorkspaceLoanAnswer {
+  workspace_id: string
+  account_id: string
+  owner_tenant: string
+  lent: boolean
+  changed: boolean
+  /**
+   * `applied` (granted now), `pending` (the workspace is not ready: recorded,
+   * granted once it is; `changed: false` when it was already pending) or
+   * `reclaimed` (`people.set_loan`). Absent from an older API.
+   */
+  state?: 'applied' | 'pending' | 'reclaimed'
+  /** With `pending`: the API's sentence saying when it applies. */
+  message?: string
+}
+
+/** `POST /v1/admin/people/{workspace_id}/loan/decline` (`people.People.decline_loan`). */
+export interface LoanDeclineAnswer {
+  workspace_id: string
+  state: 'declined'
+  reason: string | null
+}
+
+/** `PUT /v1/admin/admins/{email}` (`admins._to_api`). */
+export interface AdminGrantAnswer {
+  email: string
+  role: string | null
+  granted_by: string | null
+  granted_at: string | null
+  changed: boolean
+}
+
+/** `DELETE /v1/admin/admins/{email}`. */
+export interface AdminRemoveAnswer {
+  email: string
+  removed: boolean
+}
+
+// ---------------------------------------------------------------------------
+// The access API (archived issue 780, OB4; read by OB8's Access page)
+// ---------------------------------------------------------------------------
+//
+// Typed from apps/swarm-api/swarm_api/routes/access.py and `access.py`
+// (`org_to_api`, `grant_to_api`, `owners`, `repositories`, `verify`,
+// `members`). Like the connection above, NO FIELD HOLDS A VALUE: the person's
+// token is in hand for one request inside swarm-api and no answer carries it.
+
+/** A grant's mode (`access.MODES`). Read is enforced by SwarmCloud, not GitHub (D9). */
+export type AccessMode = 'read' | 'write'
+
+/** The checks verify runs (`access.CHECKS`), plus D6's opt-in `push_test` (`access.OPT_IN_CHECKS`). */
+export type AccessCheckName = 'clone' | 'push' | 'pull_request' | 'push_test'
+
+/** A check's answer. `not_required` is push and pull request on a read grant. */
+export type AccessCheckState = 'ok' | 'missing' | 'unknown' | 'not_required'
+
+export interface AccessCheck {
+  state: AccessCheckState
+  /** The §2.3 code a check that did not pass carries. */
+  code: string | null
+  checked_at: string | null
+  /** `push_test` only: the `swarmcloud/onboarding-check-<nonce>` branch it created. */
+  branch?: string
+  /** `push_test` only: the delete failed and the branch is still on GitHub. */
+  leftover?: boolean
+}
+
+/** How an owner was enabled: the App's installation, or the person's own token for it (D5). */
+export type AccessOrgMethod = 'app' | 'pat'
+
+/** `access.org_to_api`: an owner the person enabled, or asked to have installed. */
+export interface AccessOrg {
+  owner: string
+  method?: AccessOrgMethod
+  owner_type: 'User' | 'Organization' | null
+  installation_id: number | null
+  /** GitHub's `all` or `selected`. */
+  repository_selection: string | null
+  install_state: string | null
+  /** `ok`, `required` or `unknown`: what the last listing found about SAML SSO. */
+  sso: string | null
+  enabled: boolean
+  enabled_at: string | null
+  /** When the person asked the org's owners to install the App (ORG_APPROVAL_PENDING). */
+  requested_at?: string | null
+  checked_at: string | null
+  /** `ORG_APPROVAL_PENDING` and its §2.3 copy, on a requested owner only. */
+  code?: string
+  copy?: string
+}
+
+/** `access.grant_to_api`: one repository the person chose. */
+export interface AccessGrant {
+  repo_id: string
+  repository: string
+  owner: string
+  mode: AccessMode
+  can_push: boolean | null
+  archived: boolean | null
+  granted_at: string | null
+  granted_by: string | null
+  checks: Partial<Record<AccessCheckName, AccessCheck>>
+  verified_at: string | null
+}
+
+/** `GET /v1/access`: the caller's connection, enabled owners and grants. No forge read. */
+export interface AccessOverview {
+  connection: GitHubConnection | null
+  orgs: AccessOrg[]
+  /** Installs the person asked for that GitHub does not list yet (ORG_APPROVAL_PENDING). */
+  requested?: AccessOrg[]
+  grants: AccessGrant[]
+  tenant_id: string
+}
+
+/** One owner `GET /v1/access/orgs` found: the account, an installation, or an org with none. */
+export interface AccessOwner {
+  owner: string
+  owner_type: 'User' | 'Organization'
+  installation_id: number | null
+  repository_selection: string | null
+  /** `requested`: asked for, not approved yet (ORG_APPROVAL_PENDING); `token`: enabled through the person's token (D5). */
+  install_state: 'installed' | 'not_installed' | 'requested' | 'token'
+  sso: string
+  enabled: boolean
+  /** The App's install page, for an owner it is not installed on. */
+  install_url: string | null
+  method?: AccessOrgMethod
+  requested_at?: string | null
+  /** `ORG_APPROVAL_PENDING` and its §2.3 copy, on a requested owner only. */
+  code?: string
+  copy?: string
+}
+
+/** `POST /v1/access/orgs/{owner}/install-request`. `recorded` is false for an owner already enabled. */
+export interface AccessInstallRequestResponse {
+  org: AccessOrg
+  recorded: boolean
+  install_url: string | null
+  tenant_id: string
+}
+
+/** The fallback token's names, as `POST /v1/onboarding/github/token` answers them: never its value. */
+export interface OwnerTokenNames {
+  token_id: string
+  secret_name: string
+  kind: string
+  forge_login: string | null
+  state: string
+  expires_at: string | null
+}
+
+/** `POST /v1/onboarding/github/token` (D5): the owner it enabled and the token's names. */
+export interface OwnerTokenResponse {
+  org: AccessOrg
+  token: OwnerTokenNames
+}
+
+/** `GET /v1/access/orgs`. */
+export interface AccessOwners {
+  owners: AccessOwner[]
+  /** False when GitHub did not list the person's orgs; installations are still listed. */
+  orgs_listed: boolean
+  install_url: string | null
+  /** The App's display name as the deployment configures it (GITHUB_APP_NAME); null or absent when unset. */
+  app_name?: string | null
+  tenant_id: string
+}
+
+/** One repository of an owner's installation, as `access._entries` serves it. */
+export interface AccessRepository {
+  repository: string
+  owner: string
+  repo: string
+  repo_id: string
+  visibility: string | null
+  archived: boolean
+  default_branch: string | null
+  /** Whether GitHub lets the person push: shown before Write is chosen (chooser A). */
+  can_push: boolean | null
+  registered: boolean
+  granted: boolean
+  mode: AccessMode | null
+}
+
+/** `GET /v1/access/orgs/{owner}/repositories?page=N&q=text`: one page. */
+export interface AccessRepositoryPage {
+  owner: string
+  repositories: AccessRepository[]
+  page: number
+  per_page: number
+  max_pages: number
+  next_page: number | null
+  /** The listing stopped at `max_pages`; past it a person types owner/repo. */
+  capped: boolean
+  q: string | null
+  /** GitHub's count for the installation; null under a search. */
+  total_count: number | null
+  tenant_id: string
+}
+
+/** `POST /v1/access/orgs`. */
+export interface AccessEnableResponse {
+  org: AccessOrg
+  tenant_id: string
+}
+
+/** `DELETE /v1/access/orgs/{owner}`. */
+export interface AccessDisableResponse {
+  owner: string
+  grants_deleted: number
+  unregistered: string[]
+  /** Where an org owner uninstalls the App: SwarmCloud cannot narrow the person's token (§2.4). */
+  installation_settings_url: string | null
+  tenant_id: string
+}
+
+/** `PUT /v1/access/grants/{repo_id}`. */
+export interface AccessGrantResponse {
+  grant: AccessGrant
+  /** True when this grant registered the repository for the tenant. */
+  registered: boolean
+  registration_repo_id: string | null
+  tenant_id: string
+}
+
+/** `DELETE /v1/access/grants/{repo_id}`. */
+export interface AccessRevokeResponse {
+  repo_id: string
+  revoked: boolean
+  unregistered: boolean
+  tenant_id: string
+}
+
+/** One check verify could not pass, with its §2.3 copy filled in. */
+export interface AccessVerifyFailure {
+  check: string
+  code: string
+  copy: string
+  url?: string | null
+}
+
+/** `POST /v1/access/grants/{repo_id}/verify`. */
+export interface AccessVerifyResponse {
+  grant: AccessGrant
+  failures: AccessVerifyFailure[]
+  passed: boolean
+  /** Only when `push_test` ran and created its branch: the branch, and whether its delete failed. */
+  push_test?: { branch: string; leftover: boolean }
+  tenant_id: string
+}
+
+/** The `detail` of a refused access request (`access.AccessRefused`). */
+export interface AccessRefusalDetail {
+  failure_code: string
+  recovery: string
+  url: string | null
+}
+
+/** One member in `GET /v1/access/members` (admin): states and names, never a value. */
+export interface AccessMember {
+  user: string
+  connection: GitHubConnection | null
+  orgs: AccessOrg[]
+  grants: AccessGrant[]
+}
+
+/** `GET /v1/access/members`. */
+export interface AccessMembers {
+  members: AccessMember[]
+  tenant_id: string
+}
+
+// ---------------------------------------------------------------------------
+// Settings › Profile (docs/design/user-profile.md §4.1, §4.2; lane
+// PROFILE-PAGE, part of archived issue 1505). `GET /v1/profile` is ONE read for the page,
+// and each section fails alone: a section the API could not read is ABSENT
+// and named in `unavailable`, so the page says "could not be read" for it
+// rather than drawing an empty one. `api.ts::normProfile` copies every field
+// by name, so a field a source gains by mistake (a secret's name, a token id)
+// never reaches a screen.
+// ---------------------------------------------------------------------------
+
+/** A bell topic (`preferences.TOPICS`). Every one may be muted (Q3). */
+export type NotificationTopic = 'approval' | 'waiting_step' | 'question' | 'failed' | 'finished' | 'account' | 'admin'
+
+/** `preferences.REMINDERS`: how often a read needs-you item rings again (§4.6). */
+export type ReminderCadence = 'as_set' | 'every_4h' | 'daily' | 'never'
+
+/** A section of `GET /v1/profile` that can fail alone. */
+export type ProfileSection = 'preferences' | 'github' | 'typesafe' | 'claude_accounts'
+
+/**
+ * A person's role in one workspace, from `workspace_role.py::role_in` ONLY
+ * (Q7). `name` is drawn as given and nothing branches on it: the roles build
+ * (archived issue 1518) may serve any name with `source: "assigned"`, and needs no page
+ * change to do so. `via` is the group that confers it, when there is one.
+ */
+export interface WorkspaceRole {
+  name: string
+  source: string
+  via: string | null
+}
+
+/**
+ * A workspace's STORED roles (docs/design/workspace-roles.md §4.3, lane
+ * ROLES-UI-PEOPLE; part of archived issue 1518): `GET /v1/workspace/roles`, readable by
+ * every role (Q7). The ladder and what the console does with it are roles.ts;
+ * the sentences saying what each role permits are the server's (`roles`), so
+ * the screen never restates them.
+ */
+export interface RoleSummary {
+  name: string
+  summary: string
+}
+
+/** The caller's own role in the selected workspace. */
+export interface WorkspaceRoleMe {
+  email: string
+  role: string
+  /** `override`, `default`, `personal` or `platform_admin`. */
+  source: string
+  /** How the workspace was selected: `member`, `personal` or `platform_admin` (§4.2.2). */
+  via: string
+  granted_by?: string
+  granted_at?: string
+}
+
+/** One person's override: everyone else holds the default. Never a grant's document id. */
+export interface WorkspaceRoleOverride {
+  email: string
+  role: string
+  source: string
+  granted_by: string
+  granted_at: string
+  /** `console`, `cli` or `platform_admin`: shown, never acted on. */
+  granted_via: string
+  reason: string
+}
+
+/** One role or platform-admin row of the workspace's audit (§4.10), newest first. */
+export interface WorkspaceRoleEvent {
+  action: string
+  by: string
+  at: string
+  target_email?: string
+  detail: Record<string, unknown>
+}
+
+/** What `GET /v1/admin/workspaces/{tenant_id}/roles` serves: a group workspace's roles. */
+export interface WorkspaceRoster {
+  tenant_id: string
+  kind: 'group' | 'user'
+  /** `viewer` or `member`; null for a personal workspace, which has only its person. */
+  default_role: string | null
+  /** `migration` until an admin sets the default, then `grant`; null for a personal workspace. */
+  default_source: string | null
+  people: WorkspaceRoleOverride[]
+  roles: RoleSummary[]
+  audit: WorkspaceRoleEvent[]
+}
+
+/**
+ * One entry of `GET /v1/admin/workspaces/roles`: a registered group workspace
+ * -- a Terraform group, or a `ready` group the workspace job made -- with its
+ * roster, or, when its roles were not served, the API's reason (`roster` null).
+ */
+export interface AdminWorkspaceRoles {
+  tenant_id: string
+  /** The workspace's registered Google group. */
+  group: string
+  /** `terraform` or `workspace_job`. */
+  registered_by: string
+  roster: WorkspaceRoster | null
+  unavailable: { code: string; message: string } | null
+}
+
+/** A page of `GET /v1/admin/workspaces/roles`; `next_page_token` is null on the last page. */
+export interface AdminWorkspaceRolesPage {
+  workspaces: AdminWorkspaceRoles[]
+  next_page_token: string | null
+}
+
+/** `GET /v1/workspace/roles`: the roster, with the caller's own role and whether they manage it. */
+export interface WorkspaceRoles extends WorkspaceRoster {
+  me: WorkspaceRoleMe
+  /** The caller holds `admin` here. The API is the gate; this only stops offering what would be refused. */
+  can_manage: boolean
+}
+
+/** One entry of `GET /v1/admin/roles/person`: an override the person holds, or a workspace whose grants could not be read. */
+export interface PersonWorkspaceRole extends Partial<WorkspaceRoleOverride> {
+  tenant_id: string
+  group: string
+  /** The signing key's id, for a key rotation (§4.13). */
+  key?: string
+  unavailable?: boolean
+}
+
+/** `GET /v1/admin/roles/person?email=`: every override one person holds, across the group workspaces. */
+export interface PersonRoles {
+  email: string
+  workspaces: PersonWorkspaceRole[]
+}
+
+/** `PUT`/`DELETE /v1/workspace/roles/person`'s answer. `member` is the fresh group check; null when the directory did not answer. */
+export interface PersonRoleChange {
+  email: string
+  role: string
+  previous_role: string
+  source: string
+  granted_at: string
+  member?: boolean | null
+}
+
+/** `PUT /v1/workspace/roles/default`'s answer. */
+export interface DefaultRoleChange {
+  tenant_id: string
+  default_role: string
+  previous_default: string
+  default_source: string
+  granted_at: string
+}
+
+/*
+ * JOIN REQUESTS (lane JOIN-UI-PERSON; docs/design/join-requests.md §4.1,
+ * §4.2, §4.8; part of archived issue 2325). A person asks to join a group workspace with
+ * the code its join link carries; that workspace's admins, or a platform
+ * admin, decide. None of these carries a tenant id, a group, a document id or
+ * a code's hash: the API never serves them (§4.2), so the client has nothing
+ * to name them with.
+ */
+
+/** A request's state, derived by the API from its newest valid decision (§4.1). */
+export type JoinRequestState = 'requested' | 'approved' | 'denied' | 'withdrawn' | 'expired'
+
+/** `POST /v1/join/lookup`: what a working code shows, the workspace's display name and nothing else. */
+export interface JoinLookup {
+  display_name: string
+}
+
+/** One of the person's own requests (`POST /v1/join-requests`, `GET /v1/join-requests/mine`). */
+export interface JoinRequestMine {
+  /** `j-` and 12 hex: the handle a withdrawal names. Not a secret. */
+  ref: string
+  state: JoinRequestState
+  display_name: string
+  requested_at: string
+  expires_at: string
+  /** Set once a decision exists. */
+  decided_at?: string
+  /** A denial's reason, which the admin had to give and the person is shown. */
+  reason?: string
+}
+
+/** `GET`/`PUT /v1/workspace/join-link`: whether the link is on, and who set it when. Never the code's hash. */
+export interface JoinLinkState {
+  on: boolean
+  set_by: string
+  set_at: string
+  /** Only in the answer that made a new code: the one time it is ever shown (§4.2). */
+  link?: string
+}
+
+/** One platform membership (`GET /v1/workspace/members`): a person let in by an approved request. */
+export interface JoinedMember {
+  email: string
+  by: string
+  at: string
+  via: string
+  /** The workspace's group was replaced since: this membership admits nobody now (§4.10). */
+  group_changed: boolean
+  /** A fresh check finds them in the Google group too; null when the directory did not answer. */
+  still_in_group: boolean | null
+}
+
+/** `GET /v1/workspace/members`: the memberships, and whether approvals admit at all (the `platform_memberships` switch). */
+export interface JoinedMembers {
+  platform_memberships: boolean
+  members: JoinedMember[]
+}
+
+/** `DELETE /v1/workspace/members/person`'s answer. */
+export interface JoinedMemberRemoval {
+  email: string
+  state: string
+  still_in_group: boolean | null
+}
+
+export interface ProfileIdentity {
+  email: string
+  /** The stored name, or null: others then see the email alone. */
+  display_name: string | null
+  /** The token's name claim after the §4.4 rules, only while no name is stored: the editor's initial value. */
+  display_name_suggested: string | null
+  domain: string | null
+  /** `owner`, `admin` or null. Shown once, here, never as a workspace role. */
+  platform_role: string | null
+  is_admin: boolean
+  is_admin_unresolved: boolean
+}
+
+export interface ProfileWorkspace {
+  tenant_id: string
+  display_name: string
+  /** `user` (the personal workspace) or `group`. */
+  kind: string
+  role: WorkspaceRole
+  /** The personal workspace's state (`requested`, `applying`, `ready`...); null for a group. */
+  state: string | null
+  /** False for a personal workspace that is not ready yet: shown, never chosen. */
+  selectable: boolean
+  is_acting: boolean
+  is_default: boolean
+}
+
+export interface ProfileDefault {
+  tenant_id: string | null
+  /** `profile`, `personal`, `first_group`, `unavailable`, or null with no workspace at all. */
+  source: string | null
+  /** Why a stored default was not honoured: `not_a_member`, `not_ready`, `unknown`. */
+  ignored: string | null
+}
+
+/** One workspace's GitHub connection (Q10). `not_connected` carries the tenant and nothing else. */
+export interface ProfileGitHub {
+  tenant_id: string
+  state: string | null
+  forge_login: string | null
+  method: string | null
+  access_expires_at: string | null
+  refreshed_at: string | null
+  failure: { code: string | null; recovery: string | null } | null
+}
+
+/** A key's status: never a value, never a secret's id. */
+export interface ProfileKeyStatus {
+  set: boolean
+  set_at: string | null
+  set_by: string | null
+  version: string | null
+}
+
+export interface ProfileTypeSafe {
+  /** Null when the caller has no ready personal workspace to keep a key in. */
+  personal: ProfileKeyStatus | null
+  acting_workspace: ProfileKeyStatus & { tenant_id: string }
+  /** Which key a task the caller submits in the acting workspace would use. */
+  uses: 'user' | 'tenant' | 'none'
+}
+
+/** Section 2 has exactly these two (Q6: SwarmCloud has no personal API keys). */
+export interface ProfileConnections {
+  github?: ProfileGitHub[]
+  typesafe?: ProfileTypeSafe
+}
+
+export interface Preferences {
+  muted: NotificationTopic[]
+  reminder: ReminderCadence
+}
+
+export interface ProfileNotifications {
+  preferences: Preferences
+  /** Every topic the bell knows, each of which may be muted. */
+  topics: NotificationTopic[]
+}
+
+export interface ProfileQuotaWindow {
+  utilization: number | null
+  resets_at: string | null
+}
+
+export interface ProfileClaudeAccount {
+  account_id: string | null
+  label: string | null
+  /** `own` (your personal workspace owns it) or `borrowed` (lent to it). */
+  relation: 'own' | 'borrowed'
+  state: string | null
+  windows: { five_hour?: ProfileQuotaWindow; seven_day?: ProfileQuotaWindow }
+  /** How many workspaces you lend it to; null on a borrowed account. */
+  lent_to_count: number | null
+  stale: boolean
+  /** The account's Name (archived issue 1913), null or absent when it has none; display text only, the id stays the account. */
+  display_name?: string | null
+}
+
+export interface ProfileClaudeAccounts {
+  /** Null when you have no ready personal workspace. */
+  personal_workspace: string | null
+  accounts: ProfileClaudeAccount[]
+  /** Pool documents the broker could not read: a short list is not the whole pool. */
+  unreadable_document_count: number
+}
+
+/** `GET /v1/profile`. */
+export interface Profile {
+  identity: ProfileIdentity
+  workspaces: ProfileWorkspace[]
+  default_workspace: ProfileDefault
+  connections: ProfileConnections
+  /** Absent when `preferences` is in `unavailable`. */
+  notifications?: ProfileNotifications
+  claude_accounts?: ProfileClaudeAccounts
+  /** The preferences document's revision, which a save echoes; null when it could not be read. */
+  revision: number | null
+  unavailable: ProfileSection[]
+  /**
+   * The person's time zone (TIMEZONE-SERVER), an IANA name: UTC while none is
+   * saved. Null when the preferences could not be read, and absent from an API
+   * older than the field: unknown, never UTC (`timezone.ts` keeps its cache).
+   */
+  time_zone?: string | null
+  time_zone_source?: TimeZoneSource
+}
+
+/** `profile`: the person saved it; `default`: nothing saved, so UTC; `unavailable`: unread. */
+export type TimeZoneSource = 'profile' | 'default' | 'unavailable'
+
+/** `PUT /v1/profile/preferences`: the whole set, at the revision last read. */
+export interface PreferencesWrite {
+  display_name: string | null
+  default_workspace: string | null
+  notifications: Preferences
+  revision: number
+  /** An IANA zone, refused with a 422 when the server does not know it. Left out, the stored zone is kept. */
+  time_zone?: string
+}
+
+/** What a save answers: the GET's sections the save can change. */
+export interface PreferencesSaved {
+  identity: Pick<ProfileIdentity, 'display_name' | 'display_name_suggested'>
+  default_workspace: ProfileDefault
+  notifications: ProfileNotifications
+  revision: number
+  time_zone?: string | null
+  time_zone_source?: TimeZoneSource
+}
+
+// ---------------------------------------------------------------------------
+// The QA identity (lane QI-UI, docs/design/qa-identity.md §4.3 and §4.6; part
+// of archived issue 1649). The shapes `swarm_api/qa_identity.py` serves: `mine` to any
+// member, `admin_list` and `grant_to_api` to a platform admin. A NAME and a
+// grant, never a credential: the JWT goes from swarm-api to the worker only.
+// ---------------------------------------------------------------------------
+
+/** One identity as `GET /v1/qa-identities/mine` serves it: this workspace's grant and nothing else. */
+export interface QaIdentityMineEntry {
+  identity: string
+  /** False when the deployment has no QA account: every request naming it is refused. */
+  configured: boolean
+  granted: boolean
+}
+
+export interface QaIdentityMine {
+  identities: QaIdentityMineEntry[]
+}
+
+/** A grant as `admin_list` lists it. `state` is `granted` or `revoked`; a revoke keeps the row. */
+export interface QaIdentityGrant {
+  tenant_id: string
+  state: 'granted' | 'revoked' | string
+  granted_by: string | null
+  granted_at: string | null
+  reason: string | null
+}
+
+/** One identity as `GET /v1/admin/qa-identities` serves it to an admin. */
+export interface QaIdentityAdminEntry {
+  identity: string
+  /** The console host the credential is bound to; empty when not configured. */
+  host: string
+  /** The QA service account's email; empty when not configured. */
+  account: string
+  configured: boolean
+  grants: QaIdentityGrant[]
+}
+
+export interface QaIdentityList {
+  identities: QaIdentityAdminEntry[]
+}
+
+/** What `PUT` and `DELETE /v1/admin/qa-identities/{identity}/grants/{tenant_id}` answer: the grant document. */
+export interface QaIdentityGrantDoc extends QaIdentityGrant {
+  identity: string
+  revoked_by: string | null
+  revoked_at: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Agent plugins (docs/design/agent-plugins.md): the closed catalogue and a
+// workspace's allowed plugins, as `GET /v1/plugins` and
+// `GET`/`PUT /v1/workspaces/{tenant_id}/plugins` answer them
+// (swarm_api.plugins.view). Names only: no route serves a path, a command, a
+// URL or a version a caller could choose (invariant 10).
+// ---------------------------------------------------------------------------
+
+/** The modes a step may name, in the catalogue's order. */
+export const PLUGIN_MODES = ['unattended', 'planner', 'designer'] as const
+export type PluginMode = (typeof PLUGIN_MODES)[number]
+
+/** One mode of a catalogue plugin: its skills, and whether a step may run it today. */
+export interface PluginModeOffer {
+  skills: string[]
+  available: boolean
+  /** Why not, in the API's words (`BRIDGE_REASON`); null when it runs. */
+  reason: string | null
+}
+
+export interface CataloguePlugin {
+  name: string
+  /** Pinned, built into the agent images; never a caller's to choose. */
+  version: string
+  runner_profiles: string[]
+  /** Only the modes the plugin offers skills in; a missing mode offers none. */
+  modes: Partial<Record<PluginMode, PluginModeOffer>>
+}
+
+export interface WorkspacePlugins {
+  tenant_id: string
+  /** The plugins in force: read only from a block whose signature verifies. */
+  allowed: string[]
+  /** What a workspace nobody has chosen for allows; null when not served. */
+  default_allowed: string[] | null
+  set_at: string | null
+  set_by: string | null
+  can_edit: boolean
+  catalogue: CataloguePlugin[]
+}
+
+// ---------------------------------------------------------------------------
+// Managed plugins in the workflow builder (docs/design/managed-plugins.md,
+// sections 6.4 and 7): a workspace's catalogue, its every-step defaults and
+// one plugin's settings form, as `GET /v1/workspaces/{tenant_id}/plugin-catalogue`,
+// `.../plugin-defaults` and `.../plugin-config/{install_id}` answer them
+// (swarm_api.pluginstore.install_view, pluginconfig.form and values_view).
+// ---------------------------------------------------------------------------
+
+/** One managed install, as `install_view` serves it. Never a path, a command or a URL. */
+export interface ManagedPluginInstall {
+  /** `p-` and 12 hex for a platform install, `w-` for a workspace's own. */
+  install_id: string
+  name: string
+  display_name: string | null
+  scope: 'platform' | 'workspace'
+  tenant_id: string | null
+  built_in: false
+  state: string
+  current_version: string | null
+  /** The manifest's version of the current version, as the plugin states it. */
+  version: string | null
+  description: string | null
+  hosts: string[]
+  components: Partial<Record<'skills' | 'commands' | 'agents' | 'hooks' | 'mcp_servers', number>>
+  /** On a platform install only: whether this workspace allows it. */
+  allowed?: boolean
+}
+
+/** A built-in, as the managed catalogue lists it (`plugincatalogue.builtin_entries`). */
+export interface BuiltInPluginEntry {
+  /** `builtin:` and the name. */
+  install_id: string
+  name: string
+  version: string
+  built_in: true
+  runner_profiles: string[]
+  skills: Record<string, string[]>
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-catalogue`. */
+export interface WorkspacePluginCatalogue {
+  scope: 'workspace'
+  tenant_id: string
+  built_in: BuiltInPluginEntry[]
+  platform_installs: ManagedPluginInstall[]
+  installs: ManagedPluginInstall[]
+  can_install: boolean
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-defaults`: built-ins by name, installs by id. */
+export interface WorkspacePluginDefaults {
+  tenant_id: string
+  defaults: string[]
+  can_edit: boolean
+}
+
+/** A field's kind (`pluginconfig.KIND_*`): only `value` and `path` take a per-step override. */
+export type PluginFieldKind = 'value' | 'path' | 'secret' | 'file'
+
+/** One settings field, as `pluginconfig.form_fields` serves it. */
+export interface PluginFormField {
+  key: string
+  source: 'user_config' | 'overlay'
+  type: 'string' | 'number' | 'boolean' | 'directory' | 'file'
+  kind: PluginFieldKind
+  title: string | null
+  description: string | null
+  required: boolean
+  multiple: boolean
+  sensitive: boolean
+  default: PluginOverrideValue | null
+}
+
+/** One field's stored state: a non-secret value, or only whether a secret or a file is set. */
+export interface PluginFieldValue {
+  set: boolean
+  value?: PluginOverrideValue
+}
+
+/** `GET /v1/workspaces/{tenant_id}/plugin-config/{install_id}`. */
+export interface PluginConfigView {
+  tenant_id: string
+  form: { install_id: string; version_id: string; fields: PluginFormField[] }
+  values: Record<string, PluginFieldValue>
+  missing: string[]
+  can_edit: boolean
+}
+
+/** A per-step override (`swarm_api.schemas.PluginOverride`): a scalar, or a list for a `multiple` field. */
+export type PluginOverrideScalar = string | number | boolean
+export type PluginOverrideValue = PluginOverrideScalar | PluginOverrideScalar[]
+
+/**
+ * A step's managed plugins, as the builder holds them: `added` maps an
+ * install id to the step's overrides (an id that is a workspace default is
+ * that default with overrides, not a second copy), `off` the defaults this
+ * step turns off. Sent as the step's `plugins` and `plugins_off` fields
+ * (`swarm_api.schemas.WorkflowStepCreate`).
+ */
+export interface StepManagedPlugins {
+  added: Record<string, Record<string, PluginOverrideValue>>
+  off: string[]
+}

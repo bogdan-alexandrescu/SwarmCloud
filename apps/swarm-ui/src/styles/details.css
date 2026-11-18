@@ -1,0 +1,629 @@
+/* =========================================================================
+   THE AGENT DETAILS TAB, v3 (agent-details-v3.html A, picked 2026-10-04)
+   =========================================================================
+   Measured live at 1440 on a running agent, the Details pane was 2,770px
+   tall with the facts that judge it scattered. This sheet draws the pick: a
+   leading card (Now, Outcome or the failure), one stat strip, Progress |
+   Resources side by side from a 640px PANE, and Input folded. Everything
+   long is behind a `<details>` on the card it belongs to.
+
+   Components here are LOCAL (`dt-`) because the canonical components lane
+   was building in parallel (owner, 2026-10-02); each is drawn to
+   components.html A -- 32px rows, pill chips, radius 8/12, the brand state
+   marks -- so a later pass can swap it for the canonical one.
+
+   TYPE (PICKS.md): 12px floor, no all-caps, no letter-spacing; sizes from
+   the scale tokens only. Mono only for ids and values.
+
+   ONE SCROLL CONTAINER: nothing in this sheet sets `overflow: auto` or
+   `scroll` on anything; the split's pane (agents.css) is the only scroller,
+   and the header and tabs stay put above it. details.v3.test.tsx. */
+
+.dt { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding-bottom: 18px; }
+.dt > .dt-top:empty { display: none; }
+.dt > .dt-top { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+
+/* --- Building, Now and Resources: three lines, then the cards ------------ */
+/* owner 2026-10-27 (DETAILS-BUILDING): "too much prose on this page ... more
+   useful to quickly understand exactly what the agent is currently doing and
+   building". The page opens with what it is building (one line at desktop,
+   two at most on a phone), the Now card leads with one line of what it is
+   doing, and resources are one row whose `details` opens the strip and the
+   Resources card unchanged. Building and Resources share one label width,
+   and Building is inset by the Resources card's padding and border (14px +
+   1px), so their two values start at one x, as the picked shape draws them.
+   Now has no label column: its line is the head of the Now card. */
+.dt-building,
+.dt-res > summary { display: flex; align-items: baseline; gap: 10px; min-width: 0; margin: 0; }
+.dt-building-l,
+.dt-res-l { flex: none; width: 72px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 550; }
+.dt-building { padding: 0 15px; }
+.dt-building-v {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  font-weight: 650;
+}
+.dt-building-v.is-none { color: var(--text-dim); font-weight: 400; }
+.dt-building-x { color: var(--text-dim); font-weight: 400; }
+/* A PHONE GETS TWO LINES, NEVER A SIDEWAYS SCROLL: the value may wrap once,
+   and is cut there. The hover still carries the prompt. */
+@container ag-pane (max-width: 479px) {
+  .dt-building-v {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+.dt-nowline { margin: 0; min-width: 0; font-size: var(--t-body); line-height: var(--lh-body); overflow-wrap: anywhere; }
+.dt-nowline-p:first-child { font-weight: 650; }
+.dt-nowline-p:last-child { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.dt-res {
+  min-width: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.dt-res > summary { list-style: none; cursor: pointer; min-height: 24px; align-items: center; }
+.dt-res > summary::-webkit-details-marker { display: none; }
+.dt-res > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
+.dt-res-fs { flex: 1; min-width: 0; font-size: var(--t-body); line-height: var(--lh-body); font-variant-numeric: tabular-nums; }
+.dt-res-f { white-space: nowrap; }
+.dt-res-f.is-absent { color: var(--text-dim); }
+.dt-res-more { flex: none; color: var(--info); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 550; white-space: nowrap; }
+.dt-res-more::after { content: " ▾"; display: inline-block; margin-inline-start: 3px; }
+.dt-res[open] .dt-res-more::after { transform: rotate(180deg); }
+.dt-res-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; margin-top: 10px; }
+
+/* --- the card (components.html A: radius 12, hairline, surface) ---------- */
+.dt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.dt-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; min-height: 24px; }
+/* A Details card's title is an `h2` (N12, visual QA run 4) drawn as the bold
+   `<b>` it was, so nothing moves: no browser margin, the body size and line
+   height, 650. The `b` stays for the cards drawn outside AgentDetail.tsx
+   (Decision, Why it's waiting, Questions for you). */
+.dt-card-head > h2,
+.dt-card-head > b { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 650; }
+.dt-card-r { display: inline-flex; align-items: center; gap: 10px; margin-inline-start: auto; }
+.dt-more {
+  text-decoration: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--info);
+  font: 550 var(--t-micro)/var(--lh-micro) var(--font);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.dt-more:hover { text-decoration: underline; }
+.dt-more:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
+.dt-note { margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-chip {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+  white-space: nowrap;
+}
+
+/* --- the leading card: Now / Outcome / failure --------------------------- */
+/* A 3px state rule on its leading edge, in the brand state hues. */
+.dt-now { border-left: 3px solid var(--s-live); gap: 9px; }
+.dt-now.is-warn { border-left-color: var(--s-warn); }
+.dt-now.is-ok { border-left-color: var(--s-live); }
+.dt-now.is-neu { border-left-color: var(--s-neu); }
+.dt-now.is-bad { border-left-color: var(--s-bad); background: linear-gradient(90deg, var(--s-badb), var(--surface) 70%); }
+.dt-now.is-bad > .dt-card-head > h2,
+.dt-now.is-bad > .dt-card-head > b { color: var(--s-bad); }
+.dt-phases { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.dt-phase-step { display: inline-flex; align-items: center; gap: 4px; }
+.dt-phase-arr { color: var(--text-faint); }
+.dt-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.dt-phase.is-done::before { content: "✓"; color: var(--s-live); font-weight: 700; }
+.dt-phase.is-cur { background: var(--s-liveb); color: var(--s-live); font-weight: 650; }
+.dt-phase.is-cur::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--s-live);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--s-live) 25%, transparent);
+}
+.dt-phase.is-gap { border: 1px dashed var(--line); }
+.dt-phase.is-todo { border: 1px dashed var(--line); align-self: flex-start; }
+.dt-nfs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 18px; margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-nf { display: inline-flex; align-items: center; gap: 5px; }
+.dt-nf > b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.dt-nf.is-absent, p.dt-nf.is-absent { color: var(--text-faint); margin: 0; }
+.dt-who { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-who > b { color: var(--text); font-weight: 600; }
+/* THE WHOLE ERROR, never truncated: it wraps, it never scrolls. */
+.dt-err {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--s-bad) 35%, transparent);
+  border-radius: 8px;
+  background: var(--surface);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The last log line, inside the leading card (AgentLogs.tsx `LogLastLine`). */
+.dt-card > .ag-loglast { margin: 0; border: 0; background: var(--surface-2); border-radius: 8px; }
+.dt-card > .ag-loglast:hover { background: color-mix(in srgb, var(--surface-2) 70%, var(--line)); }
+/* UNDER A FAILURE THE LINE IS READ WHOLE (QA-115, archived issue 1680 comment 6283738952).
+   agents.css cuts the strip's line to one row with an ellipsis, which suits
+   the Now card's live line; under the Failed card's error at 390 it left
+   `resul…` -- the one line a reader opened the card to compare with the
+   error. Here the strip wraps: the line takes its own row when it has less
+   than 12em beside its label, and breaks anywhere rather than running out. */
+/* AND IT TAKES ITS OWN ROW, LEFT-ALIGNED (QA2 ovag2-16): beside its label
+   and `Open logs ›` it was wrapped into a narrow centre column. The label and
+   the link share the first row; the line runs the card's width under them. */
+.dt-fail > .ag-loglast { flex-wrap: wrap; padding-block: 6px; }
+.dt-fail > .ag-loglast > .ag-loglast-open { order: 1; margin-left: auto; }
+.dt-fail > .ag-loglast > .ag-loglast-line { order: 2; flex: 1 0 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+/* The leading Outcome card keeps the code panel's own blocks flush. */
+.dt-card.run-output > .section,
+.dt-card.run-output > .git-outcome { margin: 0; }
+
+/* --- the stat strip ------------------------------------------------------ */
+.dt-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.dt-sc { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 9px 12px 10px; border-left: 1px solid var(--line); }
+.dt-sc:first-child { border-left: 0; }
+/* A LABEL MAY WRAP (c07, owner decision 2026-10-22): `Ran · attempt 3` names
+   its clock, and the 115px tile at 1440 has no room for it on one line. It
+   was `nowrap`, and ran out of its tile. */
+.dt-sc-l { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: normal; }
+/* A FIGURE IS NEVER CUT (V058): it was one line with an ellipsis, so in a
+   narrow cell `26.7 MiB 13%` read `26.7 Mi…` -- the number itself lost. The
+   figure and its unit each hold together, and the unit drops under the
+   figure when the cell is too narrow for both. */
+.dt-sc-v {
+  font: 650 var(--t-title)/var(--lh-title) var(--font);
+  font-variant-numeric: tabular-nums;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.dt-sc-v > small { display: inline-block; margin-inline-start: 2px; color: var(--text-dim); font-size: var(--t-micro); font-weight: 500; white-space: nowrap; }
+/* NOT DUE, NOT READ OR NOT RECORDED: small and muted, never full size. */
+.dt-sc.is-reading > .dt-sc-v,
+.dt-sc.is-absent > .dt-sc-v,
+.dt-sc.is-unread > .dt-sc-v { font: 500 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
+.dt-sc-s { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-sc-k { display: block; }
+/* A SUB-LINE NEVER STARTS WITH ITS SEPARATOR (V260, VQA2-R13). `glueSeparators`
+   draws each ` · ` as this span: its leading space cannot break, so the dot
+   stays at the end of the line before and the plain space after it is where a
+   narrow cell wraps. `· OOM near miss` opened a line of its own before. */
+.dt-dot { white-space: nowrap; }
+.dt-sc.is-alert > .dt-sc-s { color: var(--s-warn); }
+.dt-sc.is-unread > .dt-sc-s { color: var(--s-warn); }
+
+/* --- bars (components.html A UsageBar, thin) ----------------------------- */
+.dt-bar { display: flex; height: 6px; margin-top: 2px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.dt-bar > i { display: block; height: 100%; background: var(--info); }
+.dt-bar > i.is-warn { background: var(--s-warn); }
+/* NO FIGURE OR NO CEILING: hatched with a dashed edge, never an empty track
+   (an unfilled plain track reads as 0% used). */
+.dt-bar.is-hatch {
+  border: 1px dashed var(--text-faint);
+  background: repeating-linear-gradient(135deg, transparent 0 3px, var(--line) 3px 5px);
+}
+
+/* --- the strip, under the Resources row ---------------------------------- */
+/* PROGRESS IS ONE COLUMN NOW (DETAILS-BUILDING): the Resources card it sat
+   beside from a 640px pane is folded under the Resources row, so `.dt-cols`
+   is gone and Progress takes the pane's width.
+
+   BELOW 640px THE STRIP STICKS once the row is opened (agent-details-v3.html,
+   small choices: B's idea): the figures stay in view while the Resources card
+   scrolls under them. Sticky against the pane, the detail's one scroller.
+
+   BUT ONLY WHERE THERE IS ROOM FOR IT (G2-01, QA 2026-10-07). At 390x844 the
+   strip is two columns and 282px tall, stuck under a 373px header: about
+   150px of the screen scrolled, and Outcome, Progress and Input slid under
+   the strip. It sticks in a pane 480px and wider on a window 700px and
+   taller; below either, it scrolls away with the rest (and on a phone the
+   header scrolls away too, agents.css). */
+@container ag-pane (min-width: 480px) and (max-width: 639px) {
+  @media (min-height: 700px) {
+    .dt-res-body > .dt-strip { position: sticky; top: 0; z-index: 2; }
+    /* UNDER THE STUCK TAB STRIP, IN THE SPLIT (AGENT-HEAD-B, the owner's pick AH1 B,
+       2026-10-28, part of archived issue 2596). There the column, not the pane, is the
+       scroller (agents.css), and a sticky inset is measured from its content
+       edge, 18px inside its top: at `top: 0` the strip stuck behind the tabs.
+       It sticks at the tabs' foot: their measured height (`--ag-tabs-h`,
+       AgentSplit.tsx; 57px, one row, until measured) less those 18px. */
+    .ag-split .dt-res-body > .dt-strip { top: calc(var(--ag-tabs-h, 57px) - 18px); }
+  }
+  /* FIVE FIGURES IN ~115px EACH, AND NO TALLER THAN THEY NEED (V058, visual
+     QA archived issue 1038). In a 600px pane `Peak memory` was cut to `26.7 Mi…`, Cost's
+     sub-line wrapped to eight lines and the stuck strip held ~220px of the
+     pane. The cells pad tighter, a figure's unit drops under it rather than
+     being cut (`.dt-sc-v` below), and each sub-line is two lines at most --
+     whole in its title (`DtStatCell`) and on the Resources card. */
+  .dt-sc { padding: 8px 8px 9px; }
+  .dt-sc-s {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+  /* EXCEPT THE CPU TILE'S (task-012, visual QA run 3, archived issue 1680): its line says
+     whose limit the `/ 2 cores` is and what the attempt was guaranteed, and
+     two lines cut it to `cgroup limit (clas…` -- the very words FF-D5a put
+     there to reconcile the tile with the head's `4 vCPU`. AND PEAK MEMORY'S
+     AND COST'S (archived issue 1680 comments 6343769495, 6343792637): two lines cut
+     `worst 7.20 GiB, attempt…` and `cost 1 of 3 reported · last…` at 1440,
+     so those tiles are `whole` too (`DtStrip`). AND THE RAN TILE'S
+     START → END (TZ-CLOCKTIME, part of archived issue 2391): each time carries its zone
+     label, `Oct 19 04:40 PDT → Oct 19 04:47 PDT` needs three lines here, and
+     two cut it to `→ Oct 19 04:47…`. It is the one sub-line whose span is
+     titled `started … · ended …` (`DtStrip`). */
+  .dt-sc.is-whole > .dt-sc-s,
+  .dt-sc-s:has(> span[title*=' · ended ']) {
+    display: block;
+    -webkit-line-clamp: none;
+    line-clamp: none;
+    overflow: visible;
+  }
+}
+/* THE TOTAL NEVER WRAPS (G2-14, QA 2026-10-07): a fixed 64px column broke
+   `19m 15s+` over two lines. The column takes its figure's width, with a
+   floor so short totals keep the bars of a few attempts nearly aligned. */
+.dt-phrow { display: grid; grid-template-columns: 70px minmax(0, 1fr) minmax(72px, max-content); gap: 8px; align-items: center; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-phrow > b { color: var(--text); font-weight: 500; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* The column's head: what the figure under it counts (G2-03). It names all
+   three phases (c07), longer than the figures' column, so it spans the bars'
+   column too and wraps there rather than squeezing the bars. */
+.dt-phrow.is-head > span:last-child { grid-column: 2 / -1; text-align: right; }
+/* THE TRACK AND THE QUEUE HOLD 3:1 (task-016, visual QA run 3, archived issue 1680, WCAG
+   1.4.11). `--surface-2` on the card's `--surface` is 1.1:1, so the track had
+   no visible extent, and `--s-neu` at 45% read about 2:1 on it in light. The
+   track keeps its fill and takes an edge in `--text-faint` (5.5:1 on the
+   card, both themes), and the queue and the cold start are `--s-neu` and
+   `--info` at full strength (5:1 on the track and more): at 45% and 55% they
+   were 2.0:1 and 2.3:1 in light. Grey, blue and green stay apart by hue and
+   by position. */
+.dt-phb { display: flex; gap: 2px; height: 12px; border: 1px solid var(--text-faint); border-radius: 4px; background: var(--surface-2); overflow: hidden; }
+.dt-phb > i { display: block; height: 100%; flex-basis: 0; }
+.dt-phb > .is-q, .dt-lg .is-q { background: var(--s-neu); }
+.dt-phb > .is-c, .dt-lg .is-c { background: var(--info); }
+.dt-phb > .is-r, .dt-lg .is-r { background: var(--s-live); }
+.dt-phb > .is-b, .dt-lg .is-b { background: var(--s-bad); }
+/* THE REST OF THE TRACK, PAST A SHORTER ATTEMPT (6:task-008): every row is
+   drawn on the longest attempt's scale (`DtPhaseRow`), and what this attempt
+   did not take is the track's own fill, not a phase. Its -2px margin takes
+   back the `.dt-phb` gap in front of it, so a shorter row's phases share the
+   same free width as the longest row's, which has no filler and one gap less. */
+.dt-phb > .is-rest { background: transparent; margin-left: -2px; }
+/* AN OPEN RUN IS DRAWN OPEN: it fades at its end rather than closing at now. */
+.dt-phb > .is-open { mask-image: linear-gradient(90deg, #000 85%, transparent); }
+.dt-lg { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-lg i { display: inline-block; width: 9px; height: 9px; margin-inline-end: 5px; border-radius: 2px; vertical-align: -1px; }
+.dt-evs { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.dt-ev { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; padding: 5px 0; border-top: 1px solid var(--line); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-ev:first-child { border-top: 0; }
+.dt-ev-t { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.dt-ev-k { font-weight: 550; }
+.dt-ev small { color: var(--text-dim); font-size: var(--t-micro); }
+.dt-ev.is-bad .dt-ev-k { color: var(--s-bad); }
+/* EVERY ROW KEEPS ITS BAR, AND THE VALUE WRAPS INSIDE THE CARD (5b:QA-008,
+   archived issue 1680 comment 6343756607). The value's track was `auto` and the value
+   `nowrap`, so at 390 `1.72 GiB 21% of 8 GiB · so far · 22s ago · worst 7.20
+   GiB, attempt 2` took the whole row: the bar's `minmax(0, 1fr)` was left 0 px
+   and the card clipped the rest. The bar now keeps 48px -- enough to read a
+   fill against its track -- and the value takes what is left up to its own
+   width, wrapping below that. At 1440 a value that fits is one line, as it
+   was. */
+.dt-rr { display: grid; grid-template-columns: 76px minmax(48px, 1fr) minmax(0, max-content); gap: 4px 10px; align-items: center; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-rr > .dt-bar { margin-top: 0; }
+.dt-rr-n { color: var(--text-dim); }
+.dt-rr-v { min-width: 0; text-align: right; white-space: normal; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.dt-rr-v > b { font-weight: 600; }
+.dt-rr-v > small { color: var(--text-dim); font-size: var(--t-micro); }
+.dt-empty { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 10px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dt-empty > b { color: var(--text); font-weight: 600; }
+.dt-empty.is-err { border-style: solid; border-color: color-mix(in srgb, var(--s-bad) 40%, transparent); background: var(--s-badb); }
+.dt-empty.is-err > b { color: var(--s-bad); }
+
+/* --- disclosures: the long sections, one click down ----------------------- */
+.dt-disc { min-width: 0; }
+.dt-disc > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  color: var(--info);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  font-weight: 550;
+  cursor: pointer;
+  list-style: none;
+}
+.dt-disc > summary::-webkit-details-marker { display: none; }
+.dt-disc > summary::before { content: "›"; display: inline-block; font-weight: 700; }
+.dt-disc[open] > summary::before { transform: rotate(90deg); }
+.dt-disc > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
+.dt-disc[open] > summary { margin-bottom: 8px; }
+
+/* --- Input, folded --------------------------------------------------------- */
+.dt-ifacts { margin: 0; }
+/* THREE LINES OF THE PROMPT, in the sans face; the whole of it is behind
+   "Show prompt", where it wraps in full -- no box of its own to scroll. */
+.dt-prev {
+  margin: 0;
+  font-size: var(--t-meta);
+  line-height: var(--lh-meta);
+  white-space: pre-line;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.dt-prompt { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* --- the inspector's other tabs ------------------------------------------- */
+/* A ZERO AND ITS MARK ARE ONE ITEM (G2-07): in a stacked record each child of
+   a cell takes a line of the value column, and `real zero` floated mid-row,
+   apart from the `0 B` it qualifies. RunFiles.tsx `Stream`. */
+.rf-zero { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+
+/* THE PROMPT IS NOT A SECOND SCROLLER (G2-34, QA 2026-10-07). On the
+   Artifacts tab the Inputs prompt was a 40vh box with its own scroll, and it
+   took the wheel: reaching Outputs needed a scroll outside it. It is twelve
+   lines, clamped, with `Show all` (Artifacts.tsx `PromptText`); opened, it
+   wraps in full. The pane stays the one scroller. */
+.arts-prompt.is-clamped,
+.arts-prompt.is-all { max-height: none; overflow: visible; }
+.arts-prompt.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 12;
+  line-clamp: 12;
+  overflow: hidden;
+}
+
+/* A FILE LIST IS A TABLE WHERE THERE IS ROOM FOR ONE (G2-33, QA 2026-10-07).
+   The inspector's tables stack below an 899px DRAWER (styles.css, AG-26), so
+   at 1440 the Outputs list was one stacked card per file, `Size` and `Get`
+   said on every one. `is-roomy` keeps its rows a table in a pane 480px and
+   wider, and lets the shared stacking take it below that. Each declaration
+   puts back what the stacked block moved, at the `.ctl-table` values. */
+@container ag-pane (min-width: 480px) {
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table { display: table; width: 100%; }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > thead {
+    display: table-header-group;
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+    white-space: normal;
+  }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody { display: table-row-group; width: auto; }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr,
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr:first-child { display: table-row; width: auto; height: var(--row-h); padding: 0; }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr > th,
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr > td {
+    display: table-cell;
+    width: auto;
+    padding: 4px 10px;
+    text-align: left;
+    white-space: nowrap;
+  }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr > th[scope='row'] {
+    padding: 4px 10px;
+    font-size: var(--t-body);
+    line-height: var(--lh-body);
+    font-weight: 500;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr > td.is-num { text-align: right; }
+  .ag-split-pane .ctl-table.is-stacked.is-roomy > table > tbody > tr > td[data-label]::before { content: none; }
+}
+
+/* --- the Decision card (DecisionCard.tsx) --------------------------------
+   Why a gated step's agent ran or did not, and what a review decided. The
+   theme tokens only, so light and dark follow; the 12px floor is
+   --t-micro. */
+.dc p { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+.dc p.dt-note { font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dc-rule { font-weight: 550; }
+.dc-part { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding-top: 8px; border-top: 1px solid var(--line); }
+.dc-h { color: var(--text); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 650; }
+.dc-k { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 550; }
+.dc-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; }
+.dc-v { min-width: 0; font-size: var(--t-body); line-height: var(--lh-body); overflow-wrap: anywhere; }
+.dc-why { flex-basis: 100%; overflow-wrap: anywhere; }
+.dc-count { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.dc-group { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dc-findings,
+.dc-staged { display: flex; flex-direction: column; gap: 4px; margin: 0; padding-inline-start: 18px; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.dc-finding { overflow-wrap: anywhere; }
+.dc-file { padding: 0 4px; border-radius: 4px; background: var(--surface-2); font: 500 var(--t-micro)/var(--lh-micro) var(--mono); }
+.dc-fix { display: block; color: var(--text-dim); }
+.dc-id { color: var(--text-dim); font-size: var(--t-micro); }
+.dc-arts { margin: 0 0 8px; overflow-wrap: anywhere; }
+
+/* --- the phone, and any pane under 480px ---------------------------------- */
+/* The strip becomes two columns with Cost across the bottom; the columns are
+   already stacked. IT STAYS UNDER THE LEADING CARD (c08, owner decision
+   2026-10-22, box comment 6314120811): one order at every width, the card
+   chosen for the state first, then the five figures. It moved above the
+   card here, so a phone read the figures before what had happened. */
+@container ag-pane (max-width: 479px) {
+  .dt-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dt-sc { border-left: 0; border-top: 1px solid var(--line); }
+  .dt-sc:nth-child(-n + 2) { border-top: 0; }
+  .dt-sc:nth-child(even) { border-left: 1px solid var(--line); }
+  .dt-sc:last-child { grid-column: 1 / -1; }
+  /* THE PEAK BARS KEEP A WIDTH ON A PHONE (5b:QA-008, archived issue 1680 comment
+     6343756607): the row's track floor (`.dt-rr` above) said so once; the
+     bar says it itself here, so no track list can squeeze it to 0 px. */
+  .dt-rr > .dt-bar { min-width: 48px; }
+}
+
+/* `parked since <time>` beside "I'm ready to sign in" (LB-V4, U1): the park
+   instant the Details tab's `eligible` bar used to print, as a fact, not an
+   action. */
+.ho-since { color: var(--text-dim); font-size: var(--t-micro); }
+
+/* --- Questions for you (QuestionsCard.tsx, part of archived issue 1206) ----------------- */
+/* The agent's questions for its owner lead Details; the recommended option
+   carries the info rule so it is found without reading every description. */
+.qc { border-left: 3px solid var(--info); }
+.qc-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.qc-q { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-top: 8px; border-top: 1px solid var(--line); }
+.qc-text { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.qc-n { color: var(--text-dim); }
+.qc-context { white-space: pre-wrap; overflow-wrap: anywhere; }
+.qc-options { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.qc-option { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; padding: 4px 8px; border-left: 2px solid var(--line); }
+.qc-option.is-recommended { border-left-color: var(--info); }
+.qc-desc { flex-basis: 100%; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; }
+/* TASK-ANSWERS: each option is a radio button the whole row wide; the picked
+   one, and the saved answer's option, carry the ok rule. */
+.qc-option.is-chosen { border-left-color: var(--ok); background: var(--surface-2); }
+.qc-pickset { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.qc-pick { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; width: 100%; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.qc-pick:disabled { cursor: not-allowed; opacity: .7; }
+.qc-other { flex-direction: column; align-items: stretch; }
+.qc-own { width: 100%; min-height: 4.5em; resize: vertical; font: inherit; }
+.qc-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
+.qc-saved { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; padding: 4px 8px; border-left: 2px solid var(--ok); }
+.qc-saved-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* A merge held by the owner's questions (archived issue 2313): each asking step's questions under a line naming it. */
+.qc-asker { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.qc-asker-head { margin: 4px 0 0; overflow-wrap: anywhere; }
+.qc-unreadable { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.qc-unreadable p { margin: 0; }
+/* The tip hangs from the SENTENCE, not from its (i). The inspector (.drawer.ag-split) clips sideways, and where the
+   (i) lands depends on how the sentence wraps: pinned to either side of the icon, the tip escaped one edge or the
+   other (a right-pinned tip lost 160 of its 240px past the inspector's left edge at 1440x900). The paragraph spans
+   the card, so a tip from its left edge, no wider than it, stays inside wherever the icon falls. */
+.qc-unreadable > p { position: relative; }
+.qc-unreadable > p > .c-tip-host { position: static; }
+.qc-unreadable .c-tip { left: 0; right: auto; max-width: min(240px, 100%); }
+
+/* --- "Why it's waiting" (WaitPanel.tsx, archived issue 1782) ----------------------------
+   The card's own tokens and a 3px leading rule like the Now card's: warn
+   when only a person ends the wait, neutral otherwise. Facts stack on a
+   phone and sit label | value from a 480px pane. Everything wraps -- a long
+   check name, a 40-character sha's title, an answer command -- and nothing
+   here scrolls or overflows sideways (the split's pane is the one scroller). */
+.wp { border-left: 3px solid var(--s-neu); }
+.wp.is-warn { border-left-color: var(--s-warn); }
+.wp-summary { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); overflow-wrap: anywhere; }
+.wp-facts { display: flex; flex-direction: column; gap: 6px; margin: 0; min-width: 0; }
+.wp-fact { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.wp-fact > dt { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.wp-fact > dd { margin: 0; min-width: 0; font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.wp-fact code { font-family: var(--mono); overflow-wrap: anywhere; }
+.wp-nr { color: var(--text-faint); font-style: italic; }
+.wp-asof { margin-inline-start: 6px; color: var(--text-faint); }
+.wp-err { display: block; white-space: pre-wrap; font-family: var(--mono); }
+.wp-cmd { display: inline-block; padding: 1px 6px; border-radius: 6px; background: var(--surface-2); white-space: normal; }
+.wp-checks, .wp-on { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 2px 0 0; padding: 0; list-style: none; min-width: 0; }
+.wp-check {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+.wp-check-n { font-family: var(--mono); color: var(--text); }
+.wp-check-s { color: var(--text-dim); }
+.wp-check.is-failed { background: var(--s-badb); }
+.wp-check.is-failed > .wp-check-s { color: var(--s-bad); font-weight: 600; }
+.wp-on > li { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: 100%; overflow-wrap: anywhere; }
+.wp-history { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding-top: 8px; border-top: 1px solid var(--line); }
+.wp-history-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.wp-history-head > b { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 650; }
+.wp-history-head > .dt-more { margin-inline-start: auto; }
+.wp-hist { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.wp-hist > li { display: flex; gap: 10px; min-width: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.wp-hist time { flex: none; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.wp-hist-t { min-width: 0; overflow-wrap: anywhere; }
+@container ag-pane (min-width: 480px) {
+  .wp-fact { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 12px; align-items: baseline; }
+}
+
+/* --- the Attempts tab (AttemptTimeline.tsx) -------------------------------
+   Its `.att-*` and `.ctl-*` rules are in styles.css; these are the ones QA
+   run 5b needed (QAFIX5-TASK-DETAIL, QA-113, archived issue 1680 comment 6283738266),
+   scoped to `.att-pane` so no other screen's toolbar or card moves. */
+
+/* THE TALLY WRAPS, IT IS NOT CLIPPED. `.ctl-card-note` is `flex: none` and
+   `nowrap` (styles.css), right for a two-word qualifier; the Attempts
+   toolbar's runs `8 events · first page · partial 2 attempts without events ·
+   partial ends at …`, and in a 480-700px pane it ran past the edge and cut
+   its own `partial` mark. Here it shrinks and wraps, still right-aligned. */
+.att-pane .ctl-toolbar > .ctl-card-note { flex: 1 1 auto; min-width: 0; white-space: normal; }
+/* The card's own note (`no events on this page · Cloud Run`) goes under the
+   title when the two do not fit, rather than squeezing the title. */
+.att-pane .att-card > .ctl-card-head { flex-wrap: wrap; }
+/* `Attempt 2 · gen 2` is one name: it never breaks between `gen` and `2`. */
+.att-pane .att-card .ctl-card-title > .att-label { white-space: nowrap; }
+/* Why no model is recorded, in words beside the mark (`AttemptModel`). */
+.att-model-why { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+
+/* AT 390, THREE SHORT FIGURES TO A ROW. styles.css stacks every fact on its
+   own line on a phone, so a card was eight lines of key and value before its
+   events. The ids and the long figures (peak memory, model) keep a whole row;
+   `ran`, `exit` and `checkpoints` share one, each its key over its value. */
+@media (max-width: 560px) {
+  .att-pane .att-card .ctl-card-body > .ctl-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .att-pane .att-card .ctl-card-body > .ctl-facts > .ctl-fact { grid-column: 1 / -1; }
+  .att-pane .att-card .ctl-card-body > .ctl-facts > .ctl-fact.att-fact-short { grid-column: auto; flex-direction: column; gap: 0; }
+}
+
+/* A GAP AND A DOT AFTER THE `partial` CHIP (6:task-004, archived issue 1680 comment
+   6343768697). The toolbar's `partial 2 attempts without events` put the
+   count against the chip's edge, a space's width away; the separator
+   (`AttemptTimeline` `Body`) draws the page's ` · ` with room either side. */
+.att-pane .att-mark-sep { margin-inline: 4px; color: var(--text-faint); }
+.att-pane .att-mark-sep::before { content: "·"; }

@@ -1,0 +1,1404 @@
+// Component F3 -- the fetch contract.
+//
+// THE ONE RULE THIS FILE EXISTS TO ENFORCE
+// ----------------------------------------
+// A failed request must never be representable as empty data.
+//
+// That is not a general principle here, it is this platform's defining bug. A
+// sweep of its operational scripts confirmed 56 places where a probe failure
+// rendered as an absence: `status.sh` printed "no swarm services deployed"
+// when a session had expired, and finished on "nothing needs attention". The
+// same day a build wrote a manifest listing zero images and reported "ok built
+// 6 image(s)". Commit 9c639af is titled "An HTTP error is not an empty
+// result". A screen that cannot tell "no agents running" from "the query
+// failed" is that bug with a nicer font.
+//
+// So every value on every screen resolves through `Result<T>`, which has no
+// member that is both a failure and an array.
+
+/** The client's classification of a failure. The table is in docs/web-ui/01. */
+export type ApiErrorKind =
+  | 'session_expired'
+  | 'unauthenticated'
+  | 'admin_required'
+  | 'wrong_domain'
+  | 'tenant_disabled'
+  | 'not_found'
+  | 'conflict'
+  | 'invalid'
+  | 'rate_limited'
+  | 'tenant_unresolved'
+  | 'upstream_degraded'
+  | 'server_error'
+  | 'unreachable'
+  /** A 403 the client does not recognise: refused, for a reason only the
+   *  server's message gives. Not admin_required -- that draws "admin only,
+   *  nothing failed", a claim nobody made. */
+  | 'forbidden'
+
+export interface ApiError {
+  kind: ApiErrorKind
+  /** null when `fetch` itself rejected, so there was never a response. */
+  httpStatus: number | null
+  /**
+   * The server's own `code`, verbatim from ApiError.to_payload() -- or null.
+   * NULL IS MEANINGFUL: an uncaught exception in FastAPI returns
+   * `{"detail": "Internal Server Error"}`, a different shape with no code at
+   * all, because create_app registers handlers for ApiError, AuthError,
+   * InvalidTransition and RequestValidationError and nothing else. Never
+   * invent one.
+   */
+  code: string | null
+  /** Written for a human by the server, or by us when there was no envelope. */
+  message: string
+  detail?: unknown
+  /** From `Retry-After` on a 429. Honour it rather than retrying into the wall. */
+  retryAfterSeconds?: number
+  /**
+   * The method of a WRITE that failed; absent on a read (visual QA V010,
+   * 2026-10-11). `write()` sets it on every error it returns, so the failure
+   * panel can tell "the platform could not be read" from "this change was
+   * refused" without each caller saying which: a refused 422 drew "This is a
+   * failure to read the platform", a `not read` mark, and a Try again that
+   * resubmitted the same invalid input. A caller that posts with its own
+   * `fetch` (Submit.tsx) sets it beside `classifyFailure`. PATCH is the
+   * schedule edit route `write()` also accepts (docs/schedules.md §7.1).
+   */
+  method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  /**
+   * The route template of a READ that answered 404 (visual QA run 4,
+   * overview-automate-001): `read()` sets it on a `not_found`, so the failure
+   * copy can tell a read of one item (`/v1/schedules/{id}`) from a read that
+   * names none (`/v1/schedules`), whose 404 means the route itself was not
+   * found. Absent everywhere else.
+   */
+  template?: string
+}
+
+/** Whether a failure is a write's: see `ApiError.method`. */
+export function isWriteFailure(e: ApiError): boolean {
+  return e.method !== undefined
+}
+
+/**
+ * Whether the platform ANSWERED a write with a refusal, so nothing was
+ * changed and resending the same input gets the same answer. A 5xx, a 429 or
+ * a request that never arrived is not one: the change may or may not have
+ * been made.
+ */
+export function writeRefused(e: ApiError): boolean {
+  return (
+    isWriteFailure(e) &&
+    (e.kind === 'invalid' || e.kind === 'conflict' || e.kind === 'not_found' || e.kind === 'forbidden')
+  )
+}
+
+/**
+ * Five states, never a bare array.
+ *
+ * `empty` is separate from `ok` on purpose: a component that wants rows must
+ * say what it does when there are none, and cannot reach `data` in the case
+ * where there are none.
+ *
+ * `stale` is the one that is easy to leave out and expensive to miss. Any
+ * refresh that fails while previous data is in hand produces `stale` -- never
+ * `error`, never a silent no-op. The last-known data stays on screen, dimmed,
+ * with the error and the age of the data in the header. That is what a
+ * dashboard looks like during a Cloud Identity blip or a 429, and it is what
+ * stops an operator reading a frozen number as a live one.
+ */
+export type Result<T> =
+  | { status: 'loading'; since: number }
+  | { status: 'ok'; data: T; fetchedAt: number; serverAt?: string }
+  | { status: 'empty'; fetchedAt: number; serverAt?: string }
+  | { status: 'stale'; data: T; fetchedAt: number; error: ApiError }
+  | { status: 'error'; error: ApiError }
+
+/** The code swarm-api's own rate limiter refuses with (`RateLimited.code`). */
+export const API_RATE_LIMITED = 'rate_limited'
+
+/** What a 429 without that code says: Cloud Run's front end, not the API (archived issue 1816). */
+export const NO_INSTANCE_FREE = "SwarmCloud's API had no instance free (Cloud Run); retried when the pause ends."
+
+/** The server's error envelope, errors.py:15-28. `detail` is optional. */
+export interface ErrorEnvelope {
+  code?: unknown
+  message?: unknown
+  detail?: unknown
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
+/**
+ * Classify a response whose status is not 2xx.
+ *
+ * EXPORTED AS `classifyFailure` for the two submit paths, which call `fetch`
+ * themselves (Submit.tsx, SubmitWorkflow.tsx). They each restated a piece of
+ * this and both mapped EVERY 503 to `upstream_degraded`, so a submit during a
+ * tenant-resolution failure read as a degraded service (states.html, "Found
+ * while reading the code"). One classifier, so two screens cannot disagree
+ * about what a status means.
+ *
+ * Several kinds are distinguished by the MESSAGE rather than the status,
+ * because the API returns 403 for three unrelated situations that need three
+ * different screens: you are not an admin, your domain is not permitted, and
+ * your tenant is disabled. Matching on substrings is fragile, so an
+ * unrecognised 403 stays a generic one rather than being forced into a bucket.
+ */
+export function classifyFailure(status: number, env: ErrorEnvelope | null, retryAfter: number | undefined): ApiError {
+  const code = typeof env?.code === 'string' ? env.code : null
+  const message =
+    typeof env?.message === 'string' && env.message.trim() !== ''
+      ? env.message
+      : `The API returned HTTP ${status}.`
+  const detail = env?.detail
+  const base = { httpStatus: status, code, message, detail }
+  const lower = message.toLowerCase()
+
+  if (status === 401) return { ...base, kind: 'unauthenticated' }
+  // The tenant switcher's refusal: the stored `X-Swarm-Tenant` names a tenant
+  // this caller is not (or no longer) a verified member of. Keyed on the
+  // server's CODE, which exists so that this 403 and no other drops the
+  // stored choice (`dropRefusedTenant`). Not an admin question, so it must
+  // not fall through to the admin-required screen below.
+  if (status === 403 && code === TENANT_REFUSED) return { ...base, kind: 'tenant_unresolved' }
+  if (status === 403) {
+    if (lower.includes('admin group membership is required')) {
+      return { ...base, kind: 'admin_required' }
+    }
+    if (lower.includes('is not permitted')) return { ...base, kind: 'wrong_domain' }
+    if (lower.includes('is disabled')) return { ...base, kind: 'tenant_disabled' }
+    // An unrecognised 403. Do NOT guess -- guessing picks a gate page that
+    // tells the user to fix something that is not wrong. It stays a generic
+    // refusal, headed as one, with the server's own message under it.
+    return { ...base, kind: 'forbidden' }
+  }
+  if (status === 404) return { ...base, kind: 'not_found' }
+  if (status === 409) return { ...base, kind: 'conflict' }
+  if (status === 422) return { ...base, kind: 'invalid' }
+  // WHOSE 429 (ANSWERS-429, part of archived issue 1816). Cloud Run's front end answers
+  // 429 too when the service has no instance free, and both read as "you are
+  // polling too much". Told apart by the body, as the bridge does
+  // (`swarm_mcp.client.ApiRateLimited`): the API's own refusal carries its
+  // `rate_limited` code (`RateLimited.code`, swarm_api/errors.py) and keeps
+  // its message; anything else is Cloud Run's. Both stay `rate_limited`, so
+  // the pause and its countdown are unchanged.
+  if (status === 429 && code !== API_RATE_LIMITED) {
+    return { ...base, kind: 'rate_limited', message: NO_INSTANCE_FREE, retryAfterSeconds: retryAfter }
+  }
+  if (status === 429) return { ...base, kind: 'rate_limited', retryAfterSeconds: retryAfter }
+  if (status === 503) {
+    // A 503 was previously ALWAYS reported as "we could not confirm which team
+    // you belong to", because group resolution is this deployment's dominant
+    // 503. It is not the only one, and on a deployment with no groups
+    // configured at all it describes a failure that cannot happen -- which
+    // matters now that SwarmCloud is meant to run outside an organisation,
+    // where `tenant_groups` is empty by design and the caller's tenant is
+    // always their own.
+    //
+    // The API says which it is, so the API is asked rather than the status
+    // code guessed from.
+    if (lower.includes('group membership') || lower.includes('tenant could not be resolved')) {
+      return { ...base, kind: 'tenant_unresolved' }
+    }
+    return { ...base, kind: 'upstream_degraded' }
+  }
+  return { ...base, kind: 'server_error' }
+}
+
+/** Copy for the one thing each failure means, for a person reading the screen. */
+export function errorHeading(e: ApiError): string {
+  switch (e.kind) {
+    case 'session_expired': return 'Your session expired'
+    case 'unauthenticated': return 'Your session expired'
+    case 'admin_required': return 'This needs admin access'
+    case 'wrong_domain': return 'This account cannot use SwarmCloud'
+    case 'tenant_disabled': return 'Your tenant is disabled'
+    case 'not_found': return 'Not found'
+    case 'conflict': return 'That conflicts with what is already registered'
+    case 'invalid': return 'That request was not valid'
+    case 'rate_limited': return 'Refreshing paused'
+    case 'tenant_unresolved': return 'We could not confirm which team you belong to'
+    case 'upstream_degraded': return 'A service the API depends on did not answer'
+    case 'server_error': return 'The API failed on this request'
+    case 'unreachable': return 'SwarmCloud is unreachable'
+    case 'forbidden': return 'The API refused this request'
+  }
+}
+
+/**
+ * The sentence that must appear on every failure surface: this is a failure to
+ * READ the platform, and says nothing about what is running. Without it a
+ * reader takes an error screen as evidence about the platform -- which is the
+ * whole bug, one layer up.
+ */
+export function errorReassurance(e: ApiError): string {
+  // A WRITE IS NOT A READ (visual QA V010). The read sentence below, under a
+  // refused change, told the person their platform could not be read when it
+  // had just answered them. What a write needs is whether the change happened.
+  if (isWriteFailure(e)) {
+    if (writeRefused(e)) {
+      return 'The platform refused this change, so nothing was changed. Sending the same input again gets the same answer.'
+    }
+    if (e.kind === 'unreachable') {
+      return 'The request may never have reached the platform. Read the page again to see whether the change was made before sending it again.'
+    }
+    return 'The platform did not confirm this change. Read the page again to see whether it was made before sending it again.'
+  }
+  if (e.kind === 'not_found' && e.template !== undefined && !e.template.includes('{')) {
+    // A READ THAT NAMES NO ITEM (visual QA run 4, overview-automate-001): a
+    // list, or the caller's own document. Its 404 is the ROUTE not found --
+    // an API without it -- never one item missing or another tenant's, which
+    // is what the copy below says and the Schedules list said over an API
+    // that did not serve schedules. V007 still holds: it names no kind of
+    // thing, only the read.
+    // THE TEST IS THE TEMPLATE'S PATH, NOT ITS QUERY: an item is "named" only
+    // by a `{param}` in the path. A read that named its item in the query
+    // string alone would get this list copy; none does today, and one that
+    // does should put the item in its template's path or extend this check.
+    return 'The API has no route for this read, so this deployment does not serve it. Reading it again gets the same answer.'
+  }
+  if (e.kind === 'not_found') {
+    // store.py:369-379 deliberately returns the same 404 whether the task does
+    // not exist or belongs to another tenant, so the copy must not promise
+    // which one it was.
+    //
+    // AND IT MUST NOT SAY "TASK" (visual QA V007, 2026-10-11). The same panel
+    // draws a 404 on an account, a run and an issue preview, and "This task
+    // does not exist" under an account's history named a thing nobody asked
+    // for. The server's message above this line says WHAT was not found;
+    // this says only what a 404 can and cannot tell. A 404 is an answer, not
+    // a failed read, so reading again gets the same one (`FailedPanel` offers
+    // no Try again for it).
+    return 'It does not exist, or it belongs to another tenant: the API gives the same answer for both. Reading it again gets the same answer.'
+  }
+  if (e.kind === 'unreachable') {
+    return 'The request never reached the platform, so this says nothing about what is running.'
+  }
+  return 'This is a failure to read the platform. It says nothing about what is running.'
+}
+
+// ---------------------------------------------------------------------------
+// Routes (CH-18)
+// ---------------------------------------------------------------------------
+// A ROUTE IS A PATH TEMPLATE WITH THE IDS AND THE QUERY REMOVED, and it is
+// what the probe registry below is keyed by. It was keyed by the concrete URL,
+// so every task anyone opened added a "route" of its own --
+// `/v1/tasks/<id>/attempts?limit=50` was 13 of the 29 cells on the dock the QA
+// pass screenshotted -- which inflated the route count, shaped the p95 and
+// made the help text's "one record per route" untrue.
+//
+// `read`, `write` and `noteFixtureProbe` take ONLY the value `route()` builds,
+// never a string, so the typecheck refuses any call that would key a probe by
+// a concrete URL. A hand-kept list of call sites could not do that: the first
+// draft of the decision's list missed four. The value is branded so it cannot
+// be forged as an object literal either.
+//
+// The template keeps its `{placeholders}` and any literal query: the seam
+// tests (`test_runtimes_screen.py`, `test_account_api.py`,
+// `test_checkpoint_content.py`) read the path literals out of the source and
+// compare their SHAPE with the routers' declarations, `{id}` and all.
+
+declare const ROUTE: unique symbol
+
+/** A read or write target: the URL to request, and the route it belongs to. */
+export interface ApiRoute {
+  /** The concrete URL, ids substituted and the query appended. */
+  readonly url: string
+  /** The registry key: the template with any `?…` removed. */
+  readonly template: string
+  readonly [ROUTE]: true
+}
+
+/**
+ * A path segment the caller has ALREADY encoded. The one user is a checkpoint
+ * member path, whose `/` separators the route's `{path:path}` expects to
+ * arrive as separators (`memberHref` in CheckpointBrowser.tsx encodes each
+ * segment and refuses `.` and `..`).
+ */
+export interface Encoded {
+  readonly encoded: string
+}
+
+/** Mark a value as already encoded, so `route()` substitutes it verbatim. */
+export function encoded(value: string): Encoded {
+  return { encoded: value }
+}
+
+/**
+ * Build a route: `{name}` in `template` becomes `encodeURIComponent(params.name)`
+ * (or the value verbatim, for an `encoded()` one), `query` is appended, and
+ * the registry key is the template with any literal query removed.
+ *
+ * A placeholder with no value THROWS rather than requesting a URL with a
+ * literal `{id}` in it, which the API would answer with a 404 that reads as
+ * "this task does not exist".
+ */
+export function route(
+  template: string,
+  params: Readonly<Record<string, string | number | Encoded>> = {},
+  query?: string | URLSearchParams,
+): ApiRoute {
+  const url = template.replace(/\{([A-Za-z_][\w]*)\}/g, (_m, name: string) => {
+    const v = params[name]
+    if (v === undefined) throw new Error(`route ${template} has no value for {${name}}`)
+    return typeof v === 'object' ? v.encoded : encodeURIComponent(String(v))
+  })
+  const q = query === undefined ? '' : String(query)
+  const full = q === '' ? url : `${url}${url.includes('?') ? '&' : '?'}${q}`
+  const at = template.indexOf('?')
+  return { url: full, template: at === -1 ? template : template.slice(0, at) } as ApiRoute
+}
+
+// ---------------------------------------------------------------------------
+// The probe registry, for the data-source strip
+// ---------------------------------------------------------------------------
+// Every read records what happened to it, so the UI can show its own
+// self-report: which route, what status, how long it took, and how old the
+// newest SUCCESSFUL payload is. That last one is the point -- a panel showing
+// a number from four minutes ago while its route has been 500ing for three of
+// them looks identical to a healthy panel unless something says otherwise.
+//
+// A 403 here is information rather than a failure: a non-admin genuinely
+// cannot read /v1/admin/*, and saying so stops the page looking broken. A 401
+// is different -- that is an expired session and needs a re-auth action.
+//
+// ONE RECORD PER ROUTE (CH-18). Its status is the last attempt of ANY call to
+// the route and its age the newest successful payload of any call to it; each
+// panel still carries its own age and its own failure, and `lastUrl` says
+// which concrete call the status belongs to.
+
+export interface ProbeRecord {
+  /** The route: a path template, ids and query removed. */
+  path: string
+  /** The concrete URL of the last attempt, so a failure can be traced to its task. */
+  lastUrl: string
+  /** null when fetch itself rejected, so there was never a response. */
+  lastStatus: number | null
+  lastKind: ApiErrorKind | null
+  lastLatencyMs: number
+  lastAttemptAt: number
+  /** When a read last actually produced a payload. Null if one never has. */
+  lastSuccessAt: number | null
+}
+
+const probes = new Map<string, ProbeRecord>()
+const probeListeners = new Set<() => void>()
+
+// useSyncExternalStore compares snapshots BY IDENTITY. A getSnapshot that
+// builds a new array every call therefore looks like a change on every render,
+// and React loops until it bails with "Maximum update depth exceeded"
+// (minified error archived issue 185) -- which is exactly what the first load of this UI did.
+//
+// So the snapshot is cached and only rebuilt when a probe actually changes.
+let snapshot: ProbeRecord[] = []
+let snapshotStale = true
+
+function recordProbe(rec: ProbeRecord): void {
+  const prev = probes.get(rec.path)
+  probes.set(rec.path, {
+    ...rec,
+    // A failure must NOT erase the age of the last good payload -- that age is
+    // exactly what the strip exists to show.
+    lastSuccessAt: rec.lastSuccessAt ?? prev?.lastSuccessAt ?? null,
+  })
+  snapshotStale = true
+  for (const fn of probeListeners) fn()
+}
+
+/**
+ * Let the fixture path register a probe too.
+ *
+ * Without this the strip only ever appears against the live API, which means
+ * it ships having never been looked at -- the same way the headroom rows
+ * silently rendered nothing because the fixture's runner_profiles was `{}`.
+ * A development mode that exercises fewer components than production is a
+ * development mode that hides bugs.
+ */
+export function noteFixtureProbe(
+  target: ApiRoute,
+  latencyMs: number,
+  ok: boolean,
+  // Which failure to simulate. Defaulted to a 403 because that is the cell
+  // whose treatment is easiest to get wrong -- it must read as information,
+  // not breakage -- and a fixture that always produced a 503 meant that path
+  // was never once looked at in development.
+  kind: ApiErrorKind = 'admin_required',
+  options: { frame?: boolean } = {},
+): void {
+  const status = ok ? 200 : kind === 'admin_required' ? 403 : 503
+  recordProbe({
+    path: target.template,
+    lastUrl: target.url,
+    lastStatus: status,
+    lastKind: ok ? null : kind,
+    lastLatencyMs: latencyMs,
+    lastAttemptAt: Date.now(),
+    lastSuccessAt: ok ? Date.now() : null,
+  })
+  // A fixture read registers when it LANDS, after its simulated latency, so it
+  // belongs to the screen that was open when it STARTED -- `latencyMs` ago.
+  // Which of an inspector and the page under it asked is not knowable by
+  // then, so it is the inspector's when one was open (development only: the
+  // live path below knows).
+  if (options.frame !== true) {
+    const scope = shownBy(frameAt(Date.now() - latencyMs))
+    scope.settled += 1
+    if (ok) scope.newestSuccessAt = Date.now()
+    else if (kind !== 'admin_required') scope.failed += 1
+    publishScreenReads()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The screen's own reads (CH-2)
+// ---------------------------------------------------------------------------
+// THE HEAD'S AGE IS THE SCREEN'S, AND THE DOCK'S IS THE TAB'S. The head used
+// to show the newest success of ANY route this tab had called, so it said
+// "just now" beside a page that was still loading -- the frame's own identity
+// read had landed, the page's had not. The dock keeps the tab-wide view (its
+// label says "every route"); the head reads only what the current screen
+// asked for.
+//
+// A SCREEN IS A ROUTE OF THE APP (`canonical()` in App.tsx), begun when the
+// route changes. A read belongs to the screen that was open when it STARTED,
+// so a slow read from the screen you just left cannot land as "newest read
+// just now" on the one you opened. The frame's own reads -- the identity read
+// behind the product header -- pass `frame: true` and belong to no screen.
+//
+// A ROUTE CAN SHOW TWO SCREENS: the agent inspector over the Agents list. The
+// list is never unmounted while the inspector is open, so opening, switching
+// and closing the inspector change the route and leave the list exactly as it
+// was -- it re-reads only on its next poll. So a route has a PAGE, the screen
+// the rail points at, and at most one INSPECTOR over it:
+//
+//   - the page's reads carry on across the inspector: a route whose page is
+//     the page already open keeps that page's reads, rather than starting from
+//     nothing beside a list that is fully drawn and asking for nothing. That
+//     was the defect -- close the drawer and the head said "reading…" with no
+//     read in flight, for up to 30s, or for good once polling had stopped;
+//   - the inspector's reads are its own, and start from nothing whenever the
+//     route changes (each pane is its own `Screen` and reads on mount);
+//   - a read the page asked for is the PAGE's even while an inspector is open,
+//     so the list's polls neither pass for the inspector's reads nor go
+//     missing from the list's own age. `Screen` says which it is by calling
+//     its load inside `pageReads`; anything else is the inspector's when one
+//     is open, and the page's when not.
+//
+// A screen re-entered through another page is still a screen re-read: only
+// the page open at the moment of the route change carries on.
+
+export interface ScreenReads {
+  /** The route these are about, or null before any screen has begun. */
+  key: string | null
+  /** Reads started and not yet settled. */
+  inFlight: number
+  /** Reads that settled, one way or the other. */
+  settled: number
+  /** Settled reads that failed, the admin gate excepted. */
+  failed: number
+  /** The newest successful payload any of this screen's reads produced. */
+  newestSuccessAt: number | null
+}
+
+/** One screen's reads. `page` names the page it is, for an inspector null. */
+type Scope = Omit<ScreenReads, 'key'> & { page: string | null }
+
+/** One route: its page's reads, and the inspector's over it if one is open. */
+interface Frame {
+  key: string | null
+  startedAt: number
+  page: Scope
+  inspector: Scope | null
+}
+
+const EMPTY_SCOPE: ScreenReads = { key: null, inFlight: 0, settled: 0, failed: 0, newestSuccessAt: null }
+
+function fresh(page: string | null): Scope {
+  return { page, inFlight: 0, settled: 0, failed: 0, newestSuccessAt: null }
+}
+
+/** Newest last. Kept short: only a read's START is ever looked up in it. */
+let frames: Frame[] = []
+let screenSnapshot: ScreenReads = EMPTY_SCOPE
+const screenListeners = new Set<() => void>()
+/** Above zero while `pageReads` is running a page's load. */
+let pageDepth = 0
+
+function currentFrame(): Frame {
+  const last = frames[frames.length - 1]
+  if (last !== undefined) return last
+  // Before any screen has begun (a read from a module-level load, a test that
+  // renders a component alone): an unnamed frame, which no head ever shows.
+  const frame: Frame = { key: null, startedAt: 0, page: fresh(null), inspector: null }
+  frames.push(frame)
+  return frame
+}
+
+/** The route that was open at `t`. */
+function frameAt(t: number): Frame {
+  for (let i = frames.length - 1; i >= 0; i--) {
+    const f = frames[i]!
+    if (f.startedAt <= t) return f
+  }
+  return frames[0] ?? currentFrame()
+}
+
+/** The screen the head speaks for on a route: the inspector, if one is open. */
+function shownBy(frame: Frame): Scope {
+  return frame.inspector ?? frame.page
+}
+
+function publishScreenReads(): void {
+  const f = currentFrame()
+  const s = shownBy(f)
+  screenSnapshot = {
+    key: f.key,
+    inFlight: s.inFlight,
+    settled: s.settled,
+    failed: s.failed,
+    newestSuccessAt: s.newestSuccessAt,
+  }
+  for (const fn of screenListeners) fn()
+}
+
+/**
+ * A route is open. `page` is the page under an inspector -- the route with its
+ * task removed -- and is omitted when the route is a page by itself.
+ *
+ * A page's reads start from nothing -- a screen re-entered is a screen
+ * re-read, and the age of its last visit is not the age of what it is about to
+ * draw -- UNLESS it is the page already open: then it never unmounted, and its
+ * reads carry on (above). An inspector's reads always start from nothing.
+ */
+export function beginScreenReads(key: string, page: string | null = null): void {
+  const pageKey = page ?? key
+  const last = frames[frames.length - 1]
+  frames.push({
+    key,
+    startedAt: Date.now(),
+    page: last !== undefined && last.page.page === pageKey ? last.page : fresh(pageKey),
+    inspector: page === null ? null : fresh(null),
+  })
+  if (frames.length > 8) frames = frames.slice(-8)
+  publishScreenReads()
+}
+
+/**
+ * Run a PAGE's load: every read it starts before its first `await` is the
+ * page's, even while an inspector is open over it. `Screen` calls its load
+ * through this when it is the page (`RoutedPage` in Shell.tsx). A read started
+ * after that first `await` is outside it, and follows the route's own rule.
+ */
+export function pageReads<T>(load: () => T): T {
+  pageDepth += 1
+  try {
+    return load()
+  } finally {
+    pageDepth -= 1
+  }
+}
+
+export function subscribeScreenReads(fn: () => void): () => void {
+  screenListeners.add(fn)
+  return () => screenListeners.delete(fn)
+}
+
+/** Identity-stable between changes, for `useSyncExternalStore`. */
+export function screenReadsSnapshot(): ScreenReads {
+  return screenSnapshot
+}
+
+/** A live read has started, on behalf of the screen open now (or the frame). */
+function startScreenRead(frame: boolean): (outcome: 'ok' | 'failed' | 'admin') => void {
+  if (frame) return () => {}
+  const route = currentFrame()
+  const scope = pageDepth > 0 ? route.page : shownBy(route)
+  scope.inFlight += 1
+  publishScreenReads()
+  return (outcome) => {
+    scope.inFlight -= 1
+    scope.settled += 1
+    if (outcome === 'ok') scope.newestSuccessAt = Date.now()
+    else if (outcome === 'failed') scope.failed += 1
+    publishScreenReads()
+  }
+}
+
+export function subscribeProbes(fn: () => void): () => void {
+  probeListeners.add(fn)
+  return () => probeListeners.delete(fn)
+}
+
+export function probeSnapshot(): ProbeRecord[] {
+  if (snapshotStale) {
+    snapshot = Array.from(probes.values()).sort((a, b) => a.path.localeCompare(b.path))
+    snapshotStale = false
+  }
+  return snapshot
+}
+
+/**
+ * Empty the registry, so "nothing has loaded in this tab" is true again.
+ *
+ * WHY THIS EXISTS. `probes` is module state, and module state in a test file
+ * outlives the test that wrote it: Vitest isolates per FILE, not per test. So
+ * one test that renders `<App />` and lets a fixture read land leaves a
+ * `lastSuccessAt` behind, and the NEXT test in that file sees a head that says
+ * "newest read just now" over a render in which nothing has read anything.
+ *
+ * That is not hypothetical. `shell.test.tsx`'s B3 head assertion -- "a head
+ * that rendered a zero age against no successful read would be the defining
+ * bug of this product, in the frame" -- failed for exactly this reason on
+ * every run of that file on its own, and passed in the full suite only because
+ * the tests before it happened to finish before the 300ms fixture landed. A
+ * guard that holds only when it runs first is the failure mode this suite was
+ * built to remove, so `setup.ts` calls this between tests the same way
+ * `restoreMocks` puts a stubbed global back.
+ *
+ * Nothing in the running application calls it. The app has one registry for
+ * the life of the tab, which is the thing the head's age is an age OF.
+ */
+/*
+ * TWO LANES WROTE THIS FUNCTION INDEPENDENTLY and git merged both copies
+ * without a conflict, because they landed in different parts of the file.
+ * TypeScript caught the redeclaration; nothing else would have. The surviving
+ * body is the stricter of the two -- it empties `snapshot` as well as marking
+ * it stale, so a reader that ignores the flag cannot serve the old array.
+ */
+export function forgetProbes(): void {
+  probes.clear()
+  snapshot = []
+  snapshotStale = true
+  for (const fn of probeListeners) fn()
+  // The screen's own reads are the same module state for the same reason, and
+  // the head's "reading…" is exactly as untestable if one test's landed read
+  // survives into the next.
+  frames = []
+  pageDepth = 0
+  screenSnapshot = EMPTY_SCOPE
+  for (const fn of screenListeners) fn()
+  // And the last tenant switch, which is about one page of one test's app,
+  // and the last preferences refusal, which is about the same app.
+  lastSwitch = null
+  preferencesDown = null
+  // And the reads in flight: one test's request that never settled must not
+  // be joined by the next test's read of the same URL.
+  inFlight.clear()
+  settled.clear()
+}
+
+// ---------------------------------------------------------------------------
+// The tenant switcher (owner decision 2026-10-01; docs/multi-tenancy.md)
+// ---------------------------------------------------------------------------
+// A caller in more than one registered tenant group picks which one the
+// console works in. The pick is sent as `X-Swarm-Tenant` on EVERY request, and
+// it leaves from here and nowhere else: `read` and `write` below, and the two
+// submit paths that call `fetch` themselves, all build their headers with
+// `apiHeaders`. A request that forgot it would act on the DEFAULT tenant while
+// the spine shows another -- a submit filed where its author is not looking.
+//
+// The header SELECTS; it never grants. The API honours it only when the tenant
+// is one Cloud Identity confirmed for this caller on that request, and answers
+// anything else with a 403 coded `tenant_not_member` before reading or writing
+// a thing. Nothing here decides membership.
+
+/** The request header the API reads (`swarm_api.auth.TENANT_HEADER`). */
+export const TENANT_HEADER = 'X-Swarm-Tenant'
+/** The key the choice is kept under, in this TAB's `sessionStorage` (Q2). */
+export const TENANT_PREF = 'swarm.tenant'
+/** The API's code for a header naming a tenant the caller is not verified in. */
+export const TENANT_REFUSED = 'tenant_not_member'
+/**
+ * The API's code for a request that named no workspace while the caller's
+ * preferences could not be read (`errors.py::PreferencesUnavailable`, Q9): the
+ * default workspace is unknown, so nothing was done. Picking a workspace sends
+ * the header, which needs no preferences.
+ */
+export const PREFERENCES_UNAVAILABLE = 'preferences_unavailable'
+/** The query parameter standing in for the header on the routes a browser
+ *  fetches by itself -- `<img src>`, download and open links (`tenantQuery`). */
+export const TENANT_QUERY = 'tenant'
+
+const tenantListeners = new Set<() => void>()
+
+/*
+ * THE SWITCH LASTS FOR THE TAB'S SESSION (docs/design/user-profile.md §4.5,
+ * Q2, owner's answer 2026-10-17). A reload keeps it; a new window or tab opens
+ * in the person's default workspace, which the API applies to a request that
+ * names none. Before the default existed the pick lived in `localStorage` and
+ * lasted forever in that browser, so it would pin a person past the default
+ * they later set. That old entry is removed ONCE per page load, the first time
+ * the choice is read or written, and never honoured: a choice the person made
+ * in this tab is the only one that outranks their default.
+ */
+let legacyCleared = false
+
+function clearLegacyChoice(): void {
+  if (legacyCleared) return
+  legacyCleared = true
+  try {
+    globalThis.localStorage?.removeItem(TENANT_PREF)
+  } catch {
+    /* refused: it is never read, so it pins nobody */
+  }
+}
+
+/**
+ * The choice, or null for "the default tenant". Every storage access is inside
+ * try/catch: storage throws in a private window, and losing the console to a
+ * preference is no trade.
+ */
+export function chosenTenant(): string | null {
+  clearLegacyChoice()
+  try {
+    const v = globalThis.sessionStorage?.getItem(TENANT_PREF) ?? null
+    return v === null || v === '' ? null : v
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Store (or, with null, forget) the choice, and tell the shell to re-read.
+ * Null is "Back to default": the API's default applies from the next request.
+ *
+ * Nothing is kept in memory when storage refuses: the default tenant is always
+ * safe, so a window that cannot remember the pick works in the default,
+ * visibly, rather than in a pick that vanishes on the next reload.
+ */
+export function chooseTenant(id: string | null): void {
+  clearLegacyChoice()
+  try {
+    if (id === null || id === '') globalThis.sessionStorage?.removeItem(TENANT_PREF)
+    else globalThis.sessionStorage?.setItem(TENANT_PREF, id)
+  } catch {
+    /* refused: the default tenant stays in force */
+  }
+  // A pick names a workspace, so a request no longer needs the unreadable
+  // preferences; and "Back to default" asks again whether they are readable.
+  notePreferencesUnavailable(null)
+  for (const fn of tenantListeners) fn()
+}
+
+export function subscribeTenant(fn: () => void): () => void {
+  tenantListeners.add(fn)
+  return () => tenantListeners.delete(fn)
+}
+
+/*
+ * THE LAST `preferences_unavailable` (§4.5, Q9). A request that named no
+ * workspace was refused because the default is unknown. It is raised like any
+ * error to the screen that made it, and ALSO kept here, so the panel can say it
+ * beside the switcher, where the next action -- name a workspace -- is taken.
+ * Memory only; cleared by a pick or "Back to default" (`chooseTenant`).
+ */
+let preferencesDown: string | null = null
+const preferencesListeners = new Set<() => void>()
+
+function notePreferencesUnavailable(message: string | null): void {
+  if (preferencesDown === message) return
+  preferencesDown = message
+  for (const fn of preferencesListeners) fn()
+}
+
+/** Record a refusal: only a headerless 503 coded `preferences_unavailable`. */
+function notePreferencesRefusal(status: number, code: string | null, sent: string | null, message: string): void {
+  if (status === 503 && code === PREFERENCES_UNAVAILABLE && sent === null) notePreferencesUnavailable(message)
+}
+
+/** The API's message for the last headerless `preferences_unavailable`, or null. */
+export function preferencesUnavailableSnapshot(): string | null {
+  return preferencesDown
+}
+
+export function subscribePreferencesUnavailable(fn: () => void): () => void {
+  preferencesListeners.add(fn)
+  return () => preferencesListeners.delete(fn)
+}
+
+/** One side of a switch: the tenant id and the name the API gave it. */
+export interface TenantSide {
+  id: string
+  name: string
+}
+
+/**
+ * THE LAST SWITCH, while the page it was made on is open (intake-tenants.html
+ * 2A). The shell writes it when the person picks another tenant; a KEPT form
+ * (Submit's) reads it to say which tenant it will now submit as, and to offer
+ * the way back. `kept` says whether the page was a kept form: a switch on any
+ * other page remounts it, and there is nothing to say on it afterwards.
+ *
+ * Memory only. It describes one page's life, so it is cleared on the next
+ * page (`clearTenantSwitch`) and never stored.
+ */
+export interface TenantSwitch {
+  from: TenantSide
+  to: TenantSide
+  kept: boolean
+}
+
+let lastSwitch: TenantSwitch | null = null
+const switchListeners = new Set<() => void>()
+
+export function noteTenantSwitch(next: TenantSwitch): void {
+  lastSwitch = next
+  for (const fn of switchListeners) fn()
+}
+
+export function clearTenantSwitch(): void {
+  if (lastSwitch === null) return
+  lastSwitch = null
+  for (const fn of switchListeners) fn()
+}
+
+export function tenantSwitchSnapshot(): TenantSwitch | null {
+  return lastSwitch
+}
+
+export function subscribeTenantSwitch(fn: () => void): () => void {
+  switchListeners.add(fn)
+  return () => switchListeners.delete(fn)
+}
+
+/**
+ * `base`, plus `X-Swarm-Tenant` when a tenant was chosen. THE one place.
+ * `tenant` is the read's own (`FetchOptions.tenant`); omitted, the choice.
+ */
+export function apiHeaders(base: Record<string, string>, tenant: string | null = chosenTenant()): Record<string, string> {
+  return tenant === null ? { ...base } : { ...base, [TENANT_HEADER]: tenant }
+}
+
+/**
+ * `query`, plus `tenant=<chosen>` when a tenant was chosen: the header's
+ * stand-in for a URL the BROWSER fetches (an `<img src>`, a download `href`),
+ * which can carry no header. The API accepts it on those routes only
+ * (`swarm_api.auth.TENANT_QUERY_ROUTES`) and validates it exactly as the
+ * header -- it selects among verified memberships and never grants one.
+ */
+export function tenantQuery(query: URLSearchParams): URLSearchParams {
+  const out = new URLSearchParams(query)
+  const tenant = chosenTenant()
+  if (tenant !== null) out.set(TENANT_QUERY, tenant)
+  return out
+}
+
+/**
+ * A `tenant_not_member` 403 for a request that carried `sent`: forget the
+ * choice -- the caller left that group, or an admin unregistered it -- so the
+ * default is used from the next request on. True when it dropped something.
+ * Only when the stored value is still the one that was refused: a switch made
+ * while the request was in flight is a newer decision and is kept.
+ */
+export function dropRefusedTenant(status: number, code: string | null, sent: string | null): boolean {
+  if (status !== 403 || code !== TENANT_REFUSED || sent === null) return false
+  if (chosenTenant() === sent) chooseTenant(null)
+  return true
+}
+
+export interface FetchOptions {
+  /** Previous data, if any. A failure with data in hand becomes `stale`. */
+  previous?: { data: unknown; fetchedAt: number; serverAt?: string } | null
+  signal?: AbortSignal
+  /**
+   * A read the FRAME makes, not the screen -- the product header's identity
+   * read. It registers in the tab-wide registry like any other, and it is not
+   * the screen's, so the head's age never counts it (CH-2).
+   */
+  frame?: boolean
+  /**
+   * Send THIS tenant's `X-Swarm-Tenant` instead of the chosen one, for this
+   * read only, without changing the choice: the 404 probe of the person's
+   * other workspaces (elsewhere.tsx). Only ever a workspace the profile listed -- the header selects,
+   * the API still refuses any tenant it did not confirm. A refusal of it
+   * never drops the stored choice, which it is not.
+   */
+  tenant?: string
+}
+
+// ---------------------------------------------------------------------------
+// One request for identical reads in flight (live QA CH-20, 2026-10-11)
+// ---------------------------------------------------------------------------
+// The shell and the page each read `/v1/stats`, `/v1/capacity`,
+// `/v1/approvals` and `/v1/tenants/me` on load, and a finished agent's page
+// asked for its task 3 times and its attempts 4 times: components that mount
+// together, each asking for the same URL in the same instant. A GET that is
+// already in flight for the same URL, under the same tenant, is now JOINED
+// rather than sent again: one request, and every caller classifies the one
+// answer itself, so each still records its probe, settles its screen read and
+// applies its own `previous` and `isEmpty`.
+//
+// AND A JUST-SETTLED ANSWER, FOR THE ROUTES A PAGE LOAD ASKS FOR TWICE IN A
+// ROW. A finished agent's page reads its task and attempts in two waves: the
+// head first, then the panes it mounts once the head has landed, each asking
+// again for what the head just read -- never in flight together, so joining
+// alone left task 2, attempts 2. A read of a route in `REUSED_ROUTES` takes a
+// SUCCESSFUL answer that settled under `REUSE_SETTLED_MS` ago instead of
+// asking again, and keeps that answer's own `fetchedAt`, so its age is the
+// age of the data and never reads younger than it is. A failure is never
+// reused, so Try again always asks; a poll asks every 10 s or slower, so it
+// never meets its own last answer; and a WRITE starts a new generation
+// (`writes`): a read asked after a change was sent never takes, or joins, an
+// answer asked for before it, which would draw the state from before the
+// change as the state after it.
+//
+// Each caller gets its own copy of the body after the first, so a caller that
+// mutates what it was given cannot change another's. A caller's `signal`
+// abandons ITS wait at once; the request itself is aborted only when every
+// caller waiting on it has abandoned it.
+
+/**
+ * How old a successful answer may be for a read of a `REUSED_ROUTES` route to
+ * take it rather than ask again (live QA CH-20). Long enough to span one page
+ * load's second wave of reads, which the QA counted in the first 4 s; short
+ * enough that no poll (10 s and slower) ever meets its own last answer.
+ */
+export const REUSE_SETTLED_MS = 2_000
+
+/**
+ * The routes a page load reads in waves (CH-20): the shell's reads every page
+ * repeats, and the agent page's task, attempts, events and checkpoints. Keyed
+ * by `ApiRoute.template`, which has any literal query removed; the reuse
+ * itself is keyed by the full URL, so a different query is a different read.
+ */
+export const REUSED_ROUTES: ReadonlySet<string> = new Set([
+  '/v1/stats',
+  '/v1/capacity',
+  '/v1/approvals',
+  '/v1/tenants/me',
+  '/v1/tenants/mine',
+  '/v1/resource-classes',
+  '/v1/tasks/{id}',
+  '/v1/tasks/{id}/attempts',
+  '/v1/tasks/{id}/events',
+  '/v1/tasks/{id}/checkpoints',
+])
+
+/** What one GET brought back, before anyone classified it. */
+type Arrival =
+  | { kind: 'threw'; message: string }
+  | {
+      kind: 'answered'
+      /** When it arrived: a reused answer keeps it as its `fetchedAt`. */
+      at: number
+      status: number
+      ok: boolean
+      isJson: boolean
+      retryAfter: string | null
+      /** null when no body was read: a 2xx that is not JSON, or a non-JSON error. */
+      body: { read: true; value: unknown } | { read: false; message: string } | null
+    }
+
+interface InFlight {
+  readonly fetcher: typeof fetch
+  readonly promise: Promise<Arrival>
+  readonly controller: AbortController
+  waiting: number
+  handedOut: number
+}
+
+const inFlight = new Map<string, InFlight>()
+/** The last successful answer per read, for `REUSED_ROUTES` (see above). */
+const settled = new Map<string, { fetcher: typeof fetch; arrival: Arrival }>()
+/** Bumped by every write: reads asked after a write never join one asked before it. */
+let writes = 0
+
+function copyOf<T>(v: T): T {
+  if (typeof structuredClone === 'function') return structuredClone(v)
+  return JSON.parse(JSON.stringify(v)) as T
+}
+
+/** A read's fetch options that never vary: the IAP cookie, same origin only. */
+const READ_INIT = { sameOrigin: 'same-origin' } as const satisfies Record<string, RequestCredentials>
+
+async function send(fetcher: typeof fetch, url: string, tenant: string | null, signal: AbortSignal): Promise<Arrival> {
+  let res: Response
+  try {
+    res = await fetcher(url, {
+      headers: apiHeaders({ accept: 'application/json' }, tenant),
+      // Behind IAP the browser already holds the session cookie; nothing here
+      // handles tokens, and nothing here should.
+      credentials: READ_INIT.sameOrigin,
+      signal,
+    })
+  } catch (err) {
+    return { kind: 'threw', message: err instanceof Error ? err.message : 'The request did not complete.' }
+  }
+  const isJson = (res.headers.get('content-type') ?? '').includes('application/json')
+  const answered = { kind: 'answered' as const, at: 0, status: res.status, ok: res.ok, isJson, retryAfter: res.headers.get('retry-after') }
+  if (!isJson) return { ...answered, at: Date.now(), body: null }
+  try {
+    const value = (await res.json()) as unknown
+    return { ...answered, at: Date.now(), body: { read: true, value } }
+  } catch (err) {
+    return { ...answered, at: Date.now(), body: { read: false, message: err instanceof Error ? err.message : 'The response body was not readable.' } }
+  }
+}
+
+/** A copy of an arrival's body, so no two callers hold the same object. */
+function handOut(a: Arrival): Arrival {
+  return a.kind !== 'answered' || a.body === null || !a.body.read ? a : { ...a, body: { read: true, value: copyOf(a.body.value) } }
+}
+
+/**
+ * The answer to `GET url` under `tenant`: a just-settled one when `reuse` and
+ * there is one, else the one in flight, else a new request.
+ */
+function arrive(url: string, tenant: string | null, signal: AbortSignal | undefined, reuse: boolean): Promise<Arrival> {
+  const key = `${writes}\n${tenant ?? ''}\n${url}`
+  const fetcher = globalThis.fetch
+  const kept = reuse ? settled.get(key) : undefined
+  if (kept !== undefined && kept.fetcher === fetcher && kept.arrival.kind === 'answered' && Date.now() - kept.arrival.at < REUSE_SETTLED_MS) {
+    return Promise.resolve(handOut(kept.arrival))
+  }
+  let entry = inFlight.get(key)
+  // A replaced `fetch` (a test's stub) is a different transport: never joined.
+  if (entry !== undefined && entry.fetcher !== fetcher) entry = undefined
+  if (entry === undefined) {
+    const controller = new AbortController()
+    const made: InFlight = { fetcher, controller, waiting: 0, handedOut: 0, promise: send(fetcher, url, tenant, controller.signal) }
+    void made.promise.then((a) => {
+      if (inFlight.get(key) === made) inFlight.delete(key)
+      // Only a success is kept: a failure is asked again by whoever asks next.
+      if (a.kind === 'answered' && a.ok && a.isJson && a.body?.read === true) settled.set(key, { fetcher, arrival: a })
+      else settled.delete(key)
+    })
+    inFlight.set(key, made)
+    entry = made
+  }
+  const shared = entry
+  shared.waiting += 1
+  return new Promise<Arrival>((resolve) => {
+    let done = false
+    const abandon = () => {
+      if (done) return
+      done = true
+      shared.waiting -= 1
+      if (shared.waiting === 0) {
+        if (inFlight.get(key) === shared) inFlight.delete(key)
+        shared.controller.abort()
+      }
+      const why = signal?.reason
+      resolve({ kind: 'threw', message: why instanceof Error ? why.message : 'The request was aborted.' })
+    }
+    if (signal?.aborted) {
+      abandon()
+      return
+    }
+    signal?.addEventListener('abort', abandon, { once: true })
+    void shared.promise.then((a) => {
+      if (done) return
+      done = true
+      signal?.removeEventListener('abort', abandon)
+      shared.handedOut += 1
+      // The first caller's copy too, once the answer may be kept for reuse.
+      resolve(shared.handedOut === 1 && !reuse ? a : handOut(a))
+    })
+  })
+}
+
+/**
+ * Drop every kept answer and abandon every read in flight: sign-out
+ * (signoutState.ts). The page is about to be left, but a read that lands in the
+ * moment before is one person's data, and nothing of it should be handed to a
+ * caller after they asked to leave. Bumping `writes` keys every later read
+ * apart from anything asked before.
+ */
+export function forgetReads(): void {
+  for (const entry of inFlight.values()) entry.controller.abort()
+  inFlight.clear()
+  settled.clear()
+  writes += 1
+}
+
+/** How many distinct GETs are in flight: for tests of the de-duplication. */
+export function readsInFlight(): number {
+  return inFlight.size
+}
+
+/**
+ * Perform one read and classify it completely.
+ *
+ * `isEmpty` decides whether a 2xx body counts as zero rows. It is a parameter
+ * rather than a guess, because "empty" is different per endpoint -- a capacity
+ * response with no pools and a task page with no tasks are both objects.
+ */
+export async function read<T>(
+  target: ApiRoute,
+  isEmpty: (data: T) => boolean,
+  opts: FetchOptions = {},
+): Promise<Result<T>> {
+  const previous = opts.previous ?? null
+  const asStale = (error: ApiError): Result<T> =>
+    previous
+      ? { status: 'stale', data: previous.data as T, fetchedAt: previous.fetchedAt, error }
+      : { status: 'error', error }
+
+  const startedAt = Date.now()
+  const settle = startScreenRead(opts.frame === true)
+  const note = (
+    status: number | null,
+    kind: ApiErrorKind | null,
+    ok: boolean,
+    /** When the data arrived, for a reused answer older than this read. */
+    at: number = Date.now(),
+  ): void => {
+    recordProbe({
+      path: target.template,
+      lastUrl: target.url,
+      lastStatus: status,
+      lastKind: kind,
+      lastLatencyMs: Date.now() - startedAt,
+      lastAttemptAt: Date.now(),
+      lastSuccessAt: ok ? Math.min(at, Date.now()) : null,
+    })
+    settle(ok ? 'ok' : kind === 'admin_required' ? 'admin' : 'failed')
+  }
+
+  const probing = opts.tenant !== undefined
+  const tenant = opts.tenant ?? chosenTenant()
+  const arrived = await arrive(target.url, tenant, opts.signal, REUSED_ROUTES.has(target.template))
+  if (arrived.kind === 'threw') {
+    // DNS, TLS, offline, CORS preflight, abort. Emphatically NOT "no data",
+    // and distinct from every 4xx: this one is never the user's fault.
+    note(null, 'unreachable', false)
+    return asStale({ kind: 'unreachable', httpStatus: null, code: null, message: arrived.message })
+  }
+
+  // THE ROW THAT MATTERS MOST.
+  //
+  // An expired IAP session does not arrive as a 401. The load balancer answers
+  // before swarm-api sees the request, with a 302 to Google's sign-in page,
+  // and `fetch` follows redirects by default -- so what lands here is a 200
+  // carrying HTML. The naive handler parses it, fails, and paints a calm,
+  // healthy, EMPTY platform. That is the status.sh incident reproduced in a
+  // browser.
+  //
+  // So the content-type is checked BEFORE the body, on every response
+  // including 2xx (`arrive` reads no body that is not JSON).
+  if (arrived.ok && !arrived.isJson) {
+    note(arrived.status, 'session_expired', false)
+    return asStale({
+      kind: 'session_expired',
+      httpStatus: arrived.status,
+      code: null,
+      message:
+        'The API answered with a page instead of data, which is how an expired sign-in arrives. Reload to sign in again.',
+    })
+  }
+
+  if (!arrived.ok) {
+    let env: ErrorEnvelope | null = null
+    const body = arrived.body
+    if (body !== null && body.read && isRecord(body.value)) {
+      // A bare FastAPI 500 is `{"detail": "Internal Server Error"}` -- no
+      // `code`, no `message`. Map its `detail` into the message so the
+      // panel is not blank, but leave `code` null. A body we cannot read is
+      // not a body that changes the diagnosis.
+      const v = body.value
+      env =
+        typeof v.message === 'string'
+          ? (v as ErrorEnvelope)
+          : { message: typeof v.detail === 'string' ? v.detail : undefined }
+    }
+    const ra = Number(arrived.retryAfter)
+    const classified = classifyFailure(arrived.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+    // Which route answered 404, for the copy (`ApiError.template`).
+    const err: ApiError = classified.kind === 'not_found' ? { ...classified, template: target.template } : classified
+    note(arrived.status, err.kind, false)
+    if (!probing) notePreferencesRefusal(arrived.status, err.code, tenant, err.message)
+    // A stored tenant the caller is no longer in: dropped, and this READ asked
+    // once more under the default. Only when the drop took: storage that
+    // refused the removal still holds the refused value, and asking again with
+    // it would be refused again, forever.
+    // A probe's tenant is not the stored choice: its refusal drops nothing.
+    if (!probing && dropRefusedTenant(arrived.status, err.code, tenant) && chosenTenant() !== tenant) return read(target, isEmpty, opts)
+    return asStale(err)
+  }
+
+  if (arrived.body === null || !arrived.body.read) {
+    // 2xx, content-type said JSON, body was not. Truncation or a proxy.
+    note(arrived.status, 'server_error', false)
+    return asStale({
+      kind: 'server_error',
+      httpStatus: arrived.status,
+      code: null,
+      message: arrived.body?.read === false ? arrived.body.message : 'The response body was not readable.',
+    })
+  }
+  const data = arrived.body.value as T
+
+  note(arrived.status, null, true, arrived.at)
+  // When the answer ARRIVED: a just-settled answer taken for this read keeps
+  // its own age (`REUSE_SETTLED_MS`), never the moment it was handed over.
+  const fetchedAt = arrived.at
+  // `generated_at` when the body carries one: the age that matters is the
+  // server's, not the moment the bytes arrived here.
+  const serverAt =
+    isRecord(data) && typeof data.generated_at === 'string' ? data.generated_at : undefined
+
+  if (isEmpty(data)) return { status: 'empty', fetchedAt, serverAt }
+  return { status: 'ok', data, fetchedAt, serverAt }
+}
+
+/**
+ * A mutation. Same contract as `read`, same classification, same rules.
+ *
+ * It shares `classifyFailure` and the content-type check deliberately: an expired
+ * IAP session arrives as a 200 carrying HTML on a PUT exactly as it does on a
+ * GET, and a second copy of that check is how the two would drift apart.
+ *
+ * There is no `empty` for a write. A mutation that succeeded returns `ok`
+ * whether or not the body carried anything, because the question "did this
+ * take effect" is answered by the status, not by the payload's length.
+ */
+export async function write(
+  target: ApiRoute,
+  // PATCH for `PATCH /v1/schedules/{id}` (docs/schedules.md §7.1), the one
+  // edit route that carries a revision rather than replacing the document.
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+  body?: unknown,
+): Promise<Result<unknown>> {
+  // A read asked from here on never joins one asked before this change (`arrive`).
+  writes += 1
+  const startedAt = Date.now()
+  // A write registers in the tab-wide registry and not as the screen's read:
+  // the head's age is "how old are the figures on this page", and a write
+  // draws no figure until the screen reads again.
+  const note = (status: number | null, kind: ApiErrorKind | null, ok: boolean): void =>
+    recordProbe({
+      path: target.template,
+      lastUrl: target.url,
+      lastStatus: status,
+      lastKind: kind,
+      lastLatencyMs: Date.now() - startedAt,
+      lastAttemptAt: Date.now(),
+      lastSuccessAt: ok ? Date.now() : null,
+    })
+
+  const tenant = chosenTenant()
+  let res: Response
+  try {
+    res = await fetch(target.url, {
+      method,
+      headers: apiHeaders({
+        accept: 'application/json',
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      }),
+      credentials: 'same-origin',
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  } catch (err) {
+    note(null, 'unreachable', false)
+    return {
+      status: 'error',
+      error: {
+        kind: 'unreachable',
+        httpStatus: null,
+        code: null,
+        message: err instanceof Error ? err.message : 'The request did not complete.',
+        method,
+      },
+    }
+  }
+
+  const isJson = (res.headers.get('content-type') ?? '').includes('application/json')
+
+  // A SUCCESS WITH NOTHING IN IT IS STILL A SUCCESS. FastAPI's
+  // `Response(status_code=204)` carries no body and no content-type, and so
+  // does every removal route here (`DELETE /v1/qa-targets/{id}`,
+  // `DELETE /v1/repositories/{id}`); reading it as the sign-in page below told
+  // the person their removal was NOT saved when it was. An expired sign-in
+  // arrives as a page, which is never empty, so it still reaches that check.
+  if (res.ok && !isJson) {
+    let empty = res.status === 204 || res.status === 205
+    if (!empty) {
+      try {
+        empty = (await res.text()).trim() === ''
+      } catch {
+        // Unreadable is not empty: it falls through to the page check.
+      }
+    }
+    if (empty) {
+      note(res.status, null, true)
+      return { status: 'ok', data: null, fetchedAt: Date.now() }
+    }
+  }
+
+  if (res.ok && !isJson) {
+    note(res.status, 'session_expired', false)
+    return {
+      status: 'error',
+      error: {
+        kind: 'session_expired',
+        httpStatus: res.status,
+        code: null,
+        message:
+          'The API answered with a page instead of data, which is how an expired sign-in arrives. Your change was NOT saved. Reload to sign in again.',
+        method,
+      },
+    }
+  }
+
+  if (!res.ok) {
+    let env: { code?: unknown; message?: unknown; detail?: unknown } | null = null
+    if (isJson) {
+      try {
+        const parsed: unknown = await res.json()
+        if (isRecord(parsed)) {
+          env =
+            typeof parsed.message === 'string'
+              ? (parsed as { code?: unknown; message?: unknown; detail?: unknown })
+              : { message: typeof parsed.detail === 'string' ? parsed.detail : undefined }
+        }
+      } catch {
+        // A body we cannot read does not change the diagnosis.
+      }
+    }
+    const ra = Number(res.headers.get('retry-after'))
+    const error: ApiError = { ...classifyFailure(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined), method }
+    note(res.status, error.kind, false)
+    notePreferencesRefusal(res.status, error.code, tenant, error.message)
+    // Dropped, but a WRITE is not retried: the person chose that tenant for
+    // this change, and quietly filing it under the default instead is the one
+    // outcome worse than the refusal. The spine redraws on the default.
+    dropRefusedTenant(res.status, error.code, tenant)
+    return { status: 'error', error }
+  }
+
+  let data: unknown = null
+  try {
+    data = isJson ? await res.json() : null
+  } catch {
+    // The write SUCCEEDED; only the echo was unreadable. Reporting an error
+    // here would tell someone their change failed when it did not.
+    data = null
+  }
+  note(res.status, null, true)
+  return { status: 'ok', data, fetchedAt: Date.now() }
+}
+
+/**
+ * `enabled` is compared explicitly, never coerced.
+ *
+ * CLAUDE.md records `false // true` returning `true` in jq as a bug that has
+ * already cost this repository a working check -- a PAUSED pool reported as
+ * open, which is the one thing that column exists to show. The TypeScript
+ * equivalents are `pool.enabled ?? true` and `!pool.enabled` on a possibly
+ * absent field: both make "the key is missing" and "the value is false"
+ * indistinguishable.
+ */
+export function isPaused(v: { enabled?: unknown }): boolean {
+  return v.enabled === false
+}
+
+/**
+ * A missing number and a zero are different pixels. Returns an em dash for
+ * null/undefined, never "0".
+ */
+export function num(v: number | null | undefined): string {
+  return typeof v === 'number' && Number.isFinite(v) ? String(v) : '—'
+}

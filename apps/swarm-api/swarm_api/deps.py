@@ -1,0 +1,580 @@
+"""Composition root and FastAPI dependencies.
+
+Every collaborator the API uses is constructed here and hung off
+`app.state.ctx`, so the routes never reach for a global and a test can build the
+whole app around an in-memory Firestore and a static token verifier without
+patching a single import.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping
+
+import logging
+
+from fastapi import Depends, Header, Request
+
+from swarm_common.models import utcnow
+
+from .admins import build_admin_roles
+from .auth import (
+    TENANT_HEADER,
+    TENANT_QUERY,
+    TENANT_QUERY_ROUTES,
+    AuthContext,
+    Authenticator,
+    GoogleTokenVerifier,
+    IapAssertionVerifier,
+    PersonalTenants,
+    TokenVerifier,
+    require_admin,
+    require_continuation_route,
+)
+from .credentials import CredentialWriter, SecretManagerCredentials
+from .errors import ValidationFailed
+from .executioncancel import (
+    ExecutionCanceller,
+    NoExecutionCanceller,
+    PubSubExecutionCanceller,
+)
+from .forge import FirestoreSlotIndex, ForgeTokens, GitHubIssues, SecretManagerForgeTokens
+from .forge_installation import InstallationSource, build_installation_tokens
+from .forgewrite import GitHubWriter
+from .groups import CloudIdentityGroups, MembershipResolver
+from .inspect import InspectionService
+from .memberships import MembershipStore
+from .metrics import ApiMetrics
+from .objects import ObjectReader, build_object_reader
+from .outcomes import Outcomes
+from .preferences import build_preferences
+from .purge import ArtifactPurger, build_artifact_purger
+from .roles import RoleStore
+from .ratelimit import TokenBucketLimiter
+from .registry import WorkspaceRegistry
+from .rollup import WorkflowRollups
+from .service import SubmissionService
+from .specsigning import SpecSigner, signer_from_settings
+from .startup import StartupEstimates
+from .settings import ApiSettings
+from .store import Store
+from .voice import grant as voice_grant
+from .voice import sessions as voice_sessions
+from .waker import SchedulerWaker, waker_for
+from .workers import per_worker, per_worker_rate
+
+#: Sentinel for "the caller did not pass this", kept distinct from None because
+#: None is a real value for `objects` -- it is how a deployment says it has no
+#: artifact store at all.
+_MISSING = object()
+
+
+@dataclass
+class AppContext:
+    settings: ApiSettings
+    db: Any
+    store: Store
+    authenticator: Authenticator
+    submissions: SubmissionService
+    credentials: CredentialWriter
+    limiter: TokenBucketLimiter
+    metrics: ApiMetrics
+    waker: SchedulerWaker
+    #: Reads checkpoints and logs out of the artifact bucket. The SERVICE is
+    #: always present; the READER inside it may be None when no bucket is
+    #: configured, which the service turns into "no artifact store is
+    #: configured for this deployment" -- a deployment problem with a named
+    #: fix -- rather than into an empty list.
+    inspection: InspectionService
+    #: Derives a workflow's state from its steps, reports drift against the
+    #: stored copy, and writes the stored copy back. Constructed here like every
+    #: other collaborator so a test gets the shipped code path over an in-memory
+    #: Firestore rather than a patched import.
+    rollups: WorkflowRollups
+    #: GET /v1/outcomes and its maintenance route: derives the per-tenant
+    #: per-day rollup, writes it, drift-checks it, and holds the 60 s payload
+    #: cache. Built here, never at import, so the cache is per app and a test
+    #: gets the shipped code over an in-memory Firestore.
+    outcomes: Outcomes
+    #: The issue preview's reader of the caller's tenant's forge token
+    #: (`swarm-tenant-<tenant>-git`, archived issue 454 mock-up 1A), and the pinned-host
+    #: GitHub client it is sent with. Both build no client until used, so
+    #: `create_app()` still needs no credentials; tests inject fakes.
+    forge_tokens: ForgeTokens | None = None
+    forge: GitHubIssues | None = None
+    #: An issue run's writes back to GitHub -- its plan and status comments,
+    #: its pull request's keyword block (`issuesync`) -- with the same
+    #: tenant token, the same pinned host and no redirects.
+    forge_writer: GitHubWriter | None = None
+    #: The App's installation tokens for BACKGROUND reads (archived issue 1483,
+    #: swarm_api.forge_installation): the merge wake, the issue run's CI read,
+    #: the stranded-PR sweep and the index's head poll read with one when the
+    #: repository's owner has an installation, so they spend the App's quota
+    #: rather than a person's. None when `forge_installation_reads` is off;
+    #: every read then uses `forge_tokens`. Writes always use `forge_tokens`.
+    forge_installations: InstallationSource | None = None
+    #: Asks the reconciler to stop a cancelled task's execution (archived issue 627). Builds
+    #: no client until a cancel needs it; tests inject a recorder.
+    executions: ExecutionCanceller = NoExecutionCanceller()
+    #: The artifact bucket's DELETE side, held by `POST /v1/admin/history:purge`
+    #: and nothing else (purge.py); `inspection` keeps the read-only reader.
+    #: None when no bucket is configured. Builds no client until used.
+    artifact_purger: ArtifactPurger | None = None
+    #: `GET /v1/tasks/{id}/startup`'s per-tenant, per-profile estimate, held
+    #: for a few minutes (`swarm_api.startup`). Per app, never at import.
+    startup_estimates: StartupEstimates = field(default_factory=StartupEstimates)
+    now: Callable[[], Any] = utcnow
+    #: Workspace roles (`swarm_api.roles`, docs/design/workspace-roles.md):
+    #: the grant reader and its 15 s cache, the gate other routes call, and
+    #: the platform-admin audit `current_auth` runs. Per app, so its caches
+    #: are per instance; built from this context when not given.
+    roles: RoleStore | None = None
+
+    def __post_init__(self) -> None:
+        if self.roles is None:
+            self.roles = RoleStore(self.db, self.settings, metrics=self.metrics, now=self.now)
+
+    def ready(self) -> tuple[bool, str]:
+        """Readiness is a real Firestore round trip, not a hard-coded 200.
+
+        The control document is one small read that proves credentials, network
+        and the named database all work. A readiness probe that cannot fail is
+        worse than none: it makes a broken revision look healthy.
+        """
+        try:
+            self.store.get_control()
+        except Exception as exc:  # pragma: no cover - depends on live Firestore
+            return False, f"firestore unavailable: {type(exc).__name__}"
+        return True, "ok"
+
+
+def request_limiter(settings: Any, environ: Mapping[str, str] | None = None) -> TokenBucketLimiter:
+    """The per-principal token bucket of ONE uvicorn worker.
+
+    `requests_per_second` and `rate_limit_burst` are configured per INSTANCE
+    (`served_limits` serves them under those names), and each worker builds
+    its own bucket here, so each gets the instance's figures divided by the
+    worker count (`workers`, SWARM_API_WORKERS; owner's choice 2026-11-10).
+    Undivided, two workers would let a principal twice the rate and burst an
+    instance is configured for. One worker keeps today's figures. The
+    workers share one listening socket, so a principal's requests spread over
+    them: the instance's total stays the configured one, and a caller held by
+    one worker's half may retry and land on the other."""
+    return TokenBucketLimiter(
+        rate_per_second=per_worker_rate(settings.core.requests_per_second, environ),
+        burst=per_worker(settings.rate_limit_burst, environ),
+    )
+
+
+def build_firestore(settings: ApiSettings) -> Any:
+    from google.cloud import firestore
+
+    # The NAMED database, never `(default)`: this is a shared project and the
+    # default database belongs to other teams.
+    return firestore.Client(
+        project=settings.project_id,
+        database=settings.core.firestore_database,
+    )
+
+
+def _configured_preferences(db: Any, settings: ApiSettings) -> Any:
+    """The preferences store for the Authenticator, or None when no child key
+    is configured (see the call site)."""
+    prefs = build_preferences(db, settings)
+    return prefs if prefs.configured else None
+
+
+def build_context(
+    *,
+    settings: ApiSettings | None = None,
+    db: Any | None = None,
+    verifier: TokenVerifier | None = None,
+    groups: MembershipResolver | None = None,
+    credentials: CredentialWriter | None = None,
+    waker: SchedulerWaker | None = None,
+    metrics: ApiMetrics | None = None,
+    # The artifact-bucket reader. Injected by the tests with an in-memory one
+    # for the same reason `db` is: the inspection routes must be exercisable
+    # with no credentials and no network. `_MISSING` rather than None, because
+    # None is a MEANINGFUL value here -- it is how a caller says "this
+    # deployment has no artifact store" -- and a default of None would make
+    # that indistinguishable from "not supplied".
+    objects: ObjectReader | None | object = _MISSING,
+    now: Callable[[], Any] = utcnow,
+    # The step-spec signer (contract request 34). `_MISSING` means "from the
+    # settings": Cloud KMS when SPEC_SIGNING_KEY_VERSION is set, a refusal to
+    # start in a hardened environment without it. Tests inject a local key.
+    signer: SpecSigner | None | object = _MISSING,
+    # The issue preview's secret reader and forge client (archived issue 454). Secret
+    # Manager and api.github.com unless injected; neither builds a client here.
+    forge_tokens: ForgeTokens | None = None,
+    forge: GitHubIssues | None = None,
+    forge_writer: GitHubWriter | None = None,
+    # The background reads' installation tokens (archived issue 1483). `_MISSING` means
+    # "from the settings": built over the App's key when
+    # `forge_installation_reads` is on (it builds no client), None when off.
+    forge_installations: InstallationSource | None | object = _MISSING,
+    executions: ExecutionCanceller | None = None,
+    # The purge's bucket deleter (purge.py). `_MISSING` means "from the
+    # settings", as for `objects`; tests inject an in-memory one.
+    artifact_purger: ArtifactPurger | None | object = _MISSING,
+) -> AppContext:
+    settings = settings or ApiSettings.from_env()
+    db = db if db is not None else build_firestore(settings)
+    metrics = metrics or ApiMetrics()
+    store = Store(db, now=now)
+    # `require_audience` outside local development. google-auth SKIPS the `aud`
+    # check entirely when no audience is passed, so an unset API_AUDIENCE means
+    # any Google ID token from an allowed domain authenticates -- including one
+    # an unrelated third-party SaaS obtained when an employee signed in with
+    # Google, which it could then replay here as that employee. Nothing about a
+    # service running with the check off looks wrong, so it is refused at start.
+    verifier = verifier or GoogleTokenVerifier(
+        settings.core.api_audience, require_audience=settings.hardened
+    )
+    groups = groups or CloudIdentityGroups(
+        settings.project_id,
+        impersonate_user=settings.groups_impersonate_user,
+        ttl_seconds=settings.group_cache_ttl_seconds,
+    )
+    credentials = credentials or SecretManagerCredentials(settings.project_id)
+    waker = waker or waker_for(settings)
+    # OFF unless an audience is pinned. A verifier that accepts an assertion
+    # without checking which backend minted it would accept one issued to any
+    # IAP-protected resource anywhere, so "not configured" must mean "not used"
+    # rather than "used without the check".
+    iap = IapAssertionVerifier(settings.iap_audiences)
+    # Admin roles in Firestore (docs/workspaces.md §6.5), beside the
+    # configuration fallback the authenticator still reads.
+    authenticator = Authenticator(
+        settings, verifier, groups, iap=iap,
+        admin_roles=build_admin_roles(db, settings, now=now),
+        # A person's own ready personal workspace is their default tenant
+        # (archived issue 1200); read from the same named database.
+        personal=PersonalTenants(db),
+        # The `ready` job-made group and service records (docs/design/
+        # workspace-kinds.md §4.4), from the same named database. Without it
+        # every request reads the empty registry and no job-made workspace
+        # ever resolves or admits anyone.
+        registry=WorkspaceRegistry.from_settings(db, settings),
+        # A person's saved default workspace (docs/design/user-profile.md §4.5):
+        # without it `_with_default` returns at its first line and a request
+        # naming no workspace acts in the personal one, whatever the person
+        # saved in Settings › Profile (measured 2026-10-19 on SwarmCloud).
+        # Only when a child key is configured: with none, no preference can be
+        # read, and an unreadable default is a 503 for every request naming no
+        # workspace (Q9) -- right for an outage, wrong for a deployment that
+        # never had the key, which keeps today's computed default instead.
+        preferences=_configured_preferences(db, settings),
+        # Platform memberships (docs/design/join-requests.md §4.5, lane
+        # JOIN-WIRE): without it `_memberships_enabled` is false and
+        # PLATFORM_MEMBERSHIPS=true admits nobody. Nothing is read while the
+        # switch is off. The one instance: an approval writes through it
+        # (`ctx.authenticator.memberships`), so its eviction is what the
+        # person's next request reads.
+        memberships=MembershipStore(db, settings, metrics=metrics),
+    )
+    spec_signer = signer_from_settings(settings) if signer is _MISSING else signer
+    # Built before the submissions service, which reads a `merge_pr` workflow's
+    # pull request with them (archived issue 352), and handed to the context as the same two.
+    # The slot index lets every read resolve the slot a task would use
+    # (`forge.resolve_forge_slot`): a personal tenant has only its owner's.
+    forge_tokens = forge_tokens or SecretManagerForgeTokens(
+        settings.project_id, index=FirestoreSlotIndex(db))
+    forge_writer = forge_writer or GitHubWriter()
+    submissions = SubmissionService(
+        settings=settings, store=store, waker=waker, metrics=metrics, now=now,
+        signer=spec_signer,  # type: ignore[arg-type]
+        forge_tokens=forge_tokens,
+        forge_writer=forge_writer,
+    )
+    limiter = request_limiter(settings)
+    reader = (
+        build_object_reader(
+            bucket=settings.core.artifact_bucket, project_id=settings.project_id
+        )
+        if objects is _MISSING
+        else objects
+    )
+    inspection = InspectionService(
+        store=store,
+        objects=reader,  # type: ignore[arg-type]
+        scan_limit=settings.object_scan_limit,
+        max_log_bytes=settings.max_log_bytes,
+        default_log_bytes=settings.default_log_bytes,
+        min_log_bytes=settings.min_log_bytes,
+        # The clock `read_at` and every `age_seconds` are measured on (#184).
+        now=now,
+    )
+    rollups = WorkflowRollups(store=store, metrics=metrics)
+    outcomes = Outcomes(store=store, rollups=rollups, metrics=metrics, now=now)
+    return AppContext(
+        settings=settings,
+        db=db,
+        store=store,
+        authenticator=authenticator,
+        submissions=submissions,
+        credentials=credentials,
+        limiter=limiter,
+        metrics=metrics,
+        waker=waker,
+        inspection=inspection,
+        rollups=rollups,
+        outcomes=outcomes,
+        forge_tokens=forge_tokens,
+        forge=forge or GitHubIssues(),
+        forge_writer=forge_writer,
+        forge_installations=(
+            (build_installation_tokens(db, settings.project_id, now=now)
+             if settings.forge_installation_reads else None)
+            if forge_installations is _MISSING
+            else forge_installations  # type: ignore[arg-type]
+        ),
+        executions=executions or _execution_canceller(settings),
+        artifact_purger=(
+            build_artifact_purger(
+                bucket=settings.core.artifact_bucket, project_id=settings.project_id
+            )
+            if artifact_purger is _MISSING
+            else artifact_purger  # type: ignore[arg-type]
+        ),
+        now=now,
+    )
+
+
+def _execution_canceller(settings: ApiSettings) -> ExecutionCanceller:
+    if not settings.execution_cancel_enabled or not settings.execution_cancel_topic:
+        return NoExecutionCanceller()
+    return PubSubExecutionCanceller(settings.execution_cancel_topic)
+
+
+# --------------------------------------------------------------------------
+# FastAPI dependencies
+log = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------
+
+def get_context(request: Request) -> AppContext:
+    return request.app.state.ctx
+
+
+def current_auth(
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    serverless_authorization: str | None = Header(
+        default=None, alias="X-Serverless-Authorization"
+    ),
+    # Identity-Aware Proxy puts the authenticated identity here. A browser behind
+    # IAP sends NO Authorization header at all -- there is no Google ID token a
+    # single-page app can mint -- so for every web caller this is the only
+    # credential that arrives.
+    iap_assertion: str | None = Header(default=None, alias="X-Goog-IAP-JWT-Assertion"),
+    # The tenant switcher (`auth.TENANT_HEADER`). It SELECTS one of the
+    # caller's verified tenant memberships and never grants one: the
+    # authenticator refuses any value not among them, here, before the route
+    # body runs. Admin status does not read it.
+    requested_tenant: str | None = Header(default=None, alias=TENANT_HEADER),
+    ctx: AppContext = Depends(get_context),
+) -> AuthContext:
+    """Authenticate, then rate-limit by principal.
+
+    The Authorization header is consumed here and nowhere else. It is never
+    placed on `request.state`, never logged and never echoed in an error.
+
+    TWO HEADERS, because Cloud Run may claim one of them. When a service
+    requires IAM authentication, the platform validates the caller's token
+    itself; depending on configuration it can forward its OWN token in
+    `Authorization` and move the caller's original into
+    `X-Serverless-Authorization`. An app that reads only `Authorization` then
+    sees a token minted for the Cloud Run runtime rather than the human, and
+    rejects every request with "id token verification failed" while the same
+    token verifies correctly everywhere else.
+
+    So the caller's original is preferred when present. The header NAMES that
+    arrived are logged on failure -- never their values, which are full
+    impersonation of that caller's tenant.
+    """
+    presented = serverless_authorization or authorization
+    # The template, not the concrete path, exactly as `admin_auth` reads it.
+    path = getattr(request.scope.get("route"), "path", None)
+    route = (request.method.upper(), path) if path else None
+    # `?tenant=` is the header's stand-in on the routes a browser fetches by
+    # itself (`auth.TENANT_QUERY_ROUTES`), and on no other route. Both present
+    # and different is ambiguous, and refused rather than resolved by a rule
+    # the caller cannot see -- after the identity is verified, so an
+    # unauthenticated caller still sees only a 401. Otherwise the value goes
+    # through the same `_select_tenant` check as the header.
+    # A Voice it session grant (voice/grant.py) is judged on its own path,
+    # never the person's; both then pass the same checks below.
+    grant = request.headers.get(voice_grant.GRANT_HEADER)
+    if grant is not None:
+        auth = _voice_grant_auth(
+            request, ctx, grant, presented=presented, iap_assertion=iap_assertion,
+            requested_tenant=requested_tenant, route=route)
+    else:
+        conflicting = False
+        if route in TENANT_QUERY_ROUTES:
+            queried = request.query_params.get(TENANT_QUERY) or None
+            if queried is not None:
+                conflicting = bool(requested_tenant) and requested_tenant != queried
+                requested_tenant = queried
+        try:
+            auth = ctx.authenticator.authenticate(
+                presented, iap_assertion, tenant=None if conflicting else requested_tenant
+            )
+        except Exception as exc:
+            ctx.metrics.auth_failures.labels(kind=type(exc).__name__).inc()
+            log.warning(
+                "authentication failed (%s); auth headers present: %s",
+                type(exc).__name__,
+                ",".join(
+                    n for n, v in (
+                        ("Authorization", authorization),
+                        ("X-Serverless-Authorization", serverless_authorization),
+                    ) if v
+                ) or "none",
+            )
+            raise
+        if conflicting:
+            raise ValidationFailed(
+                f"{TENANT_HEADER} and ?{TENANT_QUERY}= name different tenants; send one."
+            )
+    # DEFAULT-DENY for a continuation-scoped account (contract request 30):
+    # here, in the dependency every route reaches -- directly, or through
+    # `tenant_scope`/`admin_auth` -- so a route added tomorrow is closed to that
+    # scope until someone adds it to `auth.CONTINUATION_ROUTES`. Before the
+    # limiter: a request that was never allowed costs the caller no budget.
+    require_continuation_route(auth, route)
+    # THE PLATFORM-ADMIN AUDIT (docs/design/workspace-roles.md §4.2.4, Q12):
+    # here, so every route reaches it -- directly, or through `tenant_scope`/
+    # `admin_auth` -- and a route added tomorrow is covered without anyone
+    # remembering. A platform admin acting in a group workspace they are not a
+    # member of, or one whose own role there is below what the route needs,
+    # has an `admin_audit` row written BEFORE the route body runs; a row that
+    # cannot be written is 503 and the route never runs. Before the limiter,
+    # as the continuation check: a refused request costs no budget.
+    acted = ctx.roles.audit_platform_admin(  # type: ignore[union-attr]
+        auth, method=request.method, route=path, path_params=dict(request.path_params))
+    if acted is not None:
+        # `main.observe` logs the response status on the same request.
+        request.state.platform_admin = (acted, auth.tenant_id, path or "unknown")
+    try:
+        ctx.limiter.check(auth.principal.email)
+    except Exception:
+        ctx.metrics.rate_limited.labels(tenant=auth.tenant_id).inc()
+        raise
+    request.state.tenant_id = auth.tenant_id
+    return auth
+
+
+#: Where `main.FrontDoor` leaves the values the error pages scrub
+#: (`main.SCRUB_STATE`; main imports this module, so it is restated, and
+#: tests/unit/control_plane/test_voice_grant.py holds the two equal).
+_SCRUB_STATE = "_scrub_values"
+
+
+def _voice_grant_auth(request: Request, ctx: AppContext, grant: str, *,
+                      presented: str | None, iap_assertion: str | None,
+                      requested_tenant: str | None,
+                      route: tuple[str, str] | None) -> AuthContext:
+    """A Voice it session grant -> the session's person (`voice.grant`).
+
+    The grant is a credential: before anything can fail it joins the values
+    every error page scrubs, and nothing here logs it -- a refusal is logged
+    by its class name and the route alone. Order: swarm-voice's identity
+    (401), the allowlist (403, before any document is read), the live
+    session (401), the person still allowed Voice it (403), then the
+    person's own resolution in the session's workspace."""
+    state = request.scope.setdefault("state", {})
+    state[_SCRUB_STATE] = (*(state.get(_SCRUB_STATE) or ()), grant)
+    try:
+        ctx.authenticator.voice_caller(presented, iap_assertion)
+        voice_grant.check_route(route)
+        session = voice_grant.resolve(
+            ctx.db, session_header=request.headers.get(voice_grant.SESSION_HEADER),
+            grant=grant)
+        people = tuple(getattr(ctx.settings, "voice_people", ()) or ())
+        if not voice_sessions.is_allowed(people, session.person):
+            raise voice_sessions.not_allowed()
+        if requested_tenant and requested_tenant != session.tenant_id:
+            raise voice_grant.RouteNotGranted(
+                "a Voice it grant acts only in its session's workspace")
+        auth = ctx.authenticator.authenticate_voice_grant(session)
+    except Exception as exc:
+        ctx.metrics.auth_failures.labels(kind=type(exc).__name__).inc()
+        log.warning("voice grant refused (%s) on %s", type(exc).__name__,
+                    " ".join(route) if route else "no route")
+        raise
+    voice_grant.write_audit(ctx.db, voice_grant.audit_row(
+        session, method=request.method.upper(), route=route[1] if route else "",
+        path_params=dict(request.path_params), at=ctx.now(),
+        quiet=request.headers.get(voice_grant.QUIET_HEADER)))
+    return auth
+
+
+def submission_scope(auth: AuthContext = Depends(current_auth)) -> str | None:
+    """`None` for an ordinary member (unfiltered, today's behaviour); the
+    caller's own email for a continuation-scoped one. ONE function so every
+    read route derives this the same way.
+
+    Every route in `auth.CONTINUATION_ROUTES` that reads a task or a workflow
+    declares it and hands it to `Store`, whose four reads take `submitted_by`
+    as a REQUIRED keyword -- so a layer that forgets it fails with a TypeError
+    rather than serving another member's task (contract request 30).
+    """
+    return auth.email if auth.member_scope else None
+
+
+def tenant_scope(
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> str:
+    """The caller's tenant id for a tenant-scoped route, through the guard.
+
+    WHY A ROUTE MUST NOT USE `auth.tenant_id` DIRECTLY. The id is derived from
+    the verified identity and can never be supplied by a caller -- that half was
+    always true -- but it is not UNIQUE to an identity. The frozen
+    `tenant_id_for_group` slugs the local part only, so two registered groups
+    can derive one id, and the personal-tenant prefix `u-` is one a group's own
+    slug can produce. A route that hands the raw string to the store is then
+    filtering by a value two unrelated principals both hold.
+
+    `SubmissionService.scope_for` compares the caller's tenant principal against
+    the one the tenant document was created for and refuses a mismatch, exactly
+    as `ensure_tenant` does on the submit paths. Declaring this dependency is
+    what makes that impossible to forget when a route is added, which is the
+    same reason the store owns the tenant filter rather than the routes.
+    """
+    return ctx.submissions.scope_for(auth)
+
+
+def admin_auth(
+    request: Request, auth: AuthContext = Depends(current_auth)
+) -> AuthContext:
+    """The dependency every admin route declares.
+
+    It hands `require_admin` the route being called -- method and template,
+    from the route FastAPI matched -- because that is what the narrow pool-admin
+    capability is decided on (`auth.POOL_ADMIN_ROUTES`). The template, not the
+    concrete path: `/v1/admin/limits/runner/{runner_profile}`, so a profile
+    name in the URL can never be spelled to look like some other route.
+
+    The template is the path in the router that DECLARES the route, not the
+    public URL: an `include_router(prefix=...)` is not part of it on the pinned
+    FastAPI (see the comment on `auth.POOL_ADMIN_ROUTES`).
+
+    No matched route (which FastAPI does not produce for a route that declared
+    this dependency) means no route to allow, and the full-admin rule applies.
+    """
+    path = getattr(request.scope.get("route"), "path", None)
+    route = (request.method.upper(), path) if path else None
+    return require_admin(auth, route)
+
+
+def paged_limit(ctx: AppContext, requested: int | None) -> int:
+    if requested is None:
+        return ctx.settings.default_page_size
+    if requested < 1:
+        raise ValidationFailed("limit must be at least 1")
+    return min(requested, ctx.settings.max_page_size)

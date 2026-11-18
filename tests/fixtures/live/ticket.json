@@ -1,0 +1,6 @@
+{
+  "ticket": "fixture.ticket",
+  "session_id": "live_att_fafe0d6de50c4ff39de9",
+  "expires_in": 30,
+  "socket_path": "/v1/live/live_att_fafe0d6de50c4ff39de9/stream"
+}

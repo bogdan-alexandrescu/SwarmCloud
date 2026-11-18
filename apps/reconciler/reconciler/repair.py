@@ -1,0 +1,3348 @@
+"""Repair, in the only order that cannot cause duplicate execution.
+
+    1. TERMINATE the execution        -- and confirm the backend accepted it
+    2. in ONE transaction, only now:
+       INVALIDATE the generation      -- a worker that wakes later fences itself
+       RELEASE the slot               -- through the frozen release
+       REPAIR the task state          -- back to READY, or FAILED if spent,
+                                         or CANCELLED if a cancel was requested
+
+Releasing before the kill is confirmed is what this module exists to prevent.
+Releasing returns a slot to the scheduler, which admits the next task in
+milliseconds, while the agent whose slot it was is still running: two agents,
+one task, one credential, one repository. So a termination that is not
+confirmed does not release. The cost of getting that wrong in the safe
+direction is one stuck slot until the next pass; the cost of getting it wrong
+in the other direction is silent data loss in a tenant's repository.
+
+THE FENCE IS NEVER WRITTEN ALONE (archived issue 560). It used to be step 1, committed in a
+transaction of its own before the kill, as a brake that did not depend on the
+backend. When the kill then failed, the pass returned with the task fenced and
+the lease held, and every later pass saw a superseded lease whose execution
+belonged to the obsolete-generation rule, whose kill failed the same way: on
+2026-10-04 four tasks held their leases for ten hours with nothing more ever
+written. A dead worker -- the only kind these rules fence -- is not polling,
+so the early brake bought little; the stuck rule, whose worker IS alive and
+polling, still fences alone (`_repair_stuck`). Now a pass that cannot finish
+writes nothing, and the next one starts again from a clean state.
+
+A WORKER THAT NEVER STARTED is its own evidence once its lease is
+`never_started_release_seconds` old (`_never_started_wait`): the kill need not
+be confirmed and the backend need not be readable, because the fence commits
+with the release and a worker checks its generation before it does anything
+(invariant 5). A worker that DID start is still held on proof (archived pull request 450).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
+from typing import Any, Protocol
+from urllib.parse import urlparse
+
+from swarm_common.models import EndCause, utcnow
+from swarm_common.profiles import RUNNER_PROFILES, resolve_backend
+from swarm_common.states import CONCURRENCY_STATES, TERMINAL_STATES, EventType, TaskState
+
+from .backends import (
+    Backend,
+    NamespacedBackend,
+    NamespacedListing,
+    Probe,
+    ProbeOutcome,
+    cancel_refused_as_not_running,
+    is_placeholder_execution_name,
+    termination_reason,
+)
+from .checkpoints import CheckpointCollector, CheckpointStore
+from .config import ReconcilerConfig
+from .finishwake import FinishAnnouncer, PubSubFinishAnnouncer
+from .detect import (
+    CLOUD_RUN,
+    ENDED_AT_STARTUP_STATES,
+    EVERY_VOLUME,
+    WORKER_EXIT_CANNOT_START,
+    Finding,
+    FindingKind,
+    WorkflowStall,
+    WorkflowStallKind,
+    cannot_start_candidates,
+    detect_all,
+    detect_empty_namespaces,
+    detect_lost_after_finish,
+    detect_orphan_executions,
+    detect_stale_leases,
+    detect_stalled_workflows,
+    detect_unused_job_resources,
+    normalise_executions,
+    sanitised,
+    scratch_report,
+    stuck_candidates,
+)
+from .model import (
+    AttemptView,
+    ControlSnapshot,
+    ExecutionView,
+    JobResourceView,
+    LeaseView,
+    TaskView,
+    Termination,
+    as_datetime,
+)
+from .plugingc import PluginCollector
+from .memory import OutOfMemory, out_of_memory_killed, stalled_at_memory_limit
+from .progress import assess
+from .startproblem import START_PROBLEM_STATES, start_problem_words
+from .startsteps import POD_STARTUP_STEPS, RUNNING_STEPS_WINDOW_SECONDS, StartRead
+from .store import NEVER_STARTED_STATES, ControlStore, RepairPlan
+
+#: The two lines the reconciler writes when it holds back, spelled ONCE.
+#:
+#: terraform/modules/monitoring/alerts.tf builds log-based metrics on these exact
+#: strings, and a log-based metric whose filter matches nothing is not an error
+#: anywhere -- it is a number that stays at zero and an alert that never fires.
+#: `test_reconciler_gke_namespaced.py` parses that file and asserts each appears
+#: verbatim in the `filter` of the metric that counts it -- not merely somewhere
+#: in the file, where a comment quoting it would do -- so rewording one here
+#: without the other fails a test instead of an alert.
+#:
+#: Why they are alerted on at all: from 2026-09-16 the GKE listing failed on
+#: essentially every pass, and nothing paged. On 2026-09-24 that blindness held
+#: five dead leases for hours, and the only record was a WARNING per lease per
+#: pass that nobody was watching.
+BACKEND_UNAVAILABLE = "backend unavailable; skipping its findings"
+NOT_REPAIRING = "not repairing: the backend that would hold this execution was unreadable"
+
+#: The line written when an unreleased lease has been past its TTL for longer
+#: than `held_lease_alert_minutes`, at ERROR, once per lease per hour
+#: (`HELD_ALERT_REPEAT_SECONDS`). Spelled once, here, for the same reason as
+#: the two above. On 2026-10-03 task_8fce64316ad14fc981fb's lease was held for
+#: five hours behind a per-pass WARNING; a hold must never be silent again.
+HELD_PAST_TTL = "lease held past its TTL; capacity is not being returned"
+#: How often HELD_PAST_TTL repeats for the same lease. Once an hour is loud
+#: enough to page on and quiet enough that one stuck lease does not drown the
+#: log at the one-minute tick.
+HELD_ALERT_REPEAT_SECONDS = 3600
+
+#: The ERROR written ONCE, when an execution is first marked wedged (archived issue 1822):
+#: Cloud Run refuses to cancel it as "not running" yet never records it
+#: finished, and no unreleased lease names it. Four such executions
+#: (`swarm-job-eng-mock-5lrt8` and three more, since 2026-10-04) wrote ~11.5k
+#: ERRORs a day and 8 Cloud Run calls a minute, one kill a pass each, while
+#: holding no slot at all.
+WEDGED_EXECUTION = "cloud run will not cancel this execution and no lease holds it; backing off"
+#: The first retry of a wedged execution, doubled on every refusal after it.
+#: Five passes: long enough to stop the per-pass flood, short enough that an
+#: execution Cloud Run was only slow to settle is retried within minutes.
+WEDGED_BACKOFF_BASE_SECONDS = 300
+#: The longest a wedged execution waits between kills: four tries a day. Not
+#: longer, because the only cost of a try is one call and one INFO line, and a
+#: try is what notices the day Cloud Run finally records it finished.
+WEDGED_BACKOFF_CAP_SECONDS = 6 * 3600
+#: How long a wedged record outlives its next try, as `expires_at`, so a TTL
+#: policy on that field can retire the record of an execution nobody lists.
+WEDGED_RECORD_RETENTION = timedelta(days=7)
+
+#: The wait before a task this pass reclaimed and requeued may run again, on
+#: its FIRST attempt (archived issue 1822). Not zero: on 2026-10-21 three tasks ended FAILED
+#: lost_worker after "lease silent for 104-117 s (grace 90 s)", each losing all
+#: three attempts back to back, because a lapse with a deterministic cause --
+#: the same step, the same memory, the same image -- recurred the moment the
+#: requeue made the task eligible. Thirty seconds is one heartbeat interval:
+#: short enough that a genuinely lost worker (a node gone, a pod evicted) costs
+#: almost nothing, long enough that the retry is not the same instant.
+REQUEUE_BACKOFF_BASE_SECONDS = 30
+#: Each further attempt waits this many times longer: 30 s, 2 min, 8 min. Four,
+#: not two, so the third attempt waits long enough for a transient cause (a
+#: provider hiccup, a node pool scaling) to have passed.
+REQUEUE_BACKOFF_FACTOR = 4
+#: The longest a reclaimed task waits: a task with a large `max_attempts` still
+#: retries within a quarter of an hour, and an operator watching it is not left
+#: wondering whether it will ever run again.
+REQUEUE_BACKOFF_CAP_SECONDS = 15 * 60
+
+
+def requeue_backoff_seconds(attempt_number: int) -> int:
+    """How long a task reclaimed on its `attempt_number`-th attempt waits (archived issue 1822).
+
+    `attempt_number` is the task's `attempt_count` as the pass read it: 1 on a
+    first attempt. Anything below 1 counts as 1."""
+    n = max(1, int(attempt_number))
+    if n > 16:
+        # Past any real attempt count, and past the cap long before: keeps the
+        # power from growing without bound on a corrupt counter.
+        return REQUEUE_BACKOFF_CAP_SECONDS
+    return min(
+        REQUEUE_BACKOFF_BASE_SECONDS * REQUEUE_BACKOFF_FACTOR ** (n - 1),
+        REQUEUE_BACKOFF_CAP_SECONDS,
+    )
+
+#: The line written once per eviction -- a stuck attempt fenced, or a Job left
+#: running terminated -- so an operator can find every one with a single
+#: filter (docs/runbooks/browser-eviction.md). The persisted pass carries the
+#: same outcome.
+EVICTED = "evicted a GKE job"
+#: The same line for a stalled Cloud Run attempt fenced by the no-progress
+#: rule (D5). Its own message, so the GKE filter above still finds exactly the
+#: GKE Jobs it always did and a Cloud Run fence is never reported as one.
+FENCED_STALLED_CLOUD_RUN = "fenced a Cloud Run attempt that made no progress"
+
+#: Findings repaired by terminating a Job and never by fencing it.
+_TERMINATE_ONLY = (FindingKind.LEFT_RUNNING,)
+#: What the reconciler writes as a lost-after-finish attempt's cause, at the
+#: head of its `error` (archived issue 380). Not an `EndCause`: that names how a TASK ended,
+#: and this repair leaves the task's own cause as its worker wrote it.
+LOST_AFTER_FINISH_CAUSE = FindingKind.LOST_AFTER_FINISH.value
+#: Findings repaired by fencing alone in the pass that finds them. See
+#: `_repair_stuck` for why the kill waits for the next pass.
+_FENCE_ONLY = (FindingKind.STUCK_NO_PROGRESS,)
+
+#: Findings whose attempt FAILS its task when its execution ended OOM-killed
+#: (archived issue 1926, `memory.out_of_memory_killed`): every finding that would otherwise
+#: requeue it on the evidence of how its worker ended. Not the cannot-start
+#: rule (it fails anyway, with the worker's cause), not the eviction rule (a
+#: node's pressure), not a leaseless or orphaned lease (no attempt of its own).
+_OUT_OF_MEMORY_KINDS = (
+    FindingKind.STALE_LEASE,
+    FindingKind.DEAD_WORKER,
+    FindingKind.MISSING_EXECUTION,
+    FindingKind.WORKER_ENDED_AT_STARTUP,
+)
+#: Of those, the ones whose attempt is also judged by its last heartbeats
+#: sitting at its memory limit (`memory.stalled_at_memory_limit`): a worker
+#: reclaimed for going silent or dead, which is what a stall at the limit does.
+_STALL_KINDS = (FindingKind.STALE_LEASE, FindingKind.DEAD_WORKER)
+
+#: The states a leaseless-task finding is about. Its fence and its requeue are
+#: each refused for a task that has left them since the snapshot -- parked,
+#: finished, or anything else a worker decided in the meantime (archived issue 332).
+_LEASELESS_STATES = tuple(sorted(CONCURRENCY_STATES, key=lambda state: state.value))
+
+#: What happens after a stuck attempt is fenced, written onto its event so the
+#: task's timeline says what to expect next.
+_AFTER_THE_FENCE = (
+    "the worker stops the agent at its next control poll and exits without "
+    "touching the lease or the task; a later pass releases the lease once the "
+    "Job has ended, terminating it first if it has not, and requeues or fails "
+    "the task by the retry rules"
+)
+
+#: The states a lease's task may be in while its worker can still be said
+#: never to have started. RUNNING is not one: only a worker writes it.
+_NEVER_STARTED_STATES = (TaskState.LEASED, TaskState.DISPATCHED, TaskState.STARTING)
+#: Set on a finding `_admit` let through on that evidence alone, so `_repair`
+#: releases it only behind a fence (archived issue 560).
+_NEVER_STARTED_DETAIL = "admitted_because_worker_never_started"
+
+#: The silence findings the never-started requeue applies to (part of archived issue 2688):
+#: a lease reclaimed for silence, with or without an execution still listed.
+#: Not the ended-at-startup rule, which has its own refund (archived issue 67), nor a
+#: missing execution, whose evidence is the backend's and not the lease's.
+_NEVER_STARTED_KINDS = (FindingKind.STALE_LEASE, FindingKind.DEAD_WORKER)
+#: What the event of a never-started requeue or failure says, in words.
+NEVER_STARTED_WHY = (
+    "its worker never started: no attempt reached STARTING before its lease "
+    "went silent, so nothing ran and the attempt is not counted"
+)
+
+#: The event each repaired state is announced with.
+_EVENT_FOR_REPAIR: dict[TaskState, EventType] = {
+    TaskState.READY: EventType.READY,
+    TaskState.FAILED: EventType.FAILED,
+    TaskState.CANCELLED: EventType.CANCELLED,
+}
+
+
+class _Disproved:
+    """`_admit`'s answer when a probe proved a finding WRONG.
+
+    A third answer beside "act on this" and "hold it back", and it has to be
+    distinct from both. Acting is what killed healthy agents: a missing_execution
+    raised only because a LIST failed was turned into a dead_worker by an active
+    Job found by name. Holding it back is wrong too -- it would be counted in
+    `findings_suppressed` and logged as NOT_REPAIRING, which pages after thirty
+    minutes, for an agent that is doing exactly what it should.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "DISPROVED"
+
+
+_DISPROVED = _Disproved()
+
+
+# ---------------------------------------------------------------------------
+# Account holds of a fenced attempt (archived issue 380)
+# ---------------------------------------------------------------------------
+
+
+class HoldReleaser(Protocol):
+    """Gives back every account hold stamped with one attempt. Returns how many."""
+
+    def release_attempt(self, *, task_id: str, attempt_id: str) -> int: ...
+
+
+#: The broker route, platform-only (`quota_broker.main`).
+RELEASE_ATTEMPT_HOLDS_PATH = "/v1/holds/release-attempt"
+
+_BROKER_TIMEOUT_SECONDS = 10
+
+
+def _identity_token(audience: str) -> str:
+    """This service's own Google ID token for `audience`.
+
+    The reconciler's service account is what makes the call a PLATFORM call:
+    the broker accepts it only when the account is on its
+    `PLATFORM_SERVICE_ACCOUNTS`, exactly as it accepts the sweep tick.
+    """
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token
+
+    return str(id_token.fetch_id_token(google_requests.Request(), audience))
+
+
+class BrokerHoldReleaser:
+    """The reconciler's client for the broker's `release-attempt` route.
+
+    One POST, no retry: the hold's own TTL, pruned by the broker's sweep, is
+    still the backstop, so a failed call costs what it cost before archived issue 380 and
+    nothing more. Standard library only for the request, as the worker's
+    account client is.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        audience: str | None = None,
+        token_fetcher: Any = None,
+        timeout: int = _BROKER_TIMEOUT_SECONDS,
+    ) -> None:
+        self._base = base_url.rstrip("/")
+        self._audience = (audience or self._base).rstrip("/")
+        self._fetch_token = token_fetcher or _identity_token
+        self._timeout = timeout
+
+    @classmethod
+    def from_env(cls) -> "BrokerHoldReleaser | None":
+        """`QUOTA_BROKER_URL` and `QUOTA_BROKER_AUDIENCE`, the names every other
+        broker client in this repository reads. None when the URL is unset: a
+        deployment with no broker has no account pool and so no holds."""
+        url = os.environ.get("QUOTA_BROKER_URL", "").strip()
+        if not url:
+            return None
+        audience = os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip() or None
+        return cls(url, audience=audience)
+
+    def release_attempt(self, *, task_id: str, attempt_id: str) -> int:
+        url = f"{self._base}{RELEASE_ATTEMPT_HOLDS_PATH}"
+        body = json.dumps({"task_id": task_id, "attempt_id": attempt_id}).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST")
+        req.add_header("Authorization", f"Bearer {self._fetch_token(self._audience)}")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"the quota broker answered {exc.code} on {RELEASE_ATTEMPT_HOLDS_PATH}"
+            ) from exc
+        except (urllib.error.URLError, OSError) as exc:
+            host = urlparse(url).hostname or self._base
+            raise RuntimeError(f"could not reach the quota broker at {host}: {exc}") from exc
+        try:
+            parsed = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("the quota broker answered with non-JSON") from exc
+        released = parsed.get("released") if isinstance(parsed, dict) else None
+        return int(released) if isinstance(released, int) else 0
+
+
+#: Reconciler's default for `hold_releaser`: read the environment. A sentinel
+#: rather than None, so None can still mean "no broker" when passed.
+_FROM_ENV: Any = object()
+
+
+@dataclass
+class RepairOutcome:
+    kind: str
+    reason: str
+    tenant_id: str | None = None
+    task_id: str | None = None
+    lease_id: str | None = None
+    execution: str | None = None
+    invalidated_to: int | None = None
+    terminated: bool = False
+    released: bool = False
+    repaired_to: str | None = None
+    deleted: str | None = None
+    skipped: str | None = None
+    actions: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "reason": self.reason,
+            "tenant_id": self.tenant_id,
+            "task_id": self.task_id,
+            "lease_id": self.lease_id,
+            "execution": self.execution,
+            "invalidated_to": self.invalidated_to,
+            "terminated": self.terminated,
+            "released": self.released,
+            "repaired_to": self.repaired_to,
+            "deleted": self.deleted,
+            "skipped": self.skipped,
+            "actions": self.actions,
+        }
+
+
+@dataclass(frozen=True)
+class SuppressedFinding:
+    """A finding this pass DETECTED and then declined to act on.
+
+    Kept apart from `findings` because the two numbers mean opposite things.
+    `findings` counts repairs attempted; this counts leases the reconciler knows
+    about and is deliberately leaving alone because it cannot see the backend
+    that would prove them dead. For six days both were folded into one number
+    that read `findings=0` -- a healthy pass and a blind one looked identical,
+    in the log line and in the persisted pass history alike.
+    """
+
+    kind: str
+    lease_id: str | None
+    task_id: str | None
+    backend: str | None
+    namespace: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "lease_id": self.lease_id,
+            "task_id": self.task_id,
+            "backend": self.backend,
+            "namespace": self.namespace,
+        }
+
+
+@dataclass
+class ReconcileReport:
+    started_at: datetime
+    finished_at: datetime | None = None
+    tasks_examined: int = 0
+    leases_examined: int = 0
+    executions_examined: int = 0
+    #: Executions under a `swarm-` job that carry no attempt id and are already
+    #: over -- mostly swarm-verify acceptance runs. Counted here, not logged one
+    #: by one: ~67k lines a day said nothing an operator could act on (archived issue 1822).
+    unattributed_finished: int = 0
+    findings: int = 0
+    #: Detected, then held back because what would prove them was unreadable.
+    #: See SuppressedFinding. Zero on a healthy pass; anything else is a lease
+    #: the platform is holding on purpose and somebody should know about.
+    findings_suppressed: int = 0
+    suppressed: list[SuppressedFinding] = field(default_factory=list)
+    #: backend -> namespace -> why it could not be read. A namespace here that
+    #: holds none of our attempts is noise (a registered tenant whose namespace
+    #: was never provisioned); one that does also appears in `errors`.
+    unreadable_namespaces: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: Unreleased leases past their TTL for longer than
+    #: `held_lease_alert_minutes`, with why this pass did not release them.
+    #: Empty on a healthy pass. Persisted with the pass, so a hold is on the
+    #: record even on a pass that logged no ERROR for it (see HELD_PAST_TTL).
+    held_past_ttl: list[dict[str, Any]] = field(default_factory=list)
+    #: Workflows that stopped making progress (archived issue 616), worst first, one row
+    #: each: workflow id, step, task, age, reason, and whether this pass
+    #: repaired it (`WorkflowStall.entry`). Persisted with the pass, which is
+    #: where the API's workflow list, the console's Overview and `sc trouble`
+    #: read them from. Empty on a healthy pass.
+    stalled_workflows: list[dict[str, Any]] = field(default_factory=list)
+    #: What the stall check examined: `examined`, `truncated`, `repaired`,
+    #: and `read_error` -- set when the workflows could not be read at all,
+    #: so a blind check reads as blind rather than as "nothing stalled".
+    #: None only on a pass that never reached the check.
+    workflow_check: dict[str, Any] | None = None
+    outcomes: list[RepairOutcome] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+    dry_run: bool = False
+    #: The checkpoint sweep's own counters. None when it did not run on this
+    #: pass -- which is the usual case, because it runs on its own slower clock.
+    #: None and a zero-filled report mean different things and are reported as
+    #: different things.
+    checkpoint_sweep: dict[str, Any] | None = None
+    #: The plugin copy sweep's counters and deletions (`plugingc`), None when
+    #: it did not run on this pass: it runs once a day.
+    plugin_gc: dict[str, Any] | None = None
+    #: `full` or `incremental`: whether this pass read every live task and
+    #: lease, or what changed since the last pass and what falls due before the
+    #: next (`Reconciler._snapshot`). `tasks_examined` and `leases_examined`
+    #: count what THIS pass read, so they are only comparable within one kind.
+    sweep: str = "full"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "started_at": self.started_at.isoformat(),
+            "sweep": self.sweep,
+            "finished_at": self.finished_at.isoformat() if self.finished_at else None,
+            "duration_seconds": (
+                round((self.finished_at - self.started_at).total_seconds(), 3)
+                if self.finished_at
+                else None
+            ),
+            "dry_run": self.dry_run,
+            "tasks_examined": self.tasks_examined,
+            "leases_examined": self.leases_examined,
+            "executions_examined": self.executions_examined,
+            "unattributed_finished": self.unattributed_finished,
+            "findings": self.findings,
+            "findings_suppressed": self.findings_suppressed,
+            "suppressed": [s.as_dict() for s in self.suppressed],
+            "unreadable_namespaces": {
+                backend: dict(namespaces)
+                for backend, namespaces in self.unreadable_namespaces.items()
+            },
+            "held_past_ttl": [dict(entry) for entry in self.held_past_ttl],
+            "stalled_workflows": [dict(entry) for entry in self.stalled_workflows],
+            "workflow_check": dict(self.workflow_check) if self.workflow_check else None,
+            "slots_released": sum(1 for o in self.outcomes if o.released),
+            "executions_terminated": sum(1 for o in self.outcomes if o.terminated),
+            "resources_deleted": sum(1 for o in self.outcomes if o.deleted),
+            "skipped": sum(1 for o in self.outcomes if o.skipped),
+            "checkpoint_sweep": self.checkpoint_sweep,
+            "plugin_gc": self.plugin_gc,
+            "outcomes": [o.as_dict() for o in self.outcomes],
+            "errors": self.errors,
+        }
+
+
+@dataclass
+class _Sight:
+    """What one pass could see, kept apart from what it may act through.
+
+    `handles` is every configured backend, readable or not. It is what a
+    termination is issued through, and it must NOT shrink when a listing fails:
+    a probe by name can find a live Job on a backend whose list was refused,
+    and the kill that must precede the release has to be sent somewhere. These
+    used to be one dict with the unreadable backends popped out, so a backend
+    that could not be listed could not be told to stop anything either.
+    """
+
+    handles: dict[str, Any] = field(default_factory=dict)
+    #: Backends whose listing succeeded -- for a namespaced backend, for at
+    #: least one namespace.
+    readable: set[str] = field(default_factory=set)
+    #: backend name -> its per-namespace listing, for namespaced backends only.
+    namespaced: dict[str, NamespacedListing] = field(default_factory=dict)
+    #: tenant id -> the namespace its document records (None if it records none).
+    tenant_namespaces: dict[str, str | None] = field(default_factory=dict)
+    executions: list[ExecutionView] = field(default_factory=list)
+    #: "<backend>:<execution_name>" -> the probe answer, so the two findings a
+    #: stranded lease produces (stale_lease, missing_execution) cost one GET.
+    probes: dict[str, Probe] = field(default_factory=dict)
+
+
+def _is_namespaced(backend: Any) -> bool:
+    return callable(getattr(backend, "list_executions_in", None))
+
+
+class Reconciler:
+    def __init__(
+        self,
+        *,
+        store: ControlStore,
+        backends: list[Backend | NamespacedBackend],
+        config: ReconcilerConfig,
+        logger: Any,
+        checkpoint_store: CheckpointStore | None = None,
+        hold_releaser: HoldReleaser | None = _FROM_ENV,
+        finish_announcer: FinishAnnouncer | None = _FROM_ENV,
+        plugin_gc: PluginCollector | None = None,
+    ) -> None:
+        self._store = store
+        # None: no pinned plugin copy is collected (`plugingc`).
+        self._plugin_gc = plugin_gc
+        self._backends = backends
+        self._config = config
+        self._log = logger
+        for variable in getattr(config, "ignored_stuck_overrides", ()):
+            # Once, here, at startup: `ReconcilerConfig.from_env` cannot log,
+            # and the variable is inert, so this line is the only sign of it.
+            self._log.warning(
+                "ignoring a stall threshold override that names no runner profile",
+                variable=variable,
+            )
+        # Who gives back a fenced attempt's account holds (archived issue 380). Built from
+        # the environment unless a caller supplies one; None means this
+        # deployment has no broker, and the holds age out on their TTL.
+        self._holds: HoldReleaser | None = (
+            BrokerHoldReleaser.from_env() if hold_releaser is _FROM_ENV else hold_releaser
+        )
+        # Who rings the scheduler's `task_finished` wake for a task a repair
+        # ended (archived issue 636, `finishwake`). From DISPATCH_TOPIC unless a caller
+        # supplies one; None means no wake, and the scheduler's safety tick
+        # releases the dependants as it did before.
+        self._finish: FinishAnnouncer | None = (
+            PubSubFinishAnnouncer.from_env()
+            if finish_announcer is _FROM_ENV
+            else finish_announcer
+        )
+        #: lease id -> when HELD_PAST_TTL was last logged for it, so it is
+        #: logged once per lease per hour. Per instance: a cold instance logs a
+        #: still-held lease once more, which errs toward being heard.
+        self._held_alerted: dict[str, datetime] = {}
+        #: attempt id -> the unended attempt of a finished task this pass read
+        #: (`_read_finished`). Reset every pass; `_admit` judges a
+        #: lost-after-finish finding on the backend this attempt names.
+        self._finished: dict[str, AttemptView] = {}
+        #: Where the next workflow stall check resumes (`_check_workflows`):
+        #: the last workflow id of a full page, None after a short one. Kept
+        #: across passes on purpose, as the scheduler's `_park_cursors` are:
+        #: that is what moves the window past `workflow_scan_limit` (archived issue 1822).
+        #: Per instance: a cold instance starts from the top.
+        self._workflow_cursor: str | None = None
+        #: The `taken_at` of this instance's last COMPLETED pass: the high-water
+        #: mark the next incremental pass reads changes after. None until a pass
+        #: completes, so an instance's first pass is a full sweep (on start).
+        #: Per instance, like `_workflow_cursor`: a second instance keeps its
+        #: own, and an older mark only ever reads more, never less.
+        self._cursor: datetime | None = None
+        #: Incremental passes since the last full sweep (`_sweep_is_full`).
+        self._since_full = 0
+        if self._finish is None:
+            # Said once, here, for the same reason as the broker below: a
+            # deployment missing DISPATCH_TOPIC rings no wake and would
+            # otherwise look exactly like one that rang every wake (archived issue 636).
+            self._log.warning(
+                "no wake topic configured (DISPATCH_TOPIC unset); a task a repair "
+                "ends releases its dependants on the scheduler's next tick"
+            )
+        if self._holds is None:
+            # Said once, here, because the per-fence path returns silently: a
+            # deployment missing QUOTA_BROKER_URL would otherwise look exactly
+            # like one with nothing to release.
+            self._log.warning(
+                "no quota broker configured (QUOTA_BROKER_URL unset); a fenced "
+                "attempt's account holds will count until their TTL"
+            )
+        # None disables the sweep outright. An environment with no artifact
+        # bucket configured gets no collector rather than one that deletes
+        # nothing quietly while claiming to have run.
+        self._checkpoints = (
+            CheckpointCollector(
+                reader=store, objects=checkpoint_store, config=config, logger=logger
+            )
+            if checkpoint_store is not None
+            else None
+        )
+
+    # ------------------------------------------------------------------
+    def run_once(self) -> ReconcileReport:
+        report = ReconcileReport(started_at=utcnow(), dry_run=self._config.dry_run)
+        snapshot = self._snapshot(report)
+        report.sweep = "full" if snapshot.full else "incremental"
+        report.tasks_examined = len(snapshot.tasks)
+        report.leases_examined = len(snapshot.leases)
+
+        sight = self._look(snapshot, report)
+        # Finished tasks whose attempt never recorded its end (archived issue 380). Read
+        # apart from the snapshot, which reaches attempts only through
+        # unreleased leases; read BEFORE an incremental pass scopes the
+        # executions, so a finished task's still-live Job stays in sight and
+        # its attempt is never written ended under it.
+        finished = self._read_finished(snapshot, report)
+        if not snapshot.full:
+            sight.executions = self._in_scope(snapshot, sight.executions, finished)
+        report.executions_examined = len(sight.executions)
+        # Both AFTER the listing, and in this order: the settled read decides
+        # whose task an execution is (and so its tenant), and the progress read
+        # is only for executions whose task is known.
+        self._read_settled(snapshot, sight.executions, report)
+        # Every task an unreleased lease names that `snapshot()` did not return,
+        # read by id BEFORE any rule may call that lease an orphan (archived issue 332).
+        self._read_lease_tasks(snapshot, report)
+        self._read_progress(snapshot, sight.executions, report)
+        # How the current attempts' FINISHED executions ended. Only those the
+        # cannot-start rule could act on, so an ordinary pass reads nothing.
+        self._read_terminations(snapshot, sight, report)
+
+        findings = [
+            *detect_all(
+                snapshot, sight.executions, self._config, now=snapshot.taken_at, logger=self._log
+            ),
+            *detect_lost_after_finish(
+                finished, sight.executions, self._config, now=snapshot.taken_at
+            ),
+        ]
+        actionable: list[Finding] = []
+        seen: set[tuple[str, str | None, str | None]] = set()
+        for finding in findings:
+            admitted = self._admit(finding, snapshot, sight)
+            if isinstance(admitted, _Disproved):
+                # Neither repaired nor held back: nothing is wrong. See _Disproved.
+                continue
+            if admitted is None:
+                report.suppressed.append(self._suppressed(finding, snapshot, sight))
+                continue
+            # A probe can turn a stale_lease and a missing_execution about the
+            # same lease into the same dead_worker; act on it once.
+            # A finding with no lease is told apart by its attempt: two
+            # lost-after-finish findings name none, and must not be one.
+            key = (
+                admitted.kind.value,
+                admitted.lease_id or admitted.attempt_id,
+                admitted.execution.name if admitted.execution else None,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            actionable.append(admitted)
+        # Re-sorted because a probe may have turned an absence into a
+        # dead_worker: anything that needs a kill goes first, so a pass never
+        # returns a slot for an execution it has not stopped yet.
+        actionable.sort(key=lambda f: (not f.requires_termination, f.kind.value))
+        report.findings = len(actionable)
+        report.findings_suppressed = len(report.suppressed)
+
+        # Leases whose execution this pass tried to stop and could not. The sort
+        # above runs every kill before any repair that only releases, so a
+        # lease-only finding about one of these would hand back a slot whose
+        # execution is still running -- the one thing the repair order exists
+        # to prevent. `detect_orphan_leases` already stands aside for an
+        # execution it can SEE in the listing; this covers the one it cannot:
+        # a Job found by name after its namespace's list failed.
+        unstopped: set[str] = set()
+        for finding in actionable:
+            kills = finding.execution is not None and finding.execution.is_active
+            if finding.lease_id in unstopped and not kills:
+                report.outcomes.append(self._held_for_unstopped(finding))
+                continue
+            try:
+                outcome = self._repair(finding, snapshot, sight.handles)
+            except Exception as exc:
+                message = f"{finding.kind.value} {finding.task_id or finding.lease_id}: {exc}"
+                self._log.exception("repair failed", exc, finding=finding.kind.value)
+                report.errors.append(message)
+                if kills and finding.lease_id:
+                    unstopped.add(finding.lease_id)
+                continue
+            report.outcomes.append(outcome)
+            if kills and finding.lease_id and not outcome.terminated and not self._config.dry_run:
+                unstopped.add(finding.lease_id)
+
+        # Why a DISPATCHED or STARTING task's pod is not starting (F1-POD).
+        # After the repairs, so nothing is recorded ahead of a kill; a record
+        # only, never fatal. See `_watch_starts`.
+        self._watch_starts(snapshot, sight, report)
+
+        self._watch_holds(snapshot, report)
+
+        # After the lease repairs, so a step this pass requeued is judged as it
+        # now stands. Never fatal: see `_check_workflows`.
+        self._check_workflows(snapshot, report)
+
+        # The full sweep's alone: garbage is an absence across the whole
+        # platform (no live task uses this Job, this namespace), and an
+        # incremental read is not the whole platform.
+        if self._config.enable_gc and snapshot.full:
+            self._collect_garbage(snapshot, sight, report)
+
+        try:
+            self._collect_checkpoints(report, now=snapshot.taken_at)
+        except Exception as exc:
+            # Storage cleanup never fails a pass that has already terminated
+            # executions and released leases: that work happened, and reporting
+            # the pass as failed would send a retry over state that is now
+            # correct. The error is on the report, not swallowed.
+            self._log.exception("checkpoint collection failed", exc)
+            report.errors.append(f"checkpoint_gc: {exc}")
+
+        try:
+            self._collect_plugins(report, now=snapshot.taken_at)
+        except Exception as exc:
+            # Never fatal, for the checkpoint sweep's reason above.
+            self._log.exception("plugin copy collection failed", exc)
+            report.errors.append(f"plugin_gc: {exc}")
+
+        report.finished_at = utcnow()
+        self._log.info("reconciliation pass complete", **{
+            k: v for k, v in report.as_dict().items() if k != "outcomes"
+        })
+
+        # Persist the pass. Until this existed the report lived only in a
+        # per-instance dict, and swarm-reconciler runs with min_instance_count =
+        # 0 -- so the platform's entire account of what went wrong at runtime
+        # was discarded whenever the service scaled down.
+        #
+        # Deliberately NOT fatal. A pass that has already terminated executions
+        # and released leases has done real work; failing it here would report
+        # that work as not having happened, and a caller retrying would
+        # re-examine state that is now correct. The write failing is worth
+        # knowing about, which is why it becomes an error on the report rather
+        # than a silent pass.
+        #
+        # A DRY RUN WRITES NOTHING, including this. "dry run changes nothing" is
+        # a guarantee worth keeping absolute: the moment it means "changes
+        # nothing except some bookkeeping", nobody can use it to answer "is it
+        # safe to run this against prod".
+        try:
+            if not self._config.dry_run:
+                self._store.record_pass(
+                    report.as_dict(), retain_hours=self._config.pass_retention_hours
+                )
+        except Exception as exc:
+            self._log.exception("could not persist the reconciliation pass", exc)
+            report.errors.append(f"record_pass: {exc}")
+
+        # Only now, with the pass complete: a pass that raised before here
+        # leaves the mark where it was, and the next pass reads its window again.
+        self._cursor = snapshot.taken_at
+        self._since_full = 0 if snapshot.full else self._since_full + 1
+        return report
+
+    # ------------------------------------------------------------------
+    # The incremental pass (the owner, 2026-11-06)
+    # ------------------------------------------------------------------
+    def _sweep_is_full(self) -> bool:
+        """Full on an instance's first pass, then every `full_sweep_every` passes."""
+        every = int(self._config.full_sweep_every)
+        return self._cursor is None or every <= 1 or self._since_full >= every - 1
+
+    def _snapshot(self, report: ReconcileReport) -> ControlSnapshot:
+        """This pass's read: a full sweep, or what changed and what falls due.
+
+        Between full sweeps the read is the changed tasks since this
+        instance's last pass (less `incremental_overlap_seconds`) and the
+        unreleased leases whose `expires_at` falls before the next tick. A
+        lease is judged silent at `heartbeat_grace_seconds`, and its worker
+        writes `expires_at` `lease_timeout_seconds` after its heartbeat, so
+        the window reaches that much further: a lease that goes silent before
+        the next tick is in this one.
+
+        Whatever the incremental read misses -- a writer that changed a task
+        without stamping `updated_at`, a clock skewed past the overlap, a
+        task whose own clock (stuck, cancel overdue) came due untouched --
+        the next full sweep reads, at most `full_sweep_every` ticks later.
+        An incremental read that FAILS falls back to the full one: the pass
+        must not be skipped for want of an index.
+        """
+        cursor = self._cursor
+        if cursor is None or self._sweep_is_full():
+            return self._store.snapshot()
+        now = utcnow()
+        changed_since = cursor - timedelta(
+            seconds=self._config.incremental_overlap_seconds
+        )
+        due_by = now + timedelta(
+            seconds=self._config.tick_seconds
+            + max(0, self._config.lease_timeout_seconds - self._config.heartbeat_grace_seconds)
+        )
+        try:
+            return self._store.incremental_snapshot(changed_since=changed_since, due_by=due_by)
+        except Exception as exc:
+            self._log.exception("the incremental read failed; running a full sweep", exc)
+            report.errors.append(f"incremental_snapshot: {exc}")
+            return self._store.snapshot()
+
+    @staticmethod
+    def _in_scope(
+        snapshot: ControlSnapshot,
+        executions: list[ExecutionView],
+        finished: list[tuple[Any, AttemptView]],
+    ) -> list[ExecutionView]:
+        """The executions an incremental pass may judge: those of what it read.
+
+        An execution whose task this pass did not read is not an orphan, it
+        is out of this pass's sight; judging it would kill healthy work. It is
+        the full sweep's, as is an execution that names no task at all. Kept:
+        an execution naming (once its ids are resolved, as `detect_all`
+        resolves them) a task, lease or attempt this pass read, or a finished
+        task's attempt `_read_finished` returned.
+        """
+        tasks = {
+            *snapshot.tasks,
+            *(lease.task_id for lease in snapshot.leases.values() if lease.task_id),
+            *(task.task_id for task, _ in finished),
+        }
+        attempts = {
+            *snapshot.attempts,
+            *(lease.attempt_id for lease in snapshot.leases.values() if lease.attempt_id),
+            *(attempt.attempt_id for _, attempt in finished),
+        }
+        resolved = normalise_executions(snapshot, executions)
+        return [
+            execution
+            for execution, ids in zip(executions, resolved)
+            if (ids.task_id and ids.task_id in tasks)
+            or (ids.attempt_id and ids.attempt_id in attempts)
+        ]
+
+    # ------------------------------------------------------------------
+    # Pods that are not starting (F1-POD)
+    # ------------------------------------------------------------------
+    def _watch_starts(self, snapshot: ControlSnapshot, sight: _Sight, report: ReconcileReport) -> None:
+        """Record why each DISPATCHED or STARTING task's pod is not starting; clear it once it is.
+
+        On 2026-10-11 the browser pods' `livegate` sidecar crash-looped for
+        three minutes while the task read only "dispatched": nothing looked at
+        a pod until its Job ended. Here, per task waiting to run, the current
+        attempt's ACTIVE execution -- of the task's own tenant -- is read by
+        the backend that listed it (`GkeBackend.start_problem`; a backend
+        without the method is skipped, so Cloud Run reads nothing) and the
+        answer goes on the task as `metadata.start_problem`
+        (`ControlStore.record_start_problem`). A task that reached RUNNING,
+        or went back to LEASED for a new attempt, has its record cleared
+        without a read, and so does a record an earlier attempt left.
+
+        A RECORD, NOT A RULE: no state, lease or pool moves here (invariants
+        1-3), and no finding is made. A read that fails records and clears
+        nothing -- "the pod is fine" and "I could not look" must not lead to
+        the same write. A dry run reads and writes nothing.
+
+        THE SAME READ YIELDS THE START-UP STEPS (STARTUP-API, contract request
+        74): a backend with `start_read` returns the pod's steps beside its
+        problem, and each is written once per attempt as a `startup_progress`
+        event (`_record_steps`) -- for a RUNNING task too, within
+        `RUNNING_STEPS_WINDOW_SECONDS` of its lease, because the worker often
+        reaches RUNNING between two passes. A record as well: no state, lease
+        or pool moves.
+        """
+        if self._config.dry_run:
+            return
+        now = snapshot.taken_at
+        for task in list(snapshot.tasks.values()):
+            try:
+                if task.state not in START_PROBLEM_STATES:
+                    # RUNNING: the worker started. LEASED: a new attempt with
+                    # no pod yet, after a requeue. Neither is described by an
+                    # earlier pod.
+                    if task.start_problem is not None:
+                        self._store.record_start_problem(task.task_id, lease_id=task.lease_id, record=None)
+                    if task.state is TaskState.RUNNING:
+                        # The pod's steps outlive the transition: a worker
+                        # that starts in seconds reaches RUNNING between two
+                        # passes, and the pod still dates every step.
+                        self._read_running_steps(task, snapshot, sight, now)
+                    continue
+                lease = snapshot.lease_for_task(task.task_id)
+                if lease is None or lease.is_released:
+                    continue
+                recorded = task.start_problem
+                if recorded is not None and recorded.get("attempt_id") != lease.attempt_id:
+                    # An earlier attempt's pod: not this attempt's problem.
+                    self._store.record_start_problem(task.task_id, lease_id=lease.lease_id, record=None)
+                    recorded = None
+                execution = self._current_execution(task, lease, sight)
+                if execution is None:
+                    continue
+                handle = sight.handles.get(execution.backend)
+                read_both = getattr(handle, "start_read", None)
+                if callable(read_both):
+                    found = read_both(execution)
+                    problem = found.problem if found is not None else None
+                    self._record_steps(task, lease, found)
+                else:
+                    read = getattr(handle, "start_problem", None)
+                    if not callable(read):
+                        continue
+                    problem = read(execution)
+                if problem is None:
+                    if recorded is not None:
+                        self._store.record_start_problem(task.task_id, lease_id=lease.lease_id, record=None)
+                    continue
+                written = self._store.record_start_problem(
+                    task.task_id,
+                    lease_id=lease.lease_id,
+                    record=problem.record(attempt_id=lease.attempt_id, seen_at=now),
+                )
+                if written:
+                    self._log.warning(
+                        "a task's pod is not starting",
+                        task_id=task.task_id,
+                        attempt_id=lease.attempt_id,
+                        execution=execution.name,
+                        container=problem.container,
+                        reason=problem.reason,
+                        restarts=problem.restarts,
+                    )
+            except Exception as exc:
+                self._log.warning(
+                    "could not read or record why a pod is not starting; nothing changed",
+                    task_id=task.task_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                report.errors.append(f"start_problem {task.task_id}: {exc}")
+
+    @staticmethod
+    def _current_execution(task: Any, lease: Any, sight: _Sight) -> ExecutionView | None:
+        """The current attempt's ACTIVE execution, of the task's own tenant, or None."""
+        return next(
+            (
+                e
+                for e in sight.executions
+                if e.task_id == task.task_id
+                and e.attempt_id == lease.attempt_id
+                and e.tenant_id == task.tenant_id
+                and not e.claim_refused
+                and e.is_active
+                # A Job stamped with another generation is not this attempt's pod.
+                and (e.generation is None or e.generation == lease.generation)
+            ),
+            None,
+        )
+
+    def _read_running_steps(self, task: Any, snapshot: ControlSnapshot, sight: _Sight, now: datetime) -> None:
+        """A RUNNING task's pod steps, read only within the start-up window (STARTUP-API).
+
+        Bounded: only a task whose lease was admitted less than
+        `RUNNING_STEPS_WINDOW_SECONDS` ago, and only through a backend that
+        reads pods (`start_read`; Cloud Run has none). Raises as the read
+        does; the caller records the error.
+        """
+        lease = snapshot.lease_for_task(task.task_id)
+        if lease is None or lease.is_released or lease.created_at is None:
+            return
+        if (now - lease.created_at).total_seconds() > RUNNING_STEPS_WINDOW_SECONDS:
+            return
+        execution = self._current_execution(task, lease, sight)
+        if execution is None:
+            return
+        read_both = getattr(sight.handles.get(execution.backend), "start_read", None)
+        if callable(read_both):
+            self._record_steps(task, lease, read_both(execution))
+
+    def _record_steps(self, task: Any, lease: Any, found: StartRead | None) -> None:
+        """Write each pod step the read found as one `startup_progress` event (STARTUP-API).
+
+        `ControlStore.record_startup_step` writes each step once per attempt
+        and only while the task is still on this lease and generation, so a
+        pass that reads the same pod again writes nothing new.
+        """
+        if found is None:
+            return
+        for step in POD_STARTUP_STEPS:
+            at = found.steps.get(step)
+            if at is None:
+                continue
+            if self._store.record_startup_step(
+                task.task_id,
+                tenant_id=task.tenant_id,
+                lease_id=lease.lease_id,
+                attempt_id=lease.attempt_id,
+                generation=lease.generation,
+                step=step,
+                at=at,
+            ):
+                self._log.info(
+                    "a task's pod reached a start-up step",
+                    task_id=task.task_id,
+                    attempt_id=lease.attempt_id,
+                    step=step,
+                )
+
+    # ------------------------------------------------------------------
+    # Holding
+    # ------------------------------------------------------------------
+    def _watch_holds(self, snapshot: ControlSnapshot, report: ReconcileReport) -> None:
+        """Say, loudly, which leases have been past their TTL too long and why.
+
+        Every unreleased lease this pass did not release, whatever the reason
+        -- held back for want of proof, a repair that failed, a kill that was
+        not confirmed, or no rule that matched it at all. A hold is the right
+        answer to "I cannot prove it is dead"; a hold nobody hears about is how
+        five hours of capacity went missing on 2026-10-03.
+
+        The TTL is the lease's `expires_at`, and for a lease that never
+        heartbeated the later of that and its dispatch deadline, which is the
+        clock `detect_stale_leases` itself judges such a lease by.
+        """
+        threshold = max(0, int(self._config.held_lease_alert_minutes)) * 60
+        now = snapshot.taken_at
+        released = {o.lease_id for o in report.outcomes if o.released and o.lease_id}
+        why: dict[str, list[str]] = {}
+        for held in report.suppressed:
+            if held.lease_id:
+                why.setdefault(held.lease_id, []).append(
+                    f"{held.kind}: held back, the backend that would prove it was unreadable"
+                    + (f" ({held.backend})" if held.backend else "")
+                )
+        for outcome in report.outcomes:
+            if outcome.lease_id and not outcome.released:
+                why.setdefault(outcome.lease_id, []).append(
+                    f"{outcome.kind}: not released"
+                    + (f" ({outcome.skipped})" if outcome.skipped else "")
+                )
+        still_held: set[str] = set()
+        for lease in snapshot.leases.values():
+            if lease.is_released or lease.lease_id in released:
+                continue
+            due = lease.expires_at
+            if lease.heartbeat_at is None and lease.dispatch_deadline is not None:
+                due = max(due, lease.dispatch_deadline) if due else lease.dispatch_deadline
+            if due is None:
+                continue
+            past = (now - due).total_seconds()
+            if past <= threshold:
+                continue
+            still_held.add(lease.lease_id)
+            reasons = list(why.get(lease.lease_id) or ["no repair was attempted on this pass"])
+            task = snapshot.tasks.get(lease.task_id)
+            if task is not None and task.generation != lease.generation:
+                # The archived issue 560 shape: what a worker of this lease could do is
+                # already fenced, and only the release is outstanding.
+                reasons.append(
+                    f"fenced: the task is at generation {task.generation}, the lease "
+                    f"at {lease.generation}, and the lease is still held"
+                )
+            remaining = self._never_started_wait(lease.lease_id, snapshot)
+            if remaining is not None:
+                reasons.append(
+                    f"its worker never started; released on that evidence in {remaining:.0f}s"
+                    if remaining > 0
+                    else "its worker never started and the wait is over; the repair "
+                    "did not complete"
+                )
+            entry = {
+                "lease_id": lease.lease_id,
+                "task_id": lease.task_id,
+                "tenant_id": lease.tenant_id,
+                "past_ttl_seconds": round(past, 1),
+                "why": reasons,
+            }
+            report.held_past_ttl.append(entry)
+            last = self._held_alerted.get(lease.lease_id)
+            if last is not None and (now - last).total_seconds() < HELD_ALERT_REPEAT_SECONDS:
+                continue
+            self._held_alerted[lease.lease_id] = now
+            self._log.error(
+                HELD_PAST_TTL,
+                lease_id=lease.lease_id,
+                task_id=lease.task_id,
+                tenant_id=lease.tenant_id,
+                past_ttl_minutes=round(past / 60, 1),
+                alert_after_minutes=threshold // 60,
+                why=reasons,
+            )
+        for lease_id in list(self._held_alerted):
+            if lease_id not in still_held:
+                del self._held_alerted[lease_id]
+
+    # ------------------------------------------------------------------
+    # Workflows (archived issue 616)
+    # ------------------------------------------------------------------
+    def _check_workflows(self, snapshot: ControlSnapshot, report: ReconcileReport) -> None:
+        """Find workflows that stopped making progress; repair what is safe.
+
+        Owner decision, 2026-10-05: on this pass's existing schedule, with no
+        service of its own, so nothing runs when no workflow does. Two repairs,
+        each the guarded write another component already makes:
+
+          * DEPENDENCIES_MET -> the step is promoted to READY in one
+            transaction that re-reads the step, its generation and every
+            parent (`ControlStore.promote_workflow_step`). A step the
+            scheduler's sweep promoted first is skipped, so it is promoted
+            once and never twice; READY holds no capacity (invariant 1).
+          * STATE_DRIFT -> the derived state is written over the stored one,
+            only while the stored one is still the value read
+            (`ControlStore.write_derived_workflow_state`).
+
+        Everything else is reported. A DRY RUN writes nothing, as for every
+        other rule here: the row says what would have been done.
+
+        A READ THAT FAILS IS A FINDING. It is recorded as `read_error` on
+        `workflow_check` and in `errors`, and it never fails the pass: the
+        lease repairs before it have already happened.
+        """
+        now = snapshot.taken_at
+        check: dict[str, Any] = {
+            "examined": 0,
+            "truncated": False,
+            "repaired": 0,
+            "read_error": None,
+            # Rows found but not kept on the pass: see below.
+            "rows_dropped": 0,
+        }
+        report.workflow_check = check
+        try:
+            read = self._store.workflows_for_stall_check(
+                limit=self._config.workflow_scan_limit, after=self._workflow_cursor
+            )
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            check["read_error"] = message[:500]
+            report.errors.append(f"workflow_stall_check: {message[:500]}")
+            self._log.error(
+                "the workflow stall check could not read the workflows; no workflow was judged",
+                error=message[:500],
+            )
+            return
+        check["examined"] = len(read.workflows) + len(read.malformed)
+        check["truncated"] = read.truncated
+        # A full page moves the window to its last document; a short page
+        # sends the next pass back to the top. A read that failed (above)
+        # leaves the cursor where it was.
+        self._workflow_cursor = read.next_after
+        for stall in detect_stalled_workflows(read, snapshot.leases, self._config, now):
+            try:
+                repaired, repair = self._repair_stall(stall)
+            except Exception as exc:
+                repaired, repair = False, f"repair failed: {type(exc).__name__}: {exc}"[:300]
+                report.errors.append(
+                    f"workflow_stall_check {stall.kind.value} {stall.workflow_id}: {exc}"[:500]
+                )
+            if repaired:
+                check["repaired"] += 1
+            entry = stall.entry(repaired=repaired, repair=repair)
+            # Every finding is repaired, but at most `max_findings_per_pass`
+            # rows are kept: the pass is one Firestore document (1 MiB), and
+            # `record_pass` bounds only `outcomes`. The rows are worst first,
+            # so what is dropped is the least urgent, and it is counted.
+            if len(report.stalled_workflows) >= self._config.max_findings_per_pass:
+                check["rows_dropped"] += 1
+            else:
+                report.stalled_workflows.append(entry)
+            # `severity` is the structured logger's own field, so the row's
+            # grade travels as `grade`. A repair that landed is routine.
+            fields = {k: v for k, v in entry.items() if k != "severity"}
+            log = self._log.info if entry["severity"] == "note" else self._log.warning
+            log("workflow stalled", grade=entry["severity"], **fields)
+
+    def _repair_stall(self, stall: WorkflowStall) -> tuple[bool, str | None]:
+        """Repair one finding if its kind is repairable. (repaired, what happened)."""
+        if stall.kind is WorkflowStallKind.DEPENDENCIES_MET and stall.task_id:
+            if self._config.dry_run:
+                return False, "dry run: would promote the step to READY"
+            skipped = self._store.promote_workflow_step(
+                stall.task_id, generation=stall.generation, parent_task_ids=stall.parents
+            )
+            if skipped is not None:
+                return False, f"not promoted: {skipped}"
+            self._store.emit(
+                task_id=stall.task_id,
+                tenant_id=stall.tenant_id,
+                event_type=EventType.READY,
+                detail={
+                    "reason": "dependencies_satisfied",
+                    "by": "workflow_stall_check",
+                    "workflow_id": stall.workflow_id,
+                },
+                generation=stall.generation,
+            )
+            return True, "promoted to READY"
+        if (
+            stall.kind is WorkflowStallKind.STATE_DRIFT
+            and stall.stored_state is not None
+            and stall.derived_state is not None
+        ):
+            if self._config.dry_run:
+                return False, f"dry run: would write {stall.derived_state.value}"
+            skipped = self._store.write_derived_workflow_state(
+                stall.workflow_id, expected=stall.stored_state, to=stall.derived_state
+            )
+            if skipped is not None:
+                return False, f"not written: {skipped}"
+            return True, f"stored state written as {stall.derived_state.value}"
+        return False, None
+
+    # ------------------------------------------------------------------
+    # Seeing
+    # ------------------------------------------------------------------
+    def _look(self, snapshot: ControlSnapshot, report: ReconcileReport) -> _Sight:
+        """List every backend, recording what could and could not be read."""
+        sight = _Sight()
+        tenants_read = False
+        for backend in self._backends:
+            sight.handles[backend.name] = backend
+            try:
+                if _is_namespaced(backend):
+                    if not tenants_read:
+                        sight.tenant_namespaces = self._tenant_namespaces(report)
+                        tenants_read = True
+                    found = self._look_namespaced(backend, snapshot, sight, report)
+                else:
+                    found = backend.list_executions()
+                    # Only the Cloud Run backend counts these; others have none.
+                    counted = getattr(backend, "unattributed_finished", 0)
+                    if isinstance(counted, int):
+                        report.unattributed_finished += counted
+            except Exception as exc:
+                # A backend we cannot see is a backend we must not act on: with
+                # no execution list, every task there looks like a missing
+                # execution, and repairing those would kill healthy work.
+                message = f"{backend.name}: listing executions failed: {exc}"
+                self._log.error(BACKEND_UNAVAILABLE, backend=backend.name, error=message)
+                report.errors.append(message)
+                continue
+            sight.readable.add(backend.name)
+            sight.executions.extend(found)
+        return sight
+
+    def _look_namespaced(
+        self,
+        backend: Any,
+        snapshot: ControlSnapshot,
+        sight: _Sight,
+        report: ReconcileReport,
+    ) -> list[ExecutionView]:
+        """Read a namespaced backend in exactly the namespaces the control plane names.
+
+        Raises when EVERY namespace failed, which `_look` reports as the whole
+        backend being unavailable -- the one case the backend-unavailable alert
+        is for. Anything less is per-namespace: logged, kept on the report, and
+        an error only where one of our live attempts is actually in it.
+        """
+        held: set[str] = set()
+        for attempt in snapshot.attempts.values():
+            if attempt.backend != backend.name:
+                continue
+            namespace = self._attempt_namespace(backend, attempt, sight.tenant_namespaces)
+            if namespace:
+                held.add(namespace)
+        wanted = {
+            backend.namespace_for(tenant_id, recorded)
+            for tenant_id, recorded in sight.tenant_namespaces.items()
+        } | held
+
+        listing: NamespacedListing = backend.list_executions_in(wanted)
+        sight.namespaced[backend.name] = listing
+        if listing.unreadable:
+            report.unreadable_namespaces[backend.name] = dict(listing.unreadable)
+        if listing.blind:
+            raise RuntimeError(
+                f"every namespace unreadable ({len(listing.unreadable)}): "
+                + "; ".join(f"{ns}: {err}" for ns, err in sorted(listing.unreadable.items()))
+            )
+        for namespace, error in sorted(listing.unreadable.items()):
+            holds_attempt = namespace in held
+            self._log.warning(
+                "namespace unreadable; findings that depend on it are held",
+                backend=backend.name,
+                namespace=namespace,
+                error=error,
+                holds_attempt=holds_attempt,
+            )
+            if holds_attempt:
+                report.errors.append(f"{backend.name}: namespace {namespace} unreadable: {error}")
+        return list(listing.executions)
+
+    def _tenant_namespaces(self, report: ReconcileReport) -> dict[str, str | None]:
+        """Registered tenants and their recorded namespaces, or {} on failure.
+
+        A failed read here narrows what is listed to the namespaces the live
+        attempts name, which is every namespace a finding can be about -- so it
+        costs orphan detection in idle namespaces and nothing that releases.
+        """
+        try:
+            return self._store.tenant_namespaces()
+        except Exception as exc:
+            self._log.exception("could not read the registered tenants", exc)
+            report.errors.append(f"tenants: {exc}")
+            return {}
+
+    def _read_settled(
+        self,
+        snapshot: ControlSnapshot,
+        executions: list[ExecutionView],
+        report: ReconcileReport,
+    ) -> None:
+        """Read, by id, every task an ACTIVE execution names that the snapshot lacks.
+
+        `snapshot()` reads only the four concurrency states, so a task that
+        finished -- or was re-queued, or parked -- is simply absent from it. An
+        execution still running for such a task used to be judged as naming "no
+        task this control plane knows about", which cannot tell apart the cases
+        that matter here: a finished task whose Job was left running, a
+        re-queued task whose OLD Job is still going, and a task re-admitted
+        between the snapshot and now, whose Job may be its NEW attempt. One
+        `get` each tells them apart.
+
+        Bounded by the executions that need it: ordinarily none at all.
+
+        Only with `enable_gke_eviction`. This read is the eviction rules' input,
+        and the three stand-asides in `detect.orphan_rule_defers` exist only
+        because of it -- so turning eviction off turns it off too, and the pass
+        judges these executions exactly as it did before the rules existed: as
+        orphans, killed first and only then released. A kill switch that left
+        the read running would leave its failure modes running with it.
+
+        The by-id read of a task an UNRELEASED LEASE names is not this one and
+        is not behind the switch: `_read_lease_tasks` (archived issue 332) writes to fields
+        of its own, which only the orphan-lease rule reads, so it brings none
+        of the three stand-asides back with eviction off.
+        """
+        if not self._config.enable_gke_eviction:
+            return
+        wanted = sorted(
+            {
+                execution.task_id
+                for execution in normalise_executions(snapshot, executions)
+                if execution.is_active
+                and execution.task_id
+                and execution.task_id not in snapshot.tasks
+            }
+        )
+        for task_id in wanted:
+            try:
+                task = self._store.task_by_id(task_id)
+            except Exception as exc:
+                snapshot.unreadable_tasks.add(task_id)
+                self._log.warning(
+                    "could not read the task an active execution names; "
+                    "nothing is concluded about that execution or its lease this pass",
+                    task_id=task_id,
+                    error=str(exc),
+                )
+                report.errors.append(f"task {task_id}: {exc}")
+                continue
+            if task is not None:
+                snapshot.settled[task_id] = task
+
+    def _read_lease_tasks(self, snapshot: ControlSnapshot, report: ReconcileReport) -> None:
+        """Read, by id, every task an unreleased lease names that the snapshot lacks.
+
+        WHY (archived issue 332). `snapshot()` reads `tasks` and `leases` in two queries. On
+        2026-09-29 the scheduler's admission of task_7ead19eefca1439ea9df
+        committed between them: the tasks query saw the task still READY, the
+        leases query saw its brand-new lease. `detect_orphan_leases` found a
+        lease whose task was absent and called it "a task that no longer
+        exists"; the repair fenced the healthy task and released its lease two
+        seconds after admission.
+
+        One `get` per such lease tells the cases apart: a task that does not
+        exist (an orphan), a finished or requeued one (an orphan, with the
+        reason that says so), and one admitted after the snapshot that still
+        holds this lease (not an orphan at all). The answer goes into
+        `lease_tasks`, and a read that FAILS into `lease_unreadable`; the
+        orphan-lease rule is the only reader of either, and concludes nothing
+        about a lease whose task could not be read.
+
+        Chosen over reading both queries at one `read_time`: a consistent
+        snapshot would close the gap between the two queries, but the repair
+        still runs seconds to minutes after the snapshot, and only the
+        transactions in `ControlStore` see the truth at the moment of writing
+        -- which is why they now guard the orphan repair as well. A by-id read
+        is also what `_read_settled` already does for executions, so the two
+        absences are judged one way, and it needs nothing from the Firestore
+        client or the in-memory fakes that they do not already support.
+
+        NOT gated on `enable_gke_eviction`, unlike `_read_settled`: the orphan
+        rule it feeds runs whatever that switch says. And NOT written to
+        `settled` or `unreadable_tasks`, and not made through `task_by_id`:
+        those are the eviction rules' input, `orphan_rule_defers` reads them,
+        and with eviction off the pass must judge executions exactly as it did
+        before those rules existed.
+
+        Bounded by the unreleased leases whose task is outside the concurrency
+        states: ordinarily none, or the handful whose worker ended without
+        releasing.
+        """
+        wanted = sorted(
+            {
+                lease.task_id
+                for lease in snapshot.leases.values()
+                if not lease.is_released
+                and lease.task_id
+                and lease.task_id not in snapshot.tasks
+                and lease.task_id not in snapshot.settled
+                and lease.task_id not in snapshot.unreadable_tasks
+                and lease.task_id not in snapshot.lease_tasks
+            }
+        )
+        for task_id in wanted:
+            try:
+                task = self._store.task_for_lease(task_id)
+            except Exception as exc:
+                snapshot.lease_unreadable.add(task_id)
+                self._log.warning(
+                    "could not read the task an unreleased lease names; "
+                    "that lease is not judged this pass",
+                    task_id=task_id,
+                    error=str(exc),
+                )
+                report.errors.append(f"task {task_id}: {exc}")
+                continue
+            if task is not None:
+                snapshot.lease_tasks[task_id] = task
+
+    def _read_progress(
+        self,
+        snapshot: ControlSnapshot,
+        executions: list[ExecutionView],
+        report: ReconcileReport,
+    ) -> None:
+        """Read the progress evidence of every attempt the stuck rule could act on.
+
+        Only attempts `stuck_candidates` names: running on GKE or Cloud Run
+        (each behind its own switch), on the current generation, with a
+        heartbeating lease, and running longer than the threshold. A read that
+        fails leaves that attempt unassessed, which the rule treats as "not
+        judged" -- never as "no progress".
+
+        The threshold is the attempt's PROFILE's (`config.stuck_after_for`, S27),
+        the same call `detect._stuck_subject` makes, so the clock that decided
+        the attempt was old enough to read is the clock it is judged by. The
+        verdict records it (`Assessment.stuck_after_seconds`).
+        """
+        now = snapshot.taken_at
+        for subject in stuck_candidates(snapshot, executions, self._config, now):
+            attempt_id = subject.lease.attempt_id
+            try:
+                events = self._store.attempt_events(subject.task.task_id, attempt_id)
+            except Exception as exc:
+                self._log.warning(
+                    "could not read an attempt's progress; not judging it this pass",
+                    task_id=subject.task.task_id,
+                    attempt_id=attempt_id,
+                    error=str(exc),
+                )
+                report.errors.append(f"progress {attempt_id}: {exc}")
+                continue
+            verdict = assess(
+                events,
+                attempt_id=attempt_id,
+                generation=subject.lease.generation,
+                started_at=subject.started_at,
+                now=now,
+                stuck_after_seconds=self._config.stuck_after_for(subject.task.runner_profile),
+                cpu_floor_cores=self._config.stuck_cpu_floor_cores,
+                max_gap_seconds=self._config.stuck_evidence_max_gap_seconds,
+            )
+            snapshot.progress[attempt_id] = verdict
+            if not verdict.judged:
+                # Worth a line: an attempt this old that cannot be judged is
+                # one the rule is blind to, and "why" is the whole answer.
+                self._log.info(
+                    "not judging an attempt's progress: the evidence is incomplete",
+                    task_id=subject.task.task_id,
+                    attempt_id=attempt_id,
+                    because=verdict.unjudged_because,
+                )
+
+    def _read_finished(
+        self, snapshot: ControlSnapshot, report: ReconcileReport
+    ) -> list[tuple[TaskView, AttemptView]]:
+        """Each task finished inside the lookback and past the grace, with its unended attempt.
+
+        The input of `detect_lost_after_finish` (archived issue 380). A read that FAILS is an
+        error on the report and yields nothing: "no such attempt" and "could
+        not look" must not lead to the same write, and an attempt not judged
+        this pass keeps its hold no longer than its TTL.
+        """
+        self._finished = {}
+        now = snapshot.taken_at
+        since = now - timedelta(seconds=self._config.lost_after_finish_lookback_seconds)
+        if not snapshot.full and self._cursor is not None:
+            # Incremental: only the tasks that crossed the grace since the last
+            # pass's `until`, less the overlap. The full sweep reads the whole
+            # lookback again, so a task this window misses is judged there.
+            since = max(
+                since,
+                self._cursor
+                - timedelta(
+                    seconds=self._config.lost_after_finish_grace_seconds
+                    + self._config.incremental_overlap_seconds
+                ),
+            )
+        try:
+            pairs = self._store.finished_attempts(
+                since=since,
+                until=now - timedelta(seconds=self._config.lost_after_finish_grace_seconds),
+            )
+        except Exception as exc:
+            self._log.exception("could not read finished tasks' unended attempts", exc)
+            report.errors.append(f"lost_after_finish: reading finished attempts failed: {exc}")
+            return []
+        self._finished = {attempt.attempt_id: attempt for _, attempt in pairs}
+        return pairs
+
+    def _read_terminations(
+        self, snapshot: ControlSnapshot, sight: _Sight, report: ReconcileReport
+    ) -> None:
+        """Read the exit code of every finished execution whose attempt still holds its lease.
+
+        Only what `cannot_start_candidates` names: a FAILED execution, its
+        attempt holding its task's current lease. The read goes to the backend
+        that listed it (`termination`): a Cloud Run task's last attempt, or a
+        GKE pod's container status. A read that fails leaves no entry, and
+        neither exit-code rule concludes anything: the lease is judged by the
+        rules that judged it before exit codes were read. A read that
+        SUCCEEDED and found no exit code leaves a `Termination` whose
+        `exit_code` is None. That is not a 78, and for a task still
+        DISPATCHED or STARTING it is an execution that ended before its runner
+        started (archived issue 198, `detect_ended_at_startup`). A read is not a write, so a
+        dry run reads too.
+        """
+        for subject in cannot_start_candidates(snapshot, sight.executions):
+            execution = subject.execution
+            backend = sight.handles.get(execution.backend)
+            read = getattr(backend, "termination", None)
+            if not callable(read):
+                continue
+            attempt_id = subject.lease.attempt_id
+            try:
+                ended = read(execution)
+            except Exception as exc:
+                self._log.warning(
+                    "could not read how an execution ended; its lease is judged by "
+                    "the usual rules this pass",
+                    execution=execution.name,
+                    backend=execution.backend,
+                    task_id=subject.task.task_id,
+                    attempt_id=attempt_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                report.errors.append(f"termination {execution.name}: {exc}")
+                continue
+            if ended is None:
+                ended = Termination(
+                    exit_code=None,
+                    message=None,
+                    detail="the backend recorded no exit code for this execution",
+                )
+            snapshot.terminations[attempt_id] = ended
+            exit_code = getattr(ended, "exit_code", None)
+            self._log.info(
+                "read how an execution ended",
+                execution=execution.name,
+                backend=execution.backend,
+                task_id=subject.task.task_id,
+                attempt_id=attempt_id,
+                task_state=subject.task.state.value,
+                exit_code=exit_code,
+                cannot_start=exit_code == WORKER_EXIT_CANNOT_START,
+                ended_at=(
+                    execution.completed_at.isoformat()
+                    if getattr(execution, "completed_at", None) is not None
+                    else None
+                ),
+                detail=getattr(ended, "detail", None),
+            )
+
+    @staticmethod
+    def _attempt_namespace(
+        backend: Any, attempt: AttemptView, tenants: dict[str, str | None]
+    ) -> str | None:
+        """Where this attempt's execution is, or would be, on a namespaced backend.
+
+        Its own `execution_name` first -- that is where the dispatcher actually
+        created it. An attempt not dispatched yet has none, and falls back to the
+        tenant's namespace by the dispatcher's own rule.
+        """
+        recorded = backend.namespace_of(
+            attempt.execution_name, task_id=attempt.task_id,
+            tenant_id=attempt.tenant_id, generation=attempt.generation,
+        )
+        if recorded:
+            return recorded
+        if attempt.tenant_id:
+            return backend.namespace_for(attempt.tenant_id, tenants.get(attempt.tenant_id))
+        return None
+
+    #: Findings that mean "nothing seems to be running" -- and are therefore
+    #: only trustworthy if every backend that COULD be running it was readable.
+    _ABSENCE_KINDS = (
+        FindingKind.STALE_LEASE,
+        FindingKind.DEAD_WORKER,
+        FindingKind.MISSING_EXECUTION,
+        # "No execution runs for it" is part of what makes a leaseless task
+        # safe to requeue, and an unreadable backend cannot say that.
+        FindingKind.LEASELESS_TASK,
+    )
+
+    def _never_dispatched(self, finding: Finding, snapshot: ControlSnapshot) -> bool:
+        """True when this task provably never reached a backend.
+
+        The lease exists and the task is still LEASED -- it never advanced to
+        DISPATCHED -- and no attempt for it records an execution. Dispatch is
+        what creates an execution, so nothing can be running.
+        """
+        task = snapshot.tasks.get(finding.task_id or "")
+        if task is None or task.state is not TaskState.LEASED:
+            return False
+        for attempt in snapshot.attempts.values():
+            if attempt.task_id == finding.task_id and getattr(attempt, "execution_name", None):
+                return False
+        return True
+
+    def _depends_on_absence(self, finding: Finding, snapshot: ControlSnapshot) -> bool:
+        return finding.kind in self._ABSENCE_KINDS or (
+            finding.kind is FindingKind.ORPHAN_LEASE
+            and (task := snapshot.tasks.get(finding.task_id or "")) is not None
+            and task.holds_capacity
+        )
+
+    def _is_actionable(
+        self,
+        finding: Finding,
+        snapshot: ControlSnapshot,
+        sight: _Sight,
+    ) -> bool:
+        """Drop findings that depend on something this pass could not read.
+
+        An unreadable backend makes every task on it look abandoned. Repairing
+        on that basis would release slots for agents that are alive and well,
+        and the scheduler would immediately start a second copy of each -- the
+        failure mode this whole service exists to prevent, caused by the service
+        itself. So: no execution list, no conclusions about absence.
+
+        "Could not read" is judged where the attempt LIVES. On a namespaced
+        backend that is the attempt's own namespace, not the backend as a
+        whole: another tenant's namespace answering 403 says nothing about
+        this one, and this one answering 403 is not cured by another being
+        fine.
+        """
+        if finding.execution is not None:
+            return finding.execution.backend in sight.readable
+
+        if not self._depends_on_absence(finding, snapshot):
+            return True
+        attempt = snapshot.attempts.get(finding.attempt_id or "")
+        backend_name = attempt.backend if attempt else None
+        if attempt is not None and backend_name is not None:
+            return self._attempt_visible(attempt, sight)
+        # A leaseless task is never waved through as "never dispatched". That
+        # shortcut reads LEASED plus no attempt naming an execution as proof
+        # nothing runs, but its evidence is the lease's attempt, and a
+        # leaseless task's lease is gone: task_7ead19eefca1439ea9df sat LEASED
+        # with a Job created for it (archived issue 332). So LEASED is gated like the rest.
+        if finding.kind is not FindingKind.LEASELESS_TASK and self._never_dispatched(
+            finding, snapshot
+        ):
+            # No attempt names a backend AND the task never left LEASED, so
+            # no execution was ever created and no backend can be running
+            # it. Refusing to repair here cannot prevent a duplicate -- there
+            # is nothing to duplicate -- it only strands the lease for ever.
+            #
+            # This mattered in practice: an unreachable GKE backend held
+            # every never-dispatched lease hostage, including tasks destined
+            # for Cloud Run Jobs that GKE had no part in. The task sat LEASED
+            # while the drain, which scans only READY, never looked at it
+            # again.
+            return True
+        # No attempt names a backend. Something may genuinely be running, so
+        # the anti-duplicate rule holds -- on every backend the task's runner
+        # profile could have been dispatched to, and on no other.
+        return self._everything_visible_for(finding, sight, snapshot)
+
+    def _attempt_visible(self, attempt: AttemptView, sight: _Sight) -> bool:
+        if attempt.backend not in sight.readable:
+            return False
+        listing = sight.namespaced.get(attempt.backend)
+        if listing is None:
+            return True          # read in one call; readable means all of it
+        namespace = self._attempt_namespace(
+            sight.handles[attempt.backend], attempt, sight.tenant_namespaces
+        )
+        # Positively read, not merely "not reported unreadable": a namespace
+        # this pass never asked about proves nothing about what runs in it.
+        return namespace is not None and namespace in listing.readable
+
+    @staticmethod
+    def _profile_backend(finding: Finding, snapshot: ControlSnapshot) -> str | None:
+        """The one backend this finding's task can run on, by its runner profile.
+
+        The scheduler picks the backend with `resolve_backend` of the task's
+        profile and nothing else (`scheduler.loop`), so a task whose profile
+        resolves to Cloud Run Jobs was never put on GKE. None when the task or
+        its profile is unknown -- then every backend is a candidate.
+        """
+        task = snapshot.tasks.get(finding.task_id or "")
+        profile = RUNNER_PROFILES.get(task.runner_profile) if task is not None else None
+        if profile is None:
+            return None
+        try:
+            return resolve_backend(profile).value
+        except Exception:
+            return None
+
+    def _everything_visible_for(
+        self, finding: Finding, sight: _Sight, snapshot: ControlSnapshot | None = None
+    ) -> bool:
+        """Every backend that could hold this finding's execution was readable.
+
+        AN UNREADABLE GKE NAMESPACE HOLDS ONLY WHAT COULD BE ON GKE. A task
+        whose runner profile resolves to Cloud Run Jobs is judged on Cloud Run
+        alone: GKE's 403s say nothing about it, and holding it on them is how
+        a GKE outage strands Cloud Run capacity (2026-10-03, where `namespace
+        unreadable; findings that depend on it are held` sat beside every held
+        Cloud Run lease).
+        """
+        only = self._profile_backend(finding, snapshot) if snapshot is not None else None
+        candidates = (
+            [b for b in self._backends if b.name == only] if only is not None else self._backends
+        )
+        if not candidates:
+            # The profile's backend is not configured here, so nothing of this
+            # task can be running on a backend this service could see.
+            candidates = self._backends
+        if any(b.name not in sight.readable for b in candidates):
+            return False
+        for name, listing in sight.namespaced.items():
+            if only is not None and name != only:
+                continue
+            if not listing.unreadable:
+                continue
+            if not finding.tenant_id:
+                return False
+            namespace = sight.handles[name].namespace_for(
+                finding.tenant_id, sight.tenant_namespaces.get(finding.tenant_id)
+            )
+            if namespace in listing.unreadable:
+                return False
+        return True
+
+    def _admit(
+        self, finding: Finding, snapshot: ControlSnapshot, sight: _Sight
+    ) -> Finding | _Disproved | None:
+        """The finding to act on -- possibly re-stated by a probe -- or why not.
+
+        None means held back: logged as NOT_REPAIRING and counted as
+        suppressed. `_DISPROVED` means a probe showed the finding was wrong,
+        and it is dropped without either.
+        """
+        if finding.kind is FindingKind.LOST_AFTER_FINISH:
+            return self._admit_lost_after_finish(finding, sight)
+        actionable = self._is_actionable(finding, snapshot, sight)
+        if actionable and not self._must_confirm_by_name(finding, snapshot, sight):
+            return finding
+        probed = self._probe(finding, snapshot, sight)
+        if probed is not None:
+            return probed
+        remaining = self._never_started_wait(finding.lease_id, snapshot)
+        if remaining is not None and remaining <= 0 and finding.lease_id:
+            # Nothing can be read about its execution, and its worker never
+            # started, long past any start ever measured. An execution that
+            # cannot be read must not hold capacity for ever (archived issue 560): repair it
+            # behind a fence written in the same transaction as the release,
+            # which stops the worker if it ever does start (invariant 5). A
+            # worker that DID start is still held on archived pull request 450's rule.
+            self._log.warning(
+                "repairing without proof of absence: its worker never started",
+                task_id=finding.task_id,
+                lease_id=finding.lease_id,
+                kind=finding.kind.value,
+                never_started_release_seconds=self._config.never_started_release_seconds,
+            )
+            return replace(
+                finding,
+                detail={**finding.detail, _NEVER_STARTED_DETAIL: True},
+                reason=(
+                    f"{finding.reason}; its worker never started in "
+                    f"{self._config.never_started_release_seconds}s"
+                ),
+            )
+        attempt = snapshot.attempts.get(finding.attempt_id or "")
+        self._log.warning(
+            NOT_REPAIRING,
+            task_id=finding.task_id,
+            lease_id=finding.lease_id,
+            kind=finding.kind.value,
+            backend=attempt.backend if attempt else None,
+            namespace=self._namespace_for_report(attempt, sight),
+        )
+        return None
+
+    #: Absence findings that, on a backend listed in one call, stand only once
+    #: the attempt's own execution has been asked for by name (archived issue 372). These two
+    #: are raised because an attempt was absent from the listing's
+    #: attribution, which is exactly what failed on 2026-09-30. The others in
+    #: `_ABSENCE_KINDS` are not: a dead worker carries its execution, and a
+    #: leaseless task is judged on the task, not on one attempt's listing.
+    _CONFIRMED_BY_NAME = (FindingKind.MISSING_EXECUTION, FindingKind.STALE_LEASE)
+
+    def _must_confirm_by_name(
+        self, finding: Finding, snapshot: ControlSnapshot, sight: _Sight
+    ) -> bool:
+        """True when a finding the listing supports still needs a GET to stand (archived issue 372).
+
+        A Cloud Run listing that SUCCEEDS and does not attribute an execution
+        to its attempt used to be read as proof that nothing runs for it, and
+        a live claude-code attempt was fenced as missing on that reading. So on
+        a backend listed in one call that can be asked by name (Cloud Run Jobs),
+        an absence finding about an attempt that records its execution is
+        confirmed by `_probe` before it is repaired: ABSENT or FINISHED lets it
+        stand, ACTIVE gets the verdict the listing would have reached with the
+        execution in hand, UNREADABLE holds it back.
+
+        An attempt that records no execution name -- or only the dispatcher's
+        placeholder, which no GET can answer -- has nothing to ask for, and
+        keeps the rule it always had. GKE is unchanged: its listing is read
+        namespace by namespace, and a namespace read is complete.
+        """
+        if finding.kind not in self._CONFIRMED_BY_NAME or finding.execution is not None:
+            return False
+        attempt = snapshot.attempts.get(finding.attempt_id or "")
+        if attempt is None or not attempt.execution_name:
+            return False
+        if is_placeholder_execution_name(attempt.execution_name):
+            return False
+        backend = sight.handles.get(attempt.backend)
+        if backend is None or _is_namespaced(backend):
+            return False
+        return callable(getattr(backend, "probe", None))
+
+    def _probe(
+        self, finding: Finding, snapshot: ControlSnapshot, sight: _Sight
+    ) -> Finding | _Disproved | None:
+        """Ask for THIS attempt's execution by name.
+
+        Called when its list was unreadable, and on Cloud Run also when the
+        list was read but an absence finding needs confirming
+        (`_must_confirm_by_name`, archived issue 372).
+
+        The list and the name are different questions. The 2026-09-24 leases
+        each named their Job exactly (`swarm-tenant-eng/swarm-<task>-1`), the
+        Jobs had been deleted by their TTL an hour earlier, and a namespaced GET
+        would have answered 404 on every pass -- proof of absence that the list
+        refusal was hiding. What each answer allows is in `GkeBackend.probe`;
+        what this does with it:
+
+        * absent or finished -- the finding stands as found, and is repaired;
+        * active -- the probe has found what the failed list would have
+          returned, so the verdict is the one the LIST path reaches with this
+          Job in hand (`_listed_verdict`): a DEAD_WORKER carrying the live Job
+          where that path would terminate -- `_repair` then fences, TERMINATES
+          and only then releases -- and `_DISPROVED` where it would do nothing;
+        * anything else -- nothing is proven and the lease stays held.
+
+        The active case used to become a DEAD_WORKER unconditionally, and that
+        killed healthy agents. A missing_execution is raised only because the
+        attempt was absent from `by_attempt`; when the list fails, EVERY
+        attempt in that namespace is absent, including ones whose lease
+        heartbeated seconds ago. Listed, such a Job produces no finding at all.
+        Probed, it was fenced, deleted, released and re-queued -- on every pass
+        where a LIST failed and a GET did not (APF 429, a 5xx blip, a timeout,
+        or RBAC granting `get` without `list`).
+        """
+        if not self._depends_on_absence(finding, snapshot):
+            return None
+        attempt = snapshot.attempts.get(finding.attempt_id or "")
+        if attempt is None or not attempt.execution_name:
+            return None
+        backend = sight.handles.get(attempt.backend)
+        probe = getattr(backend, "probe", None)
+        if not callable(probe):
+            return None
+        key = f"{attempt.backend}:{attempt.execution_name}"
+        result = sight.probes.get(key)
+        if result is None:
+            try:
+                if attempt.backend == "GKE_AUTOPILOT":
+                    # A legacy pod-name record (archived issue 1804) maps to its Job only
+                    # with the attempt's own ids.
+                    result = probe(
+                        attempt.execution_name, task_id=attempt.task_id,
+                        tenant_id=attempt.tenant_id, generation=attempt.generation,
+                    )
+                else:
+                    result = probe(attempt.execution_name)
+            except Exception as exc:
+                result = Probe(ProbeOutcome.UNREADABLE, detail=f"{type(exc).__name__}: {exc}")
+            sight.probes[key] = result
+            self._log.info(
+                "probed an execution by name",
+                execution=attempt.execution_name,
+                backend=attempt.backend,
+                outcome=result.outcome.value,
+                detail=result.detail,
+            )
+        if result.outcome is ProbeOutcome.UNREADABLE:
+            return None
+        detail = {**finding.detail, "probe": result.outcome.value, "probe_detail": result.detail}
+        if result.outcome in (ProbeOutcome.ABSENT, ProbeOutcome.FINISHED):
+            return replace(
+                finding,
+                detail=detail,
+                reason=f"{finding.reason}; confirmed by name: {result.detail}",
+                execution=result.execution,
+            )
+        execution = result.execution
+        if execution is None or not self._probe_matches(finding, execution, snapshot):
+            return None
+        verdict = self._listed_verdict(finding, execution, snapshot)
+        if verdict is None:
+            # No lease in the snapshot to judge: prove nothing, hold.
+            return None
+        if isinstance(verdict, _Disproved):
+            self._log.info(
+                "probe found the execution alive under a live lease; finding disproved",
+                task_id=finding.task_id,
+                lease_id=finding.lease_id,
+                kind=finding.kind.value,
+                execution=attempt.execution_name,
+                backend=attempt.backend,
+            )
+            return verdict
+        return replace(
+            finding,
+            kind=FindingKind.DEAD_WORKER,
+            execution=execution,
+            detail={**detail, "terminates_because": verdict},
+            reason=f"{finding.reason}; its job is still active by name: {result.detail}",
+        )
+
+    def _listed_verdict(
+        self, finding: Finding, execution: ExecutionView, snapshot: ControlSnapshot
+    ) -> str | _Disproved | None:
+        """What the LIST path concludes about this lease once it holds this Job.
+
+        The probe has found, by name, the active Job a readable list would have
+        returned. Acting on it may go no further than the list path would have
+        gone with that same Job in hand: a probe is a way to SEE past a failed
+        list, never a reason to act more harshly than seeing does. So the list
+        path's own execution rules are re-run -- not restated -- over this one
+        lease with this one Job:
+
+        * `detect_stale_leases`, with the Job in `by_attempt`: a stale lease
+          over a live Job is `dead_worker`, and a live lease is nothing at all.
+        * `detect_orphan_executions`: a Job whose generation is not the task's
+          is `obsolete_generation` (the partial-repair case: fenced, never
+          released); one whose task this snapshot does not hold is an orphan.
+
+        Whichever of those requires termination names the reason, and the
+        caller kills before it releases. If none does -- in practice a
+        missing_execution raised only because the list failed, under a lease
+        that is heartbeating -- the finding is `_DISPROVED`.
+
+        `orphan_lease` is the one kind answered directly, and in the stricter
+        direction. Its task points at a different lease (or its lease is
+        superseded), and the list path's orphan-lease rule releases without
+        looking for compute at all. Releasing capacity while its Job still runs
+        is the thing this module exists to prevent, so here the Job is killed
+        first.
+
+        None when there is no lease in the snapshot to judge.
+        """
+        if finding.kind is FindingKind.ORPHAN_LEASE:
+            return FindingKind.ORPHAN_LEASE.value
+        lease: LeaseView | None = snapshot.leases.get(finding.lease_id or "")
+        if lease is None:
+            return None
+        # The probe read the Job this attempt's own record names, and
+        # `_probe_matches` tied it to the task, tenant and generation: it IS
+        # this lease's execution, whatever spelling its labels gave the ids.
+        held = replace(execution, task_id=lease.task_id, attempt_id=lease.attempt_id)
+        only_this = replace(snapshot, leases={lease.lease_id: lease})
+        now = snapshot.taken_at
+        listed = [
+            *detect_stale_leases(only_this, {lease.attempt_id: held}, self._config, now),
+            *detect_orphan_executions(only_this, [held], self._config, now),
+        ]
+        terminating = sorted({f.kind.value for f in listed if f.requires_termination})
+        return terminating[0] if terminating else _DISPROVED
+
+    @staticmethod
+    def _probe_matches(
+        finding: Finding, execution: ExecutionView, snapshot: ControlSnapshot
+    ) -> bool:
+        """The probed Job is this finding's, by task, tenant and generation.
+
+        The name came from the attempt's own record, so a mismatch here is not
+        expected -- and is exactly when a kill must not be sent. Compared in
+        sanitised form, because a label-sourced identifier has been through it.
+        """
+        if not execution.task_id or not finding.task_id:
+            return False
+        if sanitised(execution.task_id) != sanitised(finding.task_id):
+            return False
+        task = snapshot.tasks.get(finding.task_id)
+        tenant = (task.tenant_id if task else None) or finding.tenant_id
+        if tenant and execution.tenant_id and sanitised(tenant) != sanitised(execution.tenant_id):
+            return False
+        if (
+            execution.generation is not None
+            and finding.generation is not None
+            and execution.generation != finding.generation
+        ):
+            return False
+        return True
+
+    def _namespace_for_report(self, attempt: AttemptView | None, sight: _Sight) -> str | None:
+        if attempt is None or attempt.backend not in sight.namespaced:
+            return None
+        return self._attempt_namespace(
+            sight.handles[attempt.backend], attempt, sight.tenant_namespaces
+        )
+
+    def _admit_lost_after_finish(self, finding: Finding, sight: _Sight) -> Finding | None:
+        """Only on a listing that could have shown the attempt's execution (archived issue 532, archived issue 372).
+
+        The finding rests on an absence -- nothing of the attempt runs -- and an
+        absence read off a backend that could not be listed is no absence at
+        all. So the backend the attempt names, and on a namespaced backend
+        its own namespace, must have been read this pass
+        (`_attempt_visible`); an attempt that names no backend needs every
+        backend its tenant could be on. There is no probe by name: nothing
+        here is waiting on capacity, so holding costs one hold for at most its
+        TTL, and the next readable pass repairs it.
+        """
+        attempt = self._finished.get(finding.attempt_id or "")
+        if attempt is not None and attempt.backend:
+            visible = self._attempt_visible(attempt, sight)
+        else:
+            visible = self._everything_visible_for(finding, sight)
+        if visible:
+            return finding
+        self._log.warning(
+            NOT_REPAIRING,
+            task_id=finding.task_id,
+            attempt_id=finding.attempt_id,
+            kind=finding.kind.value,
+            backend=attempt.backend if attempt else None,
+            namespace=self._namespace_for_report(attempt, sight),
+        )
+        return None
+
+    def _suppressed(
+        self, finding: Finding, snapshot: ControlSnapshot, sight: _Sight
+    ) -> SuppressedFinding:
+        attempt = snapshot.attempts.get(finding.attempt_id or "") or self._finished.get(
+            finding.attempt_id or ""
+        )
+        return SuppressedFinding(
+            kind=finding.kind.value,
+            lease_id=finding.lease_id,
+            task_id=finding.task_id,
+            backend=(attempt.backend or None) if attempt else None,
+            namespace=self._namespace_for_report(attempt, sight),
+        )
+
+    # ------------------------------------------------------------------
+    def _repair(
+        self,
+        finding: Finding,
+        snapshot: ControlSnapshot,
+        handles: dict[str, Any],
+    ) -> RepairOutcome:
+        """Terminate; then invalidate, release and repair together -- or not at all.
+
+        `handles` is every configured backend, NOT only the ones this pass could
+        list: see `_Sight`. Whether a finding may be acted on was settled by
+        `_admit`; this only needs somewhere to send the kill.
+        """
+        outcome = RepairOutcome(
+            kind=finding.kind.value,
+            reason=finding.reason,
+            tenant_id=finding.tenant_id,
+            task_id=finding.task_id,
+            lease_id=finding.lease_id,
+            execution=finding.execution.name if finding.execution else None,
+        )
+        if finding.kind is FindingKind.LOST_AFTER_FINISH:
+            return self._repair_lost_after_finish(finding, outcome)
+        if finding.kind in _TERMINATE_ONLY:
+            return self._repair_left_running(finding, outcome, handles, snapshot)
+        if finding.kind in _FENCE_ONLY:
+            return self._repair_stuck(finding, outcome)
+        cannot_start = finding.kind is FindingKind.WORKER_CANNOT_START
+        ended_at_startup = finding.kind is FindingKind.WORKER_ENDED_AT_STARTUP
+        # A pod kubelet evicted for passing its own disk limit is retried once
+        # and then failed, counted inside the repair's transaction (archived issue 893).
+        disk_eviction = finding.kind is FindingKind.WORKER_EVICTED and bool(
+            finding.detail.get("disk_limit")
+        )
+        # The ended-at-startup rule is about a task in these states, and its
+        # fence and its requeue are each refused, inside their transactions,
+        # for a task that has left them since the snapshot (archived issue 198). Passed only
+        # for that rule, so every other repair calls the store as it did.
+        leaseless = finding.kind is FindingKind.LEASELESS_TASK
+        guard: dict[str, Any] = (
+            {"only_from": ENDED_AT_STARTUP_STATES}
+            if ended_at_startup
+            else {"only_from": _LEASELESS_STATES}
+            if leaseless
+            else {}
+        )
+        # An orphan-lease finding may rest on a snapshot that missed its task
+        # (archived issue 332). The fence and the release re-read the task inside their own
+        # transactions and refuse while it still holds this lease.
+        orphan_lease = finding.kind is FindingKind.ORPHAN_LEASE
+        # Why the execution ended -- an OOM kill and its limit, kubelet's
+        # eviction message -- when this pass read it, in the words the attempt
+        # and the task keep (archived issue 1822). Words only: nothing below decides a
+        # state, a release or a fence on it (invariants 3 and 5): the finding
+        # keeps its kind, lease and generation, and only its reason grows.
+        ended_why = self._how_it_ended(finding, snapshot)
+        if ended_why:
+            finding = replace(finding, reason=f"{finding.reason}; {ended_why}")
+            outcome.reason = finding.reason
+        # Why the attempt's pod never started -- the scheduler's
+        # `Unschedulable`, the Job's `FailedCreate`, a crash-looping sidecar --
+        # as `_watch_starts` recorded it on the task on an earlier pass
+        # (archived issue 3531). Before this a never-scheduled pod was reclaimed as "lease
+        # silent for 485s" and nothing said why. Words only, like the two
+        # above: the kind, the lease, the generation and the refund are
+        # decided exactly as before.
+        start_why = self._why_not_started(finding, snapshot)
+        if start_why:
+            finding = replace(finding, reason=f"{finding.reason}; {start_why}")
+            outcome.reason = finding.reason
+        # An attempt that ran out of memory at its own limit FAILS its task
+        # the first time (archived issue 1926): the retry is the same step at the same
+        # size. Its words lead the reason, so the attempt, the task and the
+        # events all say it. A decision on the state only: the fence, the
+        # release and the kill below are the reclaim's, unchanged.
+        out_of_memory = self._out_of_memory(finding, snapshot)
+        if out_of_memory is not None:
+            finding = replace(finding, reason=f"{out_of_memory.words}; {finding.reason}")
+            outcome.reason = finding.reason
+        # What filled the volume a disk-limit eviction names, from the
+        # attempt's last scratch reading (archived issue 2436): kubelet gives no grace
+        # period, so the worker's newest heartbeat is the last word it had.
+        # Words only, like the two above: the state, the eviction count, the
+        # fence and the release below are decided exactly as before.
+        if disk_eviction and not self._config.dry_run:
+            scratch = self._scratch_report(finding)
+            if scratch:
+                what = finding.detail.get("what_ended") or finding.reason
+                finding = replace(
+                    finding,
+                    reason=f"{finding.reason}; {scratch}",
+                    detail={**finding.detail, "what_ended": f"{what}; {scratch}"},
+                )
+                outcome.reason = finding.reason
+        if self._config.dry_run:
+            outcome.skipped = "dry_run"
+            outcome.actions.append(
+                f"would invalidate, release and fail the task: {finding.reason}"
+                if cannot_start or out_of_memory is not None
+                else f"would invalidate, release and requeue the task: {finding.reason}"
+                if ended_at_startup or finding.kind is FindingKind.WORKER_EVICTED
+                else f"would invalidate and requeue the task, releasing nothing: {finding.reason}"
+                if leaseless
+                else "would terminate, then invalidate, release and repair in one transaction"
+            )
+            return outcome
+
+        # ---- STEP 0: is the worker still silent? -----------------------
+        # A silence finding rests on a snapshot that may be minutes old by now
+        # (archived issue 1822): read the lease again, BEFORE the kill, which no aborted
+        # transaction can take back. A worker that beat since, within the
+        # grace, is alive: nothing is killed, fenced, released or requeued.
+        silence = self._silence_seen(finding, snapshot)
+        if silence is not None and finding.lease_id:
+            if self._store.lease_heartbeat_resumed(
+                finding.lease_id,
+                seen=silence[0],
+                generation=finding.generation,
+                grace_seconds=self._config.heartbeat_grace_seconds,
+            ):
+                return self._heartbeat_resumed(finding, outcome, "before the kill")
+
+        # ---- STEP 1: terminate the execution ----------------------------
+        # BEFORE anything is written. The fence used to be committed first, in
+        # a transaction of its own, and when this kill was then refused the
+        # repair returned with the generation fenced and the lease held. Every
+        # later pass saw a superseded lease and left it to a rule whose kill
+        # failed the same way: on 2026-10-04 four leases were held like that
+        # for ten hours (archived issue 560). Nothing is fenced now that this pass cannot
+        # also release and repair.
+        proof_by_absence_of_a_start = False
+        if not self._terminate(finding, outcome, handles, snapshot):
+            remaining = self._never_started_wait(finding.lease_id, snapshot)
+            if remaining is None or remaining > 0:
+                if remaining is not None:
+                    outcome.actions.append(
+                        f"its worker never started; released without a confirmed "
+                        f"kill in {remaining:.0f}s if nothing proves it gone sooner"
+                    )
+                return outcome
+            # A worker that never started, long past any start ever measured.
+            # The fence below commits WITH the release, and a worker checks its
+            # generation before it does anything, so if this container ever
+            # starts it exits without running the agent (invariant 5).
+            proof_by_absence_of_a_start = True
+            outcome.skipped = None
+            outcome.actions.append(
+                "kill not confirmed, but its worker never started in "
+                f"{self._config.never_started_release_seconds}s: fencing and "
+                "releasing on that evidence"
+            )
+        proof_by_absence_of_a_start = (
+            proof_by_absence_of_a_start or bool(finding.detail.get(_NEVER_STARTED_DETAIL))
+        )
+        # The same check inside the reclaim's transaction, on the lease read
+        # there -- but only when nothing was killed: once this pass has stopped
+        # the execution its worker is gone whatever it last wrote, and the
+        # reclaim must go ahead or the slot waits a further pass for nothing.
+        killed = finding.execution is not None and finding.execution.is_active
+        recheck = silence is not None and not killed
+
+        # ---- STEPS 2-4: fence, release, repair -- one transaction -------
+        plan: RepairPlan | None = None
+        task = snapshot.tasks.get(finding.task_id or "") if finding.task_id else None
+        if task is not None and not task.is_terminal:
+            # A requested cancel is FINISHED here, in one hop. Returning the
+            # task to READY and leaving the flag for the scheduler's drain
+            # to act on is a second hop through a second service, and it
+            # records the wrong outcome whenever retries are spent: READY
+            # is downgraded to FAILED, so a task somebody stopped was
+            # written down as having failed. DISPATCHED/STARTING/RUNNING/
+            # LEASED -> CANCELLED are all legal (swarm_common.states), and
+            # the repair re-reads the flag inside its transaction, so a
+            # cancel pressed after this snapshot is honoured too.
+            cancelling = task.cancel_requested
+            # A worker that exited 78 CANNOT START, and another attempt
+            # would fail the same way: FAILED, whatever attempts remain,
+            # with the worker's cause as the whole `last_error` (owner,
+            # 2026-09-25). Every other finding requeues, as it always has.
+            if cancelling:
+                to_state, error = (
+                    TaskState.CANCELLED,
+                    f"cancelled on request; reconciled: {finding.reason}",
+                )
+            elif cannot_start:
+                to_state, error = TaskState.FAILED, finding.reason
+            elif out_of_memory is not None:
+                # No refund, no eviction count, no retry: FAILED, whatever
+                # attempts remain. A cancel still wins, above.
+                to_state, error = TaskState.FAILED, f"reconciled: {finding.reason}"
+            else:
+                to_state, error = TaskState.READY, f"reconciled: {finding.reason}"
+            # An attempt that ended before its runner started is refunded,
+            # up to a bound, inside the repair's own transaction and before
+            # it decides whether the attempts are spent (archived issue 67). The store
+            # appends how the attempt was counted, so the reason goes in
+            # without the snapshot's prediction of it. Only on this
+            # transaction's own fence: when somebody else fenced first,
+            # nothing is refunded (invariant 5).
+            refund_limit: int | None = None
+            if ended_at_startup and to_state is TaskState.READY and out_of_memory is None:
+                what = finding.detail.get("what_ended") or finding.reason
+                error = f"reconciled: {what}" + (f"; {ended_why}" if ended_why else "")
+                refund_limit = self._config.startup_refund_limit
+            # Likewise the disk-eviction count: the store appends whether this
+            # eviction is retried or ends the task.
+            if disk_eviction and to_state is TaskState.READY:
+                what = finding.detail.get("what_ended") or finding.reason
+                error = f"reconciled: {what}"
+            # A silent lease whose task never reached STARTING ran nothing
+            # (part of archived issue 2688): re-queued without counting the attempt, up to a
+            # bound, then FAILED as never started. The store re-reads the
+            # state inside the transaction and applies this only while the
+            # task is still LEASED or DISPATCHED; a worker that started since
+            # is judged as before. The fence, the release and the kill are the
+            # reclaim's, unchanged (invariants 1-3 and 5).
+            never_started = (
+                to_state is TaskState.READY
+                and finding.kind in _NEVER_STARTED_KINDS
+                and self._never_started(finding, task, snapshot)
+            )
+            backoff_after = (
+                task.never_started_requeues + 1 if never_started else task.attempt_count
+            )
+            plan = RepairPlan(
+                to_state=to_state,
+                # Only the task this finding is actually about. A snapshot is
+                # minutes old by the time slow terminations ahead of it are
+                # done, and the task may legitimately be on a newer lease by
+                # now -- see `repair_task_state`.
+                expected_lease_id=finding.lease_id,
+                error=error,
+                # A retry time means nothing on a task that will not retry.
+                # Otherwise after a backoff by attempt number, never `now`: a
+                # lapse with a deterministic cause would recur at once and spend
+                # every attempt back to back (archived issue 1822). The wait creates no
+                # demand: a READY task holds nothing (invariant 1).
+                next_eligible_at=None
+                if cannot_start or out_of_memory is not None
+                else utcnow() + timedelta(seconds=requeue_backoff_seconds(backoff_after)),
+                # Why it ends if it ends FAILED: the worker could not start,
+                # or (spent attempts on a requeue) its worker was lost.
+                failed_cause=EndCause.CANNOT_START if cannot_start else EndCause.LOST_WORKER,
+                startup_refund_limit=refund_limit,
+                disk_eviction=disk_eviction,
+                never_started_requeue_limit=(
+                    self._config.never_started_requeue_limit if never_started else None
+                ),
+            )
+        fence_guard: dict[str, Any] = dict(guard)
+        if orphan_lease and finding.lease_id:
+            fence_guard["unless_holding_lease"] = finding.lease_id
+        done = self._store.fence_release_repair(
+            finding.task_id,
+            expected_generation=finding.generation if finding.task_id else None,
+            # Never for a leaseless task: its lease is already released (or
+            # was never written), so its capacity is already back. Asking
+            # again is a no-op only because the frozen release is
+            # idempotent; not asking keeps the requeue from depending on that
+            # (invariants 2 and 3).
+            lease_id=finding.lease_id if not leaseless else None,
+            release_reason=f"reconciler:{finding.kind.value}",
+            repair=plan,
+            # An orphan-lease finding may rest on a snapshot that missed its
+            # task (archived issue 332), and a release on the evidence of a worker that never
+            # started is safe only behind a fence: both are refused while the
+            # task, as this transaction leaves it, still holds the lease.
+            refuse_while_task_holds_it=orphan_lease or proof_by_absence_of_a_start,
+            # The attempt this finding supersedes gets its end in the same
+            # commit (archived issue 630): a fenced worker never writes one, and an attempt
+            # left open counted as running in every figure read from attempts.
+            # The store writes it only at the finding's own generation.
+            attempt_id=finding.attempt_id,
+            attempt_reason=finding.reason,
+            heartbeat_seen=silence[0] if recheck and silence is not None else None,
+            heartbeat_grace_seconds=(
+                float(self._config.heartbeat_grace_seconds) if recheck else None
+            ),
+            **fence_guard,
+        )
+        if done.heartbeat_resumed:
+            return self._heartbeat_resumed(finding, outcome, "inside the reclaim's transaction")
+
+        if done.new_generation is not None and finding.task_id:
+            outcome.invalidated_to = done.new_generation
+            outcome.actions.append(f"generation {finding.generation} -> {done.new_generation}")
+            self._store.emit(
+                task_id=finding.task_id,
+                tenant_id=finding.tenant_id,
+                event_type=EventType.GENERATION_FENCED,
+                detail={
+                    "reason": finding.reason,
+                    "finding": finding.kind.value,
+                    "invalidated_generation": finding.generation,
+                    "new_generation": done.new_generation,
+                },
+                attempt_id=finding.attempt_id,
+                lease_id=finding.lease_id,
+                generation=finding.generation,
+            )
+            self._release_attempt_holds(finding, outcome)
+        self._note_attempt_end(finding, outcome, done.attempt_ended)
+        if done.release_refused:
+            outcome.actions.append(
+                f"did NOT release {finding.lease_id}: its task still holds it at its generation"
+            )
+        outcome.released = done.released
+        if done.released:
+            outcome.actions.append(f"released {finding.lease_id}")
+            if finding.task_id:
+                self._store.emit(
+                    task_id=finding.task_id,
+                    tenant_id=finding.tenant_id,
+                    event_type=EventType.LEASE_RELEASED,
+                    detail={"reason": finding.kind.value, "detail": finding.reason},
+                    attempt_id=finding.attempt_id,
+                    lease_id=finding.lease_id,
+                )
+        repaired = done.repaired_to
+        if repaired is not None and task is not None and finding.task_id:
+            outcome.repaired_to = repaired.value
+            outcome.actions.append(f"task -> {repaired.value}")
+            detail: dict[str, Any] = {
+                "reason": finding.kind.value,
+                "detail": finding.reason,
+            }
+            if cannot_start:
+                detail.update(
+                    exit_code=finding.detail.get("exit_code"),
+                    execution=finding.detail.get("execution"),
+                    cause_source=finding.detail.get("cause_source"),
+                )
+            if ended_at_startup:
+                detail.update(
+                    exit_code=finding.detail.get("exit_code"),
+                    execution=finding.detail.get("execution"),
+                    task_state=finding.detail.get("task_state"),
+                )
+            if out_of_memory is not None and repaired is TaskState.FAILED:
+                # The reason in words, as the owner asked (archived issue 1926); the finding
+                # that reclaimed it is kept beside them, not lost.
+                detail.update(
+                    reason=out_of_memory.words,
+                    finding=finding.kind.value,
+                    out_of_memory=out_of_memory.how,
+                    memory_limit_bytes=out_of_memory.limit_bytes,
+                )
+            if done.never_started_requeues is not None:
+                detail.update(
+                    never_started=True,
+                    why=NEVER_STARTED_WHY,
+                    never_started_requeues=done.never_started_requeues,
+                    never_started_requeue_limit=self._config.never_started_requeue_limit,
+                )
+                outcome.actions.append(
+                    f"never started: {done.never_started_requeues}/"
+                    f"{self._config.never_started_requeue_limit} re-queue(s)"
+                )
+            if repaired is TaskState.CANCELLED:
+                # The API's flag-only cancel wrote `cancel_requested`
+                # (before 2026-09-24: a `cancelled` with
+                # phase=cancel_requested). THIS is the terminal
+                # `cancelled`, written by the component that released
+                # the lease -- contract request 17.
+                detail.update(phase="cancelled", from_state=task.state.value)
+            self._store.emit(
+                task_id=finding.task_id,
+                tenant_id=finding.tenant_id,
+                event_type=_EVENT_FOR_REPAIR.get(repaired, EventType.FAILED),
+                detail=detail,
+                attempt_id=finding.attempt_id,
+                lease_id=finding.lease_id,
+            )
+            if repaired in TERMINAL_STATES:
+                self._announce_finished(finding.task_id, task.tenant_id, repaired, outcome)
+        return outcome
+
+    @staticmethod
+    def _never_started(finding: Finding, task: TaskView, snapshot: ControlSnapshot) -> bool:
+        """Whether no attempt of `task` reached STARTING, as this pass read it (part of archived issue 2688).
+
+        A worker writes STARTING before it runs anything, so a task still
+        LEASED or DISPATCHED has none; an attempt document that records a
+        `started_at` says otherwise whatever the task reads. The store judges
+        the state again inside the repair's transaction.
+        """
+        if task.state not in NEVER_STARTED_STATES:
+            return False
+        attempt = snapshot.attempts.get(finding.attempt_id or "")
+        return attempt is None or attempt.started_at is None
+
+    @staticmethod
+    def _why_not_started(finding: Finding, snapshot: ControlSnapshot) -> str | None:
+        """The start problem recorded for this silence finding's own attempt, in words, or None (archived issue 3531).
+
+        Only a silent lease or a dead worker -- the findings that reclaim a
+        pod that never started -- and only the record of the finding's own
+        attempt: an earlier attempt's pod says nothing about this one.
+        """
+        if finding.kind not in _NEVER_STARTED_KINDS or not finding.attempt_id or not finding.task_id:
+            return None
+        task = snapshot.tasks.get(finding.task_id)
+        recorded = task.start_problem if task is not None else None
+        if not recorded or recorded.get("attempt_id") != finding.attempt_id:
+            return None
+        return start_problem_words(recorded)
+
+    def _out_of_memory(self, finding: Finding, snapshot: ControlSnapshot) -> OutOfMemory | None:
+        """Whether this finding's attempt ran out of memory at its own limit (archived issue 1926), or None.
+
+        An OOM kill, from the termination this pass already read, on any
+        finding that would otherwise requeue the attempt's task. A stall at
+        the limit, from the attempt's heartbeat events, only on a silent or
+        dead worker -- the rule is about a worker that stopped answering --
+        and never on an evicted one: a node's pressure is not this step's
+        size. A read that fails is no evidence, and keeps today's retry.
+        """
+        if finding.kind not in _OUT_OF_MEMORY_KINDS or not finding.attempt_id:
+            return None
+        task = snapshot.tasks.get(finding.task_id or "") if finding.task_id else None
+        if task is None or task.is_terminal:
+            return None
+        ended = (getattr(snapshot, "terminations", None) or {}).get(finding.attempt_id)
+        killed = out_of_memory_killed(ended)
+        if killed is not None or finding.kind not in _STALL_KINDS:
+            return killed
+        if ended is not None and getattr(ended, "eviction", None):
+            return None
+        try:
+            events = self._store.attempt_events(task.task_id, finding.attempt_id)
+        except Exception as exc:
+            self._log.warning(
+                "could not read an attempt's heartbeats; not judging its memory",
+                task_id=task.task_id,
+                attempt_id=finding.attempt_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        return stalled_at_memory_limit(
+            events, attempt_id=finding.attempt_id, generation=finding.generation
+        )
+
+    def _scratch_report(self, finding: Finding) -> str | None:
+        """The evicted volume's largest paths from the attempt's last reading (archived issue 2436), or None.
+
+        A read that fails is no report: the eviction's own words stand and
+        the repair goes ahead, logged.
+        """
+        if not finding.task_id or not finding.attempt_id:
+            return None
+        try:
+            events = self._store.attempt_events(finding.task_id, finding.attempt_id)
+        except Exception as exc:
+            self._log.warning(
+                "could not read an attempt's heartbeats; not naming what filled its scratch",
+                task_id=finding.task_id,
+                attempt_id=finding.attempt_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+        return scratch_report(
+            events,
+            attempt_id=finding.attempt_id,
+            generation=finding.generation,
+            volume=str(finding.detail.get("volume") or EVERY_VOLUME),
+        )
+
+    @staticmethod
+    def _how_it_ended(finding: Finding, snapshot: ControlSnapshot) -> str | None:
+        """Why this finding's execution ended, when the finding does not already say it.
+
+        From `snapshot.terminations`, the read `_read_terminations` already
+        made for this attempt's FAILED execution (`backends.termination_reason`):
+        an OOM kill reads "container worker: OOMKilled: the container passed
+        its 8 GiB memory limit (exit code 137)", an eviction "Evicted:
+        <kubelet's message>". Before archived issue 1822 that reached one log line, and the
+        task read "lost_worker" or "lease silent", which cannot tell a memory
+        problem from a dead node.
+
+        None when nothing was read, the read names no reason, or the finding's
+        own words already carry it: the cannot-start rule's worker cause, the
+        eviction rule's cause, a crash already named by its detail.
+        """
+        if finding.kind in (FindingKind.WORKER_CANNOT_START, FindingKind.WORKER_EVICTED):
+            return None
+        if not finding.attempt_id:
+            return None
+        ended = (getattr(snapshot, "terminations", None) or {}).get(finding.attempt_id)
+        words = termination_reason(ended)
+        if not words:
+            return None
+        said = str(getattr(ended, "eviction", None) or getattr(ended, "detail", "") or "")
+        said = " ".join(said.split())
+        if said and said in finding.reason:
+            return None
+        return words
+
+    def _announce_finished(
+        self, task_id: str, tenant_id: str, state: TaskState, outcome: RepairOutcome
+    ) -> None:
+        """Ring the scheduler: this repair ENDED the task, its dependants may run (archived issue 636).
+
+        After the commit and its event, so the scheduler that wakes reads the
+        task terminal and its lease released (the same transaction released
+        it). Only for a terminal `repaired_to`: a requeue to READY is not an
+        end, and its dependants still wait on it. Once per repair, and a repair
+        is written once -- the next pass finds the lease released and nothing
+        to act on. Never raises: a lost wake costs one safety tick, and the
+        repair it follows has already happened.
+        """
+        if self._finish is None:
+            return
+        try:
+            published = bool(
+                self._finish.announce(task_id=task_id, tenant_id=tenant_id, state=state)
+            )
+            result = "published" if published else "refused"
+        except Exception as exc:
+            # The type only: a transport error's text can name the request.
+            result = f"error:{type(exc).__name__}"
+        outcome.actions.append(f"finish wake {result}")
+        self._log.info(
+            "finish wake", task_id=task_id, state=state.value, outcome=result
+        )
+
+    def _never_started_wait(self, lease_id: str | None, snapshot: ControlSnapshot) -> float | None:
+        """Seconds until this lease's never-started worker is its own evidence.
+
+        None when the worker DID start -- the lease has heartbeated, its
+        attempt recorded a start, or its task reached RUNNING, which only a
+        worker writes -- or when there is no lease to judge. Then archived pull request 450 holds:
+        an execution nobody can see is held until something proves it gone.
+        Zero or less means `never_started_release_seconds` have passed since
+        the lease was created and nothing of its worker was ever heard: see
+        that setting for why that is enough (archived issue 560).
+        """
+        lease = snapshot.leases.get(lease_id or "")
+        if lease is None or lease.is_released or lease.heartbeat_at is not None:
+            return None
+        task = snapshot.tasks.get(lease.task_id)
+        if task is None or task.state not in _NEVER_STARTED_STATES:
+            return None
+        attempt = snapshot.attempts.get(lease.attempt_id or "")
+        if attempt is not None and attempt.started_at is not None:
+            return None
+        created = lease.created_at or (attempt.created_at if attempt is not None else None)
+        if created is None:
+            return None
+        age = (snapshot.taken_at - created).total_seconds()
+        return float(self._config.never_started_release_seconds) - age
+
+    def _held_for_unstopped(self, finding: Finding) -> RepairOutcome:
+        """The outcome of a release this pass refuses: its lease's execution still runs."""
+        self._log.warning(
+            "not releasing: this pass could not stop the execution holding the lease",
+            kind=finding.kind.value,
+            task_id=finding.task_id,
+            lease_id=finding.lease_id,
+        )
+        return RepairOutcome(
+            kind=finding.kind.value,
+            reason=finding.reason,
+            tenant_id=finding.tenant_id,
+            task_id=finding.task_id,
+            lease_id=finding.lease_id,
+            skipped="execution_not_stopped",
+            actions=[
+                "did NOT release: an earlier repair in this pass could not stop the "
+                "execution holding this lease"
+            ],
+        )
+
+    @staticmethod
+    def _silence_seen(
+        finding: Finding, snapshot: ControlSnapshot
+    ) -> tuple[datetime | None] | None:
+        """The beat a silence finding was made on, or None for any other finding.
+
+        A silence finding is `detect_stale_leases`'s: a stale lease or a dead
+        worker that carries `silent_seconds`. One whose execution has ENDED is
+        not: the backend's record already proves the worker gone, and no later
+        beat can outweigh it. The beat is wrapped so that "it had never beaten"
+        (None) is told apart from "this is not a silence finding"."""
+        if finding.kind not in (FindingKind.STALE_LEASE, FindingKind.DEAD_WORKER):
+            return None
+        if "silent_seconds" not in finding.detail or finding.detail.get("execution_ended"):
+            return None
+        if not finding.lease_id or not finding.task_id:
+            return None
+        lease = snapshot.leases.get(finding.lease_id)
+        return (lease.heartbeat_at if lease is not None else None,)
+
+    def _heartbeat_resumed(
+        self, finding: Finding, outcome: RepairOutcome, where: str
+    ) -> RepairOutcome:
+        outcome.skipped = "heartbeat_resumed"
+        outcome.actions.append(
+            f"did NOT reclaim: the lease heartbeat advanced since the snapshot ({where}); "
+            "its worker is alive"
+        )
+        self._log.info(
+            "reclaim aborted: the worker heartbeat after the snapshot",
+            task_id=finding.task_id,
+            lease_id=finding.lease_id,
+            kind=finding.kind.value,
+            generation=finding.generation,
+            checked=where,
+        )
+        return outcome
+
+    def _terminate(
+        self,
+        finding: Finding,
+        outcome: RepairOutcome,
+        handles: dict[str, Any],
+        snapshot: ControlSnapshot,
+    ) -> bool:
+        """Stop the finding's execution; True only when there is nothing left running.
+
+        True, too, when there was nothing to stop. False means the caller must
+        NOT go on to release anything: the kill was refused, failed, or not
+        confirmed, or is backing off, and `outcome` already says which.
+
+        AN EXECUTION CLOUD RUN WILL NOT CANCEL, THAT NO LEASE HOLDS, IS ASKED
+        LESS OFTEN (archived issue 1822). Cloud Run can refuse a cancel as "not running" and
+        still never record the execution finished; asking again every pass
+        changes nothing. When no unreleased lease names the execution, the
+        refusal is recorded (`ControlStore.record_wedged_execution`), ONE error
+        says so, and the kill is retried on a doubling backoff capped at
+        `WEDGED_BACKOFF_CAP_SECONDS`. Nothing is released either way: there is
+        no slot behind it. When a lease DOES name it, none of that applies and
+        every pass tries the kill and keeps the slot, as before: a lease is
+        only ever released on a confirmed stop (invariant 3).
+        """
+        if finding.execution is None or not finding.execution.is_active:
+            return True
+        backend = handles.get(finding.execution.backend)
+        if backend is None:
+            outcome.skipped = "backend_unavailable"
+            outcome.actions.append("did NOT release: backend unavailable to confirm the kill")
+            return False
+        name = finding.execution.name
+        held = self._lease_names_execution(finding, snapshot)
+        wedged = None if held else self._wedged_record(name)
+        if wedged is not None:
+            next_try = as_datetime(wedged.get("next_try"))
+            if next_try is not None and snapshot.taken_at < next_try:
+                outcome.skipped = "wedged_backoff"
+                outcome.actions.append(
+                    f"did NOT terminate: Cloud Run has refused to cancel {name} "
+                    f"{int(wedged.get('refusals') or 0)} time(s) as not running; "
+                    f"next try at {next_try.isoformat()}"
+                )
+                return False
+        try:
+            outcome.terminated = bool(backend.terminate(finding.execution))
+        except Exception as exc:
+            if not held and cancel_refused_as_not_running(exc):
+                if self._back_off_wedged(finding, wedged, exc, snapshot.taken_at, outcome):
+                    return False
+            self._log.error(
+                "termination failed; NOT releasing the slot",
+                execution=name,
+                error=str(exc),
+            )
+            outcome.skipped = f"termination_failed: {exc}"
+            outcome.actions.append("did NOT release: termination was not confirmed")
+            return False
+        if not outcome.terminated:
+            outcome.skipped = "termination_unconfirmed"
+            outcome.actions.append("did NOT release: termination was not confirmed")
+            return False
+        outcome.actions.append(f"terminated {name}")
+        if wedged is not None:
+            self._forget_wedged(name)
+        return True
+
+    @staticmethod
+    def _lease_names_execution(finding: Finding, snapshot: ControlSnapshot) -> bool:
+        """Whether any unreleased lease could be this execution's.
+
+        Generous on purpose: the finding's own lease, a lease of the
+        execution's attempt, or a lease whose attempt records this execution's
+        name. Each answers yes, and yes keeps the kill on every pass.
+        """
+        if finding.lease_id:
+            return True
+        execution = finding.execution
+        if execution is None:
+            return False
+        for lease in snapshot.leases.values():
+            if lease.is_released:
+                continue
+            if execution.attempt_id and lease.attempt_id == execution.attempt_id:
+                return True
+            attempt = snapshot.attempts.get(lease.attempt_id)
+            if attempt is not None and attempt.execution_name == execution.name:
+                return True
+        return False
+
+    def _wedged_record(self, name: str) -> dict[str, Any] | None:
+        """The execution's wedged record, or None -- also when it cannot be read.
+
+        An unread record costs one extra kill this pass, which is what every
+        pass did before it existed; it never holds a kill back.
+        """
+        try:
+            return self._store.wedged_execution(name)
+        except Exception as exc:
+            self._log.warning(
+                "could not read the wedged-execution record; trying the kill",
+                execution=name,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
+
+    def _back_off_wedged(
+        self,
+        finding: Finding,
+        previous: dict[str, Any] | None,
+        exc: Exception,
+        now: datetime,
+        outcome: RepairOutcome,
+    ) -> bool:
+        """Record one more "not running" refusal and when to try next.
+
+        False when the record could not be written: the caller then reports
+        the failed kill exactly as it did before records existed, and the next
+        pass tries again.
+        """
+        execution = finding.execution
+        if execution is None:
+            return False
+        refusals = int((previous or {}).get("refusals") or 0) + 1
+        delay = min(
+            WEDGED_BACKOFF_BASE_SECONDS * 2 ** (refusals - 1), WEDGED_BACKOFF_CAP_SECONDS
+        )
+        next_try = now + timedelta(seconds=delay)
+        why = " ".join(str(exc).split())[:300]
+        first_seen = as_datetime((previous or {}).get("first_seen")) or now
+        try:
+            self._store.record_wedged_execution(
+                execution.name,
+                {
+                    "backend": execution.backend,
+                    "task_id": execution.task_id,
+                    "attempt_id": execution.attempt_id,
+                    "first_seen": first_seen,
+                    "last_refused": now,
+                    "refusals": refusals,
+                    "next_try": next_try,
+                    "reason": why,
+                    "expires_at": next_try + WEDGED_RECORD_RETENTION,
+                },
+            )
+        except Exception as write_exc:
+            self._log.warning(
+                "could not record a wedged execution; it will be tried again next pass",
+                execution=execution.name,
+                error=f"{type(write_exc).__name__}: {write_exc}",
+            )
+            return False
+        if previous is None:
+            self._log.error(
+                WEDGED_EXECUTION,
+                execution=execution.name,
+                why=why,
+                task_id=execution.task_id,
+                attempt_id=execution.attempt_id,
+                next_try=next_try.isoformat(),
+            )
+        else:
+            self._log.info(
+                "cloud run still will not cancel a wedged execution; backing off",
+                execution=execution.name,
+                refusals=refusals,
+                first_seen=first_seen.isoformat(),
+                next_try=next_try.isoformat(),
+            )
+        outcome.skipped = f"execution_wedged: {why}"
+        outcome.actions.append(
+            f"did NOT terminate: Cloud Run refused to cancel it as not running "
+            f"({refusals} time(s)); no lease holds it; next try at {next_try.isoformat()}"
+        )
+        return True
+
+    def _forget_wedged(self, name: str) -> None:
+        """Drop the wedged record of an execution whose stop is now confirmed."""
+        try:
+            self._store.clear_wedged_execution(name)
+        except Exception as exc:
+            # A leftover record only delays the next kill of an execution that
+            # is already over; it holds no slot.
+            self._log.warning(
+                "could not clear a wedged-execution record",
+                execution=name,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    def _repair_stuck(self, finding: Finding, outcome: RepairOutcome) -> RepairOutcome:
+        """Fence a stuck attempt, and leave the rest to the worker and the next pass.
+
+        The worker under a stuck browser is ALIVE -- that is what makes it
+        stuck rather than dead -- and a live worker handles the two ways of
+        being stopped very differently:
+
+        * **It notices the fence** at its next control poll (every 10s):
+          `lifecycle._apply_control_signals` stops the runner child, emits
+          `generation_fenced` and exits 70, writing nothing to the task or the
+          lease (invariant 5). The Job then ends on its own (`backoffLimit: 0`).
+        * **It receives SIGTERM** -- which is what deleting its Job sends it:
+          `lifecycle._handle_interruption` checkpoints and PARKS the task
+          `SCHEDULED_RETRY` without checking whether it was fenced, and nothing
+          in the platform promotes that park (scheduler/dispatch.py says so at
+          WORKER_FINALISE_BUDGET_SECONDS). Racing the reconciler's own READY, it
+          would turn an evicted task into one parked for ever, or -- when the
+          scheduler had already leased it again, so PARKED is illegal -- into
+          FAILED through `_safe_finish`. Read from the code, not observed: no
+          browser attempt has reached RUNNING on this platform yet.
+
+        So this pass only fences, and names the reason on the task's timeline.
+        What the owner asked for still happens, in the order that cannot race:
+        the worker ends the agent itself; then, on a later pass, the lease is
+        superseded and silent, so the existing rules take it -- the
+        obsolete-generation rule terminates the Job first if it is somehow
+        still active, the partial-repair rule in `detect_stale_leases` releases
+        through the frozen `release_lease_in_transaction`, and
+        `repair_task_state` requeues it or fails it once its attempts are spent.
+        Nothing here can re-find it meanwhile: the stuck rule only judges an
+        attempt on its task's CURRENT generation.
+        """
+        if self._config.dry_run:
+            outcome.skipped = "dry_run"
+            outcome.actions.append(
+                f"would fence generation {finding.generation}; then {_AFTER_THE_FENCE}"
+            )
+            return outcome
+        if not finding.task_id or finding.generation is None:
+            outcome.skipped = "nothing_to_fence"
+            return outcome
+        fenced = self._store.fence_attempt(
+            finding.task_id,
+            finding.generation,
+            attempt_id=finding.attempt_id,
+            attempt_reason=finding.reason,
+        )
+        new_generation = fenced.new_generation
+        outcome.invalidated_to = new_generation
+        if new_generation is None:
+            # Moved on since the snapshot -- fenced by someone else, finished,
+            # or re-admitted. The attempt this finding is about has already
+            # been superseded, and nothing of the newer one is touched.
+            outcome.skipped = "already_superseded"
+            outcome.actions.append(
+                f"did not fence: the task is no longer at generation {finding.generation}"
+            )
+            return outcome
+        outcome.actions.append(f"generation {finding.generation} -> {new_generation}")
+        self._store.emit(
+            task_id=finding.task_id,
+            tenant_id=finding.tenant_id,
+            event_type=EventType.GENERATION_FENCED,
+            detail={
+                "reason": finding.reason,
+                "finding": finding.kind.value,
+                "invalidated_generation": finding.generation,
+                "new_generation": new_generation,
+                "then": _AFTER_THE_FENCE,
+            },
+            attempt_id=finding.attempt_id,
+            lease_id=finding.lease_id,
+            generation=finding.generation,
+        )
+        self._release_attempt_holds(finding, outcome)
+        self._note_attempt_end(finding, outcome, fenced.attempt_ended)
+        outcome.actions.append(f"then: {_AFTER_THE_FENCE}")
+        self._log_eviction(finding, outcome)
+        return outcome
+
+    def _note_attempt_end(
+        self, finding: Finding, outcome: RepairOutcome, cause: str | None
+    ) -> None:
+        """Say on the outcome that a fence's commit recorded its attempt's end (archived issue 630)."""
+        if cause is None or not finding.attempt_id:
+            return
+        outcome.actions.append(f"recorded the end of {finding.attempt_id} as {cause}")
+
+    def _release_attempt_holds(self, finding: Finding, outcome: RepairOutcome) -> None:
+        """Give back the account holds of the attempt this pass just ended (archived issue 380).
+
+        CALLED ONLY ONCE THE ATTEMPT IS PROVABLY OVER: its fence has COMMITTED
+        -- `invalidate_generation` returned the new generation -- or, for a
+        `left_running` Job, which has no generation left to fence, its kill was
+        confirmed. A fence that was refused or lost its race (archived issue 372) returns
+        None, and then nothing is released: the attempt may be
+        a live worker still using its account, and taking its hold away would
+        let `choose()` stack another agent onto it. After a committed fence the
+        worker can no longer write anything for its generation and stops at its
+        next poll, so its hold describes nothing the platform should count.
+
+        A fenced worker never reaches its own release (`lifecycle._give_back`),
+        so without this the hold counted for its whole TTL. Never raises: the
+        broker's own sweep releases the holds of an attempt whose record shows
+        it ended (`quota_broker.main._release_ended_attempt_holds`), the TTL is
+        the backstop behind that, and a broker outage must not stop the rest
+        of the repair.
+        """
+        if self._holds is None or not finding.task_id or not finding.attempt_id:
+            return
+        try:
+            released = self._holds.release_attempt(
+                task_id=finding.task_id, attempt_id=finding.attempt_id
+            )
+        except Exception as exc:
+            self._log.warning(
+                "could not release an ended attempt's account holds; the "
+                "broker's sweep or their TTL will",
+                task_id=finding.task_id,
+                attempt_id=finding.attempt_id,
+                error=str(exc)[:300],
+            )
+            outcome.actions.append(
+                f"did NOT release the account holds of {finding.attempt_id}: broker call failed"
+            )
+            return
+        if released:
+            outcome.actions.append(
+                f"released {released} account hold(s) of {finding.attempt_id}"
+            )
+
+    def _repair_lost_after_finish(
+        self, finding: Finding, outcome: RepairOutcome
+    ) -> RepairOutcome:
+        """Record the attempt's end for its lost worker, then give back its account holds (archived issue 380).
+
+        No kill (nothing of it runs: `_admit_lost_after_finish`), no fence (a
+        terminal task has no generation left to fence), no lease (the
+        orphan-lease rule releases one `finish` left behind, as it always
+        has), and the task document is not written: its state and end cause
+        are what its worker decided. The end is written in one transaction
+        that refuses unless the task is still terminal at the attempt's
+        generation and the attempt is still unended
+        (`ControlStore.record_lost_attempt_end`), and the holds are released
+        ONLY when that write committed -- the same "only after our own write"
+        rule the fence follows. A refused write releases nothing: the attempt
+        is a newer writer's now (invariant 5), or its worker ended it itself
+        and its own release runs.
+
+        The cause is `lost_after_finish`, in the attempt's `error`: the
+        attempt document has no cause field, and the frozen `EndCause` names a
+        task's end, which this does not change. With `completed_at` written,
+        a failed broker call is still covered: the broker's sweep gives back
+        the holds of an attempt that recorded its end
+        (`quota_broker.main._release_ended_attempt_holds`).
+        """
+        attempt_id = finding.attempt_id or ""
+        if self._config.dry_run:
+            outcome.skipped = "dry_run"
+            outcome.actions.append(
+                f"would record the end of {attempt_id} as {LOST_AFTER_FINISH_CAUSE} "
+                "and release its account holds"
+            )
+            return outcome
+        if not finding.task_id or not attempt_id or finding.generation is None:
+            outcome.skipped = "no attempt to end"
+            return outcome
+        recorded = self._store.record_lost_attempt_end(
+            finding.task_id,
+            attempt_id,
+            expected_generation=finding.generation,
+            error=f"{LOST_AFTER_FINISH_CAUSE}: {finding.reason}",
+        )
+        if not recorded:
+            outcome.actions.append(
+                f"did NOT record the end of {attempt_id}: its task or attempt moved "
+                "since this pass read them"
+            )
+            return outcome
+        outcome.actions.append(f"recorded the end of {attempt_id} as {LOST_AFTER_FINISH_CAUSE}")
+        self._log.warning(
+            "recorded the end of an attempt whose worker ended its task and not its attempt",
+            task_id=finding.task_id,
+            attempt_id=attempt_id,
+            generation=finding.generation,
+            cause=LOST_AFTER_FINISH_CAUSE,
+        )
+        self._release_attempt_holds(finding, outcome)
+        return outcome
+
+    def _repair_left_running(
+        self,
+        finding: Finding,
+        outcome: RepairOutcome,
+        handles: dict[str, Any],
+        snapshot: ControlSnapshot,
+    ) -> RepairOutcome:
+        """Terminate a Job whose task already finished; release only its own lease.
+
+        No fence. The task is terminal, so there is no generation left for this
+        Job to run under -- and `invalidate_generation` on a task that has been
+        re-opened since (FAILED -> READY is legal) would bump a generation that
+        belongs to the NEXT attempt. No task-state repair either: a terminal
+        state is the worker's own record of how the task ended.
+
+        The lease on the finding, if any, is this Job's own: same attempt, same
+        generation, unreleased (`detect_left_running`). It is released only
+        after the kill is confirmed, for the same reason every release here is.
+        """
+        name = finding.execution.name if finding.execution else None
+        if self._config.dry_run:
+            outcome.skipped = "dry_run"
+            outcome.actions.append(
+                f"would terminate {name}"
+                + (f" and release {finding.lease_id}" if finding.lease_id else "")
+            )
+            return outcome
+        if not self._terminate(finding, outcome, handles, snapshot):
+            return outcome
+        # The Job's worker died with it, before its own `finally` could give
+        # its account back, and with no fence here nothing else releases for
+        # this attempt until the hold's TTL (archived issue 380). The confirmed kill is the
+        # evidence: the same strength as a committed fence, which is why it
+        # sits after `_terminate` and never before.
+        self._release_attempt_holds(finding, outcome)
+        if finding.lease_id:
+            outcome.released = self._store.release_lease(
+                finding.lease_id, f"reconciler:{finding.kind.value}"
+            )
+            if outcome.released:
+                outcome.actions.append(f"released {finding.lease_id}")
+                if finding.task_id:
+                    self._store.emit(
+                        task_id=finding.task_id,
+                        tenant_id=finding.tenant_id,
+                        event_type=EventType.LEASE_RELEASED,
+                        detail={"reason": finding.kind.value, "detail": finding.reason},
+                        attempt_id=finding.attempt_id,
+                        lease_id=finding.lease_id,
+                    )
+        if finding.task_id:
+            # The event that names the reason on the task's own timeline. The
+            # frozen EventType has no "execution evicted"; GENERATION_FENCED is
+            # the nearest -- the reconciler stopped an execution of this
+            # generation that had no right to run -- and `phase` says which
+            # kind of stop it was. Contract request 19 asks for a type of its own.
+            self._store.emit(
+                task_id=finding.task_id,
+                tenant_id=finding.tenant_id,
+                event_type=EventType.GENERATION_FENCED,
+                detail={
+                    "reason": finding.reason,
+                    "finding": finding.kind.value,
+                    "phase": "left_running",
+                    "execution": name,
+                    "task_state": finding.detail.get("task_state"),
+                    "lease_released": outcome.released,
+                },
+                attempt_id=finding.attempt_id,
+                lease_id=finding.lease_id,
+                generation=finding.generation,
+            )
+        self._log_eviction(finding, outcome)
+        return outcome
+
+    def _log_eviction(self, finding: Finding, outcome: RepairOutcome) -> None:
+        on_cloud_run = finding.execution is not None and finding.execution.backend == CLOUD_RUN
+        self._log.info(
+            FENCED_STALLED_CLOUD_RUN if on_cloud_run else EVICTED,
+            kind=finding.kind.value,
+            task_id=finding.task_id,
+            tenant_id=finding.tenant_id,
+            execution=outcome.execution,
+            namespace=finding.detail.get("namespace"),
+            terminated=outcome.terminated,
+            released=outcome.released,
+            repaired_to=outcome.repaired_to,
+            reason=finding.reason,
+        )
+
+    # ------------------------------------------------------------------
+    def _collect_checkpoints(self, report: ReconcileReport, *, now: datetime) -> None:
+        """Reclaim checkpoints nothing can resume from.
+
+        Separate from `_collect_garbage` for two reasons. It asks a different
+        question of the control plane -- which tasks are FINISHED, where
+        `snapshot()` reads only the four states that hold capacity -- and it
+        lists an entire bucket, so it runs on its own slower clock instead of on
+        every one-minute tick.
+        """
+        if self._checkpoints is None or not self._config.enable_checkpoint_gc:
+            return
+        if self._config.dry_run:
+            # The claim is a WRITE. A dry run that took it would make the next
+            # real pass skip its sweep, so "dry run changes nothing" has to mean
+            # this too -- but the sweep itself still runs and still reports what
+            # it would have deleted, because a dry run that reported nothing
+            # would be useless for answering "is it safe to enable this".
+            #
+            # The consequence is deliberate and worth knowing: a reconciler left
+            # in dry run lists the bucket on EVERY pass rather than hourly.
+            sweep = self._checkpoints.sweep(now=now)
+        else:
+            if not self._store.claim_checkpoint_sweep(
+                min_interval_seconds=self._config.checkpoint_sweep_interval_seconds, now=now
+            ):
+                return
+            sweep = self._checkpoints.sweep(now=now)
+
+        report.checkpoint_sweep = sweep.as_dict()
+        report.errors.extend(sweep.errors)
+        for item in sweep.outcomes:
+            outcome = RepairOutcome(
+                kind=item.kind,
+                reason=item.reason,
+                tenant_id=item.tenant_id,
+                task_id=item.task_id,
+                skipped=item.skipped,
+            )
+            if item.deleted:
+                outcome.deleted = item.prefix
+                outcome.actions.append(f"deleted {item.objects_deleted} objects under {item.prefix}")
+            elif item.skipped == "dry_run":
+                outcome.actions.append(f"would delete {item.prefix}")
+            else:
+                outcome.actions.append(f"kept {item.prefix}")
+            report.outcomes.append(outcome)
+
+    # ------------------------------------------------------------------
+    def _collect_plugins(self, report: ReconcileReport, *, now: datetime) -> None:
+        """Delete pinned plugin copies nothing names (managed-plugins.md
+        section 9.3; `plugingc`). Daily, claimed across instances; a dry run
+        claims nothing and sweeps every pass, as the checkpoint sweep does."""
+        if self._plugin_gc is None or not self._plugin_gc.enabled:
+            return
+        if not self._config.dry_run and not self._plugin_gc.claim(now=now):
+            return
+        sweep = self._plugin_gc.sweep(now=now)
+        report.plugin_gc = sweep.as_dict()
+        report.errors.extend(sweep.errors)
+        for item in sweep.deletions:
+            outcome = RepairOutcome(
+                kind="plugin_copy_deleted",
+                reason="unreferenced past retention",
+                tenant_id=item.tenant_id,
+                skipped="dry_run" if sweep.dry_run else None,
+            )
+            if sweep.dry_run:
+                outcome.actions.append(f"would delete {item.object}")
+            else:
+                outcome.deleted = item.object
+                outcome.actions.append(f"deleted {item.object} generation {item.generation}")
+            report.outcomes.append(outcome)
+
+    # ------------------------------------------------------------------
+    def _collect_garbage(
+        self, snapshot: ControlSnapshot, sight: _Sight, report: ReconcileReport
+    ) -> None:
+        """Remove per-tenant infrastructure nothing is using any more.
+
+        Cloud Run pins the service account on the Job resource, so the
+        dispatcher creates one per (tenant, profile) and they accumulate. This
+        is where they stop accumulating -- and it only ever removes resources
+        carrying this platform's own label.
+
+        Only on backends this pass could read, and EACH IN ITS OWN TRY: one
+        backend's collection failing used to abort the loop, so a GKE fault
+        stopped Cloud Run's Job resources being collected as well.
+        """
+        try:
+            active = self._store.active_tenants(snapshot)
+            # A namespace is protected by mere registration; a Job resource is
+            # not. The difference is recoverability: `ensure_job` recreates a
+            # deleted Job on the next dispatch, whereas nothing recreates a
+            # namespace, its service account or its workload-identity binding.
+            protected_namespaces = active | self._store.registered_tenants()
+        except Exception as exc:
+            self._log.exception("garbage collection failed", exc)
+            report.errors.append(f"gc: {exc}")
+            return
+        for backend in self._backends:
+            if backend.name not in sight.readable:
+                continue
+            try:
+                report.outcomes.extend(
+                    self._collect_garbage_on(
+                        backend, snapshot, active=active, protected=protected_namespaces
+                    )
+                )
+            except Exception as exc:
+                self._log.exception("garbage collection failed", exc, backend=backend.name)
+                report.errors.append(f"gc {backend.name}: {exc}")
+
+    def _collect_garbage_on(
+        self,
+        backend: Any,
+        snapshot: ControlSnapshot,
+        *,
+        active: set[str],
+        protected: set[str],
+    ) -> list[RepairOutcome]:
+        outcomes: list[RepairOutcome] = []
+        now = snapshot.taken_at
+        resources = backend.list_job_resources()
+        if backend.name == "GKE_AUTOPILOT":
+            findings = detect_empty_namespaces(resources, protected, self._config, now)
+        else:
+            findings = detect_unused_job_resources(resources, active, self._config, now)
+        for finding in findings:
+            resource: JobResourceView = finding.resource  # type: ignore[assignment]
+            outcome = RepairOutcome(
+                kind=finding.kind.value,
+                reason=finding.reason,
+                tenant_id=finding.tenant_id,
+            )
+            if self._config.dry_run:
+                outcome.skipped = "dry_run"
+                outcome.actions.append(f"would delete {resource.name}")
+                outcomes.append(outcome)
+                continue
+            try:
+                deleted = backend.delete_job_resource(resource)
+            except PermissionError as exc:
+                outcome.skipped = str(exc)
+                self._log.warning("refused to delete an unmanaged resource", error=str(exc))
+                outcomes.append(outcome)
+                continue
+            if deleted:
+                outcome.deleted = resource.name
+                outcome.actions.append(f"deleted {resource.name}")
+            else:
+                outcome.skipped = "not_empty"
+            outcomes.append(outcome)
+        return outcomes

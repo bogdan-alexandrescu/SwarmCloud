@@ -1,0 +1,372 @@
+// The shape of the only data a chart in this product may receive, and the
+// arithmetic that is allowed over it.
+//
+// WHY THIS FILE EXISTS AT ALL. This console's single best property is that it
+// tells an ABSENT measurement apart from a MEASURED ZERO, and says which in
+// words: "not reported — No attempt reported a cost. This is an absent
+// measurement, not $0.00" beside a checkpoint count of `0` rendered as a
+// DIGIT, because that zero was measured. Every charting library on the market
+// takes `number | null` and draws the null as a gap, as a zero, or as a line
+// straight through it. All three are claims this platform cannot support.
+//
+// So the absence never reaches the library. `ChartPoint` is a discriminated
+// union with NO `value` field on its absent arm: there is no number to hand a
+// scale, and TypeScript refuses the code that would try. The library only ever
+// sees points that were measured.
+//
+// Pure: no React, no visx, no DOM. `TimeSeries.tsx` is the only module in this
+// repository that imports a charting library, and it imports this one for
+// every decision that is about the DATA rather than about pixels.
+
+import { currentZone, formatClock, formatDateTime, startOfDay, zoneLabel } from '../timezone'
+
+/**
+ * One point of a series.
+ *
+ * `at` is a position in milliseconds on the chart's time axis: an epoch
+ * instant for `TimeSeries`, whose axis is drawn on the person's zone
+ * (`clockTicks`, `clockTickText` and `axisZone` below), or milliseconds
+ * since a stated origin for a T+n chart (`PeakMemory.tsx` measures from the
+ * attempt's `started_at`, and says so on its axis). It is present on BOTH
+ * arms on purpose: when a cost was not reported, the *time* of the attempt is
+ * still a measurement, and drawing the absence at its real position on the
+ * time axis is honest. What is unknown is the value, and only the value.
+ */
+export type ChartPoint =
+  | {
+      readonly at: number
+      readonly label: string
+      readonly measured: true
+      readonly value: number
+    }
+  | {
+      readonly at: number
+      readonly label: string
+      readonly measured: false
+      /** Why there is no number. Rendered verbatim; never "0", never "—". */
+      readonly why: string
+    }
+
+/** A point that was measured. `value` may be 0; a measured zero is a fact. */
+export function measured(at: number, label: string, value: number): ChartPoint {
+  return { at, label, measured: true, value }
+}
+
+/** A point that was not measured, and the sentence that says why. */
+export function absent(at: number, label: string, why: string): ChartPoint {
+  return { at, label, measured: false, why }
+}
+
+/**
+ * The constructor for a nullable field off the API, and the reason this module
+ * is worth its length.
+ *
+ * `why` is a REQUIRED parameter, not an optional one. Every call site that
+ * holds a `number | null` is therefore forced, by the compiler, to have
+ * already written the sentence explaining the null before it can plot the
+ * series at all. That is the same discipline `AttemptSpend` applies by hand in
+ * prose -- a runner that does not report, an attempt that has not finished, an
+ * attempt that never started, and an image too old to capture are four
+ * different sentences -- expressed as a type.
+ *
+ * A non-finite number is NOT a measurement. NaN and +/-Infinity come out of
+ * arithmetic over missing inputs, and a scale given one produces an axis with
+ * no domain at all, so they are recorded as absences with the reason stated.
+ */
+export function reading(
+  at: number,
+  label: string,
+  value: number | null | undefined,
+  why: string,
+): ChartPoint {
+  if (value === null || value === undefined) return absent(at, label, why)
+  if (!Number.isFinite(value)) {
+    return absent(
+      at,
+      label,
+      'The value read back was not a finite number, so nothing is plotted for it.',
+    )
+  }
+  return measured(at, label, value)
+}
+
+/**
+ * What a series actually supports being said about it.
+ *
+ * `sum`, `mean`, `min` and `max` are `null` when NOTHING was measured, rather
+ * than 0. A sum of no measurements is not zero; it is unknown, and this is the
+ * type that makes a caller handle that rather than print `$0.00`.
+ *
+ * `absent` is carried beside every figure so that no total can be rendered
+ * without its coverage: `TimeSeries` prints both from one object, and there is
+ * no way to ask it for the total alone.
+ */
+export interface Coverage {
+  /** Every point, measured or not. */
+  readonly points: number
+  readonly measured: number
+  readonly absent: number
+  /** Over the MEASURED points only, and null when there are none. */
+  readonly sum: number | null
+  readonly mean: number | null
+  readonly min: number | null
+  readonly max: number | null
+  /** True when at least one point had no measurement. */
+  readonly partial: boolean
+}
+
+export function coverageOf(points: readonly ChartPoint[]): Coverage {
+  let sum = 0
+  let n = 0
+  let min: number | null = null
+  let max: number | null = null
+  for (const p of points) {
+    if (!p.measured) continue
+    n += 1
+    sum += p.value
+    if (min === null || p.value < min) min = p.value
+    if (max === null || p.value > max) max = p.value
+  }
+  return {
+    points: points.length,
+    measured: n,
+    absent: points.length - n,
+    sum: n === 0 ? null : sum,
+    mean: n === 0 ? null : sum / n,
+    min,
+    max,
+    partial: n !== points.length,
+  }
+}
+
+/**
+ * Where the value axis is allowed to start and stop.
+ *
+ * `anchored` — the quantity has a meaningful zero (money, tokens, counts, a
+ * duration). The floor may be pulled down to 0 so that "small" reads as small
+ * rather than as the bottom of a zoomed window.
+ *
+ * `from-data` — it does not (a temperature, a rate, a delta). The axis spans
+ * exactly the measurements and no further.
+ *
+ * There is NO DEFAULT and the prop is required on the component. Both choices
+ * are defensible and only the caller knows which; a default would make one of
+ * them happen silently, and a value axis whose floor was chosen by a library
+ * default is the quietest way to misrepresent a magnitude.
+ */
+export type ZeroRule = 'anchored' | 'from-data'
+
+export interface Extent {
+  readonly lo: number
+  readonly hi: number
+  /** lo === hi: every measurement is the same number. */
+  readonly degenerate: boolean
+}
+
+/**
+ * The value extent, or null when nothing was measured.
+ *
+ * Null is the important return. A chart with no measurements has NO domain,
+ * and the honest rendering is no axis at all -- not an axis from 0 to 1, which
+ * is a range the data does not support and which every library will invent for
+ * you. `TimeSeries` renders the sentence instead.
+ *
+ * Note what this deliberately does NOT do: it never calls d3's `.nice()`. Nice
+ * rounding moves the ends of the axis OUT to tidy numbers, so the top of the
+ * axis stops being a measurement and starts being a number nobody recorded.
+ */
+export function valueExtent(points: readonly ChartPoint[], zero: ZeroRule): Extent | null {
+  const c = coverageOf(points)
+  if (c.min === null || c.max === null) return null
+  const lo = zero === 'anchored' ? Math.min(0, c.min) : c.min
+  const hi = zero === 'anchored' ? Math.max(0, c.max) : c.max
+  return { lo, hi, degenerate: lo === hi }
+}
+
+/** The time extent, over every point: an absent value still has a real instant. */
+export function timeExtent(points: readonly ChartPoint[]): Extent | null {
+  const first = points[0]
+  if (first === undefined) return null
+  let lo = first.at
+  let hi = first.at
+  for (const p of points) {
+    if (p.at < lo) lo = p.at
+    if (p.at > hi) hi = p.at
+  }
+  return { lo, hi, degenerate: lo === hi }
+}
+
+/**
+ * The runs of consecutive measured points.
+ *
+ * A line may only be drawn WITHIN a run. Between two runs there is an absence,
+ * and a stroke across it would assert a measurement that was never taken --
+ * the single failure this whole module exists to prevent. `TimeSeries` uses
+ * this to decide whether any line is drawable at all; the rendering itself is
+ * done by the library's `defined` accessor, which produces the same partition.
+ */
+export function measuredRuns(points: readonly ChartPoint[]): ChartPoint[][] {
+  const runs: ChartPoint[][] = []
+  let current: ChartPoint[] = []
+  for (const p of points) {
+    if (p.measured) {
+      current.push(p)
+    } else if (current.length > 0) {
+      runs.push(current)
+      current = []
+    }
+  }
+  if (current.length > 0) runs.push(current)
+  return runs
+}
+
+/** Sorted oldest-first. Charts are drawn in time order, never in array order. */
+export function inTimeOrder(points: readonly ChartPoint[]): ChartPoint[] {
+  return [...points].sort((a, b) => a.at - b.at)
+}
+
+/**
+ * The vertices of a STEP-AFTER line through a running maximum.
+ *
+ * WHY STEP, AND WHY AFTER. `peak_rss_bytes` on a heartbeat is a high-water
+ * mark that never resets (agent_worker/metrics.py: `merge_rss` is `max()`).
+ * Between two readings the true peak is at least the earlier one and at most
+ * the later one. A straight line between them claims it rose smoothly, which
+ * nothing measured; a step that HOLDS the earlier value until the next reading
+ * draws the lower bound, which is exactly what is known -- "the peak reached
+ * by T+n was at least this". redesign-v2 §4 row 4: monotonic step, never
+ * smoothed.
+ *
+ * WHY THIS IS DONE HERE, as data, rather than with a curve factory. The step
+ * corner is inserted only between two MEASURED neighbours. Next to an absence
+ * no corner is added, so the absence still ends the subpath and the hard-coded
+ * `defined` accessor in `TimeSeries.tsx` still breaks the line there -- the
+ * step cannot be used to carry a stroke across a gap. It also keeps the chart
+ * layer to the four visx packages `package.json` declares: the library's curve
+ * package arrives only transitively, and importing a package nobody declared
+ * is how a lockfile refresh breaks a build. (It is not named here with its
+ * scope on purpose: `chart.tokenspend.test.tsx` fails on any module outside
+ * `TimeSeries.tsx` whose text contains the library's import prefix, comments
+ * included.)
+ *
+ * The corner is labelled with the reading it holds, so its tooltip says what
+ * it is -- the earlier value, carried forward -- and not a new measurement.
+ */
+export function stepAfter(points: readonly ChartPoint[]): ChartPoint[] {
+  const ordered = inTimeOrder(points)
+  const out: ChartPoint[] = []
+  ordered.forEach((p, i) => {
+    out.push(p)
+    const next = ordered[i + 1]
+    if (next !== undefined && p.measured && next.measured && next.at > p.at) {
+      out.push(measured(next.at, `${p.label} (held)`, p.value))
+    }
+  })
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// The time axis, on the person's clock
+// ---------------------------------------------------------------------------
+
+/**
+ * THE TIME AXIS'S TICKS AND THEIR WORDS FOLLOW THE PERSON'S ZONE (VQ-023,
+ * owner decision 2026-10-26, "A per-person setting"; lane TIMEZONE-SHARED,
+ * part of archived issue 2391), UTC until they pick one. Lanes placed its ticks on the
+ * browser's own clock, unlabelled, while Overview counted its day in UTC: an
+ * hour tick and "today" could be in two zones on one screen. Every axis that
+ * names a time of day takes its ticks from `clockTicks`, its words from
+ * `clockTickText` and its one zone label from `axisZone`, all through
+ * `timezone.ts`, so it cannot drift from the zone the rest of the page uses.
+ *
+ * A DAY TICK IS THE ZONE'S MIDNIGHT (`startOfDay`), not 00:00 UTC: in Los
+ * Angeles "Oct 26" sits at 07:00Z, where the person's Oct 26 begins.
+ */
+const MIN = 60_000
+const HOUR = 3_600_000
+const DAY = 86_400_000
+
+/** Every tick step an axis may use, each one a divisor of a day or a whole number of days. */
+export const CLOCK_STEPS: readonly number[] = [
+  MIN, 2 * MIN, 5 * MIN, 10 * MIN, 15 * MIN, 30 * MIN,
+  HOUR, 2 * HOUR, 3 * HOUR, 6 * HOUR, 12 * HOUR,
+  DAY, 2 * DAY, 7 * DAY, 14 * DAY, 30 * DAY,
+]
+
+/** Minutes since the zone's midnight on its wall clock: `formatClock`'s "HH:MM", read back. */
+function wallMinutes(t: number, z: string): number {
+  const hm = formatClock(t, z).slice(0, 5)
+  return Number(hm.slice(0, 2)) * 60 + Number(hm.slice(3, 5))
+}
+
+/** The zone's next midnight after the one at `day`: 36 hours on lands inside the next date whatever its length. */
+const nextDay = (day: number, z: string) => startOfDay(day + 36 * HOUR, z)
+
+/**
+ * Ticks on `z`'s wall clock across [since, until), at most about `most` of
+ * them: the first of `steps` that fits.
+ *
+ * Inside a day a tick is a whole multiple of the step from the zone's
+ * midnight ("09:00", never "09:17"), checked on the wall clock, so on the day
+ * summer time starts or ends the ticks stay on round hours and a wall time
+ * the day skips is not drawn. A step of days puts every tick on a midnight of
+ * the zone, counted from the zone's first day of 1970 so the same day is a
+ * tick whatever window it is seen in.
+ */
+export function clockTicks(
+  since: number,
+  until: number,
+  most: number,
+  z: string = currentZone(),
+  steps: readonly number[] = CLOCK_STEPS,
+): number[] {
+  const width = until - since
+  if (!(width > 0) || steps.length === 0) return []
+  const step = steps.find((s) => width / s <= most) ?? steps[steps.length - 1]!
+  const out: number[] = []
+  if (step < DAY) {
+    const per = step / MIN
+    for (let day = startOfDay(since, z); day < until; day = nextDay(day, z)) {
+      const end = nextDay(day, z)
+      // Only the steps near the window: a summer-time change moves a tick by an hour at most.
+      const from = Math.max(0, Math.floor((since - day - HOUR) / step))
+      for (let k = from; k * per < 1440 && day + k * step - HOUR < until; k += 1) {
+        const want = k * per
+        // Measured from midnight, then moved by however far the wall clock disagrees (an hour, on a change day).
+        let t = day + k * step
+        const drift = (want - wallMinutes(t, z) + 1440 + 720) % 1440 - 720
+        t += drift * MIN
+        if (t < day || t >= end || wallMinutes(t, z) !== want) continue
+        if (t >= since && t < until && t !== out[out.length - 1]) out.push(t)
+      }
+    }
+    return out
+  }
+  const n = Math.round(step / DAY)
+  const origin = startOfDay(12 * HOUR, z)
+  let day = startOfDay(since, z)
+  if (day < since) day = nextDay(day, z)
+  // To the first midnight whose day number is a multiple of n, then n days at a time.
+  const lag = ((Math.round((day - origin) / DAY) % n) + n) % n
+  if (lag !== 0) day = startOfDay(day + (n - lag) * DAY + 12 * HOUR, z)
+  for (; day < until; day = startOfDay(day + n * DAY + 12 * HOUR, z)) out.push(day)
+  return out
+}
+
+/**
+ * A tick's words on `z`'s clock, without the zone (the axis says it once,
+ * `axisZone`): its date ("Oct 26") when the ticks are a day or more apart or
+ * it sits on the zone's midnight, its hour ("09:00") otherwise.
+ */
+export function clockTickText(t: number, ticks: readonly number[], z: string = currentZone()): string {
+  const daily = ticks.length > 1 && ticks[1]! - ticks[0]! >= 23 * HOUR
+  if (daily || startOfDay(t, z) === t) return formatDateTime(t, z).split(' ').slice(0, 2).join(' ')
+  return formatClock(t, z).slice(0, 5)
+}
+
+/** The zone an axis over [since, until] is drawn in: "PDT", or "PDT–PST" across a change. */
+export function axisZone(since: number, until: number, z: string = currentZone()): string {
+  const a = zoneLabel(since, z)
+  const b = zoneLabel(until, z)
+  return a === b ? a : `${a}–${b}`
+}

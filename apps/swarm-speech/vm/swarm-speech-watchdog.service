@@ -1,0 +1,10 @@
+# The speech machine's own watchdog (docs/design/voice-it-own-speech.md §4.5,
+# stop 2): powers the machine off after ten minutes with no open authenticated
+# socket. Run every minute by swarm-speech-watchdog.timer with the host's own
+# Python, so it works when the server's container does not.
+[Unit]
+Description=Power the speech machine off when no speech socket is open
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/swarm-speech/watchdog.py

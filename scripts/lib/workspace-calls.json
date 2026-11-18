@@ -1,0 +1,188 @@
+{
+  "about": "The call guard's rules (docs/workspaces.md §2.5). scripts/lib/workspace-guard.sh judges every gcloud, kubectl and curl call the workspace job makes against these shapes; a call is allowed only if ONE shape matches it whole, every flag included. Values in braces are filled from the expectation file A1 writes from the approved workspace record; a shape naming a value the file does not hold yet matches nothing, so before A1 only A1's own reads can run. scripts/lib/workspace-guard-cases.json holds a call each rule must refuse and one it must allow, and tests/unit/scripts/test_workspace_guard.py runs them.",
+  "wd9_fallback": true,
+  "wd9_fallback_why": "Off while the WD9 principal-set grant gives every personal worker its database, bucket-metadata and telemetry roles once (docs/workspaces.md §2.3). Turn it on only if W0 finds that grant impossible; then C5 and the bucket-metadata shape of C4 start to allow, and nothing else changes.",
+  "kinds": ["personal", "group", "service"],
+  "kinds_why": "A workspace record's kind (docs/design/workspace-kinds.md §4.1); a record with none is personal. The expectation carries it, and every kind-only value (a group's namespace label, a service's principal and front-door backend) is in the expectation only for its kind, so a shape that names one matches nothing for another kind.",
+  "front_door_backend": "swarm-ui-backend",
+  "front_door_backend_why": "The API's IAP backend, the one S2 may admit a service account on (§4.5, K1). terraform/modules/frontend/main.tf names it `${name_prefix}-ui-backend` for name_prefix swarm, and the console's `-ui-ui-backend`, which no service is ever admitted to. Fixed here, in the job's image, and not in its environment: an execution override can set the environment, never this file. tests/unit/scripts/test_workspace_deployer_walk.py holds it to terraform/bootstrap/workspace_deployer.tf's front_door_api_backend.",
+  "terraform_tenants": {"dev": ["eng", "smoke", "u-or-9a0792", "u-sw-c90291"], "prod": ["eng", "research", "smoke"]},
+  "terraform_tenants_why": "The tenants each environment's Terraform declares (var.tenants in terraform/environments/<env>/<env>.tfvars), which stay Terraform's (docs/design/workspace-kinds.md §4.7, Q8 (a)). The guard never writes a group or service expectation for one, so the job cannot reach their worker, grants, slot or namespace even where their Firestore documents are missing. In the image because the image carries no tfvars; tests/unit/scripts/test_register_tenant_workspace.py holds it to kubernetes/render.py's terraform_tenants of each file.",
+  "tools": {
+    "gcloud": {
+      "flags": {
+        "--project": "{project_id}",
+        "--format": "*",
+        "--quiet": true,
+        "-q": true
+      },
+      "require_project": ["iam", "secrets", "container", "iap"],
+      "require_project_why": "Without --project the configured project decides where an account, a secret or a cluster call lands; the job's calls always name it."
+    },
+    "kubectl": {
+      "flags": {
+        "--context": "*",
+        "--request-timeout": "*"
+      },
+      "context_why": "--context is judged apart from the shapes: the effective context (the flag, else the kubeconfig's current-context) must be one of the expectation's two names for the swarm cluster, and a context whose cluster is on the shared deny-list is refused by name."
+    },
+    "curl": {
+      "flags": {
+        "-s": true, "-S": true, "-f": true, "-sS": true, "-sf": true, "-fsS": true, "-sSf": true,
+        "--silent": true, "--show-error": true, "--fail": true,
+        "-m": "*", "--max-time": "*",
+        "-o": "*", "--output": "*",
+        "-w": "*", "--write-out": "*",
+        "-X": "*", "--request": "*",
+        "-H": "*", "--header": "*",
+        "-K": "-", "--config": "-",
+        "--data-binary": "*"
+      },
+      "default_headers": ["Content-Type: application/json"],
+      "config_why": "fs_request hands curl its bearer header on stdin (-K -) so the token is never an argument. The guard reads that config in memory and allows exactly one kind of line, the Authorization header; a url, request or data line there would be a call the arguments do not show."
+    }
+  },
+  "kube_kinds": ["Namespace", "ServiceAccount", "ResourceQuota", "LimitRange", "NetworkPolicy", "Role", "RoleBinding", "FQDNNetworkPolicy"],
+  "kube_kind_names_why": "A kind a tenant namespace holds under one fixed name only. FQDNNetworkPolicy is the tenant's TypeSafe hostname policy (kubernetes/network-policies/fqdn/allow-typesafe-direct.yaml, docs/runbooks/typesafe-egress.md), which kubernetes/apply.sh renders only on a cluster that serves fqdnnetworkpolicies.networking.gke.io: a hostname policy under any other name could open the namespace's egress to any host, so the guard refuses it. kubernetes/rbac/provisioner-rbac.yaml grants get and patch on the same one name.",
+  "kube_kind_names": {"FQDNNetworkPolicy": ["swarm-allow-typesafe-direct"]},
+  "kube_kind_words_why": "The namespaced kinds a tenant namespace holds, as kubectl spells them. Namespace is not among them: it is cluster-scoped, so -n would not confine it, and its own shapes name it.",
+  "kube_kind_words": ["serviceaccount", "serviceaccounts", "sa", "resourcequota", "resourcequotas", "quota", "limitrange", "limitranges", "limits", "networkpolicy", "networkpolicies", "netpol", "role", "roles", "rolebinding", "rolebindings"],
+  "kube_role_names": ["swarm-worker", "swarm-dispatcher", "swarm-reaper"],
+  "rules": [
+    {
+      "id": "C0",
+      "summary": "Nothing by default: a call no shape below matches stops the run. So does any argument naming a resource on the shared deny-list (scripts/lib/common.sh SHARED_DENY_LIST), whatever the call.",
+      "known_unused": [
+        {"tool": "gcloud", "command": ["identity", "groups", "describe"], "why": "register-tenant.sh checks a GROUP exists (§1); --workspace registers a person and skips it (docs/workspaces.md §4.1)"},
+        {"tool": "gcloud", "command": ["secrets", "update"], "why": "printed as advice to an operator when a provider secret is unlabelled; --workspace grants no provider secret (§8)"},
+        {"tool": "gcloud", "command": ["run", "services", "describe"], "why": "kubernetes/apply.sh --swarm-system reads swarm-api's Direct VPC egress subnet for the live relay's ingress (docs/design/live-browser.md §8.3); --workspace runs apply.sh --tenant only"},
+        {"tool": "gcloud", "command": ["compute", "networks", "subnets", "describe"], "why": "kubernetes/apply.sh --swarm-system reads that subnet's range for the live relay's ingress (docs/design/live-browser.md §8.3); --workspace runs apply.sh --tenant only"},
+        {"tool": "gcloud", "command": ["storage", "cp"], "why": "the operator path's .tenant marker. gcloud storage cp reads the destination object before it uploads (storage.objects.get), which the deployer does not hold: w-7f9285's A5, 2026-10-13. --workspace writes its marker with C4's one create-only upload instead (WS-WALK)"},
+        {"tool": "gcloud", "command": ["iam", "roles", "describe"], "why": "the operator path asks whether the worker Firestore and bucket-metadata roles exist; --workspace grants them only on the WD9 fallback, by name, and never describes them (WS-WALK)"},
+        {"tool": "gcloud", "command": ["storage", "buckets", "describe"], "why": "the operator path asks whether the artifact bucket exists; --workspace reads only its policy (WS-WALK)"},
+        {"tool": "gcloud", "command": ["secrets", "versions", "list"], "why": "the operator path checks a provider secret has a version; --workspace makes the forge slot empty and never lists its versions, which the deployer cannot (no secretmanager.versions.list) (WS-WALK)"},
+        {"tool": "kubectl", "command": ["diff"], "why": "kubernetes/apply.sh diffs only without --confirm; A7 always passes --confirm"},
+        {"tool": "gcloud", "command": ["secrets", "versions", "access", "latest"], "why": "kubernetes/apply.sh --swarm-system --confirm reads swarm-tailscale-oauth to sync it into swarm-system/operator-oauth (docs/runbooks/tailscale-egress.md; JUDGE-NET); --workspace runs apply.sh --tenant only"},
+        {"tool": "kubectl", "command": ["create"], "why": "kubernetes/apply.sh --swarm-system --confirm builds swarm-system/operator-oauth with kubectl create secret --dry-run=client (JUDGE-NET); --workspace runs apply.sh --tenant only"},
+        {"tool": "kubectl", "command": ["label"], "why": "kubernetes/apply.sh --swarm-system --confirm labels that Secret with kubectl label --local (JUDGE-NET); --workspace runs apply.sh --tenant only"}
+      ],
+      "shapes": []
+    },
+    {
+      "id": "C1",
+      "summary": "Reads of this workspace's resources and of the fixed shared resources the script reads, plus the token plumbing every authenticated call needs. Before A1 writes the expectation, only A1's own reads match.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["auth", "print-access-token"], "args": [], "after_stop": true},
+        {"tool": "gcloud", "command": ["config", "get-value"], "args": [["account", "project"]], "after_stop": true},
+        {"tool": "gcloud", "command": ["config", "config-helper"], "args": [], "after_stop": true},
+        {"tool": "gcloud", "command": ["auth", "list"], "args": [], "flags": {"--filter": "status:ACTIVE"}, "require": ["--filter"], "why": "scripts/lib/check-cluster-network-parity.sh, which kubernetes/apply.sh --confirm runs after a tenant apply, asks which account is active before it reads the cluster"},
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "describe"], "args": [["{worker_email}", "{scheduler_email}", "{reconciler_email}"]]},
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "describe"], "args": ["{service_principal}"], "why": "S1 and A9 read the account a service workspace admits (docs/design/workspace-kinds.md §4.3); never its IAM. Only a service expectation holds service_principal, and only for an account S1 may consider (workspace-guard.sh expect)"},
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "get-iam-policy"], "args": ["{worker_email}"]},
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "keys", "list"], "args": [], "flags": {"--iam-account": "{worker_email}", "--managed-by": "*"}, "require": ["--iam-account"]},
+        {"tool": "gcloud", "command": ["projects", "get-iam-policy"], "args": ["{project_id}"], "flags": {"--flatten": "*", "--filter": "*"}},
+        {"tool": "gcloud", "command": ["storage", "buckets", "get-iam-policy"], "args": ["{bucket_url}"]},
+        {"tool": "gcloud", "command": ["secrets", "describe"], "args": [["{forge_slot}", "{forge_slot_twin}", "{qa_secret}"]], "why": "A6 reads the forge slot pair, and on a personal workspace the person's QA target credential secret swarm-tenant-<t>-qa: whose it is (labels.tenant, labels.component) before it is created or kept (docs/design/visual-qa-any-app.md §2.1, §7 V-1/V-2). Its metadata only, never a version. Only a personal expectation holds qa_secret"},
+        {"tool": "gcloud", "command": ["secrets", "get-iam-policy"], "args": [["{forge_slot}", "{forge_slot_twin}", "{qa_secret}"]], "why": "A6 reads each secret's policy before it binds: on the QA secret, any member but swarm-api stops the run (SLOT_NOT_OURS) rather than being repaired (§2.1, §7 V-1/V-2). Only a personal expectation holds qa_secret"},
+        {"tool": "gcloud", "command": ["iap", "web", "get-iam-policy"], "args": [], "flags": {"--resource-type": "backend-services", "--service": "{front_door_backend}"}, "require": ["--resource-type", "--service"], "why": "C10's read twin: S2 reads the API backend's IAP policy before it adds, and A9 reads the member back. Only in a service expectation, which alone holds front_door_backend"},
+        {"tool": "gcloud", "command": ["container", "clusters", "describe"], "args": ["{gke_cluster}"], "flags": {"--location": "{gke_location}", "--region": "{gke_location}", "--zone": "{gke_location}"}},
+        {"tool": "gcloud", "command": ["container", "clusters", "get-credentials"], "args": ["{gke_cluster}"], "flags": {"--location": "{gke_location}", "--region": "{gke_location}", "--zone": "{gke_location}", "--internal-ip": true, "--dns-endpoint": true}},
+
+        {"tool": "kubectl", "command": ["version"], "args": [], "flags": {"--client": true, "-o": "*", "--output": "*"}, "require": ["--client"], "local": true},
+        {"tool": "kubectl", "command": ["config", "current-context"], "args": [], "local": true},
+        {"tool": "kubectl", "command": ["config", "view"], "args": [], "flags": {"-o": "*", "--output": "*", "--minify": true}, "local": true},
+        {"tool": "kubectl", "command": ["get"], "args": [], "flags": {"--raw": ["/readyz", "/livez", "/healthz"]}, "require": ["--raw"]},
+        {"tool": "kubectl", "command": ["api-resources"], "args": [], "flags": {"--api-group": "networking.gke.io", "-o": "name", "--output": "name"}, "require": ["--api-group"], "require_one": ["-o", "--output"], "why": "kubernetes/apply.sh --tenant asks whether the cluster serves fqdnnetworkpolicies.networking.gke.io before it renders the tenant's TypeSafe hostname policy (docs/runbooks/typesafe-egress.md). Discovery of that one API group, which every authenticated caller may read (GKE's system:discovery), on the swarm cluster's context only"},
+        {"tool": "kubectl", "command": ["get"], "args": [["service", "services", "svc"], "kube-dns"], "flags": {"-n": "kube-system", "--namespace": "kube-system", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
+        {"tool": "kubectl", "command": ["get"], "args": [["daemonset", "daemonsets", "ds"], "node-local-dns"], "flags": {"-n": "kube-system", "--namespace": "kube-system", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
+        {"tool": "kubectl", "command": ["get"], "args": [["namespace", "namespaces", "ns"], "{namespace}"], "flags": {"-o": "*", "--output": "*"}},
+        {"tool": "kubectl", "command": ["get"], "args": [{"rules_list": "kube_kind_words"}, "*"], "flags": {"-n": "{namespace}", "--namespace": "{namespace}", "-o": "*", "--output": "*"}, "require_one": ["-n", "--namespace"]},
+
+        {"tool": "curl", "method": "GET", "url": "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token", "headers": ["Metadata-Flavor: Google"], "body": "none", "after_stop": true},
+        {"tool": "curl", "method": "POST", "op": "runQuery", "body": "runquery_workspace", "after_stop": true},
+        {"tool": "curl", "method": "POST", "op": "runQuery", "body": "runquery_collection", "collections": ["admin_roles"]},
+        {"tool": "curl", "method": "GET", "doc": ["{workspace_doc}", "{tenant_doc}", "{pool_doc}", "admin_roles"], "doc_prefix": ["admin_roles/"], "query_keys": ["mask.fieldPaths", "pageSize", "pageToken", "transaction"], "body": "none", "after_stop": true},
+        {"tool": "curl", "method": "POST", "op": "beginTransaction", "body": "transaction_options", "after_stop": true},
+        {"tool": "curl", "method": "POST", "op": "rollback", "body": "transaction_id", "after_stop": true}
+      ]
+    },
+    {
+      "id": "C2",
+      "summary": "Create the expected worker account, and nothing else on accounts: no delete, disable, update, keys or set-iam-policy.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "create"], "args": ["{worker_id}"], "flags": {"--display-name": "*", "--description": "*"}}
+      ]
+    },
+    {
+      "id": "C3",
+      "summary": "Bind the expected worker account's own IAM: Workload Identity for the namespace's two Kubernetes service accounts, and act-as for the scheduler and the reconciler.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "add-iam-policy-binding"], "args": ["{worker_email}"], "flags": {"--role": "roles/iam.workloadIdentityUser", "--member": ["serviceAccount:{project_id}.svc.id.goog[{namespace}/swarm-agent-worker]", "serviceAccount:{project_id}.svc.id.goog[{namespace}/swarm-worker]"]}, "require": ["--role", "--member"]},
+        {"tool": "gcloud", "command": ["iam", "service-accounts", "add-iam-policy-binding"], "args": ["{worker_email}"], "flags": {"--role": "roles/iam.serviceAccountUser", "--member": ["serviceAccount:{scheduler_email}", "serviceAccount:{reconciler_email}"]}, "require": ["--role", "--member"]}
+      ]
+    },
+    {
+      "id": "C4",
+      "summary": "The artifact bucket's two prefix-conditioned grants for the expected worker, each condition string-equal to the expression register-tenant.sh renders for tenants/<tenant>/, and the .tenant marker object, written create-only (an existing marker is left as it is). On the WD9 fallback only, the bucket-metadata role.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["storage", "buckets", "add-iam-policy-binding"], "args": ["{bucket_url}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": "roles/storage.objectViewer", "--condition-from-file": {"file_expression": "{read_expr}"}}, "require": ["--member", "--role", "--condition-from-file"]},
+        {"tool": "gcloud", "command": ["storage", "buckets", "add-iam-policy-binding"], "args": ["{bucket_url}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": "roles/storage.objectUser", "--condition-from-file": {"file_expression": "{write_expr}"}}, "require": ["--member", "--role", "--condition-from-file"]},
+        {"tool": "gcloud", "command": ["storage", "buckets", "add-iam-policy-binding"], "args": ["{bucket_url}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": "{bucket_metadata_role}", "--condition": "None"}, "require": ["--member", "--role", "--condition"], "fallback_only": true},
+        {"tool": "curl", "method": "POST", "url": "{marker_upload_url}", "auth": true, "body": "marker", "why": "one Storage JSON API upload with ifGenerationMatch=0: a create that can never replace, so storage.objects.create on tenants/ is all it needs. gcloud storage cp read the destination first (storage.objects.get), which the deployer does not hold (WS-WALK)"}
+      ]
+    },
+    {
+      "id": "C5",
+      "summary": "WD9 fallback only: the expected worker's database and telemetry roles on the project. Under the principal-set grant this rule is off, and any project IAM call stops the run. The database role only while the expectation's worker_firestore_access is true (absent on the record is true): under false `expect` writes no {firestore_role}, so this shape admits the telemetry roles alone and the database binding stops the run (#1457 design B, lane ISO-WS-FIRESTORE).",
+      "shapes": [
+        {"tool": "gcloud", "command": ["projects", "add-iam-policy-binding"], "args": ["{project_id}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": ["{firestore_role}", "roles/logging.logWriter", "roles/monitoring.metricWriter"], "--condition": "None"}, "require": ["--member", "--role", "--condition"], "fallback_only": true}
+      ]
+    },
+    {
+      "id": "C6",
+      "summary": "Create the person's forge slot and its -refresh twin, empty, and let the expected worker read the slot. Never the twin: terraform/bootstrap/forge_user_slots.tf keeps the refresh token from the worker. For a group the slot is its team slot swarm-tenant-<g>-git and twin; for a service the team slot alone, which has no twin (docs/design/workspace-kinds.md §4.6): the expectation names them. For a personal workspace only, also the person's QA target credential secret swarm-tenant-<t>-qa, empty and pinned to a region, with swarm-api alone as version adder and accessor (docs/design/visual-qa-any-app.md §2.1, §7 V-1/V-2): never a worker, never any other member or role.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["secrets", "create"], "args": [["{forge_slot}", "{forge_slot_twin}"]], "flags": {"--replication-policy": "*", "--labels": "*"}},
+        {"tool": "gcloud", "command": ["secrets", "add-iam-policy-binding"], "args": ["{forge_slot}"], "flags": {"--member": "serviceAccount:{worker_email}", "--role": "roles/secretmanager.secretAccessor"}, "require": ["--member", "--role"]},
+        {"tool": "gcloud", "command": ["secrets", "create"], "args": ["{qa_secret}"], "flags": {"--replication-policy": "user-managed", "--locations": "*", "--labels": "*"}, "require": ["--replication-policy", "--locations", "--labels"], "why": "A6 on a personal workspace: the person's QA target credential secret, EMPTY (no --data-file, so no value passes through the job) and replicated only where it is pinned, as terraform/infra/qa_targets.tf makes its own tenants' (docs/design/visual-qa-any-app.md §2.1, §7 V-1/V-2; the owner 2026-10-22: the deployer job creates it). Only a personal expectation holds qa_secret: the deployer's secret binder stops at swarm-tenant-u-"},
+        {"tool": "gcloud", "command": ["secrets", "add-iam-policy-binding"], "args": ["{qa_secret}"], "flags": {"--member": "serviceAccount:{api_email}", "--role": ["roles/secretmanager.secretVersionAdder", "roles/secretmanager.secretAccessor"]}, "require": ["--member", "--role"], "why": "V-1 and V-2 (docs/design/visual-qa-any-app.md §2.1, §7): swarm-api stores the value from the console's one-time form and reads it at sign-in. swarm-api alone, and only these two roles: a worker on this secret would let its agent read a test account's password out of Secret Manager itself"}
+      ]
+    },
+    {
+      "id": "C7",
+      "summary": "kubectl apply (a dry run included) whose every object is the Namespace swarm-tenant-<tenant> or one of a tenant namespace's kinds inside it (the guard reads -f or stdin), on the swarm cluster's context only. For a group or a service the Namespace must carry <prefix>/workspace: <w-id> (the expectation's namespace_label), the label the deployer's scope policy admits it by (docs/design/workspace-kinds.md §4.3 A7).",
+      "shapes": [
+        {"tool": "kubectl", "command": ["apply"], "args": [], "flags": {"-f": "*", "--filename": "*", "--dry-run": ["client", "server", "none"], "--validate": "*", "-o": "*", "--output": "*", "-n": "{namespace}", "--namespace": "{namespace}"}, "require_one": ["-f", "--filename"], "objects": true}
+      ]
+    },
+    {
+      "id": "C8",
+      "summary": "Firestore writes on exactly tenants/<tenant>, pools/tenant:<tenant> and workspaces/<tenant> (a PATCH, or a commit whose every write is an update of one of them). After a stop only the workspace record may still be written, so the script can record needs_owner.",
+      "shapes": [
+        {"tool": "curl", "method": "PATCH", "doc": ["{tenant_doc}", "{pool_doc}", "{workspace_doc}"], "query_keys": ["updateMask.fieldPaths", "currentDocument.updateTime", "currentDocument.exists", "mask.fieldPaths"], "body": "document"},
+        {"tool": "curl", "method": "PATCH", "doc": ["{workspace_doc}"], "query_keys": ["updateMask.fieldPaths", "currentDocument.updateTime", "currentDocument.exists", "mask.fieldPaths"], "body": "document", "after_stop": true},
+        {"tool": "curl", "method": "POST", "op": "commit", "body": "commit", "docs": ["{tenant_doc}", "{pool_doc}", "{workspace_doc}"]},
+        {"tool": "curl", "method": "POST", "op": "commit", "body": "commit", "docs": ["{workspace_doc}"], "after_stop": true}
+      ]
+    },
+    {
+      "id": "C10",
+      "summary": "A service workspace's front-door admit (docs/design/workspace-kinds.md §4.5, S2): roles/iap.httpsResourceAccessor for exactly the approved service account, unconditioned, on the API backend only. Any other role, member, backend or resource type stops the run, and a removal is C9's. Only a service expectation holds service_principal and front_door_backend, so for every other kind this shape matches nothing.",
+      "shapes": [
+        {"tool": "gcloud", "command": ["iap", "web", "add-iam-policy-binding"], "args": [], "flags": {"--resource-type": "backend-services", "--service": "{front_door_backend}", "--role": "roles/iap.httpsResourceAccessor", "--member": "serviceAccount:{service_principal}", "--condition": "None"}, "require": ["--resource-type", "--service", "--role", "--member", "--condition"]}
+      ]
+    },
+    {
+      "id": "C9",
+      "summary": "Never, whatever the target: a removal, a policy replacement, a delete, a disable, a key, kubectl delete or prune, a Firestore DELETE or a commit that deletes. The script's legacy repair paths hit this and go to the owner.",
+      "never": {
+        "gcloud_words": ["remove-iam-policy-binding", "set-iam-policy", "delete", "disable"],
+        "gcloud_sequences": [["keys", "create"], ["keys", "upload"]],
+        "kubectl_verbs": ["delete"],
+        "kubectl_flags": ["--prune", "--force"],
+        "curl_methods": ["DELETE"]
+      },
+      "shapes": []
+    }
+  ]
+}

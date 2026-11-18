@@ -1,0 +1,172 @@
+# The control plane's access to a tenant namespace.
+#
+# WHY THIS FILE EXISTS. The `browser` profile is the only runner profile whose
+# resolved backend is GKE_AUTOPILOT; every other profile dispatches as a Cloud
+# Run Job and never touches Kubernetes. On 2026-09-23 a thirty-step workflow
+# ran with three profiles and the result split exactly along that line:
+#
+#     claude-code / CLOUD_RUN_JOB  -> SUCCEEDED  14
+#     mock        / CLOUD_RUN_JOB  -> SUCCEEDED   8
+#     browser     / GKE_AUTOPILOT  -> FAILED      6
+#
+# Every browser attempt failed identically:
+#
+#     jobs.batch is forbidden: User "117405034245659033603" cannot create
+#     resource "jobs" in API group "batch" in the namespace
+#     "swarm-tenant-eng": requires one of ["container.jobs.create"]
+#     permission(s) in Cloud IAM or a Kubernetes RBAC role with verb "create"
+#     for resource "jobs".
+#
+# All seven browser tasks ever submitted to this deployment failed the same
+# way. The capability shipped broken; it is not a regression.
+#
+# WHY IAM ALONE DID NOT DO IT. `swarmGkeDispatcher` holds
+# `container.jobs.create` and IS bound to swarm-scheduler -- but with an IAM
+# CONDITION, `resource.name.startsWith(".../clusters/swarm-autopilot")`, added
+# so the project-level grant could not reach `peer-cluster`, another team's
+# live cluster on this repository's deny-list. The instinct is right and the
+# condition stays. What it cannot do is authorise a NAMESPACED Kubernetes
+# request: the resource in that check is the namespaced object, not the cluster
+# path the expression tests, so the condition does not match and GKE reports
+# the permission as simply absent.
+#
+# RBAC IS THE MECHANISM THAT FITS THE INTENT. The error message names it as the
+# alternative, and it scopes BY CONSTRUCTION rather than by an expression that
+# has to be evaluated correctly: these objects exist only inside
+# swarm-autopilot, so `peer-cluster` cannot be reached by them at all. That
+# is a stronger guarantee than the condition was attempting, and it is enforced
+# by where the object lives rather than by a string comparison.
+#
+# TWO ROLES, NOT ONE, mirroring the IAM split that already exists
+# (swarmGkeDispatcher / swarmGkeReaper): the scheduler creates and observes and
+# can never delete; the reconciler deletes and can never create. A mistake in
+# one is therefore not an escalation into the other, which is the same
+# reasoning worker-rbac.yaml gives for its own pair.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: swarm-dispatcher
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+    app.kubernetes.io/part-of: swarm
+  annotations:
+    __LABEL_PREFIX__/rationale: >-
+      The scheduler creates one Job per attempt and reads back its status and
+      its pod's logs. It cannot delete: reaping is the reconciler's, under
+      swarm-reaper below.
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Reading a failed attempt's output is how a dispatch failure becomes a
+  # diagnosis rather than an exit code.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: swarm-dispatcher
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+    app.kubernetes.io/part-of: swarm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: swarm-dispatcher
+subjects:
+  # A Google service account is a `User` to Kubernetes RBAC -- not a
+  # ServiceAccount subject: the scheduler runs on Cloud Run as a Google identity
+  # and never has a Kubernetes ServiceAccount of its own.
+  #
+  # BOUND TWICE, BY EMAIL AND BY NUMERIC uniqueId, AND THE SECOND ONE IS THE ONE
+  # THAT WORKS HERE. This file originally said a GSA is "named by its email",
+  # bound only that, and was wrong in the most expensive way available: the
+  # RoleBinding applied cleanly and authorised nobody. Measured 2026-09-24,
+  # after the namespace and the bindings had both been confirmed present:
+  #
+  #     jobs.batch is forbidden: User "117405034245659033603" cannot create
+  #     resource "jobs" in API group "batch" in the namespace "swarm-tenant-eng"
+  #
+  # That number is the scheduler GSA's uniqueId. The scheduler reaches the
+  # Kubernetes API with a Google OAuth ACCESS token (dispatch.py's
+  # `install_google_bearer_token`), and on that path GKE resolves the caller to
+  # the uniqueId rather than the email.
+  #
+  # Both are kept because the email IS the subject on other paths -- kubectl
+  # with an impersonated GSA, and Workload Identity -- and a binding that
+  # authorises one caller and not another is the exact shape of the defect this
+  # file was written to fix. A duplicate subject costs nothing: RBAC subjects are
+  # a list and a repeat grants nothing new, which is also why __SCHEDULER_UID__
+  # falls back to the email when no uniqueId is supplied.
+  - kind: User
+    name: __SCHEDULER_GSA__
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: "__SCHEDULER_UID__"
+    apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: swarm-reaper
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+    app.kubernetes.io/part-of: swarm
+  annotations:
+    __LABEL_PREFIX__/rationale: >-
+      The reconciler deletes finished Jobs and pods that outlived their lease.
+      It cannot create: dispatching is the scheduler's.
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "delete"]
+  # A Job refused its pod (quota, admission) leaves no pod to read: the Job
+  # controller's `FailedCreate` event is the only record of why, and the
+  # reconciler writes it on the task (GkeBackend._failed_create). Read only,
+  # and no `watch`: the reconciler lists once per pass and never streams.
+  # Without this rule the read 403s once and is not asked again.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: swarm-reaper
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+    app.kubernetes.io/part-of: swarm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: swarm-reaper
+subjects:
+  # Email and numeric uniqueId, for the reason given on swarm-dispatcher above.
+  # The reconciler has not been observed failing this way only because it deletes
+  # rather than creates and nothing had reached the delete path yet -- it
+  # authenticates the same way and would have failed identically.
+  - kind: User
+    name: __RECONCILER_GSA__
+    apiGroup: rbac.authorization.k8s.io
+  - kind: User
+    name: "__RECONCILER_UID__"
+    apiGroup: rbac.authorization.k8s.io

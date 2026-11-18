@@ -1,0 +1,1010 @@
+"""Leasing an account from the pool, and giving it back.
+
+WHAT CHANGES HERE. Until now a worker read exactly one secret --
+`swarm-tenant-<tenant>-<provider>` -- and every agent for a tenant ran on the
+same subscription. That is one account's five-hour window shared by every
+concurrent agent the tenant runs, so the second agent slows the first and the
+fourth stops it. The account pool exists to spread those agents across several
+subscriptions; this module is the worker's half of it.
+
+THE SHAPE OF THE CALL, AND WHY IT IS THIS SHAPE
+-----------------------------------------------
+Two POSTs, no state, no retry loop:
+
+    POST /v1/accounts/assign     {provider, exclude, task_id, attempt_id}
+                                 -> {account_id, assignment_id, secret, ...}
+    POST /v1/accounts/{id}/release  {assignment_id, unusable}
+                                 -> {assigned}
+
+The broker answers "no account for you" with a **200**, not an error, and this
+client preserves that distinction all the way to the caller. `accounts.choose`
+returning None means every account the tenant may use is spent or paused --
+nobody did anything wrong, and the correct response is to park the task, which
+costs nothing and resumes by itself. An exception here would be
+indistinguishable from the broker being unreachable, and those two want
+opposite responses: park versus carry on with the per-tenant secret.
+
+So `assign()` returns an `Assignment` or a `reason`, and raises only when the
+broker could not be reached or did not answer in this shape.
+
+THREE MORE CALLS, EACH ONLY FOR THE HOLDER (S13-S15)
+----------------------------------------------------
+
+    POST /v1/accounts/{id}/readings     {assignment, task, attempt, windows}
+    POST /v1/accounts/{id}/hold-status  {assignment, task, attempt} -> {move}
+    POST /v1/accounts/swap              {account_id, assignment, task, attempt,
+                                         reason, provider, exclude}
+                                        -> the assign route's shape
+
+The broker answers each only for a LIVE hold with that assignment id, issued
+to this worker's tenant and stamped with this task and attempt; a fenced
+attempt holds nothing and is refused. A reading carries figures and instants
+and never a token. A swap is one broker transaction -- the hold moves, it is
+never two and never none -- and "no other account" is a 200 with a reason,
+exactly as for an assign, with the current hold untouched.
+
+A REFUSAL IS NOT AN OUTAGE
+--------------------------
+`BrokerUnavailable` and `BrokerRefused` are deliberately different types
+because the caller must do opposite things with them. A connection that was
+refused, a 5xx, a timeout: the broker is down, the per-tenant secret still
+works, and degrading to it turns one control-plane outage into nothing. A 401,
+a 403 or a 404: the pool IS configured -- somebody set a URL -- and this worker
+is not allowed to use it, or is pointed at something that is not the broker.
+Treating that as permission to carry on is the "not configured means
+accept-anything" mistake wearing a different hat: every agent would run on the
+one shared tenant subscription, which is the exact contention the pool exists
+to remove, while the pool's own dashboards showed it healthy and idle. So a
+refusal parks the task and names the cause, and somebody has to fix it.
+
+AN ASSIGNMENT HAS AN ID, AND THE RELEASE CARRIES IT
+---------------------------------------------------
+The broker counts agents per account by recording a HOLD, and the hold's id
+comes back with the assignment. Releasing names that id, so a release can only
+ever give back the assignment it was issued for -- an account lent to several
+tenants cannot have its counter driven to zero by a caller that never held it.
+A hold also expires on its own, which is what makes a SIGKILLed worker cost a
+few stale minutes rather than a permanently inflated count.
+
+NO KEY MATERIAL CROSSES THIS WIRE
+---------------------------------
+`secret` is a Secret Manager secret NAME. The worker reads the value itself,
+under its own service account, over Google's authorized path -- the same way it
+has always read its tenant's credential. The broker never returns a token, so
+this response is no more sensitive than the account listing an operator already
+reads, and a log line carrying the whole body cannot leak a credential.
+
+The name always points at `{base}`, the half that holds ONLY the access token.
+The `{base}-refresh` half holds the pair and is readable by the broker alone,
+because a pod that could mint successors forever is a pod whose compromise does
+not expire.
+
+AUTHENTICATION IS THE METADATA SERVER'S ID TOKEN
+------------------------------------------------
+The broker identifies its caller by the Google-signed OIDC token in the
+Authorization header and derives the tenant from the service-account email in
+it -- `worker_sa_pattern` pins the project, so a similarly named service
+account in somebody else's project is not this tenant. The worker therefore
+sends the token the metadata server mints for the broker's audience and sends
+nothing else: it never names its own tenant, because a tenant a caller can name
+is a tenant a caller can choose.
+
+Standard library only, on purpose. `urllib` is what `forge.py` already uses for
+GitHub; adding an HTTP dependency to the agent runtime image to make two POSTs
+would be paid for on every image pull, forever.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+from urllib.parse import quote, urlparse
+
+#: Where a Cloud Run or GKE workload asks for an identity token. `audience` is
+#: what the receiving service checks, so it must be the broker's URL: a token
+#: minted for any other audience is one `WorkerIdentity` will reject, and a
+#: token minted with no audience at all is one google-auth does not check the
+#: `aud` claim of -- which is the hole BROKER_AUDIENCE exists to close.
+METADATA_IDENTITY_URL = (
+    "http://metadata.google.internal/computeMetadata/v1/"
+    "instance/service-accounts/default/identity"
+)
+
+_TIMEOUT = 10
+_UA = "swarmcloud-agent-worker"
+
+#: The environment variable an account's access token fills.
+#:
+#: An account is a Claude SUBSCRIPTION, so its credential is an OAuth token and
+#: belongs in the OAuth variable. Putting it in ANTHROPIC_API_KEY would offer a
+#: subscription token to the metered API, which refuses it -- and the runner's
+#: own `_credential_env` disambiguates by value prefix precisely because the two
+#: are not interchangeable. A runner profile that does not declare this name
+#: cannot run on a pool account at all, and asking for one would be a request
+#: for a credential it has no variable to put.
+ACCOUNT_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
+
+#: The variables a ChatGPT PLAN account fills (part of archived issue 2688; the owner, 2026-11-01:
+#: codex runs on a shared pool of ChatGPT-plan accounts the way claude-code
+#: runs on the pool of Claude subscriptions). The plan's current ACCESS token
+#: (about an hour) and its account id; codex reads both from the auth.json the
+#: runner writes (`runners.codex`). Never the refresh token: the broker is the
+#: only writer of the plan's sign-in, because each refresh REPLACES it.
+PLAN_TOKEN_ENV = "CODEX_PLAN_ACCESS_TOKEN"
+PLAN_ACCOUNT_ENV = "CODEX_PLAN_ACCOUNT_ID"
+
+#: THE PROVIDER CHOICE: which variables an account of each provider's pool
+#: fills. A profile can run on a provider's pool only when it declares every
+#: one of them (`takes_account`); a profile that declares none of them wants a
+#: metered API key, which the pool does not hold.
+ACCOUNT_ENVS: dict[str, tuple[str, ...]] = {
+    "anthropic": (ACCOUNT_TOKEN_ENV,),
+    "openai": (PLAN_TOKEN_ENV, PLAN_ACCOUNT_ENV),
+}
+
+#: THE KEY SHAPES (docs/design/llm-providers.md §3, lane LP-W1). A developer
+#: API key is its own `provider` on the broker's `Account` -- `anthropic-api`
+#: beside the Claude plan's `anthropic`, `openai-api` beside the ChatGPT plan's
+#: `openai` -- and fills the ONE variable its vendor's CLI reads a metered key
+#: from: `ANTHROPIC_API_KEY` for claude-code, `OPENAI_API_KEY` for codex. Never
+#: the plan's variable: a key offered as an OAuth token is refused, and the
+#: reverse is the same mistake.
+ANTHROPIC_KEY_PROVIDER = "anthropic-api"
+OPENAI_KEY_PROVIDER = "openai-api"
+ANTHROPIC_KEY_ENV = "ANTHROPIC_API_KEY"
+OPENAI_KEY_ENV = "OPENAI_API_KEY"
+KEY_ENVS: dict[str, str] = {
+    ANTHROPIC_KEY_PROVIDER: ANTHROPIC_KEY_ENV,
+    OPENAI_KEY_PROVIDER: OPENAI_KEY_ENV,
+}
+#: Each plan provider's key provider: the chain walks kinds within one vendor
+#: (§3.1), never across vendors. The broker's `accounts.KEY_PROVIDER_OF`.
+KEY_PROVIDER_OF: dict[str, str] = {
+    "anthropic": ANTHROPIC_KEY_PROVIDER,
+    "openai": OPENAI_KEY_PROVIDER,
+}
+#: What a key account's `{secret}` says it holds (the broker's
+#: `api_key.KIND_OF`): `{"kind": <this>, "api_key": <the key>}`, written by the
+#: broker alone. A secret of the other vendor's kind is refused, so a key can
+#: never land in the wrong vendor's variable.
+KEY_SECRET_KIND: dict[str, str] = {
+    ANTHROPIC_KEY_PROVIDER: "anthropic_api_key",
+    OPENAI_KEY_PROVIDER: "openai_api_key",
+}
+
+#: The tier a hold was granted from (§5.3), as assign and swap answer it, and
+#: the values `Attempt.credential_tier` takes (contract request 152). Joined,
+#: as the broker's own constant is, so a scanner does not read the line as a
+#: key assignment.
+TIER_PLAN = "plan"
+TIER_METERED = "_".join(("api", "key"))
+CREDENTIAL_TIERS: tuple[str, ...] = (TIER_PLAN, TIER_METERED)
+
+#: `Attempt.credential_source` (request 13, carried by request 152).
+SOURCE_ACCOUNT_POOL = "account_pool"
+SOURCE_TENANT_OWN = "tenant_secret"
+
+#: The hold-status `move` that asks a key holder back to a plan (Q1, §5.3),
+#: and the swap reason that walks tier 1 only.
+SWAP_PLAN_AVAILABLE = "plan_available"
+
+#: Providers whose pool serves a tenant only when the tenant supplies no API
+#: key of its own. For "openai" the brief is explicit (the owner, 2026-11-01): a
+#: codex step leases a plan when the tenant has no OPENAI_API_KEY, so a tenant
+#: paying for metered access keeps running on it. "anthropic" stays pool-first.
+TENANT_KEY_FIRST: frozenset[str] = frozenset({"openai"})
+
+#: The refused-credential marker of the codex runner's own stop before its
+#: plan token's hour (`runners.codex.ExpiryStop`). The worker reads it as a
+#: SCHEDULED reload of the account, not as the provider refusing it.
+PLAN_EXPIRY_MARKER = "codex plan access token nears its expiry"
+
+#: The broker's answer when this tenant has NO account it may use -- not one
+#: that is busy, not one that is paused: none at all. The pool is not how this
+#: deployment runs, so the caller must fall back to the per-tenant secret. Every
+#: deployment that has never registered an account gets this answer and behaves
+#: exactly as it did before the pool existed.
+NO_ACCOUNTS_REGISTERED = "no_accounts_registered"
+
+#: Accounts exist for this tenant and none can take a new agent right now.
+#: A WAIT. The caller parks; `next_reset_at` says until when if a window is
+#: what is blocking.
+NO_ACCOUNT_AVAILABLE = "no_account_available"
+
+#: Every account this tenant may use is paused, draining or needs
+#: re-authentication. Waiting on a PERSON, not on a clock, so there is no
+#: instant to wake at and polling faster would only ask the same question.
+POOL_PAUSED = "pool_paused"
+
+#: Accounts exist and every one of them was last observed too long ago to
+#: trust. NOT the same claim as "they are spent": nothing says they are. The
+#: broker's usage poll refreshes readings on its own sweep, so this clears by
+#: itself in minutes -- which is why it must not be parked for the same long
+#: fallback as a genuinely exhausted pool.
+NO_RECENT_READING = "no_recent_reading"
+
+#: Accounts have room by their windows and every one already holds as many
+#: agents as it may (the broker's per-account cap, archived issue 2222). A slot frees when an
+#: agent on it finishes, which no instant predicts, so -- like a stale reading
+#: and unlike a spent window -- it is minutes away, not hours.
+ACCOUNTS_FULL = "accounts_full"
+
+#: Client-side, never from the broker: the pool is configured and refused us.
+BROKER_REFUSED = "broker_refused"
+
+#: Client-side, never from the broker: an account was assigned and no account
+#: this worker was offered could have its secret read.
+ACCOUNT_UNREADABLE = "account_unreadable"
+
+#: HTTP statuses that mean "configured, and refusing you" rather than "down".
+#: 401/403: the invoker IAM or the identity check said no. 404: the URL is not
+#: this API. Everything else -- 5xx, 429, a timeout, a refused connection -- is
+#: an outage, and an outage degrades to the tenant secret.
+REFUSAL_STATUSES = frozenset({401, 403, 404})
+
+
+class BrokerUnavailable(RuntimeError):
+    #: The HTTP status the broker answered, when it answered one.
+    status: int | None = None
+
+    """The broker could not be reached, or did not answer in this shape.
+
+    Deliberately NOT raised when the broker says there is no account: that is a
+    200 with a reason, and the caller's response to it is different. Collapsing
+    the two would make an outage look like an empty pool, and every task would
+    quietly run on the wrong credential instead of parking.
+
+    Also deliberately NOT raised when the broker REFUSED the caller -- see
+    `BrokerRefused`. The caller falls back to the tenant secret on this one, so
+    anything that lands here is something the caller will carry on through.
+    """
+
+
+class BrokerRefused(RuntimeError):
+    """The pool is configured and this worker is not allowed to use it.
+
+    401 and 403: Cloud Run's invoker IAM or the broker's own identity check
+    rejected the token -- typically the tenant's worker service account is
+    missing from the broker's `run.invoker` list, or the audience does not
+    match. 404: the URL names something that is not this API.
+
+    NOT a subclass of `BrokerUnavailable`, and that is the whole point. These
+    are configuration errors, and a configuration error must never be read as
+    permission to carry on: the caller parks and names the cause, so somebody
+    sees it. An unreachable broker is invisible-but-harmless; a refused one is
+    invisible-and-wrong, because every agent silently piles back onto the one
+    shared tenant subscription the pool exists to get them off.
+    """
+
+
+class AccountUnreadable(RuntimeError):
+    """The account was assigned and its secret cannot be read.
+
+    Three real causes, and none of them is the task's fault:
+
+      * a freshly onboarded account whose `{base}` secret has no version yet --
+        `scripts/account.sh` creates it empty on purpose and the broker
+        publishes the access token on its next sweep, so there is a window
+        between `account.sh add` and that sweep;
+      * an account lent by another tenant whose secret this worker's service
+        account was never granted `secretmanager.secretAccessor` on;
+      * an empty or malformed version.
+
+    Raised so the caller can hand THIS account back, ask for a different one,
+    and park if there is none -- rather than failing the attempt, which would
+    burn one of its three tries and, because `choose()` is deterministic, burn
+    the next two on the same unusable account.
+    """
+
+    def __init__(self, account_id: str, detail: str) -> None:
+        super().__init__(f"account {account_id} cannot be read: {detail}")
+        self.account_id = account_id
+        self.detail = detail
+
+
+class NoAccountAvailable(RuntimeError):
+    """The pool is how this tenant runs, and it has nothing to give right now.
+
+    Raised only when the tenant HAS accounts and none can take a new agent --
+    never when it has none at all, which is a fallback rather than a wait. The
+    caller parks; it does not fail. Parking costs nothing, keeps the task's
+    three attempts for real failures, and the scheduler brings it back by
+    itself when `next_eligible_at` passes.
+    """
+
+    def __init__(self, decision: "NoAccount", provider: str) -> None:
+        super().__init__(
+            f"the {provider} account pool cannot serve this attempt: {decision.reason}"
+        )
+        self.decision = decision
+        self.provider = provider
+
+
+@dataclass(frozen=True)
+class Assignment:
+    """One account, as handed to a worker. `secret` is a NAME, never a value.
+
+    `assignment_id` identifies the HOLD the broker recorded, not the account.
+    It is what the release carries, so giving an account back can only ever
+    give back this assignment -- and it is what lets the broker expire a hold
+    whose worker was killed before it could release anything.
+    """
+
+    account_id: str
+    secret: str
+    assignment_id: str = ""
+    account: dict[str, Any] = field(default_factory=dict)
+    #: The tier the broker granted it from (§5.3): `plan` or `api_key`.
+    tier: str = TIER_PLAN
+
+    @property
+    def provider(self) -> str:
+        """The ACCOUNT's provider (`anthropic`, `anthropic-api`, ...), which
+        says which variable its credential fills; "" when the broker named none."""
+        return str(self.account.get("provider") or "")
+
+    @property
+    def is_key(self) -> bool:
+        return self.tier == TIER_METERED
+
+    @property
+    def label(self) -> str:
+        return str(self.account.get("label") or self.account_id)
+
+    @property
+    def owner_tenant(self) -> str:
+        return str(self.account.get("owner_tenant") or "")
+
+
+@dataclass(frozen=True)
+class NoAccount:
+    """Why no account was assigned, and when one is next expected.
+
+    `next_reset_at` is an ISO instant or None. None does NOT mean "soon" and it
+    does not mean one thing: an all-paused pool is waiting on a person, while a
+    pool whose readings have all gone stale is waiting on the broker's next
+    usage poll. `reason` is what separates them, and the caller picks a
+    different wait for each -- inventing one retry time for both would either
+    wake a paused pool up to the same answer or leave a merely-stale one asleep
+    for a quarter of an hour.
+    """
+
+    reason: str
+    next_reset_at: str | None = None
+
+    @property
+    def is_pool_absent(self) -> bool:
+        return self.reason == NO_ACCOUNTS_REGISTERED
+
+
+def fetch_identity_token(audience: str, *, timeout: int = _TIMEOUT) -> str:
+    """A Google-signed OIDC token for `audience`, from the metadata server."""
+    url = f"{METADATA_IDENTITY_URL}?audience={quote(audience, safe='')}&format=full"
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Metadata-Flavor", "Google")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            token = response.read().decode("utf-8").strip()
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+        # Off Google Cloud there is no metadata server, which is an ordinary
+        # local run rather than a fault. The caller falls back.
+        raise BrokerUnavailable(f"no workload identity token available: {exc}") from exc
+    if not token:
+        raise BrokerUnavailable("the metadata server returned an empty identity token")
+    return token
+
+
+class AccountBroker:
+    """The worker's client for the two pool routes.
+
+    Holds no state between calls and performs no retries. A retry here would be
+    a worker holding a concurrency slot while it waits on a control-plane
+    service; the platform's answer to "try again later" is to park, which gives
+    the slot back first.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        logger: Any,
+        audience: str | None = None,
+        token_fetcher: Any = None,
+        timeout: int = _TIMEOUT,
+        task_id: str | None = None,
+        attempt_id: str | None = None,
+    ) -> None:
+        self._base = base_url.rstrip("/")
+        # WHICH WORK this worker is, sent on assign so the broker can stamp
+        # the hold and an account can say who is on it (archived issue 379). None reads the
+        # two variables `WorkerConfig.from_env` requires -- the worker's own
+        # config, from the same source -- so the construction in lifecycle.py
+        # sends them without having to be told. Identifiers of work, never of
+        # a tenant: the broker still takes the tenant from the identity token.
+        self._task_id = (
+            task_id if task_id is not None else os.environ.get("TASK_ID", "")
+        ).strip()
+        self._attempt_id = (
+            attempt_id if attempt_id is not None else os.environ.get("ATTEMPT_ID", "")
+        ).strip()
+        self._log = logger
+        # Cloud Run checks the token's `aud` against the service URL unless a
+        # custom audience is configured, so the URL is the right default and an
+        # override exists for deployments that set one.
+        self._audience = (audience or self._base).rstrip("/")
+        self._fetch_token = token_fetcher or fetch_identity_token
+        self._timeout = timeout
+        #: Whether a key holder's hold-status read carries its running spend;
+        #: off for good once this broker refuses the field (`hold_status`).
+        self._status_spend = True
+
+    # -- the two calls ----------------------------------------------------
+
+    def assign(
+        self, provider: str, *, exclude: Any = (), key_tier: bool = False
+    ) -> Assignment | NoAccount:
+        """Ask for an account for THIS worker's tenant.
+
+        The tenant is never sent. The broker derives it from the service
+        account in the identity token, which is the only version of the answer
+        a caller cannot influence.
+
+        `exclude` names accounts this attempt has ALREADY been given and could
+        not use -- a fresh account whose secret has no version yet, or one lent
+        by a tenant that never granted this worker access to its secret.
+        Sending it is safe in a way naming a tenant is not: it can only ever
+        narrow the caller's own options, never widen them, and without it
+        `choose()` is deterministic and would hand back the same unusable
+        account until the task ran out of attempts.
+
+        `key_tier` says this worker can run the step on its vendor's API key
+        (`takes_key`): the broker then walks the plans and, when none is
+        available, the keys (§5.3). Omitted when False, so the body is what an
+        older worker sent.
+        """
+        body: dict[str, Any] = {"provider": provider}
+        excluded = sorted({str(a) for a in exclude if a})
+        if excluded:
+            body["exclude"] = excluded
+        if key_tier:
+            body["key_tier"] = True
+        # Omitted rather than sent empty: the broker bounds both at one
+        # character, and a 422 here would put the agent on the tenant secret.
+        if self._task_id:
+            body["task_id"] = self._task_id
+        if self._attempt_id:
+            body["attempt_id"] = self._attempt_id
+        payload = self._post("/v1/accounts/assign", body)
+        account_id = payload.get("account_id")
+        if not account_id:
+            return NoAccount(
+                reason=str(payload.get("reason") or NO_ACCOUNT_AVAILABLE),
+                next_reset_at=payload.get("next_reset_at") or None,
+            )
+        secret = payload.get("secret")
+        if not isinstance(secret, str) or not secret:
+            # An assignment whose secret name is missing would silently become
+            # a fallback to the tenant credential while the broker's counter
+            # says an agent is on the account. Refusing is loud and correct.
+            raise BrokerUnavailable(
+                f"the broker assigned {account_id} without naming its secret"
+            )
+        assignment_id = payload.get("assignment_id")
+        if not isinstance(assignment_id, str) or not assignment_id:
+            # Refused for the same reason: without it this worker cannot give
+            # the hold back, so the account would count an agent that has
+            # already exited until the hold expired.
+            raise BrokerUnavailable(
+                f"the broker assigned {account_id} without an assignment id"
+            )
+        account = payload.get("account")
+        account = account if isinstance(account, dict) else {}
+        return Assignment(
+            account_id=str(account_id),
+            secret=secret,
+            assignment_id=assignment_id,
+            account=account,
+            tier=tier_of(payload.get("tier"), account),
+        )
+
+    def release(
+        self,
+        account_id: str,
+        assignment_id: str,
+        *,
+        unusable: str = "",
+        cost_usd: float | None = None,
+    ) -> Any:
+        """Give this assignment back. Naming the hold, not just the account.
+
+        `unusable` is set when the account was handed over and could not be
+        used -- an unreadable secret. The broker records it against (account,
+        THIS tenant) so the next agent is not sent at the same wall, and so an
+        operator can see that an account nobody can read is not the same thing
+        as an account nobody wants.
+
+        `cost_usd` is the worker's estimate of what ran on this hold (§4.6,
+        Q5): on a key the broker adds it to the month's metered spend in the
+        transaction that closes the hold. Sent only when there is one.
+        """
+        path = f"/v1/accounts/{quote(account_id, safe='')}/release"
+        body: dict[str, Any] = {"assignment_id": assignment_id}
+        if unusable:
+            body["unusable"] = unusable[:200]
+        spend = spend_figure(cost_usd)
+        if spend is not None:
+            body["cost_usd"] = spend
+        payload = self._post(path, body)
+        return payload.get("assigned")
+
+    # -- the holder's calls (S13-S15) --------------------------------------
+
+    def _proof(self, assignment: Assignment) -> dict[str, Any]:
+        """What every holder route checks: the hold, and the work it is stamped with."""
+        return {
+            "assignment_id": assignment.assignment_id,
+            "task_id": self._task_id,
+            "attempt_id": self._attempt_id,
+        }
+
+    def report_reading(
+        self, assignment: Assignment, windows: dict[str, dict[str, Any]]
+    ) -> Any:
+        """Forward the latest reading of some windows of the held account.
+
+        `windows` maps a window name to `{utilization, resets_at}` and nothing
+        else: the body is built here from those two fields, so nothing the
+        stream carried beside them can reach the broker.
+        """
+        body = {
+            **self._proof(assignment),
+            "windows": {
+                str(name): {
+                    "utilization": float(w["utilization"]),
+                    "resets_at": str(w["resets_at"]),
+                }
+                for name, w in windows.items()
+            },
+        }
+        path = f"/v1/accounts/{quote(assignment.account_id, safe='')}/readings"
+        return self._post(path, body).get("recorded")
+
+    def hold_status(
+        self, assignment: Assignment, *, cost_usd: float | None = None
+    ) -> dict[str, Any]:
+        """`{held, move, state}` for this worker's hold: one cheap read.
+
+        THE RUNNING SPEND (§4.6). A key holder's read carries `cost_usd`, the
+        attempt's estimate of what has run on this hold so far -- the figure
+        the hold's close will carry -- so a long attempt is counted against
+        the key's cap before it ends. A broker that does not take the field
+        yet answers 422 to it; the read is then asked once more without it and
+        this client stops sending it, so the move back to a plan and a drain
+        are never lost to the figure.
+        """
+        path = f"/v1/accounts/{quote(assignment.account_id, safe='')}/hold-status"
+        body = self._proof(assignment)
+        spend = spend_figure(cost_usd) if assignment.is_key else None
+        if spend is None or not self._status_spend:
+            return self._post(path, body)
+        try:
+            return self._post(path, {**body, "cost_usd": spend})
+        except BrokerUnavailable as exc:
+            if exc.status != 422:
+                raise
+            self._status_spend = False
+            return self._post(path, body)
+
+    def swap(
+        self,
+        assignment: Assignment,
+        *,
+        provider: str,
+        reason: str,
+        exclude: Any = (),
+        key_tier: bool = False,
+        cost_usd: float | None = None,
+    ) -> Assignment | NoAccount:
+        """Move this attempt's hold to another account, or say why not.
+
+        `Assignment` when the broker moved it; `NoAccount` when no other
+        account can take it, in which case the broker left the current hold
+        exactly as it was. Raises as `assign` does for an outage or a refusal
+        -- a 403 here is what a fenced or stale attempt meets.
+
+        `key_tier` as for `assign`: a swap walks the same chain, so a plan at
+        its window hands over to a key (§5.3); `reason` `plan_available` walks
+        the plans alone (Q1). `cost_usd` is what ran on the hold being left,
+        as a release carries it.
+        """
+        body: dict[str, Any] = {
+            **self._proof(assignment),
+            "account_id": assignment.account_id,
+            "reason": reason,
+            "provider": provider,
+        }
+        excluded = sorted({str(a) for a in exclude if a})
+        if excluded:
+            body["exclude"] = excluded
+        if key_tier:
+            body["key_tier"] = True
+        spend = spend_figure(cost_usd)
+        if spend is not None:
+            body["cost_usd"] = spend
+        payload = self._post("/v1/accounts/swap", body)
+        if not payload.get("swapped"):
+            return NoAccount(
+                reason=str(payload.get("reason") or NO_ACCOUNT_AVAILABLE),
+                next_reset_at=payload.get("next_reset_at") or None,
+            )
+        account_id = payload.get("account_id")
+        secret = payload.get("secret")
+        new_id = payload.get("assignment_id")
+        if not all(isinstance(v, str) and v for v in (account_id, secret, new_id)):
+            # The hold has moved and this answer cannot say where to: the new
+            # hold expires on its own, and the caller parks as for an outage.
+            raise BrokerUnavailable("the broker swapped without naming the account, secret or hold")
+        account = payload.get("account")
+        account = account if isinstance(account, dict) else {}
+        return Assignment(
+            account_id=str(account_id),
+            secret=str(secret),
+            assignment_id=str(new_id),
+            account=account,
+            tier=tier_of(payload.get("tier"), account),
+        )
+
+    # -- transport --------------------------------------------------------
+
+    def _post(self, path: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+        url = f"{self._base}{path}"
+        body = json.dumps(payload or {}).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST")
+        req.add_header("Authorization", f"Bearer {self._fetch_token(self._audience)}")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json")
+        req.add_header("User-Agent", _UA)
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:300]
+            if exc.code in REFUSAL_STATUSES:
+                # CONFIGURED AND REFUSING. Not an outage, and the caller must
+                # not carry on as though the pool were merely unused.
+                raise BrokerRefused(
+                    f"the quota broker refused this worker with {exc.code} on "
+                    f"{path}: {detail}"
+                ) from exc
+            unavailable = BrokerUnavailable(
+                f"the quota broker answered {exc.code} on {path}: {detail}"
+            )
+            unavailable.status = exc.code
+            raise unavailable from exc
+        except (urllib.error.URLError, OSError) as exc:
+            host = urlparse(url).hostname or self._base
+            raise BrokerUnavailable(f"could not reach the quota broker at {host}: {exc}") from exc
+        try:
+            parsed = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError as exc:
+            raise BrokerUnavailable(f"the quota broker answered {path} with non-JSON") from exc
+        if not isinstance(parsed, dict):
+            raise BrokerUnavailable(f"the quota broker answered {path} with {type(parsed).__name__}")
+        return parsed
+
+
+#: At most one forward of each window per this many seconds (S15). The
+#: broker's usage poller budgets about five calls per five minutes, shared with
+#: humans and laptops; a worker reporting every stream line would be the
+#: opposite problem. A minute keeps a reading fresh well inside
+#: `DEFAULT_STALE_AFTER` (thirty minutes) at a cost of one call per minute.
+READING_INTERVAL_SECONDS = 60.0
+
+
+class ReadingForwarder:
+    """The latest reading of each window, forwarded at most once per window per minute.
+
+    `offer` is given the runner's latest readings as often as the caller likes;
+    it sends a window when its value has changed AND it has not been sent in
+    the last `interval` seconds, all due windows in one call. `offer(...,
+    final=True)` -- the end of a run -- sends every window whose latest value
+    has not been sent, once, whatever the interval, because a reading held
+    back then would never be sent at all.
+
+    A FAILED FORWARD IS LOGGED AND NOTHING ELSE. It never raises, never fails
+    or parks the attempt: the readings are an optimisation of `choose()`, and
+    the broker's own poller still reads every account. A window whose send
+    failed waits out the interval before it is tried again, so a broker
+    answering 5xx is asked once a minute, not once a slice.
+
+    A window whose reset has already passed is not sent: the broker refuses
+    it, rightly, and it says nothing about the account any more.
+    """
+
+    def __init__(
+        self,
+        send: Any,
+        *,
+        logger: Any,
+        interval: float = READING_INTERVAL_SECONDS,
+        clock: Any = None,
+        now: Any = None,
+    ) -> None:
+        self._send = send
+        self._log = logger
+        self._interval = interval
+        self._clock = clock or time.monotonic
+        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._latest: dict[str, dict[str, Any]] = {}
+        self._sent: dict[str, dict[str, Any]] = {}
+        self._sent_at: dict[str, float] = {}
+
+    def offer(self, readings: Any, *, final: bool = False) -> list[str]:
+        """Send what is due. Returns the window names it sent (empty on failure)."""
+        if isinstance(readings, dict):
+            for name, reading in readings.items():
+                if _is_reading(reading):
+                    self._latest[str(name)] = {
+                        "utilization": float(reading["utilization"]),
+                        "resets_at": str(reading["resets_at"]),
+                    }
+        tick = self._clock()
+        wall = self._now()
+        due: dict[str, dict[str, Any]] = {}
+        for name, reading in self._latest.items():
+            if self._sent.get(name) == reading or _has_reset(reading, wall):
+                continue
+            last = self._sent_at.get(name)
+            if final or last is None or tick - last >= self._interval:
+                due[name] = reading
+        if not due:
+            return []
+        for name in due:
+            self._sent_at[name] = tick
+        try:
+            self._send(due)
+        except Exception as exc:
+            self._log.warning(
+                "could not forward the account's rate-limit readings; the broker's "
+                "own usage poll still reads it, and the attempt carries on",
+                windows=sorted(due),
+                error_type=type(exc).__name__,
+            )
+            return []
+        for name, reading in due.items():
+            self._sent[name] = reading
+        return sorted(due)
+
+
+def _is_reading(raw: Any) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    u = raw.get("utilization")
+    return (
+        isinstance(u, (int, float))
+        and not isinstance(u, bool)
+        and 0.0 <= float(u) <= 1.0
+        and isinstance(raw.get("resets_at"), str)
+    )
+
+
+def _has_reset(reading: dict[str, Any], now: datetime) -> bool:
+    try:
+        at = datetime.fromisoformat(str(reading["resets_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return at <= now
+
+
+def takes_account(provider: str | None, secret_env_names: Any) -> bool:
+    """Whether a profile of `provider` declaring `secret_env_names` can run on
+    an account of that provider's pool: it declares every name one fills."""
+    wanted = ACCOUNT_ENVS.get(provider or "")
+    declared = tuple(secret_env_names or ())
+    return bool(wanted) and all(name in declared for name in wanted)
+
+
+def takes_key(provider: str | None, secret_env_names: Any) -> bool:
+    """Whether a profile of plan provider `provider` declaring
+    `secret_env_names` can run on its vendor's API key (§3.1): it declares
+    the key's variable. `browser` declares `ANTHROPIC_API_KEY` alone, so it
+    runs on a key and never on a plan; a profile with the plan token alone
+    never on a key."""
+    key = KEY_PROVIDER_OF.get(provider or "")
+    return key is not None and KEY_ENVS[key] in tuple(secret_env_names or ())
+
+
+def tier_of(answered: Any, account: dict[str, Any]) -> str:
+    """The tier of a granted hold: the broker's `tier` when it is one a worker
+    is handed, else read off the account's provider (a broker that predates
+    the field grants plans alone)."""
+    if answered in CREDENTIAL_TIERS:
+        return str(answered)
+    return TIER_METERED if account.get("provider") in KEY_ENVS else TIER_PLAN
+
+
+def spend_figure(cost_usd: Any) -> float | None:
+    """`cost_usd` as the broker takes it -- a finite, non-negative number of
+    dollars rounded to the micro-dollar -- or None when there is none to send."""
+    if isinstance(cost_usd, bool) or not isinstance(cost_usd, (int, float)):
+        return None
+    value = float(cost_usd)
+    if value != value or value in (float("inf"), float("-inf")) or value <= 0:
+        return None
+    return round(value, 6)
+
+
+def credential_env_from_account(
+    payload: str,
+    *,
+    secret_env_names: tuple[str, ...],
+    secret_name: str,
+    provider: str = "anthropic",
+) -> dict[str, str]:
+    """Shape an account secret's payload into the child's environment.
+
+    ONE KIND OF CREDENTIAL, ONE VARIABLE. An account is a Claude SUBSCRIPTION
+    and `{base}` holds only its access token, written as a bare string by the
+    broker -- the single writer. There is no second shape to accept: this
+    function used to also read a JSON object and export whichever of the
+    profile's declared names it carried, which meant an account secret could
+    supply ANTHROPIC_API_KEY. The pool does not handle API keys, so that branch
+    described a credential kind that does not exist here and gave whoever could
+    write a secret version a choice the design says nobody has.
+
+    The token goes to ACCOUNT_TOKEN_ENV alone, never to every declared name.
+    The two names claude-code declares are interchangeable inputs, not copies:
+    projecting a subscription token into ANTHROPIC_API_KEY as well would hand
+    the metered API a credential it refuses.
+
+    `provider` "openai" is a ChatGPT PLAN account (`_plan_env`): its own one
+    shape, into PLAN_TOKEN_ENV and PLAN_ACCOUNT_ENV alone, never
+    OPENAI_API_KEY, which the plan's token is not.
+
+    `provider` `anthropic-api` or `openai-api` is a developer API KEY
+    (`_key_env`, §3): its vendor's key variable alone. `provider` is the
+    ACCOUNT's, as the broker answered it, so a swap from a plan to a key or
+    back rebuilds the environment with the new kind's variable only.
+    """
+    stripped = (payload or "").strip()
+    if not stripped:
+        raise ValueError(f"account secret {secret_name} is empty")
+
+    if provider in KEY_ENVS:
+        return _key_env(
+            stripped, provider=provider, secret_env_names=secret_env_names,
+            secret_name=secret_name,
+        )
+    if provider == "openai":
+        return _plan_env(stripped, secret_env_names=secret_env_names, secret_name=secret_name)
+    if ACCOUNT_TOKEN_ENV not in secret_env_names:
+        raise ValueError(
+            f"this runner does not accept a subscription token: it declares "
+            f"{', '.join(secret_env_names) or 'no credential variables'} and an "
+            f"account supplies {ACCOUNT_TOKEN_ENV}"
+        )
+    return {ACCOUNT_TOKEN_ENV: stripped}
+
+
+def _key_env(
+    payload: str, *, provider: str, secret_env_names: tuple[str, ...], secret_name: str
+) -> dict[str, str]:
+    """A key account's `{secret}`: `{"kind", "api_key"}`, the broker's one shape.
+
+    The kind must be this provider's (`KEY_SECRET_KIND`): an OpenAI key in an
+    Anthropic key's account would be handed to the wrong vendor. The profile
+    must declare the key's variable, or it has nowhere to put it. The value is
+    never put in a message: every refusal names the secret, never its contents.
+    """
+    variable = KEY_ENVS[provider]
+    if variable not in secret_env_names:
+        raise ValueError(
+            f"this runner does not accept an API key: it declares "
+            f"{', '.join(secret_env_names) or 'no credential variables'} and a "
+            f"{provider} account supplies {variable}"
+        )
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        raise ValueError(f"account secret {secret_name} is not an API key account's") from None
+    if not isinstance(data, dict) or data.get("kind") != KEY_SECRET_KIND[provider]:
+        raise ValueError(f"account secret {secret_name} is not a {provider} key account's")
+    key = data.get("api_key")
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError(f"account secret {secret_name} holds no API key")
+    return {variable: key.strip()}
+
+
+def _plan_env(
+    payload: str, *, secret_env_names: tuple[str, ...], secret_name: str
+) -> dict[str, str]:
+    """A ChatGPT plan account's `{base}`: `{"access_token", "account_id"}`.
+
+    ONE SHAPE, as for a Claude account: a JSON object holding the current
+    access token and the plan's account id, both non-empty strings, written by
+    the broker alone. A bare string is refused (a plan needs its account id
+    beside the token), and so is an object carrying a `refresh_token`: the
+    refresh half belongs in `{base}-refresh`, readable by the broker alone, and
+    a `{base}` holding one would hand this pod the power to sign every other
+    holder of the account out. Neither value is ever put in the message.
+    """
+    if not takes_account("openai", secret_env_names):
+        raise ValueError(
+            f"this runner does not accept a ChatGPT plan: it declares "
+            f"{', '.join(secret_env_names) or 'no credential variables'} and an "
+            f"account supplies {PLAN_TOKEN_ENV} and {PLAN_ACCOUNT_ENV}"
+        )
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        raise ValueError(
+            f"account secret {secret_name} is not the plan's JSON object"
+        ) from None
+    if not isinstance(data, dict):
+        raise ValueError(f"account secret {secret_name} is not the plan's JSON object")
+    if "refresh_token" in data:
+        raise ValueError(
+            f"account secret {secret_name} carries a refresh token; only the broker "
+            "may hold it"
+        )
+    token, account = data.get("access_token"), data.get("account_id")
+    if not isinstance(token, str) or not token.strip():
+        raise ValueError(f"account secret {secret_name} holds no access token")
+    if not isinstance(account, str) or not account.strip():
+        raise ValueError(f"account secret {secret_name} holds no plan account id")
+    return {PLAN_TOKEN_ENV: token.strip(), PLAN_ACCOUNT_ENV: account.strip()}
+
+
+__all__ = [
+    "ANTHROPIC_KEY_ENV",
+    "ANTHROPIC_KEY_PROVIDER",
+    "CREDENTIAL_TIERS",
+    "KEY_ENVS",
+    "KEY_PROVIDER_OF",
+    "KEY_SECRET_KIND",
+    "OPENAI_KEY_ENV",
+    "OPENAI_KEY_PROVIDER",
+    "SOURCE_ACCOUNT_POOL",
+    "SOURCE_TENANT_OWN",
+    "SWAP_PLAN_AVAILABLE",
+    "TIER_METERED",
+    "TIER_PLAN",
+    "spend_figure",
+    "takes_key",
+    "tier_of",
+    "ACCOUNTS_FULL",
+    "ACCOUNT_ENVS",
+    "ACCOUNT_TOKEN_ENV",
+    "ACCOUNT_UNREADABLE",
+    "BROKER_REFUSED",
+    "METADATA_IDENTITY_URL",
+    "NO_ACCOUNTS_REGISTERED",
+    "NO_ACCOUNT_AVAILABLE",
+    "NO_RECENT_READING",
+    "PLAN_ACCOUNT_ENV",
+    "PLAN_EXPIRY_MARKER",
+    "PLAN_TOKEN_ENV",
+    "POOL_PAUSED",
+    "REFUSAL_STATUSES",
+    "TENANT_KEY_FIRST",
+    "AccountBroker",
+    "AccountUnreadable",
+    "Assignment",
+    "BrokerRefused",
+    "BrokerUnavailable",
+    "NoAccount",
+    "NoAccountAvailable",
+    "READING_INTERVAL_SECONDS",
+    "ReadingForwarder",
+    "credential_env_from_account",
+    "fetch_identity_token",
+    "takes_account",
+]

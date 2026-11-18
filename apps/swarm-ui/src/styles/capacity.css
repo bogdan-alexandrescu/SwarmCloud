@@ -1,0 +1,1171 @@
+/*
+ * CAPACITY: Pools (Ceilings, By runner profile), Runtimes, Holders, Accounts
+ * and Provider quota, as picked in docs/web-ui/mockups/capacity.html (C1, the
+ * profile matrix, A1) and drawn to components.html A: 32px rows, pill chips,
+ * 12px type floor, sentence case, no letter-spacing. Corners are 6px for
+ * controls and 10px for cards, the scale spacing.test.tsx holds every corner
+ * to today (0/2/6/10/14/999); A's 8/12 lands with lane U0's tokens. They are
+ * literals because the spacing probe substitutes var() in styles.css only.
+ *
+ * ONE SHEET PER SECTION (owner, 2026-10-02): the seven UI lanes ran at once,
+ * so each section's rules live in its own file and styles.css keeps the shell
+ * and the shared primitives. The `cap-` / `rt-` / `hold-` / `quota-` names are
+ * this section's; the `Cap*` components that draw them are local stand-ins for
+ * the shared set lane U0 is building, named so a later pass can swap them.
+ * __tests__/sections.stylesheet.test.ts runs the stylesheet gate and the type rules over this file.
+ */
+
+/* -- Pools, Runtimes, Holders, Provider quota ----------------------------- */
+
+/* The in-page view strip under the Pools heading (capacity.html C1, frames 0
+   and 3): the canonical segmented control's link form; this only spaces it. */
+.cap-seg { display: flex; margin: 0 0 var(--ctl-s3); }
+
+/* Ceilings: "Needs action" leads (the pools a person has to act on), in the
+   warning hue's soft surface. */
+.cap-needs { border-color: color-mix(in srgb, var(--s-warn) 50%, transparent); }
+.cap-needs .ctl-card-title { color: var(--text); }
+
+/* SEVEN COLUMNS, ONE WIDTH EACH, IN EVERY FAMILY (archived issue 503, CP-18). The tables are
+   fixed-layout so a column starts at the same x in every family; these are
+   the widths. They add to 100%, so no column takes room from its neighbour,
+   and Use gets the widest figure column: the old quarter-and-eighths left it
+   narrower than its own track, and the figure painted over the State chip. */
+/* POOL TAKES THE SHARE ITS KEY NEEDS (QA G5-11, 2026-10-07): at 23% the key
+   `provider:mock-provider:tenant:eng` was cut beside a 190px Use cell whose
+   bar alone was 147px. Use loses bar, never figure (below), and Set by is a
+   dot on most rows now (G5-19), so they give Pool the room. */
+/* SET BY HOLDS ITS WORDS (visual QA V089, 2026-10-11). At 9% it was ~75px of
+   text at 1440 with the nav open, and `AIMD back-off` (the term then; see
+   QA1B-13 below for its plain words) and `provider quota` --
+   the two terms the column exists to make stand out -- wrapped to two lines
+   and made their rows taller than every other. Pool gives up two points; at
+   28% it still holds `provider:mock-provider:tenant:eng` whole. */
+/* AND IT HOLDS THEM IN PLAIN WORDS, ON TWO LINES AT MOST (QA1B-13 review,
+   2026-10-28). capacity-21 replaced `AIMD back-off` with `lowered
+   automatically after errors`, and at 11% (114px at 1440 with the nav open)
+   that wrapped to three lines and made its row 61px against 46px -- V089
+   again. 16% (~166px, 146px of text) holds `lowered automatically` on one
+   line at the cell's 12px even at the tests' 0.56em upper bound, so the term
+   is two lines, inside the row's height. Pool gives two points (its key is
+   12px sans, ~200px, in 26%'s ~269px), Use two (it loses bar, never figure:
+   `no limit set` still fits 12%), State one (`near ceiling` fits 12%). */
+.cap-c-pool { width: 26%; }
+.cap-c-num { width: 11%; }
+.cap-c-use { width: 12%; }
+.cap-c-state { width: 12%; }
+.cap-c-by { width: 16%; }
+.cap-c-links { width: 12%; }
+/* A head is one line: "Leased (units)" fits its eleventh at 1440 with the nav
+   open, and at a narrower desktop it ellipsizes (its title says it whole)
+   rather than wrapping to two lines or painting into its neighbour. */
+.cap-pools thead th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The pool's id and its scope share the line under its name (CP-2): one
+   sub-line, not a second row of height. */
+/* A ROW TITLE OVER ONE SANS LINE (visual QA Q8, 2026-10-02; capacity.html):
+   the name was an underlined bold link -- a <th> is bold by default -- and
+   the mono sublabel wrapped "global / global / · platform" over three lines
+   in the 23% column. The name is the row's title at normal weight, still the
+   link to Holders (underlined on hover); the sublabel holds one line and
+   ellipses, its whole text in the cell's title. */
+.cap-pools tbody th[scope='row'] { font-weight: 400; }
+.cap-pools tbody th[scope='row'] > .ctl-link { color: var(--text); text-decoration: none; }
+.cap-pools tbody th[scope='row'] > .ctl-link:hover { text-decoration: underline; }
+.cap-sub { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cap-pools .cap-sub .ctl-sub { display: inline; font: inherit; color: inherit; }
+/* THE SCOPE GIVES WAY BEFORE THE KEY (QA G5-11, 2026-10-07). One line still,
+   but as two flex items: the scope shrinks a thousand times faster, so a
+   narrow column cuts `· tenant sm…` and leaves the key whole -- the key is
+   what gets pasted into pool-limit.sh -- and only a key wider than the whole
+   column is cut itself. */
+.cap-pools .cap-sub { display: flex; }
+.cap-pools .cap-sub > .ctl-sub { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cap-pools .cap-sub > .cap-sub-scope { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.cap-scope { color: var(--text-faint); }
+
+/* THE USE CELL: the bar shrinks, the figure does not. The figure's track is
+   its own content width and never wraps, and the bar takes what is left --
+   down to nothing -- so a narrow column loses bar, never figure, and nothing
+   overflows into State. */
+.cap-use {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.cap-use-pct {
+  white-space: nowrap;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.cap-links { white-space: nowrap; font-size: var(--t-micro); color: var(--text-faint); }
+
+/* Below 900px each family table scrolls on its own and sizes to its content
+   (styles.css, "POOLS SCROLL"), so the desktop widths stand down. */
+@media (max-width: 899px) {
+  .cap-pools col { width: auto; }
+}
+
+/* By runner profile: the matrix. The binding cell is outlined in the warning
+   hue -- amber is for warnings only, and the pool that runs out first is one. */
+.cap-mx { display: flex; flex-direction: column; gap: 8px; margin-bottom: var(--ctl-s3); }
+.cap-mx td.is-num b { display: block; font: 650 var(--t-body)/var(--lh-body) var(--font); font-variant-numeric: tabular-nums; }
+.cap-mx td.is-num small { display: block; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+/* THE OUTLINE IS ON THE FIGURES' BOX, NOT THE CELL (visual QA V090,
+   2026-10-11). On the cell it was as wide as its column -- `Resource classes`
+   outlined a wider box than `Global` -- and 4px from the next row's outline.
+   `.cap-mx-v` is one width in every column, right-aligned where a
+   figure is, and the cell's padding is what now separates two rows' boxes.
+   ONE WIDTH, NOT A MINIMUM (visual QA V090, 2026-10-27): at `min-width: 5ch`
+   a figure past five characters grew its box, 40px beside 44px. The box is
+   5ch of content in `content-box`, so the 8px padding does not eat it: 42px
+   at 1440, where a five-digit figure and a `37/40` use line fit (the
+   `--t-micro` line's `ch` is smaller). A worded value (`no limit set`) wraps
+   inside it rather than widening it. The `used/ceiling` line never wraps.
+   NOT 9ch (review of U01, 2026-10-27): six family columns of 92px boxes
+   made the matrix 1247px in its 1039px scroller at 1440 and pushed Runs out
+   first -- the answer -- off-screen. vqa2.r16.capacity.test.tsx (FIT) sums
+   the columns from the review's measurement. */
+.cap-mx td > .cap-mx-v {
+  display: inline-flex; flex-direction: column; align-items: flex-end;
+  box-sizing: content-box; inline-size: 5ch; min-width: 0;
+  padding: 2px 8px; border-radius: 6px;
+  vertical-align: middle; white-space: normal; text-align: right;
+}
+.cap-mx td > .cap-mx-v > small { white-space: nowrap; }
+.cap-mx td.is-binding > .cap-mx-v { outline: 2px solid var(--s-warn); outline-offset: -2px; background: var(--s-warnb); }
+.cap-mx td.cap-mx-na { color: var(--text-faint); }
+.cap-mx b.cap-mx-zero { color: var(--s-warn); }
+.cap-mx-toggle { display: inline-flex; gap: 6px; align-items: center; background: none; border: 0; padding: 0; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+/* ONE LONG NAME DOES NOT WIDEN THE MATRIX (visual QA V031, 2026-10-11). The
+   first column is no-wrap and sized by its widest name, so one long profile
+   name pushed Can start and Runs out first off-screen at 1440. The toggle is
+   held to 30ch -- every name the catalogue serves today fits -- and a longer
+   one ellipsizes, whole in the button's title. */
+.cap-mx-toggle { max-width: 30ch; }
+.cap-mx-toggle > .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cap-mx-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+/* THE OPEN ROW IS ONE TINTED BLOCK (visual QA V093, 2026-10-11). The tint
+   was on the CELLS, which on a phone are blocks inside a padded record, so the
+   row and its detail were two tinted blocks with the records' 12px of
+   untinted padding between them. It is on the rows now -- one fill at every
+   width -- and the phone block below closes the seam between the two. */
+.cap-mx tr.is-open, .cap-mx tr.cap-mx-exp { background: var(--surface-2); }
+.cap-mx tr.cap-mx-exp > td { font-size: var(--t-meta); white-space: normal; }
+/* Runs out first (archived issue 124): each binding pool on a line, its Fits under it in
+   the cell-figure grey; the opened row's per-pool table marks the binding
+   rows with the matrix's own amber edge. */
+.cap-mx-first { white-space: normal; }
+/* AND IT MAY WRAP (visual QA V031): `.ctl-table td`'s nowrap (0,1,1) out-ranked
+   the rule above, so this column -- the answer -- could never give back any
+   width, and the matrix overflowed 1440 by itself. */
+.cap-mx td.cap-mx-first { white-space: normal; }
+/* ONE LINE AT ONE WIDTH (visual QA V195 and V090's half of it, 2026-10-27).
+   The column's wrap above let an entry break INSIDE itself beside a long
+   profile name -- `(5/5) fits ⏎0` on every row. An entry is a one-line flex
+   row 21ch wide, held to its cell on a phone record: the pool name gives way
+   with an ellipsis, whole in the entry's title, and the use and the fits
+   never shrink. Entries still stack, one per line, so the column wraps
+   BETWEEN them. 21ch, NOT 34ch (review of U01, 2026-10-27): at 34ch the
+   column was 276px and, with the 9ch boxes above, sat off-screen at 1440. A
+   long pool name is cut sooner; the use and the fits -- the answer -- are
+   always on screen, and the binding family cell outlines the same pool. */
+.cap-mx-bind {
+  display: flex; align-items: baseline; gap: 0.5ch; font-size: var(--t-meta); color: var(--text);
+  inline-size: 21ch; max-inline-size: 100%; white-space: nowrap;
+}
+.cap-mx-bind > .cap-mx-bind-pool { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cap-mx-bind > .cap-mx-bind-use,
+.cap-mx-bind > small { flex-shrink: 0; }
+.cap-mx-bind small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.cap-mx-fits { margin-bottom: 8px; }
+.cap-mx-fits tr.is-binding > th[scope="row"] { box-shadow: inset 3px 0 0 var(--s-warn); }
+.cap-mx-note { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
+
+/* Runtimes: the cards lead (capacity.html frame 5), each listing the pools it
+   must clear as linked pill chips; Backends follows, Sizing is last. */
+.rt-cards { margin-bottom: var(--ctl-s5); }
+/* `flex-start`, NOT THE DEFAULT STRETCH (visual QA V030, 2026-10-11): with
+   the capacity read failed, the `not read` mark under the eyebrow stretched
+   to the card's width -- a full-width dashed bar that read as an empty input.
+   A mark is as wide as its words. */
+.rt-pools { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 10px; }
+/* A LONG ID IS CUT INSIDE ITS CHIP, NOT PAST THE CARD (visual QA V162,
+   2026-10-27). `.rt-pools` sizes the row to its content (`flex-start`, V030),
+   so one unbreakable tenant id made the row as wide as itself: at 1440 the
+   chip ran ~40px past the card border, at 400 the card edge cut it mid-word.
+   The row is held to the card, a chip may shrink to it, and the id inside
+   ellipsizes -- whole in the chip's title. `nowrap` stays on the id: ids
+   are not broken (the pattern V153-V161 share). */
+.rt-pool-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; max-width: 100%; }
+.rt-pool-chips > .c-chip { min-width: 0; max-width: 100%; }
+.rt-pool-chips > .c-chip > .rt-chip-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* SIZING FITS ITS CARD (archived issue 503): "Resolves from" lists every runtime that
+   resolves to a class, and a nowrap list ran past the card's right edge. It
+   is the one prose-shaped column in the table, so it wraps. */
+.rt-sizing td[data-label="Resolves from"] { white-space: normal; overflow-wrap: anywhere; }
+/* BETWEEN NAMES, NEVER INSIDE ONE (visual QA V194, 2026-10-27): the list
+   wrapped at a hyphen, `demo-⏎scribe`. Each runtime is its own span, its
+   comma inside, so the cell wraps only at the spaces between them. */
+.rt-resolves > .rt-resolves-id { white-space: nowrap; overflow-wrap: normal; }
+/* ON A PHONE IT HOLDS ONE LINE (QA G5-09, 2026-10-07). At 390 the column is
+   off-screen in the scrolling table, and wrapping every runtime name into its
+   narrow cell made a row about 200px tall with its visible cells floating in
+   blank space. The table scrolls, so the list can be as long as it is. */
+/* ONLY WHILE IT SCROLLS (visual QA V032): below 561px the table is a record
+   per class, where one unbroken line would run off the card instead. */
+@media (max-width: 699px) {
+  .rt-sizing .is-scroll td[data-label="Resolves from"] { white-space: nowrap; overflow-wrap: normal; }
+}
+/* A POOL NOBODY CREATED (QA G5-04): the chip's outline is dashed, so a pool
+   the profile names but Pools does not list reads as absent, not as a link to
+   a row. Its title says admission treats it as uncapped. */
+.rt-pool-chips > .c-chip.is-phantom { border: 1px dashed var(--text-faint); background: transparent; }
+/* "Sets it apart: nothing" and "cred: no secret declared" are words, muted
+   (QA G5-10), not the `real zero` chip. */
+.rt-apart-none, .rt-cred-none { color: var(--text-dim); font-size: var(--t-meta); }
+
+/* Holders: the table first, its All / per-tenant filter in its head; the
+   drift callout above it when a counter disagrees; drift per pool below. */
+.hold-tenants { margin-left: 8px; }
+/* THE TENANT FILTER SCROLLS ITSELF, NOT THE PAGE (visual QA V006,
+   2026-10-11). One segment per tenant made a 1011px control that, at 400px,
+   pushed the whole page sideways; later tenants were reachable only by
+   panning the page. The control is held to its row and scrolls inside it --
+   the cut-off segment at the edge says there is more. `.c-seg` clips with
+   `overflow: hidden` and never shrinks (`flex: none`), so both are undone
+   here, for this control only. */
+.ctl-toolbar > .hold-tenants {
+  flex: 0 1 auto; min-width: 0; max-width: calc(100% - 8px);
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+}
+.ctl-toolbar > .hold-tenants > button { flex: none; }
+/* ABOVE A PHONE IT WRAPS INSTEAD (visual QA V179, 2026-10-16). Held to one
+   row at 1440, 12 tenants made a 1,551px control in a 1,046px box: the last
+   showed only as a cut segment, its scrollbar hidden, and a vertical-wheel
+   mouse could not reach them at all. The segments now take as many rows as
+   they need inside the one box; the hairline between segments is a shadow
+   on each segment's right and foot, so the rows are ruled from each other
+   and the last row's foot falls on the box's own edge. A phone keeps
+   the one scrolling row (V006): it swipes, and six rows of tenants would
+   push the table off the screen. */
+@media (min-width: 561px) {
+  .ctl-toolbar > .hold-tenants {
+    flex-wrap: wrap; height: auto; overflow-x: hidden; overflow-y: hidden;
+  }
+  .ctl-toolbar > .hold-tenants > button {
+    min-height: var(--h-ctl);
+    border-right: 0; box-shadow: 1px 0 0 var(--line), 0 1px 0 var(--line);
+  }
+}
+.hold-callout {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 0 0 var(--ctl-s3);
+  padding: 10px 12px;
+  border: 1px solid var(--s-warn);
+  border-radius: 10px;
+  background: var(--s-warnb);
+  font-size: var(--t-meta);
+  color: var(--text);
+}
+.hold-callout p { margin: 0; }
+.hold-drift { margin-top: var(--ctl-s5); }
+/* Counters unread (V019): the dash, the mark and the sentence on one line. */
+.hold-unread { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.hold-unread > .ctl-figure { flex: none; }
+.hold-unread > p { flex: 1 1 16rem; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.hold-drift tr.is-warn td[data-label="Delta"] { color: var(--text); font-weight: 600; }
+.hold-delta { display: inline-flex; align-items: center; gap: 6px; }
+/* Holders narrowed to the pool a Pools link named (archived issue 125), with the way back. */
+.hold-pool { margin-left: 8px; font-size: var(--t-meta); color: var(--text-dim); }
+.hold-pool-clear { background: none; border: 0; padding: 0; font: inherit; color: var(--info); cursor: pointer; text-decoration: underline; }
+/* A pool filter no lease matches (G5-14): one row that says so. */
+.hold-all tr.hold-empty td { color: var(--text-dim); font-size: var(--t-meta); }
+.hold-pool-clear:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+/* THE AGREEING POOLS' FOLD (visual QA capacity-16): one line under the
+   drifted rows, the count and its toggle at the meta step. */
+.hold-agree { margin: 0; padding: 8px 12px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+
+/* Provider quota (capacity.html frame 11): eight columns that fit 1440 with
+   the nav open. Fixed layout with the widths below, so Reported is never
+   pushed past the card's edge; the pool name is the one long value, and it
+   wraps at its colons (QA-057, run 2). */
+.quota-table > table { table-layout: fixed; width: 100%; }
+/* THE WIDTHS FOLLOW WHAT EACH COLUMN HOLDS (visual QA V005, V013, V156,
+   2026-10-16). Tenant had 11% -- `cu… tomation`, no tenant recognisable --
+   while State and Quota cap had room to spare, and Last 429 was too narrow
+   for `time not recorded` on one line. Measured at 1440 with the nav open
+   (a ~1054px table): Quota cap's nowrap head is ~110px, `available · 14m
+   old` ~150px and `throttled` with its age ~165px, `9 (at last report)`
+   ~120px, `time not recorded` 112px as a pill (its outline and padding;
+   rendered, 11% gave it 96px inside the cell's gutters and clipped its right
+   border), `17m ago` ~70px. Feeds pool gives up the 2% Last 429 needs: its
+   name is cut in the middle (V020) and keeps the tenant's last eight. */
+/* THE SLACK GOES TO THE POOL NAME (QA-057, 2026-10-20). Every column was a
+   percentage, so a table wider than the ~1054px the widths were measured on
+   gave each column its share of the slack -- and the one long value, the
+   pool, was still head-cut (`…anthropic:tenant:eng`) beside columns with room
+   to spare. The columns whose content is bounded are now as wide as that
+   content (the widths above, as the percentages gave them at 1054), Tenant
+   keeps its share, and Feeds pool sets no width: a fixed table gives an auto
+   column what is left. At 1054 that is ~160px, what its 15% was; at ~1300 it
+   is ~400px, the whole of `provider:anthropic:tenant:u-owner`. Run 2 shot
+   1440 with the nav open, the ~1054 table, so the name still did not fit on
+   one line there: it now wraps rather than being cut (`.quota-feeds a`).
+   EACH PX WIDTH IS CAPPED AT ITS OLD SHARE (QA-057 review; a container
+   query since the VQ-036 review, below).
+   In bare px the bounded columns are 724px: a 1280px viewport with the nav
+   open (a ~894px table) left Feeds pool ~27px, and below ~1250px the fixed
+   table outgrew its card and pushed Reported past its edge -- the regression
+   V005/V013 exist to prevent. Capped, a table narrower than 1054 gives every
+   column its old percentage again, so Feeds pool never has less than 15%. */
+/* TENANT IS AS WIDE AS A TENANT ID (VQ-036, visual QA pass 1). Its 16% was
+   ~170px of mostly empty column beside a Feeds pool of ~160px that broke
+   every name over two or three lines and cut its ceiling note. A tenant id
+   is short (`u-or-9a0792`, ~90px in the mono face), and a longer one is
+   middle-cut with its last eight kept (`MiddleCut`), so 120px holds it; the
+   ~50px it gives back go to Feeds pool, the one flexible column. Capped at
+   its old share for the reason the px widths are (QA-057 review). */
+/* A <COL> WIDTH IS A PLAIN LENGTH, NEVER `min()` (VQ-036 review, rendered
+   2026-10-26). Chromium drops a `min(px, %)` width on a column of this
+   fixed table and sizes it as auto, so all eight columns came out an equal
+   130px at 1440 with the nav open and Feeds pool still broke every name over
+   three lines. The cap the `min()` meant is a container query instead: the
+   px widths hold while the table is at least 993px, where their 844px leave
+   Feeds pool its 15% (149px); below that each bounded column takes its old
+   share, which leaves the pool exactly 15% again, so the two meet at 993.
+   At the ~1054px table (1440, nav open) Feeds pool is ~210px. */
+.quota-table { container: quota-table / inline-size; }
+.quota-table col.quota-c-tenant { width: 120px; }
+.quota-table col.quota-c-state { width: 168px; }
+.quota-table col.quota-c-cap { width: 116px; }
+.quota-table col.quota-c-left { width: 104px; }
+.quota-table col.quota-c-429s { width: 124px; }
+.quota-table col.quota-c-last { width: 136px; }
+.quota-table col.quota-c-rep { width: 76px; }
+@container quota-table (max-width: 992px) {
+  .quota-table col.quota-c-tenant { width: 16%; }
+  .quota-table col.quota-c-state { width: 16%; }
+  .quota-table col.quota-c-cap { width: 11%; }
+  .quota-table col.quota-c-left { width: 10%; }
+  .quota-table col.quota-c-429s { width: 12%; }
+  .quota-table col.quota-c-last { width: 13%; }
+  .quota-table col.quota-c-rep { width: 7%; }
+}
+.quota-table thead th { white-space: normal; }
+/* THE POOL NAME WRAPS AT ITS COLONS, WHOLE (QA-057, visual QA run 2). At
+   1440 the column is ~160px and the name up to ~265px, so a one-line name
+   was always cut -- twice once its tail split (`…:ten… u-owner`).
+   `PoolName` (QuotaDetail.tsx) offers a `<wbr>` after each colon. */
+.quota-feeds a {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* EACH SEGMENT IS ONE RUN WHILE IT FITS, as Pool limits' `.adm-key-seg`
+   (styles/admin.css, VQA V076, V160): an inline block no wider than the
+   cell does not break at the hyphen in `u-owner` while it fits a line, and
+   one that cannot fit any line still wraps rather than run into Requests
+   left. An inline block takes no underline from its link, so it takes the
+   link's own (`inherit`), hover colour included. */
+.quota-feeds .quota-pool-seg {
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-decoration: inherit;
+}
+/* CUT IN THE MIDDLE (visual QA V005, V020; QuotaDetail.tsx `MiddleCut`): the
+   head of an id shrinks first and the tail -- a tenant's last eight -- is
+   kept, the `.cap-sub` pattern. The tenant row head clips inside its column
+   instead of printing over State. (The Feeds pool name wraps instead,
+   above.) */
+.quota-cut { display: flex; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
+/* The head's box ends where its ellipsis does (`text-align: end`): cut at a
+   glyph boundary it is up to one character wider than what it prints, and
+   that slack read as a space between head and tail. The tail does not shrink
+   at all until it alone is wider than the column (`max-width`). */
+.quota-cut > .quota-cut-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; text-align: end; }
+.quota-cut > .quota-cut-tail { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.quota-table tbody th.quota-tenant { overflow: hidden; }
+/* "TIME NOT RECORDED" HOLDS ONE LINE (visual QA V013, 2026-10-16). In 9% it
+   printed over Reported; wrapped, it made its row ~12px taller than the rest.
+   The column is now as wide as the mark (above), which stays one line; the
+   cell clips as a backstop. */
+.quota-table td[data-label='Last 429'] { white-space: nowrap; overflow: hidden; }
+.quota-table td[data-label='Last 429'] > .ctl-mark { white-space: nowrap; }
+/* The fed pool's ceiling, under its name (G5-02). The ` · ` is for text and
+   screen readers; the line break already separates the two on screen. */
+/* IT WRAPS, NEVER CUT (VQ-036): `ceiling 50 (provide…` lost what sets the
+   ceiling and where it sits against the cap -- the two words the note exists
+   for. It breaks between words, onto a second line under the name. */
+.quota-ceiling { display: block; font-size: var(--t-meta); color: var(--text-dim); white-space: normal; overflow-wrap: normal; }
+.quota-ceiling .quota-sep { display: none; }
+/* `(at last report)` on a stale document's 429 count (G5-03), in the text
+   face (V156): in the figures' mono `9 (at last report)` was wider than its
+   column and printed into Last 429. */
+.quota-basis { font-family: var(--font); font-size: var(--t-meta); color: var(--text-dim); }
+/* A cell of several parts is ONE element (V180), so a phone record keeps
+   the state and its age, or a count and its basis, on one value line. */
+.quota-val { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; max-width: 100%; }
+.quota-state { display: inline-flex; align-items: center; gap: 7px; font-size: var(--t-micro); color: var(--text); }
+@media (max-width: 899px) {
+  .quota-table > table { table-layout: auto; width: max-content; min-width: 100%; }
+  /* `[class]` so it outranks the px and container widths above: in the
+     auto layout a px column width is a floor, and the max-content table
+     would grow by it. */
+  .quota-table col[class] { width: auto; }
+}
+
+
+/* -- Accounts ------------------------------------------------------------- */
+/* A1, "Split, like Agents" (frames 7-10; audit archived issue 503). One card: the compact
+   list on the left, the chosen account on the right. On a phone the list is
+   the page, and a chosen account is a page of its own with `‹ Accounts`.
+   RADII ON THE CONSOLE'S SCALE (0, 2, 6, 10, 14, pill), which spacing.test.tsx
+   enforces: the card is 10 and a control or tile 6 (literals, because the
+   gate does not resolve a custom property here), the nearest steps to components.html A's 12 and 8. */
+
+/* Which window Clears counts down, and when an account was last given out:
+   faint, under the figure (archived issue 127). */
+.acct-given, .acct-clears-win { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-faint); font-weight: 400; }
+
+/* The sign-in callout: a condition, so the warning hue's soft surface. */
+.acct-callout {
+  display: flex; gap: 10px; align-items: flex-start;
+  margin: 0 0 var(--ctl-gutter); padding: 10px 14px;
+  border: 1px solid var(--s-warn);
+  border-radius: 10px; background: var(--s-warnb);
+  font-size: var(--t-meta); color: var(--text);
+}
+.acct-callout > .sk-st { margin-top: 3px; }
+.acct-callout-body { display: grid; gap: 4px; min-width: 0; }
+.acct-callout-body p { margin: 0; }
+.acct-link {
+  padding: 0; border: 0; background: none; cursor: pointer;
+  font: inherit; color: var(--sk-ac); text-decoration: underline;
+}
+.acct-link:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+
+/* THE ACCOUNTS SECTION'S OWN SCOPE: Accounts (Subscription accounts) and
+   Provider quota. It draws no box -- `display: contents` -- so wrapping a
+   screen's body in it moves nothing; it only gives a rule somewhere to stop. */
+.acct-page, .quota-page { display: contents; }
+/* A STRAIGHT DASHED EDGE, NOT A DASHED CURVE (QA-049, 2026-10-20), ON THESE
+   SCREENS ONLY. The rounded right corners carried the dashes round the curve,
+   and on a mark one line tall the dashes and the corners met as a broken
+   edge: the outline read as clipped beside `unread docs` and `last read 3d
+   ago`, not as the hole it is. Square on the dashed side only, so the dashes
+   run the full height and the solid side keeps the mark's radius.
+   SCOPED, NOT SHARED (the owner's choice, 2026-10-20). QAFIX-CAPACITY wrote
+   it into the shared `.ctl-mark.is-partial` rule, which squared every partial
+   mark on every screen; everywhere else the mark is as it was before. */
+/* THE DASHES ARE DRAWN, NOT LEFT TO THE BROWSER (QA-049, visual QA run 2,
+   capacity-003). Squared, the dashed side still read as cut: a browser fits a
+   dashed border's pattern so the edge starts and ends on a dash, a 2px
+   border's dash is ~6px, and on a mark ~19px tall that is one tick at the
+   top, one at the bottom and a gap between. The border stays 2px wide but
+   transparent, and a 2px strip of `currentColor` on, 2px off, painted over it
+   from the border box's top, runs the full height as four even dashes -- a
+   dashed rule, the "partial" shape, not a broken outline. */
+.acct-page .ctl-mark.is-partial,
+.quota-page .ctl-mark.is-partial {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right-style: solid;
+  border-right-color: transparent;
+  border-right-width: 2px;
+  background-image: repeating-linear-gradient(to bottom, currentColor 0 2px, transparent 2px 4px);
+  background-size: 2px 100%;
+  background-position: right top;
+  background-repeat: no-repeat;
+  background-origin: border-box;
+}
+
+.acct-split {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; align-items: start;
+  border: 1px solid var(--line); border-radius: 10px;
+  /* `clip`, NOT `hidden` (visual QA V157): `hidden` makes the card a scroll
+     container, so the page's scrollIntoView would have one more box to move
+     and a wheel over the card could scroll it. The corners clip the same. */
+  background: var(--surface); overflow: clip;
+}
+@media (min-width: 901px) {
+  .acct-split { grid-template-columns: minmax(0, 380px) minmax(0, 1fr); min-height: 560px; }
+}
+
+/* The list: a panel inside the card, so it gives up its own frame. */
+.acct-split > .acct-list {
+  display: flex; flex-direction: column; min-width: 0;
+  margin: 0; padding: 0; border: 0; border-radius: 0; background: none;
+}
+/* EACH HALF IS AS TALL AS WHAT IT HOLDS (visual QA V068, V157; 2026-10-16).
+   Stretched to the taller half, the list ran ~320px of empty rows under its
+   last account -- ~1,300px with the Add form open -- and with 40 accounts the
+   pane drew its detail at the top of a 3,000px column, ~1,600px above the row
+   just chosen, so the click looked like it did nothing. Now neither half
+   stretches; the divider is both halves' edge (the pane overlaps the list's
+   by 1px), so it runs as far as the longer one.
+   ONE SCROLLER, NO STICKY (capacity-010, visual QA run 2, 2026-10-20). The
+   pane was capped at the window and scrolled itself, so at 1440 two
+   scrollbars stood side by side and `save classes` sat below an inner fold.
+   It is no longer a scroll container, and it no longer sticks: a sticky pane
+   taller than the window stays pinned at top 0 while the list scrolls, so
+   its lower half stays below the fold until the card's end comes into view
+   -- with 40 accounts, `save classes` was out of reach again. The page is
+   the one scroller, and choosing a row brings the pane into view instead
+   (Accounts.tsx Pool's `scrollIntoView`). */
+@media (min-width: 901px) {
+  .acct-split > .acct-list { border-right: 1px solid var(--line); }
+  .acct-split > .acct-pane {
+    margin-left: -1px; border-left: 1px solid var(--line);
+  }
+}
+.acct-list-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--line);
+}
+.acct-list-head > h2 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+/* ONE LINE AT 400PX (visual QA V073): "Subscription accounts" wrapped onto two
+   lines beside its count and Add account. The title holds its line and the
+   count -- which the summary above already says -- gives way first. */
+.acct-list-head > h2 { flex: 1 1 auto; min-width: 0; white-space: nowrap; }
+.acct-list-head > h2 > .ctl-card-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.acct-add {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  height: 32px; padding: 0 12px; border: 1px solid var(--sk-ac); border-radius: 6px;
+  background: var(--sk-ac); color: var(--bg);
+  font: 600 var(--t-meta)/var(--lh-flush) var(--font); cursor: pointer;
+}
+.acct-add svg { width: 12px; height: 12px; }
+/* THE COUNT IS NOT WHAT GIVES WAY AT 390 (QA-050, 2026-10-20). Title, count
+   and `Add account` measured ~352px on one line in ~332px, so the count was
+   cut to `6 ac…`. On a phone the button says `Add` beside its plus -- the
+   heading it sits in already says what is added, and its accessible name is
+   still `Add account` -- which gives back ~50px and the count stays whole. */
+@media (max-width: 560px) {
+  .acct-add-what { display: none; }
+}
+.acct-add:disabled { opacity: .5; cursor: not-allowed; }
+.acct-add:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+.acct-items { list-style: none; margin: 0; padding: 0; }
+.acct-li { position: relative; border-bottom: 1px solid var(--line-soft); }
+.acct-li.is-chosen { background: var(--sk-acs); }
+.acct-li.is-chosen::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--sk-ac);
+}
+.acct-li > .acct-open {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: baseline;
+  width: 100%; min-height: 32px; padding: 8px 12px 2px 14px;
+  border: 0; background: none; color: var(--text); text-align: left; cursor: pointer;
+  font: inherit;
+}
+.acct-li > .acct-open:hover { background: var(--sk-hv); }
+.acct-li > .acct-open:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.acct-li-name {
+  font-weight: 600; font-size: var(--t-meta);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.acct-li .acct-window { font: normal var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
+.acct-li-line {
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px;
+  font-size: var(--t-micro); color: var(--text-dim); min-width: 0;
+}
+.acct-li-line .sk-st-w { font-size: var(--t-micro); }
+.acct-li .acct-clears-win { display: inline; }
+.acct-li-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px;
+  padding: 0 12px 8px 14px; font-size: var(--t-micro); color: var(--text-faint); min-width: 0;
+}
+.acct-li-meta .raw { font: var(--t-micro)/var(--lh-micro) var(--mono); overflow-wrap: anywhere; }
+.acct-li-meta .acct-given { display: inline; }
+.acct-li-meta .acct-why { display: inline; margin: 0; }
+/* THE CHOSEN ROW'S MUTED CLAUSES (G5-17, QA 2026-10-07): "5h", "eng:team",
+   "given out 3m ago" were `--text-faint` on `--sk-acs`, 4.33:1 in dark. The
+   token holds 4.5:1 or better on the selection in both themes. Scoped to the
+   chosen row; the projected and unmeasured greys ride along because they are
+   the same faint ink on the same blue. `.acct-unusable` is a mark, not one of
+   these, and keeps its own colour. */
+.acct-li.is-chosen .acct-clears-win,
+.acct-li.is-chosen > .acct-li-meta,
+.acct-li.is-chosen > .acct-li-meta .acct-given,
+.acct-li.is-chosen > .acct-li-meta .acct-why,
+.acct-li.is-chosen .acct-projected,
+.acct-li.is-chosen .acct-unmeasured,
+.acct-li.is-chosen .acct-projected .acct-pct,
+.acct-li.is-chosen .acct-unmeasured .acct-pct,
+.acct-li.is-chosen .acct-pct-win { color: var(--text-dim-on-selected); }
+.acct-split > .acct-list > .ctl-facts { padding: 8px 12px 0; }
+/* THE FOOT FOLLOWS THE ROWS (visual QA V068, 2026-10-11). It was pushed to
+   the bottom (`margin-top: auto`) of a list column stretched to the pane's
+   height, ~900px under the last row beside a long account. The column still
+   stretches -- its right rule is the divider -- but the foot sits under the
+   list it qualifies. */
+.acct-split > .acct-list > .acct-foot { margin: 0; padding: 8px 12px; font-size: var(--t-micro); }
+
+/* An account state that is not one the console knows: faint, no mark. */
+.acct-state.is-unknown { color: var(--text-faint); }
+
+/* The pane: the chosen account. */
+.acct-pane { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 14px 16px; }
+.acct-split .acct-pane-detail .acct-detail { border-left: 0; background: none; padding: 0; }
+.acct-back {
+  display: none; align-self: flex-start; align-items: baseline;
+  /* "‹ Accounts", not "‹Accounts" (visual QA V071): in a flex box the space
+     between the chevron and the word collapses, so the gap is the space. */
+  gap: 4px;
+  padding: 0; border: 0; background: none; cursor: pointer;
+  font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--sk-ac);
+}
+.acct-back:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+
+.acct-dhead { display: grid; gap: 4px; min-width: 0; }
+.acct-dhead-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.acct-dhead h3 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; overflow-wrap: anywhere; }
+/* THE NAME AND ITS RENAME (archived issue 1913): the heading and its ghost button share the
+   line and wrap together; the heading keeps the room it needs. The editor
+   that replaces them stacks its fault under the field. */
+.acct-dhead-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.acct-dhead-name > h3 { min-width: 0; }
+.acct-rename { display: grid; gap: 4px; min-width: 0; }
+.acct-rename > .warn-text { margin: 0; }
+.acct-idt { margin: 0; font-size: var(--t-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+/* AN ID IS ONE WORD (visual QA V070; Accounts.tsx `Id`). A hyphen is a break
+   opportunity, so `u-owner` broke to `u-` / `owner` in the subtitle, in
+   Lending's serves list and in Holding now's tenant list. The line breaks
+   between ids; one wider than its line is cut, whole in its title. */
+.acct-id {
+  display: inline-block; max-width: 100%; vertical-align: bottom;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal;
+}
+
+.acct-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
+.acct-tile {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  padding: 8px 10px; border-radius: 6px; background: var(--sk-hv);
+}
+.acct-tile > small { font-size: var(--t-micro); color: var(--text-dim); }
+.acct-tile > b { font: 600 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
+.acct-tile > i { font-style: normal; font-size: var(--t-micro); color: var(--text-dim); }
+.acct-tile.acct-projected > b, .acct-tile.acct-unmeasured > b { color: var(--text-faint); }
+/* A WINDOW ALREADY RESET (live QA CAP-3) reads `reset`, faint, with what it
+   WAS beside it and no track: the old figure is not a current proportion. */
+.acct-tile.acct-reset > b { color: var(--text-faint); }
+.acct-was { font-size: var(--t-micro); color: var(--text-faint); }
+.acct-li.is-chosen .acct-reset .acct-pct,
+.acct-li.is-chosen .acct-was { color: var(--text-dim-on-selected); }
+
+/* THE EMPTY POOL IS THE SAME CARD (visual QA V072): the zero in the list half,
+   inset like a row, the add form in the pane. */
+.acct-split.is-empty > .acct-list > .acct-empty { margin: 12px; }
+
+/* A FAILURE OR AN ANSWER INSIDE THE CARD SPEAKS AT THE CARD'S SIZE (visual QA
+   V008, owner decision Q4 2026-10-11). `.state p` is `--t-lead` (16px) for a
+   full-page error; nested in an account's pane, beside 12-14px facts, it
+   outgrew what it was about. Here the body is the 13px scale, and Try again
+   sits 12px under the panel's last line rather than ~4px. The full-page
+   states keep `--t-lead`; the shared rule is lane L14's. */
+.acct-split .state p { font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-split .state > .c-btn { margin-top: 12px; }
+
+/* THE ADD FORM IN GROUPS (visual QA V069, 2026-10-11). Label, field and the
+   field's rule are one group 4px apart; groups are 12px apart. The rule under
+   a field sat 4px above the NEXT field's label, so it read as that field's. */
+.acct-add-form { display: grid; gap: 4px; justify-items: start; }
+.acct-add-form > * { max-width: 620px; }
+.acct-add-form > p { margin: 0; }
+.acct-add-form > p.muted.small { margin-top: 0; }
+.acct-add-form > .t-label:not(:first-child),
+.acct-add-form > .acct-buttons,
+.acct-add-form > .warn-text,
+.acct-add-form > .state { margin-top: 12px; }
+/* A STEP STARTS A NEW BLOCK (V069): "2 · Sign in to Claude" hugged the
+   paragraph of step 1, and inside a re-auth the steps sat 8px under its
+   prose. */
+.section > .acct-action { margin-top: 16px; }
+.acct-action > .acct-action { margin-top: 8px; }
+/* THE FOUR CLASS BOXES ARE ONE ROW BESIDE THEIR SAVE BUTTON, like the
+   lending field they sit under: a fieldset's default border and padding
+   would draw a second card inside the panel. Wraps at 400 rather than
+   pushing the button off it. */
+.acct-classes {
+  display: inline-flex; flex-wrap: wrap; gap: 4px 16px;
+  margin: 0; padding: 0; border: 0; min-width: 0;
+}
+.acct-class { display: inline-flex; align-items: center; gap: 6px; }
+/* A CHECKBOX IS NOT A TEXT FIELD (visual QA run 6, 6:capacity-009, part of
+   archived issue 1680). The editor sits in a `.limit-edit`, whose `.limit-edit input`
+   (styles.css, (0,1,1), loading after this sheet) gives every input the
+   ceiling field's 74px and padding: each box was drawn centred in a 74px
+   slot, ~40px from its own word and nearly as far as the next pair's 50.
+   (0,2,1) gives it back its own size. The label's 6px gap is the space
+   between a box and its word, and the 16px between pairs is more than twice
+   it, so each box reads with the word after it. The browser's own 0.5ex
+   either side of a checkbox is off the spacing scale, hence `margin: 0`. */
+.acct-classes > .acct-class > input { width: auto; padding: 0; margin: 0; }
+
+/* AN ID'S CONTAINERS GIVE IT A WIDTH TO BE CUT AT (visual QA V153, V154,
+   V155, V184; 2026-10-16). `.acct-id` never breaks (V070) and is cut at
+   `max-width: 100%` -- of a box that grew to fit it: the detail and every
+   panel in it are grids whose one implicit column is as wide as its widest
+   word. A 39-character label widened the pane past its card at 400 (the
+   tiles went to three columns, Clears cut, the card's right edge gone),
+   Lending's `serves` list and Holding now's tenant list ran off the card,
+   and the same `width: 100%` field was 309px in a re-auth and 420px in Add
+   account. One column, as wide as the pane, and the facts that hold ids
+   shrink to it. */
+.acct-split .acct-detail,
+.acct-split .acct-action { grid-template-columns: minmax(0, 1fr); }
+/* `justify-items: start` sizes a panel's children to their content, and an
+   unbreakable id makes that wider than the column; capped at it. */
+.acct-split .acct-action > *,
+.acct-split .acct-add-form > * { max-width: min(620px, 100%); }
+/* THE PASTE FIELD IS ONE WIDTH WHEREVER THE SIGN-IN RUNS (V184): a re-auth's
+   steps are a panel inside a panel, and `justify-items: start` shrank the
+   inner one -- and the `width: 100%` field in it -- to 309px, where Add
+   account's is 420px. The inner panel takes the outer's width; every wide
+   field is `.acct-wide`'s 420px at most. */
+.acct-split .acct-action > .acct-action { justify-self: stretch; }
+.acct-split .acct-action > input.acct-wide,
+.acct-split .acct-add-form > input.acct-wide { max-width: min(420px, 100%); }
+/* styles.css's `.muted.small` measure loads later at the same weight. */
+.acct-split .acct-action > p.muted.small { max-width: min(var(--measure), 100%); }
+/* `remove <label>` is one line while it fits; a label too long for the
+   pane takes a second line rather than pushing the button off the card. */
+.acct-split .acct-action > .limit-edit > .c-btn {
+  max-width: 100%; height: auto; min-height: var(--h-ctl); padding-block: 4px;
+  white-space: normal; overflow-wrap: anywhere;
+}
+.acct-split .acct-action .ctl-fact { max-width: 100%; }
+.acct-split .acct-action .ctl-fact > .acct-ids { min-width: 0; }
+.acct-holder-tenants > li { max-width: 100%; }
+/* THE TENANT IN A HOLDER CELL IS CUT IN ITS MIDDLE (V155): end-cut, the
+   phone's Agent cell kept `data-platform-in…`, the part every team's ids
+   share. Its last eight stay, as a task reference's do; whole in the title. */
+.acct-cut { display: inline-flex; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
+.acct-cut > .acct-cut-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.acct-cut > .acct-cut-tail { flex: none; white-space: pre; }
+@media (max-width: 560px) {
+  /* THE FIELD TAKES ITS OWN LINE ON A PHONE (V154, V181): beside `save
+     lending` it was ~230px, its placeholder cut mid-word and the button
+     clipped at the card's edge. */
+  .acct-split .acct-action > .limit-edit > input.acct-wide { flex: 1 1 100%; max-width: none; }
+}
+
+/* The phone: the list is the page; a chosen account is a page (frame 10). An
+   add form that is open shows under the list, so the list keeps its button. */
+@media (max-width: 560px) {
+  .acct-split:not(.is-detail):not(.is-adding) > .acct-pane { display: none; }
+  .acct-split.is-detail > .acct-list { display: none; }
+  .acct-split.is-detail .acct-back { display: inline-flex; }
+  .acct-pane { padding: 12px; }
+}
+
+/* ACCOUNTS › HISTORY, THE PICKED TABLE (browser QA D24, 2026-10-04;
+   components.html A): 32px rows, 12px sentence-case heads, a 6px bar. It was a
+   bulleted list with 8rem bars over a seven-day window. Local to this screen
+   (`acct-hist`), so U0's canonical table can replace it by name. */
+.acct-hist { width: 100%; border-collapse: collapse; font-size: var(--t-meta); table-layout: fixed; }
+/* FIXED COLUMNS, HOLDER TAKES THE REST (browser QA D24 again, 2026-10-04):
+   with auto layout and `max-width: 0` on the Holder cell, Holder had no
+   minimum -- 45px, "tas…" -- and the When bar's column took ~340px of slack.
+   Started fits "MM-DD HH:MM", Held "23h 59m", Ended a release word, When is
+   a share for its bar; Holder is cut, whole in the cell's title. */
+.acct-hist th[data-col='started'] { width: 104px; }
+.acct-hist th[data-col='held'] { width: 80px; }
+.acct-hist th[data-col='ended'] { width: 104px; }
+.acct-hist th[data-col='when'] { width: 22%; }
+/* HOLDING NOW IS THE SAME TABLE, THREE COLUMNS (G5-16, capacity.html §D):
+   Attempt fits a small number, Since "14:09 (23h 59m)"; Agent takes the rest. */
+.acct-hist th[data-col='attempt'] { width: 72px; }
+.acct-hist th[data-col='since'] { width: 120px; }
+/* A phone keeps the Holder readable: tighter figures, and the When bar --
+   a picture of the times beside it -- is not drawn. */
+/* THE FIGURES AS WIDE AS THEIR LONGEST VALUE (visual QA V004, 2026-10-16):
+   at 400 Holder kept ~100px and cut the already middle-cut `task_…12e9…`
+   again while Held and Ended had room to spare. Started is `MM-DD HH:MM`,
+   Held `23h 59m`, Ended `unusable` -- each at the 13px scale plus the cell's
+   10px gutter -- and Holder takes the ~20px they gave back. */
+@media (max-width: 699px) {
+  .acct-hist th[data-col='started'] { width: 84px; }
+  .acct-hist th[data-col='held'] { width: 62px; }
+  .acct-hist th[data-col='ended'] { width: 64px; }
+  .acct-hist th[data-col='when'],
+  .acct-hist td.acct-hist-when { display: none; }
+}
+.acct-hist th { text-align: left; font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.acct-hist td { height: 32px; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line-soft); vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acct-hist tr:last-child td { border-bottom: 0; }
+.acct-hist .is-num { text-align: right; font-variant-numeric: tabular-nums; }
+/* THE HOLDER IS A ROW OF PIECES, EACH ITS OWN BOX (owner QA D24, 2026-10-04):
+   as inline text in a 196px cell the task link ran 2-3px over "attempt 1".
+   The link and the tenant shrink and are cut, each with its own ellipsis;
+   "attempt N" and a mark keep their width. The cell's title is the whole. */
+/* AND IT WRAPS BEFORE IT CLIPS (visual QA V004, 2026-10-11). On one line in
+   History's ~196px Holder cell, or a phone's Agent cell, the tenant was cut to
+   "u-b…", the link to "ta…" and `unverified` was clipped by the cell edge. The
+   pieces now take a second line when the first is full; a piece alone on its
+   line still shrinks and is cut with its ellipsis, whole in the cell title. */
+.acct-hist-whoin {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 4px;
+  min-width: 0; max-width: 100%; overflow: hidden; padding: 2px 0;
+}
+.acct-hist-whoin > * { flex: none; white-space: nowrap; }
+.acct-hist-whoin > a,
+.acct-hist-whoin > .mono { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A mark keeps its words but may wrap between them: on a phone History's
+   Holder cell is ~98px and `task not recorded` is 112px. It never shrinks
+   below its longest word, so `unverified` stays whole. */
+.acct-hist-whoin > .ctl-mark { flex: 0 1 auto; white-space: normal; }
+.acct-hist-bar { position: relative; display: block; min-width: 96px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+.acct-hist-bar > i { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 3px; background: var(--sk-ac); }
+
+/* A CREDENTIAL NAME IS ONE TOKEN (browser QA D22, 2026-10-04): `.rt-cred`'s
+   `overflow-wrap: anywhere` broke "CLAUDE_CODE_OAUTH_T / OKEN", so a name
+   never breaks inside a word. LIVE QA CAP-14 (2026-10-11): cut at 1440 too -- `CLAUDE_CODE_OAUTH_…` on a
+   card with room. The name now wraps, but only at the `<wbr>` Runtimes.tsx
+   puts after each underscore: never inside a word, and whole on screen. */
+.rt-cred code { display: inline; vertical-align: baseline; white-space: normal; overflow-wrap: normal; word-break: normal; }
+/* `configured` IS A FAINT DOT ON POOLS (owner decision 2026-10-22, Console
+   Design Calls c14, reversing PR 1853's word). The word is Pool limits' alone,
+   in the dim ink (`.adm-setby-cfg`, styles/admin.css, QA-099); here the dot in
+   `--text-faint` keeps 28 configured rows quieter than the overrides in ink
+   (G5-19), and its `aria-label` names it. */
+.cap-setby-cfg { color: var(--text-faint); }
+/* capacity-008 (visual QA run 2): `AIMD back-off` (since QA1B-13, `lowered
+   automatically after errors`) WAS THE ROW'S BIGGEST WORDS.
+   The cell took the table's body size, ~15px, beside a 12px `paused` mark and
+   `0 holders · limit`. Set by is a qualifier of the ceiling, like the marks and
+   links of its row, so it takes their size; it keeps its ink, which is what
+   makes a non-configured source stand out (G5-19). */
+.cap-pools td[data-label="Set by"] { font-size: var(--t-micro); line-height: var(--lh-micro); }
+
+/* ---------------------------------------------------------------------------
+   QA G5 (2026-10-07), lane C6U.
+   --------------------------------------------------------------------------- */
+
+/* G5-20: A ZERO IS A 1PX TICK, NOT AN OUTLINED TRACK. `.ctl-util-track.is-zero`
+   (styles.css) draws an inset hairline round the whole track and a 3px tick;
+   on Pools a 0% row's outlined track read as FULLER than a 5% row's
+   borderless one. Here the zero is the start of the scale and nothing else:
+   no outline, a 1px tick at the origin -- still a different picture from a
+   track that failed to paint (which has no tick) and from 5% (a fill). */
+/* THE AXIS GOES TOO (visual QA run 6, 6:capacity-012, part of archived issue 1680). The
+   shared track draws a 3px `--track-axis` left border on every measured track
+   (styles.css §B20), so this tick stood beside 3px of axis inside a rounded
+   end: a dark cap ~5px wide that read as a small use. The 1px tick IS the
+   origin here; the left end is square, as an axis is. */
+.cap-use .ctl-util-track.is-zero {
+  box-shadow: none;
+  border-left-width: 0;
+  border-top-left-radius: 0; border-bottom-left-radius: 0;
+}
+.cap-use .ctl-util-track.is-zero > .ctl-util-zero { width: 1px; border-radius: 0; }
+/* A TRACK ON A TINTED ROW IS OUTLINED (QA-053, 2026-10-20). `--surface-2` is
+   the track on a plain row, and a Needs-action row's wash is within ~1.0:1 of
+   it in both themes: on the lavender row only the 0% tick showed. On a tinted
+   row the track is the card's own surface inside a `--line` hairline, which
+   holds it apart from the wash by more than a plain row's track is held from
+   its row. Every track on such a row is outlined, a 0% one too, so G5-20's
+   comparison (an outlined zero reading fuller than a bare 5%) cannot arise
+   within the row. */
+.cap-pools tr.is-paused .ctl-util-track,
+.cap-pools tr.is-warn .ctl-util-track,
+.cap-pools tr.is-bad .ctl-util-track {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+/* THE SUMMARY WRAPS BETWEEN CLAUSES, NEVER INSIDE ONE (QA-054): `tenant
+   u-owner` broke at its hyphen at 390. */
+.cap-clause { white-space: nowrap; }
+
+/* G5-15: ONE TASK REFERENCE (TaskRef.tsx). The link, then its copy. */
+.task-ref { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; }
+.task-ref-link { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-ref-copy {
+  flex: none; display: inline-flex; align-self: center; padding: 0; border: 0; background: none;
+  color: var(--text-faint); cursor: pointer;
+}
+.task-ref-copy:hover { color: var(--text); }
+.task-ref-copy:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; border-radius: 2px; }
+.task-ref-said { flex: none; font-size: var(--t-micro); color: var(--text-dim); }
+/* Holders' second line is a lease and says so: `lease …a1b2c3d4`. */
+.lease-ref { display: block; }
+/* In an Accounts holder row the reference is the part that gives way. */
+/* THE REFERENCE NEVER VANISHES (visual QA V004, 2026-10-11): beside a tenant
+   and `unverified` the link was cut to "ta…" or to nothing. The tenant gives
+   way first, and the reference keeps room for `task_…` and some of its tail. */
+.acct-hist-whoin > .task-ref { flex: 0 1 auto; min-width: 9ch; overflow: hidden; }
+.acct-hist-whoin > .mono { flex-shrink: 4; }
+
+/* G5-23: the account list's figure names its window: `69% 5h`. */
+.acct-pct-win { color: var(--text-faint); }
+
+/* G5-23: `Quota cap (units)` and `429s (this run)` hold one line each, in
+   the widths above (Feeds pool takes what they leave; its name wraps at its colons when that is too little). */
+.quota-table thead th.quota-nowrap { white-space: nowrap; }
+
+/* G5-08: ON A PHONE A CAPACITY TABLE IS A RECORD PER ROW (capacityPoll
+   `tableMode`). The stacked layout is styles.css §B6.3's `.is-stacked`; the
+   one thing it cannot know is that Provider quota sizes its table to its
+   content below 900px (above), which as a block is a 822px box in a 356px
+   card. */
+@media (max-width: 560px) {
+  .quota-table.is-stacked > table { width: auto; min-width: 0; }
+  /* Its warn rule is the shared stacked one (styles.css §B6.3): full height
+     and dashed on every stacked table since STACKED-WARN, so no copy here. */
+}
+
+/* ---------------------------------------------------------------------------
+   VISUAL QA, LANE VQA-L15 (2026-10-11, part of archived issue 1038): the capacity boards.
+   --------------------------------------------------------------------------- */
+
+/* V094: WHY NO HOLDERS LINK CARRIES A COUNT, ONCE, ABOVE THE FAMILIES. The
+   mark and the reason on one line; the reason wraps under itself. */
+.cap-holders-note {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim);
+}
+.cap-holders-note > .ctl-mark { flex: none; }
+
+/* V033: a field with no pool to name says why, muted. */
+.cap-mx-none { color: var(--text-dim); font-size: var(--t-meta); }
+
+/* V087: THE DISABLED RUNTIME'S REASON IS A PARAGRAPH OF THE CARD, spaced from
+   the facts under it as `Sets it apart` is from the facts above it. `.muted`
+   sets `margin: 0` in styles.css, which loads after this sheet, so the
+   element and both classes are named. */
+p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
+
+/* V088: AN IMAGE OR A CREDENTIAL TAKES THE WHOLE ROW of the facts grid. The
+   `.rt-fact-wide` rule in styles.css says `flex-basis: 100%`, which a grid
+   item ignores, so the image sat in one ~220px track and a digest wrapped to
+   nine lines. */
+.ctl-facts.is-rows > .rt-fact-wide { grid-column: 1 / -1; }
+/* THE CARDS OF ONE ROW SHARE ITS HEIGHT (visual QA runs 3 and 6, capacity-011
+   and 6:capacity-010, box 6314114353, part of archived issue 1680). V088 once held each card
+   to its own facts with `align-items: start`, because an unwrapped digest grew
+   a short card to its neighbour's height. With the digest on its own full
+   line (above), what `start` left was a row of ragged bottoms, three card
+   edges at three heights. Stated on the grid, not left to its `normal`
+   default, so the next screen-private rule meets it here. */
+.rt-cards > .ctl-cards { align-items: stretch; }
+
+/* V032: Sizing's keys are the longest any stacked record draws (`Workspace (of
+   memory)`, 21 characters), so its record says so rather than every record
+   on every screen giving its values the room (styles.css §B6.3). 22.5
+   advances of the 12px key face. */
+.rt-sizing > .ctl-table.is-stacked { --stack-key: calc(var(--t-micro) * 13.5); }
+
+/* V091: THE COLUMN HEADS STAY IN VIEW DOWN A LONG POOLS FAMILY OR MATRIX.
+   A head cannot stick inside `.ctl-table`'s `overflow-x: auto` -- the wrapper
+   is then its scroll container on both axes and never scrolls vertically
+   (WF-21, styles.css). So above 900px, where a family table is fixed-layout
+   at 100% and never overflows, its wrapper CLIPS instead (`clip` makes no
+   scroll container), and the head sticks to the page's scroller. The matrix
+   can be wider than its column (one column per family), so it keeps its
+   sideways scroll and becomes its own vertical scroller below the page head,
+   with the head stuck to its top. The ROW GROUP sticks, never a `th`: thead's
+   one fill (WF-21) moves with it, and the head is one layer, not one per cell.
+   z-index 1 is under the inspector's band (shell.test.tsx). */
+@media (min-width: 900px) {
+  .cap-families .ctl-table.is-scroll,
+  .hold-drift .ctl-table.is-stacked { overflow: clip; }
+  .cap-mx > .ctl-table.is-scroll {
+    /* Short enough to sit whole below the bell bar (V091, 2026-10-27). */
+    max-height: calc(100vh - 180px - var(--ctl-bar-h, 0px)); overflow: auto;
+    /* Its own scroller, so its rows clear its head here (capacity-007, below). */
+    scroll-padding-top: var(--row-h);
+  }
+  .cap-families .ctl-table.is-scroll > table > thead,
+  .cap-mx > .ctl-table.is-scroll > table > thead,
+  .hold-drift .ctl-table.is-stacked > table > thead {
+    position: sticky; top: 0; z-index: 1;
+  }
+  /* UNDER THE BELL BAR, NOT UNDER ITS EDGE (visual QA V091, 2026-10-27).
+     The families stick to the page's scroller, where the bell bar
+     (`.ctl-bar`, sticky at top 0, z-index 20) pins first: at `top: 0` their
+     heads slid under it with a live API, hidden exactly when needed. They
+     stick `--ctl-bar-h` lower -- 48px under a bar, 0 where App draws none
+     (notifications.css); the bare `0` is for a reader outside any frame.
+     The matrix is its own scroller, so its head stays at ITS top -- an
+     offset there opens a gap its rows show through -- and the scroller is
+     held short enough to sit below the bar. */
+  .cap-families .ctl-table.is-scroll > table > thead { top: var(--ctl-bar-h, 0); }
+  /* A SCROLL STOPS A ROW BELOW THE HEAD, NOT UNDER IT (visual QA run 3,
+     capacity-007, part of archived issue 1680). At 1440 the first Pools row sat under the
+     stuck head -- of `runner:browser` only the descenders showed, its figures
+     level with the head's bottom edge -- because a scroll that brings a row
+     into view (Tab to its link, Page Down, `scrollIntoView`, an anchor) stops
+     it at the scroller's top padding, and that padding was the bell bar's
+     alone (styles.css `.ctl-scroll`). So the head is one data row tall,
+     `--row-h` -- its one nowrap line of `--t-meta` and 4px of padding each
+     side is ~28px, inside it -- and the padding is the bar plus that same
+     token: the height and the offset read one value, so they cannot drift
+     apart. The families scroll in the page's scroller; the matrix in its
+     own, padded above. Pool limits reuses `.cap-families` under a sticky
+     filter whose height this sheet cannot see (admin.css), so the page
+     padding leaves its scroller alone. Holders' Accounting drift table
+     sticks its head too (visual QA run 4, N9, capacity-010: at 1440 its
+     second screenful was 19 rows of unlabelled numbers), on the same terms --
+     four columns at 100% that never overflow above 900px, so its wrapper
+     clips -- and the page padding counts it. Holders' Every holder table,
+     Provider quota and Accounts draw no sticky head: nothing to clear. A
+     wheel or a drag can still stop anywhere, as on any sticky table. */
+  .cap-families .ctl-table.is-scroll > table > thead > tr,
+  .cap-mx > .ctl-table.is-scroll > table > thead > tr,
+  .hold-drift .ctl-table.is-stacked > table > thead > tr { height: var(--row-h); }
+  .ctl-scroll:has(.cap-families .ctl-table.is-scroll > table > thead):not(:has(.adm-ceilings)),
+  .ctl-scroll:has(.hold-drift .ctl-table.is-stacked > table > thead) {
+    scroll-padding-top: calc(var(--ctl-bar-h, 0px) + var(--row-h));
+  }
+}
+
+/* V086, V093: THE PHONE RECORDS. */
+@media (max-width: 560px) {
+  /* THE USE METER STAYS (visual QA run 3, capacity-012). styles.css's phone
+     block hides every `.ctl-util-track`, because inside a `.ctl-util` row the
+     bar is a ~100px picture of the number beside it. A Pools record is not
+     that shape: Use is a row of its own, the value column ~220px wide at 390,
+     and the track is the only place `.is-unknown` (no ceiling read) and
+     `.is-zero` (a measured nought) are drawn -- B4.6 kept it on the cards for
+     the same reason. Hidden, it also left the accessibility tree, so the
+     record lost the named meter every width above it has. It is drawn here
+     as at 1440, beside its figure, in `.cap-use`'s grid; that grid is why
+     V086's `display: block` is gone -- the 8px gap it removed sits between
+     the bar and the figure again, not before an empty track. */
+  .cap-pools.is-stacked .cap-use > .ctl-util-track { display: flex; }
+
+  /* ONE COMPACT ROW PER POOL (VQ-032, visual QA pass 1; capacity.html A
+     phone, "rows keep name, figure and state (§7.3)"). The shared record gave
+     every pool six keyed lines -- Leased, Ceiling, Use, State, Set by `·`,
+     Links -- ~220px each, so 36 pools took ~35 screens and a full pool looked
+     like an idle one. The row is now the frame's: the name and its key on the
+     left, `46/50` and the links on the right, then the use bar beside the
+     state, ~80px in all. The keys go (the figure is read as the frame reads
+     it, leased over ceiling), and Set by keeps a line only when something
+     other than the configured limit sets the ceiling (`cap-by-cfg` is the
+     configured case, Capacity.tsx). The cells stay cells: the column heads
+     are still in the accessibility tree (the shared visually-hidden thead). */
+  .cap-pools.is-stacked > table > tbody > tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content max-content;
+    grid-template-areas:
+      'name leased ceil'
+      'name open open'
+      'use use state'
+      'by by by';
+    gap: 2px var(--ctl-s2);
+    align-items: center;
+    padding: var(--ctl-s2) var(--ctl-pad-chrome);
+  }
+  .cap-pools.is-stacked > table > tbody > tr > th[scope='row'] {
+    grid-area: name;
+    align-self: start;
+    min-width: 0;
+    padding: 0;
+    font-size: var(--t-body);
+    line-height: var(--lh-body);
+  }
+  .cap-pools.is-stacked > table > tbody > tr > td {
+    display: block;
+    min-width: 0;
+    padding: 0;
+  }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label]::before { content: none; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Leased (units)'] {
+    grid-area: leased;
+    align-self: start;
+    font-weight: 600;
+  }
+  /* `46 of 50`: leased over ceiling, in words (QA2-FIX-14, capacity-12). The
+     row read `0 /6 /10` -- the `/` before the ceiling and the configured
+     limit's own `/10` -- three figures with no key between them. The ceiling
+     takes `of`, and a lowered one names what it was lowered from: `0 of 6
+     (lowered from 10)`. The configured limit's `/` is its own element
+     (Capacity.tsx `.cap-was-sl`) so this row can drop it; the wide table
+     keeps the frame's `6/10`. */
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)'] { grid-area: ceil; align-self: start; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)']::before { content: 'of '; }
+  /* No limit set has no ceiling to be `of`: the row reads `0 no limit set`. */
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Ceiling (units)']:has(.ctl-em)::before { content: none; }
+  .cap-pools.is-stacked .cap-was-sl { display: none; }
+  /* The leading space is the row's word gap (QA2-FIX-14 review): `.cap-was`'s
+     2px margin alone joined it as `of 6(lowered from 10)`. */
+  .cap-pools.is-stacked .cap-was::before { content: ' (lowered from '; }
+  .cap-pools.is-stacked .cap-was::after { content: ')'; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Use'] { grid-area: use; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='State'] { grid-area: state; justify-self: end; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Set by'] { grid-area: by; }
+  .cap-pools.is-stacked > table > tbody > tr > td.cap-by-cfg { display: none; }
+  .cap-pools.is-stacked > table > tbody > tr > td[data-label='Links'] { grid-area: open; align-self: end; justify-self: end; }
+  /* The open record and its detail are one block: the detail takes no top
+     padding of its own, and its cell no gap above the Fits table. */
+  .cap-mx .is-stacked > table > tbody > tr.cap-mx-exp { padding-top: 0; }
+}
+
+/* QA-009 (visual QA wf_9e9bf74834634db7bcc3, 2026-10-20): THE PAGE SCROLLED
+   SIDEWAYS AT 390, and the box past the edge was a model-class chip. `.c-chip`
+   is `white-space: nowrap`, so `demo-deep · demo-model-deep-2 · default` was
+   one 308px line in a ~220px value column -- right edge 412 on a 390
+   scroller, measured in Chromium against the fixture build. (Backends' and
+   Sizing's hits in that measurement were their visually-hidden 1px heads,
+   which clip and add no scroll width.) The chip now wraps BETWEEN its parts
+   and is never wider than its row; each part keeps one line, so the class
+   and the model ID -- strings a reader pastes -- never break inside. */
+.rt-model-classes > .rt-model-class { flex-wrap: wrap; max-width: 100%; row-gap: 0; }
+.rt-model-classes > .rt-model-class > .mono { white-space: nowrap; }
+
+/* QA-010: `CLOUD_RUN_JO` / `B`. The primitive gives every value of an
+   `is-rows` fact `min-width: 0; overflow-wrap: anywhere` (styles.css, which
+   is right for an image digest), so on `runs on` the backend was the item
+   that shrank to make room for `← AUTO` beside it, and it broke mid-token.
+   A backend is one identifier: it keeps its width and its letters together,
+   and the annotation wraps under it instead when the track is tight. (0,5,0)
+   because the primitive's rule is (0,3,1) and loads after this sheet.
+   THE FACT ITSELF NEVER WRAPS (visual QA run 5b, r2:capacity-007, part of
+   archived issue 1680). It was `flex-wrap: wrap` from when `← AUTO` was its own item; once
+   the backend and the annotation became one value item (below), that wrap
+   could only move the WHOLE value -- `CLOUD_RUN_JOB ← AUTO` -- to the row's
+   start, under `runs on`, whenever key plus value outgrew the card's track,
+   which it did on demo-wide at 1440. `nowrap` keeps the value beside its key;
+   the primitive's `min-width: 0` on it (styles.css `.ctl-facts.is-rows >
+   .ctl-fact > :not(b)`) lets it shrink to the room left, so the wrap happens
+   inside it, under CLOUD_RUN_JOB. */
+.ctl-facts.is-rows > .ctl-fact.rt-runs-on { flex-wrap: nowrap; }
+.ctl-facts.is-rows > .ctl-fact.rt-runs-on .rt-backend { flex: none; overflow-wrap: normal; }
+/* capacity-007 (visual QA run 2, 2026-10-20): `← AUTO` WRAPPED UNDER THE KEY.
+   The annotation was the fact's own flex item, so its wrap went to the row's
+   start -- under `runs on` -- and read as a second label. The backend and its
+   annotation are one value item now: the wrap stays in the value column,
+   under CLOUD_RUN_JOB, and at 1440 the two sit side by side. */
+.ctl-facts.is-rows > .ctl-fact.rt-runs-on > .rt-runs-on-value {
+  display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--ctl-s2);
+}
+
+/* capacity-002 (visual QA run 3, 2026-10-21): REMOVE IS DRAWN OFF UNTIL IT IS
+   ARMED. The unarmed button was `danger-filled` and disabled, which the system
+   draws as a pale red ground under a red edge (V138, components.css) -- on
+   Accounts, in light and dark, it read as ready to fire. Accounts.tsx now draws
+   it as the plain button until the label is typed, so the disabled look is the
+   one every other control takes. `.limit-edit button:disabled` (styles.css,
+   (0,2,1)) would fade that to .4, the faded disabled look V256 retired; this
+   (0,4,0) keeps it drawn rather than faded. */
+.acct-action > .limit-edit > .c-btn:disabled { opacity: 1; }
+/* A DANGER OUTLINE WHILE UNARMED (owner decision 2026-10-22, "Danger outline
+   unarmed", box comment 6314115845, part of archived issue 1680). The plain grey control
+   above hid that Remove is the one irreversible act here; it is `is-danger`
+   now, and the system's ONE disabled treatment (`.c-btn:disabled`,
+   components.css, (0,2,0)) would repaint it the grey ground and `--line` edge.
+   This (0,5,0) keeps it the danger ink on its edge and its words with no fill,
+   so it reads as dangerous and as off -- never as the armed fill, which is
+   `danger-filled` once the label is typed. */
+.acct-action > .limit-edit > .c-btn.is-danger:disabled {
+  background: transparent; border-color: var(--s-bad); color: var(--s-bad);
+}

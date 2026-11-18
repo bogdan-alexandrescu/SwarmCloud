@@ -1,0 +1,30 @@
+# The owner reviews what bounds swarm-workspace-deployer (docs/workspaces.md
+# §2.4, safeguard 2; archived issue 847).
+#
+# That identity holds project-wide account-IAM power in a project shared with
+# another team, and Google cannot narrow it. Since WD2's re-decision
+# (2026-10-10) the Cloud Run job swarm-workspace-apply runs as it, from the
+# workspace-apply image, and that image carries what the identity will do: the
+# entrypoint that scrubs every override (entry.py), the job's script
+# (workspace-apply.sh), the call guard, its rules and shims, the script it
+# runs, the library both source, and the Dockerfile and build config that
+# decide what the image holds. A merge reaches the identity only when the owner's bootstrap
+# apply moves the image digest; this review is the step before that. Branch
+# protection must require the code owner's review for these paths, or this
+# file is only a suggestion (the owner's setting, not this repository's).
+#
+# `@example-org/swarm-owners` is the owners' team in GitHub's `@org/team` form,
+# a placeholder: the repository names its own owners' team, which must have
+# write access for GitHub to route these reviews to it.
+
+/scripts/lib/workspace-guard.sh         @example-org/swarm-owners
+/scripts/lib/workspace-calls.json       @example-org/swarm-owners
+/scripts/lib/workspace-guard-cases.json @example-org/swarm-owners
+/scripts/lib/guard-bin/                 @example-org/swarm-owners
+/scripts/lib/common.sh                  @example-org/swarm-owners
+/scripts/register-tenant.sh             @example-org/swarm-owners
+/scripts/workspace-apply.sh             @example-org/swarm-owners
+/images/workspace-apply/entry.py        @example-org/swarm-owners
+/images/workspace-apply/Dockerfile      @example-org/swarm-owners
+/images/workspace-apply/cloudbuild.yaml @example-org/swarm-owners
+/.github/CODEOWNERS                     @example-org/swarm-owners

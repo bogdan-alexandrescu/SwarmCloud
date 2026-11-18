@@ -1,0 +1,174 @@
+"""The language servers §3.5 names, and how each is started.
+
+docs/repo-index.md §3.5 (revised 2026-10-04): pyright for Python, tsserver
+(through typescript-language-server) for TypeScript and JavaScript, gopls
+for Go and terraform-ls for HCL. The image installs all four into
+DEFAULT_BIN_DIR (images/agent-runtime-indexer/Dockerfile, versions pinned
+there and in lsp/package-lock.json), and the driver resolves a command ONLY
+there: never from PATH, so nothing a checkout or an agent put on a PATH can
+stand in for a server.
+
+What each spec says:
+
+  command          argv; argv[0] is a name in the bin directory, or an
+                   absolute path (the tests' fake server)
+  languages        the extractor's language names it serves. tsserver
+                   serves two, in ONE process: the workspace load is most
+                   of a server's cost, so it is paid once
+  language_ids     file extension -> the LSP languageId for didOpen. A file
+                   whose extension is not here is never opened, and its
+                   sites stay `ast`
+  call_hierarchy   ask `callHierarchy/incomingCalls` for exported functions
+                   and methods. terraform-ls has none
+  references       ask `textDocument/references` for the symbols of
+                   `reference_kinds` instead -- terraform-ls's only way to
+                   say who uses a variable, a resource or a module
+  settings         answers to `workspace/configuration`
+  env              added to the minimal environment the driver builds
+
+The per-language adapters (RI10a-d: lsp/python.py, typescript.py, go.py,
+terraform.py) refine routes and test discovery on top of these; the
+protocol, the budget and the fallbacks are the driver's, for all four.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+
+# Where the image links every server command (Dockerfile, "language servers").
+DEFAULT_BIN_DIR = Path("/opt/repo-index/servers/bin")
+
+
+@dataclass(frozen=True)
+class ServerSpec:
+    name: str
+    command: tuple[str, ...]
+    languages: tuple[str, ...]
+    language_ids: Mapping[str, str]
+    call_hierarchy: bool = True
+    references: bool = False
+    reference_kinds: tuple[str, ...] = ()
+    initialization_options: Mapping[str, Any] | None = None
+    settings: Mapping[str, Any] = field(default_factory=dict)
+    env: Mapping[str, str] = field(default_factory=dict)
+
+
+SERVERS: dict[str, ServerSpec] = {
+    "pyright": ServerSpec(
+        name="pyright",
+        command=("pyright-langserver", "--stdio"),
+        languages=("python",),
+        language_ids={".py": "python", ".pyi": "python"},
+        # openFilesOnly: diagnostics for the file being asked about, not a
+        # full-workspace check whose output the index never reads. No
+        # library code indexing: dependencies are not installed (§3.5).
+        settings={
+            "python": {"analysis": {"diagnosticMode": "openFilesOnly",
+                                    "indexing": False,
+                                    "useLibraryCodeForTypes": False,
+                                    "autoSearchPaths": True}},
+            "pyright": {"disableLanguageServices": False},
+        },
+    ),
+    "tsserver": ServerSpec(
+        name="tsserver",
+        command=("typescript-language-server", "--stdio"),
+        languages=("typescript", "javascript"),
+        language_ids={".ts": "typescript", ".mts": "typescript", ".cts": "typescript",
+                      ".tsx": "typescriptreact", ".js": "javascript", ".mjs": "javascript",
+                      ".cjs": "javascript", ".jsx": "javascriptreact"},
+        # No automatic type acquisition: it downloads @types packages.
+        #
+        # useSyntaxServer "never": typescript-language-server's default
+        # ("auto") starts a second, partial-semantic tsserver and routes
+        # definition, references and the like to it for as long as the
+        # semantic server is still loading the project (its first-start
+        # state, until a projectLoadingFinish or diagnostics event). This
+        # driver asks for a definition right after didOpen, so every answer
+        # came from the syntax server, which cannot follow an import to
+        # another file: the build's LSP self-test got "typescript: ok, 0 lsp
+        # edge(s)" (main, 2026-10-05). "never" runs one full server.
+        initialization_options={"disableAutomaticTypingAcquisition": True,
+                                "tsserver": {"useSyntaxServer": "never"},
+                                "preferences": {"includeCompletionsForModuleExports": False}},
+    ),
+    "gopls": ServerSpec(
+        name="gopls",
+        command=("gopls", "serve"),
+        languages=("go",),
+        language_ids={".go": "go"},
+        # §3.5 "no dependencies are installed": no module download, no
+        # toolchain download, no telemetry upload. A module that needs a
+        # missing dependency still resolves its in-repository calls. GOFLAGS
+        # is left alone on purpose: `-mod=mod` would let `go list` rewrite
+        # the checkout's go.mod and go.sum, and the index never writes to
+        # the repository it reads.
+        env={"GOPROXY": "off", "GOTOOLCHAIN": "local", "GOTELEMETRY": "off", "CGO_ENABLED": "0"},
+    ),
+    "terraform-ls": ServerSpec(
+        name="terraform-ls",
+        command=("terraform-ls", "serve"),
+        languages=("hcl",),
+        language_ids={".tf": "terraform", ".tfvars": "terraform-vars"},
+        call_hierarchy=False,
+        references=True,
+        reference_kinds=("variable", "resource", "data", "module", "output", "local"),
+        # No `terraform init` and no provider schema download.
+        initialization_options={"experimentalFeatures": {"prefillRequiredFields": False},
+                                "validation": {"enableEnhancedValidation": False}},
+    ),
+}
+
+# A server specified here but left out of the image goes in DISABLED_SERVERS,
+# so its language reports `unsupported` instead of `failing` on every run.
+# Empty since 2026-10-20 (lane INDEX-LANGS, part of archived issue 1693): terraform-ls had
+# been out since 2026-10-05, when the vendor zip carried HIGH CVEs (release
+# 37289476429) and that day's source build answered 0 references in the
+# image's self-test (main a3621325). terraform-ls 0.39.0 compiled from source
+# with Go 1.27.1 and the raised golang.org/x modules answers references
+# across a module's files (measured 2026-10-20 against this driver,
+# tests/unit/worker/test_repo_index_lsp_servers.py), and the self-test now
+# requires an `lsp` edge for HCL as for the other four languages.
+DISABLED_SERVERS: dict[str, ServerSpec] = {}
+
+
+# The paths the LSP pass never opens, on every repository (lane INDEX-SITES,
+# part of archived issue 1693). Tree-sitter still parses them -- their symbols, imports and
+# `ast` edges are in the graph as before -- but no server is asked about
+# them: a migration or an alembic revision calls the models a hundred times
+# and is never where impact finds a test, and docs/ is examples and Sphinx
+# configuration. On a peer application the pass ran out of its budget every full run
+# (16 of 16), so every site asked there was one not asked in application
+# code. Gitignore semantics, matched against the repository-relative path:
+# `**/` is zero or more directories, `*` stays inside one.
+LSP_EXCLUDED_PATHS: tuple[str, ...] = ("**/migrations/**", "**/alembic/versions/**", "docs/**")
+
+
+def _glob_regex(pattern: str) -> re.Pattern[str]:
+    """A gitignore-style glob as an anchored regular expression."""
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:[^/]+/)*")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def lsp_excluded(path: str, patterns: Sequence[str] = LSP_EXCLUDED_PATHS) -> bool:
+    """Whether the LSP pass leaves `path` to tree-sitter alone."""
+    return any(_glob_regex(pattern).match(path) for pattern in patterns)

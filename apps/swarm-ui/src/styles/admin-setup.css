@@ -1,0 +1,26 @@
+/* ADMIN › SETUP (DAYONE-SETUP-UI-2; part of archived issue 2688; plan §5.1): the page's own
+   few rules. Everything else is the console's: the strip is the Workspace
+   setup strip's `cfg-*`, the lead `ws-lead` / `adm-lead`, the checklist
+   `ob-*`, the layout `ws-grid is-setup`. Tokens only, no literal colour. */
+.asm-page { min-width: 0; }
+/* The strip and the lead stand apart from the grid below them. */
+.asm-strip { margin: 0 0 var(--ctl-s3, 12px); }
+/* Add a team sits under the first-run grid, a gap below it. */
+.asm-team { margin-top: var(--ctl-s3, 12px); }
+.asm-form { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+.asm-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; }
+/* Phone (B11): the form's fields one under another. */
+@media (max-width: 720px) {
+  .asm-fields { grid-template-columns: minmax(0, 1fr); }
+}
+/* NO EXPLANATORY PROSE ON THE SURFACE (owner, 2026-11-05): the (i) beside a
+   heading, a label whose explanation is its tooltip, and a status tick whose
+   tooltip is its reason (AdminSetupHealth's About, Explained, ReasonTick). */
+.c-btn.is-icon.is-sm.asm-about { width: 24px; height: 24px; border: 1px solid var(--line); border-radius: 50%; vertical-align: middle; }
+.asm-about .c-ic { width: 18px; height: 18px; stroke-width: 2.6; }
+.asm-explained { text-decoration: underline dotted var(--text-faint); text-underline-offset: 3px; cursor: help; }
+.asm-tick { display: inline-flex; align-items: center; cursor: help; vertical-align: middle; }
+.asm-explained:focus-visible,
+.asm-tick:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: 2px; }
+/* A team field's label and input inside its tooltip's host, one under the other. */
+.asm-fields .c-field > .c-tip-host { display: flex; flex-direction: column; gap: 4px; min-width: 0; }

@@ -1,0 +1,313 @@
+"""Release blockers are caught before the merge (C3), the measured download
+flakes retry (PR 1281's table), and ruff runs in CI (owner decisions
+2026-10-14; docs/ci.md "A pull request scans the images it builds").
+
+  * a pull request's `build changed images without pushing` scans every image
+    it builds with the release's own policy, at the release's trivy pin, and a
+    finding fails the build;
+  * it checks the tool mirror's manifest against the Dockerfiles' pins and
+    names every object a merge would need uploaded first;
+  * the three downloads that failed runs retry, bounded;
+  * `ruff check` is a job of application.yml.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+from .ci_fold_layout import check_steps
+from .test_build_images_local import _builds, _local, _value
+from .test_build_mirror import _refresh
+from .test_fast_checks_on_lane_prs import without_lane_clause
+
+REPO = Path(__file__).resolve().parents[3]
+APPLICATION = REPO / ".github" / "workflows" / "application.yml"
+RELEASE = REPO / ".github" / "workflows" / "release.yml"
+SCAN = REPO / "scripts" / "scan-image-layout.sh"
+POLICY = REPO / "scripts" / "lib" / "image-scan.sh"
+TAG = "feed00c0ffee"
+
+
+def _jobs() -> dict:
+    return yaml.safe_load(APPLICATION.read_text())["jobs"]
+
+
+def _step(job: str, name: str) -> dict:
+    (step,) = [s for s in _jobs()[job]["steps"] if s.get("name") == name]
+    return step
+
+
+# --------------------------------------------------------------------------
+# The scan.
+# --------------------------------------------------------------------------
+def test_the_pull_request_scans_at_the_releases_trivy_pin():
+    """MUTATION: bump one pin and not the other."""
+    release_pin = yaml.safe_load(RELEASE.read_text())["env"]["TRIVY_VERSION"]
+    assert _jobs()["build-check"]["env"]["TRIVY_VERSION"] == release_pin
+
+
+def test_the_build_step_scans_with_the_shared_policy():
+    env = _step("build-check", "build with docker buildx, pushing nothing")["env"]
+    assert env["BUILD_ONLY_SCAN"] == "scripts/scan-image-layout.sh", env
+    assert SCAN.exists() and os.access(SCAN, os.X_OK)
+    # One policy: both scans read lib/image-scan.sh, neither restates its flags.
+    for script in (SCAN, REPO / "scripts" / "push-images.sh"):
+        text = script.read_text()
+        assert "lib/image-scan.sh" in text and "image_scan_args" in text, script
+        assert "--ignore-unfixed" not in text, f"{script.name} restates the policy"
+    assert "--ignore-unfixed" in POLICY.read_text()
+
+
+# A trivy that keeps its argv in FAKE_TRIVY_LOG. FAKE_TRIVY_DB_FAILS=<n|all>:
+# the first n DB downloads fail as a ghcr.io outage does, and so does a scan
+# that would download the DB itself (one without --skip-db-update), which is
+# what a scan on main does. A finding (FAKE_TRIVY_FINDINGS=1) exits with the
+# --exit-code the policy asked for; trivy's own errors exit 1.
+FAKE_TRIVY = r'''#!{python}
+import json, os, sys
+args = sys.argv[1:]
+log = os.environ["FAKE_TRIVY_LOG"]
+failed = 0
+if os.path.exists(log):
+    with open(log) as fh:
+        failed = sum(1 for line in fh if json.loads(line)[0] == "db-failed")
+with open(log, "a") as fh:
+    fh.write(json.dumps(args) + "\n")
+spec = os.environ.get("FAKE_TRIVY_DB_FAILS", "0")
+if "--download-db-only" in args or "--skip-db-update" not in args:
+    if spec == "all" or failed < int(spec):
+        with open(log, "a") as fh:
+            fh.write(json.dumps(["db-failed"]) + "\n")
+        print("2026-10-27T00:00:00Z FATAL Fatal error init error: DB error: failed to download "
+              "vulnerability DB: OCI artifact error: GET https://ghcr.io/v2/: TOOMANYREQUESTS",
+              file=sys.stderr)
+        sys.exit(1)
+    if "--download-db-only" in args:
+        sys.exit(0)
+if os.environ.get("FAKE_TRIVY_FINDINGS"):
+    print("libexpat CVE-0000-0000 HIGH fixed in 9.9.9")
+    sys.exit(int(args[args.index("--exit-code") + 1]))
+sys.exit(0)
+'''
+
+
+def _layout_scan(tmp_path: Path, **fakes: str):
+    trivy = tmp_path / "trivy"
+    trivy.write_text(FAKE_TRIVY.replace("{python}", sys.executable))
+    trivy.chmod(0o755)
+    layout = tmp_path / "layout"
+    layout.mkdir()
+    log = tmp_path / "trivy.log"
+    env = {**os.environ, "SWARM_TRIVY": str(trivy), "FAKE_TRIVY_LOG": str(log),
+           "SWARM_ENV_FILE": str(tmp_path / "none.env"), "IMAGE_SCAN_DB_BACKOFF": "0",
+           "PROJECT_ID": "swarm-test-project", "REGION": "us-central1", "NO_COLOR": "1", **fakes}
+    proc = subprocess.run(["bash", str(SCAN), str(layout), "swarm-api"], env=env,
+                          capture_output=True, text=True, timeout=60)
+    calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+    return proc, layout, calls
+
+
+def _scans(calls: list[list[str]]) -> list[list[str]]:
+    return [c for c in calls if c and c[0] == "image" and "--download-db-only" not in c]
+
+
+@pytest.mark.parametrize("findings, rc", [("", 0), ("1", 1)], ids=["clean", "findings"])
+def test_the_layout_scan_passes_the_policy_and_fails_on_a_finding(tmp_path, findings, rc):
+    proc, layout, calls = _layout_scan(tmp_path, FAKE_TRIVY_FINDINGS=findings)
+    assert proc.returncode == rc, proc.stderr
+    (argv,) = _scans(calls)
+    assert argv[0] == "image" and "--ignore-unfixed" in argv and "--exit-code" in argv, argv
+    assert argv[argv.index("--severity") + 1] == "HIGH,CRITICAL", argv
+    assert argv[-2:] == ["--input", str(layout)], argv
+    out = proc.stdout + proc.stderr
+    assert ("found fixable" in out) == bool(findings), out[-2000:]
+    assert "could not scan" not in out, out[-2000:]
+
+
+def test_a_finding_has_an_exit_code_of_its_own_not_trivys_error_code(tmp_path):
+    # trivy exits 1 on its own errors, so --exit-code 1 made a failed DB
+    # download indistinguishable from a finding (archived issue 2379).
+    _, _, calls = _layout_scan(tmp_path)
+    (argv,) = _scans(calls)
+    assert argv[argv.index("--exit-code") + 1] not in ("0", "1"), argv
+
+
+def test_a_db_download_that_fails_is_a_scanner_error_not_a_finding(tmp_path):
+    # MUTATION: treat every non-zero trivy exit as findings again, and this fails.
+    proc, _, calls = _layout_scan(tmp_path, FAKE_TRIVY_DB_FAILS="all")
+    out = proc.stdout + proc.stderr
+    assert proc.returncode != 0, "the scan could not run and the gate passed: it must fail closed"
+    assert "found fixable" not in out, out[-2000:]
+    assert "trivy could not scan swarm-api" in out and "this is not a finding" in out, out[-2000:]
+    downloads = [c for c in calls if "--download-db-only" in c]
+    assert len(downloads) > 1, f"the DB download was not retried: {calls}"
+    assert not _scans(calls), f"scanned without a vulnerability DB: {calls}"
+
+
+def test_a_db_download_that_fails_once_is_retried_and_the_scan_runs(tmp_path):
+    proc, layout, calls = _layout_scan(tmp_path, FAKE_TRIVY_DB_FAILS="1")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    (argv,) = _scans(calls)
+    assert "--skip-db-update" in argv and argv[-2:] == ["--input", str(layout)], argv
+    downloads = [c for c in calls if "--download-db-only" in c]
+    assert len(downloads) == 2, calls
+
+
+FAKE_SCAN = r'''#!/bin/sh
+echo "$1 $2" >> "$FAKE_SCAN_LOG"
+if [ -n "$FAKE_SCAN_REFUSE" ]; then case "$2" in *"$FAKE_SCAN_REFUSE"*) exit 1 ;; esac; fi
+exit 0
+'''
+
+
+def _scan_build(tmp_path: Path, monkeypatch, refuse: str = ""):
+    scan = tmp_path / "fake-scan.sh"
+    scan.write_text(FAKE_SCAN)
+    scan.chmod(0o755)
+    log = tmp_path / "scan.log"
+    log.write_text("")
+    monkeypatch.setenv("BUILD_ONLY_SCAN", str(scan))
+    monkeypatch.setenv("FAKE_SCAN_LOG", str(log))
+    monkeypatch.setenv("FAKE_SCAN_REFUSE", refuse)
+    root, proc, events = _local(tmp_path, "--build-only", "--local", "--tag", TAG, "swarm-api")
+    return root, proc, events, [line.split() for line in log.read_text().splitlines() if line]
+
+
+def test_every_image_a_pull_request_builds_is_exported_and_scanned(tmp_path, monkeypatch):
+    root, proc, events, scans = _scan_build(tmp_path, monkeypatch)
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    (build,) = [b for b in _builds(events) if "swarm-api" in " ".join(b)]
+    (output,) = _value(build, "--output")
+    assert output.startswith("type=oci,") and ".scan.oci" in output, output
+    assert [s[1].split("/")[-1].split(":")[0] for s in scans] == ["swarm-api"], scans
+    assert scans[0][0].endswith(".scan.oci"), scans
+
+
+def test_a_refused_scan_fails_the_build_naming_the_image(tmp_path, monkeypatch):
+    """MUTATION: ignore the scan's exit code in the replay."""
+    _, proc, _, scans = _scan_build(tmp_path, monkeypatch, refuse="swarm-api")
+    assert scans, "nothing was scanned"
+    assert proc.returncode != 0
+    assert "the image scan refused it" in proc.stdout + proc.stderr
+
+
+def test_without_the_scan_nothing_is_exported(tmp_path, monkeypatch):
+    """The control: unset, a leaf is cache-only, as before C3."""
+    monkeypatch.delenv("BUILD_ONLY_SCAN", raising=False)
+    _, proc, events = _local(tmp_path, "--build-only", "--local", "--tag", TAG, "swarm-api")
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    (build,) = [b for b in _builds(events) if "swarm-api" in " ".join(b)]
+    assert _value(build, "--output") == ["type=cacheonly"], build
+
+
+# --------------------------------------------------------------------------
+# The tool mirror.
+# --------------------------------------------------------------------------
+def test_the_mirror_step_runs_the_consistency_check_that_exists():
+    run = _step("build-check", "the tool mirror holds what this pull request pins")["run"]
+    (node,) = re.findall(r"tests/unit/scripts/(test_\w+\.py)::(\w+)", run)
+    path = REPO / "tests" / "unit" / "scripts" / node[0]
+    assert f"def {node[1]}(" in path.read_text(), node
+    assert "tool-mirror.sha256" in run and "refresh-build-mirror.sh --tools-only" in run, run
+
+
+def test_the_mirror_step_names_every_added_row(tmp_path):
+    """The diff-reading line of the step, run over a fixture diff: an added row
+    is named, a removed or unchanged one is not."""
+    run = _step("build-check", "the tool mirror holds what this pull request pins")["run"]
+    (sed,) = [line.strip() for line in run.splitlines() if line.strip().startswith("| sed -nE")]
+    sed = sed[1:].strip().split(" > ")[0]
+    diff = "\n".join([
+        "--- a/images/agent-runtime-base/tool-mirror.sha256",
+        "+++ b/images/agent-runtime-base/tool-mirror.sha256",
+        "+" + "1" * 64 + "  github.com/new/tool/releases/download/v1/tool.tar.gz",
+        "-" + "2" * 64 + "  github.com/old/tool/releases/download/v0/tool.tar.gz",
+        " " + "3" * 64 + "  github.com/same/tool/releases/download/v1/same.tar.gz",
+    ]) + "\n"
+    proc = subprocess.run(["bash", "-c", sed], input=diff, capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == ["github.com/new/tool/releases/download/v1/tool.tar.gz"], proc.stdout
+
+
+# --------------------------------------------------------------------------
+# The download flakes.
+# --------------------------------------------------------------------------
+def test_the_emulator_download_retries_bounded():
+    run = _step("integration", "install the emulator")["run"]
+    assert "for attempt in 1 2 3 4" in run and "sleep" in run, run
+    assert run.count("gcloud components install cloud-firestore-emulator") == 1, run
+
+
+def test_every_image_download_retries_on_an_http_error():
+    """curl's exit 22 (an HTTP error) is retried only with --retry-all-errors.
+    MUTATION: drop it from any `curl -fsSL` in a Dockerfile."""
+    bare = []
+    for df in sorted([*REPO.glob("images/*/Dockerfile"), *REPO.glob("apps/*/Dockerfile")]):
+        for n, line in enumerate(df.read_text().splitlines(), 1):
+            if re.search(r"\bcurl -fsSL\b", line) and "--retry-all-errors" not in line and not line.lstrip().startswith("#"):
+                bare.append(f"{df.relative_to(REPO)}:{n}")
+    assert not bare, bare
+
+
+def test_the_go_module_fetches_retry():
+    text = (REPO / "images" / "agent-runtime-indexer" / "Dockerfile").read_text()
+    assert "three_tries build_server golang.org/x/tools/gopls" in text
+
+
+# --------------------------------------------------------------------------
+# ruff.
+# --------------------------------------------------------------------------
+def test_ruff_check_is_a_gated_job():
+    jobs = _jobs()
+    job = jobs["ruff"]
+    assert job["name"] == "ruff check"
+    # The check runs as the `ruff check · ...` steps of `quick-checks` since
+    # CI-FOLD (archived issue 1799); `ruff` keeps the name (test_ci_fold.py).
+    runs = "\n".join(str(s.get("run", "")) for s in check_steps("application.yml", "ruff"))
+    assert "uv run --frozen --only-dev ruff check" in runs, runs
+    assert {"ruff", "quick-checks"} <= set(jobs["ci-gate"]["needs"])
+
+
+# --------------------------------------------------------------------------
+# Main fills the tool mirror (owner decision 2026-10-14, on PR 1298).
+# --------------------------------------------------------------------------
+def test_main_fills_the_tool_mirror_before_it_builds_and_a_pull_request_never_does():
+    """MUTATION: drop the step, move it after the build, or drop --tools-only."""
+    job = _jobs()["build"]
+    names = [s.get("name") for s in job["steps"]]
+    fill = names.index("fill the tool mirror with what this commit pins")
+    assert fill < names.index("build with Cloud Build"), names
+    assert job["steps"][fill]["run"].strip() == "./scripts/refresh-build-mirror.sh --tools-only"
+    # (Then the lane clause every job ends with, test_fast_checks_on_lane_prs.py.)
+    assert without_lane_clause(job["if"]) == ("${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' "
+        # A lane push (`swarm/**`) runs the tests but never builds (LANE CI-EARLY, test_ci_early.py).
+        "&& github.ref == 'refs/heads/main' || !cancelled() && !failure() && github.event_name == 'workflow_dispatch' }}"), job["if"]
+    for other_id, other in _jobs().items():
+        if other_id != "build":
+            for st in other.get("steps", []):
+                for line in str(st.get("run", "")).splitlines():
+                    assert not line.strip().startswith(("./scripts/refresh-build-mirror.sh", "scripts/refresh-build-mirror.sh")), (other_id, line)
+
+
+def test_tools_only_uploads_checked_files_and_touches_no_image_and_deletes_nothing(tmp_path):
+    """--tools-only: only `storage objects describe` and `storage cp` to the
+    bucket, every upload matching its pinned sha256; no artifacts call, no
+    delete. MUTATION: let --tools-only fall through to the image half."""
+    import hashlib
+
+    rows, bucket, proc, calls, _ = _refresh(tmp_path, "--tools-only")
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    assert calls, "the refresh made no gcloud call"
+    for argv in calls:
+        assert argv[0] == "storage" and argv[1] in {"objects", "cp"}, argv
+        assert not any(word in {"rm", "delete"} for word in argv), argv
+    for sha, obj in rows:
+        assert hashlib.sha256((bucket / "swarm-build-mirror-swarm-test-project" / obj).read_bytes()).hexdigest() == sha
