@@ -165,6 +165,62 @@ def test_a_token_that_cannot_read_variables_boards_where_the_base_requires_merge
     assert len(_labelled(world)) == 1 and world.merge_calls() == []
 
 
+@pytest.mark.parametrize("private", [False, True], ids=["public", "private"])
+def test_an_unreadable_switch_after_the_steps_own_train_park_never_merges_directly(tmp_path,
+                                                                                   private):
+    """Issue 16: the variable 403s (the App has no *Variables: Read*), the
+    rules read gives GitHub's plan answer, every head check is green, and
+    this step parked on the repository's train before. GitHub refused the
+    direct merge 403: the train was on.
+
+    On the public repository of the incident the plan answer cannot be the
+    plan's truth, so the rules are unread: a transient outage, retried,
+    never a merge. On a private one it is "no rules", and the switch this
+    step has seen on is not read as off: it parks on the train again.
+
+    MUTATION (merge.py `repository_train`): return None on every unreadable
+    switch the base does not require `merge-train` for, and the private case
+    merges; (`GitHubMerger.required_checks`) read the plan answer as "no
+    rules" whatever `private` says, and the public case parks instead."""
+    world = MergeWorld(tmp_path)
+    world.repository["private"] = private
+    _switch(world, None, status=403)
+    world.github.route("GET", f"{API}/rules/branches/main", (403, {}, {
+        "message": "Upgrade to GitHub Pro or make this repository public to enable this "
+                   "feature.",
+        "documentation_url": "https://docs.github.com/rest/repos/rules#get-rules-for-a-branch"}))
+    world.branch = {"name": "main", "protected": False}
+    world.runs = [{"name": CHECK, "status": "completed", "conclusion": "success"}]
+    _parked_on_train(world)
+    outcome = merge.run_merge(world.context())
+
+    assert world.merge_calls() == [] and world.update_calls() == []
+    if private:
+        assert outcome.state is TaskState.PARKED, outcome.message
+        assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING
+        assert outcome.summary["repository_train"]["on_by"] == "own_train_park"
+        assert outcome.summary["required_checks_source"] == "none_plan_limited_all_checks"
+    else:
+        assert outcome.state is TaskState.FAILED and outcome.retryable is True, outcome.message
+        assert outcome.summary["refusal"]["code"] == "forge_unavailable", outcome.summary
+
+
+def test_an_unreadable_switch_with_ready_label_boards_instead_of_merging(tmp_path):
+    """No train park of its own, but the pull request is already `ready`:
+    the label is the train's boarding pass, so the switch it was boarded on
+    is not read as off. It parks on the train and never merges directly."""
+    world = MergeWorld(tmp_path)
+    _switch(world, None, status=403)
+    world.pr["labels"] = [{"name": "ready"}]
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING
+    assert outcome.summary["repository_train"]["on_by"] == "ready_label"
+    assert outcome.summary["repository_train"]["switch"] == "unreadable"
+    assert _labelled(world) == [] and world.merge_calls() == []
+
+
 # ---------------------------------------------------------------------------
 # The wake: merged ends green
 

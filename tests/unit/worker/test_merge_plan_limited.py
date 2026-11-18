@@ -36,6 +36,8 @@ def _plan_limited(world: MergeWorld, *, message: str = PLAN_MESSAGE,
     if docs is not None:
         body["documentation_url"] = docs
     world.github.route("GET", RULES, (403, {}, body))
+    # GitHub gives its plan answer as "no rules" only on a private repository.
+    world.repository["private"] = True
     world.branch = {"name": "main", "protected": False}
     world.runs = [{"name": "lint", "status": "completed", "conclusion": "success"},
                   {"name": "unit", "status": "completed", "conclusion": "success"}]
@@ -210,6 +212,32 @@ def test_the_source_names_rulesets_and_classic_protection(tmp_path):
     outcome = merge.run_merge(classic.context())
     assert outcome.state is TaskState.SUCCEEDED, outcome.message
     assert outcome.summary["required_checks_source"] == "classic"
+
+
+@pytest.mark.parametrize("private", [False, None], ids=["public", "unstated"])
+def test_a_plan_answer_on_a_public_repository_is_an_outage_not_no_rules(tmp_path, private):
+    """Issue 16: GitHub's plan answer cannot be the plan's truth on a
+    repository that is not private -- a public one has rulesets on every
+    plan -- so it is not read as "no rules", which would drop a required
+    check (the train's `merge-train`) and merge directly. It is a transient
+    outage: retried, never a merge and never `token_lacks_rights`.
+
+    MUTATION (merge.py `GitHubMerger.required_checks`): read the plan answer
+    as "no rules" whatever `private` says, and this merges."""
+    world = MergeWorld(tmp_path)
+    _plan_limited(world)
+    if private is None:
+        del world.repository["private"]
+    else:
+        world.repository["private"] = private
+    outcome = merge.run_merge(world.context())
+
+    assert world.merge_calls() == []
+    assert outcome.state is TaskState.FAILED, outcome.message
+    assert outcome.retryable is True
+    assert outcome.summary["refusal"]["code"] == "forge_unavailable", outcome.summary
+    assert "not private" in outcome.summary["refusal"]["message"]
+    assert outcome.summary.get("required_checks_source") != "none_plan_limited_all_checks"
 
 
 def test_plan_lacks_feature_reads_only_a_403():
