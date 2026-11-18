@@ -170,8 +170,8 @@ def test_an_unreadable_switch_after_the_steps_own_train_park_never_merges_direct
                                                                                    private):
     """Issue 16: the variable 403s (the App has no *Variables: Read*), the
     rules read gives GitHub's plan answer, every head check is green, and
-    this step parked on the repository's train before. GitHub refused the
-    direct merge 403: the train was on.
+    this step parked on the repository's train at an earlier head. GitHub
+    refused the direct merge 403: the train was on.
 
     On the public repository of the incident the plan answer cannot be the
     plan's truth, so the rules are unread: a transient outage, retried,
@@ -191,7 +191,9 @@ def test_an_unreadable_switch_after_the_steps_own_train_park_never_merges_direct
         "documentation_url": "https://docs.github.com/rest/repos/rules#get-rules-for-a-branch"}))
     world.branch = {"name": "main", "protected": False}
     world.runs = [{"name": CHECK, "status": "completed", "conclusion": "success"}]
-    _parked_on_train(world)
+    # As in the incident: parked on the train at an earlier head, then a fix
+    # round moved the head to the one this attempt reads green.
+    _parked_on_train(world, head="f" * 40)
     outcome = merge.run_merge(world.context())
 
     assert world.merge_calls() == [] and world.update_calls() == []
@@ -199,6 +201,7 @@ def test_an_unreadable_switch_after_the_steps_own_train_park_never_merges_direct
         assert outcome.state is TaskState.PARKED, outcome.message
         assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING
         assert outcome.summary["repository_train"]["on_by"] == "own_train_park"
+        assert len(_labelled(world)) == 1
         assert outcome.summary["required_checks_source"] == "none_plan_limited_all_checks"
     else:
         assert outcome.state is TaskState.FAILED and outcome.retryable is True, outcome.message
