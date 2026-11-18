@@ -306,6 +306,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_terraform_install_inputs.py` | `_listed` | `skip_call` | no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): nothing says what is live |
 | `tests/unit/scripts/test_typesafe_policies_wired.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_verify_remote_slash_targets.py` | `<module>` | `skipif` | verify-remote.sh and bash are required |
+| `tests/unit/scripts/test_verify_remote_smoke_fixture.py` | `<module>` | `skipif` | verify-remote.sh and bash are required |
 | `tests/unit/scripts/test_warm_jobs.py` | `<module>` | `skipif` | warm-jobs.sh needs bash and jq |
 | `tests/unit/scripts/test_workspace_apply_approval.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_workspace_apply_entry.py` | `<module>` | `skipif` | the exec test needs Linux's /proc, /usr/bin/timeout and /bin/bash |
