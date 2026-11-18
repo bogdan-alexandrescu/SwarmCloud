@@ -1751,15 +1751,45 @@ def checkout_head(repo: Path, env: Mapping[str, str]) -> str | None:
 
 
 def committed_nothing(repo: Path, env: Mapping[str, str], start_head: str | None) -> bool:
-    """True only when HEAD is still `start_head` and the tree is clean (archived issue 3265).
+    """True when the tree is clean and HEAD added no commit of the agent's own
+    (archived issue 3265; widened for issue #17): HEAD is still `start_head`, or
+    descends from it and every commit in `start_head..HEAD` is already on
+    origin's default branch -- the first of `refs/remotes/origin/<SWARM_PREPUBLISH_BASE>`
+    and `prepublish._DEFAULT_REFS` that resolves. That is the harvest's reading:
+    it excludes the default branch's commits (`lifecycle._workflow_negatives`).
+    Triage 6 of issue #17: an agent pulled its clone from base a1ca1443 onto
+    main's 75a09a1b, committed nothing of its own, took repair_turns 0 and
+    failed `published_nothing`, because a moved HEAD was read as published work.
 
-    Any git error is False: the no-change turn is never asked on a guess. An
+    Any git error is False, as is a moved HEAD with no origin default-branch
+    ref to read it against: the no-change turn is never asked on a guess. An
     uncommitted change is not nothing either: the worker's harvest commits it.
     """
-    if start_head is None or checkout_head(repo, env) != start_head:
+    if start_head is None:
         return False
     code, status = ceiling_mod._git(repo, env, "status", "--porcelain")
-    return code == 0 and not status
+    if code != 0 or status:
+        return False
+    head = checkout_head(repo, env)
+    if head is None:
+        return False
+    if head == start_head:
+        return True
+    code, _ = ceiling_mod._git(repo, env, "merge-base", "--is-ancestor", start_head, head)
+    if code != 0:
+        return False
+    from ..prepublish import _DEFAULT_REFS, PREPUBLISH_BASE_ENV  # lazy, as the gate's
+
+    named = (env.get(PREPUBLISH_BASE_ENV) or os.environ.get(PREPUBLISH_BASE_ENV) or "").strip()
+    refs = ((f"refs/remotes/origin/{named}",) if named else ()) + _DEFAULT_REFS
+    for ref in refs:
+        code, _ = ceiling_mod._git(repo, env, "rev-parse", "--verify", "-q", f"{ref}^{{commit}}")
+        if code != 0:
+            continue
+        code, out = ceiling_mod._git(
+            repo, env, "rev-list", "--count", f"{start_head}..{head}", "--not", ref)
+        return code == 0 and out == "0"
+    return False
 
 
 #: THE STEP'S WALL CLOCK, TOLD TO THE AGENT (archived issue 2139). Measured 2026-10-23 by the
@@ -2991,8 +3021,10 @@ def run_cli_agent(
             return problem
 
         # A PUBLISHING STEP THAT COMMITTED NOTHING (archived issue 3265; see
-        # `NO_CHANGE_REPAIR_MAX_TURNS`): HEAD where it started, the tree clean
-        # and no non-blank verification.md (`_verified_no_change`'s rule). Not
+        # `NO_CHANGE_REPAIR_MAX_TURNS`): HEAD where it started, or only
+        # fast-forwarded along origin's default branch (issue #17; see
+        # `committed_nothing`), the tree clean and no non-blank verification.md
+        # (`_verified_no_change`'s rule). Not
         # for SWARM_STEP_PUBLISHES=0. Its "1" also covers a contributor,
         # amender or carrier step, for which no change is not a failure: there
         # the turn is one cheap turn whose verification.md also makes the
