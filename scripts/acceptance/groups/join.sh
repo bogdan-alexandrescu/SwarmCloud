@@ -426,6 +426,21 @@ run_join() {
   fi
 }
 
+# join_unprovisioned -> returns 0 and prints nothing when every setting the
+# probe needs is set; otherwise prints, on one line, each one that is unset,
+# and returns 1. Reads the environment itself, so it needs neither config.sh
+# nor lib.sh (whose config check refuses a run without the sandbox URL).
+join_unprovisioned() {
+  local n problems=()
+  for n in SWARM_ACCEPTANCE_JOIN_TENANT SWARM_ACCEPTANCE_JOIN_ADMIN_SA SWARM_ACCEPTANCE_JOIN_PERSON SWARM_ACCEPTANCE_JOIN_PERSON_SECRET; do
+    [[ -n "${!n:-}" ]] || problems+=("${n} is unset")
+  done
+  [[ "${#problems[@]}" -gt 0 ]] || return 0
+  local IFS=';'
+  printf '%s\n' "${problems[*]}"
+  return 1
+}
+
 # On its own: `verify-remote.sh acceptance/groups/join` executes this file.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   # shellcheck source-path=SCRIPTDIR
@@ -435,6 +450,17 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   # shellcheck source-path=SCRIPTDIR
   # shellcheck source=../../lib/testlib.sh
   source "${REPO_ROOT}/scripts/lib/testlib.sh"
+  # Not provisioned: skip before lib.sh, whose config check would fail the run
+  # for a setting this probe does not use.
+  if ! problem="$(join_unprovisioned)"; then
+    step "Acceptance: ${PROJECT_ID} / ${ENVIRONMENT} -- the join probe"
+    while IFS= read -r line; do
+      t_case "${line}"
+      t_skip "${line}: not measured: ${problem}"
+    done < <(join_checks)
+    if t_summary; then exit 0; fi
+    exit 1
+  fi
   # shellcheck source-path=SCRIPTDIR
   # shellcheck source=../lib.sh
   source "${REPO_ROOT}/scripts/acceptance/lib.sh"

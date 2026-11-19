@@ -376,6 +376,47 @@ def test_until_it_is_configured_every_check_skips_and_says_why(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Run on its own, as verify-remote.sh runs it, without the sandbox URL
+# ---------------------------------------------------------------------------
+
+
+def _standalone(tmp_path: Path, **settings: str) -> subprocess.CompletedProcess:
+    """Executes the group file as the swarm-verify job does for this step: the
+    probe's own settings only, no SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL."""
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "NO_COLOR": "1", "TMPDIR": str(tmp_path),
+           "SWARM_ENV_FILE": str(tmp_path / "no.env"), "PROJECT_ID": "swarm-dev-test",
+           **placeholder_deployment.child_env("swarm-dev-test"), **settings}
+    env.pop("SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL", None)
+    return subprocess.run(["bash", str(GROUP)], cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
+
+
+def test_unprovisioned_it_skips_naming_every_missing_setting_instead_of_failing(tmp_path):
+    proc = _standalone(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    for name in SETTINGS:
+        assert name in proc.stderr, proc.stderr
+    assert proc.stderr.count("SKIP") == len(CHECKS), proc.stderr
+    assert "NOT MEASURED" in proc.stderr
+    assert "SANDBOX_REPOSITORY_URL" not in proc.stderr
+    assert "FAIL" not in proc.stderr
+
+
+def test_partly_provisioned_it_names_only_what_is_missing(tmp_path):
+    proc = _standalone(tmp_path, **{SETTINGS[0]: TENANT, SETTINGS[2]: PERSON})
+    assert proc.returncode == 0, proc.stderr
+    assert f"{SETTINGS[1]} is unset" in proc.stderr and f"{SETTINGS[3]} is unset" in proc.stderr
+    assert f"{SETTINGS[0]} is unset" not in proc.stderr and f"{SETTINGS[2]} is unset" not in proc.stderr
+    assert "SANDBOX_REPOSITORY_URL" not in proc.stderr
+
+
+def test_provisioned_it_still_reaches_the_configuration_check(tmp_path):
+    proc = _standalone(tmp_path, **dict(zip(SETTINGS, (TENANT, ADMIN, PERSON, PERSON_SECRET))))
+    assert proc.returncode == 1, proc.stderr
+    assert "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL is not set" in proc.stderr, proc.stderr
+    assert "SKIP" not in proc.stderr
+
+
+# ---------------------------------------------------------------------------
 # Where it runs
 # ---------------------------------------------------------------------------
 
