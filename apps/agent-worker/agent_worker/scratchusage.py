@@ -80,6 +80,11 @@ from typing import Any, Callable, Iterable
 #: volume name, its mountPath, its sizeLimit in GiB. Cloud Run sets nothing:
 #: its disk is the memory-backed workspace, which no kubelet evicts.
 SCRATCH_VOLUMES_ENV = "SWARM_SCRATCH_VOLUMES"
+#: The variable naming the claude-code runner's scratch note (issue #26): a
+#: file in the worker's `private/` that `Worker._scratch_crossed` writes when
+#: a volume passes two thirds of its limit, and `runners/budget_note_hook.py`
+#: hands to the agent once, as it does the budget's note.
+SCRATCH_NOTE_ENV = "SWARM_SCRATCH_NOTE"
 
 GIB = 1024**3
 MIB = 1024**2
