@@ -22,8 +22,12 @@ Google's token endpoint and swarm-api) and a fake `gcloud`, both on PATH:
   membership, FAILs;
 * neither the join code, the person's refresh token nor any minted token
   reaches argv or the probe's output;
-* the probe SKIPs, naming what is missing, until its settings are set, and
-  never runs in the shared smoke tenant;
+* the person's requests go through the front door (SWARM_ACCEPTANCE_CONSOLE_URL,
+  where IAP takes the Desktop client's ID token, minted with `openid email`
+  only), and the admin's to the service's own address; pointed at the
+  service's address the person is refused;
+* the probe SKIPs, naming what is missing, until its settings and the front
+  door's URL are set, and never runs in the shared smoke tenant;
 * accept.yml runs it in the smoke job beside the roles probe, through
   verify-remote.sh, which carries its settings into the execution;
 * the design records it as built.
@@ -72,6 +76,12 @@ ADMIN = "qa-admin@example-project.iam.gserviceaccount.com"
 PERSON = "join-tester@example.com"
 PERSON_SECRET = "swarm-acceptance-join-person"
 API_URL = "https://swarm-api.example.a.run.app"
+#: The front door, IAP in front of swarm-api: the only address that takes the
+#: person's ID token (its audience is the Desktop OAuth client). The swarm-verify
+#: job's own setting, not the probe's, so not in SETTINGS (accept.yml does not
+#: pass it).
+CONSOLE = "SWARM_ACCEPTANCE_CONSOLE_URL"
+FRONT_URL = "https://swarm.example.com"
 #: The deployment's private sandbox: configuration with no default in
 #: scripts/acceptance/config.sh, so the probe gets the placeholder repository's.
 SANDBOX_URL = f"https://github.com/{_PLACEHOLDERS.GITHUB_REPOSITORY}.git"
@@ -84,7 +94,10 @@ pytestmark = pytest.mark.skipif(
 
 #: A stand-in for every endpoint the probe reaches from the swarm-verify job.
 #: It logs its argv, tells the caller apart by the bearer token in the header
-#: file, and keeps the fake API's state as files in FAKE_DIR. FAKE_SWITCH is
+#: file, and keeps the fake API's state as files in FAKE_DIR. Like the real
+#: deployment, the service's own address (FAKE_API) takes only the admin's
+#: token, and the front door (FAKE_FRONT) only the person's; hosts.log says
+#: which address each caller reached. FAKE_SWITCH is
 #: platform_memberships; FAKE_BROKEN breaks one behaviour so a test can show
 #: the probe notices.
 FAKE_CURL = r"""#!/usr/bin/env bash
@@ -122,15 +135,18 @@ case "${url}" in
     printf '{"payload":{"data":"%s"}}' "${FAKE_CREDENTIAL_B64}"; exit 0 ;;
   https://oauth2.googleapis.com/token)
     [[ "${data}" == *"refresh_token=${FAKE_REFRESH}"* && "${data}" == *"grant_type=refresh_token"* ]] || exit 22
+    tr '&' '
+' <<<"${data}" | sed -n 's/^scope=//p' >>"${FAKE_DIR}/scopes"
     printf '{"access_token":"x","id_token":"%s","token_type":"Bearer"}' "${FAKE_PERSON_ID}"; exit 0 ;;
-  "${FAKE_API}"/*) ;;
+  "${FAKE_API}"/*) host=api; path="${url#"${FAKE_API}"}" ;;
+  "${FAKE_FRONT}"/*) host=front; path="${url#"${FAKE_FRONT}"}" ;;
   *) printf '%s\n' "${url}" >>"${FAKE_DIR}/elsewhere"; exit 7 ;;
 esac
 who=""
 [[ "${bearer}" == "${FAKE_ADMIN_ID}" ]] && who=admin
 [[ "${bearer}" == "${FAKE_PERSON_ID}" ]] && who=person
-[[ -n "${who}" ]] || answer 401 '{}'
-path="${url#"${FAKE_API}"}"
+printf '%s %s\n' "${who:-nobody}" "${host}" >>"${FAKE_DIR}/hosts.log"
+[[ "${who}:${host}" == "admin:api" || "${who}:${host}" == "person:front" ]] || answer 401 '{}'
 printf '%s %s %s %s\n' "${who}" "${method}" "${path}" "${tenant}" >>"${FAKE_DIR}/api.log"
 on=false; [[ "${FAKE_SWITCH}" == "on" ]] && on=true
 member=0; [[ -f "${FAKE_DIR}/member" ]] && member=1
@@ -214,13 +230,13 @@ def _probe(tmp_path: Path, switch: str, broken: str = "", **extra: str):
     env = {"PATH": str(bin_dir), "HOME": str(tmp_path), "NO_COLOR": "1", "TMPDIR": str(tmp_path),
            "SWARM_ENV_FILE": str(tmp_path / "no.env"), "CLOUD_RUN_JOB": "swarm-verify",
            "PROJECT_ID": "swarm-dev-test", "API_URL": API_URL, "API_HOST": "front.example.com",
-           "FAKE_DIR": str(fake), "FAKE_API": API_URL, "FAKE_SWITCH": switch,
+           "FAKE_DIR": str(fake), "FAKE_API": API_URL, "FAKE_FRONT": FRONT_URL, "FAKE_SWITCH": switch,
            "FAKE_BROKEN": broken, "FAKE_TENANT": TENANT, "FAKE_PERSON": PERSON,
            "FAKE_ADMIN": ADMIN, "SWARM_ACCEPTANCE_JOIN_SETTLE": "0",
            "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL": SANDBOX_URL,
            "FAKE_CREDENTIAL_B64": base64.b64encode(credential.encode()).decode(),
            SETTINGS[0]: TENANT, SETTINGS[1]: ADMIN, SETTINGS[2]: PERSON, SETTINGS[3]: PERSON_SECRET,
-           **placeholder_deployment.child_env("swarm-dev-test"), **tokens, **extra}
+           CONSOLE: FRONT_URL, **placeholder_deployment.child_env("swarm-dev-test"), **tokens, **extra}
     script = (f'source "{REPO}/scripts/lib/common.sh"\nSUITE_NAME=acceptance\n'
               f'source "{REPO}/scripts/lib/testlib.sh"\n'
               f'source "{REPO}/scripts/acceptance/lib.sh"\nsource "{GROUP}"\n'
@@ -328,6 +344,51 @@ def test_a_link_left_on_fails_link_off(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# The person through the front door, the admin at the service's address
+# ---------------------------------------------------------------------------
+
+
+def test_the_persons_requests_go_through_the_front_door_and_the_admins_do_not(tmp_path):
+    proc, fake, _ = _probe(tmp_path, "on")
+    assert proc.returncode == 0, proc.stderr
+    hosts = (fake / "hosts.log").read_text().splitlines()
+    person = [h.split()[1] for h in hosts if h.startswith("person ")]
+    admin = [h.split()[1] for h in hosts if h.startswith("admin ")]
+    # whoami, before, the ask, after, mine and removed: every one of the person's.
+    assert len(person) >= 6 and set(person) == {"front"}, hosts
+    assert len(admin) >= 6 and set(admin) == {"api"}, hosts
+    assert "nobody" not in " ".join(hosts)
+    urls = [line.split()[-1] for line in (fake / "curl.argv").read_text().splitlines()]
+    assert any(u == f"{FRONT_URL}/v1/join-requests/mine" for u in urls), urls
+    assert any(u == f"{FRONT_URL}/v1/tenants/me" for u in urls), urls
+    assert not any(u.startswith(f"{API_URL}/v1/join-requests") or u.startswith(f"{API_URL}/v1/tenants/")
+                   for u in urls), urls
+    assert not any(u.startswith(f"{FRONT_URL}/v1/workspace") or u.startswith(f"{FRONT_URL}/v1/admin")
+                   for u in urls), urls
+
+
+def test_a_trailing_slash_on_the_front_door_is_not_doubled(tmp_path):
+    proc, fake, _ = _probe(tmp_path, "on", **{CONSOLE: FRONT_URL + "/"})
+    assert _verdicts(proc) == {c: "PASS" for c in CHECKS}, proc.stderr
+    assert f"{FRONT_URL}//v1" not in (fake / "curl.argv").read_text()
+
+
+def test_the_persons_id_token_is_minted_with_openid_email_only(tmp_path):
+    proc, fake, _ = _probe(tmp_path, "on")
+    assert proc.returncode == 0, proc.stderr
+    assert (fake / "scopes").read_text().splitlines() == ["openid%20email"]
+
+
+def test_the_person_at_the_services_own_address_is_refused(tmp_path):
+    """MUTATION: the front door's URL is the service's address, where the
+    Desktop client's ID token is refused: whoami fails and nothing runs."""
+    proc, fake, _ = _probe(tmp_path, "on", **{CONSOLE: API_URL})
+    assert _verdicts(proc) == {c: "FAIL" for c in CHECKS}, proc.stderr
+    assert "HTTP 401" in proc.stderr and "front door" in proc.stderr
+    assert not (fake / "link_on").exists()
+
+
+# ---------------------------------------------------------------------------
 # What it needs before it runs
 # ---------------------------------------------------------------------------
 
@@ -348,12 +409,21 @@ def test_the_checks_are_the_seven_the_design_names():
 
 def test_it_names_every_missing_setting():
     proc = _bash("join_settings_problem || true")
-    for name in SETTINGS:
+    for name in (*SETTINGS, CONSOLE):
         assert name in proc.stdout, proc.stdout
 
 
+def test_the_front_door_must_be_an_https_origin():
+    full = {**dict(zip(SETTINGS, (TENANT, ADMIN, PERSON, PERSON_SECRET))), CONSOLE: FRONT_URL}
+    assert _bash("join_settings_problem && echo OK", **full).stdout.strip() == "OK"
+    for value in ("http://swarm.example.com", "https://user@swarm.example.com",
+                  f"{FRONT_URL}/v1", f"{FRONT_URL}?x=1", "swarm.example.com"):
+        proc = _bash("join_settings_problem || echo REFUSED", **{**full, CONSOLE: value})
+        assert "REFUSED" in proc.stdout and CONSOLE in proc.stdout, value
+
+
 def test_it_never_runs_in_the_smoke_tenant_a_personal_one_or_as_a_service_account():
-    full = dict(zip(SETTINGS, (TENANT, ADMIN, PERSON, PERSON_SECRET)))
+    full = {**dict(zip(SETTINGS, (TENANT, ADMIN, PERSON, PERSON_SECRET))), CONSOLE: FRONT_URL}
     assert _bash("join_settings_problem && echo OK", **full).stdout.strip() == "OK"
     # The never-touch list is the placeholder deployment's, served for the project _bash
     # names: a name on it (a PEER entry, never a real resource) is refused as the secret,
@@ -375,6 +445,13 @@ def test_until_it_is_configured_every_check_skips_and_says_why(tmp_path):
     assert SETTINGS[3] in proc.stderr
 
 
+def test_without_the_front_door_every_check_skips_naming_it(tmp_path):
+    proc, fake, _ = _probe(tmp_path, "on", **{CONSOLE: ""})
+    assert _verdicts(proc) == {c: "SKIP" for c in CHECKS}, proc.stderr
+    assert f"{CONSOLE} is unset" in proc.stderr
+    assert not (fake / "api.log").exists(), "the probe made a request with no front door"
+
+
 # ---------------------------------------------------------------------------
 # Run on its own, as verify-remote.sh runs it, without the sandbox URL
 # ---------------------------------------------------------------------------
@@ -393,7 +470,7 @@ def _standalone(tmp_path: Path, **settings: str) -> subprocess.CompletedProcess:
 def test_unprovisioned_it_skips_naming_every_missing_setting_instead_of_failing(tmp_path):
     proc = _standalone(tmp_path)
     assert proc.returncode == 0, proc.stderr
-    for name in SETTINGS:
+    for name in (*SETTINGS, CONSOLE):
         assert name in proc.stderr, proc.stderr
     assert proc.stderr.count("SKIP") == len(CHECKS), proc.stderr
     assert "NOT MEASURED" in proc.stderr
@@ -406,11 +483,22 @@ def test_partly_provisioned_it_names_only_what_is_missing(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert f"{SETTINGS[1]} is unset" in proc.stderr and f"{SETTINGS[3]} is unset" in proc.stderr
     assert f"{SETTINGS[0]} is unset" not in proc.stderr and f"{SETTINGS[2]} is unset" not in proc.stderr
+    assert f"{CONSOLE} is unset" in proc.stderr
+
+
+def test_provisioned_but_for_the_front_door_it_skips_naming_it(tmp_path):
+    proc = _standalone(tmp_path, **dict(zip(SETTINGS, (TENANT, ADMIN, PERSON, PERSON_SECRET))))
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr.count("SKIP") == len(CHECKS), proc.stderr
+    assert f"{CONSOLE} is unset" in proc.stderr
+    for name in SETTINGS:
+        assert f"{name} is unset" not in proc.stderr
     assert "SANDBOX_REPOSITORY_URL" not in proc.stderr
 
 
 def test_provisioned_it_still_reaches_the_configuration_check(tmp_path):
-    proc = _standalone(tmp_path, **dict(zip(SETTINGS, (TENANT, ADMIN, PERSON, PERSON_SECRET))))
+    proc = _standalone(tmp_path, **dict(zip(SETTINGS, (TENANT, ADMIN, PERSON, PERSON_SECRET))),
+                       **{CONSOLE: FRONT_URL})
     assert proc.returncode == 1, proc.stderr
     assert "SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL is not set" in proc.stderr, proc.stderr
     assert "SKIP" not in proc.stderr

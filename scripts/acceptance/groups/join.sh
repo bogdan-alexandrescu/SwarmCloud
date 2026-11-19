@@ -31,16 +31,31 @@
 # routes/join_requests.py: joining is a person's own request), so the asker
 # cannot be minted by impersonation as the roles probe's identities are. The
 # person's sign-in is an OAuth `authorized_user` credential (client_id,
-# client_secret, refresh_token; what `gcloud auth application-default login`
-# writes) in the Secret Manager secret ACC_JOIN_PERSON_SECRET, read at run
-# time with the job's access token and exchanged at Google's token endpoint
-# for an ID token. Its OAuth client must be one the API accepts (API_AUDIENCE,
-# or the front door's IAP client). Nothing of it reaches argv, a file other
-# than a 0600 one removed at once, or a log; the join code neither.
+# client_secret, refresh_token) for the deployment's Desktop OAuth client
+# (docs/runbooks/iap-desktop-client.md; what `sc login` signs in with), in the
+# Secret Manager secret ACC_JOIN_PERSON_SECRET, read at run time with the
+# job's access token and exchanged at Google's token endpoint for an ID token,
+# scopes `openid email` only.
+#
+# THE PERSON GOES THROUGH THE FRONT DOOR; THE ADMIN DOES NOT. That ID token's
+# audience is the Desktop client, which swarm-api never accepts as a bearer
+# (it pins API_AUDIENCE) and which Cloud Run's own check on the service's
+# address refuses too. The front door's IAP does accept it, for programmatic
+# access, once the client is on the backends' allowlist (the runbook, step
+# 4); IAP then forwards the request with its signed assertion, which swarm-api
+# verifies and judges the request by alone. So every request the person makes
+# (whoami, the ask, the selects, the check after a removal) goes to
+# SWARM_ACCEPTANCE_CONSOLE_URL, https://<frontend_hostname>, whose URL map
+# sends /v1/* to swarm-api, with the token as `Authorization: Bearer` exactly
+# as `sc` sends it. The admin's requests keep acc_api_as and `api_url`: a
+# service account's ID token minted for API_AUDIENCE, which the service's own
+# address takes. Nothing of the person's credential reaches argv, a file
+# other than a 0600 one removed at once, or a log; the join code neither.
 #
 # Until the owner has provisioned the workspace, the person and the secret
-# (config in accept.yml's repository variables), every check SKIPs and says
-# which setting is missing; a skip is never a pass.
+# (config in accept.yml's repository variables and secrets) and the job has
+# the front door's URL, every check SKIPs and says which setting is missing;
+# a skip is never a pass.
 #
 # Run in accept.yml's smoke job, after the roles probe, as
 # `verify-remote.sh acceptance/groups/join`, so this file is also its own
@@ -52,13 +67,19 @@
 # shellcheck disable=SC2034,SC2154,SC2016
 set -euo pipefail
 
-#: The probe's settings (accept.yml passes them from the repository variables
-#: JOIN_TENANT, JOIN_ADMIN_SA, JOIN_PERSON and JOIN_PERSON_SECRET). None is a
-#: secret: a tenant id, two addresses and a secret's NAME.
+#: The probe's settings. accept.yml passes the first four from the
+#: repository's JOIN_TENANT and JOIN_PERSON_SECRET variables and its
+#: JOIN_ADMIN_SA and JOIN_PERSON secrets: the two addresses are masked as
+#: secrets so a log does not name an account or a person, though neither is a
+#: credential, and the secret's setting is its NAME, never its value. The front
+#: door's URL is the swarm-verify job's own SWARM_ACCEPTANCE_CONSOLE_URL
+#: (terraform/infra/verify.tf, from acceptance_console_url), the address the
+#: person's requests go to.
 ACC_JOIN_TENANT="${SWARM_ACCEPTANCE_JOIN_TENANT:-}"
 ACC_JOIN_ADMIN_SA="${SWARM_ACCEPTANCE_JOIN_ADMIN_SA:-}"
 ACC_JOIN_PERSON="${SWARM_ACCEPTANCE_JOIN_PERSON:-}"
 ACC_JOIN_PERSON_SECRET="${SWARM_ACCEPTANCE_JOIN_PERSON_SECRET:-}"
+ACC_JOIN_FRONT_DOOR="${SWARM_ACCEPTANCE_CONSOLE_URL:-}"
 #: How long a membership write may take to reach the instance that answers
 #: the person's next request: resolution caches a membership read for 15 s
 #: (memberships.py), and only the writing instance evicts at once.
@@ -89,10 +110,12 @@ EOF
 join_settings_problem() {
   local problems=() tenant="${ACC_JOIN_TENANT}" admin="${ACC_JOIN_ADMIN_SA}"
   local person="${ACC_JOIN_PERSON}" secret="${ACC_JOIN_PERSON_SECRET}"
+  local front="${ACC_JOIN_FRONT_DOOR}"
   [[ -n "${tenant}" ]] || problems+=("SWARM_ACCEPTANCE_JOIN_TENANT is unset")
   [[ -n "${admin}" ]] || problems+=("SWARM_ACCEPTANCE_JOIN_ADMIN_SA is unset")
   [[ -n "${person}" ]] || problems+=("SWARM_ACCEPTANCE_JOIN_PERSON is unset")
   [[ -n "${secret}" ]] || problems+=("SWARM_ACCEPTANCE_JOIN_PERSON_SECRET is unset")
+  [[ -n "${front}" ]] || problems+=("SWARM_ACCEPTANCE_CONSOLE_URL is unset (the front door the person's requests go through)")
   if [[ -n "${tenant}" ]]; then
     if [[ ! "${tenant}" =~ ^[a-z0-9][a-z0-9-]*$ || "${tenant}" == u-* ]]; then
       problems+=("SWARM_ACCEPTANCE_JOIN_TENANT must name a group workspace")
@@ -109,6 +132,11 @@ join_settings_problem() {
   if [[ -n "${secret}" ]] && { [[ ! "${secret}" =~ ^[A-Za-z0-9_-]{1,255}$ ]] || is_shared_resource "${secret}"; }; then
     problems+=("SWARM_ACCEPTANCE_JOIN_PERSON_SECRET must be a Secret Manager secret id of this platform's")
   fi
+  # The origin only: https, a host, no user info, path, query or fragment, so
+  # the person's token can go nowhere but the front door.
+  if [[ -n "${front}" && ! "${front}" =~ ^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]{1,5})?/?$ ]]; then
+    problems+=("SWARM_ACCEPTANCE_CONSOLE_URL must be the front door's https origin, https://<frontend_hostname>")
+  fi
   [[ "${#problems[@]}" -gt 0 ]] || return 0
   local IFS=';'
   printf '%s\n' "${problems[*]}"
@@ -122,7 +150,9 @@ JOIN_LINK_SET=0
 JOIN_ADMITTED=0
 
 # _join_person_token -> sets JOIN_PERSON_ID from the person's authorized_user
-# credential in Secret Manager, or returns 1 with why on stderr. The access
+# credential in Secret Manager, or returns 1 with why on stderr. The refresh
+# asks for `openid email` only: an ID token naming the person is all IAP and
+# swarm-api read, and the probe wants no API scope of the person's. The access
 # token and the credential go to curl in 0600 files and through pipes, never
 # in argv; the form is built by jq from the secret's payload, in a pipe.
 _join_person_token() {
@@ -136,7 +166,7 @@ _join_person_token() {
     "https://secretmanager.googleapis.com/v1/projects/${PROJECT_ID}/secrets/${ACC_JOIN_PERSON_SECRET}/versions/latest:access" 2>/dev/null \
     | jq -r '.payload.data | @base64d | fromjson
              | select(.refresh_token and .client_id)
-             | "grant_type=refresh_token&client_id=\(.client_id | @uri)&client_secret=\(.client_secret // "" | @uri)&refresh_token=\(.refresh_token | @uri)"' \
+             | "grant_type=refresh_token&client_id=\(.client_id | @uri)&client_secret=\(.client_secret // "" | @uri)&refresh_token=\(.refresh_token | @uri)&scope=openid%20email"' \
       >"${form}" 2>/dev/null || rc=$?
   rm -f "${header}"
   if [[ "${rc}" -ne 0 || ! -s "${form}" ]]; then
@@ -155,8 +185,9 @@ _join_person_token() {
 }
 
 # _join_person NAME METHOD PATH [BODY] [TENANT] -> one API request as the
-# person, into ${ACC_WORK}/join.NAME (and .status, 0 when none was made, and
-# .err). The body goes to curl from a 0600 file: the ask's carries the code.
+# person, THROUGH THE FRONT DOOR (ACC_JOIN_FRONT_DOOR, never `api_url`: see
+# the header), into ${ACC_WORK}/join.NAME (and .status, 0 when none was made,
+# and .err). The body goes to curl from a 0600 file: the ask's carries the code.
 _join_person() {
   local name="$1" method="$2" path="$3" body="${4:-}" tenant="${5:-}"
   local out="${ACC_WORK}/join.$1" header data="" response
@@ -174,7 +205,7 @@ _join_person() {
     printf '%s' "${body}" >"${data}"
     args+=(-H "Content-Type: application/json" --data-binary @"${data}")
   fi
-  response="$(curl "${args[@]}" "$(api_url)${API_PREFIX}${path}" 2>"${out}.err")" || response=""
+  response="$(curl "${args[@]}" "${ACC_JOIN_FRONT_DOOR%/}${API_PREFIX}${path}" 2>"${out}.err")" || response=""
   rm -f "${header}" ${data:+"${data}"}
   [[ -n "${response}" ]] || return 0
   printf '%s' "${response##*$'\n'}" >"${out}.status"
@@ -182,7 +213,7 @@ _join_person() {
 }
 
 # _join_admin NAME METHOD PATH BODY -> acc_api_as the platform admin, in the
-# test workspace, into ${ACC_WORK}/join.NAME.
+# test workspace, into ${ACC_WORK}/join.NAME: the service's own address.
 _join_admin() {
   acc_api_as "${ACC_JOIN_ADMIN_SA}" "${ACC_JOIN_TENANT}" "$2" "$3" "$4" "${ACC_WORK}/join.$1"
 }
@@ -277,7 +308,7 @@ run_join() {
   fi
   _join_person whoami GET /join-requests/mine
   if [[ "$(_join_status whoami)" != "200" ]]; then
-    _join_fail_rest "GET /v1/join-requests/mine as ${ACC_JOIN_PERSON} answered HTTP $(_join_status whoami) $(_join_code whoami) $(_join_err whoami): the API did not take the person's sign-in as a person" "${all[@]}"
+    _join_fail_rest "GET /v1/join-requests/mine as ${ACC_JOIN_PERSON} answered HTTP $(_join_status whoami) $(_join_code whoami) $(_join_err whoami) through the front door ${ACC_JOIN_FRONT_DOOR}: IAP or the API did not take the person's sign-in as a person (a 401 from IAP: the credential's OAuth client is not on the backends' programmatic allowlist, docs/runbooks/iap-desktop-client.md)" "${all[@]}"
     return 0
   fi
   _join_admin members GET /workspace/members ""
@@ -432,7 +463,7 @@ run_join() {
 # nor lib.sh (whose config check refuses a run without the sandbox URL).
 join_unprovisioned() {
   local n problems=()
-  for n in SWARM_ACCEPTANCE_JOIN_TENANT SWARM_ACCEPTANCE_JOIN_ADMIN_SA SWARM_ACCEPTANCE_JOIN_PERSON SWARM_ACCEPTANCE_JOIN_PERSON_SECRET; do
+  for n in SWARM_ACCEPTANCE_JOIN_TENANT SWARM_ACCEPTANCE_JOIN_ADMIN_SA SWARM_ACCEPTANCE_JOIN_PERSON SWARM_ACCEPTANCE_JOIN_PERSON_SECRET SWARM_ACCEPTANCE_CONSOLE_URL; do
     [[ -n "${!n:-}" ]] || problems+=("${n} is unset")
   done
   [[ "${#problems[@]}" -gt 0 ]] || return 0
