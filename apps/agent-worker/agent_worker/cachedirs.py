@@ -65,8 +65,13 @@ and Chromium's unpacked libraries and fonts to a literal /tmp, the pod's 3 GiB
 
 * `scratch_note` is the one sentence the claude-code runner appends to the
   agent's prompt: databases, test logs, unpacked libraries and fonts and
-  downloads under $TMPDIR, never a literal /tmp, never the workspace. On Cloud
-  Run, where there is no cache volume, a shorter sentence that promises none.
+  downloads under $TMPDIR, never a literal /tmp, never the workspace; and the
+  build and test output tools write inside the checkout by default (issue 26:
+  node_modules, a framework's `.next*` build directory and Playwright's
+  test-results filled task_7a9a3133's 5 GiB workspace): one node_modules
+  install, deleted when done, `.next*` deleted when done, and Playwright's
+  output sent to $TMPDIR with `--output`. On Cloud Run, where there is no
+  cache volume, a shorter sentence that promises none.
 * `cache_env` sets PLAYWRIGHT_BROWSERS_PATH to `<cache>/ms-playwright` when the
   worker's environment has none, so a browser an agent installs lands on this
   volume by name. Only then: agent-runtime-browser's own value is the
@@ -189,13 +194,23 @@ def scratch_note(own_volume: bool) -> str:
             "and never evicts the pod; never write it to a literal /tmp "
             f"({TMP_VOLUME_GIB} GiB: past it the pod is evicted and the attempt "
             f"lost) or to the workspace (at most {WORKSPACE_VOLUME_GIB} GiB, "
-            "checkpointed)."
+            "checkpointed). Build and test output lands in the checkout by "
+            "default and counts against the workspace too: install "
+            "node_modules once and delete it when no longer needed, delete a "
+            "framework build directory (.next, .next-mock and other .next*) "
+            "when done, and pass Playwright --output=$TMPDIR/test-results (or "
+            "set outputDir) so its test-results, traces and videos go to the "
+            "cache volume."
         )
     return (
         "Put scratch data under $TMPDIR, never a literal /tmp or the checkout: "
         "$TMPDIR is inside the workspace's in-memory filesystem and counts "
         "against this container's memory limit, so keep it small and delete "
-        "what you no longer need."
+        "what you no longer need. The same holds for build and test output "
+        "in the checkout: install node_modules once and delete it when no "
+        "longer needed, delete .next* build directories when done, and pass "
+        "Playwright --output=$TMPDIR/test-results (or set outputDir) so its "
+        "test-results stay small."
     )
 
 
