@@ -8,8 +8,8 @@ says at that moment is ever written. task_73850f24085447368991 was evicted
 for `/tmp` past 3 GiB and its last_error said only that, with nothing about
 what had filled it -- so the next run filled it the same way.
 
-So the worker reads the volumes BEFORE the eviction, on every heartbeat, and
-puts the reading on the HEARTBEAT event (`detail["scratch"]`): each volume's
+So the worker reads the volumes BEFORE the eviction, on a thread of its own,
+and puts the newest reading on every HEARTBEAT event (`detail["scratch"]`): each volume's
 used bytes, its limit and its five largest paths. The reconciler, repairing
 the eviction, reports the newest reading in the task's last_error (the
 reconciler restates this shape as data rather than import it). Past two
@@ -22,7 +22,13 @@ kubelet's `Usage of EmptyDir volume "<name>"` message uses:
 
     {"tmp": {"used_bytes": int, "limit_bytes": int,
              "top": [[absolute path, bytes], ...], "partial": bool,
-             "inodes_used": int | None, "inodes_total": int | None}}
+             "inodes_used": int | None, "inodes_total": int | None,
+             "complete_used_bytes": int | None, "read_at": float}}
+
+`complete_used_bytes` is the used bytes of the sampler's last pass that walked
+the volume whole (None before one has); `read_at` is when the reading was
+taken, in epoch seconds. `sample` alone writes neither: `ScratchSampler` adds
+both.
 
 BYTES ARE ALLOCATED BLOCKS (`st_blocks * 512`), as kubelet's du-style
 accounting counts them: a sparse file costs what it allocated, not its
@@ -41,9 +47,19 @@ volume, a network disk outside `SWARM_SCRATCH_VOLUMES`, is read too
 (`cache_reading`), carried beside the reading as `detail["scratch_cache"]`,
 and warned on in the heartbeat by `cache_warnings`, inodes named apart.
 
-THE WALK IS BOUNDED, by an entry count and a wall time per volume, because it
-runs on the loop that heartbeats the lease. A walk that stopped early says so
-(`partial`), and its bytes are a floor.
+THE WALK RUNS OFF THE HEARTBEAT LOOP (issue #26). It used to run on the loop
+that heartbeats the lease, bounded to `MAX_ENTRIES` entries and `MAX_SECONDS`
+per volume; once a `node_modules` was in the checkout every reading stopped
+early, and its bytes were a floor (61-900 MiB while real use passed 5 GiB), so
+the two-thirds warning never fired. Now a daemon thread (`ScratchSampler`)
+walks each volume du-style with its own, far larger budget
+(`WALK_MAX_ENTRIES`, `WALK_MAX_SECONDS`), pausing between passes, and
+publishes its newest reading; the heartbeat only reads that, with no I/O of
+its own, so no walk ever holds the beat that extends the lease. `partial`
+still means the walk stopped early -- now only at the thread's large bound --
+and its `used_bytes` is a floor; `complete_used_bytes` carries the last pass
+that finished, and `crossing_bytes` is what a threshold is compared with.
+`sample` keeps its own small default bound for any caller on a hot path.
 """
 
 from __future__ import annotations
@@ -53,6 +69,7 @@ import json
 import os
 import re
 import stat
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -75,6 +92,19 @@ TOP = 5
 MAX_ENTRIES = 20_000
 #: Wall time one volume's walk takes at most, for the same reason.
 MAX_SECONDS = 0.25
+#: The sampler thread's bounds per volume (`ScratchSampler`), off the
+#: heartbeat loop. A `/workspace` of 5 GiB holding a few `node_modules` trees
+#: is some hundreds of thousands of entries, and an `lstat` costs a few
+#: microseconds: 2,000,000 entries or 30 s walks any volume these limits allow
+#: whole, while still ending a pass on a pathological tree of empty files
+#: (which then reads `partial`, a floor, beside its last complete total).
+WALK_MAX_ENTRIES = 2_000_000
+WALK_MAX_SECONDS = 30.0
+#: The sampler's pause after a pass: at least this, and at least as long as
+#: the pass took, so the walk never spends more than half of one CPU of a pod
+#: whose agent is building. 15 s is a few heartbeats: the newest reading is
+#: at most one pass and one pause old.
+WALK_PAUSE_SECONDS = 15.0
 #: How deep the walk looks for one directory that holds nearly everything
 #: (`DESCEND_SHARE`) -- the `/workspace/<attempt>` wrapper -- before it lists
 #: the largest paths, so the report names what is inside the wrapper rather
@@ -294,9 +324,135 @@ def bounded(reading: dict[str, Any], max_bytes: int = SCRATCH_DETAIL_MAX_BYTES) 
         trimmable = [entry for entry in reading.values() if entry["top"]]
         if not trimmable:
             break
-        emptiest = min(trimmable, key=lambda e: e["used_bytes"] / max(e["limit_bytes"], 1))
+        emptiest = min(trimmable, key=lambda e: crossing_bytes(e) / max(e["limit_bytes"], 1))
         emptiest["top"].pop()
     return reading
+
+
+def crossing_bytes(entry: dict[str, Any]) -> int:
+    """What a volume's entry is compared with a threshold by: the larger of its
+    `used_bytes` and its last complete total (`complete_used_bytes`).
+
+    A `partial` reading's bytes are a floor; the last pass that walked the
+    volume whole is the better figure until the volume shrinks below it, and
+    then a whole walk's `used_bytes` is that figure again.
+    """
+    return max(int(entry.get("used_bytes") or 0), int(entry.get("complete_used_bytes") or 0))
+
+
+def start_thread(target: Callable[[], None], name: str) -> Any:
+    """A started daemon thread running `target`: `ScratchSampler`'s, injectable in tests."""
+    thread = threading.Thread(target=target, name=name, daemon=True)
+    thread.start()
+    return thread
+
+
+class ScratchSampler:
+    """Walks the scratch volumes whole on its own daemon thread; `latest` is the newest reading.
+
+    See THE WALK RUNS OFF THE HEARTBEAT LOOP in the module docstring. Each
+    pass is `sample` with `WALK_MAX_ENTRIES` and `WALK_MAX_SECONDS`; each
+    entry gains `complete_used_bytes` and `read_at`, and the reading is
+    published under a lock. `latest` costs no I/O: the heartbeat calls it.
+    `run_once` is one pass on the caller's thread, for tests. Nothing here
+    raises: a failed pass is logged once through `warn` and the last reading
+    is kept.
+    """
+
+    def __init__(
+        self,
+        volumes: Iterable[tuple[str, Path, int]],
+        *,
+        scrub: Callable[[str], str] | None = None,
+        warn: Callable[[str], None] | None = None,
+        clock: Callable[[], float] = time.time,
+        monotonic: Callable[[], float] = time.monotonic,
+        starter: Callable[[Callable[[], None], str], Any] | None = None,
+        max_entries: int = WALK_MAX_ENTRIES,
+        max_seconds: float = WALK_MAX_SECONDS,
+        pause_seconds: float = WALK_PAUSE_SECONDS,
+    ) -> None:
+        self._volumes = list(volumes)
+        self._scrub = scrub
+        self._warn = warn
+        self._clock = clock
+        self._monotonic = monotonic
+        self._starter = starter
+        self._max_entries = max_entries
+        self._max_seconds = max_seconds
+        self._pause_seconds = pause_seconds
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._latest: dict[str, Any] | None = None
+        self._complete: dict[str, int] = {}
+        self._thread: Any = None
+        self._warned = False
+
+    def start(self) -> None:
+        """Start the thread, once. Never raises."""
+        if self._thread is not None:
+            return
+        try:
+            # `start_thread` looked up when called, so a test's patch holds.
+            self._thread = (self._starter or start_thread)(self._loop, "scratch-sampler")
+        except Exception as exc:
+            self._warn_once(exc)
+
+    def stop(self, timeout: float = 1.0) -> None:
+        """End the thread after its current pass. Never raises.
+
+        The join is short: a pass in progress is not interrupted, and the
+        thread is a daemon, so it never holds the worker's exit.
+        """
+        self._stop.set()
+        thread = self._thread
+        if thread is None:
+            return
+        try:
+            thread.join(timeout)
+        except Exception as exc:
+            self._warn_once(exc)
+
+    def latest(self) -> dict[str, Any] | None:
+        """The newest reading (a copy), or None before the first pass ends."""
+        with self._lock:
+            reading = self._latest
+        return json.loads(json.dumps(reading)) if reading is not None else None
+
+    def run_once(self) -> dict[str, Any] | None:
+        """One pass over every volume on the caller's thread; the reading it published, or None."""
+        try:
+            reading = sample(self._volumes, max_entries=self._max_entries,
+                             max_seconds=self._max_seconds, scrub=self._scrub)
+            read_at = round(self._clock(), 3)
+            for name, entry in reading.items():
+                if not entry["partial"]:
+                    self._complete[name] = entry["used_bytes"]
+                entry["complete_used_bytes"] = self._complete.get(name)
+                entry["read_at"] = read_at
+            reading = bounded(reading)
+        except Exception as exc:
+            self._warn_once(exc)
+            return None
+        with self._lock:
+            self._latest = reading
+        return reading
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            began = self._monotonic()
+            self.run_once()
+            took = max(0.0, self._monotonic() - began)
+            self._stop.wait(max(self._pause_seconds, took))
+
+    def _warn_once(self, exc: BaseException) -> None:
+        if self._warned or self._warn is None:
+            return
+        self._warned = True
+        try:
+            self._warn(f"{type(exc).__name__}: {exc}")
+        except Exception:
+            pass
 
 
 def _shown(path: str, scrub: Callable[[str], str] | None) -> str:

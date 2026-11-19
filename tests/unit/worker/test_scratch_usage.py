@@ -164,7 +164,9 @@ def test_a_reading_stays_within_its_share_of_the_event():
 
     long = "/" + "p" * 119
     reading = {
-        name: {"used_bytes": used, "limit_bytes": 3 * GIB, "top": [[long, 1] for _ in range(5)], "partial": False}
+        name: {"used_bytes": used, "limit_bytes": 3 * GIB, "top": [[long, 1] for _ in range(5)], "partial": False,
+               # What `ScratchSampler` adds to each entry fits too.
+               "complete_used_bytes": used, "read_at": 1_763_520_000.123}
         for name, used in (("workspace", GIB), ("tmp", int(2.5 * GIB)), ("home", 0))
     }
 
@@ -381,8 +383,9 @@ def test_the_mirrored_sizes_are_the_dispatchers():
 # kubelet evicts with no grace period, so the worker puts its newest reading
 # on every HEARTBEAT event, warns once per volume past two thirds of its
 # limit, and writes an out-of-cadence reading at that crossing (and at every
-# further 10% of the limit). `scratchusage.sample` is patched: what is pinned
-# here is the heartbeat's use of a reading, not the walk (above).
+# further 10% of the limit). `scratchusage.sample` is patched, and the
+# sampler runs one pass per beat on the test's thread (`_scripted`): what is
+# pinned here is the heartbeat's use of a reading, not the walk (above).
 
 
 WARNING = "past it kubelet evicts this pod"
@@ -417,6 +420,18 @@ def _scripted(monkeypatch, readings: list[int]) -> list[object]:
         return _reading(readings.pop(0))
 
     monkeypatch.setattr(scratchusage, "sample", fake_sample)
+
+    class EveryBeat(scratchusage.ScratchSampler):
+        """No thread: one pass per read, so each beat reads the next scripted sample."""
+
+        def start(self) -> None:
+            return None
+
+        def latest(self):
+            self.run_once()
+            return super().latest()
+
+    monkeypatch.setattr(scratchusage, "ScratchSampler", EveryBeat)
     return calls
 
 
@@ -439,7 +454,9 @@ def test_heartbeat_event_carries_the_scratch_reading(db, worker, monkeypatch):
     worker._heartbeat()
 
     (beat,) = _beats(db)
-    assert beat["detail"]["scratch"] == _reading(GIB)
+    scratch = beat["detail"]["scratch"]
+    assert scratch["tmp"].pop("read_at") > 0
+    assert scratch == {"tmp": {**_reading(GIB)["tmp"], "complete_used_bytes": GIB}}
     # Still a whole reading: the readers of the usage figures see them.
     assert "memory_limit_bytes" in beat["detail"] and "series" in beat["detail"]
 

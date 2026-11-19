@@ -1543,6 +1543,9 @@ class Worker:
             return self._run()
         finally:
             self._stop_egress_probe()
+            # The scratch volumes' walker (`_scratch_reading`), started by the
+            # first heartbeat: no sampler thread outlives the attempt.
+            self._stop_scratch_sampler()
 
     def _start_egress_probe(self) -> None:
         """Probe the forge's path from process start (archived issue 721 (a)). Never raises.
@@ -13086,12 +13089,21 @@ class Worker:
 
     #: The pod's local scratch volumes (`scratchusage.parse_volumes`), read
     #: once; [] on Cloud Run, where nothing is sampled. And per volume, the
-    #: used bytes at its last out-of-cadence reading.
+    #: bytes (`scratchusage.crossing_bytes`) at its last out-of-cadence reading.
     _scratch_volumes: list[tuple[str, Path, int]] | None = None
     _scratch_marks: dict[str, int] | None = None
+    #: The thread that walks them (`scratchusage.ScratchSampler`), built and
+    #: started by the first beat that has volumes; stopped by `run`.
+    _scratch_sampler: Any = None
 
     def _scratch_reading(self) -> dict[str, Any] | None:
-        """This beat's walk of the scratch volumes (archived issue 2436), or None without any. Never raises."""
+        """The newest walk of the scratch volumes (archived issue 2436), or None. Never raises.
+
+        None without volumes, and before the sampler's first pass ends. The
+        walk runs on the sampler's own thread (issue #26), never here: this
+        runs on the loop that extends the lease, and reading the published
+        reading costs no I/O.
+        """
         from . import scratchusage as scratch_mod
 
         if self._scratch_volumes is None:
@@ -13100,10 +13112,23 @@ class Worker:
         if not self._scratch_volumes:
             return None
         try:
-            return scratch_mod.sample(self._scratch_volumes, scrub=self.log.scrub_text)
+            if self._scratch_sampler is None:
+                self._scratch_sampler = scratch_mod.ScratchSampler(
+                    self._scratch_volumes,
+                    scrub=self.log.scrub_text,
+                    warn=lambda error: self.log.warning(
+                        "could not read the scratch volumes", error=error),
+                )
+                self._scratch_sampler.start()
+            return self._scratch_sampler.latest()
         except Exception as exc:
             self.log.warning("could not read the scratch volumes", error=f"{type(exc).__name__}: {exc}")
             return None
+
+    def _stop_scratch_sampler(self) -> None:
+        sampler = self._scratch_sampler
+        if sampler is not None:
+            sampler.stop()
 
     def _scratch_crossed(self, scratch: dict[str, Any]) -> bool:
         """Whether a volume passed two thirds of its limit, or grew another 10% of it past.
@@ -13118,9 +13143,11 @@ class Worker:
         crossed = False
         for name, mount, limit in self._scratch_volumes or []:
             entry = scratch.get(name)
-            if not entry or entry["used_bytes"] < scratch_mod.warn_threshold(limit):
+            # A `partial` reading's bytes are a floor: compared by the larger
+            # of them and the last complete walk's total (issue #26).
+            if not entry or scratch_mod.crossing_bytes(entry) < scratch_mod.warn_threshold(limit):
                 continue
-            used = entry["used_bytes"]
+            used = scratch_mod.crossing_bytes(entry)
             if name not in marks:
                 self.log.warning(
                     f"{mount} is at {scratch_mod.size_words(used)} of its "
