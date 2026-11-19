@@ -52,3 +52,33 @@ def test_the_headless_settings_keep_the_background_refusal(tmp_path):
         if any("refuse-background.py" in h["command"] for h in e["hooks"])
     ]
     assert "Bash" in entry["matcher"].split("|")
+
+
+def _note_hooks(settings: dict, hook: Path) -> list[str]:
+    return [
+        h["command"]
+        for e in settings["hooks"].get("PostToolUse", [])
+        for h in e["hooks"]
+        if str(hook) in h["command"]
+    ]
+
+
+def test_the_scratch_note_hook_is_wired_when_the_worker_sets_it(tmp_path, monkeypatch):
+    # MUTATION: drop the scratch note's PostToolUse entry in
+    # `claude_code.write_headless_settings` -- the agent is never told.
+    from agent_worker.scratchusage import SCRATCH_NOTE_ENV
+
+    monkeypatch.delenv(SCRATCH_NOTE_ENV, raising=False)
+    monkeypatch.delenv(claude_code.BUDGET_NOTE_ENV, raising=False)
+    assert _note_hooks(_settings(tmp_path), claude_code.BUDGET_NOTE_HOOK) == []
+
+    scratch_note = tmp_path / "private" / "scratch-note.json"
+    budget_note = tmp_path / "private" / "budget-note.json"
+    monkeypatch.setenv(SCRATCH_NOTE_ENV, str(scratch_note))
+    monkeypatch.setenv(claude_code.BUDGET_NOTE_ENV, str(budget_note))
+
+    commands = _note_hooks(_settings(tmp_path / "both"), claude_code.BUDGET_NOTE_HOOK)
+
+    # Alongside the budget's note, not instead of it.
+    assert sorted(c.rsplit(" ", 1)[-1] for c in commands) == sorted(
+        [str(budget_note), str(scratch_note)])

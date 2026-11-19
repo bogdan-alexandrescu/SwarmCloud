@@ -782,3 +782,51 @@ def test_the_heartbeat_does_not_walk_the_volumes(db, worker, monkeypatch, tmp_pa
     assert walked
     worker._heartbeat()
     assert worker._scratch_reading()["tmp"]["partial"] is False
+
+
+def test_a_crossing_tells_the_agent_its_largest_paths(db, worker_factory, monkeypatch):
+    # MUTATION: drop the note write from `Worker._scratch_crossed` -- the
+    # warning reaches only the worker's log, which the agent never sees.
+    from agent_worker import scratchusage
+
+    seed_attempt(db)
+    built, config, _ = worker_factory(runner_profile="claude-code")
+    built.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    monkeypatch.setenv(scratchusage.SCRATCH_VOLUMES_ENV, "tmp=/tmp:3")
+    used = [GIB, int(2.2 * GIB), int(2.25 * GIB), int(2.6 * GIB)]
+    _scripted(monkeypatch, list(used))
+    # A stale note of an earlier attempt is cleared when the runner's env is built.
+    note = built.ws.private / "scratch-note.json"
+    note.write_text(json.dumps({"message": "stale"}))
+    note.with_name(note.name + ".told").write_text("{}")
+
+    env = built._scratch_note_env()
+
+    assert env == {scratchusage.SCRATCH_NOTE_ENV: str(note)}
+    assert not note.exists() and not note.with_name(note.name + ".told").exists()
+
+    built._heartbeat()  # under two thirds: nothing to tell
+    assert not note.exists()
+
+    built._heartbeat()  # past two thirds: told once, with its largest paths
+    assert note.stat().st_mode & 0o777 == 0o600
+    message = json.loads(note.read_text())["message"]
+    assert "/tmp is at 2.2 GiB of its 3 GiB limit" in message
+    assert scratchusage.format_top(_reading(used[1])["tmp"]) in message
+    assert "$TMPDIR" in message
+    # The hook renames it on telling; nothing rewrites it under the next 10%.
+    note.rename(note.with_name(note.name + ".told"))
+    built._heartbeat()
+    assert not note.exists()
+
+    built._heartbeat()  # another 10% of the limit: told again
+    message = json.loads(note.read_text())["message"]
+    assert "/tmp is at 2.6 GiB of its 3 GiB limit" in message
+
+
+def test_no_scratch_note_for_a_runner_that_cannot_be_told(worker, monkeypatch):
+    # MUTATION: drop the `cli_agent_spec` check in `Worker._scratch_note_env`.
+    from agent_worker import scratchusage
+
+    monkeypatch.setenv(scratchusage.SCRATCH_VOLUMES_ENV, "tmp=/tmp:3")
+    assert worker._scratch_note_env() == {}
