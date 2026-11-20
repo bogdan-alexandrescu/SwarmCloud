@@ -11,6 +11,11 @@ not in the workspace yet):
     GET    /v1/join-requests/mine                           {requests: [...]}
     POST   /v1/join-requests/{ref}/withdraw
 
+The person's own, in the tenant `X-Swarm-Tenant` selects (any role there;
+only the caller, never a subject):
+
+    POST   /v1/workspace/leave            {reason?}         ends their platform membership
+
 A workspace admin's, in the tenant `X-Swarm-Tenant` selects (its `admin`, or
 a platform admin):
 
@@ -78,6 +83,9 @@ from ..errors import (
     MembershipUnavailable,
     NotFound,
     UpstreamUnavailable,
+    WorkspaceLeaveLastAdmin,
+    WorkspaceLeaveNotMember,
+    WorkspaceLeavePersonOnly,
 )
 from ..groups import GroupLookupError
 from ..joinrequests import Decision, JoinRequest, RequestView
@@ -101,6 +109,8 @@ router = APIRouter(tags=["join-requests"])
 LOOKUP_ROUTE = "/v1/join/lookup"
 ASK_ROUTE = "/v1/join-requests"
 LINK_ROUTE = "/v1/workspace/join-link"
+#: The person's own: leave the selected workspace (`roles.PERSON_ROUTES`).
+LEAVE_ROUTE = "/v1/workspace/leave"
 
 #: What a person is shown for a workspace with no display name: never its id
 #: or its group, which a working code does not reveal (§4.2).
@@ -150,6 +160,11 @@ class MemberRemoval(StrictModel):
     reason: str | None = Field(default=None, max_length=memberships.REASON_MAX)
 
 
+class LeaveBody(StrictModel):
+    #: No `email`: only the caller leaves, so a subject is a 422.
+    reason: str | None = Field(default=None, max_length=memberships.REASON_MAX)
+
+
 class ApproveBody(StrictModel):
     #: `viewer` or the workspace's default; none given is the default (Q4 (a)).
     role: str | None = Field(default=None, max_length=32)
@@ -166,16 +181,16 @@ class DenyBody(StrictModel):
 # ---------------------------------------------------------------------------
 
 
-def _person(auth: AuthContext) -> str:
-    """The caller, when they are a person who may ask (§4.1): never a
-    service account, the schedule tick, the rollup sweeper, a listed
-    service account or a pool admin acting as one."""
+def _person(auth: AuthContext, refusal: Callable[[str], Exception] = Forbidden) -> str:
+    """The caller, when they are a person who may ask (§4.1) or leave
+    (§4.4): never a service account, the schedule tick, the rollup sweeper,
+    a listed service account or a pool admin acting as one."""
     email = (auth.email or "").strip().lower()
     if (auth.is_pool_admin or auth.is_rollup_sweeper or auth.is_schedule_tick
             or auth.member_scope or auth.tenant_member or ws.is_service_identity(email)
             or not memberships.is_person(email)):
-        raise Forbidden("joining a workspace is a person's own request; this identity is not "
-                        "a person")
+        raise refusal("joining or leaving a workspace is a person's own request; this "
+                      "identity is not a person")
     return email
 
 
@@ -485,6 +500,65 @@ def remove_member(
                 state=memberships.REMOVED, by=auth.email, via=via, reason=body.reason,
                 detail={"still_in_group": still})
     return {"email": subject, "state": memberships.REMOVED, "still_in_group": still}
+
+
+def _last_admin(request: Request, ctx: AppContext, *, tenant_id: str, email: str,
+                group: str) -> bool:
+    """Whether the caller is the workspace's only `admin` by override and
+    the group does not hold them there, so their leaving would leave it no
+    admin of its own. The roster read and the group check are fresh; either
+    failing is a 503, never a guess that lets the last admin go."""
+    store = ctx.roles
+    assert store is not None
+    mine = store.newest_valid(tenant_id, email, fresh=True)
+    if mine is None or mine.role != roles.ADMIN:
+        return False
+    if any(other != email and grant.role == roles.ADMIN
+           for other, grant in store.overrides(tenant_id)):
+        return False
+    return not _in_group(request, ctx, email, group)
+
+
+@router.post(LEAVE_ROUTE)
+def leave_workspace(
+    request: Request,
+    body: LeaveBody | None = None,
+    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The caller leaves the workspace their own sign-in selected: a
+    `removed` grant over THEIR platform membership here, `via: self`, with
+    its audit row (§4.4). Never anyone else's -- the body has no subject --
+    and never the Google group, which the platform cannot change:
+    `still_in_group` says when the group still lists them. A role override
+    they held here is KEPT, exactly as `remove_member` keeps it, so asking
+    and being approved again restores what an admin named. The workspace's
+    last `admin` by override cannot leave it without one (409
+    `workspace_leave_last_admin`)."""
+    email = _person(auth, WorkspaceLeavePersonOnly)
+    if roles.is_personal(auth):
+        raise JoinNotOffered("a personal workspace is yours alone; there is nothing to leave")
+    group = _registered(ctx).get(tenant_id)
+    if group is None or group != (auth.tenant_principal or "").strip().lower():
+        raise JoinNotOffered("only a group workspace holds platform memberships to leave")
+    store = membership_store(ctx)
+    grant = store.read(email, fresh=True).newest.get(tenant_id)
+    if grant is None or grant.state != memberships.MEMBER:
+        raise WorkspaceLeaveNotMember(
+            "you hold no platform membership of this workspace, so there is nothing to leave; "
+            "if its Google group lists you, the group's own admins change that. Nothing was "
+            "written")
+    if _last_admin(request, ctx, tenant_id=tenant_id, email=email, group=group):
+        raise WorkspaceLeaveLastAdmin(
+            "you are this workspace's only admin; name another admin before you leave. "
+            "Nothing was written")
+    still = _still_in_group(request, ctx, email, group)
+    store.write(tenant_id=tenant_id, group=grant.group, subject=email,
+                state=memberships.REMOVED, by=email, via=memberships.VIA_SELF,
+                reason=body.reason if body is not None else None,
+                detail={"still_in_group": still})
+    return {"email": email, "state": memberships.REMOVED, "still_in_group": still}
 
 
 # ---------------------------------------------------------------------------

@@ -547,6 +547,31 @@ class JoinWorkspaceQueueFull(RateLimited):
     code = "join_workspace_queue_full"
 
 
+class WorkspaceLeavePersonOnly(Forbidden):
+    """`POST /v1/workspace/leave` by an identity that is not a person: a
+    service account, the schedule tick, the rollup sweeper, a listed service
+    account or a pool admin acting as one (§4.4). Only a person leaves, and
+    only themselves."""
+
+    code = "workspace_leave_person_only"
+
+
+class WorkspaceLeaveNotMember(NotFound):
+    """A person leaving a workspace they hold no platform membership of --
+    they reach it through its Google group alone, which the platform cannot
+    change, or not at all (§4.4). Nothing is written."""
+
+    code = "workspace_leave_not_member"
+
+
+class WorkspaceLeaveLastAdmin(Conflict):
+    """A person leaving a workspace whose only `admin` by override they are,
+    while the group does not hold them there: the workspace would be left
+    with no admin of its own (§4.4). Nothing is written."""
+
+    code = "workspace_leave_last_admin"
+
+
 class MembershipUnavailable(UpstreamUnavailable):
     """A person's platform memberships could not be read -- Firestore
     failed, or the bounded read ended before the tenant asked about was

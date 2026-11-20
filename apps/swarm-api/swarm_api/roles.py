@@ -426,6 +426,9 @@ def registered_group_tenants(settings: Any) -> dict[str, str]:
 PERSON_ROUTES: frozenset[str] = frozenset({
     "/v1/tenants/me", "/v1/tenants/mine", "/v1/workspace", "/v1/workspace/loan-request",
     "/v1/provider-keys/{provider}/user",
+    # Leaving a workspace (join-requests.md §4.4): the person's own, whatever
+    # role a grant holds them at there.
+    "/v1/workspace/leave",
 })
 PERSON_ROUTE_PREFIXES: tuple[str, ...] = (
     "/v1/admin/", "/v1/onboarding/github", "/v1/profile",

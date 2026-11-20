@@ -77,7 +77,10 @@ STATES = frozenset({MEMBER, REMOVED})
 VIA_JOIN_REQUEST = "join_request"
 VIA_WORKSPACE_ADMIN = "workspace_admin"
 VIA_PLATFORM_ADMIN = "platform_admin"
-VIAS = frozenset({VIA_JOIN_REQUEST, VIA_WORKSPACE_ADMIN, VIA_PLATFORM_ADMIN})
+#: The person left by their own request (`POST /v1/workspace/leave`): only
+#: ever on a `removed` grant whose `by` is its `subject`.
+VIA_SELF = "self"
+VIAS = frozenset({VIA_JOIN_REQUEST, VIA_WORKSPACE_ADMIN, VIA_PLATFORM_ADMIN, VIA_SELF})
 
 #: The bounded read (§4.4): three pages of 20, read as ONE query of 60 -- the
 #: bound `roles.SCAN_LIMIT` is, in one round trip. It is one query per

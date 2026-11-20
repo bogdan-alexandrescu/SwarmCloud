@@ -654,7 +654,9 @@ SWITCHES: dict[str, Switch] = {
     # that did not exist before that design, so none narrows anything a
     # person could do, and continuing past any of them is the breach itself.
     # They are raised with `raise`, and listed in the guard's
-    # NOT_SWITCHABLE_CODES with that reason.
+    # NOT_SWITCHABLE_CODES with that reason. So are the three of the person's
+    # own leave route (workspace_leave_person_only, workspace_leave_not_member,
+    # workspace_leave_last_admin; §4.4, owner decision 2026-11-20).
 }
 
 
