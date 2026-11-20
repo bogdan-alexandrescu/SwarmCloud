@@ -133,13 +133,17 @@ FROM ${MIRROR_DOCKER_HUB}/${NGINX_IMAGE}
 # the pinned digest and Docker Hub's current 1.31.6-alpine digest (sha256:
 # 884e0b7f..., read on 2026-11-10) still ship 1.1.43-r3 -- checked by listing
 # their packages -- while Alpine v3.24 main carries 1.1.43-r4; same reason, same fix.
+# The release after the self-leave route merged (2026-11-20, 23:00Z) refused it
+# over libxml2 2.13.9-r2 (CVE-2026-86144, HIGH, fixed in 2.13.9-r3): the scan
+# read 2.13.9-r2 in the built image, after this layer, so neither the pinned
+# digest nor the refresh carries the fix; same reason, same fix.
 USER root
 # APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
 # main build and release), so the upgrade below is never an older build's
 # (owner decision 2026-10-14).
 ARG APT_REFRESH=unset
 RUN echo "apk layer of ${APT_REFRESH}" \
- && apk upgrade --no-cache libexpat pcre2 tiff libx11 brotli-libs curl libcurl zlib musl musl-utils libxslt
+ && apk upgrade --no-cache libexpat pcre2 tiff libx11 brotli-libs curl libcurl zlib musl musl-utils libxslt libxml2
 
 # THE ENVIRONMENT, WRITTEN AT START, NOT AT BUILD. nginx's own entrypoint runs
 # every executable script in /docker-entrypoint.d before it starts nginx, as
