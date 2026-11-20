@@ -1614,8 +1614,66 @@ codes. Departures from §6 row 6:
   swarm-verify on both identities. A skip is never a pass; an earlier issue's last
   criterion is met when the probe first passes live.
 
+**The probe's admin is a scoped probe admin, not a platform admin (owner
+decision 2026-11-19).** A security review showed that putting the probe's
+admin identity on `admin_users` would make the verify identity a full
+platform admin one step removed: admin is one boolean, and it could disable
+any tenant. The setting `probe_admin_users` (Terraform
+`var.probe_admin_users`, rendered as swarm-api's `PROBE_ADMIN_USERS`, a JSON
+list of `{principal, tenants}`; `ApiSettings.probe_admin_users`) replaces it.
+Least privilege (owner decision 2026-11-20, "roles + join only"): in the
+group workspaces its entry lists (`roles.probe_admin_scope`) its principal is
+`admin`, `source: probe_admin`, ONLY on the routes the roles and join probes
+measure, `roles.PROBE_ADMIN_ROUTES`; everywhere else it resolves exactly as
+it would without the entry.
+
+* **What it may do there:** read people's roles; set and clear a viewer's
+  or a member's role and set the default (never to `admin`, and never on a
+  person whose stored role is `admin`: 403 `role_admin_required`); list the
+  workspace's members; read and set the join link; list, approve and deny
+  join requests, where an approval never changes or clears a stored `admin`
+  role -- one a platform admin named ahead of the person's joining -- and is
+  refused the same 403 instead. Every write is recorded `via: probe_admin`:
+  the role grants and their audit rows, and the join decisions.
+* **What it may not do:** remove a member, or anything else a workspace
+  admin does -- secrets, MCP servers, git-token slots, provider keys,
+  private plugins, repository, merge, plan and QA settings, the workspace's
+  name, ending runs. Each refuses it 403 `probe_admin_not_permitted` and
+  writes nothing.
+
+**Why one choke point.** `RoleStore.resolve` answers `admin` for a probe
+admin only when the call passes `probe_admin=True`, which only the routes on
+`PROBE_ADMIN_ROUTES` do; every other call gets its ordinary role capped at
+`member`, marked `Resolution.probe_admin`, so `RoleStore.require` and
+`RoleStore.refusal` (and the few gates that read a role themselves) refuse
+it with that code. A new admin route therefore refuses a probe admin until
+it is added to the list, and
+`tests/unit/control_plane/test_probe_admin_routes.py` holds the list, its
+call sites and the app's routes to each other.
+
+**What outlives the entry.** It never sets `is_admin`, so it is not in the
+`ADMIN_USERS` migration into `admin_roles`, not in any admin listing, and
+reaches no platform-admin route (Admin › People and the join decisions
+answer it as a workspace admin of its listed workspaces only,
+`routes/people.administered_workspaces`). It cannot grant, change or clear a
+platform admin's or a workspace admin's role, so it never leaves an admin
+behind nor takes one away. What it does write -- a viewer's or member's
+role, the default, an admitted member, the link's state -- stays after its
+entry is removed, as any admin's change does; the probe restores what it
+changed. It selects no workspace: a role never admits anyone, so the
+principal must be in the probe workspace's group. A `u-` id cannot be listed
+(refused at plan time and at start), so the personal-workspace refusal the
+probe measures is unchanged. What this changes for the probe: its admin
+identity is now IN the test workspace's group rather than outside it, so the
+probe's "reach" step (a platform admin outside the group selecting the
+workspace, recorded `platform_admin_acted`) measures nothing for a scoped
+admin, and the probe's admin step is to be reworked to the scoped shape in
+its own change.
+
 **What is left, in order.** The owner provisions ROLES-ACCEPT's identities
-and workspace, and the probe passes live; a named workspace admin in every
+and workspace -- the admin identity as a `probe_admin_users` entry naming
+`ROLES_TENANT` and a member of its group, never an `admin_users` entry -- the
+probe's reach step is reworked for a scoped admin, and the probe passes live; a named workspace admin in every
 group workspace that manages secrets (eng, smoke), then
 `role_admin_required` on in dev; the registry gap above; a week of
 report-only lines in prod; then prod.

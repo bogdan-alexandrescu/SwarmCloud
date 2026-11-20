@@ -537,6 +537,14 @@ NOT_SWITCHABLE_CODES = frozenset({
     # whole in swarm-api's memory to be sent.
     "checkpoint_member_not_an_image",
     "checkpoint_image_too_large",
+    # A scoped probe admin refused a workspace-admin route the acceptance
+    # probes do not measure (roles.PROBE_ADMIN_ROUTES; owner decision
+    # 2026-11-20). Raised only for a principal on PROBE_ADMIN_USERS, which is
+    # empty by default and which this change introduces, so no existing
+    # caller can be refused by it. Continuing past it is the breach itself:
+    # the probes' identity writing a workspace's secrets, keys, plugins or
+    # settings, or removing a member.
+    "probe_admin_not_permitted",
 })
 
 #: What the guard lets through without a switch.

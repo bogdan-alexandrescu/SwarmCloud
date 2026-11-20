@@ -744,6 +744,103 @@ variable "admin_pool_users" {
   }
 }
 
+variable "probe_admin_users" {
+  description = <<-EOT
+    SCOPED workspace admins for the acceptance probes: each entry names one
+    principal and the group workspaces (tenant ids) it is a probe admin of
+    (swarm_api.roles.probe_admin_scope). Everywhere else it resolves exactly
+    as it would without the entry.
+
+    Exists for the roles and join acceptance probes, whose admin identity
+    narrows the test workspace's default role, reads its audit and approves a
+    join request (docs/design/workspace-roles.md section 8,
+    docs/design/join-requests.md section 8). An `admin_users` entry would make
+    that verify identity a FULL platform admin one step removed; the owner
+    decided against it on 2026-11-19 after a security review, and this list
+    replaced it. Least privilege (owner, 2026-11-20): it is admin only on the
+    routes those probes measure (swarm_api.roles.PROBE_ADMIN_ROUTES).
+
+    What it MAY do, in its listed workspaces only: read people's roles; set
+    and clear a viewer's or member's role and set the default (never to
+    admin, never on a person whose stored role is admin); list the
+    workspace's members; read and set the join link; list, approve and deny
+    join requests (an approval never changes or clears a stored admin role).
+    Its writes are recorded via probe_admin.
+
+    What it may NOT do: remove a member, or anything else a workspace admin
+    does (secrets, MCP servers, git-token slots, provider keys, private
+    plugins, repository, merge, plan and QA settings, the workspace name,
+    ending runs): each answers 403 probe_admin_not_permitted and writes
+    nothing. It is not a platform admin (it never sets is_admin, appears in
+    no admin listing and is never written to admin_roles by the ADMIN_USERS
+    migration), reaches no platform-admin route, and SELECTS no workspace:
+    it must already be a member of the listed workspace's group (or hold a
+    platform membership of it). What it does write -- a viewer's or member's
+    role, the default, an admitted member, the link -- stays after its entry
+    is removed, as any admin's change does; it can never leave an admin
+    behind nor take one away. A personal (`u-`) workspace cannot be listed:
+    its only admin is its own person.
+
+    Taken from the environment's tfvars as is; locals.tf appends nothing.
+    Empty, the default, changes nothing.
+
+    Principals are bare emails, never IAM members and never with a `*`
+    (swarm-api compares each with the email in the verified token), and may
+    not also be in admin_users or secret_admin_members, be the platform
+    owner, or be the rollup sweeper or schedule tick identity. A probe
+    identity may also be on admin_pool_users: the two are independent narrow
+    capabilities.
+  EOT
+  type = list(object({
+    principal = string
+    tenants   = list(string)
+  }))
+  default = []
+
+  validation {
+    condition     = alltrue([for e in var.probe_admin_users : can(regex("^[^@:,*[:space:]]+@[^@:,*[:space:]]+$", e.principal))])
+    error_message = "probe_admin_users principals are bare email addresses, not IAM members and never with a *: swarm-api compares each with the email in the verified token, so a serviceAccount: prefix would match nobody and a * would look like a wildcard though it matches only itself."
+  }
+
+  validation {
+    condition     = length(var.probe_admin_users) == length(distinct([for e in var.probe_admin_users : lower(e.principal)]))
+    error_message = "a principal may appear in probe_admin_users once; list every tenant it administers in that one entry."
+  }
+
+  validation {
+    condition = alltrue([
+      for e in var.probe_admin_users : length(e.tenants) > 0 && alltrue([
+        for t in e.tenants : can(regex("^[a-z0-9][a-z0-9-]*$", t)) && !startswith(t, "u-")
+      ])
+    ])
+    error_message = "probe_admin_users tenants are a non-empty list of group workspace tenant ids (lower-case slugs); a personal workspace (u-...) cannot be listed, since its only admin is its own person."
+  }
+
+  validation {
+    condition = length(setintersection(
+      toset([for e in var.probe_admin_users : lower(e.principal)]),
+      toset(concat([for u in var.admin_users : lower(u)], compact([try(lower(var.platform_owner), "")])))
+    )) == 0
+    error_message = "a probe_admin_users principal may not also be in admin_users or be the platform_owner: the scoped list exists so that the probe identity is not a platform admin."
+  }
+
+  # The identities swarm-api also refuses beside it at start
+  # (swarm_api.settings._probe_admins). The sweeper's and the tick's account
+  # ids are modules/service_account_ids' rollup_sweeper_id and
+  # schedule_tick_id, which a variable cannot read; the tftest
+  # probe_admin_users_env holds these two literals to that module.
+  validation {
+    condition = length(setintersection(
+      toset([for e in var.probe_admin_users : lower(e.principal)]),
+      toset(concat(
+        [for m in var.secret_admin_members : lower(replace(replace(replace(m, "user:", ""), "group:", ""), "serviceAccount:", ""))],
+        ["swarm-rollup-sweeper@${var.project_id}.iam.gserviceaccount.com", "swarm-schedule-tick@${var.project_id}.iam.gserviceaccount.com"],
+      ))
+    )) == 0
+    error_message = "a probe_admin_users principal may not also be in secret_admin_members, nor be the rollup sweeper or schedule tick identity: swarm-api refuses each at start, since the scoped list exists so that the probe identity holds no wider role."
+  }
+}
+
 variable "admin_groups" {
   description = <<-EOT
     Google groups whose members may act across tenants in swarm-api -- reading

@@ -12,6 +12,15 @@ THE RULES, in the order `RoleStore.resolve` applies them (§4.1, §4.2, §4.5):
   workspace it is in or reaches (`source: platform_admin`, Q5). No grant is
   read for them -- so a flood of grants cannot touch their role -- and a grant
   naming them is stored and shown but inert while they are one.
+* A scoped probe admin (`ApiSettings.probe_admin_users`) is `admin` in the
+  group workspaces its entry lists, and nowhere else, ONLY when the route
+  asking is one the acceptance probes measure (`PROBE_ADMIN_ROUTES`: people's
+  roles, the member list, the join link and decisions) and says so with
+  `resolve(..., probe_admin=True)` (`source: probe_admin`). Every other call
+  -- every other admin gate -- gets its ordinary role, never above `member`,
+  marked `Resolution.probe_admin`, and an admin gate refuses it 403
+  `probe_admin_not_permitted` (`require`, `refusal`). It is not a platform
+  admin, and it never selects a workspace it is not a member of.
 * Everyone else holds their newest VALID per-person grant (`source:
   override`), else the workspace default: the newest valid `"*"` grant, else
   `member` (§4.7: on the day this ships everyone keeps exactly what they have).
@@ -68,6 +77,7 @@ from .admins import AUDIT_COLLECTION
 from .auth import VIA_PLATFORM_MEMBER, AuthContext
 from .errors import (
     PlatformAdminAuditUnavailable,
+    ProbeAdminNotPermitted,
     RoleAdminRequired,
     RoleMemberRequired,
     RolePersonRequired,
@@ -113,6 +123,38 @@ SOURCE_OVERRIDE = "override"
 SOURCE_DEFAULT = "default"
 SOURCE_PERSONAL = "personal"
 SOURCE_PLATFORM_ADMIN = "platform_admin"
+#: A `PROBE_ADMIN_USERS` entry in one of its listed group workspaces
+#: (`probe_admin_scope`): admin there, and not a platform admin anywhere.
+SOURCE_PROBE_ADMIN = "probe_admin"
+#: The `via` a scoped probe admin's writes are recorded with (role grants,
+#: their audit rows and join decisions), so nothing it did reads as a
+#: console, CLI or workspace admin's.
+VIA_PROBE_ADMIN = "probe_admin"
+#: THE ONLY ROUTES a scoped probe admin acts as `admin` on (owner decision
+#: 2026-11-20, "roles + join only"): what the roles and join acceptance
+#: probes measure -- people's roles, the member list, the join link and the
+#: join decisions. Never removing a member (`DELETE
+#: /v1/workspace/members/person`), and nothing else a workspace admin does.
+#: Each passes `probe_admin=True` to the resolution its gate asks for (or
+#: declares `people.people_scope`); no other call does, so a new admin route
+#: refuses a probe admin until it is added here. Held to the call sites and
+#: the app's routes by tests/unit/control_plane/test_probe_admin_routes.py.
+PROBE_ADMIN_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("GET", "/v1/workspace/roles"),
+    ("PUT", "/v1/workspace/roles/person"),
+    ("DELETE", "/v1/workspace/roles/person"),
+    # The roles probe narrows the default to viewer and restores it; a
+    # default is never `admin` (DEFAULT_ROLES).
+    ("PUT", "/v1/workspace/roles/default"),
+    ("GET", "/v1/workspace/members"),
+    # The join probe turns the link a request is made through on, reads it,
+    # and turns it off again.
+    ("GET", "/v1/workspace/join-link"),
+    ("PUT", "/v1/workspace/join-link"),
+    ("GET", "/v1/admin/people"),
+    ("POST", "/v1/admin/join-requests/{ref}/approve"),
+    ("POST", "/v1/admin/join-requests/{ref}/deny"),
+})
 #: A service account the workspace lists (contract request 30): its listing,
 #: not a grant, decides its role (§4.6).
 SOURCE_LISTING = "listing"
@@ -267,6 +309,10 @@ class Resolution:
     source: str
     #: The person's own grant when `source` is `override`.
     grant: Grant | None = None
+    #: A scoped probe admin in one of its listed workspaces, asked by a route
+    #: that is not on `PROBE_ADMIN_ROUTES`: `role` is its ordinary role, never
+    #: above `member`, and an admin gate refuses it `probe_admin_not_permitted`.
+    probe_admin: bool = False
 
     def to_api(self) -> dict[str, Any]:
         return {"name": self.role, "source": self.source}
@@ -280,6 +326,63 @@ def is_personal(auth: AuthContext) -> bool:
     email = (auth.email or "").strip().lower()
     principal = (auth.tenant_principal or auth.email or "").strip().lower()
     return bool(email) and principal == email
+
+
+def probe_admin_tenants(settings: Any, email: str | None) -> frozenset[str]:
+    """The group workspaces `email` is a scoped probe admin of
+    (`ApiSettings.probe_admin_users`), or none. Configuration only; whether
+    the caller may SELECT one is still decided by their memberships."""
+    email = (email or "").strip().lower()
+    for principal, tenants in getattr(settings, "probe_admin_users", ()) or ():
+        if principal == email:
+            return frozenset(t for t in tenants if not t.startswith("u-"))
+    return frozenset()
+
+
+def probe_admin_scope(settings: Any, auth: AuthContext) -> bool:
+    """The caller is a scoped probe admin IN the selected workspace: its email
+    is on `ApiSettings.probe_admin_users` with this tenant id among its
+    tenants, and the tenant is a group workspace it already selected.
+
+    False for a listed service account (its listing decides it), for the
+    caller's own personal workspace (it is that workspace's admin anyway) and
+    for a platform admin (`is_admin` already decides it), so the entry adds
+    nothing where another rule answers. A `u-` id never matches: one cannot
+    be listed (`settings._probe_admins`), and this refuses it again. Asks
+    nothing of Firestore or Cloud Identity -- configuration only."""
+    if auth.tenant_member or is_personal(auth) or auth.is_admin:
+        return False
+    tenant_id = (auth.tenant_id or "").strip().lower()
+    return bool(tenant_id) and tenant_id in probe_admin_tenants(settings, auth.email)
+
+
+def probe_admin_refusal(auth: AuthContext) -> ProbeAdminNotPermitted:
+    """The 403 every workspace-admin route not on `PROBE_ADMIN_ROUTES` gives
+    a scoped probe admin, raised before anything is written."""
+    return ProbeAdminNotPermitted(
+        f"a probe admin acts as admin of {auth.tenant_id} only on its people's roles, its "
+        "member list and its join decisions; this route is not one of them. Nothing was "
+        "changed.",
+        detail={"tenant_id": auth.tenant_id, "source": SOURCE_PROBE_ADMIN,
+                "permitted": sorted(f"{m} {p}" for m, p in PROBE_ADMIN_ROUTES)})
+
+
+def probe_admin_admin_target(store: "RoleStore", tenant_id: str, subject: str,
+                             role: str | None) -> None:
+    """A scoped probe admin's role write in `tenant_id` -- a person's role, or
+    the one a join approval sets or clears -- may never name `admin` nor
+    change or clear a person whose stored role is `admin`: an admin it named
+    would outlive its entry, and narrowing one, or clearing one a platform
+    admin stored ahead of a person's joining, would take the workspace from
+    the people it belongs to. 403 `role_admin_required`, before anything is
+    written."""
+    current = store.newest_valid(tenant_id, subject, fresh=True)
+    if role == ADMIN or (current is not None and current.role == ADMIN):
+        raise RoleAdminRequired(
+            f"a probe admin's role in {tenant_id} is scoped to it: it cannot grant, change "
+            "or clear a workspace admin's role. Nothing was changed.",
+            detail={"tenant_id": tenant_id, "role": ADMIN, "required": ADMIN,
+                    "source": SOURCE_PROBE_ADMIN, "admins": []})
 
 
 def clean_email(email: Any) -> str:
@@ -526,8 +629,14 @@ class RoleStore:
         role, _ = self.default_role(tenant_id, fresh=fresh)
         return Resolution(role=role, source=SOURCE_DEFAULT)
 
-    def resolve(self, auth: AuthContext, *, fresh: bool = False) -> Resolution:
-        """The caller's role in the tenant the request selected."""
+    def resolve(self, auth: AuthContext, *, fresh: bool = False,
+                probe_admin: bool = False) -> Resolution:
+        """The caller's role in the tenant the request selected.
+
+        `probe_admin=True` is passed ONLY by the routes on
+        `PROBE_ADMIN_ROUTES`; there a scoped probe admin is `admin`. Anywhere
+        else it is its ordinary role capped at `member` and marked, so the
+        one choke point for every admin gate is here."""
         if auth.tenant_member:
             # A SERVICE ACCOUNT THE WORKSPACE LISTS (contract request 30; the
             # GitHub CI fixer, swarm-ci-fix) is a member inside its scope and
@@ -542,6 +651,12 @@ class RoleStore:
             return Resolution(role=ADMIN, source=SOURCE_PERSONAL)
         if auth.is_admin:
             return Resolution(role=ADMIN, source=SOURCE_PLATFORM_ADMIN)
+        if probe_admin_scope(self._settings, auth):
+            if probe_admin:
+                return Resolution(role=ADMIN, source=SOURCE_PROBE_ADMIN)
+            own = self.person_role(auth.tenant_id, auth.email, fresh=fresh)
+            role = MEMBER if own.role == ADMIN else own.role
+            return replace(own, role=role, probe_admin=True)
         return self.person_role(auth.tenant_id, auth.email, fresh=fresh)
 
     def try_resolve(self, auth: AuthContext) -> Resolution | None:
@@ -572,6 +687,10 @@ class RoleStore:
             return None
         if at_least(me.role, needed):
             return me
+        if me.probe_admin and needed == ADMIN:
+            # Not behind the switch: a probe admin is refused every admin
+            # route it is not listed for, whatever role_admin_required says.
+            raise probe_admin_refusal(auth)
         enforced = refusals.enforced(code)
         self._metrics.role_refusals.labels(code=code, enforced=str(enforced).lower()).inc()
         if not enforced:
@@ -588,6 +707,8 @@ class RoleStore:
         """The 403 a role too low gets, naming up to three of the workspace's
         admins so the person knows whom to ask -- every member can read the
         roster already (Q7), so naming them is no leak."""
+        if me.probe_admin and needed == ADMIN:
+            return probe_admin_refusal(auth)
         admins = self.admins(auth.tenant_id) if name_admins else []
         ask = (f" Ask an admin of {auth.tenant_id} ({', '.join(admins)}) to change it."
                if admins else f" Ask an admin of {auth.tenant_id} to change it.")
@@ -885,9 +1006,11 @@ def grant_api(email: str, grant: Grant) -> dict[str, Any]:
             "granted_via": grant.via, "reason": grant.reason}
 
 
-def workspace_payload(store: RoleStore, auth: AuthContext) -> dict[str, Any]:
-    """`GET /v1/workspace/roles` (§4.3), readable by every role (Q7)."""
-    me = store.resolve(auth)
+def workspace_payload(store: RoleStore, auth: AuthContext, *,
+                      probe_admin: bool = False) -> dict[str, Any]:
+    """`GET /v1/workspace/roles` (§4.3), readable by every role (Q7).
+    `probe_admin` is the route's (`PROBE_ADMIN_ROUTES`), for `can_manage`."""
+    me = store.resolve(auth, probe_admin=probe_admin)
     mine: dict[str, Any] = {"email": auth.email, "role": me.role, "source": me.source,
                             "via": tenant_via(auth)}
     if me.grant is not None:

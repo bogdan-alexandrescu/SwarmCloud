@@ -1000,3 +1000,25 @@ acceptance probe in dev runs the off path. Its settings (`JOIN_TENANT`,
 credential in Secret Manager and the swarm-verify identity's
 `secretAccessor` on it are the owner's to provision; until then every check
 SKIPs and names what is missing.
+
+The probe's admin (`JOIN_ADMIN_SA`) is a scoped probe admin, never a platform
+admin (owner decision 2026-11-19): an entry of `probe_admin_users`
+(Terraform `var.probe_admin_users`, swarm-api `PROBE_ADMIN_USERS`) naming
+`JOIN_TENANT`, and a member of that workspace's group. There it resolves as
+`admin` (`source: probe_admin`) only for what the probe measures
+(`roles.PROBE_ADMIN_ROUTES`, owner decision 2026-11-20): it turns the link on
+and off, lists the members, and decides that workspace's requests through
+`routes/people.administered_workspaces`, which counts its listed workspaces
+among its memberships, recorded `via: probe_admin`. It never removes a
+membership (`DELETE /v1/workspace/members/person` is 403
+`probe_admin_not_permitted`), so the probe's removal step needs another
+identity, and an approval that would change or clear a stored `admin` role
+is 403 `role_admin_required` with nothing written. `people_scope`
+refuses a service account on Admin › People because it holds no person's
+role; a probe admin's entry is that role, so a listed one is answered as a
+workspace admin, with its listed workspaces only. Anywhere else it is what
+it would be without the entry, and it is no platform admin on any
+`/v1/admin` route. An `admin_users` entry would have made the verify
+identity a full platform admin one step removed
+([workspace-roles.md](workspace-roles.md) §8 says what the setting cannot
+do).

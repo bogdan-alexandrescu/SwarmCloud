@@ -152,20 +152,25 @@ def _set_default(ctx: AppContext, *, tenant_id: str, by: str, via: str,
             "default_source": "grant", "granted_at": granted_at}
 
 
-def _workspace_writer(ctx: AppContext, auth: AuthContext, requested_via: str) -> str:
+def _workspace_writer(ctx: AppContext, auth: AuthContext, requested_via: str, *,
+                      probe_admin: bool = False) -> str:
     """Authorise a role write in the SELECTED workspace and return the `via`
     it is recorded with. A personal workspace is 409 before anything else:
-    its person is its fixed admin, so there is nothing to grant (§4.5)."""
+    its person is its fixed admin, so there is nothing to grant (§4.5).
+    `probe_admin` only from a route on `roles.PROBE_ADMIN_ROUTES`; a scoped
+    probe admin's write is recorded `via: probe_admin`."""
     if roles.is_personal(auth):
         raise PersonalWorkspaceRolesFixed(
             "a personal workspace has only its person, who is its admin; its roles "
             "cannot be changed")
     store = ctx.roles
     assert store is not None
-    me = store.resolve(auth, fresh=True)
+    me = store.resolve(auth, fresh=True, probe_admin=probe_admin)
     if me.role != roles.ADMIN:
         # RAISED, not refused: a new route (see the module docstring).
         raise store.refusal(auth, me, roles.ADMIN)
+    if me.source == roles.SOURCE_PROBE_ADMIN:
+        return roles.VIA_PROBE_ADMIN
     if me.source != roles.SOURCE_PLATFORM_ADMIN:
         return requested_via
     if auth.tenant_via == roles.VIA_PLATFORM_ADMIN:
@@ -180,6 +185,19 @@ def _workspace_writer(ctx: AppContext, auth: AuthContext, requested_via: str) ->
     return requested_via if own == roles.ADMIN else roles.VIA_PLATFORM_ADMIN
 
 
+def _probe_admin_limit(ctx: AppContext, auth: AuthContext, email: Any,
+                      role: str | None) -> None:
+    """A scoped probe admin (`roles.probe_admin_scope`) may narrow and widen
+    viewers and members in its listed workspace, as the roles probe does, but
+    never grant `admin` to a person nor change or clear a person who holds
+    it (`roles.probe_admin_admin_target`)."""
+    if not roles.probe_admin_scope(ctx.settings, auth):
+        return
+    store = ctx.roles
+    assert store is not None
+    roles.probe_admin_admin_target(store, auth.tenant_id, roles.subject_for_write(email), role)
+
+
 # ---------------------------------------------------------------------------
 # The selected workspace's own
 # ---------------------------------------------------------------------------
@@ -192,7 +210,7 @@ def workspace_roles(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     assert ctx.roles is not None
-    return roles.workspace_payload(ctx.roles, auth)
+    return roles.workspace_payload(ctx.roles, auth, probe_admin=True)
 
 
 @router.put("/v1/workspace/roles/person")
@@ -202,7 +220,8 @@ def workspace_set_person(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    via = _workspace_writer(ctx, auth, body.via)
+    via = _workspace_writer(ctx, auth, body.via, probe_admin=True)
+    _probe_admin_limit(ctx, auth, body.email, roles.check_role(body.role))
     return _set_person(ctx, tenant_id=tenant_id, group=auth.tenant_principal, by=auth.email,
                        via=via, body=body)
 
@@ -214,7 +233,8 @@ def workspace_clear_person(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    via = _workspace_writer(ctx, auth, body.via)
+    via = _workspace_writer(ctx, auth, body.via, probe_admin=True)
+    _probe_admin_limit(ctx, auth, body.email, None)
     return _clear_person(ctx, tenant_id=tenant_id, by=auth.email, via=via, body=body)
 
 
@@ -225,7 +245,7 @@ def workspace_set_default(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    via = _workspace_writer(ctx, auth, body.via)
+    via = _workspace_writer(ctx, auth, body.via, probe_admin=True)
     return _set_default(ctx, tenant_id=tenant_id, by=auth.email, via=via, body=body)
 
 

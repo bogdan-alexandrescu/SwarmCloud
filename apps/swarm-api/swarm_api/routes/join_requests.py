@@ -228,13 +228,18 @@ def _group_workspace(ctx: AppContext, auth: AuthContext) -> str:
 
 
 def _resolve_admin(ctx: AppContext, auth: AuthContext,
-                   refusal: Callable[[roles.Resolution], Exception]) -> roles.Resolution:
+                   refusal: Callable[[roles.Resolution], Exception], *,
+                   probe_admin: bool = False) -> roles.Resolution:
     """The caller's role in the selected workspace, read FRESH, when it is
-    `admin` -- by their own grant or as a platform admin; else `refusal`."""
+    `admin` -- by their own grant or as a platform admin; else `refusal`.
+    `probe_admin` only from a route on `roles.PROBE_ADMIN_ROUTES`; anywhere
+    else a scoped probe admin is 403 `probe_admin_not_permitted`."""
     store = ctx.roles
     assert store is not None
-    me = store.resolve(auth, fresh=True)
+    me = store.resolve(auth, fresh=True, probe_admin=probe_admin)
     if me.role != roles.ADMIN:
+        if me.probe_admin:
+            raise roles.probe_admin_refusal(auth)
         raise refusal(me)
     return me
 
@@ -346,15 +351,18 @@ def withdraw(
 # ---------------------------------------------------------------------------
 
 
-def _link_admin(ctx: AppContext, auth: AuthContext) -> str:
+def _link_admin(ctx: AppContext, auth: AuthContext, *, probe_admin: bool = False) -> str:
     """The join link is the workspace `admin`'s, or a platform admin's: the
     403 is `role_admin_required`, RAISED, because these are new routes (as
-    `routes/roles.py` raises it)."""
+    `routes/roles.py` raises it). A scoped probe admin's too (`probe_admin`,
+    `roles.PROBE_ADMIN_ROUTES`): the join probe opens the link a request is
+    made through."""
     if roles.is_personal(auth):
         raise JoinNotOffered("a personal workspace has one person and takes no join requests")
     store = ctx.roles
     assert store is not None
-    _resolve_admin(ctx, auth, lambda me: store.refusal(auth, me, roles.ADMIN))
+    _resolve_admin(ctx, auth, lambda me: store.refusal(auth, me, roles.ADMIN),
+                   probe_admin=probe_admin)
     return _group_workspace(ctx, auth)
 
 
@@ -366,7 +374,7 @@ def get_join_link(
 ) -> dict:
     """Whether the link is on, and who set it when. Never the code, which
     is not stored, and never its hash."""
-    _link_admin(ctx, auth)
+    _link_admin(ctx, auth, probe_admin=True)
     return join_store(ctx).link(tenant_id).to_api()
 
 
@@ -380,7 +388,7 @@ def set_join_link(
     """Turn the link on or off, or rotate its code. `link` is in the answer
     only when a code was just made -- the one time it is ever shown -- with
     the code in the URL's fragment, which a browser never sends."""
-    group = _link_admin(ctx, auth)
+    group = _link_admin(ctx, auth, probe_admin=True)
     state, code = join_store(ctx).set_link(tenant_id=tenant_id, group=group, on=body.on,
                                            rotate=body.rotate, by=auth.email)
     out = state.to_api()
@@ -390,11 +398,14 @@ def set_join_link(
     return out
 
 
-def _members_admin(ctx: AppContext, auth: AuthContext) -> tuple[str, roles.Resolution]:
-    """Who lists and removes platform memberships: the decider of §4.6."""
+def _members_admin(ctx: AppContext, auth: AuthContext, *,
+                   probe_admin: bool = False) -> tuple[str, roles.Resolution]:
+    """Who lists and removes platform memberships: the decider of §4.6. A
+    scoped probe admin lists them (`probe_admin`, from `list_members`) and
+    never removes one: removal is not something the probes measure."""
     if roles.is_personal(auth):
         raise JoinNotOffered("a personal workspace has one person and takes no join requests")
-    me = _resolve_admin(ctx, auth, _not_decider)
+    me = _resolve_admin(ctx, auth, _not_decider, probe_admin=probe_admin)
     return _group_workspace(ctx, auth), me
 
 
@@ -411,7 +422,7 @@ def list_members(
     whether a fresh per-group check finds them in the Google group too
     (`still_in_group`, null when the directory did not answer). Never a
     document id."""
-    group, _me = _members_admin(ctx, auth)
+    group, _me = _members_admin(ctx, auth, probe_admin=True)
     registered = _registered(ctx)
     store = membership_store(ctx)
     keys = settings_keys(getattr(ctx.settings, "settings_key", ""),
@@ -496,6 +507,7 @@ def _role_change(ctx: AppContext, *, tenant_id: str, subject: str, chosen: str, 
         return None
     common = {"tenant_id": tenant_id, "subject": subject, "by": by,
               "via": roles.VIA_PLATFORM_ADMIN if via == joinrequests.VIA_PLATFORM_ADMIN
+              else roles.VIA_PROBE_ADMIN if via == joinrequests.VIA_PROBE_ADMIN
               else "console",
               "reason": LOWERED_REASON, "previous": current}
     if chosen == default:
@@ -522,7 +534,7 @@ def approve_join_request(
     the membership, a lowered role and every audit row are ONE transaction;
     with it off, the decision is recorded and `group_change` names the
     `gcloud` line that adds the person to the group (`admitted: false`)."""
-    view, via = join_scope(ctx, scope, ref)
+    view, via = join_scope(ctx, scope, ref, auth)
     tenant_id, group, subject = view.request.tenant_id, view.request.group, view.request.requester
     if _registered(ctx).get(tenant_id) != group:
         raise JoinWorkspaceChanged(
@@ -537,6 +549,10 @@ def approve_join_request(
         raise JoinRoleNotAllowed(
             f"an approval gives this workspace's default ({default}) or viewer below it; "
             "name an admin after they have joined")
+    if via == joinrequests.VIA_PROBE_ADMIN:
+        # A probe admin's approval never changes or clears a stored `admin`
+        # role -- one a platform admin named ahead of the person's joining.
+        roles.probe_admin_admin_target(store, tenant_id, subject, chosen)
     by = (auth.email or "").strip().lower()
     admitted = platform_memberships_on(ctx.settings)
     role_change = _role_change(ctx, tenant_id=tenant_id, subject=subject, chosen=chosen,
@@ -585,7 +601,7 @@ def deny_join_request(
 ) -> dict:
     """Deny an open request, with the reason the person is shown. The
     person may ask that workspace again after `DENIED_HOLD_DAYS`."""
-    view, via = join_scope(ctx, scope, ref)
+    view, via = join_scope(ctx, scope, ref, auth)
     _view, decision = join_store(ctx).decide(
         ref, state=joinrequests.DENIED, by=(auth.email or "").strip().lower(), via=via,
         reason=body.reason if body is not None else None, also=_same_request(view))
