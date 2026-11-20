@@ -358,6 +358,17 @@ class RoleAdminRequired(Forbidden):
     code = "role_admin_required"
 
 
+class ProbeAdminNotPermitted(Forbidden):
+    """A scoped probe admin (`ApiSettings.probe_admin_users`) asked a
+    workspace-admin route the acceptance probes do not measure. Its entry
+    reaches only the routes on `roles.PROBE_ADMIN_ROUTES` (people's roles,
+    the member list and the join decisions); every other admin route refuses
+    it with this, before anything is written. Never behind a switch: it is
+    raised only for a principal on that setting, which is empty by default."""
+
+    code = "probe_admin_not_permitted"
+
+
 class RolePersonRequired(Forbidden):
     """A role write naming a service account (§4.6): a listed account has its
     own narrower scope, and a role must not widen it."""

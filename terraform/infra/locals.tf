@@ -995,6 +995,15 @@ locals {
       ADMIN_POOL_USERS        = join(",", sort(var.admin_pool_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
 
+      # Scoped workspace admins for the acceptance probes: JSON
+      # [{principal, tenants}], parsed by swarm_api.settings._probe_admins.
+      # Taken from the tfvars as is, like ADMIN_POOL_USERS; "[]" when empty,
+      # which changes nothing. Never derived here: an identity is a probe
+      # admin only where an environment names it.
+      PROBE_ADMIN_USERS = jsonencode([
+        for e in var.probe_admin_users : { principal = lower(e.principal), tenants = sort(e.tenants) }
+      ])
+
       # The never-touch twin (docs/design/generic-repository.md section 2.4):
       # "1" and the JSON list only when the deployment wrote one ("[]"
       # included); "0" and "" when shared_deny_list is null, so swarm-api
