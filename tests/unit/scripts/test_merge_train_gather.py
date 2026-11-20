@@ -116,6 +116,7 @@ class Gather:
         chosen.write_text("".join(f"{p['number']}\t{p['headRefOid']}\t{p['title']}\n" for p in self.prs))
         summary = self.tmp / "summary.md"
         summary.write_text("")
+        (self.tmp / "output.txt").write_text("")
         self.log.write_text("")
         env = dict(os.environ)
         for key in [k for k in env if k.startswith("MERGE_TRAIN_")]:
@@ -123,6 +124,7 @@ class Gather:
         env.update({"PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}", "GH_REPO": GH_REPO,
                     "FAKE_GH_LOG": str(self.log), "FAKE_EVENTS": str(self.events),
                     "GITHUB_STEP_SUMMARY": str(summary),
+                    "GITHUB_OUTPUT": str(self.tmp / "output.txt"),
                     # The repository's batch size, the script's default too
                     # (a minimum above it is tested on its own).
                     "MERGE_TRAIN_MAX_PRS": "40",
@@ -160,6 +162,28 @@ def test_five_ready_for_five_minutes_board_nothing_and_say_so_in_one_line(gather
     assert "wait for 8 to board (or 15 minutes)" in line
     assert "at the latest" in line and "in 10 minutes" in line
     assert re.search(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", line), line
+
+
+def test_a_gathering_tick_publishes_the_moment_the_oldest_window_ends(gather):
+    """The workflow's `wake` job sleeps to this epoch and dispatches one more
+    tick: no event is raised when a gather's window ends."""
+    gather.ready(101, [_labeled(5)])
+    gather.ready(102, [_labeled(2)])
+    before = int(time.time())
+    verdict, _ = gather.run()
+    assert verdict == "wait"
+    (line,) = (gather.tmp / "output.txt").read_text().splitlines()
+    wake_at = int(line.removeprefix("wake_at="))
+    # #101 became ready 5 minutes ago: its 15-minute window ends 10 minutes on.
+    assert before + 9 * 60 <= wake_at <= before + 10 * 60 + 60
+
+
+def test_a_tick_that_boards_publishes_no_deadline(gather):
+    for n in range(101, 109):
+        gather.ready(n, [_labeled(1)])
+    verdict, _ = gather.run()
+    assert verdict == "board"
+    assert (gather.tmp / "output.txt").read_text() == ""
 
 
 def test_seven_ready_wait_and_eight_board_without_reading_when_they_became_ready(gather):
