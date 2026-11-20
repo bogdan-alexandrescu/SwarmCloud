@@ -1543,6 +1543,9 @@ class Worker:
             return self._run()
         finally:
             self._stop_egress_probe()
+            # The scratch volumes' walker (`_scratch_reading`), started by the
+            # first heartbeat: no sampler thread outlives the attempt.
+            self._stop_scratch_sampler()
 
     def _start_egress_probe(self) -> None:
         """Probe the forge's path from process start (archived issue 721 (a)). Never raises.
@@ -11026,6 +11029,9 @@ class Worker:
         # THE BUDGET (archived issue 2459): where the runner reports usage and reads the
         # stop, on a budgeted task only. Nothing for any other.
         base.update(self._budget_env())
+        # THE SCRATCH NOTE (issue #26): where a crossing of two thirds of a
+        # scratch volume is written for the agent, on GKE and claude-code only.
+        base.update(self._scratch_note_env())
         for name in ("CLAUDE_CODE_BIN", "CLAUDE_CODE_ARGS", "CODEX_BIN", "CODEX_ARGS"):
             # Platform-set, never caller-set: they live in the Job definition.
             if os.environ.get(name):
@@ -13086,54 +13092,129 @@ class Worker:
 
     #: The pod's local scratch volumes (`scratchusage.parse_volumes`), read
     #: once; [] on Cloud Run, where nothing is sampled. And per volume, the
-    #: used bytes at its last out-of-cadence reading.
+    #: bytes (`scratchusage.crossing_bytes`) at its last out-of-cadence reading.
     _scratch_volumes: list[tuple[str, Path, int]] | None = None
     _scratch_marks: dict[str, int] | None = None
+    #: The thread that walks them (`scratchusage.ScratchSampler`), built and
+    #: started by the first beat that has volumes; stopped by `run`.
+    _scratch_sampler: Any = None
+    #: Where a crossing is written for the agent (`_scratch_note_env`), or
+    #: None while the runner was given no note: Cloud Run, or a runner that
+    #: cannot be told mid-run.
+    _scratch_note: Path | None = None
 
-    def _scratch_reading(self) -> dict[str, Any] | None:
-        """This beat's walk of the scratch volumes (archived issue 2436), or None without any. Never raises."""
+    def _scratch_volumes_parsed(self) -> list[tuple[str, Path, int]]:
         from . import scratchusage as scratch_mod
 
         if self._scratch_volumes is None:
             self._scratch_volumes = scratch_mod.parse_volumes(os.environ.get(scratch_mod.SCRATCH_VOLUMES_ENV))
             self._scratch_marks = {}
-        if not self._scratch_volumes:
+        return self._scratch_volumes
+
+    def _scratch_note_env(self) -> dict[str, str]:
+        """The runner's scratch note (issue #26), clearing a stale one on first use.
+
+        Only when the pod has scratch volumes and the runner is claude-code,
+        whose PostToolUse hook (`runners/budget_note_hook.py`) is the one way
+        to tell an agent mid-run; `codex exec` takes nothing once started.
+        """
+        from . import scratchusage as scratch_mod
+
+        if self._scratch_note is None:
+            spec = cli_agent_spec(self.cfg.runner_profile)
+            if spec is None or spec.name != "claude-code" or self.ws is None:
+                return {}
+            if not self._scratch_volumes_parsed():
+                return {}
+            note = self.ws.private / "scratch-note.json"
+            for stale in (note, note.with_name(note.name + ".told")):
+                stale.unlink(missing_ok=True)
+            self._scratch_note = note
+        return {scratch_mod.SCRATCH_NOTE_ENV: str(self._scratch_note)}
+
+    def _scratch_reading(self) -> dict[str, Any] | None:
+        """The newest walk of the scratch volumes (archived issue 2436), or None. Never raises.
+
+        None without volumes, and before the sampler's first pass ends. The
+        walk runs on the sampler's own thread (issue #26), never here: this
+        runs on the loop that extends the lease, and reading the published
+        reading costs no I/O.
+        """
+        from . import scratchusage as scratch_mod
+
+        if not self._scratch_volumes_parsed():
             return None
         try:
-            return scratch_mod.sample(self._scratch_volumes, scrub=self.log.scrub_text)
+            if self._scratch_sampler is None:
+                self._scratch_sampler = scratch_mod.ScratchSampler(
+                    self._scratch_volumes,
+                    scrub=self.log.scrub_text,
+                    warn=lambda error: self.log.warning(
+                        "could not read the scratch volumes", error=error),
+                )
+                self._scratch_sampler.start()
+            return self._scratch_sampler.latest()
         except Exception as exc:
             self.log.warning("could not read the scratch volumes", error=f"{type(exc).__name__}: {exc}")
             return None
+
+    def _stop_scratch_sampler(self) -> None:
+        sampler = self._scratch_sampler
+        if sampler is not None:
+            sampler.stop()
 
     def _scratch_crossed(self, scratch: dict[str, Any]) -> bool:
         """Whether a volume passed two thirds of its limit, or grew another 10% of it past.
 
         The first crossing is warned once per volume per attempt, in the
-        worker's log; every crossing asks for an out-of-cadence reading.
+        worker's log; every crossing asks for an out-of-cadence reading, and
+        tells the agent through its scratch note (`_scratch_note_env`), so
+        that the agent itself, not only the log, learns what fills the volume.
         """
         from . import scratchusage as scratch_mod
 
         marks = self._scratch_marks if self._scratch_marks is not None else {}
         self._scratch_marks = marks
         crossed = False
+        told: list[str] = []
         for name, mount, limit in self._scratch_volumes or []:
             entry = scratch.get(name)
-            if not entry or entry["used_bytes"] < scratch_mod.warn_threshold(limit):
+            # A `partial` reading's bytes are a floor: compared by the larger
+            # of them and the last complete walk's total (issue #26).
+            if not entry or scratch_mod.crossing_bytes(entry) < scratch_mod.warn_threshold(limit):
                 continue
-            used = entry["used_bytes"]
+            used = scratch_mod.crossing_bytes(entry)
+            if name in marks and used < marks[name] + limit // 10:
+                continue
+            words = (
+                f"{mount} is at {scratch_mod.size_words(used)} of its "
+                f"{scratch_mod.limit_words(limit)} limit; past it kubelet evicts this pod. "
+                f"Largest: {scratch_mod.format_top(entry)}. "
+                "Move large scratch data under $TMPDIR (the cache volume)."
+            )
             if name not in marks:
-                self.log.warning(
-                    f"{mount} is at {scratch_mod.size_words(used)} of its "
-                    f"{scratch_mod.limit_words(limit)} limit; past it kubelet evicts this pod. "
-                    f"Largest: {scratch_mod.format_top(entry)}. "
-                    "Move large scratch data under $TMPDIR (the cache volume).",
-                    volume=name, used_bytes=used, limit_bytes=limit,
-                )
-            elif used < marks[name] + limit // 10:
-                continue
+                self.log.warning(words, volume=name, used_bytes=used, limit_bytes=limit)
+            told.append(words)
             marks[name] = used
             crossed = True
+        if told:
+            self._tell_scratch(" ".join(told))
         return crossed
+
+    def _tell_scratch(self, words: str) -> None:
+        """Write the agent's scratch note, replacing one not yet told. Never raises.
+
+        One note per beat, naming every volume that crossed in it; a note the
+        hook has not handed on yet is replaced by the newer beat's, so the
+        agent is told the latest figures, once.
+        """
+        note = self._scratch_note
+        if note is None:
+            return
+        try:
+            budget_mod._write_private(note, json.dumps({"message": self.log.scrub_text(words)}))
+        except OSError as exc:
+            self.log.warning("could not write the scratch note", error=f"{type(exc).__name__}: {exc}")
 
     #: What the cache volume was warned of this attempt: `inodes`, `space`.
     _cache_warned: set[str] | None = None

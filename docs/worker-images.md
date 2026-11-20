@@ -384,6 +384,31 @@ own state is the agent's and is checkpointed with it.
   the checkout's `.venv` is the size it was, and what leaves the workspace is
   everything else the caches hold -- npm's tarballs, downloads and builds,
   terraform's providers, and all of TMPDIR.
+
+  **The pod's local scratch volumes are walked off the heartbeat loop**
+  (issue #26). `/workspace`, `/tmp` and HOME are emptyDirs that kubelet
+  evicts the pod for, with no grace, the moment one passes its `sizeLimit`;
+  the worker puts its newest reading of each (used bytes, limit, largest
+  paths) on the HEARTBEAT event and warns past two thirds. That walk used to
+  run on the loop that extends the lease, so it was bounded to 20,000 entries
+  or 0.25 s per volume, and once a `node_modules` was in the checkout every
+  reading stopped early: its bytes were a floor (61-900 MiB while real use
+  passed 5 GiB), and the two-thirds warning never fired. **Why it moved:** a
+  du-style walk of a large tree takes seconds, and a heartbeat held that long
+  is a lease that can expire under a live worker; a bound small enough to
+  keep the beat safe is too small to see the volume. So a daemon thread
+  (`scratchusage.ScratchSampler`) walks each volume whole with its own budget
+  (2,000,000 entries or 30 s per volume per pass), pausing at least as long
+  as a pass took so it never takes more than half a CPU from the agent, and
+  publishes its newest reading under a lock. The heartbeat only reads that:
+  no I/O of its own, so **the walk can never delay the beat that extends the
+  lease**. **What `partial` means now:** the thread's large bound stopped the
+  pass, so its `used_bytes` is a floor; each entry also carries
+  `complete_used_bytes`, the last pass that finished, and `read_at`. The
+  two-thirds check compares the larger of the two (`crossing_bytes`), so a
+  volume that once read past two thirds still counts as crossed while a later
+  pass is cut short. The trade: the reading is up to one pass and one pause
+  old (15 s or more), against a beat that never waits on the disk.
 * **Cloud Run.** Every volume is a memory tmpfs and the provider cannot give a
   Job a second disk, so there is no cache volume and no `SWARM_CACHE_ROOT`.
   The cache directory is `<attempt>/cache/`, inside the workspace tmpfs, where

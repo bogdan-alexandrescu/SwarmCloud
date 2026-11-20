@@ -323,6 +323,7 @@ from swarm_rollup.agentimage import QA_TOOL_MODULE, VENV_BIN, VENV_PYTHON, runs_
 
 from .. import browser_tools, graphstage, lightpanda, stepservers
 from ..budget import NOTE_ENV as BUDGET_NOTE_ENV
+from ..scratchusage import SCRATCH_NOTE_ENV
 from ..cachedirs import image_browsers_path, scratch_note
 from ..children import CHILDREN_ENV, SCREEN_REVIEW_GUIDE_NAME, git_shim_argv, search_shim_argv
 from ..mcp_attach import MAX_SERVERS as MAX_MCP_SERVERS
@@ -1413,17 +1414,20 @@ def write_headless_settings(directory: Path, *, graph_hint: bool = False) -> Pat
                 ],
             }
         ]
-    budget_note = os.environ.get(BUDGET_NOTE_ENV, "").strip()
-    if budget_note:
-        # A budgeted attempt only (archived issue 2459): after every tool, one rename and
-        # at most one small read; fails open, and tells the note once.
+    # A budgeted attempt (archived issue 2459) and a pod with scratch volumes
+    # (issue #26), each with its own note: after every tool, one rename and
+    # at most one small read per note; fails open, and tells each note once.
+    for note_env in (BUDGET_NOTE_ENV, SCRATCH_NOTE_ENV):
+        note = os.environ.get(note_env, "").strip()
+        if not note:
+            continue
         post_tool_use.append({
             "matcher": "*",
             "hooks": [
                 {
                     "type": "command",
                     "command": f"{shlex.quote(sys.executable)} -I {shlex.quote(str(BUDGET_NOTE_HOOK))} "
-                               f"{shlex.quote(budget_note)}",
+                               f"{shlex.quote(note)}",
                     "timeout": 10,
                 }
             ],
