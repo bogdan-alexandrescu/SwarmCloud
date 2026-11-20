@@ -6,8 +6,9 @@
 # {principal, tenants}, into swarm-api's environment, which
 # swarm_api.settings._probe_admins parses. These runs hold the rendering ("[]"
 # by default, the entries lower-cased and sorted when set) and the plan-time
-# refusals: an IAM member, a personal workspace, an empty tenant list, and a
-# principal that is also a full admin.
+# refusals: an IAM member, a `*` principal, a personal workspace, an empty
+# tenant list, and a principal that is also a full admin, a secret admin or the
+# rollup sweeper.
 
 
 mock_provider "google" {
@@ -117,4 +118,62 @@ run "a_full_admin_is_refused" {
   }
 
   expect_failures = [var.probe_admin_users]
+}
+
+run "a_wildcard_principal_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    probe_admin_users = [{ principal = "*@example.com", tenants = ["smoke"] }]
+  }
+
+  expect_failures = [var.probe_admin_users]
+}
+
+run "the_rollup_sweeper_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    probe_admin_users = [{ principal = "swarm-rollup-sweeper@example-project.iam.gserviceaccount.com", tenants = ["smoke"] }]
+  }
+
+  expect_failures = [var.probe_admin_users]
+}
+
+run "a_secret_admin_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    secret_admin_members = ["user:probe@example.com"]
+    probe_admin_users    = [{ principal = "probe@example.com", tenants = ["smoke"] }]
+  }
+
+  expect_failures = [var.probe_admin_users]
+}
+
+# variables.tf restates the sweeper's and the tick's account ids, which a
+# variable validation cannot read from the module; this holds them together.
+run "the_restated_identities_are_the_modules" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  assert {
+    condition     = module.service_account_ids.rollup_sweeper_id == "swarm-rollup-sweeper" && module.service_account_ids.schedule_tick_id == "swarm-schedule-tick"
+    error_message = "modules/service_account_ids renamed the rollup sweeper or the schedule tick: update the probe_admin_users validation in terraform/infra/variables.tf to match"
+  }
 }

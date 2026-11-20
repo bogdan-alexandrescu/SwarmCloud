@@ -91,7 +91,13 @@ from ..errors import (
     ValidationFailed,
 )
 from ..groups import MembershipResolver
-from ..joinrequests import VIA_PLATFORM_ADMIN, VIA_WORKSPACE_ADMIN, JoinStore, RequestView
+from ..joinrequests import (
+    VIA_PLATFORM_ADMIN,
+    VIA_PROBE_ADMIN,
+    VIA_WORKSPACE_ADMIN,
+    JoinStore,
+    RequestView,
+)
 from ..memberships import MembershipStore
 from ..people import (
     MAX_CEILING,
@@ -357,7 +363,9 @@ def administered_workspaces(ctx: AppContext, auth: AuthContext) -> dict[str, str
     unread: RoleUnavailable | None = None
     read = 0
     # A scoped probe admin administers its listed workspaces among these
-    # memberships, as `RoleStore.resolve` answers it there, and no other.
+    # memberships, as `RoleStore.resolve(..., probe_admin=True)` answers it
+    # there, and no other. Only the routes on `roles.PROBE_ADMIN_ROUTES`
+    # (through `people_scope`) and the notification feed's read ask this.
     probe = frozenset() if auth.tenant_member else roles.probe_admin_tenants(ctx.settings, email)
     for tenant_id, principal in auth.tenant_choices:
         if principal == email or tenant_id.startswith("u-"):
@@ -391,7 +399,9 @@ def people_scope(request: Request, auth: AuthContext = Depends(current_auth),
     before: none of them holds a person's role. The one service account that
     is not is a scoped probe admin (`ApiSettings.probe_admin_users`): its
     entry is a workspace role, so it is answered with its listed workspaces
-    among its memberships, exactly as a workspace admin is."""
+    among its memberships, exactly as a workspace admin is. Every route that
+    declares this is on `roles.PROBE_ADMIN_ROUTES`
+    (tests/unit/control_plane/test_probe_admin_routes.py holds that)."""
     try:
         admin_auth(request, auth)
         return None
@@ -407,7 +417,8 @@ def people_scope(request: Request, auth: AuthContext = Depends(current_auth),
         return administered
 
 
-def join_scope(ctx: AppContext, scope: dict[str, str] | None, ref: str) -> tuple[RequestView, str]:
+def join_scope(ctx: AppContext, scope: dict[str, str] | None, ref: str,
+               auth: AuthContext | None = None) -> tuple[RequestView, str]:
     """WHO MAY DECIDE ONE JOIN REQUEST (join-requests.md §4.6, Q3 (a)): the
     request, read fresh, and the `via` its decision is recorded with. `scope`
     is `people_scope`'s answer, which every decision route declares, so a
@@ -420,7 +431,9 @@ def join_scope(ctx: AppContext, scope: dict[str, str] | None, ref: str) -> tuple
     group it names; anything else is 403 `join_decider_required`. An unknown
     ref, or one whose request fails its MAC, is the SAME 403 to a workspace
     admin, so deciding is never a way to learn which refs exist in another
-    workspace; a platform admin is told which it is."""
+    workspace; a platform admin is told which it is. A scoped probe admin
+    (`auth` on `ApiSettings.probe_admin_users` for the request's workspace)
+    decides as one, recorded `via: probe_admin`."""
     store = join_store(ctx)
     try:
         view = store.view(ref)
@@ -433,6 +446,9 @@ def join_scope(ctx: AppContext, scope: dict[str, str] | None, ref: str) -> tuple
     group = scope.get(view.request.tenant_id)
     if group is None or group.strip().lower() != view.request.group:
         raise _not_decider()
+    if auth is not None and not auth.tenant_member and view.request.tenant_id in \
+            roles.probe_admin_tenants(ctx.settings, auth.email):
+        return view, VIA_PROBE_ADMIN
     return view, VIA_WORKSPACE_ADMIN
 
 

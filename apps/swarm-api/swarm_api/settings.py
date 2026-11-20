@@ -163,7 +163,9 @@ def _tenant_members(
 
 
 _PROBE_TENANT = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-_PROBE_PRINCIPAL = re.compile(r"[^@:,\s]+@[^@:,\s]+")
+#: One bare email: no `type:` IAM prefix, no list separator and no `*`, which
+#: would read as a wildcard though it matches only itself.
+_PROBE_PRINCIPAL = re.compile(r"[^@:,\s*]+@[^@:,\s*]+")
 
 
 def _probe_admins(
@@ -175,12 +177,15 @@ def _probe_admins(
     (`var.probe_admin_users`, terraform/infra/locals.tf). Refused HERE, at
     startup, like TENANT_SERVICE_ACCOUNTS: a value that is not a list; an
     entry that is not exactly those two keys; a principal that is not one bare
-    email (a `serviceAccount:` member would match nobody); the same principal
+    email (a `serviceAccount:` member would match nobody, and a `*` would look
+    like a wildcard though it matches only itself); the same principal
     twice; an empty tenant list; a tenant id that is not a slug; a `u-` id,
     because a personal workspace's only admin is its own person
     (docs/design/workspace-roles.md §4.2); and a principal also named by any
-    list in `refused` -- a full admin, the owner or the rollup sweeper -- since
-    the scoped list exists so that the probes' identity is NOT one of those.
+    list in `refused` -- a full admin, the owner, the rollup sweeper, a
+    secret admin or a schedule tick identity, each compared with any `type:`
+    prefix dropped -- since the scoped list exists so that the probes'
+    identity is NOT one of those.
     """
     raw = os.environ.get("PROBE_ADMIN_USERS", "").strip()
     if not raw:
@@ -192,7 +197,8 @@ def _probe_admins(
     if not isinstance(entries, list):
         raise ValueError("PROBE_ADMIN_USERS must be a JSON list of {principal, tenants} objects")
     refused_sets = {
-        name: {value.strip().lower() for value in values} for name, values in refused.items()
+        name: {value.strip().lower().rsplit(":", 1)[-1] for value in values}
+        for name, values in refused.items()
     }
     result: list[tuple[str, tuple[str, ...]]] = []
     for index, entry in enumerate(entries):
@@ -399,9 +405,10 @@ class ApiSettings:
     #: token, case-insensitive. A `serviceAccount:` prefix matches nobody.
     admin_pool_users: tuple[str, ...] = ()
     #: A SCOPED workspace admin, by email: each entry is (principal, tenant
-    #: ids), and the principal resolves as `admin` in exactly those GROUP
-    #: workspaces (`roles.RoleStore.resolve`, `source: probe_admin`) and
-    #: nowhere else.
+    #: ids). In exactly those GROUP workspaces the principal is `admin` on the
+    #: routes the roles and join acceptance probes measure, and on no other
+    #: (`roles.PROBE_ADMIN_ROUTES`, `source: probe_admin`); nowhere else is
+    #: it more than without the entry.
     #:
     #: WHY IT EXISTS. The roles and join acceptance probes need an identity
     #: that is a workspace admin: it narrows the test workspace's default to
@@ -409,14 +416,28 @@ class ApiSettings:
     #: entry would make the verify identity a FULL platform admin one step
     #: removed (it could disable any tenant), and the owner decided against
     #: that on 2026-11-19 after a security review. This list is the
-    #: replacement: admin inside the named probe workspaces, nothing else.
+    #: replacement, least privilege (owner, 2026-11-20).
+    #:
+    #: WHAT IT MAY DO, in its listed workspaces only: read people's roles;
+    #: set and clear a viewer's or member's role and set the default (never
+    #: to `admin`, and never on a person whose stored role is `admin`); list
+    #: the workspace's members; read and set the join link; list, approve
+    #: and deny join requests (an approval never changes or clears a stored
+    #: `admin` role). Each write is recorded `via: probe_admin`.
+    #:
+    #: WHAT IT MAY NOT DO: remove a member, or anything else a workspace
+    #: admin does -- secrets, MCP servers, git-token slots, provider keys,
+    #: private plugins, repository, merge, plan and QA settings, the
+    #: workspace's name, ending runs -- each refuses it 403
+    #: `probe_admin_not_permitted` and writes nothing. What it does write
+    #: (a viewer's or member's role, the default, an admitted member, the
+    #: link) stays after its entry is removed, as any admin's change does;
+    #: it can never leave behind an admin, nor take one away.
     #:
     #: It does NOT set `is_admin`, so it is not a platform admin anywhere:
     #: not on an operator screen, not in `GET /v1/admin/admins`, not in the
     #: config migration into `admin_roles` (which reads `admin_users` only),
-    #: and `PUT`/`DELETE /v1/admin/admins/{email}` refuse it; Admin › People
-    #: and the join decisions answer it as a workspace admin of its listed
-    #: workspaces only (`routes.people.administered_workspaces`). It never
+    #: and `PUT`/`DELETE /v1/admin/admins/{email}` refuse it. It never
     #: SELECTS a workspace either: the header still selects only the
     #: caller's own memberships, so the principal must be in the probe
     #: workspace's group (or hold a platform membership of it); a role never
@@ -1141,6 +1162,7 @@ class ApiSettings:
                     f"ROLLUP_SWEEPER_USERS and {name} both name {', '.join(overlap)}; "
                     "the rollup sweeper may call one route and is no other kind of caller"
                 )
+        schedule_tick_users = _csv("SCHEDULE_TICK_USERS")
         # Read after PLATFORM_OWNER is checked, and refused beside every wider
         # role it could be mistaken for. NOT beside ADMIN_POOL_USERS: the
         # verify identity holds that one route and may hold this scope too.
@@ -1148,6 +1170,8 @@ class ApiSettings:
             "ADMIN_USERS": admin_users,
             "PLATFORM_OWNER": (platform_owner,) if platform_owner else (),
             "ROLLUP_SWEEPER_USERS": rollup_sweeper_users,
+            "SECRET_ADMIN_PRINCIPALS": secret_admin_principals,
+            "SCHEDULE_TICK_USERS": schedule_tick_users,
         })
         return cls(
             core=core,
@@ -1181,7 +1205,7 @@ class ApiSettings:
             admin_pool_users=admin_pool_users,
             probe_admin_users=probe_admin_users,
             rollup_sweeper_users=rollup_sweeper_users,
-            schedule_tick_users=_csv("SCHEDULE_TICK_USERS"),
+            schedule_tick_users=schedule_tick_users,
             allowed_users=allowed_users,
             secret_admin_principals=secret_admin_principals,
             groups_impersonate_user=groups_impersonate_user,

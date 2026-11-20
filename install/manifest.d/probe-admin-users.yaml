@@ -1,9 +1,10 @@
 # The scoped probe admin list (part of the carried dev acceptance issue; owner
-# decision 2026-11-19): the environment variable swarm-api reads for
-# var.probe_admin_users (apps/swarm-api/swarm_api/settings.py, _probe_admins).
-# A variable of type list(object), not bool or enable_*, so it needs no
-# variable entry; empty by default, and an install never sets it.
+# decisions 2026-11-19 and 2026-11-20): the environment variable swarm-api
+# reads for var.probe_admin_users (apps/swarm-api/swarm_api/settings.py,
+# _probe_admins). A variable of type list(object), not bool or enable_*, so it
+# needs no variable entry; empty by default, and an install never sets it. The
+# setter names the symbol, not a line, so it does not drift as locals.tf grows.
 version: 1
 env:
   PROBE_ADMIN_USERS:
-    setter: terraform/infra/locals.tf:1003
+    setter: 'internal: rendered by terraform/infra/locals.tf as local.service_env["swarm-api"].PROBE_ADMIN_USERS, the JSON of var.probe_admin_users; read by _probe_admins in apps/swarm-api/swarm_api/settings.py'

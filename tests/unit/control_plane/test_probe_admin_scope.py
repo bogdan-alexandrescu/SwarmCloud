@@ -184,9 +184,12 @@ def test_resolve_never_matches_a_personal_or_unlisted_tenant():
         return AuthContext(principal=Principal(email=PROBE, subject="s", domain="example.com"),
                            tenant_id=tenant, is_admin=False, tenant_principal=principal)
 
-    assert store.resolve(ctx("eng", ENG_GROUP)).source == roles.SOURCE_PROBE_ADMIN
+    assert store.resolve(ctx("eng", ENG_GROUP), probe_admin=True).source == roles.SOURCE_PROBE_ADMIN
+    # Without the route's opt-in it is its ordinary role, marked.
+    plain = store.resolve(ctx("eng", ENG_GROUP))
+    assert (plain.role, plain.probe_admin) == (roles.MEMBER, True)
     # Its own personal workspace is its own (`personal`), not the entry's.
-    assert store.resolve(ctx("u-probe", PROBE)).source == roles.SOURCE_PERSONAL
+    assert store.resolve(ctx("u-probe", PROBE), probe_admin=True).source == roles.SOURCE_PERSONAL
     # A `u-` id under any other principal never matches the entry.
     assert not roles.probe_admin_scope(settings, ctx("u-probe", ENG_GROUP))
     assert not roles.probe_admin_scope(settings, ctx("research", RESEARCH_GROUP))
@@ -213,7 +216,9 @@ def test_admin_people_is_a_workspace_admins_view_of_its_listed_workspace(client)
 def test_tenants_me_does_not_call_it_an_admin(client):
     body = client.get("/v1/tenants/me", headers=h("probe", "eng")).json()
     assert body["principal"]["is_admin"] is False
-    assert body["role"] == {"name": "admin", "source": "probe_admin"}
+    # `/v1/tenants/me` is not on PROBE_ADMIN_ROUTES: there it is what it is
+    # without the entry.
+    assert body["role"] == {"name": "member", "source": "default"}
 
 
 def test_no_admin_roles_write_and_no_admin_listing_entry(client, db):
@@ -319,6 +324,9 @@ def test_a_pool_admin_may_also_be_a_probe_admin(env):
     json.dumps([{"principal": PROBE, "tenants": ["eng"], "role": "admin"}]),
     json.dumps([{"principal": "serviceAccount:" + PROBE, "tenants": ["eng"]}]),
     json.dumps([{"principal": "a@example.com,b@example.com", "tenants": ["eng"]}]),
+    # A `*` reads as a wildcard though it matches only itself.
+    json.dumps([{"principal": "*@example.com", "tenants": ["eng"]}]),
+    json.dumps([{"principal": "probe@*", "tenants": ["eng"]}]),
     json.dumps([{"principal": PROBE, "tenants": []}]),
     json.dumps([{"principal": PROBE, "tenants": "eng"}]),
     json.dumps([{"principal": PROBE, "tenants": ["u-someone"]}]),
@@ -332,9 +340,17 @@ def test_a_malformed_setting_is_refused(env, raw):
         ApiSettings.from_env()
 
 
-@pytest.mark.parametrize("name", ["ADMIN_USERS", "PLATFORM_OWNER", "ROLLUP_SWEEPER_USERS"])
+@pytest.mark.parametrize("name", ["ADMIN_USERS", "PLATFORM_OWNER", "ROLLUP_SWEEPER_USERS",
+                                  "SECRET_ADMIN_PRINCIPALS", "SCHEDULE_TICK_USERS"])
 def test_a_wider_role_on_the_same_principal_is_refused(env, name):
     env.setenv(name, PROBE)
     env.setenv("PROBE_ADMIN_USERS", json.dumps([{"principal": PROBE, "tenants": ["eng"]}]))
     with pytest.raises(ValueError, match=name):
+        ApiSettings.from_env()
+
+
+def test_a_secret_admin_named_as_an_iam_member_is_refused_too(env):
+    env.setenv("SECRET_ADMIN_PRINCIPALS", "user:" + PROBE.upper())
+    env.setenv("PROBE_ADMIN_USERS", json.dumps([{"principal": PROBE, "tenants": ["eng"]}]))
+    with pytest.raises(ValueError, match="SECRET_ADMIN_PRINCIPALS"):
         ApiSettings.from_env()

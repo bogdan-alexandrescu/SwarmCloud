@@ -16,6 +16,7 @@ import secrets
 import pytest
 from fastapi.testclient import TestClient
 
+from swarm_api import roles
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -55,14 +56,14 @@ GROUPS = {
 }
 
 
-def _client(db, probe_admin_users) -> TestClient:
+def _client(db, probe_admin_users, **settings) -> TestClient:
     tokens = {f"token-{e.split('@')[0]}": {"email": e, "email_verified": True,
                                            "sub": f"sub-{e}", "hd": "example.com"}
               for e in GROUPS}
     ctx = build_context(
         settings=api_settings(settings_key=secrets.token_hex(32), console_url=CONSOLE,
                               rate_limit_burst=10_000, allowed_users=(PROBE,),
-                              probe_admin_users=probe_admin_users),
+                              probe_admin_users=probe_admin_users, **settings),
         db=db, verifier=StaticTokenVerifier(tokens), groups=StaticGroups(GROUPS),
         credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
         objects=None, forge_tokens=NoForgeTokens(),
@@ -95,7 +96,7 @@ def test_it_turns_the_link_on_and_approves_in_its_listed_workspace(client, db) -
     ref = ask(client, "lee", code)["ref"]
     response = approve(client, "roles-probe", ref)
     assert response.status_code == 200, response.text
-    assert [d["via"] for d in decisions(db)] == ["workspace_admin"]
+    assert [d["via"] for d in decisions(db)] == ["probe_admin"]
 
 
 def test_it_decides_nothing_outside_it(client, db) -> None:
@@ -127,3 +128,66 @@ def test_without_the_entry_the_service_account_is_refused(db) -> None:
     response = client.put("/v1/workspace/join-link", headers=h("roles-probe", "eng"),
                           json={"on": True})
     assert response.status_code == 403
+
+
+# -- least privilege (owner decision 2026-11-20) -------------------------------------
+
+
+def _grant(client, tenant: str, who: str) -> dict:
+    response = client.get(f"/v1/admin/workspaces/{tenant}/roles", headers=h("ops"))
+    assert response.status_code == 200, response.text
+    return {p["email"]: p["role"] for p in response.json()["people"]}.get(who)
+
+
+def test_an_approval_never_clears_an_admin_override_stored_ahead(db) -> None:
+    """A platform admin names kim eng's admin before kim joins; the probe
+    admin's approval with the default role would CLEAR that override
+    (`_role_change`), so it is refused and nothing is written."""
+    client = _client(db, ((PROBE, ("eng",)),), platform_memberships=True)
+    response = client.put("/v1/admin/workspaces/eng/roles/person", headers=h("ops"),
+                          json={"email": "kim@example.com", "role": "admin"})
+    assert response.status_code == 200, response.text
+    ref = ask(client, "kim", link_on(client, "roles-probe", "eng"))["ref"]
+    before = written(db)
+    response = approve(client, "roles-probe", ref)
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "role_admin_required"
+    assert written(db) == before
+    assert _grant(client, "eng", "kim@example.com") == "admin"
+    # A platform admin's approval still decides it, as before.
+    assert approve(client, "ops", ref).status_code == 200
+
+
+def test_its_approval_and_its_role_write_say_probe_admin(db) -> None:
+    client = _client(db, ((PROBE, ("eng",)),), platform_memberships=True)
+    ref = ask(client, "lee", link_on(client, "roles-probe", "eng"))["ref"]
+    response = approve(client, "roles-probe", ref, role="viewer")
+    assert response.status_code == 200, response.text
+    assert [d["via"] for d in decisions(db)] == ["probe_admin"]
+    vias = {d.get("via") for p, d in db.dump().items()
+            if p.startswith(f"{roles.GRANTS_COLLECTION}/") and d.get("subject") == "lee@example.com"}
+    assert vias == {"probe_admin"}
+
+
+def test_it_denies_in_its_listed_workspace_recorded_as_probe_admin(client, db) -> None:
+    ref = ask(client, "lee", link_on(client, "roles-probe", "eng"))["ref"]
+    response = client.post(f"/v1/admin/join-requests/{ref}/deny", headers=h("roles-probe"),
+                           json={"reason": "the probe's own request"})
+    assert response.status_code == 200, response.text
+    assert [d["via"] for d in decisions(db)] == ["probe_admin"]
+
+
+def test_it_lists_members_and_never_removes_one(db) -> None:
+    client = _client(db, ((PROBE, ("eng",)),), platform_memberships=True)
+    ref = ask(client, "lee", link_on(client, "roles-probe", "eng"))["ref"]
+    assert approve(client, "ops", ref).status_code == 200
+    listed = client.get("/v1/workspace/members", headers=h("roles-probe", "eng"))
+    assert listed.status_code == 200, listed.text
+    assert [m["email"] for m in listed.json()["members"]] == ["lee@example.com"]
+    before = written(db)
+    response = client.request("DELETE", "/v1/workspace/members/person",
+                              headers=h("roles-probe", "eng"),
+                              json={"email": "lee@example.com", "reason": "probe"})
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "probe_admin_not_permitted"
+    assert written(db) == before

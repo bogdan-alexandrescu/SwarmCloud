@@ -110,7 +110,10 @@ def authorize(ctx: AppContext, auth: AuthContext, tenant_id: str) -> str:
         principal = auth.tenant_principal or None
     if principal is None or ctx.roles is None:
         raise _refused(tenant_id)
-    me = ctx.roles.resolve(roles.with_tenant(auth, tenant_id, principal), fresh=True)
+    scoped = roles.with_tenant(auth, tenant_id, principal)
+    me = ctx.roles.resolve(scoped, fresh=True)
+    if me.probe_admin:
+        raise roles.probe_admin_refusal(scoped)
     if me.role != roles.ADMIN:
         raise _refused(tenant_id)
     return "workspace_admin"

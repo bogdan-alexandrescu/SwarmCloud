@@ -1627,7 +1627,12 @@ def _ends_runs(ctx: AppContext, auth: AuthContext) -> bool:
     if auth.is_admin:
         return True
     store = getattr(ctx, "roles", None)
-    return store is not None and store.resolve(auth, fresh=True).role == roles.ADMIN
+    if store is None:
+        return False
+    me = store.resolve(auth, fresh=True)
+    if me.probe_admin:
+        raise roles.probe_admin_refusal(auth)
+    return me.role == roles.ADMIN
 
 
 @router.post("/{run_id}:end")

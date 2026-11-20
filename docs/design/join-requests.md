@@ -1005,10 +1005,15 @@ The probe's admin (`JOIN_ADMIN_SA`) is a scoped probe admin, never a platform
 admin (owner decision 2026-11-19): an entry of `probe_admin_users`
 (Terraform `var.probe_admin_users`, swarm-api `PROBE_ADMIN_USERS`) naming
 `JOIN_TENANT`, and a member of that workspace's group. There it resolves as
-`admin` (`source: probe_admin`): it turns the link on and off, removes a
-membership, and decides that workspace's requests through
+`admin` (`source: probe_admin`) only for what the probe measures
+(`roles.PROBE_ADMIN_ROUTES`, owner decision 2026-11-20): it turns the link on
+and off, lists the members, and decides that workspace's requests through
 `routes/people.administered_workspaces`, which counts its listed workspaces
-among its memberships, recorded `via: workspace_admin`. `people_scope`
+among its memberships, recorded `via: probe_admin`. It never removes a
+membership (`DELETE /v1/workspace/members/person` is 403
+`probe_admin_not_permitted`), so the probe's removal step needs another
+identity, and an approval that would change or clear a stored `admin` role
+is 403 `role_admin_required` with nothing written. `people_scope`
 refuses a service account on Admin › People because it holds no person's
 role; a probe admin's entry is that role, so a listed one is answered as a
 workspace admin, with its listed workspaces only. Anywhere else it is what
