@@ -16,13 +16,17 @@ What holds now, one test per property:
    counted, and uv's and pip's caches are switched off;
 3. the CLI and generic runners carry those variables on to the agent;
 4. the checkpoint and the artifact upload never see it, and it is emptied at
-   the start of an attempt and removed at its end.
+   the start of an attempt and removed at its end;
+5. the scratch note names the build and test output tools write inside the
+   checkout by default -- node_modules, `.next*`, Playwright's test-results
+   sent away with `--output=$TMPDIR` (issue 26).
 
 MUTATIONS: drop a name from `cachedirs.CACHE_SUBDIRS` or from
 `AGENT_CACHE_ENV` (tests 1 and 3 name it); put the cache under `work/` (the
 checkpoint and upload tests see its files); stop `create` clearing a leftover
 cache, or `destroy` removing it (test 4); drop `NO_CACHE_ENV` on the Cloud Run
-path (test 2).
+path (test 2); drop node_modules, .next, test-results or `--output=$TMPDIR`
+from either `cachedirs.scratch_note` variant (test 5).
 """
 
 from __future__ import annotations
@@ -37,7 +41,7 @@ from typing import Any
 import pytest
 
 from agent_worker import workspace as workspace_mod
-from agent_worker.cachedirs import AGENT_CACHE_ENV, CACHE_ROOT_ENV
+from agent_worker.cachedirs import AGENT_CACHE_ENV, CACHE_ROOT_ENV, scratch_note
 from agent_worker.checkpoint import CheckpointManager
 from agent_worker.config import WorkerConfig
 from agent_worker.errors import ExitCode
@@ -268,3 +272,15 @@ def test_the_cache_is_emptied_at_the_start_of_an_attempt_and_removed_at_its_end(
 
     workspace_mod.destroy(again)
     assert not os.path.lexists(again.cache), "destroy left the attempt's cache behind"
+
+
+def test_the_scratch_note_names_checkout_build_and_test_output():
+    gke = scratch_note(own_volume=True)
+    for phrase in ("node_modules", ".next", "test-results", "--output=$TMPDIR"):
+        assert phrase in gke, (phrase, gke)
+    cloud_run = scratch_note(own_volume=False)
+    for phrase in ("node_modules", "test-results", "--output=$TMPDIR"):
+        assert phrase in cloud_run, (phrase, cloud_run)
+    for note in (gke, cloud_run):
+        assert "\n" not in note, "the note is one prompt line"
+    assert "20 GiB" not in cloud_run and "cache volume" not in cloud_run, cloud_run

@@ -164,7 +164,9 @@ def test_a_reading_stays_within_its_share_of_the_event():
 
     long = "/" + "p" * 119
     reading = {
-        name: {"used_bytes": used, "limit_bytes": 3 * GIB, "top": [[long, 1] for _ in range(5)], "partial": False}
+        name: {"used_bytes": used, "limit_bytes": 3 * GIB, "top": [[long, 1] for _ in range(5)], "partial": False,
+               # What `ScratchSampler` adds to each entry fits too.
+               "complete_used_bytes": used, "read_at": 1_763_520_000.123}
         for name, used in (("workspace", GIB), ("tmp", int(2.5 * GIB)), ("home", 0))
     }
 
@@ -381,8 +383,9 @@ def test_the_mirrored_sizes_are_the_dispatchers():
 # kubelet evicts with no grace period, so the worker puts its newest reading
 # on every HEARTBEAT event, warns once per volume past two thirds of its
 # limit, and writes an out-of-cadence reading at that crossing (and at every
-# further 10% of the limit). `scratchusage.sample` is patched: what is pinned
-# here is the heartbeat's use of a reading, not the walk (above).
+# further 10% of the limit). `scratchusage.sample` is patched, and the
+# sampler runs one pass per beat on the test's thread (`_scripted`): what is
+# pinned here is the heartbeat's use of a reading, not the walk (above).
 
 
 WARNING = "past it kubelet evicts this pod"
@@ -417,6 +420,18 @@ def _scripted(monkeypatch, readings: list[int]) -> list[object]:
         return _reading(readings.pop(0))
 
     monkeypatch.setattr(scratchusage, "sample", fake_sample)
+
+    class EveryBeat(scratchusage.ScratchSampler):
+        """No thread: one pass per read, so each beat reads the next scripted sample."""
+
+        def start(self) -> None:
+            return None
+
+        def latest(self):
+            self.run_once()
+            return super().latest()
+
+    monkeypatch.setattr(scratchusage, "ScratchSampler", EveryBeat)
     return calls
 
 
@@ -439,7 +454,9 @@ def test_heartbeat_event_carries_the_scratch_reading(db, worker, monkeypatch):
     worker._heartbeat()
 
     (beat,) = _beats(db)
-    assert beat["detail"]["scratch"] == _reading(GIB)
+    scratch = beat["detail"]["scratch"]
+    assert scratch["tmp"].pop("read_at") > 0
+    assert scratch == {"tmp": {**_reading(GIB)["tmp"], "complete_used_bytes": GIB}}
     # Still a whole reading: the readers of the usage figures see them.
     assert "memory_limit_bytes" in beat["detail"] and "series" in beat["detail"]
 
@@ -644,3 +661,172 @@ def test_an_enospc_checkpoint_write_with_no_free_bytes_names_space(
     (warning,) = _cache_warnings(log_stream, "space")
     assert "inode" not in warning["message"]
     assert "No space left on device" in warning["message"]
+
+
+# ---------------------------------------------------------------------------
+# The whole volume is walked off the heartbeat loop (issue #26)
+# ---------------------------------------------------------------------------
+# The heartbeat's own walk stopped at `MAX_ENTRIES` or `MAX_SECONDS`, so with
+# a `node_modules` in the checkout every reading was `partial`, its bytes a
+# floor (61-900 MiB while real use passed 5 GiB), and `_scratch_crossed` never
+# fired. A sampler thread now walks each volume whole and the heartbeat reads
+# its newest reading. `scratchusage.start_thread` is patched to start nothing,
+# and the sampler's `run_once` is driven between beats, so nothing sleeps.
+
+
+def _no_thread(monkeypatch) -> list[str]:
+    from agent_worker import scratchusage
+
+    started: list[str] = []
+
+    class _Idle:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def join(self, timeout: float | None = None) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return False
+
+    def start_thread(target, name):
+        started.append(name)
+        return _Idle(name)
+
+    monkeypatch.setattr(scratchusage, "start_thread", start_thread, raising=False)
+    return started
+
+
+def _sampler_pass(worker) -> None:
+    sampler = getattr(worker, "_scratch_sampler", None)
+    if sampler is not None:
+        sampler.run_once()
+
+
+def test_a_volume_past_the_entry_bound_is_crossed_within_bounded_beats(
+    db, worker, monkeypatch, tmp_path
+):
+    # MUTATION: walk with `MAX_ENTRIES` in `ScratchSampler.run_once` -- the
+    # walk stops inside the listing of empty files, never reaches the large
+    # one, and its floor never crosses two thirds.
+    from agent_worker import scratchusage
+
+    volume = tmp_path / "tmp"
+    small = volume / "node_modules"
+    small.mkdir(parents=True)
+    # Empty files allocate no blocks: past the entry bound, they add nothing
+    # to the floor a bounded walk reports.
+    for i in range(scratchusage.MAX_ENTRIES + 4_000):
+        (small / f"f{i:05d}").touch()
+    # Under the listing that exhausts the bound: a bounded walk counts it
+    # only after every name of that listing.
+    _file(small / "zz-deeper" / "big.bin", 3 * MIB)
+    monkeypatch.setenv(scratchusage.SCRATCH_VOLUMES_ENV, f"tmp={volume}:{4 * MIB / GIB}")
+    _no_thread(monkeypatch)
+
+    for _ in range(3):
+        worker._heartbeat()
+        _sampler_pass(worker)
+
+    assert "tmp" in (worker._scratch_marks or {}), "no beat counted the volume as crossed"
+    beats = _beats(db)
+    assert len(beats) >= 2, "no out-of-cadence HEARTBEAT at the crossing"
+    entry = beats[-1]["detail"]["scratch"]["tmp"]
+    assert entry["complete_used_bytes"] >= 3 * MIB
+    assert scratchusage.crossing_bytes(entry) >= scratchusage.warn_threshold(4 * MIB)
+
+
+def test_a_partial_reading_whose_complete_total_passed_two_thirds_is_crossed(
+    worker, log_stream
+):
+    # MUTATION: compare `entry["used_bytes"]` in `Worker._scratch_crossed`
+    # -- the floor of 1 GiB is under 2 GiB and nothing is crossed.
+    worker._scratch_volumes = [("tmp", Path("/tmp"), 3 * GIB)]
+    worker._scratch_marks = {}
+    reading = _reading(GIB)
+    reading["tmp"].update(partial=True, complete_used_bytes=int(2.5 * GIB), read_at=0.0)
+
+    assert worker._scratch_crossed(reading) is True
+    (warning,) = _warnings(log_stream)
+    assert warning["message"].startswith("/tmp is at 2.5 GiB of its 3 GiB limit")
+    assert warning["used_bytes"] == int(2.5 * GIB)
+
+
+def test_the_heartbeat_does_not_walk_the_volumes(db, worker, monkeypatch, tmp_path):
+    # MUTATION: call `scratchusage.sample` from `Worker._scratch_reading` --
+    # the walk runs on the heartbeat's own thread, holding the lease's beat.
+    import threading
+
+    from agent_worker import scratchusage
+
+    volume = tmp_path / "tmp"
+    _fill(volume)
+    monkeypatch.setenv(scratchusage.SCRATCH_VOLUMES_ENV, f"tmp={volume}:3")
+    started = _no_thread(monkeypatch)
+    walked: list[int] = []
+    real_walk = scratchusage._walk
+
+    def recording_walk(*args, **kwargs):
+        walked.append(threading.get_ident())
+        return real_walk(*args, **kwargs)
+
+    monkeypatch.setattr(scratchusage, "_walk", recording_walk)
+
+    worker._heartbeat()
+    worker._heartbeat()
+
+    assert threading.get_ident() not in walked
+    assert started, "no sampler thread was started"
+    # Its pass walks; the next beat carries what it read.
+    _sampler_pass(worker)
+    assert walked
+    worker._heartbeat()
+    assert worker._scratch_reading()["tmp"]["partial"] is False
+
+
+def test_a_crossing_tells_the_agent_its_largest_paths(db, worker_factory, monkeypatch):
+    # MUTATION: drop the note write from `Worker._scratch_crossed` -- the
+    # warning reaches only the worker's log, which the agent never sees.
+    from agent_worker import scratchusage
+
+    seed_attempt(db)
+    built, config, _ = worker_factory(runner_profile="claude-code")
+    built.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    monkeypatch.setenv(scratchusage.SCRATCH_VOLUMES_ENV, "tmp=/tmp:3")
+    used = [GIB, int(2.2 * GIB), int(2.25 * GIB), int(2.6 * GIB)]
+    _scripted(monkeypatch, list(used))
+    # A stale note of an earlier attempt is cleared when the runner's env is built.
+    note = built.ws.private / "scratch-note.json"
+    note.write_text(json.dumps({"message": "stale"}))
+    note.with_name(note.name + ".told").write_text("{}")
+
+    env = built._scratch_note_env()
+
+    assert env == {scratchusage.SCRATCH_NOTE_ENV: str(note)}
+    assert not note.exists() and not note.with_name(note.name + ".told").exists()
+
+    built._heartbeat()  # under two thirds: nothing to tell
+    assert not note.exists()
+
+    built._heartbeat()  # past two thirds: told once, with its largest paths
+    assert note.stat().st_mode & 0o777 == 0o600
+    message = json.loads(note.read_text())["message"]
+    assert "/tmp is at 2.2 GiB of its 3 GiB limit" in message
+    assert scratchusage.format_top(_reading(used[1])["tmp"]) in message
+    assert "$TMPDIR" in message
+    # The hook renames it on telling; nothing rewrites it under the next 10%.
+    note.rename(note.with_name(note.name + ".told"))
+    built._heartbeat()
+    assert not note.exists()
+
+    built._heartbeat()  # another 10% of the limit: told again
+    message = json.loads(note.read_text())["message"]
+    assert "/tmp is at 2.6 GiB of its 3 GiB limit" in message
+
+
+def test_no_scratch_note_for_a_runner_that_cannot_be_told(worker, monkeypatch):
+    # MUTATION: drop the `cli_agent_spec` check in `Worker._scratch_note_env`.
+    from agent_worker import scratchusage
+
+    monkeypatch.setenv(scratchusage.SCRATCH_VOLUMES_ENV, "tmp=/tmp:3")
+    assert worker._scratch_note_env() == {}

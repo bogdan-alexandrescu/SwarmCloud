@@ -13,6 +13,12 @@ one place text reaches it mid-run is a hook's
 worker writes the note (`agent_worker.budget.BudgetGuard`) and this hook
 hands it on.
 
+THE SCRATCH NOTE (issue #26). The same hook, registered a second time with
+`$SWARM_SCRATCH_NOTE`, hands on the worker's scratch note: written by
+`Worker._scratch_crossed` when a pod's scratch volume passes two thirds of
+its limit, naming the volume, its size and its largest paths, so that the
+agent moves its scratch data under `$TMPDIR` before kubelet evicts the pod.
+
 ONCE. The note is renamed to `<note>.told` before it is read: a rename is
 atomic, so of two tool calls finishing together exactly one tells it, and
 every later call finds no note and prints nothing.
