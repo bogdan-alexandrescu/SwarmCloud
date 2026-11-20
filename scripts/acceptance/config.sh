@@ -82,10 +82,11 @@ ACC_ROLES_TENANT="${SWARM_ACCEPTANCE_ROLES_TENANT:-}"
 #: (role_person_required), so the probe grants it `viewer` through the
 #: workspace's default role, the one grant that reaches it.
 ACC_ROLES_VIEWER_SA="${SWARM_ACCEPTANCE_ROLES_VIEWER_SA:-}"
-#: A platform admin NOT in that workspace's group: it grants and revokes
-#: through the reach, so each write is recorded `platform_admin_acted`.
+#: A scoped probe admin: a member of that workspace's group, listed for it in
+#: swarm-api's probe_admin_users and never in admin_users. It grants and
+#: revokes the default, and the probe checks its limits.
 ACC_ROLES_ADMIN_SA="${SWARM_ACCEPTANCE_ROLES_ADMIN_SA:-}"
-#: Another identity's personal (`u-`) workspace, which the platform admin must
+#: Another identity's personal (`u-`) workspace, which the probe admin must
 #: still be refused `tenant_not_member`.
 ACC_ROLES_OTHER_WORKSPACE="${SWARM_ACCEPTANCE_ROLES_OTHER_WORKSPACE:-}"
 
