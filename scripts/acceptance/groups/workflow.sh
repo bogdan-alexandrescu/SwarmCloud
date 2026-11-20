@@ -529,11 +529,21 @@ _wf_check_carry() {
   acc_run_to_end state "${b}" || return 0
   acc_assert_eq "SUCCEEDED SUCCEEDED" "$(task_state "${a}") ${state}" "parent and child" "${b}"
 
-  attempts="$(task_field "${a}" '.attempt_count // 0')"
+  # COUNTED FROM THE ATTEMPT DOCUMENTS, NOT FROM `attempt_count`. The recipe's
+  # first attempt parks on PROVIDER_QUOTA_EXHAUSTED, and that park refunds its
+  # attempt (`ControlPlane.park`, the owner 2026-10-27, "Refund, bounded"):
+  # `attempt_count` goes back down, and the second attempt's lease takes it
+  # to 1 again. Dev acceptance on 2026-11-20 read that 1 as "no second
+  # attempt" for a parent that parked and resumed exactly as designed. Each
+  # attempt writes its own document, refunded or not.
+  if ! attempts="$(task_attempts "${a}" | jq -s 'length')"; then
+    acc_fail "could not read the parent's attempt documents" "${a}"
+    return 0
+  fi
   if [[ "${attempts}" -ge 2 ]]; then
-    acc_pass "the parent ran ${attempts} attempts: it parked and resumed" "${a}"
+    acc_pass "the parent has ${attempts} attempt documents: it parked and resumed" "${a}"
   else
-    acc_fail "the parent ran ${attempts} attempt(s); the recipe parks its first, so it needs at least 2" "${a}"
+    acc_fail "the parent has ${attempts} attempt document(s); the recipe parks its first, so it needs at least 2" "${a}"
   fi
 
   # The parked attempt is the one the park's own events name (each event
