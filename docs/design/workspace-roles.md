@@ -1585,13 +1585,25 @@ acceptance/groups/roles` (the owner, 2026-10-28: the smoke job, not a new
 acceptance group or the tenant-isolation job). It acts as two identities that
 are not swarm-verify's own, each through an impersonated ID token
 (`acc_api_as` in `scripts/acceptance/lib.sh`), in a group workspace of its
-own, and checks five things: a viewer's `POST /v1/tasks` is 403
+own, and checks eight things: a viewer's `POST /v1/tasks` is 403
 `role_member_required` and creates nothing; its `GET /v1/tasks` is 200; the
 viewer grant and its revocation, matched by a reason naming the run, are both
 in `GET /v1/workspace/roles` `audit`; the platform admin, outside the
 workspace's group, selects it and its write is recorded
 `platform_admin_acted`; and that admin selecting another identity's `u-`
-workspace is 403 `tenant_not_member`. Its judge reads only the status and the
+workspace is 403 `tenant_not_member`; and, for the scoped probe admin below,
+its limits: selecting the acceptance tenant, a group workspace it is neither
+listed for nor a member of, is 403 `tenant_not_member`; renaming the test
+workspace (`PUT /v1/workspaces/{tenant_id}/name`), an admin route not on its
+list, is 403 `probe_admin_not_permitted`; and naming a person `admin` there
+is 403 `role_admin_required` from `source: probe_admin`. No GET route
+refuses a probe admin `probe_admin_not_permitted` (every admin route the
+list leaves out is a write), so the two refused writes are sent in a shape
+no gate can turn into a write: an empty name, and a reason longer than
+`REASON_MAX`, each refused 422 after the admin gate and before anything is
+read or written; a broken gate shows as that 422 and a FAIL, never as a
+changed workspace. The refused grant names an address on a reserved domain
+nobody signs in as. Its judge reads only the status and the
 API's code or audit action, and
 `tests/unit/scripts/test_acceptance_roles.py` holds it to `swarm_api`'s own
 codes. Departures from §6 row 6:
@@ -1667,8 +1679,10 @@ probe measures is unchanged. What this changes for the probe: its admin
 identity is now IN the test workspace's group rather than outside it, so the
 probe's "reach" step (a platform admin outside the group selecting the
 workspace, recorded `platform_admin_acted`) measures nothing for a scoped
-admin, and the probe's admin step is to be reworked to the scoped shape in
-its own change.
+admin. The probe now also checks the scoped admin's limits (above). The
+reach step itself is still in the probe: §4.9 keeps the reach off in prod
+until ROLES-ACCEPT has exercised it in dev, so replacing it is the owner's
+question of what exercises the reach instead, asked with that change.
 
 **What is left, in order.** The owner provisions ROLES-ACCEPT's identities
 and workspace -- the admin identity as a `probe_admin_users` entry naming

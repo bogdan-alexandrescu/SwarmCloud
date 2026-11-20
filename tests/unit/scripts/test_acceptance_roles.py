@@ -7,7 +7,9 @@ with `role_member_required` and may still read; the viewer grant and its
 revocation are in the workspace's audit; a platform admin reaches a group
 workspace it is not in, and its write there is recorded
 `platform_admin_acted`; another identity's `u-` workspace stays
-`tenant_not_member`.
+`tenant_not_member`; and the scoped probe admin stays inside its limits: it
+selects no workspace it is not a member of, an admin route not on its list
+refuses it `probe_admin_not_permitted`, and it cannot name a person `admin`.
 
 Held here, with no network and no credentials:
 
@@ -55,7 +57,8 @@ SETTINGS = (
     "SWARM_ACCEPTANCE_ROLES_ADMIN_SA",
     "SWARM_ACCEPTANCE_ROLES_OTHER_WORKSPACE",
 )
-CHECKS = ("viewer-submit", "viewer-read", "audit", "reach", "personal")
+CHECKS = ("viewer-submit", "viewer-read", "audit", "reach", "personal", "unlisted", "not-permitted",
+          "no-admin")
 REASON = "ROLES-ACCEPT test-acceptance-20261028190000"
 
 pytestmark = pytest.mark.skipif(
@@ -85,14 +88,16 @@ def _api() -> SimpleNamespace:
     (test_collection_stays_cheap.py)."""
     from swarm_api import roles
     from swarm_api.auth import TenantNotMember
-    from swarm_api.errors import RoleMemberRequired
+    from swarm_api.errors import ProbeAdminNotPermitted, RoleAdminRequired, RoleMemberRequired
 
     return SimpleNamespace(member_required=RoleMemberRequired.code, not_member=TenantNotMember.code,
-                           default_set=roles.AUDIT_DEFAULT_SET, acted=roles.AUDIT_PLATFORM_ADMIN_ACTED)
+                           default_set=roles.AUDIT_DEFAULT_SET, acted=roles.AUDIT_PLATFORM_ADMIN_ACTED,
+                           not_permitted=ProbeAdminNotPermitted.code, admin_required=RoleAdminRequired.code,
+                           probe_source=roles.SOURCE_PROBE_ADMIN)
 
 
-def _refusal(code: str) -> dict:
-    return {"code": code, "message": "refused", "detail": {}}
+def _refusal(code: str, **detail: str) -> dict:
+    return {"code": code, "message": "refused", "detail": detail}
 
 
 def _audit(*rows: dict) -> dict:
@@ -116,7 +121,7 @@ def _acted(at: str = "2026-10-28T19:00:01.123456+00:00", route: str = "/v1/works
 # ---------------------------------------------------------------------------
 
 
-def test_the_checks_are_the_five_the_design_names():
+def test_the_checks_are_the_eight_the_design_names():
     proc = _bash("roles_checks")
     lines = proc.stdout.splitlines()
     assert [line.split(":")[1].strip() for line in lines] == list(CHECKS)
@@ -168,6 +173,57 @@ def test_another_identitys_personal_workspace_passes_only_on_tenant_not_member()
     assert _judge("personal", 403, _refusal(_api().not_member))[0] == "PASS"
     assert _judge("personal", 200, {"tenant_id": "u-someone"})[0] == "FAIL"
     assert _judge("personal", 403, _refusal(_api().member_required))[0] == "FAIL"
+
+
+def test_an_unlisted_workspace_passes_only_on_tenant_not_member():
+    """MUTATION: accept any refusal, or let the probe admin in. Selected, it
+    is in that workspace's group or a platform admin: neither is the scoped
+    probe admin the owner provisioned."""
+    assert _judge("unlisted", 403, _refusal(_api().not_member))[0] == "PASS"
+    verdict, reason = _judge("unlisted", 200, {"tenant": {"tenant_id": "smoke"}})
+    assert verdict == "FAIL" and "200" in reason
+    assert _judge("unlisted", 503, _refusal("membership_unavailable"))[0] == "FAIL"
+    assert _judge("unlisted", 403, _refusal(_api().not_permitted))[0] == "FAIL"
+
+
+def test_an_unlisted_admin_route_passes_only_on_probe_admin_not_permitted():
+    """MUTATION: accept role_admin_required, which a plain member gets too,
+    or the 422 the empty name meets once the gate let it past."""
+    assert _judge("not-permitted", 403, _refusal(_api().not_permitted, source="probe_admin"))[0] == "PASS"
+    assert _judge("not-permitted", 403, _refusal(_api().admin_required))[0] == "FAIL"
+    verdict, reason = _judge("not-permitted", 422, _refusal("validation_failed", field="display_name"))
+    assert verdict == "FAIL" and "admin gate" in reason and "nothing was written" in reason
+    assert _judge("not-permitted", 200, {"changed": False})[0] == "FAIL"
+
+
+def test_naming_an_admin_passes_only_on_role_admin_required_as_the_probe_admin():
+    """MUTATION: accept role_admin_required from any source. A member the
+    probe-admin entry does not cover is refused the same code by the role
+    write's own gate, which proves nothing about the entry's limit."""
+    api = _api()
+    assert _judge("no-admin", 403, _refusal(api.admin_required, source=api.probe_source))[0] == "PASS"
+    verdict, reason = _judge("no-admin", 403, _refusal(api.admin_required, source="override"))
+    assert verdict == "FAIL" and "probe_admin_users" in reason
+    assert _judge("no-admin", 403, _refusal(api.admin_required))[0] == "FAIL"
+    verdict, reason = _judge("no-admin", 422, _refusal("validation_failed", field="reason"))
+    assert verdict == "FAIL" and "nothing was written" in reason
+    assert _judge("no-admin", 200, {"role": "admin"})[0] == "FAIL"
+    assert _judge("no-admin", 403, _refusal(api.not_permitted, source=api.probe_source))[0] == "FAIL"
+
+
+def test_the_limit_checks_send_nothing_a_gate_could_turn_into_a_write():
+    """The rename's name and the role write's reason are refused 422 after
+    the admin gate and before anything is read or written, so a broken gate
+    cannot change the test workspace. Held to the API's own limits."""
+    from swarm_api import roles
+
+    text = GROUP.read_text()
+    assert "'{\"display_name\": \"\"}'" in text
+    width = int(text.split("printf -v pad '%*s' ", 1)[1].split()[0])
+    assert width > roles.REASON_MAX
+    nobody = text.split('ROLES_NOBODY="', 1)[1].split('"', 1)[0]
+    assert nobody.endswith("@example.invalid") and not roles.is_service_account(nobody)
+    assert roles.clean_email(nobody) == nobody
 
 
 def test_the_judge_never_echoes_a_response_body_it_does_not_understand():
