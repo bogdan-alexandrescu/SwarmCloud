@@ -6,8 +6,11 @@ tests in tests/unit/control_plane prove offline: an admin turns a workspace's
 join link on and reads its code once; a second identity, a person outside the
 workspace's group, asks with the code in a body; the admin approves; the
 person's next request selects the workspace (`via: platform_member`); the
-admin removes the membership and the next request is refused; the link is
-turned off again. With `platform_memberships` off, approval answers
+admin, a scoped probe admin, is refused the membership's removal
+(`probe_admin_not_permitted`) and the person is still a member; the link is
+turned off again. The person stays a member between runs, so a later run
+finds them listed: the ask is 409 `join_already_member`, the approval is not
+measured, and every other check still passes. With `platform_memberships` off, approval answers
 `admitted: false` with the group command and admits nobody. No Google group
 is ever written: the probe reads the group only through the API's own fresh
 per-group check, and calls no Cloud Identity API at all.
@@ -18,8 +21,9 @@ Google's token endpoint and swarm-api) and a fake `gcloud`, both on PATH:
 
 * the on path PASSes every check, and the off path PASSes the
   `admitted: false` check and admits nobody;
-* an approval that does not admit, or a removal that does not end the
-  membership, FAILs;
+* an approval that does not admit, a removal the probe admin is allowed, or a
+  refusal that removes the person anyway, FAILs;
+* a person an earlier run left a member runs the member's path and passes;
 * neither the join code, the person's refresh token nor any minted token
   reaches argv or the probe's output;
 * the person's requests go through the front door (SWARM_ACCEPTANCE_CONSOLE_URL,
@@ -99,7 +103,8 @@ pytestmark = pytest.mark.skipif(
 #: token, and the front door (FAKE_FRONT) only the person's; hosts.log says
 #: which address each caller reached. FAKE_SWITCH is
 #: platform_memberships; FAKE_BROKEN breaks one behaviour so a test can show
-#: the probe notices.
+#: the probe notices. The admin is a scoped probe admin, so its removal is
+#: refused probe_admin_not_permitted, as swarm-api's roles.PROBE_ADMIN_ROUTES has it.
 FAKE_CURL = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >>"${FAKE_DIR}/curl.argv"
 headers=() data="" url="" method="GET" tenant=""
@@ -167,9 +172,15 @@ case "${who} ${method} ${path}" in
     [[ "${member}" == 1 ]] && rows="[{\"email\":\"${FAKE_PERSON}\",\"by\":\"a\",\"at\":\"t\",\"via\":\"join_request\",\"group_changed\":false,\"still_in_group\":${FAKE_IN_GROUP:-false}}]"
     answer 200 "{\"platform_memberships\":${on},\"members\":${rows}}" ;;
   "admin DELETE /v1/workspace/members/person")
-    [[ "$(jq -r .email <<<"${data}")" == "${FAKE_PERSON}" && "${member}" == 1 ]] || refuse 404 not_found
-    [[ "${FAKE_BROKEN:-}" == "removal-keeps" ]] || rm -f "${FAKE_DIR}/member"
-    answer 200 "{\"email\":\"${FAKE_PERSON}\",\"state\":\"removed\",\"still_in_group\":false}" ;;
+    printf '%s\n' "$(jq -r .email <<<"${data}")" >>"${FAKE_DIR}/removals"
+    case "${FAKE_BROKEN:-}" in
+      removal-allowed)
+        [[ "$(jq -r .email <<<"${data}")" == "${FAKE_PERSON}" && "${member}" == 1 ]] || refuse 404 not_found
+        rm -f "${FAKE_DIR}/member"
+        answer 200 "{\"email\":\"${FAKE_PERSON}\",\"state\":\"removed\",\"still_in_group\":false}" ;;
+      refusal-removes) rm -f "${FAKE_DIR}/member" ;;
+    esac
+    refuse 403 probe_admin_not_permitted ;;
   "admin POST /v1/admin/join-requests/jr-1/approve")
     [[ -f "${FAKE_DIR}/asked" ]] || refuse 404 join_request_unknown
     if [[ "${on}" == true ]]; then
@@ -214,11 +225,15 @@ def _tools(tmp_path: Path) -> Path:
     return bin_dir
 
 
-def _probe(tmp_path: Path, switch: str, broken: str = "", **extra: str):
-    """Runs run_join as the swarm-verify job would, against the fakes."""
+def _probe(tmp_path: Path, switch: str, broken: str = "", member: bool = False, **extra: str):
+    """Runs run_join as the swarm-verify job would, against the fakes. With
+    `member`, the person starts as a platform member, as an earlier run with
+    the switch on leaves them."""
     bin_dir = _tools(tmp_path)
     fake = tmp_path / "fake"
     fake.mkdir()
+    if member:
+        (fake / "member").touch()
     refresh, client_secret = secrets.token_urlsafe(24), secrets.token_urlsafe(12)
     credential = json.dumps({"type": "authorized_user", "client_id": "cli.apps.example.com",
                              "client_secret": client_secret, "refresh_token": refresh})
@@ -287,13 +302,15 @@ def test_with_platform_memberships_on_every_check_passes(tmp_path):
     assert proc.returncode == 0, proc.stderr
     log = (fake / "api.log").read_text().splitlines()
     # The person asked with the code in a body; the admin approved; the
-    # person's next request selected the workspace; the admin removed them;
-    # the link ended off.
+    # person's next request selected the workspace; the admin's removal was a
+    # real request, refused, made once (the EXIT path does not retry it); the
+    # person is still a member; the link ended off.
     assert "person POST /v1/join-requests" in [" ".join(r.split()[:3]) for r in log]
     assert f"person GET /v1/tenants/me {TENANT}" in log
-    assert any(r.startswith("admin DELETE /v1/workspace/members/person") for r in log)
+    assert (fake / "removals").read_text().splitlines() == [PERSON]
+    assert "probe_admin_not_permitted" in proc.stderr
     assert not (fake / "link_on").exists()
-    assert not (fake / "member").exists(), "the probe left the person a member"
+    assert (fake / "member").exists(), "the refused removal removed the person"
     # The person's sign-in was read from Secret Manager, once, by name.
     assert f"/secrets/{PERSON_SECRET}/versions/latest:access" in (fake / "secrets.read").read_text()
     _assert_nothing_leaked(proc, fake, secret_values)
@@ -304,13 +321,11 @@ def test_with_platform_memberships_off_approval_answers_the_group_command(tmp_pa
     proc, fake, secret_values = _probe(tmp_path, "off")
     verdicts = _verdicts(proc)
     assert proc.returncode == 0, proc.stderr
-    for check in ("link-on", "ask", "approve", "selects", "no-group-write", "link-off"):
-        assert verdicts[check] == "PASS", (check, proc.stderr)
-    # No membership was written, so there is nothing to remove: not measured.
-    assert verdicts["removal"] == "SKIP"
+    assert verdicts == {c: "PASS" for c in CHECKS}, proc.stderr
     assert "admitted: false" in proc.stderr and "gcloud identity groups memberships add" in proc.stderr
-    log = (fake / "api.log").read_text()
-    assert "DELETE /v1/workspace/members/person" not in log
+    # No membership was written, yet the removal's refusal is still a real
+    # request, and the person is still refused after it.
+    assert (fake / "removals").read_text().splitlines() == [PERSON]
     assert not (fake / "member").exists() and not (fake / "link_on").exists()
     _assert_nothing_leaked(proc, fake, secret_values)
     _assert_no_group_write(fake)
@@ -324,11 +339,40 @@ def test_an_approval_that_admits_nobody_fails_with_the_switch_on(tmp_path):
     assert proc.returncode != 0
 
 
-def test_a_removal_that_does_not_end_the_membership_fails(tmp_path):
-    """MUTATION: the removal answers 200 and the person still selects it."""
-    proc, _fake, _ = _probe(tmp_path, "on", broken="removal-keeps")
+def test_a_removal_the_probe_admin_is_allowed_fails(tmp_path):
+    """MUTATION: the probe admin's removal answers 200 removed: the probe
+    admin holds a power the owner decided it does not."""
+    proc, _fake, _ = _probe(tmp_path, "on", broken="removal-allowed")
     assert _verdicts(proc)["removal"] == "FAIL", proc.stderr
+    assert "probe_admin_not_permitted" in proc.stderr
     assert proc.returncode != 0
+
+
+def test_a_refusal_that_removes_the_person_anyway_fails(tmp_path):
+    """MUTATION: the removal answers 403 probe_admin_not_permitted but the
+    membership is gone: the refusal is checked, not assumed."""
+    proc, _fake, _ = _probe(tmp_path, "on", broken="refusal-removes")
+    assert _verdicts(proc)["removal"] == "FAIL", proc.stderr
+    assert "must still be a member" in proc.stderr
+    assert proc.returncode != 0
+
+
+def test_a_person_an_earlier_run_left_a_member_still_passes(tmp_path):
+    """The run after an on run: the person is a member already. The ask is
+    409 join_already_member, there is no request to approve (not measured,
+    never a pass), and every other check passes."""
+    proc, fake, secret_values = _probe(tmp_path, "on", member=True)
+    verdicts = _verdicts(proc)
+    assert proc.returncode == 0, proc.stderr
+    assert verdicts == {**{c: "PASS" for c in CHECKS}, "approve": "SKIP"}, proc.stderr
+    assert "409 join_already_member" in proc.stderr
+    log = (fake / "api.log").read_text()
+    assert "/approve" not in log
+    assert (fake / "removals").read_text().splitlines() == [PERSON]
+    assert (fake / "member").exists() and not (fake / "link_on").exists()
+    _assert_nothing_leaked(proc, fake, secret_values)
+    _assert_no_group_write(fake)
+
 
 
 def test_a_person_the_group_already_holds_fails_no_group_write(tmp_path):
@@ -354,7 +398,7 @@ def test_the_persons_requests_go_through_the_front_door_and_the_admins_do_not(tm
     hosts = (fake / "hosts.log").read_text().splitlines()
     person = [h.split()[1] for h in hosts if h.startswith("person ")]
     admin = [h.split()[1] for h in hosts if h.startswith("admin ")]
-    # whoami, before, the ask, after, mine and removed: every one of the person's.
+    # whoami, before, the ask, after, mine and kept: every one of the person's.
     assert len(person) >= 6 and set(person) == {"front"}, hosts
     assert len(admin) >= 6 and set(admin) == {"api"}, hosts
     assert "nobody" not in " ".join(hosts)

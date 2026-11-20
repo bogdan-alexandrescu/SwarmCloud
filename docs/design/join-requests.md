@@ -941,13 +941,26 @@ and §3, [workspace-roles.md](workspace-roles.md)'s Q3 amendment,
 this section, and the acceptance probe `scripts/acceptance/groups/join.sh`,
 run by `.github/workflows/accept.yml`'s smoke job beside the roles probe and
 held offline by `tests/unit/scripts/test_join_acceptance_probe.py`. With a
-platform admin and a person outside the test workspace's group, it turns the
-link on and reads the code once, asks as the person with the code in a body,
-approves, checks the person's next request selects the workspace
+scoped probe admin and a person outside the test workspace's group, it turns
+the link on and reads the code once, asks as the person with the code in a
+body, approves, checks the person's next request selects the workspace
 (`via: platform_member`), checks the API's own fresh per-group check does not
-find the person in the group, removes the membership and checks the next
-request is refused, and turns the link off. With the switch off it checks
-approval answers `admitted: false` with the group command and admits nobody.
+find the person in the group, asks to remove the membership and checks the
+request is refused `probe_admin_not_permitted` and the person still selects
+the workspace and is still listed, and turns the link off. With the switch
+off it checks approval answers `admitted: false` with the group command and
+admits nobody, and that the removal is refused just the same.
+
+The removal step proves a refusal, not a removal, because the probe admin may
+not remove a membership (the owner's decision; §8.2) and swarm-api has no
+route a person can call to leave a workspace themselves: `withdraw` ends an
+open request, not a membership. So with the switch on the person stays a
+member between runs. The probe is idempotent for that: a run that finds the
+person listed runs the member's path, where the ask is 409
+`join_already_member`, the approval is not measured (SKIP, naming why: there
+is no request to approve), and every other check is measured as before. How
+a later run measures the approval again -- a self-leave route in its own
+change, or a separate cleanup identity -- is an open question to the owner.
 
 ### 8.1 Where the code departs from §4
 
@@ -971,7 +984,7 @@ approval answers `admitted: false` with the group command and admits nobody.
   one store; two had left a removed person selecting the workspace for up to
   `role_cache_seconds` on the instance that wrote. Another instance still
   serves its cached read for up to that long (15 s by default), which is why
-  the acceptance probe waits up to 30 s for a removal to show.
+  the acceptance probe waits up to 30 s for an approval to show.
 * **The bell's route wiring is its own lane** (JOIN-BELL-WIRE), not part of
   JOIN-BELL: until it landed the join sources read nothing.
 * **The asker in the acceptance probe is a person, signed in from Secret
@@ -984,7 +997,8 @@ approval answers `admitted: false` with the group command and admits nobody.
   row 8 said: that is where every live probe this platform runs lives.
 * **No Google group is read by the probe directly.** "No Google group was
   written" is shown read only, through the API's own fresh per-group check
-  (`still_in_group`) and the person's refusal after removal; the probe calls
+  (`still_in_group`), and with the switch off by the person's refusal after
+  the approval; the probe calls
   no Cloud Identity API and no `gcloud`, so it could not write a group either.
 
 ### 8.2 What is left
@@ -1011,8 +1025,8 @@ and off, lists the members, and decides that workspace's requests through
 `routes/people.administered_workspaces`, which counts its listed workspaces
 among its memberships, recorded `via: probe_admin`. It never removes a
 membership (`DELETE /v1/workspace/members/person` is 403
-`probe_admin_not_permitted`), so the probe's removal step needs another
-identity, and an approval that would change or clear a stored `admin` role
+`probe_admin_not_permitted`), so the probe's removal step measures that
+refusal and leaves the person a member (§8 above), and an approval that would change or clear a stored `admin` role
 is 403 `role_admin_required` with nothing written. `people_scope`
 refuses a service account on Admin › People because it holds no person's
 role; a probe admin's entry is that role, so a listed one is answered as a

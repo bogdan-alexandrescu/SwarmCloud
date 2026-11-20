@@ -3,14 +3,18 @@
 # row 8 and §8; part of archived issue 2325): a person outside a group workspace asks to
 # join it through its join link, and a platform admin decides, measured live.
 #
-#   1. link-on: the admin (ACC_JOIN_ADMIN_SA, a platform admin) turns the test
-#      workspace's join link on with a fresh code, and is shown the code once:
-#      in the answer's `link` fragment, never again in GET.
+#   1. link-on: the admin (ACC_JOIN_ADMIN_SA, a scoped probe admin of the
+#      test workspace) turns the test workspace's join link on with a fresh
+#      code, and is shown the code once: in the answer's `link` fragment,
+#      never again in GET.
 #   2. ask: the person (ACC_JOIN_PERSON, NOT in the workspace's group) POSTs
 #      the code in a body to /v1/join-requests: 202, a `requested` request.
+#      A person an earlier run admitted (below) is answered 409
+#      join_already_member instead: a member needs nobody's decision.
 #   3. approve: the admin approves it. With `platform_memberships` on the
 #      answer is `admitted: true`; off, `admitted: false` with the `gcloud`
-#      group command, and nobody is admitted.
+#      group command, and nobody is admitted. For a person an earlier run
+#      admitted there is no request to approve, so it is not measured.
 #   4. selects: on, the person's next request with X-Swarm-Tenant selects the
 #      workspace and GET /v1/tenants/mine lists it `via: platform_member`;
 #      off, the same request is still 403 tenant_not_member.
@@ -19,10 +23,22 @@
 #      after the approval; off, the person is still refused. READ ONLY: the
 #      probe calls no Cloud Identity API and no gcloud, so it cannot write a
 #      group either.
-#   6. removal: on, the admin removes the membership and the person's next
-#      request is 403 tenant_not_member again. Off there is nothing to remove,
-#      so it is not measured.
+#   6. removal: the admin's DELETE /v1/workspace/members/person for the person
+#      is refused 403 probe_admin_not_permitted: a scoped probe admin never
+#      removes a membership (the owner's decision). On, the person still
+#      selects the workspace afterwards and the member list still lists them,
+#      so the refusal is measured, not assumed; off, the person is still
+#      refused as before.
 #   7. link-off: the link is turned off again, and GET says so.
+#
+# THE PERSON STAYS A MEMBER BETWEEN RUNS. swarm-api has no route a person can
+# call to leave a workspace (withdraw ends an open REQUEST only), and the
+# probe admin may not remove one, so with the switch on the first run's
+# approval leaves the person a platform member of the test workspace. Every
+# later run finds them listed and runs the member's path: the ask is 409
+# join_already_member, the approval is not measured, and every other check is.
+# How a later run measures the approval again is the owner's open question
+# (a self-leave route, or a separate cleanup identity).
 #
 # Which path runs is the deployment's: GET /v1/workspace/members says whether
 # `platform_memberships` is on. Neither path is a skip of the other.
@@ -44,7 +60,7 @@
 # access, once the client is on the backends' allowlist (the runbook, step
 # 4); IAP then forwards the request with its signed assertion, which swarm-api
 # verifies and judges the request by alone. So every request the person makes
-# (whoami, the ask, the selects, the check after a removal) goes to
+# (whoami, the ask, the selects, the check after the refused removal) goes to
 # SWARM_ACCEPTANCE_CONSOLE_URL, https://<frontend_hostname>, whose URL map
 # sends /v1/* to swarm-api, with the token as `Authorization: Bearer` exactly
 # as `sc` sends it. The admin's requests keep acc_api_as and `api_url`: a
@@ -86,20 +102,22 @@ ACC_JOIN_FRONT_DOOR="${SWARM_ACCEPTANCE_CONSOLE_URL:-}"
 ACC_JOIN_SETTLE="${SWARM_ACCEPTANCE_JOIN_SETTLE:-30}"
 
 #: The codes and fields the probe judges by, as swarm_api spells them
-#: (auth.TenantNotMember, routes/tenants.VIA_PLATFORM_MEMBER, the approval's
-#: group_change.command).
+#: (auth.TenantNotMember, errors.JoinAlreadyMember, errors.ProbeAdminNotPermitted,
+#: routes/tenants.VIA_PLATFORM_MEMBER, the approval's group_change.command).
 JOIN_NOT_MEMBER="tenant_not_member"
+JOIN_ALREADY_MEMBER="join_already_member"
+JOIN_PROBE_ADMIN_REFUSED="probe_admin_not_permitted"
 JOIN_VIA_PLATFORM_MEMBER="platform_member"
 JOIN_GROUP_COMMAND="gcloud identity groups memberships add"
 
 join_checks() {
   cat <<'EOF'
 join: link-on: the admin turns the test workspace's join link on and is shown its code once
-join: ask: the person outside the group asks with the code in a body and gets a requested request
+join: ask: the person outside the group asks with the code in a body and gets a requested request (a member already: 409 join_already_member)
 join: approve: the admin approves; admitted is true with platform_memberships on, false with the group command off
 join: selects: the person's next request selects the workspace (via platform_member), or is still refused with the switch off
 join: no-group-write: the approval wrote no Google group: the API's fresh per-group check does not find the person (read only)
-join: removal: the admin removes the membership and the person's next request is refused
+join: removal: the probe admin's removal of the person is refused probe_admin_not_permitted, and the person is still a member
 join: link-off: the join link is turned off again
 EOF
 }
@@ -143,8 +161,9 @@ join_settings_problem() {
   return 1
 }
 
-#: The person's ID token, in this shell's memory only; and what is left to
-#: undo (the EXIT trap and _join_link_off_on_exit read them).
+#: The person's ID token, in this shell's memory only; what is left to undo
+#: (the EXIT trap and _join_link_off_on_exit read it); and whether the person
+#: holds a platform membership here, an earlier run's or this one's approval.
 JOIN_PERSON_ID=""
 JOIN_LINK_SET=0
 JOIN_ADMITTED=0
@@ -260,21 +279,20 @@ _join_selects() {
   _join_status "${name}"
 }
 
-_join_remove() {
-  _join_admin "$1" DELETE /workspace/members/person \
-    "$(jq -nc --arg e "${ACC_JOIN_PERSON}" --arg r "JOIN-ACCEPT ${ACC_RUN_ID:-}" '{email: $e, reason: $r}')"
+# _join_listed NAME -> "1" when the admin's member list in ${ACC_WORK}/join.NAME
+# lists the person, else "0".
+_join_listed() {
+  if [[ "$(_join_field "$1" --arg e "${ACC_JOIN_PERSON}" \
+      '[(.members // [])[] | objects | select(.email == $e)] | length')" =~ ^[1-9] ]]; then
+    printf '1'
+  else
+    printf '0'
+  fi
 }
 
-# What a crash must not leave behind: the person a member, the link on.
+# What a crash must not leave behind: the link on. The person's membership is
+# not undone here: the probe admin may not remove one (the header).
 _join_link_off_on_exit() {
-  if [[ "${JOIN_ADMITTED}" == "1" ]]; then
-    _join_remove exit-remove
-    if [[ "$(_join_status exit-remove)" =~ ^(2|404) ]]; then
-      JOIN_ADMITTED=0
-    else
-      err "join: ${ACC_JOIN_PERSON} may still hold a platform membership of ${ACC_JOIN_TENANT}: remove it in Workspace › People (HTTP $(_join_status exit-remove) $(_join_err exit-remove))"
-    fi
-  fi
   if [[ "${JOIN_LINK_SET}" == "1" ]]; then
     _join_admin exit-link PUT /workspace/join-link '{"on":false}'
     if [[ "$(_join_status exit-link)" =~ ^2 ]]; then
@@ -301,7 +319,8 @@ run_join() {
   local all=(link-on ask approve selects no-group-write removal link-off)
 
   # 0. The person signs in, the API takes them for a person, and they are
-  # outside the workspace. A membership a crashed run left is removed first.
+  # outside the workspace -- or, with the switch on, a member an earlier
+  # run's approval left (the header), which the next request must show.
   if ! _join_person_token; then
     _join_fail_rest "the person's ID token could not be minted (above)" "${all[@]}"
     return 0
@@ -318,13 +337,19 @@ run_join() {
   fi
   on="$(_join_field members '.platform_memberships == true')"
   info "join: platform_memberships is $([[ "${on}" == "true" ]] && echo on || echo off) in this environment"
-  if [[ "$(_join_field members --arg e "${ACC_JOIN_PERSON}" \
-      '[(.members // [])[] | objects | select(.email == $e)] | length')" != "0" ]]; then
-    info "join: a run before this one left ${ACC_JOIN_PERSON} a member; removing it first"
-    _join_remove restore
+  local already=0
+  if [[ "${on}" == "true" && "$(_join_listed members)" == "1" ]]; then
+    already=1
+    JOIN_ADMITTED=1
+    info "join: an earlier run left ${ACC_JOIN_PERSON} a platform member of ${ACC_JOIN_TENANT} (the probe admin may not remove one); measuring the member's path"
   fi
   status="$(_join_selects before)"
-  if [[ "${status}" != "403" || "$(_join_code before)" != "${JOIN_NOT_MEMBER}" ]]; then
+  if [[ "${already}" == "1" ]]; then
+    if [[ "${status}" != "200" ]]; then
+      _join_fail_rest "the member list lists ${ACC_JOIN_PERSON}, but selecting ${ACC_JOIN_TENANT} answered HTTP ${status} $(_join_code before), not 200: a listed membership does not admit" "${all[@]}"
+      return 0
+    fi
+  elif [[ "${status}" != "403" || "$(_join_code before)" != "${JOIN_NOT_MEMBER}" ]]; then
     _join_fail_rest "before asking, ${ACC_JOIN_PERSON} selecting ${ACC_JOIN_TENANT} answered HTTP ${status} $(_join_code before), not 403 ${JOIN_NOT_MEMBER}: the probe needs a person outside the workspace's group" "${all[@]}"
     return 0
   fi
@@ -354,7 +379,16 @@ run_join() {
     status="$(_join_status ask)"
     ref="$(_join_field ask 'if type == "object" and .state == "requested" then (.ref // "") else "" end')"
     [[ "${ref}" =~ ^[A-Za-z0-9_-]+$ ]] || ref=""
-    if [[ "${status}" =~ ^20[02]$ && -n "${ref}" ]]; then
+    if [[ "${already}" == "1" ]]; then
+      ref=""
+      if [[ "${status}" == "409" && "$(_join_code ask)" == "${JOIN_ALREADY_MEMBER}" ]]; then
+        acc_pass "409 ${JOIN_ALREADY_MEMBER}: the person, a member since an earlier run, needs nobody's decision; the code was sent in the body only"
+      else
+        acc_fail "the person, a member since an earlier run, asking answered HTTP ${status} $(_join_code ask), not 409 ${JOIN_ALREADY_MEMBER}"
+        _join_fail_rest "the member's ask was not refused" approve selects no-group-write removal
+        already=0
+      fi
+    elif [[ "${status}" =~ ^20[02]$ && -n "${ref}" ]]; then
       acc_pass "HTTP ${status}: a requested request, the code sent in the body only"
     else
       acc_fail "POST /v1/join-requests answered HTTP ${status} $(_join_code ask), not 202 with a requested request"
@@ -362,24 +396,28 @@ run_join() {
     fi
   fi
 
-  if [[ -n "${ref}" ]]; then
+  if [[ -n "${ref}" || "${already}" == "1" ]]; then
     # 3. The approval, at the workspace's default role.
     acc_check "$(_join_title approve)"
-    _join_admin approve POST "/admin/join-requests/${ref}/approve" '{}'
-    status="$(_join_status approve)"
-    if [[ "${on}" == "true" ]]; then
-      if [[ "${status}" == "200" && "$(_join_field approve '.admitted == true and .group_change == null')" == "true" ]]; then
-        JOIN_ADMITTED=1
-        acc_pass "200 admitted: true, with no group change to make"
-      else
-        acc_fail "the approval answered HTTP ${status} $(_join_code approve) admitted $(_join_field approve '.admitted // "absent"'), not 200 admitted: true"
-      fi
+    if [[ "${already}" == "1" ]]; then
+      acc_skip "not measured: ${ACC_JOIN_PERSON} is a member since an earlier run, so there is no request to approve; no route lets the person leave and the probe admin may not remove them (the owner's open question)"
     else
-      if [[ "${status}" == "200" && "$(_join_field approve --arg c "${JOIN_GROUP_COMMAND}" --arg e "${ACC_JOIN_PERSON}" \
-          '.admitted == false and ((.group_change.command // "") | startswith($c) and endswith("--member-email=" + $e))')" == "true" ]]; then
-        acc_pass "200 admitted: false, and the answer names the group command (${JOIN_GROUP_COMMAND} ... --member-email=${ACC_JOIN_PERSON}) for the group's owner"
+      _join_admin approve POST "/admin/join-requests/${ref}/approve" '{}'
+      status="$(_join_status approve)"
+      if [[ "${on}" == "true" ]]; then
+        if [[ "${status}" == "200" && "$(_join_field approve '.admitted == true and .group_change == null')" == "true" ]]; then
+          JOIN_ADMITTED=1
+          acc_pass "200 admitted: true, with no group change to make"
+        else
+          acc_fail "the approval answered HTTP ${status} $(_join_code approve) admitted $(_join_field approve '.admitted // "absent"'), not 200 admitted: true"
+        fi
       else
-        acc_fail "with platform_memberships off the approval answered HTTP ${status} $(_join_code approve), not 200 admitted: false with the group command"
+        if [[ "${status}" == "200" && "$(_join_field approve --arg c "${JOIN_GROUP_COMMAND}" --arg e "${ACC_JOIN_PERSON}" \
+            '.admitted == false and ((.group_change.command // "") | startswith($c) and endswith("--member-email=" + $e))')" == "true" ]]; then
+          acc_pass "200 admitted: false, and the answer names the group command (${JOIN_GROUP_COMMAND} ... --member-email=${ACC_JOIN_PERSON}) for the group's owner"
+        else
+          acc_fail "with platform_memberships off the approval answered HTTP ${status} $(_join_code approve), not 200 admitted: false with the group command"
+        fi
       fi
     fi
 
@@ -421,25 +459,33 @@ run_join() {
       acc_fail "the person selecting ${ACC_JOIN_TENANT} after the approval answered HTTP $(_join_status after) $(_join_code after)"
     fi
 
-    # 6. Removal ends it.
+    # 6. The probe admin's removal is refused, and nothing changes: a real
+    # request, then the person's own next request and the member list.
     acc_check "$(_join_title removal)"
-    if [[ "${on}" != "true" ]]; then
-      acc_skip "not measured: platform_memberships is off in this environment, so the approval wrote no membership to remove"
-    elif [[ "${JOIN_ADMITTED}" != "1" ]]; then
+    if [[ "${on}" == "true" && "${JOIN_ADMITTED}" != "1" ]]; then
       acc_fail "not measured: the approval admitted nobody"
     else
-      _join_remove remove
+      _join_admin remove DELETE /workspace/members/person \
+        "$(jq -nc --arg e "${ACC_JOIN_PERSON}" --arg r "JOIN-ACCEPT ${ACC_RUN_ID:-}" '{email: $e, reason: $r}')"
       status="$(_join_status remove)"
-      [[ "${status}" =~ ^2 ]] && JOIN_ADMITTED=0
-      if [[ "${status}" =~ ^2 && "$(_join_field remove '.state // ""')" == "removed" ]]; then
-        status="$(_join_selects removed 403)"
-        if [[ "${status}" == "403" && "$(_join_code removed)" == "${JOIN_NOT_MEMBER}" ]]; then
-          acc_pass "removed, and the person's next request is 403 ${JOIN_NOT_MEMBER}"
+      if [[ "${status}" != "403" || "$(_join_code remove)" != "${JOIN_PROBE_ADMIN_REFUSED}" ]]; then
+        acc_fail "DELETE /v1/workspace/members/person as the probe admin answered HTTP ${status} $(_join_code remove) $(_join_err remove), not 403 ${JOIN_PROBE_ADMIN_REFUSED}: a probe admin must never remove a membership"
+      elif [[ "${on}" == "true" ]]; then
+        status="$(_join_selects kept)"
+        _join_admin members-kept GET /workspace/members ""
+        row="$(_join_listed members-kept)"
+        if [[ "${status}" == "200" && "${row}" == "1" ]]; then
+          acc_pass "403 ${JOIN_PROBE_ADMIN_REFUSED}, and the person still selects ${ACC_JOIN_TENANT} and is still listed: nothing was removed"
         else
-          acc_fail "removed, and the person selecting ${ACC_JOIN_TENANT} still answered HTTP ${status} $(_join_code removed), not 403 ${JOIN_NOT_MEMBER}"
+          acc_fail "the removal was refused, yet the person selecting ${ACC_JOIN_TENANT} answered HTTP ${status} $(_join_code kept) and the member list (HTTP $(_join_status members-kept)) $([[ "${row}" == "1" ]] && echo lists || echo "does not list") them: the person must still be a member"
         fi
       else
-        acc_fail "DELETE /v1/workspace/members/person answered HTTP ${status} $(_join_code remove) $(_join_err remove)"
+        status="$(_join_selects kept)"
+        if [[ "${status}" == "403" && "$(_join_code kept)" == "${JOIN_NOT_MEMBER}" ]]; then
+          acc_pass "403 ${JOIN_PROBE_ADMIN_REFUSED}; with the switch off there was no membership, and the person is still refused ${JOIN_NOT_MEMBER}"
+        else
+          acc_fail "the removal was refused, and the person selecting ${ACC_JOIN_TENANT} answered HTTP ${status} $(_join_code kept), not 403 ${JOIN_NOT_MEMBER}"
+        fi
       fi
     fi
   fi
