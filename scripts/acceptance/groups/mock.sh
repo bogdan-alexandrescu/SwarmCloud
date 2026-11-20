@@ -194,9 +194,20 @@ _mock_check_retry() {
   else
     acc_fail "no 'retrying' event: a 1 s retry-after was not retried in place" "${task}"
   fi
-  attempts="$(task_field "${task}" '.attempt_count // 0')"
+  # COUNTED FROM THE ATTEMPT DOCUMENTS, NOT FROM `attempt_count`. The mock
+  # refuses every in-place retry of its first attempt, so that attempt parks
+  # and a second one runs. A PROVIDER_QUOTA_EXHAUSTED park refunds its attempt
+  # (`ControlPlane.park`, the owner 2026-10-27, "Refund, bounded"):
+  # `attempt_count` goes back down, and the second attempt's lease takes it
+  # to 1 again. Dev acceptance on 2026-11-20 read that 1 as "no second
+  # attempt" for a task that parked and resumed exactly as designed. Each
+  # attempt writes its own document, refunded or not.
+  if ! attempts="$(task_attempts "${task}" | jq -s 'length')"; then
+    acc_fail "could not read the task's attempt documents" "${task}"
+    return 0
+  fi
   resumed="$(acc_output "${task}" '.was_resumed // false')"
-  acc_assert_eq "true" "$([[ "${attempts}" -ge 2 && "${resumed}" == "true" ]] && echo true || echo "attempts=${attempts} was_resumed=${resumed}")" "a second attempt ran and resumed" "${task}"
+  acc_assert_eq "true" "$([[ "${attempts}" -ge 2 && "${resumed}" == "true" ]] && echo true || echo "attempt documents=${attempts} was_resumed=${resumed}")" "a second attempt ran and resumed" "${task}"
 }
 
 _mock_check_park_and_restore() {
