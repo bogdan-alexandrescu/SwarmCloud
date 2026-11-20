@@ -316,6 +316,9 @@ run "the_tick_holds_no_grant_but_run_invoker_on_swarm_api" {
         "infra/main.tf: member = \"serviceAccount:$${module.scheduler.schedule_tick_email}\"",
         "infra/locals.tf: SCHEDULE_TICK_USERS = module.scheduler.schedule_tick_email",
         "infra/deployer.tf: \"swarm-schedule-tick\" = module.scheduler.schedule_tick_email",
+        # The probe-admin overlap check: a validation that refuses a probe
+        # admin principal equal to this account. It compares and grants nothing.
+        "infra/variables.tf: [\"swarm-rollup-sweeper@$${var.project_id}.iam.gserviceaccount.com\", \"swarm-schedule-tick@$${var.project_id}.iam.gserviceaccount.com\"],",
         # deployer_admin's depends_on: an apply ordering, not a grant.
         "bootstrap/deployer_service_accounts.tf: google_service_account.schedule_tick,",
       ], l) && length(regexall("^modules/scheduler/[^:]+: service_account_email = local\\.schedule_tick_email$", l)) == 0
