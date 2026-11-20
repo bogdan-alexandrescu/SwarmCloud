@@ -593,16 +593,38 @@ route:
 * refuses, writing nothing: an identity that is not a person (a service
   account, the schedule tick, the rollup sweeper, a listed service account)
   403 `workspace_leave_person_only`; a personal or service workspace 409
-  `join_not_offered`; a person with no platform membership there (the group
-  alone lists them, or they left already) 404 `workspace_leave_not_member`.
+  `join_not_offered`; a person with no platform membership there that
+  still counts for the workspace's registered group (the group alone lists
+  them, they left already, or the workspace's group changed since the grant,
+  so it admits nobody: `counts_for`, as resolution reads it) 404
+  `workspace_leave_not_member`.
 * refuses the workspace's **last admin by override** 409
   `workspace_leave_last_admin` when the group does not hold them there,
   since leaving would leave the workspace with no admin of its own. Neither a
   removal nor the roles routes had such a guard to mirror, so the route has
-  its own: it reads the roster and the group fresh, and a read that fails is
-  a 503, never a guess that lets the last admin go. A last admin the group
-  still lists may leave the platform membership, since the group keeps them
-  (and their override) there.
+  its own. A last admin the group still lists may leave the platform
+  membership, since the group keeps them (and their override) there.
+  * **Another admin counts only while they can still select the
+    workspace**: their override is `admin` AND either their platform
+    membership still counts for the registered group or a fresh per-group
+    check finds them in it. An override alone is not an admin, because it
+    outlives a leave and a removal by design and an admin can be named
+    before they ever join: without this, of two admins reachable only by
+    platform membership, the second to leave would count the first's kept
+    override and the workspace would end with no admin anyone can reach.
+  * **Every read it decides on is fresh**: the roster of overrides
+    (`RoleStore.overrides(fresh=True)`), each other admin's membership and
+    the group checks. A read that fails is a 503, never a guess that lets
+    the last admin go.
+  * **The check and the write are one Firestore transaction.** The caller's
+    and the other admins' memberships are read inside it, with the `removed`
+    grant and its audit row written in it, and a leave by an admin also
+    reads and writes the workspace's guard document
+    (`workspace_leave_guards/{tenant_id}`, which holds no authority). Two
+    admins leaving at once therefore conflict on that document; Firestore
+    aborts one, the transaction runs again, and its re-read sees the other
+    gone, so both cannot leave. Contention that outlasts the retries is a
+    503 `membership_unavailable`, with nothing written.
 
 ### 4.5 Tenant resolution: the change, exactly
 

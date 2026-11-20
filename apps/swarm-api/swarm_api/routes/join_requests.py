@@ -59,12 +59,17 @@ command, resource spec or backend parameter (invariant 10).
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
+from google.api_core import exceptions as gexc
+from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import Field
+
+from swarm_common.admission import _snapshot
 
 from .. import joinrequests, memberships, roles
 from .. import workspaces as ws
@@ -91,6 +96,7 @@ from ..groups import GroupLookupError
 from ..joinrequests import Decision, JoinRequest, RequestView
 from ..judgment import settings_keys
 from ..schemas import StrictModel
+from ..store import _COMMIT_RETRIES_EXHAUSTED
 from .people import (
     join_scope,
     join_store,
@@ -502,21 +508,63 @@ def remove_member(
     return {"email": subject, "state": memberships.REMOVED, "still_in_group": still}
 
 
-def _last_admin(request: Request, ctx: AppContext, *, tenant_id: str, email: str,
-                group: str) -> bool:
-    """Whether the caller is the workspace's only `admin` by override and
-    the group does not hold them there, so their leaving would leave it no
-    admin of its own. The roster read and the group check are fresh; either
-    failing is a 503, never a guess that lets the last admin go."""
+def _admin_by_override(ctx: AppContext, tenant_id: str, email: str) -> bool:
+    """Whether the caller's own newest valid grant here, read fresh, is `admin`."""
     store = ctx.roles
     assert store is not None
     mine = store.newest_valid(tenant_id, email, fresh=True)
-    if mine is None or mine.role != roles.ADMIN:
-        return False
-    if any(other != email and grant.role == roles.ADMIN
-           for other, grant in store.overrides(tenant_id)):
-        return False
-    return not _in_group(request, ctx, email, group)
+    return mine is not None and mine.role == roles.ADMIN
+
+
+def _admin_remains(request: Request, ctx: AppContext, txn: Any, *, tenant_id: str,
+                   email: str, group: str, registered: dict[str, str]) -> bool:
+    """Whether someone other than the caller is this workspace's `admin` by
+    override AND can still select it: their platform membership, read inside
+    `txn`, still counts for the registered group, or a fresh per-group check
+    finds them in it. An override alone is not an admin: it outlives a leave
+    and a removal by design, and an admin can be named before they join.
+    The roster is read fresh; a group check that fails is a 503, never a
+    guess that lets the last admin go."""
+    store = ctx.roles
+    assert store is not None
+    others = [other for other, grant in store.overrides(tenant_id, fresh=True)
+              if other != email and grant.role == roles.ADMIN]
+    members = membership_store(ctx)
+    for other in others:
+        grant = members.read(other, transaction=txn).newest.get(tenant_id)
+        if grant is not None and grant.counts_for(registered):
+            return True
+    return any(_in_group(request, ctx, other, group) for other in others)
+
+
+def _leave_contended(exc: BaseException) -> bool:
+    """A leave transaction that cannot have committed: Firestore aborted it,
+    on a read or after the decorator's own retries ran out."""
+    if isinstance(exc, gexc.Aborted):
+        return True
+    return isinstance(exc, ValueError) and str(exc).startswith(_COMMIT_RETRIES_EXHAUSTED)
+
+
+def _leavable(read: memberships.MembershipRead, tenant_id: str,
+              registered: dict[str, str]) -> memberships.Membership:
+    """The caller's membership here when it still counts for the registered
+    group; a bounded read cut short before it answered is a 503, never a
+    404 that the unread grant could contradict."""
+    grant = read.newest.get(tenant_id)
+    if grant is not None and grant.counts_for(registered):
+        return grant
+    if grant is None and read.cut_short:
+        raise MembershipUnavailable(
+            "your workspace memberships could not be read: too many records failed "
+            "verification; an operator has been alerted. Nothing was written")
+    raise _not_member()
+
+
+def _not_member() -> WorkspaceLeaveNotMember:
+    return WorkspaceLeaveNotMember(
+        "you hold no platform membership of this workspace, so there is nothing to leave; "
+        "if its Google group lists you, the group's own admins change that. Nothing was "
+        "written")
 
 
 @router.post(LEAVE_ROUTE)
@@ -533,31 +581,63 @@ def leave_workspace(
     and never the Google group, which the platform cannot change:
     `still_in_group` says when the group still lists them. A role override
     they held here is KEPT, exactly as `remove_member` keeps it, so asking
-    and being approved again restores what an admin named. The workspace's
-    last `admin` by override cannot leave it without one (409
-    `workspace_leave_last_admin`)."""
+    and being approved again restores what an admin named.
+
+    Only a membership that still counts for the workspace's registered group
+    is left (`counts_for`, as resolution reads it). The workspace's last
+    `admin` by override whom the group does not hold cannot leave it without
+    another admin who can still select it (409 `workspace_leave_last_admin`,
+    `_admin_remains`). That check and the `removed` grant are one Firestore
+    transaction, which reads and writes the workspace's leave guard
+    document, so two admins leaving at once conflict and the one retried
+    re-checks who is left: both cannot go."""
     email = _person(auth, WorkspaceLeavePersonOnly)
     if roles.is_personal(auth):
         raise JoinNotOffered("a personal workspace is yours alone; there is nothing to leave")
-    group = _registered(ctx).get(tenant_id)
+    registered = _registered(ctx)
+    group = registered.get(tenant_id)
     if group is None or group != (auth.tenant_principal or "").strip().lower():
         raise JoinNotOffered("only a group workspace holds platform memberships to leave")
     store = membership_store(ctx)
-    grant = store.read(email, fresh=True).newest.get(tenant_id)
-    if grant is None or grant.state != memberships.MEMBER:
-        raise WorkspaceLeaveNotMember(
-            "you hold no platform membership of this workspace, so there is nothing to leave; "
-            "if its Google group lists you, the group's own admins change that. Nothing was "
-            "written")
-    if _last_admin(request, ctx, tenant_id=tenant_id, email=email, group=group):
-        raise WorkspaceLeaveLastAdmin(
-            "you are this workspace's only admin; name another admin before you leave. "
-            "Nothing was written")
-    still = _still_in_group(request, ctx, email, group)
-    store.write(tenant_id=tenant_id, group=grant.group, subject=email,
-                state=memberships.REMOVED, by=email, via=memberships.VIA_SELF,
-                reason=body.reason if body is not None else None,
-                detail={"still_in_group": still})
+    # Read fresh first, so a person with nothing to leave hears that before
+    # any group lookup; read again inside the transaction, which decides.
+    _leavable(store.read(email, fresh=True), tenant_id, registered)
+    admin = _admin_by_override(ctx, tenant_id, email)
+    if admin:
+        # The group holding the caller keeps them, and their override, here.
+        still: bool | None = _in_group(request, ctx, email, group)
+    else:
+        still = _still_in_group(request, ctx, email, group)
+    guard = ctx.db.collection(memberships.LEAVE_GUARD_COLLECTION).document(tenant_id)
+    reason = body.reason if body is not None else None
+
+    @firestore.transactional
+    def _apply(txn: Any) -> None:
+        if admin:
+            _snapshot(txn.get(guard))
+        current = _leavable(store.read(email, transaction=txn), tenant_id, registered)
+        if admin and not still and not _admin_remains(
+                request, ctx, txn, tenant_id=tenant_id, email=email, group=group,
+                registered=registered):
+            raise WorkspaceLeaveLastAdmin(
+                "you are this workspace's only admin who can still select it; name another "
+                "admin who is a member before you leave. Nothing was written")
+        if admin:
+            txn.set(guard, {"tenant_id": tenant_id, "by": email,
+                            "at": datetime.now(timezone.utc)})
+        store.write(tenant_id=tenant_id, group=current.group, subject=email,
+                    state=memberships.REMOVED, by=email, via=memberships.VIA_SELF,
+                    reason=reason, detail={"still_in_group": still}, writer=txn)
+
+    try:
+        _apply(ctx.db.transaction())
+    except Exception as exc:  # noqa: BLE001 - only contention is re-raised as a retry
+        if not _leave_contended(exc):
+            raise
+        log.warning("workspace leave contended tenant=%s", tenant_id)
+        raise MembershipUnavailable(
+            "others in this workspace were leaving at the same moment; retry shortly. "
+            "Nothing was written") from None
     return {"email": email, "state": memberships.REMOVED, "still_in_group": still}
 
 

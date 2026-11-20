@@ -724,10 +724,12 @@ class RoleStore:
 
     # -- the roster ---------------------------------------------------------
 
-    def overrides(self, tenant_id: str) -> list[tuple[str, Grant]]:
+    def overrides(self, tenant_id: str, *, fresh: bool = False) -> list[tuple[str, Grant]]:
         """Every person whose newest valid grant is an override, as (email,
         grant), newest first. Each person's role is the one `newest_valid`
-        decides, so the roster and the gates can never disagree."""
+        decides, so the roster and the gates can never disagree. `fresh`
+        reads each person's grant past the cache, for a decision that must
+        not act on a role changed within the cache's lifetime."""
         try:
             snaps = list(self._grants()
                          .where(filter=FieldFilter("tenant_id", "==", tenant_id))
@@ -750,7 +752,7 @@ class RoleStore:
                 break
         out: list[tuple[str, Grant]] = []
         for subject in subjects:
-            grant = self.newest_valid(tenant_id, subject)
+            grant = self.newest_valid(tenant_id, subject, fresh=fresh)
             if grant is not None and grant.role is not None:
                 out.append((subject, grant))
         out.sort(key=lambda item: item[1].granted_at, reverse=True)

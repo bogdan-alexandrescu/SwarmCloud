@@ -473,7 +473,9 @@ of nothing else:
   workspace their own sign-in selected, writes the same `removed` row for the
   caller only (`via: "self"`; no subject in the body), keeps any role
   override as a removal does, and refuses the workspace's last admin by
-  override (`workspace_leave_last_admin`); [join-requests.md](design/join-requests.md)
+  override (`workspace_leave_last_admin`), counting another admin only while
+  they can still select it (a membership that counts, or a fresh group
+  check), in one transaction with the write; [join-requests.md](design/join-requests.md)
   §4.4 "Leaving".
 * **A personal (`u-`) or service workspace takes no requests**
   (`join_not_offered`): a personal workspace has one person.

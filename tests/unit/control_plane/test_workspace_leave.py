@@ -11,12 +11,17 @@ Read with an attacker's eye. The attacks are:
   membership there writing a `removed` grant anyway: each is refused with
   its own code and nothing is written;
 * the workspace's last `admin` by override walking out and leaving it with
-  no admin of its own: 409 `workspace_leave_last_admin`, nothing written.
+  no admin of its own: 409 `workspace_leave_last_admin`, nothing written --
+  and another person's admin override counts only while that person can
+  still select the workspace (a membership that counts, or a fresh group
+  check), so a kept override of someone who left is no admin; two admins
+  leaving at once cannot both go.
 
 Who is who (`eng@example.com` and `research@example.com` are the groups):
 `ops` a platform admin; `alice` in eng, eng's admin; `bob` in eng, no grant;
 `erin` research's admin; `lee` in no group, the person who joins and leaves;
-`builder` a service account the eng group lists.
+`dan` and `kim` in no group, other admins of eng by platform membership or
+by override alone; `builder` a service account the eng group lists.
 
 Every key is made at runtime (CLAUDE.md: nothing added may look like a
 credential).
@@ -25,10 +30,11 @@ credential).
 from __future__ import annotations
 
 import secrets
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 from fastapi.testclient import TestClient
+from google.api_core import exceptions as gexc
 
 from swarm_api import memberships, roles
 from swarm_api.admins import AUDIT_COLLECTION
@@ -42,7 +48,7 @@ from swarm_api.routes.join_requests import membership_store
 from swarm_api.waker import NullWaker
 
 from .conftest import ADMIN_GROUP, ENG_GROUP, RESEARCH_GROUP, NoForgeTokens, api_settings, seed_tenant
-from .fakes import FakeFirestore
+from .fakes import FakeDocumentRef, FakeFirestore, FakeTransaction
 from .test_people_admin import FakePool, FakePublisher
 
 SVC = "builder@example-project.iam.gserviceaccount.com"
@@ -52,9 +58,13 @@ GROUPS = {
     "bob@example.com": (ENG_GROUP,),
     "erin@example.com": (RESEARCH_GROUP,),
     "lee@example.com": (),
+    "dan@example.com": (),
+    "kim@example.com": (),
     SVC: (ENG_GROUP,),
 }
 LEE = "lee@example.com"
+DAN = "dan@example.com"
+KIM = "kim@example.com"
 BOB = "bob@example.com"
 ALICE = "alice@example.com"
 LEAVE = "/v1/workspace/leave"
@@ -75,15 +85,16 @@ def db() -> FakeFirestore:
     return db
 
 
-@pytest.fixture
-def ctx(db):
+def build(db, settings=None):
+    """One swarm-api instance over `db`; a second over the same `db` and
+    `settings` is another instance, with its own role and membership caches."""
     tokens = {f"token-{e.split('@')[0]}": {"email": e, "email_verified": True,
                                            "sub": f"sub-{e}", "hd": "example.com"}
               for e in GROUPS}
     ctx = build_context(
-        settings=api_settings(settings_key=secrets.token_hex(32),
-                              console_url="https://console.example.com",
-                              rate_limit_burst=10_000, allowed_users=(SVC,)),
+        settings=settings or api_settings(settings_key=secrets.token_hex(32),
+                                          console_url="https://console.example.com",
+                                          rate_limit_burst=10_000, allowed_users=(SVC,)),
         db=db, verifier=StaticTokenVerifier(tokens), groups=StaticGroups(GROUPS),
         credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
         objects=None, forge_tokens=NoForgeTokens(),
@@ -93,12 +104,21 @@ def ctx(db):
     return ctx
 
 
-@pytest.fixture
-def client(ctx) -> TestClient:
+def serve(ctx) -> TestClient:
     app = create_app(ctx)
     app.state.workspace_publisher = FakePublisher()
     app.state.account_pool = FakePool()
-    client = TestClient(app, raise_server_exceptions=False)
+    return TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.fixture
+def ctx(db):
+    return build(db)
+
+
+@pytest.fixture
+def client(ctx) -> TestClient:
+    client = serve(ctx)
     for who, tenant in (("alice", "eng"), ("erin", "research")):
         set_role(client, f"{who}@example.com", "admin", tenant)
     return client
@@ -287,3 +307,178 @@ def test_the_last_admin_the_group_still_holds_may_leave_the_platform_membership(
     # The group keeps bob in eng, and his override with him: eng keeps its admin.
     assert response.status_code == 200, response.text
     assert response.json()["still_in_group"] is True
+
+
+def test_a_membership_that_no_longer_counts_for_the_group_is_not_left(client, ctx, db) -> None:
+    """A grant written for the workspace's old group admits nobody now
+    (`counts_for`); leaving it is refused as resolution reads it."""
+    membership_store(ctx).write(tenant_id="eng", group="old-eng@example.com", subject=BOB,
+                                state=memberships.MEMBER, by="ops@example.com",
+                                via=memberships.VIA_PLATFORM_ADMIN)
+    before = written(db)
+    response = client.post(LEAVE, headers=h("bob", "eng"))
+    # MUTATION: check only `state == member` -> 200 and a removed grant is written.
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == "workspace_leave_not_member"
+    assert written(db) == before
+
+
+def test_a_read_cut_short_before_it_answered_is_a_503_not_a_404(
+        client, db, monkeypatch) -> None:
+    """bob selects eng through its group; his bounded membership read ends
+    before reaching an eng grant, so whether he holds one is unknown."""
+    real = memberships.MembershipStore.read
+
+    def read(self, subject, **kwargs):
+        if subject == BOB:
+            return memberships.MembershipRead(subject=BOB, newest={}, cut_short=True)
+        return real(self, subject, **kwargs)
+
+    monkeypatch.setattr(memberships.MembershipStore, "read", read)
+    before = written(db)
+    response = client.post(LEAVE, headers=h("bob", "eng"))
+    # MUTATION: drop `cut_short` -> 404 workspace_leave_not_member.
+    assert response.status_code == 503, response.text
+    assert response.json()["code"] == "membership_unavailable"
+    assert written(db) == before
+
+
+# -- who else counts as an admin ----------------------------------------------------
+
+def test_an_admin_override_that_outlived_its_membership_is_no_admin(client, ctx, db) -> None:
+    """dan and lee are eng's admins by platform membership alone. dan leaves
+    (lee remains); his override is kept, by design, but he can no longer
+    select eng, so lee is its last admin and may not leave. Nor does kim,
+    named admin before ever joining, count."""
+    joined(client)
+    grant_member(ctx, DAN)
+    set_role(client, LEE, "admin")
+    set_role(client, DAN, "admin")
+    set_role(client, KIM, "admin")
+    set_role(client, ALICE, None)
+    assert client.post(LEAVE, headers=h("dan", "eng")).status_code == 200
+    assert ctx.roles.newest_valid("eng", DAN, fresh=True).role == "admin"
+
+    before = written(db)
+    response = client.post(LEAVE, headers=h("lee", "eng"))
+    # MUTATION: count any other `admin` override -> 200 and eng has no admin left.
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "workspace_leave_last_admin"
+    assert written(db) == before
+    assert selects(client, "lee", "eng") == 200
+
+
+class FreshOnlyGroups:
+    """A directory whose cached answer is stale: only a fresh check finds
+    bob in eng's group."""
+
+    def __init__(self) -> None:
+        self.asked: list[tuple[str, bool]] = []
+
+    def groups_for(self, email: str, candidates: tuple[str, ...], *,
+                   fresh: bool = False) -> tuple[str, ...]:
+        self.asked.append((email, fresh))
+        if email == BOB and fresh:
+            return tuple(g for g in candidates if g == ENG_GROUP)
+        return ()
+
+
+def test_another_admin_a_fresh_group_check_finds_lets_the_admin_leave(client, ctx, db) -> None:
+    joined(client)
+    set_role(client, LEE, "admin")
+    set_role(client, BOB, "admin")
+    set_role(client, ALICE, None)
+    directory = FreshOnlyGroups()
+    client.app.state.workspace_directory = directory
+    response = client.post(LEAVE, headers=h("lee", "eng"))
+    # MUTATION: count only platform memberships, or ask the group from cache -> 409.
+    assert response.status_code == 200, response.text
+    assert (BOB, True) in directory.asked
+
+
+def test_a_stale_cached_admin_role_is_not_counted(client, ctx, db) -> None:
+    """Another instance cleared dan's admin override; this instance's role
+    cache still says admin. The roster the guard reads is fresh."""
+    joined(client)
+    grant_member(ctx, DAN)
+    set_role(client, LEE, "admin")
+    set_role(client, DAN, "admin")
+    set_role(client, ALICE, None)
+    assert dict(ctx.roles.overrides("eng"))[DAN].role == "admin"  # cached here now
+    other = serve(build(db, ctx.settings))
+    set_role(other, DAN, None)
+
+    response = client.post(LEAVE, headers=h("lee", "eng"))
+    # MUTATION: read the roster through the cache -> 200 on dan's cleared role.
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "workspace_leave_last_admin"
+
+
+# -- two admins leaving at once -----------------------------------------------------
+
+GUARD = memberships.LEAVE_GUARD_COLLECTION + "/"
+
+
+class RacingTransaction(FakeTransaction):
+    """Firestore's conflict on the leave guard: a transaction whose guard
+    document changed between its read and its commit is aborted, and the
+    REAL `firestore.transactional` runs it again. `on_commit` runs another
+    whole leave just before the first commit -- the interleaving to beat."""
+
+    def _begin(self, retry_id: bytes | None = None) -> None:
+        super()._begin(retry_id)
+        self._seen: dict[str, Any] = {}
+
+    def get(self, ref: Any, **kwargs: Any) -> Any:
+        if isinstance(ref, FakeDocumentRef) and ref.path.startswith(GUARD):
+            self._seen[ref.path] = self._db.docs.get(ref.path)
+        return super().get(ref, **kwargs)
+
+    def _commit(self) -> list[Any]:
+        hook, self._db.on_commit = self._db.on_commit, None
+        if hook is not None:
+            hook()
+        if any(self._db.docs.get(path) != seen for path, seen in self._seen.items()):
+            self._db.aborts += 1
+            raise gexc.Aborted("the leave guard changed under this transaction")
+        return super()._commit()
+
+
+class RacingFirestore(FakeFirestore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.on_commit: Callable[[], None] | None = None
+        self.aborts = 0
+
+    def transaction(self, **kwargs: Any) -> RacingTransaction:
+        return RacingTransaction(self)
+
+
+def test_the_last_two_admins_leaving_at_once_cannot_both_go() -> None:
+    db = RacingFirestore()
+    seed_tenant(db, "eng")
+    seed_tenant(db, "research")
+    ctx = build(db)
+    client = serve(ctx)
+    set_role(client, ALICE, "admin")
+    joined(client)
+    grant_member(ctx, DAN)
+    set_role(client, LEE, "admin")
+    set_role(client, DAN, "admin")
+    set_role(client, ALICE, None)
+
+    answers: list[Any] = []
+    db.on_commit = lambda: answers.append(client.post(LEAVE, headers=h("dan", "eng")))
+    first = client.post(LEAVE, headers=h("lee", "eng"))
+    if not answers:  # no transaction at all: dan leaves after lee
+        answers.append(client.post(LEAVE, headers=h("dan", "eng")))
+    (second,) = answers
+    # MUTATION: check outside the transaction, or skip the guard -> both 200.
+    assert sorted((first.status_code, second.status_code)) == [200, 409], (first.text,
+                                                                          second.text)
+    # dan, inside lee's commit, went first; lee's retry saw him gone.
+    assert second.status_code == 200 and first.json()["code"] == "workspace_leave_last_admin"
+    assert db.aborts == 1
+    store = membership_store(ctx)
+    assert store.read(LEE, fresh=True).newest["eng"].state == memberships.MEMBER
+    assert store.read(DAN, fresh=True).newest["eng"].state == memberships.REMOVED

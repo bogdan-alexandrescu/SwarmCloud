@@ -567,7 +567,9 @@ class WorkspaceLeaveNotMember(NotFound):
 class WorkspaceLeaveLastAdmin(Conflict):
     """A person leaving a workspace whose only `admin` by override they are,
     while the group does not hold them there: the workspace would be left
-    with no admin of its own (§4.4). Nothing is written."""
+    with no admin of its own (§4.4). Another admin counts only while they
+    can still select it -- a platform membership that counts, or a fresh
+    group check -- never by a kept override alone. Nothing is written."""
 
     code = "workspace_leave_last_admin"
 
