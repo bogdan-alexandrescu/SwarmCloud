@@ -169,6 +169,8 @@ def test_a_cancelled_only_reading_with_no_completed_at_keeps_the_six_hour_bound(
 def test_with_no_required_check_a_cancelled_only_reading_past_the_bound_refuses(tmp_path):
     """The no-required path (every check at the head) applies the same bound."""
     world = MergeWorld(tmp_path)
+    # GitHub's plan answer reads as "no rules" only on a private repository.
+    world.repository["private"] = True
     world.github.route("GET", f"{API}/rules/branches/main", (403, {}, {
         "message": "Upgrade to GitHub Pro or make this repository public to enable this feature."}))
     world.branch = {"name": "main", "protected": False}

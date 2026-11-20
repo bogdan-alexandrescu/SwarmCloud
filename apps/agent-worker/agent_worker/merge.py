@@ -764,7 +764,10 @@ _MERGE_QUEUE = re.compile(r"merge queue", re.IGNORECASE)
 #: repository on a plan without rulesets (or branch protection) is answered
 #: "Upgrade to GitHub Pro or make this repository public to enable this
 #: feature." (measured on example-org/peer-app, 2026-10-10). Read as "the plan
-#: has none", exactly as a 404 is; any other 403 still refuses.
+#: has none", exactly as a 404 is, only on a repository GitHub's own document
+#: says is private: a public one has rulesets on every plan, so there the
+#: answer is not the plan's truth and reads as an outage (issue 16). Any
+#: other 403 still refuses.
 _PLAN_LACKS_FEATURE = re.compile(
     r"upgrade to github pro|make this repository public to enable this feature",
     re.IGNORECASE,
@@ -1631,12 +1634,22 @@ class GitHubMerger:
         A 404, or a 403 that is GitHub's plan answer (`plan_lacks_feature`: a
         private repository on a plan without rulesets), reads as "none"; any
         other answer raises. `source` records which rule the step then used.
+
+        The plan answer is "none" only where the repository's document says
+        `private: true`. On any other repository it cannot be the plan's
+        truth -- a public repository has rulesets on every plan -- and
+        reading it as "none" drops every required check, the train's
+        `merge-train` with them: the step then merged directly into a base
+        whose train was on, and GitHub refused it 403 (issue 16). There it
+        raises `ForgeUnavailable`, which `_forge_outcome` reads as a
+        transient outage before any merge call: retried, never a merge.
         """
         plan_limited = False
         try:
             rules = self._client.rules_for_branch(self.owner, self.repo, branch)
         except forge_mod.ForgeAnswered as exc:
             if plan_lacks_feature(exc):
+                self._plan_answer_on_private()
                 plan_limited = True
             elif getattr(exc, "status", None) != 404:
                 raise
@@ -1650,6 +1663,7 @@ class GitHubMerger:
         except forge_mod.ForgeAnswered as exc:
             if not plan_lacks_feature(exc):
                 raise
+            self._plan_answer_on_private()
             plan_limited = True
             branch_doc = {}
         protection = _mapping(_mapping(branch_doc.get("protection")).get("required_status_checks"))
@@ -1674,6 +1688,15 @@ class GitHubMerger:
         else:
             source = CHECKS_NONE_ALL_CHECKS
         return RequiredChecks(checks=tuple(found.values()), protected=protected, source=source)
+
+    def _plan_answer_on_private(self) -> None:
+        """Raise `ForgeUnavailable` unless this repository is private, the one
+        place GitHub's plan answer is the plan's truth (`required_checks`)."""
+        if self._repository_doc().get("private") is not True:
+            raise forge_mod.ForgeUnavailable(
+                f"GitHub gave its plan answer (no rulesets or branch protection on this "
+                f"plan) for {self.full_name}, a repository that is not private, so its "
+                "rules are unread: an outage, not \"no rules\"")
 
     def checks_at(self, sha: str, *, head_ref: str | None = None) -> list[CheckFacts]:
         """Every check run, and every commit status, reported at `sha` for
@@ -4026,7 +4049,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     gated = list(required.checks)
     if (parse_merge_target(ctx.dispatch).merge_mode != mergetrain.TRAIN
             and any(c.context == REPOSITORY_TRAIN_CONTEXT for c in required.checks)):
-        switch, switch_read = repository_train(merger, required), True
+        switch, switch_read = repository_train(merger, required, ctx=ctx, own=own,
+                                               labels=pr.labels), True
         if switch is not None:
             gated = [c for c in required.checks if c.context != REPOSITORY_TRAIN_CONTEXT]
             checks = [c for c in checks if c.name != REPOSITORY_TRAIN_CONTEXT]
@@ -4114,7 +4138,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     # takes no slot and updates no branch (docs/merge-step.md "The
     # repository's merge train").
     if not switch_read:
-        switch = repository_train(merger, required)
+        switch = repository_train(merger, required, ctx=ctx, own=own, labels=pr.labels)
     if switch is not None:
         return _board(run, merger, own, pr=pr, head=head, base=default, switch=switch)
 
@@ -4258,15 +4282,30 @@ def _train(run: _Run, merger: ForgeMerger, *, title: str, number: int, head: str
                     head=head, pull_request=number, pending=[])
 
 
-def repository_train(merger: ForgeMerger, required: RequiredChecks) -> dict[str, Any] | None:
+def repository_train(merger: ForgeMerger, required: RequiredChecks, *,
+                     ctx: ActionContext | None = None, own: Mapping[str, Any] | None = None,
+                     labels: tuple[str, ...] = ()) -> dict[str, Any] | None:
     """The repository's merge train switch, read as merge-train.sh reads it;
     None when the train is off.
 
     `vars.MERGE_TRAIN` exactly `on` is on; unset or anything else is off.
-    A token without *Variables: Read* (401/403) cannot see the variable: the
-    train is then on only when the base requires the train's own
-    `merge-train` status -- the runbook's ruleset change -- because a direct
-    merge into such a base is refused whatever the variable says.
+    A token without *Variables: Read* (401/403) cannot see the variable --
+    the merge App is not granted it -- and an unreadable switch the step has
+    seen on must not read as off: GitHub refused the direct merge 403 into a
+    base whose train was on (issue 16). The train is then on when
+
+      * the base requires the train's own `merge-train` status -- the
+        runbook's ruleset change -- because a direct merge into such a base
+        is refused whatever the variable says (`required_check`);
+      * this step's own last park, in `own`, was on the repository's train
+        (`_on_repository_train`): it boarded on a switch it read on
+        (`own_train_park`);
+      * the pull request already carries `REPOSITORY_TRAIN_LABEL`, the
+        train's boarding label `_board` writes (`ready_label`).
+
+    With none of these it is off, as before: the variable read always 403s
+    for the App, so an unprotected or private plan-limited base with no
+    such evidence still merges directly.
     """
     try:
         value = merger.repository_variable(REPOSITORY_TRAIN_VARIABLE)
@@ -4275,6 +4314,10 @@ def repository_train(merger: ForgeMerger, required: RequiredChecks) -> dict[str,
             raise
         if any(c.context == REPOSITORY_TRAIN_CONTEXT for c in required.checks):
             return {"switch": "unreadable", "on_by": "required_check"}
+        if ctx is not None and own is not None and _on_repository_train(ctx, own):
+            return {"switch": "unreadable", "on_by": "own_train_park"}
+        if REPOSITORY_TRAIN_LABEL in labels:
+            return {"switch": "unreadable", "on_by": "ready_label"}
         return None
     if value != REPOSITORY_TRAIN_ON:
         return None
