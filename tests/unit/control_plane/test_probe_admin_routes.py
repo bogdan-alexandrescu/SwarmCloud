@@ -20,7 +20,7 @@ Two halves:
   workspace admin makes -- a secret, an MCP server, the tenant provider key,
   a git-token slot, the merge, code-intelligence and judgment settings, a
   private plugin install, a repository's issue flag, the workspace's name,
-  removing a member -- is refused `probe_admin_not_permitted`, with the role
+  an account's per-workspace caps, removing a member -- is refused `probe_admin_not_permitted`, with the role
   switches OFF (so a switch cannot let it through), and nothing is written;
   while the listed routes still work for it.
 
@@ -294,6 +294,16 @@ def test_the_other_admin_routes_refuse_it(client, db, sm, credentials, method, p
     before = _everything(db, sm, credentials)
     _refused(client.request(method, path, headers=h("probe"), json=body))
     assert _everything(db, sm, credentials) == before
+
+
+def test_an_accounts_caps_refuse_it_before_the_broker_is_asked(client):
+    """`routes/accounts._admin_tenant_id`: the per-workspace caps an admin of
+    the owning workspace sets."""
+    pool = client.app.state.account_pool
+    calls = list(pool.calls)
+    _refused(client.put("/v1/accounts/eng:team-max/per-workspace-max", headers=h("probe"),
+                        json={"per_workspace_max": {"eng": 1}}))
+    assert [c for c in pool.calls if c not in calls] == []
 
 
 def test_a_member_is_not_given_the_probe_admins_code(client):
