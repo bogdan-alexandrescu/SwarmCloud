@@ -12,16 +12,32 @@ child staging the parked attempt's object -- rather than merely that a
 two-step workflow succeeded. Only `artifact_before_park` makes the finishing
 attempt write nothing, so a recipe without it would pass on a rewrite.
 
-Read as text, offline: the group itself needs a deployment.
+Most of this reads the group as text, offline: the group itself needs a
+deployment. The tests at the end run the real `_wf_check_carry` against fakes
+(no platform, no network, no credentials) for how it counts the parent's
+attempts.
+
+THE FALSE FAILURE (dev acceptance, 2026-11-20). The check read the parent's
+`attempt_count` and reported "the parent ran 1 attempt(s); the recipe parks its
+first, so it needs at least 2" for a parent that parked and resumed exactly as
+designed. A PROVIDER_QUOTA_EXHAUSTED park REFUNDS its attempt
+(`agent_worker.control.ControlPlane.park`, the owner 2026-10-27, "Refund,
+bounded"), so `attempt_count` went back down and the second lease took it to 1.
+The check now counts the parent's attempt documents, which every attempt
+writes, refunded or not, and fails when they cannot be read.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
+LIB = ROOT / "scripts" / "acceptance" / "lib.sh"
 WORKFLOW = ROOT / "scripts" / "acceptance" / "groups" / "workflow.sh"
 ACCEPTANCE_DOC = ROOT / "docs" / "acceptance.md"
 
@@ -112,7 +128,7 @@ def test_carry_check_asserts_carried_from_and_child_staging():
         "staged_inputs",
         "workflow_step_task",
         "acc_run_to_end",
-        "attempt_count",
+        "task_attempts",
         "acc_events",
         "/attempts/",
         "SUCCEEDED SUCCEEDED",
@@ -129,3 +145,122 @@ def test_acceptance_doc_has_a_carry_row():
     assert len(rows) == 1, section
     assert "carried_from" in rows[0]
     assert "the park-and-carry 403 finding" in rows[0]
+
+
+PARENT = "task_carrya00000000000001"
+CHILD = "task_carryb00000000000001"
+PARKED = "att_parked"
+FINAL = "att_final"
+OBJECT = f"/tasks/{PARENT}/attempts/{PARKED}/artifacts/notes.md"
+#: The parent the 2026-11-20 run read: refunded back to one after its park.
+PARENT_DOC = {
+    "state": "SUCCEEDED",
+    "attempt_count": 1,
+    "result_summary": {
+        "artifacts": [{"name": "notes.md", "carried_from": PARKED, "uri": f"gs://bucket{OBJECT}"}],
+    },
+}
+CHILD_DOC = {
+    "state": "SUCCEEDED",
+    "result_summary": {
+        "staged_inputs": [{"filename": "notes.md", "task_id": PARENT, "uri": f"gs://bucket{OBJECT}"}],
+    },
+}
+EVENTS = [
+    {"type": "parked", "attempt_id": PARKED, "at": "2026-11-20T10:01:00Z"},
+    {"type": "succeeded", "attempt_id": FINAL, "at": "2026-11-20T10:03:00Z"},
+]
+ATTEMPTS_LINE = "attempt document"
+
+
+def _clean_env() -> dict[str, str]:
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("API_", "SWARM_", "GITHUB_", "GH_"))
+    }
+    env["NO_COLOR"] = "1"
+    # The placeholder deployment's sandbox: config.sh has no default for it.
+    env["SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"] = os.environ["SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL"]
+    return env
+
+
+def _carry_check(tmp_path: Path, *, attempts: list[dict] | None) -> subprocess.CompletedProcess:
+    (tmp_path / f"{PARENT}.json").write_text(json.dumps(PARENT_DOC))
+    (tmp_path / f"{CHILD}.json").write_text(json.dumps(CHILD_DOC))
+    (tmp_path / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in EVENTS))
+    (tmp_path / "work").mkdir()
+    if attempts is None:
+        fake_attempts = "task_attempts() { return 1; }"
+    else:
+        (tmp_path / "attempts.jsonl").write_text("".join(json.dumps(a) + "\n" for a in attempts))
+        fake_attempts = f"task_attempts() {{ cat {shlex.quote(str(tmp_path / 'attempts.jsonl'))}; }}"
+    docs = shlex.quote(str(tmp_path))
+    script = f"""set -euo pipefail
+REPO_ROOT={shlex.quote(str(ROOT))}
+die() {{ printf 'DIE %s\\n' "$*" >&2; exit 9; }}
+t_pass() {{ printf 'PASS %s\\n' "$*"; }}
+t_fail() {{ printf 'FAIL %s\\n' "$*"; }}
+t_skip() {{ printf 'SKIP %s\\n' "$*"; }}
+t_case() {{ :; }}; t_info() {{ :; }}; info() {{ :; }}; step() {{ :; }}
+source {shlex.quote(str(LIB))}
+source {shlex.quote(str(WORKFLOW))}
+ACC_WORK={shlex.quote(str(tmp_path / "work"))}
+workflow_step_task() {{ case "$2" in a) echo {PARENT} ;; b) echo {CHILD} ;; esac; }}
+acc_run_to_end() {{ printf -v "$1" '%s' SUCCEEDED; }}
+task_doc() {{ cat {docs}/"$1".json; }}
+task_field() {{ task_doc "$1" | jq -r "$2"; }}
+task_state() {{ task_field "$1" '.state'; }}
+acc_events() {{ cat {docs}/events.jsonl; }}
+_wf_check_child_copy() {{ :; }}
+{fake_attempts}
+_wf_check_carry '{{"workflow":{{}}}}' 'carried notes'
+"""
+    # stdin is an empty pipe, so a fake that drains it never waits on a tty.
+    return subprocess.run(
+        ["bash", "-c", script],
+        cwd=ROOT,
+        env=_clean_env(),
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def _attempt(attempt_id: str) -> dict:
+    return {"attempt_id": attempt_id, "task_id": PARENT}
+
+
+def _verdicts(result: subprocess.CompletedProcess) -> list[str]:
+    return [line for line in result.stdout.splitlines() if line.startswith(("PASS", "FAIL", "SKIP"))]
+
+
+def test_a_refunded_park_then_a_second_attempt_passes(tmp_path):
+    # The 2026-11-20 run: attempt_count 1 after the refund, two attempt documents.
+    result = _carry_check(tmp_path, attempts=[_attempt(PARKED), _attempt(FINAL)])
+    lines = _verdicts(result)
+    assert any(line.startswith("PASS") and "2 attempt documents" in line for line in lines), (
+        result.stdout + result.stderr
+    )
+    # Everything else the check asserts still holds against this shape.
+    assert lines and not any(line.startswith("FAIL") for line in lines), result.stdout + result.stderr
+
+
+def test_one_attempt_document_fails(tmp_path):
+    result = _carry_check(tmp_path, attempts=[_attempt(FINAL)])
+    lines = [line for line in _verdicts(result) if ATTEMPTS_LINE in line]
+    assert any(line.startswith("FAIL") and "1 attempt document(s)" in line for line in lines), (
+        result.stdout + result.stderr
+    )
+    assert not any(line.startswith("PASS") for line in lines), result.stdout
+
+
+def test_an_unreadable_attempts_query_fails_rather_than_counting_nothing(tmp_path):
+    result = _carry_check(tmp_path, attempts=None)
+    lines = [line for line in _verdicts(result) if ATTEMPTS_LINE in line]
+    assert any(line.startswith("FAIL") and "could not read" in line for line in lines), (
+        result.stdout + result.stderr
+    )
+    assert not any(line.startswith("PASS") for line in lines), result.stdout
