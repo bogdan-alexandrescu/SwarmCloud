@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -96,8 +97,9 @@ def _tenant_members(
     so the `endswith` below is that pin; the same email listed twice, under the
     same tenant or another (checked explicitly, never left to a dict or set to
     collapse); an email also named by ADMIN_USERS, ADMIN_POOL_USERS,
-    ROLLUP_SWEEPER_USERS or SECRET_ADMIN_PRINCIPALS, since a listing grants one
-    tenant's rights and an admin entry would add every tenant's.
+    ROLLUP_SWEEPER_USERS, SECRET_ADMIN_PRINCIPALS or PROBE_ADMIN_USERS, since a
+    listing grants one tenant's rights and an admin entry would add every
+    tenant's (a listing resolves `member` before any probe-admin scope).
     """
     raw = os.environ.get("TENANT_SERVICE_ACCOUNTS", "").strip()
     if not raw:
@@ -157,6 +159,74 @@ def _tenant_members(
                     "tenant's rights and may not be combined with an admin entry"
                 )
         result.append(TenantMember(email=email, kind=kind, principal=principal, uid=uid))
+    return tuple(result)
+
+
+_PROBE_TENANT = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+_PROBE_PRINCIPAL = re.compile(r"[^@:,\s]+@[^@:,\s]+")
+
+
+def _probe_admins(
+    *, refused: dict[str, tuple[str, ...]]
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """PROBE_ADMIN_USERS -> ((principal, (tenant_id, ...)), ...).
+
+    Terraform renders a JSON LIST of `{principal, tenants}`
+    (`var.probe_admin_users`, terraform/infra/locals.tf). Refused HERE, at
+    startup, like TENANT_SERVICE_ACCOUNTS: a value that is not a list; an
+    entry that is not exactly those two keys; a principal that is not one bare
+    email (a `serviceAccount:` member would match nobody); the same principal
+    twice; an empty tenant list; a tenant id that is not a slug; a `u-` id,
+    because a personal workspace's only admin is its own person
+    (docs/design/workspace-roles.md §4.2); and a principal also named by any
+    list in `refused` -- a full admin, the owner or the rollup sweeper -- since
+    the scoped list exists so that the probes' identity is NOT one of those.
+    """
+    raw = os.environ.get("PROBE_ADMIN_USERS", "").strip()
+    if not raw:
+        return ()
+    try:
+        entries = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"PROBE_ADMIN_USERS is not valid JSON: {exc.msg}") from None
+    if not isinstance(entries, list):
+        raise ValueError("PROBE_ADMIN_USERS must be a JSON list of {principal, tenants} objects")
+    refused_sets = {
+        name: {value.strip().lower() for value in values} for name, values in refused.items()
+    }
+    result: list[tuple[str, tuple[str, ...]]] = []
+    for index, entry in enumerate(entries):
+        where = f"PROBE_ADMIN_USERS[{index}]"
+        if not isinstance(entry, dict) or set(entry) != {"principal", "tenants"}:
+            raise ValueError(f"{where} must be an object with exactly principal and tenants")
+        principal, tenants = entry["principal"], entry["tenants"]
+        if not isinstance(principal, str) or not _PROBE_PRINCIPAL.fullmatch(principal.strip()):
+            raise ValueError(
+                f"{where}: principal must be one bare email address, never an IAM member; "
+                "swarm-api compares it with the email in the verified token"
+            )
+        principal = principal.strip().lower()
+        if any(p == principal for p, _ in result):
+            raise ValueError(f"{where}: {principal!r} is listed more than once")
+        for name, values in refused_sets.items():
+            if principal in values:
+                raise ValueError(
+                    f"{where}: {principal!r} is also in {name}; a probe admin is admin in its "
+                    "listed workspaces only and may not be combined with a wider role"
+                )
+        if not isinstance(tenants, list) or not tenants or not all(
+                isinstance(t, str) for t in tenants):
+            raise ValueError(f"{where}: tenants must be a non-empty list of tenant ids")
+        cleaned = tuple(dict.fromkeys(t.strip().lower() for t in tenants))
+        for tenant_id in cleaned:
+            if not _PROBE_TENANT.fullmatch(tenant_id):
+                raise ValueError(f"{where}: {tenant_id!r} is not a tenant id")
+            if tenant_id.startswith("u-"):
+                raise ValueError(
+                    f"{where}: {tenant_id!r} is a personal workspace; its only admin is its "
+                    "own person, so a probe admin may name group workspaces only"
+                )
+        result.append((principal, cleaned))
     return tuple(result)
 
 
@@ -328,6 +398,32 @@ class ApiSettings:
     #: Same comparison as `admin_users`: the bare email from the verified
     #: token, case-insensitive. A `serviceAccount:` prefix matches nobody.
     admin_pool_users: tuple[str, ...] = ()
+    #: A SCOPED workspace admin, by email: each entry is (principal, tenant
+    #: ids), and the principal resolves as `admin` in exactly those GROUP
+    #: workspaces (`roles.RoleStore.resolve`, `source: probe_admin`) and
+    #: nowhere else.
+    #:
+    #: WHY IT EXISTS. The roles and join acceptance probes need an identity
+    #: that is a workspace admin: it narrows the test workspace's default to
+    #: `viewer`, reads its audit and approves a join request. An `admin_users`
+    #: entry would make the verify identity a FULL platform admin one step
+    #: removed (it could disable any tenant), and the owner decided against
+    #: that on 2026-11-19 after a security review. This list is the
+    #: replacement: admin inside the named probe workspaces, nothing else.
+    #:
+    #: It does NOT set `is_admin`, so it is not a platform admin anywhere:
+    #: not on an operator screen, not in `GET /v1/admin/admins`, not in the
+    #: config migration into `admin_roles` (which reads `admin_users` only),
+    #: and `PUT`/`DELETE /v1/admin/admins/{email}` refuse it; Admin › People
+    #: and the join decisions answer it as a workspace admin of its listed
+    #: workspaces only (`routes.people.administered_workspaces`). It never
+    #: SELECTS a workspace either: the header still selects only the
+    #: caller's own memberships, so the principal must be in the probe
+    #: workspace's group (or hold a platform membership of it); a role never
+    #: admits anyone. Outside its tenants it resolves exactly as without the
+    #: entry, and a `u-` id is refused at start. Same comparison as
+    #: `admin_users`: the bare email from the verified token, case-insensitive.
+    probe_admin_users: tuple[tuple[str, tuple[str, ...]], ...] = ()
     #: The identity the per-tenant Cloud Scheduler rollup jobs present
     #: (terraform/modules/scheduler/jobs.tf, `workflow_rollup` and
     #: `issue_run_advance`): may call `POST /v1/admin/workflows/rollup` and
@@ -1045,6 +1141,14 @@ class ApiSettings:
                     f"ROLLUP_SWEEPER_USERS and {name} both name {', '.join(overlap)}; "
                     "the rollup sweeper may call one route and is no other kind of caller"
                 )
+        # Read after PLATFORM_OWNER is checked, and refused beside every wider
+        # role it could be mistaken for. NOT beside ADMIN_POOL_USERS: the
+        # verify identity holds that one route and may hold this scope too.
+        probe_admin_users = _probe_admins(refused={
+            "ADMIN_USERS": admin_users,
+            "PLATFORM_OWNER": (platform_owner,) if platform_owner else (),
+            "ROLLUP_SWEEPER_USERS": rollup_sweeper_users,
+        })
         return cls(
             core=core,
             tenant_service_accounts=_tenant_members(
@@ -1055,6 +1159,7 @@ class ApiSettings:
                     "ADMIN_POOL_USERS": admin_pool_users,
                     "ROLLUP_SWEEPER_USERS": rollup_sweeper_users,
                     "SECRET_ADMIN_PRINCIPALS": secret_admin_principals,
+                    "PROBE_ADMIN_USERS": tuple(p for p, _ in probe_admin_users),
                 },
             ),
             # One per backend service fronting this platform. Terraform sets
@@ -1074,6 +1179,7 @@ class ApiSettings:
             join_open_per_workspace=_positive("JOIN_OPEN_PER_WORKSPACE", 50),
             role_cache_seconds=float(_int("ROLE_CACHE_SECONDS", 15)),
             admin_pool_users=admin_pool_users,
+            probe_admin_users=probe_admin_users,
             rollup_sweeper_users=rollup_sweeper_users,
             schedule_tick_users=_csv("SCHEDULE_TICK_USERS"),
             allowed_users=allowed_users,

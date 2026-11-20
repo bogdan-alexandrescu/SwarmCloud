@@ -356,8 +356,15 @@ def administered_workspaces(ctx: AppContext, auth: AuthContext) -> dict[str, str
     out: dict[str, str] = {}
     unread: RoleUnavailable | None = None
     read = 0
+    # A scoped probe admin administers its listed workspaces among these
+    # memberships, as `RoleStore.resolve` answers it there, and no other.
+    probe = frozenset() if auth.tenant_member else roles.probe_admin_tenants(ctx.settings, email)
     for tenant_id, principal in auth.tenant_choices:
         if principal == email or tenant_id.startswith("u-"):
+            continue
+        if tenant_id in probe:
+            out[tenant_id] = principal
+            read += 1
             continue
         try:
             role = store.person_role(tenant_id, email, fresh=True).role
@@ -381,14 +388,18 @@ def people_scope(request: Request, auth: AuthContext = Depends(current_auth),
     is the whole of what they read; and when they administer none -- a member,
     a viewer, someone in no group -- `admin_auth`'s own 403. A pool admin, a
     listed service account and the platform's own identities are refused as
-    before: none of them holds a person's role."""
+    before: none of them holds a person's role. The one service account that
+    is not is a scoped probe admin (`ApiSettings.probe_admin_users`): its
+    entry is a workspace role, so it is answered with its listed workspaces
+    among its memberships, exactly as a workspace admin is."""
     try:
         admin_auth(request, auth)
         return None
     except Forbidden:
-        if (auth.is_pool_admin or auth.is_rollup_sweeper or auth.is_schedule_tick
+        probe = bool(roles.probe_admin_tenants(ctx.settings, auth.email))
+        if (auth.is_rollup_sweeper or auth.is_schedule_tick
                 or auth.member_scope or auth.tenant_member
-                or ws.is_service_identity(auth.email)):
+                or ((auth.is_pool_admin or ws.is_service_identity(auth.email)) and not probe)):
             raise
         administered = administered_workspaces(ctx, auth)
         if not administered:

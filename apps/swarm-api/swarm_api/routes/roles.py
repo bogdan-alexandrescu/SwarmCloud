@@ -43,6 +43,7 @@ from ..errors import (
     DefaultRoleNotAllowed,
     NotFound,
     PersonalWorkspaceRolesFixed,
+    RoleAdminRequired,
     RoleUnavailable,
     RoleUnchanged,
     UpstreamUnavailable,
@@ -180,6 +181,28 @@ def _workspace_writer(ctx: AppContext, auth: AuthContext, requested_via: str) ->
     return requested_via if own == roles.ADMIN else roles.VIA_PLATFORM_ADMIN
 
 
+def _probe_admin_limit(ctx: AppContext, auth: AuthContext, email: Any,
+                      role: str | None) -> None:
+    """A scoped probe admin (`roles.probe_admin_scope`) may narrow and widen
+    viewers and members in its listed workspace, as the roles probe does, but
+    never grant `admin` to a person nor change or clear a person who holds
+    it: an admin it named would outlive its own entry, and removing one would
+    take a workspace from the people it belongs to. 403
+    `role_admin_required`, raised before anything is written."""
+    if not roles.probe_admin_scope(ctx.settings, auth):
+        return
+    store = ctx.roles
+    assert store is not None
+    subject = roles.subject_for_write(email)
+    current = store.newest_valid(auth.tenant_id, subject, fresh=True)
+    if role == roles.ADMIN or (current is not None and current.role == roles.ADMIN):
+        raise RoleAdminRequired(
+            f"a probe admin's role in {auth.tenant_id} is scoped to it: it cannot grant or "
+            "remove a workspace admin. Nothing was changed.",
+            detail={"tenant_id": auth.tenant_id, "role": roles.ADMIN, "required": roles.ADMIN,
+                    "source": roles.SOURCE_PROBE_ADMIN, "admins": []})
+
+
 # ---------------------------------------------------------------------------
 # The selected workspace's own
 # ---------------------------------------------------------------------------
@@ -203,6 +226,7 @@ def workspace_set_person(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     via = _workspace_writer(ctx, auth, body.via)
+    _probe_admin_limit(ctx, auth, body.email, roles.check_role(body.role))
     return _set_person(ctx, tenant_id=tenant_id, group=auth.tenant_principal, by=auth.email,
                        via=via, body=body)
 
@@ -215,6 +239,7 @@ def workspace_clear_person(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     via = _workspace_writer(ctx, auth, body.via)
+    _probe_admin_limit(ctx, auth, body.email, None)
     return _clear_person(ctx, tenant_id=tenant_id, by=auth.email, via=via, body=body)
 
 

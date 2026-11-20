@@ -744,6 +744,73 @@ variable "admin_pool_users" {
   }
 }
 
+variable "probe_admin_users" {
+  description = <<-EOT
+    SCOPED workspace admins for the acceptance probes: each entry names one
+    principal and the group workspaces (tenant ids) it is `admin` in. In
+    those workspaces swarm-api resolves it as `admin` (source probe_admin,
+    swarm_api.roles.probe_admin_scope); everywhere else it resolves exactly
+    as it would without the entry.
+
+    Exists for the roles and join acceptance probes, whose admin identity
+    narrows the test workspace's default role, reads its audit and approves a
+    join request (docs/design/workspace-roles.md section 8,
+    docs/design/join-requests.md section 8). An `admin_users` entry would make
+    that verify identity a FULL platform admin one step removed; the owner
+    decided against it on 2026-11-19 after a security review, and this list
+    replaced it.
+
+    What an entry can NOT do, by construction: it is not a platform admin (it
+    never sets is_admin, appears in no admin listing and is never written to
+    admin_roles by the ADMIN_USERS migration), it cannot grant or remove a
+    platform admin or a workspace admin, it reaches no platform-admin route
+    (on Admin > People and the join decisions it is a workspace admin of its
+    listed workspaces only), and it SELECTS no workspace: it must already be a member of the listed
+    workspace's group (or hold a platform membership of it). A personal (`u-`)
+    workspace cannot be listed: its only admin is its own person.
+
+    Taken from the environment's tfvars as is; locals.tf appends nothing.
+    Empty, the default, changes nothing.
+
+    Principals are bare emails, never IAM members (swarm-api compares each
+    with the email in the verified token), and may not also be in
+    admin_users or be the platform owner. A probe identity may also be on
+    admin_pool_users: the two are independent narrow capabilities.
+  EOT
+  type = list(object({
+    principal = string
+    tenants   = list(string)
+  }))
+  default = []
+
+  validation {
+    condition     = alltrue([for e in var.probe_admin_users : can(regex("^[^@:,[:space:]]+@[^@:,[:space:]]+$", e.principal))])
+    error_message = "probe_admin_users principals are bare email addresses, not IAM members: swarm-api compares each with the email in the verified token, so a serviceAccount: prefix would match nobody."
+  }
+
+  validation {
+    condition     = length(var.probe_admin_users) == length(distinct([for e in var.probe_admin_users : lower(e.principal)]))
+    error_message = "a principal may appear in probe_admin_users once; list every tenant it administers in that one entry."
+  }
+
+  validation {
+    condition = alltrue([
+      for e in var.probe_admin_users : length(e.tenants) > 0 && alltrue([
+        for t in e.tenants : can(regex("^[a-z0-9][a-z0-9-]*$", t)) && !startswith(t, "u-")
+      ])
+    ])
+    error_message = "probe_admin_users tenants are a non-empty list of group workspace tenant ids (lower-case slugs); a personal workspace (u-...) cannot be listed, since its only admin is its own person."
+  }
+
+  validation {
+    condition = length(setintersection(
+      toset([for e in var.probe_admin_users : lower(e.principal)]),
+      toset(concat([for u in var.admin_users : lower(u)], compact([try(lower(var.platform_owner), "")])))
+    )) == 0
+    error_message = "a probe_admin_users principal may not also be in admin_users or be the platform_owner: the scoped list exists so that the probe identity is not a platform admin."
+  }
+}
+
 variable "admin_groups" {
   description = <<-EOT
     Google groups whose members may act across tenants in swarm-api -- reading

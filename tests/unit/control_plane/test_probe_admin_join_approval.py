@@ -1,0 +1,129 @@
+"""A scoped probe admin decides join requests in its listed workspace, as the
+join acceptance probe's admin does, and nowhere else (owner decision
+2026-11-19; docs/design/join-requests.md section 8).
+
+The probe admin here is a SERVICE ACCOUNT on ALLOWED_USERS, in eng's group
+and research's, listed for `eng` only -- the shape the probe's
+`JOIN_ADMIN_SA` takes. Without the entry Admin › People refuses a service
+account outright (`people_scope`: it holds no person's role); with it, the
+entry is its workspace role there and nowhere else.
+"""
+
+from __future__ import annotations
+
+import secrets
+
+import pytest
+from fastapi.testclient import TestClient
+
+from swarm_api.auth import StaticTokenVerifier
+from swarm_api.credentials import InMemoryCredentials
+from swarm_api.deps import build_context
+from swarm_api.groups import StaticGroups
+from swarm_api.main import create_app
+from swarm_api.metrics import ApiMetrics
+from swarm_api.waker import NullWaker
+
+from .conftest import (
+    ADMIN_GROUP,
+    ENG_GROUP,
+    RESEARCH_GROUP,
+    NoForgeTokens,
+    api_settings,
+    seed_tenant,
+)
+from .fakes import FakeFirestore
+from .test_join_requests_routes import (
+    CONSOLE,
+    approve,
+    ask,
+    decisions,
+    h,
+    link_on,
+    written,
+)
+from .test_people_admin import FakePool, FakePublisher
+
+#: Built at runtime, like every identity here.
+PROBE = "roles-probe@" + "example-project.iam.gserviceaccount.com"
+GROUPS = {
+    PROBE: (ENG_GROUP, RESEARCH_GROUP),
+    "ops@example.com": (ADMIN_GROUP,),
+    "erin@example.com": (RESEARCH_GROUP,),
+    "lee@example.com": (),
+    "kim@example.com": (),
+}
+
+
+def _client(db, probe_admin_users) -> TestClient:
+    tokens = {f"token-{e.split('@')[0]}": {"email": e, "email_verified": True,
+                                           "sub": f"sub-{e}", "hd": "example.com"}
+              for e in GROUPS}
+    ctx = build_context(
+        settings=api_settings(settings_key=secrets.token_hex(32), console_url=CONSOLE,
+                              rate_limit_burst=10_000, allowed_users=(PROBE,),
+                              probe_admin_users=probe_admin_users),
+        db=db, verifier=StaticTokenVerifier(tokens), groups=StaticGroups(GROUPS),
+        credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
+        objects=None, forge_tokens=NoForgeTokens(),
+    )
+    app = create_app(ctx)
+    app.state.workspace_publisher = FakePublisher()
+    app.state.account_pool = FakePool()
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.put("/v1/admin/workspaces/research/roles/person", headers=h("ops"),
+                          json={"email": "erin@example.com", "role": "admin"})
+    assert response.status_code == 200, response.text
+    return client
+
+
+@pytest.fixture
+def db() -> FakeFirestore:
+    db = FakeFirestore()
+    seed_tenant(db, "eng")
+    seed_tenant(db, "research")
+    return db
+
+
+@pytest.fixture
+def client(db) -> TestClient:
+    return _client(db, ((PROBE, ("eng",)),))
+
+
+def test_it_turns_the_link_on_and_approves_in_its_listed_workspace(client, db) -> None:
+    code = link_on(client, "roles-probe", "eng")
+    ref = ask(client, "lee", code)["ref"]
+    response = approve(client, "roles-probe", ref)
+    assert response.status_code == 200, response.text
+    assert [d["via"] for d in decisions(db)] == ["workspace_admin"]
+
+
+def test_it_decides_nothing_outside_it(client, db) -> None:
+    ref = ask(client, "kim", link_on(client, "erin", "research"))["ref"]
+    before = written(db)
+    response = approve(client, "roles-probe", ref)
+    assert response.status_code == 403
+    assert response.json()["code"] == "join_decider_required"
+    response = client.put("/v1/workspace/join-link", headers=h("roles-probe", "research"),
+                          json={"on": False})
+    assert response.status_code == 403
+    assert written(db) == before
+
+
+def test_its_admin_people_view_is_its_listed_workspace_only(client) -> None:
+    response = client.get("/v1/admin/people", headers=h("roles-probe"))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["scope"] != "platform"
+    assert [w["tenant_id"] for w in body["workspaces"]] == ["eng"]
+    assert not body.get("admins")
+
+
+def test_without_the_entry_the_service_account_is_refused(db) -> None:
+    client = _client(db, ())
+    ref = ask(client, "kim", link_on(client, "erin", "research"))["ref"]
+    assert approve(client, "roles-probe", ref).status_code == 403
+    assert client.get("/v1/admin/people", headers=h("roles-probe")).status_code == 403
+    response = client.put("/v1/workspace/join-link", headers=h("roles-probe", "eng"),
+                          json={"on": True})
+    assert response.status_code == 403

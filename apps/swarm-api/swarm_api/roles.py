@@ -12,6 +12,10 @@ THE RULES, in the order `RoleStore.resolve` applies them (§4.1, §4.2, §4.5):
   workspace it is in or reaches (`source: platform_admin`, Q5). No grant is
   read for them -- so a flood of grants cannot touch their role -- and a grant
   naming them is stored and shown but inert while they are one.
+* A scoped probe admin (`ApiSettings.probe_admin_users`) is `admin` in the
+  group workspaces its entry lists and nowhere else (`source: probe_admin`);
+  it is not a platform admin, and it never selects a workspace it is not a
+  member of. Like a platform admin, no grant is read for it there.
 * Everyone else holds their newest VALID per-person grant (`source:
   override`), else the workspace default: the newest valid `"*"` grant, else
   `member` (§4.7: on the day this ships everyone keeps exactly what they have).
@@ -113,6 +117,9 @@ SOURCE_OVERRIDE = "override"
 SOURCE_DEFAULT = "default"
 SOURCE_PERSONAL = "personal"
 SOURCE_PLATFORM_ADMIN = "platform_admin"
+#: A `PROBE_ADMIN_USERS` entry in one of its listed group workspaces
+#: (`probe_admin_scope`): admin there, and not a platform admin anywhere.
+SOURCE_PROBE_ADMIN = "probe_admin"
 #: A service account the workspace lists (contract request 30): its listing,
 #: not a grant, decides its role (§4.6).
 SOURCE_LISTING = "listing"
@@ -280,6 +287,34 @@ def is_personal(auth: AuthContext) -> bool:
     email = (auth.email or "").strip().lower()
     principal = (auth.tenant_principal or auth.email or "").strip().lower()
     return bool(email) and principal == email
+
+
+def probe_admin_tenants(settings: Any, email: str | None) -> frozenset[str]:
+    """The group workspaces `email` is a scoped probe admin of
+    (`ApiSettings.probe_admin_users`), or none. Configuration only; whether
+    the caller may SELECT one is still decided by their memberships."""
+    email = (email or "").strip().lower()
+    for principal, tenants in getattr(settings, "probe_admin_users", ()) or ():
+        if principal == email:
+            return frozenset(t for t in tenants if not t.startswith("u-"))
+    return frozenset()
+
+
+def probe_admin_scope(settings: Any, auth: AuthContext) -> bool:
+    """The caller is a scoped probe admin IN the selected workspace: its email
+    is on `ApiSettings.probe_admin_users` with this tenant id among its
+    tenants, and the tenant is a group workspace it already selected.
+
+    False for a listed service account (its listing decides it), for the
+    caller's own personal workspace (it is that workspace's admin anyway) and
+    for a platform admin (`is_admin` already decides it), so the entry adds
+    nothing where another rule answers. A `u-` id never matches: one cannot
+    be listed (`settings._probe_admins`), and this refuses it again. Asks
+    nothing of Firestore or Cloud Identity -- configuration only."""
+    if auth.tenant_member or is_personal(auth) or auth.is_admin:
+        return False
+    tenant_id = (auth.tenant_id or "").strip().lower()
+    return bool(tenant_id) and tenant_id in probe_admin_tenants(settings, auth.email)
 
 
 def clean_email(email: Any) -> str:
@@ -542,6 +577,8 @@ class RoleStore:
             return Resolution(role=ADMIN, source=SOURCE_PERSONAL)
         if auth.is_admin:
             return Resolution(role=ADMIN, source=SOURCE_PLATFORM_ADMIN)
+        if probe_admin_scope(self._settings, auth):
+            return Resolution(role=ADMIN, source=SOURCE_PROBE_ADMIN)
         return self.person_role(auth.tenant_id, auth.email, fresh=fresh)
 
     def try_resolve(self, auth: AuthContext) -> Resolution | None:
