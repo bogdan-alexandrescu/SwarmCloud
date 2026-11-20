@@ -4,10 +4,8 @@
 scripts/acceptance/groups/roles.sh measures, against dev, what the unit tests
 in tests/unit/control_plane prove offline: a viewer is refused a submission
 with `role_member_required` and may still read; the viewer grant and its
-revocation are in the workspace's audit; a platform admin reaches a group
-workspace it is not in, and its write there is recorded
-`platform_admin_acted`; another identity's `u-` workspace stays
-`tenant_not_member`; and the scoped probe admin stays inside its limits: it
+revocation are in the workspace's audit; another identity's `u-` workspace
+stays `tenant_not_member`; and the scoped probe admin stays inside its limits: it
 selects no workspace it is not a member of, an admin route not on its list
 refuses it `probe_admin_not_permitted`, and it cannot name a person `admin`.
 
@@ -31,7 +29,6 @@ import secrets
 import shutil
 import stat
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,8 +54,7 @@ SETTINGS = (
     "SWARM_ACCEPTANCE_ROLES_ADMIN_SA",
     "SWARM_ACCEPTANCE_ROLES_OTHER_WORKSPACE",
 )
-CHECKS = ("viewer-submit", "viewer-read", "audit", "reach", "personal", "unlisted", "not-permitted",
-          "no-admin")
+CHECKS = ("viewer-submit", "viewer-read", "audit", "personal", "unlisted", "not-permitted", "no-admin")
 REASON = "ROLES-ACCEPT test-acceptance-20261028190000"
 
 pytestmark = pytest.mark.skipif(
@@ -91,7 +87,7 @@ def _api() -> SimpleNamespace:
     from swarm_api.errors import ProbeAdminNotPermitted, RoleAdminRequired, RoleMemberRequired
 
     return SimpleNamespace(member_required=RoleMemberRequired.code, not_member=TenantNotMember.code,
-                           default_set=roles.AUDIT_DEFAULT_SET, acted=roles.AUDIT_PLATFORM_ADMIN_ACTED,
+                           default_set=roles.AUDIT_DEFAULT_SET,
                            not_permitted=ProbeAdminNotPermitted.code, admin_required=RoleAdminRequired.code,
                            probe_source=roles.SOURCE_PROBE_ADMIN)
 
@@ -107,13 +103,7 @@ def _audit(*rows: dict) -> dict:
 def _default_set(to: str, frm: str, reason: str = REASON) -> dict:
     return {"action": _api().default_set, "by": "qa-admin@example-project.iam.gserviceaccount.com",
             "at": "2026-10-28T19:00:01.123456+00:00",
-            "detail": {"from": frm, "to": to, "via": "platform_admin", "reason": reason}}
-
-
-def _acted(at: str = "2026-10-28T19:00:01.123456+00:00", route: str = "/v1/workspace/roles/default") -> dict:
-    return {"action": _api().acted, "by": "qa-admin@example-project.iam.gserviceaccount.com",
-            "at": at, "detail": {"method": "PUT", "route": route, "path_params": {},
-                                 "via": "platform_admin", "reach": "non_member"}}
+            "detail": {"from": frm, "to": to, "via": "probe_admin", "reason": reason}}
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +111,7 @@ def _acted(at: str = "2026-10-28T19:00:01.123456+00:00", route: str = "/v1/works
 # ---------------------------------------------------------------------------
 
 
-def test_the_checks_are_the_eight_the_design_names():
+def test_the_checks_are_the_seven_the_design_names():
     proc = _bash("roles_checks")
     lines = proc.stdout.splitlines()
     assert [line.split(":")[1].strip() for line in lines] == list(CHECKS)
@@ -158,15 +148,14 @@ def test_the_audit_needs_both_the_grant_and_its_revocation_of_this_run():
     assert _judge("audit", 503, _refusal("role_unavailable"), REASON)[0] == "FAIL"
 
 
-def test_reach_passes_on_the_admins_write_and_its_platform_admin_acted_row():
-    started = str(int(datetime(2026, 10, 28, 18, 43, 20, tzinfo=timezone.utc).timestamp()))
-    assert _judge("reach", 200, _audit(_acted()), started)[0] == "PASS"
-    # MUTATION: accept a write with no row, or an older row.
-    assert _judge("reach", 200, _audit(_default_set("viewer", "member")), started)[0] == "FAIL"
-    assert _judge("reach", 200, _audit(_acted(at="2026-10-27T10:00:00+00:00")), started)[0] == "FAIL"
-    assert _judge("reach", 200, _audit(_acted(at="2026-10-28T19:00:01Z")), started)[0] == "PASS"
-    # The reach refused: the admin's write never happened.
-    assert _judge("reach", 403, _audit(_acted()), started)[0] == "FAIL"
+def test_the_platform_admin_reach_is_no_longer_measured_here():
+    """The probe's admin is a scoped probe admin, a member of the test
+    workspace's group: it never goes through the reach, so no check may claim
+    the reach or a `platform_admin_acted` row (owner decision, 2026-11-20)."""
+    text = GROUP.read_text()
+    assert "platform_admin_acted" not in text
+    assert "reach" not in [line.split(":")[1].strip() for line in _bash("roles_checks").stdout.splitlines()]
+    assert _judge("reach", 200, _audit())[0] == "FAIL"
 
 
 def test_another_identitys_personal_workspace_passes_only_on_tenant_not_member():

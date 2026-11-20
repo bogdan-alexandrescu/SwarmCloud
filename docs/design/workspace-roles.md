@@ -889,9 +889,9 @@ Nothing is written on the day this ships.
 3. **Platform admins keep every path they have**, and gain the reach of
    §4.2. The reach ships behind `ApiSettings.platform_admin_reach`
    (`PLATFORM_ADMIN_REACH`), **off by default**, with the reason beside the
-   value: it widens who may enter a tenant, so it goes on in dev first, is
-   exercised by the acceptance probe, and then goes on in prod, the same
-   order as the switches. Off, `platform_reach` is empty and `may_act_in`
+   value: it widens who may enter a tenant, so it goes on in dev first and
+   then in prod, the same order as the switches. Its gate before prod is
+   §4.9's, no longer the acceptance probe. Off, `platform_reach` is empty and `may_act_in`
    never answers `"platform_admin"`, which is today's behaviour exactly.
 4. **Both refusal codes ship as switches that are off** (§4.9). Even an
    admin's narrowing is report-only until the owner turns that code's switch
@@ -1095,8 +1095,15 @@ default, `false`. **Still off:** `role_admin_required`, in dev and prod. Its
 own condition above is that every group workspace that manages secrets has
 a named admin, and eng and smoke do not have one yet; on before that, a
 group workspace's secrets could be changed by nobody but a platform admin.
-Prod has all three off until ROLES-ACCEPT has exercised them in dev and a
-week of report-only lines names only people an admin narrowed (§6, step 6).
+Prod has all three off. Each refusal switch stays off in prod until
+ROLES-ACCEPT has exercised it in dev and a week of report-only lines names
+only people an admin narrowed (§6, step 6). **The reach's gate is re-pointed
+(owner decision 2026-11-20):** the probe's admin is now a scoped probe admin,
+a member of the test workspace's group (§8), so no live probe exercises the
+reach and ROLES-ACCEPT no longer gates it. Its evidence before prod is the
+offline tests that hold it, `tests/unit/control_plane/test_platform_admin_reach.py`
+and `test_platform_admin_reach_registry.py`, and it goes on in prod when the
+owner turns it on.
 
 ### 4.10 Audit events
 
@@ -1294,7 +1301,7 @@ so the UI is three lanes.
 | 5 | **ROLES-UI-ADMIN** (after UI-PEOPLE) | `WorkspaceRolesAdmin.tsx` (new), `People.tsx`, `Spine.tsx`, their `__tests__` | Admin › People shows the Workspace roles card with "Name an admin" and the drawer's roles; a platform admin's switcher lists reach workspaces under their own heading, and selecting one shows the platform-admin banner; a non-admin's switcher is unchanged |
 | 5 | **ROLES-UI-GATES** (after UI-PEOPLE) | `Approvals.tsx`, `QuestionsCard.tsx`, `Submit.tsx`, `Schedules.tsx`, `Repositories.tsx`, the Profile seam's file, their `__tests__` | a `viewer` sees Approve/Reject disabled with the role sentence; Submit and Cancel are disabled for a `viewer`; Profile shows the stored role and its source, "admin (platform admin)" for a reach entry, and the derived role when `role` is absent |
 | each | **ROLES-DOCS** | `docs/workspaces.md`, `docs/security.md`, `docs/design/workspace-secrets.md`, `docs/design/human-steps.md`, this file | `test_docs_describe_what_was_built`, where it reads these files |
-| 6 | **ROLES-ACCEPT** (after GATES, and the dev switches and reach on) | one probe, its workflow wiring (built as `scripts/acceptance/groups/roles.sh` in accept.yml's smoke job, §8) | with a dev acceptance identity granted `viewer` in a test workspace: `POST /v1/tasks` is 403 `role_member_required`, `GET /v1/tasks` is 200, and the grant and its revocation each appear in `GET /v1/workspace/roles` `audit`; with a dev platform-admin identity outside the test workspace's group: selecting it succeeds, a write appears as `platform_admin_acted`, and selecting another identity's `u-` workspace is 403 `tenant_not_member` |
+| 6 | **ROLES-ACCEPT** (after GATES, and the dev switches and reach on) | one probe, its workflow wiring (built as `scripts/acceptance/groups/roles.sh` in accept.yml's smoke job, §8) | with a dev acceptance identity granted `viewer` in a test workspace: `POST /v1/tasks` is 403 `role_member_required`, `GET /v1/tasks` is 200, and the grant and its revocation each appear in `GET /v1/workspace/roles` `audit`; with a dev platform-admin identity outside the test workspace's group: selecting it succeeds, a write appears as `platform_admin_acted`, and selecting another identity's `u-` workspace is 403 `tenant_not_member` (the reach half superseded 2026-11-20: the probe's admin is a scoped probe admin, §8, and the reach's prod gate is §4.9's) |
 
 Order and dependencies:
 
@@ -1307,8 +1314,9 @@ Order and dependencies:
    ROLES-UI-GATES, in parallel.
 5. The operator turns on `PLATFORM_ADMIN_REACH` and the two switches in dev
    (`dev.tfvars`), then ROLES-ACCEPT goes green.
-6. A week of report-only lines in prod, per code. Then each switch, and the
-   reach, go on in prod.
+6. A week of report-only lines in prod, per code. Then each switch goes on
+   in prod; the reach goes on in prod on its offline tests and the owner's
+   word, not on ROLES-ACCEPT (§4.9, amended 2026-11-20).
 
 The change touches admission's front door (submissions) and tenant
 resolution, so step 5 also runs `make smoke concurrency-test race-test`
@@ -1585,13 +1593,11 @@ acceptance/groups/roles` (the owner, 2026-10-28: the smoke job, not a new
 acceptance group or the tenant-isolation job). It acts as two identities that
 are not swarm-verify's own, each through an impersonated ID token
 (`acc_api_as` in `scripts/acceptance/lib.sh`), in a group workspace of its
-own, and checks eight things: a viewer's `POST /v1/tasks` is 403
+own, and checks seven things: a viewer's `POST /v1/tasks` is 403
 `role_member_required` and creates nothing; its `GET /v1/tasks` is 200; the
 viewer grant and its revocation, matched by a reason naming the run, are both
-in `GET /v1/workspace/roles` `audit`; the platform admin, outside the
-workspace's group, selects it and its write is recorded
-`platform_admin_acted`; and that admin selecting another identity's `u-`
-workspace is 403 `tenant_not_member`; and, for the scoped probe admin below,
+in `GET /v1/workspace/roles` `audit`; the admin identity selecting another
+identity's `u-` workspace is 403 `tenant_not_member`; and, for the scoped probe admin below,
 its limits: selecting the acceptance tenant, a group workspace it is neither
 listed for nor a member of, is 403 `tenant_not_member`; renaming the test
 workspace (`PUT /v1/workspaces/{tenant_id}/name`), an admin route not on its
@@ -1620,8 +1626,9 @@ codes. Departures from §6 row 6:
   for the code.
 * **It SKIPs until the owner provisions it**, naming what is missing: a group
   workspace for it (repository variable `ROLES_TENANT`), the viewer identity
-  in that workspace's group (`ROLES_VIEWER_SA`), a platform-admin identity
-  outside it (`ROLES_ADMIN_SA`), another identity's personal workspace
+  in that workspace's group (`ROLES_VIEWER_SA`), a scoped probe admin
+  identity, also in its group and listed for it in `probe_admin_users`
+  (`ROLES_ADMIN_SA`), another identity's personal workspace
   (`ROLES_OTHER_WORKSPACE`), and roles/iam.serviceAccountTokenCreator for
   swarm-verify on both identities. A skip is never a pass; an earlier issue's last
   criterion is met when the probe first passes live.
@@ -1678,16 +1685,16 @@ principal must be in the probe workspace's group. A `u-` id cannot be listed
 probe measures is unchanged. What this changes for the probe: its admin
 identity is now IN the test workspace's group rather than outside it, so the
 probe's "reach" step (a platform admin outside the group selecting the
-workspace, recorded `platform_admin_acted`) measures nothing for a scoped
-admin. The probe now also checks the scoped admin's limits (above). The
-reach step itself is still in the probe: §4.9 keeps the reach off in prod
-until ROLES-ACCEPT has exercised it in dev, so replacing it is the owner's
-question of what exercises the reach instead, asked with that change.
+workspace, recorded `platform_admin_acted`) measured nothing for a scoped
+admin. The owner decided (2026-11-20) to delete that step and re-point the
+reach's prod gate (§4.9): the probe checks the scoped admin's limits
+(above) instead, and the reach goes on in prod on its offline tests and
+the owner's word.
 
 **What is left, in order.** The owner provisions ROLES-ACCEPT's identities
 and workspace -- the admin identity as a `probe_admin_users` entry naming
-`ROLES_TENANT` and a member of its group, never an `admin_users` entry -- the
-probe's reach step is reworked for a scoped admin, and the probe passes live; a named workspace admin in every
+`ROLES_TENANT` and a member of its group, never an `admin_users` entry -- and
+the probe passes live; a named workspace admin in every
 group workspace that manages secrets (eng, smoke), then
 `role_admin_required` on in dev; the registry gap above; a week of
 report-only lines in prod; then prod.

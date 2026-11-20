@@ -3,8 +3,8 @@
 # row 6 and §8; archived issue 1518): what dev's workspace roles do, measured live with two
 # identities that are not swarm-verify's own.
 #
-#   1. The platform admin (ACC_ROLES_ADMIN_SA), NOT in the test workspace's
-#      group, selects it through the reach and sets its default role to
+#   1. The probe admin (ACC_ROLES_ADMIN_SA), a member of the test workspace's
+#      group listed for it in probe_admin_users, sets its default role to
 #      `viewer`: the grant. A service account cannot hold a person's grant
 #      (role_person_required), so the default is the one grant that reaches
 #      the viewer identity, and the test workspace is the probe's own.
@@ -14,10 +14,9 @@
 #   3. The admin sets the default back to `member`: the revocation. Always,
 #      once the grant was made, and again on exit if a crash skipped it.
 #   4. GET /v1/workspace/roles `audit` holds both rows this run wrote (matched
-#      by their reason, which names the run) and a `platform_admin_acted` row
-#      written since the probe started.
+#      by their reason, which names the run).
 #   5. The admin selecting another identity's `u-` workspace is 403
-#      tenant_not_member: the reach never covers a personal workspace.
+#      tenant_not_member: no admin entry covers a personal workspace.
 #   6. The probe admin's limits (docs/design/workspace-roles.md §8, a scoped
 #      probe admin): selecting the acceptance tenant, a group workspace it
 #      is neither listed for nor a member of, is 403 tenant_not_member;
@@ -48,7 +47,6 @@ set -euo pipefail
 ROLES_MEMBER_REQUIRED="role_member_required"
 ROLES_NOT_MEMBER="tenant_not_member"
 ROLES_DEFAULT_SET="workspace_default_role_set"
-ROLES_ADMIN_ACTED="platform_admin_acted"
 #: (errors.ProbeAdminNotPermitted, errors.RoleAdminRequired, roles.SOURCE_PROBE_ADMIN).
 ROLES_PROBE_NOT_PERMITTED="probe_admin_not_permitted"
 ROLES_ADMIN_REQUIRED="role_admin_required"
@@ -63,8 +61,7 @@ roles_checks() {
 roles: viewer-submit: a viewer's POST /v1/tasks in the roles test workspace is 403 role_member_required
 roles: viewer-read: a viewer's GET /v1/tasks there is 200
 roles: audit: the viewer grant and its revocation are both in GET /v1/workspace/roles audit
-roles: reach: a platform admin outside the workspace's group selects it, and its write is recorded platform_admin_acted
-roles: personal: the platform admin selecting another identity's u- workspace is 403 tenant_not_member
+roles: personal: the probe admin selecting another identity's u- workspace is 403 tenant_not_member
 roles: unlisted: the probe admin selecting the acceptance tenant, a group workspace it is not listed for nor a member of, is 403 tenant_not_member
 roles: not-permitted: the probe admin renaming the test workspace, an admin route not on its list, is 403 probe_admin_not_permitted
 roles: no-admin: the probe admin naming a person admin in the test workspace is 403 role_admin_required
@@ -97,8 +94,8 @@ roles_settings_problem() {
 }
 
 # roles_judge CHECK STATUS BODY [EXTRA] -> one line, "PASS<TAB>reason" or
-# "FAIL<TAB>reason". EXTRA is this run's grant reason for `audit` and the
-# probe's start (epoch seconds) for `reach`. Reads the code or the audit rows
+# "FAIL<TAB>reason". EXTRA is this run's grant reason for `audit`. Reads the
+# code or the audit rows
 # out of BODY and never echoes BODY itself.
 roles_judge() {
   local check="$1" status="$2" body="$3" extra="${4:-}" code verdict
@@ -133,22 +130,9 @@ roles_judge() {
             else "FAIL\tneither this run'"'"'s grant nor its revocation is in the audit" end' \
         <<<"${body}" 2>/dev/null)" || verdict="FAIL	the audit could not be read"
       printf '%s\n' "${verdict}" ;;
-    reach)
-      if [[ ! "${status}" =~ ^2 ]]; then
-        printf 'FAIL\tthe platform admin'"'"'s write in the test workspace answered HTTP %s %s\n' "${status}" "${code:-(no code)}"
-        return 0
-      fi
-      verdict="$(jq -r --arg a "${ROLES_ADMIN_ACTED}" --argjson since "${extra:-0}" '
-          [(.audit // [])[] | objects | select(.action == $a)
-           | (try (.at | sub("\\.[0-9]+"; "") | sub("(\\+00:00|Z)$"; "Z") | fromdateiso8601) catch 0)
-           | select(. >= $since)]
-          | if length > 0 then "PASS\tthe write went through the reach and is recorded \($a)"
-            else "FAIL\tthe write succeeded with no \($a) row since the probe started" end' \
-        <<<"${body}" 2>/dev/null)" || verdict="FAIL	the audit could not be read"
-      printf '%s\n' "${verdict}" ;;
     personal)
       if [[ "${status}" == "403" && "${code}" == "${ROLES_NOT_MEMBER}" ]]; then
-        printf 'PASS\t403 %s: the reach does not cover a personal workspace\n' "${code}"
+        printf 'PASS\t403 %s: the admin selects no one else'"'"'s personal workspace\n' "${code}"
       else
         printf 'FAIL\tHTTP %s %s, not 403 %s\n' "${status}" "${code:-(no code)}" "${ROLES_NOT_MEMBER}"
       fi ;;
@@ -242,7 +226,7 @@ _roles_title() { roles_checks | awk -v n="roles: $1:" 'index($0, n) == 1 { print
 
 run_roles() {
   step "Acceptance: roles (workspace roles, ROLES-ACCEPT)"
-  local problem="" line started status task check
+  local problem="" line status task check
   ACC_CHECK="roles"
   if ! problem="$(roles_settings_problem)"; then
     while IFS= read -r line; do
@@ -252,8 +236,7 @@ run_roles() {
     return 0
   fi
   ROLES_REASON="ROLES-ACCEPT ${ACC_RUN_ID}"
-  started="$(date -u +%s)"
-  info "roles: test workspace ${ACC_ROLES_TENANT}; viewer ${ACC_ROLES_VIEWER_SA}; platform admin ${ACC_ROLES_ADMIN_SA}"
+  info "roles: test workspace ${ACC_ROLES_TENANT}; viewer ${ACC_ROLES_VIEWER_SA}; probe admin ${ACC_ROLES_ADMIN_SA}"
 
   # 1. The grant. A workspace a crashed run left at viewer answers 409
   # role_unchanged: restore it first, so this run's rows are this run's.
@@ -266,9 +249,9 @@ run_roles() {
   if [[ "${status}" =~ ^2 ]]; then
     ROLES_GRANTED=1
   else
-    for check in viewer-submit viewer-read audit reach; do
+    for check in viewer-submit viewer-read audit; do
       acc_check "$(_roles_title "${check}")"
-      acc_fail "not measured: the platform admin could not make the viewer grant in ${ACC_ROLES_TENANT} (HTTP ${status} $(_roles_code grant) $(_roles_err grant))"
+      acc_fail "not measured: the probe admin could not make the viewer grant in ${ACC_ROLES_TENANT} (HTTP ${status} $(_roles_code grant) $(_roles_err grant))"
     done
   fi
 
@@ -304,12 +287,6 @@ run_roles() {
     _roles_as viewer "${ACC_ROLES_TENANT}" GET /workspace/roles "" audit
     acc_check "$(_roles_title audit)"
     _roles_result audit "$(_roles_status audit)" "$(_roles_body audit)" "${ROLES_REASON}"
-    acc_check "$(_roles_title reach)"
-    if [[ "$(_roles_status audit)" == "200" ]]; then
-      _roles_result reach "$(_roles_status grant)" "$(_roles_body audit)" "${started}"
-    else
-      acc_fail "not measured: the audit could not be read (HTTP $(_roles_status audit))"
-    fi
   fi
 
   # 5. Another identity's personal workspace.
