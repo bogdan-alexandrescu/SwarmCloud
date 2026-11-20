@@ -32,10 +32,12 @@ INDEXER = REPO / "images" / "agent-runtime-indexer" / "Dockerfile"
 
 #: Releases measured on 2026-10-31 to carry a HIGH a newer vendor release fixes.
 REFUSED = {
-    # go1.27.1, x/net v0.58.0 (CVE-2026-78667, -78669); 2.103.3 is go1.27.3, x/net v0.60.0.
-    "GH_VERSION": {"2.102.0"},
-    # go1.26.8 (CVE-2026-78667, -78669 in the stdlib); 29.9.2 is go1.26.10.
-    "DOCKER_CLI_VERSION": {"29.8.2"},
+    # go1.27.1, x/net v0.58.0 (CVE-2026-78667, -78669); 2.103.3 is go1.27.3, x/net v0.60.0,
+    # but CVE-2026-97054 (net/http MaxBytesReader); 2.105.0 is go1.27.4 (measured 2026-11-20).
+    "GH_VERSION": {"2.102.0", "2.103.3"},
+    # go1.26.8 (CVE-2026-78667, -78669 in the stdlib); 29.9.2 is go1.26.10, but
+    # CVE-2026-97054; 29.10.0 is go1.27.4 (measured 2026-11-20).
+    "DOCKER_CLI_VERSION": {"29.8.2", "29.9.2"},
     # 1.16.4: go1.26.8, x/net v0.58.0; 1.16.7: go-jose 4.1.4 (CVE-2026-116587);
     # 1.17.1 is go1.26.10, x/net v0.62.0, go-jose 4.1.6.
     "TERRAFORM_VERSION": {"1.16.4", "1.16.7"},
@@ -51,8 +53,9 @@ REFUSED = {
 }
 
 #: The Go that links the indexer's gopls and terraform-ls, and ships as its
-#: toolchain: CVE-2026-78667, -78669 and -97031 are fixed in 1.27.2.
-MIN_GO = (1, 27, 2)
+#: toolchain: CVE-2026-78667, -78669 and -97031 are fixed in 1.27.2,
+#: CVE-2026-111943 in 1.27.3 and CVE-2026-97054 in 1.27.4.
+MIN_GO = (1, 27, 4)
 
 #: pyasn1 0.6.4 carries the findings 0.6.5 fixes on the swarm-api image.
 MIN_PYASN1 = (0, 6, 5)

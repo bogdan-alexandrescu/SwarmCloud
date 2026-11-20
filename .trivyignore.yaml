@@ -267,3 +267,44 @@ vulnerabilities:
   # vllm 0.33.0 and pillow 13.0.0 and dropped qwen-asr, gradio and ray, so
   # every one of those findings is fixed or gone (trivy 0.76.1 over the lock:
   # none).
+
+  # Same class again (owner, 2026-11-20: "bump Go, accept the rest"): a Go
+  # standard library net/http fix (CVE-2026-97054, HIGH, fixed in Go 1.26.11 /
+  # 1.27.4): an HTTP/1 SERVER whose MaxBytesReader limit is exceeded. The
+  # release's scan refused agent-runtime-base, -nocodex, -browser, -indexer,
+  # -lightpanda and workspace-apply on it.
+  #
+  # FIXED, not accepted (measured 2026-11-20 with `go version -m` on each
+  # vendor's download after its checksum matched, and `trivy rootfs`):
+  #   * the indexer's Go toolchain, usr/local/go: GO_VERSION 1.27.3 -> 1.27.4
+  #     (go.dev's sha256), which also rebuilds gopls and terraform-ls, both
+  #     compiled from source in that image;
+  #   * gh 2.103.3 -> 2.105.0 (go1.27.4) and docker-ce-cli 29.9.2 -> 29.10.0
+  #     (go1.27.4); both scan clean.
+  # ACCEPTED, because no upstream release is built with a fixed Go:
+  #   binary                   pinned          its Go     newest release    its Go
+  #   gcloud-crc32c            gcloud 591.0.0  go1.27.2   594.0.0           go1.27.2
+  #   gke-gcloud-auth-plugin   592.0.0         go1.27.3   594.0.0           go1.27.3
+  #   kubectl                  1.36.6          go1.26.10  1.37.2            go1.26.10
+  #   terraform                1.17.1          go1.26.10  1.17.2            go1.26.10
+  #   trivy                    0.76.2          go1.27.3   0.76.2            go1.27.3
+  #
+  # What bounds it: the bug is in the server side of net/http. These are
+  # client tools: none of them runs an HTTP/1 server in our containers, which
+  # are non-root, read-only and capability-dropped, under the egress
+  # NetworkPolicy, for one attempt.
+  #
+  # Scoped by path so that it cannot hide the finding in any other binary,
+  # least of all one we build. Re-check before 2026-11-27 (owner rule: take
+  # every fixed build, extend one week only if upstream is still unfixed):
+  # re-read each newest release, run `go version -m` on it, bump the pin and
+  # drop its path; delete the entry when no path is left (docs/versions.md).
+  - id: CVE-2026-97054
+    paths:
+      - usr/lib/google-cloud-sdk/bin/gcloud-crc32c
+      - usr/lib/google-cloud-sdk/bin/gke-gcloud-auth-plugin
+      - usr/local/bin/kubectl
+      - usr/local/bin/terraform
+      - usr/local/bin/trivy
+    statement: "Go net/http MaxBytesReader on HTTP/1 servers, inside vendor-built gcloud-crc32c, gke-gcloud-auth-plugin, kubectl, terraform and trivy, whose newest releases are still below Go 1.26.11 / 1.27.4; these are client tools that run no HTTP/1 server in our containers. The Go toolchain, gopls, terraform-ls, gh and docker are fixed by bumps, not accepted."
+    expired_at: 2026-11-27

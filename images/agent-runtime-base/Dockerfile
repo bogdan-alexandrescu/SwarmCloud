@@ -927,6 +927,12 @@ ARG GKE_PLUGIN_SHA256=3a1da42673e0df59b86958c817d2369ef89d5b435767d1fea85e453707
 # binary from dl.k8s.io rather than Google's `kubectl` .deb, which is 141 MB
 # of several bundled versions. Checksum:
 # https://dl.k8s.io/release/v1.36.6/bin/linux/amd64/kubectl.sha256.
+# CVE-2026-97054 (net/http MaxBytesReader, fixed in Go 1.26.11 / 1.27.4),
+# 2026-11-20: 1.36.6 is still the newest 1.36 (stable-1.36.txt) and it and
+# the newest release, 1.37.2, are go1.26.10; Google's newest gcloud, 594.0.0,
+# ships gcloud-crc32c on go1.27.2 and gke-gcloud-auth-plugin on go1.27.3 (each
+# .deb's SHA256 matched the index). No fixed build of any of the three
+# exists, so the id is accepted for them in .trivyignore.yaml.
 ARG KUBECTL_VERSION=1.36.6
 ARG KUBECTL_SHA256=29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634
 # dpkg runs with /usr/sbin on PATH because it refuses to start without
@@ -967,23 +973,26 @@ RUN mkdir -p /tmp/toolbox \
 #
 # GitHub and Docker CLIs.
 #
-# gh 2.103.3: the newest release (https://api.github.com/repos/cli/cli/releases/latest,
-# published 2026-10-26), built with go1.27.3 and golang.org/x/net v0.60.0,
-# which fix CVE-2026-78667 and CVE-2026-78669 (2.102.0 was go1.27.1, x/net
-# v0.58.0). Checksum from the vendor's own
-# https://github.com/cli/cli/releases/download/v2.103.3/gh_2.103.3_checksums.txt
-# (gh_2.103.3_linux_amd64.tar.gz). Scan, 2026-10-31: clean.
-ARG GH_VERSION=2.103.3
-ARG GH_SHA256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
-# docker CLI 29.9.2 (newest on 2026-10-31), built with go1.26.10, which fixes
-# CVE-2026-78667 and CVE-2026-78669 (29.8.2 was go1.26.8). Docker publishes no checksum beside its static tarballs,
+# gh 2.105.0: the newest release (https://api.github.com/repos/cli/cli/releases/latest,
+# published 2026-11-18), built with go1.27.4 and golang.org/x/net v0.62.0,
+# which fix CVE-2026-97054 (net/http MaxBytesReader; 2.103.3 was go1.27.3),
+# as 2.103.3's go1.27.3 and x/net v0.60.0 fixed CVE-2026-78667 and
+# CVE-2026-78669 (2.102.0 was go1.27.1, x/net v0.58.0). Checksum from the
+# vendor's own
+# https://github.com/cli/cli/releases/download/v2.105.0/gh_2.105.0_checksums.txt
+# (gh_2.105.0_linux_amd64.tar.gz). Scan, 2026-11-20: clean.
+ARG GH_VERSION=2.105.0
+ARG GH_SHA256=79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f
+# docker CLI 29.10.0 (newest on 2026-11-20), built with go1.27.4, which fixes
+# CVE-2026-97054 (29.9.2 and 29.9.3 are go1.26.10), as 29.9.2's go1.26.10
+# fixed CVE-2026-78667 and CVE-2026-78669 (29.8.2 was go1.26.8). Docker publishes no checksum beside its static tarballs,
 # so this is the `docker-ce-cli` .deb, newest for bookworm in
 # https://download.docker.com/linux/debian/dists/bookworm/stable/binary-amd64/Packages
-# (Version 5:29.9.2-1~debian.12~bookworm), with that index's SHA256. It is the
+# (Version 5:29.10.0-1~debian.12~bookworm), with that index's SHA256. It is the
 # CLI alone -- Depends: libc6 only -- installed without its Recommends
-# (buildx, compose), and with no daemon. Scan: clean.
-ARG DOCKER_CLI_VERSION=29.9.2
-ARG DOCKER_CLI_SHA256=06ebf3de771f5673de48d01837d55309e0732958f071ac8c93f4e35d85979bf1
+# (buildx, compose), and with no daemon. Scan, 2026-11-20: clean.
+ARG DOCKER_CLI_VERSION=29.10.0
+ARG DOCKER_CLI_SHA256=f77d8aba85291cb24f9f017bd036aca26cbdb6d169e5d1f335fe948899514079
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
     mkdir -p /tmp/toolbox \
  && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gh.tar.gz \
@@ -1015,6 +1024,11 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
 # 1.26.6). 1.16.4 (2026-09-23, newest) scanned clean. A patch release of the
 # same minor reads and writes the same state and lock files. Checksum:
 # https://releases.hashicorp.com/terraform/1.17.1/terraform_1.17.1_SHA256SUMS.
+# Not moved on 2026-11-20 for CVE-2026-97054 (net/http MaxBytesReader, fixed in
+# Go 1.26.11 / 1.27.4): the newest, 1.17.2 (checkpoint-api.hashicorp.com),
+# is still go1.26.10, read with `go version -m` after its SHA256SUMS matched,
+# so the id is accepted for this binary in .trivyignore.yaml until a fixed
+# build ships.
 ARG TERRAFORM_VERSION=1.17.1
 ARG TERRAFORM_SHA256=4638628058e71a55212b1c563712eac03b902128f40740f3dc8174df12135061
 # INSTALL_TOFU and INSTALL_TFLINT are each OFF by default because no published
@@ -1114,6 +1128,9 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
 # .github/workflows. Checksum from
 # https://github.com/aquasecurity/trivy/releases/download/v0.76.2/trivy_0.76.2_checksums.txt
 # (trivy_0.76.2_Linux-64bit.tar.gz), recomputed over the downloaded file.
+# trivy 0.76.2 is still the newest on 2026-11-20 and is go1.27.3, so
+# CVE-2026-97054 (fixed in Go 1.27.4) is accepted for this binary in
+# .trivyignore.yaml until a fixed build ships.
 ARG SHELLCHECK_VERSION=0.11.0
 ARG SHELLCHECK_SHA256=b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
 ARG TRIVY_VERSION=0.76.2

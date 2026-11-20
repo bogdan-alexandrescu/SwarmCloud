@@ -62,15 +62,20 @@ ARG BASE_IMAGE
 # ---------------------------------------------------------------------------
 FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS languageservers
 
-# Go 1.27.3 (the newest stable on https://go.dev/dl/?mode=json on 2026-10-31,
-# whose sha256 for go1.27.3.linux-amd64.tar.gz this is). Raised from 1.27.1,
-# whose standard library carries CVE-2026-78667, CVE-2026-78669 and
-# CVE-2026-97031 (fixed in 1.27.2) and CVE-2026-111943 (fixed in 1.27.3), in
-# the toolchain this image ships and in the gopls and terraform-ls it links. gopls needs the
+# Go 1.27.4 (the newest stable on https://go.dev/dl/?mode=json on 2026-11-20,
+# whose sha256 for go1.27.4.linux-amd64.tar.gz this is, recomputed over the
+# download). Raised from 1.27.3, whose standard library carries CVE-2026-97054
+# (net/http MaxBytesReader on HTTP/1 servers, fixed in 1.26.11 / 1.27.4), as
+# 1.27.1 carried CVE-2026-78667, CVE-2026-78669 and CVE-2026-97031 (fixed in
+# 1.27.2) and CVE-2026-111943 (fixed in 1.27.3), in the toolchain this image
+# ships and in the gopls and terraform-ls it links: both are compiled below
+# with this toolchain, so the bump fixes them too and nothing here is accepted
+# in .trivyignore.yaml. `trivy rootfs` over the unpacked 1.27.4 tree
+# (bin/go, bin/gofmt, pkg/tool/linux_amd64/*), 2026-11-20: clean. gopls needs the
 # toolchain at run time, not only to build: it loads packages through
 # `go list`, so the runtime stage carries /usr/local/go too.
-ARG GO_VERSION=1.27.3
-ARG GO_SHA256=65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+ARG GO_VERSION=1.27.4
+ARG GO_SHA256=7226736c2339719cda28fbf3a54d71aa63bcefe376e98cef00034268dab24840
 # gopls 0.23.0 (2026-07-07, proxy.golang.org's @latest on 2026-10-05) and
 # terraform-ls 0.39.0 (checkpoint-api.hashicorp.com's current_version on
 # 2026-10-05) are both COMPILED HERE from their module source, not taken as
