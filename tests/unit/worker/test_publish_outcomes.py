@@ -31,7 +31,9 @@ one-turn test sees three runs.
 
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +47,7 @@ from agent_worker.runners import claude_code, cliagent
 from swarm_common.states import EventType, TaskState
 
 from worker_seeds import seed_attempt
-from test_claude_repair_turns import DONE, SESSION, _ctx, _install, _runs
+from test_claude_repair_turns import DONE, SESSION, _ctx, _git, _install, _runs
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
     _the_fence_holds,
     agent_edits_without_committing,
@@ -524,6 +526,137 @@ def test_the_no_change_turn_is_asked_once_and_beside_a_missing_title_in_one_turn
     assert out["repair_turns"] == 1
     assert out["repairs"][0]["no_change_fixed"] is True
     assert out["repair_unresolved"] is None
+
+
+# Issue #17 (triage 6): an agent that only fast-forwarded its clone along the
+# default branch -- clone base a1ca1443 pulled onto main's 75a09a1b, no commit
+# of its own, a clean tree -- took repair_turns 0 and failed
+# `published_nothing`: the harvest excludes main's commits
+# (`lifecycle._workflow_negatives`), but `committed_nothing` read any moved
+# HEAD as published work.
+
+
+def _give_an_origin_ahead(checkout: Path, tmp_path: Path) -> str:
+    """Give `checkout` an origin whose main is one commit ahead of its HEAD;
+    fetched, so refs/remotes/origin/main names it while HEAD stays. Returns
+    that commit."""
+    upstream = tmp_path / "upstream"
+    subprocess.run(["git", "clone", "-q", str(checkout), str(upstream)], check=True)
+    _git(upstream, "config", "user.email", "upstream@example.invalid")
+    _git(upstream, "config", "user.name", "upstream")
+    (upstream / "src" / "newer.py").write_text("NEWER = 1\n")
+    _git(upstream, "add", "-A")
+    _git(upstream, "commit", "-q", "-m", "newer main")
+    _git(checkout, "remote", "add", "origin", str(upstream))
+    _git(checkout, "fetch", "-q", "origin")
+    return _git(checkout, "rev-parse", "refs/remotes/origin/main").strip()
+
+
+FAST_FORWARD = ["merge", "--ff-only", "-q", "origin/main"]
+
+
+def _fast_forward_ctx(tmp_path, monkeypatch, step):
+    monkeypatch.delenv("SWARM_PREPUBLISH_BASE", raising=False)
+    ctx = _no_change_ctx(tmp_path, monkeypatch, [step])
+    _give_an_origin_ahead(ctx.repo_dir, tmp_path)
+    return ctx
+
+
+def test_a_step_that_only_fast_forwarded_along_origin_main_gets_the_no_change_turn(
+    tmp_path, monkeypatch,
+):
+    ctx = _fast_forward_ctx(tmp_path, monkeypatch, {**TITLE_ONLY, "git": [FAST_FORWARD]})
+    start = _git(ctx.repo_dir, "rev-parse", "HEAD").strip()
+    out = claude_code.body(ctx)
+    # The fake did move HEAD, onto origin's main and nothing of its own.
+    assert _git(ctx.repo_dir, "rev-parse", "HEAD").strip() != start
+    assert out["repair_turns"] == 1
+    assert out["repairs"][0]["no_change_asked"] is True
+
+
+def test_a_fast_forward_plus_an_own_commit_gets_no_no_change_turn(tmp_path, monkeypatch):
+    step = {**TITLE_ONLY, "write": {**TITLE_ONLY["write"], "src/frames.py": "FRAMES = 8\n"},
+            "git": [FAST_FORWARD], "commit": "render the frames"}
+    ctx = _fast_forward_ctx(tmp_path, monkeypatch, step)
+    out = claude_code.body(ctx)
+    assert len(_runs(ctx)) == 1
+    assert out["repair_turns"] == 0
+
+
+def test_a_head_moved_onto_a_commit_origin_lacks_gets_no_no_change_turn(tmp_path, monkeypatch):
+    step = {**TITLE_ONLY, "write": {**TITLE_ONLY["write"], "src/frames.py": "FRAMES = 8\n"},
+            "git": [["checkout", "-q", "-b", "x"]], "commit": "render the frames"}
+    ctx = _fast_forward_ctx(tmp_path, monkeypatch, step)
+    out = claude_code.body(ctx)
+    assert len(_runs(ctx)) == 1
+    assert out["repair_turns"] == 0
+
+
+def _git_env(tmp_path: Path) -> dict[str, str]:
+    """A small env for direct calls: an assertion that fails prints it."""
+    return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path)}
+
+
+def _repo_with_origin_ahead(tmp_path, monkeypatch):
+    monkeypatch.delenv("SWARM_PREPUBLISH_BASE", raising=False)
+    ctx = _ctx(tmp_path, {"prompt": "p"}, repo=True)
+    repo = ctx.repo_dir
+    start = _git(repo, "rev-parse", "HEAD").strip()
+    newer = _give_an_origin_ahead(repo, tmp_path)
+    return repo, start, newer
+
+
+def test_committed_nothing_reads_the_checkout_as_the_harvest_does(tmp_path, monkeypatch):
+    repo, start, newer = _repo_with_origin_ahead(tmp_path, monkeypatch)
+    env = _git_env(tmp_path)
+    # HEAD where it started, the tree clean.
+    assert cliagent.committed_nothing(repo, env, start) is True
+    # No start is never nothing.
+    assert cliagent.committed_nothing(repo, env, None) is False
+    # A dirty tree: the harvest commits it.
+    (repo / "src" / "dirty.py").write_text("X = 1\n")
+    assert cliagent.committed_nothing(repo, env, start) is False
+    (repo / "src" / "dirty.py").unlink()
+    # Fast-forwarded onto origin's main, clean: nothing of its own.
+    _git(repo, "merge", "--ff-only", "-q", "origin/main")
+    assert _git(repo, "rev-parse", "HEAD").strip() == newer
+    assert cliagent.committed_nothing(repo, env, start) is True
+    # The same fast-forward with an uncommitted change.
+    (repo / "src" / "app.py").write_text("def main():\n    return 2\n")
+    assert cliagent.committed_nothing(repo, env, start) is False
+    _git(repo, "checkout", "-q", "--", "src/app.py")
+    # A commit origin lacks on top of the fast-forward.
+    (repo / "src" / "own.py").write_text("OWN = 1\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "own")
+    assert cliagent.committed_nothing(repo, env, start) is False
+    # HEAD on a line that does not descend from the start.
+    _git(repo, "checkout", "-q", "--orphan", "elsewhere")
+    _git(repo, "commit", "-q", "-m", "elsewhere")
+    assert cliagent.committed_nothing(repo, env, start) is False
+    # A start git cannot resolve is a git error, not nothing.
+    assert cliagent.committed_nothing(repo, env, "f" * 40) is False
+
+
+def test_committed_nothing_without_an_origin_ref_is_false_once_head_moved(tmp_path, monkeypatch):
+    monkeypatch.delenv("SWARM_PREPUBLISH_BASE", raising=False)
+    ctx = _ctx(tmp_path, {"prompt": "p"}, repo=True)
+    repo = ctx.repo_dir
+    start = _git(repo, "rev-parse", "HEAD").strip()
+    _git(repo, "commit", "-q", "--allow-empty", "-m", "own")
+    assert cliagent.committed_nothing(repo, _git_env(tmp_path), start) is False
+
+
+def test_committed_nothing_reads_the_named_prepublish_base_first(tmp_path, monkeypatch):
+    repo, start, newer = _repo_with_origin_ahead(tmp_path, monkeypatch)
+    # origin/release holds the newer commit; origin/main is held back.
+    _git(repo, "update-ref", "refs/remotes/origin/release", newer)
+    _git(repo, "update-ref", "refs/remotes/origin/main", start)
+    _git(repo, "merge", "--ff-only", "-q", newer)
+    env = _git_env(tmp_path)
+    assert cliagent.committed_nothing(repo, env, start) is False
+    env["SWARM_PREPUBLISH_BASE"] = "release"
+    assert cliagent.committed_nothing(repo, env, start) is True
 
 
 def test_the_publish_paragraph_offers_verification_when_the_brief_asks_for_no_change():

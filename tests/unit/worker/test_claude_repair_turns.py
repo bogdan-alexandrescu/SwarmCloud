@@ -89,8 +89,9 @@ def _ctx(tmp_path: Path, payload: dict, *, repo: bool) -> RunnerContext:
 #: The fake CLI. Its plan is `$HOME/plan.json` (HOME is the work directory);
 #: each start appends how it was started to `$HOME/runs.jsonl`, then writes
 #: the files its step names: `$ARTIFACTS/<name>` into the artifacts directory,
-#: anything else relative to where it was started (the checkout), and, when
-#: the step names a `commit` message, commits the tree with it.
+#: anything else relative to where it was started (the checkout), runs each
+#: argv of the step's `git` list as `git <argv>` there, and, when the step
+#: names a `commit` message, commits the tree with it.
 FAKE_CLI = r'''#!/usr/bin/env python3
 import json, os, pathlib, sys
 argv = sys.argv[1:]
@@ -108,6 +109,9 @@ for name, text in step.get("write", {}).items():
         path = pathlib.Path.cwd() / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
+for args in step.get("git", []):
+    import subprocess
+    subprocess.run(["git", *args], check=True)
 if step.get("commit"):
     import subprocess
     subprocess.run(["git", "add", "-A"], check=True)
