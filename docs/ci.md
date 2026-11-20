@@ -4376,6 +4376,38 @@ label is read from the event that started the run, so it counts from the next
 push after it is added (an empty commit will do); re-running an old run does
 not see it.
 
+**What starts a tick of the train, and why the schedule is only a fallback.**
+[`merge-train.yml`](../.github/workflows/merge-train.yml) runs
+`scripts/merge-train.sh tick` from the default branch, on these events: an
+`application` or `security` run finishing on a `train/` branch (judges the
+train), one finishing green on a pull request of this repository, `ready`
+being added (through `auto-merge`'s run on that label), a dispatch, and a
+five-minute schedule. GitHub does not honour that schedule: on 2026-11-03 it ran
+every four to seven hours, and on the new repository on 19 and 20 November it
+ran at 17:02Z, 23:29Z and 04:12Z. None of the events is raised when a
+gather's window *ends*, so a `ready` pull request whose tick said "gathering"
+waited for the next unrelated run or schedule tick, and then for a person.
+So a tick that gathers writes the window's end to its step output (`wake_at`,
+epoch seconds), and the workflow's `wake` job sleeps until then and dispatches
+one more tick of the same workflow on the default branch. The wake:
+
+* holds no secret, checks out nothing and runs no pull request's code; its
+  token has `actions: write` alone, which is what a `workflow_dispatch` needs
+  (the one event a `GITHUB_TOKEN` may raise); it mints no App token;
+* runs in its own concurrency group (`merge-train-wake`, never cancelled: one
+  running and one pending), so a burst of ticks queues no sleeper each; the tick's
+  group `merge-train` is free for the run it dispatches, and ticks still never
+  overlap there;
+* sleeps to the deadline it was given, never longer (at most 25 minutes at a
+  time); a dispatched tick that still gathers publishes the next deadline;
+* does nothing while `vars.MERGE_TRAIN` is not `on` (a dispatch with the train off
+  would be a dry run) or for a dry run, and is skipped when its tick is.
+
+A direct `pull_request_target` trigger on `ready` is not added: the label
+already reaches the train through `auto-merge`, and a second path would put a
+write token on an event the pull request's author shapes in a self-hosted job.
+`tests/unit/scripts/test_merge_train.py` pins the triggers and the wake.
+
 **What a lane gives up.** A defect only a heavy job catches is found by the
 train's pull request, which bisects and ejects the pull request that broke it;
 main never sees the failure. A lane's own agent still runs the tests related

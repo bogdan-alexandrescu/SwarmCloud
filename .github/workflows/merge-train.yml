@@ -44,6 +44,13 @@
 #     `pull_request_target` either: auto-merge.yml already carries that risk,
 #     once, and is reviewed for it. auto-merge's own dispatches, schedule and
 #     `workflow_run` runs are filtered out by their event;
+#   * the gather's deadline, by the `wake` job below: a tick that holds ready
+#     pull requests back to gather records when the oldest's window ends, and
+#     `wake` dispatches one more tick then. No event above is raised at that
+#     moment (a `ready` pull request alone raises none), so without it a
+#     gathered pull request waited for the schedule: on 2026-11-19 and 20 the
+#     new repository ran it at 17:02Z, 23:29Z and 04:12Z, and a `ready`
+#     pull request sat in "gathering" until a person dispatched;
 #   * every five minutes, only while vars.MERGE_TRAIN is `on`: the fallback,
 #     for whatever no event above says. Off, a schedule run would take a
 #     runner every five minutes to find nothing to do;
@@ -62,6 +69,20 @@
 # branch raises a `workflow_run` here, and as workflow-level concurrency each of
 # those skipped runs would take the pending slot and cancel a real tick
 # waiting in it. A job skipped by its `if:` never joins a job's group.
+#
+# THE WAKE. One more job, with no checkout and no secret: it sleeps until the
+# deadline the tick wrote (`wake_at`, epoch seconds, from scripts/merge-train.sh
+# `gather_waits`) and then dispatches this workflow on the default branch with
+# the workflow's own token, which GitHub lets start a `workflow_dispatch` run
+# (the one event a GITHUB_TOKEN may raise). That run is a tick like any other
+# and is the only thing the wake does: it reads no pull request, runs none of
+# their code and mints no token. Its own concurrency group holds one running
+# and one pending wake, so a burst of ticks never queues a sleeper each, and a
+# sleeper that waited its turn sleeps only until the deadline it was given, so
+# it never sleeps past it. A wake is capped below the job's timeout; a tick it
+# starts that is still gathering writes the next deadline, so the chain goes on
+# until the train boards. Only while vars.MERGE_TRAIN is `on` and never for a
+# dry run: a dispatch with the train off starts a DRY RUN train.
 #
 # CREDENTIALS. The merge App's installation token, minted exactly as
 # auto-merge.yml mints it, for the push, the train's pull request and the
@@ -130,6 +151,10 @@ jobs:
     concurrency:
       group: merge-train
       cancel-in-progress: false
+    # The gather's deadline in epoch seconds, set only by a tick that held ready
+    # pull requests back; the `wake` job reads it.
+    outputs:
+      wake_at: ${{ steps.tick.outputs.wake_at }}
     # The three `workflow_run` clauses are WHEN's first three bullets, in order.
     # Never in a fork: the repository is told by GitHub's own `fork` flag and
     # named through `github.repository`, never by a literal address
@@ -197,6 +222,7 @@ jobs:
           permission-workflows: write
 
       - name: one tick of the train
+        id: tick
         env:
           GH_TOKEN: ${{ github.token }}
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -228,3 +254,40 @@ jobs:
         run: |
           set -euo pipefail
           scripts/merge-train.sh tick
+
+  wake:
+    name: wake the train at the gather's deadline
+    needs: tick
+    # Skipped whenever the tick is: success() is implied. The runner is the
+    # tick's (short form: no pull request can start this workflow).
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    if: >-
+      needs.tick.outputs.wake_at != '' &&
+      vars.MERGE_TRAIN == 'on' &&
+      inputs.dry_run != true
+    # The cap on one sleep is 25 minutes, so the timeout leaves a margin for the
+    # dispatch and the runner's start.
+    timeout-minutes: 30
+    concurrency:
+      group: merge-train-wake
+      cancel-in-progress: false
+    # Only this: starting the tick's workflow_dispatch run.
+    permissions:
+      actions: write
+    steps:
+      - name: sleep until the deadline, then start one tick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          WAKE_AT: ${{ needs.tick.outputs.wake_at }}
+        run: |
+          set -euo pipefail
+          [[ "${WAKE_AT}" =~ ^[0-9]{10}$ ]] || { echo "no valid deadline: no wake"; exit 0; }
+          pause=$((WAKE_AT - $(date +%s) + 15))
+          [[ "${pause}" -le 1500 ]] || pause=1500
+          if [[ "${pause}" -gt 0 ]]; then
+            echo "sleeping ${pause}s until the gather's deadline"
+            sleep "${pause}"
+          fi
+          gh workflow run merge-train.yml --repo "${GH_REPO}" --ref "${DEFAULT_BRANCH}"

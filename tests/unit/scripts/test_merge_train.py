@@ -1011,6 +1011,74 @@ def test_one_train_at_a_time_and_a_running_one_is_never_cancelled(train_workflow
     assert train_workflow["jobs"]["tick"]["concurrency"] == {"group": "merge-train", "cancel-in-progress": False}
 
 
+def test_a_gathering_tick_hands_its_deadline_to_a_wake_that_dispatches_one_more_tick(train_workflow):
+    """No event is raised when a gather's window ends, so the tick publishes the
+    deadline and `wake` dispatches one more tick then, whatever GitHub's
+    schedule does. The wake holds no secret, checks out nothing, runs no pull
+    request's code, and asks the token for `actions: write` alone."""
+    jobs = train_workflow["jobs"]
+    tick, wake = jobs["tick"], jobs["wake"]
+    (step,) = [s for s in tick["steps"] if s.get("name") == "one tick of the train"]
+    assert step["id"] == "tick"
+    assert tick["outputs"] == {"wake_at": "${{ steps.tick.outputs.wake_at }}"}
+    assert wake["needs"] == "tick"
+    # Skipped with the tick (no status function), without a deadline, with the
+    # train off (a dispatch would be a DRY RUN) and for a dry run.
+    assert wake["if"] == "needs.tick.outputs.wake_at != '' && vars.MERGE_TRAIN == 'on' && inputs.dry_run != true"
+    assert wake["permissions"] == {"actions": "write"}
+    assert "environment" not in wake
+    # One running and one pending wake, never a cancelled sleeper, and its own
+    # group: the tick's must stay free for the tick it dispatches.
+    assert wake["concurrency"] == {"group": "merge-train-wake", "cancel-in-progress": False}
+    assert wake["concurrency"]["group"] != tick["concurrency"]["group"]
+    assert wake["timeout-minutes"] * 60 > 1500
+    (run,) = wake["steps"]
+    assert not any(str(k).startswith("uses") for k in run)
+    assert run["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert run["env"]["WAKE_AT"] == "${{ needs.tick.outputs.wake_at }}"
+    assert "${{" not in run["run"]
+    assert "gh workflow run merge-train.yml" in run["run"]
+    assert '--ref "${DEFAULT_BRANCH}"' in run["run"]
+    assert run["env"]["DEFAULT_BRANCH"] == "${{ github.event.repository.default_branch }}"
+
+
+def test_the_wake_adds_no_pull_request_trigger_and_names_no_secret(train_workflow):
+    assert not {"pull_request", "pull_request_target"} & set(train_workflow["on"])
+    wake = yaml.dump(train_workflow["jobs"]["wake"])
+    assert "secrets." not in wake and "MERGE_APP" not in wake
+
+
+def test_the_wake_sleeps_only_to_the_deadline_it_was_given(train_workflow, tmp_path):
+    """The wake's script, run with a fake `gh` and `sleep`: a past deadline
+    sleeps none, a far one is capped, a malformed one dispatches nothing."""
+    script = train_workflow["jobs"]["wake"]["steps"][0]["run"]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "calls.log"
+    for tool in ("gh", "sleep"):
+        fake = bin_dir / tool
+        fake.write_text(f'#!/usr/bin/env bash\nprintf \'{tool} %s\\n\' "$*" >>"{log}"\n')
+        fake.chmod(0o755)
+
+    def wake(wake_at: str) -> list[str]:
+        log.write_text("")
+        proc = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, timeout=30, check=False,
+            env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "WAKE_AT": wake_at,
+                 "GH_REPO": THIS_REPO, "DEFAULT_BRANCH": "main"})
+        assert proc.returncode == 0, proc.stderr
+        return log.read_text().splitlines()
+
+    dispatch = f"gh workflow run merge-train.yml --repo {THIS_REPO} --ref main"
+    assert wake(str(int(time.time()) - 600)) == [dispatch]
+    (sleep, call) = wake(str(int(time.time()) + 300))
+    assert call == dispatch and 300 <= int(sleep.split()[1]) <= 320
+    (sleep, call) = wake(str(int(time.time()) + 86400))
+    assert sleep == "sleep 1500" and call == dispatch
+    assert wake("soon") == []
+    assert wake("") == []
+
+
 def test_the_train_lands_with_the_merge_app_token_and_never_a_pat(train_workflow):
     text = WORKFLOW.read_text()
     assert set(re.findall(r"secrets\.([A-Z_]+)", text)) == {"MERGE_APP_PRIVATE_KEY"}
