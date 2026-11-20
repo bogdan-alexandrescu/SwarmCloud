@@ -891,7 +891,8 @@ Nothing is written on the day this ships.
    (`PLATFORM_ADMIN_REACH`), **off by default**, with the reason beside the
    value: it widens who may enter a tenant, so it goes on in dev first and
    then in prod, the same order as the switches. Its gate before prod is
-   §4.9's, no longer the acceptance probe. Off, `platform_reach` is empty and `may_act_in`
+   §4.9's (the offline tests plus one recorded operator-run check in dev),
+   no longer the acceptance probe. Off, `platform_reach` is empty and `may_act_in`
    never answers `"platform_admin"`, which is today's behaviour exactly.
 4. **Both refusal codes ship as switches that are off** (§4.9). Even an
    admin's narrowing is report-only until the owner turns that code's switch
@@ -1100,10 +1101,22 @@ ROLES-ACCEPT has exercised it in dev and a week of report-only lines names
 only people an admin narrowed (§6, step 6). **The reach's gate is re-pointed
 (owner decision 2026-11-20):** the probe's admin is now a scoped probe admin,
 a member of the test workspace's group (§8), so no live probe exercises the
-reach and ROLES-ACCEPT no longer gates it. Its evidence before prod is the
-offline tests that hold it, `tests/unit/control_plane/test_platform_admin_reach.py`
-and `test_platform_admin_reach_registry.py`, and it goes on in prod when the
-owner turns it on.
+reach and ROLES-ACCEPT no longer gates it. Its evidence before prod is two
+things, both required: the offline tests that hold it,
+`tests/unit/control_plane/test_platform_admin_reach.py` and
+`test_platform_admin_reach_registry.py`, **and one operator-run check in
+dev**. In dev, a platform admin selects a group workspace they are not a
+member of, makes one harmless read and one harmless write the reach allows,
+and confirms that the workspace's audit shows the `platform_admin_acted`
+rows. The check is run by a person, not by the verify job: **no
+platform-admin identity is added to the verify job or to the acceptance
+probe**. When it is run, add a record line below (date, what was done,
+result). The reach goes on in prod only after that line says it passed, and
+then when the owner turns it on.
+
+**Dev reach check record.** *Not yet run.* Format: `YYYY-MM-DD, <what the
+operator did: workspace, the read, the write>, <result: the
+platform_admin_acted rows seen, or what failed>`.
 
 ### 4.10 Audit events
 
@@ -1301,7 +1314,7 @@ so the UI is three lanes.
 | 5 | **ROLES-UI-ADMIN** (after UI-PEOPLE) | `WorkspaceRolesAdmin.tsx` (new), `People.tsx`, `Spine.tsx`, their `__tests__` | Admin › People shows the Workspace roles card with "Name an admin" and the drawer's roles; a platform admin's switcher lists reach workspaces under their own heading, and selecting one shows the platform-admin banner; a non-admin's switcher is unchanged |
 | 5 | **ROLES-UI-GATES** (after UI-PEOPLE) | `Approvals.tsx`, `QuestionsCard.tsx`, `Submit.tsx`, `Schedules.tsx`, `Repositories.tsx`, the Profile seam's file, their `__tests__` | a `viewer` sees Approve/Reject disabled with the role sentence; Submit and Cancel are disabled for a `viewer`; Profile shows the stored role and its source, "admin (platform admin)" for a reach entry, and the derived role when `role` is absent |
 | each | **ROLES-DOCS** | `docs/workspaces.md`, `docs/security.md`, `docs/design/workspace-secrets.md`, `docs/design/human-steps.md`, this file | `test_docs_describe_what_was_built`, where it reads these files |
-| 6 | **ROLES-ACCEPT** (after GATES, and the dev switches and reach on) | one probe, its workflow wiring (built as `scripts/acceptance/groups/roles.sh` in accept.yml's smoke job, §8) | with a dev acceptance identity granted `viewer` in a test workspace: `POST /v1/tasks` is 403 `role_member_required`, `GET /v1/tasks` is 200, and the grant and its revocation each appear in `GET /v1/workspace/roles` `audit`; with a dev platform-admin identity outside the test workspace's group: selecting it succeeds, a write appears as `platform_admin_acted`, and selecting another identity's `u-` workspace is 403 `tenant_not_member` (the reach half superseded 2026-11-20: the probe's admin is a scoped probe admin, §8, and the reach's prod gate is §4.9's) |
+| 6 | **ROLES-ACCEPT** (after GATES, and the dev switches and reach on) | one probe, its workflow wiring (built as `scripts/acceptance/groups/roles.sh` in accept.yml's smoke job, §8) | with a dev acceptance identity granted `viewer` in a test workspace: `POST /v1/tasks` is 403 `role_member_required`, `GET /v1/tasks` is 200, and the grant and its revocation each appear in `GET /v1/workspace/roles` `audit`; with a dev platform-admin identity outside the test workspace's group: selecting it succeeds, a write appears as `platform_admin_acted`, and selecting another identity's `u-` workspace is 403 `tenant_not_member` (the reach half superseded 2026-11-20: the probe's admin is a scoped probe admin, §8, and the reach's prod gate is §4.9's: the offline tests plus one recorded operator-run check in dev) |
 
 Order and dependencies:
 
@@ -1315,8 +1328,12 @@ Order and dependencies:
 5. The operator turns on `PLATFORM_ADMIN_REACH` and the two switches in dev
    (`dev.tfvars`), then ROLES-ACCEPT goes green.
 6. A week of report-only lines in prod, per code. Then each switch goes on
-   in prod; the reach goes on in prod on its offline tests and the owner's
-   word, not on ROLES-ACCEPT (§4.9, amended 2026-11-20).
+   in prod; the reach goes on in prod on its offline tests, the one
+   operator-run check in dev recorded in §4.9 (a platform admin selects a
+   group workspace they are not in, makes one harmless read and one harmless
+   write, and sees the `platform_admin_acted` rows), and the owner's word,
+   not on ROLES-ACCEPT (§4.9, amended 2026-11-20). No platform-admin identity
+   is added to the verify job for it.
 
 The change touches admission's front door (submissions) and tenant
 resolution, so step 5 also runs `make smoke concurrency-test race-test`
@@ -1688,13 +1705,15 @@ probe's "reach" step (a platform admin outside the group selecting the
 workspace, recorded `platform_admin_acted`) measured nothing for a scoped
 admin. The owner decided (2026-11-20) to delete that step and re-point the
 reach's prod gate (§4.9): the probe checks the scoped admin's limits
-(above) instead, and the reach goes on in prod on its offline tests and
-the owner's word.
+(above) instead, and the reach goes on in prod on its offline tests, one
+operator-run check in dev recorded in §4.9, and the owner's word. No
+platform-admin identity is added to the verify job.
 
 **What is left, in order.** The owner provisions ROLES-ACCEPT's identities
 and workspace -- the admin identity as a `probe_admin_users` entry naming
 `ROLES_TENANT` and a member of its group, never an `admin_users` entry -- and
-the probe passes live; a named workspace admin in every
+the probe passes live; the operator-run reach check in dev, recorded in
+§4.9; a named workspace admin in every
 group workspace that manages secrets (eng, smoke), then
 `role_admin_required` on in dev; the registry gap above; a week of
 report-only lines in prod; then prod.
