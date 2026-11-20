@@ -1065,6 +1065,12 @@ gather_waits() {
   left=$(((window - oldest_age + 59) / 60))
   [[ "${count}" -ne 1 ]] || noun="ready pull request waits"
   summary "gathering: ${count} ${noun} for ${min} to board (or ${MAX_WAIT_MINUTES} minutes); the oldest, #${oldest}, has been ready $((oldest_age / 60)) minutes; they board at the latest at ${at}, in ${left} minutes"
+  # The deadline (epoch seconds) for merge-train.yml's `wake` job: no event
+  # comes at the moment a gather's window ends, and GitHub's schedule is not
+  # relied on to supply one.
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    printf 'wake_at=%s\n' "$((now - oldest_age + window))" >>"${GITHUB_OUTPUT}"
+  fi
   return 0
 }
 

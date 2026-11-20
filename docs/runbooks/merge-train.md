@@ -241,7 +241,9 @@ train through `workflow_run` as any App-started run does.
   a fork's pull request starts no tick). With no train open, such a tick
   starts one, as a schedule tick does; a train's own run only judges it. The
   five-minute schedule is only the fallback, because GitHub ran it only every
-  four to seven hours (2026-11-03). Many events close together make at most two
+  four to seven hours (2026-11-03) and a few times a day on the new repository
+  (2026-11-19). A tick that holds pull requests back to gather is followed by
+  one more at the gather's deadline: its `wake` job in the same run. Many events close together make at most two
   ticks: the one running and one pending behind it.
 * Every landed pull request is marked **merged** by GitHub, with the subject
   `<title> (#N)`. `auto-merge.yml`'s `close-issues` job closes the issues it
@@ -273,8 +275,12 @@ gathering: 3 ready pull requests wait for 6 to board (or 20 minutes); the oldest
 ```
 
 The train boards on the first tick after that time. Ticks come from CI runs
-finishing and from `ready` being added, and the five-minute schedule is the
-fallback. So the real wait can run past twenty minutes until the next tick.
+finishing and from `ready` being added, and the tick that gathers also starts a
+`wake` job (`merge-train.yml`): it sleeps until the time the summary names and
+dispatches one more tick, so the wait no longer depends on the schedule or on
+another run finishing. The five-minute schedule is the last fallback. If a wake
+cannot start (no runner, or the train off) the wait can still run past the
+window until the next tick.
 
 **"Ready since"** is when the `ready` label was **last added**, read from
 the pull request's issue events on GitHub on every tick. The script keeps no
