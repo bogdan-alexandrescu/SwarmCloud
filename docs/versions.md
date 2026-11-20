@@ -75,13 +75,13 @@ release of either, and the same findings.
 
 | Tool | In the image | Default build | Why this version |
 |---|---|---|---|
-| `gh` | **2.103.3** | yes | newest; go1.27.3 and x/net 0.60.0 fix CVE-2026-78667 and -78669 (2026-10-31) |
-| `gcloud` | **591.0.0** | yes | newest; its bundled Python 3.14 is removed (7 fixable HIGHs in its site-packages) and gcloud runs on the image's 3.11; its gcloud-crc32c is go1.27.2, its gke-gcloud-auth-plugin still go1.27.1 (accepted in `.trivyignore.yaml`, 2026-10-31); on 2026-11-18 the newest, 594.0.0, still carries the same builds (gcloud-crc32c 20261016, auth plugin 20261030), so the crypto/x509 acceptance runs one more week, to 2026-11-25, and is re-checked then; the pin stays 591.0.0 |
+| `gh` | **2.105.0** | yes | newest; go1.27.4 fixes CVE-2026-97054 (2.103.3 was go1.27.3; 2026-11-20); go1.27.3 and x/net 0.60.0 had fixed CVE-2026-78667 and -78669 (2026-10-31) |
+| `gcloud` | **591.0.0** | yes | newest; its bundled Python 3.14 is removed (7 fixable HIGHs in its site-packages) and gcloud runs on the image's 3.11; its gcloud-crc32c is go1.27.2, its gke-gcloud-auth-plugin still go1.27.1 (accepted in `.trivyignore.yaml`, 2026-10-31); on 2026-11-18 the newest, 594.0.0, still carries the same builds (gcloud-crc32c 20261016, auth plugin 20261030), so the crypto/x509 acceptance runs one more week, to 2026-11-25, and is re-checked then; the pin stays 591.0.0; for CVE-2026-97054 (Go net/http MaxBytesReader, fixed in Go 1.26.11 / 1.27.4) 594.0.0 is still gcloud-crc32c go1.27.2 and auth plugin go1.27.3 (2026-11-20), so both are accepted to 2026-11-27 (see below the table) |
 | `kubectl` | **1.36.6** | yes | newest 1.36 patch (go1.26.10: CVE-2026-56857, -78667 and -111943 fixed; x/net 0.56.0's CVE-2026-78669 is in every kubectl release and accepted); operators pin 1.36.3 |
 | `terraform` | **1.17.1** | yes | newest; go1.26.10, x/net 0.62.0 and go-jose 4.1.6 fix CVE-2026-78667, -78669 and -116587 (1.16.7 still has go-jose 4.1.4); operators and CI pin 1.16.2, whose Go 1.26.4 stdlib has 9 fixable HIGHs |
 | `checkov` | **3.3.17** | yes | matches CI; isolated `uv tool` env, resolution pinned to 2026-10-01 |
 | `shellcheck` | **0.11.0** | yes | matches the operator pin |
-| `docker` | **29.9.2** | yes | CLI only, from Docker's bookworm `.deb`; no daemon, no socket; go1.26.10 fixes CVE-2026-78667 and -78669 |
+| `docker` | **29.10.0** | yes | CLI only, from Docker's bookworm `.deb`; no daemon, no socket; go1.27.4 fixes CVE-2026-97054 (29.9.2 and 29.9.3 are go1.26.10; 2026-11-20), as go1.26.10 fixed CVE-2026-78667 and -78669 |
 | `trivy` | **0.76.2** | yes | newest; go-jose 4.1.6 fixes CVE-2026-116587 (0.76.1 had 4.1.5); go1.27.3 and x/net 0.62.0 (0.76.1's go1.27.3 and x/net 0.60.0 fixed CVE-2026-78667 and -78669; 0.74.0 had grpc 1.82.1) |
 | `coderabbit` | **0.9.1** | yes | the release the vendor's installer binds Linux to; checksum from its signed `SHA256SUMS`; 91.1 MiB on disk; nothing in it trivy can analyse (2026-10-26). Fetched from `cli.coderabbit.ai`, not the tool mirror; its key is a workspace secret ([worker-images.md](worker-images.md#coderabbit)) |
 | `pgvector` | **0.8.7** | yes | a floor, not a pin: PGDG's `postgresql-16-pgvector` beside the test services' PostgreSQL 16, which floats with `APT_REFRESH` as the server does; the build refuses anything older than `PGVECTOR_MIN_VERSION` (0.8.7-1.pgdg12+2 was bookworm-pgdg's on 2026-11-12) and a package without `vector.control`. A branch's migrations `CREATE EXTENSION vector` against the worker's server (archived issue 2442, the owner, 2026-11-12); trivy does not track PGDG's packages ([test-services.md](test-services.md#the-catalogue-postgresql-16-one-entry)) |
@@ -95,6 +95,25 @@ whole image over one tool's dependency. The two arguments are independent, so
 turn each on once its own vendor ships a release that scans clean, re-scanning
 first; one tool does not wait for the other. The
 owner ruled out a `.trivyignore.yaml` waiver for them.
+
+**CVE-2026-97054, accepted for five binaries until 2026-11-27.** A Go
+standard library advisory (HIGH; an HTTP/1 server whose `MaxBytesReader`
+limit is exceeded; fixed in Go 1.26.11 and 1.27.4) made the release's scan
+refuse agent-runtime-base, -nocodex, -browser, -indexer, -lightpanda and
+workspace-apply on 2026-11-20. The owner's decision that day: bump Go, accept
+the rest. The indexer's Go toolchain moved from 1.27.3 to 1.27.4, which also
+fixes gopls and terraform-ls, both compiled from source with it; gh and docker
+moved to the first releases built with go1.27.4 (2.105.0 and 29.10.0). No
+upstream release of the other five is built with a fixed Go yet (read with
+`go version -m` on each newest release after its checksum matched,
+2026-11-20): Google's `gcloud-crc32c` (594.0.0: go1.27.2) and
+`gke-gcloud-auth-plugin` (594.0.0: go1.27.3), `kubectl` (1.36.6 and 1.37.2:
+go1.26.10), `terraform` (1.17.2: go1.26.10) and `trivy` (0.76.2: go1.27.3). One
+`.trivyignore.yaml` entry accepts the id for exactly those five paths, because
+they are client tools that run no HTTP/1 server in our containers; it expires
+on **2026-11-27** and is re-checked before then. The owner's rule: take every
+fixed build as it ships (bump the pin, drop its path from the entry), and
+extend the rest one week only if upstream is still unfixed.
 
 ---
 
