@@ -126,6 +126,14 @@ non-decider's approval, a forged request approved). They are raised with
 | `join_requests_daily_limit` | 429 | the person asked the most times in the last 24 hours | the same, over time |
 | `join_denied_recently` | 429 | asking a workspace that denied this person within the hold; `detail.opens_on` is the UTC day it opens | a denial is not answered by asking again at once |
 | `join_workspace_queue_full` | 429 | the workspace already holds the most open requests | only someone holding a working code can reach it, so it reveals nothing |
+| `workspace_leave_person_only` | 403 | `POST /v1/workspace/leave` by a service account, the schedule tick, the rollup sweeper or a listed service account | only a person leaves, and only themselves |
+| `workspace_leave_not_member` | 404 | a person leaving a workspace they hold no platform membership of that still counts for its registered group (the group alone lists them, nothing does, or the group changed since) | there is nothing the platform can end; the group is its admins' to change. Nothing is written |
+| `workspace_leave_last_admin` | 409 | the workspace's only `admin` by override leaving while its group does not hold them there; another admin counts only while their platform membership still counts or a fresh group check finds them | the workspace would have no admin of its own; another admin is named first. Nothing is written |
+
+The leave route (§4.4) refuses a personal or service workspace with
+`join_not_offered`, as the membership routes do. Its three codes gate a
+route that did not exist before the owner's decision of 2026-11-20, so they
+have no switch either, for the same reason.
 
 Two more answers are 503s, outside the 4xx guard, and never a refusal of the
 person:
