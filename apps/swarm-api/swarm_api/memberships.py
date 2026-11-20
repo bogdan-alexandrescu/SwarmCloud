@@ -50,6 +50,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping
 
+from google.api_core import exceptions as gexc
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
@@ -69,6 +70,11 @@ from .workspaces import is_service_identity
 log = logging.getLogger(__name__)
 
 COLLECTION = "workspace_memberships"
+#: One document per group workspace, `{tenant_id}`, that every leave by an
+#: `admin` reads and writes inside its own transaction, so two admins leaving
+#: at once conflict and the retried one re-checks who is left (§4.4). It
+#: holds no authority: nothing reads its fields to decide anything.
+LEAVE_GUARD_COLLECTION = "workspace_leave_guards"
 
 MEMBER = "member"
 REMOVED = "removed"
@@ -77,7 +83,10 @@ STATES = frozenset({MEMBER, REMOVED})
 VIA_JOIN_REQUEST = "join_request"
 VIA_WORKSPACE_ADMIN = "workspace_admin"
 VIA_PLATFORM_ADMIN = "platform_admin"
-VIAS = frozenset({VIA_JOIN_REQUEST, VIA_WORKSPACE_ADMIN, VIA_PLATFORM_ADMIN})
+#: The person left by their own request (`POST /v1/workspace/leave`): only
+#: ever on a `removed` grant whose `by` is its `subject`.
+VIA_SELF = "self"
+VIAS = frozenset({VIA_JOIN_REQUEST, VIA_WORKSPACE_ADMIN, VIA_PLATFORM_ADMIN, VIA_SELF})
 
 #: The bounded read (§4.4): three pages of 20, read as ONE query of 60 -- the
 #: bound `roles.SCAN_LIMIT` is, in one round trip. It is one query per
@@ -317,11 +326,14 @@ class MembershipStore:
 
     # -- reading ------------------------------------------------------------
 
-    def read(self, subject: str, *, fresh: bool = False) -> MembershipRead:
+    def read(self, subject: str, *, fresh: bool = False,
+             transaction: Any = None) -> MembershipRead:
         """The person's newest valid grant per tenant. Raises
-        `MembershipUnavailable` when Firestore fails."""
+        `MembershipUnavailable` when Firestore fails. With `transaction` the
+        read is that transaction's: fresh, and never cached, because it is
+        retried whenever what it read changed before the commit."""
         subject = (subject or "").strip().lower()
-        if not fresh and self._ttl > 0:
+        if transaction is None and not fresh and self._ttl > 0:
             with self._lock:
                 hit = self._cache.get(subject)
             if hit is not None and hit[0] > time.monotonic():
@@ -331,8 +343,10 @@ class MembershipStore:
                      .where(filter=FieldFilter("subject", "==", subject))
                      .order_by("at", direction=firestore.Query.DESCENDING)
                      .limit(SCAN_LIMIT))
-            snaps = list(query.stream())
+            snaps = list(query.stream() if transaction is None else transaction.get(query))
         except Exception as exc:  # noqa: BLE001 - any Firestore failure is "unknown"
+            if transaction is not None and isinstance(exc, gexc.Aborted):
+                raise  # contention: the transaction runs again or reports it
             log.warning("memberships unreadable (%s)", type(exc).__name__)
             raise MembershipUnavailable(
                 "your workspace memberships could not be read; retry shortly") from None
@@ -356,7 +370,7 @@ class MembershipStore:
         if cut_short:
             log.warning("memberships reached the bounded read; unread tenants are unknown")
         result = MembershipRead(subject=subject, newest=newest, cut_short=cut_short)
-        if self._ttl > 0:
+        if transaction is None and self._ttl > 0:
             with self._lock:
                 self._cache[subject] = (time.monotonic() + self._ttl, result)
         return result

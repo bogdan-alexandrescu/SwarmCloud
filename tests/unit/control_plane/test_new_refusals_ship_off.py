@@ -510,6 +510,15 @@ NOT_SWITCHABLE_CODES = frozenset({
     "join_requests_daily_limit",
     "join_denied_recently",
     "join_workspace_queue_full",
+    # A person leaving a workspace (POST /v1/workspace/leave, join-requests.md
+    # §4.4, owner decision 2026-11-20): raised only by that route, which this
+    # change introduces, so no existing caller can be refused by them.
+    # Continuing past any of them is the breach itself: a service account
+    # writing a membership grant, a `removed` grant over a membership nobody
+    # held, or a workspace's last admin walking out and leaving it none.
+    "workspace_leave_person_only",
+    "workspace_leave_not_member",
+    "workspace_leave_last_admin",
     # Admin › Setup's sign-in client (docs/design/day-one-plan.md §5.6, part
     # of archived issue 2964): raised only by POST /v1/admin/setup/sign-in-client, which
     # that change introduces, so no existing caller can be refused by it.

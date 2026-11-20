@@ -469,6 +469,14 @@ of nothing else:
   evicts its cache at once; another instance within `role_cache_seconds`,
   15 s by default, the membership cache's lifetime). Removal ends the platform membership only: a person who is also
   in the group stays a member through the group, which `still_in_group` says.
+* **The person can leave it themselves.** `POST /v1/workspace/leave`, in the
+  workspace their own sign-in selected, writes the same `removed` row for the
+  caller only (`via: "self"`; no subject in the body), keeps any role
+  override as a removal does, and refuses the workspace's last admin by
+  override (`workspace_leave_last_admin`), counting another admin only while
+  they can still select it (a membership that counts, or a fresh group
+  check), in one transaction with the write; [join-requests.md](design/join-requests.md)
+  §4.4 "Leaving".
 * **A personal (`u-`) or service workspace takes no requests**
   (`join_not_offered`): a personal workspace has one person.
 

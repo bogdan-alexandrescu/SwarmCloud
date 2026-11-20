@@ -6,8 +6,12 @@ tests in tests/unit/control_plane prove offline: an admin turns a workspace's
 join link on and reads its code once; a second identity, a person outside the
 workspace's group, asks with the code in a body; the admin approves; the
 person's next request selects the workspace (`via: platform_member`); the
-admin removes the membership and the next request is refused; the link is
-turned off again. With `platform_memberships` off, approval answers
+admin, a scoped probe admin, is refused the membership's removal
+(`probe_admin_not_permitted`) and the person is still a member; the person
+then leaves through the front door (`POST /v1/workspace/leave`) and is no
+longer a member; the link is turned off again. A run that finds the person
+still a member has them leave first and runs the full flow, approval
+included. With `platform_memberships` off, approval answers
 `admitted: false` with the group command and admits nobody. No Google group
 is ever written: the probe reads the group only through the API's own fresh
 per-group check, and calls no Cloud Identity API at all.
@@ -18,8 +22,12 @@ Google's token endpoint and swarm-api) and a fake `gcloud`, both on PATH:
 
 * the on path PASSes every check, and the off path PASSes the
   `admitted: false` check and admits nobody;
-* an approval that does not admit, or a removal that does not end the
-  membership, FAILs;
+* an approval that does not admit, a removal the probe admin is allowed, a
+  refusal that removes the person anyway, or a leave that leaves the person
+  a member, FAILs;
+* a person an earlier run left a member leaves first, and every check,
+  the approval included, is measured and passes; a leave refused there fails
+  every check;
 * neither the join code, the person's refresh token nor any minted token
   reaches argv or the probe's output;
 * the person's requests go through the front door (SWARM_ACCEPTANCE_CONSOLE_URL,
@@ -70,7 +78,8 @@ SETTINGS = (
     "SWARM_ACCEPTANCE_JOIN_PERSON",
     "SWARM_ACCEPTANCE_JOIN_PERSON_SECRET",
 )
-CHECKS = ("link-on", "ask", "approve", "selects", "no-group-write", "removal", "link-off")
+CHECKS = ("link-on", "ask", "approve", "selects", "no-group-write", "removal", "leave",
+          "link-off")
 TENANT = "join-accept"
 ADMIN = "qa-admin@example-project.iam.gserviceaccount.com"
 PERSON = "join-tester@example.com"
@@ -99,7 +108,11 @@ pytestmark = pytest.mark.skipif(
 #: token, and the front door (FAKE_FRONT) only the person's; hosts.log says
 #: which address each caller reached. FAKE_SWITCH is
 #: platform_memberships; FAKE_BROKEN breaks one behaviour so a test can show
-#: the probe notices.
+#: the probe notices. The admin is a scoped probe admin, so its removal is
+#: refused probe_admin_not_permitted, as swarm-api's roles.PROBE_ADMIN_ROUTES has it.
+#: The person leaves by their own POST /v1/workspace/leave, which, like
+#: swarm-api's, answers only for a person who selects the workspace (else 403
+#: tenant_not_member, as the sign-in refuses it before the route).
 FAKE_CURL = r"""#!/usr/bin/env bash
 printf '%s\n' "$*" >>"${FAKE_DIR}/curl.argv"
 headers=() data="" url="" method="GET" tenant=""
@@ -167,9 +180,15 @@ case "${who} ${method} ${path}" in
     [[ "${member}" == 1 ]] && rows="[{\"email\":\"${FAKE_PERSON}\",\"by\":\"a\",\"at\":\"t\",\"via\":\"join_request\",\"group_changed\":false,\"still_in_group\":${FAKE_IN_GROUP:-false}}]"
     answer 200 "{\"platform_memberships\":${on},\"members\":${rows}}" ;;
   "admin DELETE /v1/workspace/members/person")
-    [[ "$(jq -r .email <<<"${data}")" == "${FAKE_PERSON}" && "${member}" == 1 ]] || refuse 404 not_found
-    [[ "${FAKE_BROKEN:-}" == "removal-keeps" ]] || rm -f "${FAKE_DIR}/member"
-    answer 200 "{\"email\":\"${FAKE_PERSON}\",\"state\":\"removed\",\"still_in_group\":false}" ;;
+    printf '%s\n' "$(jq -r .email <<<"${data}")" >>"${FAKE_DIR}/removals"
+    case "${FAKE_BROKEN:-}" in
+      removal-allowed)
+        [[ "$(jq -r .email <<<"${data}")" == "${FAKE_PERSON}" && "${member}" == 1 ]] || refuse 404 not_found
+        rm -f "${FAKE_DIR}/member"
+        answer 200 "{\"email\":\"${FAKE_PERSON}\",\"state\":\"removed\",\"still_in_group\":false}" ;;
+      refusal-removes) rm -f "${FAKE_DIR}/member" ;;
+    esac
+    refuse 403 probe_admin_not_permitted ;;
   "admin POST /v1/admin/join-requests/jr-1/approve")
     [[ -f "${FAKE_DIR}/asked" ]] || refuse 404 join_request_unknown
     if [[ "${on}" == true ]]; then
@@ -178,6 +197,15 @@ case "${who} ${method} ${path}" in
     fi
     answer 200 "{\"ref\":\"jr-1\",\"state\":\"approved\",\"email\":\"${FAKE_PERSON}\",\"tenant_id\":\"${FAKE_TENANT}\",\"role\":\"member\",\"admitted\":false,\"group_change\":{\"group\":\"eng@example.com\",\"command\":\"gcloud identity groups memberships add --group-email=eng@example.com --member-email=${FAKE_PERSON}\"}}" ;;
   "person GET /v1/join-requests/mine") answer 200 '{"requests":[]}' ;;
+  "person POST /v1/workspace/leave")
+    printf '%s\n' "${member}" >>"${FAKE_DIR}/leaves"
+    [[ "${tenant}" == "${FAKE_TENANT}" && "${member}" == 1 ]] || refuse 403 tenant_not_member
+    case "${FAKE_BROKEN:-}" in
+      leave-refused) refuse 404 workspace_leave_not_member ;;
+      leave-keeps) ;;
+      *) rm -f "${FAKE_DIR}/member" ;;
+    esac
+    answer 200 "{\"email\":\"${FAKE_PERSON}\",\"state\":\"removed\",\"still_in_group\":false}" ;;
   "person POST /v1/join-requests")
     [[ -f "${FAKE_DIR}/link_on" && "$(jq -r .code <<<"${data}")" == "${FAKE_CODE}" ]] || refuse 404 join_link_unknown
     [[ "${member}" == 0 ]] || refuse 409 join_already_member
@@ -214,11 +242,15 @@ def _tools(tmp_path: Path) -> Path:
     return bin_dir
 
 
-def _probe(tmp_path: Path, switch: str, broken: str = "", **extra: str):
-    """Runs run_join as the swarm-verify job would, against the fakes."""
+def _probe(tmp_path: Path, switch: str, broken: str = "", member: bool = False, **extra: str):
+    """Runs run_join as the swarm-verify job would, against the fakes. With
+    `member`, the person starts as a platform member, as an earlier run with
+    the switch on leaves them."""
     bin_dir = _tools(tmp_path)
     fake = tmp_path / "fake"
     fake.mkdir()
+    if member:
+        (fake / "member").touch()
     refresh, client_secret = secrets.token_urlsafe(24), secrets.token_urlsafe(12)
     credential = json.dumps({"type": "authorized_user", "client_id": "cli.apps.example.com",
                              "client_secret": client_secret, "refresh_token": refresh})
@@ -240,7 +272,7 @@ def _probe(tmp_path: Path, switch: str, broken: str = "", **extra: str):
     script = (f'source "{REPO}/scripts/lib/common.sh"\nSUITE_NAME=acceptance\n'
               f'source "{REPO}/scripts/lib/testlib.sh"\n'
               f'source "{REPO}/scripts/acceptance/lib.sh"\nsource "{GROUP}"\n'
-              'acc_init\nrun_join\n_join_link_off_on_exit\nacc_cleanup\nt_summary\n')
+              'acc_init\nrun_join\n_join_undo_on_exit\nacc_cleanup\nt_summary\n')
     proc = subprocess.run([str(bin_dir / "bash"), "-c", script], cwd=REPO, env=env,
                           capture_output=True, text=True, timeout=120)
     secret_values = (*tokens.values(), client_secret)
@@ -287,13 +319,18 @@ def test_with_platform_memberships_on_every_check_passes(tmp_path):
     assert proc.returncode == 0, proc.stderr
     log = (fake / "api.log").read_text().splitlines()
     # The person asked with the code in a body; the admin approved; the
-    # person's next request selected the workspace; the admin removed them;
-    # the link ended off.
+    # person's next request selected the workspace; the admin's removal was a
+    # real request, refused, made once (the EXIT path does not retry it); the
+    # person then left by their own request, once, as a member (the EXIT path
+    # does not leave again); the link ended off.
     assert "person POST /v1/join-requests" in [" ".join(r.split()[:3]) for r in log]
     assert f"person GET /v1/tenants/me {TENANT}" in log
-    assert any(r.startswith("admin DELETE /v1/workspace/members/person") for r in log)
+    assert (fake / "removals").read_text().splitlines() == [PERSON]
+    assert "probe_admin_not_permitted" in proc.stderr
+    assert f"person POST /v1/workspace/leave {TENANT}" in log
+    assert (fake / "leaves").read_text().splitlines() == ["1"]
     assert not (fake / "link_on").exists()
-    assert not (fake / "member").exists(), "the probe left the person a member"
+    assert not (fake / "member").exists(), "the person is still a member after the run"
     # The person's sign-in was read from Secret Manager, once, by name.
     assert f"/secrets/{PERSON_SECRET}/versions/latest:access" in (fake / "secrets.read").read_text()
     _assert_nothing_leaked(proc, fake, secret_values)
@@ -304,13 +341,13 @@ def test_with_platform_memberships_off_approval_answers_the_group_command(tmp_pa
     proc, fake, secret_values = _probe(tmp_path, "off")
     verdicts = _verdicts(proc)
     assert proc.returncode == 0, proc.stderr
-    for check in ("link-on", "ask", "approve", "selects", "no-group-write", "link-off"):
-        assert verdicts[check] == "PASS", (check, proc.stderr)
-    # No membership was written, so there is nothing to remove: not measured.
-    assert verdicts["removal"] == "SKIP"
+    assert verdicts == {c: "PASS" for c in CHECKS}, proc.stderr
     assert "admitted: false" in proc.stderr and "gcloud identity groups memberships add" in proc.stderr
-    log = (fake / "api.log").read_text()
-    assert "DELETE /v1/workspace/members/person" not in log
+    # No membership was written, yet the removal's refusal is still a real
+    # request, and the person is still refused after it; their leave, too, is
+    # a real request, refused because there is nothing to leave.
+    assert (fake / "removals").read_text().splitlines() == [PERSON]
+    assert (fake / "leaves").read_text().splitlines() == ["0"]
     assert not (fake / "member").exists() and not (fake / "link_on").exists()
     _assert_nothing_leaked(proc, fake, secret_values)
     _assert_no_group_write(fake)
@@ -324,11 +361,70 @@ def test_an_approval_that_admits_nobody_fails_with_the_switch_on(tmp_path):
     assert proc.returncode != 0
 
 
-def test_a_removal_that_does_not_end_the_membership_fails(tmp_path):
-    """MUTATION: the removal answers 200 and the person still selects it."""
-    proc, _fake, _ = _probe(tmp_path, "on", broken="removal-keeps")
+def test_a_removal_the_probe_admin_is_allowed_fails(tmp_path):
+    """MUTATION: the probe admin's removal answers 200 removed: the probe
+    admin holds a power the owner decided it does not."""
+    proc, _fake, _ = _probe(tmp_path, "on", broken="removal-allowed")
     assert _verdicts(proc)["removal"] == "FAIL", proc.stderr
+    assert "probe_admin_not_permitted" in proc.stderr
     assert proc.returncode != 0
+
+
+def test_a_refusal_that_removes_the_person_anyway_fails(tmp_path):
+    """MUTATION: the removal answers 403 probe_admin_not_permitted but the
+    membership is gone: the refusal is checked, not assumed."""
+    proc, _fake, _ = _probe(tmp_path, "on", broken="refusal-removes")
+    assert _verdicts(proc)["removal"] == "FAIL", proc.stderr
+    assert "must still be a member" in proc.stderr
+    assert proc.returncode != 0
+
+
+def test_a_person_an_earlier_run_left_a_member_leaves_first_and_every_check_passes(tmp_path):
+    """A run that finds the person still a member (an earlier run crashed
+    before its leave): the person leaves first, then the full flow runs --
+    the ask is a new request and the approval is measured, never skipped."""
+    proc, fake, secret_values = _probe(tmp_path, "on", member=True)
+    verdicts = _verdicts(proc)
+    assert proc.returncode == 0, proc.stderr
+    # MUTATION: keep the member's path (ask 409, approval SKIP) -> not all PASS.
+    assert verdicts == {c: "PASS" for c in CHECKS}, proc.stderr
+    assert "join_already_member" not in proc.stderr
+    log = (fake / "api.log").read_text()
+    assert "/approve" in log
+    # Left twice, each time a member: first, and at the end of the run.
+    assert (fake / "leaves").read_text().splitlines() == ["1", "1"]
+    assert (fake / "removals").read_text().splitlines() == [PERSON]
+    assert not (fake / "member").exists() and not (fake / "link_on").exists()
+    _assert_nothing_leaked(proc, fake, secret_values)
+    _assert_no_group_write(fake)
+
+
+def test_a_member_whose_leave_first_is_refused_fails_every_check(tmp_path):
+    """MUTATION: the leave route refuses the member: nothing can be measured
+    from a person who is already in, so every check FAILs, never passes."""
+    proc, fake, _ = _probe(tmp_path, "on", broken="leave-refused", member=True)
+    assert _verdicts(proc) == {c: "FAIL" for c in CHECKS}, proc.stderr
+    assert "could not leave first" in proc.stderr
+    assert "/approve" not in (fake / "api.log").read_text()
+    assert proc.returncode != 0
+
+
+def test_a_leave_that_keeps_the_person_a_member_fails(tmp_path):
+    """MUTATION: the leave answers 200 removed but the membership stays: the
+    leave is checked by the person's next request and the member list."""
+    proc, _fake, _ = _probe(tmp_path, "on", broken="leave-keeps")
+    verdicts = _verdicts(proc)
+    assert verdicts["leave"] == "FAIL", proc.stderr
+    assert "the person is still a member" in proc.stderr
+    assert proc.returncode != 0
+
+
+def test_a_leave_the_route_refuses_fails(tmp_path):
+    proc, _fake, _ = _probe(tmp_path, "on", broken="leave-refused")
+    assert _verdicts(proc)["leave"] == "FAIL", proc.stderr
+    assert "workspace_leave_not_member" in proc.stderr
+    assert proc.returncode != 0
+
 
 
 def test_a_person_the_group_already_holds_fails_no_group_write(tmp_path):
@@ -354,17 +450,21 @@ def test_the_persons_requests_go_through_the_front_door_and_the_admins_do_not(tm
     hosts = (fake / "hosts.log").read_text().splitlines()
     person = [h.split()[1] for h in hosts if h.startswith("person ")]
     admin = [h.split()[1] for h in hosts if h.startswith("admin ")]
-    # whoami, before, the ask, after, mine and removed: every one of the person's.
-    assert len(person) >= 6 and set(person) == {"front"}, hosts
+    # whoami, before, the ask, after, mine, kept, the leave and gone: every one
+    # of the person's.
+    assert len(person) >= 8 and set(person) == {"front"}, hosts
     assert len(admin) >= 6 and set(admin) == {"api"}, hosts
     assert "nobody" not in " ".join(hosts)
     urls = [line.split()[-1] for line in (fake / "curl.argv").read_text().splitlines()]
     assert any(u == f"{FRONT_URL}/v1/join-requests/mine" for u in urls), urls
     assert any(u == f"{FRONT_URL}/v1/tenants/me" for u in urls), urls
+    assert any(u == f"{FRONT_URL}/v1/workspace/leave" for u in urls), urls
     assert not any(u.startswith(f"{API_URL}/v1/join-requests") or u.startswith(f"{API_URL}/v1/tenants/")
-                   for u in urls), urls
-    assert not any(u.startswith(f"{FRONT_URL}/v1/workspace") or u.startswith(f"{FRONT_URL}/v1/admin")
-                   for u in urls), urls
+                   or u == f"{API_URL}/v1/workspace/leave" for u in urls), urls
+    # The person's only workspace route is their own leave; the admin's
+    # routes are never sent through the front door.
+    assert not any((u.startswith(f"{FRONT_URL}/v1/workspace") and u != f"{FRONT_URL}/v1/workspace/leave")
+                   or u.startswith(f"{FRONT_URL}/v1/admin") for u in urls), urls
 
 
 def test_a_trailing_slash_on_the_front_door_is_not_doubled(tmp_path):
@@ -402,7 +502,7 @@ def _bash(script: str, **env: str) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, timeout=60)
 
 
-def test_the_checks_are_the_seven_the_design_names():
+def test_the_checks_are_the_eight_the_design_names():
     lines = _bash("join_checks").stdout.splitlines()
     assert [line.split(":")[1].strip() for line in lines] == list(CHECKS)
 
