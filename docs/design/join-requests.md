@@ -570,6 +570,40 @@ in the Google group, the response says so (`still_in_group: true`, from a
 fresh per-group check), and so does the grid. The admin then knows the group
 is the other half, and that the platform cannot change it.
 
+**Leaving** (owner decision, 2026-11-20). A person leaves a workspace they
+hold a platform membership of with `POST /v1/workspace/leave` (§4.8), in the
+workspace their own sign-in selected (`X-Swarm-Tenant`, through
+`tenant_scope`). Before it, nothing let a person end their own membership:
+withdraw ends an open request only, and the join probe's scoped admin may
+not remove anyone, so the probe's person stayed a member between runs. The
+route:
+
+* ends **only the caller's** membership. The body is `{reason?}` and has no
+  subject; an `email` in it is 422. A person can only ever leave the
+  workspace their own sign-in selected, so tenant isolation is the
+  selection's, as on every tenant-scoped route.
+* writes a `removed` grant **exactly as a removal does**, with `via: "self"`
+  and `by` the person, and its `workspace_member_removed` row in the same
+  batch (§4.7). It ends the platform membership only: when the Google group
+  lists the person too, the answer says so (`still_in_group: true`), and the
+  group is its admins' to change.
+* **keeps** any role override the person held there, as a removal does
+  (above): it stays inert while they are not a member, and if they ask again
+  and are approved, the approval decides the role as it always does.
+* refuses, writing nothing: an identity that is not a person (a service
+  account, the schedule tick, the rollup sweeper, a listed service account)
+  403 `workspace_leave_person_only`; a personal or service workspace 409
+  `join_not_offered`; a person with no platform membership there (the group
+  alone lists them, or they left already) 404 `workspace_leave_not_member`.
+* refuses the workspace's **last admin by override** 409
+  `workspace_leave_last_admin` when the group does not hold them there,
+  since leaving would leave the workspace with no admin of its own. Neither a
+  removal nor the roles routes had such a guard to mirror, so the route has
+  its own: it reads the roster and the group fresh, and a read that fails is
+  a 503, never a guess that lets the last admin go. A last admin the group
+  still lists may leave the platform membership, since the group keeps them
+  (and their override) there.
+
 ### 4.5 Tenant resolution: the change, exactly
 
 All of it is in `auth.py`, and all of it is gated by `platform_memberships`:
@@ -670,7 +704,7 @@ change and its row both land or neither does:
 | `join_denied` | denial | `{ref, via}`. The reason is in the decision, redacted |
 | `join_withdrawn` | withdrawal | `{ref}` |
 | `workspace_member_added` | the membership grant | `{via: "join_request", ref}` |
-| `workspace_member_removed` | a removal | `{via, still_in_group}` |
+| `workspace_member_removed` | a removal, or the person leaving | `{via, still_in_group}`; `via: "self"` when the person left |
 | `join_link_changed` | link on, off or rotated | `{on, rotated: true\|false}`. **Never the code or its hash** |
 
 Expiry writes no row, because it is derived. These rows appear in Admin ›
@@ -691,6 +725,13 @@ POST   /v1/join/lookup                  {code}            -> {display_name} | 40
 POST   /v1/join-requests                {code, message?}  -> 202 {ref, state, display_name, expires_at}
 GET    /v1/join-requests/mine                             -> [{ref, display_name, state, requested_at, decided_at?, reason?}]
 POST   /v1/join-requests/{ref}/withdraw
+```
+
+**The person's own, under the tenant `X-Swarm-Tenant` selects** (any role
+there; only the caller, §4.4 "Leaving"):
+
+```
+POST   /v1/workspace/leave              {reason?}         -> {email, state: "removed", still_in_group}
 ```
 
 **A workspace admin's, under the tenant `X-Swarm-Tenant` selects** (`admin`
@@ -947,20 +988,30 @@ body, approves, checks the person's next request selects the workspace
 (`via: platform_member`), checks the API's own fresh per-group check does not
 find the person in the group, asks to remove the membership and checks the
 request is refused `probe_admin_not_permitted` and the person still selects
-the workspace and is still listed, and turns the link off. With the switch
-off it checks approval answers `admitted: false` with the group command and
-admits nobody, and that the removal is refused just the same.
+the workspace and is still listed, has the person leave through the front
+door (`POST /v1/workspace/leave`, §4.4 "Leaving") and checks they are then
+refused the workspace `tenant_not_member` and no longer listed, and turns the
+link off. With the switch off it checks approval answers `admitted: false`
+with the group command and admits nobody, that the removal is refused just
+the same, and that the person's leave is 403 `tenant_not_member`: there is
+no membership to leave.
 
 The removal step proves a refusal, not a removal, because the probe admin may
-not remove a membership (the owner's decision; §8.2) and swarm-api has no
-route a person can call to leave a workspace themselves: `withdraw` ends an
-open request, not a membership. So with the switch on the person stays a
-member between runs. The probe is idempotent for that: a run that finds the
-person listed runs the member's path, where the ask is 409
-`join_already_member`, the approval is not measured (SKIP, naming why: there
-is no request to approve), and every other check is measured as before. How
-a later run measures the approval again -- a self-leave route in its own
-change, or a separate cleanup identity -- is an open question to the owner.
+not remove a membership (the owner's decision; §8.2). The leave step is what
+ends the membership: the person's own route (owner decision 2026-11-20), so
+every run ends with the person outside the workspace and the next run asks,
+is approved and measures the approval again. A run that finds the person
+still listed -- an earlier run that crashed before its leave, and whose EXIT
+trap could not leave either -- has the person leave first, through the same
+route, and then runs the full flow; a leave refused there fails every check,
+not measured. The probe admin gains no power from any of this.
+
+**SELF-LEAVE (owner decision 2026-11-20).** `routes/join_requests.py`'s
+`leave_workspace` (`POST /v1/workspace/leave`, on `roles.PERSON_ROUTES`),
+`memberships.VIA_SELF`, the three `workspace_leave_*` codes in `errors.py`
+and their `NOT_SWITCHABLE_CODES` entries, and
+`tests/unit/control_plane/test_workspace_leave.py`; the join probe's leave
+step and its leave-first start.
 
 ### 8.1 Where the code departs from §4
 
@@ -1026,7 +1077,7 @@ and off, lists the members, and decides that workspace's requests through
 among its memberships, recorded `via: probe_admin`. It never removes a
 membership (`DELETE /v1/workspace/members/person` is 403
 `probe_admin_not_permitted`), so the probe's removal step measures that
-refusal and leaves the person a member (§8 above), and an approval that would change or clear a stored `admin` role
+refusal and the person then leaves by their own route (§8 above), and an approval that would change or clear a stored `admin` role
 is 403 `role_admin_required` with nothing written. `people_scope`
 refuses a service account on Admin › People because it holds no person's
 role; a probe admin's entry is that role, so a listed one is answered as a

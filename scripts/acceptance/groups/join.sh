@@ -9,12 +9,9 @@
 #      never again in GET.
 #   2. ask: the person (ACC_JOIN_PERSON, NOT in the workspace's group) POSTs
 #      the code in a body to /v1/join-requests: 202, a `requested` request.
-#      A person an earlier run admitted (below) is answered 409
-#      join_already_member instead: a member needs nobody's decision.
 #   3. approve: the admin approves it. With `platform_memberships` on the
 #      answer is `admitted: true`; off, `admitted: false` with the `gcloud`
-#      group command, and nobody is admitted. For a person an earlier run
-#      admitted there is no request to approve, so it is not measured.
+#      group command, and nobody is admitted.
 #   4. selects: on, the person's next request with X-Swarm-Tenant selects the
 #      workspace and GET /v1/tenants/mine lists it `via: platform_member`;
 #      off, the same request is still 403 tenant_not_member.
@@ -29,16 +26,22 @@
 #      selects the workspace afterwards and the member list still lists them,
 #      so the refusal is measured, not assumed; off, the person is still
 #      refused as before.
-#   7. link-off: the link is turned off again, and GET says so.
+#   7. leave: the person leaves through the front door, POST
+#      /v1/workspace/leave with X-Swarm-Tenant naming the test workspace (the
+#      person's own route: it ends only the caller's platform membership).
+#      On, the answer is `removed`, and afterwards the person's next request
+#      is 403 tenant_not_member and the member list no longer lists them, so
+#      the next run asks, is approved and measures the approval again; off,
+#      there is no membership to leave and the request is 403
+#      tenant_not_member.
+#   8. link-off: the link is turned off again, and GET says so.
 #
-# THE PERSON STAYS A MEMBER BETWEEN RUNS. swarm-api has no route a person can
-# call to leave a workspace (withdraw ends an open REQUEST only), and the
-# probe admin may not remove one, so with the switch on the first run's
-# approval leaves the person a platform member of the test workspace. Every
-# later run finds them listed and runs the member's path: the ask is 409
-# join_already_member, the approval is not measured, and every other check is.
-# How a later run measures the approval again is the owner's open question
-# (a self-leave route, or a separate cleanup identity).
+# EVERY RUN STARTS FROM A PERSON OUTSIDE THE WORKSPACE. The probe admin may not
+# remove a member (step 6), so the person removes themselves (step 7). A run
+# that finds the person still a member -- an earlier run that crashed before
+# step 7 and whose EXIT trap could not leave either -- has the person leave
+# first, through the same route, and then runs the full flow; a leave that
+# fails there fails every check, not measured.
 #
 # Which path runs is the deployment's: GET /v1/workspace/members says whether
 # `platform_memberships` is on. Neither path is a skip of the other.
@@ -60,7 +63,8 @@
 # access, once the client is on the backends' allowlist (the runbook, step
 # 4); IAP then forwards the request with its signed assertion, which swarm-api
 # verifies and judges the request by alone. So every request the person makes
-# (whoami, the ask, the selects, the check after the refused removal) goes to
+# (whoami, the ask, the selects, the check after the refused removal, the
+# leave) goes to
 # SWARM_ACCEPTANCE_CONSOLE_URL, https://<frontend_hostname>, whose URL map
 # sends /v1/* to swarm-api, with the token as `Authorization: Bearer` exactly
 # as `sc` sends it. The admin's requests keep acc_api_as and `api_url`: a
@@ -102,10 +106,9 @@ ACC_JOIN_FRONT_DOOR="${SWARM_ACCEPTANCE_CONSOLE_URL:-}"
 ACC_JOIN_SETTLE="${SWARM_ACCEPTANCE_JOIN_SETTLE:-30}"
 
 #: The codes and fields the probe judges by, as swarm_api spells them
-#: (auth.TenantNotMember, errors.JoinAlreadyMember, errors.ProbeAdminNotPermitted,
+#: (auth.TenantNotMember, errors.ProbeAdminNotPermitted,
 #: routes/tenants.VIA_PLATFORM_MEMBER, the approval's group_change.command).
 JOIN_NOT_MEMBER="tenant_not_member"
-JOIN_ALREADY_MEMBER="join_already_member"
 JOIN_PROBE_ADMIN_REFUSED="probe_admin_not_permitted"
 JOIN_VIA_PLATFORM_MEMBER="platform_member"
 JOIN_GROUP_COMMAND="gcloud identity groups memberships add"
@@ -113,11 +116,12 @@ JOIN_GROUP_COMMAND="gcloud identity groups memberships add"
 join_checks() {
   cat <<'EOF'
 join: link-on: the admin turns the test workspace's join link on and is shown its code once
-join: ask: the person outside the group asks with the code in a body and gets a requested request (a member already: 409 join_already_member)
+join: ask: the person outside the group asks with the code in a body and gets a requested request
 join: approve: the admin approves; admitted is true with platform_memberships on, false with the group command off
 join: selects: the person's next request selects the workspace (via platform_member), or is still refused with the switch off
 join: no-group-write: the approval wrote no Google group: the API's fresh per-group check does not find the person (read only)
 join: removal: the probe admin's removal of the person is refused probe_admin_not_permitted, and the person is still a member
+join: leave: the person leaves through the front door and is no longer a member: refused the workspace and not listed
 join: link-off: the join link is turned off again
 EOF
 }
@@ -162,8 +166,9 @@ join_settings_problem() {
 }
 
 #: The person's ID token, in this shell's memory only; what is left to undo
-#: (the EXIT trap and _join_link_off_on_exit read it); and whether the person
-#: holds a platform membership here, an earlier run's or this one's approval.
+#: (the EXIT trap and _join_undo_on_exit read it); and whether the person
+#: holds a platform membership here that this run's approval wrote and the
+#: person has not left yet.
 JOIN_PERSON_ID=""
 JOIN_LINK_SET=0
 JOIN_ADMITTED=0
@@ -290,8 +295,40 @@ _join_listed() {
   fi
 }
 
-# What a crash must not leave behind: the link on. The person's membership is
-# not undone here: the probe admin may not remove one (the header).
+# _join_leave NAME -> the person's own POST /v1/workspace/leave in the test
+# workspace, through the front door, into ${ACC_WORK}/join.NAME.
+_join_leave() {
+  _join_person "$1" POST /workspace/leave \
+    "$(jq -nc --arg r "JOIN-ACCEPT ${ACC_RUN_ID:-}" '{reason: $r}')" "${ACC_JOIN_TENANT}"
+}
+
+# _join_left NAME -> "true" when ${ACC_WORK}/join.NAME is the leave's 200
+# answer for the person: their membership ended, `removed`.
+_join_left() {
+  if [[ "$(_join_status "$1")" == "200" && "$(_join_field "$1" --arg e "${ACC_JOIN_PERSON}" \
+      '.state == "removed" and .email == $e')" == "true" ]]; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+# What a crash must not leave behind: the link on, and the person a member
+# (the person leaves through their own route; the probe admin may not remove
+# them, the header).
+_join_undo_on_exit() {
+  _join_link_off_on_exit
+  if [[ "${JOIN_ADMITTED}" == "1" && -n "${JOIN_PERSON_ID}" ]]; then
+    _join_leave exit-leave
+    if [[ "$(_join_left exit-leave)" == "true" ]]; then
+      JOIN_ADMITTED=0
+    else
+      err "join: ${ACC_JOIN_PERSON} may still be a platform member of ${ACC_JOIN_TENANT}: the next run has them leave first (HTTP $(_join_status exit-leave) $(_join_code exit-leave) $(_join_err exit-leave))"
+    fi
+  fi
+  return 0
+}
+
 _join_link_off_on_exit() {
   if [[ "${JOIN_LINK_SET}" == "1" ]]; then
     _join_admin exit-link PUT /workspace/join-link '{"on":false}'
@@ -316,11 +353,11 @@ run_join() {
     return 0
   fi
   info "join: test workspace ${ACC_JOIN_TENANT}; platform admin ${ACC_JOIN_ADMIN_SA}; person ${ACC_JOIN_PERSON}"
-  local all=(link-on ask approve selects no-group-write removal link-off)
+  local all=(link-on ask approve selects no-group-write removal leave link-off)
 
   # 0. The person signs in, the API takes them for a person, and they are
-  # outside the workspace -- or, with the switch on, a member an earlier
-  # run's approval left (the header), which the next request must show.
+  # outside the workspace -- or, with the switch on, a member an earlier run
+  # left behind (the header), who leaves first through the front door.
   if ! _join_person_token; then
     _join_fail_rest "the person's ID token could not be minted (above)" "${all[@]}"
     return 0
@@ -337,19 +374,19 @@ run_join() {
   fi
   on="$(_join_field members '.platform_memberships == true')"
   info "join: platform_memberships is $([[ "${on}" == "true" ]] && echo on || echo off) in this environment"
-  local already=0
+  local want=""
   if [[ "${on}" == "true" && "$(_join_listed members)" == "1" ]]; then
-    already=1
-    JOIN_ADMITTED=1
-    info "join: an earlier run left ${ACC_JOIN_PERSON} a platform member of ${ACC_JOIN_TENANT} (the probe admin may not remove one); measuring the member's path"
-  fi
-  status="$(_join_selects before)"
-  if [[ "${already}" == "1" ]]; then
-    if [[ "${status}" != "200" ]]; then
-      _join_fail_rest "the member list lists ${ACC_JOIN_PERSON}, but selecting ${ACC_JOIN_TENANT} answered HTTP ${status} $(_join_code before), not 200: a listed membership does not admit" "${all[@]}"
+    info "join: an earlier run left ${ACC_JOIN_PERSON} a platform member of ${ACC_JOIN_TENANT}; the person leaves first, then the full flow runs"
+    _join_leave leave-first
+    if [[ "$(_join_left leave-first)" != "true" ]]; then
+      _join_fail_rest "${ACC_JOIN_PERSON}, a member since an earlier run, could not leave first: POST /v1/workspace/leave answered HTTP $(_join_status leave-first) $(_join_code leave-first) $(_join_err leave-first), not 200 removed" "${all[@]}"
       return 0
     fi
-  elif [[ "${status}" != "403" || "$(_join_code before)" != "${JOIN_NOT_MEMBER}" ]]; then
+    # The leave reaches every instance within the settle window.
+    want="403"
+  fi
+  status="$(_join_selects before "${want}")"
+  if [[ "${status}" != "403" || "$(_join_code before)" != "${JOIN_NOT_MEMBER}" ]]; then
     _join_fail_rest "before asking, ${ACC_JOIN_PERSON} selecting ${ACC_JOIN_TENANT} answered HTTP ${status} $(_join_code before), not 403 ${JOIN_NOT_MEMBER}: the probe needs a person outside the workspace's group" "${all[@]}"
     return 0
   fi
@@ -364,7 +401,7 @@ run_join() {
   _join_admin link-read GET /workspace/join-link ""
   if [[ -z "${code}" ]]; then
     acc_fail "PUT /v1/workspace/join-link answered HTTP ${status} $(_join_code link) with no code in its link"
-    _join_fail_rest "the join link has no code" ask approve selects no-group-write removal
+    _join_fail_rest "the join link has no code" ask approve selects no-group-write removal leave
   else
     if [[ "$(_join_field link-read 'type == "object" and .on == true and (has("link") | not)')" == "true" ]]; then
       acc_pass "the link is on and its code was shown once, in the answer's link fragment; GET does not show it"
@@ -379,45 +416,32 @@ run_join() {
     status="$(_join_status ask)"
     ref="$(_join_field ask 'if type == "object" and .state == "requested" then (.ref // "") else "" end')"
     [[ "${ref}" =~ ^[A-Za-z0-9_-]+$ ]] || ref=""
-    if [[ "${already}" == "1" ]]; then
-      ref=""
-      if [[ "${status}" == "409" && "$(_join_code ask)" == "${JOIN_ALREADY_MEMBER}" ]]; then
-        acc_pass "409 ${JOIN_ALREADY_MEMBER}: the person, a member since an earlier run, needs nobody's decision; the code was sent in the body only"
-      else
-        acc_fail "the person, a member since an earlier run, asking answered HTTP ${status} $(_join_code ask), not 409 ${JOIN_ALREADY_MEMBER}"
-        _join_fail_rest "the member's ask was not refused" approve selects no-group-write removal
-        already=0
-      fi
-    elif [[ "${status}" =~ ^20[02]$ && -n "${ref}" ]]; then
+    if [[ "${status}" =~ ^20[02]$ && -n "${ref}" ]]; then
       acc_pass "HTTP ${status}: a requested request, the code sent in the body only"
     else
       acc_fail "POST /v1/join-requests answered HTTP ${status} $(_join_code ask), not 202 with a requested request"
-      _join_fail_rest "the person's request was not made" approve selects no-group-write removal
+      _join_fail_rest "the person's request was not made" approve selects no-group-write removal leave
     fi
   fi
 
-  if [[ -n "${ref}" || "${already}" == "1" ]]; then
+  if [[ -n "${ref}" ]]; then
     # 3. The approval, at the workspace's default role.
     acc_check "$(_join_title approve)"
-    if [[ "${already}" == "1" ]]; then
-      acc_skip "not measured: ${ACC_JOIN_PERSON} is a member since an earlier run, so there is no request to approve; no route lets the person leave and the probe admin may not remove them (the owner's open question)"
-    else
-      _join_admin approve POST "/admin/join-requests/${ref}/approve" '{}'
-      status="$(_join_status approve)"
-      if [[ "${on}" == "true" ]]; then
-        if [[ "${status}" == "200" && "$(_join_field approve '.admitted == true and .group_change == null')" == "true" ]]; then
-          JOIN_ADMITTED=1
-          acc_pass "200 admitted: true, with no group change to make"
-        else
-          acc_fail "the approval answered HTTP ${status} $(_join_code approve) admitted $(_join_field approve '.admitted // "absent"'), not 200 admitted: true"
-        fi
+    _join_admin approve POST "/admin/join-requests/${ref}/approve" '{}'
+    status="$(_join_status approve)"
+    if [[ "${on}" == "true" ]]; then
+      if [[ "${status}" == "200" && "$(_join_field approve '.admitted == true and .group_change == null')" == "true" ]]; then
+        JOIN_ADMITTED=1
+        acc_pass "200 admitted: true, with no group change to make"
       else
-        if [[ "${status}" == "200" && "$(_join_field approve --arg c "${JOIN_GROUP_COMMAND}" --arg e "${ACC_JOIN_PERSON}" \
-            '.admitted == false and ((.group_change.command // "") | startswith($c) and endswith("--member-email=" + $e))')" == "true" ]]; then
-          acc_pass "200 admitted: false, and the answer names the group command (${JOIN_GROUP_COMMAND} ... --member-email=${ACC_JOIN_PERSON}) for the group's owner"
-        else
-          acc_fail "with platform_memberships off the approval answered HTTP ${status} $(_join_code approve), not 200 admitted: false with the group command"
-        fi
+        acc_fail "the approval answered HTTP ${status} $(_join_code approve) admitted $(_join_field approve '.admitted // "absent"'), not 200 admitted: true"
+      fi
+    else
+      if [[ "${status}" == "200" && "$(_join_field approve --arg c "${JOIN_GROUP_COMMAND}" --arg e "${ACC_JOIN_PERSON}" \
+          '.admitted == false and ((.group_change.command // "") | startswith($c) and endswith("--member-email=" + $e))')" == "true" ]]; then
+        acc_pass "200 admitted: false, and the answer names the group command (${JOIN_GROUP_COMMAND} ... --member-email=${ACC_JOIN_PERSON}) for the group's owner"
+      else
+        acc_fail "with platform_memberships off the approval answered HTTP ${status} $(_join_code approve), not 200 admitted: false with the group command"
       fi
     fi
 
@@ -488,9 +512,38 @@ run_join() {
         fi
       fi
     fi
+
+    # 7. The person leaves through the front door, their own route: every run
+    # ends with them outside, so the next one asks and is approved again.
+    acc_check "$(_join_title leave)"
+    if [[ "${on}" == "true" && "${JOIN_ADMITTED}" != "1" ]]; then
+      acc_fail "not measured: the approval admitted nobody, or the person is no longer a member"
+    elif [[ "${on}" == "true" ]]; then
+      _join_leave leave
+      if [[ "$(_join_left leave)" != "true" ]]; then
+        acc_fail "POST /v1/workspace/leave as ${ACC_JOIN_PERSON} answered HTTP $(_join_status leave) $(_join_code leave) $(_join_err leave), not 200 removed: the person could not leave"
+      else
+        JOIN_ADMITTED=0
+        status="$(_join_selects gone 403)"
+        _join_admin members-gone GET /workspace/members ""
+        row="$(_join_listed members-gone)"
+        if [[ "${status}" == "403" && "$(_join_code gone)" == "${JOIN_NOT_MEMBER}" && "$(_join_status members-gone)" == "200" && "${row}" == "0" ]]; then
+          acc_pass "200 removed (still_in_group $(_join_field leave '.still_in_group | tostring')), and the person is now refused ${ACC_JOIN_TENANT} ${JOIN_NOT_MEMBER} and no longer listed"
+        else
+          acc_fail "the leave answered 200 removed, yet the person selecting ${ACC_JOIN_TENANT} answered HTTP ${status} $(_join_code gone) and the member list (HTTP $(_join_status members-gone)) $([[ "${row}" == "1" ]] && echo lists || echo "does not list") them: the person is still a member"
+        fi
+      fi
+    else
+      _join_leave leave
+      if [[ "$(_join_status leave)" == "403" && "$(_join_code leave)" == "${JOIN_NOT_MEMBER}" ]]; then
+        acc_pass "403 ${JOIN_NOT_MEMBER}: with the switch off the approval admitted nobody, so there is no membership to leave"
+      else
+        acc_fail "with platform_memberships off the person's leave answered HTTP $(_join_status leave) $(_join_code leave), not 403 ${JOIN_NOT_MEMBER}"
+      fi
+    fi
   fi
 
-  # 7. The link, off again.
+  # 8. The link, off again.
   acc_check "$(_join_title link-off)"
   _join_admin link-off PUT /workspace/join-link '{"on":false}'
   status="$(_join_status link-off)"
@@ -546,11 +599,11 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   acc_init
   JOIN_FINISHED=0
   # A crash must not leave the person a member or the link on, and must not
-  # exit 0.
+  # exit 0. The person leaves through their own route (_join_undo_on_exit).
   # shellcheck disable=SC2317,SC2329  # invoked through the EXIT trap below
   _join_exit() {
     local ec=$?
-    _join_link_off_on_exit || true
+    _join_undo_on_exit || true
     acc_cleanup
     if [[ "${JOIN_FINISHED}" != "1" ]]; then
       [[ "${ec}" -ne 0 ]] || ec=1
