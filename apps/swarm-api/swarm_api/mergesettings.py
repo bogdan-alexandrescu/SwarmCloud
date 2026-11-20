@@ -84,7 +84,7 @@ from .errors import Forbidden, NotFound, RoleUnavailable, ValidationFailed
 from .judgment import MAC_FIELD, SettingsMac, block_mac, mac_enforced, trusted_block
 from .refusals import refuse
 from .repositories import COLLECTION as REPOSITORIES
-from .roles import ADMIN, RoleStore, at_least, with_tenant
+from .roles import ADMIN, RoleStore, at_least, probe_admin_refusal, with_tenant
 from .schemas import StrictModel
 from .validation import MERGE_MODE_DIRECT, MERGE_MODE_TRAIN
 
@@ -340,6 +340,11 @@ def group_admin(roles: RoleStore | None, auth: AuthContext, tenant: Tenant, *,
         me = roles.resolve(auth, fresh=fresh)
     except RoleUnavailable:
         return False
+    if me.probe_admin and fresh:
+        # `fresh` is the write's read: a scoped probe admin is refused the
+        # write outright, whatever the caller's switch says; the read's
+        # `can_edit` only answers no.
+        raise probe_admin_refusal(auth)
     return at_least(me.role, ADMIN)
 
 

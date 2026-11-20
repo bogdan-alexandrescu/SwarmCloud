@@ -107,7 +107,10 @@ DECISION_STATES = frozenset({APPROVED, DENIED, WITHDRAWN})
 VIA_WORKSPACE_ADMIN = "workspace_admin"
 VIA_PLATFORM_ADMIN = "platform_admin"
 VIA_REQUESTER = "requester"
-VIAS = frozenset({VIA_WORKSPACE_ADMIN, VIA_PLATFORM_ADMIN, VIA_REQUESTER})
+#: A scoped probe admin's decision (`ApiSettings.probe_admin_users`): never
+#: recorded as a workspace admin's.
+VIA_PROBE_ADMIN = "probe_admin"
+VIAS = frozenset({VIA_WORKSPACE_ADMIN, VIA_PLATFORM_ADMIN, VIA_REQUESTER, VIA_PROBE_ADMIN})
 
 #: The roles an approval may give (§4.3 step 4, Q4 (a)): the workspace
 #: default, which the approving admin may lower to viewer. Never admin: an
