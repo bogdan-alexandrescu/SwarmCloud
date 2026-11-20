@@ -165,7 +165,19 @@ def forge_tokens() -> forge_fakes.AnyTenantTokens:
 
 
 @pytest.fixture
-def client(db, tokens, group_map, objects, github, forge_tokens) -> TestClient:
+def make_client(db, tokens, group_map, objects, github, forge_tokens):
+    """Builds the app whose clock reads `at` (default NOW)."""
+    def build(at: datetime | None = None) -> TestClient:
+        return _build_client(db, tokens, group_map, objects, github, forge_tokens, at or NOW)
+    return build
+
+
+@pytest.fixture
+def client(make_client) -> TestClient:
+    return make_client()
+
+
+def _build_client(db, tokens, group_map, objects, github, forge_tokens, at) -> TestClient:
     seed_tenant(db, "eng")
     seed_tenant(db, "research")
     _register(db, "eng", OWNER, NAME)
@@ -182,6 +194,10 @@ def client(db, tokens, group_map, objects, github, forge_tokens) -> TestClient:
         objects=objects,
         forge_tokens=forge_tokens,
         forge_writer=forgewrite.GitHubWriter(send=github),
+        # Every age in this file is measured from NOW, which is fixed when the module
+        # is imported: a sweep on the wall clock would see a "one hour old" pull
+        # request as stranded once a long serial run reached this file.
+        now=lambda: at,
     )
     return TestClient(create_app(context), raise_server_exceptions=False)
 
@@ -406,6 +422,15 @@ def test_the_sweep_classifies_stores_and_get_serves_each_reason(client, db, gith
     assert row["repo"] == REPO and row["head_sha"] == _sha(1) and row["remedy"] == "merge_pr"
     assert row["age_hours"] >= 4.9
     assert served.json()["tenants"][0]["swept_at"] is not None
+
+
+def test_the_sweep_ages_pull_requests_on_the_apps_clock_not_the_wall_clock(
+        make_client, db, github):
+    _seed_every_reason(db, github)
+    assert 9 not in _reasons(_sweep(make_client()).json())
+    # Control: the same pull request, 70 minutes later on the app's clock, is stranded.
+    later = _reasons(_sweep(make_client(NOW + timedelta(minutes=70))).json())
+    assert later[9] == NO_MERGE_STEP
 
 
 def test_get_before_any_sweep_says_never_swept_rather_than_clean(client):
