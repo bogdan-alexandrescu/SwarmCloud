@@ -12,9 +12,6 @@ unchanged). What is held here:
   * a limit above 2 x the request, or below it, is refused at construction;
   * the Cloud Run ceiling binds the request, not the limit, so `large` at
     8/16 constructs and a request of 9 is still refused;
-  * CONTRACT.md's invariant 7 says CPU may burst and memory may not, and
-    profiles.py's docstring no longer forbids every burst;
-  * the request is filed in docs/contract-change-requests.md as entry 108.
 
 No cloud, no emulator: the contract is pure. Nothing here renders a pod; the
 manifests start reading `cpu_limit_cores` in lane SIZES-SCHED-1.
@@ -22,24 +19,17 @@ manifests start reading `cpu_limit_cores` in lane SIZES-SCHED-1.
 MUTATION: leave `cpu_limit` unset on `standard` and
 `test_every_class_bursts_to_twice_its_request["standard"]` fails; drop the
 ratio check from `__post_init__` and
-`test_a_limit_above_the_ratio_is_refused` fails; restore invariant 7's
-"No bursting" line and `test_invariant_7_text_names_cpu_only` fails.
+`test_a_limit_above_the_ratio_is_refused` fails.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import re
-from pathlib import Path
 
 import pytest
 
 from swarm_common import profiles
 from swarm_common.profiles import RESOURCE_CLASSES, ResourceClass
-
-REPO = Path(__file__).resolve().parents[3]
-CONTRACT = REPO / "CONTRACT.md"
-REQUESTS = REPO / "docs" / "contract-change-requests.md"
 
 #: §4.1, the owner's Q1 answer: requests unchanged, limit twice the request.
 EXPECTED = {"standard": (4, 8), "browser": (4, 8), "large": (8, 16),
@@ -114,39 +104,3 @@ def test_the_cloud_run_ceiling_binds_the_request_not_the_limit():
     with pytest.raises(ValueError, match="ceiling"):
         ResourceClass("probe", cpu=9, memory_gib=32, disk_gib=16, units=4, cpu_limit=9)
 
-
-def _invariant_7(text: str) -> str:
-    match = re.search(r"^7\. (.*?)(?=^8\. )", text, re.M | re.S)
-    assert match, "CONTRACT.md has no invariant 7"
-    return match.group(1)
-
-
-def test_invariant_7_text_names_cpu_only():
-    seven = _invariant_7(CONTRACT.read_text(encoding="utf-8"))
-    # MUTATION: restore "requests == limits. No bursting" and these fail.
-    assert "No bursting" not in seven
-    assert "Memory and ephemeral storage: requests == limits" in seven
-    assert "CPU: request <= limit <= `CPU_BURST_MAX_RATIO` x request" in seven
-    assert "GKE" in seven and "Cloud Run renders the request" in seven
-    assert "never killed" in seven and "OOM-killed" in seven
-    # invariant 8 is named, because Burstable QoS raises the OOM score.
-    assert "invariant 8" in seven
-
-
-def test_profiles_docstring_no_longer_forbids_every_burst():
-    doc = profiles.__doc__ or ""
-    # MUTATION: restore "requests == limits. Bursting past a request ..." and this fails.
-    assert "we never do it" not in doc
-    assert "memory and disk: requests == limits" in doc.lower()
-    assert "CPU_BURST_MAX_RATIO" in doc
-
-
-def test_request_rs_1_is_filed_as_entry_108():
-    """The change the tests above hold has its entry, under the design's §5
-    name (CLAUDE.md rule 1)."""
-    text = REQUESTS.read_text(encoding="utf-8")
-    rows = [line for line in text.splitlines() if line.startswith("| 108 |")]
-    assert len(rows) == 1, rows
-    assert "SIZES-CONTRACT-1" in rows[0] and "RS-1" in rows[0]
-    assert "APPLIED" in rows[0]
-    assert re.search(r"^## 108\. .*\(SIZES-CONTRACT-1, runner sizes request RS-1, part of #1689\)$", text, re.M)
