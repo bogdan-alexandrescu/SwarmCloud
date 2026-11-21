@@ -1,0 +1,13 @@
+# Findings gitleaks may skip, one fingerprint (commit:path:rule:line) each.
+# Narrower than a path in .gitleaks.toml's allowlist: an entry covers one line
+# of one commit, so a credential added to the same file later is still found.
+#
+# The console tests' synthetic keys as they stood in the replaced history's
+# root commit. The tree now joins each one at run time, so only that commit
+# holds them. tests/unit/scripts/test_gitleaks_allowlist.py pins this list.
+9ee05db74fcc48276cd1722ad0208b9ec1dcff8d:apps/swarm-ui/src/__tests__/artifacts.pane.test.tsx:generic-api-key:901
+9ee05db74fcc48276cd1722ad0208b9ec1dcff8d:apps/swarm-ui/src/__tests__/details.followup.test.tsx:generic-api-key:50
+9ee05db74fcc48276cd1722ad0208b9ec1dcff8d:apps/swarm-ui/src/__tests__/details.masked.everywhere.test.tsx:generic-api-key:42
+9ee05db74fcc48276cd1722ad0208b9ec1dcff8d:apps/swarm-ui/src/__tests__/repofixture.ts:generic-api-key:162
+9ee05db74fcc48276cd1722ad0208b9ec1dcff8d:apps/swarm-ui/src/__tests__/workflows.textkey.test.ts:generic-api-key:19
+9ee05db74fcc48276cd1722ad0208b9ec1dcff8d:apps/swarm-ui/src/__tests__/workflows.textkey.test.ts:generic-api-key:20

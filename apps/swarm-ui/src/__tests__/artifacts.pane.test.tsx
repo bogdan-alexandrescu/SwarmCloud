@@ -898,7 +898,8 @@ describe('Inputs: the prompt, the repository, and every staged file', () => {
   it('masks a credential in the prompt as the API masked it, counts it, and never draws the raw input', async () => {
     // The task document holds the raw prompt; the pane must not draw it. The
     // served copy is what `redaction.redact` made of it, count included.
-    const secret = 'sk-proj0123456789abcdefghijklmnopqrstuv'
+    // Joined at run time so no credential-shaped literal sits in the source.
+    const secret = 'sk-' + 'proj0123456789' + 'abcdefghijklmnopqrstuv'
     const masked = 'Deploy with sk-proj01******** then report.'
     await openPane(
       finishedRoutes({
