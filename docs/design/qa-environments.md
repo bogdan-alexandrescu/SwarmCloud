@@ -623,6 +623,15 @@ it:
   under "This flow wrote" (`flow-<id>.json`'s `this_flow_wrote`, and the line
   heading the flow's section of `flows.md`), so whoever reads the report sees
   what was meant to be written beside what was.
+* **One width (a QA user's report, 2026-11-21).** A mutating flow runs at
+  the leg's first width only (desktop by default), not once per width as
+  a read-only flow does (`qaspec.flow_widths`): run at desktop and again at
+  phone-390, a send-once flow sent twice, its declared writes doubled
+  without anyone saying so, and the second run's typing was cut short before
+  Send. So the writes sentence is written once a run. The flow's brief
+  records one `flow-<id>-<width>.gif`, the run's description says which
+  width the writing flows run at, and `flows.md` shows that one width's run,
+  never a missing phone result.
 * **Declared removal (the owner, 2026-11-13, archived issue 3977).** "A mutating QA flow
   may click a Remove control only when its declared writes name that removal
   AND the item was created by the same flow run. Every other Remove or Delete

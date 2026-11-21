@@ -95,7 +95,7 @@ before this field is read, served and approved exactly as before.
 |---|---|---|
 | `capture-g<n>` | `claude-code-browser`, haiku, Playwright | writes its group's route list from the prompt, then `python -m swarm_qa capture --routes … --group g<n> --base <base_url> --presets … --themes … --settle generic --axe [--keep-storage] [--clock] [--entry-query <pairs>]` |
 | `review-g<n>` | `claude-code`, opus | stages `capture-g<n>.tar`; reads the app's own design docs first (`design_docs`, default `DESIGN.md`, `docs/design*/**`, `**/style-guide*`); the §4.3 checklist; writes `findings-g<n>.json` and a crop per finding |
-| `flow-<id>` | `claude-code-browser`, sonnet, jev | one per declared flow, recorded once per width (`flow-<id>-<preset>.gif`) |
+| `flow-<id>` | `claude-code-browser`, sonnet, jev | one per declared mutating flow, recorded once, at the leg's first width only (desktop by default; `flow-<id>-<preset>.gif`), so its declared writes happen once; read-only flows run in `flows-<k>` batches, recorded once per width |
 | `report` | `claude-code`, opus | stages every capture and review tar; checks each review's `reviewed` against its manifest; writes `findings.json` and `report.md` |
 | `flow-report` | `claude-code`, opus | only when the target declares flows; writes `flows.md` |
 | `file` | `claude-code`, sonnet | stages the report's `findings.json`; files through the brokered `issue_create` / `issue_comment` (agent-autonomy.md §3.2); absent when the run asked for `file: "none"` |
@@ -146,7 +146,7 @@ them, and `qaspec` holds the rules once:
   | file | holds |
   |---|---|
   | `flow-<id>.json` | `{"flow", "runs": [{"width", "goal_reached", "stopped", "steps": [{"did", "state", "proof", "screenshot", "shows", "retries"}], "labels": [{"screenshot", "problem"}]}]}` |
-  | `flows/flow-<id>-<width>.gif` | one width's recording (`swarm-handoff record`) |
+  | `flows/flow-<id>-<width>.gif` | one width's recording (`swarm-handoff record`); a read-only flow has one per width, a mutating flow exactly one, at the leg's first width |
   | `screenshots/` | `browser_take_screenshot`'s files, each named by a step |
   | `flow-<id>.tar` | that flow's json, recordings and the screenshots its json lists |
   | `<step>.tar` | what the step stages: a batch's `flows-<k>.tar` holds one `flow-<id>.tar` a flow; a mutating flow's step is `flow-<id>`, so its tar is its own |
