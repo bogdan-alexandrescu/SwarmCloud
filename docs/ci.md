@@ -5346,14 +5346,43 @@ explicitly because ruff's own default set has grown past that -- so it reports
 defects (an unused import, an undefined name, an f-string with no
 placeholder), never taste; widening it is a decision of its own, with its
 churn measured first. `apps/common/swarm_common/` is frozen, so its unused
-imports are ignored there rather than fixed. **`ruff format` is NOT adopted**:
+imports are ignored there rather than fixed.
+
+**Silent broad excepts: `BLE001`, `S110`, `S112`, with a baseline that may
+only shrink** (issue 54, 2026-11-21). Besides that set, the lint selects
+`BLE001` (a blind `except Exception` or `except BaseException`), `S110`
+(`try`-`except`-`pass`) and `S112` (`try`-`except`-`continue`), because a
+handler that swallows every exception and hands back a default is a defect a
+caller reads as an answer. Selecting them made the 473 `# noqa: BLE001`
+markers in `apps/` take effect -- before, nothing checked them -- and found
+542 findings (470 BLE001, 63 S110, 9 S112) in 146 files. Those are
+**baselined, not fixed**: each file
+is one line in `[tool.ruff.lint.per-file-ignores]` between `# BEGIN` and
+`# END BLE001/S110/S112 BASELINE`, naming exactly the rules it broke then,
+generated from `uv run ruff check . --extend-select BLE001,S110,S112`. So a
+new silent broad except fails anywhere outside those files, and inside one of
+them for any rule it did not already break. A per-file entry was chosen over
+inline markers so the baseline is one reviewable block, not a diff across
+146 files; ruff has no separate suppressions file. **The baseline may only
+shrink**: never add a path or a rule, never widen a path to a glob -- fix
+the handler (log it, re-raise it, narrow the exception, or mark a deliberate
+best-effort catch `# noqa: BLE001` with the reason). When a file's handlers
+are fixed, delete its line and lower `BASELINE_CEILING`;
+`tests/unit/scripts/test_ruff_config.py` fails on a line that no longer
+suppresses anything, on a path that is gone or a glob, and on a baseline over
+its ceiling, and proves through ruff on standard input that a new silent
+except in an unlisted file is reported and a `# noqa: BLE001` still silences
+it. Reviewing the existing silent handlers is issue 54's second item.
+
+**`ruff format` is NOT adopted**:
 a repository-wide reformat would conflict with every open lane, so
 `[tool.ruff.format]` excludes every file and `force-exclude` keeps that true
 when files are named explicitly, which is how the pre-publish gate
 (`apps/agent-worker/agent_worker/prepublish.py`) runs `ruff format --check`
 on a lane's changed Python -- without it every lane touching Python would be
 told to reformat what it touched. `tests/unit/scripts/test_ruff_config.py`
-holds the pin, the lock, the rule set and the format exclusion. The CI job
+holds the pin, the lock, the rule set, the silent-except baseline and the
+format exclusion. The CI job
 that runs it is `ruff check` in `application.yml` (SPEED-B, 2026-10-14):
 `uv run --frozen --only-dev ruff check --output-format github .`, which
 installs the dev group alone -- the pinned ruff with it -- so it takes
