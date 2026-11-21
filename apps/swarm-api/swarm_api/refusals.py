@@ -656,7 +656,10 @@ SWITCHES: dict[str, Switch] = {
     # They are raised with `raise`, and listed in the guard's
     # NOT_SWITCHABLE_CODES with that reason. So are the three of the person's
     # own leave route (workspace_leave_person_only, workspace_leave_not_member,
-    # workspace_leave_last_admin; §4.4, owner decision 2026-11-20).
+    # workspace_leave_last_admin; §4.4, owner decision 2026-11-20). The last
+    # of these also refuses removing, demoting or clearing a workspace's last
+    # admin (issue 47, routes/last_admin.py): the owner asked for the refusal,
+    # and a switch that let it through would be the breach itself.
 }
 
 

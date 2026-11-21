@@ -26,14 +26,21 @@ be the breach itself. Every write is one signed, append-only grant and its
 change nothing is 409 `role_unchanged` and writes nothing. No response carries
 a grant's document id: the id is what a tenant worker would need to overwrite
 a grant (§4.4).
+
+A person's role is not written as a batch of its own: every set or clear is
+one transaction over the workspace's last-admin guard document
+(`routes/last_admin.py`) that reads the person's role inside it and decides
+there whether the write lowers an `admin` override. A lowering is 409
+`workspace_leave_last_admin` when no other admin who can still select the
+workspace would remain (join-requests.md §4.4, issue 47).
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict
 
 from .. import roles
@@ -47,6 +54,7 @@ from ..errors import (
     RoleUnchanged,
     UpstreamUnavailable,
 )
+from . import last_admin
 
 router = APIRouter(tags=["roles"])
 
@@ -89,46 +97,131 @@ def _member(ctx: AppContext, email: str, tenant_id: str, group: str) -> bool | N
         return None
 
 
-def _set_person(ctx: AppContext, *, tenant_id: str, group: str, by: str, via: str,
-                body: PersonRole) -> dict[str, Any]:
+def _guarded_write(request: Request, ctx: AppContext, *, tenant_id: str, subject: str,
+                   by: str, group: str, route: str, via: str,
+                   change: Callable[[Any, dict[str, Any]], tuple[bool, Callable[[Any], Any]]],
+                   ) -> Any:
+    """Every person-role write, in ONE transaction over the workspace's guard
+    document (`routes/last_admin.py`): it FIRST reads the guard, THEN
+    `change(txn, detail)` reads the subject's role fresh and answers whether
+    the write lowers an `admin` override and the write itself. A lowering
+    runs the self-leave route's last-admin guard -- 409
+    `workspace_leave_last_admin`, nothing written but the refusal's audit row,
+    when no other admin who can still select the workspace would remain; any
+    other write, naming an admin included, writes the guard document. Whether
+    to guard is decided on the role read inside the transaction, never
+    before it: a promotion or a guarded leave committed in between changed
+    the guard, so this write is aborted and its retry decides again on the
+    new role. A platform admin is never counted; naming an admin is never
+    refused, so one can always be named first."""
+    registered = last_admin.registered(ctx)
+    group = (group or "").strip().lower()
+    by = (by or "").strip().lower()
+    if subject == by:
+        message = ("you are this workspace's only admin who can still select it; name another "
+                   "admin who is a member before you change your own role. Nothing was written")
+    else:
+        message = (f"{subject} is this workspace's only admin who can still select it; name "
+                   "another admin who is a member before changing their role. Nothing was "
+                   "written")
+    # `change` sets `to`, read on the try that decided; the refusal row reports it.
+    detail: dict[str, Any] = {"route": route, "via": via}
+
+    def _apply(txn: Any) -> Any:
+        last_admin.read_guard(ctx, txn, tenant_id)
+        lowers, write = change(txn, detail)
+        if lowers:
+            last_admin.require_admin_remains(
+                request, ctx, txn, tenant_id=tenant_id, subject=subject, by=by, group=group,
+                registered=registered, message=message)
+        else:
+            last_admin.write_guard(ctx, txn, tenant_id, by=by)
+        return write(txn)
+
+    return last_admin.run(ctx, _apply, tenant_id=tenant_id, subject=subject, by=by,
+                          detail=detail, contended_error=RoleUnavailable)
+
+
+def _set_person(request: Request, ctx: AppContext, *, tenant_id: str, group: str, by: str,
+                via: str, body: PersonRole) -> dict[str, Any]:
     role = roles.check_role(body.role)
     subject = roles.subject_for_write(body.email)
     reason = roles.clean_reason(body.reason)
     store = ctx.roles
     assert store is not None
+    # Read fresh first, so an unchanged role is a 409 before any group lookup;
+    # read again inside the transaction, which decides.
     current = store.newest_valid(tenant_id, subject, fresh=True)
     if current is not None and current.role == role:
         raise RoleUnchanged(f"{subject} already holds {role} in {tenant_id}; nothing was written")
-    if current is not None and current.role is not None:
-        previous, from_source = current.role, roles.SOURCE_OVERRIDE
-    else:
-        previous, from_source = store.default_role(tenant_id, fresh=True)[0], roles.SOURCE_DEFAULT
     member = _member(ctx, subject, tenant_id, group)
-    granted_at = store.write(
-        tenant_id=tenant_id, subject=subject, role=role, by=by, via=via, reason=reason,
-        previous=current, action=roles.AUDIT_GRANTED,
-        detail={"from": previous, "to": role, "from_source": from_source, "member": member})
-    return {"email": subject, "role": role, "previous_role": previous,
-            "source": roles.SOURCE_OVERRIDE, "granted_at": granted_at, "member": member}
+
+    def change(_txn: Any, detail: dict[str, Any]) -> tuple[bool, Callable[[Any], Any]]:
+        current = store.newest_valid(tenant_id, subject, fresh=True)
+        if current is not None and current.role == role:
+            raise RoleUnchanged(
+                f"{subject} already holds {role} in {tenant_id}; nothing was written")
+        if current is not None and current.role is not None:
+            previous, from_source = current.role, roles.SOURCE_OVERRIDE
+        else:
+            previous, from_source = store.default_role(tenant_id, fresh=True)[0], \
+                roles.SOURCE_DEFAULT
+        detail["to"] = role
+
+        def write(txn: Any) -> dict[str, Any]:
+            granted_at = store.write(
+                tenant_id=tenant_id, subject=subject, role=role, by=by, via=via,
+                reason=reason, previous=current, action=roles.AUDIT_GRANTED,
+                detail={"from": previous, "to": role, "from_source": from_source,
+                        "member": member},
+                writer=txn)
+            return {"email": subject, "role": role, "previous_role": previous,
+                    "source": roles.SOURCE_OVERRIDE, "granted_at": granted_at,
+                    "member": member}
+
+        return previous == roles.ADMIN, write
+
+    return _guarded_write(request, ctx, tenant_id=tenant_id, subject=subject, by=by,
+                          group=group, route=last_admin.ROUTE_ROLE_SET, via=via, change=change)
 
 
-def _clear_person(ctx: AppContext, *, tenant_id: str, by: str, via: str,
-                  body: PersonClear) -> dict[str, Any]:
+def _clear_person(request: Request, ctx: AppContext, *, tenant_id: str, group: str, by: str,
+                  via: str, body: PersonClear) -> dict[str, Any]:
     subject = roles.subject_for_write(body.email)
     reason = roles.clean_reason(body.reason)
     store = ctx.roles
     assert store is not None
+
+    def unchanged() -> RoleUnchanged:
+        return RoleUnchanged(
+            f"{subject} already holds {tenant_id}'s default role; nothing was written")
+
     current = store.newest_valid(tenant_id, subject, fresh=True)
     if current is None or current.role is None:
-        raise RoleUnchanged(
-            f"{subject} already holds {tenant_id}'s default role; nothing was written")
-    default = store.default_role(tenant_id, fresh=True)[0]
-    granted_at = store.write(
-        tenant_id=tenant_id, subject=subject, role=None, by=by, via=via, reason=reason,
-        previous=current, action=roles.AUDIT_CLEARED,
-        detail={"from": current.role, "to": default})
-    return {"email": subject, "role": default, "previous_role": current.role,
-            "source": roles.SOURCE_DEFAULT, "granted_at": granted_at}
+        raise unchanged()
+
+    def change(_txn: Any, detail: dict[str, Any]) -> tuple[bool, Callable[[Any], Any]]:
+        current = store.newest_valid(tenant_id, subject, fresh=True)
+        if current is None or current.role is None:
+            raise unchanged()
+        held = current.role
+        default = store.default_role(tenant_id, fresh=True)[0]
+        detail["to"] = default
+
+        def write(txn: Any) -> dict[str, Any]:
+            granted_at = store.write(
+                tenant_id=tenant_id, subject=subject, role=None, by=by, via=via,
+                reason=reason, previous=current, action=roles.AUDIT_CLEARED,
+                detail={"from": held, "to": default}, writer=txn)
+            return {"email": subject, "role": default, "previous_role": held,
+                    "source": roles.SOURCE_DEFAULT, "granted_at": granted_at}
+
+        # A default is never admin (`roles.DEFAULT_ROLES`), so clearing `admin` demotes.
+        return held == roles.ADMIN and default != roles.ADMIN, write
+
+    return _guarded_write(request, ctx, tenant_id=tenant_id, subject=subject, by=by,
+                          group=group, route=last_admin.ROUTE_ROLE_CLEARED, via=via,
+                          change=change)
 
 
 def _set_default(ctx: AppContext, *, tenant_id: str, by: str, via: str,
@@ -216,26 +309,29 @@ def workspace_roles(
 @router.put("/v1/workspace/roles/person")
 def workspace_set_person(
     body: PersonRole,
+    request: Request,
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     via = _workspace_writer(ctx, auth, body.via, probe_admin=True)
     _probe_admin_limit(ctx, auth, body.email, roles.check_role(body.role))
-    return _set_person(ctx, tenant_id=tenant_id, group=auth.tenant_principal, by=auth.email,
-                       via=via, body=body)
+    return _set_person(request, ctx, tenant_id=tenant_id, group=auth.tenant_principal,
+                       by=auth.email, via=via, body=body)
 
 
 @router.delete("/v1/workspace/roles/person")
 def workspace_clear_person(
     body: PersonClear,
+    request: Request,
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     via = _workspace_writer(ctx, auth, body.via, probe_admin=True)
     _probe_admin_limit(ctx, auth, body.email, None)
-    return _clear_person(ctx, tenant_id=tenant_id, by=auth.email, via=via, body=body)
+    return _clear_person(request, ctx, tenant_id=tenant_id, group=auth.tenant_principal,
+                         by=auth.email, via=via, body=body)
 
 
 @router.put("/v1/workspace/roles/default")
@@ -292,11 +388,12 @@ def admin_workspace_roles(
 def admin_set_person(
     tenant_id: str,
     body: PersonRole,
+    request: Request,
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     group = _registered(ctx, tenant_id)
-    return _set_person(ctx, tenant_id=tenant_id, group=group, by=auth.email,
+    return _set_person(request, ctx, tenant_id=tenant_id, group=group, by=auth.email,
                        via=roles.VIA_PLATFORM_ADMIN, body=body)
 
 
@@ -304,11 +401,12 @@ def admin_set_person(
 def admin_clear_person(
     tenant_id: str,
     body: PersonClear,
+    request: Request,
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    _registered(ctx, tenant_id)
-    return _clear_person(ctx, tenant_id=tenant_id, by=auth.email,
+    group = _registered(ctx, tenant_id)
+    return _clear_person(request, ctx, tenant_id=tenant_id, group=group, by=auth.email,
                          via=roles.VIA_PLATFORM_ADMIN, body=body)
 
 

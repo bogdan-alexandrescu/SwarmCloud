@@ -516,6 +516,9 @@ NOT_SWITCHABLE_CODES = frozenset({
     # Continuing past any of them is the breach itself: a service account
     # writing a membership grant, a `removed` grant over a membership nobody
     # held, or a workspace's last admin walking out and leaving it none.
+    # `workspace_leave_last_admin` also gates removal and the roles routes'
+    # demotions (issue 47, routes/last_admin.py), which the owner asked to be
+    # refused: a switch that let them through would be the same breach.
     "workspace_leave_person_only",
     "workspace_leave_not_member",
     "workspace_leave_last_admin",
