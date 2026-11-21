@@ -319,6 +319,32 @@ def test_a_rejected_code_does_not_tell_the_person_to_re_authenticate(client):
     assert "single-use" in r.json()["message"]
 
 
+def test_a_token_endpoint_that_stalls_is_a_422_naming_it_not_a_500(client, monkeypatch):
+    """Issue 53: urllib raises a read timeout as a bare TimeoutError, not a
+    URLError, and this route catches only CredentialError -- so a token endpoint
+    that accepted the connection and never answered was a bare 500. The real
+    endpoint, pointed at a listening socket nobody accepts from."""
+    import socket
+    import urllib.request
+
+    from quota_broker.oauth import HttpTokenEndpoint
+
+    real = urllib.request.urlopen
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: real(req, timeout=0.5))
+    state = _begin(client).json()["state"]
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as stalled:
+        stalled.bind(("127.0.0.1", 0))
+        stalled.listen(8)
+        client.app_ref.state.token_endpoint = HttpTokenEndpoint(
+            url=f"http://127.0.0.1:{stalled.getsockname()[1]}/v1/oauth/token"
+        )
+        r = client.post("/v1/accounts/exchange", json={"state": state, "code": "code-abc", "expected_owner": TENANT})
+
+    # MUTATION: no OSError branch in HttpTokenEndpoint.redeem -- 500.
+    assert r.status_code == 422, r.text
+    assert "could not reach the token endpoint" in r.json()["message"]
+
+
 def test_a_failed_exchange_keeps_the_pending_sign_in_so_a_retry_is_one_paste(client):
     """Deleting it on failure would make a mistyped code cost the whole
     sign-in, including logging in again."""
