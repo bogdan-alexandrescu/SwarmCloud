@@ -29,13 +29,14 @@ import pytest
 
 from swarm_api import memberships, roles
 from swarm_api.errors import RoleUnavailable
-from swarm_api.groups import GroupLookupError
+from swarm_api.groups import GroupLookupError, StaticGroups
 from swarm_api.routes.join_requests import membership_store
 
-from .conftest import seed_tenant
+from .conftest import ENG_GROUP, seed_tenant
 from .test_workspace_leave import (  # noqa: F401 - fixtures
     ALICE,
     DAN,
+    GROUPS,
     LEAVE,
     LEE,
     RacingFirestore,
@@ -315,3 +316,127 @@ def test_a_leave_and_a_demotion_of_the_only_two_admins_leave_one(first: str) -> 
         assert not lee_member and dan_admin
     assert [r["detail"]["route"] for r in refused(db)] == [
         "leave" if first == "leave" else "role_set"]
+
+
+# -- a promotion, a stale lowering and a leave ----------------------------------------
+
+@pytest.mark.parametrize("stale", ["demote", "clear", "remove", "leave"])
+def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, stale) -> None:
+    """lee is eng's only admin; dan a member by platform membership. lee's
+    change to dan -- or dan's own leave -- reads dan's role (member, or viewer
+    for the clear) and, before it commits: (1) lee
+    names dan admin, and (3) lee leaves, which is guarded and sees dan as the
+    admin who remains. When the stale change then commits, dan is no longer
+    an admin who can select eng, and eng has none. It must see the guard
+    document change, be retried on dan's new role, and be refused."""
+    db = RacingFirestore()
+    seed_tenant(db, "eng")
+    seed_tenant(db, "research")
+    ctx = build(db)
+    client = serve(ctx)
+    set_role(client, ALICE, "admin")
+    lee_is_the_last_admin(client)
+    grant_member(ctx, DAN)
+    if stale == "clear":
+        set_role(client, DAN, "viewer")
+
+    real = roles.RoleStore.newest_valid
+    armed = [True]
+    between: list[Any] = []
+
+    def newest_valid(self, tenant_id, subject, **kwargs):
+        seen = real(self, tenant_id, subject, **kwargs)
+        if subject == DAN and armed[0]:
+            armed[0] = False
+            between.append(client.put(ROLES, headers=h("lee", "eng"),
+                                      json={"email": DAN, "role": "admin"}))
+            between.append(client.post(LEAVE, headers=h("lee", "eng")))
+        return seen
+
+    monkeypatch.setattr(roles.RoleStore, "newest_valid", newest_valid)
+    if stale == "remove":
+        outcome = remove(client, "lee", DAN)
+    elif stale == "leave":
+        outcome = client.post(LEAVE, headers=h("dan", "eng"))
+    else:
+        outcome = client.request("PUT" if stale == "demote" else "DELETE", ROLES,
+                                 headers=h("lee", "eng"),
+                                 json={"email": DAN, "role": "viewer"} if stale == "demote"
+                                 else {"email": DAN})
+    monkeypatch.setattr(roles.RoleStore, "newest_valid", real)
+    promoted, left = between
+    assert promoted.status_code == 200, promoted.text
+    assert left.status_code == 200, left.text
+    # MUTATION: decide `guarded` before the transaction, or take no guard on
+    # an unguarded lowering -> 200, and eng has no admin who can select it.
+    assert outcome.status_code == 409, outcome.text
+    assert outcome.json()["code"] == LAST
+    assert db.aborts >= 1
+    assert role_of(ctx, DAN) == roles.ADMIN
+    assert membership_store(ctx).read(DAN, fresh=True).newest["eng"].state == memberships.MEMBER
+    assert [r["detail"]["route"] for r in refused(db)] == [
+        {"demote": "role_set", "clear": "role_cleared", "remove": "member_removed",
+         "leave": "leave"}[stale]]
+
+
+# -- a join approval that lowers a stored admin override ------------------------------
+
+def lee_asks(client) -> str:
+    """lee asks to join eng through its link; the request stays open."""
+    response = client.put("/v1/workspace/join-link", headers=h("alice", "eng"), json={"on": True})
+    assert response.status_code == 200, response.text
+    code = response.json()["link"].split("#", 1)[1]
+    response = client.post("/v1/join-requests", headers=h("lee"), json={"code": code})
+    assert response.status_code == 202, response.text
+    return response.json()["ref"]
+
+
+def approve(client, ref: str):
+    return client.post(f"/v1/admin/join-requests/{ref}/approve", headers=h("ops"), json={})
+
+
+def test_an_approval_cannot_lower_the_last_admin_who_selects_the_workspace(client, ctx,
+                                                                           db) -> None:
+    """lee asked to join; while the request was open, eng's group took lee in
+    and a platform admin named lee admin, and alice's admin was cleared. lee
+    is now eng's only admin who can select it: an approval at the default
+    (member) would clear that override and leave eng with none."""
+    ref = lee_asks(client)
+    client.app.state.workspace_directory = StaticGroups({**GROUPS, LEE: (ENG_GROUP,)})
+    set_role(client, LEE, "admin")
+    set_role(client, ALICE, None)
+    before = grants(db)
+    response = approve(client, ref)
+    # MUTATION: write the approval's role change with no guard -> 200, no admin left.
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == LAST
+    assert grants(db) == before
+    assert role_of(ctx, LEE) == roles.ADMIN
+    assert [r["detail"]["route"] for r in refused(db)] == ["join_approved"]
+
+
+def test_an_approval_lowers_an_admin_named_ahead_who_cannot_select_yet(client, ctx,
+                                                                       db) -> None:
+    """An admin named before they joined is no admin who can select eng: an
+    approval at the default clears the override even when eng has no other
+    admin (alice's is cleared straight in the store: the route would refuse,
+    lee not counting)."""
+    ref = lee_asks(client)
+    set_role(client, LEE, "admin")
+    ctx.roles.write(tenant_id="eng", subject=ALICE, role=None, by="ops@example.com",
+                    via="console", reason="", action=roles.AUDIT_CLEARED, detail={},
+                    previous=ctx.roles.newest_valid("eng", ALICE, fresh=True))
+    response = approve(client, ref)
+    assert response.status_code == 200, response.text
+    assert role_of(ctx, LEE) is None
+    assert not refused(db)
+
+
+def test_a_refusal_is_served_in_the_workspace_role_events(client, ctx, db) -> None:
+    """The People page labels `workspace_last_admin_refused`; `RoleStore.audit`
+    must serve the row for it to be shown."""
+    lee_is_the_last_admin(client)
+    response = remove(client, "lee", LEE)
+    assert response.status_code == 409, response.text
+    # MUTATION: leave the action off WORKSPACE_AUDIT_ACTIONS -> the row is never shown.
+    assert "workspace_last_admin_refused" in [e["action"] for e in ctx.roles.audit("eng")]
