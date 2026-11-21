@@ -12,7 +12,7 @@ import { read, route, write, type Result } from './fetch'
  *   DELETE /v1/qa-targets/{id}                   delete, with its credential (a workspace admin)
  *   POST   /v1/qa-targets/{id}:run               a member starts a run: {environments?, file, browser_tool?, flows_per_step?}
  *   POST   /v1/qa-targets/{id}:discover          a member starts its discovery (§4.1, lane QA-DISCOVER)
- *   POST   /v1/qa-targets/{id}:approve-host      a PLATFORM admin approves the host: {host, extra_origin?, idp_token_path?} (VQ-Q1, audited; QA-IDP-POST)
+ *   POST   /v1/qa-targets/{id}:approve-host      a PLATFORM admin approves the host: {host, extra_origin?, extra_origins?, idp_token_path?, environment?} (VQ-Q1, audited; QA-IDP-POST)
  *   POST   /v1/qa-targets/{id}/credential-links  a one-time link to the credential form (an admin): {environment?}
  *   PUT    /v1/qa-targets/{id}/credential        the form's write, with the link's token
  *   PUT    /v1/qa-targets/{id}/challenge-bypass  its challenge bypass's value (a workspace admin, §2.5)
@@ -145,6 +145,10 @@ export interface QaEnvironment {
   /** The one IdP path the gate lets a POST through to after this leg's sign-in (QA-IDP-POST). */
   approved_idp_token_path: string | null
   extra_origin: string | null
+  /** The leg's other `https://host[:port]` origins its pages use, beside `sign_in` (empty for none). */
+  extra_origins: string[]
+  /** The origins its approval covers, as served, the base first (empty when none is approved). */
+  approved_origins: string[]
   sign_in: QaSignIn
   credential: QaCredentialStatus
   challenge_bypass: QaChallengeBypass | null
@@ -153,7 +157,7 @@ export interface QaEnvironment {
   entry_query: string | null
   /**
    * The entry's registration fields as served (`_entry_api`: name, base_url,
-   * environment, sign_in, read_posts, rate, challenge_bypass, entry_query), so
+   * environment, sign_in, extra_origins, read_posts, rate, challenge_bypass, entry_query), so
    * a change of one leg's field sends every entry back whole; null for the
    * one-origin shape.
    */
@@ -179,6 +183,10 @@ export interface QaTarget {
   /** The registration's repository URL, `https://github.com/<owner>/<repo>`. */
   repository: string | null
   sign_in: QaSignIn
+  /** A one-origin target's extra origins (a target of entries keeps them per entry); empty for none. */
+  extra_origins: string[]
+  /** The origins its approval covers, as served, the base first. */
+  approved_origins: string[]
   credential: QaCredentialStatus
   /** Its challenge bypass, or null when it has none (§2.5). */
   challenge_bypass: QaChallengeBypass | null
@@ -223,6 +231,8 @@ export interface QaTargetBody {
   challenge_bypass?: QaChallengeBypass | null
   /** A one-origin target's entry query; null on a change removes it. */
   entry_query?: string | null
+  /** A one-origin target's extra origins; null on a change removes them. */
+  extra_origins?: string[] | null
   /** A target of entries: every entry, whole, each with its `entry_query`. */
   environments?: Record<string, unknown>[]
 }
@@ -265,6 +275,8 @@ export interface QaLink {
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? v : null)
 const rec = (v: unknown): Record<string, unknown> => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {})
+/** A list of strings as served: its non-empty strings, in order; anything else is none. */
+const strs = (v: unknown): string[] => (Array.isArray(v) ? v.flatMap((x) => str(x) ?? []) : [])
 
 function normSignIn(raw: unknown): QaSignIn {
   const s = rec(raw)
@@ -339,7 +351,7 @@ function normHostState(state: unknown): HostState | null {
 }
 
 /** `qatargets._ENTRY_KEYS`: what an entry of `environments` registers with. */
-const ENTRY_SPEC_FIELDS = ['name', 'base_url', 'environment', 'sign_in', 'read_posts', 'rate', 'challenge_bypass', 'entry_query'] as const
+const ENTRY_SPEC_FIELDS = ['name', 'base_url', 'environment', 'sign_in', 'extra_origins', 'read_posts', 'rate', 'challenge_bypass', 'entry_query'] as const
 
 /** One served entry, field by field: its credential and bypass as status only. */
 function normEnvironment(raw: unknown): QaEnvironment | null {
@@ -357,6 +369,8 @@ function normEnvironment(raw: unknown): QaEnvironment | null {
     approved_at: str(e.approved_at),
     approved_idp_token_path: str(e.approved_idp_token_path),
     extra_origin: signIn.extra_origin,
+    extra_origins: strs(e.extra_origins),
+    approved_origins: strs(e.approved_origins),
     sign_in: signIn,
     credential: normCredential(e.credential),
     challenge_bypass: normBypass(e.challenge_bypass),
@@ -397,6 +411,8 @@ export function normQaTarget(raw: unknown): QaTarget | null {
     repo_id: str(t.repo_id),
     repository: str(t.repository),
     sign_in: normSignIn(t.sign_in),
+    extra_origins: strs(t.extra_origins),
+    approved_origins: strs(t.approved_origins),
     credential: normCredential(t.credential),
     challenge_bypass: normBypass(t.challenge_bypass),
     challenge_bypass_value: normCredential(t.challenge_bypass_value),
@@ -435,6 +451,8 @@ export function legsOf(t: QaTarget): QaEnvironment[] {
       approved_at: t.approved_at,
       approved_idp_token_path: t.approved_idp_token_path,
       extra_origin: t.sign_in.extra_origin,
+      extra_origins: t.extra_origins,
+      approved_origins: t.approved_origins,
       sign_in: t.sign_in,
       credential: t.credential,
       challenge_bypass: t.challenge_bypass,
@@ -627,9 +645,11 @@ export async function discoverQaTarget(id: string, environment: string | null = 
 }
 
 /**
- * A platform admin's approval of one leg's host they typed (§1.2, VQ-Q1), and the
- * login's extra origin only when the target declares one: the API approves
- * an origin only when it is named. The answer is the target as it now is.
+ * A platform admin's approval of one leg's host they typed (§1.2, VQ-Q1), the
+ * login's extra origin only when the target declares one, and the ones of the
+ * leg's declared `extra_origins` the admin ticked (sent only when any is): the
+ * API approves an origin only when it is named. The answer is the target as
+ * it now is.
  */
 export async function approveQaTargetHost(
   id: string,
@@ -637,11 +657,13 @@ export async function approveQaTargetHost(
   extraOrigin: string | null,
   idpTokenPath: string | null = null,
   environment: string | null = null,
+  extraOrigins: string[] = [],
 ): Promise<Result<QaTarget | null>> {
-  const body: { host: string; extra_origin?: string; idp_token_path?: string; environment?: string } = { host }
+  const body: { host: string; extra_origin?: string; extra_origins?: string[]; idp_token_path?: string; environment?: string } = { host }
   // The entry whose host this is (§1.3, `ApproveBody.environment`); none for the one-origin shape.
   if (environment !== null) body.environment = environment
   if (extraOrigin !== null) body.extra_origin = extraOrigin
+  if (extraOrigins.length > 0) body.extra_origins = [...extraOrigins]
   // QA-IDP-POST: only with the extra origin it is on; the API refuses it otherwise.
   if (extraOrigin !== null && idpTokenPath !== null) body.idp_token_path = idpTokenPath
   const r = await write(route('/v1/qa-targets/{target_id}:approve-host', { target_id: id }), 'POST', body)

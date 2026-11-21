@@ -79,7 +79,7 @@ entry:
 
 | on the target (the app's, shared by every environment) | in each `environments[]` entry (one leg) |
 |---|---|
-| `name`, `repository`, `authorized_by`/`attested_at`, `screens`, `discover`, `flows`, `flows_browser_tool`, `widths`, `themes`, `exclusions`, `design_docs`, `file`, `clock` | `name` (a short label, `[a-z0-9-]{1,20}`, unique in the target: `staging`, `production`), `base_url` (and so `host`, `origin`), `environment` mark (`production` \| `non_production`), `sign_in` (`login_path`, selectors, `signed_in_selector`, `start_clicks`, `extra_origin`), `credential` status, `challenge_bypass` spec and `challenge_bypass_value` status, `host_state`/`approved_origins`/`approved_by`/`approved_at`, `read_posts`, `rate` (optional; slower only, the 1 s floor held), `discovered` and `discovering` (§5) |
+| `name`, `repository`, `authorized_by`/`attested_at`, `screens`, `discover`, `flows`, `flows_browser_tool`, `widths`, `themes`, `exclusions`, `design_docs`, `file`, `clock` | `name` (a short label, `[a-z0-9-]{1,20}`, unique in the target: `staging`, `production`), `base_url` (and so `host`, `origin`), `environment` mark (`production` \| `non_production`), `sign_in` (`login_path`, selectors, `signed_in_selector`, `start_clicks`, `extra_origin`), `extra_origins` (the leg's other origins, an API host among them), `credential` status, `challenge_bypass` spec and `challenge_bypass_value` status, `host_state`/`approved_origins`/`approved_by`/`approved_at`, `read_posts`, `rate` (optional; slower only, the 1 s floor held), `discovered` and `discovering` (§5) |
 
 Why this split: the routes, flows, exclusions and filing rules describe the
 **app**, and a route found on staging is a route production will have once it
@@ -127,6 +127,23 @@ host or `extra_origin` sets **that entry** back to `pending` and removes
 per entry). Two entries on the same host are two approvals: the approval is
 of a leg (its origins, its write rule), not of a hostname. Under (b) and (c)
 nothing changes.
+
+**A leg's extra origins** (the ledger's 'QA target extra origins' item). One
+`extra_origin` was not enough for an app whose API is served from another
+host: the gate refused it after sign-in. An entry (or a one-origin target,
+beside `sign_in`) declares `extra_origins`, each `https://host[:port]` held
+to the base host rule, none twice and none its base origin or the login's,
+and its origins besides the base one total at most three, so the gate's
+four (`MAX_ORIGINS`) is kept. `:approve-host` takes `extra_origins`, the
+declared ones the admin names; an origin the entry does not declare is a
+409 and only the named ones are approved, listed whole in the audit row. The
+served `origins` are exactly that approved list (base, the login's when
+named, then the named extra origins in declaration order), and the IdP token
+path rides on the login's origin only while it is approved, never on the
+list's length. A change of an entry's `extra_origins` resets **that entry**
+as a change of its host does, its bypass value removed first. Why per leg:
+staging and production commonly call different API hosts, and an approval
+of one leg's API host must never open the other's.
 
 ### 1.4 The credential secret: still one secret per tenant, no IAM change
 

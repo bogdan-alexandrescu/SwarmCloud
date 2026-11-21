@@ -647,6 +647,7 @@ LEG_FIELDS = (
     "challenge_bypass_value", "entry_query", "host_state", "approved_origins", "approved_by", "approved_at",
     "approved_idp_token_path", "read_posts", "rate", "discovered", "discovered_at", "discovered_by",
     "discovered_workflow", "discovered_new", "discovery_error", "discovering", "legacy_map_key",
+    "extra_origins",
 )
 #: The leg's name in a view `leg` makes; never stored.
 LEG_NAME = "environment_name"
@@ -705,7 +706,7 @@ def _leg_origins(entry: Mapping[str, Any]) -> set[str]:
     origin here: read as two, they would let a write permission through."""
     origins: set[str] = set()
     for raw in (*(entry.get("approved_origins") or []), entry.get("origin"), entry.get("base_url"),
-                (entry.get("sign_in") or {}).get("extra_origin")):
+                (entry.get("sign_in") or {}).get("extra_origin"), *(entry.get("extra_origins") or [])):
         if isinstance(raw, str) and raw.lower().startswith("https://"):
             origin = _origin(raw).lower()
             origins.add(origin[:-len(":443")] if origin.endswith(":443") else origin)
