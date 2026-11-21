@@ -20,6 +20,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 
+/** The words a reader sees with every (i) shut: `visible` less the tips' text (`data-help-description`). */
+const shown = (el: Element | null) => {
+  const copy = el?.cloneNode(true) as Element | undefined
+  copy?.querySelectorAll('[data-help-description]').forEach((n) => n.remove())
+  return visible(copy ?? null)
+}
+
 type Json = Record<string, unknown>
 
 // Documentation addresses (RFC 5737): never a real NAT.
@@ -114,7 +121,23 @@ describe('Config › MCP servers', () => {
     await screen.findByRole('table', { name: /registered mcp servers/i })
     expect(screen.queryByRole('form', { name: /register an mcp server/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^(enable|disable|edit)\b/i })).toBeNull()
-    expect(visible(document.body)).toMatch(/only a platform admin/i)
+    // One short line drawn; who may change them is behind its (i) (issue 81).
+    expect(shown(document.body)).toMatch(/Read only\./)
+    expect(shown(document.body)).not.toMatch(/only a platform admin can register/i)
+    expect(visible(document.body)).toMatch(/only a platform admin can register or change/i)
+  })
+
+  it('keeps its intro behind the (i) beside the title, not drawn as a paragraph (issue 81)', async () => {
+    api(list({ canManage: true }))
+    const { McpServersScreen } = await load()
+    render(<McpServersScreen />)
+    await screen.findByRole('table', { name: /registered mcp servers/i })
+    // MUTATION: put the 57-word intro back as a `.pk-lead` paragraph -> red.
+    expect(document.querySelector('.pk-lead')).toBeNull()
+    expect(shown(document.body)).not.toMatch(/may call during its run/)
+    const info = screen.getByRole('button', { name: 'About MCP servers' })
+    expect(info.closest('.c-phead')).not.toBeNull()
+    expect(visible(info.parentElement)).toContain('SwarmCloud never calls a registered URL itself')
   })
 
   it('offers the register form and the enable/disable control to a manager', async () => {
