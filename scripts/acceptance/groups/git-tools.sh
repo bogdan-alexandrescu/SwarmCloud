@@ -32,7 +32,10 @@
 # document, git-calls audit and two artifacts are saved under one directory,
 # and tests/acceptance/test_runner_git_tools.py judges it, one JSON line per
 # check, reported here in this file's order. The prompts are the Python's
-# too, so what a task is asked and what is read back are written once.
+# too, so what a task is asked and what is read back are written once. The
+# agents run the tools as `python3 -m agent_worker.gitmcp <tool>` in Bash:
+# none of these steps is handed the swarm-git MCP server
+# (agent_worker.stepservers; docs/acceptance.md, "git-tools").
 #
 # THE PULL REQUEST'S CONTENT ON GITHUB -- its head contains main, and
 # planted.txt holds the resolution -- is read where a sandbox token is:
@@ -87,8 +90,16 @@ _gt_choose_read() {
   pick="$(jq -c --arg s "${ACC_GITHUB_REPO}" '
     [.repositories[]? | select(.readable_by_tasks == true)]
     | (map(select((.repository // "" | ascii_downcase) == ($s | ascii_downcase))) + .)[0] // empty' "${listed}")"
+  # None listed is a DEPLOYMENT SETTING, not a defect: the SKIP names the
+  # exact call a platform admin makes, for the sandbox, with its repo_id when
+  # it is registered (docs/acceptance.md, "git-tools", read_private).
   if [[ -z "${pick}" ]]; then
-    jq -nc --arg t "${ACC_TENANT}" '{skip: ("no repository registered in tenant " + $t + " is readable_by_tasks; a platform admin sets it with PATCH /v1/repositories/{id} (docs/runner-git-tools.md 2.3)")}' >"${dir}/read.json"
+    jq -nc --arg t "${ACC_TENANT}" --arg s "${ACC_GITHUB_REPO}" --slurpfile l "${listed}" '
+      ([$l[0].repositories[]? | select((.repository // "" | ascii_downcase) == ($s | ascii_downcase))][0].repo_id // "") as $id
+      | {skip: ("no repository registered in tenant " + $t + " is readable_by_tasks. To measure it, a platform admin, with X-Swarm-Tenant: " + $t + ", "
+          + (if $id == "" then "registers the sandbox (POST /v1/repositories {\"repository\": \"" + $s + "\"}), then sends PATCH /v1/repositories/<its repo_id>"
+             else "sends PATCH /v1/repositories/" + $id + " (the sandbox " + $s + ")" end)
+          + " with {\"readable_by_tasks\": true} (docs/runner-git-tools.md 2.3; docs/acceptance.md, git-tools)")}' >"${dir}/read.json"
     return 0
   fi
   if [[ "$(jq -r '.repository | ascii_downcase' <<<"${pick}")" == "$(printf '%s' "${ACC_GITHUB_REPO}" | tr '[:upper:]' '[:lower:]')" ]]; then
