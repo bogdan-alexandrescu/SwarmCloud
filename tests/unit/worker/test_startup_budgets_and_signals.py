@@ -250,7 +250,7 @@ def test_a_sigterm_once_the_runner_exists_still_stops_it_and_parks(db, worker_fa
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             child = worker._child
-            if child is not None and child.poll() is None and child.elapsed_seconds > 0.5:
+            if child is not None and child.poll() is None and (child.elapsed_seconds or 0.0) > 0.5:
                 _deliver_sigterm()
                 fired.set()
                 return
