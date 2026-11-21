@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 
 import pytest
 
@@ -47,6 +46,7 @@ from agent_worker.logs import build_logger
 from agent_worker.procman import ChildProcess
 from swarm_common.states import EventType
 
+from virtual_clock import FLOAT_SLACK, VirtualClock, count_beats
 from worker_seeds import seed_attempt
 import fakes
 from test_account_hot_swap import FakeBroker, _run, cli  # noqa: F401 - `cli` is a fixture
@@ -164,32 +164,22 @@ def test_a_heartbeat_retries_for_no_longer_than_one_beat_interval():
 # ---------------------------------------------------------------------------
 
 
-def _count_beats(worker):
-    beats: list[float] = []
-    real = worker._heartbeat
-
-    def counted():
-        beats.append(time.monotonic())
-        return real()
-
-    worker._heartbeat = counted  # type: ignore[method-assign]
-    return beats
-
-
 def test_the_first_beat_during_a_checkpoint_is_due_from_the_last_beat(db, worker_factory):
     """The loop beats at t0 and starts a checkpoint 1.4 s later, on a 2 s beat.
     The thread's first beat is due at t0 + 2 s. It used to wait 2 s from its
-    own start -- t0 + 3.4 s, 1.7 intervals of silence."""
+    own start -- t0 + 3.4 s, 1.7 intervals of silence. On the virtual clock
+    the first beat lands at t0 + 2 s exactly."""
     seed_attempt(db, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
     worker, _, _ = worker_factory(heartbeat_interval_seconds=2)
-    last = time.monotonic()
+    clock = VirtualClock().install(worker)
+    last = clock.now
     worker._heartbeat()
-    beats = _count_beats(worker)
-    time.sleep(1.4)
+    beats = count_beats(worker, clock)
+    clock.advance(1.4)
     with worker._heartbeat_meanwhile("checkpoint (test)"):
-        time.sleep(2.2)
+        clock.advance(2.2)
     assert beats, "no beat at all while the block ran"
-    assert beats[0] - last <= 2.0 + 0.4, (
+    assert beats[0] - last <= 2.0 + FLOAT_SLACK, (
         f"the first beat came {beats[0] - last:.2f} s after the last one, on a 2 s beat"
     )
 
@@ -206,6 +196,7 @@ def test_a_beat_that_cannot_reach_the_control_plane_does_not_end_the_beating(
 
     seed_attempt(db, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
     worker, _, _ = worker_factory(heartbeat_interval_seconds=1)
+    clock = VirtualClock().install(worker)
     real = worker.control.heartbeat
     calls: list[str] = []
 
@@ -219,7 +210,7 @@ def test_a_beat_that_cannot_reach_the_control_plane_does_not_end_the_beating(
     worker.control.heartbeat = flaky  # type: ignore[method-assign]
     before = db.doc("leases/lease_1").get("heartbeat_at")
     with worker._heartbeat_meanwhile("checkpoint (test)"):
-        time.sleep(3.6)
+        clock.advance(3.6)
     assert calls[:3] == ["unreachable", "unreachable", "landed"], calls
     assert db.doc("leases/lease_1").get("heartbeat_at") != before
 
@@ -233,12 +224,13 @@ def test_a_beat_that_cannot_reach_the_control_plane_does_not_end_the_beating(
 def test_the_lease_is_heartbeaten_through_the_whole_checkpoint(db, worker_factory, slow_call):
     """The owner check, the start event and the pointer's transaction are
     Firestore calls with budgets of 30-60 s each, and they ran with nothing
-    beating. Each is held here for 2.5 beat intervals; the lease's
-    `heartbeat_at` must move while it is."""
+    beating. Each is held here for 2.5 beat intervals of the virtual clock;
+    the lease's `heartbeat_at` must move while it is."""
     seed_attempt(db, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
     worker, _, _ = worker_factory(
         heartbeat_interval_seconds=1, checkpoint_interval_seconds=60, control_poll_seconds=60,
     )
+    clock = VirtualClock().install(worker)
     real = getattr(worker.control, slow_call)
     seen: list[tuple[object, object]] = []
 
@@ -246,7 +238,7 @@ def test_the_lease_is_heartbeaten_through_the_whole_checkpoint(db, worker_factor
         is_checkpoint_call = slow_call != "emit" or args[0] == EventType.CHECKPOINT_STARTED
         if is_checkpoint_call and not seen:
             before = db.doc("leases/lease_1").get("heartbeat_at")
-            time.sleep(2.5)
+            clock.advance(2.5)
             seen.append((before, db.doc("leases/lease_1").get("heartbeat_at")))
         return real(*args, **kwargs)
 
@@ -346,23 +338,24 @@ def test_the_runner_niceness_defaults_to_ten_and_is_bounded(monkeypatch):
 
 
 def test_the_lease_is_heartbeaten_while_the_live_log_tails_upload(db, worker_factory):
-    """The first publish of the live tails is held for 2.5 beat intervals (the
-    mock runner flushes nothing to stdout before it exits, so the publisher is
-    held rather than one upload); the lease's `heartbeat_at` must move while it
-    is. The checkpoint and the control poll are pushed past the run, so nothing
+    """The first publish of the live tails is held for 2.5 beat intervals of
+    the virtual clock (the mock runner flushes nothing to stdout before it
+    exits, so the publisher is held rather than one upload); the lease's
+    `heartbeat_at` must move while it is. The checkpoint and the control poll are pushed past the run, so nothing
     else can beat meanwhile."""
     seed_attempt(db, task_input={"prompt": "x", "steps": 2, "sleep_seconds": 4})
     worker, _, _ = worker_factory(
         heartbeat_interval_seconds=1, checkpoint_interval_seconds=60,
         control_poll_seconds=60, live_log_interval_seconds=1,
     )
+    clock = VirtualClock().install(worker)
     real = worker._publish_live_logs
     seen: list[tuple[object, object]] = []
 
     def slow():
         if not seen:
             before = db.doc("leases/lease_1").get("heartbeat_at")
-            time.sleep(2.5)
+            clock.advance(2.5)
             seen.append((before, db.doc("leases/lease_1").get("heartbeat_at")))
         return real()
 
@@ -379,20 +372,27 @@ def test_the_lease_is_heartbeaten_while_the_account_broker_answers(
     db, worker_factory, tmp_path, cli, log_stream
 ):
     """The hold-status read at the agent's first turn boundary is held for 2.5
-    beat intervals; the lease's `heartbeat_at` must move while it is. The
-    broker then answers `drain`, so the run swaps and finishes."""
+    beat intervals of the virtual clock; the lease's `heartbeat_at` must move
+    while it is. The broker then answers `drain`, so the run swaps and
+    finishes."""
     seen: list[tuple[object, object]] = []
+    clock = VirtualClock()
+
+    def factory(**kwargs):
+        worker, config, exporter = worker_factory(**kwargs)
+        clock.install(worker)
+        return worker, config, exporter
 
     class SlowBroker(FakeBroker):
         def hold_status(self, assignment, **_kw):
             if not seen:
                 before = db.doc("leases/lease_1").get("heartbeat_at")
-                time.sleep(2.5)
+                clock.advance(2.5)
                 seen.append((before, db.doc("leases/lease_1").get("heartbeat_at")))
             return super().hold_status(assignment)
 
     code, _worker, _runs, _tokens, _sessions = _run(
-        db, worker_factory, tmp_path, SlowBroker(move="drain"), modes=["turns", "finish"],
+        db, factory, tmp_path, SlowBroker(move="drain"), modes=["turns", "finish"],
         heartbeat_interval_seconds=1, checkpoint_interval_seconds=60, control_poll_seconds=60,
     )
     assert code == ExitCode.OK, log_stream.getvalue()[-3000:]
