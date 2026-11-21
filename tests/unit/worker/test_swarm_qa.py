@@ -328,6 +328,12 @@ class FakePage:
         # for a page whose every shot is the viewport's size, 3x2.
         self.first_shot = None
         self.fresh = False
+        # True: `document.fonts.ready` never resolves, so FONTS_READY_JS
+        # answers false once its cap (the argument) has passed on the page's
+        # clock; False: the fonts are ready at once.
+        self.fonts_never = False
+        # The cap each FONTS_READY_JS was evaluated with.
+        self.fonts_caps = []
         # (width, height) of every screenshot (run 5b's admin phone shots,
         # 394x852 against the reading); None is first_shot's rule.
         self.every_shot = None
@@ -414,6 +420,10 @@ class FakePage:
         if expression == getattr(self.qa, "LINKS_JS", None):
             return list(self.links.get(self._path(), []))
         if expression == self.qa.FONTS_READY_JS:
+            self.fonts_caps.append(arg)
+            if self.fonts_never:
+                self.elapsed += arg
+                return False
             return True
         # QA-SHOT-MASK: a page whose text the gate scrubbed of nothing, so
         # nothing is masked (test_swarm_qa_shot_mask drives the mask).
@@ -2335,3 +2345,73 @@ def test_a_page_taller_than_the_bound_is_marked_truncated_with_its_height(qa, wo
     # MUTATION: keep the verdict line's bare count and the cut page is not named there.
     assert verdict["truncated"] == 1
     assert verdict["truncated_pages"] == [f"runs phone-390 light: {qa.MAX_SEGMENTS} segments of {total} px"]
+
+
+# --------------------------------------------------------------------------
+# document.fonts.ready is waited for up to FONTS_READY_CAP_MS, never forever
+# --------------------------------------------------------------------------
+
+_FONTS_PROGRAM = r"""
+const spec = JSON.parse(process.argv[1]);
+globalThis.document = { fonts: { ready: spec.never ? new Promise(() => {}) : Promise.resolve() } };
+const fn = (0, eval)('(' + process.argv[2] + ')');
+const started = Date.now();
+Promise.resolve(fn(spec.cap)).then((v) => process.stdout.write(JSON.stringify([v, Date.now() - started])));
+"""
+
+
+def _run_fonts_js(qa, *, never: bool, cap: int) -> list:
+    done = subprocess.run([_node(), "-e", _FONTS_PROGRAM, json.dumps({"never": never, "cap": cap}),
+                           qa.FONTS_READY_JS], capture_output=True, text=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_the_font_cap_is_a_few_seconds(qa):
+    # MUTATION: a cap of minutes is no cap; one under a second shoots every
+    # route before its web font has loaded.
+    assert 1_000 <= qa.FONTS_READY_CAP_MS <= 10_000
+
+
+def test_fonts_that_never_settle_stop_the_wait_at_its_cap_in_a_page(qa):
+    settled, took = _run_fonts_js(qa, never=True, cap=200)
+    # MUTATION: wait on document.fonts.ready alone and node answers nothing
+    # (the promise never settles), so this fails instead of hanging.
+    assert settled is False
+    assert 150 <= took < 5_000, took
+
+
+def test_fonts_that_settle_at_once_answer_true_without_waiting_for_the_cap_in_a_page(qa):
+    settled, took = _run_fonts_js(qa, never=False, cap=5_000)
+    assert settled is True
+    # MUTATION: wait out the cap whatever the fonts did and every route pays it.
+    assert took < 2_000, took
+
+
+def test_a_route_whose_fonts_never_settle_is_captured_with_a_note(qa, world):
+    _one_route(world)
+    world.page.fonts_never = True
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    manifest = _manifest(bundle)
+    # MUTATION: fail the route when the cap is hit and it is listed in `failed`.
+    (entry,) = manifest["routes"]
+    assert manifest["failed"] == []
+    assert entry["status"] == "captured" and entry["images"], entry
+    # MUTATION: evaluate without the cap and the page waits on fonts forever.
+    assert world.page.fonts_caps == [qa.FONTS_READY_CAP_MS]
+    # MUTATION: drop the record and a reviewer cannot tell the frame may show fallback fonts.
+    assert entry["fonts_settled"] is False
+    assert len(entry["notes"]) == 1 and "fonts had not settled" in entry["notes"][0], entry
+    assert "fallback fonts" in entry["notes"][0]
+
+
+def test_a_route_whose_fonts_settle_at_once_carries_no_note(qa, world):
+    _one_route(world)
+    code, _out, bundle = _capture(qa, world, presets="desktop", themes="light")
+    assert code == 0
+    (entry,) = _manifest(bundle)["routes"]
+    assert entry["status"] == "captured"
+    assert entry["fonts_settled"] is True
+    # MUTATION: write the note whatever the fonts did and every route carries it.
+    assert "notes" not in entry, entry
