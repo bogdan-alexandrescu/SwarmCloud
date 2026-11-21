@@ -37,7 +37,9 @@ variable "worker_firestore_access" {
 # keeps its tenant-id key, so the plan destroys the listed binding and touches
 # no other. Every entry must be a key of var.tenants: a name that is not one
 # would plan nothing, and an empty plan for a cutover step reads like one that
-# worked. terraform/infra refuses an entry not yet in state_via_api_tenants.
+# worked. terraform/infra refuses an entry not yet in state_via_api_tenants,
+# unless the tenant is marked runs_no_work (it dispatches no work, so no
+# worker of it reads Firestore at all).
 variable "worker_firestore_off_tenants_iam" {
   description = "Tenant ids (keys of var.tenants) whose worker gets NO swarmTenantWorkerFirestore binding even while worker_firestore_access is true. Default [] = every tenant keeps today's grant."
   type        = list(string)
@@ -80,6 +82,13 @@ variable "tenants" {
     capacity_units = optional(number, 40)
     # Kubernetes service account that assumes this tenant's GSA on Autopilot.
     ksa_name = optional(string, "swarm-agent-worker")
+    # The workspace runs no agents (the roles and join acceptance probes'
+    # workspaces). Read by no resource here, so it plans nothing on its own:
+    # the binding goes only when worker_firestore_access is false or the
+    # tenant is in worker_firestore_off_tenants_iam, exactly as for any other
+    # tenant. terraform/infra reads it to accept either for a tenant not in
+    # state_via_api_tenants. Default false: every tenant unchanged.
+    runs_no_work = optional(bool, false)
   }))
 
   validation {
