@@ -26,6 +26,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+
+/** The words a reader sees with every (i) shut: `visible` less the tips' text (`data-help-description`). */
+const shown = (el: Element | null) => {
+  const copy = el?.cloneNode(true) as Element | undefined
+  copy?.querySelectorAll('[data-help-description]').forEach((n) => n.remove())
+  return visible(copy ?? null)
+}
 import type { CascadeEnv } from './cssgate'
 import { THEMES, painted, resolveColour, tokensIn, type Theme } from './marks'
 import { contrast } from './spaceprobe'
@@ -239,13 +246,16 @@ describe('5b:QA-010: the register form does not say no profile takes MCP servers
     // box is there (under "could not be read") while the read is in flight:
     // wait for the capacity read's own note before reading the group.
     // (Worded for the person since QAFIX6-SETTINGS, 6:overview-automate-019.)
-    await waitFor(() => expect(visible(profilesGroup())).toMatch(/Could not read which runners take MCP servers/))
+    await waitFor(() => expect(shown(profilesGroup())).toMatch(/Runner inputs not read/))
     const box = await within(profilesGroup()).findByRole('checkbox', { name: 'claude-code' })
     expect((box as HTMLInputElement).checked).toBe(false)
     // MUTATION: read a contract with no `inputs` as "declares nothing" (the
     // old `mcpProfiles`) -> no box, and the note says no profile takes MCP servers: red.
     expect(visible(profilesGroup())).not.toMatch(/No profile here takes MCP servers/)
     // MUTATION: drop the unserved note -> the form offers names without saying where they came from: red.
+    expect(shown(profilesGroup())).toMatch(/Runner inputs not read; showing those in use\./)
+    // The whole sentence moved behind the group's (i) (issue 81), not off the page.
+    expect(shown(profilesGroup())).not.toMatch(/offering the ones your servers already use/)
     expect(visible(profilesGroup())).toMatch(/Could not read which runners take MCP servers; offering the ones your servers already use/)
   })
 
@@ -269,9 +279,9 @@ describe('5b:QA-010: the register form does not say no profile takes MCP servers
     // box is there under the in-flight note ("Could not read the runner
     // list"): wait for the read to land before reading the group, or the
     // assertion below races the fetch.
-    await waitFor(() => expect(visible(profilesGroup())).not.toMatch(/Could not read the runner list/))
+    await waitFor(() => expect(visible(profilesGroup())).not.toMatch(/Runner list not read|Could not read the runner list/))
     expect(within(profilesGroup()).queryByRole('checkbox', { name: 'generic' })).toBeNull()
-    expect(visible(profilesGroup())).not.toMatch(/Could not read/)
+    expect(visible(profilesGroup())).not.toMatch(/Could not read|not read/)
   })
 })
 

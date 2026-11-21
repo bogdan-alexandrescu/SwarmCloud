@@ -30,6 +30,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+
+/** The words a reader sees with every (i) shut: `visible` less the tips' text (`data-help-description`). */
+const shown = (el: Element | null) => {
+  const copy = el?.cloneNode(true) as Element | undefined
+  copy?.querySelectorAll('[data-help-description]').forEach((n) => n.remove())
+  return visible(copy ?? null)
+}
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { ALL_CSS } from './sheets'
@@ -330,16 +337,21 @@ describe('g. 6:overview-automate-019: the profile help says what ticking does, a
   it('words the served, unserved and unread cases for the person', async () => {
     await mountMcp(capacity('declared'))
     // MUTATION: keep the old API-facing note -> the person reads about the API: red.
-    await waitFor(() => expect(visible(profilesGroup())).toMatch(/Tick a profile to let only its agents use this server/))
+    await waitFor(() => expect(shown(profilesGroup())).toMatch(/None ticked allows every profile\./))
+    // The how-to is behind the group's (i) (issue 81): reachable, not drawn.
+    expect(shown(profilesGroup())).not.toMatch(/Tick a profile/)
+    expect(visible(profilesGroup())).toMatch(/Tick a profile to let only its agents use this server/)
     cleanup()
 
     await mountMcp(capacity('unserved'))
-    await waitFor(() => expect(visible(profilesGroup())).toMatch(/Could not read which runners take MCP servers; offering the ones your servers already use/))
+    await waitFor(() => expect(shown(profilesGroup())).toMatch(/Runner inputs not read; showing those in use\./))
+    expect(visible(profilesGroup())).toMatch(/Could not read which runners take MCP servers; offering the ones your servers already use/)
     expect(visible(profilesGroup())).not.toMatch(/This API does not say/)
     cleanup()
 
     await mountMcp(null)
-    await waitFor(() => expect(visible(profilesGroup())).toMatch(/Could not read the runner list; offering the ones your servers already use/))
+    await waitFor(() => expect(shown(profilesGroup())).toMatch(/Runner list not read; showing those in use\./))
+    expect(visible(profilesGroup())).toMatch(/Could not read the runner list; offering the ones your servers already use/)
     cleanup()
 
     // Every served contract declares none, yet docs-search names claude-code.
