@@ -53,6 +53,7 @@ import {
   type Report,
 } from './spaceprobe'
 import { expectTwins, reaching, sectionTwins } from './sheetcut'
+import { screenLoaded } from './screenLoaded'
 
 /**
  * Every route the rail can reach, DERIVED rather than restated.
@@ -210,6 +211,7 @@ async function sweep(routes: readonly string[], Shown: typeof App = App): Promis
   for (const route of routes) {
     window.location.hash = `#${route}`
     const { container, unmount } = render(<Shown />)
+    await screenLoaded()
     await settle()
     const snap = container.cloneNode(true) as HTMLElement
     unmount()
