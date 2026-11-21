@@ -30,7 +30,6 @@ import pytest
 from swarm_api import memberships, roles
 from swarm_api.errors import RoleUnavailable
 from swarm_api.groups import GroupLookupError
-from swarm_api.routes import last_admin
 from swarm_api.routes.join_requests import membership_store
 
 from .conftest import seed_tenant
