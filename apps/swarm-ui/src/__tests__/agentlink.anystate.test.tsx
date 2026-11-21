@@ -19,6 +19,7 @@ import { render, waitFor } from '@testing-library/react'
 
 import type { Task, TaskState } from '../types'
 import { task as baseTask } from './runfixture'
+import { screenLoaded } from './screenLoaded'
 
 const PROFILE = 'linkprobe-runner'
 const OTHER = 'task_0ther0running0000000'
@@ -64,6 +65,7 @@ async function openLink(id: string, state: TaskState): Promise<string[]> {
   window.history.replaceState(null, '', `/agents/live/${id}`)
   const { App } = await import('../App')
   render(<App />)
+  await screenLoaded()
   return calls
 }
 
@@ -95,8 +97,10 @@ describe('agent link drawer opens in any state (path /agents/live/<id>)', () => 
       // Read by id, not found among the list's rows.
       const paths = calls.map((c) => new URL(c, 'http://ui.test').pathname)
       expect(paths).toContain(`/v1/tasks/${id}`)
-      // The address still names this agent.
-      expect(window.location.pathname).toBe(`/agents/live/${id}`)
+      // The address still names this agent, under the list its state is in
+      // once the read lands (QA12-26, qa12.routes.tabs.test.tsx): Waiting for
+      // a QUEUED task, Recent for a finished one.
+      await waitFor(() => expect(window.location.pathname).toBe(`/agents/${state === 'QUEUED' ? 'waiting' : 'recent'}/${id}`))
     })
   }
 })

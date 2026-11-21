@@ -23,6 +23,7 @@ import { noteFixtureProbe, route } from '../fetch'
 import type { CascadeEnv } from './cssgate'
 import { build, painted, resolveColour, THEMES, type Theme } from './marks'
 import { contrast } from './spaceprobe'
+import { screenLoaded } from './screenLoaded'
 
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -105,6 +106,7 @@ describe('a11y-keyboard-003: a pinned section card is a named dialog', () => {
     // (owner 2026-10-26), so its section card is not drawn there.
     window.history.replaceState(null, '', '/capacity/runtimes')
     render(<App />)
+    await screenLoaded()
     const glyph = await waitFor(() => screen.getByRole('button', { name: /^Help: .* answers$/ }), WAIT)
     const title = glyph.getAttribute('aria-label')!.replace(/^Help: /, '')
     fireEvent.click(glyph)

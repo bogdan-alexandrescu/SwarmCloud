@@ -53,6 +53,7 @@ import { NEVER_WRITTEN, REAL_STATES, elapsed, timeAgo, type TaskState } from '..
 import { cascade, declarations, flatRules, splitTop, type CascadeEnv } from './cssgate'
 import { task } from './runfixture'
 import { resolveVars, tokenTables } from './spaceprobe'
+import { screenLoaded } from './screenLoaded'
 
 /**
  * Put the SHIPPED stylesheet into the document so `getComputedStyle` answers
@@ -112,6 +113,7 @@ describe('B2: the section question is printed once, not on every pane', () => {
     // is not a section, so it has no section question.
     window.history.replaceState(null, '', '/overview')
     render(<App />)
+    await screenLoaded()
     // By the page's title now (visual QA Q2): the row it sat on is gone.
     const glyph = document.querySelector<HTMLButtonElement>('main.work h1 ~ .ctl-q .ctl-q-glyph')
     expect(glyph, 'the title has no section `?`').not.toBeNull()
@@ -135,12 +137,13 @@ describe('B2: the section question is printed once, not on every pane', () => {
 })
 
 describe('B2: the attempt timeline is a view mode, not a screen', () => {
-  it('is reachable only as a pane of one agent, and the pane strip is there', () => {
+  it('is reachable only as a pane of one agent, and the pane strip is there', async () => {
     // §B2: "AttemptTimeline.tsx stops being a screen and becomes a view mode
     // inside the agent inspector. It answers no question that 'what is
     // running, what did it produce' does not already own."
     window.location.hash = '#work/task/t-1/attempts'
     render(<App />)
+    await screenLoaded()
 
     const drawer = document.querySelector('.ctl-drawer')
     expect(drawer, 'the agent inspector did not open').not.toBeNull()
@@ -203,7 +206,7 @@ describe('B3: the work area, now beside the Sky spine', () => {
 })
 
 describe('B3: the head', () => {
-  it('carries a breadcrumb, and each screen carries its own read age on its refresh control', () => {
+  it('carries a breadcrumb, and each screen carries its own read age on its refresh control', async () => {
     // THE CRUMB IS THE TRAIL TO THE PAGE (archived issue 138): on Overview, a one-page
     // section, the trail is empty -- the `<h1>` names the page -- and on a
     // page inside a section it is the section, as a link.
@@ -223,6 +226,7 @@ describe('B3: the head', () => {
     // refresh control from `Screen`'s head. The page has no age at all.
     window.history.replaceState(null, '', '/capacity/accounts')
     const page = render(<App />)
+    await screenLoaded()
     expect(document.querySelector('.ctl-head'), 'a section page draws the crumb row').toBeNull()
     expect(document.querySelectorAll('.ctl-head-age'), 'the frame drew a second age beside the screen’s').toHaveLength(0)
     expect(
@@ -232,6 +236,7 @@ describe('B3: the head', () => {
     page.unmount()
     window.location.hash = '#work/task/t-1'
     render(<App />)
+    await screenLoaded()
     const head = document.querySelector('.ctl-head')
     expect(head, 'no head region inside an open agent').not.toBeNull()
     expect(head!.querySelector('.ctl-crumb a')?.textContent ?? '').toBe('Work')
