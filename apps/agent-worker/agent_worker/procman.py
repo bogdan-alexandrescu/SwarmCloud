@@ -438,8 +438,15 @@ class ChildProcess:
         return self._proc.pid if self._proc else None
 
     @property
-    def elapsed_seconds(self) -> float:
-        return time.monotonic() - self._started_at if self._started_at else 0.0
+    def elapsed_seconds(self) -> float | None:
+        """Seconds since the child started, or None when it never started.
+
+        None, not 0.0 (issue 56): a 0.0 reads as "ran instantly" and was
+        stored and summed as a measured duration.
+        """
+        if self._proc is None or not self._started_at:
+            return None
+        return time.monotonic() - self._started_at
 
     def poll(self) -> int | None:
         return self._proc.poll() if self._proc else None
@@ -567,7 +574,8 @@ class ChildProcess:
             term_signal=term_signal,
             timed_out=self._timed_out,
             killed=self._killed,
-            duration_seconds=self.elapsed_seconds,
+            # Started, since `_proc` is set: the clock always has a reading.
+            duration_seconds=time.monotonic() - self._started_at,
             stdout_bytes=self._stdout.written,
             stderr_bytes=self._stderr.written,
             stdout_truncated=self._stdout.truncated,
