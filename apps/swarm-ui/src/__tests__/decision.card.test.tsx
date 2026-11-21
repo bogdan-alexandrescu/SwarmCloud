@@ -25,6 +25,7 @@
 // from nothing at all goes red.
 
 import { render, screen, waitFor, within } from '@testing-library/react'
+import { screenLoaded } from './screenLoaded'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentRun, WorkflowRead } from '../api'
@@ -411,6 +412,7 @@ describe("a skipped step's Artifacts tab", () => {
     window.location.hash = `#work/task/${FIX}/artifacts`
     const { App } = await import('../App')
     render(<App />)
+    await screenLoaded()
     const note = await screen.findByTestId('skipped-artifacts')
     expect(note.textContent).toContain('No agent was started')
     expect(note.textContent).toContain('review verdict MERGE')

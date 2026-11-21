@@ -32,6 +32,7 @@ import { cascade, type CascadeEnv, type Declared } from './cssgate'
 import { expandLocal, painted, TABLES } from './marks'
 import { task } from './runfixture'
 import { resolveVars } from './spaceprobe'
+import { screenLoaded } from './screenLoaded'
 
 const PHONE: CascadeEnv = { width: 390 }
 const PHONE_STILL: CascadeEnv = { width: 390, reducedMotion: true }
@@ -50,6 +51,7 @@ afterEach(() => {
 async function at(path: string, Root: typeof App = App): Promise<HTMLElement> {
   window.history.replaceState(null, '', path)
   const { container } = render(<Root />)
+  await screenLoaded()
   await waitFor(() => expect(container.querySelector('.sk-spine .sk-av')?.getAttribute('title')).not.toBe('not read'), { timeout: 5000 })
   return container
 }
@@ -219,7 +221,13 @@ describe("#139 at 390: a section's sticky page strip sits flush under the header
     // top edge already is the header's foot; any `top` past 0 leaves a band
     // of rows scrolling through between the header and the strip, and a
     // second value for the compacted header moves the strip mid-scroll.
-    const c = await at('/agents')
+    // A FRESH APP: an earlier case reset the module registry (`shellAs`), and
+    // the Agents screen loads with its route (React.lazy, issue 79), so under
+    // the file's App it would load against other copies of fetch.ts and api.ts
+    // than the shell around it reads.
+    vi.resetModules()
+    const { App: Fresh } = await import('../App')
+    const c = await at('/agents', Fresh)
     const strip = await waitFor(() => {
       const el = c.querySelector<HTMLElement>('.ag-list-tabs')
       expect(el, 'the Agents page drew no page strip').not.toBeNull()
