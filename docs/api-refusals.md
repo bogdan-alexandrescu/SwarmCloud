@@ -128,12 +128,16 @@ non-decider's approval, a forged request approved). They are raised with
 | `join_workspace_queue_full` | 429 | the workspace already holds the most open requests | only someone holding a working code can reach it, so it reveals nothing |
 | `workspace_leave_person_only` | 403 | `POST /v1/workspace/leave` by a service account, the schedule tick, the rollup sweeper or a listed service account | only a person leaves, and only themselves |
 | `workspace_leave_not_member` | 404 | a person leaving a workspace they hold no platform membership of that still counts for its registered group (the group alone lists them, nothing does, or the group changed since) | there is nothing the platform can end; the group is its admins' to change. Nothing is written |
-| `workspace_leave_last_admin` | 409 | the workspace's only `admin` by override leaving while its group does not hold them there; another admin counts only while their platform membership still counts or a fresh group check finds them | the workspace would have no admin of its own; another admin is named first. Nothing is written |
+| `workspace_leave_last_admin` | 409 | the workspace's only `admin` by override leaving, or being removed (`DELETE /v1/workspace/members/person`, themselves included), while its group does not hold them there; or that admin's override set lower or cleared (`PUT`/`DELETE /v1/workspace/roles/person` and the platform admin's `/v1/admin/workspaces/{tenant_id}/roles/person`). Another admin counts only while their platform membership still counts or a fresh group check finds them; a platform admin never counts | the workspace would have no admin of its own; another admin is named first (naming one is never refused). Nothing is written but a `workspace_last_admin_refused` audit row |
 
 The leave route (§4.4) refuses a personal or service workspace with
 `join_not_offered`, as the membership routes do. Its three codes gate a
 route that did not exist before the owner's decision of 2026-11-20, so they
-have no switch either, for the same reason.
+have no switch either, for the same reason. `workspace_leave_last_admin` has
+since also gated removal and the roles routes' demotions (issue 47), which
+existed before it; it still has no switch, because the owner asked for the
+refusal and letting it through is the breach itself: a workspace left with no
+admin anyone can reach.
 
 Two more answers are 503s, outside the 4xx guard, and never a refusal of the
 person:
