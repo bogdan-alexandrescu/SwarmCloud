@@ -1981,7 +1981,16 @@ class SwarmClient:
                         edge=_is_edge(response.status, raw),
                     ) from exc
         except urllib.error.HTTPError as exc:
-            raw = _read_body(exc).decode("utf-8", errors="replace")
+            try:
+                raw = _read_body(exc).decode("utf-8", errors="replace")
+            except OSError as read_exc:
+                # The error's body times out like any other (issue 53): raised
+                # inside this clause, it would pass the OSError one below.
+                raise SwarmError(
+                    f"{method} {path} -> {exc.code}, and its body could not be read "
+                    f"from {self.base_url}: {read_exc or type(read_exc).__name__}",
+                    status=exc.code,
+                ) from read_exc
             edge = _is_edge(exc.code, raw)
             message = f"{method} {path} -> {exc.code}: {_explain(exc.code, raw)}"
             if edge and exc.code == 401 and self.tier.value == "signed-in":
@@ -2006,6 +2015,14 @@ class SwarmClient:
             raise error from exc
         except urllib.error.URLError as exc:
             raise SwarmError(f"could not reach {self.base_url}: {exc.reason}") from exc
+        except OSError as exc:
+            # urllib wraps only the SEND in URLError: a timeout in
+            # getresponse() or read() is a bare TimeoutError (issue 53), which
+            # skipped every caller's `except SwarmError` fallback.
+            raise SwarmError(
+                f"{method} {path}: no answer from {self.base_url}: "
+                f"{exc or type(exc).__name__}"
+            ) from exc
 
     # -- operations --------------------------------------------------------
     def dispatch(

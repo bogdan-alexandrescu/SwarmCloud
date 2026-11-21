@@ -100,7 +100,11 @@ def _get(client: SwarmClient, uri: str, url: str, *, timeout: int) -> bytes:
         except urllib.error.HTTPError as exc:
             if exc.code == 401 and attempt == 1 and callable(forget) and forget():
                 continue
-            body = exc.read().decode("utf-8", errors="replace")[:300]
+            try:
+                body = exc.read().decode("utf-8", errors="replace")[:300]
+            except OSError:
+                # A body that times out (issue 53) still leaves the status.
+                body = "(the body could not be read)"
             if exc.code == 403:
                 body += (
                     " -- an artifact lives under the TENANT's prefix, so reading it "
@@ -115,6 +119,9 @@ def _get(client: SwarmClient, uri: str, url: str, *, timeout: int) -> bytes:
             raise SwarmError(f"could not read {uri}: {exc.code} {body}", status=exc.code) from exc
         except urllib.error.URLError as exc:
             raise SwarmError(f"could not read {uri}: {exc.reason}") from exc
+        except OSError as exc:
+            # A read timeout is a bare TimeoutError, not a URLError (issue 53).
+            raise SwarmError(f"could not read {uri}: {exc or type(exc).__name__}") from exc
     raise SwarmError(f"could not read {uri}: refused twice")  # pragma: no cover - loop always returns or raises
 
 
