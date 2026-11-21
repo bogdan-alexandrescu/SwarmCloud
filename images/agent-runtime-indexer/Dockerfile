@@ -124,10 +124,26 @@ ARG X_TEXT_VERSION=0.42.0
 # terraform-ls/@v/v<version>.zip | sha256sum`): the module checksum database
 # already verifies those bytes, and this pin makes a raised version a reviewed
 # change to this file, as GO_SHA256 does for the toolchain.
-ARG TERRAFORM_LS_VERSION=0.39.0
-ARG TERRAFORM_LS_SHA256=7ac775b112c025aa426f4ae107b7632e7553270e76f136a7b09cfeff4108dda5
-ARG X_CRYPTO_VERSION=0.57.0
-ARG X_NET_VERSION=0.60.0
+#
+# terraform-ls 0.39.1 (2026-11-21): the dev release was refused at the image
+# scan on CVE-2026-78661 (HIGH, golang.org/x/net/html denial of service,
+# fixed in x/net 0.62.0) in the x/net 0.60.0 terraform-ls linked; its
+# one-week acceptance in .trivyignore.yaml expired on 2026-11-21. 0.39.1's
+# go.mod already requires x/net v0.62.0, x/crypto v0.58.0, x/text v0.43.0 and
+# x/mod v0.42.0 (with x/tools 0.52.0), and x/net 0.62.0's own go.mod requires
+# x/crypto 0.58.0 and x/text 0.43.0, so those are its pins. x/mod and x/text
+# are now raised for terraform-ls by pins of its own, TERRAFORM_LS_X_MOD_VERSION
+# and TERRAFORM_LS_X_TEXT_VERSION: the shared X_MOD_VERSION / X_TEXT_VERSION
+# above stay gopls's (0.41.0 / 0.42.0, what v0.24.0-pre.1 requires), and
+# passing them to terraform-ls would now downgrade it (and x/tools 0.52.0
+# with it) instead of raising it. Every `go` line is 1.26.8 or older (the
+# module's own), under GO_VERSION.
+ARG TERRAFORM_LS_VERSION=0.39.1
+ARG TERRAFORM_LS_SHA256=346fb271323ec8e0606ecfbfac459582e1011ba60a88666bde467c1af5ccbafd
+ARG TERRAFORM_LS_X_MOD_VERSION=0.42.0
+ARG TERRAFORM_LS_X_TEXT_VERSION=0.43.0
+ARG X_CRYPTO_VERSION=0.58.0
+ARG X_NET_VERSION=0.62.0
 
 # EVERY DOWNLOAD HERE RETRIES (2026-10-14, PR 1281's flake table): `curl -fsSL
 # --retry 5 --retry-all-errors --retry-connrefused`, 1+2+4+8+16 s of backoff at
@@ -185,7 +201,7 @@ RUN export PATH="/usr/local/go/bin:${PATH}" GOPATH=/tmp/gopath GOCACHE=/tmp/goca
       "golang.org/x/mod@v${X_MOD_VERSION}" "golang.org/x/text@v${X_TEXT_VERSION}" \
  && three_tries check_module_zip github.com/hashicorp/terraform-ls "${TERRAFORM_LS_VERSION}" "${TERRAFORM_LS_SHA256}" \
  && three_tries build_server github.com/hashicorp/terraform-ls "${TERRAFORM_LS_VERSION}" /usr/local/bin/terraform-ls \
-      "golang.org/x/mod@v${X_MOD_VERSION}" "golang.org/x/text@v${X_TEXT_VERSION}" \
+      "golang.org/x/mod@v${TERRAFORM_LS_X_MOD_VERSION}" "golang.org/x/text@v${TERRAFORM_LS_X_TEXT_VERSION}" \
       "golang.org/x/crypto@v${X_CRYPTO_VERSION}" "golang.org/x/net@v${X_NET_VERSION}" \
  && rm -rf /tmp/src /tmp/gopath /tmp/gocache \
  && /usr/local/bin/gopls version \
