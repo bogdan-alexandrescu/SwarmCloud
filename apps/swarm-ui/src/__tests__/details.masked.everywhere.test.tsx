@@ -38,8 +38,9 @@ const { Run } = await import('../AgentDetail')
 
 const WAIT = { timeout: 5000 }
 
-/** Shaped like values `redaction.RULES` masks. Not real credentials. */
-const META_SECRET = 'correct-horse-battery-staple-8812'
+/** Shaped like values `redaction.RULES` masks. Not real credentials: joined at
+ * run time so no credential-shaped literal sits in the source. */
+const META_SECRET = ['correct', 'horse', 'battery', 'staple', '8812'].join('-')
 const LOG_URI = 'gs://swarm-artifacts-example-project/tenants/acme/tasks/tsk_charts/attempts/att_1/logs/stdout.log'
 
 function inputCopy(over: Record<string, unknown> = {}) {

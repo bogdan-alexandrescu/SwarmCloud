@@ -9,9 +9,14 @@
 # replacement and the public switch, that version scanned every commit the
 # clone could see: every branch, every tag and every pull request head (11,546
 # non-merge commits, and the 481 merges whose resolution differs from the
-# automatic merge). It found 111 findings, and each one is matched here:
-# deliberate fakes in redaction tests, or a public value that only looks like a
-# key. None was a real credential.
+# automatic merge). It found 111 findings, and each one is matched here or, for
+# the console tests' fakes now joined at run time, by fingerprint in
+# .gitleaksignore: deliberate fakes in redaction tests, or a public value that
+# only looks like a key. None was a real credential.
+#
+# tests/unit/scripts/test_gitleaks_allowlist.py holds this allowlist to test
+# fixtures under tests/, to entries that still match a file, to narrow regexes,
+# and to the regexes, stopwords and fingerprints it pins.
 #
 # Why an allowlist of exact paths and not of tests/: a real credential pasted
 # into a NEW test file must still be found. Each file below holds only synthetic
@@ -29,17 +34,9 @@ useDefault = true
 description = "Synthetic credentials in redaction and masking tests, and public values shaped like keys"
 regexTarget = "line"
 paths = [
-  # Redaction and masking tests in the console: fake keys the masks must hide.
-  '''^apps/swarm-ui/src/__tests__/artifacts\.pane\.test\.tsx$''',
-  '''^apps/swarm-ui/src/__tests__/details\.followup\.test\.tsx$''',
-  '''^apps/swarm-ui/src/__tests__/details\.masked\.everywhere\.test\.tsx$''',
-  # A fixture token record's id, not a token.
-  '''^apps/swarm-ui/src/__tests__/repofixture\.ts$''',
-  # Fake question-text digests.
-  '''^apps/swarm-ui/src/__tests__/workflows\.textkey\.test\.ts$''',
-  # The generator of tests/fixtures/redaction-parity.json; it held the same
-  # synthetic cases and is no longer in the tree.
-  '''^scratchpad/wave-0927-redaction-family/gen_fixture\.py$''',
+  # The console's tests (apps/swarm-ui/src/__tests__/) need no entry: their
+  # fakes are joined at run time. Their old literals in the replaced history's
+  # root commit are matched one by one, by fingerprint, in .gitleaksignore.
   # The parity corpus the Python and shell redaction filters both run.
   '''^tests/fixtures/redaction-parity\.json$''',
   # Redaction and masking tests: a synthetic value of each shape the rules
