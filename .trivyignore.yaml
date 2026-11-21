@@ -107,9 +107,19 @@ vulnerabilities:
   # (Google's index, SHA256 matched) is go1.27.3 with x/net v0.61.0; gh
   # 2.104.0 is go1.27.4 with x/net v0.61.0; trivy's newest is 0.76.2, pinned.
   # Both entries below move to 2026-11-21 unchanged; revisit the same way.
+  # REVISITED 2026-11-21 ~00:30Z UTC (owner rule of 2026-11-01: take every
+  # fixed build, extend one week only for what is still unfixed). The release
+  # at 23:40Z was refused once both entries expired. Still unfixed: kubectl's
+  # newest releases are 1.37.2 (x/net v0.57.0) and 1.36.6 (v0.56.0), read from
+  # each tag's go.mod; Google's newest gke-gcloud-auth-plugin, 594.0.0 (its
+  # .deb's SHA256 matched the index), is go1.27.3 with x/net v0.61.0, read with
+  # `go version -m`. gh and trivy were not flagged in that scan. terraform-ls in
+  # the indexer image is fixed at source (0.39.1 links x/net 0.62.0) by its own
+  # pull request. Both entries below move to 2026-11-28, narrowed to kubectl and
+  # the plugin; revisit the same way.
   - id: CVE-2026-78669
     statement: "golang.org/x/net http2 DoS inside vendor-built kubectl (1.36.6 links x/net v0.56.0; the newest release, 1.37.2, v0.57.0); no kubectl release links x/net 0.60.0 yet. The GKE plugin is fixed at 592.0.0."
-    expired_at: 2026-11-21
+    expired_at: 2026-11-28
   # Same class, added the same night (owner, 2026-10-10): the next release after
   # PR 992 was refused on this id alone, in the same vendor binaries and images,
   # fixed by the same Go 1.26.9 / 1.27.2. Same bound: a crafted TLS peer can at
@@ -144,9 +154,19 @@ vulnerabilities:
   # (Google's index, SHA256 matched) is go1.27.3 with x/net v0.61.0; gh
   # 2.104.0 is go1.27.4 with x/net v0.61.0; trivy's newest is 0.76.2, pinned.
   # Both entries below move to 2026-11-21 unchanged; revisit the same way.
+  # REVISITED 2026-11-21 ~00:30Z UTC (owner rule of 2026-11-01: take every
+  # fixed build, extend one week only for what is still unfixed). The release
+  # at 23:40Z was refused once both entries expired. Still unfixed: kubectl's
+  # newest releases are 1.37.2 (x/net v0.57.0) and 1.36.6 (v0.56.0), read from
+  # each tag's go.mod; Google's newest gke-gcloud-auth-plugin, 594.0.0 (its
+  # .deb's SHA256 matched the index), is go1.27.3 with x/net v0.61.0, read with
+  # `go version -m`. gh and trivy were not flagged in that scan. terraform-ls in
+  # the indexer image is fixed at source (0.39.1 links x/net 0.62.0) by its own
+  # pull request. Both entries below move to 2026-11-28, narrowed to kubectl and
+  # the plugin; revisit the same way.
   - id: CVE-2026-78661
-    statement: "golang.org/x/net/html DoS inside vendor-built kubectl, gke-gcloud-auth-plugin, gh and trivy (x/net v0.56.0 to v0.61.0); no vendor build links the fixed 0.62.0 yet."
-    expired_at: 2026-11-21
+    statement: "golang.org/x/net/html DoS inside vendor-built kubectl and gke-gcloud-auth-plugin (x/net v0.56.0 to v0.61.0, plugin 594.0.0 included); no vendor build links the fixed 0.62.0 yet."
+    expired_at: 2026-11-28
   # Same class again (owner, 2026-10-17): golang.org/x/text's precis Nickname
   # profile can panic on an out-of-bounds slice. It is in two vendor-built
   # binaries: kubectl (agent-runtime-base, -nocodex, -browser, -indexer and
