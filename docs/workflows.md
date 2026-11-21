@@ -97,17 +97,18 @@ held to the same rule, and records `description_source: "generated"` so the
 console marks it. It reads the steps' masked briefs and what the spec says
 about its output: the step ids and labels, the title, the strategy (whether
 the steps publish a pull request), the `merge` setting and whether a merge step
-follows. The model switch ships off (`SWARM_WORKFLOW_DESCRIPTION_MODEL = "off"`
-on swarm-api, terraform/infra/locals.tf), so an extract is written: the purpose
-is the first sentence of the first brief, a goal per step (`<step id>: <first
-sentence>`) when there are two or more, and the expected output what the
-strategy and the merge setting publish; each usage row says outcome
-`extractive`. It turns to `"vertex"`, Claude Haiku on Vertex AI (the owner's
-pick, 2026-11-05), once the owner grants swarm-api's account
-`roles/aiplatform.user`, enables `aiplatform.googleapis.com` and accepts
-Anthropic's Model Garden terms; the model answers the three parts as JSON, and
-a call that fails, times out, is refused or answers parts the rule refuses
-falls back to the same extract. With the switch unset (a unit test, a local
+follows. Claude Haiku on Vertex AI (the owner's pick, 2026-11-05) writes them:
+Terraform turns the model on (`SWARM_WORKFLOW_DESCRIPTION_MODEL = "vertex"` on
+swarm-api, terraform/infra/locals.tf), grants swarm-api's account
+`roles/aiplatform.user` and enables `aiplatform.googleapis.com`, and the model
+answers the three parts as JSON. A call that fails, times out, is refused --
+Anthropic's Model Garden terms not yet accepted on the project, which is the
+project owner's to do -- or answers parts the rule refuses falls back to an
+extract: the purpose is the first sentence of the first brief, a goal per step
+(`<step id>: <first sentence>`) when there are two or more, and the expected
+output what the strategy and the merge setting publish; the usage row says
+outcome `extractive:<why>`. Set to `"off"`, only the extract is written, each
+row saying `extractive`. With the switch unset (a unit test, a local
 run) nothing is written: the page shows the title alone, nothing invented.
 Each workflow costs at most one call, recorded with its tokens and outcome in
 one `workflow_description_usage` row (`swarm_api.wfdescription` says why). A

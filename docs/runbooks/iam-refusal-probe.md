@@ -66,7 +66,8 @@ does; a pass says it in the run summary. The probe **never asks for
 
    Expect one line per chunk and nothing else: since the role-chunking change the grant is one
    conditioned binding per chunk of at most 10 roles, because `hasOnly()`
-   refuses a longer list, so the 15 grantable roles (14 until the swarmGithubHooksDedup rollout turned
+   refuses a longer list, so the 16 grantable roles (15 until the Vertex AI descriptions change added
+   `roles/aiplatform.user`, 14 until the swarmGithubHooksDedup rollout turned
    it on, and 15 until the swarmSecretLister removal took it off) read as
    `only the roles terraform infra grants (chunk 1 of 2)` and
    `... (chunk 2 of 2)`. Preflight checks every one of them, not the first. A

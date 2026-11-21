@@ -1043,12 +1043,12 @@ class ApiSettings:
     search_daily_queries_per_tenant: int = 200
 
     # --- generated workflow descriptions (swarm_api.wfdescription, archived issue 2688) ---
-    #: SWARM_WORKFLOW_DESCRIPTION_MODEL: "vertex" asks Claude Haiku on Vertex
-    #: AI; "off" (what Terraform ships, terraform/infra/locals.tf) writes the
-    #: extractive fallback alone; empty, the default here and for a variable
-    #: that is absent (a unit test, a local run), writes nothing. The model is
-    #: off unless this says "vertex": it turns on once the owner grants Vertex
-    #: AI (archived pull request 3346). Any other value is refused at start, not at a submission.
+    #: SWARM_WORKFLOW_DESCRIPTION_MODEL: "vertex" (what Terraform ships,
+    #: terraform/infra/locals.tf; the owner's pick on archived pull request
+    #: 3346) asks Claude Haiku on Vertex AI; "off" writes the extractive
+    #: fallback alone; empty, the default here and for a variable that is
+    #: absent (a unit test, a local run), writes nothing. The model is off
+    #: unless this says "vertex". Any other value is refused at start, not at a submission.
     workflow_description_model: str = ""
 
     # --- model classes (docs/design/model-per-step.md §4.4, archived issue 1435) ---------

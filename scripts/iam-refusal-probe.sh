@@ -13,7 +13,8 @@
 #     api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", []).hasOnly([...])
 #
 # (terraform/bootstrap/deployer_conditions.tf), whose lists together are the
-# 15 project roles terraform/infra grants (14 until archived pull request 1430 turned
+# 16 project roles terraform/infra grants (15 until the Vertex AI descriptions
+# change added roles/aiplatform.user, 14 until archived pull request 1430 turned
 # swarmGithubHooksDedup on, and 15 until archived pull request 150 took swarmSecretLister off) -- one conditioned binding per chunk of at most 10 roles since archived issue 275,
 # because hasOnly() refuses a longer list. Nothing in the pipeline ever asks for a
 # role off that list, so nothing has shown the refusal side works. This script
@@ -269,7 +270,7 @@ cmd_preflight() {
 
   #    Since archived issue 275 that grant is one conditioned binding per chunk of at most 10
   #    roles (hasOnly() refuses a longer list; deployer_conditions.tf), so there
-  #    are as many bindings as chunks -- two for 15 roles. A grant is
+  #    are as many bindings as chunks -- two for 16 roles. A grant is
   #    admitted if ANY binding's condition admits it, so EVERY one must be the
   #    bare modifiedGrantsByRole hasOnly() test (the whole expression: one
   #    `|| true` appended to a chunk would admit everything) and none may list

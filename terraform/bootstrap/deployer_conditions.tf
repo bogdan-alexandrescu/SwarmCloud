@@ -330,7 +330,9 @@ locals {
   #   modules/iam/bindings.tf  plain      logging.logWriter, monitoring.metricWriter,
   #                                       cloudtrace.agent, serviceusage.serviceUsageConsumer,
   #                                       monitoring.viewer, swarmJobDispatcher,
-  #                                       swarmJobReaper
+  #                                       swarmJobReaper, aiplatform.user
+  #                                       (swarm-api, since the Vertex AI
+  #                                       descriptions change)
   #                            gke        swarmGkeDispatcher, swarmGkeReaper
   #                            firestore  datastore.user
   #   modules/iam/custom_roles.tf         secretmanager.secretVersionAdder (the
@@ -369,7 +371,9 @@ locals {
   # which the owner applies, never by CI. Re-read 2026-09-25 08:52 UTC: 67
   # distinct roles in the policy, and with swarmSecretLister off the list, 14
   # grantable until #1430 and 53 refused. #1430 turned swarmGithubHooksDedup
-  # on, so the list makes 15 grantable once the owner applies it.
+  # on, so the list made 15; the Vertex AI descriptions change added
+  # roles/aiplatform.user, so the list makes 16 grantable once the owner
+  # applies it.
   #
   # NOT SCOPED BY THIS: two of the listed roles also have a member that is not
   # ours -- roles/logging.logWriter and roles/monitoring.metricWriter are held
@@ -380,6 +384,12 @@ locals {
   # -------------------------------------------------------------------------
   deployer_grantable_project_roles = concat(
     [
+      # swarm-api's Claude Haiku call on Vertex AI, which writes a workflow's
+      # generated description (modules/iam/bindings.tf, the owner's pick on
+      # archived pull request 3346). It holds no setIamPolicy, so CI granting
+      # it widens nothing toward roles/owner. Until the owner applies this root, a CI apply of
+      # that grant is refused by the hasOnly() condition below.
+      "roles/aiplatform.user",
       "roles/cloudtrace.agent",
       "roles/datastore.user",
       "roles/datastore.viewer",
@@ -426,8 +436,9 @@ locals {
   }
 
   # roles/resourcemanager.projectIamAdmin's hasOnly() would need every one of
-  # the 15 deployer_grantable_project_roles in one list (14 with
-  # enable_github_hooks_dedup_role off, and 15 until #69's owner
+  # the 16 deployer_grantable_project_roles in one list (15 with
+  # enable_github_hooks_dedup_role off, 15 until the Vertex AI descriptions
+  # change added roles/aiplatform.user, and 15 until #69's owner
   # decision of 2026-09-25, which #150 delivered, took swarmSecretLister off --
   # still over the limit either way), and GCP's linter
   # (LintValidationUnits/ListLengthCheck) refuses a hasOnly() list over 10

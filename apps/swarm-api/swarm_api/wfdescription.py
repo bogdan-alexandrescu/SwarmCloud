@@ -33,10 +33,12 @@ submitter's about is held to (plain text, one line a part, the parts' caps):
   pick on archived pull request 3346 (2026-11-05), behind the switch
   `SWARM_WORKFLOW_DESCRIPTION_MODEL=vertex`, read once into swarm-api's
   settings (`ApiSettings.workflow_description_model`, validated at start).
-  It ships OFF: Terraform sets the switch to "off" on swarm-api
-  (terraform/infra/locals.tf). It turns to "vertex" once the owner
-  grants Vertex AI: swarm-api's account `roles/aiplatform.user`, the Vertex
-  AI API enabled and Anthropic's Model Garden terms accepted;
+  Terraform sets it to "vertex" on swarm-api (terraform/infra/locals.tf),
+  grants swarm-api's account `roles/aiplatform.user`
+  (modules/iam/bindings.tf) and enables the Vertex AI API (main.tf; the
+  installer's `api.aiplatform`). Anthropic's Model Garden terms are the
+  project owner's to accept; until they are, the call is refused and the
+  fallback writes, the row saying `extractive:model_vertex_http_<status>`;
 * the extractive fallback (`extract_about`): the purpose is the first
   sentence of the first brief, each goal a step's id and the first sentence
   of its brief (when there are two steps or more), the output what the
@@ -242,7 +244,7 @@ class _Spent(SummaryRefused):
 def summariser_for(switch: str, *, project_id: str,
                    environ: Mapping[str, str] | None = None) -> Summariser | None:
     """The model behind the switch (the settings' `workflow_description_model`),
-    or None while it is off (the default)."""
+    or None while it is "off" or unset."""
     if (switch or "").strip().lower() != MODEL_SWITCH_VERTEX or not project_id:
         return None
     environ = os.environ if environ is None else environ
