@@ -19,6 +19,7 @@ import { STATE_MARK, StateMark, WarnMark } from '../marks'
 import { addressToPath, helpGroupOf, pathToAddress } from '../paths'
 import { meterOf } from '../Spine'
 import type { Capacity, TaskState } from '../types'
+import { screenLoaded } from './screenLoaded'
 
 /** The path the router writes for an old hash: what the one-time redirect does. */
 function redirect(hash: string): string {
@@ -152,6 +153,7 @@ describe('the app performs the redirect once, without adding history', () => {
   it('opens an agent from an old hash under its list, on the tab it named', async () => {
     window.history.replaceState(null, '', '/#work/task/t-1/attempts')
     render(<App />)
+    await screenLoaded()
     await waitFor(() => expect(window.location.pathname).toBe('/agents/live/t-1/attempts'))
     const drawer = document.querySelector('.ctl-drawer')
     expect(drawer).not.toBeNull()

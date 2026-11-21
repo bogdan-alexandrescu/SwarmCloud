@@ -53,11 +53,37 @@ function routes(): Record<string, unknown> {
   }
 }
 
+/**
+ * THE ROUTES THE SHELL AND OVERVIEW SHARE, ANSWERED AS THE API ANSWERS THEM.
+ * Overview loads with its route (React.lazy, issue 79), so it mounts after the
+ * shell's reads went out, and may ask after one has settled rather than while
+ * it is in flight. A settled SUCCESS is reused (`REUSE_SETTLED_MS`); a 404 is
+ * asked again, as it should be. Answered with the stub's 404, these counted a
+ * failure being retried, not a read being shared.
+ */
+function shared(): Record<string, unknown> {
+  return {
+    '/v1/stats': { tenant_id: 'eng', tasks_by_state: {}, dispatch_paused: false, limits: {}, generated_at: new Date().toISOString() },
+    '/v1/capacity': { pools: [], runner_profiles: {}, tenant_id: 'eng' },
+    '/v1/approvals': { approvals: [] },
+    '/v1/tenants/me': {
+      tenant: {
+        tenant_id: 'eng', kind: 'group', principal: 'eng@example.com', display_name: 'Engineering',
+        created_at: '2026-09-01T00:00:00Z', max_active: 4, capacity_units: 8, monthly_budget_usd: null, enabled: true,
+        credentials: [], service_account: null, gcs_prefix: 'tenants/eng', namespace: 'swarm-tenant-eng',
+      },
+      principal: { email: 'someone@example.com', domain: 'example.com', groups: [], is_admin: false },
+      environment: 'dev',
+      environment_declared: false,
+    },
+  }
+}
+
 /** Every GET the app makes at `path` in its first `ms`, by route. */
-async function readsOn(path: string, ms = 1_500): Promise<Map<string, number>> {
+async function readsOn(path: string, ms = 1_500, extra: Record<string, unknown> = {}): Promise<Map<string, number>> {
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
-  const answers = routes()
+  const answers = { ...routes(), ...extra }
   const counts = new Map<string, number>()
   const realNow = Date.now.bind(Date)
   const start = realNow()
@@ -96,8 +122,10 @@ describe('CH-20: identical reads in flight are one request', () => {
   })
 
   it('reads each route the shell and the Overview share once', async () => {
-    const counts = await readsOn('/overview')
+    const counts = await readsOn('/overview', 1_500, shared())
     console.info('CH-20 overview GETs', JSON.stringify([...counts].sort()))
+    // Overview itself drew, so its reads were made and are in the counts.
+    expect(document.querySelector('main.work #ov-needs'), 'Overview did not draw').not.toBeNull()
     // Measured before the change: approvals 2, capacity 2, stats 2.
     for (const shared of ['/v1/stats', '/v1/capacity', '/v1/approvals', '/v1/tenants/me']) {
       expect(counts.get(shared), shared).toBe(1)

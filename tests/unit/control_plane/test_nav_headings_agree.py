@@ -156,6 +156,10 @@ def _import_map(app: str) -> dict[str, Path]:
         for name in (n.strip() for n in names.split(",")):
             if name and not name.startswith("type "):
                 out[name] = SRC / f"{module}.tsx"
+    # A screen App.tsx loads with its route (React.lazy, issue 79):
+    # `const Name = lazy(() => import('./Module')...)`.
+    for name, module in re.findall(r"^const (\w+) = lazy\(\(\) => import\('\./([\w./]+)'\)", app, re.M):
+        out[name] = SRC / f"{module}.tsx"
     return out
 
 

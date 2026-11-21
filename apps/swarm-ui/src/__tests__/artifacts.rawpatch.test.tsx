@@ -16,6 +16,7 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, waitFor } from '@testing-library/react'
+import { screenLoaded } from './screenLoaded'
 
 import STYLES from '../styles.css?raw'
 import { artifactRawUrl } from '../api'
@@ -213,6 +214,7 @@ async function openPane(signedIn: string, over: Partial<Task> = {}): Promise<voi
   window.location.hash = `#work/task/${REF}/artifacts`
   const { App } = await import('../App')
   render(<App />)
+  await screenLoaded()
 }
 
 function drawer(): HTMLElement {
