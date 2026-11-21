@@ -1058,7 +1058,7 @@ function BrowserCard({ rows, removable, onChange }: { rows: SecretsRow[]; remova
       {removing !== null && (
         <TypedConfirm title={`Remove ${removing}`} name={removing} verb="Remove" keep="Keep it" busy={busy ? 'Removing…' : false}
           error={failed} onConfirm={() => void remove(removing)} onClose={() => setRemoving(null)}>
-          <p>Your agents must sign in to this site again.</p>
+          <p>Agents must sign in to this site again.</p>
         </TypedConfirm>
       )}
     </Card>
@@ -1882,7 +1882,7 @@ function StoreForm({
         {draft !== null && <><dt>Granted to</dt><dd>{draft.consumers.length === 0 ? 'nothing yet: grant it from the matrix' : draft.consumers.join(', ')}</dd></>}
       </dl>
       {catalogue === null ? (
-        <p className="ur-small">Reading the kinds a secret may be stored as…</p>
+        <p className="ur-small">Reading the secret kinds…</p>
       ) : (
         <AddSecret catalogue={catalogue} store={store} fixed={draft} takeToken={take} onAdded={(name) => void add(name)} />
       )}
