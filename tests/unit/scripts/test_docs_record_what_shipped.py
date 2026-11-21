@@ -1,23 +1,5 @@
-"""Five documents said what the code did before it changed (wave 14, lane C4I).
-
-WHY THIS EXISTS. A read-only triage of 2026-10-07 found sentences that had
-been true and stopped being true, each pinned here against the value it
-describes, read from the code or the tests wherever it can be:
-
-  * docs/contract-change-requests.md's `AsymmetricSign` quota bullet told the
-    reader to run `gcloud services quota list`, which gcloud 586 refuses
-    (archived issue 453; the runbook was fixed by archived pull request 456, this copy was not).
-  * Contract request 30 still described the CI fixer's reach as "any
-    `direct-pr` task"; since the owner's decision of 2026-10-06 (archived pull request 754) it
-    also continues an `integrate` workflow's integrator (archived issue 263).
-  * docs/mirrored-values.md had no row for the GKE metadata server's address,
-    which the dispatcher, three worker templates and the egress policy all
-    restate (archived issue 76).
-  * docs/issue-runs.md said auto-merge was "refused until archived issue 342 and archived issue 295/#352
-    land" and "not buildable yet", and cited two tests that no longer exist;
-    since contract request 47 the merge is built (archived issue 454).
-  * docs/ci.md said the deployer holds no role on the fixer's account, but
-    not that it holds no IAP role at all, nor where IAP membership lives (archived issue 76).
+"""Code-only consistency checks and doc-citation link checks left after slice 1
+of issue #71 dropped the doc-prose assertions (wave 14, lane C4I).
 """
 
 from __future__ import annotations
@@ -28,25 +10,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 DOCS = REPO / "docs"
-REQUESTS = DOCS / "contract-change-requests.md"
-MIRRORED = DOCS / "mirrored-values.md"
 ISSUE_RUNS = DOCS / "issue-runs.md"
-CI = DOCS / "ci.md"
 DISPATCH = REPO / "apps" / "scheduler" / "scheduler" / "dispatch.py"
-CONTINUATION = REPO / "apps" / "swarm-api" / "swarm_api" / "continuation.py"
-ISSUERUNS = REPO / "apps" / "swarm-api" / "swarm_api" / "issueruns.py"
-ISSUECI = REPO / "apps" / "swarm-api" / "swarm_api" / "issueci.py"
-BOOTSTRAP_TEST = REPO / "tests" / "terraform" / "bootstrap.tftest.hcl"
-WIF = REPO / "terraform" / "bootstrap" / "wif.tf"
 
 
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
-
-
-def _between(text: str, start: str, end: str) -> str:
-    begin = text.index(start)
-    return text[begin: text.index(end, begin + len(start))]
 
 
 def _section(text: str, heading: str) -> str:
@@ -82,134 +51,46 @@ def _defines(path: Path, name: str) -> bool:
 
 
 # --------------------------------------------------------------------------
-# archived issue 453: the KMS quota command
+# archived issue 76: the GKE metadata server address, restated in four places
 # --------------------------------------------------------------------------
 
-WORKING_QUOTA_COMMAND = "gcloud quotas info list --service=cloudkms.googleapis.com"
+_GKE_METADATA_TEMPLATES = ("worker-job.yaml", "worker-job-v2.yaml", "worker-job-browser.yaml")
 
 
-def test_the_kms_quota_bullet_names_the_command_gcloud_runs():
-    """MUTATION: put `gcloud services quota list` back as the check to run."""
-    bullet = _between(_text(REQUESTS), "* **`AsymmetricSign` quota, not verified.**", "#### 4.")
-    assert WORKING_QUOTA_COMMAND in bullet, bullet
-    # The control: the runbook this bullet now agrees with says the same.
-    assert WORKING_QUOTA_COMMAND.split(" --")[0] in _text(
-        DOCS / "runbooks" / "spec-signing-rollout.md"
-    )
-
-
-def test_the_dead_quota_command_is_only_named_as_dead():
-    text = _text(REQUESTS)
-    hits = [m.start() for m in re.finditer(r"gcloud services quota list", text)]
-    for at in hits:
-        around = text[at: at + 200]
-        assert "does not exist" in around, (
-            f"contract-change-requests.md names `gcloud services quota list` as a "
-            f"command to run; gcloud 586 answers `Invalid choice: 'quota'`: {around!r}"
-        )
-
-
-# --------------------------------------------------------------------------
-# archived issue 263: request 30 records the integrator widening
-# --------------------------------------------------------------------------
-
-
-def test_request_30_records_the_widening_to_an_integrate_workflows_integrator():
-    """MUTATION: delete the 2026-10-06 addendum from request 30."""
-    entry = _between(_text(REQUESTS), "## 30. ", "## 31. ")
-    addendum = _between(entry, "**2026-10-06", "### What is true today")
-    role = _module_constant(CONTINUATION, "INTEGRATOR_ROLE")
-    strategy = _module_constant(CONTINUATION, "INTEGRATE_STRATEGY")
-    for needle in (f"`{strategy}`", role, "#754", "contributor", "merge"):
-        assert needle in addendum, (needle, addendum)
-    # The symbol the addendum points at is the one that decides it.
-    assert "`_has_own_pull_request`" in addendum
-    assert _defines(CONTINUATION, "_has_own_pull_request")
-    # The test it names exists.
-    test = REPO / "tests" / "unit" / "control_plane" / "test_continuation_scope_is_narrow.py"
-    name = "test_the_listed_account_can_continue_an_integrate_workflows_integrator"
-    assert name in addendum and _defines(test, name)
-
-
-# --------------------------------------------------------------------------
-# archived issue 76: the metadata server address in the register
-# --------------------------------------------------------------------------
-
-
-def test_the_register_lists_the_gke_metadata_server_address():
-    """MUTATION: delete the row, or let it name an address the dispatcher does not send."""
+def test_gke_metadata_server_address_matches_across_dispatch_templates_and_egress():
+    """dispatch.py's GKE_METADATA_SERVER_IP is restated by three worker templates and
+    allow-egress.yaml's /32 CIDR; a value changed in one place and not the others would
+    route the worker's token proxy to an address the network policy then blocks."""
     address = _module_constant(DISPATCH, "GKE_METADATA_SERVER_IP")
-    covered = _section(_text(MIRRORED), "## Covered elsewhere, deliberately not moved here")
-    rows = [line for line in covered.splitlines() if line.startswith("|") and address in line]
-    assert len(rows) == 1, f"expected one row naming {address}, got {rows}"
-    row = rows[0]
-    assert "`GKE_METADATA_SERVER_IP`" in row
-    for path in (
-        "tests/unit/control_plane/test_gke_worker_metadata_env.py",
-        "tests/unit/worker/test_worker_templates_name_the_metadata_server.py",
-    ):
-        assert f"`{path}`" in row and (REPO / path).is_file(), path
-    for template in ("worker-job.yaml", "worker-job-v2.yaml", "worker-job-browser.yaml"):
-        assert template in row
+    for template in _GKE_METADATA_TEMPLATES:
+        # MUTATION: change the address in one worker template only -> red.
         assert address in _text(REPO / "kubernetes" / "worker-templates" / template), template
+    # MUTATION: change the address in dispatch.py without the /32 egress rule -> red.
     assert f"{address}/32" in _text(REPO / "kubernetes" / "network-policies" / "allow-egress.yaml")
 
 
 # --------------------------------------------------------------------------
-# archived issue 2688 (LIGHTPANDA-DOCS): Lightpanda's CDP port in the register
+# archived issue 2688 (LIGHTPANDA-DOCS): Lightpanda's CDP port, not the live gate's
 # --------------------------------------------------------------------------
 
 LIGHTPANDA = REPO / "apps" / "agent-worker" / "agent_worker" / "lightpanda.py"
 LIGHTPANDA_RUNNER_TEST = "tests/unit/worker/test_lightpanda_runner.py"
 
 
-def test_the_register_lists_the_lightpanda_cdp_port():
-    """MUTATION: delete the row, or let it name a port `lightpanda.py` does not serve on.
-
-    claude-code-lightpanda's `serve` child listens on a port the runner states
-    and its test restates; it is not the live gate's 9222, and the register is
-    where a reader looks before reusing either."""
+def test_lightpanda_cdp_port_is_not_the_live_browser_gates_port_and_matches_its_test():
+    """claude-code-lightpanda's `serve` child listens on the port lightpanda.py's
+    CDP_PORT names; it must not collide with the live browser gate's 9222, and the
+    runner test that exercises it restates the same port literal."""
     port = _module_constant(LIGHTPANDA, "CDP_PORT")
-    assert port != 9222, "Lightpanda must not take the live gate's CDP port"
-    covered = _section(_text(MIRRORED), "## Covered elsewhere, deliberately not moved here")
-    rows = [line for line in covered.splitlines() if line.startswith("|") and f"`{port}`" in line]
-    assert len(rows) == 1, f"expected one row naming `{port}`, got {rows}"
-    row = rows[0]
-    assert "`CDP_PORT`" in row and "`claude-code-lightpanda`" in row and "9222" in row
-    assert f"`{LIGHTPANDA_RUNNER_TEST}`" in row and (REPO / LIGHTPANDA_RUNNER_TEST).is_file()
+    # MUTATION: set CDP_PORT to 9222 -> red (Lightpanda must not take the live gate's port).
+    assert port != 9222
+    # MUTATION: change CDP_PORT without updating its test -> red.
     assert str(port) in _text(REPO / LIGHTPANDA_RUNNER_TEST)
 
 
 # --------------------------------------------------------------------------
-# archived issue 454: issue-runs says the merge is built
+# docs/issue-runs.md: every citation it makes still resolves
 # --------------------------------------------------------------------------
-
-_STALE_ISSUE_RUN_CLAIMS = (
-    "refused until #342 and #295/#352 land",
-    "not buildable yet",
-    "visible but refused",
-    "swarm-api\nhas no merge call",
-    "Auto-merge: visible, refused, and why",
-)
-
-
-def test_issue_runs_no_longer_says_auto_merge_is_refused():
-    """MUTATION: restore any of the stale sentences."""
-    text = _text(ISSUE_RUNS)
-    flat = " ".join(text.split())
-    for claim in _STALE_ISSUE_RUN_CLAIMS:
-        assert " ".join(claim.split()) not in flat, claim
-    # The premise: the refusal really is conditional on a disabled profile, and
-    # the CI loop really submits the merge.
-    assert _defines(ISSUERUNS, "_auto_merge_refusal")
-    assert _defines(ISSUECI, "merge_workflow") and _defines(ISSUECI, "_merge")
-
-
-def test_issue_runs_says_the_merge_is_built_and_not_proven_live():
-    section = _section(_text(ISSUE_RUNS), "### 4. ")
-    assert "Built; not proven live" in section, section
-    assert "`issueci._merge`" in section and "`issueruns._auto_merge_refusal`" in section
-
 
 _CITED_TEST = re.compile(r"`((?:tests/[\w/]+/)?test_\w+\.py)::(\w+)`")
 
@@ -237,18 +118,3 @@ def test_the_auto_merge_ui_tests_issue_runs_quotes_exist():
     assert titles, section
     for title in titles:
         assert title in tsx.replace("\\'", "'"), title
-
-
-# --------------------------------------------------------------------------
-# archived issue 76: the deployer holds no IAP role
-# --------------------------------------------------------------------------
-
-
-def test_ci_md_says_the_deployer_holds_no_iap_role_and_where_membership_lives():
-    """MUTATION: delete the sentence from "What the owner configures, once"."""
-    section = _section(_text(CI), "### What the owner configures, once")
-    flat = " ".join(section.split())
-    assert "holds no IAP role" in flat, flat
-    assert "`frontend_accessors`" in flat and "frontend_accessors" in _text(WIF)
-    run = "iap_membership_is_bootstrap_owned_and_the_deployer_has_no_iap_role"
-    assert f"`{run}`" in flat and f'run "{run}"' in _text(BOOTSTRAP_TEST)
