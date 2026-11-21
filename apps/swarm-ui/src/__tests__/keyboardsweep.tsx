@@ -27,6 +27,7 @@ import { tabStops } from '../focus'
 import { pointerSelectors, probeKeyboard, ringSelectors, signature, type Finding } from './keyboard'
 import { resolveSheet } from './spaceprobe'
 import { PANEL_PAGES } from '../Spine'
+import { screenLoaded } from './screenLoaded'
 
 /**
  * Every route the rail can reach, DERIVED rather than restated.
@@ -361,6 +362,7 @@ export function keyboardGroup(name: string): void {
         if (sweepStopped) return
         window.location.hash = `#${route}`
         const { container, unmount } = render(<App />)
+        await screenLoaded()
         await settle()
         if (sweepStopped) {
           unmount()

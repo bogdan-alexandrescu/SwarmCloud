@@ -39,6 +39,7 @@ import { Markdown } from '../ArtifactViewer'
 import type { Task } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
 import { task as baseTask } from './runfixture'
+import { screenLoaded } from './screenLoaded'
 
 // The page is stubbed for speed; it still draws the open agent App hosts in its
 // inspector (archived pull request 3146). Mocked again after each `resetModules`, so the stub reads
@@ -308,6 +309,7 @@ async function openPane(routes: Record<string, Route>, hash = `#work/task/${REF}
   window.location.hash = hash
   const { App } = await import('../App')
   render(<App />)
+  await screenLoaded()
   return { calls, count: (path) => calls.filter((c) => new URL(c, 'http://ui.test').pathname === path).length }
 }
 

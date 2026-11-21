@@ -22,6 +22,7 @@ import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import type { Task, TaskPage, TaskState } from '../types'
 import { task as runTask } from './runfixture'
+import { screenLoaded } from './screenLoaded'
 
 const api = vi.hoisted(() => ({
   loadTask: vi.fn(),
@@ -265,6 +266,7 @@ describe('QA12-26 through the router: /agents/live/<parked id>', () => {
     window.history.replaceState(null, '', `/agents/live/${ID}/details`)
     const { App } = await import('../App')
     render(<App />)
+    await screenLoaded()
     await waitFor(() => expect(window.location.pathname).toBe(`/agents/waiting/${ID}`))
     const back = document.querySelector<HTMLElement>('.ctl-agent-back')
     expect(back?.textContent).toMatch(/Waiting/)

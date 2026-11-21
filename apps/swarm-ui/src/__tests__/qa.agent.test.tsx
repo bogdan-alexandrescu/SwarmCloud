@@ -19,6 +19,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { App } from '../App'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { screenLoaded } from './screenLoaded'
 
 const WIDE: CascadeEnv = { width: 1440 }
 
@@ -31,6 +32,7 @@ async function split(): Promise<HTMLElement> {
   // At its Logs address: a running agent opens on Details since archived issue 1646.
   window.location.hash = '#work/task/task_a073aff5/logs'
   render(<App />)
+  await screenLoaded()
   // A claude-code agent's Logs open on its Transcript, which in the agent's
   // own pane is the trace (trace/Trace.tsx, part of archived issue 2688); the stream log
   // these cases measure is the Runner view.
