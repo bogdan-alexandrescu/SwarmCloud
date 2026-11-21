@@ -21,8 +21,17 @@ cannot import swarm-egress; tests/unit/control_plane/test_qa_targets.py holds
 the two equal), and every address it resolves to public unicast. A new target
 is `pending`; no run starts until a PLATFORM ADMIN approves it (VQ-Q1, "any
 platform admin, audited"), naming the host they approve, so an approval can
-never land on a host that changed under the approver. Changing the host or
-the login's `extra_origin` sets it back to `pending`.
+never land on a host that changed under the approver. Changing the host,
+the login's `extra_origin` or the leg's `extra_origins` sets it back to
+`pending`.
+
+THE EXTRA ORIGINS (the ledger's 'QA target extra origins' item). A leg may
+declare `extra_origins`, the other `https://host[:port]` origins its pages
+call (an API host), each held to the host rule above, none twice, none its
+base origin or the login's, and at most `EXTRA_ORIGINS_MAX` non-base origins
+with the login's, so the gate's four origins hold. The approval covers only
+the ones the platform admin names (`approve_host`), and the worker is served
+exactly the approved list.
 
 THE IdP TOKEN PATH (QA-IDP-POST; the owner decided 2026-10-23, part of archived issue 2067:
 "allow the token path only"). The live gate refuses every write to the
@@ -400,13 +409,14 @@ SPEC_FIELDS = (
     "name", "base_url", "repository", "sign_in", "screens", "discover", "flows",
     "widths", "themes", "exclusions", "environment", "read_posts", "design_docs",
     "file", "rate", "clock", "challenge_bypass", "flows_browser_tool", "environments", "entry_query",
+    "extra_origins",
 )
 REQUIRED_FIELDS = ("name", "base_url", "repository", "authorized_by")
 #: The registration fields of one leg (qa-environments.md §1.1): in a body,
 #: either beside the app's fields (a target of one environment, stored as
 #: before) or in each entry of `environments`, never both.
 LEG_SPEC_FIELDS = ("base_url", "sign_in", "environment", "read_posts", "rate", "challenge_bypass",
-                   "entry_query")
+                   "entry_query", "extra_origins")
 #: The app's: stored on the target once, shared by every entry.
 APP_SPEC_FIELDS = tuple(k for k in SPEC_FIELDS if k not in LEG_SPEC_FIELDS and k != "environments")
 _ENTRY_KEYS = frozenset({"name", *LEG_SPEC_FIELDS})
@@ -430,6 +440,13 @@ _IDP_TOKEN_PATH = re.compile(r"(?:/[A-Za-z0-9._~!$&'()+,;=:@-]+)+")
 IDP_TOKEN_PATH_MAX = 512
 #: Where the approval stores it: beside `approved_origins`, never in the spec.
 IDP_TOKEN_FIELD = "approved_idp_token_path"
+#: A leg's origins besides its base one, `sign_in.extra_origin` and
+#: `extra_origins` together: the gate takes at most four origins in all
+#: (livegate/qatarget.py `MAX_ORIGINS`), the base origin one of them.
+EXTRA_ORIGINS_MAX = 3
+EXTRA_ORIGINS_MESSAGE = ("extra_origins must be a list of distinct https://host[:port] origins, none the "
+                         "base origin or sign_in.extra_origin; with sign_in.extra_origin, at most "
+                         f"{EXTRA_ORIGINS_MAX} origins besides the base one")
 _TARGET_ID = re.compile(r"^qat_[0-9a-f]{16}$")
 
 #: §1.4: a Secret Manager payload is at most 64 KiB; the tenant's one QA map
@@ -556,12 +573,12 @@ SECRET_FULL_MESSAGE = (
 #: The refusal's `detail.reason`.
 SECRET_FULL = "qa_secret_full"
 LEG_BESIDE_ENVIRONMENTS_MESSAGE = (
-    "a QA target with environments carries base_url, sign_in, environment, read_posts, rate and "
-    "challenge_bypass in each entry, not beside them"
+    "a QA target with environments carries base_url, sign_in, environment, read_posts, rate, "
+    "challenge_bypass, entry_query and extra_origins in each entry, not beside them"
 )
 ENVIRONMENTS_MESSAGE = (
     f"environments must list 1 to {qaspec.MAX_ENVIRONMENTS} entries, each {{name, base_url, "
-    "environment?, sign_in?, read_posts?, rate?, challenge_bypass?, entry_query?}"
+    "environment?, sign_in?, read_posts?, rate?, challenge_bypass?, entry_query?, extra_origins?}"
 )
 ENVIRONMENT_NAME_MESSAGE = (
     "an environment's name is 1 to 20 lower-case letters, digits or hyphens, unique in its target"
@@ -635,21 +652,55 @@ def _origin_of(url: str) -> tuple[str, str]:
     return f"https://{parts.netloc.lower()}", (parts.hostname or "").lower()
 
 
-def _extra_origin(raw: Any, resolve: Resolver) -> str:
-    """A login's other origin (§2.3): `https://host[:port]` and nothing more,
-    held to the same host rule as `base_url`."""
+def _extra_origin(raw: Any, resolve: Resolver, *, what: str = "sign_in.extra_origin",
+                  field: str = "sign_in") -> str:
+    """A login's other origin (§2.3), or one of a leg's `extra_origins`:
+    `https://host[:port]` and nothing more, held to the same host rule as
+    `base_url`."""
     if not isinstance(raw, str) or len(raw) > 300:
-        raise _invalid("sign_in.extra_origin must be https://host[:port]", field="sign_in")
+        raise _invalid(f"{what} must be https://host[:port]", field=field)
     try:
         normal = qaspec.base_url({"base_url": raw})
     except qaspec.QaSpecError:
-        raise _invalid("sign_in.extra_origin must be https://host[:port]", field="sign_in") from None
+        raise _invalid(f"{what} must be https://host[:port]", field=field) from None
     origin, host = _origin_of(normal)
     if normal != origin:
-        raise _invalid("sign_in.extra_origin must be https://host[:port], with no path",
-                       field="sign_in")
+        raise _invalid(f"{what} must be https://host[:port], with no path", field=field)
     check_public_host(host, resolve)
     return origin
+
+
+def _same_origin(a: str, b: str) -> bool:
+    """https's own port written out is the same origin (`qaspec._leg_origins`)."""
+    def bare(origin: str) -> str:
+        return origin[:-len(":443")] if origin.endswith(":443") else origin
+    return bare(a.lower()) == bare(b.lower())
+
+
+def _extra_origins(raw: Any, resolve: Resolver, *, base: str, sign_in: Mapping[str, Any]) -> list[str] | None:
+    """A leg's other origins, an app's API host among them (the ledger's 'QA
+    target extra origins' item): each one `_extra_origin`'s, none twice, none
+    the base origin or the login's, and with the login's at most
+    `EXTRA_ORIGINS_MAX`. None when the leg declares none. Declaring one
+    approves nothing: `approve_host` names each."""
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise _invalid(EXTRA_ORIGINS_MESSAGE, field="extra_origins")
+    login = sign_in.get("extra_origin")
+    if len(raw) + (login is not None) > EXTRA_ORIGINS_MAX:
+        raise _invalid(EXTRA_ORIGINS_MESSAGE, field="extra_origins")
+    out: list[str] = []
+    for item in raw:
+        try:
+            origin = _extra_origin(item, resolve, what="each of extra_origins", field="extra_origins")
+        except ValidationFailed as exc:
+            # `check_public_host` names `base_url`; the refusal is of this list.
+            raise _invalid(exc.message, field="extra_origins") from None
+        if any(_same_origin(origin, seen) for seen in (base, *([login] if login else []), *out)):
+            raise _invalid(EXTRA_ORIGINS_MESSAGE, field="extra_origins")
+        out.append(origin)
+    return out or None
 
 
 # --------------------------------------------------------------------------
@@ -969,7 +1020,7 @@ def _entry_api(entry: Mapping[str, Any], *, screens: Any = None, dismissed: Any 
         "credential": credential_status(entry),
         BYPASS_FIELD: bypass_status(entry),
     }
-    for key in ("read_posts", "rate", "challenge_bypass", "entry_query"):
+    for key in ("read_posts", "rate", "challenge_bypass", "entry_query", "extra_origins"):
         if key in entry:
             body[key] = entry[key]
     body.update(discovery_status(entry, screens=screens, dismissed=dismissed))
@@ -1269,6 +1320,9 @@ class QaTargets:
         if query is not None:
             leg["entry_query"] = query
         leg["sign_in"] = _sign_in(values.get("sign_in"), self._resolve, exclusions=exclusions)
+        extra = _extra_origins(values.get("extra_origins"), self._resolve, base=origin, sign_in=leg["sign_in"])
+        if extra is not None:
+            leg["extra_origins"] = extra
         rate = _rate(values.get("rate"))
         if rate is not None:
             leg["rate"] = rate
@@ -1402,8 +1456,8 @@ class QaTargets:
     def patch(self, tenant_id: str, target_id: str, changes: Mapping[str, Any], *,
               by: str, credentials: QaCredentialStore | None = None) -> dict[str, Any]:
         """`changes` holds only the fields the caller sent; a None clears an
-        optional one. A change of an entry's host or `extra_origin` resets
-        THAT entry's approval (§1.3).
+        optional one. A change of an entry's host, `extra_origin` or
+        `extra_origins` resets THAT entry's approval (§1.3).
 
         A target stored with `environments` takes its legs' fields in
         `environments` alone, each entry matched to the stored one by name:
@@ -1412,8 +1466,8 @@ class QaTargets:
         stored before takes them where they always were, or `environments`,
         which migrates it.
 
-        A change that removes an entry's challenge bypass, or moves its host
-        or `extra_origin`, removes the bypass's value from the secret FIRST
+        A change that removes an entry's challenge bypass, or moves its host,
+        `extra_origin` or `extra_origins`, removes the bypass's value from the secret FIRST
         (§2.5): a value its owner made for one host never reaches another,
         and a change whose value cannot be removed is not written."""
         if not changes:
@@ -1464,8 +1518,11 @@ class QaTargets:
                 added += _holds_values(leg)
                 continue
             status = {k: old[k] for k in _STATUS_FIELDS if k in old}
-            host_reset = (old.get("host"), (old.get("sign_in") or {}).get("extra_origin")) != \
-                (leg["host"], leg["sign_in"].get("extra_origin"))
+            # Any change of the leg's origins, its list of extra ones included,
+            # is a change of what the approval covered.
+            host_reset = (old.get("host"), (old.get("sign_in") or {}).get("extra_origin"),
+                          list(old.get("extra_origins") or [])) != \
+                (leg["host"], leg["sign_in"].get("extra_origin"), list(leg.get("extra_origins") or []))
             if host_reset:
                 status.update(host_state=HOST_PENDING, approved_by=None, approved_at=None,
                               approved_origins=[], **{IDP_TOKEN_FIELD: None})
@@ -1638,20 +1695,30 @@ class QaTargets:
     # -- the host approval (§1.2, VQ-Q1; per entry, qa-environments.md §1.3) ------
 
     def approve_host(self, target_id: str, *, host: Any, extra_origin: Any,
-                     by: str, idp_token_path: Any = None, environment: Any = None) -> dict[str, Any]:
+                     by: str, idp_token_path: Any = None, environment: Any = None,
+                     extra_origins: Any = None) -> dict[str, Any]:
         """A platform admin's approval of the host they NAME, which must be
         the entry's host now. The entry is `environment`'s, required when the
         target has several: two entries on one host are two approvals, of a
         leg and not of a hostname (§1.3). The declared `extra_origin` is
         covered only when it is named too (§1.2), and its `idp_token_path`
         only when that is named with it (QA-IDP-POST): an approval that does
-        not name it clears it."""
+        not name it clears it. Each of the leg's declared `extra_origins` is
+        covered only when it is named in `extra_origins`; one the leg does
+        not declare is a 409. The approved list is the base origin, the
+        login's when named, then the named extra origins in the leg's order,
+        and the audit row lists it whole."""
         token_path = None
         if idp_token_path is not None:
             token_path = _idp_token_path(idp_token_path)
             if extra_origin is None:
                 raise _invalid("idp_token_path is approved only with the extra origin it is on: name "
                                "extra_origin too", field="idp_token_path")
+        if extra_origins is None:
+            extra_origins = []
+        if not isinstance(extra_origins, list) or not all(isinstance(o, str) for o in extra_origins):
+            raise _invalid("extra_origins must be a list of the leg's declared extra origins",
+                           field="extra_origins")
         current = self.any_tenant(target_id)
         entry = _entry_of(current, environment)
         name = entry["name"]
@@ -1664,6 +1731,10 @@ class QaTargets:
             if not declared or extra_origin != declared:
                 raise Conflict("the extra origin named is not this QA target's declared one")
             approved.append(declared)
+        listed = list(entry.get("extra_origins") or [])
+        if any(named not in listed for named in extra_origins):
+            raise Conflict("an extra origin named is not one this QA target's leg declares")
+        approved.extend(o for o in listed if o in extra_origins)
         now = self._now()
         tenant_id = str(current.get("tenant_id") or "")
         new = _replace_entry(current, name, {"host_state": HOST_APPROVED, "approved_by": by, "approved_at": now,
@@ -2814,8 +2885,12 @@ class QaTargetIssuer:
             served["challenge_bypass"] = {"kind": bypass.get("kind"), "name": bypass.get("name")}
         approved_origins = list(target.get("approved_origins") or [origin])
         token_path = target.get(IDP_TOKEN_FIELD)
-        if isinstance(token_path, str) and len(approved_origins) == 2:
-            # QA-IDP-POST: only with the extra origin it was approved on.
+        login_origin = sign_in.get("extra_origin")
+        if isinstance(token_path, str) and isinstance(login_origin, str) and login_origin in approved_origins:
+            # QA-IDP-POST: only with the login's origin it was approved on,
+            # whatever other extra origins were approved beside it. The gate
+            # puts it on the first origin after the base, which `approve_host`
+            # makes the login's.
             served["idp_token_path"] = token_path
         return {
             **served,
@@ -2823,8 +2898,8 @@ class QaTargetIssuer:
             "revision": target.get("revision"),
             "base_url": qaspec.with_query(target["base_url"], query) if query and target.get("base_url")
             else target.get("base_url"),
-            # Only what a platform admin approved: the base origin, and the
-            # login's other origin when it was named in the approval.
+            # Only what a platform admin approved: the base origin, the
+            # login's other origin and each extra origin named in the approval.
             "origins": approved_origins,
             "environment": target.get("environment") or "production",
             "rate": dict(target.get("rate") or DEFAULT_RATE),
