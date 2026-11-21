@@ -185,8 +185,9 @@ def test_the_live_browser_and_the_git_tools_share_one_config(monkeypatch, tmp_pa
     seen = _run_body(claude_code, monkeypatch, tmp_path, spool=spool,
                      browsers="/opt/playwright", endpoint=endpoint)
     assert _mcp_config(seen) == {"mcpServers": {
-        claude_code.MCP_SERVER_NAME: {"type": "stdio", "command": claude_code.PLAYWRIGHT_MCP_BIN,
-                                      "args": ["--cdp-endpoint", f"{endpoint}/client/playwright",
+        claude_code.MCP_SERVER_NAME: {"type": "stdio", "command": claude_code.PLAYWRIGHT_MCP_NODE,
+                                      "args": [claude_code.PLAYWRIGHT_MCP_GUARD, claude_code.PLAYWRIGHT_MCP_BIN,
+                                               "--cdp-endpoint", f"{endpoint}/client/playwright",
                                                "--image-responses", "omit",
                                                "--output-dir", str(tmp_path / "artifacts" / "screenshots")]},
         shim.SERVER_NAME: _shim_server(spool),

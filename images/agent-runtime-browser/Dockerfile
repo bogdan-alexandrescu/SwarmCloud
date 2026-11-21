@@ -170,7 +170,13 @@ COPY --chmod=0555 images/agent-runtime-browser/swarm-test-browsers /usr/local/bi
 #     (`claude_code.PLAYWRIGHT_MCP_BIN`), so the agent's browser_navigate and
 #     browser_tabs act on the browser the console shows. It connects and
 #     launches nothing, so it needs no browser of its own. Pinned 2026-10-13
-#     against npm's `latest`.
+#     against npm's `latest`. It is registered through
+#     /opt/swarm/playwright-mcp/playwright-mcp-guard.mjs
+#     (`claude_code.PLAYWRIGHT_MCP_GUARD`, run by /usr/local/bin/node): once
+#     the server's backend answers "Cannot read properties of undefined
+#     (reading 'length')", upstream answers it on every later call, so the
+#     guard kills the server, starts a fresh one on the same live browser and
+#     retries a read-only call once.
 #   * the stub browsers directory, /opt/swarm/live-browser-only. The runner
 #     points the AGENT's PLAYWRIGHT_BROWSERS_PATH at it -- only the agent's:
 #     the image ENV above, which the gate and the `browser` runner read, stays
@@ -213,6 +219,8 @@ COPY --chmod=0444 images/agent-runtime-browser/swarm_qa.py /opt/venv/lib/python3
 RUN --mount=type=bind,source=images/agent-runtime-browser,target=/tmp/swarm-browser-build \
     scratch="$(mktemp -d)" \
  && npm_config_cache="${scratch}/npm" npm install -g --no-audit --no-fund "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" "axe-core@${AXE_CORE_VERSION}" \
+ && install -d -m 0755 /opt/swarm/playwright-mcp \
+ && install -o root -g root -m 0444 /tmp/swarm-browser-build/playwright-mcp-guard.mjs /opt/swarm/playwright-mcp/playwright-mcp-guard.mjs \
  && install -d -m 0755 /opt/swarm/axe-core \
  && install -o root -g root -m 0444 "$(npm root -g)/axe-core/axe.min.js" /opt/swarm/axe-core/axe.min.js \
  && pip install --no-cache-dir "pillow==${PILLOW_VERSION}" \

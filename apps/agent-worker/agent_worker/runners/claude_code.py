@@ -693,6 +693,15 @@ TEST_RUNNER_NOTE = (
 #: The Playwright MCP server the browser image pins (`@playwright/mcp`), by
 #: absolute path: the npm global prefix the base image installs CLIs into.
 PLAYWRIGHT_MCP_BIN = "/usr/local/share/npm-global/bin/playwright-mcp"
+#: The guard the `playwright` server is registered through, run by the image's
+#: node with PLAYWRIGHT_MCP_BIN as its first argument
+#: (images/agent-runtime-browser/playwright-mcp-guard.mjs). When the server's
+#: browser backend answers "Cannot read properties of undefined (reading
+#: 'length')" -- which upstream then answers on every later call -- the guard
+#: kills the server, starts a fresh one on the same live browser, retries a
+#: read-only call once and answers anything else with a clear error.
+PLAYWRIGHT_MCP_GUARD = "/opt/swarm/playwright-mcp/playwright-mcp-guard.mjs"
+PLAYWRIGHT_MCP_NODE = "/usr/local/bin/node"
 MCP_SERVER_NAME = "playwright"
 MCP_CONFIG_NAME = "mcp.json"
 #: QA-KIT (owner decision 2026-10-19, part of archived issue 1649): where Playwright MCP
@@ -1608,7 +1617,9 @@ def write_mcp_config(
     lists the slice alone and does not carry it: the code-graph skill says
     when to load it (SKILL-ON-DEMAND).
 
-    Playwright MCP connects with its client tag on the endpoint
+    Playwright MCP runs behind `PLAYWRIGHT_MCP_GUARD`, which restarts it once
+    its browser backend is poisoned (images/agent-runtime-browser/
+    playwright-mcp-guard.mjs), and connects with its client tag on the endpoint
     (`browser_tools.tag_endpoint`), so the gate can say which tool drove the
     browser last; jev's wrapper adds its own tag.
 
@@ -1628,8 +1639,8 @@ def write_mcp_config(
             playwright_args += ["--output-dir", screenshots_dir]
         servers[MCP_SERVER_NAME] = {
             "type": "stdio",
-            "command": PLAYWRIGHT_MCP_BIN,
-            "args": playwright_args,
+            "command": PLAYWRIGHT_MCP_NODE,
+            "args": [PLAYWRIGHT_MCP_GUARD, PLAYWRIGHT_MCP_BIN, *playwright_args],
         }
         if jev:
             # No `env`: the wrapper reads SWARM_CDP_ENDPOINT and the key from
