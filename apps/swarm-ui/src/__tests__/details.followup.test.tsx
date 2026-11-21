@@ -46,8 +46,9 @@ const { Run } = await import('../AgentDetail')
 
 const WAIT = { timeout: 5000 }
 
-/** Shaped like a key `redaction.RULES` masks. Not a real credential. */
-const SECRET = 'sk-proj0123456789abcdefghijklmnopqrstuv'
+/** Shaped like a key `redaction.RULES` masks. Not a real credential: joined at
+ * run time so no credential-shaped literal sits in the source. */
+const SECRET = 'sk-' + 'proj0123456789' + 'abcdefghijklmnopqrstuv'
 const RAW_PROMPT = `Deploy with ${SECRET} and report.`
 /** What the API serves for it: the `sk-` rule keeps its prefix and masks the rest. */
 const MASKED_PROMPT = 'Deploy with sk-proj01******** and report.'

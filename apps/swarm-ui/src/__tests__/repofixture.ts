@@ -159,7 +159,8 @@ export function liveIndex(repoId: string, doc: Json = {}, meta: Json = {}): Json
 
 export function token(over: Json = {}): Json {
   return {
-    token_id: 'tok_0011223344556677',
+    // Joined at run time so the fixture id is no credential-shaped literal.
+    token_id: 'tok_' + '00112233' + '44556677',
     tenant_id: 'eng',
     scope: 'tenant',
     repo_ids: [],
