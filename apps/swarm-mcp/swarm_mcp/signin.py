@@ -161,7 +161,11 @@ def _post(url: str, form: dict[str, str], *, timeout: float = 30.0) -> dict[str,
         with _OPENER.open(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            raw = exc.read().decode("utf-8", errors="replace")
+        except OSError:
+            # A body that times out (issue 53) leaves the status alone.
+            raw = ""
         try:
             body = json.loads(raw)
         except json.JSONDecodeError:
@@ -171,6 +175,12 @@ def _post(url: str, form: dict[str, str], *, timeout: float = 30.0) -> dict[str,
         raise _OAuthError(error, described, exc.code) from exc
     except urllib.error.URLError as exc:
         raise SwarmError(f"could not reach {urllib.parse.urlsplit(url).netloc}: {exc.reason}") from exc
+    except OSError as exc:
+        # A read timeout is a bare TimeoutError, not a URLError (issue 53).
+        where = urllib.parse.urlsplit(url)
+        raise SwarmError(
+            f"POST {where.path or '/'}: no answer from {where.netloc}: {exc or type(exc).__name__}"
+        ) from exc
     if not raw.strip():
         return {}
     try:

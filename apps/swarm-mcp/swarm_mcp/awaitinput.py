@@ -332,13 +332,22 @@ def post_multipart(client: Any, path: str, content_type: str, body: bytes) -> An
                     status=response.status, edge=client_module._is_edge(response.status, raw),
                 ) from exc
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            raw = exc.read().decode("utf-8", errors="replace")
+        except OSError as read_exc:
+            raise SwarmError(f"POST {path} -> {exc.code}, and its body could not be read "
+                             f"from {client.base_url}: {read_exc or type(read_exc).__name__}",
+                             status=exc.code) from read_exc
         edge = client_module._is_edge(exc.code, raw)
         code, detail = (None, None) if edge else client_module._error_fields(raw)
         raise SwarmError(f"POST {path} -> {exc.code}: {client_module._explain(exc.code, raw)}",
                          status=exc.code, edge=edge, code=code, detail=detail) from exc
     except urllib.error.URLError as exc:
         raise SwarmError(f"could not reach {client.base_url}: {exc.reason}") from exc
+    except OSError as exc:
+        # A read timeout is a bare TimeoutError, not a URLError (issue 53).
+        raise SwarmError(f"POST {path}: no answer from {client.base_url}: "
+                         f"{exc or type(exc).__name__}") from exc
     finally:
         if shared is not None:
             shared.invalidate()

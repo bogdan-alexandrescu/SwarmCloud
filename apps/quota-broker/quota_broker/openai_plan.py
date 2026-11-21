@@ -439,7 +439,10 @@ class HttpPlanTokenEndpoint:
         except urllib.error.HTTPError as exc:
             # The body is read for its error CODE only, never quoted: it can
             # echo what was sent.
-            detail = exc.read().decode("utf-8", "replace")[:400]
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:400]
+            except OSError:
+                detail = ""
             if refresh and (exc.code in (400, 401) or any(c in detail for c in _DEAD_GRANT)):
                 raise ReauthRequired(
                     f"the ChatGPT token endpoint refused the refresh token ({exc.code}); "
@@ -449,6 +452,11 @@ class HttpPlanTokenEndpoint:
         except urllib.error.URLError as exc:
             raise CredentialError(
                 f"could not reach the ChatGPT token endpoint: {type(exc.reason).__name__}"
+            ) from None
+        except OSError as exc:
+            # A read timeout is a bare TimeoutError, not a URLError (issue 53).
+            raise CredentialError(
+                f"could not reach the ChatGPT token endpoint: {type(exc).__name__}"
             ) from None
         except ValueError:
             raise CredentialError("the ChatGPT token endpoint answered with no JSON") from None
@@ -542,10 +550,18 @@ def _http_json_post(url: str, body: dict[str, str]) -> tuple[int, Any]:
         with urllib.request.urlopen(request, timeout=30) as response:
             status, raw = response.status, response.read()
     except urllib.error.HTTPError as exc:
-        status, raw = exc.code, exc.read()
+        try:
+            status, raw = exc.code, exc.read()
+        except OSError:
+            status, raw = exc.code, b""
     except urllib.error.URLError as exc:
         raise CredentialError(
             f"could not reach the ChatGPT device sign-in: {type(exc.reason).__name__}"
+        ) from None
+    except OSError as exc:
+        # A read timeout is a bare TimeoutError, not a URLError (issue 53).
+        raise CredentialError(
+            f"could not reach the ChatGPT device sign-in: {type(exc).__name__}"
         ) from None
     try:
         return status, json.loads(raw.decode("utf-8")) if raw else {}
@@ -645,6 +661,11 @@ def fetch_usage(published: str, *, timeout_seconds: float = 10.0) -> dict[str, W
     except urllib.error.URLError as exc:
         raise UsageUnavailable(
             f"could not reach the plan's usage route: {type(exc.reason).__name__}"
+        ) from None
+    except OSError as exc:
+        # A read timeout is a bare TimeoutError, not a URLError (issue 53).
+        raise UsageUnavailable(
+            f"could not reach the plan's usage route: {type(exc).__name__}"
         ) from None
     try:
         payload = json.loads(body)
