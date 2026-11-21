@@ -22,6 +22,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+
+/** The words a reader sees with every (i) shut: `visible` less the tips' text (`data-help-description`). */
+const shown = (el: Element | null) => {
+  const copy = el?.cloneNode(true) as Element | undefined
+  copy?.querySelectorAll('[data-help-description]').forEach((n) => n.remove())
+  return visible(copy ?? null)
+}
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { nowrap } from './tablefit'
@@ -121,16 +128,19 @@ describe('config-25: the MCP servers lead says what the console knows, in a sent
 
   it('stays unknown, never green, when the overview lists no MCP server unset', async () => {
     await draw(overview('set'))
-    await waitFor(() => expect(visible(lead())).toMatch(/not known/))
+    await waitFor(() => expect(visible(lead())).toMatch(/not known/i))
     expect(lead()!.classList.contains('is-ok')).toBe(false)
   })
 
   it('starts the unknown sentence with a word, the dash being the kicker\'s figure', async () => {
     await draw(null)
-    await waitFor(() => expect(visible(lead())).toMatch(/not known/))
+    await waitFor(() => expect(visible(lead())).toMatch(/not known/i))
     const sentence = visible(lead()!.querySelector('b'))
-    // MUTATION: put back `<b>— whether ...` -> the sentence opens on a dash: red.
-    expect(sentence).toMatch(/^Whether an MCP server is missing its credential is not known: /)
+    // MUTATION: put back `<b>— not known ...` -> the sentence opens on a dash: red.
+    expect(sentence).toMatch(/^Not known: /)
+    // One short line on the surface; the whole question behind its (i) (issue 81).
+    expect(shown(lead())).not.toMatch(/Whether an MCP server/)
+    expect(visible(lead())).toMatch(/Whether an MCP server is missing its credential is not known: /)
     expect(visible(lead()!.querySelector('.ws-lead-k'))).toBe('Secrets set · —')
   })
 
