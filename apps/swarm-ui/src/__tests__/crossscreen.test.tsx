@@ -277,6 +277,7 @@ describe('#98: one read age per screen', () => {
 
     window.history.replaceState(null, '', '/admin/counts')
     const b = render(<App />)
+    await screenLoaded()
     await waitFor(() => expect(document.querySelector('.head > h1')?.textContent).toBe('Platform counts'))
     expect(document.querySelector('.c-phead .c-acts .counts-prov'), 'Counts lost its own provenance').not.toBeNull()
     expect(document.querySelector('.ctl-head-age'), 'two ages on Platform counts').toBeNull()
