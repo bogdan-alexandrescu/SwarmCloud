@@ -564,8 +564,10 @@ function TargetCard({
   const [approving, setApproving] = useState<string | null>(null)
   const [discoveryBusy, setDiscoveryBusy] = useState(false)
   const [promoting, setPromoting] = useState<string | null>(null)
-  // An approved leg with a login's extra origin can be approved again, to set or clear its IdP token path (QA-IDP-POST).
-  const canApprove = (leg: QaEnvironment) => platformAdmin && leg.host !== null && (leg.host_state !== 'approved' || leg.extra_origin !== null)
+  // An approved leg with a login's extra origin can be approved again, to set or clear its IdP token path (QA-IDP-POST),
+  // and one that declares extra origins, to approve the ones named.
+  const canApprove = (leg: QaEnvironment) =>
+    platformAdmin && leg.host !== null && (leg.host_state !== 'approved' || leg.extra_origin !== null || leg.extra_origins.length > 0)
   // Discovery browses the ticked legs that may be browsed, one `:discover` each.
   const discoverable = legs.filter((leg) => !unticked.has(keyOf(leg)) && cannotBrowseBecause(t, leg) === null && leg.discovering === null)
   const anyDiscovered = legs.some((leg) => leg.discovered.length > 0)
@@ -938,7 +940,9 @@ function typedHost(text: string): string {
  * With an extra origin, the admin may name its IdP token path: the one path
  * there the gate lets a POST through to after its sign-in (QA-IDP-POST, owner
  * 2026-10-23, archived issue 2067). It starts as the approved one, and an approval sent
- * without it clears it.
+ * without it clears it. Each of the leg's declared extra origins is a box,
+ * ticked when its approval already covers it; only the ticked ones are sent,
+ * and the API approves only those it is named.
  */
 function ApproveHostForm({
   t,
@@ -957,6 +961,7 @@ function ApproveHostForm({
   const [typed, setTyped] = useState('')
   const [typedOrigin, setTypedOrigin] = useState('')
   const [tokenPath, setTokenPath] = useState(leg.approved_idp_token_path ?? '')
+  const [ticked, setTicked] = useState<string[]>(() => leg.extra_origins.filter((o) => leg.approved_origins.includes(o)))
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState<string | null>(null)
   const fid = useId()
@@ -968,7 +973,8 @@ function ApproveHostForm({
     setBusy(true)
     setFailed(null)
     const path = tokenPath.trim()
-    const r = await approveQaTargetHost(t.id, host, origin, path === '' ? null : path, leg.name)
+    const named = leg.extra_origins.filter((o) => ticked.includes(o))
+    const r = await approveQaTargetHost(t.id, host, origin, path === '' ? null : path, leg.name, named)
     setBusy(false)
     if (r.status === 'error') {
       setFailed(writeFailure(r.error))
@@ -1031,6 +1037,28 @@ function ApproveHostForm({
             </div>
           </>
         )}
+        {leg.extra_origins.length > 0 && (
+          <>
+            <div className="ur-fl">Extra origins</div>
+            <div role="group" aria-label="Extra origins">
+              {leg.extra_origins.map((o) => (
+                <label key={o} style={ORIGIN_BOX}>
+                  <input
+                    type="checkbox"
+                    name="confirm_extra_origins"
+                    value={o}
+                    checked={ticked.includes(o)}
+                    onChange={(e) => {
+                      const on = e.target.checked
+                      setTicked((was) => (on ? [...was.filter((x) => x !== o), o] : was.filter((x) => x !== o)))
+                    }}
+                  />{' '}
+                  {o}
+                </label>
+              ))}
+            </div>
+          </>
+        )}
       </div>
       <div className="ur-formacts">
         <Button type="submit" kind="primary" size="sm" busy={busy} disabled={!matches}>
@@ -1050,6 +1078,8 @@ function ApproveHostForm({
 }
 
 const ENTRY_RUN: CSSProperties = { whiteSpace: 'nowrap' }
+/** One extra origin's box in Approve host: a line each. */
+const ORIGIN_BOX: CSSProperties = { display: 'block' }
 
 /** A refusal's message as a sentence: capitalised, and ended with a full stop when it has no end of its own. */
 function asSentence(message: string): string {
@@ -1267,12 +1297,33 @@ interface Draft {
   bypass_name: string
   /** A one-origin target's entry query (`qaspec.entry_query`): `key=value` pairs every URL it opens carries. */
   entry_query: string
+  /** A one-origin target's extra origins as typed (`originsText`); a target of entries keeps them per leg. */
+  extra_origins: string
   /**
    * A target of entries: each entry as served, its entry query as typed, and
    * its sign-in as edited beside the one read (an entry whose sign-in is
-   * unchanged sends the served one back as it was).
+   * unchanged sends the served one back as it was). Its extra origins
+   * likewise: as typed, beside the list read.
    */
-  legs: { name: string; spec: Record<string, unknown>; entry_query: string; sign_in: SignInDraft; read: SignInDraft }[]
+  legs: {
+    name: string
+    spec: Record<string, unknown>
+    entry_query: string
+    sign_in: SignInDraft
+    read: SignInDraft
+    extra_origins: string
+    read_origins: string[]
+  }[]
+}
+
+/** A leg's extra origins in their box: one a line. */
+function originsText(origins: string[]): string {
+  return origins.join('\n')
+}
+
+/** The extra origins box as a list: split on lines, spaces or commas, each trimmed, none empty. The API checks each. */
+function parseOrigins(text: string): string[] {
+  return text.split(/[\s,]+/).flatMap((o) => (o.trim() === '' ? [] : [o.trim()]))
 }
 
 /** `qaspec.MAX_START_CLICKS`: the API refuses a fourth. */
@@ -1329,10 +1380,21 @@ function draftOf(t: QaTarget | null): Draft {
     bypass_kind: t?.challenge_bypass?.kind ?? 'none',
     bypass_name: t?.challenge_bypass?.name ?? '',
     entry_query: t?.entry_query ?? '',
+    extra_origins: originsText(t?.extra_origins ?? []),
     legs: (t?.environments ?? []).flatMap((e) =>
       e.name === null || e.spec === null
         ? []
-        : [{ name: e.name, spec: e.spec, entry_query: e.entry_query ?? '', sign_in: signInDraftOf(e.sign_in), read: signInDraftOf(e.sign_in) }],
+        : [
+            {
+              name: e.name,
+              spec: e.spec,
+              entry_query: e.entry_query ?? '',
+              sign_in: signInDraftOf(e.sign_in),
+              read: signInDraftOf(e.sign_in),
+              extra_origins: originsText(e.extra_origins),
+              read_origins: e.extra_origins,
+            },
+          ],
     ),
   }
 }
@@ -1381,15 +1443,23 @@ function bodyOf(d: Draft, was: Draft | null): QaTargetSend | string {
     // `sign_in` beside them is refused): every entry is sent back whole, so
     // the one that changed is the only change, and an entry whose sign-in was
     // not touched sends the served one as it was read.
-    full.environments = d.legs.map(({ spec, entry_query, sign_in, read }) => {
+    full.environments = d.legs.map(({ spec, entry_query, sign_in, read, extra_origins, read_origins }) => {
       const rest = { ...spec }
       if (JSON.stringify(sign_in) !== JSON.stringify(read)) rest.sign_in = signInBody(sign_in)
+      // Extra origins sit beside the sign-in: sent as typed once changed, left out to clear them.
+      const origins = parseOrigins(extra_origins)
+      if (JSON.stringify(origins) !== JSON.stringify(read_origins)) {
+        if (origins.length > 0) rest.extra_origins = origins
+        else delete rest.extra_origins
+      }
       delete rest.entry_query
       const query = queryOf(entry_query)
       return query === '' ? rest : { ...rest, entry_query: query }
     })
-  } else if (queryOf(d.entry_query) !== '') {
-    full.entry_query = queryOf(d.entry_query)
+  } else {
+    if (queryOf(d.entry_query) !== '') full.entry_query = queryOf(d.entry_query)
+    const origins = parseOrigins(d.extra_origins)
+    if (origins.length > 0) full.extra_origins = origins
   }
   if (was === null) return full
   const old = bodyOf(was, null)
@@ -1549,6 +1619,51 @@ function SignInFields({
   )
 }
 
+/**
+ * A leg's extra origins (`extra_origins`, beside its sign-in): one box, one
+ * origin a line, under the one-origin target's sign-in or in a leg's fold.
+ * A change of them asks that leg's host approval again, as a change of the
+ * login's extra origin does, and says so in the same words (`reset`).
+ */
+function ExtraOriginsField({
+  fid,
+  suffix,
+  value,
+  onChange,
+  reset,
+}: {
+  fid: string
+  suffix: string
+  value: string
+  onChange: (next: string) => void
+  /** Whose approval is asked again, when the list differs from the one read; null says nothing. */
+  reset: string | null
+}) {
+  const id = `${fid}-extra_origins${suffix}`
+  return (
+    <>
+      <label className="ur-fl" htmlFor={id}>
+        Extra origins
+      </label>
+      <div>
+        <textarea
+          id={id}
+          name={`extra_origins${suffix}`}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          rows={3}
+          spellCheck={false}
+        />
+        <InfoTip
+          about="extra origins"
+          tip="One https://host[:port] a line: other origins the app's pages load from, each opened only once Approve host names it. A change asks the host approval again."
+        />
+        {reset !== null && <p className="ur-hint" data-extra-origin-reset="">{`${reset}\u2019s host approval will be asked again.`}</p>}
+      </div>
+    </>
+  )
+}
+
 /** Register (target null) or change one. The API checks every field and says its own refusal. */
 function TargetForm({
   target,
@@ -1689,6 +1804,19 @@ function TargetForm({
                         onChange={(next) => setD((was) => ({ ...was, legs: was.legs.map((l, j) => (j === i ? { ...l, sign_in: next } : l)) }))}
                         extraOrigin={{ leg: leg.name, read: leg.read.extra_origin }}
                       />
+                      <ExtraOriginsField
+                        fid={fid}
+                        suffix={`-${leg.name}`}
+                        value={leg.extra_origins}
+                        onChange={(next) => setD((was) => ({ ...was, legs: was.legs.map((l, j) => (j === i ? { ...l, extra_origins: next } : l)) }))}
+                        // The login's extra origin, once changed, already says it beside its own field.
+                        reset={
+                          JSON.stringify(parseOrigins(leg.extra_origins)) !== JSON.stringify(leg.read_origins) &&
+                          !(leg.sign_in.kind === 'own_login' && leg.sign_in.extra_origin.trim() !== leg.read.extra_origin.trim())
+                            ? leg.name
+                            : null
+                        }
+                      />
                     </div>
                   </details>
                 </div>
@@ -1733,7 +1861,20 @@ function TargetForm({
             </select>
           </div>
           {d.legs.length === 0 && (
-            <SignInFields fid={fid} suffix="" value={d.sign_in} onChange={(next) => setD((was) => ({ ...was, sign_in: next }))} />
+            <>
+              <SignInFields fid={fid} suffix="" value={d.sign_in} onChange={(next) => setD((was) => ({ ...was, sign_in: next }))} />
+              <ExtraOriginsField
+                fid={fid}
+                suffix=""
+                value={d.extra_origins}
+                onChange={(next) => setD((was) => ({ ...was, extra_origins: next }))}
+                reset={
+                  target !== null && JSON.stringify(parseOrigins(d.extra_origins)) !== JSON.stringify(target.extra_origins)
+                    ? (target.host ?? target.name)
+                    : null
+                }
+              />
+            </>
           )}
           <label className="ur-fl" htmlFor={`${fid}-bypass_kind`}>
             Challenge bypass

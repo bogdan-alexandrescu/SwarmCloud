@@ -349,7 +349,8 @@ def test_the_run_schema_lists_exactly_playwright_and_jev():
 #: What a listed entry carries (§7's checkbox: its host state, its credential
 #: state, why it cannot run) and nothing else.
 ENTRY_FIELDS = {"name", "environment", "base_url", "host", "host_state", "sign_in",
-                "credential_set", "can_run", "cannot_run_because"}
+                "credential_set", "can_run", "cannot_run_because", "extra_origins",
+                "approved_extra_origins"}
 
 
 def _keys(value) -> set[str]:
