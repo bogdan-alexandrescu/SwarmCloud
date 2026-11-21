@@ -4955,8 +4955,9 @@ class Worker:
             if len(self._runs) > 1:
                 # EVERY RUN (SWAP-RUNS, archived issue 2457): the attempt's agent time is the
                 # sum of its runs; the last run's own figure keeps its own name.
-                summary["duration_seconds"] = round(
-                    sum(float(run.get("duration_s") or 0.0) for run in self._runs), 3)
+                # A run whose duration is unknown is left out of the sum and
+                # the total says `duration_partial` (issue 56), never summed as 0.0.
+                summary.update(_runs_duration(self._runs))
                 summary["last_run_duration_seconds"] = round(result.duration_seconds, 3)
             if self._index_phases is not None:
                 summary["repo_index_phases"] = [r.as_dict() for r in self._index_phases]
@@ -12491,8 +12492,10 @@ class Worker:
         if self._browser_idle_checked or not getattr(self.handoff, "live", False):
             return
         try:
-            elapsed = float(child.elapsed_seconds)
+            elapsed = child.elapsed_seconds
         except Exception:
+            return
+        if elapsed is None:
             return
         if elapsed < BROWSER_IDLE_SECONDS:
             return
@@ -13309,6 +13312,7 @@ class Worker:
         """
         usage = self._attempt_usage()
         cpu_seconds = usage.cpu_seconds if usage else None
+        child_seconds = self._child.elapsed_seconds if self._child else None
         points = self._pending_points
         self._pending_points = []
         points.extend(self._drain_points())
@@ -13321,7 +13325,9 @@ class Worker:
             except Exception as exc:
                 self.log.warning("could not read the series clock", error=f"{type(exc).__name__}: {exc}")
         return {
-            "elapsed_seconds": round(self._child.elapsed_seconds, 1) if self._child else 0,
+            # The heartbeat's clock: 0 before the agent child starts, as it
+            # always was (a clock reading, not a stored run duration).
+            "elapsed_seconds": round(child_seconds, 1) if child_seconds is not None else 0,
             # The working set (`metrics.working_set_bytes`), page cache
             # excluded: the figure the reconciler's memory judgement reads.
             "peak_rss_bytes": usage.peak_rss_bytes if usage else None,
@@ -19120,11 +19126,12 @@ class Worker:
                 seconds, exit_code, timed_out = (
                     result.duration_seconds, result.exit_code, result.timed_out)
             else:
-                seconds = child.elapsed_seconds if child is not None else 0.0
+                # None when there is no child or it never started (issue 56).
+                seconds = child.elapsed_seconds if child is not None else None
                 exit_code = child.poll() if child is not None else None
                 timed_out = False
             entry["ended_at"] = _rfc3339_now()
-            entry["duration_s"] = round(float(seconds), 3)
+            entry["duration_s"] = round(float(seconds), 3) if seconds is not None else None
             entry["exit_code"] = exit_code
             if timed_out:
                 entry["timed_out"] = True
@@ -22575,12 +22582,38 @@ def _runs_summary(runs: list[dict[str, Any]], swaps: list[dict[str, Any]]) -> di
         for reread in measured:
             for key, value in (reread.get("tokens") or {}).items():
                 tokens[key] = tokens.get(key, 0) + int(value)
+        # A re-read whose seconds are unknown is skipped, not summed as 0, and
+        # the cost says `partial` (issue 56).
+        seconds = [float(r["seconds"]) for r in measured if _is_seconds(r.get("seconds"))]
         out["swap_cost"] = {
-            "reread_seconds": round(sum(float(r.get("seconds") or 0) for r in measured), 3),
+            "reread_seconds": round(sum(seconds), 3) if seconds else None,
             "reread_tokens": tokens,
             "measured_runs": len(measured),
             "reached_action": sum(1 for r in measured if r.get("reached")),
         }
+        if len(seconds) < len(measured):
+            out["swap_cost"]["partial"] = True
+    return out
+
+
+def _is_seconds(value: Any) -> bool:
+    """A measured duration: a number, not a bool, not None."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _runs_duration(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """An attempt's agent time from its runs (SWAP-RUNS, archived issue 2457).
+
+    The sum of the runs whose `duration_s` was measured. A run whose duration
+    is unknown (`None`: closed with no result and no child, or its close
+    failed) is left out and the total carries `duration_partial: true`
+    (issue 56); summing it as 0.0 silently shortened the total. None when no
+    run was measured.
+    """
+    known = [float(run["duration_s"]) for run in runs if _is_seconds(run.get("duration_s"))]
+    out: dict[str, Any] = {"duration_seconds": round(sum(known), 3) if known else None}
+    if len(known) < len(runs):
+        out["duration_partial"] = True
     return out
 
 
