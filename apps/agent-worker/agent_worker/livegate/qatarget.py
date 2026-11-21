@@ -187,6 +187,29 @@ token refresh the gate let through is kept apart, in `allowed`
 refresh"), bounded the same way: a run shows what was let through, and never
 counts it as refused.
 
+A TARGET'S OWN 5xx IS NAMED AS THE TARGET'S (`note_upstream`,
+`UPSTREAM_5XX`). A peer's QA run saw the target's sign-in configuration and
+current-user calls answer 503 `no healthy upstream` while the app logged no
+503 at all. No hop of ours can write that answer: the gate's forwarder
+(egress.py) and swarm-egress answer only a CONNECT, with an empty body, and
+Chromium turns a CONNECT that is not answered 200 into
+`net::ERR_TUNNEL_CONNECTION_FAILED`, never into a response a page can read;
+past the 200 the TLS session is the browser's own with the target, its
+certificate verified, so every byte of a response inside it came from
+whatever holds the target's certificate. `no healthy upstream` is Envoy's
+own reply when it has no healthy backend to forward to, and an Envoy-based
+front of the target (a managed load balancer can be one without the app's
+team knowing it) answers it without the app ever seeing the request. So the
+guard, which already holds a session on every page, frame and worker,
+enables `Network` there too, and every 502, 503 or 504 from a target origin
+is recorded as `qa_target_upstream_5xx` and kept in `refusals()`'s
+`upstream`, apart from what the gate answered itself: its time, origin, path (scrubbed like a refusal's), status, `source` `target_edge`,
+whether it came through the gate's forwarder (`proxied`, the remote address
+being loopback) and the body's class (`body`: `no_healthy_upstream` or
+`other`; the body itself is never kept), last `MAX_REFUSALS` of them. A
+run that files such a 503 against SwarmCloud can then read that the gate
+let it through from the target's side.
+
 NOTHING HERE LOGS OR RECORDS A CREDENTIAL, A USERNAME OR A SELECTOR'S MATCH.
 Records carry the target id, causes, origins, methods and counts.
 """
@@ -338,6 +361,13 @@ TARGET_LEFT = "qa_target_left"
 #: QA-IDP-POST: the code and the report's words for a token refresh let through.
 IDP_TOKEN_ALLOWED = "idp_token_refresh"
 IDP_TOKEN_LABEL = "allowed: IdP token refresh"
+#: A 5xx the target's side answered (module docstring), never one of ours.
+UPSTREAM_5XX = "qa_target_upstream_5xx"
+UPSTREAM_STATUSES = frozenset({502, 503, 504})
+#: Envoy's reply when no backend is healthy: its whole body.
+NO_HEALTHY_UPSTREAM = b"no healthy upstream"
+#: The most of a 5xx body read to classify it; Envoy's is 19 bytes.
+MAX_UPSTREAM_BODY = 4096
 #: swarm-api's `qatargets._IDP_TOKEN_PATH`, restated: one plain path, segments
 #: of unreserved and sub-delim characters less the glob characters, no `%`
 #: (so no encoded variant), no empty segment (no `//`, no trailing slash).
@@ -471,6 +501,9 @@ class QaTarget:
         #: QA-IDP-POST: the token refreshes let through, kept apart from the refusals.
         self._allowed: deque[dict[str, Any]] = deque(maxlen=MAX_REFUSALS)
         self._allowed_count = 0
+        #: The target side's 5xx answers (`note_upstream`), kept apart from both.
+        self._upstream: deque[dict[str, Any]] = deque(maxlen=MAX_REFUSALS)
+        self._upstream_count = 0
         #: Messages the scrub refused whole (`_refuse_whole`), for the record's count.
         self._scrub_refusals = 0
         self.target_id: str | None = None
@@ -879,6 +912,18 @@ class QaTarget:
             "origin": origin, "path": self._replace(path, [0])[:512], "code": code, "label": IDP_TOKEN_LABEL,
         })
 
+    def note_upstream(self, status: int, url: Any, *, proxied: bool, body: str) -> None:
+        """Keep one 5xx the target's side answered (module docstring), in the
+        refusals' shape, with its status, whether it came through the gate's
+        forwarder and its body's class; never the body."""
+        origin = origin_of(url) or "unknown"
+        path = _path_of(str(url)) if isinstance(url, str) else "/"
+        self._upstream_count += 1
+        self._upstream.append({
+            "n": self._upstream_count, "at": float(self._wall()), "origin": origin, "path": self._replace(path, [0])[:512], "code": UPSTREAM_5XX,
+            "status": int(status), "source": "target_edge", "proxied": bool(proxied), "body": body,
+        })
+
     def refusals(self) -> dict[str, Any]:
         """What `REFUSALS_PATH` answers: the kept refusals, oldest first, and
         apart from them the token refreshes let through (`allowed`)."""
@@ -888,7 +933,9 @@ class QaTarget:
                 "build": buildinfo.describe(),
                 "dropped": self._refused - len(self._refusals),
                 "allowed": [dict(r) for r in self._allowed],
-                "allowed_dropped": self._allowed_count - len(self._allowed)}
+                "allowed_dropped": self._allowed_count - len(self._allowed),
+                "upstream": [dict(r) for r in self._upstream],
+                "upstream_dropped": self._upstream_count - len(self._upstream)}
 
     # ------------------------------------------------------------- rules
 
@@ -1126,7 +1173,8 @@ class QaTargetGuard:
 
     `start` attaches the gate to every page and, through each page's
     auto-attach, to its frames and workers, and enables `Fetch` at the
-    `Request` stage on each. `on_event` is fed every message from the pipe and
+    `Request` stage on each, and `Network` to see a target's own 5xx
+    (`UPSTREAM_5XX`). `on_event` is fed every message from the pipe and
     never waits: each answer runs on a task.
     """
 
@@ -1139,6 +1187,8 @@ class QaTargetGuard:
         self.started = False
         self._sessions: dict[str, _Session] = {}
         self._attaching: set[str] = set()
+        #: requestId -> (status, url, proxied) of a target 5xx whose body is still loading.
+        self._upstream: dict[str, tuple[int, str, str, bool]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closed = False
 
@@ -1197,6 +1247,9 @@ class QaTargetGuard:
         try:
             await self._quietly("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]},
                                 session)
+            # Only the headers and a small body are wanted (UPSTREAM_5XX).
+            await self._quietly("Network.enable", {"maxResourceBufferSize": MAX_UPSTREAM_BODY,
+                                                   "maxTotalBufferSize": 16 * MAX_UPSTREAM_BODY}, session)
             await self._quietly("Target.setAutoAttach",
                                 {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True}, session)
         finally:
@@ -1224,6 +1277,13 @@ class QaTargetGuard:
             return
         if method == "Fetch.requestPaused":
             self._spawn(self._paused(session, params))
+        elif method == "Network.responseReceived":
+            self._response(params)
+        elif method in ("Network.loadingFinished", "Network.loadingFailed"):
+            pending = self._upstream.pop(str(params.get("requestId")), None)
+            if pending is not None:
+                self._spawn(self._note_upstream(session, str(params.get("requestId")), pending,
+                                                loaded=method == "Network.loadingFinished"))
         elif method == "Target.attachedToTarget":
             child = params.get("sessionId")
             info = params.get("targetInfo") or {}
@@ -1232,6 +1292,41 @@ class QaTargetGuard:
                 self._spawn(self._setup(child, waiting=params.get("waitingForDebugger") is True))
         elif method == "Target.detachedFromTarget":
             self._sessions.pop(str(params.get("sessionId")), None)
+
+    def _response(self, params: Mapping[str, Any]) -> None:
+        """A target origin's 502/503/504 is held until its body has loaded."""
+        response = params.get("response")
+        request_id = params.get("requestId")
+        if not isinstance(response, Mapping) or not isinstance(request_id, str):
+            return
+        status = response.get("status")
+        url = response.get("url")
+        if not isinstance(status, int) or status not in UPSTREAM_STATUSES or origin_of(url) not in self._target.origins:
+            return
+        if len(self._upstream) >= MAX_REFUSALS:
+            return
+        remote = str(response.get("remoteIPAddress") or "")
+        proxied = remote.startswith("127.") or remote in ("::1", "[::1]")
+        self._upstream[request_id] = (status, str(url), proxied)
+
+    async def _note_upstream(self, session: str, request_id: str, pending: tuple[int, str, bool],
+                             *, loaded: bool) -> None:
+        status, url, proxied = pending
+        body = "other"
+        if loaded:
+            got = await self._quietly("Network.getResponseBody", {"requestId": request_id}, session) or {}
+            raw = got.get("body")
+            if isinstance(raw, str):
+                try:
+                    data = base64.b64decode(raw[:2 * MAX_UPSTREAM_BODY]) if got.get("base64Encoded") else \
+                        raw[:MAX_UPSTREAM_BODY].encode("utf-8", "replace")
+                except (binascii.Error, ValueError):
+                    data = b""
+                if data.strip() == NO_HEALTHY_UPSTREAM:
+                    body = "no_healthy_upstream"
+        self._target.note_upstream(status, url, proxied=proxied, body=body)
+        self._record(UPSTREAM_5XX, {"origin": origin_of(url), "status": status, "source": "target_edge",
+                                    "proxied": proxied, "body": body})
 
     def _top_document(self, session: str, params: Mapping[str, Any]) -> bool:
         owner = self._sessions.get(session)
