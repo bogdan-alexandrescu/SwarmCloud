@@ -488,13 +488,13 @@ export function SecretsScreen({ view, token = null }: { view: string | null; tok
           {done !== null && <p className="pk-saved" role="status">{done}</p>}
           {at.scope === 'repository' && known === false ? (
             <Banner tone="warn" title="That repository is not registered in this workspace">
-              The Repository scope lists only this workspace&rsquo;s registrations. Pick one above, or register it on{' '}
-              <AppLink address="config/repositories">Config › Repositories</AppLink>.
+              Pick one above, or <AppLink address="config/repositories">register it</AppLink>.{' '}
+              <InfoTip about="the Repository scope" tip="The Repository scope lists only this workspace’s registrations. Pick one above, or register it on Config › Repositories." />
             </Banner>
           ) : at.scope === 'repository' && registered !== null && registered.length === 0 ? (
             <Banner tone="info" title="No repository is registered in this workspace yet">
-              A repository&rsquo;s secrets are released only to agents that clone it, so they wait for a registration.
-              Register one on <AppLink address="config/repositories">Config › Repositories</AppLink>.
+              <AppLink address="config/repositories">Register one</AppLink>{' '}
+              <InfoTip about="repository secrets" tip="A repository’s secrets are released only to agents that clone it, so they wait for a registration. Register one on Config › Repositories." />
             </Banner>
           ) : (
             <UrRegion state={overview.state} route={OVERVIEW_ROUTE} what="This scope's secrets" plural onRetry={overview.reload}>
@@ -683,7 +683,7 @@ function ScopeBody({
             />
             <div className="sec-g2">
               <QaCard rows={of('qa_sign_in')} />
-              <GitCard rows={of('github')} empty="No repository token. Agents for this repository use the workspace’s token (repository first, then workspace)." />
+              <GitCard rows={of('github')} empty="No repository token." emptyWhy="Agents for this repository use the workspace’s token (repository first, then workspace)." />
             </div>
           </>
         )}
@@ -695,8 +695,10 @@ function ScopeBody({
       <>
         <div className="sec-lead is-ok">
           <span className="sec-k">Yours</span>
-          <b>Your secrets win over the workspace&rsquo;s and a repository&rsquo;s, for your own agents</b>
-          <span>Nothing you set here is read by anyone else&rsquo;s agents.</span>
+          <b>
+            Yours win, for your own agents{' '}
+            <InfoTip about="Yours" tip="Your secrets win over the workspace’s and a repository’s, for your own agents. Nothing you set here is read by anyone else’s agents." />
+          </b>
         </div>
         {personalSelected ? (
           <StoreCard title="For your agents" label="Your secrets" target={{ scope: 'workspace' }} overview={overview} catalogue={catalogue} onChange={onChange} go={go} at={at} />
@@ -721,7 +723,7 @@ function ScopeBody({
             : null}
       <StoreCard title="For agents" label="Workspace secrets" target={{ scope: 'workspace' }} overview={overview} catalogue={catalogue} onChange={onChange} go={go} at={at} empty={<FirstSecret tenant={overview.tenant_id} keys={keys} />} />
       <KeysCard rows={[...of('keys'), ...of('accounts')]} scope="workspace" agents={of('agents')} go={go} onChange={onChange} onAdd={onAdd} />
-      <GitCard rows={of('github')} empty="No workspace token is registered. Connect one on GitHub access." />
+      <GitCard rows={of('github')} empty="No workspace token is registered." />
     </>
   )
 }
@@ -778,7 +780,7 @@ function NeedLead({ rows, keyNeeded, manages, scope, tenant, repository, repoId,
     const note = `Needed and not set in ${where}: ${listed}. A workspace admin sets ${n === 1 ? 'it' : 'them'} on Config › Secrets: ${address}`
     try {
       await navigator.clipboard.writeText(note)
-      setCopied('Note copied. Send it to a workspace admin.')
+      setCopied('Note copied: send it to a workspace admin.')
     } catch {
       setCopied('The note was not copied: this browser refused the clipboard.')
     }
@@ -796,9 +798,8 @@ function NeedLead({ rows, keyNeeded, manages, scope, tenant, repository, repoId,
       </b>
       {!(manages && n === 1) && (
         <span>
-          {manages
-            ? `${listed.replace(/^./, (c) => c.toUpperCase())}. Each stays off until it is set.`
-            : `${listed.replace(/^./, (c) => c.toUpperCase())}. You can set your own under Yours; yours win for your agents.`}
+          {`${listed.replace(/^./, (c) => c.toUpperCase())}.`}{' '}
+          <AboutTip label="what is needed" tip={manages ? 'Each stays off until it is set.' : 'You can set your own under Yours; yours win for your agents.'} />
         </span>
       )}
       <span className="sec-acts">
@@ -830,7 +831,10 @@ function FirstLead({ tenant, step, onAdd }: { tenant: string; step: SetupStep | 
     <section className="sec-lead" aria-label="Add your first secret">
       <span className="sec-k">{step?.state === 'done' ? 'Step 3 · nothing missing' : 'Step 3 · next'}</span>
       <b>Add your first secret</b>
-      <span>Nothing is stored for {tenant || 'this workspace'} yet, and nothing registered needs one yet either.</span>
+      <span>
+        Nothing is stored for {tenant || 'this workspace'} yet.{' '}
+        <AboutTip label="Add your first secret" tip="Nothing registered needs one yet either." />
+      </span>
       <span className="sec-acts">
         <Button kind="primary" size="sm" onClick={onAdd}>Add a secret</Button>
       </span>
@@ -844,8 +848,8 @@ function FirstLead({ tenant, step, onAdd }: { tenant: string; step: SetupStep | 
  */
 function DoneLead({ tenant, secrets, keys, next }: { tenant: string; secrets: number; keys: number; next: SetupStep | null }) {
   const what = secrets === 0
-    ? `${keysAre(keys)} set; no secret for agents is stored yet.`
-    : `${secrets === 1 ? '1 secret for agents' : `${secrets} secrets for agents`}${keys === 0 ? '' : ` and ${keys === 1 ? '1 key' : `${keys} keys`}`} ${secrets + keys === 1 ? 'is' : 'are'} set.`
+    ? `${keysAre(keys)} set; no secret for agents yet.`
+    : `${secrets === 1 ? '1 secret for agents' : `${secrets} secrets for agents`}${keys === 0 ? '' : ` and ${keys === 1 ? '1 key' : `${keys} keys`}`}${keys === 0 ? ` ${secrets === 1 ? 'is' : 'are'}` : ''} set.`
   return (
     <section className="sec-lead is-ok" aria-label="Nothing missing">
       <span className="sec-k">Step 3 · done</span>
@@ -871,12 +875,13 @@ function FirstSecret({ tenant, keys }: { tenant: string; keys: readonly SecretsR
   return (
     <>
       <p className="pk-lead">
-        <b>{keys.length === 0 ? `No secret is stored for ${where} yet.` : `No secret for agents is stored for ${where} yet; ${keysAre(keys.length)} set below.`}</b> Usually first:
+        <b>{keys.length === 0 ? `No secret is stored for ${where} yet.` : `No secret for agents in ${where} yet.`}</b>
+        {keys.length > 0 && <> <AboutTip label="Keys set" tip={`${keysAre(keys.length).replace(/^./, (c) => c.toUpperCase())} set below, under Keys for agents and MCP.`} /></>} Usually first:
       </p>
       <ul className="sec-first">
-        {!typesafe && <li><b>The TypeSafe key</b><span>Jev and browser agents read it. Set it under Keys for agents and MCP.</span></li>}
-        <li><b>A search API key</b><span>For agents that search the web. Add a secret, then grant it.</span></li>
-        <li><b>A QA sign-in</b><span>Set on a repository, once a QA target is registered.</span></li>
+        {!typesafe && <li><b>The TypeSafe key</b><span>Under Keys for agents and MCP.</span> <AboutTip label="The TypeSafe key" tip="Jev and browser agents read it. Set it under Keys for agents and MCP." /></li>}
+        <li><b>A search API key</b><span>Add a secret, then grant it.</span> <AboutTip label="A search API key" tip="For agents that search the web. Add a secret, then grant it." /></li>
+        <li><b>A QA sign-in</b><span>Set on a repository.</span> <AboutTip label="A QA sign-in" tip="Set on a repository, once a QA target is registered." /></li>
       </ul>
     </>
   )
@@ -929,6 +934,7 @@ function StoreCard({
       className={blank ? 'sec-dash' : undefined}
       action={
         <span className="sec-acts">
+          {hint !== undefined && <AboutTip label="Who sets these" tip={hint} />}
           {!blank && (
             <AboutTip
               label="Granted to"
@@ -957,7 +963,6 @@ function StoreCard({
           />
         )}
       </UrRegion>}
-      {hint !== undefined && <p className="sec-hint">{hint}</p>}
       {matrix && data !== null && (
         <UrRegion state={catalogue.state} route={CATALOGUE_ROUTE} what="The consumers a secret may be granted to" plural onRetry={catalogue.reload}>
           {(c) => <GrantMatrix data={data} store={store} catalogue={c} onChange={reload} />}
@@ -975,10 +980,11 @@ function YoursList({ rows, personal, keys }: { rows: SecretsRow[]; personal: str
     goView('')
   }
   return (
-    <Card title="For your agents">
+    <Card title="For your agents" action={<AboutTip label="For your agents" tip="Your secrets live in your personal workspace: add, rotate and opt them in to a workspace there." end />}>
       {rows.length === 0 ? (
         <p className="ur-small">
-          {keys === 0 ? 'You have no secret of your own yet.' : `You have no secret of your own for agents yet; ${keysAre(keys)} yours, set under Keys below.`}
+          {keys === 0 ? 'You have no secret of your own yet.' : 'No secret of your own for agents yet.'}
+          {keys > 0 && <> <AboutTip label="Your keys" tip={`${keysAre(keys).replace(/^./, (c) => c.toUpperCase())} yours, set under Keys below.`} /></>}
         </p>
       ) : (
         <table className="mcp-servers" aria-label="Your secrets">
@@ -997,9 +1003,6 @@ function YoursList({ rows, personal, keys }: { rows: SecretsRow[]; personal: str
           </tbody>
         </table>
       )}
-      <p className="sec-hint">
-        Your secrets live in your personal workspace: add, rotate and opt them in to a workspace there.
-      </p>
       {personal === null ? (
         <p className="ur-small">You have no personal workspace yet.</p>
       ) : (
@@ -1028,9 +1031,9 @@ function BrowserCard({ rows, removable, onChange }: { rows: SecretsRow[]; remova
     onChange()
   }
   return (
-    <Card title="Browser sessions">
+    <Card title="Browser sessions" action={<AboutTip label="Browser sessions" tip="Saved when a browser agent asks you to sign in. Only your agents reuse it." end />}>
       {rows.length === 0 ? (
-        <p className="ur-small">No browser session is saved. One is saved when a browser agent asks you to sign in.</p>
+        <p className="ur-small">No browser session is saved.</p>
       ) : (
         <table className="mcp-servers" aria-label="Browser sessions">
           <thead>
@@ -1052,11 +1055,10 @@ function BrowserCard({ rows, removable, onChange }: { rows: SecretsRow[]; remova
           </tbody>
         </table>
       )}
-      <p className="sec-hint">Saved when a browser agent asks you to sign in. Only your agents reuse it.</p>
       {removing !== null && (
         <TypedConfirm title={`Remove ${removing}`} name={removing} verb="Remove" keep="Keep it" busy={busy ? 'Removing…' : false}
           error={failed} onConfirm={() => void remove(removing)} onClose={() => setRemoving(null)}>
-          <p>Your agents will be asked to sign in again the next time they need this site.</p>
+          <p>Your agents must sign in to this site again.</p>
         </TypedConfirm>
       )}
     </Card>
@@ -1180,7 +1182,8 @@ function KeysCard({ rows, scope, agents = [], go, onChange, onAdd }: { rows: Sec
       {deleting !== null && (
         <TypedConfirm title="Delete the TypeSafe key" name={deleting.name} verb="Delete" keep="Keep it" busy={busy ? 'Deleting…' : false}
           error={failed} onConfirm={() => void remove(deleting)} onClose={() => setDeleting(null)}>
-          <p>Every version is destroyed. {scope === 'personal' ? 'Your submissions use the workspace’s key, if it has one.' : 'Jev and browser agents of this workspace lose it.'}</p>
+          <p>Every version is destroyed.</p>
+          <p>{scope === 'personal' ? 'Your submissions fall back to any workspace key.' : 'This workspace’s Jev and browser agents lose it.'}</p>
         </TypedConfirm>
       )}
     </Card>
@@ -1200,7 +1203,7 @@ function expired(iso: string | null): boolean {
 }
 
 /** GitHub token status (§4): kind, state, login, verified, expires. Never any character of it. */
-function GitCard({ rows, empty }: { rows: SecretsRow[]; empty: string }) {
+function GitCard({ rows, empty, emptyWhy }: { rows: SecretsRow[]; empty: string; emptyWhy?: string }) {
   return (
     <Card title="GitHub token" action={
       <span className="sec-acts">
@@ -1208,7 +1211,7 @@ function GitCard({ rows, empty }: { rows: SecretsRow[]; empty: string }) {
         <AppLink address="config/github" kind="secondary" label="Connect or disconnect on GitHub access">GitHub access</AppLink>
       </span>
     }>
-      {rows.length === 0 ? <p className="ur-small">{empty}</p> : rows.map((r) => (
+      {rows.length === 0 ? <p className="ur-small">{empty}{emptyWhy !== undefined && <> <InfoTip about="the missing token" tip={emptyWhy} /></>}</p> : rows.map((r) => (
         <dl key={r.name} className="sec-kv">
           <dt>Kind</dt><dd>{r.kind === null ? 'not said' : (TOKEN_KINDS[r.kind] ?? r.kind)}{r.token_scope === null ? '' : ` · ${r.token_scope === 'tenant' ? 'workspace' : r.token_scope === 'user' ? 'yours' : r.token_scope}`}</dd>
           {/* ONE STATE WITH GITHUB ACCESS (visual QA pass 2 config2-02): the
@@ -1233,9 +1236,14 @@ function GitCard({ rows, empty }: { rows: SecretsRow[]; empty: string }) {
 function QaCard({ rows }: { rows: SecretsRow[] }) {
   const acts = rows.some((r) => r.can_manage)
   return (
-    <Card title="Sign-in for QA">
+    <Card title="Sign-in for QA" action={
+      <span className="sec-acts">
+        <AboutTip label="Sign-in for QA" tip="Set and Replace open the target’s one-time form on QA targets." end />
+        <AppLink address={QA_LINK_ADDRESS} kind="secondary">QA targets</AppLink>
+      </span>
+    }>
       {rows.length === 0 ? (
-        <p className="ur-small">No QA target of this repository holds a sign-in.</p>
+        <p className="ur-small">No QA target here holds a sign-in.</p>
       ) : (
         <table className="mcp-servers" aria-label="Sign-in for QA">
           <thead><tr><th scope="col">Target · environment</th><th scope="col">State</th>{acts && <th scope="col" aria-label="Actions" />}</tr></thead>
@@ -1264,7 +1272,6 @@ function QaCard({ rows }: { rows: SecretsRow[] }) {
           </tbody>
         </table>
       )}
-      <p className="sec-hint">Set and Replace open the target&rsquo;s one-time form on <AppLink address={QA_LINK_ADDRESS}>QA targets</AppLink>.</p>
     </Card>
   )
 }
@@ -1446,10 +1453,13 @@ function AddWizard({
         </ol>
         {step === 1 && (
           <fieldset className="sec-opts">
-            <legend>Where does it live?</legend>
-            <Opt name={`${id}-scope`} on={scope === 'workspace'} title={tenant === null ? 'Workspace' : `Workspace · ${tenant}`} why="Any member’s agents may be granted it. Set by a workspace admin." onPick={() => setScope('workspace')} />
-            <Opt name={`${id}-scope`} on={scope === 'personal'} title="Yours" why="Only your own submissions read it, and it wins over the others." onPick={() => setScope('personal')} />
-            <Opt name={`${id}-scope`} on={scope === 'repository'} title="Repository" why="Only for one repository, and released only to agents that clone it." onPick={() => setScope('repository')} disabled={repos.length === 0 ? 'No repository is registered in this workspace yet.' : undefined} />
+            <legend>
+              Where does it live?{' '}
+              <AboutTip label="where it lives" tip="Workspace: any member’s agents may be granted it; a workspace admin sets it. Yours: only your own submissions read it, and it wins over the others. Repository: only for one repository, and released only to agents that clone it." />
+            </legend>
+            <Opt name={`${id}-scope`} on={scope === 'workspace'} title={tenant === null ? 'Workspace' : `Workspace · ${tenant}`} why="Set by a workspace admin." onPick={() => setScope('workspace')} />
+            <Opt name={`${id}-scope`} on={scope === 'personal'} title="Yours" why="Read only by your own submissions." onPick={() => setScope('personal')} />
+            <Opt name={`${id}-scope`} on={scope === 'repository'} title="Repository" why="Released only to agents that clone it." onPick={() => setScope('repository')} disabled={repos.length === 0 ? 'No repository is registered here yet.' : undefined} />
             {scope === 'repository' && repos.length > 0 && (
               <span className="sec-field">
                 <label htmlFor={`${id}-repo`}>Repository</label>
@@ -1462,20 +1472,31 @@ function AddWizard({
         )}
         {step === 2 && (
           <fieldset className="sec-opts">
-            <legend>Who is it for?</legend>
-            <Opt name={`${id}-dest`} on={!actions} title="Agents" why={scope === 'repository' ? `Agents that clone ${where}.` : 'Agents, tools and components it is granted to.'} onPick={() => setDest('agents')} />
+            <legend>
+              Who is it for?{' '}
+              <AboutTip label="who it is for" tip="Agents: the agents, tools and components it is granted to (for a repository, agents that clone it). GitHub Actions: workflows in the repository, on GitHub. A GitHub Actions secret lives on one repository: pick Repository at step 1 for one." />
+            </legend>
+            <Opt name={`${id}-dest`} on={!actions} title="Agents" why={scope === 'repository' ? `Agents that clone ${where}.` : 'Those it is granted to.'} onPick={() => setDest('agents')} />
             {scope === 'repository' && (
               <Opt name={`${id}-dest`} on={actions} title="GitHub Actions" why="Workflows in the repository, on GitHub." onPick={() => setDest('actions')} />
             )}
-            {scope !== 'repository' && <p className="sec-hint">A GitHub Actions secret lives on one repository: pick Repository at step 1 for one.</p>}
+            {scope !== 'repository' && repos.length > 0 && (
+              <span className="sec-acts">
+                <Button kind="ghost" size="sm" onClick={() => {
+                  setScope('repository')
+                  setStep(1)
+                }}>For GitHub Actions, pick a repository</Button>
+              </span>
+            )}
             {actions && (
               <>
                 <p className="sec-hint">
                   {listed?.can_write === true
-                    ? 'GitHub Actions needs GitHub admin of the repository: checked, you are.'
+                    ? 'GitHub admin of the repository: checked, you are.'
                     : listed?.can_write === false
-                      ? `${sentenceOf(listed.cannot_write_because ?? 'GitHub was asked and did not allow it')} Only a workspace manager whom GitHub calls admin of ${repoLabel} sets these.`
-                      : 'GitHub Actions needs GitHub admin of the repository: SwarmCloud asks GitHub when the form opens and again at the write.'}
+                      ? sentenceOf(listed.cannot_write_because ?? 'GitHub was asked and did not allow it')
+                      : 'Needs GitHub admin: checked when the form opens.'}{' '}
+                  <AboutTip label="GitHub admin" tip={`GitHub Actions needs GitHub admin of the repository: SwarmCloud asks GitHub when the form opens and again at the write. Only a workspace manager whom GitHub calls admin of ${repoLabel} sets these.`} />
                 </p>
                 {listFailed !== null ? (
                   <Banner tone="bad" title={`${repoLabel}’s environments were not read: ${listFailed}`} role="alert" />
@@ -1484,7 +1505,7 @@ function AddWizard({
                 ) : (
                   <fieldset className="sec-opts">
                     <legend>Environment</legend>
-                    <Opt name={`${id}-env`} on={env === null} title="Repository level" why="Every workflow in the repository can read it." onPick={() => setEnv(null)} />
+                    <Opt name={`${id}-env`} on={env === null} title="Repository level" why="Every workflow in it can read it." onPick={() => setEnv(null)} />
                     {listed.environments.map((e) => {
                       const r = ruleOf(e.environment)
                       return (
@@ -1501,7 +1522,12 @@ function AddWizard({
                       <p className="sec-hint" role="status"><b>{env}</b>: {ruleWords(rules[env]!)}, read from GitHub just now.</p>
                     )}
                     {checkFailed !== null && <Banner tone="bad" title={checkFailed} role="alert" />}
-                    {listed.environments.length === 0 && <p className="sec-hint">No environment on {repoLabel} yet: create one on GitHub, then Check rule reads its branch rule.</p>}
+                    {listed.environments.length === 0 && (
+                      <p className="sec-hint">
+                        No environment on {repoLabel} yet.{' '}
+                        <AboutTip label="environments" tip="Create one on GitHub, then Check rule reads its branch rule." />
+                      </p>
+                    )}
                   </fieldset>
                 )}
               </>
@@ -1512,12 +1538,15 @@ function AddWizard({
           <div className="sec-opts">
             <p className="sec-hint">{readersOf(env ?? null, ruleOf(env), repoLabel)}</p>
             <span className="sec-field">
-              <label htmlFor={`${id}-name`}>Name</label>
+              <span>
+                <label htmlFor={`${id}-name`}>Name</label>{' '}
+                <AboutTip label="the name rule" tip="Letters, digits and _; not starting with a digit or GITHUB_. Never the value." />
+              </span>
               <input id={`${id}-name`} className="ur-search" value={name} maxLength={200} spellCheck={false} autoCapitalize="off" autoCorrect="off"
                 autoComplete="off" placeholder="MERGE_APP_PRIVATE_KEY" aria-describedby={`${id}-name-why`} aria-invalid={nameProblem(name) !== null}
                 onChange={(e) => setName(e.target.value.trim())} />
               <span id={`${id}-name-why`} className="sec-hint">
-                {nameProblem(name) ?? 'Letters, digits and _; not starting with a digit or GITHUB_. Never the value.'}
+                {nameProblem(name) ?? 'Never the value.'}
               </span>
             </span>
           </div>
@@ -1525,10 +1554,13 @@ function AddWizard({
         {step === 3 && !actions && (
           <div className="sec-opts">
             <span className="sec-field">
-              <label htmlFor={`${id}-name`}>Name</label>
+              <span>
+                <label htmlFor={`${id}-name`}>Name</label>{' '}
+                <AboutTip label="the name rule" tip="Lower-case letters, digits and hyphens, starting with a letter or a digit. Never the value." />
+              </span>
               <input id={`${id}-name`} className="ur-search" value={name} maxLength={64} spellCheck={false} autoCapitalize="off" autoCorrect="off"
                 placeholder="search-api" aria-describedby={`${id}-name-why`} onChange={(e) => setName(e.target.value.trim())} />
-              <span id={`${id}-name-why`} className="sec-hint">Lower-case letters, digits and hyphens, starting with a letter or a digit. Never the value.</span>
+              <span id={`${id}-name-why`} className="sec-hint">Never the value.</span>
             </span>
             <span className="sec-field-row">
               <span className="sec-field">
@@ -1546,7 +1578,12 @@ function AddWizard({
             </span>
             <fieldset className="sec-grants">
               <legend>Granted to</legend>
-              {fits.length === 0 ? <p className="sec-hint">The catalogue was not read, so grant it from the matrix after it is set.</p> : fits.map(({ c, cell }) => (
+              {fits.length === 0 ? (
+                <p className="sec-hint">
+                  The catalogue was not read.{' '}
+                  <AboutTip label="granting it later" tip="The catalogue was not read, so grant it from the matrix after it is set." />
+                </p>
+              ) : fits.map(({ c, cell }) => (
                 <label key={c.consumer} className={`sec-grant${cell!.open ? '' : ' is-off'}`}>
                   <input type="checkbox" disabled={!cell!.open} checked={picked.includes(c.consumer)}
                     onChange={(e) => setPicked((p) => (e.target.checked ? [...p, c.consumer] : p.filter((x) => x !== c.consumer)))} />
@@ -1561,8 +1598,8 @@ function AddWizard({
           <div className="sec-opts">
             <p className="sec-big">Set the value in a one-time form</p>
             <p className="sec-hint">
-              Opens a form for <b>{name}</b> in {actionsWhere}. It works once, for ten minutes. The value is sealed in
-              SwarmCloud, written to GitHub and never shown again; SwarmCloud keeps only the name, who set it and when.
+              Writes <b>{name}</b> to GitHub; never shown again.{' '}
+              <AboutTip label="the one-time form" tip={`Opens a form for ${name} in ${actionsWhere}. It works once, for ten minutes. The value is sealed in SwarmCloud, written to GitHub and never shown again; SwarmCloud keeps only the name, who set it and when.`} />
             </p>
             <div className="c-banner is-info sec-term">
               <span>From a terminal instead: <code>{scLine(name, repoLabel, env ?? null)}</code></span>
@@ -1575,14 +1612,17 @@ function AddWizard({
             <p className="sec-big">Set the value in a one-time form</p>
             {wrongScope ? (
               <Banner tone="warn" title="Yours is set in your personal workspace">
-                {personalHere === null
-                  ? 'Reading which workspace is yours…'
-                  : 'A form opened here would write this workspace’s store, not yours. Switch to your personal workspace and add it there.'}
+                {personalHere === null ? 'Reading which workspace is yours…' : (
+                  <>
+                    Switch to your personal workspace to add it.{' '}
+                    <AboutTip label="where yours is set" tip="A form opened here would write this workspace’s store, not yours. Switch to your personal workspace and add it there." />
+                  </>
+                )}
               </Banner>
             ) : (
               <p className="sec-hint">
-                Opens a form for <b>{name}</b> in {where}. It works once, for ten minutes. The value is stored write-only and
-                never shown again{picked.length > 0 ? `; then ${picked.length === 1 ? picked[0] : `${picked.length} consumers`} ${picked.length === 1 ? 'is' : 'are'} granted it` : ''}.
+                Write-only: <b>{name}</b> is never shown again.{' '}
+                <AboutTip label="the one-time form" tip={`Opens a form for ${name} in ${where}. It works once, for ten minutes. The value is stored write-only and never shown again${picked.length > 0 ? `; then ${picked.length === 1 ? picked[0] : `${picked.length} consumers`} ${picked.length === 1 ? 'is' : 'are'} granted it` : ''}.`} />
               </p>
             )}
             <div className="c-banner is-info sec-term">
@@ -1694,16 +1734,20 @@ function OneTimeForm({
     onDone(words)
   }
   const after = (
-    <Card title={written === null ? 'After you press Set' : 'Written'}>
+    <Card title={written === null ? 'After you press Set' : 'Written'} action={
+      <AboutTip label={written === null ? 'After you press Set' : 'Written'} end tip={written === null
+        ? 'The value is written write-only, the link is used up, and the value is not shown again, here or anywhere. If the link was used or is older than ten minutes, the form says so and nothing is written.'
+        : 'The link is used up. The value is not shown again, here or anywhere.'} />
+    }>
       {written === null ? (
         <>
-          <p className="pk-lead">The value is written write-only, the link is used up, and the value is not shown again, here or anywhere.</p>
-          <p className="pk-lead"><b>If the link was used or is older than ten minutes</b>, the form says so and nothing is written.</p>
+          <p className="pk-lead">Write-only: never shown again.</p>
+          <p className="pk-lead">A used or stale link writes nothing.</p>
         </>
       ) : (
         <>
           <p className="pk-saved" role="status">{written}</p>
-          <p className="pk-lead">The link is used up. The value is not shown again, here or anywhere.</p>
+          <p className="pk-lead">The link is used up.</p>
           <span className="sec-acts">
             <Button kind="secondary" size="sm" onClick={onAgain}>Set another in this place</Button>
             <Button kind="ghost" size="sm" onClick={onAnother}>Back to Secrets</Button>
@@ -1720,8 +1764,8 @@ function OneTimeForm({
   } else if (at.scope === 'personal' && overview !== null && !personalSelected) {
     body = (
       <Banner tone="warn" title="Yours is set in your personal workspace">
-        This form would write the selected workspace&rsquo;s store, not yours, so it is not offered here. Switch to your
-        personal workspace and open it there.
+        Switch to your personal workspace to open it.{' '}
+        <AboutTip label="where yours is set" tip="This form would write the selected workspace’s store, not yours, so it is not offered here. Switch to your personal workspace and open it there." />
       </Banner>
     )
   } else if (at.scope === 'personal' && overview === null) {
@@ -1749,8 +1793,8 @@ function OneTimeForm({
   return (
     <>
       <Banner tone="info" title={fromLink ? 'Opened from a one-time link' : 'A one-time form'}>
-        Paste the value into the form below: the /sc command and this page&rsquo;s address never see it. Its link works
-        once, for ten minutes.
+        Works once, for ten minutes.{' '}
+        <AboutTip label="the one-time form" tip="Paste the value into the form below: the /sc command and this page’s address never see it. Its link works once, for ten minutes." />
       </Banner>
       <div className="sec-g21">
         <div className="sec-col">{body}</div>
@@ -1842,7 +1886,7 @@ function StoreForm({
       ) : (
         <AddSecret catalogue={catalogue} store={store} fixed={draft} takeToken={take} onAdded={(name) => void add(name)} />
       )}
-      <p className="sec-hint">8 bytes to 8 KiB. The form is cleared whatever the answer.</p>
+      <p className="sec-hint">8 bytes to 8 KiB. <AboutTip label="the value" tip="8 bytes to 8 KiB. The form is cleared whatever the answer." /></p>
     </Card>
   )
 }
@@ -1901,7 +1945,7 @@ function KeyForm({
         <label htmlFor={`${id}-v`}>{label}</label>
         <input id={`${id}-v`} ref={field} className="ur-search pk-input" type="password" autoComplete="off" autoCapitalize="off"
           autoCorrect="off" spellCheck={false} placeholder="Paste the value" onChange={() => setFilled((field.current?.value ?? '') !== '')} />
-        <p className="sec-hint">8 bytes to 8 KiB. The form is cleared whatever the answer.</p>
+        <p className="sec-hint">8 bytes to 8 KiB. <AboutTip label="the value" tip="8 bytes to 8 KiB. The form is cleared whatever the answer." /></p>
         <div className="pk-form-row">
           <Button kind="primary" size="sm" type="submit" busy={busy ? 'Setting…' : false} disabled={!filled}>Set secret</Button>
         </div>
