@@ -130,3 +130,44 @@ def test_workspace_refuses_the_switch(tmp_path) -> None:
     assert proc.returncode != 0, out
     assert "takes its every value from the approved record" in out, out
     assert fakes.calls() == [], out
+
+
+# --runs-no-work (owner decision 2026-11-21): a workspace that never runs
+# agents -- the roles and join acceptance probes' -- takes the same switch off
+# without being on swarm-api's state routes, and the run says what it skipped.
+
+
+def test_runs_no_work_with_false_skips_the_role_and_says_so(tmp_path) -> None:
+    fakes = Fakes(tmp_path)
+    proc = fakes.run([
+        str(REGISTER), *FULL, "--providers", "anthropic", "--runs-no-work", "--worker-firestore-access", "false",
+    ])
+    out = _out(proc)
+    assert proc.returncode == 0, out
+    assert _firestore_grants(fakes) == [], f"a no-work workspace with false must get no Firestore role:\n{out}"
+    assert fakes.bucket_changes(), f"the object grants went with the Firestore one:\n{out}"
+    assert "skipped: swarmTenantWorkerFirestore" in out and "runs no agents" in out, out
+
+
+def test_runs_no_work_alone_grants_as_before(tmp_path) -> None:
+    fakes = Fakes(tmp_path)
+    proc = fakes.run([str(REGISTER), *FULL, "--providers", "anthropic", "--runs-no-work"])
+    out = _out(proc)
+    assert proc.returncode == 0, out
+    assert len(_firestore_grants(fakes)) == 1, f"--runs-no-work alone must remove nothing:\n{out}"
+    assert "--runs-no-work alone skips nothing" in out, out
+
+
+def test_add_provider_and_workspace_refuse_runs_no_work(tmp_path) -> None:
+    fakes = Fakes(tmp_path, _tenant_document(["anthropic"]))
+    proc = fakes.run([str(REGISTER), "--tenant", "eng", "--add-provider", "openai", "--runs-no-work"])
+    out = _out(proc)
+    assert proc.returncode != 0 and "--runs-no-work" in out, out
+    assert fakes.gcloud_changes() == [] and fakes.patches() == [], out
+
+    (tmp_path / "ws").mkdir()
+    fakes = Fakes(tmp_path / "ws")
+    proc = fakes.run([str(REGISTER), "--workspace", "w-3f9a2c", "--runs-no-work"])
+    out = _out(proc)
+    assert proc.returncode != 0 and "takes its every value from the approved record" in out, out
+    assert fakes.calls() == [], out
