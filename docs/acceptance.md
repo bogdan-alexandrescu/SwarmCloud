@@ -434,6 +434,35 @@ The reader is `collect` with `carrier: branches`, so it MAY push its own
 branch. A strategy that pushes nothing is refused `strategy_pushes_nothing`
 before the branch rule is ever asked.
 
+**The agents call the tools from Bash, as `python3 -m agent_worker.gitmcp
+<tool> --ref ...`, not through the swarm-git MCP server.** Since archived pull
+request 3113 (the owner's "prompts without bloat", 3 November 2026) the worker
+hands the MCP server only to the steps on `agent_worker.stepservers`' list: a
+review, a CI fix, a step publishing onto a pull request, a `single-pr` reader
+or amender, a merge step's conflict round. None of this group's agents is on
+it: the rebase lane is a `continues` step, the reader a `collect` task, the
+build step an `integrate` contributor. Their prompts still said "you have the
+swarm-git MCP tools", so on 2026-11-21 (deployed 9ee05db74fcc) the agents made
+almost no call and recorded no answer, and four checks FAILed as if the
+platform had refused or moved something: "0 fetch(es)", "not audited",
+"answered with no refusal". The pull request sweep's "7 commit(s) behind main"
+and "planted.txt ... is not the resolution" followed from the rebase that never
+ran. The worker still exports the spool (`$SWARM_GIT`) to every attempt it
+offers the tools, whether or not the step gets the MCP server, and the CLI form
+writes to it. It reaches the same relay, the same swarm-api route and the same
+audit, so every check still measures the platform. The judge
+(`GIT_CLI`, `git_cli`) writes each command whole, and a unit test holds every
+command to the CLI's own tool names and options.
+
+An agent that made no audited call and recorded no answer is now one FAIL that
+says so: "made no git tool call ... it never reached the tools". It is no
+longer a list of missing fetches and pushes.
+
+The `POST /v1/tasks` 422s in a run are not this group's. All four of its
+agents are created (a refused one reads "the ... task was not created"), and
+the 422s are the door probes of `mock`, `claude-code`, `generic` and `browser`
+(`acc_door`), which are refused on purpose.
+
 **On GitHub.** The lane's pull request carries `acceptance-git-tools: rebase`
 in its body, and `github-verify.sh` judges it as its own kind. Its head must
 contain main, it must change exactly `planted.txt` and `lane.txt`, and
@@ -441,8 +470,22 @@ contain main, it must change exactly `planted.txt` and `lane.txt`, and
 
 **SKIP, not PASS:** an agent the platform held (closed pool, no credential),
 and `read_private` when no repository in the smoke tenant is
-`readable_by_tasks`. Only a platform admin can set that, with
-`PATCH /v1/repositories/{id}`, so the suite never sets it itself.
+`readable_by_tasks`. That is a deployment setting, and only a platform admin
+can set it, so the suite never sets it itself. To measure `read_private`, a
+platform admin, with `X-Swarm-Tenant: smoke`:
+
+1. registers the sandbox in the smoke tenant if it is not registered yet:
+   `POST /v1/repositories` with `{"repository": "<owner>/<repo>"}`, the
+   sandbox `SWARM_ACCEPTANCE_SANDBOX_REPOSITORY_URL` names. After a
+   repository move, that is the new deployment's sandbox: a registration of
+   the old one does not count;
+2. sends `PATCH /v1/repositories/<repo_id>` with
+   `{"readable_by_tasks": true}`.
+
+The sandbox, rather than any other repository, is the one to list, because
+then the check also compares the file read with this build's `planted.txt`.
+The SKIP names the sandbox and, when it is registered, its `repo_id`, so it
+reads as the exact call to make (`_gt_choose_read`).
 
 It runs in wave 2 of `accept.yml` (`scripts/acceptance/git-tools.sh`), with
 a peak of five agents. The lane runs first, because both later agents need its

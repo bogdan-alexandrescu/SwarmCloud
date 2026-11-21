@@ -27,6 +27,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
@@ -342,6 +343,44 @@ def test_no_allowlisted_repository_is_a_skip_naming_who_sets_one(tmp_path):
     assert verdict == "SKIP" and "readable_by_tasks" in reason
 
 
+def _choose_read(tmp_path: Path, listed: dict) -> dict:
+    """git-tools.sh's `_gt_choose_read` against a stubbed `GET /v1/repositories`."""
+    (tmp_path / "listed.json").write_text(json.dumps(listed))
+    script = (
+        'api_fetch() { cp "$LISTED" "$2"; }\n'
+        f'source "{GROUP}"\n'
+        '_gt_choose_read "$DIR"\n'
+    )
+    env = {**_clean_env(), "LISTED": str(tmp_path / "listed.json"), "DIR": str(tmp_path),
+           "ACC_GITHUB_REPO": "example-org/Sandbox", "ACC_TENANT": "smoke", "ACC_REF": "main",
+           "REPO_ROOT": str(ROOT)}
+    subprocess.run(["bash", "-c", script], env=env, check=True, capture_output=True, text=True)
+    return json.loads((tmp_path / "read.json").read_text())
+
+
+def test_an_unlisted_sandbox_skip_names_the_exact_patch_with_its_repo_id(tmp_path):
+    read = _choose_read(tmp_path, {"repositories": [
+        {"repo_id": "repo_0123456789abcdef", "repository": "Example-Org/sandbox",
+         "readable_by_tasks": False}]})
+    assert "PATCH /v1/repositories/repo_0123456789abcdef" in read["skip"]
+    assert '{"readable_by_tasks": true}' in read["skip"]
+    assert "X-Swarm-Tenant: smoke" in read["skip"]
+
+
+def test_an_unregistered_sandbox_skip_says_to_register_it_first(tmp_path):
+    read = _choose_read(tmp_path, {"repositories": []})
+    assert 'POST /v1/repositories {"repository": "example-org/Sandbox"}' in read["skip"]
+    assert '{"readable_by_tasks": true}' in read["skip"]
+
+
+def test_a_listed_sandbox_is_read_and_its_file_checked(tmp_path):
+    read = _choose_read(tmp_path, {"repositories": [
+        {"repo_id": "repo_0123456789abcdef", "repository": "example-org/sandbox",
+         "readable_by_tasks": True}]})
+    assert read["repo"] == "example-org/sandbox" and read["path"] == gt.PLANTED
+    assert read["expected_sha256"] == hashlib.sha256((ROOT / gt.PLANTED).read_bytes()).hexdigest()
+
+
 def test_a_task_that_was_never_created_is_a_failure(tmp_path):
     w = _world()
     w["build"] = {"task": "", "state": ""}
@@ -438,6 +477,89 @@ def test_each_prompt_names_every_step_the_judge_reads():
     assert gt.LANE_LINE in lane and gt.PR_MARKER in lane and gt.PLANTED in lane
     # The lane writes planted.txt itself, on a base without it: never main's line.
     assert gt.MAIN_LINE not in lane
+
+
+GIT_CLI_SOURCE = ROOT / "apps" / "agent-worker" / "agent_worker" / "gitmcp" / "__main__.py"
+GIT_SHIM_SOURCE = ROOT / "apps" / "agent-worker" / "agent_worker" / "gitmcp" / "server.py"
+
+
+def _cli_vocabulary() -> tuple[set[str], set[str]]:
+    """(the shim's tool names, the options its one-call CLI takes), read from
+    the worker's source: this suite's environment does not import the worker."""
+    tools = set(re.findall(r'\{"name": "([a-z_]+)"', GIT_SHIM_SOURCE.read_text()))
+    options = set(re.findall(r'add_argument\("(--[a-z]+)"', GIT_CLI_SOURCE.read_text()))
+    return tools, options
+
+
+def _cli_commands(prompt: str) -> list[list[str]]:
+    """Every `python3 -m agent_worker.gitmcp ...` command a prompt asks for, split
+    as a shell would; a command ends where its `(step ...)` or `,` begins."""
+    out = []
+    for raw in re.findall(re.escape(gt.GIT_CLI) + r" ([^(,]*)", prompt):
+        out.append(shlex.split(raw))
+    return out
+
+
+def _all_prompts() -> list[str]:
+    return [
+        gt.prompt("rebase", run_id="r", lane_branch=BRANCH),
+        gt.prompt("reader", run_id="r", lane_branch=BRANCH, read_repo=SANDBOX,
+                  read_path=gt.PLANTED, read_ref="main"),
+        gt.prompt("reader", run_id="r", lane_branch=BRANCH, read_repo="other/repo",
+                  read_path="", read_ref="main"),
+        gt.prompt("build", run_id="r"),
+    ]
+
+
+def test_every_tool_call_a_prompt_asks_for_is_a_command_the_cli_takes():
+    """2026-11-21: the prompts said "you have the swarm-git MCP tools", which
+    stepservers hands none of these steps, so no agent called anything. They
+    now run the CLI form; each command must be one it parses."""
+    tools, options = _cli_vocabulary()
+    assert {"git_fetch", "git_rebase_onto", "git_push_branch", "read_private", "pr_checks"} <= tools
+    assert {"--ref", "--branch", "--repo", "--path"} <= options
+    seen = set()
+    for prompt in _all_prompts():
+        commands = _cli_commands(prompt)
+        assert commands, prompt
+        for words in commands[1:]:  # the first is the usage line in _TOOLS
+            assert words[0] in tools, words
+            seen.add(words[0])
+            flags = words[1::2]
+            values = words[2::2]
+            assert set(flags) <= options, words
+            assert len(flags) == len(values), words
+    assert seen == {"git_fetch", "git_rebase_onto", "git_push_branch", "read_private", "pr_checks"}
+
+
+def test_an_empty_read_path_is_still_one_argument():
+    command = gt.git_cli("read_private", repo="other/repo", path="", ref="main")
+    assert shlex.split(command)[-4:] == ["--path", "", "--ref", "main"]
+
+
+def test_no_prompt_promises_the_mcp_server():
+    for prompt in _all_prompts():
+        assert "MCP" not in prompt, prompt
+        assert "$SWARM_ARTIFACTS_DIR/" + gt.ANSWERS in prompt
+
+
+@pytest.mark.parametrize("role", ["rebase", "reader", "build"])
+def test_an_agent_that_never_reached_the_tools_is_one_fail_saying_so(tmp_path, role):
+    """No call audited and no answer recorded is the tools not reached, said
+    once -- not "0 fetch(es)" or "not audited", which read as the platform's."""
+    w = _world()
+    w[role]["calls"] = []
+    w[role]["answers"] = []
+    verdicts = _verdicts(tmp_path, w)
+    checks = {"rebase": ["rebase"], "reader": ["read_private", "push_main", "push_other"],
+              "build": ["push_fails"]}[role]
+    for check in checks:
+        verdict, reason = verdicts[check]
+        assert verdict == "FAIL", (check, reason)
+        assert "never reached the tools" in reason, (check, reason)
+        assert "fetch(es)" not in reason and "not audited" not in reason, (check, reason)
+    for check in set(gt.CHECKS) - set(checks):
+        assert verdicts[check][0] == "PASS", (check, verdicts[check])
 
 
 def test_the_resolution_is_main_s_line_then_the_lane_s():

@@ -62,6 +62,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import sys
 from typing import Any, Iterable
 
@@ -124,16 +125,47 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 # What the tasks are asked
 # --------------------------------------------------------------------------
 
+#: How the agents reach the tools: the CLI form of the swarm-git shim, run in
+#: their Bash tool. NOT the MCP server: since archived pull request 3113 the
+#: worker hands swarm-git's MCP server only to the steps on
+#: `agent_worker.stepservers`' list (a review, a CI fix, a step publishing onto
+#: a pull request, a single-pr reader or amender, a conflict round), and none
+#: of this group's agents -- a `continues` lane, a `collect` reader with
+#: `carrier: branches`, an `integrate` contributor -- is on it. Asked for "the
+#: swarm-git MCP tools" they had none, made no call and recorded nothing, so
+#: every check FAILED on 2026-11-21. The worker still exports the spool
+#: ($SWARM_GIT) to every attempt it offers the tools, and the CLI writes to it:
+#: the same relay, the same swarm-api route, the same audit.
+GIT_CLI = "python3 -m agent_worker.gitmcp"
+
+
+def git_cli(tool: str, **arguments: str) -> str:
+    """The shell command for one tool call, as the agent is asked to run it.
+
+    `agent_worker.gitmcp.__main__` takes `--ref`, `--branch`, `--repo`,
+    `--path` and `--pr`; a unit test holds every command a prompt carries to
+    that vocabulary and to the shim's tool names.
+    """
+    words = [GIT_CLI, tool]
+    for name, value in arguments.items():
+        words += [f"--{name}", shlex.quote(value)]
+    return " ".join(words)
+
+
 _RECORD = (
-    "After EVERY swarm-git tool call, append one line of JSON to "
+    "After EVERY such command, append one line of JSON to "
     "$SWARM_ARTIFACTS_DIR/" + ANSWERS + ": {\"step\": \"<the step name given>\", "
-    "\"answer\": <the tool's whole answer, as the JSON object it returned>}. "
-    "A refused call is an answer too: record it and go on to the next step. "
+    "\"answer\": <the whole JSON object the command printed>}. "
+    "A refused call is an answer too (the command exits 1): record it and go on to the "
+    "next step. "
 )
 _TOOLS = (
-    "You have the swarm-git MCP tools (git_fetch, git_rebase_onto, git_push_branch, "
-    "read_private, pr_checks). This container holds no git credential: never run "
-    "git fetch, git pull or git push yourself. "
+    "The platform's git tools (git_fetch, git_rebase_onto, git_push_branch, read_private, "
+    f"pr_checks) are run from your Bash tool as `{GIT_CLI} <tool> [--ref R] [--branch B] "
+    "[--repo R] [--path P]`, each as its own Bash command with a timeout of 600000 ms; "
+    "the command prints the tool's answer as one JSON object. Run each command exactly as "
+    "given below. This container holds no git credential: never run git fetch, git pull "
+    "or git push yourself. "
 )
 
 
@@ -159,36 +191,38 @@ def prompt(name: str, *, run_id: str, lane_branch: str = "", read_repo: str = ""
     if name == "rebase":
         return (
             _TOOLS + _RECORD
-            + f"1) git_fetch with ref {lane_branch} (step fetch-own). "
-            "2) git_rebase_onto with ref main (step rebase). It stops on a conflict. "
+            + f"1) Run {git_cli('git_fetch', ref=lane_branch)} (step fetch-own). "
+            f"2) Run {git_cli('git_rebase_onto', ref='main')} (step rebase). It stops on a "
+            "conflict. "
             f"3) Resolve it: write {PLANTED} with exactly these two lines, in this order: "
             f"{MAIN_LINE} -- then: {LANE_LINE}. For every OTHER conflicted path keep main's side "
             "(git checkout --ours -- <path>). git add the resolved paths and run "
             "GIT_EDITOR=true git rebase --continue; repeat until the rebase has finished. "
             f"4) Run: python3 {ENV_REPORT} > $SWARM_ARTIFACTS_DIR/{ENV_REPORT_ARTIFACT} "
-            "5) git_push_branch with no arguments (step push). "
-            "6) pr_checks with no arguments (step pr-checks). "
+            f"5) Run {git_cli('git_push_branch')} (step push). "
+            f"6) Run {git_cli('pr_checks')} (step pr-checks). "
             "Change nothing else and make no other commit. Reply with one word: done."
         )
     if name == "reader":
         steps = [
-            "1) git_fetch with ref main (step fetch-main-before).",
-            "2) git_push_branch with branch main (step push-main).",
-            "3) git_fetch with ref main (step fetch-main-after).",
-            f"4) git_fetch with ref {lane_branch} (step fetch-other-before).",
-            f"5) git_push_branch with branch {lane_branch} (step push-other).",
-            f"6) git_fetch with ref {lane_branch} (step fetch-other-after).",
+            f"1) Run {git_cli('git_fetch', ref='main')} (step fetch-main-before).",
+            f"2) Run {git_cli('git_push_branch', branch='main')} (step push-main).",
+            f"3) Run {git_cli('git_fetch', ref='main')} (step fetch-main-after).",
+            f"4) Run {git_cli('git_fetch', ref=lane_branch)} (step fetch-other-before).",
+            f"5) Run {git_cli('git_push_branch', branch=lane_branch)} (step push-other).",
+            f"6) Run {git_cli('git_fetch', ref=lane_branch)} (step fetch-other-after).",
         ]
         if read_repo:
             steps += [
-                f"7) read_private with repo {read_repo}, path {read_path}, ref {read_ref} "
+                f"7) Run {git_cli('read_private', repo=read_repo, path=read_path, ref=read_ref)} "
                 "(step read-ref).",
-                f"8) read_private with repo {read_repo}, path {read_path}, and as ref the "
-                "resolved_sha that step 7 answered (step read-sha).",
+                f"8) Run {git_cli('read_private', repo=read_repo, path=read_path, ref='<SHA>')}, "
+                "with <SHA> replaced by the resolved_sha that step 7 answered (step read-sha).",
             ]
         steps.append(
-            f"{len(steps) + 1}) read_private with repo {UNLISTED_PREFIX}{run_id}, path README.md, "
-            "ref main (step read-unlisted)."
+            f"{len(steps) + 1}) Run "
+            f"{git_cli('read_private', repo=UNLISTED_PREFIX + run_id, path='README.md', ref='main')} "
+            "(step read-unlisted)."
         )
         return (_TOOLS + _RECORD + " ".join(steps)
                 + " Change no file and make no commit. Reply with one word: done.")
@@ -197,7 +231,7 @@ def prompt(name: str, *, run_id: str, lane_branch: str = "", read_repo: str = ""
             _TOOLS + _RECORD
             + f"1) Create {BUILD_FILE} containing the one line: first {run_id} -- then "
             "git add it and git commit -m 'git-tools acceptance: first'. "
-            "2) git_push_branch with no arguments (step push-first). "
+            f"2) Run {git_cli('git_push_branch')} (step push-first). "
             f"3) Run git reset --hard HEAD~1, then create {BUILD_FILE} containing the one line: "
             f"second {run_id} -- and git add it and git commit -m 'git-tools acceptance: second'. "
             "Change no other file. Reply with one word: done."
@@ -403,6 +437,24 @@ def _not_run(role: Role, what: str) -> Verdict | None:
     return None
 
 
+def _no_tool_reached(role: Role, what: str) -> Verdict | None:
+    """A FAIL naming the cause when `role` ran but its agent never reached the
+    tools at all -- no call audited, no answer recorded -- or None.
+
+    Without it each check listed what was missing ("0 fetch(es)", "not
+    audited", "answered with no refusal") as if the platform had refused or
+    moved something, when the agent had simply been handed no tool
+    (2026-11-21, `GIT_CLI`'s comment)."""
+    if role.calls or role.answers:
+        return None
+    return "FAIL", (f"the {what} task's agent made no git tool call (none audited) and recorded "
+                    f"no answer in {ANSWERS}: it never reached the tools, so nothing here was "
+                    f"measured. Its prompt runs them as `{GIT_CLI} <tool>`, which needs "
+                    "$SWARM_GIT, exported only to an attempt the worker offers git tools "
+                    "(the worker logs 'git tools offered for this attempt'); the task ended "
+                    f"{role.state}: {role.last_error()}")
+
+
 def _fetched(role: Role, ref: str) -> list[str | None]:
     """What each git_fetch of `ref` resolved to, oldest first; None for a refused one."""
     return [row.get("resolved_sha") if row.get("result") == "ok" else None
@@ -419,7 +471,7 @@ def check_rebase(lane: Role, rebase: Role) -> Verdict:
     number = pull_request_number(lane.doc)
     if number is None:
         return "FAIL", "the lane ended SUCCEEDED but opened no pull request to rebase"
-    early = _not_run(rebase, "rebase")
+    early = _not_run(rebase, "rebase") or _no_tool_reached(rebase, "rebase")
     if early:
         return early
     branch = f"swarm/{lane.task}"
@@ -488,7 +540,7 @@ def check_read_private(reader: Role, read: Any) -> Verdict:
     if not isinstance(read, dict) or read.get("skip") or not read.get("repo"):
         why = read.get("skip") if isinstance(read, dict) else None
         return "SKIP", f"not measured: {why or 'no allowlisted repository was chosen'}"
-    early = _not_run(reader, "reader")
+    early = _not_run(reader, "reader") or _no_tool_reached(reader, "reader")
     if early:
         return early
     repo = str(read["repo"])
@@ -532,7 +584,7 @@ def _no_push_reached(reader: Role) -> str | None:
 
 
 def check_push_main(reader: Role) -> Verdict:
-    early = _not_run(reader, "reader")
+    early = _not_run(reader, "reader") or _no_tool_reached(reader, "reader")
     if early:
         return early
     problems = []
@@ -555,7 +607,7 @@ def check_push_main(reader: Role) -> Verdict:
 
 
 def check_push_other(reader: Role, rebase: Role, lane_task: str) -> Verdict:
-    early = _not_run(reader, "reader")
+    early = _not_run(reader, "reader") or _no_tool_reached(reader, "reader")
     if early:
         return early
     if not lane_task:
@@ -586,7 +638,7 @@ def check_push_other(reader: Role, rebase: Role, lane_task: str) -> Verdict:
 
 
 def check_push_fails(build: Role) -> Verdict:
-    early = _not_run(build, "build")
+    early = _not_run(build, "build") or _no_tool_reached(build, "build")
     if early:
         return early
     pushed = build.rows("git_push_branch", result="ok", branch=f"swarm/{build.task}")
