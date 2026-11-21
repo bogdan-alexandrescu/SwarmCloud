@@ -440,7 +440,7 @@ request 3113 (the owner's "prompts without bloat", 3 November 2026) the worker
 hands the MCP server only to the steps on `agent_worker.stepservers`' list: a
 review, a CI fix, a step publishing onto a pull request, a `single-pr` reader
 or amender, a merge step's conflict round. None of this group's agents is on
-it: the rebase lane is a `continues` step, the reader a `collect` task, the
+it: the rebase lane is a `continues` step, the reader a `collect` agent, the
 build step an `integrate` contributor. Their prompts still said "you have the
 swarm-git MCP tools", so on 2026-11-21 (deployed 9ee05db74fcc) the agents made
 almost no call and recorded no answer, and four checks FAILed as if the
