@@ -760,3 +760,68 @@ def test_a_base_requiring_only_merge_train_gates_on_every_other_check(tmp_path, 
     assert outcome.ci_wait["code"] == code, outcome.ci_wait
     assert len(_labelled(world)) == (1 if conclusion == "success" else 0)
     assert world.merge_calls() == []
+
+
+# ---------------------------------------------------------------------------
+# An unreadable switch the step treats as on says so in its park (epic issue 21)
+
+
+def _unreadable_switch_park(world: MergeWorld, on_by: str) -> Any:
+    """Board with the switch 403 and only `on_by` as the evidence it is on."""
+    _switch(world, None, status=403)
+    if on_by == "ready_label":
+        world.pr["labels"] = [{"name": "ready"}]
+    else:
+        world.repository["private"] = True
+        world.github.route("GET", f"{API}/rules/branches/main", (403, {}, {
+            "message": "Upgrade to GitHub Pro or make this repository public to enable this "
+                       "feature."}))
+        world.branch = {"name": "main", "protected": False}
+        world.runs = [{"name": CHECK, "status": "completed", "conclusion": "success"}]
+        _parked_on_train(world, head="f" * 40)
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.ci_wait["code"] == mergetrain.TRAIN_WAITING
+    assert outcome.summary["repository_train"]["on_by"] == on_by
+    assert outcome.summary["repository_train"]["switch"] == "unreadable"
+    return outcome
+
+
+@pytest.mark.parametrize("on_by,evidence", [
+    ("ready_label", "already carries `ready`"),
+    ("own_train_park", "this step's last park was on the repository's merge train")])
+def test_a_park_on_an_unreadable_switch_names_the_switch_the_evidence_and_the_fix(
+        tmp_path, on_by, evidence):
+    """The operator reads the park and learns why the step did not merge
+    directly, and what makes the switch readable.
+
+    MUTATION (merge.py `_board`): drop the unreadable-switch clause, and
+    the park reads as if `vars.MERGE_TRAIN` were on."""
+    world = MergeWorld(tmp_path)
+    message = _unreadable_switch_park(world, on_by).summary["wait"]["message"]
+
+    assert message.startswith(f"pull request #{NUMBER} is `ready` for main's merge train at "
+                              f"{PINNED}"), message
+    assert "the merge-train switch (vars.MERGE_TRAIN) could not be read" in message
+    assert evidence in message
+    assert "'Variables: Read'" in message
+    assert "requiring the `merge-train` check in main's ruleset" in message
+    assert world.merge_calls() == []
+
+
+@pytest.mark.parametrize("on_by", ["variable", "required_check"])
+def test_a_park_on_a_readable_or_required_train_keeps_todays_text(tmp_path, on_by):
+    """The controls: a switch read `on`, or a base that requires the train's
+    own check, park exactly as before."""
+    world = MergeWorld(tmp_path)
+    if on_by == "variable":
+        _switch(world, "on")
+    else:
+        _switch(world, None, status=403)
+        world.rules[0]["parameters"]["required_status_checks"].append({"context": "merge-train"})
+        world.statuses = [{"context": "merge-train", "state": "success"}]
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.summary["repository_train"]["on_by"] == on_by
+    assert outcome.summary["wait"]["message"] == (
+        f"pull request #{NUMBER} is `ready` for main's merge train at {PINNED}")

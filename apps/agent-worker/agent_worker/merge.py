@@ -3435,9 +3435,10 @@ def _pick_fix(run: _Run, target: MergeTarget, opener: Mapping[str, Any],
         task_id = _task_id(last.get("task_id"))
         if task_id is None:
             return wait(OWNER_PICK_FIX_RUNNING, unbuilt, f"pick fix round {n} is being submitted")
-        if not _ended(ctx, task_id):
+        running = _round_running(ctx, task_id)
+        if running is not None:
             return wait(OWNER_PICK_FIX_RUNNING, unbuilt,
-                        f"pick fix round {n} ({task_id}) is running")
+                        f"pick fix round {n} ({task_id}) {running}")
 
     # Every ended round's report, oldest first, so a later round's word wins.
     # A round that pushed nothing reports picks the branch ALREADY built at
@@ -4466,8 +4467,8 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
         return run.wait(mergetrain.TRAIN_WAITING,
                         f"pull request #{number} was ejected from {base}'s merge train at "
                         f"{head}, green there, and is `{REPOSITORY_TRAIN_LABEL}` again: its one "
-                        "re-board at this head", head=head, pull_request=number,
-                        pending=[TRAIN_REBOARDED])
+                        "re-board at this head" + _switch_unread(switch, base),
+                        head=head, pull_request=number, pending=[TRAIN_REBOARDED])
     else:
         if ctx.recheck():
             return cancelled(summary)
@@ -4475,9 +4476,34 @@ def _board(run: _Run, merger: ForgeMerger, own: Mapping[str, Any], *, pr: PullRe
         record["labelled"] = True
     return run.wait(mergetrain.TRAIN_WAITING,
                     f"pull request #{number} is `{REPOSITORY_TRAIN_LABEL}` for {base}'s merge "
-                    f"train at {head}" + (f"; the train skips it: {skips}" if skips else ""),
+                    f"train at {head}" + (f"; the train skips it: {skips}" if skips else "")
+                    + _switch_unread(switch, base),
                     head=head, pull_request=number,
                     pending=[TRAIN_REBOARDED] if reboarded else [])
+
+
+#: What made `repository_train` treat an unreadable switch as on, as a park says it.
+_SWITCH_EVIDENCE = {
+    "own_train_park": "this step's last park was on the repository's merge train",
+    "ready_label": f"the pull request already carries `{REPOSITORY_TRAIN_LABEL}`",
+}
+
+
+def _switch_unread(switch: Mapping[str, Any], base: str) -> str:
+    """The park's word on a merge-train switch the step could not read (epic issue 21).
+
+    Empty unless `repository_train` read the variable 401/403 and treated
+    the train as on from this step's own evidence: the operator then reads
+    why the step did not merge directly, and what makes the switch
+    readable. A base that requires `merge-train` (`required_check`) or a
+    variable read `on` parks as it always did."""
+    evidence = _SWITCH_EVIDENCE.get(str(switch.get("on_by")))
+    if switch.get("switch") != "unreadable" or evidence is None:
+        return ""
+    return (f"; the merge-train switch (vars.{REPOSITORY_TRAIN_VARIABLE}) could not be read "
+            f"(401/403), and the step treats the train as on because {evidence}; granting "
+            "the merge App 'Variables: Read', or requiring the "
+            f"`{REPOSITORY_TRAIN_CONTEXT}` check in {base}'s ruleset, makes it readable")
 
 
 def _train_round(run: _Run, own: Mapping[str, Any], *, number: int, head: str, message: str,
@@ -4517,8 +4543,9 @@ def _train_round(run: _Run, own: Mapping[str, Any], *, number: int, head: str, m
         task_id = _task_id(last.get("task_id"))
         if task_id is None:
             return wait(CI_FIX_RUNNING, f"CI fix round {n} is being submitted")
-        if not _ended(run.ctx, task_id):
-            return wait(CI_FIX_RUNNING, f"CI fix round {n} ({task_id}) is running")
+        running = _round_running(run.ctx, task_id)
+        if running is not None:
+            return wait(CI_FIX_RUNNING, f"CI fix round {n} ({task_id}) {running}")
         return run.refuse("train_ejected",
                           f"{message}; after one re-board and after CI fix round {n} "
                           f"({task_id}) ended at this head")
@@ -5388,20 +5415,24 @@ def _fix_rounds(own: Mapping[str, Any], key: str = "rounds") -> list[Mapping[str
 _ROUND_KINDS = (("CI", "rounds"), ("conflict", CONFLICT_ROUNDS_KEY), ("pick", PICK_ROUNDS_KEY))
 
 
-def _live_round(ctx: ActionContext, own: Mapping[str, Any]) -> tuple[str, Mapping[str, Any]] | None:
-    """The first fix round of any kind whose task is still running, at any head (archived issue 2577).
+def _live_round(ctx: ActionContext,
+                own: Mapping[str, Any]) -> tuple[str, Mapping[str, Any], str] | None:
+    """The first fix round of any kind whose task is still running, at any head
+    (archived issue 2577), with `_round_running`'s word on it.
 
     One writer per pull request: while a round's task has not ended, the
     next round would push onto the same branch and fail to replay over it.
-    A round without a task (claimed, not submitted yet) is the tick's to
-    hold for LOST_ROUND_SECONDS; an errored one never ran."""
+    A round whose task cannot be read has not ended (issue 52): it may still
+    be pushing. A round without a task (claimed, not submitted yet) is the
+    tick's to hold for LOST_ROUND_SECONDS; an errored one never ran."""
     for kind, key in _ROUND_KINDS:
         for entry in _fix_rounds(own, key):
             if entry.get("error"):
                 continue
             task_id = _task_id(entry.get("task_id"))
-            if task_id is not None and not _ended(ctx, task_id):
-                return kind, entry
+            running = None if task_id is None else _round_running(ctx, task_id)
+            if running is not None:
+                return kind, entry, running
     return None
 
 
@@ -5827,17 +5858,19 @@ def _conflicted(run: _Run, own: Mapping[str, Any], *, head: str, number: int, ba
         task_id = _task_id(last.get("task_id"))
         if task_id is None:
             return wait(CONFLICT_FIX_RUNNING, f"conflict fix round {n} is being submitted")
-        if not _ended(run.ctx, task_id):
-            return wait(CONFLICT_FIX_RUNNING, f"conflict fix round {n} ({task_id}) is running")
+        running = _round_running(run.ctx, task_id)
+        if running is not None:
+            return wait(CONFLICT_FIX_RUNNING, f"conflict fix round {n} ({task_id}) {running}")
         return run.refuse("merge_conflict",
                           f"{message}, after conflict fix round {n} ({task_id}) ended at this "
                           "head")
     live = _live_round(run.ctx, own)
     if live is not None:
-        kind, entry = live
+        kind, entry, running = live
         return wait(CONFLICT_FIX_RUNNING,
                     f"{kind} fix round {entry.get('round')} ({_task_id(entry.get('task_id'))}) "
-                    f"is still running at {str(entry.get('head') or '?')[:12]}")
+                    f"{'is still running' if running == _ROUND_RUNNING else running} at "
+                    f"{str(entry.get('head') or '?')[:12]}")
     if len(rounds) >= MERGE_CONFLICT_ROUNDS_TOTAL_MAX:
         return run.refuse("merge_conflict",
                           f"{message}, after {len(rounds)} conflict fix round(s) of any outcome, "
@@ -5878,13 +5911,31 @@ def _conflict_rounds_spent(rounds: list[Mapping[str, Any]],
     return spent
 
 
-def _ended(ctx: ActionContext, task_id: str) -> bool:
-    """Whether a round's task has ended; one that cannot be read has, for this step."""
+_ROUND_RUNNING = "is running"
+
+
+def _round_running(ctx: ActionContext, task_id: str) -> str | None:
+    """None once a round's task has ended; else why the step still waits for it.
+
+    A task that cannot be read has NOT ended (issue 52), as `_task_state`
+    reads it: a transient failure of the read (a 5xx, a network blip) read
+    as ended refused `merge_conflict` "after the round ended" while it may
+    still have been running, and let `_live_round` start a second round on
+    the same branch. The step waits instead, naming the failed read, and the
+    wait's own MERGE_CI_MAX_SECONDS bound still ends a read that never
+    recovers. `fetch_upstream` has no not-found error of its own --
+    `InputUnavailable` is a missing document, another tenant's or an
+    undeclared one alike -- so no failure reads as ended.
+    """
     try:
         state = _mapping(ctx.fetch_upstream(task_id)).get("state")
-        return TaskState(state) in TERMINAL_STATES
-    except Exception:  # noqa: BLE001 - nothing left to wait on
-        return True
+        ended = TaskState(state) in TERMINAL_STATES
+    except Exception as exc:  # noqa: BLE001 - unreadable is not ended: wait, never refuse
+        ctx.log.warning("a fix round's task could not be read; waiting for it",
+                        task_id=task_id,
+                        error=ctx.scrub(f"{type(exc).__name__}: {exc}")[:200])
+        return f"could not be read: {type(exc).__name__}; waiting"
+    return None if ended else _ROUND_RUNNING
 
 
 def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
@@ -5943,8 +5994,9 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
         task_id = _task_id(last.get("task_id"))
         if task_id is None:
             return wait(CI_FIX_RUNNING, f"{message}; CI fix round {number} is being submitted", [])
-        if not _ended(run.ctx, task_id):
-            return wait(CI_FIX_RUNNING, f"{message}; CI fix round {number} ({task_id}) is running",
+        running = _round_running(run.ctx, task_id)
+        if running is not None:
+            return wait(CI_FIX_RUNNING, f"{message}; CI fix round {number} ({task_id}) {running}",
                         [])
         refused = _round_refusal(run.ctx, task_id)
         if refused is not None:
