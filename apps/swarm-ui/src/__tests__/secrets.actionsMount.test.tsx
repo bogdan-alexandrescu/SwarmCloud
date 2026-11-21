@@ -404,6 +404,11 @@ async function drawWithStrip(view: string | null) {
   )
 }
 
+/** The text an (i) holds as its description, read without opening it. */
+function tipOf(button: HTMLElement): string {
+  return document.getElementById(button.getAttribute('aria-describedby') ?? '')?.textContent ?? ''
+}
+
 describe('VQ-041: the page agrees with the strip and with its own Keys table', () => {
   const keyOnly = () => api({ overview: (scope) => ({ tenant_id: 'eng', scope, personal_tenant_id: 'u-ana', can_manage: true, rows: [TYPESAFE_SET] }) })
 
@@ -415,7 +420,7 @@ describe('VQ-041: the page agrees with the strip and with its own Keys table', (
     expect(screen.queryByRole('region', { name: /add your first secret/i })).toBeNull()
     expect(visible(lead)).toMatch(/^Step 3 · done/)
     expect(visible(lead)).toContain('Nothing eng needs is missing')
-    expect(visible(lead)).toContain('1 key is set; no secret for agents is stored yet.')
+    expect(visible(lead)).toContain('1 key is set; no secret for agents yet.')
     // The strip's next step is the lead's one button.
     expect(within(lead).getByRole('link', { name: 'Next: People invited' }).getAttribute('href')).toBe('/admin/workspaces?tab=people')
     // The head draws Add a secret, since this lead does not.
@@ -425,7 +430,9 @@ describe('VQ-041: the page agrees with the strip and with its own Keys table', (
   it('names the key set below For agents\' empty list, and leaves it out of "Usually first"', async () => {
     keyOnly()
     await drawWithStrip(null)
-    await screen.findByText('No secret for agents is stored for eng yet; 1 key is set below.')
+    await screen.findByText('No secret for agents in eng yet.')
+    // The key set below is the line's (i), a moved sentence the reader can still reach.
+    expect(tipOf(screen.getByRole('button', { name: 'About Keys set' }))).toBe('1 key is set below, under Keys for agents and MCP.')
     // MUTATION: suggest the TypeSafe key whatever the keys say -> fails.
     const first = document.querySelector('.sec-first')
     expect(visible(first)).not.toContain('TypeSafe')
@@ -447,8 +454,27 @@ describe('VQ-041: the page agrees with the strip and with its own Keys table', (
     keyOnly()
     await drawWithStrip('scope=personal')
     // MUTATION: keep "You have no secret of your own yet." over a key of yours that is set -> fails.
-    await screen.findByText('You have no secret of your own for agents yet; 1 key is yours, set under Keys below.')
+    await screen.findByText('No secret of your own for agents yet.')
+    expect(tipOf(screen.getByRole('button', { name: 'About Your keys' }))).toBe('1 key is yours, set under Keys below.')
     expect(screen.queryByText('You have no secret of your own yet.')).toBeNull()
+  })
+
+  it('keeps Yours\' lead to one short line and its two sentences behind the (i) (issue 81)', async () => {
+    keyOnly()
+    await drawWithStrip('scope=personal')
+    await screen.findByText('No secret of your own for agents yet.')
+    const shown = (el: Element): string => {
+      const clone = el.cloneNode(true) as Element
+      for (const n of clone.querySelectorAll('[data-help-description]')) n.remove()
+      return visible(clone)
+    }
+    // MUTATION: put the lead's sentences back on the page -> fails.
+    expect(shown(document.body)).not.toMatch(/Nothing you set here is read|Your secrets live in your personal workspace/)
+    expect(shown(document.body)).toContain('Yours win, for your own agents')
+    expect(tipOf(screen.getByRole('button', { name: 'About Yours' }))).toBe(
+      'Your secrets win over the workspace’s and a repository’s, for your own agents. Nothing you set here is read by anyone else’s agents.',
+    )
+    expect(tipOf(screen.getByRole('button', { name: 'About For your agents' }))).toMatch(/^Your secrets live in your personal workspace/)
   })
 })
 
