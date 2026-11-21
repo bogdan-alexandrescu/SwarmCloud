@@ -91,18 +91,53 @@ describe('the Code intelligence switch', () => {
     render(<CodeIntelligenceCard />)
     await toggle()
     const text = visible(document.body)
-    // What is sent, and what never is (§5.4).
-    expect(text).toMatch(/excerpts of this workspace.s code/i)
+    // What is sent, and what never is (§5.4), one short line each (part of #81).
+    expect(text).toMatch(/sends excerpts to/i)
     expect(text).toMatch(/never sent/i)
     expect(text).toMatch(/\.env/)
     expect(text).toMatch(/credential/i)
     expect(text).toMatch(/transcript/i)
     // Where it goes: the workspace's judgment backend, by name.
-    await waitFor(() => expect(visible(document.body)).toMatch(/Internal Jev.*stays inside your network/i))
+    await waitFor(() => expect(visible(document.body)).toMatch(/Internal Jev, inside your network/i))
     // The company is not named on the card (archived issue 1647).
     expect(listedIn(document.body.textContent ?? '')).toEqual([])
-    // Local context is a separate switch and sends nothing.
-    expect(text).toMatch(/repository context.*nothing leaves the platform/i)
+    // Only the Jev switch sends code; repository context sends nothing.
+    expect(text).toMatch(/only this switch sends code off the platform/i)
+  })
+
+  it('keeps every moved sentence behind the page head ? and publishes its short form to the switch', async () => {
+    api(codeIntel())
+    const { CodeIntelligenceCard } = await load()
+    const { HELP } = await import('../help')
+    render(<CodeIntelligenceCard />)
+    const t = await toggle()
+    // The intro and §5.4's whole lists are the workspace-settings topic's long form.
+    const long = HELP['workspace-settings'].long.join(' ')
+    expect(long).toMatch(/repository context.*nothing leaves the platform/i)
+    expect(long).toMatch(/excerpts of this workspace.s code \(the files and symbols ranked for a step\)/i)
+    expect(long).toMatch(/Jev advises; it never decides a verdict/)
+    expect(long).toMatch(/dropped whole, not masked/)
+    expect(long).toMatch(/hard-stop paths/)
+    expect(long).toMatch(/only the workspace.s owner or a platform admin/i)
+    // ...and none of it is screen text.
+    expect(visible(document.body)).not.toMatch(/dropped whole|never decides a verdict|hard-stop/i)
+    // The switch still describes itself with the topic's short form.
+    const ids = (t.getAttribute('aria-describedby') ?? '').split(' ')
+    const notes = ids.map((i) => document.getElementById(i)?.textContent ?? '').join(' ')
+    expect(notes).toContain(HELP['workspace-settings'].short)
+  })
+
+  it('links the Jev backend to Config › Secrets until the judgment read names it', async () => {
+    serve((m, url) => {
+      if (m === 'GET' && url.startsWith('/v1/code-intelligence')) return { status: 200, body: codeIntel() }
+      if (m === 'GET' && url.startsWith('/v1/judgment')) return { status: 500, body: { code: 'INTERNAL', message: 'down' } }
+      return null
+    })
+    const { CodeIntelligenceCard } = await load()
+    render(<CodeIntelligenceCard />)
+    await toggle()
+    const link = await screen.findByRole('link', { name: /jev backend/i })
+    expect(link.getAttribute('href')).toBe('/config/secrets')
   })
 
   it('names TypeSafe as leaving your network when that is the judgment backend', async () => {
@@ -110,7 +145,7 @@ describe('the Code intelligence switch', () => {
     const { CodeIntelligenceCard } = await load()
     render(<CodeIntelligenceCard />)
     await toggle()
-    await waitFor(() => expect(visible(document.body)).toMatch(/TypeSafe.*outside your network/i))
+    await waitFor(() => expect(visible(document.body)).toMatch(/TypeSafe, outside your network/i))
     expect(listedIn(document.body.textContent ?? '')).toEqual([])
   })
 
@@ -153,7 +188,7 @@ describe('the Code intelligence switch', () => {
     const t = await toggle()
     expect(t.disabled).toBe(true)
     expect(t.checked).toBe(true)
-    expect(visible(document.body)).toMatch(/only the workspace.s owner or a platform admin/i)
+    expect(visible(document.body)).toMatch(/read-only: owner or platform admin only/i)
     fireEvent.click(t)
     expect(calls.filter((c) => c.method !== 'GET')).toEqual([])
   })
