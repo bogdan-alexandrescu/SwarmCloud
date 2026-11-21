@@ -44,6 +44,7 @@ from swarm_api.deps import build_context
 from swarm_api.groups import StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
+from swarm_api.routes import last_admin
 from swarm_api.routes.join_requests import membership_store
 from swarm_api.waker import NullWaker
 
@@ -157,8 +158,14 @@ def role_grants_for(db, subject: str) -> list[dict]:
 
 
 def written(db) -> dict[str, Any]:
-    """Everything a leave could change; `people/` is each request's own sighting."""
-    return {k: v for k, v in db.dump().items() if not k.startswith("people/")}
+    """Everything a leave could change; `people/` is each request's own
+    sighting, and a refusal's own audit row is asserted apart (`refused`)."""
+    return {k: v for k, v in db.dump().items()
+            if not k.startswith("people/") and v.get("action") != last_admin.AUDIT_REFUSED}
+
+
+def refused(db) -> list[dict]:
+    return audit(db, last_admin.AUDIT_REFUSED)
 
 
 def grant_member(ctx, subject: str) -> None:
@@ -291,6 +298,11 @@ def test_the_last_admin_by_override_cannot_leave(client, ctx, db) -> None:
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "workspace_leave_last_admin"
     assert written(db) == before
+    # MUTATION: write no row for a refused leave -> this fails.
+    (row,) = refused(db)
+    assert (row["by"], row["target_email"], row["target_tenant_id"]) == (LEE, LEE, "eng")
+    assert row["detail"] == {"route": "leave", "via": "self",
+                             "refused": "workspace_leave_last_admin"}
 
     # With another admin named, they may.
     set_role(client, ALICE, "admin")

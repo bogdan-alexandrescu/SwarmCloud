@@ -31,9 +31,9 @@ a grant (§4.4).
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, ConfigDict
 
 from .. import roles
@@ -47,6 +47,7 @@ from ..errors import (
     RoleUnchanged,
     UpstreamUnavailable,
 )
+from . import last_admin
 
 router = APIRouter(tags=["roles"])
 
@@ -89,8 +90,42 @@ def _member(ctx: AppContext, email: str, tenant_id: str, group: str) -> bool | N
         return None
 
 
-def _set_person(ctx: AppContext, *, tenant_id: str, group: str, by: str, via: str,
-                body: PersonRole) -> dict[str, Any]:
+def _demotion(request: Request, ctx: AppContext, *, tenant_id: str, subject: str, by: str,
+              group: str, route: str, via: str, to: str,
+              write: Callable[[Any], str]) -> str:
+    """`write` an `admin` override lower -- set to member or viewer, or
+    cleared to a default that is never admin -- only while another admin
+    who can still select the workspace remains: the last-admin guard the
+    self-leave route uses, in ONE transaction over the workspace's guard
+    document, so a demotion and a leave or removal at once cannot both pass
+    (409 `workspace_leave_last_admin`, nothing written but the refusal's
+    audit row). A platform admin is never counted; naming an admin is never
+    guarded, so one can always be named first."""
+    registered = last_admin.registered(ctx)
+    group = (group or "").strip().lower()
+    by = (by or "").strip().lower()
+    if subject == by:
+        message = ("you are this workspace's only admin who can still select it; name another "
+                   "admin who is a member before you change your own role. Nothing was written")
+    else:
+        message = (f"{subject} is this workspace's only admin who can still select it; name "
+                   "another admin who is a member before changing their role. Nothing was "
+                   "written")
+
+    def _apply(txn: Any) -> str:
+        last_admin.read_guard(ctx, txn, tenant_id)
+        last_admin.require_admin_remains(
+            request, ctx, txn, tenant_id=tenant_id, subject=subject, by=by, group=group,
+            registered=registered, message=message)
+        return write(txn)
+
+    return last_admin.run(ctx, _apply, tenant_id=tenant_id, subject=subject, by=by,
+                          detail={"route": route, "via": via, "to": to},
+                          contended_error=RoleUnavailable)
+
+
+def _set_person(request: Request, ctx: AppContext, *, tenant_id: str, group: str, by: str,
+                via: str, body: PersonRole) -> dict[str, Any]:
     role = roles.check_role(body.role)
     subject = roles.subject_for_write(body.email)
     reason = roles.clean_reason(body.reason)
@@ -104,16 +139,26 @@ def _set_person(ctx: AppContext, *, tenant_id: str, group: str, by: str, via: st
     else:
         previous, from_source = store.default_role(tenant_id, fresh=True)[0], roles.SOURCE_DEFAULT
     member = _member(ctx, subject, tenant_id, group)
-    granted_at = store.write(
-        tenant_id=tenant_id, subject=subject, role=role, by=by, via=via, reason=reason,
-        previous=current, action=roles.AUDIT_GRANTED,
-        detail={"from": previous, "to": role, "from_source": from_source, "member": member})
+
+    def write(writer: Any = None) -> str:
+        return store.write(
+            tenant_id=tenant_id, subject=subject, role=role, by=by, via=via, reason=reason,
+            previous=current, action=roles.AUDIT_GRANTED,
+            detail={"from": previous, "to": role, "from_source": from_source, "member": member},
+            writer=writer)
+
+    if previous == roles.ADMIN:
+        granted_at = _demotion(request, ctx, tenant_id=tenant_id, subject=subject, by=by,
+                               group=group, route=last_admin.ROUTE_ROLE_SET, via=via, to=role,
+                               write=write)
+    else:
+        granted_at = write()
     return {"email": subject, "role": role, "previous_role": previous,
             "source": roles.SOURCE_OVERRIDE, "granted_at": granted_at, "member": member}
 
 
-def _clear_person(ctx: AppContext, *, tenant_id: str, by: str, via: str,
-                  body: PersonClear) -> dict[str, Any]:
+def _clear_person(request: Request, ctx: AppContext, *, tenant_id: str, group: str, by: str,
+                  via: str, body: PersonClear) -> dict[str, Any]:
     subject = roles.subject_for_write(body.email)
     reason = roles.clean_reason(body.reason)
     store = ctx.roles
@@ -123,10 +168,20 @@ def _clear_person(ctx: AppContext, *, tenant_id: str, by: str, via: str,
         raise RoleUnchanged(
             f"{subject} already holds {tenant_id}'s default role; nothing was written")
     default = store.default_role(tenant_id, fresh=True)[0]
-    granted_at = store.write(
-        tenant_id=tenant_id, subject=subject, role=None, by=by, via=via, reason=reason,
-        previous=current, action=roles.AUDIT_CLEARED,
-        detail={"from": current.role, "to": default})
+
+    def write(writer: Any = None) -> str:
+        return store.write(
+            tenant_id=tenant_id, subject=subject, role=None, by=by, via=via, reason=reason,
+            previous=current, action=roles.AUDIT_CLEARED,
+            detail={"from": current.role, "to": default}, writer=writer)
+
+    # A default is never admin (`roles.DEFAULT_ROLES`), so clearing `admin` demotes.
+    if current.role == roles.ADMIN and default != roles.ADMIN:
+        granted_at = _demotion(request, ctx, tenant_id=tenant_id, subject=subject, by=by,
+                               group=group, route=last_admin.ROUTE_ROLE_CLEARED, via=via,
+                               to=default, write=write)
+    else:
+        granted_at = write()
     return {"email": subject, "role": default, "previous_role": current.role,
             "source": roles.SOURCE_DEFAULT, "granted_at": granted_at}
 
@@ -216,26 +271,29 @@ def workspace_roles(
 @router.put("/v1/workspace/roles/person")
 def workspace_set_person(
     body: PersonRole,
+    request: Request,
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     via = _workspace_writer(ctx, auth, body.via, probe_admin=True)
     _probe_admin_limit(ctx, auth, body.email, roles.check_role(body.role))
-    return _set_person(ctx, tenant_id=tenant_id, group=auth.tenant_principal, by=auth.email,
-                       via=via, body=body)
+    return _set_person(request, ctx, tenant_id=tenant_id, group=auth.tenant_principal,
+                       by=auth.email, via=via, body=body)
 
 
 @router.delete("/v1/workspace/roles/person")
 def workspace_clear_person(
     body: PersonClear,
+    request: Request,
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     via = _workspace_writer(ctx, auth, body.via, probe_admin=True)
     _probe_admin_limit(ctx, auth, body.email, None)
-    return _clear_person(ctx, tenant_id=tenant_id, by=auth.email, via=via, body=body)
+    return _clear_person(request, ctx, tenant_id=tenant_id, group=auth.tenant_principal,
+                         by=auth.email, via=via, body=body)
 
 
 @router.put("/v1/workspace/roles/default")
@@ -292,11 +350,12 @@ def admin_workspace_roles(
 def admin_set_person(
     tenant_id: str,
     body: PersonRole,
+    request: Request,
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     group = _registered(ctx, tenant_id)
-    return _set_person(ctx, tenant_id=tenant_id, group=group, by=auth.email,
+    return _set_person(request, ctx, tenant_id=tenant_id, group=group, by=auth.email,
                        via=roles.VIA_PLATFORM_ADMIN, body=body)
 
 
@@ -304,11 +363,12 @@ def admin_set_person(
 def admin_clear_person(
     tenant_id: str,
     body: PersonClear,
+    request: Request,
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    _registered(ctx, tenant_id)
-    return _clear_person(ctx, tenant_id=tenant_id, by=auth.email,
+    group = _registered(ctx, tenant_id)
+    return _clear_person(request, ctx, tenant_id=tenant_id, group=group, by=auth.email,
                          via=roles.VIA_PLATFORM_ADMIN, body=body)
 
 
