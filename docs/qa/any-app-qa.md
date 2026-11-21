@@ -52,8 +52,42 @@ walks. A route's own query is kept and the leg's keys win (`?tab=a&env=staging`
 opens as `?tab=a&env=production`); a hash route's fragment stays after it.
 
 It is **not part of the host**: a change of the entry query alone keeps the
-leg's approval. Only the host and the login's `extra_origin` are what a
-platform admin approved.
+leg's approval. Only the leg's origins (its host, the login's
+`extra_origin` and its `extra_origins`, §1.2) are what a platform admin
+approved.
+
+### 1.2 A leg's extra origins (the ledger's 'QA target extra origins' item)
+
+A leg could reach its base origin and the login's one other origin
+(`sign_in.extra_origin`, the sign-in or identity-provider host) and nothing
+else. An app whose pages call an API on another host
+(`https://api.example.com` beside `https://app.example.com`) was refused by
+the live gate the moment it signed in, and the run reported a signed-out app
+that was in fact working. A leg now declares `extra_origins`, registered
+and changed with the leg like `entry_query` (and edited in the console's QA
+target form, "Extra origins"):
+
+* each one is `https://host[:port]`, nothing more, held to the host rule of
+  `base_url` (a public name that resolves to public addresses), because the
+  gate opens it to the agent's browser exactly as it opens the base;
+* none twice, and none the base origin or the login's (`https://h:443` is
+  `https://h`), so one origin is never approved twice under two spellings;
+* the leg's origins besides its base one, the login's and these together,
+  are **at most three**: the gate takes four origins in all
+  (`livegate/qatarget.py` `MAX_ORIGINS`) and that bound is not raised.
+
+Declaring one approves nothing. `:approve-host` takes `extra_origins`, the
+ones the platform admin names, each one the leg must declare (else 409); only
+those are approved, and the audit row lists every approved origin. The
+worker's route serves `origins` as exactly the approved list: the base
+origin, the login's when it was named, then the named extra origins in the
+leg's order. The IdP token path (QA-IDP-POST) is served only while the
+login's `extra_origin` is among them, never because the list happens to
+hold two origins, and the gate puts it on the first origin after the base,
+which is the login's. Any change of the list, as of the host or the login's
+origin, sets the leg back to `pending` and removes its challenge bypass value
+first: the approval covered those origins and no others. A target stored
+before this field is read, served and approved exactly as before.
 
 ## 2. The steps
 

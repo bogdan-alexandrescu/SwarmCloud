@@ -1018,16 +1018,19 @@ def _parse_idp_token_path(raw: Any, origins: list[str], base_origin: str | None,
                           sign_in_kind: str) -> tuple[str | None, str | None]:
     """(path, the one URL it allows), checked again (QA-IDP-POST): swarm-api
     took it only from a platform admin's approval with the extra origin, and
-    the hand-off crossed the worker. The extra origin is the one approved
-    origin that is not the base's; with none, or more than one, or a target
-    that never signs in, there is nothing to bound it, and it is refused."""
+    the hand-off crossed the worker. The extra origin is the first approved
+    origin that is not the base's: swarm-api serves the login's
+    `extra_origin` there, before any other approved `extra_origins`, and
+    serves the path only while that origin is approved. With none, or a
+    target that never signs in, there is nothing to bound it, and it is
+    refused."""
     if raw is None:
         return None, None
     if (not isinstance(raw, str) or len(raw) > MAX_IDP_TOKEN_PATH or not _IDP_TOKEN_PATH.fullmatch(raw)
             or any(segment in (".", "..") for segment in raw.split("/"))):
         raise QaTargetRefused("idp_token_path")
     extra = [o for o in origins if o != base_origin]
-    if sign_in_kind != "own_login" or len(extra) != 1:
+    if sign_in_kind != "own_login" or not extra:
         raise QaTargetRefused("idp_token_path")
     return raw, f"{extra[0]}{raw}"
 
