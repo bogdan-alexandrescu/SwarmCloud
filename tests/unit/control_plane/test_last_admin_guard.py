@@ -320,15 +320,22 @@ def test_a_leave_and_a_demotion_of_the_only_two_admins_leave_one(first: str) -> 
 
 # -- a promotion, a stale lowering and a leave ----------------------------------------
 
-@pytest.mark.parametrize("stale", ["demote", "clear", "remove", "leave"])
-def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, stale) -> None:
+@pytest.mark.parametrize("stale,read", [
+    ("demote", 1), ("demote", 2), ("clear", 1), ("clear", 2), ("remove", 1), ("leave", 1)])
+def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, stale,
+                                                                 read) -> None:
     """lee is eng's only admin; dan a member by platform membership. lee's
     change to dan -- or dan's own leave -- reads dan's role (member, or viewer
     for the clear) and, before it commits: (1) lee
     names dan admin, and (3) lee leaves, which is guarded and sees dan as the
     admin who remains. When the stale change then commits, dan is no longer
     an admin who can select eng, and eng has none. It must see the guard
-    document change, be retried on dan's new role, and be refused."""
+    document change, be retried on dan's new role, and be refused.
+
+    `read` is which of the change's reads of dan's role goes stale: the roles
+    routes read it once before their transaction (to answer `role_unchanged`
+    early) and again inside it, which decides; removal and leave read it
+    inside only."""
     db = RacingFirestore()
     seed_tenant(db, "eng")
     seed_tenant(db, "research")
@@ -341,16 +348,20 @@ def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, s
         set_role(client, DAN, "viewer")
 
     real = roles.RoleStore.newest_valid
-    armed = [True]
+    reads = [0]
     between: list[Any] = []
+
+    def interleave() -> None:
+        between.append(client.put(ROLES, headers=h("lee", "eng"),
+                                  json={"email": DAN, "role": "admin"}))
+        between.append(client.post(LEAVE, headers=h("lee", "eng")))
 
     def newest_valid(self, tenant_id, subject, **kwargs):
         seen = real(self, tenant_id, subject, **kwargs)
-        if subject == DAN and armed[0]:
-            armed[0] = False
-            between.append(client.put(ROLES, headers=h("lee", "eng"),
-                                      json={"email": DAN, "role": "admin"}))
-            between.append(client.post(LEAVE, headers=h("lee", "eng")))
+        if subject == DAN and not between:
+            reads[0] += 1
+            if reads[0] == read:
+                interleave()
         return seen
 
     monkeypatch.setattr(roles.RoleStore, "newest_valid", newest_valid)
@@ -364,6 +375,8 @@ def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, s
                                  json={"email": DAN, "role": "viewer"} if stale == "demote"
                                  else {"email": DAN})
     monkeypatch.setattr(roles.RoleStore, "newest_valid", real)
+    if not between:  # the change read dan's role only once, before its write
+        interleave()
     promoted, left = between
     assert promoted.status_code == 200, promoted.text
     assert left.status_code == 200, left.text
@@ -371,7 +384,8 @@ def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, s
     # an unguarded lowering -> 200, and eng has no admin who can select it.
     assert outcome.status_code == 409, outcome.text
     assert outcome.json()["code"] == LAST
-    assert db.aborts >= 1
+    # A stale read inside the transaction is caught by the guard's abort.
+    assert db.aborts >= (1 if read == 2 or stale in ("remove", "leave") else 0)
     assert role_of(ctx, DAN) == roles.ADMIN
     assert membership_store(ctx).read(DAN, fresh=True).newest["eng"].state == memberships.MEMBER
     assert [r["detail"]["route"] for r in refused(db)] == [

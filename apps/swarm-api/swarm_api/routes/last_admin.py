@@ -1,23 +1,32 @@
 """The last-admin guard: no route leaves a group workspace without an admin
 of its own who can still select it (docs/design/join-requests.md §4.4).
 
-Three routes lower who administers a workspace, and every one goes through
-this guard:
+These routes can lower who administers a workspace, and every one goes
+through this guard:
 
     POST   /v1/workspace/leave                  the caller, when they hold `admin`
     DELETE /v1/workspace/members/person         a person who holds `admin`
     PUT    /v1/workspace/roles/person           an `admin` override set lower
     DELETE /v1/workspace/roles/person           an `admin` override cleared
     (and the platform admin's /v1/admin/workspaces/{tenant}/roles/person pair)
+    POST   /v1/admin/join-requests/{ref}/approve   an approval lowering the
+                                                override of an admin who
+                                                can already select it
 
-HOW IT HOLDS UNDER CONCURRENCY. Each of those writes is one Firestore
-transaction that FIRST reads the workspace's guard document
-(`memberships.LEAVE_GUARD_COLLECTION/{tenant}`, `read_guard`), then checks
-who else is an admin (`require_admin_remains`) and writes the guard document
-with its own change. Two changes that each lower a different admin therefore
-conflict on the guard: Firestore aborts one, and its retry re-checks who is
-left, so both cannot pass. Naming an admin never lowers anyone and takes no
-guard, so a platform admin can always name a new one.
+HOW IT HOLDS UNDER CONCURRENCY. EVERY write those routes make -- a lowering
+or not, naming an admin included -- is one Firestore transaction that FIRST
+reads the workspace's guard document (`memberships.LEAVE_GUARD_COLLECTION/
+{tenant}`, `read_guard`), THEN reads the subject's role fresh and decides
+there whether the write lowers an admin, and WRITES the guard document with
+its change: through `require_admin_remains` when it lowers one, through
+`write_guard` when it does not. Whether to guard is never decided before the
+transaction. So any commit in between that changed who is an admin -- a
+promotion, a guarded leave that counted the subject as the admin who remains
+-- changed the guard too: Firestore aborts the writer that read it before,
+and its retry reads the subject's new role and, if it now lowers an admin,
+re-checks who is left. Two lowerings, or a lowering and a stale "not an
+admin" write, cannot both pass. Naming an admin is never REFUSED, so a
+platform admin can always name a new one; it only takes part in the guard.
 
 WHO COUNTS. Another person counts only while they hold `admin` by override,
 read fresh, AND can still select the workspace: their platform membership,
@@ -57,12 +66,13 @@ from ..store import _COMMIT_RETRIES_EXHAUSTED
 log = logging.getLogger(__name__)
 
 #: The `admin_audit` row a refused leave, removal or demotion leaves.
-AUDIT_REFUSED = "workspace_last_admin_refused"
+AUDIT_REFUSED = roles.AUDIT_LAST_ADMIN_REFUSED
 #: Which route was refused, in the row's `detail.route`.
 ROUTE_LEAVE = "leave"
 ROUTE_REMOVE = "member_removed"
 ROUTE_ROLE_SET = "role_set"
 ROUTE_ROLE_CLEARED = "role_cleared"
+ROUTE_JOIN_APPROVED = "join_approved"
 
 
 def registered(ctx: AppContext) -> dict[str, str]:
@@ -129,6 +139,14 @@ def read_guard(ctx: AppContext, txn: Any, tenant_id: str) -> None:
     _snapshot(txn.get(guard_ref(ctx, tenant_id)))
 
 
+def write_guard(ctx: AppContext, txn: Any, tenant_id: str, *, by: str) -> None:
+    """Write the guard document inside `txn`: every transaction that read it
+    (`read_guard`) and has not committed yet is aborted and retried, and
+    decides again on what this one changed."""
+    txn.set(guard_ref(ctx, tenant_id), {"tenant_id": tenant_id, "by": by,
+                                        "at": datetime.now(timezone.utc)})
+
+
 def require_admin_remains(request: Request, ctx: AppContext, txn: Any, *, tenant_id: str,
                           subject: str, by: str, group: str, registered: Mapping[str, str],
                           message: str) -> None:
@@ -139,8 +157,7 @@ def require_admin_remains(request: Request, ctx: AppContext, txn: Any, *, tenant
     if not admin_remains(request, ctx, txn, tenant_id=tenant_id, email=subject, group=group,
                          registered=registered):
         raise WorkspaceLeaveLastAdmin(message)
-    txn.set(guard_ref(ctx, tenant_id), {"tenant_id": tenant_id, "by": by,
-                                        "at": datetime.now(timezone.utc)})
+    write_guard(ctx, txn, tenant_id, by=by)
 
 
 def contended(exc: BaseException) -> bool:
@@ -151,7 +168,7 @@ def contended(exc: BaseException) -> bool:
     return isinstance(exc, ValueError) and str(exc).startswith(_COMMIT_RETRIES_EXHAUSTED)
 
 
-def _audit_refusal(ctx: AppContext, *, tenant_id: str, subject: str, by: str,
+def audit_refusal(ctx: AppContext, *, tenant_id: str, subject: str, by: str,
                    detail: Mapping[str, Any]) -> None:
     """One row for a refused change. Written after the transaction rolled
     back; a row that cannot be written is logged, and the refusal stands."""
@@ -176,7 +193,7 @@ def run(ctx: AppContext, apply: Callable[[Any], Any], *, tenant_id: str, subject
     try:
         return firestore.transactional(apply)(ctx.db.transaction())
     except WorkspaceLeaveLastAdmin:
-        _audit_refusal(ctx, tenant_id=tenant_id, subject=subject, by=by, detail=detail)
+        audit_refusal(ctx, tenant_id=tenant_id, subject=subject, by=by, detail=detail)
         raise
     except Exception as exc:  # noqa: BLE001 - only contention is re-raised as a retry
         if not contended(exc):

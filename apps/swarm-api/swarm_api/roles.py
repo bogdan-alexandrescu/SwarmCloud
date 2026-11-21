@@ -219,9 +219,12 @@ AUDIT_DEFAULT_SET = "workspace_default_role_set"
 AUDIT_GRANT_INVALID = "workspace_role_grant_invalid"
 AUDIT_PLATFORM_ADMIN_ACTED = "platform_admin_acted"
 AUDIT_PLATFORM_ADMIN_VIEWED = "platform_admin_viewed"
+#: A refused leave, removal, demotion or approval (`routes/last_admin.py`
+#: writes it): served here so Admin › People and roles can show it.
+AUDIT_LAST_ADMIN_REFUSED = "workspace_last_admin_refused"
 WORKSPACE_AUDIT_ACTIONS = frozenset({
     AUDIT_GRANTED, AUDIT_CLEARED, AUDIT_DEFAULT_SET, AUDIT_GRANT_INVALID,
-    AUDIT_PLATFORM_ADMIN_ACTED, AUDIT_PLATFORM_ADMIN_VIEWED,
+    AUDIT_PLATFORM_ADMIN_ACTED, AUDIT_PLATFORM_ADMIN_VIEWED, AUDIT_LAST_ADMIN_REFUSED,
 })
 
 _EMAIL = re.compile(r"^[^@\s\"'<>(),;:\\]+@[^@\s\"'<>(),;:\\]+\.[^@\s\"'<>(),;:\\]+$")

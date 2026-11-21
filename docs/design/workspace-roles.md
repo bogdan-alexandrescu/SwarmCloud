@@ -704,7 +704,11 @@ Setting a person's `admin` override to `member` or `viewer`, or clearing it
 (a default is never `admin`), on either route group, is refused 409
 `workspace_leave_last_admin` when no other admin who can still select the
 workspace would remain: the self-leave route's last-admin guard, in one
-transaction over the same guard document (issue 47;
+transaction over the same guard document. Every set or clear of a person's
+role -- naming an admin included -- is such a transaction, reading the
+person's role after the guard and deciding there whether it lowers an admin,
+so one decided on a role that changed meanwhile is aborted and decided again
+(issue 47;
 [join-requests.md](join-requests.md) §4.4 "The last-admin guard on every
 route"). A platform admin is never counted as that other admin; naming an
 admin is never refused, so one can always be named first. The refusal writes

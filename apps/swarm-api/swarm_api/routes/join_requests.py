@@ -83,6 +83,7 @@ from ..errors import (
     MembershipUnavailable,
     NotFound,
     UpstreamUnavailable,
+    WorkspaceLeaveLastAdmin,
     WorkspaceLeaveNotMember,
     WorkspaceLeavePersonOnly,
 )
@@ -477,15 +478,11 @@ def remove_member(
     group, me = _members_admin(ctx, auth)
     subject = memberships.clean_person(body.email, "email")
     store = membership_store(ctx)
+    # Read fresh first, so a person with nothing to remove hears that before
+    # any role or group lookup; read again inside the transaction, which decides.
     grant = store.read(subject, fresh=True).newest.get(tenant_id)
     if grant is None or grant.state != memberships.MEMBER:
         raise _no_membership(subject)
-    # Fail-closed for an admin: the group holding them keeps them, and their
-    # override, here; a lookup that fails is a 503, never a guess.
-    admin = last_admin.admin_by_override(ctx, tenant_id, subject)
-    still: bool | None = (_in_group(request, ctx, subject, group) if admin
-                          else _still_in_group(request, ctx, subject, group))
-    guarded = admin and not still
     via = (memberships.VIA_PLATFORM_ADMIN if me.source == roles.SOURCE_PLATFORM_ADMIN
            else memberships.VIA_WORKSPACE_ADMIN)
     by = (auth.email or "").strip().lower()
@@ -497,22 +494,32 @@ def remove_member(
         message = (f"{subject} is this workspace's only admin who can still select it; name "
                    "another admin who is a member before removing them. Nothing was written")
 
-    def _apply(txn: Any) -> None:
-        if guarded:
-            last_admin.read_guard(ctx, txn, tenant_id)
+    def _apply(txn: Any) -> bool | None:
+        last_admin.read_guard(ctx, txn, tenant_id)
         current = store.read(subject, transaction=txn).newest.get(tenant_id)
         if current is None or current.state != memberships.MEMBER:
             raise _no_membership(subject)
-        if guarded:
+        # Decided here, after the guard read, never before the transaction: a
+        # promotion committed in between changed the guard, so this try is
+        # aborted and the retry reads the new role. Fail-closed for an admin:
+        # the group holding them keeps them, and their override, here; a
+        # lookup that fails is a 503, never a guess.
+        admin = last_admin.admin_by_override(ctx, tenant_id, subject)
+        still: bool | None = (_in_group(request, ctx, subject, group) if admin
+                              else _still_in_group(request, ctx, subject, group))
+        if admin and not still:
             last_admin.require_admin_remains(
                 request, ctx, txn, tenant_id=tenant_id, subject=subject, by=by, group=group,
                 registered=registered, message=message)
+        else:
+            last_admin.write_guard(ctx, txn, tenant_id, by=by)
         store.write(tenant_id=tenant_id, group=current.group, subject=subject,
                     state=memberships.REMOVED, by=auth.email, via=via, reason=body.reason,
                     detail={"still_in_group": still}, writer=txn)
+        return still
 
-    last_admin.run(ctx, _apply, tenant_id=tenant_id, subject=subject, by=by,
-                   detail={"route": last_admin.ROUTE_REMOVE, "via": via})
+    still = last_admin.run(ctx, _apply, tenant_id=tenant_id, subject=subject, by=by,
+                           detail={"route": last_admin.ROUTE_REMOVE, "via": via})
     return {"email": subject, "state": memberships.REMOVED, "still_in_group": still}
 
 
@@ -579,31 +586,33 @@ def leave_workspace(
     # Read fresh first, so a person with nothing to leave hears that before
     # any group lookup; read again inside the transaction, which decides.
     _leavable(store.read(email, fresh=True), tenant_id, registered)
-    admin = last_admin.admin_by_override(ctx, tenant_id, email)
-    if admin:
-        # The group holding the caller keeps them, and their override, here.
-        still: bool | None = _in_group(request, ctx, email, group)
-    else:
-        still = _still_in_group(request, ctx, email, group)
-    guarded = admin and not still
     reason = body.reason if body is not None else None
+    message = ("you are this workspace's only admin who can still select it; name another "
+               "admin who is a member before you leave. Nothing was written")
 
-    def _apply(txn: Any) -> None:
-        if guarded:
-            last_admin.read_guard(ctx, txn, tenant_id)
+    def _apply(txn: Any) -> bool | None:
+        last_admin.read_guard(ctx, txn, tenant_id)
         current = _leavable(store.read(email, transaction=txn), tenant_id, registered)
-        if guarded:
+        # Decided after the guard read, as `remove_member` decides it.
+        admin = last_admin.admin_by_override(ctx, tenant_id, email)
+        if admin:
+            # The group holding the caller keeps them, and their override, here.
+            still: bool | None = _in_group(request, ctx, email, group)
+        else:
+            still = _still_in_group(request, ctx, email, group)
+        if admin and not still:
             last_admin.require_admin_remains(
                 request, ctx, txn, tenant_id=tenant_id, subject=email, by=email, group=group,
-                registered=registered,
-                message="you are this workspace's only admin who can still select it; name "
-                        "another admin who is a member before you leave. Nothing was written")
+                registered=registered, message=message)
+        else:
+            last_admin.write_guard(ctx, txn, tenant_id, by=email)
         store.write(tenant_id=tenant_id, group=current.group, subject=email,
                     state=memberships.REMOVED, by=email, via=memberships.VIA_SELF,
                     reason=reason, detail={"still_in_group": still}, writer=txn)
+        return still
 
-    last_admin.run(ctx, _apply, tenant_id=tenant_id, subject=email, by=email,
-                   detail={"route": last_admin.ROUTE_LEAVE, "via": memberships.VIA_SELF})
+    still = last_admin.run(ctx, _apply, tenant_id=tenant_id, subject=email, by=email,
+                           detail={"route": last_admin.ROUTE_LEAVE, "via": memberships.VIA_SELF})
     return {"email": email, "state": memberships.REMOVED, "still_in_group": still}
 
 
@@ -615,7 +624,8 @@ def leave_workspace(
 def _role_change(ctx: AppContext, *, tenant_id: str, subject: str, chosen: str, default: str,
                  by: str, via: str, ref: str) -> dict[str, Any] | None:
     """The role write that makes `chosen` the person's role, or None when it
-    already is. Read before the transaction, written inside it. The default
+    already is. Read inside the approval's transaction, after its last-admin
+    guard read (`approve_join_request`), and written there. The default
     chosen over a stored override CLEARS the override, so the person holds
     exactly the role the approving admin saw -- never an older grant's."""
     store = ctx.roles
@@ -642,6 +652,7 @@ def _role_change(ctx: AppContext, *, tenant_id: str, subject: str, chosen: str, 
 @router.post("/v1/admin/join-requests/{ref}/approve")
 def approve_join_request(
     ref: str,
+    request: Request,
     body: ApproveBody | None = None,
     scope: dict[str, str] | None = Depends(people_scope),
     auth: AuthContext = Depends(current_auth),
@@ -653,7 +664,16 @@ def approve_join_request(
     `join_role_not_allowed`). With `platform_memberships` on, the decision,
     the membership, a lowered role and every audit row are ONE transaction;
     with it off, the decision is recorded and `group_change` names the
-    `gcloud` line that adds the person to the group (`admitted: false`)."""
+    `gcloud` line that adds the person to the group (`admitted: false`).
+
+    An admitting approval is also a write of the last-admin guard
+    (`routes/last_admin.py`): it reads the guard document and the person's
+    role inside the transaction, and an approval that would lower the
+    `admin` override of someone who can already select the workspace (the
+    group took them in, or a platform membership counts) is 409
+    `workspace_leave_last_admin` when no other such admin would remain. An
+    admin named ahead of their joining, who cannot select it yet, is lowered
+    without the check: no admin who could select the workspace is lost."""
     view, via = join_scope(ctx, scope, ref, auth)
     tenant_id, group, subject = view.request.tenant_id, view.request.group, view.request.requester
     if _registered(ctx).get(tenant_id) != group:
@@ -675,30 +695,54 @@ def approve_join_request(
         roles.probe_admin_admin_target(store, tenant_id, subject, chosen)
     by = (auth.email or "").strip().lower()
     admitted = platform_memberships_on(ctx.settings)
-    role_change = _role_change(ctx, tenant_id=tenant_id, subject=subject, chosen=chosen,
-                               default=default, by=by, via=via, ref=view.request.ref) \
-        if admitted else None
+    registered = _registered(ctx)
     same = _same_request(view)
     # The authenticator's own store (`membership_store`), so the write's
     # eviction is what the person's next request reads, not a second cache's
     # 15 s (§4.4).
     grants = membership_store(ctx)
 
-    def also(writer: Any, request: JoinRequest, decision: Decision) -> None:
-        same(writer, request, decision)
+    def also(writer: Any, asked: JoinRequest, decision: Decision) -> None:
+        same(writer, asked, decision)
         if not admitted:
             return
+        # The guard first, then the role read fresh, so whether this lowers
+        # an admin is decided on a role no guarded change committed over.
+        last_admin.read_guard(ctx, writer, tenant_id)
+        role_change = _role_change(ctx, tenant_id=tenant_id, subject=subject, chosen=chosen,
+                                   default=default, by=by, via=via, ref=view.request.ref)
+        lowers = (role_change is not None and role_change["previous"] is not None
+                  and role_change["previous"].role == roles.ADMIN)
+        if lowers:
+            held = grants.read(subject, transaction=writer).newest.get(tenant_id)
+            # Fail-closed: a group lookup that fails is a 503, never a guess.
+            lowers = ((held is not None and held.counts_for(registered))
+                      or _in_group(request, ctx, subject, group))
+        if lowers:
+            last_admin.require_admin_remains(
+                request, ctx, writer, tenant_id=tenant_id, subject=subject, by=by, group=group,
+                registered=registered,
+                message=f"{subject} is this workspace's only admin who can still select it; "
+                        "name another admin who is a member before approving them at a lower "
+                        "role. Nothing was written")
+        else:
+            last_admin.write_guard(ctx, writer, tenant_id, by=by)
         # The role first, the membership after: whichever fails, the
         # transaction carries both, so neither lands alone.
         if role_change is not None:
             store.write(**role_change, writer=writer)
         grants.write(
             tenant_id=tenant_id, group=group, subject=subject, state=memberships.MEMBER,
-            by=by, via=memberships.VIA_JOIN_REQUEST, detail={"ref": request.ref},
+            by=by, via=memberships.VIA_JOIN_REQUEST, detail={"ref": asked.ref},
             writer=writer)
 
-    join_store(ctx).decide(ref, state=joinrequests.APPROVED, by=by, via=via, role=chosen,
-                           admitted=admitted, also=also)
+    try:
+        join_store(ctx).decide(ref, state=joinrequests.APPROVED, by=by, via=via, role=chosen,
+                               admitted=admitted, also=also)
+    except WorkspaceLeaveLastAdmin:
+        last_admin.audit_refusal(ctx, tenant_id=tenant_id, subject=subject, by=by, detail={
+            "route": last_admin.ROUTE_JOIN_APPROVED, "via": via, "to": chosen})
+        raise
     out: dict[str, Any] = {"ref": view.request.ref, "state": joinrequests.APPROVED,
                            "email": subject, "tenant_id": tenant_id, "role": chosen,
                            "admitted": admitted, "group_change": None}
