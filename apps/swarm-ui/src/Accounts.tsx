@@ -21,6 +21,7 @@ import { errorHeading, read, route, write, type ApiError, type Result } from './
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam, usePhoneTables } from './capacityPoll'
 import { HelpCard } from './HelpCard'
+import { InfoTip } from './People'
 import { Mark } from './primitives'
 import { Button, CIcon, Chip, Dialog, Table, ToneMark, WarnMark } from './components'
 import './styles/capacity.css'
@@ -656,7 +657,8 @@ function Broken({
         {lent.length > 0 && (
           <p>
             <b>{names(lent)}</b> need{lent.length === 1 ? 's' : ''} a sign-in by{' '}
-            {owners.length === 1 ? owners[0] : 'their owners'}; lent to you, so nothing here can do it.
+            {owners.length === 1 ? owners[0] : 'their owners'}; lent to you.{' '}
+            <InfoTip about="lent accounts" tip="Lent to you, so nothing here can do it." />
           </p>
         )}
       </div>
@@ -862,8 +864,11 @@ function Pool({
             {/* WHICH ORGANISATION (archived issue 2222): one login can hold two, and the
                 sign-in takes the one selected in that browser. */}
             <p className="muted small">
-              Sign in to the organisation you mean: one claude.ai login can hold two, and the sign-in takes the one that is
-              selected.
+              Which organisation{' '}
+              <InfoTip
+                about="which organisation"
+                tip="Sign in to the organisation you mean: one claude.ai login can hold two, and the sign-in takes the one that is selected."
+              />
             </p>
           </div>
         </section>
@@ -2055,8 +2060,11 @@ function HoldingHistory({ account, now, fixture }: { account: Account; now: numb
       )}
       {h?.scan_limited && (
         <p className="muted small">
-          Older history was not searched further: none of this tenant’s own holds were found in
-          the most recent pages.
+          Older history not searched{' '}
+          <InfoTip
+            about="the history search"
+            tip="Older history was not searched further: none of this tenant’s own holds were found in the most recent pages."
+          />
         </p>
       )}
       {h?.next_cursor && (
@@ -2088,8 +2096,8 @@ function Borrowed({ account }: { account: Account }) {
           a row with no buttons and no sentence reads as a row that failed to
           render them. */}
       <p className="muted small">
-        <strong>{account.owner_tenant}</strong> owns it. Your agents can run on
-        it; nothing here can change it.
+        <strong>{account.owner_tenant}</strong> owns it; nothing here can change it.{' '}
+        <InfoTip about="a lent account" tip="Your agents can run on it; nothing here can change it." />
       </p>
     </div>
   )
@@ -2109,8 +2117,8 @@ function AllWindows({ account, now }: { account: Account; now: number }) {
   if (keys.length === 0) {
     return (
       <p className="muted small">
-        No windows reported &mdash; the 5-hour and 7-day windows above are{' '}
-        <strong>unmeasured, not zero</strong>.
+        No windows reported: <strong>unmeasured, not zero</strong>{' '}
+        <InfoTip about="the windows" tip="No windows reported — the 5-hour and 7-day windows above are unmeasured, not zero." />
       </p>
     )
   }
@@ -2216,163 +2224,147 @@ type RefreshState =
  * into one sentence is exactly the mistake this codebase keeps paying for.
  */
 function refreshVerdict(r: RefreshResult): { ok: boolean; heading: string; body: ReactNode } {
+  // ONE LINE ON THE SURFACE, THE REST BEHIND THE (i) (the owner's standing
+  // rule, issue 81): what was written or not stays visible, the why moves.
+  const why = (line: ReactNode, tip: string) => (
+    <>
+      {line} <InfoTip about="this outcome" tip={tip} />
+    </>
+  )
   switch (r.reason) {
     case 'refreshed':
       return {
         ok: true,
         heading: 'Exchanged',
-        body: (
-          <>
-            A new pair was obtained and written: the refresh half first, then the
-            access token the pods mount.{' '}
-            <strong>The previous access token is now revoked</strong> &mdash; that
-            is what exchanging one does, and it is why nothing outside
-            quota-broker may ever do it.
-          </>
+        body: why(
+          <strong>The previous access token is now revoked.</strong>,
+          'A new pair was obtained and written: the refresh half first, then the access token the pods mount. ' +
+            'The previous access token is now revoked — that is what exchanging one does, and it is why nothing ' +
+            'outside quota-broker may ever do it.',
         ),
       }
     case 'published':
       return {
         ok: true,
         heading: 'Published',
-        body: (
-          <>
-            The stored token was still valid, but the secret a pod mounts did not
-            carry it. It does now. This is the case that silently breaks every
-            agent for an account whose credential is working perfectly, so seeing
-            it here means something was genuinely fixed.
-          </>
+        body: why(
+          'The pod-facing secret now carries the token.',
+          'The stored token was still valid, but the secret a pod mounts did not carry it. It does now. This is ' +
+            'the case that silently breaks every agent for an account whose credential is working perfectly, so ' +
+            'seeing it here means something was genuinely fixed.',
         ),
       }
     case 'published_unverified':
       return {
         ok: true,
         heading: 'Published, but nothing confirmed it was needed',
-        body: (
+        body: why(
           <>
-            The stored token was still valid and was written to the secret a pod
-            mounts &mdash; without the broker being able to read that secret
-            first, so it could not tell whether the write was necessary. The
-            credential is fine and pods have the right token. What is wrong is
-            the broker&rsquo;s IAM: it needs{' '}
-            <code>roles/secretmanager.secretAccessor</code> on this
-            account&rsquo;s secret. Until it has that, the usage poller cannot
-            read the token either, so this account&rsquo;s headroom stays at
-            whatever it was last seen to be.
-          </>
+            Broker needs <code>roles/secretmanager.secretAccessor</code>.
+          </>,
+          'The stored token was still valid and was written to the secret a pod mounts — without the broker ' +
+            'being able to read that secret first, so it could not tell whether the write was necessary. The ' +
+            'credential is fine and pods have the right token. What is wrong is the broker’s IAM: it needs ' +
+            'roles/secretmanager.secretAccessor on this account’s secret. Until it has that, the usage poller ' +
+            'cannot read the token either, so this account’s headroom stays at whatever it was last seen to be.',
         ),
       }
     case 'unverified_skipped':
       return {
         ok: false,
-        heading: 'Nothing could confirm what the secret holds, so nothing was written',
-        body: (
-          <>
-            The stored token is still valid, but the broker could read neither the
-            secret a pod mounts nor its own record of what it last published
-            there. With no evidence in either direction it declined to write &mdash;
-            deliberately, because writing on a failed read is what added ~1,700
-            identical versions to every account secret in September. The
-            credential itself is fine. Two things to check: the broker needs{' '}
-            <code>roles/secretmanager.secretAccessor</code> on this
-            account&rsquo;s secret, and its Firestore{' '}
-            <code>credential_publications</code> collection has to be reachable.
-            Until one of them works, this account&rsquo;s pod-facing secret is
-            only rewritten when the credential actually rotates.
-          </>
+        heading: 'Secret unreadable, so nothing was written',
+        body: why(
+          'The credential itself is fine.',
+          'The stored token is still valid, but the broker could read neither the secret a pod mounts nor its ' +
+            'own record of what it last published there. With no evidence in either direction it declined to ' +
+            'write — deliberately, because writing on a failed read is what added ~1,700 identical versions to ' +
+            'every account secret in September. The credential itself is fine. Two things to check: the broker ' +
+            'needs roles/secretmanager.secretAccessor on this account’s secret, and its Firestore ' +
+            'credential_publications collection has to be reachable. Until one of them works, this account’s ' +
+            'pod-facing secret is only rewritten when the credential actually rotates.',
         ),
       }
     case 'still_valid':
       return {
         ok: true,
         heading: 'Nothing to do',
-        body: (
-          <>
-            The stored token is still valid and the pod-facing secret already
-            carries it, so nothing was exchanged and nothing was written. This is
-            the healthy answer, not a failure &mdash; an exchange only happens
-            inside the last three hours of the access token&rsquo;s life.
-          </>
+        body: why(
+          'Nothing was exchanged and nothing was written.',
+          'The stored token is still valid and the pod-facing secret already carries it, so nothing was ' +
+            'exchanged and nothing was written. This is the healthy answer, not a failure — an exchange only ' +
+            'happens inside the last three hours of the access token’s life.',
         ),
       }
     case 'reauth_required':
       return {
         ok: false,
         heading: 'The refresh token is gone',
-        body: (
+        body: why(
           <>
-            The token endpoint refused the exchange. Only a person can fix this,
-            so the broker has stopped trying and moved this account to
-            REAUTH_REQUIRED. Press <em>Sign in again</em> below &mdash; it is the
-            same sign-in that added the account, and this screen puts the state
-            back afterwards as a visible second step.
-          </>
+            Moved to REAUTH_REQUIRED: press <em>Sign in again</em>.
+          </>,
+          'The token endpoint refused the exchange. Only a person can fix this, so the broker has stopped trying ' +
+            'and moved this account to REAUTH_REQUIRED. Press Sign in again below — it is the same sign-in that ' +
+            'added the account, and this screen puts the state back afterwards as a visible second step.',
         ),
       }
     case 'unreadable':
       return {
         ok: false,
         heading: 'The stored credential could not be parsed',
-        body: (
+        body: why(
           <>
-            What is in Secret Manager is not a credential this can read, so there
-            is nothing to exchange &mdash; a different fault from a refresh token
-            the endpoint rejected. The account has been moved to REAUTH_REQUIRED.
-            Press <em>Sign in again</em> below: a fresh sign-in writes the shape
-            the broker produces, which is the shape it can read.
-          </>
+            Moved to REAUTH_REQUIRED: press <em>Sign in again</em>.
+          </>,
+          'What is in Secret Manager is not a credential this can read, so there is nothing to exchange — a ' +
+            'different fault from a refresh token the endpoint rejected. The account has been moved to ' +
+            'REAUTH_REQUIRED. Press Sign in again below: a fresh sign-in writes the shape the broker produces, ' +
+            'which is the shape it can read.',
         ),
       }
     case 'no_refresh_credential':
       return {
         ok: false,
         heading: 'There is no refresh half to exchange',
-        body: (
+        body: why(
           <>
-            No <code>-refresh</code> secret exists for this account, so there is
-            nothing to exchange and nothing was rejected. That is the shape a
-            lone long-lived access token has &mdash; one token, nothing beside it
-            &mdash; and it cannot be kept alive by anything. Press{' '}
-            <em>Sign in again</em> below: a sign-in always yields a pair.
-          </>
+            Press <em>Sign in again</em>: it yields a pair.
+          </>,
+          'No -refresh secret exists for this account, so there is nothing to exchange and nothing was rejected. ' +
+            'That is the shape a lone long-lived access token has — one token, nothing beside it — and it cannot ' +
+            'be kept alive by anything. Press Sign in again below: a sign-in always yields a pair.',
         ),
       }
     case 'store_unavailable':
       return {
         ok: false,
         heading: 'Secret Manager did not answer',
-        body: (
-          <>
-            The credential was never read, so this says nothing about whether it
-            is healthy &mdash; it is a failure to reach the store, not a verdict
-            on the account. Nothing was written. Try again.
-          </>
+        body: why(
+          'Credential not read, nothing written: try again',
+          'The credential was never read, so this says nothing about whether it is healthy — it is a failure to ' +
+            'reach the store, not a verdict on the account. Nothing was written. Try again.',
         ),
       }
     case 'publish_failed':
       return {
         ok: false,
         heading: 'The token is fine; writing it failed',
-        body: (
-          <>
-            A valid access token could not be written to the secret pods mount, so
-            pods are still reading whatever was there before. The credential is
-            not the problem. Try again, and if it persists this is a Secret
-            Manager permission or availability problem rather than an account one.
-          </>
+        body: why(
+          'Pods still read the previous token: try again',
+          'A valid access token could not be written to the secret pods mount, so pods are still reading ' +
+            'whatever was there before. The credential is not the problem. Try again, and if it persists this is ' +
+            'a Secret Manager permission or availability problem rather than an account one.',
         ),
       }
     case 'refresh_failed':
       return {
         ok: false,
         heading: 'The exchange failed, and may be transient',
-        body: (
-          <>
-            The token endpoint did not complete the exchange, and did not say the
-            credential is dead. The account has deliberately NOT been moved to
-            REAUTH_REQUIRED, so the sweep will try again on its next tick. If it
-            keeps answering this, treat it as needing a sign-in.
-          </>
+        body: why(
+          'Not moved to REAUTH_REQUIRED; the sweep retries.',
+          'The token endpoint did not complete the exchange, and did not say the credential is dead. The account ' +
+            'has deliberately NOT been moved to REAUTH_REQUIRED, so the sweep will try again on its next tick. If ' +
+            'it keeps answering this, treat it as needing a sign-in.',
         ),
       }
     default:
@@ -2381,12 +2373,12 @@ function refreshVerdict(r: RefreshResult): { ok: boolean; heading: string; body:
         heading: r.refreshed ? 'Refreshed' : 'Not refreshed',
         // An unrecognised reason is reported verbatim rather than mapped onto
         // the nearest known one. A wrong explanation is worse than none.
-        body: (
+        body: why(
           <>
-            The broker answered with a reason this screen has no copy for:{' '}
-            <code>{r.reason}</code>. It is shown as the broker wrote it rather
-            than guessed at.
-          </>
+            Unrecognised reason: <code>{r.reason}</code>
+          </>,
+          `The broker answered with a reason this screen has no copy for: ${r.reason}. It is shown as the broker ` +
+            'wrote it rather than guessed at.',
         ),
       }
   }
@@ -2475,8 +2467,10 @@ function RefreshControl({
               one costs a revoked token. */}
           <p className="warn-text">
             <strong>Reload this screen before pressing refresh again.</strong>{' '}
-            This failed on a write, so the credential may have been exchanged
-            anyway.
+            <InfoTip
+              about="reloading first"
+              tip="This failed on a write, so the credential may have been exchanged anyway."
+            />
           </p>
         </>
       )}
@@ -2505,16 +2499,16 @@ function RefreshAnswer({ result }: { result: RefreshResult }) {
             <>
               {' '}
               &middot;{' '}
-              <strong>
-                the access token it reports is ALREADY EXPIRED, so pods will fail
-                on it
-              </strong>
+              <strong>access token ALREADY EXPIRED: pods will fail</strong>{' '}
+              <InfoTip
+                about="the expired token"
+                tip="The access token it reports is ALREADY EXPIRED, so pods will fail on it."
+              />
             </>
           ) : (
             <>
               {' '}
-              &middot; the access token this account publishes expires in{' '}
-              {clearsIn(result.expires_at, Date.now())}
+              &middot; published token expires in {clearsIn(result.expires_at, Date.now())}
             </>
           ))}
       </p>
@@ -2643,7 +2637,7 @@ function Lending({
       </span>
       {includesOwner && (
         <p className="muted small">
-          <code>{owner}</code> owns this account, so it is not sent as a loan.
+          <code>{owner}</code> owns it: not sent as a loan.
         </p>
       )}
       {unknown.length > 0 && (
@@ -2655,7 +2649,7 @@ function Lending({
               <code>{t}</code>
             </span>
           ))}
-          . Nothing was sent.
+          {' '}&mdash; nothing was sent.
         </p>
       )}
       {confirming && (
@@ -2697,7 +2691,11 @@ function Lending({
           </ul>
           {added.length > 0 && (
             <p className="muted small">
-              Agents in {added.join(', ')} will be able to run on this account&rsquo;s credential.
+              Agents in {added.join(', ')} can then run on it.{' '}
+              <InfoTip
+                about="lending"
+                tip={`Agents in ${added.join(', ')} will be able to run on this account’s credential.`}
+              />
             </p>
           )}
           {error && (
@@ -2711,9 +2709,11 @@ function Lending({
             drawn is indistinguishable from one that failed to render. */}
       {board.tenants === null && (
         <p className="muted small">
-          <strong>No tenant picker:</strong> the tenant list could not be read.{' '}
-          {board.tenantsDetail} Ids typed here are still checked by the
-          platform.
+          <strong>No tenant picker:</strong> tenant list unreadable{' '}
+          <InfoTip
+            about="the missing tenant picker"
+            tip={['The tenant list could not be read.', board.tenantsDetail, 'Ids typed here are still checked by the platform.'].filter(Boolean).join(' ')}
+          />
         </p>
       )}
       {board.tenants !== null && (
@@ -3050,7 +3050,7 @@ function PoolsControl({ account, reload }: { account: Account; reload: () => voi
             <li className="ctl-fact rt-fact-wide">
               <b>Voice it people</b>
               <span>
-                {people.length > 0 ? <span className="mono">{people.join(', ')}</span> : 'set by the broker when Voice it is added'}{' '}
+                {people.length > 0 ? <span className="mono">{people.join(', ')}</span> : 'set when Voice it is added'}{' '}
                 <span className="muted small">({VOICE_IT_PEOPLE_NOTE})</span>
               </span>
             </li>
@@ -3074,9 +3074,17 @@ function PoolsControl({ account, reload }: { account: Account; reload: () => voi
           )}
           {error && (
             <p className="c-hint" role="alert">
-              {poolInUse(error)
-                ? 'Pool in use: a live lease holds this account in a pool you are removing. Wait for it to end, then try again.'
-                : errorHeading(error)}{' '}
+              {poolInUse(error) ? (
+                <>
+                  Pool in use{' '}
+                  <InfoTip
+                    about="the pool in use"
+                    tip="Pool in use: a live lease holds this account in a pool you are removing. Wait for it to end, then try again."
+                  />
+                </>
+              ) : (
+                errorHeading(error)
+              )}{' '}
               &mdash; {error.message} The pools were not changed.
             </p>
           )}
@@ -3268,7 +3276,12 @@ export function VoiceKeyLink() {
         </Button>
         <Info about="the OpenAI API key" tip={VOICE_KEY_TIP} />
       </form>
-      {!valid && <p className="ur-small">Lowercase letters, digits and dashes, starting with a letter or digit.</p>}
+      {!valid && (
+        <p className="ur-small">
+          Lowercase letters, digits and dashes only{' '}
+          <InfoTip about="the name" tip="Lowercase letters, digits and dashes, starting with a letter or digit." />
+        </p>
+      )}
       {added !== null && (
         <p className="acct-clause" role="status">
           <CIcon name="check" /> <span className="mono">{added}</span> is in the Voice it pool{' '}
@@ -3424,9 +3437,10 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
               {asked.to === 'DRAINING'
                 ? `${agents} on it now will be moved off.`
                 : `${agents} on it now keep running; no new ones start on it.`}{' '}
-              {/* AN ID IS ONE WORD (V070): "loses it u-⏎owner". */}
-              Every agent in <Id>{account.owner_tenant}</Id>
-              {account.lend_to.length > 0 ? ` and the tenants it is lent to` : ''} loses it for new work.
+              <InfoTip
+                about="who loses it"
+                tip={`Every agent in ${account.owner_tenant}${account.lend_to.length > 0 ? ' and the tenants it is lent to' : ''} loses it for new work.`}
+              />
             </p>
           )}
           <label className="c-field">
@@ -3721,32 +3735,39 @@ function ExchangeAdvice({
   // that never reached a handler.
   if (refusal === 'route_missing') return null
 
+  // ONE LINE EACH, THE REST BEHIND THE (i) (the owner's standing rule, issue
+  // 81): the imperative and what was or was not written stay on the surface;
+  // the mechanism is the tip, word for word as it used to be drawn.
+  const lookFor = mode === 'add' ? 'for the label you typed' : "at this account's row"
   if (refusal === 'accepted_unnamed') {
     return (
       <>
         {/* THE IMPERATIVE IS THE WHOLE PANEL and it never moves (§6). The
             mechanism -- what the success code means and why the record is
-            already gone -- is the topic. */}
+            already gone -- is the tip. */}
         <p className="warn-text">
-          <strong>Do not sign in again until you have looked.</strong> The
-          platform said yes; what is missing from its answer is the
-          account&rsquo;s name, not the account.
+          <strong>Look before you sign in again.</strong>{' '}
+          <InfoTip
+            about="this answer"
+            tip="Do not sign in again until you have looked. The platform said yes; what is missing from its answer is the account’s name, not the account."
+          />
         </p>
         <p className="muted small">
           {mode === 'add' ? (
             <>
-              Reload the pool and look for the label you typed.{' '}
-              <strong>
-                Read the label and the lending list off the form first
-              </strong>
-              {' '}&mdash; reloading clears them.
+              <strong>Note label and lending first</strong>: reload clears them{' '}
+              <InfoTip
+                about="reloading"
+                tip="Reload the pool and look for the label you typed. Read the label and the lending list off the form first — reloading clears them."
+              />
             </>
           ) : (
             <>
-              Reload the pool and open this account&rsquo;s row.{' '}
-              <strong>
-                Treat the credential as already replaced until you have looked.
-              </strong>
+              <strong>Treat the credential as already replaced.</strong>{' '}
+              <InfoTip
+                about="reloading"
+                tip="Reload the pool and open this account’s row. Treat the credential as already replaced until you have looked."
+              />
             </>
           )}
         </p>
@@ -3766,15 +3787,18 @@ function ExchangeAdvice({
     return (
       <>
         <p className="warn-text">
-          <strong>Nothing refused this &mdash; nothing answered it.</strong> The
-          request did not complete, so this page never learned what the platform
-          did with it, and <strong>nothing here measures which</strong>.
+          <strong>Nothing refused this &mdash; nothing answered it.</strong>{' '}
+          <InfoTip
+            about="this answer"
+            tip="Nothing refused this — nothing answered it. The request did not complete, so this page never learned what the platform did with it, and nothing here measures which."
+          />
         </p>
         <p className="muted small">
-          Reload the pool and look{' '}
-          {mode === 'add' ? 'for the label you typed' : "at this account's row"}{' '}
-          first &mdash; that is measurable and this is not. The paste field
-          above is still live.
+          Reload the pool and look first{' '}
+          <InfoTip
+            about="looking first"
+            tip={`Reload the pool and look ${lookFor} first — that is measurable and this is not. The paste field above is still live.`}
+          />
         </p>
         <p className="acct-buttons">
           <button type="button" onClick={reload}>
@@ -3793,16 +3817,24 @@ function ExchangeAdvice({
             nothing happened -- and saying it is the whole value of the
             panel. */}
         <p className="warn-text">
-          <strong>
-            This sign-in was held past its deadline, and pasting cannot reopen
-            it.
-          </strong>{' '}
-          <strong>Nothing was created and nothing was changed.</strong>
+          <strong>Nothing was created and nothing was changed.</strong>{' '}
+          <InfoTip
+            about="the expired sign-in"
+            tip="This sign-in was held past its deadline, and pasting cannot reopen it. Nothing was created and nothing was changed."
+          />
         </p>
         <p className="muted small">
-          {mode === 'add'
-            ? 'Read the label and the lending list off the form before you start over \u2014 nothing kept a copy.'
-            : 'The account in the row is untouched.'}
+          {mode === 'add' ? (
+            <>
+              Note the label and lending first{' '}
+              <InfoTip
+                about="starting over"
+                tip="Read the label and the lending list off the form before you start over — nothing kept a copy."
+              />
+            </>
+          ) : (
+            'The account in the row is untouched.'
+          )}
         </p>
         <p className="acct-buttons">
           <button type="button" onClick={onStartOver}>
@@ -3817,24 +3849,28 @@ function ExchangeAdvice({
     return (
       <>
         <p className="warn-text">
-          <strong>This sign-in is over, and it may well have worked.</strong>{' '}
-          The platform is not holding a record for it, and this page cannot
-          tell you whether it completed.{' '}
-          <strong>So this is not &ldquo;nothing happened&rdquo;.</strong>
+          <strong>This sign-in is over; it may have worked.</strong>{' '}
+          <InfoTip
+            about="this answer"
+            tip="This sign-in is over, and it may well have worked. The platform is not holding a record for it, and this page cannot tell you whether it completed. So this is not “nothing happened”."
+          />
         </p>
         <p className="muted small">
           {mode === 'add' ? (
             <>
-              Reload the pool and look for the label{' '}
-              <strong>before you start another sign-in</strong>. Read the label
-              and the lending list off the form first.
+              <strong>Look before another sign-in</strong>{' '}
+              <InfoTip
+                about="looking first"
+                tip="Reload the pool and look for the label before you start another sign-in. Read the label and the lending list off the form first."
+              />
             </>
           ) : (
             <>
-              Reload the pool and open this account&rsquo;s row.{' '}
-              <strong>
-                Treat the credential as possibly already replaced.
-              </strong>
+              <strong>Treat the credential as possibly already replaced.</strong>{' '}
+              <InfoTip
+                about="looking first"
+                tip="Reload the pool and open this account’s row. Treat the credential as possibly already replaced."
+              />
             </>
           )}
         </p>
@@ -3853,9 +3889,11 @@ function ExchangeAdvice({
   if (refusal === 'other_sign_in') {
     return (
       <p className="muted small">
-        <strong>That code belongs to a different sign-in.</strong>{' '}
-        <strong>This sign-in is untouched and still open</strong> &mdash; paste
-        the code from the page <em>this</em> panel opened.
+        <strong>Another sign-in&rsquo;s code; this one is untouched.</strong>{' '}
+        <InfoTip
+          about="this code"
+          tip="That code belongs to a different sign-in. This sign-in is untouched and still open — paste the code from the page this panel opened."
+        />
       </p>
     )
   }
@@ -3863,9 +3901,11 @@ function ExchangeAdvice({
   if (refusal === 'code_refused') {
     return (
       <p className="muted small">
-        <strong>The code was refused, and this sign-in is still open.</strong>{' '}
-        Paste again above, or press <em>Open the sign-in page again</em> for a
-        fresh code.
+        <strong>Code refused; this sign-in is still open.</strong>{' '}
+        <InfoTip
+          about="the refused code"
+          tip="The code was refused, and this sign-in is still open. Paste again above, or press Open the sign-in page again for a fresh code."
+        />
       </p>
     )
   }
@@ -3873,17 +3913,15 @@ function ExchangeAdvice({
   return (
     <>
       <p className="muted small">
-        <strong>
-          The platform refused the exchange, and what it said above is all it
-          said.
-        </strong>{' '}
-        This page does not recognise that refusal, so it does not know whether
-        an account was written.
+        <strong>The platform refused the exchange.</strong>{' '}
+        <InfoTip
+          about="this refusal"
+          tip="The platform refused the exchange, and what it said above is all it said. This page does not recognise that refusal, so it does not know whether an account was written."
+        />
       </p>
       <p className="muted small">
-        Reload the pool and look{' '}
-        {mode === 'add' ? 'for the label you typed' : "at this account's row"}{' '}
-        first &mdash; that is measurable and this is not.
+        Reload the pool and look first{' '}
+        <InfoTip about="looking first" tip={`Reload the pool and look ${lookFor} first — that is measurable and this is not.`} />
       </p>
       <p className="acct-buttons">
         <button type="button" onClick={reload}>
@@ -3932,13 +3970,16 @@ function SignInFailure({
     return (
       <div className="ctl-empty is-partial" role="status">
         <h3>
-          This deployment&rsquo;s API does not serve the sign-in yet
+          This deployment&rsquo;s API lacks the sign-in
         </h3>
         {/* THE STATUS AND THE ROUTE STAY: they are what distinguishes "this
             deployment lacks the route" from "your request was refused". */}
         <p>
-          The API answered <strong>HTTP {error.httpStatus}</strong> for{' '}
-          <code>{what}</code> itself &mdash; not an answer about your request.
+          <strong>HTTP {error.httpStatus}</strong> for <code>{what}</code> itself{' '}
+          <InfoTip
+            about="this status"
+            tip={`The API answered HTTP ${error.httpStatus ?? ''} for ${what} itself — not an answer about your request. This deployment’s API does not serve the sign-in yet.`}
+          />
         </p>
         <p>Nothing was created and nothing was changed.</p>
         <span className="ctl-empty-foot">
@@ -3990,8 +4031,11 @@ function Deadline({ auth, startedAt }: { auth: AccountAuthorization; startedAt: 
   if (auth.expires_in_seconds === null) {
     return (
       <p className="muted small">
-        <strong>No deadline was given</strong>, so there is no countdown here.
-        Finish promptly: <strong>the code is single-use</strong>.
+        <strong>No deadline given</strong>: <strong>the code is single-use</strong>{' '}
+        <InfoTip
+          about="the deadline"
+          tip="No deadline was given, so there is no countdown here. Finish promptly: the code is single-use."
+        />
       </p>
     )
   }
@@ -3999,15 +4043,18 @@ function Deadline({ auth, startedAt }: { auth: AccountAuthorization; startedAt: 
   if (left <= 0) {
     return (
       <p className="warn-text">
-        The platform&rsquo;s {humaniseUntil(auth.expires_in_seconds * 1000)} hold
-        has passed on this browser&rsquo;s clock. The field is still live.
+        Hold passed; the field is still live{' '}
+        <InfoTip
+          about="the hold"
+          tip={`The platform’s ${humaniseUntil(auth.expires_in_seconds * 1000)} hold has passed on this browser’s clock. The field is still live.`}
+        />
       </p>
     )
   }
   return (
     <p className="muted small">
-      Held for another <strong>{humaniseUntil(left)}</strong> · the code itself{' '}
-      <strong>expires sooner</strong>.
+      Held for another <strong>{humaniseUntil(left)}</strong>{' '}
+      <InfoTip about="the hold" tip="The code itself expires sooner." />
     </p>
   )
 }
@@ -4040,18 +4087,19 @@ function DifferentBrowserNote({ mode }: { mode: 'add' | 'reauth' }) {
       <div>
         {mode === 'add' ? (
           <>
-            <strong>A private window is not enough</strong> &mdash; it shares the
-            same cookie jar. Copy the link below into a{' '}
-            <em>different browser application</em>, or sign out of Claude in
-            this one first.
+            <strong>A private window is not enough.</strong>{' '}
+            <InfoTip
+              about="a private window"
+              tip="A private window is not enough — it shares the same cookie jar. Copy the link below into a different browser application, or sign out of Claude in this one first."
+            />
           </>
         ) : (
           <>
-            This replaces the credential with whichever organisation{' '}
-            <em>this browser</em> is signed in as, and{' '}
-            <strong>a private window shares that jar</strong>. If it is the
-            wrong organisation, copy the link below into a different browser
-            application instead.
+            <strong>A private window shares this browser&rsquo;s jar.</strong>{' '}
+            <InfoTip
+              about="which organisation"
+              tip="This replaces the credential with whichever organisation this browser is signed in as, and a private window shares that jar. If it is the wrong organisation, copy the link below into a different browser application instead."
+            />
           </>
         )}
       </div>
@@ -4126,8 +4174,11 @@ function SignInLink({ url }: { url: string }) {
       </div>
       {copied === 'unavailable' && (
         <p className="muted small">
-          <strong>This browser refused the clipboard.</strong> Select the link
-          below and copy it by hand.
+          <strong>Clipboard refused: copy the link by hand.</strong>{' '}
+          <InfoTip
+            about="the clipboard"
+            tip="This browser refused the clipboard. Select the link below and copy it by hand."
+          />
         </p>
       )}
       <p className="acct-fixed" style={{ wordBreak: 'break-all' }}>
@@ -4233,7 +4284,7 @@ function SignInSteps({
               Opens <code>{host}</code> in a new tab.
             </>
           ) : (
-            <>Opens Claude&rsquo;s own sign-in page in a new tab.</>
+            <>Opens Claude&rsquo;s sign-in page in a new tab.</>
           )}
         </p>
         {/* BOTH DISABLED WHILE A CODE IS IN FLIGHT, and `start over` is the one
@@ -4266,9 +4317,11 @@ function SignInSteps({
             moment the platform said it had finished with it. */}
         {at.opened === 'blocked' && !dead && (
           <p className="warn-text">
-            <strong>This browser refused to open the tab</strong> (a popup
-            blocker or an extension). The sign-in is still open &mdash; use the
-            link below.
+            <strong>Tab blocked: use the link below.</strong>{' '}
+            <InfoTip
+              about="the blocked tab"
+              tip="This browser refused to open the tab (a popup blocker or an extension). The sign-in is still open — use the link below."
+            />
           </p>
         )}
         {dead ? (
@@ -4278,7 +4331,8 @@ function SignInSteps({
              works, it just produces a dead end two browsers away from here,
              where nothing explains it. */
           <p className="muted small">
-            <strong>The sign-in link has been withdrawn.</strong> {deadWhy}
+            <strong>The sign-in link has been withdrawn.</strong>{' '}
+            <InfoTip about="the withdrawn link" tip={deadWhy} />
           </p>
         ) : (
           <SignInLink url={at.auth.authorize_url} />
@@ -4293,8 +4347,8 @@ function SignInSteps({
             credential landing on the wrong account from a second tab; the
             mechanism behind it is the topic. */}
         <p className="muted small">
-          <strong>Paste all of it</strong> &mdash; the code, the{' '}
-          <code>#</code>, and the long string after it.
+          <strong>Paste all of it</strong>, <code>#</code> included{' '}
+          <InfoTip about="the code" tip="Paste all of it — the code, the #, and the long string after it." />
         </p>
         {/* NOT WHEN THE SIGN-IN IS OVER. This counts down the platform's hold
             on a pending record that no longer exists, and its expired branch
@@ -4428,8 +4482,8 @@ function labelFault(label: string): string | null {
   const bad = [...label].find((c) => !/[a-z0-9-]/.test(c))
   if (bad !== undefined) {
     return /\s/.test(bad)
-      ? 'a space is not allowed: use a dash. Only lowercase letters, digits and dashes.'
-      : `"${bad}" is not allowed: only lowercase letters, digits and dashes.`
+      ? 'a space is not allowed: use a dash'
+      : `"${bad}" is not allowed: use a-z, 0-9 and dashes`
   }
   if (label.startsWith('-')) return 'it must start with a letter or a digit, not a dash.'
   if (label.endsWith('-')) return 'it must end with a letter or a digit, not a dash.'
@@ -4504,12 +4558,14 @@ function AddAccount({
               is simply not drawn is indistinguishable from one that failed to
               render. */}
           <h3>
-            Adding an account is unavailable until your tenant is named
+            Adding an account needs your tenant named
           </h3>
           <p>
-            This response named no tenant, so this form cannot tell you whose
-            pool an account would land in. This is a gap in what was read, not a
-            fault in the platform, and it says nothing about the accounts above.
+            No tenant named in this response{' '}
+            <InfoTip
+              about="the missing tenant"
+              tip="Adding an account is unavailable until your tenant is named. This response named no tenant, so this form cannot tell you whose pool an account would land in. This is a gap in what was read, not a fault in the platform, and it says nothing about the accounts above."
+            />
           </p>
         </div>
       </section>
@@ -4645,7 +4701,8 @@ function AddAccount({
               ) : (
                 <>, lent to nobody</>
               )}
-              . <em>start over</em> below is the only way to change either.
+              {' '}
+              <InfoTip about="the reservation" tip="Start over below is the only way to change either." />
             </p>
           </div>
           <SignInSteps
@@ -4744,10 +4801,11 @@ function AddAccount({
           {/* A DESTRUCTIVE OUTCOME, NAMED BEFORE IT HAPPENS (§6). */}
           {replacing && (
             <p className="warn-text">
-              <strong>{trimmed} already exists in this pool.</strong> Signing in
-              under that label <strong>REPLACES its credential</strong> rather
-              than adding a second account. For another subscription, give it a
-              different name.
+              <strong>{trimmed} exists: signing in REPLACES its credential.</strong>{' '}
+              <InfoTip
+                about="replacing"
+                tip={`${trimmed} already exists in this pool. Signing in under that label REPLACES its credential rather than adding a second account. For another subscription, give it a different name.`}
+              />
             </p>
           )}
 
@@ -4797,7 +4855,11 @@ function AddAccount({
           {state.kind === 'start_failed' && state.error.kind === 'invalid' && (
             <p className="warn-text acct-refused" role="alert">
               <strong>The platform refused this sign-in:</strong> {asSentence(state.error.message)}{' '}
-              Nothing was created. Correct what it names above and press <em>Start the sign-in</em>.
+              Nothing was created.{' '}
+              <InfoTip
+                about="the refusal"
+                tip="Nothing was created. Correct what it names above and press Start the sign-in."
+              />
             </p>
           )}
           {state.kind === 'start_failed' && state.error.kind !== 'invalid' && (
@@ -4821,9 +4883,11 @@ function AddAccount({
                     its own button. */}
               {trimmed === '' && (
                 <p className="warn-text">
-                  No <em>Try again</em>: the{' '}
-                  <strong>label field above is empty</strong>. Type a name and
-                  press <em>Start the sign-in</em>.
+                  No <em>Try again</em>: <strong>the label is empty</strong>{' '}
+                  <InfoTip
+                    about="the missing retry"
+                    tip="No Try again: the label field above is empty. Type a name and press Start the sign-in."
+                  />
                 </p>
               )}
             </>
@@ -4864,15 +4928,16 @@ function SignInDone({
         Two secrets were written.{' '}
         {state.expiresAt ? (
           <>
-            The mounted token expires in{' '}
-            <strong>{clearsIn(state.expiresAt, Date.now())}</strong> &mdash; not
-            a deadline for you.
+            Mounted token expires in <strong>{clearsIn(state.expiresAt, Date.now())}</strong>{' '}
+            <InfoTip about="the expiry" tip="The mounted token’s expiry is not a deadline for you." />
           </>
         ) : (
           <>
-            <strong>No expiry was reported</strong>, so there is no figure here
-            rather than a guessed one. <em>Refresh this account</em> in its row
-            asks the broker directly.
+            <strong>No expiry was reported.</strong>{' '}
+            <InfoTip
+              about="the missing expiry"
+              tip="No expiry was reported, so there is no figure here rather than a guessed one. Refresh this account in its row asks the broker directly."
+            />
           </>
         )}
       </p>
@@ -4882,18 +4947,19 @@ function SignInDone({
       {restore !== null &&
         (restore.ok ? (
           <p>
-            Its state was put back to AVAILABLE as a second, separate call, and
-            that call succeeded.
+            State put back to AVAILABLE.{' '}
+            <InfoTip
+              about="the state"
+              tip="Its state was put back to AVAILABLE as a second, separate call, and that call succeeded."
+            />
           </p>
         ) : (
           <p>
-            <strong>
-              This account is STILL in REAUTH_REQUIRED, so nothing will be
-              assigned to it.
-            </strong>{' '}
-            The credential is good; the second call failed:{' '}
-            {restore.error?.message ?? 'the request did not complete.'} Use{' '}
-            <em>{moveLabel('AVAILABLE')}</em> in the row above.
+            <strong>STILL in REAUTH_REQUIRED: nothing will be assigned.</strong>{' '}
+            <InfoTip
+              about="the state"
+              tip={`This account is STILL in REAUTH_REQUIRED, so nothing will be assigned to it. The credential is good; the second call failed: ${restore.error?.message ?? 'the request did not complete.'} Use ${moveLabel('AVAILABLE')} in the row above.`}
+            />
           </p>
         ))}
       {/* WHAT THE POOL WILL SHOW FOR IT, READ OFF THE ACCOUNT THE EXCHANGE
@@ -4924,12 +4990,11 @@ function SignInDone({
           run. */}
       {restore === null && state.account.state !== 'AVAILABLE' && (
         <p className="warn-text">
-          <strong>
-            It is in {state.account.state.toLowerCase()}, and available is the
-            only state an agent is started on.
-          </strong>{' '}
-          Its row has <em>{moveLabel('AVAILABLE')}</em> for when it should take work
-          again.
+          <strong>It is {state.account.state.toLowerCase()}: no agent starts on it.</strong>{' '}
+          <InfoTip
+            about="the state"
+            tip={`It is in ${state.account.state.toLowerCase()}, and available is the only state an agent is started on. Its row has ${moveLabel('AVAILABLE')} for when it should take work again.`}
+          />
         </p>
       )}
       <p className="acct-buttons">
@@ -4979,21 +5044,25 @@ function PlanReauth({ account, broken }: { account: Account; broken: boolean }) 
       <p className="muted small">
         {broken ? (
           <>
-            <strong>Only a person can replace this.</strong> The refresh token
-            behind <Id className="mono">{account.account_id}</Id> is gone or unreadable.
+            <strong>Only a person can replace this:</strong> <Id className="mono">{account.account_id}</Id>{' '}
+            <InfoTip
+              about="this sign-in"
+              tip={`Only a person can replace this. The refresh token behind ${account.account_id} is gone or unreadable.`}
+            />
           </>
         ) : (
           <>
             Replaces the credential behind <Id className="mono" after=".">{account.account_id}</Id>{' '}
-            Nothing here needs doing on a healthy account.
+            <InfoTip about="replacing" tip="Nothing here needs doing on a healthy account." />
           </>
         )}
       </p>
       <p className="muted small">
-        A ChatGPT plan&rsquo;s sign-in finishes on your own computer, not in this browser
-        tab: the plan sends its code to <span className="mono">localhost:1455</span>, where{' '}
-        <span className="mono">sc</span> listens. Run this in a terminal on the computer
-        this browser runs on:
+        Run this in a terminal on this computer:{' '}
+        <InfoTip
+          about="the plan sign-in"
+          tip="A ChatGPT plan’s sign-in finishes on your own computer, not in this browser tab: the plan sends its code to localhost:1455, where sc listens. Run this in a terminal on the computer this browser runs on."
+        />
       </p>
       <p>
         <code className="acct-hs-msg" data-cmd="">
@@ -5001,11 +5070,15 @@ function PlanReauth({ account, broken }: { account: Account; broken: boolean }) 
         </code>
       </p>
       <p className="muted small">
-        It opens the sign-in page and registers the plan under the same label, with the same
-        loans.{' '}
-        {broken
-          ? 'The account leaves REAUTH_REQUIRED as soon as it registers, and this page shows it on its next read.'
-          : 'This page shows the new credential’s expiry on its next read.'}
+        Keeps the same label and loans.{' '}
+        <InfoTip
+          about="the command"
+          tip={`It opens the sign-in page and registers the plan under the same label, with the same loans. ${
+            broken
+              ? 'The account leaves REAUTH_REQUIRED as soon as it registers, and this page shows it on its next read.'
+              : 'This page shows the new credential’s expiry on its next read.'
+          }`}
+        />
       </p>
     </div>
   )
@@ -5139,14 +5212,17 @@ function Reauth({
       <p className="muted small">
         {broken ? (
           <>
-            <strong>Only a person can replace this.</strong> The refresh token
-            behind <Id className="mono">{account.account_id}</Id> is gone or unreadable.
+            <strong>Only a person can replace this:</strong> <Id className="mono">{account.account_id}</Id>{' '}
+            <InfoTip
+              about="this sign-in"
+              tip={`Only a person can replace this. The refresh token behind ${account.account_id} is gone or unreadable.`}
+            />
           </>
         ) : (
           <>
             {/* The full stop rides inside the id's box (V154's comma). */}
             Replaces the credential behind <Id className="mono" after=".">{account.account_id}</Id>{' '}
-            Nothing here needs doing on a healthy account.
+            <InfoTip about="replacing" tip="Nothing here needs doing on a healthy account." />
           </>
         )}
       </p>
