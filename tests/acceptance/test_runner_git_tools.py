@@ -87,6 +87,12 @@ LANE_LINE = "lane: the pull request wrote this line"
 BASE_BRANCH = "acceptance/git-tools-base"
 #: The PR body line github-verify.sh recognises the lane's pull request by.
 PR_MARKER = "acceptance-git-tools: rebase"
+#: The line the build step's integrator writes into its pull request's body,
+#: so github-verify.sh tells that pull request from the claude-code group's
+#: integrate one (`pr_kind`).
+INTEGRATE_MARKER = "acceptance-git-tools: integrate"
+#: The platform's first line of an integrate pull request's body.
+_INTEGRATES = re.compile(r"^Integrates [0-9]+ contributor branch", re.MULTILINE)
 #: The repository the reader's control read names: on no tenant's list, and
 #: on no forge (§2.3 gives both one answer). Suffixed with the run id.
 UNLISTED_PREFIX = "swarm-acceptance/not-allowlisted-"
@@ -117,6 +123,13 @@ _GIT_CREDENTIAL_PART = re.compile(r"PASS|CRED|TOKEN|AUTH(?!OR)|HEADER|SECRET")
 _CREDENTIAL_CONFIG_KEY = re.compile(r"^(credential\b|http\..*extraheader$|.*\.insteadof$)",
                                     re.IGNORECASE)
 
+#: The `step` of the lines the WORKER appends to the agent's answers file
+#: (`agent_worker.gittools.ANSWERS_STEP`, restated; a unit test holds them
+#: equal): every refusal its relay answered, with the tool but no arguments.
+WORKER_STEP = "worker"
+#: `Role.recorded`'s answer for a step the agent recorded nothing for.
+_NOTHING = object()
+
 TERMINAL = ("SUCCEEDED", "FAILED", "CANCELLED", "DEAD_LETTERED")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -136,7 +149,19 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 #: every check FAILED on 2026-11-21. The worker still exports the spool
 #: ($SWARM_GIT) to every attempt it offers the tools, and the CLI writes to it:
 #: the same relay, the same swarm-api route, the same audit.
-GIT_CLI = "python3 -m agent_worker.gitmcp"
+#:
+#: THE VENV'S INTERPRETER BY ITS FULL PATH, NOT `python3`. The claude-code
+#: runner gives its agent `cliagent.BASE_PATH`, which starts at
+#: /usr/local/bin and puts /opt/venv/bin first only on the browser image, so
+#: on agent-runtime-base `python3` is the image's bare interpreter, which has
+#: no `agent_worker`: every command answered "No module named agent_worker",
+#: nothing reached the relay, and the run on 2026-11-21 read as "answered with
+#: no refusal" and "0 fetch(es)". `swarm_rollup.agentimage.VENV_PYTHON`,
+#: restated (this file is standard library only; a unit test holds them
+#: equal). `-I`, as `children.git_shim_argv`: the checkout the agent runs in
+#: is never on `sys.path`, so no module it wrote there is what runs.
+VENV_PYTHON = "/opt/venv/bin/python"
+GIT_CLI = f"{VENV_PYTHON} -I -m agent_worker.gitmcp"
 
 
 def git_cli(tool: str, **arguments: str) -> str:
@@ -240,8 +265,8 @@ def prompt(name: str, *, run_id: str, lane_branch: str = "", read_repo: str = ""
         return (
             "Change no repository file. Write a one-line pull request title saying this "
             "integrates the git-tools acceptance build step, with no task id, to "
-            "$SWARM_ARTIFACTS_DIR/pr-title.txt, and the single line "
-            f"acceptance-run:{run_id} to $SWARM_ARTIFACTS_DIR/pr-body.md."
+            "$SWARM_ARTIFACTS_DIR/pr-title.txt, and exactly two lines to "
+            f"$SWARM_ARTIFACTS_DIR/pr-body.md: acceptance-run:{run_id} and {INTEGRATE_MARKER}."
         )
     raise ValueError(f"no prompt named {name!r}")
 
@@ -291,6 +316,28 @@ class Role:
             if entry.get("step") == step and isinstance(entry.get("answer"), dict):
                 found = entry["answer"]
         return found
+
+    def recorded(self, step: str) -> Any:
+        """The LAST thing the agent recorded for a step, whatever its shape
+        (a shell error is a string), or `_NOTHING` when it recorded none."""
+        found: Any = _NOTHING
+        for entry in self.answers:
+            if entry.get("step") == step:
+                found = entry.get("answer")
+        return found
+
+    @property
+    def agent_answers(self) -> list[dict[str, Any]]:
+        """The agent's own lines: the worker appends its refusals to the same
+        file under `WORKER_STEP`, and those say nothing of what the agent ran."""
+        return [e for e in self.answers if e.get("step") != WORKER_STEP]
+
+    def worker_refusals(self, tool: str) -> list[str]:
+        """The codes of the refusals of `tool` the worker recorded itself."""
+        return [str(refusal_code(e.get("answer")))
+                for e in self.answers
+                if e.get("step") == WORKER_STEP and e.get("tool") == tool
+                and refusal_code(e.get("answer"))]
 
     def rows(self, tool: str, *, result: str | None = None, **fields: Any) -> list[dict[str, Any]]:
         out = []
@@ -437,22 +484,83 @@ def _not_run(role: Role, what: str) -> Verdict | None:
     return None
 
 
+def _is_tool_answer(answer: Any) -> bool:
+    """Whether `answer` is what the tool prints: `{"tool", "result"}` or `{"refused"}`."""
+    return isinstance(answer, dict) and (
+        isinstance(answer.get("result"), dict) or isinstance(answer.get("refused"), dict))
+
+
+def _snippet(value: Any, limit: int = 240) -> str:
+    """What the agent recorded, on one line and cut."""
+    text = value if isinstance(value, str) else json.dumps(value, sort_keys=True, default=str)
+    return " ".join(text.split())[:limit]
+
+
+def _missing_module_hint(text: str) -> str:
+    if "No module named" in text or "not found" in text or "No such file" in text:
+        return (f" -- the tool is MISSING from the agent's shell: `{GIT_CLI}` does not run "
+                "on the agent's PATH (is it the image's venv interpreter?)")
+    return ""
+
+
+def describe_step(role: Role, step: str, tool: str) -> str:
+    """Which of three things the agent's record shows for one step, so a red
+    run names it (2026-11-21, when three checks said only "answered with no
+    refusal", "0 fetch(es)" and "not audited"):
+
+      * TOOL NOT CALLED: no line for the step -- and, when the worker itself
+        recorded refusing that tool, REFUSAL NOT RECORDED by the agent;
+      * TOOL MISSING: a line that is not a tool's answer (a shell error);
+      * the tool's own answer: its refusal code, or that it succeeded.
+    """
+    recorded = role.recorded(step)
+    if recorded is _NOTHING:
+        worker = role.worker_refusals(tool)
+        if worker:
+            return (f"step {step}: refusal not recorded -- the agent recorded no answer, but the "
+                    f"worker recorded refusing {tool} ({', '.join(worker)})")
+        return f"step {step}: tool not called -- the agent recorded no answer for it"
+    if not _is_tool_answer(recorded):
+        text = _snippet(recorded)
+        return (f"step {step}: tool missing -- the agent recorded {text or 'an empty answer'}, "
+                f"which is not a tool's answer{_missing_module_hint(text)}")
+    code = refusal_code(recorded)
+    if code:
+        return f"step {step}: refused {code}"
+    return f"step {step}: answered with no refusal (the call succeeded)"
+
+
 def _no_tool_reached(role: Role, what: str) -> Verdict | None:
     """A FAIL naming the cause when `role` ran but its agent never reached the
-    tools at all -- no call audited, no answer recorded -- or None.
+    tools at all -- no call audited and no tool answer recorded -- or None.
 
     Without it each check listed what was missing ("0 fetch(es)", "not
     audited", "answered with no refusal") as if the platform had refused or
     moved something, when the agent had simply been handed no tool
-    (2026-11-21, `GIT_CLI`'s comment)."""
-    if role.calls or role.answers:
+    (2026-11-21, `GIT_CLI`'s comment). The worker's own lines in the answers
+    file are not the agent's: they once made a task that never ran the tool
+    look as if it had."""
+    if role.calls:
         return None
-    return "FAIL", (f"the {what} task's agent made no git tool call (none audited) and recorded "
-                    f"no answer in {ANSWERS}: it never reached the tools, so nothing here was "
-                    f"measured. Its prompt runs them as `{GIT_CLI} <tool>`, which needs "
+    mine = role.agent_answers
+    if any(_is_tool_answer(e.get("answer")) for e in mine):
+        return None
+    ended = f"the task ended {role.state}: {role.last_error()}"
+    if mine:
+        text = _snippet(mine[0].get("answer"))
+        return "FAIL", (f"tool missing: the {what} task's agent made no git tool call (none audited) "
+                        f"and none of its {len(mine)} recorded answer(s) in {ANSWERS} is a tool's "
+                        f"answer, so it never reached the tools: step {mine[0].get('step')!r} "
+                        f"recorded {text or 'an empty answer'}{_missing_module_hint(text)}; {ended}")
+    worker = [str(refusal_code(e.get("answer"))) for e in role.answers]
+    return "FAIL", (f"tool not called: the {what} task's agent made no git tool call (none audited) "
+                    f"and recorded no answer in {ANSWERS}: it never reached the tools, so nothing "
+                    f"here was measured. Its prompt runs them as `{GIT_CLI} <tool>`, which needs "
                     "$SWARM_GIT, exported only to an attempt the worker offers git tools "
-                    "(the worker logs 'git tools offered for this attempt'); the task ended "
-                    f"{role.state}: {role.last_error()}")
+                    "(the worker logs 'git tools offered for this attempt')"
+                    + (f"; the worker itself recorded {len(worker)} refusal(s): {', '.join(worker)}"
+                       if worker else "")
+                    + f"; {ended}")
 
 
 def _fetched(role: Role, ref: str) -> list[str | None]:
@@ -590,14 +698,16 @@ def check_push_main(reader: Role) -> Verdict:
     problems = []
     code = refusal_code(reader.answer("push-main"))
     if code not in MAIN_REFUSALS:
-        problems.append(f"the push to main was answered {code or 'with no refusal'}, not one of "
-                        f"{', '.join(MAIN_REFUSALS)}")
+        problems.append(f"the push to main was not refused {' or '.join(MAIN_REFUSALS)} "
+                        f"({describe_step(reader, 'push-main', 'git_push_branch')})")
     reached = _no_push_reached(reader)
     if reached:
         problems.append(reached)
     tips = [s for s in _fetched(reader, "main") if s]
     if len(tips) < 2:
-        problems.append(f"main was not fetched before and after the push ({len(tips)} fetch(es))")
+        problems.append(f"main was not fetched before and after the push ({len(tips)} fetch(es) "
+                        f"audited; {describe_step(reader, 'fetch-main-before', 'git_fetch')}; "
+                        f"{describe_step(reader, 'fetch-main-after', 'git_fetch')})")
     elif tips[0] != tips[-1]:
         problems.append(f"main moved from {tips[0][:12]} to {tips[-1][:12]} across the refused push")
     if problems:
@@ -616,8 +726,8 @@ def check_push_other(reader: Role, rebase: Role, lane_task: str) -> Verdict:
     problems = []
     code = refusal_code(reader.answer("push-other"))
     if code not in OTHER_REFUSALS:
-        problems.append(f"the push to {branch} was answered {code or 'with no refusal'}, not "
-                        f"{OTHER_REFUSALS[0]}")
+        problems.append(f"the push to {branch} was not refused {OTHER_REFUSALS[0]} "
+                        f"({describe_step(reader, 'push-other', 'git_push_branch')})")
     reached = _no_push_reached(reader)
     if reached:
         problems.append(reached)
@@ -626,7 +736,9 @@ def check_push_other(reader: Role, rebase: Role, lane_task: str) -> Verdict:
     # pushes may account for a move.
     own_moves = {r.get("new_sha") for r in rebase.rows("git_push_branch", result="ok", branch=branch)}
     if len(tips) < 2:
-        problems.append(f"{branch} was not fetched before and after the push ({len(tips)} fetch(es))")
+        problems.append(f"{branch} was not fetched before and after the push ({len(tips)} fetch(es) "
+                        f"audited; {describe_step(reader, 'fetch-other-before', 'git_fetch')}; "
+                        f"{describe_step(reader, 'fetch-other-after', 'git_fetch')})")
     elif tips[-1] != tips[0] and tips[-1] not in own_moves:
         problems.append(f"{branch} moved from {tips[0]} to {tips[-1]}, which no push of its own "
                         "lane accounts for")
@@ -643,9 +755,9 @@ def check_push_fails(build: Role) -> Verdict:
         return early
     pushed = build.rows("git_push_branch", result="ok", branch=f"swarm/{build.task}")
     if not pushed:
-        code = refusal_code(build.answer("push-first"))
         return "FAIL", (f"the push this check makes fail was never set up: the mid-task push of "
-                        f"swarm/{build.task} did not succeed ({code or 'not audited'}); "
+                        f"swarm/{build.task} did not succeed (none audited; "
+                        f"{describe_step(build, 'push-first', 'git_push_branch')}); "
                         f"the step ended {build.state}: {build.last_error()}")
     if build.state == "SUCCEEDED":
         doc = build.doc if isinstance(build.doc, dict) else {}
@@ -685,9 +797,25 @@ def judge(base: str) -> list[tuple[str, str, str]]:
     return out
 
 
-def pr_kind(body: str) -> str:
-    """github-verify.sh's question: is this the git-tools lane's pull request?"""
-    return "git-tools" if PR_MARKER in (body or "") else "other"
+def pr_kind(body: str, files: Iterable[str] = ()) -> str:
+    """github-verify.sh's question: which group's pull request is this?
+
+    `git-tools` for the rebase lane's (its marker); `git-tools-integrate`
+    for the build step's integrator's -- its marker, or, for an integrator
+    that wrote none (every run before the marker), the platform's
+    "Integrates" block over files that ALL lie under FIXTURE_DIR, where no
+    other group writes; `other` for the rest, which github-verify.sh judges
+    as the claude-code group's. On 2026-11-21 the integrator's pull request
+    was read as claude-code's and failed its calc.py assertion."""
+    body = body or ""
+    if PR_MARKER in body:
+        return "git-tools"
+    if INTEGRATE_MARKER in body:
+        return "git-tools-integrate"
+    changed = [f for f in files if f]
+    if changed and all(f.startswith(FIXTURE_DIR + "/") for f in changed) and _INTEGRATES.search(body):
+        return "git-tools-integrate"
+    return "other"
 
 
 def test_a_refused_pr_checks_call_is_named_by_its_code(tmp_path: Any) -> None:
@@ -759,6 +887,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     sub.add_parser("expected-planted")
     k = sub.add_parser("pr-kind")
     k.add_argument("--body-file", required=True)
+    k.add_argument("--files-file", default="",
+                   help="the pull request's changed paths, one per line")
     j = sub.add_parser("judge")
     j.add_argument("--dir", required=True)
     j.add_argument("--results", required=True)
@@ -772,7 +902,8 @@ def main(argv: Iterable[str] | None = None) -> int:
         sys.stdout.write(expected_planted())
         return 0
     if args.command == "pr-kind":
-        sys.stdout.write(pr_kind(_read_text(args.body_file)) + "\n")
+        files = _read_text(args.files_file).splitlines() if args.files_file else []
+        sys.stdout.write(pr_kind(_read_text(args.body_file), files) + "\n")
         return 0
     with open(args.results, "a", encoding="utf-8") as fh:
         for check, verdict, reason in judge(args.dir):
