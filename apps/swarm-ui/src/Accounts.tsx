@@ -3050,7 +3050,7 @@ function PoolsControl({ account, reload }: { account: Account; reload: () => voi
             <li className="ctl-fact rt-fact-wide">
               <b>Voice it people</b>
               <span>
-                {people.length > 0 ? <span className="mono">{people.join(', ')}</span> : 'set when Voice it is added'}{' '}
+                {people.length > 0 ? <span className="mono">{people.join(', ')}</span> : 'set by the broker on adding Voice it'}{' '}
                 <span className="muted small">({VOICE_IT_PEOPLE_NOTE})</span>
               </span>
             </li>
@@ -4795,7 +4795,8 @@ function AddAccount({
               would refuse. */}
           {fault !== null && (
             <p className="warn-text acct-label-fault" role="alert">
-              <strong>This label would be refused:</strong> {fault}
+              <strong>This label would be refused:</strong> {fault}{' '}
+              <InfoTip about="the label rule" tip="Only lowercase letters, digits and dashes." />
             </p>
           )}
           {/* A DESTRUCTIVE OUTCOME, NAMED BEFORE IT HAPPENS (§6). */}
