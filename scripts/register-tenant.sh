@@ -92,6 +92,17 @@
 # remove a grant an earlier run made; section 3 prints the command that does.
 #   scripts/register-tenant.sh --group eng@example.com --worker-firestore-access false
 #
+# --runs-no-work marks a workspace that never runs agents -- the roles and
+# join acceptance probes' workspaces, which exist only to test workspace roles
+# and join requests -- and mirrors terraform/infra's per-tenant `runs_no_work`
+# (owner decision 2026-11-21: the existing switch is reused, no new one). It
+# is what `--worker-firestore-access false` is for when the worker is NOT on
+# swarm-api's state routes: a workspace that runs no work has no worker
+# reading state, so it needs no project-wide Firestore role. On its own it
+# changes nothing and grants as usual; with `false` the run says which grant
+# it skipped and why. It writes nothing to the tenant record.
+#   scripts/register-tenant.sh --group probe-roles@example.com --runs-no-work --worker-firestore-access false
+#
 # A person's workspace, from its approved record, under the call guard only --
 # the Cloud Run job swarm-workspace-apply runs this, through
 # scripts/workspace-apply.sh (section W below, docs/workspaces.md §2.2, §4):
@@ -144,6 +155,9 @@ WORKSPACE_GIVEN=0
 WORKSPACE_MODE=""
 # Section 3's Firestore grant. "true" is today's grant; see the header.
 WORKER_FIRESTORE_ACCESS="true"
+# --runs-no-work: the workspace never runs agents (see the header). 0 is every
+# tenant before the flag existed.
+RUNS_NO_WORK=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -157,6 +171,7 @@ while [[ $# -gt 0 ]]; do
     --display-name)    DISPLAY_NAME="$2"; FULL_ONLY_FLAGS+=" $1"; shift 2 ;;
     --skip-k8s)        SKIP_K8S=1; FULL_ONLY_FLAGS+=" $1"; shift ;;
     --worker-firestore-access) WORKER_FIRESTORE_ACCESS="${2-}"; FULL_ONLY_FLAGS+=" $1"; shift 2 ;;
+    --runs-no-work)    RUNS_NO_WORK=1; FULL_ONLY_FLAGS+=" $1"; shift ;;
     --add-provider)    ADD_PROVIDER="$2"; ADD_PROVIDER_GIVEN=1; shift 2 ;;
     --dry-run|-n)      DRY_RUN=1; shift ;;
     --workspace)       WORKSPACE_ID="$2"; WORKSPACE_GIVEN=1; shift 2 ;;
@@ -3132,8 +3147,14 @@ FIRESTORE_ROLE="projects/${PROJECT_ID}/roles/${FIRESTORE_ROLE_ID}"
 # `worker_firestore_access` is false. The worker then reaches its state only
 # through swarm-api (archived issue 1457, design B). A binding an earlier run made is not
 # removed here -- that is the owner's step at the cutover -- but it is named.
-if [[ "${WORKER_FIRESTORE_ACCESS}" == "false" ]]; then
+# With --runs-no-work the reason is different and is printed as such: the
+# workspace never runs agents, so its worker reads no state by any route.
+if [[ "${WORKER_FIRESTORE_ACCESS}" == "false" && "${RUNS_NO_WORK}" -eq 1 ]]; then
+  ok "skipped: ${FIRESTORE_ROLE##*/} for ${GSA_ID} (--runs-no-work --worker-firestore-access false): this workspace runs no agents, so its worker reads no state"
+elif [[ "${WORKER_FIRESTORE_ACCESS}" == "false" ]]; then
   ok "no Firestore role for ${GSA_ID} (--worker-firestore-access false): it reaches its state through swarm-api"
+fi
+if [[ "${WORKER_FIRESTORE_ACCESS}" == "false" ]]; then
   dim "  a ${FIRESTORE_ROLE##*/} binding an earlier run made is left in place; the owner removes it with"
   dim "  gcloud projects remove-iam-policy-binding ${PROJECT_ID} --member serviceAccount:${GSA_EMAIL} --role ${FIRESTORE_ROLE} --condition None"
 else
@@ -3221,6 +3242,9 @@ if [[ "${DRY_RUN}" -eq 0 ]]; then
   fi
 fi
 fi # --worker-firestore-access
+if [[ "${RUNS_NO_WORK}" -eq 1 && "${WORKER_FIRESTORE_ACCESS}" == "true" ]]; then
+  dim "  --runs-no-work alone skips nothing: ${FIRESTORE_ROLE##*/} was granted as usual; --worker-firestore-access false skips it"
+fi
 
 # GCS, conditioned on this tenant's own prefix. This is the boundary that stops
 # a compromised worker from reading another tenant's artifacts by guessing a path.
