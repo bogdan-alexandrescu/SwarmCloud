@@ -1,6 +1,8 @@
 import { useEffect, useId, useState } from 'react'
 import { loadCodeIntelligence, loadJudgment, putCodeIntelligence, type JevBackend } from './api'
 import { Banner, Card } from './components'
+import { HelpNote } from './HelpCard'
+import { CONFIG_SECRETS_ADDRESS, addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { timeAgo } from './types'
 import './styles/keys.css'
@@ -22,28 +24,25 @@ import './styles/keys.css'
  * settings document, `workspace_settings/{tenant_id}` (owner decision
  * 2026-10-14). Only the workspace's owner or a platform admin can change it
  * (`can_edit`); the API is the gate, and a member sees the switch read-only.
+ *
+ * ONE SHORT LINE PER DISCLOSURE (part of #81: no visible run of nine words or
+ * two sentences). The card keeps what a reader must see before flipping the
+ * switch -- that it is the only thing that sends code, where the excerpts go,
+ * what never goes, who may change it. The intro, §5.4's full "sent" and
+ * "never sent" lists and "Jev advises; it never decides" are the
+ * `workspace-settings` help topic's long form (help.ts), opened from the
+ * page head's `?`, and the topic's short form is published to the switch
+ * through `<HelpNote>`.
  */
 
 const ROUTE = 'GET /v1/code-intelligence'
 
 /** Where Jev's judgments go, per backend: what the card says leaves the platform to. */
 const DESTINATION: Readonly<Record<JevBackend, string>> = {
-  'internal-jev': 'Internal Jev, which stays inside your network',
-  'internal-laya': 'Internal Laya, which stays inside your network',
-  typesafe: 'TypeSafe, a service outside your network',
+  'internal-jev': 'Internal Jev, inside your network',
+  'internal-laya': 'Internal Laya, inside your network',
+  typesafe: 'TypeSafe, outside your network',
 }
-
-/** §5.4, in the reader's words: what is sent when the switch is on. */
-const SENT =
-  "Excerpts of this workspace's code (the files and symbols ranked for a step), with the agent's title and the changed paths."
-
-/** §5.4: what never is, even when on. */
-const NEVER: readonly string[] = [
-  'the content of .env, key, certificate, tfvars and tfstate files, secrets/ and credentials/ directories and the repository’s hard-stop paths (their names only)',
-  'any excerpt in which a credential is found: it is dropped whole, not masked',
-  'the agent’s registered secrets and anything the redaction rules match',
-  'issue and pull request authors, another repository’s content, the agent’s transcript and environment variables',
-]
 
 export function CodeIntelligenceCard() {
   const ci = useUrRead(loadCodeIntelligence, 'code-intelligence')
@@ -52,11 +51,7 @@ export function CodeIntelligenceCard() {
   const backend = judgment.state.status === 'ok' || judgment.state.status === 'stale' ? judgment.state.data.jev.backend : null
   return (
     <Card title="Code intelligence" action={<UrRefresh reads={[ci, judgment]} />}>
-      <p className="pk-lead">
-        What a step on this workspace&rsquo;s repositories is given about its code. Repository context &mdash; a ranked
-        pack and the graph tools, built from the platform&rsquo;s own index &mdash; is set per repository on its
-        Settings tab, and nothing leaves the platform for it. The switch below is the one that sends code anywhere.
-      </p>
+      <p className="pk-lead">Only this switch sends code off the platform.</p>
       <UrRegion state={ci.state} route={ROUTE} what="the Code intelligence setting" onRetry={ci.reload}>
         {(d) => (
           <JevSwitch tenantId={d.tenant_id} canEdit={d.can_edit} on={d.jev} backend={backend} setAt={d.set_at} setBy={d.set_by} onChange={ci.reload} />
@@ -111,7 +106,6 @@ function JevSwitch({
     onChange()
   }
 
-  const where = backend === null ? "this workspace's Jev backend (Config › Secrets › Keys for agents and MCP)" : DESTINATION[backend]
   return (
     <div className="jb-choice">
       <label className={`jb-option${picked ? ' is-on' : ''}${!canEdit ? ' is-off' : ''}`}>
@@ -119,7 +113,7 @@ function JevSwitch({
           type="checkbox"
           role="switch"
           aria-label={`Send code to Jev for ${tenantId}`}
-          aria-describedby={`${id}-sent ${id}-never`}
+          aria-describedby={`${id}-sent ${id}-never ${id}-help`}
           checked={picked}
           disabled={!canEdit || busy}
           onChange={(e) => void flip(e.target.checked)}
@@ -130,19 +124,25 @@ function JevSwitch({
             <span className="jb-default">{picked ? ' — on' : on || saved ? ' — off' : ' — off (default)'}</span>
           </span>
           <span id={`${id}-sent`} className="jb-note">
-            {`When on: ${SENT} They go to ${where}, which ranks and judges them. Jev advises; it never decides a verdict.`}
+            {backend === null ? (
+              <>
+                On: sends excerpts to the{' '}
+                <a className="ctl-link" href={addressToPath(CONFIG_SECRETS_ADDRESS)}>
+                  Jev backend
+                </a>
+                .
+              </>
+            ) : (
+              `On: sends excerpts to ${DESTINATION[backend]}.`
+            )}
           </span>
         </span>
       </label>
-      <div id={`${id}-never`} className="jb-note">
-        Never sent, even when on:
-        <ul>
-          {NEVER.map((n) => (
-            <li key={n}>{n}</li>
-          ))}
-        </ul>
-      </div>
-      {!canEdit && <p className="ur-small">Only the workspace&rsquo;s owner or a platform admin can change this.</p>}
+      <p id={`${id}-never`} className="jb-note">
+        Never sent: .env files, credentials, secrets, transcripts.
+      </p>
+      <HelpNote topic="workspace-settings" id={`${id}-help`} />
+      {!canEdit && <p className="ur-small">Read-only: owner or platform admin only.</p>}
       {setBy !== null && <p className="ur-small">{`Set by ${setBy}${setAt !== null ? ` ${timeAgo(setAt)}` : ''}.`}</p>}
       {saved && (
         <p className="pk-saved" role="status">
