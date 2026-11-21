@@ -156,7 +156,7 @@ class _Reader:
 
 
 def test_a_stalled_object_read_is_a_swarm_error_naming_the_object():
-    uri = "gs://bucket/tenant/patch.diff"
+    uri = "gs://swarm-artifacts-example-project/tenant/patch.diff"
     with _silent() as port:
         with pytest.raises(SwarmError) as caught:
             patches._get(_Reader(), uri, f"http://127.0.0.1:{port}/o/patch", timeout=SHORT)
@@ -164,9 +164,9 @@ def test_a_stalled_object_read_is_a_swarm_error_naming_the_object():
 
 
 def test_control_a_refused_object_read_is_a_swarm_error():
-    uri = "gs://bucket/tenant/patch.diff"
+    uri = "gs://swarm-artifacts-example-project/tenant/patch.diff"
     port = _refused_port()
-    with pytest.raises(SwarmError, match="could not read gs://bucket/tenant/patch.diff"):
+    with pytest.raises(SwarmError, match="could not read gs://swarm-artifacts-example-project/tenant/patch.diff"):
         patches._get(_Reader(), uri, f"http://127.0.0.1:{port}/o/patch", timeout=SHORT)
 
 
