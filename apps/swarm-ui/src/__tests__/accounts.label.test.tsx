@@ -128,7 +128,7 @@ describe('the label is lowercased as it is typed (#1912)', () => {
     const input = await mount([account('ai-eng-2')])
     type(input, 'AI-ENG-2')
     // MUTATION: compare the typed value instead of the lowercased one and the REPLACES warning is lost.
-    expect(screen.getByText('ai-eng-2 already exists in this pool.')).toBeTruthy()
+    expect(screen.getByText('ai-eng-2 exists: signing in REPLACES its credential.')).toBeTruthy()
   })
 })
 

@@ -97,7 +97,9 @@ function expectAllCardsClosed(): void {
       'false',
     )
   }
-  expect(document.querySelectorAll('[role="tooltip"], [role="dialog"]').length).toBe(0)
+  // A tooltip still `hidden` is a closed (i) (issue 81 moved Accounts' prose
+  // behind them), not an open card.
+  expect(document.querySelectorAll('[role="tooltip"]:not([hidden]), [role="dialog"]').length).toBe(0)
 }
 
 /**

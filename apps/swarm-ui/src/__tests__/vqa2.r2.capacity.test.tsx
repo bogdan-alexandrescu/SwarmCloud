@@ -351,8 +351,10 @@ describe('V070: the state-change modal and the Replace copy draw ids unbroken', 
     fireEvent.click(screen.getByRole('button', { name: 'Pause' }))
     const dialog = await screen.findByRole('dialog', CONFIRM, WAIT)
     const warn = dialog.querySelector('.warn-text')!
+    // The owner's name moved behind the warning's (i) (issue 81): it is the
+    // tip's text now, one string, so there is no box left to break.
     expect(warn.textContent).toContain('Every agent in u-owner loses it for new work.')
-    expect([...warn.querySelectorAll('.acct-id')].map((e) => e.textContent)).toEqual(['u-owner'])
+    expect(warn.querySelector('[data-help-description]')!.textContent).toContain('u-owner')
   })
 
   it('names the account as an id in Replace the credential', async () => {
