@@ -31,6 +31,7 @@ import { App } from '../App'
 import type { CascadeEnv } from './cssgate'
 import { familyOf } from './faces'
 import { painted } from './marks'
+import { screenLoaded } from './screenLoaded'
 
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -135,6 +136,7 @@ describe('Q2/Q10: one page head, no breadcrumb row on a section page', () => {
     const visited: string[] = []
     for (const path of PAGES) {
       const { unmount } = at(path)
+      await screenLoaded()
       const h1 = await screen.findByRole('heading', { level: 1 }, WAIT)
       visited.push(path)
       expect(document.querySelector('.ctl-crumb, .c-crumb, nav[aria-label="Breadcrumb"]'), `${path} draws a breadcrumb`).toBeNull()

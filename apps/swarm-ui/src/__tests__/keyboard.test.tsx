@@ -67,6 +67,7 @@ import {
   tabSwallowed,
 } from './keyboardsweep'
 import { resolveSheet } from './spaceprobe'
+import { screenLoaded } from './screenLoaded'
 
 let sheet: HTMLStyleElement
 
@@ -172,6 +173,7 @@ describe('keyboard traversal', () => {
   it('traps Tab, closes on Escape, and hands the row back', async () => {
     window.location.hash = '#work/running'
     const { container, unmount } = render(<App />)
+    await screenLoaded()
     await settle()
 
     const row = container.querySelector<HTMLElement>('.row.clickable')
@@ -315,6 +317,7 @@ describe('keyboard traversal', () => {
   it('tabs from a help trigger into its portalled card and back out', async () => {
     window.location.hash = '#overview/now'
     const { container, unmount } = render(<App />)
+    await screenLoaded()
     await settle()
 
     // The first `?` whose card actually carries a tab stop, because a bridge

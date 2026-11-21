@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { landed } from './reads'
+import { screenLoaded } from './screenLoaded'
 
 // The fixtures still answer every read; the Details read is only watched, so
 // a case can wait for it to land before it ends (archived issue 605, below).
@@ -55,6 +56,7 @@ afterEach(() => {
 async function split(id: string): Promise<HTMLElement> {
   window.location.hash = `#work/task/${id}`
   render(<App />)
+  await screenLoaded()
   const s = await waitFor(() => {
     const el = document.querySelector<HTMLElement>('.ag-split')
     expect(el).not.toBeNull()
