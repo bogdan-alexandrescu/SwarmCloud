@@ -24,6 +24,10 @@ from pathlib import Path
 
 import pytest
 
+# The jobs that gate the release (CI_RELEASE_TEST_JOBS, scripts/lib/common.sh;
+# test_ci_built_images.py holds them to application.yml's ci-gate).
+from .test_ci_built_images import gating_job_names
+
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "lib" / "build-superseded.sh"
 
@@ -91,15 +95,15 @@ def _run_reads(*runs: dict) -> dict:
     return {"reads": [{"workflow_runs": [run]} for run in runs]}
 
 
-# The jobs that gate the release (CI_RELEASE_TEST_JOBS, scripts/lib/common.sh).
-TEST_JOBS = ("format / unit tests", "shellcheck", "kubernetes manifests")
 
 
 def _jobs(build_conclusion: str | None, tests: str | None = "success") -> dict:
     """`tests` is every gating test job's conclusion, None for not listed."""
-    jobs = [{"name": "unit tests (1/4)", "conclusion": "cancelled"}]
+    # `format / unit tests` (`python`) is a name-keeper ci-gate does not need:
+    # cancelled, it gates nothing.
+    jobs = [{"name": "format / unit tests", "conclusion": "cancelled"}]
     if tests is not None:
-        jobs += [{"name": name, "conclusion": tests} for name in TEST_JOBS]
+        jobs += [{"name": name, "conclusion": tests} for name in gating_job_names()]
     if build_conclusion is not None:
         jobs.append({"name": "build images", "conclusion": build_conclusion})
     return {"jobs": jobs}

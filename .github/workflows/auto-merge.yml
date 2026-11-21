@@ -326,7 +326,7 @@ jobs:
       - name: check out the default branch's scripts
         id: main-scripts
         if: steps.pr.outputs.evaluate == 'true'
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
@@ -739,7 +739,7 @@ jobs:
       - name: mint the merge App's token for this repository
         id: app-token
         if: steps.gate.outputs.decision == 'merge' || steps.gate.outputs.disarm == 'true'
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ vars.MERGE_APP_ID }}
           private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
@@ -1256,7 +1256,7 @@ jobs:
       - name: mint the merge App's token for this repository
         id: app-token
         if: ${{ !cancelled() && steps.classify.outputs.pure_base_merge != 'true' && vars.MERGE_APP_ID != '' }}
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ vars.MERGE_APP_ID }}
           private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}
@@ -1367,7 +1367,7 @@ jobs:
     steps:
       # The default branch, which the merge has just made: reviewed code, the
       # same main the release builds. Never the pull request's head or fork.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
@@ -1422,7 +1422,7 @@ jobs:
       # The DEFAULT branch's scripts/ for the judge: main's reviewed
       # merge-train.sh, never a pull request's code, no credentials kept.
       - name: check out the default branch's scripts
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
@@ -1554,7 +1554,7 @@ jobs:
       - name: mint the merge App's token for this repository
         id: app-token
         if: steps.judge.outputs.promote != ''
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ vars.MERGE_APP_ID }}
           private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}

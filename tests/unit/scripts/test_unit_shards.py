@@ -121,17 +121,18 @@ def test_the_kept_names_stand_for_their_shards(job_id, needs):
 
 def test_the_unit_tests_gate_the_release_not_the_build():
     """main's image build starts with its run (owner pick on PR 3344, issue
-    3336); the free checks it used to need -- `python` is their result now,
-    beside `shell` and `manifests` -- gate the release instead, by the names
-    CI_RELEASE_TEST_JOBS lists (test_ci_built_images.py holds the rest).
-    MUTATION: rename `python`, or drop it from CI_RELEASE_TEST_JOBS."""
+    3336); the unit shards and the lock / contract checks gate the release
+    instead, by the names CI_RELEASE_TEST_JOBS lists -- every job ci-gate
+    needs (test_ci_built_images.py holds the rest). MUTATION: rename
+    `python-unit`, or drop it from CI_RELEASE_TEST_JOBS."""
     jobs = _jobs()
     assert not _needs(jobs["build"]), _needs(jobs["build"])
     common = (REPO / "scripts" / "lib" / "common.sh").read_text()
     gate = re.search(r"^CI_RELEASE_TEST_JOBS=\(\n(.*?)^\)", common, re.M | re.S)
     assert gate, "CI_RELEASE_TEST_JOBS is not in scripts/lib/common.sh"
     listed = set(re.findall(r'"([^"]+)"', gate.group(1)))
-    for job_id in ("python", "shell", "manifests"):
+    assert str(jobs["python-unit"]["name"]).split(" (", 1)[0] in listed
+    for job_id in ("python-checks", "shell", "manifests"):
         assert str(jobs[job_id].get("name") or job_id) in listed, job_id
 
 
@@ -271,7 +272,8 @@ def test_the_count_refuses_what_it_does_not_model(tmp_path, mode, areas, tests):
 
 
 def _pick(tmp_path: Path, shard: int, shards: int, *, mode: str = "all", areas: str = "",
-          cwd: Path = REPO, durations: Path = DURATIONS) -> tuple[subprocess.CompletedProcess[str], list[str], dict]:
+          cwd: Path = REPO, durations: Path = DURATIONS,
+          extra: dict[str, str] | None = None) -> tuple[subprocess.CompletedProcess[str], list[str], dict]:
     # The workflow's pick step runs this script from the checkout
     # (test_the_python_shard_count_is_written_once holds that); a scratch tree
     # (`cwd`) has no scripts/, so the same script runs from here against it.
@@ -280,7 +282,7 @@ def _pick(tmp_path: Path, shard: int, shards: int, *, mode: str = "all", areas: 
     output.write_text("")
     env = {**os.environ, "SHARD": str(shard), "SHARDS": str(shards), "PYTHON_MODE": mode,
            "PYTHON_AREAS": areas, "DURATIONS": str(durations), "SHARD_FILES": str(files),
-           "GITHUB_OUTPUT": str(output)}
+           "GITHUB_OUTPUT": str(output), **(extra or {})}
     proc = subprocess.run(["python3", str(UNIT_SHARDS), "pick"], cwd=cwd, env=env,
                           capture_output=True, text=True, timeout=120)
     picked = files.read_text().split() if files.exists() else []
@@ -555,3 +557,37 @@ def test_the_ui_build_job_runs_what_is_not_sharded():
     runs = [str(s.get("run", "")).strip() for s in _jobs()["ui-build"]["steps"]]
     for command in ("npm run typecheck", "npm run test:node", "npm run build"):
         assert command in runs, command
+
+
+
+def test_the_quarantine_step_runs_only_on_a_shard_holding_a_quarantined_test(tmp_path):
+    """tests/flaky.txt lists no test, yet the `quarantined unit tests` step ran
+    a second pytest in every shard: its `if:` read the shard's file count. The
+    pick step now writes `quarantined`, the entries naming one of its files.
+    MUTATION: count every entry whatever its file, count comment lines, or put
+    the step's `if:` back on `count`."""
+    root = tmp_path / "tree"
+    _tree(root, {"tests/unit/a/test_one.py": "pass\n", "tests/unit/a/test_two.py": "pass\n"})
+    durations = tmp_path / "durations.json"
+    durations.write_text("{}")
+    flaky = tmp_path / "flaky.txt"
+    flaky.write_text(
+        "# tests/unit/a/test_one.py::test_x   #1   2026-10-14\n"
+        "\n"
+        "  tests/unit/a/test_one.py::test_x   #12   2026-11-01\n"
+        "tests/unit/a/test_one.py::test_y[p]   #13   2026-11-01\n")
+    expected = {"tests/unit/a/test_one.py": "2", "tests/unit/a/test_two.py": "0"}
+    for listed, counts in ((flaky, expected), (tmp_path / "absent.txt", dict.fromkeys(expected, "0"))):
+        for k in (1, 2):
+            sub = tmp_path / f"{listed.stem}-{k}"
+            sub.mkdir()
+            proc, files, outputs = _pick(sub, k, 2, cwd=root, durations=durations,
+                                         extra={"FLAKY_LIST": str(listed)})
+            assert proc.returncode == 0, proc.stderr
+            assert len(files) == 1, files
+            assert outputs.get("quarantined") == counts[files[0]], (listed, files, outputs)
+
+    (step,) = [s for s in _jobs()["python-unit"]["steps"] if "-m flaky" in str(s.get("run", ""))]
+    assert step.get("if") == (
+        "${{ !cancelled() && steps.pick.outputs.count != '0' && "
+        "fromJSON(steps.pick.outputs.quarantined || '0') > 0 }}"), step.get("if")

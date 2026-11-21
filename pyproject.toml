@@ -18,6 +18,11 @@ dependencies = [
 
 [tool.uv]
 package = false
+# The uv the agent images run (images/*/Dockerfile, ARG UV_IMAGE) and every
+# astral-sh/setup-uv step in .github/ installs; a different uv refuses to run
+# here rather than resolve or sync differently from CI.
+# tests/unit/scripts/test_ci_tool_versions.py holds the three equal.
+required-version = "==0.12.15"
 
 [tool.uv.sources]
 swarm-common = { path = "apps/common", editable = true }
