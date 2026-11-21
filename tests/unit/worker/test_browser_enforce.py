@@ -229,10 +229,12 @@ def test_the_runner_registers_playwright_mcp_on_the_live_browser(monkeypatch, tm
         "mcpServers": {
             "playwright": {
                 "type": "stdio",
-                "command": claude_code.PLAYWRIGHT_MCP_BIN,
+                # The guard restarts a poisoned server (playwright-mcp-guard.mjs).
+                "command": claude_code.PLAYWRIGHT_MCP_NODE,
                 # The client tag (BSTATUS-API): the gate attributes and strips it.
                 # QA-KIT: auto-named screenshots land in the task's artifacts.
-                "args": ["--cdp-endpoint", ENDPOINT + "/client/playwright",
+                "args": [claude_code.PLAYWRIGHT_MCP_GUARD, claude_code.PLAYWRIGHT_MCP_BIN,
+                         "--cdp-endpoint", ENDPOINT + "/client/playwright",
                          "--image-responses", "omit",
                          "--output-dir", str(tmp_path / "artifacts" / "screenshots")],
             }

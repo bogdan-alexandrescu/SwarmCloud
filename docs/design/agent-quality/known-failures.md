@@ -73,6 +73,7 @@ read from here**, so a green CI run is not, by itself, evidence that they ran:
 | `tests/unit/worker/test_jev_internal_compat.py` | node is installed | Jev adapter |
 | `tests/unit/worker/test_quality_gates.py` | node is installed | Jev quality gates |
 | `tests/unit/worker/test_qa_target_signin.py` | node is installed | browser QA gate (the sign-in start click) |
+| `tests/unit/worker/test_playwright_mcp_guard.py` | node is installed | browser tools (the Playwright MCP guard) |
 | `tests/unit/control_plane/test_log_redaction.py` | node is installed | Jev outbound filter against the redaction rules |
 | `tests/unit/worker/test_repo_index_lsp_servers.py` | the language servers are installed | index |
 | `tests/unit/worker/test_mcp_runner_config.py` | the `claude` or `codex` CLI is installed | agent plugins and MCP |
@@ -366,6 +367,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/worker/test_jev_internal_compat.py` | `node` | `skip_call` | node is not installed here; CI runs these |
 | `tests/unit/worker/test_jev_outbound_filter.py` | `node` | `skip_call` | node is not installed here; CI runs these |
 | `tests/unit/worker/test_jev_outbound_filter.py` | `test_the_path_deny_and_never_sent_keys_are_the_workers` | `skip_call` | node is not installed here; CI runs these |
+| `tests/unit/worker/test_playwright_mcp_guard.py` | `node` | `skip_call` | node is not installed here; CI runs these |
 | `tests/unit/worker/test_jev_wiring.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_lightpanda_loopback.py` | `test_live_a_loopback_page_is_read_and_the_metadata_server_is_refused` | `skipif` | needs the Lightpanda binary of agent-runtime-lightpanda |
 | `tests/unit/worker/test_livegate_main.py` | `test_the_gates_tunnel_speaks_to_the_real_relay` | `importorskip` | uvicorn is not importable |
