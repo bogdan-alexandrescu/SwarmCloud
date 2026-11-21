@@ -26,6 +26,12 @@ be the breach itself. Every write is one signed, append-only grant and its
 change nothing is 409 `role_unchanged` and writes nothing. No response carries
 a grant's document id: the id is what a tenant worker would need to overwrite
 a grant (§4.4).
+
+Lowering or clearing an `admin` override is the one write that is not a
+batch of its own: it runs the self-leave route's last-admin guard
+(`routes/last_admin.py`) and the grant in one transaction, and is 409
+`workspace_leave_last_admin` when no other admin who can still select the
+workspace would remain (join-requests.md §4.4, issue 47).
 """
 
 from __future__ import annotations
