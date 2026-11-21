@@ -8,9 +8,6 @@ one's work. Everything else in the worker is recoverable; this is not.
 
 from __future__ import annotations
 
-import threading
-import time
-
 from fakes import ExplodingChildProcess
 
 from agent_worker import lifecycle
@@ -103,15 +100,16 @@ def test_generation_bumped_mid_run_stops_the_agent_and_keeps_the_lease(db, worke
         task_input={"prompt": "long", "steps": 40, "sleep_seconds": 8.0},
     )
     worker, _, _ = worker_factory(generation=1, control_poll_seconds=1, timeout_seconds=30)
+    real_mark = worker._mark_agent_started
 
-    def bump() -> None:
-        time.sleep(1.5)
+    def bump_once_running() -> None:
+        # Once the agent process exists, so the loop meets it mid-run at its
+        # next control poll; never on a wall-clock guess at when that is.
+        real_mark()
         db.doc("tasks/task_1")["current_generation"] = 99
 
-    thread = threading.Thread(target=bump)
-    thread.start()
+    worker._mark_agent_started = bump_once_running  # type: ignore[method-assign]
     exit_code = worker.run()
-    thread.join()
 
     assert exit_code == ExitCode.GENERATION_FENCED
     # The lease is left alone even mid-run: the reconciler owns it now.

@@ -26,8 +26,8 @@ the bound's third (`config.HEARTBEAT_MEANWHILE_BOUND_LEASE_TIMEOUTS`) -- is
 1 s. Tests 1-4 run the beat thread on a virtual clock (`_Clock`, through the
 worker's `heartbeat_clock` and `heartbeat_wait`), so a beat lands at the same
 instant on every run and no band around it is needed (archived issue 2233). Test 5 drives
-the whole worker loop on the real clock; its window leaves about half a beat
-of slack each way.
+the whole worker loop with a `virtual_clock.VirtualClock` installed, which its
+stand-in checkpoint advances (issue #75): it held 6 s of real sleeps before.
 """
 
 from __future__ import annotations
@@ -37,7 +37,6 @@ import io
 import json
 import tarfile
 import threading
-import time
 from typing import Callable
 
 import pytest
@@ -49,20 +48,8 @@ from agent_worker.config import WorkerConfig
 from agent_worker.errors import ConfigError
 from agent_worker.logs import build_logger
 
+from virtual_clock import VirtualClock, count_beats
 from worker_seeds import TENANT, seed_attempt
-
-
-def _count_beats(worker) -> list[float]:
-    """The real-clock times of the beats, for test 5's whole-loop run."""
-    beats: list[float] = []
-    real = worker._heartbeat
-
-    def counted():
-        beats.append(time.monotonic())
-        return real()
-
-    worker._heartbeat = counted  # type: ignore[method-assign]
-    return beats
 
 
 class _Clock:
@@ -282,19 +269,19 @@ def test_the_checkpoint_hands_its_progress_to_the_heartbeat_and_logs_the_extensi
     advances it for 6 s keeps its lease past the 3 s bound, and the worker
     logs ONE event naming the bound, the time used and the progress seen."""
     worker = _worker(db, worker_factory)
-    beats = _count_beats(worker)
+    clock = VirtualClock().install(worker)
+    beats = count_beats(worker, clock)
     real_create = worker.checkpoints.create
     window: list[float] = []
 
     def slow_create(ws, *, label="periodic"):
         if window:
             return real_create(ws, label=label)
-        start = time.monotonic()
-        end = start + 6
-        while time.monotonic() < end:
+        start = clock.now
+        for _ in range(60):
             worker.checkpoints.progress.files += 1
             worker.checkpoints.progress.bytes += 4096
-            time.sleep(0.1)
+            clock.advance(0.1)
         window.append(start)
         return real_create(ws, label=label)
 
@@ -315,7 +302,8 @@ def test_the_checkpoint_hands_its_progress_to_the_heartbeat_and_logs_the_extensi
     assert event["ceiling_seconds"] == 30
     assert event["during"].startswith("checkpoint (")
     # MUTATION: log the bound as the time used, or the reading at the start
-    # as the progress, and these fail.
+    # as the progress, or time it on the real clock rather than the beat
+    # thread's (milliseconds here), and these fail.
     assert event["seconds"] >= 5.5, event
     # (The real create after the stand-in's 6 s adds its own entries and
     # bytes inside the same block, so these are floors.)
