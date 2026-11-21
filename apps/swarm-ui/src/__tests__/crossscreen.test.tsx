@@ -24,6 +24,7 @@ import { stateTone, type TaskState } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { task as baseTask } from './runfixture'
+import { screenLoaded } from './screenLoaded'
 
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -252,6 +253,7 @@ describe('#98: one read age per screen', () => {
       window.history.replaceState(null, '', `/agents/live/${id}`)
       const { App: LiveApp } = await import('../App')
       render(<LiveApp />)
+      await screenLoaded()
       const listAge = () => document.querySelector('main.work .c-phead .c-refresh')?.textContent ?? ''
       await waitFor(() => expect(listAge()).toMatch(/^⟳ (\d+ s|.*· read \d+ s ago)$/))
       expect(document.querySelector('main.work .ctl-head-age'), 'the frame drew an age over the list').toBeNull()
@@ -275,6 +277,7 @@ describe('#98: one read age per screen', () => {
 
     window.history.replaceState(null, '', '/admin/counts')
     const b = render(<App />)
+    await screenLoaded()
     await waitFor(() => expect(document.querySelector('.head > h1')?.textContent).toBe('Platform counts'))
     expect(document.querySelector('.c-phead .c-acts .counts-prov'), 'Counts lost its own provenance').not.toBeNull()
     expect(document.querySelector('.ctl-head-age'), 'two ages on Platform counts').toBeNull()
@@ -293,7 +296,14 @@ describe('#98: one read age per screen', () => {
     // MUTATION: an unlabelled `{n}/{m}` fraction, or drop the problems.
     // Overview's own route: the root is Home since the owner's pick of it.
     window.history.replaceState(null, '', '/overview')
-    render(<App />)
+    // A FRESH APP: the case before this one reset the module registry, and
+    // Overview loads with its route (React.lazy, issue 79), so under the
+    // file's App it would load against other copies of fetch.ts and api.ts
+    // than the shell around it reads, and every check would read blind.
+    vi.resetModules()
+    const { App: Fresh } = await import('../App')
+    render(<Fresh />)
+    await screenLoaded()
     const line = await waitFor(() => {
       const el = document.querySelector('#ov-needs .ov-lh .ov-cnt')
       expect(el).not.toBeNull()

@@ -28,6 +28,7 @@ import { App, CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, cano
 import { HELP_ROUTE } from '../help'
 import { addressToPath, pathToAddress } from '../paths'
 import { PANEL_PAGES, SkyShell, hrefOf, voicePagesFor } from '../Spine'
+import { screenLoaded } from './screenLoaded'
 
 /**
  * The props App hands the agent list, captured. The list itself is not what
@@ -211,6 +212,7 @@ describe('the links the frame draws itself', () => {
   it("ends the head `?`'s card in a way into Help", async () => {
     window.location.hash = '#overview/now'
     const { container } = render(<App />)
+    await screenLoaded()
     const glyph = container.querySelector<HTMLButtonElement>('.ctl-q-glyph')
     expect(glyph, 'the head carries no section `?`').not.toBeNull()
     await act(async () => {
@@ -230,9 +232,10 @@ describe('the links the frame draws itself', () => {
    *
    * MUTATION: stop passing it. The list is rendered with no `taskId`.
    */
-  it('tells the agent list which agent the inspector has open', () => {
+  it('tells the agent list which agent the inspector has open', async () => {
     window.location.hash = '#work/task/task_0123456789abcdef0123'
     render(<App />)
+    await screenLoaded()
     const last = agentsProps[agentsProps.length - 1]
     expect(last, 'the agent list was not rendered under an open inspector').toBeTruthy()
     expect(last!.taskId).toBe('task_0123456789abcdef0123')
@@ -395,9 +398,10 @@ describe('the Voice it section', () => {
 
   // Settings and Telemetry head their page once the identity read answers
   // (voice/Section.tsx `VoiceSettingsSectionScreen`); their own cases are below.
-  it.each(PANES.slice(0, 3))('heads the %s page with its tab label', (tab, label) => {
+  it.each(PANES.slice(0, 3))('heads the %s page with its tab label', async (tab, label) => {
     window.location.hash = `#voice/${tab}`
     render(<App />)
+    await screenLoaded()
     expect(screen.getByRole('heading', { level: 1, name: label })).toBeTruthy()
   })
 

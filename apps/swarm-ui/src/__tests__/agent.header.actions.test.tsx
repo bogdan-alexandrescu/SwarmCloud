@@ -35,6 +35,7 @@ import { App } from '../App'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { fontPx, lengthPx, paddingX, textPx } from './tablefit'
+import { screenLoaded } from './screenLoaded'
 
 const RUNNING = 'task_a073aff5'
 /** The spine and the section panel beside the content column. */
@@ -86,6 +87,7 @@ async function split(pref: string): Promise<HTMLElement> {
   localStorage.setItem('swarm.agents.list', pref)
   window.location.hash = `#work/task/${RUNNING}`
   const { container } = render(<App />)
+  await screenLoaded()
   const s = await waitFor(() => {
     const s = document.querySelector<HTMLElement>('.ag-split')
     expect(s?.querySelector('.ag-head-facts')).toBeTruthy()
