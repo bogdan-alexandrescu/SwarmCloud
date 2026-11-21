@@ -496,6 +496,37 @@ jobs:
           if [ "${fail}" -eq 0 ]; then echo "no keys found"; fi
           exit "${fail}"
 
+      - name: secret scan · gitleaks over the pull request's commits
+        id: secrets-gitleaks
+        # THE CREDENTIAL LEAK GUARD (owner approval 2026-11-07, held for the
+        # owner's review of this diff): every commit a pull request adds is
+        # scanned with gitleaks, pinned to 8.21.2 and verified against its
+        # published checksum, using the repository's .gitleaks.toml, whose
+        # allowlist tests/unit/scripts/test_gitleaks_allowlist.py pins to the
+        # fixture files. Pull requests only: the merge train's pull request
+        # carries every lane's commits, so nothing reaches main unscanned, and
+        # the history scan above already covers the whole tree. --redact keeps
+        # any finding's value out of the log; the rule id and file:line remain.
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          GITLEAKS_VERSION: "8.21.2"
+          GITLEAKS_SHA256: "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-connrefused \
+            -o "${RUNNER_TEMP}/${archive}" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          echo "${GITLEAKS_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/gitleaks"
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}/gitleaks" gitleaks
+          "${RUNNER_TEMP}/gitleaks/gitleaks" git \
+            --config .gitleaks.toml \
+            --log-opts "${BASE_SHA}..${HEAD_SHA}" \
+            --redact --no-banner --exit-code 1 .
+
       # --- platform policy assertions ----------------------------------------
       - name: platform policy assertions · no Spot anywhere
         id: policy-spot
