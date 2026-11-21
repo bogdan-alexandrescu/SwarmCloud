@@ -1,7 +1,18 @@
 # A workflow step that runs review-fix rounds until a review says MERGE
 
-Status: **design only, lane FIX-LOOP-DESIGN.** No code changes
-here. The owner asked for the design first (2026-10-26, about 17:20 PDT in Product
+Status: **built, and shipped unavailable** (contract request 124). The
+switch-on (request 151) was reverted on 2026-11-10 after the dev acceptance
+check "workflow: fix-loop" left the loop PARKED DEPENDENCY_INCOMPLETE for its
+whole hour (issue 3). For that check's exact workflow, the scheduler and
+swarm-api release the loop the moment `fix` SUCCEEDED and run re-review:1,
+review-fix:2 and re-review:2 in order. That holds with and without the
+deployed 60 s control-publish hold, with and without an appended merge, and
+when the finish event is lost
+(`tests/unit/control_plane/test_fix_loop_acceptance_flow.py`). So the dev run's
+`fix` step most likely never reached SUCCEEDED within the hour. That run's
+cause is not found yet.
+
+The design came first (lane FIX-LOOP-DESIGN). The owner asked for it (2026-10-26, about 17:20 PDT in Product
 Oracle's session, confirmed on an earlier issue at about 00:10Z on 2026-10-27). Build
 lanes follow the owner's answers to §9. The working name in the issue is
 `fix_until_merge`. This note calls the step a **fix loop**, and §9 Q10 asks
