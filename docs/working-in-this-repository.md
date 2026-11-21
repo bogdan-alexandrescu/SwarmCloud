@@ -320,6 +320,12 @@ and waiting inside agents made lanes carry 300-500k tokens on every turn.
   first with no exception, which agents followed (experiment batch two, 3 November
   2026: one graph call in six build steps against 1,910 other tool calls, more than
   half of them searches).
+* **Searches skip bulk files.** The root `.ignore` keeps lockfiles, the contract
+  change log, large fixtures and manifests and the HTML mock-ups out of Grep, rg and
+  Glob, which otherwise return them on every search (issue 67). A census that must
+  see every occurrence (a rename, a deny-list sweep, a count) uses `git grep` or
+  `rg --no-ignore`, and an ignored file can still be opened with Read by its path.
+  `docs/ci.md` stays searchable on purpose.
 * **Never wait or poll.** No `sleep` loops, `gh run watch`, `--watch`, or waiting
   for a PR to merge. The orchestrator waits for CI at zero token cost, and it
   dispatches a dependent lane only after its dependency has merged.
