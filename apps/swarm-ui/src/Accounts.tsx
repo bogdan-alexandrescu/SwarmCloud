@@ -3436,7 +3436,7 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
             <p className="warn-text">
               {asked.to === 'DRAINING'
                 ? `${agents} on it now will be moved off.`
-                : `${agents} on it now keep running; no new ones start on it.`}{' '}
+                : `${agents} on it keep running; no new ones start.`}{' '}
               <InfoTip
                 about="who loses it"
                 tip={`Every agent in ${account.owner_tenant}${account.lend_to.length > 0 ? ' and the tenants it is lent to' : ''} loses it for new work.`}
