@@ -1,6 +1,6 @@
 import { Fragment, useContext, useEffect, useId, useRef, useState, type FormEvent, type MouseEvent, type MutableRefObject } from 'react'
 import { USE_FIXTURES, loadCapacity, loadSecretsOverview, type SecretsRow } from './api'
-import { Banner, Button, ButtonLink, buttonClass, Card, routedClick, Tooltip } from './components'
+import { Banner, Button, ButtonLink, Card, routedClick, Tooltip } from './components'
 import { SetupContext } from './ConfigSetup'
 import { noteFixtureProbe, read, route, write, type ApiError, type ApiRoute, type Result } from './fetch'
 import { addressToPath, secretsAddAddress } from './paths'
@@ -369,19 +369,16 @@ function useMcpLead(): McpLead | null {
  * THE PAGE'S (i) (the owner's no-prose rule; issue 81). The sentence that
  * explains a line sits behind it, on hover, focus or a tap, and stays in the
  * document as help (`Tooltip` marks it `data-help-description`, so the prose
- * ratchet does not count it). People's `InfoTip` draws the same mark, but
- * People reaches this file back through Submit, and vitest's loader
- * deadlocks on that cycle, so this one is built on the components' `Tooltip`.
+ * ratchet does not count it). The mark is Profile's `AboutTip` disc, the
+ * borderless `.ctl-q-glyph`. Neither that nor People's `InfoTip` is imported:
+ * both files reach this one back through Submit, and vitest's loader
+ * deadlocks on a cycle, so this one is built on the components' `Tooltip`.
  */
 function Info({ about, tip }: { about: string; tip: string }) {
   return (
     <Tooltip tip={tip}>
-      <button type="button" className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })} aria-label={`About ${about}`}
-        style={{ marginBlock: -6, verticalAlign: 'middle' }}>
-        <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <circle cx="12" cy="12" r="8.5" />
-          <path d="M12 11v5.5M12 7.75v.01" />
-        </svg>
+      <button type="button" className="ctl-q-glyph" aria-label={`About ${about}`}>
+        i
       </button>
     </Tooltip>
   )
