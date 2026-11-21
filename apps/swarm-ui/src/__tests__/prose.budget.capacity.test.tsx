@@ -58,6 +58,11 @@
 //                                         laptop note, and a ranked table whose
 //                                         rows say in words what blocks each
 //                                         account and when it clears
+//   Accounts      (issue 81)   404     404   410   the explanations of every
+//                                         refresh outcome, sign-in refusal and
+//                                         empty or withdrawn state moved behind
+//                                         an (i); this fixture draws none of
+//                                         them, so the ceiling comes down to it
 //
 // A ceiling that has to be RAISED is not a failure either -- a screen that
 // gains a genuinely new column gains words. It is a decision, and the point of
@@ -346,7 +351,7 @@ const BUDGET = {
   Pools: 215,
   Runtimes: 255,
   Holders: 110,
-  Accounts: 520,
+  Accounts: 410,
 } as const
 
 function report(screenName: keyof typeof BUDGET): void {
