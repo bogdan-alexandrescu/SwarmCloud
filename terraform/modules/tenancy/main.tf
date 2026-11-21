@@ -164,7 +164,10 @@ resource "google_service_account" "worker" {
 # routes (STATE_VIA_API_TENANTS): a worker still on the direct path gets
 # PermissionDenied on its first read and its attempt fails. Before that, one
 # tenant at a time: var.worker_firestore_off_tenants_iam removes the listed
-# tenants' bindings alone (docs/runbooks/isolation-cutover.md step b2).
+# tenants' bindings alone (docs/runbooks/isolation-cutover.md step b2). A
+# tenant marked runs_no_work (a workspace that never runs agents, such as the
+# roles and join probes') may take either without the state switch: it has no
+# worker reading state. The marker itself removes nothing.
 #
 # The role names below are plain strings from ../custom_role_ids, the one
 # spelling this module and terraform/bootstrap share. A string, not a resource

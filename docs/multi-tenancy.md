@@ -846,6 +846,34 @@ nothing changes for a tenant until the owner switches it.
 
    Each defaults to today's grant, and none removes a binding an earlier run
    made: that is the owner's step at the cutover.
+
+   **A tenant that runs no work may take the switch off before its state
+   switch** (owner decision, 2026-11-21: the same switch is reused, no new one
+   is added). The two acceptance probe workspaces, roles and join, exist only
+   to test workspace roles and join requests: they never run agents, so no
+   worker of theirs is ever dispatched, and none reads or writes
+   control-plane state by either route. A project-wide Firestore role on
+   their worker accounts is therefore authority nothing uses — exactly the
+   residual design B exists to remove — and waiting for their state switch
+   would keep it for no reason. Such a tenant is marked, and the marker grants
+   and creates nothing; it only lets the switch above be off without
+   `state_via_api_tenants`:
+   * a Terraform tenant: `runs_no_work = true` on its `var.tenants` entry
+     (terraform/infra and `terraform/modules/tenancy`; default `false`, so
+     every existing tenant plans no change). `worker_firestore_access = false`,
+     `worker_firestore_off_tenants_iam` and `worker_firestore_off_tenants` then
+     accept it whether or not it is in `state_via_api_tenants`; a tenant that
+     runs work and is not listed there is still refused at plan. The marker
+     alone removes no binding;
+   * an operator-registered tenant: `scripts/register-tenant.sh --runs-no-work
+     --worker-firestore-access false`, which grants no Firestore role and
+     prints `skipped: swarmTenantWorkerFirestore ... this workspace runs no
+     agents`. `--runs-no-work` alone grants as usual and says so, and it writes
+     nothing to the tenant record.
+
+   Marking a tenant that does run agents is the mistake to avoid: its worker
+   still uses direct Firestore, and with the role withheld its first read
+   fails `PermissionDenied`.
 5. An acceptance probe, from a tenant-A pod, gets `PermissionDenied` on a direct
    update of `workspace_settings/<B>`, a get of `tenants/<B>` and a create under
    `leases/`. It is red until step 4 is applied.
