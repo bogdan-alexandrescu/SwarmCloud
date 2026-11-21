@@ -313,7 +313,17 @@ def create_app(scheduler: Scheduler | None = None) -> FastAPI:
             return {"status": "error", "detail": type(exc).__name__}
 
     @app.get("/last-run")
-    def last_run(request: Request, _: Scheduler = Depends(scheduler_of)) -> dict[str, Any]:
+    def last_run(
+        request: Request, response: Response, _: Scheduler = Depends(scheduler_of)
+    ) -> dict[str, Any]:
+        # The same second layer as /tick and /pubsub/push: Cloud Run invoker
+        # IAM alone would let any authorised caller in the project read the
+        # drain report (issue 57).
+        try:
+            request.app.state.verifier.verify(request.headers.get("Authorization"))
+        except PushAuthError as exc:
+            response.status_code = 401
+            return {"status": "unauthenticated", "detail": str(exc)}
         report = request.app.state.last_report
         return {"report": report.to_dict() if report else None}
 
