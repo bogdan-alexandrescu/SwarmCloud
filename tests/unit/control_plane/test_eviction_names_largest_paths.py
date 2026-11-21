@@ -368,3 +368,49 @@ def test_no_reading_of_this_attempt_is_no_report():
     ]
     assert scratch_report(events, attempt_id="att_1", generation=1, volume="tmp") is None
     assert scratch_report([], attempt_id="att_1", generation=1, volume="tmp") is None
+
+
+def test_a_partial_reading_reports_its_last_complete_total_when_larger():
+    """The worker warns on `max(used_bytes, complete_used_bytes)`; a partial
+    reading's `used_bytes` is only a floor, so the report reads the larger
+    figure too and never says less than the warning the agent already saw."""
+    from reconciler.detect import scratch_report
+
+    at = datetime(2026, 10, 26, 10, 41, 12, tzinfo=timezone.utc)
+    floor = {**_entry([("/tmp/pgdata", 1.0)], used=1.2, partial=True),
+             "complete_used_bytes": int(2.8 * GIB)}
+    words = scratch_report([_event(at, {"tmp": floor})], attempt_id="att_1", generation=1,
+                           volume="tmp")
+    assert words is not None and '(volume "tmp" 2.8 GiB of 3 GiB)' in words, words
+    assert "(partial)" in words, words
+
+
+def test_a_pod_level_eviction_picks_the_fullest_volume_by_its_complete_total():
+    from reconciler.detect import EVERY_VOLUME, scratch_report
+
+    at = datetime(2026, 10, 26, 10, 41, 12, tzinfo=timezone.utc)
+    # By used_bytes alone "workspace" (2.0 of 3) is fuller than "tmp" (0.5 of 3);
+    # tmp's last complete walk read 2.9 GiB, so tmp is the fuller one.
+    workspace = _entry([("/workspace/repo", 2.0)], used=2.0)
+    tmp = {**_entry([("/tmp/pgdata", 0.4)], used=0.5, partial=True),
+           "complete_used_bytes": int(2.9 * GIB)}
+    words = scratch_report([_event(at, {"workspace": workspace, "tmp": tmp})],
+                           attempt_id="att_1", generation=1, volume=EVERY_VOLUME)
+    assert words is not None and '(volume "tmp" 2.9 GiB of 3 GiB)' in words, words
+    assert "/workspace/repo" not in words, words
+
+
+def test_a_whole_reading_reports_used_bytes_as_before():
+    """A whole walk's `complete_used_bytes` is its own `used_bytes`, or None
+    before the sampler has walked whole: either way `used_bytes` is reported."""
+    from reconciler.detect import scratch_report
+
+    at = datetime(2026, 10, 26, 10, 41, 12, tzinfo=timezone.utc)
+    whole = {**NEWEST, "complete_used_bytes": NEWEST["used_bytes"]}
+    words = scratch_report([_event(at, {"tmp": whole})], attempt_id="att_1", generation=1,
+                           volume="tmp")
+    assert words is not None and '(volume "tmp" 2.9 GiB of 3 GiB)' in words, words
+    absent = {**NEWEST, "complete_used_bytes": None}
+    words = scratch_report([_event(at, {"tmp": absent})], attempt_id="att_1", generation=1,
+                           volume="tmp")
+    assert words is not None and '(volume "tmp" 2.9 GiB of 3 GiB)' in words, words
