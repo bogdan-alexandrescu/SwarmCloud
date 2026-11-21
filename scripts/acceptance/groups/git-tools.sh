@@ -33,7 +33,8 @@
 # and tests/acceptance/test_runner_git_tools.py judges it, one JSON line per
 # check, reported here in this file's order. The prompts are the Python's
 # too, so what a task is asked and what is read back are written once. The
-# agents run the tools as `python3 -m agent_worker.gitmcp <tool>` in Bash:
+# agents run the tools as `/opt/venv/bin/python -I -m agent_worker.gitmcp
+# <tool>` in Bash (the venv's, which the agent's PATH does not put first):
 # none of these steps is handed the swarm-git MCP server
 # (agent_worker.stepservers; docs/acceptance.md, "git-tools").
 #

@@ -675,3 +675,202 @@ def test_pr_kind_reads_only_the_marker():
     assert gt.pr_kind(f"x\n{gt.PR_MARKER}\n") == "git-tools"
     assert gt.pr_kind("Integrates 1 contributor branch(es):") == "other"
     assert gt.pr_kind("") == "other"
+
+
+# ---------------------------------------------------------------------------
+# 2026-11-21: the agents' commands never reached the tools, and the checks did
+# not say which of "tool missing", "tool not called" and "refusal not
+# recorded" they saw
+# ---------------------------------------------------------------------------
+
+AGENT_IMAGE_SOURCE = ROOT / "apps" / "workflow-rollup" / "swarm_rollup" / "agentimage.py"
+CLIAGENT_SOURCE = ROOT / "apps" / "agent-worker" / "agent_worker" / "runners" / "cliagent.py"
+GITTOOLS_SOURCE = ROOT / "apps" / "agent-worker" / "agent_worker" / "gittools.py"
+
+
+def _source_constant(path: Path, name: str) -> str:
+    text = path.read_text()
+    found = re.search(rf'^{name} = f?"([^"]*)"', text, re.MULTILINE)
+    assert found, (path, name)
+    value = found.group(1)
+    for ref in re.findall(r"\{([A-Z_]+)\}", value):
+        value = value.replace("{" + ref + "}", _source_constant(path, ref))
+    return value
+
+
+def test_the_git_cli_is_the_venv_interpreter_the_agent_s_path_does_not_find():
+    """The claude-code agent's PATH (cliagent.BASE_PATH) holds no venv on
+    agent-runtime-base, so a bare `python3` there has no agent_worker. The
+    prompts name the venv's interpreter by its full path, isolated."""
+    venv_bin = _source_constant(AGENT_IMAGE_SOURCE, "VENV_BIN")
+    assert venv_bin not in _source_constant(CLIAGENT_SOURCE, "BASE_PATH").split(":")
+    words = gt.GIT_CLI.split()
+    # MUTATION: `python3 -m agent_worker.gitmcp` (the deployed prompts) fails here.
+    assert words[0] == gt.VENV_PYTHON == _source_constant(AGENT_IMAGE_SOURCE, "VENV_PYTHON")
+    assert words[1:] == ["-I", "-m", "agent_worker.gitmcp"]
+    for prompt in _all_prompts():
+        assert "python3 -m agent_worker" not in prompt, prompt
+
+
+def test_the_worker_s_step_name_is_the_relay_s():
+    assert gt.WORKER_STEP == _source_constant(GITTOOLS_SOURCE, "ANSWERS_STEP")
+
+
+def _worker_line(tool: str, code: str) -> str:
+    return json.dumps({"step": gt.WORKER_STEP, "tool": tool, "request_id": "r1",
+                       "answer": _refused(code)})
+
+
+@pytest.mark.parametrize("role", ["reader", "build"])
+def test_only_the_worker_s_own_lines_are_the_tool_not_called(tmp_path, role):
+    """The deployed run's shape: nothing audited, and the answers file holds
+    only the WORKER's refusal lines. Those once counted as the agent's, so
+    each check printed its generic line instead of the cause."""
+    w = _world()
+    w[role]["calls"] = []
+    w[role]["answers"] = [_worker_line("git_push_branch", "not_this_tasks_branch")]
+    verdicts = _verdicts(tmp_path, w)
+    checks = {"reader": ["push_main", "push_other"], "build": ["push_fails"]}[role]
+    for check in checks:
+        verdict, reason = verdicts[check]
+        assert verdict == "FAIL", (check, reason)
+        assert reason.startswith("tool not called:"), (check, reason)
+        assert "the worker itself recorded 1 refusal(s): not_this_tasks_branch" in reason, reason
+        assert "fetch(es)" not in reason and "not audited" not in reason, (check, reason)
+
+
+def test_a_shell_error_recorded_as_every_answer_is_the_tool_missing(tmp_path):
+    w = _world()
+    w["reader"]["calls"] = []
+    error = "/usr/local/bin/python3: Error while finding module specification: No module named agent_worker"
+    w["reader"]["answers"] = [json.dumps({"step": s, "answer": error})
+                              for s in ("fetch-main-before", "push-main", "fetch-main-after")]
+    verdicts = _verdicts(tmp_path, w)
+    for check in ("push_main", "push_other", "read_private"):
+        verdict, reason = verdicts[check]
+        assert verdict == "FAIL", (check, reason)
+        assert reason.startswith("tool missing:"), (check, reason)
+        assert "No module named agent_worker" in reason and "MISSING from the agent's shell" in reason
+
+
+def test_each_step_s_record_is_named_when_the_tool_reached_other_calls(tmp_path):
+    """Some calls audited, so the role reached the tools; each failed step
+    says what the agent recorded for it: nothing (with the worker's refusal
+    beside it: the refusal was made but not recorded), a shell error, or a
+    successful answer."""
+    w = _world()
+    w["reader"]["calls"] = [r for r in w["reader"]["calls"] if r["tool"] == "read_private"]
+    w["reader"]["answers"] = [
+        a for a in w["reader"]["answers"] if json.loads(a)["step"] not in ("push-main", "push-other")
+    ] + [
+        _worker_line("git_push_branch", "protected_branch"),
+        json.dumps({"step": "fetch-main-before", "answer": "bash: line 1: python3: command not found"}),
+        _answer("push-other", {"tool": "git_push_branch", "result": {"branch": BRANCH}}),
+    ]
+    verdicts = _verdicts(tmp_path, w)
+    verdict, reason = verdicts["push_main"]
+    assert verdict == "FAIL", reason
+    assert ("step push-main: refusal not recorded -- the agent recorded no answer, but the "
+            "worker recorded refusing git_push_branch (protected_branch)") in reason, reason
+    assert "step fetch-main-before: tool missing" in reason, reason
+    assert "step fetch-main-after: tool not called" in reason, reason
+    verdict, reason = verdicts["push_other"]
+    assert verdict == "FAIL", reason
+    assert "step push-other: answered with no refusal (the call succeeded)" in reason, reason
+
+
+def test_the_build_step_s_unarmed_push_names_what_the_agent_recorded(tmp_path):
+    w = _world()
+    w["build"]["calls"] = [_row("git_fetch", 1, ref="main", resolved_sha=MAIN_SHA)]
+    w["build"]["answers"] = [_answer("push-first", _refused("foreign_author"))]
+    verdict, reason = _verdicts(tmp_path, w)["push_fails"]
+    assert verdict == "FAIL", reason
+    assert "never set up" in reason and "step push-first: refused foreign_author" in reason, reason
+
+
+# ---------------------------------------------------------------------------
+# github-verify.sh: the git-tools integrator's pull request is that group's
+# ---------------------------------------------------------------------------
+
+CC_CALC = "tests/acceptance/fixtures/claude-code/calc.py"
+
+
+def _integrate_body(task: str, merged: str, marker: str = "") -> str:
+    return (f"acceptance-run:x\n{marker}\n\nOpened by swarm task {task}.\n\n"
+            f"Integrates 1 contributor branch(es):\n- merged: `swarm/{merged}`\n")
+
+
+def _verify_integrates(tmp_path: Path, git_tools_files: list[str],
+                       marker: str = "") -> subprocess.CompletedProcess:
+    """Both integrate shapes on one sandbox: the claude-code group's (it fixes
+    calc.py) and the git-tools build step's integrator's (build.txt)."""
+    cc_task, cc_part = "task_" + "5e" * 10, "task_" + "6f" * 10
+    gt_task = "task_" + "7a" * 10
+    pulls = [
+        _pr(11, cc_task, title="Integrate the calculator fix", body=_integrate_body(cc_task, cc_part)),
+        _pr(12, gt_task, title="Integrate git-tools acceptance build step",
+            body=_integrate_body(gt_task, BUILD, marker)),
+    ]
+    gh = tmp_path / "gh"
+    gh.mkdir()
+    repo = f"repos/{SANDBOX}"
+    (gh / _gh_key(f"{repo}/pulls?state=open&per_page=100")).write_text(json.dumps(pulls))
+    (gh / _gh_key(f"{repo}/pulls/11/files?per_page=100")).write_text(json.dumps(
+        [{"filename": CC_CALC, "patch": "@@ -1,2 +1,2 @@\n-    return a - b\n+    return a + b\n"}]))
+    (gh / _gh_key(f"{repo}/pulls/12/files?per_page=100")).write_text(json.dumps(
+        [{"filename": f, "patch": "+second x\n"} for f in git_tools_files]))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "curl"
+    fake.write_text(FAKE_GH_CURL)
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    env = _clean_env(PATH=f"{bin_dir}:{os.environ['PATH']}", HOME=str(tmp_path), TMPDIR=str(tmp_path),
+                     FAKE_DIR=str(tmp_path), SWARM_ENV_FILE=str(tmp_path / "no.env"),
+                     SWARM_ACCEPTANCE_GITHUB_API="http://gh.invalid",
+                     SWARM_ACCEPTANCE_GITHUB_TOKEN="t" + "k" * 12)
+    return subprocess.run(["bash", str(VERIFY)], cwd=ROOT, env=env, capture_output=True, text=True,
+                          timeout=60, check=False)
+
+
+#: The integrator's marker, spelled out: `pr_kind`'s test holds it equal to the judge's.
+INTEGRATE_MARKER = "acceptance-git-tools: integrate"
+
+
+@pytest.mark.parametrize("marker", ["", INTEGRATE_MARKER])
+def test_verify_judges_the_git_tools_integrate_pull_request_as_that_group_s(tmp_path, marker):
+    """2026-11-21: the sweep counted '1 direct-pr, 2 integrate, 1 git-tools'
+    and failed the git-tools integrator's pull request on calc.py. With no
+    marker (the deployed integrator wrote none) its fixture paths say whose
+    it is; with one, the marker does."""
+    result = _verify_integrates(tmp_path, [gt.BUILD_FILE], marker)
+    assert result.returncode == 0, result.stderr
+    assert "calc.py" not in "\n".join(l for l in result.stderr.splitlines() if "PR #12" in l), result.stderr
+    assert "1 integrate, 0 git-tools, 1 git-tools integrate" in result.stderr, result.stderr
+    assert "PR #12: the git-tools integrator's pull request changes only" in result.stderr
+    assert "push_fails" in result.stderr
+
+
+def test_verify_fails_a_git_tools_integrate_pull_request_changing_another_fixture_file(tmp_path):
+    result = _verify_integrates(tmp_path, [gt.BUILD_FILE, gt.PLANTED], gt.INTEGRATE_MARKER)
+    assert result.returncode != 0, result.stderr
+    assert "PR #12: the git-tools integrator's pull request must change only" in result.stderr
+
+
+def test_verify_s_build_file_is_the_judge_s():
+    text = VERIFY.read_text()
+    assert 'GIT_TOOLS_BUILD="${GIT_TOOLS_DIR}/build.txt"' in text
+    assert _shell_value(VERIFY, "GIT_TOOLS_DIR") + "/build.txt" == gt.BUILD_FILE
+
+
+def test_pr_kind_tells_the_git_tools_integrator_from_the_claude_code_one():
+    block = "Integrates 1 contributor branch(es):\n- merged: `swarm/task_x`\n"
+    assert gt.pr_kind(block, [gt.BUILD_FILE]) == "git-tools-integrate"
+    assert gt.pr_kind(f"x\n{gt.INTEGRATE_MARKER}\n", []) == "git-tools-integrate"
+    assert gt.pr_kind(block, [CC_CALC]) == "other"
+    assert gt.pr_kind(block, [gt.BUILD_FILE, CC_CALC]) == "other"
+    assert gt.pr_kind(block, []) == "other"
+    # Without an Integrates block, fixture paths alone do not make it the integrator's.
+    assert gt.pr_kind("acceptance-run:x\n", [gt.BUILD_FILE]) == "other"
+    assert gt.pr_kind(f"{gt.PR_MARKER}\n{block}", [gt.PLANTED]) == "git-tools"
+    assert gt.INTEGRATE_MARKER == INTEGRATE_MARKER
+    assert gt.INTEGRATE_MARKER in gt.prompt("integrate", run_id="r")
