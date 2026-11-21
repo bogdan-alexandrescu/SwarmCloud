@@ -25,6 +25,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
 
+/** The words a reader sees with every (i) shut: `visible` less the tips' text (`data-help-description`). */
+const shown = (el: Element | null) => {
+  const copy = el?.cloneNode(true) as Element | undefined
+  copy?.querySelectorAll('[data-help-description]').forEach((n) => n.remove())
+  return visible(copy ?? null)
+}
+
 type Json = Record<string, unknown>
 
 function server(name: string, mode: string): Json {
@@ -83,7 +90,10 @@ afterEach(() => {
 describe('Config › MCP servers: its lead (S5a)', () => {
   it('names the one server whose credential is missing, with one button that opens setting it', async () => {
     const lead = await draw({ secrets: secrets([KB_MISSING]) })
-    expect(visible(lead)).toContain('MCP server kb has no credential stored')
+    expect(shown(lead)).toContain('MCP server kb has no credential stored.')
+    // What that costs is behind the lead's (i) (issue 81), word for word.
+    expect(shown(lead)).not.toMatch(/every call/i)
+    expect(visible(lead)).toContain('Every call to it fails until a workspace secret is granted to mcp:kb.')
     expect(visible(lead)).not.toContain('docs-search')
     const buttons = within(lead).getAllByRole('link')
     expect(buttons).toHaveLength(1)
@@ -155,7 +165,7 @@ describe('Config › MCP servers with none registered (VQ-046)', () => {
         <McpServersScreen />
       </SetupContext.Provider>,
     )
-    await screen.findByText(/No MCP server is registered for eng yet/, { selector: '.ur-small' })
+    await screen.findByText(/None registered for eng\./, { selector: '.ur-small' })
     return document.querySelector('.ws-lead') as HTMLElement | null
   }
 
@@ -165,7 +175,10 @@ describe('Config › MCP servers with none registered (VQ-046)', () => {
     // MUTATION: keep the "nothing waiting" lead over an empty list -> is-ok and these fail.
     expect(lead!.classList.contains('is-ok')).toBe(false)
     expect(visible(lead!)).not.toMatch(/nothing waiting/i)
-    expect(visible(lead!)).toContain('No MCP server is registered for eng yet.')
+    expect(shown(lead!)).toContain('None registered for eng.')
+    // The how-to is behind the lead's (i) (issue 81); the button is the action.
+    expect(shown(lead!)).not.toMatch(/Register one to let an agent/)
+    expect(visible(lead!)).toContain('Register one to let an agent call it during its run.')
     const button = within(lead!).getByRole('button', { name: 'Register an MCP server' })
     // One sentence and one button: the card does not draw it a second time.
     // MUTATION: leave the card's secondary Register button drawn -> two and this fails.
@@ -178,8 +191,10 @@ describe('Config › MCP servers with none registered (VQ-046)', () => {
   it('tells a reader who may not register who does, with no button', async () => {
     const lead = await drawEmpty(false)
     expect(lead).not.toBeNull()
-    expect(visible(lead!)).toContain('No MCP server is registered for eng yet.')
-    expect(visible(lead!)).toMatch(/a platform admin registers/i)
-    expect(within(lead!).queryAllByRole('button')).toHaveLength(0)
+    expect(shown(lead!)).toContain('None registered for eng.')
+    expect(shown(lead!)).toMatch(/only a platform admin registers them/i)
+    expect(visible(lead!)).toMatch(/A platform admin registers a group workspace’s MCP servers/)
+    // Its one control is the (i); there is nothing for this reader to press.
+    expect(within(lead!).queryAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual(['About who registers'])
   })
 })
