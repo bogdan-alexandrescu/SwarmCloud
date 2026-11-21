@@ -195,8 +195,10 @@ run "every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one" {
   # allow policy that may share a role and a principal with different
   # condition expressions -- one per projectIamAdmin chunk here, since they
   # are per-chunk bindings rather than one ORed expression (deployer_conditions.tf
-  # explains why). 15 roles / 10 per chunk is 2 today (14 with enable_github_hooks_dedup_role
-  # off, which this file runs, and 15 until #150 took swarmSecretLister off;
+  # explains why). 16 roles / 10 per chunk is 2 today (15 with
+  # enable_github_hooks_dedup_role off, which this file runs; 15 until the
+  # Vertex AI descriptions change added roles/aiplatform.user, and 15 until
+  # #150 took swarmSecretLister off;
   # still 2 each time); this guards the day
   # deployer_grantable_project_roles grows past 100 roles (10 chunks), which
   # would need a different scheme, not a bigger number here. Half of 20, not
