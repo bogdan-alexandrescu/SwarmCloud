@@ -168,8 +168,15 @@ def test_a_real_process_tree_is_measured_including_its_children(tmp_path: Path):
     )
     proc = subprocess.Popen([sys.executable, str(parent)])
     try:
-        time.sleep(2.2)
+        # Read until the child's burn shows, rather than sleeping a guess at
+        # how long it takes; the child is still alive throughout (it burns
+        # 1.5 s, then sleeps). A walk that misses the child reads the idle
+        # parent's few milliseconds until the backstop.
+        backstop = time.monotonic() + 10
         measured = process_tree_cpu_seconds(proc.pid)
+        while (measured is None or measured < 0.3) and time.monotonic() < backstop:
+            time.sleep(0.05)
+            measured = process_tree_cpu_seconds(proc.pid)
     finally:
         proc.kill()
         proc.wait()
