@@ -1,0 +1,23 @@
+# Bulk tracked files kept out of Grep, rg and Glob (issue 67). ripgrep reads
+# this file in gitignore syntax; git does not, so `git grep` and `rg --no-ignore`
+# still see everything, and Read still opens any of these by path.
+# docs/ci.md stays searchable: CLAUDE.md sends agents to it.
+# tests/unit/scripts/test_ignore_file.py holds that every pattern still matches
+# a tracked file.
+
+# Lockfiles.
+**/uv.lock
+apps/swarm-ui/package-lock.json
+
+# The contract change log (about 970 KB).
+docs/contract-change-requests.md
+
+# Fixtures, rendered manifests and generated permission lists.
+tests/unit/scripts/fixtures/workspace_guard_corpus.json
+install/manifest.yaml
+docs/design/day-one/manifest.draft.yaml
+terraform/bootstrap/doctor-role-permissions.json
+
+# HTML mock-up folders above about 100 KB.
+docs/web-ui/mockups/
+docs/design/mockups/
