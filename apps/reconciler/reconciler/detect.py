@@ -1793,7 +1793,14 @@ def evicted_volume(message: str) -> str | None:
 #
 #     detail["scratch"] = {"tmp": {"used_bytes": int, "limit_bytes": int,
 #                                  "top": [[absolute path, bytes], ...],
-#                                  "partial": bool}}
+#                                  "partial": bool,
+#                                  "complete_used_bytes": int | None}}
+#
+# `complete_used_bytes` is the used bytes of the worker's last walk of the
+# volume that was whole (None before one was). A `partial` reading's
+# `used_bytes` is only a floor, so the worker warns the agent by the larger of
+# the two (`scratchusage.crossing_bytes`); `_scratch_crossing` restates that
+# rule, so the report never says less than the warning the agent already saw.
 #
 # The sizes are written as `scratchusage.size_words` / `limit_words` write
 # them, so a report reads like the worker's own warning in the step log.
@@ -1843,8 +1850,20 @@ def scratch_format_top(entry: dict[str, Any], top: int = SCRATCH_TOP) -> str:
     return ", ".join(pairs)
 
 
+def _scratch_crossing(entry: dict[str, Any]) -> int | None:
+    """The larger of `used_bytes` and `complete_used_bytes`, as the worker's
+    `scratchusage.crossing_bytes` compares a volume with its threshold; None
+    when neither is a size."""
+    sizes = [
+        size
+        for size in (_scratch_bytes(entry.get("used_bytes")), _scratch_bytes(entry.get("complete_used_bytes")))
+        if size is not None
+    ]
+    return max(sizes) if sizes else None
+
+
 def _scratch_fullness(entry: dict[str, Any]) -> float:
-    used = _scratch_bytes(entry.get("used_bytes")) or 0
+    used = _scratch_crossing(entry) or 0
     limit = _scratch_bytes(entry.get("limit_bytes")) or 0
     return used / limit if limit else 0.0
 
@@ -1900,7 +1919,7 @@ def scratch_report(
     paths = scratch_format_top(entry)
     if not paths:
         return None
-    used, limit = _scratch_bytes(entry.get("used_bytes")), _scratch_bytes(entry.get("limit_bytes"))
+    used, limit = _scratch_crossing(entry), _scratch_bytes(entry.get("limit_bytes"))
     use = f'volume "{name}"'
     if used is not None and limit:
         use += f" {scratch_size_words(used)} of {scratch_limit_words(limit)}"
