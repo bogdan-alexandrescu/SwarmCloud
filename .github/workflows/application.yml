@@ -138,9 +138,9 @@ jobs:
       contents: read
       actions: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: azure/setup-kubectl@v5
+      - uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
         with:
           # The parity checks below find kubectl >= 1.30 (scripts/lib/common.sh
           # kubectl_bin). GitHub's image carries one; the self-hosted VM does
@@ -604,7 +604,7 @@ jobs:
       # The URL of the run (or merge train) those jobs passed in; ci-gate cites it.
       reused_from: ${{ steps.train.outputs.train != '' && steps.train.outputs.reused_from || steps.reuse.outputs.reused_from }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # `base...head` needs both commits and their merge base.
           fetch-depth: 0
@@ -1124,23 +1124,24 @@ jobs:
       # one in the verdict.
       - name: setup · checkout
         id: setup-checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: setup · uv
         id: setup-uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
           enable-cache: true
 
       - name: setup · python
         id: setup-python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: setup · kubectl
         id: setup-kubectl
-        uses: azure/setup-kubectl@v5
+        uses: azure/setup-kubectl@bda439f5f36b99b262ebdcd3613869bddb064c8e # v5.2.0
         with:
           # Pinned. An old client silently drops fields it does not understand,
           # so a manifest can "validate" while losing its security context.
@@ -1162,7 +1163,7 @@ jobs:
       - name: release workflow wiring (actionlint) · restore the pinned actionlint
         id: workflows-cache
         if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') }}
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/actionlint-bin
           key: actionlint-${{ env.ACTIONLINT_VERSION }}-${{ env.ACTIONLINT_SHA256 }}
@@ -1195,6 +1196,16 @@ jobs:
             .github/workflows/accept.yml .github/workflows/application.yml \
             .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml \
             .github/workflows/auto-merge.yml
+
+      - name: release workflow wiring (actionlint) · every third-party action is pinned to a commit SHA
+        # A tag moves; a commit cannot (audit, 2026-11-21). Every `uses:` in
+        # .github/ outside this repository's own actions names a 40-hex commit
+        # with its version in a trailing comment; scripts/check-action-pins.sh
+        # says why and how to pin one. It reads files only: no token, no
+        # network.
+        id: workflows-action-pins
+        if: ${{ !cancelled() && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows') }}
+        run: scripts/check-action-pins.sh
 
       # --- ruff check ----------------------------------------------------------
       # Why: the `ruff` name-keeper's comment.
@@ -1409,13 +1420,14 @@ jobs:
       matrix:
         shard: ${{ fromJSON(needs.changes.outputs.unit_shards) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
           enable-cache: true
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -1446,7 +1458,7 @@ jobs:
           fi
           echo "major=${majors}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: ${{ steps.node.outputs.major }}
 
@@ -1553,7 +1565,13 @@ jobs:
         # annotation and a line in the step summary. Exit 5 is pytest's "no
         # test selected": this shard holds no quarantined test.
         # Not `--junitxml`: the shard weights are the gating run's.
-        if: ${{ !cancelled() && steps.pick.outputs.count != '0' }}
+        #
+        # SKIPPED WHEN THIS SHARD HOLDS NO QUARANTINED TEST. The pick step
+        # counts the tests/flaky.txt entries that name one of this shard's
+        # files (`quarantined`, scripts/lib/unit_shards.py); reading the
+        # shard's file count instead started a second pytest in every shard
+        # while the list was empty, only to select nothing.
+        if: ${{ !cancelled() && steps.pick.outputs.count != '0' && fromJSON(steps.pick.outputs.quarantined || '0') > 0 }}
         continue-on-error: true
         env:
           SWARM_REQUIRE_REAL_REAP: "1"
@@ -1599,7 +1617,7 @@ jobs:
 
       - name: upload this shard's measured durations
         if: ${{ !cancelled() && steps.pick.outputs.count != '0' && github.ref == 'refs/heads/main' }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: unit-durations-${{ matrix.shard }}
           path: ${{ runner.temp }}/durations/unit-durations.json
@@ -1700,7 +1718,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: is this commit still main's newest?
         id: newest
@@ -1802,7 +1820,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' && needs.changes.outputs.ui == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ui-build') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: read the Node major the swarm-ui image builds with
         id: node
@@ -1826,7 +1844,7 @@ jobs:
           echo "major=${majors}" >> "$GITHUB_OUTPUT"
           echo "swarm-ui builds with Node ${majors} (${dockerfile})"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           # From the step above, not a literal. vitest 3.2 and jsdom 25 both
           # support Node 24. `cache: npm` needs the lockfile path because the
@@ -1930,7 +1948,7 @@ jobs:
       matrix:
         shard: ${{ fromJSON(needs.changes.outputs.ui_shards) }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: pick this shard's test files
         id: pick
@@ -1980,7 +1998,7 @@ jobs:
           echo "major=${majors}" >> "$GITHUB_OUTPUT"
           echo "swarm-ui builds with Node ${majors} (${dockerfile})"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         if: steps.pick.outputs.count != '0'
         with:
           # From the step above, not a literal. vitest 3.2 and jsdom 25 both
@@ -2081,7 +2099,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full == 'true' && needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'integration') && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: which integration tests this run runs
         id: pick
@@ -2104,17 +2122,18 @@ jobs:
             echo "tests/integration, whole"
           fi
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         if: steps.pick.outputs.none != 'true'
         with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
           enable-cache: true
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         if: steps.pick.outputs.none != 'true'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         if: steps.pick.outputs.none != 'true'
         with:
           # The Firestore emulator is a Java program, and it now REQUIRES a
@@ -2124,7 +2143,7 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
         if: steps.pick.outputs.none != 'true'
 
       - name: install the emulator
@@ -2331,7 +2350,7 @@ jobs:
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         if: steps.scope.outputs.build == 'true'
         with:
           # `base...head` needs both commits and their merge base.
@@ -2406,7 +2425,7 @@ jobs:
           echo "Free disk on \`/\`: ${before} before freeing, ${after} after." >> "$GITHUB_STEP_SUMMARY"
 
       # build-images.sh reads each build config with PyYAML to replay it.
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         if: steps.plan.outputs.build == 'true'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -2592,7 +2611,7 @@ jobs:
       # `images-prod` record here and builds its own, through the same script.
       ENVIRONMENT: dev
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # The whole history: --incremental diffs this commit against the
           # one each reused digest was built from, and --previous tells an
@@ -2603,15 +2622,17 @@ jobs:
       # uv.lock precision: a Python image is rebuilt on a uv.lock change only
       # if its own pruned `uv export` exports something different. Without uv
       # the script cannot tell, and rebuilds it.
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
 
       - id: auth
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: fill the tool mirror with what this commit pins
         # OWNER DECISION 2026-10-14 (PR 1298; docs/ci.md "A pull request scans
@@ -2693,7 +2714,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: record the digests for the release
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           # scripts/lib/ci-built-images.sh downloads `images-<environment>`
           # and reads `images-<environment>.json` out of it.
@@ -2732,7 +2753,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
 
@@ -2751,7 +2772,7 @@ jobs:
 
       - name: upload the record
         continue-on-error: true
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: tested-tree-${{ steps.record.outputs.tree }}
           path: ${{ runner.temp }}/tested-tree/
@@ -2847,7 +2868,7 @@ jobs:
           fi
           echo "every job passed or was skipped by its own if"
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         if: github.event_name != 'workflow_dispatch' && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository)
         with:
           # The changed files are `git diff base...head`; a shallow clone has

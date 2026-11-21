@@ -203,7 +203,8 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-ci-images.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 API_ERR="${WORK}/api.err"
 
-# CI_RELEASE_TEST_JOBS (common.sh) as a JSON array, for jq.
+# CI_RELEASE_TEST_JOBS (common.sh) as a JSON array, for jq. An entry matches a
+# job named exactly so, or each leg of a matrix job, `<entry> (...)`.
 TEST_JOBS_JSON="$(printf '%s\n' "${CI_RELEASE_TEST_JOBS[@]}" | jq -R . | jq -cs .)"
 
 ERROR_TITLE="release images"
@@ -302,7 +303,7 @@ survey() {
     if [[ "${state}" == success ]]; then
       IFS=$'\t' read -r tstate tdetail turl < <(jq -r --argjson t "${TEST_JOBS_JSON}" --arg rs "${run_status}" --arg ru "${run_url}" '
           (.jobs // []) as $all
-          | [ $t[] as $n | { name: $n, j: [ $all[] | select(.name == $n) ] } ] as $g
+          | [ $t[] as $n | { name: $n, j: [ $all[] | select(.name == $n or (.name | startswith($n + " ("))) ] } ] as $g
           | [ $g[] | select((.j | length) > 0 and any(.j[]; .status == "completed" and .conclusion != "success" and .conclusion != "skipped")) ] as $bad
           | if ($bad | length) > 0 then
               ["untested",

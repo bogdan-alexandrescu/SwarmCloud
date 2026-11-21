@@ -601,8 +601,11 @@ def test_ci_addon_refuses_the_deploying_repository_as_sandbox_and_open_prod() ->
 #: actions/create-github-app-token@v2's inputs (its action.yml, read
 #: 2026-10-30), without the `permission-*` ones: those are checked against
 #: GitHub's own permission keys below, which is what lesson 45 was about.
-APP_TOKEN_INPUTS = {"v2": {"app-id", "private-key", "owner", "repositories", "skip-token-revoke",
-                           "github-api-url"}}
+_APP_TOKEN_V2_INPUTS = {"app-id", "private-key", "owner", "repositories", "skip-token-revoke", "github-api-url"}
+#: Keyed by the ref a step pins: `v2`, or the commit .github/ pins since the
+#: action-pinning audit (2026-11-21), v2.2.2, which `v2` resolved to that day.
+APP_TOKEN_INPUTS = {"v2": _APP_TOKEN_V2_INPUTS,
+                    "fee1f7d63c2ff003460e3d139729b119787bc349": _APP_TOKEN_V2_INPUTS}
 #: GitHub App permission keys (the REST API's app-permissions object, plus
 #: `actions_variables`, the key archived issue 2220 established on 2026-10-27).
 GITHUB_PERMISSIONS = {

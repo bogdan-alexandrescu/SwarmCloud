@@ -107,7 +107,7 @@ jobs:
       proceed: ${{ steps.label.outputs.proceed }}
       pr: ${{ steps.label.outputs.pr }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: read the merged pull request's labels
         id: label
@@ -174,15 +174,15 @@ jobs:
       # release-images fetches this environment's tfvars from the state bucket.
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - id: auth
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: the images CI built for this commit, scanned (nothing is promoted yet)
         id: stage
@@ -282,17 +282,17 @@ jobs:
     steps:
       # Full history: the order guard asks git whether the commit already out
       # is an ancestor of this one.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
       - id: auth
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: scan and promote the recorded digests
         uses: ./.github/actions/release-promote
@@ -315,19 +315,19 @@ jobs:
       REGION: ${{ vars.GCP_REGION }}
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
       - id: auth
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
@@ -361,18 +361,18 @@ jobs:
       REGION: ${{ vars.GCP_REGION }}
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
       # No ID token, as in release.yml's deploy: the suites run INSIDE the VPC.
       - id: auth
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: verify every service, job and worker image runs the pinned digests
         id: verify
@@ -383,14 +383,15 @@ jobs:
       # No warm step: accept.yml, after the normal release of the same push,
       # warms the same digests.
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' && vars.APPLY_TENANT_NAMESPACES == 'true' }}
         with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
           enable-cache: true
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -435,9 +436,10 @@ jobs:
       # Its own uv setup and sync, NOT switched by vars.APPLY_TENANT_NAMESPACES:
       # apply.sh runs render.py and network_parity.py on PYTHON_BIN, and the
       # relay rolls whether or not tenant namespaces are applied.
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
         with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
           enable-cache: true
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -461,9 +463,10 @@ jobs:
       # as the tenant-namespace setup above is (that one stays off until the
       # owner turns the namespaces on). A second sync is a no-op when the first
       # ran.
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
         with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
           enable-cache: true
           python-version: ${{ env.PYTHON_VERSION }}
 
