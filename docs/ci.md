@@ -189,6 +189,26 @@ workflow:
 | `security.yml` | `checks` | `secret scan` · `platform policy assertions` |
 | `terraform.yml` | `offline` | `fmt / validate / tflint` · `terraform test` |
 
+**Third-party actions are pinned by commit, and the check runs here**
+(audit, 2026-11-21). Every `uses:` in `.github/` outside this repository's
+own `./.github/actions` names a full commit SHA, with the release it was
+resolved from in a trailing comment (`actions/checkout@<40 hex> # v5.1.0`). A
+tag is whatever its owner last pushed to it: a moved or compromised tag would
+run new code in every job naming it, with that job's token and cloud
+credentials, and nothing here would change to show it. A commit cannot move.
+`scripts/check-action-pins.sh` refuses any other form, by file and line, and
+runs as a step of the `release workflow wiring (actionlint)` check above; its
+header says how to resolve a tag to its commit. To bump an action, resolve the
+new tag and change the SHA and the comment together.
+
+**The tools CI installs are pinned too.** Every `astral-sh/setup-uv` step
+installs the uv the images copy in (`ARG UV_IMAGE` in `images/*/Dockerfile`),
+and the root `pyproject.toml` sets `[tool.uv] required-version` to the same
+version, so a lock resolved or a sync made with any other uv is refused
+instead of differing from CI's in silence: bump all three together.
+`azure/setup-kubectl` installs `KUBECTL_VERSION` (`application.yml`'s `env`).
+`tests/unit/scripts/test_ci_tool_versions.py` holds all of it.
+
 Three jobs that run no check of their own move to `ubuntu-24.04` without
 folding: `format / unit tests` and `swarm-ui typecheck / component tests`
 read `needs` and nothing else, and `plan (not run on a pull request)` writes a
@@ -667,7 +687,14 @@ run beside it. Those three -- exactly the jobs it used to need -- now gate the
 release instead: `scripts/lib/ci-built-images.sh` hands release.yml and
 hotfix.yml the build's record only once each of them, in the same run,
 concluded success or was skipped by its own paths (the list is
-`CI_RELEASE_TEST_JOBS`, once, in `scripts/lib/common.sh`). While they still
+`CI_RELEASE_TEST_JOBS`, once, in `scripts/lib/common.sh`). **Since the
+2026-11-21 audit that list is every job `ci-gate` needs**, not those three:
+the integration tests, the UI shards, the lock and contract checks and the
+rest hold every pull request through `ci-gate`, so a commit on main where one
+of them failed must not ship either. A matrix job is listed by its name up to
+the matrix part (`unit tests` for each `unit tests (k/N)` leg), and
+`tests/unit/scripts/test_ci_built_images.py` derives the list from ci-gate's
+`needs:` and fails when the two differ. While they still
 run, the release waits as for a build in progress (`CI_BUILD_WAIT_RUNNING`).
 When one failed or was cancelled, or the run finished without it, the release
 refuses the commit and, even when dispatched with `or-build`, builds nothing:
@@ -4278,7 +4305,12 @@ skipped, while its issue is worked:
   the gate)`. That step's failure is a warning annotation and a line in the
   step summary; it never fails the job. A quarantined test therefore still
   runs on every pull request, so the day it starts failing every time --
-  a real defect, not a flake -- shows up there.
+  a real defect, not a flake -- shows up there. The step runs only in a shard
+  that holds a quarantined test: the pick step writes `quarantined`, the
+  number of entries naming one of the shard's files
+  (`scripts/lib/unit_shards.py`), and the step's `if:` reads it. Until the
+  2026-11-21 audit it read the shard's file count, so with the list empty
+  every shard still started a second pytest to select nothing.
 * **`tests/unit/scripts/test_flaky_quarantine.py`** holds the parser, the
   marking, the job's two steps, and that every listed test exists: a renamed
   test would otherwise leave its entry quarantining nothing while the real

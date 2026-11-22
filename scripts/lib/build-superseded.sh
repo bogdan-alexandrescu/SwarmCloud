@@ -67,12 +67,13 @@ status="$(gh api "repos/${SUP_REPO}/compare/${SUP_SHA}...main" --jq '.status' 2>
 [[ "${status}" == ahead ]] || not_superseded "main is not ahead of ${SUP_SHA} (compare: ${status:-unreadable})"
 
 # One read of the run's jobs answers both questions; see the loop. The names
-# go in as a JSON array literal: `gh api --jq` takes no --arg.
+# go in as a JSON array literal: `gh api --jq` takes no --arg. An entry
+# matches a job named exactly so, or each leg of a matrix job, `<entry> (...)`.
 TEST_JOBS_JSON="$(printf '%s\n' "${CI_RELEASE_TEST_JOBS[@]}" | jq -R . | jq -cs .)"
 # shellcheck disable=SC2016  # jq's $names, not the shell's
 JOBS_JQ='(.jobs // []) as $all
   | ([ $all[] | select(.name == "build images") ][0].conclusion // "none") as $b
-  | [ '"${TEST_JOBS_JSON}"'[] as $n | [ $all[] | select(.name == $n) ] ] as $g
+  | [ '"${TEST_JOBS_JSON}"'[] as $n | [ $all[] | select(.name == $n or (.name | startswith($n + " ("))) ] ] as $g
   | (if any($g[]; any(.[]; .conclusion != null and .conclusion != "success" and .conclusion != "skipped" and .conclusion != "cancelled")) then "failed"
      elif all($g[]; length > 0 and all(.[]; .conclusion == "success" or .conclusion == "skipped")) then "passed"
      else "unfinished" end) as $t

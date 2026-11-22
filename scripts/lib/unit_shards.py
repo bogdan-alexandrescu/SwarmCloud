@@ -8,8 +8,15 @@ Both read the environment the workflow sets: PYTHON_MODE (all | selected |
 subset), PYTHON_AREAS (subset: docs, swarm-ui), PYTHON_TESTS (selected: the
 test files the change reaches), DURATIONS (tests/unit/scripts/
 unit_test_durations.json) and GITHUB_OUTPUT; `pick` also SHARD, SHARDS
-(`strategy.job-total`) and SHARD_FILES. Paths are relative to the working
-directory, the repository's checkout.
+(`strategy.job-total`) and SHARD_FILES, and FLAKY_LIST when set (default
+tests/flaky.txt). Paths are relative to the working directory, the
+repository's checkout.
+
+`pick` writes two outputs: `count`, the shard's test files, and
+`quarantined`, how many tests/flaky.txt entries name a file in this shard.
+The `quarantined unit tests` step runs only when that is not 0: with the
+list empty it started a second pytest in every shard to select nothing
+(exit 5, "no test selected").
 
 THE SPLIT (owner request 2026-10-07). Longest-first onto the lightest shard
 (LPT), weighted by the measured seconds per file, a file with no weight at the
@@ -195,6 +202,23 @@ def count() -> int:
     return 0
 
 
+def quarantined(files: list[str], text: str) -> int:
+    """How many entries of tests/flaky.txt (`text`) name a test in `files`.
+    An entry's file is its node id up to `::`. Blank lines and `#` comments
+    are skipped. The list's shape is held by tests/unit/flaky_quarantine.py
+    at collection; a line it would refuse still counts here when its first
+    field names one of these files, so the step runs and the refusal shows."""
+    mine = set(files)
+    n = 0
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.split()[0].split("::", 1)[0] in mine:
+            n += 1
+    return n
+
+
 def pick() -> int:
     shard, shards = int(os.environ["SHARD"]), int(os.environ["SHARDS"])
     if not 1 <= shard <= shards:
@@ -210,6 +234,11 @@ def pick() -> int:
     for f in mine:
         print(f"  {f}")
     _output(f"count={len(mine)}")
+    flaky = Path(os.environ.get("FLAKY_LIST") or "tests/flaky.txt")
+    text = flaky.read_text(encoding="utf-8") if flaky.is_file() else ""
+    q = quarantined(mine, text)
+    print(f"{q} quarantined test(s) ({flaky}) in this shard")
+    _output(f"quarantined={q}")
     return 0
 
 

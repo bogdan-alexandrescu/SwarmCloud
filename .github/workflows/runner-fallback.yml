@@ -106,7 +106,7 @@ jobs:
       # person's; docs/ci.md says which permission the App needs).
       - name: mint the merge App's token for the variable
         id: app-token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
         with:
           app-id: ${{ vars.MERGE_APP_ID }}
           private-key: ${{ secrets.MERGE_APP_PRIVATE_KEY }}

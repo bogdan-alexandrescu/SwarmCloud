@@ -82,7 +82,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: install trivy
         # Explicit and pinned, not aquasecurity/trivy-action: that action's
@@ -144,7 +144,7 @@ jobs:
             --exit-code 0 --skip-db-update --no-progress .
 
       - name: upload SARIF
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         if: always()
         with:
           sarif_file: trivy-fs.sarif
@@ -220,9 +220,9 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.11"
 
@@ -294,7 +294,7 @@ jobs:
             --compact
 
       - name: upload SARIF (terraform)
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         if: always()
         with:
           sarif_file: checkov-tf.sarif
@@ -303,7 +303,7 @@ jobs:
       - name: upload SARIF (kubernetes)
         # Uploaded separately, and previously not uploaded at all: a finding that
         # only ever appears in a job log is a finding nobody re-reads.
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         if: always()
         with:
           sarif_file: checkov-k8s.sarif
@@ -347,7 +347,7 @@ jobs:
       contents: read
     steps:
       - name: checkout · the guard, from the base commit
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # A dispatch from another branch still runs main's guard.
           ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
@@ -355,7 +355,7 @@ jobs:
           persist-credentials: false
 
       - name: checkout · the change, as data only
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           path: pr
           # Full history: --diff reads the merge base.
@@ -443,7 +443,7 @@ jobs:
     steps:
       - name: setup · checkout
         id: setup-checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # Full history, for `secret scan`: a key removed in the latest commit
           # is still a leaked key if it is reachable anywhere in the branch.
@@ -678,15 +678,15 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - id: auth
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: scan the current channel images
         env:
