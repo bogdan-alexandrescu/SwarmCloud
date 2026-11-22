@@ -27,10 +27,19 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { App } from '../App'
 import type { CascadeEnv } from './cssgate'
 import { familyOf } from './faces'
 import { painted } from './marks'
+import { screenLoaded } from './screenLoaded'
+
+// A PLATFORM ADMIN OPENS THESE PAGES: the default fixture caller is refused
+// the Admin pages visited here (Pool limits, Platform counts, Tenants) in
+// place, under a head with no `?` and no age. Those pages drew their screens
+// only while their eager modules beat the session reads; loaded with their
+// routes (React.lazy, issue 79) they land after them. api.ts reads the persona
+// cookie once, when it loads, so it is set before App is imported.
+document.cookie = 'swarm_qa_persona=platform-admin; path=/'
+const { App } = await import('../App')
 
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -135,6 +144,7 @@ describe('Q2/Q10: one page head, no breadcrumb row on a section page', () => {
     const visited: string[] = []
     for (const path of PAGES) {
       const { unmount } = at(path)
+      await screenLoaded()
       const h1 = await screen.findByRole('heading', { level: 1 }, WAIT)
       visited.push(path)
       expect(document.querySelector('.ctl-crumb, .c-crumb, nav[aria-label="Breadcrumb"]'), `${path} draws a breadcrumb`).toBeNull()
