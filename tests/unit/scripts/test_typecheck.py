@@ -64,7 +64,7 @@ def test_pyright_is_pinned_exactly_and_the_baseline_was_written_by_that_version(
         "a pyright bump reports different errors: regenerate the baseline with "
         "scripts/typecheck.sh --write-baseline in the same change"
     )
-    assert f'"pyright[nodejs]==${{PYRIGHT_VERSION}}"' in SCRIPT.read_text()
+    assert '"pyright[nodejs]==${PYRIGHT_VERSION}"' in SCRIPT.read_text()
 
 
 def test_the_baseline_names_existing_files_and_only_shrinks():
