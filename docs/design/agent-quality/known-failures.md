@@ -227,7 +227,6 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_ci_fold.py` | `<module>` | `skipif` | the verdict step needs bash and jq |
 | `tests/unit/scripts/test_ci_gate.py` | `<module>` | `skipif` | the gate needs bash and jq |
 | `tests/unit/scripts/test_close_merged_issues.py` | `<module>` | `skipif` | bash and jq are required |
-| `tests/unit/scripts/test_cloud_run_start_doc.py` | `test_each_stated_backend_is_the_catalogues` | `skip_call` | {name} is not named by the doc (the test above fails for it) |
 | `tests/unit/scripts/test_concurrency_judge.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_concurrency_sampler_by_file.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_create_secrets_egress.py` | `<module>` | `skipif` | create-secrets.sh needs bash |

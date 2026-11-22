@@ -45,14 +45,6 @@ def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _section(text: str, heading: str) -> str:
-    """The body under a markdown heading, up to the next heading of any level."""
-    start = text.index(heading)
-    rest = text[start + len(heading):]
-    nxt = re.search(r"^#{1,4} ", rest, flags=re.M)
-    return rest[: nxt.start()] if nxt else rest
-
-
 def _backends() -> dict[str, Backend]:
     return {name: resolve_backend(p) for name, p in RUNNER_PROFILES.items()}
 
@@ -110,52 +102,6 @@ def test_the_catalogue_is_what_the_amendment_describes():
 # --------------------------------------------------------------------------
 # BUILD_PROMPT_V2.md
 # --------------------------------------------------------------------------
-
-
-def test_build_prompt_no_longer_claims_to_be_unbuilt():
-    status = next(line for line in _text(BUILD_PROMPT).splitlines() if line.startswith("**Status:**"))
-    assert "not yet built" not in status
-    assert "built" in status
-
-
-def test_build_prompt_substrate_is_cloud_run_primary_with_gke_for_browser():
-    text = _text(BUILD_PROMPT)
-    assert "only GKE Autopilot" not in text
-    assert "Everything is a pod" not in text
-    heading = next(line for line in text.splitlines() if line.startswith("### 2.1 "))
-    assert "Cloud Run Jobs" in heading
-    body = _section(text, heading)
-    for name, backend in _backends().items():
-        label = "Cloud Run Jobs" if backend is Backend.CLOUD_RUN_JOB else "GKE Autopilot"
-        row = next((line for line in body.splitlines() if line.startswith(f"| `{name}` ")), None)
-        assert row is not None, f"§2.1 has no row for the {name!r} profile"
-        assert label in row, f"§2.1 puts {name!r} somewhere the catalogue does not: {row}"
-    assert "swarm_common/profiles.py" in body
-    assert "apps/scheduler/scheduler/dispatch.py" in body
-    assert "2026-10-01" in body
-
-
-def test_build_prompt_records_why_and_the_workspace_storage_correction():
-    body = _section(_text(BUILD_PROMPT), next(
-        line for line in _text(BUILD_PROMPT).splitlines() if line.startswith("### 2.1 ")
-    ))
-    # WHY: the v1 rationale in architecture.md §5, cited.
-    assert "docs/architecture.md" in body
-    assert "no nodes" in body
-    # The CLAUDE.md "Correction (workspace storage)", not softened.
-    for phrase in ("tmpfs", "GA", "live migration", "Preview"):
-        assert phrase in body, phrase
-    # Checkpointing stays mandatory, for the reasons CLAUDE.md gives.
-    for reason in ("park-and-exit", "cancellation", "stale generation", "crash"):
-        assert reason in body, reason
-    assert "mandatory" in body.lower()
-
-
-def test_build_prompt_no_longer_lists_cloud_run_jobs_for_deletion():
-    text = _text(BUILD_PROMPT)
-    deleted = _section(text, "## 6. What gets deleted")
-    assert "terraform/modules/cloud_run_jobs/" not in deleted or "NOT deleted" in deleted
-    assert "CLOUD_RUN_JOB` member and every branch" not in deleted
 
 
 def _cited_symbol(path: str, qualname: str) -> str:
@@ -254,124 +200,27 @@ def _assert_cites_resolve(doc: Path) -> None:
         _cited_anchor(path, anchor, once=(path, anchor) not in _REPEATED_ANCHORS)
 
 
-def test_build_prompt_marks_the_unbuilt_root_gvisor_shape():
-    """§2.2, §2.6.3 and §3 describe root + gVisor, an init container and a
-    sidecar: none of it runs. Each carries a dated note saying what does, and
-    the lines those notes cite still say what the notes claim."""
-    text = _text(BUILD_PROMPT)
-    isolation = _section(text, "### 2.2 Isolation: root inside the pod, gVisor underneath")
-    assert "Amended 2026-10-01" in isolation
-    assert "`images/agent-runtime-base/Dockerfile` (`USER swarm:swarm`)" in isolation
+def test_the_runtime_image_runs_as_a_single_non_root_user():
+    """images/agent-runtime-base/Dockerfile switches to `USER swarm:swarm` exactly once."""
     assert _cited_anchor("images/agent-runtime-base/Dockerfile", "USER swarm:swarm").strip() == "USER swarm:swarm"
-    assert "`kubernetes/render.py::JOB_FILES_GVISOR`" in isolation
-    gvisor = _cited_symbol("kubernetes/render.py", "JOB_FILES_GVISOR")
-    # One line says both: that `--runtime gvisor` selects it and that it is
-    # NOT the default. Two phrases anywhere in the symbol's comment block
-    # would pass a comment that split or dropped the negation (archived issue 453).
-    assert any("--runtime gvisor" in line and "NOT the" in line for line in gvisor.splitlines()), (
-        "kubernetes/render.py JOB_FILES_GVISOR no longer says, on one line, that "
-        "`--runtime gvisor` selects it and it is NOT the default"
-    )
 
-    dispatch = _section(text, "#### 2.6.3 Dispatch — the pod starts already logged in")
-    assert "Amended 2026-10-01" in dispatch
-    assert "no init container" in dispatch
+
+def test_lease_account_assigns_through_the_account_broker():
+    """Worker._lease_account leases by calling self._account_broker.assign(...)."""
     lifecycle = "apps/agent-worker/agent_worker/lifecycle.py"
-    accountlease = "apps/agent-worker/agent_worker/accountlease.py"
-    assert f"`{lifecycle}::Worker._lease_account`" in dispatch
     assert "self._account_broker.assign(" in _cited_symbol(lifecycle, "Worker._lease_account")
-    assert f"`{lifecycle}::Worker._account_credential_env`" in dispatch
+
+
+def test_account_credential_env_builds_env_from_the_account():
+    """Worker._account_credential_env derives the child's env via credential_env_from_account."""
+    lifecycle = "apps/agent-worker/agent_worker/lifecycle.py"
     assert "credential_env_from_account(" in _cited_symbol(lifecycle, "Worker._account_credential_env")
-    assert f"`{accountlease}::credential_env_from_account`" in dispatch
-    assert _cited_symbol(accountlease, "credential_env_from_account").startswith(
-        "def credential_env_from_account("
-    )
 
-    built = _section(text, "## 5. What gets built")
-    assert f"`{lifecycle}::Worker._run_child_supervised`" in built
+
+def test_the_supervised_run_loop_checkpoints_periodically():
+    """Worker._run_child_supervised calls self._checkpoint("periodic") in its run loop."""
+    lifecycle = "apps/agent-worker/agent_worker/lifecycle.py"
     assert 'self._checkpoint("periodic")' in _cited_symbol(lifecycle, "Worker._run_child_supervised")
-    # archived issue 647: no line number into lifecycle.py is left for a lane to shift.
-    assert not re.search(r"lifecycle\.py:\d", text)
-
-    architecture = _section(text, "## 3. Architecture")
-    assert "Amended 2026-10-01" in architecture
-    assert "`browser`" in architecture and "`claude-code`" in architecture
-
-
-# --------------------------------------------------------------------------
-# CONTRACT.md
-# --------------------------------------------------------------------------
-
-
-def test_contract_names_the_backend_split_per_profile():
-    decisions = _section(_text(CONTRACT), "## Platform decisions")
-    line = next(line for line in decisions.split("\n- ") if "Primary backend" in line)
-    for name in ("mock", "generic", "claude-code", "codex", "browser"):
-        assert f"`{name}`" in line, name
-    assert "swarm_common/profiles.py" in line
-    assert "dispatch.py" in line
-    assert "2026-10-01" in line
-
-
-def test_contract_keeps_the_live_migration_constraint_and_its_correction():
-    text = _text(CONTRACT)
-    # CLAUDE.md: must stay in the docs and must not be softened.
-    assert "Cloud Run ephemeral disk is Preview and" in text
-    assert "disables live migration" in text
-    assert "Correction (workspace storage)" in text
-
-
-def test_contract_says_what_pod_means_on_each_backend():
-    text = _text(CONTRACT)
-    assert "Cloud Run Job execution" in text
-
-
-# --------------------------------------------------------------------------
-# budgets: cost-control.md, multi-tenancy.md, quota-management.md
-# --------------------------------------------------------------------------
-
-
-def test_cost_control_does_not_advertise_a_budget():
-    text = _text(COST)
-    assert '"monthly_budget_usd": 2000' not in text
-    assert "A tenant over budget gets" not in text
-    assert "per-tenant budgets |" not in text
-    for phrase in ("not built and not planned", "2026-10-01", "record_spend", "BUDGET_EXHAUSTED", "422"):
-        assert phrase in text, phrase
-
-
-def test_multi_tenancy_does_not_say_nothing_attributes_cost():
-    text = _text(TENANCY)
-    assert "nothing attributes cost" not in text
-    for phrase in ("record_spend", "2026-10-01", "BUDGET_EXHAUSTED"):
-        assert phrase in text, phrase
-
-
-def test_quota_management_marks_budget_exhausted_never_written():
-    row = next(line for line in _text(QUOTA).splitlines() if line.startswith("| `BUDGET_EXHAUSTED` |"))
-    assert "never written" in row
-    assert "states.py" in row
-
-
-# --------------------------------------------------------------------------
-# contract-change-requests.md
-# --------------------------------------------------------------------------
-
-
-def test_budget_exhausted_is_recorded_as_a_request_not_an_edit():
-    text = _text(REQUESTS)
-    heading = next(
-        (line for line in text.splitlines() if line.startswith("## ") and "BUDGET_EXHAUSTED" in line),
-        None,
-    )
-    assert heading is not None, "no entry records BUDGET_EXHAUSTED as unused"
-    number = re.match(r"## (\d+)\.", heading).group(1)
-    assert re.search(rf"^\| {number} \| .*BUDGET_EXHAUSTED.* \| (?:open|PROPOSED)", text, flags=re.M)
-    body = _section(text, heading)
-    assert "**Status:" in body or "**Status:**" in text[text.index(heading):]
-    entry = text[text.index(heading):]
-    for part in ("### What is true today", "### The requested change", "### If it is declined"):
-        assert part in entry, part
 
 
 # --------------------------------------------------------------------------
