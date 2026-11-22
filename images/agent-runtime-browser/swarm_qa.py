@@ -71,7 +71,9 @@ What `capture` does, and why each:
    navigates and waits for `load` (a main document that answered 4xx or 5xx
    fails the route at `navigate`, with its status: archived issue 1981), then up to NETWORK_IDLE_MS for
    the network to go quiet (the console polls, so it may never be quiet for
-   long: not reaching it is recorded, not fatal), then `document.fonts.ready`,
+   long: not reaching it is recorded, not fatal), then `document.fonts.ready` for up to
+   FONTS_READY_CAP_MS (not settling then is a note in the route's entry,
+   `fonts_settled: false`, not fatal),
    then the route's `ready` selector, then until the page shows no pending
    read for SETTLE_QUIET_POLLS polls in a row (PENDING_JS: the console's
    skeletons and its "reading…") AND its body text has not changed for
@@ -601,7 +603,21 @@ DIFF_MARK = (255, 0, 255)
 #: A PNG member of a tarball is read only up to this size.
 MAX_MEMBER_BYTES = 64 * 1024 * 1024
 
-FONTS_READY_JS = "() => document.fonts.ready.then(() => true)"
+#: How long a route waits for `document.fonts.ready` before it is shot
+#: anyway. A web font that loads settles in well under a second on the preview
+#: build; one that never settles (a font host that never answers, a face that
+#: never finishes decoding) hung the capture with no cap. Three seconds is
+#: several times a slow font load and small beside the route's other waits;
+#: past it the route is captured as it stands, `fonts_settled: false` in its
+#: entry with a note, because its frames may show fallback fonts.
+FONTS_READY_CAP_MS = 3_000
+#: True once the document's fonts have settled; false when FONTS_READY_CAP_MS
+#: (the argument) passed first. Raced in the page, because page.evaluate has
+#: no timeout of its own.
+FONTS_READY_JS = """(ms) => Promise.race([
+  document.fonts.ready.then(() => true),
+  new Promise((resolve) => setTimeout(() => resolve(false), ms)),
+])"""
 #: The element that scrolls (QA-TOOLS-FIX, QA-003). The console's document does
 #: not scroll: the route's content scrolls inside `div.ctl-scroll` (Spine.tsx),
 #: and the first run, which looked only at the document, `main` and
@@ -2002,7 +2018,7 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
         except Exception:  # noqa: BLE001 -- a console that polls may never be idle
             idle = False
         step = "fonts"
-        page.evaluate(FONTS_READY_JS)
+        fonts = page.evaluate(FONTS_READY_JS, FONTS_READY_CAP_MS) is not False
         step = "ready"
         page.wait_for_selector(ready, state="visible", timeout=READY_TIMEOUT_MS)
         for n, click in enumerate(route.get("reveal") or [], 1):
@@ -2089,7 +2105,13 @@ def _capture_route(page, errors: _Errors, *, base: str, group: str, route: dict,
             "truncated": truncated, "reached": reached, "total": total, "duplicate": duplicate,
             "geometry": geometry, "masked": masked_total, "reshot": reshot, "off_viewport": off_size,
             "text": f"{stem}.txt", "a11y": f"{stem}.a11y.json", "errors": f"{stem}.errors.json",
+            "fonts_settled": fonts,
         }
+        if not fonts:
+            # Shot, not failed: the frames are still the route, but a reviewer
+            # must know their text may be in a fallback font.
+            entry["notes"] = [f"fonts had not settled after {FONTS_READY_CAP_MS} ms (document.fonts.ready); "
+                              "the frames may show fallback fonts"]
         if axe_source is not None:
             step = "axe"
             if not page.evaluate(AXE_INJECT_JS, axe_source):

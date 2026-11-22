@@ -352,6 +352,19 @@ variable "tenants" {
     # (contract request 30). Bare emails of user-managed accounts in this
     # project; never a human, never an admin, never under two tenants.
     service_accounts = optional(list(string), [])
+    # Whether this workspace runs no agents at all: it exists only to test
+    # something else, as the roles and join acceptance probes' workspaces do,
+    # which test workspace roles and join requests and never dispatch work.
+    # Its worker then never reads or writes control-plane state, so it may go
+    # without swarmTenantWorkerFirestore (worker_firestore_access = false, or
+    # worker_firestore_off_tenants_iam / worker_firestore_off_tenants) without
+    # first being in state_via_api_tenants (owner decision 2026-11-21: reuse
+    # the existing worker-Firestore switch rather than add one). DEFAULTS
+    # FALSE, so every existing tenant is unchanged and plans no change: the
+    # marker grants nothing and creates nothing; it only relaxes those
+    # validations. docs/multi-tenancy.md (design B, step 4: "A tenant that
+    # runs no work") says why.
+    runs_no_work = optional(bool, false)
   }))
   default = {}
 
@@ -1454,13 +1467,15 @@ variable "settings_mac_tenants" {
 # cutover (docs/runbooks/isolation-cutover.md step c), and is refused at plan
 # while any Terraform tenant is missing from state_via_api_tenants: that
 # tenant's worker would still be dispatched onto the direct path and fail its
-# first read with PermissionDenied.
+# first read with PermissionDenied. A tenant marked runs_no_work (var.tenants)
+# needs no listing: it dispatches nothing, so nothing of its reads Firestore.
 variable "worker_firestore_access" {
   description = <<-EOT
     Grant each Terraform tenant's worker the swarmTenantWorkerFirestore role on
     the swarm database (modules/tenancy `worker_firestore_access`). True is
     today's grant. False removes it for every tenant in var.tenants, and plans
-    only once every one of them is in state_via_api_tenants
+    only once every one of them is in state_via_api_tenants or marked
+    runs_no_work
     (docs/runbooks/isolation-cutover.md).
   EOT
   type        = bool
@@ -1468,8 +1483,8 @@ variable "worker_firestore_access" {
   nullable    = false
 
   validation {
-    condition     = var.worker_firestore_access || alltrue([for t in keys(var.tenants) : contains(var.state_via_api_tenants, t)])
-    error_message = "worker_firestore_access = false needs every tenant in var.tenants listed in state_via_api_tenants first: an unlisted tenant's worker is still dispatched onto direct Firestore and fails its first read once the role is gone (docs/runbooks/isolation-cutover.md)."
+    condition     = var.worker_firestore_access || alltrue([for t, cfg in var.tenants : contains(var.state_via_api_tenants, t) || cfg.runs_no_work])
+    error_message = "worker_firestore_access = false needs every tenant in var.tenants listed in state_via_api_tenants first, or marked runs_no_work: an unlisted tenant that runs work is still dispatched onto direct Firestore and fails its first read once the role is gone (docs/runbooks/isolation-cutover.md)."
   }
 }
 
@@ -1485,14 +1500,14 @@ variable "worker_firestore_access" {
 # from worker_firestore_off_tenants below, which is swarm-api's list for
 # job-made workspace records and creates or destroys no binding. Refused at
 # plan, as the global switch is, for a tenant not yet in
-# state_via_api_tenants, and for `*` or anything else that is not a tenant id.
+# state_via_api_tenants and not marked runs_no_work in var.tenants, and for `*` or anything else that is not a tenant id.
 variable "worker_firestore_off_tenants_iam" {
   description = <<-EOT
     Terraform tenant ids (keys of var.tenants) whose worker loses its
     swarmTenantWorkerFirestore binding (module.tenancy worker_firestore) while
     worker_firestore_access is still true: #1457 design B, one tenant at a
     time (docs/runbooks/isolation-cutover.md step b2). Each entry must already
-    be in state_via_api_tenants. Default [] = every tenant keeps today's grant.
+    be in state_via_api_tenants, or be a tenant marked runs_no_work. Default [] = every tenant keeps today's grant.
   EOT
   type        = list(string)
   default     = []
@@ -1504,8 +1519,8 @@ variable "worker_firestore_off_tenants_iam" {
   }
 
   validation {
-    condition     = alltrue([for t in var.worker_firestore_off_tenants_iam : contains(var.state_via_api_tenants, t)])
-    error_message = "every worker_firestore_off_tenants_iam entry must already be in state_via_api_tenants: that tenant's worker is otherwise still dispatched onto direct Firestore and fails its first read once its binding is destroyed (docs/runbooks/isolation-cutover.md)."
+    condition     = alltrue([for t in var.worker_firestore_off_tenants_iam : contains(var.state_via_api_tenants, t) || try(var.tenants[t].runs_no_work, false)])
+    error_message = "every worker_firestore_off_tenants_iam entry must already be in state_via_api_tenants, or be a tenant marked runs_no_work: a tenant that runs work is otherwise still dispatched onto direct Firestore and fails its first read once its binding is destroyed (docs/runbooks/isolation-cutover.md)."
   }
 }
 
@@ -1514,7 +1529,8 @@ variable "worker_firestore_off_tenants_iam" {
 # variable existed. Rendered onto swarm-api alone as WORKER_FIRESTORE_OFF_TENANTS
 # (locals.tf), the job-made path's twin of worker_firestore_access above
 # (docs/workspaces.md §2.7). A tenant is listed only after it is in
-# state_via_api_tenants, and the plan refuses it otherwise. `*` is refused
+# state_via_api_tenants, or when it is a var.tenants entry marked
+# runs_no_work, and the plan refuses it otherwise. `*` is refused
 # too: swarm-api would read it as every tenant, which the state switch cannot
 # list, so every unswitched workspace would lose a role its worker still uses.
 variable "worker_firestore_off_tenants" {
@@ -1526,7 +1542,8 @@ variable "worker_firestore_off_tenants" {
     change; the workspace job then withholds the role and its A9 check
     requires the worker to hold none. Removing an existing binding is the
     owner's, by hand (docs/runbooks/isolation-cutover.md). Each entry must
-    already be in state_via_api_tenants. Default [] = nobody cut over.
+    already be in state_via_api_tenants, or be a var.tenants entry marked
+    runs_no_work. Default [] = nobody cut over.
   EOT
   type        = list(string)
   default     = []
@@ -1538,8 +1555,8 @@ variable "worker_firestore_off_tenants" {
   }
 
   validation {
-    condition     = alltrue([for t in var.worker_firestore_off_tenants : contains(var.state_via_api_tenants, t)])
-    error_message = "every worker_firestore_off_tenants entry must already be in state_via_api_tenants: a workspace worker still dispatched onto direct Firestore fails its first read once its role is withheld (docs/runbooks/isolation-cutover.md)."
+    condition     = alltrue([for t in var.worker_firestore_off_tenants : contains(var.state_via_api_tenants, t) || try(var.tenants[t].runs_no_work, false)])
+    error_message = "every worker_firestore_off_tenants entry must already be in state_via_api_tenants, or be a tenant in var.tenants marked runs_no_work: a workspace worker still dispatched onto direct Firestore fails its first read once its role is withheld (docs/runbooks/isolation-cutover.md)."
   }
 }
 

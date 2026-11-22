@@ -183,8 +183,9 @@ describe('a plan’s sign-in section', () => {
       'sc account add --label codex-plan --provider openai --lend-to smoke --lend-to u-owner',
     )
     expect(section.textContent).toContain('localhost:1455')
-    // No control in it starts a browser sign-in, so nothing can post one.
-    expect(within(section).queryAllByRole('button')).toHaveLength(0)
+    // No control in it starts a browser sign-in, so nothing can post one. The
+    // (i) buttons only open their tips (issue 81).
+    expect(within(section).queryAllByRole('button').filter((b) => !b.getAttribute('aria-label')?.startsWith('About '))).toHaveLength(0)
     for (const b of within(sheet).queryAllByRole('button')) {
       if (/sign in|sign-in/i.test(b.textContent ?? '')) fireEvent.click(b)
     }
@@ -199,7 +200,7 @@ describe('a plan’s sign-in section', () => {
     expect(section.querySelector('h4')!.textContent).toBe('Sign in again')
     expect(section.textContent).toContain('Only a person can replace this.')
     expect(section.textContent).toContain('leaves REAUTH_REQUIRED as soon as it registers')
-    expect(within(section).queryAllByRole('button')).toHaveLength(0)
+    expect(within(section).queryAllByRole('button').filter((b) => !b.getAttribute('aria-label')?.startsWith('About '))).toHaveLength(0)
     expect(api.beginAccountSignIn).not.toHaveBeenCalled()
   })
 

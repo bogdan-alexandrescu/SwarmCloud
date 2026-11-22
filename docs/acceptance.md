@@ -434,8 +434,8 @@ The reader is `collect` with `carrier: branches`, so it MAY push its own
 branch. A strategy that pushes nothing is refused `strategy_pushes_nothing`
 before the branch rule is ever asked.
 
-**The agents call the tools from Bash, as `python3 -m agent_worker.gitmcp
-<tool> --ref ...`, not through the swarm-git MCP server.** Since archived pull
+**The agents call the tools from Bash, as `/opt/venv/bin/python -I -m
+agent_worker.gitmcp <tool> --ref ...`, not through the swarm-git MCP server.** Since archived pull
 request 3113 (the owner's "prompts without bloat", 3 November 2026) the worker
 hands the MCP server only to the steps on `agent_worker.stepservers`' list: a
 review, a CI fix, a step publishing onto a pull request, a `single-pr` reader
@@ -458,6 +458,33 @@ An agent that made no audited call and recorded no answer is now one FAIL that
 says so: "made no git tool call ... it never reached the tools". It is no
 longer a list of missing fetches and pushes.
 
+**The venv's interpreter by its full path, not `python3`.** The first run
+with the CLI (deployed dde4017ff, 2026-11-21) still failed push to main, push
+to another agent's branch and a failed push fails, with the same generic lines.
+The claude-code runner gives its agent `cliagent.BASE_PATH`, which starts at
+`/usr/local/bin`; only the browser image puts `/opt/venv/bin` in front. So on
+`agent-runtime-base` the agent's `python3` is the image's bare interpreter,
+which has no `agent_worker`, and every command answered "No module named
+agent_worker" without reaching the relay. The prompts now name
+`swarm_rollup.agentimage.VENV_PYTHON` (a unit test holds the two equal) with
+`-I`, as the worker's own `git_shim_argv` does, so nothing the agent wrote
+into the checkout is what runs. "Never reached the tools" missed that run for
+a second reason: the worker appends its own refusals to the same
+`git-answers.jsonl`, under the step `worker`, and those lines counted as the
+agent's. They no longer do.
+
+Each failed step now names which of three things its record shows, so a red
+run says which one it saw:
+
+* **tool missing**: the agent recorded a line that is not a tool's answer (a
+  shell error such as "No module named agent_worker");
+* **tool not called**: the agent recorded nothing for the step;
+* **refusal not recorded**: the agent recorded nothing, but the worker
+  recorded refusing that tool.
+
+A recorded tool answer is named by its refusal code, or as a call that
+succeeded.
+
 The `POST /v1/tasks` 422s in a run are not this group's. All four of its
 agents are created (a refused one reads "the ... task was not created"), and
 the 422s are the door probes of `mock`, `claude-code`, `generic` and `browser`
@@ -467,6 +494,18 @@ the 422s are the door probes of `mock`, `claude-code`, `generic` and `browser`
 in its body, and `github-verify.sh` judges it as its own kind. Its head must
 contain main, it must change exactly `planted.txt` and `lane.txt`, and
 `planted.txt` at its head must be main's line followed by the lane's.
+
+The build step's integrator writes `acceptance-git-tools: integrate` into its
+pull request's body. An integrate pull request whose changed files all lie
+under `tests/acceptance/fixtures/git-tools/` is that group's as well, even
+without the marker, because no other group writes there. `github-verify.sh`
+judges it as the git-tools integrator's: it must change only `build.txt`, and
+its integrate block must list a merged branch and leave none out. It never
+gets the claude-code group's `calc.py` assertion. On 2026-11-21 the sweep
+counted it as the claude-code integrate pull request and failed it on
+`calc.py`. The integrator runs only when the build step wrongly succeeded. The
+suite's "a failed push fails" check already FAILs that, so here the pull
+request's existence is a warning.
 
 **SKIP, not PASS:** an agent the platform held (closed pool, no credential),
 and `read_private` when no repository in the smoke tenant is

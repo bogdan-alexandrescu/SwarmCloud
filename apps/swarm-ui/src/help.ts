@@ -1912,6 +1912,12 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'A name is one to sixty characters, and the id never changes.',
       'Add a new workspace is for platform admins. Anyone else is sent to request a workspace instead.',
+      // Code intelligence's card says each of these in one short line (part of
+      // #81); the whole of each is here, word for word where it was a sentence.
+      'Code intelligence is what a step on this workspace’s repositories is given about its code. Repository context, a ranked pack and the graph tools built from the platform’s own index, is set per repository on its Settings tab, and nothing leaves the platform for it. Send code to Jev, on the Code intelligence card, is the one switch that sends code anywhere.',
+      'When Send code to Jev is on, excerpts of this workspace’s code (the files and symbols ranked for a step), with the agent’s title and the changed paths, go to the workspace’s Jev backend, chosen in Config › Secrets › Keys for agents and MCP: Internal Jev and Internal Laya stay inside your network, TypeSafe is a service outside it. The backend ranks and judges them. Jev advises; it never decides a verdict.',
+      'Never sent, even when on: the content of .env, key, certificate, tfvars and tfstate files, secrets/ and credentials/ directories and the repository’s hard-stop paths (their names only); any excerpt in which a credential is found, which is dropped whole, not masked; the agent’s registered secrets and anything the redaction rules match; issue and pull request authors, another repository’s content, the agent’s transcript and environment variables.',
+      'Only the workspace’s owner or a platform admin can change the switch; anyone else sees it read-only.',
     ],
     see: ['config-setup-strip'],
   },

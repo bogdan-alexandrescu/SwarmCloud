@@ -641,7 +641,7 @@ finding) carries over.
 4. **flows-<k>**: `claude-code-browser`, sonnet, with the target's
    `flows_browser_tool` (Playwright unless it says `jev`), or the one run's
    `browser_tool` when `:run` names one; recorded with `swarm-handoff record`,
-   each flow at each width. The prompt names the tool's own tools:
+   each read-only flow at each width (a mutating flow at one width only, below). The prompt names the tool's own tools:
    Playwright MCP's `browser_*`, or the jev tools. Since QA-FLOWS-CAP
    (the owner, 2026-10-26) the read-only flows render as ceil(n / `flows_per_step`)
    batch steps, `flows-1` ... `flows-<k>`, in the target's order, each one
@@ -657,7 +657,17 @@ finding) carries over.
    **flow-<id>** step, because the gate grants writes per step, from the step
    id naming one flow the stored target declares mutating
    (`QaTargetIssuer._mutating`); a batch carrying one would either lose the
-   grant or hand it to the read-only flows beside it. The batch prompt says
+   grant or hand it to the read-only flows beside it. **A mutating flow runs
+   at one width**, the leg's first (desktop by default), never once a width
+   (`qaspec.flow_widths`, a QA user's report, 2026-11-21): run at every width
+   it performed its declared writes once a width, so a send-once flow sent
+   at desktop and again at phone-390, the declared budget doubled without
+   anyone stating it, and the phone run's typing was cut short before Send.
+   A write is the same write at any width; the widths are the screens'
+   concern, and read-only flows keep them all. Its brief records one
+   `flow-<id>-<width>.gif`, the run's description says the writing flows
+   run at that width only, and the flow report shows that one width's run
+   rather than a missing phone result. The batch prompt says
    the per-width recipe once, not under every flow, so 150 flows of
    500-character goals stay inside the 256 KiB of workflow input; a leg whose
    prompts do not is refused at render with that reason. `MAX_ISSUES` (30)

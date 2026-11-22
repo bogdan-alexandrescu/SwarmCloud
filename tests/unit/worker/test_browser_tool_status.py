@@ -211,7 +211,8 @@ def test_the_runner_registers_the_choice_and_names_it_first(monkeypatch, tmp_pat
     seen = _run_body(monkeypatch, tmp_path, payload={"browser_tool": selected}, jev_key=key)
     assert set(seen["mcp"]) == servers
     # Playwright MCP connects with its client tag; jev's wrapper adds its own.
-    assert seen["mcp"]["playwright"]["args"] == ["--cdp-endpoint", ENDPOINT + "/client/playwright",
+    assert seen["mcp"]["playwright"]["args"] == [claude_code.PLAYWRIGHT_MCP_GUARD, claude_code.PLAYWRIGHT_MCP_BIN,
+                                                 "--cdp-endpoint", ENDPOINT + "/client/playwright",
                                                  "--image-responses", "omit",
                                                  "--output-dir", str(tmp_path / "artifacts" / "screenshots")]
     if "jev" in servers:

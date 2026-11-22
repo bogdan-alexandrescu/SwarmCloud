@@ -1288,7 +1288,10 @@ cmd_expect() {
   # The tenant's Firestore switch (archived issue 1457 design B, lane ISO-WS-FIRESTORE), as
   # swarm-api writes it on the record from WORKER_FIRESTORE_OFF_TENANTS: the
   # job-made path's twin of terraform/modules/tenancy `worker_firestore_access`
-  # and register-tenant.sh --worker-firestore-access. Absent is true, today's
+  # and register-tenant.sh --worker-firestore-access (which, with
+  # --runs-no-work, takes a workspace that never runs agents off without its
+  # state switch; terraform/infra's per-tenant `runs_no_work` is the same
+  # marker, docs/multi-tenancy.md design B step 4). Absent is true, today's
   # grant, so every record written before the switch reads as it did. A false
   # expectation holds no `firestore_role`, so C5 admits no database binding for
   # the worker. Anything but a boolean is refused: a typo must fall through to

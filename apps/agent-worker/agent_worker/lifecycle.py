@@ -1055,7 +1055,10 @@ class Worker:
         # on real sleeps a busy runner scheduled one beat 0.01 s past its
         # band with nothing wrong in the thread (archived issue 2233). A replacement holds
         # for those two only; the loop and the lease's outage check read
-        # `time.monotonic`, so a test that swaps it runs no loop.
+        # `time.monotonic`. A test that runs the loop with one installed starts
+        # it at a real `time.monotonic()` reading and only moves it forward
+        # (`tests/unit/worker/virtual_clock.py`), so a beat's stamp stays
+        # within the test's own few seconds of the loop's clock.
         self.heartbeat_clock: Callable[[], float] = time.monotonic
         self.heartbeat_wait: Callable[[threading.Event, float], bool] = threading.Event.wait
         # The egress probe (archived issue 721 (a), `agent_worker.egress`): started at the
@@ -14586,7 +14589,9 @@ class Worker:
                     during=what,
                     bound_seconds=bound,
                     ceiling_seconds=ceiling_seconds,
-                    seconds=round(time.monotonic() - opened, 1),
+                    # On the clock `opened` was read from, so a test's virtual
+                    # clock reports the virtual time the block took.
+                    seconds=round(clock() - opened, 1),
                     files=reading[0] - first[0],
                     bytes=reading[1] - first[1],
                     ended=extension["ended"],

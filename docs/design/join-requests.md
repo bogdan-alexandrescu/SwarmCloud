@@ -563,7 +563,9 @@ All of them go in `terraform/modules/firestore/indexes.tf`.
 grant (§4.8, `DELETE /v1/workspace/members/person`). It takes effect on the
 next request, after the 15 s cache. Any role override the person held stays
 stored and inert, as a grant to a non-member is today
-(`workspace-roles.md` §4.6).
+(`workspace-roles.md` §4.6). Removing a person who holds `admin` by override
+-- the caller removing themselves included -- goes through the same
+last-admin guard as leaving (below, "The last-admin guard on every route").
 
 A removal applies only to the platform membership. When the person is also
 in the Google group, the response says so (`still_in_group: true`, from a
@@ -600,10 +602,14 @@ route:
   `workspace_leave_not_member`.
 * refuses the workspace's **last admin by override** 409
   `workspace_leave_last_admin` when the group does not hold them there,
-  since leaving would leave the workspace with no admin of its own. Neither a
-  removal nor the roles routes had such a guard to mirror, so the route has
-  its own. A last admin the group still lists may leave the platform
-  membership, since the group keeps them (and their override) there.
+  since leaving would leave the workspace with no admin of its own. When
+  the route was built, neither a removal nor the roles routes had such a
+  guard, so the last admin could remove themselves or demote their own
+  override and then leave (issue 47). The guard now lives in one place,
+  `routes/last_admin.py`, and every route that lowers who administers a
+  workspace goes through it (below). A last admin the group still lists may
+  leave the platform membership, since the group keeps them (and their
+  override) there.
   * **Another admin counts only while they can still select the
     workspace**: their override is `admin` AND either their platform
     membership still counts for the registered group or a fresh per-group
@@ -618,13 +624,68 @@ route:
     the last admin go.
   * **The check and the write are one Firestore transaction.** The caller's
     and the other admins' memberships are read inside it, with the `removed`
-    grant and its audit row written in it, and a leave by an admin also
-    reads and writes the workspace's guard document
-    (`workspace_leave_guards/{tenant_id}`, which holds no authority). Two
+    grant and its audit row written in it, and every leave also reads and
+    writes the workspace's guard document
+    (`workspace_leave_guards/{tenant_id}`, which holds no authority); whether
+    the caller is an admin is read after the guard, inside it. Two
     admins leaving at once therefore conflict on that document; Firestore
     aborts one, the transaction runs again, and its re-read sees the other
     gone, so both cannot leave. Contention that outlasts the retries is a
     503 `membership_unavailable`, with nothing written.
+  * **A refused leave is recorded**: one `workspace_last_admin_refused`
+    row (§4.7), and nothing else.
+
+**The last-admin guard on every route** (issue 47). Four kinds of write
+can lower who administers a group workspace, and all of them run the guard
+above, unchanged, from `routes/last_admin.py`:
+
+| route | guarded when | refused with |
+|---|---|---|
+| `POST /v1/workspace/leave` | the caller holds `admin` by override and the group does not hold them | 409 `workspace_leave_last_admin` |
+| `DELETE /v1/workspace/members/person` | the person removed -- the caller themselves included -- holds `admin` by override and the group does not hold them | the same |
+| `PUT /v1/workspace/roles/person`, `PUT /v1/admin/workspaces/{tenant_id}/roles/person` | the person's override is `admin` and the new role is `member` or `viewer` | the same |
+| `DELETE /v1/workspace/roles/person`, `DELETE /v1/admin/workspaces/{tenant_id}/roles/person` | the person's override is `admin`: a default is never `admin`, so clearing it always demotes | the same |
+| `POST /v1/admin/join-requests/{ref}/approve` (admitting) | the approval lowers or clears an `admin` override of a person who can already select the workspace (the group holds them, or a platform membership counts); an admin named ahead of their joining is lowered unchecked, as no admin who could select it is lost | the same |
+
+* **The same rule decides on every route**: another person counts only
+  while their override is `admin` AND they can still select the workspace
+  (a membership that counts, or a fresh group check). **A platform admin is
+  never counted**: their reach is the platform's, not the workspace's, so a
+  platform admin removing or demoting the last admin is refused like anyone.
+  A demotion is refused even when the person demoted can no longer select
+  the workspace themselves: the rule asks whether another admin remains,
+  and a platform admin names one first.
+* **Naming an admin is never refused.** It lowers nobody, so a platform
+  admin can always name a new admin (`PUT /v1/admin/workspaces/{tenant_id}/
+  roles/person` with `admin`), after which the removal or demotion goes
+  through. It still takes part in the guard document, as every write below
+  does.
+* **Fail-closed, as leaving is**: the person's own role, the roster and every
+  group check are read fresh, and any of them that cannot be read is a 503
+  (`role_unavailable`, `upstream_unavailable`, `membership_unavailable`),
+  never a permissive answer.
+* **One transaction per write, over the same guard document, and the
+  decision inside it.** EVERY write these routes make -- guarded or not,
+  naming an admin included -- reads `workspace_leave_guards/{tenant_id}`
+  first, THEN reads the person's role fresh and decides there whether the
+  write lowers an admin, and writes the guard document with its own grant
+  and audit row, all in one Firestore transaction (a role grant through
+  `RoleStore.write(writer=)`, a membership through
+  `MembershipStore.write(writer=)`). Whether to guard is never decided
+  before the transaction. A leave and a demotion of the only two admins at
+  once conflict exactly as two leaves do. And a write decided on a role
+  that went stale cannot slip through: if A, the only admin, names B admin,
+  while A's change of B to `viewer` (or removal of B) has already read B as
+  `member`, and A then leaves -- guarded, counting B as the admin who
+  remains -- both the naming and the leave wrote the guard after the stale
+  change read it, so Firestore aborts the stale change, and its retry reads
+  B as `admin`, runs the guard and is refused. Had the unguarded write taken
+  no part in the guard, it would commit last and leave no admin. Contention
+  that outlasts the retries is a 503 (`membership_unavailable` for leave
+  and removal, `role_unavailable` for the roles routes), nothing written.
+* **Every refusal writes nothing but its audit row**:
+  `workspace_last_admin_refused`, written after the transaction rolled back
+  (§4.7). A row that cannot be written is logged, and the 409 stands.
 
 ### 4.5 Tenant resolution: the change, exactly
 
@@ -728,6 +789,7 @@ change and its row both land or neither does:
 | `workspace_member_added` | the membership grant | `{via: "join_request", ref}` |
 | `workspace_member_removed` | a removal, or the person leaving | `{via, still_in_group}`; `via: "self"` when the person left |
 | `join_link_changed` | link on, off or rotated | `{on, rotated: true\|false}`. **Never the code or its hash** |
+| `workspace_last_admin_refused` | a leave, removal, demotion or approval refused 409 `workspace_leave_last_admin` (§4.4) | `{route: "leave"\|"member_removed"\|"role_set"\|"role_cleared"\|"join_approved", via, to?, refused}`. The one row written with no change beside it: it is written after the refused transaction rolled back. `RoleStore.audit` serves it in the workspace's role events, which Admin › People and roles labels |
 
 Expiry writes no row, because it is derived. These rows appear in Admin ›
 People and roles › Recent admin actions and in the workspace's own role
