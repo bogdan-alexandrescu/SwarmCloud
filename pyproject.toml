@@ -23,6 +23,20 @@ package = false
 # here rather than resolve or sync differently from CI.
 # tests/unit/scripts/test_ci_tool_versions.py holds the three equal.
 required-version = "==0.12.15"
+# RELEASE-AGE QUARANTINE (audit "Add a 14-day release-age quarantine for uv
+# and npm", part of #60): a resolution (`uv lock`, `uv lock --upgrade`, `uv add`)
+# only takes distributions uploaded at least 14 days ago, so a hijacked release
+# that is yanked within days never reaches uv.lock. A ROLLING window: uv takes
+# a duration here and resolves it against the clock on every run, recording
+# only the span in uv.lock ([options] exclude-newer-span = "P14D"; the
+# exclude-newer "0001-01-01" beside it is uv's placeholder and does nothing).
+# Nothing to move by hand. Installs are unaffected: CI and the images install
+# with `uv sync --frozen` from uv.lock, and `uv lock --check` passes while the
+# lock records the same span. To take a fix younger than the window, use
+# `exclude-newer-package` for that one package, never a shorter window.
+# tests/unit/scripts/test_release_age_quarantine.py holds this and the lock's
+# span equal, and apps/swarm-ui/.npmrc's npm counterpart.
+exclude-newer = "14 days"
 
 [tool.uv.sources]
 swarm-common = { path = "apps/common", editable = true }
@@ -282,3 +296,9 @@ ignore = ["E741"]
 
 [tool.ruff.format]
 exclude = ["*"]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+pythonVersion = "3.11"
+include = ["apps"]
+exclude = ["apps/swarm-ui", "**/node_modules", "**/__pycache__", "**/.*"]
