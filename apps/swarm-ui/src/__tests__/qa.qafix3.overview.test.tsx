@@ -221,9 +221,11 @@ describe('ffp-002, VQ-002: a phone Running row is one line that keeps the step, 
     expect(ov.indexOf('./styles/overview.css')).toBeGreaterThanOrEqual(0)
     expect(ov.indexOf('./styles/overview.css')).toBeLessThan(ov.indexOf('./styles/names.css'))
     const app = imports(APP_TSX)
-    // MUTATION: import Workflows (names.css's other importer) before Overview in App.tsx.
-    expect(app.indexOf('./Overview')).toBeGreaterThanOrEqual(0)
-    expect(app.indexOf('./Overview')).toBeLessThan(app.indexOf('./Workflows'))
+    // Overview is a lazy screen, so App.tsx imports overview.css itself; a lazy
+    // chunk's CSS would land after names.css, which the main chunk holds through Workflows.
+    // MUTATION: import Workflows (names.css's other importer) before overview.css in App.tsx.
+    expect(app.indexOf('./styles/overview.css')).toBeGreaterThanOrEqual(0)
+    expect(app.indexOf('./styles/overview.css')).toBeLessThan(app.indexOf('./Workflows'))
   })
 
   it('cuts the title and keeps the step, in the cascade the built console paints', async () => {

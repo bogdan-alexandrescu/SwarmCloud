@@ -35,6 +35,7 @@ import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { repo, serve, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { screenLoaded } from './screenLoaded'
 
 const WAIT = { timeout: 4000 }
 const APPROVED = 'qat_' + 'a1'.repeat(8)
@@ -1039,6 +1040,7 @@ describe('QA targets: the credential link, opened in the console (VQ6-ROUTE)', (
     try {
       const { App } = await import('../App')
       render(<App />)
+      await screenLoaded()
       // MUTATION: drop App's capture (pass no `qaLink` to RepositoriesScreen) and the first mount is handed undefined.
       expect(handed[0]).toEqual({ view: 'page=qa-targets', qaLink: { targetId: LOGIN, token, environment: null, field: 'credential' } })
       fireEvent.click(button(document, 'away')!)

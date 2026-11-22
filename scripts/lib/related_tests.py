@@ -274,6 +274,9 @@ _CASE = re.compile(r"^(\s*)case\s+'([^']+)'\s*:", re.M)
 _TAG = re.compile(r"<([A-Z][A-Za-z0-9_]*)")
 _COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 _IMPORT = re.compile(r"^import\s+(?!type\s)([^'\";]*?)\s+from\s*['\"]([^'\"]+)['\"]", re.M)
+# A screen App.tsx loads with its route (React.lazy, issue 79):
+# `const Name = lazy(() => import('./Module')...)` is Module's import of Name.
+_LAZY = re.compile(r"^const\s+([A-Z]\w*)\s*=\s*lazy\(\s*\(\)\s*=>\s*import\(\s*['\"]([^'\"]+)['\"]\s*\)[^\n]*$", re.M)
 
 
 class SpacingPlan(NamedTuple):
@@ -335,6 +338,10 @@ def spacing_plan(ui_root: Path, known: set[str]) -> SpacingPlan | None:
         target = _resolve(APP, m.group(2), known)
         if target:
             imports.update(dict.fromkeys(_imported_names(m.group(1)), target))
+    for m in _LAZY.finditer(app):
+        target = _resolve(APP, m.group(2), known)
+        if target:
+            imports[m.group(1)] = target
     local = set(re.findall(r"^(?:export\s+)?(?:function|const|class)\s+([A-Z]\w*)", app, re.M))
     routes: dict[str, set[str]] = {}
     for route in (r for rs in groups.values() for r in rs):
@@ -344,7 +351,7 @@ def spacing_plan(ui_root: Path, known: set[str]) -> SpacingPlan | None:
         routes[route] = {imports.get(t, APP) for t in tags}
     # App's import of a module is a screen's when each name it brings in is
     # used inside SectionBody's cases and nowhere else in App.tsx.
-    rest = _IMPORT.sub("", _COMMENT.sub("", rest))
+    rest = _LAZY.sub("", _IMPORT.sub("", _COMMENT.sub("", rest)))
     in_cases = "\n".join(segments.values())
     by_module: dict[str, set[str]] = {}
     for name, target in imports.items():

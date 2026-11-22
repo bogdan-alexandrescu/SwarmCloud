@@ -31,6 +31,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { screenLoaded } from './screenLoaded'
 
 type Json = Record<string, unknown>
 
@@ -83,6 +84,7 @@ async function app(path: string) {
   const mod = await import('../App')
   window.history.replaceState(null, '', path)
   render(<mod.App />)
+  await screenLoaded()
   return mod
 }
 
