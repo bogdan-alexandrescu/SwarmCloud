@@ -53,7 +53,6 @@ import io
 import json
 import os
 import tarfile
-import time
 from pathlib import Path
 
 import pytest
@@ -68,6 +67,7 @@ from agent_worker.checkpoint import (
 from agent_worker.errors import CheckpointError, ExitCode
 from agent_worker.logs import build_logger
 
+from virtual_clock import VirtualClock, count_beats
 from worker_seeds import TENANT, seed_attempt
 
 #: What uv's build environment really holds (the archived issue 286 archive's refusal).
@@ -567,18 +567,19 @@ def test_a_link_through_an_internal_directory_link_is_over_skipped_knowingly(
 def test_the_lease_is_heartbeaten_while_a_checkpoint_is_written(db, worker_factory):
     """A checkpoint of a large tree ran on the loop that heartbeats the lease,
     so the lease aged for as long as the archive and the upload took. The
-    stand-in `create` holds for 2.5 heartbeat intervals; the lease's
-    `heartbeat_at` must move while it does."""
+    stand-in `create` holds for 2.5 heartbeat intervals of the virtual clock;
+    the lease's `heartbeat_at` must move while it does."""
     seed_attempt(db, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
     worker, _, _ = worker_factory(
         heartbeat_interval_seconds=1, checkpoint_interval_seconds=60, control_poll_seconds=60,
     )
+    clock = VirtualClock().install(worker)
     real_create = worker.checkpoints.create
     seen: list[tuple[str, object, object]] = []
 
     def slow_create(ws, *, label="periodic"):
         before = db.doc("leases/lease_1").get("heartbeat_at")
-        time.sleep(2.5)
+        clock.advance(2.5)
         after = db.doc("leases/lease_1").get("heartbeat_at")
         seen.append((label, before, after))
         return real_create(ws, label=label)
@@ -593,29 +594,19 @@ def test_the_lease_is_heartbeaten_while_a_checkpoint_is_written(db, worker_facto
         )
 
 
-def _count_beats(worker):
-    beats: list[float] = []
-    real = worker._heartbeat
-
-    def counted():
-        beats.append(time.monotonic())
-        return real()
-
-    worker._heartbeat = counted  # type: ignore[method-assign]
-    return beats
-
-
 def test_the_heartbeat_during_a_checkpoint_stops_at_its_bound(db, worker_factory):
     """A checkpoint that never ends -- a wedged upload -- must not keep the
     lease, and the capacity behind it, alive for ever. The bound here is 2 s
-    against a 1 s interval, and the stand-in checkpoint holds for 6 s: an
-    unbounded thread beats 5 or 6 times, a bounded one twice."""
+    against a 1 s interval, and the stand-in checkpoint holds for 6 s of the
+    virtual clock: an unbounded thread beats 5 or 6 times, a bounded one
+    twice."""
     seed_attempt(db, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
     worker, _, _ = worker_factory(
         heartbeat_interval_seconds=1, checkpoint_interval_seconds=60, control_poll_seconds=60,
         heartbeat_meanwhile_max_seconds=2,
     )
-    beats = _count_beats(worker)
+    clock = VirtualClock().install(worker)
+    beats = count_beats(worker, clock)
     real_create = worker.checkpoints.create
     during: list[int] = []
 
@@ -623,7 +614,7 @@ def test_the_heartbeat_during_a_checkpoint_stops_at_its_bound(db, worker_factory
         if during:
             return real_create(ws, label=label)
         start = len(beats)
-        time.sleep(6)
+        clock.advance(6)
         during.append(len(beats) - start)
         return real_create(ws, label=label)
 
@@ -639,25 +630,26 @@ def test_the_heartbeat_during_a_checkpoint_keeps_beating_after_a_cancel_until_it
     """Cancelled mid-checkpoint: the cancellation's own checkpoint has to
     finish, so the thread keeps the lease alive through a cancel (owner
     decision 2026-09-29, archived pull request 288) -- but no longer than its bound. The bound
-    here is 4 s from the start of the checkpoint and the cancel lands at 1.5 s:
-    beats at about 2 s and 3 s, none after 4 s."""
+    here is 4 s from the start of the checkpoint and the cancel lands at 1.5 s
+    of the virtual clock: beats at about 2 s and 3 s, none after 4 s."""
     seed_attempt(db, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
     worker, _, _ = worker_factory(
         heartbeat_interval_seconds=1, checkpoint_interval_seconds=60, control_poll_seconds=60,
         heartbeat_meanwhile_max_seconds=4,
     )
-    beats = _count_beats(worker)
+    clock = VirtualClock().install(worker)
+    beats = count_beats(worker, clock)
     real_create = worker.checkpoints.create
     window: list[tuple[float, float]] = []
 
     def slow_create(ws, *, label="periodic"):
         if window:
             return real_create(ws, label=label)
-        start = time.monotonic()
-        time.sleep(1.5)
+        start = clock.now
+        clock.advance(1.5)
         db.doc("tasks/task_1").update({"cancel_requested": True})
-        cancelled_at = time.monotonic()
-        time.sleep(5)
+        cancelled_at = clock.now
+        clock.advance(5)
         window.append((start, cancelled_at))
         return real_create(ws, label=label)
 
@@ -679,17 +671,18 @@ def test_the_heartbeat_during_a_checkpoint_stops_once_the_attempt_is_fenced(db, 
     worker, _, _ = worker_factory(
         heartbeat_interval_seconds=1, checkpoint_interval_seconds=60, control_poll_seconds=60,
     )
-    beats = _count_beats(worker)
+    clock = VirtualClock().install(worker)
+    beats = count_beats(worker, clock)
     real_create = worker.checkpoints.create
     after_fence: list[int] = []
 
     def slow_create(ws, *, label="periodic"):
         if after_fence:
             return real_create(ws, label=label)
-        time.sleep(1.5)
+        clock.advance(1.5)
         db.doc("tasks/task_1").update({"current_generation": 2})
         mark = len(beats)
-        time.sleep(4)
+        clock.advance(4)
         after_fence.append(len(beats) - mark)
         return real_create(ws, label=label)
 

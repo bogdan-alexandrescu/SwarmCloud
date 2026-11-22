@@ -1,6 +1,6 @@
 import { Fragment, useContext, useEffect, useId, useRef, useState, type FormEvent, type MouseEvent, type MutableRefObject } from 'react'
 import { USE_FIXTURES, loadCapacity, loadSecretsOverview, type SecretsRow } from './api'
-import { Banner, Button, ButtonLink, Card, routedClick } from './components'
+import { Banner, Button, ButtonLink, Card, routedClick, Tooltip } from './components'
 import { SetupContext } from './ConfigSetup'
 import { noteFixtureProbe, read, route, write, type ApiError, type ApiRoute, type Result } from './fetch'
 import { addressToPath, secretsAddAddress } from './paths'
@@ -309,13 +309,13 @@ export type McpLead =
 /** The `mcp_server` part of `config_setup.secrets` (`swarm_api.config_setup.secrets_step`); null while the read has not landed. */
 export function mcpLeadOf(doc: Result<unknown>): McpLead | null {
   if (doc.status === 'loading') return null
-  if (doc.status === 'error' || doc.status === 'empty') return { kind: 'unknown', reason: 'the setup read could not be read' }
+  if (doc.status === 'error' || doc.status === 'empty') return { kind: 'unknown', reason: 'the setup read failed' }
   const setup = isRecord(doc.data) ? doc.data.config_setup : undefined
   const step = isRecord(setup) ? setup.secrets : undefined
-  if (!isRecord(step)) return { kind: 'unknown', reason: 'this API does not serve which secrets are needed and not stored' }
+  if (!isRecord(step)) return { kind: 'unknown', reason: 'this API does not serve it' }
   const source = isRecord(step.sources) ? step.sources.mcp_servers : undefined
   if (!isRecord(source) || typeof source.needed !== 'number') {
-    return { kind: 'unknown', reason: (isRecord(source) ? text(source.reason) : null) ?? 'the MCP servers’ credentials were not measured' }
+    return { kind: 'unknown', reason: (isRecord(source) ? text(source.reason) : null) ?? 'their credentials were not measured' }
   }
   const items = Array.isArray(step.items) ? step.items : []
   const names = [...new Set(items.flatMap((i) => (isRecord(i) && i.kind === 'mcp_server' && text(i.name) !== null ? [text(i.name)!] : [])))]
@@ -365,6 +365,25 @@ function useMcpLead(): McpLead | null {
   return mcpLeadWith(lead, useSecretsUnset(lead?.kind === 'unknown'))
 }
 
+/**
+ * THE PAGE'S (i) (the owner's no-prose rule; issue 81). The sentence that
+ * explains a line sits behind it, on hover, focus or a tap, and stays in the
+ * document as help (`Tooltip` marks it `data-help-description`, so the prose
+ * ratchet does not count it). The mark is Profile's `AboutTip` disc, the
+ * borderless `.ctl-q-glyph`. Neither that nor People's `InfoTip` is imported:
+ * both files reach this one back through Submit, and vitest's loader
+ * deadlocks on a cycle, so this one is built on the components' `Tooltip`.
+ */
+function Info({ about, tip }: { about: string; tip: string }) {
+  return (
+    <Tooltip tip={tip}>
+      <button type="button" className="ctl-q-glyph" aria-label={`About ${about}`}>
+        i
+      </button>
+    </Tooltip>
+  )
+}
+
 function joined(names: readonly string[]): string {
   return names.length < 2 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
@@ -384,11 +403,16 @@ function McpServersLead({ lead, list, onRegister }: { lead: McpLead | null; list
       <section className="ws-lead" aria-label="No MCP server yet">
         <div className="ws-lead-t">
           <span className="ws-lead-k">No MCP server yet</span>
-          <b>No MCP server is registered for {list.tenant_id || 'this workspace'} yet.</b>
+          <b>None registered for {list.tenant_id || 'this workspace'}.</b>
           <span className="ws-lead-s">
-            {list.can_manage
-              ? 'Register one to let an agent call it during its run.'
-              : 'A platform admin registers a group workspace’s MCP servers.'}
+            {list.can_manage ? (
+              <Info about="registering" tip="Register one to let an agent call it during its run." />
+            ) : (
+              <>
+                Only a platform admin registers them.{' '}
+                <Info about="who registers" tip="A platform admin registers a group workspace’s MCP servers." />
+              </>
+            )}
           </span>
         </div>
         {list.can_manage && (
@@ -410,7 +434,8 @@ function McpServersLead({ lead, list, onRegister }: { lead: McpLead | null; list
       <section className="ws-lead is-next" aria-label="Secrets set · —">
         <div className="ws-lead-t">
           <span className="ws-lead-k">Secrets set · —</span>
-          <b>Whether an MCP server is missing its credential is not known: {lead.reason}.</b>
+          <b>Not known: {lead.reason}.</b>{' '}
+          <Info about="what is not known" tip={`Whether an MCP server is missing its credential is not known: ${lead.reason}.`} />
         </div>
       </section>
     )
@@ -434,10 +459,9 @@ function McpServersLead({ lead, list, onRegister }: { lead: McpLead | null; list
     <section className="ws-lead is-next" aria-label={kicker}>
       <div className="ws-lead-t">
         <span className="ws-lead-k">{kicker}</span>
-        <b>
-          {n === 1 ? `MCP server ${lead.names[0]} has no credential stored` : `MCP servers ${joined(lead.names)} have no credential stored`}
-          , so every call to {n === 1 ? 'it' : 'them'} fails until a workspace secret is granted to {n === 1 ? `mcp:${lead.names[0]}` : 'each'}.
-        </b>
+        <b>{n === 1 ? `MCP server ${lead.names[0]} has no credential stored.` : `MCP servers ${joined(lead.names)} have no credential stored.`}</b>{' '}
+        <Info about="the missing credential"
+          tip={`Every call to ${n === 1 ? 'it' : 'them'} fails until a workspace secret is granted to ${n === 1 ? `mcp:${lead.names[0]}` : 'each'}.`} />
       </div>
       <div className="ws-lead-a">
         <ButtonLink kind="primary" size="sm" href={addressToPath(setCredentialAddress(lead.names))} onClick={routedTo(setCredentialAddress(lead.names))}>
@@ -447,6 +471,12 @@ function McpServersLead({ lead, list, onRegister }: { lead: McpLead | null; list
     </section>
   )
 }
+
+/** The page's intro, behind the (i) beside its title. */
+const INTRO = 'The MCP servers an agent may call during its run, by name. An agent names them on Submit; the '
+  + 'worker reaches each one for the agent and holds its credential, which the agent never sees. SwarmCloud '
+  + 'never calls a registered URL itself: the first request a server sees is a worker’s, from one of the '
+  + 'addresses below.'
 
 export function McpServersScreen() {
   const list = useUrRead(loadMcpServers, 'mcp-servers')
@@ -460,7 +490,7 @@ export function McpServersScreen() {
   const none = read !== null && read.servers.length === 0
   return (
     <div className="pk-page">
-      <PageHead title="MCP servers" />
+      <PageHead title="MCP servers" info={<Info about="MCP servers" tip={INTRO} />} />
       <McpServersLead lead={lead} list={read} onRegister={() => setRegistering(true)} />
       <Card
         title="Registered MCP servers"
@@ -475,12 +505,6 @@ export function McpServersScreen() {
           </span>
         )}
       >
-        <p className="pk-lead">
-          The MCP servers an agent may call during its run, by name. An agent names them on Submit; the
-          worker reaches each one for the agent and holds its credential, which the agent never sees. SwarmCloud
-          never calls a registered URL itself: the first request a server sees is a worker&rsquo;s, from one of the
-          addresses below.
-        </p>
         <UrRegion state={list.state} route={`GET ${LIST}`} what="The workspace's MCP servers" plural onRetry={list.reload}>
           {(d) => <Registrations data={d} missing={missing} registering={registering} onChange={list.reload} />}
         </UrRegion>
@@ -518,12 +542,12 @@ function Registrations({ data, missing, registering, onChange }: {
     <>
       {!data.can_manage && (
         <p className="ur-small">
-          Only a platform admin can register or change a group workspace&rsquo;s MCP servers (in a personal
-          workspace, its person). You can read them here.
+          Read only.{' '}
+          <Info about="who changes them" tip="Only a platform admin can register or change a group workspace’s MCP servers (in a personal workspace, its person). You can read them here." />
         </p>
       )}
       {data.servers.length === 0 ? (
-        <p className="ur-small">No MCP server is registered for {data.tenant_id || 'this workspace'} yet.</p>
+        <p className="ur-small">None registered for {data.tenant_id || 'this workspace'}.</p>
       ) : (
         <table role="table" className="mcp-servers mcp-registered" aria-label="Registered MCP servers">
           <thead>
@@ -600,16 +624,16 @@ function EgressAddresses({ addresses }: { addresses: string[] | null }) {
         <div className="mcp-allow-b">
           {addresses === null ? (
             <p className="ur-small">
-              The platform&rsquo;s outbound addresses are not served by this API yet, so they cannot be shown here.
-              Every worker&rsquo;s call to a registered server leaves through the platform&rsquo;s fixed NAT addresses.
+              Not served by this API yet.{' '}
+              <Info about="the addresses" tip="The platform’s outbound addresses are not served by this API yet, so they cannot be shown here. Every worker’s call to a registered server leaves through the platform’s fixed NAT addresses." />
             </p>
           ) : addresses.length === 0 ? (
-            <p className="ur-small">The API served no outbound addresses for this platform.</p>
+            <p className="ur-small">The API served no outbound addresses.</p>
           ) : (
             <>
               <p className="ur-small">
-                Every worker&rsquo;s call to a registered server leaves the platform from one of these addresses. A
-                server that allowlists its callers should admit them.
+                Admit these on the server.{' '}
+                <Info about="the addresses" tip="Every worker’s call to a registered server leaves the platform from one of these addresses. A server that allowlists its callers should admit them." />
               </p>
               <ul className="pk-uses">
                 {addresses.map((a) => <li key={a}><code>{a}</code></li>)}
@@ -648,11 +672,13 @@ function splitTools(raw: string): string[] {
   return [...new Set(raw.split(/[\s,]+/).map((t) => t.trim()).filter((t) => t !== ''))]
 }
 
-const AUTH_CHOICES: ReadonlyArray<{ mode: McpAuthMode; label: string }> = [
-  { mode: 'none', label: 'No credential — the server is open to SwarmCloud’s addresses' },
-  { mode: 'dispatch', label: 'Per-run credential — the caller sends one with each agent, and it dies with the agent' },
-  { mode: 'workspace_secret', label: 'Workspace secret — the secret this workspace grants to mcp:<name>' },
+// Each choice's label is its name; what it means is behind the group's (i), as `AUTH_TIP`.
+const AUTH_CHOICES: ReadonlyArray<{ mode: McpAuthMode; label: string; means: string }> = [
+  { mode: 'none', label: 'No credential', means: 'the server is open to SwarmCloud’s addresses' },
+  { mode: 'dispatch', label: 'Per-run credential', means: 'the caller sends one with each agent, and it dies with the agent' },
+  { mode: 'workspace_secret', label: 'Workspace secret', means: 'the secret this workspace grants to mcp:<name>' },
 ]
+const AUTH_TIP = AUTH_CHOICES.map((c) => `${c.label}: ${c.means}.`).join(' ')
 
 /** Register (editing null) or change one registration. Its name is fixed once registered. */
 function ServerForm({ editing, named, onDone }: { editing: McpServer | null; named: readonly string[]; onDone: () => void }) {
@@ -679,11 +705,12 @@ function ServerForm({ editing, named, onDone }: { editing: McpServer | null; nam
   // archived issue 1680), so the form never says none does under a row naming one.
   const offered = [...new Set([...(served ?? []), ...named, ...profiles])].sort()
   // Words for the person, not about the API: what could not be read, and so
-  // where the offered names came from.
+  // where the offered names came from. `said` is the visible line, `why` the
+  // sentence behind its (i).
   const unsaid = served === null
     ? read
-      ? 'Could not read which runners take MCP servers'
-      : 'Could not read the runner list'
+      ? { said: 'Runner inputs not read', why: 'Could not read which runners take MCP servers' }
+      : { said: 'Runner list not read', why: 'Could not read the runner list' }
     : null
   const verb = editing === null ? 'Register' : 'Save'
 
@@ -748,21 +775,26 @@ function ServerForm({ editing, named, onDone }: { editing: McpServer | null; nam
             <label htmlFor={`${id}-name`}>Name</label>
             <input id={`${id}-name`} className="ur-search pk-input" value={name} required maxLength={31} spellCheck={false}
               placeholder="kb" aria-describedby={`${id}-name-why`} onChange={(e) => setName(e.target.value)} />
-            <span id={`${id}-name-why`} className="jb-note">
-              What an agent names: a lower-case letter, then letters, digits and hyphens. It cannot be changed later.
+            <span className="jb-note">
+              <span id={`${id}-name-why`}>Lower-case letters, digits, hyphens; fixed once registered.</span>{' '}
+              <Info about="the name" tip="What an agent names: a lower-case letter, then letters, digits and hyphens. It cannot be changed later." />
             </span>
           </>
         )}
         <label htmlFor={`${id}-url`}>URL</label>
         <input id={`${id}-url`} className="ur-search pk-input" type="url" value={url} required maxLength={512} spellCheck={false}
           placeholder="https://mcp.example.com/mcp" aria-describedby={`${id}-url-why`} onChange={(e) => setUrl(e.target.value)} />
-        <span id={`${id}-url-why`} className="jb-note">
-          Public HTTPS on port 443, by host name, speaking streamable HTTP. A private or IP address is refused.
+        <span className="jb-note">
+          <span id={`${id}-url-why`}>Public HTTPS by host name, port 443.</span>{' '}
+          <Info about="the URL" tip="Public HTTPS on port 443, by host name, speaking streamable HTTP. A private or IP address is refused." />
         </span>
         <label htmlFor={`${id}-desc`}>Description</label>
         <input id={`${id}-desc`} className="ur-search pk-input" value={description} maxLength={280}
           aria-describedby={`${id}-desc-why`} onChange={(e) => setDescription(e.target.value)} />
-        <span id={`${id}-desc-why`} className="jb-note">Shown to the agent beside the name, so it knows what the server is for.</span>
+        <span className="jb-note">
+          <span id={`${id}-desc-why`}>Shown to the agent beside the name.</span>{' '}
+          <Info about="the description" tip="Shown to the agent beside the name, so it knows what the server is for." />
+        </span>
 
         <fieldset className="jb-options">
           <legend>Credential</legend>
@@ -772,6 +804,7 @@ function ServerForm({ editing, named, onDone }: { editing: McpServer | null; nam
               <span className="jb-text">{c.label}</span>
             </label>
           ))}
+          <span className="jb-note">What each means <Info about="the credential choices" tip={AUTH_TIP} /></span>
         </fieldset>
         {authMode !== 'none' && (
           <div className="pk-form-row">
@@ -790,9 +823,17 @@ function ServerForm({ editing, named, onDone }: { editing: McpServer | null; nam
           <legend>Profiles that may use it</legend>
           {offered.length === 0 ? (
             <span className="jb-note">
-              {unsaid !== null
-                ? `${unsaid}, so this registration allows every profile that takes MCP servers.`
-                : 'No profile here takes MCP servers yet; leaving this empty allows every one that does.'}
+              {unsaid !== null ? (
+                <>
+                  {unsaid.said}: every profile allowed.{' '}
+                  <Info about="the profiles" tip={`${unsaid.why}, so this registration allows every profile that takes MCP servers.`} />
+                </>
+              ) : (
+                <>
+                  No profile takes MCP servers yet.{' '}
+                  <Info about="the profiles" tip="No profile here takes MCP servers yet; leaving this empty allows every one that does." />
+                </>
+              )}
             </span>
           ) : (
             <>
@@ -804,9 +845,8 @@ function ServerForm({ editing, named, onDone }: { editing: McpServer | null; nam
                 </label>
               ))}
               <span className="jb-note">
-                {unsaid !== null && `${unsaid}; offering the ones your servers already use. `}
-                Tick a profile to let only its agents use this server; none ticked allows every profile that takes MCP
-                servers.
+                {unsaid !== null ? `${unsaid.said}; showing those in use.` : 'None ticked allows every profile.'}{' '}
+                <Info about="the profiles" tip={`${unsaid === null ? '' : `${unsaid.why}; offering the ones your servers already use. `}Tick a profile to let only its agents use this server; none ticked allows every profile that takes MCP servers.`} />
               </span>
             </>
           )}
@@ -815,8 +855,9 @@ function ServerForm({ editing, named, onDone }: { editing: McpServer | null; nam
         <label htmlFor={`${id}-tools`}>Allowed tools</label>
         <textarea id={`${id}-tools`} className="ur-search pk-input" rows={2} value={tools} spellCheck={false}
           aria-describedby={`${id}-tools-why`} onChange={(e) => setTools(e.target.value)} />
-        <span id={`${id}-tools-why`} className="jb-note">
-          Tool names, separated by commas or spaces. Empty allows every tool the server lists.
+        <span className="jb-note">
+          <span id={`${id}-tools-why`}>Empty allows every tool.</span>{' '}
+          <Info about="allowed tools" tip="Tool names, separated by commas or spaces. Empty allows every tool the server lists." />
         </span>
 
         <div className="pk-form-row">
@@ -947,11 +988,12 @@ export function McpCredentialField({
         {CREDENTIAL_LIFETIMES.map((l) => <option key={l.seconds} value={l.seconds}>{l.label}</option>)}
       </select>
       <span id={`${id}-why`} className="jb-note">
-        {scope === 'task'
-          ? 'Sent once with this agent, to the worker only, and destroyed when the agent ends.'
-          : 'Sent once with this workflow, to the workers of the steps that name it only, and destroyed when its agents end.'}
-        {' '}The field is emptied as soon as the platform answers.
+        {scope === 'task' ? 'Destroyed when the agent ends.' : 'Destroyed when its agents end.'}
       </span>
+      <Info about={`${name}’s credential`}
+        tip={`${scope === 'task'
+          ? 'Sent once with this agent, to the worker only, and destroyed when the agent ends.'
+          : 'Sent once with this workflow, to the workers of the steps that name it only, and destroyed when its agents end.'} The field is emptied as soon as the platform answers.`} />
     </span>
   )
 }
@@ -1014,12 +1056,13 @@ export function McpServerPicker({
         <p className="btp-hint">Reading this workspace&rsquo;s MCP servers…</p>
       ) : data === null ? (
         <p className="btp-hint">
-          This workspace&rsquo;s MCP servers could not be read
-          {list.status === 'error' ? ` (${list.error.message})` : ''}, so none is offered. <McpServersLink />
+          Could not be read{list.status === 'error' ? ` (${list.error.message})` : ''}.{' '}
+          <Info about="the MCP servers" tip="This workspace’s MCP servers could not be read, so none is offered." /> <McpServersLink />
         </p>
       ) : offered.length === 0 ? (
         <p className="btp-hint">
-          No enabled MCP server is registered for {profile} in this workspace. <McpServersLink />
+          None enabled for {profile}.{' '}
+          <Info about="the MCP servers" tip={`No enabled MCP server is registered for ${profile} in this workspace.`} /> <McpServersLink />
         </p>
       ) : (
         <>

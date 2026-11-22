@@ -153,7 +153,15 @@ def entry_view(entry: dict[str, Any]) -> dict[str, Any]:
     sign_in = entry.get("sign_in") if isinstance(entry.get("sign_in"), dict) else {}
     why = cannot_run_because(entry)
     view = {name: entry.get(name) for name in ENTRY_FIELDS}
+    # The entry's origins besides its base one, its login's and its
+    # `extra_origins` (an API host among them), and which of them a platform
+    # admin approved: origins only, copied as strings and nothing else.
+    listed = entry.get("extra_origins") if isinstance(entry.get("extra_origins"), list) else []
+    declared = [o for o in (sign_in.get("extra_origin"), *listed) if isinstance(o, str) and o.startswith("https://")]
+    approved = entry.get("approved_origins") if isinstance(entry.get("approved_origins"), list) else []
     view.update({
+        "extra_origins": declared,
+        "approved_extra_origins": [o for o in declared if o in approved],
         "sign_in": "own_login" if sign_in.get("kind") == "own_login" else "none",
         "credential_set": credential.get("set") is True,
         "can_run": why is None,
@@ -348,8 +356,13 @@ def targets_text(view: dict[str, Any]) -> str:
             if e.get("sign_in") == "own_login":
                 login = ", own login, credential " + ("set" if e.get("credential_set") else "not set")
             state = "can run" if e.get("can_run") else f"cannot run: {e.get('cannot_run_because')}"
+            extra = ""
+            if e.get("extra_origins"):
+                approved = set(e.get("approved_extra_origins") or [])
+                extra = "; extra origins " + ", ".join(
+                    f"{o} ({'approved' if o in approved else 'not approved'})" for o in e["extra_origins"])
             lines.append(f"  {e.get('name')} [{e.get('environment')}] {e.get('base_url')}; "
-                         f"host {e.get('host_state')}{login}; {state}")
+                         f"host {e.get('host_state')}{login}{extra}; {state}")
         if not t.get("environments"):
             lines.append(f"  cannot run: {t.get('cannot_run_because')}")
     return "\n".join(lines)

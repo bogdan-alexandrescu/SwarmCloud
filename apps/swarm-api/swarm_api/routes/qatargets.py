@@ -136,8 +136,12 @@ class TargetBody(StrictModel):
     #: The leg's plain `key=value` pairs every URL it opens carries
     #: (`qaspec.entry_query`, QA-ENTRY-QUERY), e.g. `env=production`.
     entry_query: Any = None
+    #: The leg's other origins, an API host among them: `https://host[:port]`
+    #: each, approved only when a platform admin names it.
+    extra_origins: Any = None
     #: The app's legs (qa-environments.md §1.1): `[{name, base_url,
-    #: environment?, sign_in?, read_posts?, rate?, challenge_bypass?, entry_query?}]`, in
+    #: environment?, sign_in?, read_posts?, rate?, challenge_bypass?, entry_query?,
+    #: extra_origins?}]`, in
     #: place of those fields beside the app's.
     environments: Any = None
     #: The registrant's statement of who said this application may be tested.
@@ -152,6 +156,8 @@ class ApproveBody(StrictModel):
     #: QA-IDP-POST: one exact path on `extra_origin` the gate lets a POST
     #: through to after its sign-in; checked by `QaTargets.approve_host`.
     idp_token_path: str | None = Field(default=None, max_length=600)
+    #: The leg's declared `extra_origins` approved: only those named here.
+    extra_origins: list[str] | None = Field(default=None, max_length=3)
     #: The entry whose host this is (§1.3), required on a target of several.
     environment: str | None = EnvironmentName
 
@@ -347,7 +353,8 @@ def approve_host(
     doc = _targets(request, ctx).approve_host(target_id, host=body.host,
                                               extra_origin=body.extra_origin, by=_email(auth),
                                               idp_token_path=body.idp_token_path,
-                                              environment=body.environment)
+                                              environment=body.environment,
+                                              extra_origins=body.extra_origins)
     return {"qa_target": to_api(doc)}
 
 

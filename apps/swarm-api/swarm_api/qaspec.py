@@ -56,6 +56,14 @@ rule renders read-only (`_flows`), and the workspace's `writing_flows`
 setting, off, renders every flow read-only (`leg`). Both only ever turn a
 write off.
 
+A FLOW THAT WRITES RUNS AT ONE WIDTH (a QA user's report, 2026-11-21). A
+read-only flow runs once a width of the leg; a mutating flow runs at the
+leg's first width alone, desktop by default, so its declared writes happen
+once, not once a width (`flow_widths`, the one place that decides it). Its
+brief records one `flow-<id>-<width>.gif`, the run's description says which
+width the writing flows run at, and the flow report shows that one width
+rather than a missing phone run.
+
 EVERY CAPTURE STEP DISCOVERS WHILE IT CAPTURES (docs/design/qa-environments.md
 §3.1, §3.5; lane QAENV-RUN; the owner's Q3 (a), 2026-10-23). A capture step runs
 `swarm_qa capture --crawl` (lane QAENV-CRAWL): its prompt carries the WHOLE
@@ -186,7 +194,8 @@ MAX_FLOWS_PER_STEP = 30
 FLOW_SECONDS = 2700
 #: A flow's output, stated HERE ONLY (QA-FLOW-CAPTURE, part of archived issue 2688): every
 #: path is relative to $SWARM_ARTIFACTS_DIR, `{id}` a flow's id, `{width}` a
-#: preset, `{step}` the step id. A flow-batch step stages `{step}.tar`
+#: preset (one of `flow_widths`: a mutating flow records one), `{step}` the
+#: step id. A flow-batch step stages `{step}.tar`
 #: (`flows-<k>.tar`) holding one `flow-{id}.tar` a flow; a mutating flow's own
 #: step stages its `flow-{id}.tar` (its step id is `flow-{id}`). Each flow tar
 #: holds its json, its recordings and the screenshots its json lists. The
@@ -647,6 +656,7 @@ LEG_FIELDS = (
     "challenge_bypass_value", "entry_query", "host_state", "approved_origins", "approved_by", "approved_at",
     "approved_idp_token_path", "read_posts", "rate", "discovered", "discovered_at", "discovered_by",
     "discovered_workflow", "discovered_new", "discovery_error", "discovering", "legacy_map_key",
+    "extra_origins",
 )
 #: The leg's name in a view `leg` makes; never stored.
 LEG_NAME = "environment_name"
@@ -705,7 +715,7 @@ def _leg_origins(entry: Mapping[str, Any]) -> set[str]:
     origin here: read as two, they would let a write permission through."""
     origins: set[str] = set()
     for raw in (*(entry.get("approved_origins") or []), entry.get("origin"), entry.get("base_url"),
-                (entry.get("sign_in") or {}).get("extra_origin")):
+                (entry.get("sign_in") or {}).get("extra_origin"), *(entry.get("extra_origins") or [])):
         if isinstance(raw, str) and raw.lower().startswith("https://"):
             origin = _origin(raw).lower()
             origins.add(origin[:-len(":443")] if origin.endswith(":443") else origin)
@@ -1383,21 +1393,38 @@ def _review_prompt(target: Mapping[str, Any], base: str, group: str, design_docs
     )
 
 
+def flow_widths(flow: Mapping[str, Any], widths: Sequence[str]) -> tuple[str, ...]:
+    """The widths one flow runs at: every width of the leg for a read-only
+    flow; the leg's first width alone (desktop by default) for a mutating one.
+
+    A flow is run once a width, so a writing flow run at every width wrote
+    its declared `writes` once a width: a send-once flow sent at desktop and
+    again at phone-390, the declared budget doubled without anyone saying so,
+    and the second run's typing was cut short before Send (a QA user's
+    report, 2026-11-21). A write is the same write at any width, so one run
+    of it proves it; the widths are a screen's concern, and the read-only
+    flows keep them. Every brief, the run's description and the flow report
+    read the widths from here."""
+    return tuple(widths[:1]) if flow.get("mutating") is True else tuple(widths)
+
+
 def _flow_prompt(target: Mapping[str, Any], base: str, flow: Mapping[str, Any], widths: Sequence[str],
                  own_login: bool, tool: str) -> str:
     fid = flow["id"]
     runs = []
-    for width in widths:
+    for width in flow_widths(flow, widths):
         runs.append(
             f"at `{width}`: run `swarm-handoff device {width}`, then `swarm-handoff record start "
             f"flow-{fid}-{width}`, reach the goal, then `swarm-handoff record stop`"
         )
+    once = ("This flow writes, so do it once, at one width only and never again at another, recorded: "
+            if flow["mutating"] else "Do it once per width, recorded: ")
     json_name = FLOW_LAYOUT["json"].format(id=fid)
     removal = _removal_allowed(target, flow)
     return (
         f"Goal-driven flow test of {target['name']}. Open {screen_url(base, flow['start_path'])} in the live "
         f"browser.{_sign_in_note(own_login, start_clicks(target))} {_FLOW_TOOL_SENTENCE[tool]}, reach this goal as a person "
-        f"would, without typing addresses: {flow['goal']}. Do it once per width, recorded: "
+        f"would, without typing addresses: {flow['goal']}. {once}"
         f"{'; '.join(runs)}. {_capture_rule(tool)} {_retry_rule(tool)} For each run write in {json_name} whether "
         f"the goal was reached, the steps taken, and every point where a label was missing, ambiguous or "
         f"misleading, each with its screenshot. {_flow_json_line(json_name)} Then bundle it: in "
@@ -1542,10 +1569,13 @@ def _coverage_line(leg_name: str) -> str:
 
 
 def _flow_report_prompt(flows: Sequence[Mapping[str, Any]],
-                        batches: Sequence[tuple[str, Sequence[Mapping[str, Any]]]] = ()) -> str:
+                        batches: Sequence[tuple[str, Sequence[Mapping[str, Any]]]] = (),
+                        widths: Sequence[str] = DEFAULT_WIDTHS) -> str:
     """The flows' report. `batches` is (batch step id, its flows): each batch
     tar carries one flow-<id>.tar per flow of its batch; a mutating flow's own
-    step stages its flow-<id>.tar directly. Every flow is named by its tar."""
+    step stages its flow-<id>.tar directly. Every flow is named by its tar. A
+    mutating flow ran at one width (`flow_widths`): its section shows that
+    width's run, and its other widths are never reported as missing."""
     batched = {f["id"] for _, members in batches for f in members}
     staged = []
     for batch_id, members in batches:
@@ -1554,7 +1584,9 @@ def _flow_report_prompt(flows: Sequence[Mapping[str, Any]],
     staged += [f"flow-{f['id']}.tar" for f in flows if f["id"] not in batched]
     order = ", ".join(f"`{f['id']}`" for f in flows)
     wrote = "".join(
-        f" In the section of `{f['id']}`, first, the line \"This flow wrote: {f['writes']}\", word for word."
+        f" In the section of `{f['id']}`, first, the line \"This flow wrote: {f['writes']}\", word for word, "
+        f"then the line \"Run at {', '.join(flow_widths(f, widths))} only: this flow writes, so it runs at one "
+        f"width\"; show that width's run, and never report its other widths as missing."
         for f in flows if f["mutating"])
     return (
         f"Write the visual QA report of the flows. Unpack every staged tar, and every flow tar a batch tar "
@@ -1846,7 +1878,7 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
     steps.append(_step("report", REVIEW_PROFILE, REPORT_MODEL, _report_prompt(target, groups, widths, themes),
                        timeout=3600, depends_on=list(staged), input_from=staged))
     if flows:
-        steps.append(_step("flow-report", REVIEW_PROFILE, REPORT_MODEL, _flow_report_prompt(flows, batches),
+        steps.append(_step("flow-report", REVIEW_PROFILE, REPORT_MODEL, _flow_report_prompt(flows, batches, widths),
                            timeout=1800, depends_on=list(flow_tars), input_from=flow_tars))
     if file == "issues":
         steps.append(_step("file", REVIEW_PROFILE, FILE_MODEL, _file_prompt(target, settings, run_group),
@@ -1854,9 +1886,14 @@ def render(target: Mapping[str, Any], *, screens: Sequence[str] | None = None,
     _hold_step_bound(steps, batches)
     report = ("The report lists every finding by screen; the file step files the new ones as GitHub issues."
               if file == "issues" else "The report lists every finding by screen; nothing is filed.")
+    # A writing flow runs at one width (`flow_widths`): the plan says so, so
+    # its writes are counted once and its missing phone run is expected.
+    writing = sum(1 for f in flows if f["mutating"])
+    one_width = (f" ({writing} writing flow{'s' if writing != 1 else ''} at {widths[0]} only)"
+                 if writing and len(widths) > 1 else "")
     work = (f"{len(groups)} capture group{'s' if len(groups) != 1 else ''} screenshot its screens at "
             f"{len(widths)} width{'s' if len(widths) != 1 else ''} in {' and '.join(themes)}, each group reviewed "
-            f"against its design{f', and {len(flows)} flows are run' if flows else ''}. {report}")
+            f"against its design{f', and {len(flows)} flows are run{one_width}' if flows else ''}. {report}")
     return _workflow(target, _leg_title("Visual QA", name, target), steps, _about(name, target, work))
 
 

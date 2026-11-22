@@ -347,7 +347,10 @@ class HttpTokenEndpoint:
             with urllib.request.urlopen(request, timeout=30) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:400]
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:400]
+            except OSError:
+                detail = "the body could not be read"
             raise CredentialError(
                 "the sign-in code was not accepted. Codes are single-use and "
                 "expire quickly, so the usual causes are pasting one that has "
@@ -356,6 +359,13 @@ class HttpTokenEndpoint:
             ) from None
         except urllib.error.URLError as exc:
             raise CredentialError(f"could not reach the token endpoint: {exc.reason}") from None
+        except OSError as exc:
+            # urllib wraps only the SEND in URLError: a timeout while the
+            # answer is read is a bare TimeoutError (issue 53), which the
+            # exchange route would answer as a 500.
+            raise CredentialError(
+                f"could not reach the token endpoint: {type(exc).__name__}"
+            ) from None
 
     def profile(self, access_token: str) -> dict[str, Any]:
         """The signed-in organisation and plan, as Claude Code reads them.
@@ -381,7 +391,8 @@ class HttpTokenEndpoint:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             raise CredentialError(f"profile endpoint returned {exc.code}") from None
-        except urllib.error.URLError:
+        except (urllib.error.URLError, OSError):
+            # OSError: a read timeout is a bare TimeoutError (issue 53).
             raise CredentialError("could not reach the profile endpoint") from None
 
     def exchange(self, refresh_token: str) -> dict[str, Any]:
@@ -415,7 +426,10 @@ class HttpTokenEndpoint:
             with urllib.request.urlopen(request, timeout=30) as response:
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:400]
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:400]
+            except OSError:
+                detail = ""
             # `invalid_grant` is terminal: the token is gone and retrying will
             # never succeed. Anything else may be transient.
             if "invalid_grant" in detail or exc.code in (400, 401):
@@ -426,6 +440,12 @@ class HttpTokenEndpoint:
             raise CredentialError(f"token endpoint returned {exc.code}") from None
         except urllib.error.URLError as exc:
             raise CredentialError(f"could not reach the token endpoint: {exc.reason}") from None
+        except OSError as exc:
+            # A read timeout is a bare TimeoutError (issue 53): transient, so
+            # the sweep records refresh_failed and tries again next tick.
+            raise CredentialError(
+                f"could not reach the token endpoint: {type(exc).__name__}"
+            ) from None
 
 
 def parse_credential(payload: str, *, now: datetime | None = None) -> Credential:

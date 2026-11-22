@@ -246,6 +246,9 @@ def test_an_admin_narrowed_a_moment_ago_is_refused_at_once(client, db, sm, crede
                                                            monkeypatch):
     monkeypatch.setenv(ADMIN_SWITCH, "on")
     name_role(client, "alice@example.com")
+    # Another admin the group holds, so narrowing alice is not refused as
+    # leaving eng without one (routes/last_admin.py).
+    name_role(client, "bob@example.com")
     # Primes the role cache with `admin`.
     assert client.get(SECRET_ROUTES, headers=h("alice")).json()["can_manage"] is True
     name_role(client, "alice@example.com", "member")

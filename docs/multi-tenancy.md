@@ -469,6 +469,8 @@ of nothing else:
   evicts its cache at once; another instance within `role_cache_seconds`,
   15 s by default, the membership cache's lifetime). Removal ends the platform membership only: a person who is also
   in the group stays a member through the group, which `still_in_group` says.
+  Removing the workspace's last admin -- yourself included -- is refused
+  `workspace_leave_last_admin`, as leaving is (below).
 * **The person can leave it themselves.** `POST /v1/workspace/leave`, in the
   workspace their own sign-in selected, writes the same `removed` row for the
   caller only (`via: "self"`; no subject in the body), keeps any role
@@ -476,7 +478,10 @@ of nothing else:
   override (`workspace_leave_last_admin`), counting another admin only while
   they can still select it (a membership that counts, or a fresh group
   check), in one transaction with the write; [join-requests.md](design/join-requests.md)
-  §4.4 "Leaving".
+  §4.4 "Leaving". The same guard refuses removing that admin and lowering or
+  clearing their `admin` override on the roles routes; a platform admin is
+  never counted as another admin, and can always name a new one first
+  (§4.4 "The last-admin guard on every route").
 * **A personal (`u-`) or service workspace takes no requests**
   (`join_not_offered`): a personal workspace has one person.
 
@@ -846,6 +851,34 @@ nothing changes for a tenant until the owner switches it.
 
    Each defaults to today's grant, and none removes a binding an earlier run
    made: that is the owner's step at the cutover.
+
+   **A tenant that runs no work may take the switch off before its state
+   switch** (owner decision, 2026-11-21: the same switch is reused, no new one
+   is added). The two acceptance probe workspaces, roles and join, exist only
+   to test workspace roles and join requests: they never run agents, so no
+   worker of theirs is ever dispatched, and none reads or writes
+   control-plane state by either route. A project-wide Firestore role on
+   their worker accounts is therefore authority nothing uses — exactly the
+   residual design B exists to remove — and waiting for their state switch
+   would keep it for no reason. Such a tenant is marked, and the marker grants
+   and creates nothing; it only lets the switch above be off without
+   `state_via_api_tenants`:
+   * a Terraform tenant: `runs_no_work = true` on its `var.tenants` entry
+     (terraform/infra and `terraform/modules/tenancy`; default `false`, so
+     every existing tenant plans no change). `worker_firestore_access = false`,
+     `worker_firestore_off_tenants_iam` and `worker_firestore_off_tenants` then
+     accept it whether or not it is in `state_via_api_tenants`; a tenant that
+     runs work and is not listed there is still refused at plan. The marker
+     alone removes no binding;
+   * an operator-registered tenant: `scripts/register-tenant.sh --runs-no-work
+     --worker-firestore-access false`, which grants no Firestore role and
+     prints `skipped: swarmTenantWorkerFirestore ... this workspace runs no
+     agents`. `--runs-no-work` alone grants as usual and says so, and it writes
+     nothing to the tenant record.
+
+   Marking a tenant that does run agents is the mistake to avoid: its worker
+   still uses direct Firestore, and with the role withheld its first read
+   fails `PermissionDenied`.
 5. An acceptance probe, from a tenant-A pod, gets `PermissionDenied` on a direct
    update of `workspace_settings/<B>`, a get of `tenants/<B>` and a create under
    `leases/`. It is red until step 4 is applied.

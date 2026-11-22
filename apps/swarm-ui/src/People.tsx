@@ -2292,6 +2292,7 @@ export const AUDIT_ACTION_WORDS: Readonly<Record<string, string>> = {
   workspace_default_role_set: 'Workspace default role set',
   workspace_member_added: 'Workspace member added',
   workspace_member_removed: 'Workspace member removed',
+  workspace_last_admin_refused: 'Refused: would leave the workspace without an admin',
   join_requested: 'Join requested',
   join_approved: 'Join request approved',
   join_denied: 'Join request denied',
