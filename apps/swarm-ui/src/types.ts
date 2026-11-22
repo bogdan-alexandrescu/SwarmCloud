@@ -1,8 +1,11 @@
-// Shapes returned by swarm-api. Field names mirror
-// apps/swarm-api/swarm_api/codec.py exactly -- if one changes there, this is
-// the copy that has to follow, and there is no check that notices. Keep the
+// Shapes returned by swarm-api. `Task` is GENERATED from the API's OpenAPI
+// document (./generated/api-types.ts, `scripts/gen_api_types.py`; part of
+// #72), and a unit test fails when that file is stale. Every other shape here
+// is still copied by hand from apps/swarm-api/swarm_api/codec.py and held to
+// the API by regex tests until a later slice generates it too. Keep the
 // comment references so the next person can find the source.
 
+import type { Task as ApiTask } from './generated/api-types'
 import { currentZone, formatClock, formatDateTime, isToday } from './timezone'
 
 /** `pool_to_api` in codec.py. */
@@ -705,7 +708,6 @@ export interface HumanWait {
   controller: { email: string; since?: string | null; renew_by?: string | null } | null
 }
 
-/** `task_to_api` in codec.py. Trimmed to what the UI actually renders. */
 /** One answer the owner gave to an agent's question, as stored on the task (TASK-ANSWERS). */
 export interface OwnerAnswerVersion {
   /** One of the question's option labels, or null for a free-text answer. */
@@ -841,130 +843,36 @@ export interface TaskAdditionalRepository {
   forge_credential_source: string
 }
 
-export interface Task {
-  id: string
-  tenant_id: string
-  state: TaskState
-  runner_profile: string
-  resource_class: string
-  provider: string | null
-  priority: number
-  created_at: string
-  updated_at: string
-  started_at: string | null
-  completed_at: string | null
-  submitted_by: string | null
-  /** The submitter's display name (`people.add_names`); null when none is set. */
-  submitted_by_name?: string | null
-  attempt_count: number
-  max_attempts: number
-  /**
-   * Contract request 123: consecutive dispatches the cluster refused (Job
-   * quota or an admission policy). Each parks PLATFORM_REFUSED without
-   * spending an attempt; a dispatch that succeeds resets it to 0.
-   */
-  platform_refusals?: number
+/**
+ * `task_to_api` in codec.py, as GENERATED from swarm-api's OpenAPI document
+ * (part of #72): which fields exist, which are required and every scalar's
+ * type are `ApiTask`'s, written by `scripts/gen_api_types.py` from
+ * `swarm_api/wire_types.py::Task`. Change a field THERE and regenerate; a
+ * field added only here fails `TaskDeclaresOnlyServedKeys` below.
+ *
+ * What stays here narrows the nested shapes the generated type leaves
+ * `unknown` (or a plain string) to the hand-written types the screens read;
+ * each must stay assignable to the generated field, which `tsc` holds.
+ */
+export interface Task extends ApiTask {
   park_reason: ParkReason | string | null
   blocked_by: BlockedEntry[] | null
-  workflow_id: string | null
-  step_id: string | null
-  depends_on: string[] | null
+
   /**
-   * Contract request 14 (docs/design/child-tasks.md §6.3). The task whose
-   * agent submitted this one, and that parent's attempt; set by swarm-api from
-   * the submitting attempt, null for everything else. OPTIONAL: an API older
-   * than the change does not send them. Not `depends_on`: a parent can cancel
-   * its children and awaits them, a dependency does neither.
+   * Required here, optional in the generated type: a `view=summary` listing
+   * row omits both (`codec.SUMMARY_DROPPED_KEYS`), and the screens that read
+   * them read the detail, as they did before the type was generated.
    */
-  parent_task_id?: string | null
-  parent_attempt_id?: string | null
-  /** archived issue 780 OB7: the slot the task's GitHub token is read from, by name. */
-  forge_credential?: string | null
-  /** `read` or `write`; null when the task names no GitHub credential. */
-  forge_access?: 'read' | 'write' | null
-  /** "the submitter's GitHub credential", "tenant token, service submission", "owner's GitHub connection, service submission" (INDEX-CRED), or null. */
-  forge_credential_source?: string | null
+  input: unknown
+  result_summary: Record<string, unknown> | null
+
   /**
    * Contract request 95 (docs/design/multi-repository-steps.md §4.1): the
    * repositories this task reads beside its own, each pinned to a commit.
    * Null when it reads none. OPTIONAL: an older API does not send it.
    */
   additional_repositories?: TaskAdditionalRepository[] | null
-  cancel_requested: boolean
-  repository_url: string | null
 
-  // The rest of what task_to_api actually sends. This file declared 21 of its
-  // 31 keys, and the ten below are exactly the ones the remaining screens are
-  // built on -- last_error for the trouble board, result_summary for run
-  // output, latest_checkpoint for the attempt timeline, next_eligible_at for
-  // parked work.
-  model: string | null
-  /**
-   * The model class the task runs (contract request 104, archived issue 1435), RESOLVED:
-   * the stored class, or its profile's default when none was stored, which
-   * `model_class_defaulted` then says. Null on a profile that runs no Claude
-   * model. OPTIONAL: an older API does not send it.
-   */
-  model_class?: string | null
-  model_class_defaulted?: boolean
-  timeout_seconds: number | null
-  /**
-   * Contract request 131: the `timeout_seconds` the spec asked for when the
-   * API stored a lower one (the profile's cap, or a child's parent's), else
-   * null. A record only: the limit is `timeout_seconds`. OPTIONAL: an older
-   * API does not send it.
-   */
-  timeout_seconds_asked?: number | null
-  /**
-   * Contract request 133: the task's resolved turn cap, which the worker
-   * passes to the agent CLI, or null for none. OPTIONAL: an older API does
-   * not send it.
-   */
-  max_turns?: number | null
-  /** When a PARKED task becomes eligible again. Null unless it is parked. */
-  next_eligible_at: string | null
-  /**
-   * MASKED, like `input` (owner decision, 2026-09-26: masked everywhere). The
-   * caller's keys come through the API's masker; the platform's own
-   * (`dispatch`, `input_from`, `expected_outputs`, which submission refuses
-   * from callers) as stored. `metadata_redaction_count` is how many masks it
-   * took.
-   */
-  metadata: Record<string, unknown> | null
-  /**
-   * A single task's own description (archived issue 2688): plain text of at most 600
-   * characters, masked as its metadata is. Null for a workflow's step, which
-   * inherits nothing; OPTIONAL, as an API older than the field sends none.
-   */
-  description?: string | null
-  repository_ref: string | null
-  /**
-   * THE MASKED INPUT. `GET /v1/tasks/{id}` serves the input the API masked at
-   * read time, never the input as submitted -- even to the tenant that
-   * submitted it (owner decision, 2026-09-26). Screens still draw the
-   * `/input` copy, which carries the prompt and the rest as blocks.
-   */
-  input: unknown
-  /**
-   * How many credential-shaped strings the API masked in `input` and in
-   * `metadata`. OPTIONAL: an API older than the change sends neither, and
-   * serves both unmasked, so absent is not zero.
-   */
-  input_redaction_count?: number | null
-  metadata_redaction_count?: number | null
-  /**
-   * MASKED too, since the archived pull request 229 review: the agent's stderr tail and its own
-   * summary text, by the input's masker, string by string (an artifact's
-   * `name` and `uri` as stored). Each count is how many masks that took;
-   * optional for the reason the two above are.
-   */
-  last_error: string | null
-  last_error_redaction_count?: number | null
-  result_summary: Record<string, unknown> | null
-  result_summary_redaction_count?: number | null
-  /** Userinfo that could carry a credential is masked whole; submission refuses it now. */
-  repository_url_redaction_count?: number | null
-  latest_checkpoint: string | null
   /**
    * Contract request 70 (LB-C), docs/design/live-browser.md §4.1: set while a
    * RUNNING browser task holds its pod for a person, null otherwise. Cleared
@@ -973,6 +881,7 @@ export interface Task {
    * `handoffOf` (Handoff.tsx), never raw.
    */
   human_wait?: HumanWait | null
+
   /**
    * F1-POD: why the current attempt's GKE pod is not starting, as the
    * reconciler last read it (`reconciler.startproblem`); null when nothing is
@@ -981,6 +890,7 @@ export interface Task {
    * send it. Drawn by `PodStartProblem`.
    */
   start_problem?: StartProblem | null
+
   /**
    * TASK-ANSWERS (part of archived issue 1206): the owner's answers to the agent's
    * questions, in question order, lifted by the API out of
@@ -989,13 +899,7 @@ export interface Task {
    * beside each question.
    */
   owner_answers?: OwnerAnswer[]
-  /**
-   * Contract request 23 (archived pull request 217). Written by every terminal writer beside
-   * `completed_at`. Null on SUCCEEDED and on a task that ended before this
-   * field existed. One of `END_CAUSES` from this build's contract; typed as a
-   * string because a newer API may send a value this build does not know.
-   */
-  end_cause?: string | null
+
   /**
    * archived issue 362. Which pool refuses this READY task NOW, read live on the GET by
    * `swarm_api/waiting.py` from the task's own pools. Null for every other
@@ -1003,6 +907,7 @@ export interface Task {
    * the scheduler's record from its LAST pass; this is the current reading.
    */
   waiting_for?: WaitingFor | null
+
   /**
    * archived issue 1782 (WAIT-API). Why a PARKED, READY or QUEUED task waits, built by
    * `swarm_api/waiting_detail.py` from what the platform recorded -- never
@@ -1011,6 +916,7 @@ export interface Task {
    * because an older API does not send it.
    */
   waiting?: Waiting | WaitingRow | null
+
   /**
    * archived issue 379. The subscription account the LATEST attempt runs on, derived by
    * `swarm_api/task_accounts.py` from this task's own account events. OPTIONAL
@@ -1018,83 +924,9 @@ export interface Task {
    * read it sends null. Read it through `accountText`, never raw.
    */
   account?: TaskAccount | null
-  /**
-   * archived issue 179. The worker's last beat, from the task's current LEASE (the worker
-   * never writes it to the task), read by `swarm_api/heartbeats.py` on
-   * `GET /v1/tasks` and `GET /v1/tasks/{id}` for LEASED, DISPATCHED, STARTING
-   * and RUNNING. Null when the lease has NEVER beaten -- never the lease's
-   * creation time -- and null for every other state. OPTIONAL because an
-   * older API does not send it. Read it through `silentWorkerLine`
-   * (Agents.tsx), and only when `heartbeat` is `'read'`.
-   */
-  heartbeat_at?: string | null
-  /** The reconciler's grace, resolved server-side; null where `heartbeat` is. */
-  heartbeat_grace_seconds?: number | null
-  /**
-   * What the reading is: `'read'` (the lease was read), `'not read'` (the
-   * read failed -- a null `heartbeat_at` then means unknown, never silent),
-   * `'no lease'`, or null for a task that holds no lease.
-   */
-  heartbeat?: 'read' | 'not read' | 'no lease' | string | null
-  /**
-   * WHETHER A BROWSER RUNTIME USED ITS BROWSER (BROWSER-USE-FLAG, archived issue 2322), the
-   * worker's verdict lifted out of `result_summary` by
-   * `codec.browser_use_to_api`, on the list rows too. True or false only on a
-   * browser runtime that ended with its counts read; NULL IS NOT FALSE: it is
-   * a runtime with no browser, an agent not ended, one that predates the
-   * record, or counts the worker could not read (`browser_use.unknown_because`).
-   * Read it through `browserUseOf` (BrowserUse.tsx). OPTIONAL: an older API
-   * does not send it.
-   */
-  browser_used?: boolean | null
+
   /** Its counts and seconds; null when the worker recorded none. */
   browser_use?: BrowserUse | null
-  /**
-   * EVERY ATTEMPT'S COST AND TIME (lane review P1, 2026-10-05), from
-   * `swarm_api/attempt_totals.py` on `GET /v1/tasks/{id}` and the workflow
-   * read. `result_summary` and `started_at` describe only the LAST attempt;
-   * these sum all of them. OPTIONAL because an older API and the list routes
-   * do not send them. `cost_usd_total` null is NOT MEASURED, never $0;
-   * `cost_incomplete` true makes it a floor ("at least"). `attempts_read:
-   * 'failed'` means the attempts were not read and every figure is null.
-   */
-  attempts?: number | null
-  attempts_with_cost?: number | null
-  cost_usd_total?: number | null
-  cost_incomplete?: boolean | null
-  duration_s_total?: number | null
-  duration_incomplete?: boolean | null
-  first_started_at?: string | null
-  last_attempt_cost_usd?: number | null
-  last_attempt_duration_s?: number | null
-  attempts_read?: 'ok' | 'failed'
-
-  /**
-   * THE FENCING GENERATION. `models.py:177`, now served by `task_to_api`.
-   *
-   * It increments on admission (`admission.py:186`) AND on a reconciler fence
-   * (`reconciler/store.py:220-227`), so `current_generation > attempt_count`
-   * is exactly "a stale worker was fenced out" -- the only cheap signal that
-   * CONTRACT invariant 5 has fired. `AttemptRow.generation` is a different and
-   * narrower thing: the generation ONE attempt was minted with.
-   *
-   * NOT OPTIONAL and 0 IS AN ANSWER: the API sends it on every task, and zero
-   * means never admitted. Read `> attempt_count` rather than truthiness.
-   */
-  current_generation: number
-  /**
-   * The lease holding this task's capacity, or null if it holds none.
-   *
-   * Null on a QUEUED, PARKED, READY or terminal task -- those cost nothing
-   * (invariant 1). It is the join key onto `LeaseRow`, and comparing that
-   * row's `generation` against `current_generation` above is how a stalled
-   * task is diagnosed: a task at generation 2 whose named lease is still at
-   * generation 1 and unreleased is holding a slot for work that will never
-   * run. That is the twenty-minute DISPATCHED stall on
-   * task_b5dc2568713a40158851, which no screen could explain because neither
-   * number reached the browser.
-   */
-  current_lease_id: string | null
 
   /**
    * `codec.dispatch_of`, lifted out of `metadata.dispatch` by the API.
@@ -1107,14 +939,16 @@ export interface Task {
    * task reads `collect`, an old API reads "not reported".
    */
   dispatch?: TaskDispatch | null
-
-  /**
-   * The step's `contract_acceptance` (jev-contract.md sections 5.4 and 8.2),
-   * served on the detail only and only where Jev judged the step's work
-   * contract: read by `ContractJev.contractAcceptance`, drawn as Jev's.
-   */
-  contract_acceptance?: unknown
 }
+
+/** Compile-time: `T` must be `never`. */
+type MustBeEmpty<T extends never> = T
+/**
+ * Every key `Task` declares is a key the API's generated `Task` declares: a
+ * field the API does not serve cannot be added here by hand. Fails `tsc`
+ * otherwise.
+ */
+export type TaskDeclaresOnlyServedKeys = MustBeEmpty<Exclude<keyof Task, keyof ApiTask>>
 
 /**
  * `current_generation` and `current_lease_id` USED TO BE MISSING HERE, and this
