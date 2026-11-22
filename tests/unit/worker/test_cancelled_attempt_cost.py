@@ -36,6 +36,7 @@ import pytest
 
 from agent_worker.errors import ExitCode
 from agent_worker import lifecycle
+from agent_worker import usage
 from agent_worker.lifecycle import _stream_usage
 from swarm_common.states import EventType, TaskState
 
@@ -275,7 +276,8 @@ def test_the_estimate_splits_each_models_counts_by_each_requests_own_prompt(tmp_
 
 
 def test_a_model_past_the_bucket_limit_is_sent_as_its_sums(tmp_path, monkeypatch):
-    monkeypatch.setattr(lifecycle, "_MAX_PROMPT_BUCKETS", 1)
+    # `_stream_usage` lives in `usage` (issue 68) and reads its limit there.
+    monkeypatch.setattr(usage, "_MAX_PROMPT_BUCKETS", 1)
     lines = [{"type": "assistant", "message": {"id": f"m{n}", "model": "claude-haiku-5-5",
                                                "usage": {"input_tokens": n * 5_000}}}
              for n in (1, 2)]
