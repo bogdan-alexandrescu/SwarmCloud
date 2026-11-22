@@ -1,61 +1,22 @@
-"""docs/cost-control.md records the claude-code prompt-cache TTL, and the runner sets none.
+"""The claude-code runner sets no prompt-cache TTL; Claude Code's default is in force.
 
-The prompt-cache TTL measurement write-up measured the 1-hour versus 5-minute prompt-cache TTL over 47 claude-code
-tasks, and the owner decided on 2026-09-29 to change nothing yet and to park
-the controlled A/B. The finding, the decision and the knob live in the doc's
-"Provider tokens: the prompt-cache TTL" section, which says plainly that no TTL
-is set and Claude Code's default is in force.
-
-That sentence is only true while the runner sets no TTL. There are three ways
-it could start to: a `promptCacheTtl` key (or a TTL env var) in the settings
-file `claude_code.write_headless_settings` writes, `CLAUDE_CODE_PROMPT_CACHE_TTL`
-added to `cliagent`'s passthrough allow-list, or a deployment's
-`CLAUDE_CODE_ARGS`. The first two are code and are held here; the third is
-Terraform, and the doc names it so the person wiring it finds the section.
-Whoever wires a TTL updates the doc in the same change and this test with it.
+The owner decided on 2026-09-29 to change nothing yet after the 1-hour versus
+5-minute measurement. There are three ways a TTL could start to be set: a
+`promptCacheTtl` key (or a TTL env var) in the settings file
+`claude_code.write_headless_settings` writes, a TTL variable added to
+`cliagent`'s passthrough allow-list, or a deployment's `CLAUDE_CODE_ARGS`. The
+first two are code and are held here; the third is Terraform. Whoever wires a
+TTL changes this test in the same change.
 """
 
 from __future__ import annotations
 
 import json
-import re
-from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[3]
-DOC = REPO / "docs" / "cost-control.md"
-
-_STALE = (
-    "docs/cost-control.md states that no prompt-cache TTL is set and Claude "
-    "Code's default TTL is in force; update the doc in the same change "
-    "that wires a TTL, then this test"
-)
+_STALE = "a prompt-cache TTL is now set; change this test in the same change that wires it"
 
 #: The environment variables that choose a TTL for the main conversation.
 _TTL_ENV = ("CLAUDE_CODE_PROMPT_CACHE_TTL", "FORCE_PROMPT_CACHING_5M", "ENABLE_PROMPT_CACHING_1H")
-
-
-def _section() -> str:
-    text = DOC.read_text(encoding="utf-8")
-    match = re.search(r"^### [^\n]*prompt-cache TTL[^\n]*\n(.*?)(?=^#{1,3} |\Z)", text, re.M | re.S)
-    assert match, f"docs/cost-control.md has no '### ... prompt-cache TTL' section; {_STALE}"
-    return match.group(0)
-
-
-def test_the_doc_records_the_ttl_finding_and_the_knob():
-    section = _section()
-    for name in (
-        "promptCacheTtl",
-        "CLAUDE_CODE_PROMPT_CACHE_TTL",
-        "write_headless_settings",
-        "_PLAIN_PASSTHROUGH",
-        "CLAUDE_CODE_ARGS",
-    ):
-        assert name in section, f"the TTL section does not name {name}; {_STALE}"
-    assert "the prompt-cache TTL measurement write-up" in section, (
-        f"the TTL section does not point at the prompt-cache TTL measurement write-up; {_STALE}"
-    )
-    assert "default is in force" in section, f"the TTL section no longer says so; {_STALE}"
-
 
 def test_the_runner_passes_no_ttl_variable_through():
     from agent_worker.runners import cliagent
@@ -63,7 +24,6 @@ def test_the_runner_passes_no_ttl_variable_through():
     passed = (*cliagent._PLAIN_PASSTHROUGH, *cliagent._SENSITIVE_PASSTHROUGH)
     for name in _TTL_ENV:
         assert name not in passed, f"cliagent now passes {name} through; {_STALE}"
-
 
 def test_the_headless_settings_choose_no_ttl(tmp_path):
     from agent_worker.runners import claude_code

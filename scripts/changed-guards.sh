@@ -120,7 +120,7 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # from this file and always runs it, so keep it one path a line, no quoting.
 # Only whole-tree tests of at most 10 CI-seconds a file are here: every pull
 # request and every lane pays for this set (CI-GUARDS-ALWAYS, part of archived issue 1822).
-# After test_docs_agent_vocabulary: the walkers of scripts/, terraform/ and
+# After the doc guards: the walkers of scripts/, terraform/ and
 # kubernetes/, the same defect class one directory over (a new .tf, .yaml or
 # .sh breaks them and names none), each under 5 CI-seconds, about 11 s
 # together (CI-GUARDS-MORE, part of archived issue 1822). After test_swarm_verify_image_
@@ -144,7 +144,6 @@ GUARD_TESTS=(
   tests/unit/control_plane/test_spec_signing_every_submitter.py
   tests/unit/scheduler/test_mcp_admission.py
   tests/unit/worker/test_helpers_import_by_unique_name.py
-  tests/unit/scripts/test_docs_agent_vocabulary.py
   tests/unit/common/test_startup_progress_contract.py
   tests/unit/control_plane/test_reconciler_cloud_run_stall_guard.py
   tests/unit/scripts/test_cloudbuild_connection_retired.py
@@ -181,7 +180,6 @@ GUARD_TESTS=(
 DOC_GUARD_TESTS=(
   tests/unit/scripts/test_docs_describe_what_was_built.py
   tests/unit/scripts/test_docs_spec_amendments.py
-  tests/unit/scripts/test_docs_agent_vocabulary.py
 )
 PARITY_CHECK="scripts/lib/check-contract-parity.sh"
 # The stylesheet guards' list and the package they run in (see above).

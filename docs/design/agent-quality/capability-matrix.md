@@ -106,7 +106,7 @@ Paths are relative to the repository root; `agent_worker/` is
 | The planner's `NOT_READY` duplicate must name the colliding lane | `swarm_api/issueruns.py::NotReadyVerdict._duplicate_names_its_lane` | no test id read here | Always on | not read from here |
 | Findings epic: each minor posted once | `agent_worker/findings_epic.py::finding_key` | `tests/unit/worker/test_findings_epic.py::test_each_minor_is_posted_once_as_its_own_comment`, `tests/unit/worker/test_findings_epic.py::test_a_rerun_posts_nothing_new` | Workspace `findings_epic` | not read from here |
 | Merge slot: one merge at a time per repository and base | `agent_worker/mergeslot.py` | `tests/unit/worker/test_merge_slot.py::test_n_merge_steps_against_one_repository_land_serially_in_submission_order`, `tests/unit/worker/test_merge_slot.py::test_a_crashed_holder_frees_the_slot_when_its_lease_runs_out` | Always on for `merge_mode: direct` | not read from here |
-| Lane queue (cross-lane claims) | **Not implemented**: [lane-queue.md](../../lane-queue.md) is proposed | `tests/unit/scripts/test_lane_queue_design_doc.py::test_the_design_doc_exists_and_is_dated_and_proposed` reads the document only | none | n/a: not implemented |
+| Lane queue (cross-lane claims) | **Not implemented**: [lane-queue.md](../../lane-queue.md) is proposed | `tests/unit/scripts/test_lane_queue_design_doc.py::test_every_cited_file_exists_in_doc_and_mockup` reads the document only (that its citations resolve) | none | n/a: not implemented |
 | Concurrent overlapping assignments of one issue to two agents outside an issue run | **Not implemented** as a claim: only the sweep's claim and the plan lock above | none | none | not read from here |
 
 ## 7. Browser and runtime routing
