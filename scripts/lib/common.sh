@@ -950,15 +950,40 @@ owner_pinned_job_variable() {
 # scripts/lib/ci-built-images.sh hands a release the build's record only once
 # every job named here, in the same run, concluded success or skipped (by its
 # own paths), and refuses it when one failed or was cancelled.
-# scripts/lib/build-superseded.sh reads the same list. The same three jobs the
-# build needed, by their names in application.yml (`python`, `shell`,
-# `manifests`); tests/unit/scripts/test_ci_built_images.py holds the names to
-# application.yml.
+# scripts/lib/build-superseded.sh reads the same list.
+#
+# EVERY JOB `ci-gate` NEEDS (audit, 2026-11-21). It hand-listed the three jobs
+# the build used to need (`python`, `shell`, `manifests`), so a release could
+# go out over a commit whose integration tests, UI tests or lock check had
+# failed -- jobs main's ruleset holds every pull request to through `ci-gate`. Now it
+# names, by the name each runs under, exactly the jobs in ci-gate's `needs:`
+# in application.yml, in that order; tests/unit/scripts/test_ci_built_images.py
+# derives the list from the workflow and fails when the two differ, so a job
+# added to the gate is a job the release waits for. (`python` and `ui`, the
+# gate's two name-keepers, are not in its `needs:`: every job they judge is.)
+#
+# A MATRIX JOB is listed by its name up to the matrix part -- `unit tests` for
+# `unit tests (${{ matrix.shard }}/...)` -- and both readers match an entry as
+# a job's whole name or as the start of `<entry> (...)`, which is how GitHub
+# names each leg ("unit tests (3/10)"). A plain job whose name is another's
+# entry plus " (" would be caught too; the test refuses such a pair.
 # shellcheck disable=SC2034  # consumed by the scripts that source this library
 CI_RELEASE_TEST_JOBS=(
-  "format / unit tests"
   "shellcheck"
+  "release workflow wiring (actionlint)"
+  "ruff check"
+  "what this change reaches"
+  "sub-minute checks (actionlint, ruff, manifests, python checks)"
+  "lock / contract / format / bridge install"
+  "unit tests"
+  "swarm-ui typecheck / build"
+  "swarm-ui component tests"
+  "integration tests (emulator)"
   "kubernetes manifests"
+  "build changed images without pushing"
+  "build images"
+  "record the tested tree"
+  "tag the plugin's bridge (sc-v<version>)"
 )
 
 # THE PROMOTION MARK. Moving `:<channel>` leaves no trace of the digest it

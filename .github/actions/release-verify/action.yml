@@ -54,7 +54,7 @@ runs:
       # from a hand-kept list of six images that omitted swarm-ui and
       # swarm-verify.)
       if: steps.order.outputs.superseded != 'true'
-      uses: actions/download-artifact@v7
+      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
       with:
         name: pinned-images-${{ inputs.environment }}
         path: build/
