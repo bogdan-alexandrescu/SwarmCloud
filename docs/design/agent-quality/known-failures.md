@@ -231,6 +231,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_concurrency_sampler_by_file.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_create_secrets_egress.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/scripts/test_create_secrets_git_wf.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
+| `tests/unit/scripts/test_create_secrets_join_person.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/scripts/test_create_secrets_search_key.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/scripts/test_create_secrets_tailscale_oauth.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/scripts/test_deploy_promotion_mark.py` | `<module>` | `skipif` | the scripts need bash and jq |
