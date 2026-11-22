@@ -269,24 +269,40 @@ describe('#98: one read age per screen', () => {
     // age of its own (API reads) still takes the frame's, in its actions.
     // MUTATION: drop a claim (`useClaimPageAge`), or the provider's check of
     // it -- two ages on that screen; or stop PageHead drawing the frame's.
-    window.history.replaceState(null, '', '/admin/tenants')
-    const a = render(<App />)
-    await waitFor(() => expect(document.querySelector('.c-phead .c-refresh'), 'a Screen route lost its own age').not.toBeNull())
-    expect(document.querySelector('.ctl-head-age'), 'two ages on a Screen route').toBeNull()
-    a.unmount()
+    // Tenants and Platform counts are platform-admin pages: the default
+    // fixture caller is refused them in place, under a head of the page's
+    // name with no age at all. They drew their screens only while the eager
+    // modules beat the session reads; loaded with their routes (React.lazy,
+    // issue 79) they land after them. So a platform admin opens them, in a
+    // FRESH APP: api.ts reads the persona cookie once, as it loads, and the
+    // case before this one reset the module registry, so a screen loaded
+    // under the file's App would read other copies of Shell.tsx and fetch.ts.
+    document.cookie = 'swarm_qa_persona=platform-admin; path=/'
+    try {
+      vi.resetModules()
+      const { App: AdminApp } = await import('../App')
+      window.history.replaceState(null, '', '/admin/tenants')
+      const a = render(<AdminApp />)
+      await screenLoaded()
+      await waitFor(() => expect(document.querySelector('.c-phead .c-refresh'), 'a Screen route lost its own age').not.toBeNull())
+      expect(document.querySelector('.ctl-head-age'), 'two ages on a Screen route').toBeNull()
+      a.unmount()
 
-    window.history.replaceState(null, '', '/admin/counts')
-    const b = render(<App />)
-    await screenLoaded()
-    await waitFor(() => expect(document.querySelector('.head > h1')?.textContent).toBe('Platform counts'))
-    expect(document.querySelector('.c-phead .c-acts .counts-prov'), 'Counts lost its own provenance').not.toBeNull()
-    expect(document.querySelector('.ctl-head-age'), 'two ages on Platform counts').toBeNull()
-    b.unmount()
+      window.history.replaceState(null, '', '/admin/counts')
+      const b = render(<AdminApp />)
+      await screenLoaded()
+      await waitFor(() => expect(document.querySelector('.head > h1')?.textContent).toBe('Platform counts'))
+      expect(document.querySelector('.c-phead .c-acts .counts-prov'), 'Counts lost its own provenance').not.toBeNull()
+      expect(document.querySelector('.ctl-head-age'), 'two ages on Platform counts').toBeNull()
+      b.unmount()
 
-    window.history.replaceState(null, '', '/api-reads')
-    render(<App />)
-    await waitFor(() => expect(document.querySelector('.c-phead .c-acts > .ctl-head-age'), 'a head with no age lost the frame\'s').not.toBeNull())
-    expect(document.querySelectorAll('.ctl-head-age')).toHaveLength(1)
+      window.history.replaceState(null, '', '/api-reads')
+      render(<AdminApp />)
+      await waitFor(() => expect(document.querySelector('.c-phead .c-acts > .ctl-head-age'), 'a head with no age lost the frame\'s').not.toBeNull())
+      expect(document.querySelectorAll('.ctl-head-age')).toHaveLength(1)
+    } finally {
+      document.cookie = 'swarm_qa_persona=; max-age=0; path=/'
+    }
   })
 
   it("labels Overview's lead count as the checks it counts", async () => {
@@ -434,6 +450,7 @@ describe('#138: the breadcrumb is the trail to the page, in links, and never the
     // MUTATION: the cost beside the button again, or the button bare.
     window.history.replaceState(null, '', '/admin/counts')
     render(<App />)
+    await screenLoaded()
     // Every price `runPrice` draws: the state counts alone, or with the
     // over-time view's half (archived issue 2149) as a total or a per-workspace rate.
     const button = await screen.findByRole('button', {

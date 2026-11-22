@@ -135,7 +135,13 @@ def test_the_runtimes_route_is_read_by_a_screen_the_router_reaches():
         "reaches it, which is the state this route was already in."
     )
     for name in rendered:
-        assert f"import {{ {name} }}" in app, f"{name} is rendered in App.tsx and not imported"
+        # App.tsx loads a route's screen either statically or with React.lazy
+        # (`const X = lazy(() => import('./Mod').then((m) => ({ default: m.X })))`).
+        lazily = re.search(
+            rf"const {name} = lazy\(\(\) => import\('\./\w+'\)\.then\(\(m\) => \(\{{ default: m\.{name} \}}\)\)\)",
+            app,
+        )
+        assert f"import {{ {name} }}" in app or lazily, f"{name} is rendered in App.tsx and not imported"
 
 
 def test_the_screen_is_reachable_by_a_hash_that_resolves_to_it():

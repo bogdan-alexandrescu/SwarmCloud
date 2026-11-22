@@ -59,6 +59,9 @@ import { interviewPageOf } from './interviewPaths'
 import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard, useScheduleName } from './Schedules'
 import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
+// Overview is lazy, so its chunk's CSS would load after the main chunk's;
+// names.css (also Workflows') must come after overview.css, as Overview imports them.
+import './styles/overview.css'
 import { useRecentName, WorkflowsScreen } from './Workflows'
 import { VoiceSessionHolder } from './voice/session'
 import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
