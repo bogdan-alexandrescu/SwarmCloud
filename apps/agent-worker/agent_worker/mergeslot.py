@@ -73,8 +73,8 @@ MERGE_SLOTS_COLLECTION = "merge_slots"
 
 #: The CI_PENDING park code of a step waiting for the slot. swarm-api's wake
 #: tick leaves these parks alone (`swarm_api.mergewake.MERGE_SLOT_WAIT`, held
-#: equal by tests/unit/worker/test_merge_slot.py): their checks are green,
-#: so reading them would wake the step for nothing every tick. The release's
+#: equal to it): their checks are green, so reading them would wake the step
+#: for nothing every tick. The release's
 #: handoff marks them, and the fallback instant covers a lost mark.
 MERGE_SLOT_WAIT = "merge_slot_wait"
 

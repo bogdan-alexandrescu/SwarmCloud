@@ -150,8 +150,8 @@ RUNTIME_PROFILES = {"browser": "claude-code-browser", "code": "claude-code"}
 
 #: The keys a step's `review_gate` block may carry, and their bounds: a copy
 #: of swarm-api's `validation.REVIEW_GATE_KEYS` and `REVIEW_GATE_MAX_*`, which
-#: this package cannot import; tests/unit/mcp/test_spec_review_gate.py holds
-#: them equal and runs every shape through swarm-api's own check.
+#: this package cannot import; held equal to them, and every shape runs
+#: through swarm-api's own check.
 REVIEW_GATE_KEYS = ("min_lines", "risk_paths", "requirements_check")
 REVIEW_GATE_MAX_MIN_LINES = 1_000_000
 REVIEW_GATE_MAX_RISK_PATHS = 100
@@ -261,9 +261,8 @@ _CONTRACT_SKELETON = _contract_skeleton()
 #: projection's (`swarm_common.workcontract.WorkContract.to_document`) plus
 #: `acceptance`, the one key swarm-api's subclass adds to it (written only
 #: when it is not the default, so it is absent from the empty projection).
-#: Read off the frozen type, never restated; tests/unit/mcp/
-#: test_spec_work_contract.py holds it equal to swarm-api's and runs every
-#: shape through swarm-api's own `workcontract.decode`.
+#: Read off the frozen type, never restated; held equal to swarm-api's, with
+#: every shape run through swarm-api's own `workcontract.decode`.
 WORK_CONTRACT_KEYS = frozenset(_CONTRACT_SKELETON) | {"acceptance"}
 
 #: The nested maps, each closed to the projection's keys, and the lists.
@@ -413,17 +412,16 @@ SPEC_KEYS = frozenset(
 
 #: swarm-api's `schemas.DESCRIPTION_MAX_CHARS` and
 #: `schemas.FEATURE_TITLE_MAX_CHARS`, which this package cannot import;
-#: tests/unit/mcp/test_spec_description_feature.py holds them equal.
+#: held equal to them by a unit test.
 DESCRIPTION_MAX_CHARS = 600
 FEATURE_TITLE_MAX_CHARS = 120
-#: swarm-api's `schemas.NAME_MAX_CHARS`, held equal by
-#: tests/unit/mcp/test_name_cap.py: the most characters a workflow's `title`
+#: swarm-api's `schemas.NAME_MAX_CHARS`, held equal to it by a unit test: the
+#: most characters a workflow's `title`
 #: or `label`, or a single task's `label`, holds, so it fits one row of the
 #: console (owner, 2026-11-07, part of archived issue 2688; measured at 1440 pixels, the
 #: Workflows list's name column holds 34). Refused, never cut (`check_name`).
 NAME_MAX_CHARS = 30
-#: swarm-api's `schemas.ABOUT_*` caps, held equal by
-#: tests/unit/mcp/test_spec_about.py.
+#: swarm-api's `schemas.ABOUT_*` caps, held equal to them by a unit test.
 ABOUT_PURPOSE_MAX_CHARS = 300
 ABOUT_GOAL_MAX_CHARS = 120
 ABOUT_GOALS_MAX = 3
@@ -549,7 +547,7 @@ def check_feature(value: Any, *, where: str, repository_url: str | None = None) 
 
 #: The most pull requests `after` may name: swarm-api's
 #: `schemas.MAX_AFTER_PRS`, which this package cannot import;
-#: tests/unit/mcp/test_spec_after_pr.py holds the two equal.
+#: held equal to it by a unit test.
 MAX_AFTER_PRS = 10
 
 
@@ -591,8 +589,8 @@ DEFAULT_PROFILE = "claude-code"
 #: --strategy/--carrier` to offer as choices. They are the API's
 #: (`swarm_api.validation.DISPATCH_STRATEGIES` / `DISPATCH_CARRIERS`), which
 #: this package cannot import -- it depends on swarm-common alone -- so this is
-#: a copy, and a copy is only safe while something compares it:
-#: `test_the_workflow_choices_are_the_apis` fails the moment they differ.
+#: a copy, and a copy is only safe while something compares it: a unit test
+#: fails the moment they differ.
 STRATEGIES = ("collect", "direct-pr", "integrate")
 CARRIERS = ("checkpoints", "branches")
 
@@ -878,8 +876,8 @@ def spec_digest(spec: Any) -> str:
     JavaScript, which escapes exactly what `json.dumps(ensure_ascii=False)`
     escapes. Integral floats are ints (`_canonical_numbers`). Keys sort by code
     point here and by UTF-16 unit in JavaScript, which agree for every key a
-    spec has (ASCII). `tests/unit/mcp/test_plugin_agents_and_workflows.py`
-    runs run.js's implementation and holds the two equal.
+    spec has (ASCII). A unit test runs run.js's implementation and holds the
+    two equal.
     """
     text = json.dumps(
         _canonical_numbers(spec), sort_keys=True, separators=(",", ":"), ensure_ascii=False

@@ -24,7 +24,7 @@ THE TICKET. Lane L7's relay verifies what this module mints, against the same
 `swarm-live-key` (held by swarm-api and swarm-live only, created by
 `scripts/create-secrets.sh`, never a Terraform secret version). The RELAY'S
 format (`swarm_live.rendezvous.mint_ticket`) is the one used, restated here,
-and tests/unit/control_plane/test_live_relay_wire.py holds the two together:
+and a test holds the two together:
 
     <b64url(payload)>.<b64url(HMAC-SHA256(key, "swarm-live-ticket/v1\\0" + b64url(payload)))>
 
@@ -611,10 +611,10 @@ class TakeControl(BaseModel):
 # and not their JSON, so the console's types (`LiveRead` in
 # apps/swarm-ui/src/api.ts) are the wire, and these models are the API's
 # statement of it. Every live route's `response_model` is one of them, so a
-# key this module forgets or renames fails the route itself, and
-# tests/fixtures/live/*.json is validated by these models in pytest AND parsed
-# by the console's own loaders in vitest -- the shape seam the path-only
-# check in test_runtimes_screen.py never was.
+# key this module forgets or renames fails the route itself, and a shared
+# fixture of live-wire JSON is validated by these models in pytest AND parsed
+# by the console's own loaders in vitest -- a shape seam that a mere
+# path-only check never gave it.
 
 
 class _Wire(BaseModel):
@@ -792,8 +792,7 @@ class LiveTicketView(_Wire):
 
 #: The gate's fixed device list (§6.1), as the console's switcher lists it.
 #: A RESTATEMENT of `agent_worker.livegate.presets.PRESETS` -- swarm-api does
-#: not import the worker -- held equal to it by
-#: tests/unit/control_plane/test_live_wire_shapes.py. It is a catalogue, not a
+#: not import the worker -- held equal to it by a test. It is a catalogue, not a
 #: reading: which preset is APPLIED is `device`, as the gate reported it.
 LIVE_PRESETS: tuple[dict[str, Any], ...] = (
     {"name": "desktop", "width": 1440, "height": 900, "scale": 1.0, "mobile": False},

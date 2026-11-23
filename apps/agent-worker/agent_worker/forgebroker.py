@@ -56,8 +56,7 @@ BROKER_PATH = "/v1/attempts/forge-credential"
 
 #: The broker's refusals that mean a write's grant is gone, as the worker's
 #: own causes (`lifecycle.FORGE_GRANT_REVOKED`, `lifecycle.FORGE_READ_GRANT`,
-#: restated: lifecycle imports this module). test_forge_broker_client.py
-#: holds them equal.
+#: restated: lifecycle imports this module). A test holds them equal.
 GRANT_CAUSES = {
     "grant_removed": "forge_grant_revoked",
     "grant_read_only": "forge_read_grant",

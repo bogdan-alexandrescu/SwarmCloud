@@ -82,8 +82,8 @@ platform's records and signed specs, never from the commit.
 THE GITHUB SPECIFICS ARE BEHIND `ForgeMerger`, with `GitHubMerger` its only
 implementation. swarm-api refuses a repository whose host has no merger at
 SUBMISSION (`validation.MERGE_FORGE_HOSTS`, held equal to
-`MERGEABLE_HOSTS` by tests/unit/worker/test_merge_action.py), so the
-`forge_unsupported` refusal below is a second line, not the first.
+`MERGEABLE_HOSTS`), so the `forge_unsupported` refusal below is a second
+line, not the first.
 
 THE OWNER QUESTIONS THE REVIEW SAID HOLD IT (archived issue 2070, owner decision
 2026-10-23, option (c)). The review is given every earlier step's owner
@@ -185,9 +185,9 @@ not succeed, or left a pick it was sent for unbuilt, refuses
 most MERGE_PICK_ROUNDS_MAX are run, so the step never loops (`_pick_fix`).
 
 THE RULES `auto-merge.yml` ALSO STATES are the module-level functions
-`title_is_placeholder`, `other_check_blocks` and `required_check_state`, so
-tests/unit/scripts/test_auto_merge_workflow.py holds them to the gate's shell
-from one table of cases (§8) until that workflow is retired.
+`title_is_placeholder`, `other_check_blocks` and `required_check_state`, held
+equal to the gate's shell from one table of cases (§8) until that workflow is
+retired.
 """
 
 from __future__ import annotations
@@ -230,7 +230,7 @@ from .specverify import UpstreamSpecUnverified
 
 #: The signed dispatch block naming what this step merges. swarm-api's
 #: `validation.MERGE_TARGET_FIELD`, restated because the worker image carries no
-#: control plane; tests/unit/worker/test_merge_action.py holds the two equal.
+#: control plane; the two are held equal.
 MERGE_TARGET_FIELD = "merge_target"
 
 #: Whether a review the size gate skipped lets the change merge (archived issue 4101).
@@ -254,8 +254,7 @@ OWNER_QUESTIONS_OPEN = "owner_questions_open"
 #: returns it to READY, as `{source: {by, at, review_task, verdict_digest,
 #: head, round_heads, unreadable}}` -- `source` one of the two below, the
 #: rest copied from the park's `acknowledges` (`_unreadable_hold`). Held
-#: equal to swarm-api's `handoff.OWNER_READY_METADATA_KEY` by
-#: tests/unit/worker/test_merge_ready_past_unreadable.py.
+#: equal to swarm-api's `handoff.OWNER_READY_METADATA_KEY`.
 OWNER_READY_METADATA_KEY = "owner_hold_ready"
 OWNER_READY_REVIEW = "review"
 OWNER_READY_SECURITY = "security_review"
@@ -273,16 +272,15 @@ OWNER_READY_SUMMARY_KEY = "owner_unreadable_ready"
 CI_WAIT_STUCK = "ci_wait_stuck"
 #: How long a wait with its rounds spent re-checks before it is a person's:
 #: `/sc check`'s CI_PENDING window (swarm_mcp.check.CI_PENDING_MINUTES, held
-#: equal by tests/unit/worker/test_merge_ci_stuck.py), so the step parks for
-#: a person when the check would first flag it.
+#: equal to it), so the step parks for a person when the check would first
+#: flag it.
 CI_STUCK_SECONDS = 90 * 60
 #: The `result_summary` key listing each unanswered advisory question this
 #: merge went ahead past (owner decision, 2 November 2026): `{task_id,
 #: step_id, question_index, question, recommended, built}`. swarm-api's answer
 #: route reads it from a SUCCEEDED merge to start a pick-fix round against the
 #: default branch when the owner later picks another option
-#: (`swarm_api.agent_questions.ADVISORY_MERGED_PAST_KEY`, held equal by
-#: tests/unit/worker/test_merge_advisory_questions.py).
+#: (`swarm_api.agent_questions.ADVISORY_MERGED_PAST_KEY`, held equal to it).
 ADVISORY_MERGED_PAST_KEY = "advisory_merged_past"
 #: The code a merge refuses with when the owner picked an option the asking
 #: branch did not build (ANSWER-CONTENT-CHECK, owner decision 2026-10-26), the
@@ -303,7 +301,7 @@ OWNER_QUESTIONS_UNREADABLE = "owner_questions_unreadable"
 #: round was sent for and left unbuilt is never sent again. Each `pending`
 #: line of the park names one pick and starts with PICK_LINE_PREFIX, which is
 #: how the tick finds the picks a round is sent for. Held equal to
-#: `swarm_api.mergewake` by tests/unit/worker/test_merge_pick_fix_round.py.
+#: `swarm_api.mergewake`.
 OWNER_PICK_FIX_PENDING = "owner_pick_fix_pending"
 OWNER_PICK_FIX_RUNNING = "owner_pick_fix_running"
 PICK_FIX_CODES = frozenset({OWNER_PICK_FIX_PENDING, OWNER_PICK_FIX_RUNNING})
@@ -316,8 +314,8 @@ PICK_LINE_QUESTION_MAX = 400
 #: swarm-api's wake tick's record of an owner-question hold
 #: (`swarm_api.mergewake.OWNER_HOLD_KEY`), inside `metadata.merge_wait`, and
 #: the two wake reasons it writes when the hold's pull request was merged or
-#: closed outside the workflow (MERGE-OUTSIDE-ENDS, part of archived issue 2441). Held equal
-#: by tests/unit/control_plane/test_merge_outside_ends.py.
+#: closed outside the workflow (MERGE-OUTSIDE-ENDS, part of archived issue 2441), held equal
+#: to swarm-api's own.
 OWNER_HOLD_KEY = "owner_hold"
 PULL_REQUEST_MERGED = "pull_request_merged"
 PULL_REQUEST_CLOSED = "pull_request_closed"
@@ -332,7 +330,7 @@ PLACEHOLDER_TITLE_PREFIX = "[swarm] task_"
 #: The worker's `pr-title.txt` rule (archived issue 214): the retired `[swarm] task_...`
 #: shape ANYWHERE in the title, any spacing, any case. `lifecycle.
 #: _RETIRED_TITLE_RE`, restated because lifecycle imports this module;
-#: tests/unit/worker/test_merge_action.py holds the two equal.
+#: the two are held equal.
 RETIRED_TITLE_RE = re.compile(r"\[swarm\]\s*task_", re.IGNORECASE)
 
 #: §5.2 3: what counts as green for a REQUIRED check. The owner's rule:
@@ -430,11 +428,10 @@ MERGE_CI_CANCELLED_MAX_SECONDS = 60 * 60
 #: wake tick (`swarm_api.mergewake.MERGE_FIX_METADATA_KEY`, lane MS7):
 #: `rounds`, oldest first, each `{round, head, claimed_at}` plus the round's
 #: `workflow_id`/`task_id` once submitted, or an `error` when it was not.
-#: Restated because the worker image carries no control plane;
-#: tests/unit/worker/test_merge_fix_round.py holds the two equal. The
-#: document is tenant-writable: a round's head is accepted only from its
-#: task's SIGNED spec (`_fix_round_heads`), and a forged entry can at most
-#: make the step wait, which `MERGE_CI_MAX_SECONDS` bounds.
+#: Restated because the worker image carries no control plane; the two are
+#: held equal. The document is tenant-writable: a round's head is accepted
+#: only from its task's SIGNED spec (`_fix_round_heads`), and a forged entry
+#: can at most make the step wait, which `MERGE_CI_MAX_SECONDS` bounds.
 MERGE_FIX_METADATA_KEY = "merge_fix"
 #: The workflow's `metadata.merge_fix_rounds`, copied onto the merge task
 #: (`swarm_api.validation.MERGE_FIX_ROUNDS_KEY`), and its ceiling
@@ -446,7 +443,7 @@ MERGE_FIX_ROUNDS_MAX = 5
 #: `merge_fix.reruns`, each `{round, head, claimed_at}` then `jobs` and
 #: `requested_at`, or `error` when GitHub refused. Written only by swarm-api's
 #: wake tick (`swarm_api.mergewake.RERUNS_KEY`/`RERUN_SETTLE_SECONDS`, held
-#: equal by tests/unit/worker/test_merge_fix_round.py). For the settle window
+#: equal to it). For the settle window
 #: after `requested_at` the failed check runs this step reads are the ones
 #: GitHub has not replaced yet, not the re-run's answer, so a wake inside it
 #: (the MERGE_CI_FALLBACK_SECONDS fallback, any other) parks rather than
@@ -470,8 +467,7 @@ RERUN_REFUSALS_MAX = 2
 #: can answer red on another (archived pull request 3049 at dd72fa3e, archived pull request 3055 at d82d2635
 #: refused unchanged and merged green on a manual re-run). Written to match
 #: `swarm_api.cirerun.RERUNS_PER_HEAD_MAX` (re-exported by mergewake), held
-#: equal by tests/unit/worker/test_merge_fix_round.py. Without a round the
-#: head keeps one.
+#: equal to it. Without a round the head keeps one.
 RERUNS_PER_HEAD_MAX = 2
 
 #: The park codes of a red reading a CI-fix round may still fix: rounds are
@@ -519,8 +515,7 @@ CI_RERUN_DUE = "ci_rerun_due"
 #: after the round, at the unchanged head). The step parks for the operator
 #: instead, and swarm-api's tick waits for the head to move without reading
 #: the checks or asking for a round (`swarm_api.mergewake.
-#: WORKFLOW_PATCH_PENDING`, held equal by
-#: tests/unit/control_plane/test_mergewake_workflow_refused.py).
+#: WORKFLOW_PATCH_PENDING`, held equal to it).
 WORKFLOW_PATCH_PENDING = "workflow_patch_pending"
 #: The broker's refusal code, and the patch's name
 #: (`agent_worker.lifecycle.WORKFLOW_PATCH_FILE`), restated: this module does
@@ -538,8 +533,7 @@ WORKFLOW_PATHS_NAMED = 10
 #: tick exactly as a CI-fix round is -- and parks on one of these two codes
 #: meanwhile. Its rounds are `merge_fix.conflict_rounds`, beside the CI
 #: rounds and counted apart from them
-#: (`swarm_api.mergewake.CONFLICT_ROUNDS_KEY`, held equal by
-#: tests/unit/worker/test_merge_conflict_round.py).
+#: (`swarm_api.mergewake.CONFLICT_ROUNDS_KEY`, held equal to it).
 CONFLICT_FIX_PENDING = "conflict_fix_pending"
 CONFLICT_FIX_RUNNING = "conflict_fix_running"
 CONFLICT_ROUNDS_KEY = "conflict_rounds"
@@ -569,8 +563,7 @@ MERGE_CONFLICT_ROUNDS_TOTAL_MAX = 6
 #: submits a `continues_task` workflow for a red `swarm/<task>` pull request
 #: and swarm-api stamps `metadata.ci_fix` (`swarm_api.cifix.stamp`), naming
 #: the pull request, with a `postback` state only the API writes. Restated
-#: because the worker image carries no control plane; held equal by
-#: tests/unit/worker/test_merge_ci_fixer_head.py.
+#: because the worker image carries no control plane; held equal to it.
 CI_FIX_METADATA_FIELD = "ci_fix"
 CI_FIX_POSTBACK_FIELD = "postback"
 CI_FIX_POSTBACK_STATES = frozenset({"pending", "posted", "gave_up"})
@@ -594,8 +587,7 @@ FIX_RECORDS_UNREAD_CHARS = 200
 #: it is on (epic archived issue 1334: HANG-LEASE's merge refused PR 1338 at the head a fix
 #: task of another workflow pushed, 2026-10-15 02:16Z). Written by
 #: `swarm_api.cifix.record_fix_heads`; restated because the worker image
-#: carries no control plane, held equal by
-#: tests/unit/worker/test_merge_recorded_fix_heads.py.
+#: carries no control plane, held equal to it.
 PR_FIX_HEADS_FIELD = "pull_request_fix_heads"
 #: How many of its entries are read, newest first: all that swarm-api keeps
 #: (`cifix.FIX_HEADS_KEPT`), each one a task read and a signature check.
@@ -609,8 +601,7 @@ BRANCH_UPDATE_PENDING = "branch_update_pending"
 
 #: The park code of a pull request this step put in its base's merge queue:
 #: swarm-api's wake tick reads the queue for it, not the checks
-#: (`swarm_api.mergewake.MERGE_QUEUED`, held equal by
-#: tests/unit/control_plane/test_merge_wake.py).
+#: (`swarm_api.mergewake.MERGE_QUEUED`, held equal to it).
 MERGE_QUEUED = "merge_queued"
 
 #: The repository's own merge train (owner decisions 2026-10-14 "A1 Merge
@@ -654,8 +645,8 @@ REPOSITORY_TRAIN_EJECTED = "**Ejected from the merge train"
 #: wait, so the re-board is recorded where `metadata.merge_wait` keeps it;
 #: swarm-api's wake tick reads it only to tell a CI_FIX_RUNNING park on a
 #: train round (green at its head, `mergewake.TRAIN_REBOARDED`, held equal
-#: by test_merge_wake_train_round.py) from a red head's, and never rewrites
-#: it; a CI park's `pending` is replaced by its own reading. Tenant-writable: a
+#: to it) from a red head's, and never rewrites it; a CI park's `pending` is
+#: replaced by its own reading. Tenant-writable: a
 #: forged one can at worst skip the re-board, which refuses or asks for a
 #: round sooner.
 TRAIN_REBOARDED = "re-boarded once after the merge train's ejection"
@@ -664,8 +655,7 @@ TRAIN_REBOARDED = "re-boarded once after the merge train's ejection"
 _EJECTION_FAILED = re.compile(
     r"^\s*[-*]\s+(?:\[(?P<link>[^\]]+)\]\(\S+\)|(?P<named>.+?):\s+\S+://\S+)\s*$")
 #: The train's "does not board" comment (`merge-train.sh tell_skip`,
-#: SKIP_MARKER and SKIP_HEADLINE, held equal by
-#: tests/unit/worker/test_merge_train_skip_reason.py): its first line is
+#: SKIP_MARKER and SKIP_HEADLINE, held equal to it): its first line is
 #: `<!-- merge-train-skip head=<sha> reason=<key> -->`, its second
 #: `**The merge train skips it: <why>.**`. The train decides why it passes
 #: over a `ready` pull request; the step only reads what it said, at its head.
@@ -692,8 +682,8 @@ GITHUB_COMMITTER_EMAIL = "noreply@github.com"
 #: step's end cause is the frozen `EndCause`, which has no such member yet, so
 #: until contract request SUPERSEDED_BY_PERSON_PUSH lands the step ends
 #: FAILED/MERGE_REFUSED with this code, and failure-review's `person_push`
-#: rule (`swarm_api.failuredigest.SUPERSEDED_BY_PERSON_PUSH`, held equal by
-#: tests/unit/worker/test_merge_person_push.py) skips it.
+#: rule (`swarm_api.failuredigest.SUPERSEDED_BY_PERSON_PUSH`, held equal to
+#: it) skips it.
 SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
 
 #: The refusal code of a step whose train-parked pull request a person took
@@ -705,14 +695,13 @@ SUPERSEDED_BY_PERSON_PUSH = "superseded_by_person_push"
 #: a defect, and nothing merges or boards. The step's end cause is the frozen
 #: `EndCause`, which has no such member, so the step ends FAILED/MERGE_REFUSED
 #: with this code, and failure-review's `person_ready_removal` rule
-#: (`swarm_api.failuredigest.READY_REMOVED_BY_PERSON`, held equal by
-#: tests/unit/control_plane/test_failure_digest.py) skips it.
+#: (`swarm_api.failuredigest.READY_REMOVED_BY_PERSON`, held equal to it)
+#: skips it.
 READY_REMOVED_BY_PERSON = "ready_removed_by_person"
 
 #: The committer addresses the platform commits under when it names no
 #: person: `WorkerConfig.git_author_email`'s default and
-#: `gitidentity.BOT_GIT_IDENTITY`'s (held equal by
-#: tests/unit/worker/test_merge_person_push.py). Restated, not imported, so
+#: `gitidentity.BOT_GIT_IDENTITY`'s, held equal. Restated, not imported, so
 #: the merge action does not load the worker's whole configuration module.
 PLATFORM_COMMITTER_EMAILS = frozenset({
     "swarmcloud-agent@users.noreply.github.com",
@@ -735,7 +724,7 @@ WORKER_COMMIT_LINE = "Made by the worker for task "
 #: (`pr_shepherd`) and an issue run's step (`issue_run`). What
 #: `cifix.live_plain_continuation` skips (`PR_WRITER_KINDS` and
 #: `ISSUE_RUN_METADATA_KEY`), restated because the worker image does not
-#: load swarm-api (held equal by tests/unit/worker/test_merge_person_push.py).
+#: load swarm-api (held equal to it).
 #: A head such a task pushed is the platform's, and `head_moved` when not
 #: accepted (`_person_lane`).
 LANE_WRITER_MARKS = ("ci_fix", "merge_fix_round", "merge_conflict_round", "fix_loop_round",
@@ -863,8 +852,7 @@ def check_run_finished(run: Mapping[str, Any]) -> bool:
     A run with no conclusion stays pending; one `completed` with no
     conclusion is finished and, having no green conclusion, not green.
     swarm-api's `forgechecks.check_run_finished`, `merge-train.sh judge` and
-    auto-merge.yml's gates 5-6 state the same rule, held equal by
-    tests/unit/scripts/test_auto_merge_workflow.py.
+    auto-merge.yml's gates 5-6 state the same rule, held equal to it.
     """
     if run.get("status") == "completed":
         return True
@@ -994,8 +982,7 @@ def cancelled_by_its_workflow(run: Mapping[str, Any],
     event) passed the check. A red check in a run nobody cancelled stays red,
     and so does one in a cancelled run with neither: nothing then says the
     failure was not real. swarm-api's `forgechecks.cancelled_by_its_workflow`
-    is the same rule, held equal by
-    tests/unit/control_plane/test_forgechecks_cancelled_workflow_run.py.
+    is the same rule, held equal to it.
     """
     if run.get("workflow_conclusion") != CANCELLED_CONCLUSION or not check_run_finished(run):
         return False
@@ -1091,8 +1078,7 @@ def required_check_state(runs: list[Mapping[str, Any]]) -> str:
     green is cancelled (`cancelled_run`, archived issue 1778), failed otherwise. A red push run is
     never outvoted by a green pull_request run (CI-EARLY, archived issue 1694); a flake
     re-run green no longer holds the check (archived issue 1999, archived issue 1778). swarm-api's
-    `forgechecks.required_check_state` is the same rule, held equal by
-    tests/unit/control_plane/test_forgechecks_per_event.py.
+    `forgechecks.required_check_state` is the same rule, held equal to it.
     """
     return _judge_latest(runs, REQUIRED_GREEN)
 
@@ -1296,7 +1282,7 @@ def unreported_failure(checks: Iterable[CheckFacts]) -> list[CheckFacts] | None:
     it, and their finished jobs not green are what is red. None when no run
     failed, the Actions runs were not read, or a failed run left no failing
     job to name. swarm-api's `forgechecks.unreported_failure` is the same
-    rule, held equal by tests/unit/control_plane/test_unreported_required_check.py.
+    rule, held equal to it.
     """
     by_run: dict[int, list[CheckFacts]] = {}
     for check in checks:
@@ -6320,9 +6306,9 @@ def _close_issues(run: _Run, merger: ForgeMerger, number: int) -> None:
     (and manual links) name. A `part of #N` pull request names none, so it
     closes none. An issue in another repository is left alone -- the token's
     reach there is not this step's to assume -- and recorded as such. The
-    rules of `scripts/close-merged-issues.sh`, held equal to it by
-    tests/unit/worker/test_merge_action.py, page rule included: past one page
-    the page is closed and `issues_beyond_page` recorded.
+    rules of `scripts/close-merged-issues.sh`, held equal to it, page rule
+    included: past one page the page is closed and `issues_beyond_page`
+    recorded.
     """
     summary = run.summary
     closed: list[int] = []

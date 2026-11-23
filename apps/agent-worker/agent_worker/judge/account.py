@@ -65,7 +65,7 @@ SOURCES = (SOURCE_JUDGMENT, SOURCE_QUALITY_HOOK, SOURCE_BROWSER)
 #: The launcher's per-call files, in `private/`: the hooks' (the gates'
 #: config `calls_file`, `qualitygates.CALLS_FILE_NAME`) and the browser's
 #: (`runners/jev_launch.BROWSER_CALLS_FILE_NAME`), with the source each may
-#: name. tests/unit/worker/test_jev_tool_calls.py holds the names equal.
+#: name. A test holds the names equal.
 TOOL_CALL_FILES = (("jev-gates.calls", SOURCE_QUALITY_HOOK),
                    ("jev-browser.calls", SOURCE_BROWSER))
 #: A file's sent offset, beside it.

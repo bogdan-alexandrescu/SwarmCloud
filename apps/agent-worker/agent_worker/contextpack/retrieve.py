@@ -351,7 +351,7 @@ def _needles(targets: list[str]) -> list[tuple[str, re.Pattern[str]]]:
     """What counts as naming a path: the path itself, or its base name when
     that is distinctive -- `changed-guards.sh` selects by both, and a guard
     that reads `children.py` as text names it by base name. A name that is
-    part of a longer one (`test_children.py`) is not a mention."""
+    part of a longer one (`old_children.py`) is not a mention."""
     out: list[tuple[str, re.Pattern[str]]] = []
     for target in targets:
         out.append((target, re.compile(re.escape(target))))

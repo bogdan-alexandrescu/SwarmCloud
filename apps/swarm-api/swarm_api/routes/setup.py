@@ -235,10 +235,10 @@ def setup_caller(
 
 #: The gate of every Admin › Setup route no service identity may call, on
 #: the route itself: `admin_auth`, the dependency every `/v1/admin` route
-#: declares, so the admin surface's sweeps (tests/unit/control_plane/
-#: test_pool_admin_is_narrow.py) see these routes as admin-gated. A platform
-#: admin passes; a pool admin, a workspace admin, a member, the deployer and
-#: the doctor are refused (none of these routes is in POOL_ADMIN_ROUTES).
+#: declares, so the admin surface's sweeps see these routes as admin-gated.
+#: A platform admin passes; a pool admin, a workspace admin, a member, the
+#: deployer and the doctor are refused (none of these routes is in
+#: POOL_ADMIN_ROUTES).
 #: Only the hook, the groups probe and the health write go through
 #: `setup_caller`, because a service identity must reach them.
 

@@ -48,9 +48,8 @@ id, the IAP audience and, when served, the secret. `oauth_client_id` and
 
 THE REPOSITORY IS READ ONLY IN DEVELOPER MODE. Layer 4 exists for the owner
 working inside this checkout, and is off unless SWARM_MCP_CONFIG_FROM=repo is
-set -- `tests/unit/mcp/test_contexts.py` watches every file the process opens
-to hold that line, because a tfvars read that silently fails looks exactly like
-one that never happened.
+set -- every file the process opens is watched to hold that line, because a
+tfvars read that silently fails looks exactly like one that never happened.
 
 THE PLUGIN OVERRIDES, BUT NEVER STEALS `current`. Inside the MCP server the
 plugin's deployment is the one used (layer 5 beats layer 6) -- that is what
@@ -95,9 +94,6 @@ LEGACY_HOST_VARS = ("SWARM_API_HOST", "API_HOST")
 #: names and nothing else; it used to spell each key again as a literal, so a
 #: rename made here and in the manifest together passed every test that
 #: compared the two lists while the bridge went on reading the old name.
-#: `tests/unit/mcp/test_plugin_user_config.py` now substitutes an answer into
-#: the manifest's own env mapping for each key, the way Claude Code does, and
-#: asks `resolve` where each one landed.
 PLUGIN_URL = "deployment_url"
 PLUGIN_CLIENT_ID = "oauth_client_id"
 PLUGIN_CLIENT_SECRET = "oauth_client_secret"
@@ -148,8 +144,8 @@ DEFAULT_ROWS = ROWS_SUMMARY
 #: still one row, an agent of its own in the session, so the cap stays a cap:
 #: 200 is the most, and 1 the least, and the ones a cap leaves out are the ones
 #: furthest from finishing (`board.order`). plugin/workflows/run.js restates
-#: all three (`MAX_ATTACHED_WORKFLOWS`, `MAX_LIVE_ROWS_LIMIT`, `liveRowCap`)
-#: and test_sc_rows_workspace_and_cap.py holds them equal.
+#: all three (`MAX_ATTACHED_WORKFLOWS`, `MAX_LIVE_ROWS_LIMIT`, `liveRowCap`),
+#: held equal to these by a unit test.
 DEFAULT_MAX_LIVE_ROWS = 100
 MAX_LIVE_ROWS_LIMIT = 200
 

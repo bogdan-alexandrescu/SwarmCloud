@@ -287,8 +287,8 @@ MAX_LOG_TAIL_BYTES = 3_000
 # EVERY FAILING FILE, NOT THE FIRST 3,000 BYTES OF THEM (archived issue 3170). On archived pull request 3146,
 # "swarm-ui component tests (1/4)" said `Tests  2 failed`, and the excerpt
 # named one file: the later failure, a `waitFor` timeout, printed a DOM dump
-# of tens of KiB under its FAIL line, so the earlier phone.chrome.test.tsx
-# FAIL sat above the 16 KiB read, and the blocks kept front-first would have
+# of tens of KiB under its FAIL line, so the earlier failing file's FAIL line
+# sat above the 16 KiB read, and the blocks kept front-first would have
 # let the dump fill the 3,000 bytes anyway. Neither CI-fix round heard of the
 # second file. So the count vitest prints is compared with the distinct FAIL
 # headers found; when it found fewer, the log is read ONCE more, up to
@@ -346,7 +346,7 @@ NO_CHANGE_MARKER = "no_change"
 #: walk's cap, not the per-slot `MERGE_MAX_BRANCH_UPDATES`, because the
 #: re-takes' catch-ups are base merges on the same head too -- spelled again
 #: because the API image does not carry the worker, and held equal to it by
-#: tests/unit/control_plane/test_issue_run_merge_update.py.
+#: a test.
 MERGE_MAX_HEAD_UPDATES = 12
 #: The committer of a commit GitHub itself made and signed, as `update-branch`
 #: merges are (`agent_worker.merge.GITHUB_COMMITTER_EMAIL`, held the same way).
@@ -1528,8 +1528,7 @@ def _read_ci(
 
 #: The repository merge train's switch and its own required check (archived issue 3312),
 #: held equal to the worker's `agent_worker.merge.REPOSITORY_TRAIN_VARIABLE`,
-#: `REPOSITORY_TRAIN_ON` and `REPOSITORY_TRAIN_CONTEXT` by
-#: tests/unit/control_plane/test_issue_run_ci.py: the variable
+#: `REPOSITORY_TRAIN_ON` and `REPOSITORY_TRAIN_CONTEXT` by a test: the variable
 #: `vars.MERGE_TRAIN`, exactly `on`, and the commit status
 #: scripts/merge-train.sh posts on each head it lands.
 TRAIN_VARIABLE = "MERGE_TRAIN"

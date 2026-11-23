@@ -358,8 +358,8 @@ def refuse_unless_granted(settings: Any, db: Any, tenant_id: str, payload: Mappi
                           *, step_id: str | None = None) -> None:
     """§4.3 at submission: a task, batch task, workflow step or child whose
     input names `qa_identity` needs this deployment's account and its tenant's
-    `granted` document. NOT a `refusals` switch: see the entry in
-    tests/unit/control_plane/test_new_refusals_ship_off.py."""
+    `granted` document. NOT a `refusals` switch: it is a deliberate, named
+    exception to that rule."""
     if not names_identity(payload):
         return
     detail: dict[str, Any] = {"key": QA_IDENTITY_INPUT_KEY}

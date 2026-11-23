@@ -24,14 +24,13 @@ issueci, cifix, the merge step, the UI -- reads it exactly as a worker's.
 THE REFUSAL SCANS ARE THE WORKER'S, IN TWO HALVES (archived issue 748: "the same refusal
 scans the worker runs (credentials, title placeholder)"). Nothing here is
 imported from the worker or moved into `swarm_common`; both halves are
-restated, and test_verdict_publish.py holds the restatement equal.
+restated, and held equal to the worker's.
 
   * THE TITLE. `title_refusal` refuses every title the worker's
     `_agent_title` refuses, with its reasons, and everything the merge step's
     `agent_worker.merge.title_is_placeholder` refuses (`[swarm] task_` in any
     case, anywhere, any spacing), plus any task id at all. One table of
-    titles is driven through all three in
-    `test_the_restated_worker_rules_are_the_workers`.
+    titles is driven through all three.
   * THE CREDENTIALS. The worker scans its final tree (`final_tree_leak`)
     and scrubs its pull request text against the secrets it registered.
     Here the tree needs no scan: the branch tip is the implementer's,
@@ -193,8 +192,7 @@ TASKS = "tasks"
 
 #: The marker on the gated step's `metadata`, beside `dispatch`, not in it:
 #: the dispatch block is signed and this is not. Read by the scheduler's hold
-#: (`scheduler.loop.CONTROL_PUBLISH_METADATA_KEY`), held equal by
-#: tests/unit/control_plane/test_verdict_publish.py.
+#: (`scheduler.loop.CONTROL_PUBLISH_METADATA_KEY`), held equal to this.
 CONTROL_PUBLISH_METADATA_KEY = "control_publish"
 CLAIMED = "claimed"
 DECLINED = "declined"
@@ -215,7 +213,7 @@ PUBLISHED_BY = "control_plane"
 #: `PR_BODY_FILE`, `PR_TITLE_MAX_CHARS`, `PR_BODY_MAX_BYTES`,
 #: `PR_READ_LIMIT_BYTES`; `agent_worker.verdict.MAX_VERDICT_BYTES`,
 #: `MAX_FINDINGS`, `MAX_FINDING_CHARS`), restated because swarm-api does not
-#: import the worker; test_verdict_publish.py holds each equal.
+#: import the worker; each is held equal.
 PR_TITLE_FILE = "pr-title.txt"
 PR_BODY_FILE = "pr-body.md"
 PR_TITLE_MAX_CHARS = 256
@@ -269,8 +267,8 @@ def held_by_scheduler(metadata: Any) -> bool:
     integrator, and a step carrying a review gate (archived issue 2524, `reviewgate.gated`).
 
     The scheduler restates this (`scheduler.loop.held_for_control_publish`),
-    and test_verdict_publish.py holds the two equal over the same documents:
-    a step one holds and the other never decides waits out the whole hold.
+    held equal over the same documents: a step one holds and the other never
+    decides waits out the whole hold.
     Everything else this module checks, it checks after the claim, and
     declines.
     """
@@ -367,8 +365,8 @@ def title_refusal(text: str) -> str | None:
     written by another task, so any id in it is one the owner's rule
     forbids), plus everything the merge step's `title_is_placeholder`
     refuses -- which the worker reports as naming a task id, and so does
-    this. test_verdict_publish.py drives one table of titles through all
-    three and holds the outcomes equal.
+    this. One table of titles is driven through all three, holding the
+    outcomes equal.
     """
     text = text.strip()
     if not text:

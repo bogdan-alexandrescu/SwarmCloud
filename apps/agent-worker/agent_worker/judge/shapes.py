@@ -221,10 +221,10 @@ def read_duplicate(answers: Mapping[str, Any]) -> int | None:
 #
 # The worker's image is not swarm-api's package, so JC2's state, questions and
 # reader are restated here from `swarm_api.contractjudge` (`judgment_state`,
-# `judgment_questions`, `read_judgment`); tests/unit/worker/
-# test_contract_post_step.py holds the two equal. The route re-reads every
-# verdict with its own thresholds (`contractreask.checked_verdict`), so the
-# worker's reading only decides what it posts, never what counts.
+# `judgment_questions`, `read_judgment`); a test holds the two equal. The
+# route re-reads every verdict with its own thresholds
+# (`contractreask.checked_verdict`), so the worker's reading only decides
+# what it posts, never what counts.
 
 #: The ledger and usage kind (`swarm_api.contractreask.JUDGMENT_KIND`).
 JC2_KIND = "contract_judgment"

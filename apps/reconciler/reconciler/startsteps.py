@@ -56,8 +56,8 @@ from .startproblem import StartProblem, _get
 
 #: The pod's steps, in order. The worker's three follow them
 #: (`agent_worker.handoff.GATE_STARTUP_STEPS`), and swarm-api serves all seven
-#: (`swarm_api.startup.STARTUP_STEPS`); tests/unit/common/
-#: test_startup_progress_contract.py holds the three restatements to one list.
+#: (`swarm_api.startup.STARTUP_STEPS`); a test holds the three restatements to
+#: one list.
 POD_STARTUP_STEPS: tuple[str, ...] = (
     "pod_scheduled",
     "image_pulling",

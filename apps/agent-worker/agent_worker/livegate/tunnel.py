@@ -74,8 +74,8 @@ log = logging.getLogger(__name__)
 DEFAULT_RELAY_URL = "ws://swarm-live.swarm-system.svc.cluster.local:8080"
 TUNNEL_PATH = "/v1/tunnel"
 
-#: The relay's frame ops (rendezvous.py `OP_*`); test_livegate_main.py holds
-#: these equal to the relay's own.
+#: The relay's frame ops (rendezvous.py `OP_*`), held equal to the relay's
+#: own.
 OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT, OP_DEVICE = 1, 2, 3, 4, 5, 6, 7
 _OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT, OP_DEVICE})
 MAX_CONN_ID = 64
@@ -94,7 +94,7 @@ SILENT_SECONDS = 75.0
 
 #: The relay's "restarting, reconnect now" (swarm_live.rendezvous
 #: CLOSE_RESTARTING; RFC 6455's 1012 "Service Restart", which uvicorn sends
-#: on SIGTERM too). test_livegate_tunnel_restart.py holds the two equal.
+#: on SIGTERM too), held equal to the relay's own.
 CLOSE_RESTARTING = 1012
 #: The first reopen after a restart, before jitter, and the longest wait
 #: between reopens while the new relay comes up. The cap is under the worker's

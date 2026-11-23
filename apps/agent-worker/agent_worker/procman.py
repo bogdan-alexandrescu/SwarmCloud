@@ -47,8 +47,8 @@ from typing import Any, Callable, Sequence
 
 #: The first bytes of every line a capture writes where it cut a stream.
 #: `swarm_api.agent_streams.TRUNCATION_MARK` restates it, so the transcript
-#: and answer routes can tell a capped capture from a whole one;
-#: `tests/unit/control_plane/test_agent_stream_parity.py` holds the two equal.
+#: and answer routes can tell a capped capture from a whole one; the two
+#: are held equal.
 TRUNCATION_MARK = b"[swarm] output truncated"
 TRUNCATION_NOTICE = b"\n" + TRUNCATION_MARK + b": size cap reached\n"
 #: What a `keep_tail` capture writes where its head filled, while the stream is

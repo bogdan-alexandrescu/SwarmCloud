@@ -37,7 +37,7 @@ GIT_IDENTITY_FIELD = "git_identity"
 #: Who commits when no person can be named. A GitHub no-reply address because
 #: it reaches nobody and GitHub links it to no account, so a bot commit is
 #: never attributed to a real user's profile. Equal to swarm-api's
-#: `BOT_IDENTITY`, held so by tests/unit/worker/test_git_identity_env.py.
+#: `BOT_IDENTITY`, held so by a test.
 BOT_GIT_IDENTITY: tuple[str, str] = ("SwarmCloud", "swarmcloud@users.noreply.github.com")
 
 #: The four variables git reads before any configuration, so an agent's
