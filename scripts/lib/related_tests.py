@@ -29,7 +29,9 @@ WHAT IS RELATED:
   * a change CI's selector runs the whole suite for -- the frozen contract,
     a conftest.py, pyproject.toml ... (its fallback_reason) -- selects capped: its own tests, the tests that import a
     changed module directly, the graph's tests_for and the tests naming a
-    changed path, and a note gives the closure's size (RELATED-CAP);
+    changed path, and a note gives the closure's size (RELATED-CAP); so does
+    any other change whose closure's recorded CI weight is more than one
+    540 s run (SIZE_CAP_WEIGHT, owner answer 2026-11-23);
     `--closure` selects every test that imports or reads it, as before;
   * swarm-ui (vitest): the change's own test files, and every test file that
     reaches a changed module through relative imports -- `import ... from`,
@@ -102,6 +104,12 @@ UI_DURATIONS = "tests/unit/scripts/ui_test_durations.json"
 # SHARD_HINT_WEIGHT: about 400 s on a 6-core container, under the 540 s a
 # command there is held to and the 10 minutes an agent's command may take.
 PYTEST_RUN_WEIGHT = 540
+# A selection with no fallback reason is capped too when its closure's
+# recorded CI weight (closure_weight: DURATIONS, an unrecorded file at the
+# median) is MORE than this: one pytest run, which --run holds to 540 s.
+# Owner answer 2026-11-23, "Also on size": agent_worker/lifecycle.py selected
+# 829 files with no fallback reason, far more than one run holds.
+SIZE_CAP_WEIGHT = PYTEST_RUN_WEIGHT
 # One vitest run's weight in CI-seconds: the same 540 as PYTEST_RUN_WEIGHT and
 # related-tests.sh's RUN_SECONDS, the limit each run is held to with --run.
 # Cutting by file count alone put all nine spacing.*.test.tsx slices (252-485 s
@@ -645,8 +653,11 @@ def python_related(root: Path, changed: list[str], graph: Graph | None = None,
     of each changed module (one hop), the graph's tests_for and the tests that
     name a changed path, and the closure's size for the note; CI (the merge
     train) runs the closure. `closure` keeps the full list. Never "all".
-    A selection that reaches FULL_FRACTION without a fallback reason is not
-    capped: the brief keeps every other change's selection as it was."""
+    ON SIZE TOO (owner answer 2026-11-23, "Also on size"): a selection with no
+    fallback reason is capped the same way when its closure's recorded CI
+    weight (closure_weight) is more than SIZE_CAP_WEIGHT, one 540 s run --
+    agent_worker/lifecycle.py reached 829 files. One at or under it is
+    unchanged. CI's FULL_FRACTION is no trigger here."""
     edges = edges or sut.import_edges
     all_tests = sorted(str(p.relative_to(root)) for p in sut._python_files(root, "tests/unit")
                        if sut.is_test(str(p.relative_to(root))))
@@ -665,6 +676,11 @@ def python_related(root: Path, changed: list[str], graph: Graph | None = None,
     virtual = sut.script_closure(root, sut.doc_closure(root, changed))
     chosen |= _names_any(root, all_tests, chosen, virtual)
     capped = sut.fallback_reason(changed)
+    if not capped:
+        weight = closure_weight(root, chosen)
+        if weight > SIZE_CAP_WEIGHT:
+            capped = (f"the closure's recorded CI weight is {weight:.0f} s, more than one "
+                      f"{PYTEST_RUN_WEIGHT} s run")
     if closure or not capped:
         return PythonSelection(sorted(chosen), len(chosen), None)
     narrow = set(own)
@@ -674,17 +690,33 @@ def python_related(root: Path, changed: list[str], graph: Graph | None = None,
     return PythonSelection(sorted(narrow), len(chosen), capped)
 
 
-def pytest_runs(root: Path, tests: list[str]) -> list[list[str]]:
-    """Longest file first onto the lightest run, as CI cuts its unit shards;
-    a file with no recorded weight counts the median."""
-    if not tests:
-        return []
+def pytest_weights(root: Path) -> tuple[dict, float]:
+    """Per-file pytest CI-seconds from DURATIONS (tests/unit/scripts/
+    unit_test_durations.json), and the weight of a file it does not record:
+    the median of what it records (1 when it records nothing), never zero."""
     try:
         weights = json.loads((root / DURATIONS).read_text())
     except (OSError, ValueError):
         weights = {}
     values = sorted(weights.values())
     median = values[len(values) // 2] if values else 1
+    return weights, median
+
+
+def closure_weight(root: Path, tests) -> float:
+    """The recorded CI-seconds of `tests`, as pytest_runs weighs them: a file
+    DURATIONS does not record counts the median, so a selection of unrecorded
+    files never looks small."""
+    weights, median = pytest_weights(root)
+    return sum(weights.get(t, median) for t in tests)
+
+
+def pytest_runs(root: Path, tests: list[str]) -> list[list[str]]:
+    """Longest file first onto the lightest run, as CI cuts its unit shards;
+    a file with no recorded weight counts the median."""
+    if not tests:
+        return []
+    weights, median = pytest_weights(root)
     weighted = sorted(((weights.get(t, median), t) for t in tests), key=lambda x: (-x[0], x[1]))
     count = max(1, math.ceil(sum(w for w, _ in weighted) / PYTEST_RUN_WEIGHT))
     runs: list[tuple[float, list[str]]] = [(0, []) for _ in range(min(count, len(tests)))]
@@ -747,7 +779,7 @@ def main(argv: list[str]) -> int:
                     help="print only the stylesheet guards the change selects, one a line, "
                          "relative to apps/swarm-ui (changed-guards.sh)")
     ap.add_argument("--closure", action="store_true",
-                    help="where CI would run the whole suite, print the full closure, not the capped selection")
+                    help="where the selection is capped, print the full closure, not the capped selection")
     args = ap.parse_args(argv)
     root = Path(args.root).resolve()
     changed = sorted({c.strip() for c in Path(args.changed).read_text().splitlines() if c.strip()})

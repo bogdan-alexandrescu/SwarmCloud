@@ -65,7 +65,9 @@
 # was up to every test file and --run stopped at its first overrun. The selector then names the
 # change's own tests, the direct importers of each changed module, the code
 # graph's tests_for and the tests naming a changed path, and a note gives the
-# closure's size; CI (the merge train) runs the closure. `--closure` prints
+# closure's size; CI (the merge train) runs the closure. Any other change is
+# capped the same way when its closure's recorded CI weight is more than one
+# 540 s run (SIZE_CAP_WEIGHT, owner answer 2026-11-23). `--closure` prints
 # the closure instead.
 #
 # stdout: the related test files, repo-relative, one a line; then one command

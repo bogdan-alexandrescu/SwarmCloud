@@ -5661,7 +5661,7 @@ guards ran; that limit predates this change and is not changed by it.
 ```bash
 scripts/related-tests.sh             # print the related test files and the runs that test them
 scripts/related-tests.sh --run       # run those, one after another, in the foreground
-scripts/related-tests.sh --closure   # where CI runs the whole suite, print the full closure, not the capped list
+scripts/related-tests.sh --closure   # where the selection is capped, print the full closure, not the capped list
 scripts/related-tests.sh --base <rev> | --files <list>|-
 ```
 
@@ -5689,11 +5689,17 @@ end ([why](working-in-this-repository.md#swarmcloud-agent-tests)).
 Python: `select_unit_tests.py`'s rules, imported rather than restated -- the
 change's own tests, every test that imports a changed module through any chain
 of imports, every test whose text names a changed path or a script that names
-one -- but **without** its fall-back to the whole suite. Where CI would run
-everything for the change itself (`fallback_reason`: a `conftest.py`,
-`pyproject.toml`, `uv.lock`, the frozen contract, a workflow, more than 40
-paths), the selection is **capped** (RELATED-CAP, owner plan 2026-11-23): the
-change's own tests, the tests that import a changed module **directly** (one
+one -- but **without** its fall-back to the whole suite. The selection is
+**capped** (RELATED-CAP, owner plan 2026-11-23) on either of two triggers:
+where CI would run everything for the change itself (`fallback_reason`: a
+`conftest.py`, `pyproject.toml`, `uv.lock`, the frozen contract, a workflow,
+more than 40 paths), or **on size**, where the closure's recorded CI weight is
+more than one 540 s run (`SIZE_CAP_WEIGHT`, owner answer 2026-11-23, "Also on
+size"; the weights are `tests/unit/scripts/unit_test_durations.json`, the same
+ones the runs are cut by, and a file it does not record counts at the median,
+never as zero, so unrecorded files cannot make a large selection look small).
+A selection at or under one run is unchanged. Either way the capped selection
+is the change's own tests, the tests that import a changed module **directly** (one
 hop; for a `conftest.py`, the tests beside it), the code graph's `tests_for`
 and the tests whose text names a changed path. A warning gives the capped
 count and the closure's, and says CI (the merge train) runs the closure;
@@ -5703,10 +5709,12 @@ task's wall-clock and tests most of the rest; the closure was up to 2,094 files
 its first overrun with "narrow it", which an agent cannot do, and the
 pre-publish gate inherited the same list. Measured on three merged changes
 against main at 8dc58b4: 8dc58b4 (`pyproject.toml`) 430 to 51 files, 38b31a8
-(`pyproject.toml`) 407 to 89, daf2a8e (31 paths, a workflow) 888 to 254. Every
-other change selects exactly what it did: a widely imported module that is not
-a fallback path (`agent_worker/lifecycle.py`, 829 files) or `common.sh` named
-through the script closure (715) is not capped. The selector remembers each
+(`pyproject.toml`) 407 to 89, daf2a8e (31 paths, a workflow) 888 to 254. On
+size, measured on main at 7fc7aaa: `agent_worker/lifecycle.py` 831 files
+(3,954 recorded CI-seconds, eight runs) to 189 (686 s, two runs; 163 tests
+import it directly), `scripts/lib/common.sh` through the script closure
+(3,784 s) to 110. CI's own selection (`select_unit_tests.py`) is unchanged by
+either trigger. The selector remembers each
 file's parsed imports by the hash of its path, its text and
 `select_unit_tests.py` (`EdgeCache`, under `$TMPDIR/swarm-related-tests`;
 `RELATED_TESTS_CACHE_DIR=off` turns it off): parsing was 20 of a run's 24 s,

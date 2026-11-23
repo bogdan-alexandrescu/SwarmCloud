@@ -375,7 +375,9 @@ def test_a_heavy_pytest_selection_splits_by_ci_weight(tmp_path):
         _write(tmp_path, f"tests/unit/foo/test_heavy{i}.py", "from foo.core import X\n")
     weights = {f"tests/unit/foo/test_heavy{i}.py": 300 for i in range(6)}
     _write(tmp_path, "tests/unit/scripts/unit_test_durations.json", json.dumps(weights))
-    got = _select(tmp_path, "apps/foo/foo/core.py")
+    # 1,800 CI-seconds is more than one run, so the default is capped on size
+    # (test_related_tests_capped_size.py); --closure cuts the whole selection.
+    got = _select(tmp_path, "apps/foo/foo/core.py", closure=True)
     # MUTATION: ignore unit_test_durations.json -> one 1,800 CI-second run.
     assert len(got["pytest"]) >= 3
     assert len(_files(got["pytest"])) == 9
