@@ -74,6 +74,8 @@ Routes:
   front's delegation, and once done the planner's spoken sentences and cards.
   `200 {voice_session_id, ended, usage_seconds, reason}`, 404 for a session
   this process does not hold.
+* `POST /internal/sessions/{voice_session_id}/summary` -- summary.py's: an
+  ended session's few-sentence summary on the fast front's model class.
 * `GET /healthz` -- counts only.
 
 THE CALLER. Each `/internal/` call carries a Google ID token minted for
@@ -174,7 +176,7 @@ from .claudefront import SessionExists as FrontExists
 from .claudeturn import admitted_model
 from .credential import CredentialError
 from .grant import GrantInvalid, SessionGrant
-from . import tools_read
+from . import summary, tools_read
 from .instructions import ReopenContext
 from .live import (LISTENING, MAX_OFFER_BYTES, PAUSE_AFTER_SECONDS, PAUSED, REOPEN_EVENT, SESSION_STATE, WAKING,
                    LiveApi, LiveError, LiveRefused, NotPaused, SessionEnded, SessionExists, Sessions)
@@ -821,6 +823,7 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
     # (claudefront.py), both behind the same caller check.
     app.include_router(readback.router)
     app.include_router(delegations_router(lambda: app.state.fronts, caller))
+    app.include_router(summary.router_for(app, caller))
 
     return app
 
