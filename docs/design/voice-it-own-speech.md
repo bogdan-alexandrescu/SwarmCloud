@@ -134,6 +134,26 @@ ChatGPT plan, is only the fallback when this engine cannot start (§4.1).
    answer carries `delegation_id`; swarm-api's relay waits on swarm-voice's `GET /delegations/{id}`
    (at most `planner.TURN_SECONDS`, 240 s) and speaks the planner's two sentences at the next
    silence, its cards streaming on SSE as today. A newer utterance never waits for it.
+
+   **The first sentence goes early** (the latency cut of 23 November 2026). The relay asks for the
+   turn streamed (`{"text", "stream": true}`): the front's child runs with
+   `--include-partial-messages`, `claudefront.EarlySentence` watches its text deltas for the first
+   complete sentence (`.`, `!` or `?` followed by whitespace), made spoken and scrubbed as the reply
+   is, and swarm-voice sends it as `{"t":"sentence"}` on an NDJSON answer before the turn's
+   `{"t":"answer"}` line. The relay hands it to `speak` at once, while the front is still writing;
+   at the answer it speaks only the rest. The transcript (the front's recorded reply, and the
+   page's `say.start` lines) starts with that sentence, so what was spoken early is recorded once
+   and never spoken again. A sentence the front wrote before a read is still spoken and recorded
+   first (the CLI's result is the last message only). A barge-in or a stop after it: the `cancel`
+   (or the closed socket) ends its synthesis, and nothing more of that turn is spoken. A swarm-voice
+   without the stream answers plain JSON, which the relay speaks whole, as before.
+
+   **A planner line wakes the relay.** One line-speaker task per relay speaks planner lines; an
+   `asyncio.Event` wakes it the moment a line arrives (the held `GET /delegations/{id}` returning)
+   or silence begins (`utt.end`). Lines are keyed by delegation id, so the same line arriving twice
+   or a doubled wake-up speaks it once; the wake is cleared before the queue is read, so a line
+   queued while another is spoken is not missed. A slow fallback recheck every 5 s
+   (`speech_relay.LINE_RECHECK_SECONDS`) catches a wake-up lost all the same.
 6. **Barge-in.** New speech while the agent talks: the browser stops playback at once and sends
    `barge`; swarm-api sends `cancel` to the VM's synthesis. A planner turn in flight is not
    cancelled (voice-it.md §3.9).
@@ -707,7 +727,7 @@ recorded as **not measured** (null), never as 0, and counted as such.
 
 | Engine | Span | Parts | Taken in |
 | --- | --- | --- | --- |
-| Own speech (`own`) | the browser's `utt.end` (sent at the voice detector's end of the utterance and at the push-to-talk release alike) to the first audio byte of the reply sent to the browser | `recognition_ms`: `utt.end` to the recogniser's final; `front_first_token_ms`: **always not measured**, the front's child streams whole messages (`claudeturn.py`), so no first token is seen anywhere; `front_ms`: the final to the reply handed to synthesis as `speak` (the read-back matcher and the front's round trip); `synthesis_ms`: that to the first audio byte sent | swarm-api, `voice/speech_relay.py` |
+| Own speech (`own`) | the browser's `utt.end` (sent at the voice detector's end of the utterance and at the push-to-talk release alike) to the first audio byte of the reply sent to the browser | `recognition_ms`: `utt.end` to the recogniser's final; `front_first_token_ms`: **always not measured**: the relay sees the front's first complete sentence, never its first token; `front_ms`: the final to the reply's first speech handed to synthesis as `speak` (the read-back matcher and the front's time to its first complete sentence, which is the early sentence of §3.3 step 5 when the front streams one, else its whole round trip); `synthesis_ms`: that to the first audio byte sent | swarm-api, `voice/speech_relay.py` |
 | GPT-Live (`gpt-live`) | the sideband's person `*.speech_stopped` to `session.output_audio.started` | none: the sideband shows no part of the span | swarm-voice, `latency.py`, posted on the session grant's trace write |
 
 **Clocks.** Each span is taken on one side only, on that process's monotonic clock, so no two clocks
