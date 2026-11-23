@@ -135,7 +135,7 @@ AT_REST = frozenset({TERMINATED, "STOPPED"})
 END_BY_PERSON = vs.END_BY_PERSON
 END_IDLE = "idle"
 END_TAB_CLOSED = "tab_closed"
-END_BUDGET_CAP = "budget_cap"
+END_BUDGET_CAP = vs.END_BUDGET_CAP
 END_SWEPT = "swept"
 # Not session ends: the session falls back to text instead (§4.1, §4.7).
 FALLBACK_NO_L4 = "no_l4"

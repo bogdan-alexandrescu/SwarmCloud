@@ -3,7 +3,7 @@ machine's sweep (docs/design/voice-it-own-speech.md §3.3, §4.4, §4.5).
 
     WS   /v1/voice/sessions/{session_id}/audio
     POST /v1/internal/voice/speech/sweep          -> {enabled, lease, ended, stopped, instance,
-                                                      abandoned}
+                                                      abandoned, budget_ended}
 
 THE AUDIO SOCKET (§3.3 step 2) is the person's, behind the same front door
 and sign-in as every Voice it route: the caller is authenticated as a request
@@ -28,7 +28,10 @@ configured the route admits nobody (503). It ends a session whose lease lost
 its heartbeat, its tab or its idle time and stops an instance no live lease
 holds. Whether or not the engine is on, it also ends every Voice it session
 of any mode left `live` without activity for sessions.LIVE_STALE_SECONDS
-(`abandoned`: how many), so none lingers in lists or holds its person.
+(`abandoned`: how many), so none lingers in lists or holds its person, and
+enforces the spend caps on every live session (voice/budget.py `sweep`):
+one past its cap's two-minute grace ends with the cause `budget_cap`
+(`budget_ended`: how many), the backstop when swarm-voice is down.
 
 WHAT THE START LANE (L6) CALLS. `machine_for(app, ctx)` is the lifecycle a
 `speech` start takes the lease and starts the instance with
@@ -54,6 +57,8 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 from ..auth import GoogleTokenVerifier
 from ..deps import AppContext
 from ..errors import Forbidden, NotFound, Unauthenticated, UpstreamUnavailable
+from ..voice import budget as vbudget
+from ..voice import ledger as vledger
 from ..voice import readback as vreadback
 from ..voice import sessions as vs
 from ..voice import settings as vsettings
@@ -364,12 +369,36 @@ async def sweep(request: Request) -> dict[str, Any]:
     sessions = vs.VoiceSessions(ctx.db, _voice_client(app, ctx),
                                 marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
                                 now=ctx.now, machine=machine)
+    guard = vbudget.BudgetGuard(ctx.db, budget_ledger(request, ctx), now=ctx.now,
+                                end=sessions.end_for_budget)
     if machine is None:
         abandoned = len(await run_in_threadpool(sessions.sweep_abandoned))
+        capped = len(await run_in_threadpool(guard.sweep))
         return {"enabled": False, "lease": None, "ended": None, "stopped": False, "instance": None,
-                "abandoned": abandoned}
+                "abandoned": abandoned, "budget_ended": capped}
     # The machine's own causes first; what is left live without activity after.
     report = await run_in_threadpool(machine.sweep, VoiceSessionEnder(ctx, _voice_client(app, ctx)))
     abandoned = len(await run_in_threadpool(sessions.sweep_abandoned))
-    log.info("speech sweep %s abandoned=%d", json.dumps(report, sort_keys=True), abandoned)
-    return {"enabled": True, **report, "abandoned": abandoned}
+    # The caps' backstop (voice/budget.py): a session past its grace ends with
+    # `budget_cap` even when swarm-voice never asks again.
+    capped = len(await run_in_threadpool(guard.sweep))
+    log.info("speech sweep %s abandoned=%d budget_ended=%d", json.dumps(report, sort_keys=True),
+             abandoned, capped)
+    return {"enabled": True, **report, "abandoned": abandoned, "budget_ended": capped}
+
+
+def budget_ledger(request: Request, ctx: AppContext) -> vledger.VoiceLedger:
+    """The ledger the sweep enforces the caps over: `app.state.voice_budget_ledger`
+    when one is set (a test's), else the one `GET .../ledger` serves."""
+    ledger = getattr(request.app.state, "voice_budget_ledger", None)
+    if ledger is not None:
+        return ledger
+    from .profile import preferences_store
+
+    # Read only when a live session is enforced: a sweep with none reads nothing.
+    return vledger.VoiceLedger(
+        ctx.db, now=ctx.now,
+        prices=lambda: ctx.store.get_platform_settings()["model_prices"],
+        time_zone=vbudget.saved_zone(
+            lambda email: preferences_store(request, ctx).read(email).time_zone),
+        work=getattr(request.app.state, "voice_work", None))
