@@ -17773,7 +17773,7 @@ function fixtureVoiceCatalogue(): unknown {
       { name: 'claude-sonnet-5', label: 'Claude Sonnet 5', model: 'claude-sonnet-5' },
     ],
     planner_models: [
-      { name: 'fable', label: 'Fable class (planning)', model: 'claude-fable-5-2' },
+      { name: 'fable', label: 'Fable class (planning)', model: 'claude-fable-5-1' },
       { name: 'opus', label: 'Opus class (coding)', model: 'claude-opus-5-5' },
     ],
     idle: [
