@@ -326,7 +326,7 @@ def test_an_attempt_that_restarts_its_runner_reports_every_runners_usage(
     exported 2.0s, wrote the second runner's lower memory peak over the
     first's, and restarted its HEARTBEAT total from zero with the second runner.
     """
-    from agent_worker import lifecycle, metrics
+    from agent_worker import heartbeat, metrics
 
     class TwoSecondsPerRunner:
         source = "scripted"
@@ -356,7 +356,7 @@ def test_an_attempt_that_restarts_its_runner_reports_every_runners_usage(
     # Every other heartbeat is an event, not every fifth, so the second runner
     # is certain to appear in the series. (`% 1 == 1` is never true, so 2 is
     # the densest setting there is.)
-    monkeypatch.setattr(lifecycle, "HEARTBEAT_EVENT_EVERY", 2)
+    monkeypatch.setattr(heartbeat, "HEARTBEAT_EVENT_EVERY", 2)
 
     seed_attempt(db, task_input={"prompt": "rotated once", "steps": 3, "sleep_seconds": 5.0},
                  simulated={"credential_revoked_times": 1})
@@ -578,12 +578,12 @@ def test_a_run_writes_the_attempts_own_figures_while_it_runs_and_at_the_end(
     exact. The docs promise a reading with every fifth heartbeat while a runner
     runs, not a reading for every run however short.
     """
-    from agent_worker import lifecycle
+    from agent_worker import heartbeat, lifecycle
 
     # The first reading comes on the runner's second heartbeat rather than its
     # third (the default of 5, after three startup heartbeats). That keeps the
     # hold at about 2s.
-    monkeypatch.setattr(lifecycle, "HEARTBEAT_EVENT_EVERY", 2)
+    monkeypatch.setattr(heartbeat, "HEARTBEAT_EVENT_EVERY", 2)
     gate, gave_up = tmp_path / "runner-may-exit", tmp_path / "runner-gave-up"
     catalogue_argv = lifecycle._runner_argv
 
