@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import re
 import tomllib
 from pathlib import Path
 
@@ -143,6 +144,38 @@ def test_the_conftest_stops_collection_on_a_malformed_list(monkeypatch):
     monkeypatch.setattr(fq, "load", broken)
     with pytest.raises(pytest.UsageError, match="tests/flaky.txt:1"):
         module.pytest_collection_modifyitems(None, [_Item(HERE_ID + "::t")])
+
+
+def test_the_conftest_stops_collection_on_a_list_naming_a_test_that_is_not_there(monkeypatch, tmp_path):
+    """A renamed or deleted test leaves its entry quarantining nothing, so the
+    loader refuses it and collection stops. Existence is read from the files
+    on disk, never from the collected items, so a shard that collects a subset
+    still loads a good list. MUTATION: drop the check from load() -- red."""
+    spec = importlib.util.spec_from_file_location("_quarantine_conftest_missing", CONFTEST)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    real_load = fq.load
+    listed = tmp_path / "flaky.txt"
+    monkeypatch.setattr(fq, "load", lambda: real_load(listed))
+
+    real = (
+        HERE_ID + "::test_apply_marks_exactly_the_listed_items",
+        HERE_ID + "::test_a_malformed_line_is_refused_with_its_line_number[a-b]",
+        HERE_ID + "::_Item::add_marker",
+    )
+    listed.write_text("".join(f"{i} #1 2026-10-14\n" for i in real), encoding="utf-8")
+    module.pytest_collection_modifyitems(None, [_Item(HERE_ID + "::t")])
+
+    for gone in (
+        HERE_ID + "::test_that_was_renamed",
+        HERE_ID + "::_Item::no_such_method",
+        HERE_ID + "::NoSuchClass::test_one",
+        "tests/unit/scripts/test_no_such_file.py::test_one",
+    ):
+        listed.write_text(f"{real[0]} #1 2026-10-14\n{gone} #1 2026-10-14\n", encoding="utf-8")
+        with pytest.raises(pytest.UsageError, match=r"tests/flaky\.txt:2: .*" + re.escape(gone)):
+            module.pytest_collection_modifyitems(None, [_Item(HERE_ID + "::t")])
 
 
 def test_the_flaky_marker_is_registered():
