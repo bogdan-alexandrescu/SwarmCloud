@@ -21,7 +21,9 @@ cannot import swarm-egress; a test holds the two equal), and every address
 it resolves to public unicast. A new target
 is `pending`; no run starts until a PLATFORM ADMIN approves it (VQ-Q1, "any
 platform admin, audited"), naming the host they approve, so an approval can
-never land on a host that changed under the approver. Changing the host,
+never land on a host that changed under the approver; the approval
+resolves every origin it approves again, so a name that moved to a private
+address since registration is a 422 and nothing is approved. Changing the host,
 the login's `extra_origin` or the leg's `extra_origins` sets it back to
 `pending`.
 
