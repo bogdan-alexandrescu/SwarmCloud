@@ -5,7 +5,7 @@ same task recorded.
 Moved out of `lifecycle.py` unchanged (issue 68, a slice of splitting that file
 by concern): `Worker` inherits `CheckpointMixin`, so the methods keep their
 `self` access and every `worker._checkpoint(...)` call and test still resolves.
-`lifecycle` re-exports `_KEY_SEGMENT_RE` by assignment, for a cite of that file.
+`_KEY_SEGMENT_RE` lives here alone (issue 193); `lifecycle` no longer binds it.
 `_refunded_resumes` stays in `lifecycle`, which counts resumes with it outside
 this concern too, and is imported where it is used: a module-level import of
 `lifecycle` from here would be circular.
