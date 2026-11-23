@@ -70,6 +70,8 @@
 .vcp-block-h { margin: 0; display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 8px; font-size: var(--t-meta); line-height: var(--lh-meta); }
 .vcp-block-t { font-weight: 600; color: var(--text); }
 .vcp-block-meta { color: var(--text-faint); }
+/* When a reached cap ends the session (voice/budget.py): a time, in the bad tone. */
+.vcp-ends { color: var(--bad-ink, var(--bad)); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .vcp-block-fig { margin-left: auto; display: inline-flex; align-items: baseline; gap: 4px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .vcp-block-fig b { color: var(--text); font-weight: 600; }
 .vcp-block-fig.is-warn b { color: var(--warn-ink, var(--warn)); }

@@ -91,6 +91,10 @@ from .claudeturn import ClaudeCode
 from .credential import CredentialError
 from .grant import SessionGrant
 from .plannerlease import NO_ACCOUNTS_REGISTERED, PlannerAccounts, PoolFull
+from .worksink import CAP_SENTENCES, WORK_ROUTE
+
+#: The caps' refusal a session already at a cap gives (worksink.CAP_REASONS).
+CAPPED_REASON = "voice_budget_capped"
 
 log = logging.getLogger("swarm_voice.planner")
 
@@ -390,18 +394,23 @@ class Planner:
 
     async def delegate(self, *, person: str, grant: SessionGrant | None,
                        transcript: list[tuple[str, str]], delegation_id: str | None = None,
-                       model: str | None = None, request: str | None = None) -> TurnResult:
+                       model: str | None = None, request: str | None = None,
+                       admitted: bool = False) -> TurnResult:
         """Run one turn for a delegation; never raises for a refusal or a failure:
         the result's `spoken` always says what happened. `model` is the
         session's planner model, read at its start; None keeps the pin.
         `request` is the delegation's own text, when the voice gave it any
-        (GPT-Live's delegation event, live.py), handed over beside the transcript."""
+        (GPT-Live's delegation event, live.py), handed over beside the transcript.
+        `admitted`: the caller already asked swarm-api's caps (the fast front's
+        `started`, worksink.py); else this asks them first (`_capped`)."""
         try:
             api = tools_read.SwarmApi.for_session(self._http, base_url=self._api_base,
                                                   id_tokens=self._id_tokens, grant=grant)
         except tools_read.NoGrant as exc:
             log.warning("planner refused: %s", exc)
             return TurnResult(delegation_id, SAY_NO_GRANT, error=str(exc))
+        if not admitted and await self._capped(api):
+            return TurnResult(delegation_id, CAP_SENTENCES[CAPPED_REASON])
         lock = self._locks.setdefault(api.session_id, asyncio.Lock())
         async with lock:
             result = TurnResult(delegation_id, "")
@@ -414,6 +423,23 @@ class Planner:
                 log.warning("voice session %s: planner turn ran out of time", api.session_id)
                 result.spoken, result.error = _failed(result), TIMED_OUT
                 return result
+
+    async def _capped(self, api: tools_read.SwarmApi) -> bool:
+        """Whether the session has reached a spend cap (voice-it.md §3.8):
+        swarm-api's caps' state, `POST .../work {budget: true}`. A read that
+        fails is not a cap: the turn runs, and swarm-api's sweep still ends a
+        session past its grace."""
+        try:
+            body = await api._call("POST", WORK_ROUTE, WORK_ROUTE.format(session_id=api.session_id),  # noqa: SLF001
+                                   json_body={"budget": True})
+        except tools_read.ApiRefused as exc:
+            log.warning("voice session %s: the caps could not be read: %s", api.session_id, exc)
+            return False
+        state = body.get("budget") if isinstance(body, dict) else None
+        capped = isinstance(state, dict) and state.get("capped") is not None
+        if capped:
+            log.info("voice session %s: a delegation refused at a cap", api.session_id)
+        return capped
 
     async def read(self, *, grant: SessionGrant | None, name: str, args: Any,
                    known: tuple[str, ...] = ()) -> tuple[str, bool]:

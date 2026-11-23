@@ -47,6 +47,13 @@ export interface LedgerCap {
   lines: LedgerLine[]
 }
 
+/** What swarm-api's cap enforcement recorded on the session (voice/budget.py): the caps warned of at 80%, the cap reached, and when the session ends for it. */
+export interface LedgerBudget {
+  warned: ('session' | 'day')[]
+  capped: 'session' | 'day' | null
+  ends_at: string | null
+}
+
 export interface Ledger {
   session_id: string
   date: string
@@ -54,6 +61,22 @@ export interface Ledger {
   session: LedgerCap
   day: LedgerCap
   not_counted: string[]
+  budget: LedgerBudget
+}
+
+const CAP_LINES = ['session', 'day'] as const
+type CapLine = (typeof CAP_LINES)[number]
+const isCapLine = (v: unknown): v is CapLine => v === 'session' || v === 'day'
+
+/** The served enforcement state; nothing warned or reached when the answer carries none. */
+function asBudget(v: unknown): LedgerBudget {
+  const b = (typeof v === 'object' && v !== null ? v : {}) as Partial<Record<keyof LedgerBudget, unknown>>
+  const capped = isCapLine(b.capped) ? b.capped : null
+  return {
+    warned: Array.isArray(b.warned) ? CAP_LINES.filter((l) => (b.warned as unknown[]).includes(l)) : [],
+    capped,
+    ends_at: capped !== null && typeof b.ends_at === 'string' ? b.ends_at : null,
+  }
 }
 
 function isCap(v: unknown): v is LedgerCap {
@@ -73,7 +96,7 @@ function isCap(v: unknown): v is LedgerCap {
 export function asLedger(v: unknown): Ledger | null {
   const l = v as Ledger | null
   if (typeof l !== 'object' || l === null || !isCap(l.session) || !isCap(l.day)) return null
-  return { ...l, not_counted: Array.isArray(l.not_counted) ? l.not_counted : [] }
+  return { ...l, not_counted: Array.isArray(l.not_counted) ? l.not_counted : [], budget: asBudget((l as { budget?: unknown }).budget) }
 }
 
 export function usd(n: number): string {

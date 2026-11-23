@@ -1801,6 +1801,7 @@ export interface VisualBody {
 export interface WorkReport {
   delegation?: { [key: string]: unknown } | null
   roster?: unknown[] | null
+  budget?: true | null
 }
 
 export interface WorkflowCreate {
