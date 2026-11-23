@@ -134,10 +134,20 @@ def test_the_parser_reads_the_saved_page_to_its_figures() -> None:
         assert modelprices.MODEL_NAME.fullmatch(name), name
 
 
+#: Seeded models the saved page predates, and the listed model whose figures
+#: each copies (modelprices.SEED's comment): claude-fable-5-2, the fable
+#: class's pin from 2026-11-23, at Fable 5.1's price until the owner confirms it.
+COPIED_SEEDS = {"claude-fable-5-2": "claude-fable-5-1"}
+
+
 def test_every_seeded_model_is_on_the_page_at_its_seeded_figures() -> None:
     parsed = refresh.parse_page(PAGE)
     for name, seed in modelprices.SEED.items():
-        assert rates(parsed.prices[name]) == rates(seed), name
+        listed = COPIED_SEEDS.get(name, name)
+        assert rates(parsed.prices[listed]) == rates(seed), name
+    for name in COPIED_SEEDS:
+        assert name not in parsed.prices, f"{name} is on the page now: seed its own figures"
+        assert modelprices.SEED[name]["updated_by"].startswith("copied from "), name
 
 
 def test_the_parser_reads_haiku_5_5s_two_tiers_from_the_saved_page() -> None:

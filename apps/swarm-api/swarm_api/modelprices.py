@@ -143,11 +143,21 @@ def _published(inp: float, out: float, read: float, write: float,
 
 
 #: Today's figures, exactly as `_LIST_PRICES` held them (module docstring),
-#: and the two `_published` from the saved pricing page.
+#: and the two `_published` from the saved pricing page, and
+#: `claude-fable-5-2`, copied from Fable 5.1 (its comment).
 #: Two that look wrong are not: `claude-mythos-5-1` is the Project Glasswing
 #: counterpart of Fable 5.1, at Fable 5.1's price, and `claude-opus-5-5` is
 #: priced BELOW Opus 5 ($4/$20).
 SEED: dict[str, dict[str, Any]] = {
+    # The fable class's pin since 2026-11-23 (owner decision). Its figures are
+    # COPIED from claude-fable-5-1 below, not read from the pricing page: the
+    # saved page (_PAGE_READ) predates it, so `updated_by` says where they
+    # came from rather than naming _LIST_PRICES. The owner confirms them; the
+    # weekly `model-prices-refresh` rewrites the live entry once the page
+    # lists it at other figures.
+    "claude-fable-5-2": {**_seed(10.0, 50.0, 0.25), "as_of": "2026-11-23",
+                         "updated_by": "copied from claude-fable-5-1"},
+    # The pin before it: kept, so tasks already recorded on it are priced.
     "claude-fable-5-1": _seed(10.0, 50.0, 0.25),
     "claude-mythos-5-1": _seed(10.0, 50.0, 0.25),
     "claude-fable-5": _seed(10.0, 50.0, 1.0),
