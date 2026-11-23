@@ -63,7 +63,7 @@ from .client import (
     SwarmError,
     check_additional_repositories,
     session_tag,
-    submit_guard,
+    send_submission,
 )
 from .follow import follow_command
 from .patches import masked_counts
@@ -1100,8 +1100,8 @@ def submit(
         body["additional_repositories"] = additional_repositories
     if mcp_credentials:
         body[PER_RUN_FIELD] = mcp_credentials
-    with submit_guard("/v1/workflows"):
-        answer = client.request("POST", "/v1/workflows", payload=body, timeout=SUBMIT_TIMEOUT_SECONDS)
+    answer = send_submission("/v1/workflows", body, lambda keyed: client.request(
+        "POST", "/v1/workflows", payload=keyed, timeout=SUBMIT_TIMEOUT_SECONDS))
     envelope = _envelope(answer, "submitting")
     _remember_launch(envelope["workflow"])
     return envelope

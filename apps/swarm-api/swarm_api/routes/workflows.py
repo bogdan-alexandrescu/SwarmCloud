@@ -260,10 +260,16 @@ def create_workflow(
 ) -> dict:
     # `member` or above (workspace-roles.md §4.1), before anything is written.
     require_member(ctx, auth)
-    submission = ctx.submissions.submit_workflow(auth, body)
+    submission = ctx.submissions.submit_workflow(auth, body,
+                                                 idempotency_key=body.idempotency_key)
     workflow = submission.workflow
     response.headers["Location"] = f"/v1/workflows/{workflow.workflow_id}"
+    if submission.replayed:
+        # The first submission's workflow (`swarm_api.idempotency`): read
+        # back, nothing created now.
+        response.status_code = status.HTTP_200_OK
     return {
+        "idempotent_replay": submission.replayed,
         # No rollup on the create response. The step tasks were written
         # microseconds ago by `create_workflow` and deriving over them would
         # spend a read per step to be told what this request just decided. The
