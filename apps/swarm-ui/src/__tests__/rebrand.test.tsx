@@ -278,7 +278,9 @@ describe('the Sky spine shell', () => {
       /* storage may be absent */
     }
   })
-  afterEach(() => {
+  afterEach(async () => {
+    // A test's lazy screen left loading across the next test's module reset never settles.
+    await screenLoaded()
     vi.unstubAllEnvs()
     window.history.replaceState(null, '', '/')
   })
