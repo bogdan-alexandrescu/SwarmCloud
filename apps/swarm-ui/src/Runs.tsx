@@ -13,7 +13,7 @@ import {
   CostFact, PlanStepLive, planStepRow, previousAt, ProgressTime, progressEntries, redReading, shortSha, StepProgress, stepRows, StepsCard, useRunWorkflows,
   type ProgressEntry, type RunWorkflows, type StepRow,
 } from './RunSteps'
-import type { IssueRun, IssueRunState, IssueRunSummary, IssueRunSummaryPage, OpenWork, PlanOverlap, PlanStepDoc, RunCheckCounts, RunPlan } from './types'
+import type { IssueRun, IssueRunState, IssueRunSummary, IssueRunSummaryPage, OpenWork, PlanLintRecord, PlanOverlap, PlanStepDoc, RunCheckCounts, RunPlan } from './types'
 import { useNow } from './useNow'
 import { proseWords, stateWord } from './words'
 import { RunContextCard, SelectedTestsGate, useRunIndex, type RunIndexRead } from './RunIndex'
@@ -1003,7 +1003,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
   const pageRef = useRef<HTMLDivElement>(null)
   // The editor records the digest it opened on, and saves with that one.
   // `at`: which of the two action rows asked to reject, so its form opens where the reader is.
-  const [open, setOpen] = useState<{ kind: 'none' } | { kind: 'edit'; digest: string } | { kind: 'reject'; at: ActionsAt }>(
+  const [open, setOpen] = useState<{ kind: 'none' } | { kind: 'edit'; digest: string | null } | { kind: 'reject'; at: ActionsAt }>(
     { kind: 'none' },
   )
   const close = () => setOpen({ kind: 'none' })
@@ -1015,6 +1015,10 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
   }
 
   const canAct = run.state === 'PLANNED' && run.plan_digest !== null && run.plan !== null
+  // A run held with no plan (both planner outputs failed to parse, none earlier
+  // did): nothing to approve, but a person edits one in or rejects it.
+  const planlessHeld = run.state === 'PLANNED' && run.plan === null && run.plan_digest === null && run.plan_lint?.held === true
+  const actable = canAct || planlessHeld
   const busy = acting.kind === 'busy'
 
   async function act(what: 'approve' | 'edit' | 'reject', at: ActionsAt, call: () => Promise<Result<unknown>>) {
@@ -1064,7 +1068,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
   const prLeads = lead(run)
   /** Approve, Edit and Reject -- or the rejection form, where it was asked for. Null while editing. */
   const actions = (at: ActionsAt): ReactNode => {
-    if (!canAct || open.kind === 'edit') return null
+    if (!actable || open.kind === 'edit') return null
     if (open.kind === 'reject' && open.at === at) {
       return (
         <RejectForm busy={busy} onCancel={() => keep(at)}
@@ -1073,11 +1077,13 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
     }
     return (
       <div className="rn-actions">
-        <Button kind="primary" disabled={busy}
-          onClick={() => void act('approve', at, () => approvePlan(run.id, digest!))}>
-          {acting.kind === 'busy' && acting.what === 'approve' ? 'Approving…' : 'Approve and run'}
-        </Button>
-        <Button disabled={busy} onClick={() => setOpen({ kind: 'edit', digest: digest! })}>Edit plan</Button>
+        {canAct && (
+          <Button kind="primary" disabled={busy}
+            onClick={() => void act('approve', at, () => approvePlan(run.id, digest!))}>
+            {acting.kind === 'busy' && acting.what === 'approve' ? 'Approving…' : 'Approve and run'}
+          </Button>
+        )}
+        <Button disabled={busy} onClick={() => setOpen({ kind: 'edit', digest })}>Edit plan</Button>
         <Button disabled={busy} data-act={`reject-${at}`} onClick={() => setOpen({ kind: 'reject', at })}>Reject</Button>
       </div>
     )
@@ -1203,16 +1209,11 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
                 {digest !== null && <> · <code className="rn-digest" title={digest}>{shortDigest(digest)}</code></>}
               </h3>
             }>
-          {run.plan === null ? (
-            <p className="sb-note">
-              {run.state === 'PLANNING'
-                ? 'No plan yet: the planner agent is still working.'
-                : 'No plan: the planner did not produce one this run could read.'}
-            </p>
-          ) : open.kind === 'edit' && canAct ? (
+          {run.state === 'PLANNED' && <PlanLintFindings lint={run.plan_lint ?? null} />}
+          {open.kind === 'edit' && actable ? (
             <PlanEditor
-              key={open.digest}
-              plan={run.plan}
+              key={open.digest ?? 'no-plan'}
+              plan={run.plan ?? EMPTY_PLAN}
               busy={busy}
               onCancel={close}
               onSave={(plan) => {
@@ -1220,6 +1221,12 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
                 void act('edit', 'foot', () => editPlan(run.id, opened, plan))
               }}
             />
+          ) : run.plan === null ? (
+            <p className="sb-note">
+              {run.state === 'PLANNING'
+                ? 'No plan yet: the planner agent is still working.'
+                : 'No plan: the planner did not produce one this run could read.'}
+            </p>
           ) : (
             <>
               <p className="sb-note">
@@ -1249,12 +1256,12 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
               up over the plan it was turning down. While it is open the foot's
               actions are a plain block under the plan; the bar (opaque, with
               its top border, intake.css) carries only the three buttons. */}
-          {canAct && open.kind !== 'edit' && (
+          {actable && open.kind !== 'edit' && (
             <div className={open.kind === 'reject' && open.at === 'foot' ? 'rn-actflow' : 'rn-actbar'}>{actions('foot')}{answer('foot')}</div>
           )}
           {open.kind === 'edit' && answer('foot')}
           </Fold>
-          {!canAct && answer('foot')}
+          {!actable && answer('foot')}
         </section>
 
         {!prLeads && <CiCard run={run} go={go} wfPr={wfPr} index={indexRead} merge={merge} />}
@@ -1724,6 +1731,9 @@ function IssueReadCard({ run, now }: { run: IssueRun; now: number }) {
 
 type StepDraft = { step: PlanStepDoc; title: string; prompt: string; files: string; tests: string; estimate: string }
 
+/** What a person edits a plan in from on a run held with no plan: one empty step to fill. */
+const EMPTY_PLAN: RunPlan = { summary: '', steps: [{ step_id: 'step-1', title: '', prompt: '' }] }
+
 /**
  * The plan, editable where a plan is: the summary, the estimate and the
  * requirements, and each step's title, prompt, files, tests and estimate.
@@ -1913,6 +1923,32 @@ function overlapRead(o: unknown): PlanOverlap {
  * heading counts both from `overlapVerdict`: "5 checked · none need action",
  * or "5 checked · 1 needs action".
  */
+/**
+ * A HELD RUN'S PLAN LINT FINDINGS (improvement plan 2026-11-23, 'Plans that can
+ * be checked'): the planner's output failed the lint, the one re-plan failed
+ * too, and the run waits PLANNED for a person. One line per finding, its code
+ * and sentence; what the hold means sits behind the chip's tooltip, so the page
+ * gains no sentence of its own.
+ */
+function PlanLintFindings({ lint }: { lint: PlanLintRecord | null }) {
+  if (lint === null || !lint.held || lint.findings.length === 0) return null
+  return (
+    <div className="rn-lint" aria-label="Plan lint findings">
+      <Chip tone="park" title="The plan failed the plan lint, and so did its one re-plan: edit it, approve it or reject it.">
+        lint · {pluralise(lint.findings.length, 'finding')}
+      </Chip>
+      <ul>
+        {lint.findings.map((f, i) => (
+          <li key={i}>
+            <code title={f.step !== null ? `step ${f.step}` : f.requirement !== null ? `requirement ${f.requirement}` : undefined}>{f.code}</code>
+            {f.message !== null && <> {f.message}</>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function Overlaps({ plan, openWork, folded, ended }: { plan: RunPlan; openWork: OpenWork | null; folded: boolean; ended: boolean }) {
   const overlaps = plan.overlaps === undefined || plan.overlaps === null ? plan.overlaps : plan.overlaps.map(overlapRead)
   const found = overlaps !== undefined && overlaps !== null && overlaps.length > 0

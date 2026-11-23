@@ -911,7 +911,7 @@ export interface PlanApprove {
 }
 
 export interface PlanEdit {
-  plan_digest: string
+  plan_digest?: string | null
   plan: { [key: string]: unknown }
 }
 

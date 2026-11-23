@@ -838,7 +838,11 @@ class PlanApprove(StrictModel):
 class PlanEdit(StrictModel):
     #: The digest of the plan being edited, so two editors cannot silently
     #: overwrite each other: the second is refused with `plan_changed`.
-    plan_digest: str = Field(min_length=1, max_length=128)
+    #: Omitted (None) only for a run held with no plan -- both planner
+    #: outputs failed to parse -- which has no digest to send; on a run that
+    #: has a plan, None is refused with `plan_changed` like any other digest
+    #: that is not the plan's.
+    plan_digest: str | None = Field(default=None, min_length=1, max_length=128)
     #: The whole replacement plan, checked against `issueruns.PlanSpec`.
     plan: dict[str, Any]
 

@@ -348,9 +348,11 @@ def test_a_caller_cannot_pick_the_planners_image_or_profile(client):
 
 def test_the_machine_is_the_one_454_names():
     # NOT_READY: the planner's verdict instead of a plan (the issue sweeper,
-    # owner decisions 2026-10-08).
+    # owner decisions 2026-10-08). PLANNING again: the one re-plan of an
+    # output that failed parse or lint (`planlint`).
     assert RUN_TRANSITIONS[RunState.PLANNING] == {
-        RunState.PLANNED, RunState.NOT_READY, RunState.FAILED, RunState.CANCELLED,
+        RunState.PLANNING, RunState.PLANNED, RunState.NOT_READY, RunState.FAILED,
+        RunState.CANCELLED,
     }
     # FAILED: an `auto` run whose creator left the tenant before the tick approved it.
     assert RUN_TRANSITIONS[RunState.PLANNED] == {
