@@ -1046,7 +1046,7 @@ TRACK_EVERY_BRANCH = (
 #: clone runs ("shallow file has changed since we read it"). Every command
 #: that starts it in its own repository carries both settings -- the fetches,
 #: the `git commit`s and the integrator's merge; which ones those are is
-#: measured, command by command, in `test_gitops_no_auto_maintenance.py`.
+#: measured, command by command, in a test.
 #: `gc.auto=0` alone gates only maintenance's gc task, not the run itself.
 _NO_AUTO_MAINTENANCE = ("-c", "maintenance.auto=false", "-c", "gc.auto=0")
 
@@ -5975,7 +5975,7 @@ def replay_onto_tip(
     publish_failed although the moved tip already held it.
 
     SUPERSEDED BY THE BASE (archived issue 2367). MEASURED 2026-10-25: four CI-fix rounds
-    had hand-patched tests/unit/scripts/unit_test_durations.json, main's
+    had hand-patched the unit test suite's cached durations file, main's
     archived pull request 2312 rewrote it and was merged into their branches, and each replay
     conflicted on it. When EVERY conflicted path of a pick is one the base
     merge changed (`base_merge_changed_paths`, clone base..tip), the tip's

@@ -53,8 +53,7 @@ def _int_or_none(value: Any) -> int | None:
 #: The marker the child cascade sets on a child cancelled because of its
 #: parent (docs/design/child-tasks.md §3.4), `swarm_api.validation.
 #: CHILD_CASCADE_METADATA_KEY` restated: this image carries neither swarm-api
-#: nor the scheduler. tests/unit/worker/test_end_cause_reconciler.py
-#: holds it equal to both.
+#: nor the scheduler. A test holds it equal to both.
 CHILD_CASCADE_METADATA_KEY = "child_cascade"
 
 
@@ -512,7 +511,6 @@ class ExecutionView:
     #: execution -- so a reconciler that (correctly) declines to terminate
     #: compute it cannot attribute to a task would leave real compute running
     #: in the attacker's tenant with a refused claim on the victim's work.
-    #: Caught by test_a_forged_execution_does_not_fence_the_victims_live_attempt.
     claim_refused: bool = False
     #: When the backend recorded this execution as over: a Cloud Run
     #: execution's `completion_time`, a Job's completion time or the time its
@@ -650,8 +648,8 @@ class ControlSnapshot:
 #: A workflow that waits for named pull requests to merge (lane SPEED-D3,
 #: `swarm_api.prgate`): the gate its root steps carry while PARKED on
 #: DEPENDENCY_INCOMPLETE, and the state that releases it. Restated because
-#: this image carries neither swarm-api nor the scheduler; held equal by
-#: tests/unit/control_plane/test_workflow_after_pr.py.
+#: this image carries neither swarm-api nor the scheduler; held equal by a
+#: test.
 AFTER_PRS_METADATA_KEY = "after_prs"
 AFTER_PRS_MERGED = "merged"
 

@@ -18,9 +18,9 @@ is a live-browser profile in the frozen catalogue. Otherwise 409
 (§2.5) -- never proxied for part of it.
 
 THE TICKET is `swarm_egress.ticket`'s wire, restated here because swarm-api
-cannot import swarm-egress; tests/unit/egress/test_egress_ticket.py holds the
-two together. Read-only: minting writes nothing, so a renewal every few
-minutes costs three document reads.
+cannot import swarm-egress; a test holds the two together. Read-only:
+minting writes nothing, so a renewal every few minutes costs three document
+reads.
 
 Nothing here logs, stores or serves a key, a signature or a ticket, other
 than the one ticket in the response body.

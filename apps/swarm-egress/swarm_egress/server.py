@@ -34,8 +34,7 @@ generation of its task appears, or when a cap is reached.
 THE LOG carries event names, causes, statuses, ids and byte counts. Never the
 ticket, the vendor username (it carries the session id) or password, the
 CONNECT host, or anything the vendor sent back; every line goes through
-swarm_redaction as well. tests/unit/egress/test_egress_server.py fails if a
-line carries any of them.
+swarm_redaction as well.
 """
 
 from __future__ import annotations

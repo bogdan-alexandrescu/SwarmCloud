@@ -216,9 +216,8 @@ def displayable(text: str) -> str:
     lone surrogate as `\\udxxx`. The same spelling as
     `swarm_api.checkpoint_content.displayable`, the API's own listing of the
     names a checkpoint holds; restated here because the worker does not import
-    the API, and held to it by a parity test
-    (`tests/unit/worker/test_standalone_outputs.py`), because a restated rule
-    is the one that drifts. The result is for reading, never an address.
+    the API, and held equal to it, because a restated rule is the one that
+    drifts. The result is for reading, never an address.
     """
     if storable(text):
         return text

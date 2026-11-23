@@ -23,8 +23,8 @@ has since drifted, so they come from here:
 
 swarm-api cannot import this package (its image installs swarm-api and
 swarm-common only), so `swarm_api.agent_streams.AGENT_STREAM_FILES` restates
-the table, and `tests/unit/control_plane/test_agent_stream_parity.py` compares
-the two for every profile in the frozen catalogue.
+the table, and the two are compared for every profile in the frozen
+catalogue.
 
 THE NAMES NEVER COME FROM A CALLER. They are the runner module's own
 constants, selected by the profile NAME the frozen catalogue already chose

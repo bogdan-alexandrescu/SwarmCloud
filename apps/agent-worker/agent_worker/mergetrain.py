@@ -48,7 +48,7 @@ from swarm_common.models import utcnow
 ENTRIES_COLLECTION = "merge_train_entries"
 
 #: The signed `merge_target.merge_mode` values (swarm-api's
-#: `validation.MERGE_MODE_*`, held equal by test_merge_train_mode.py).
+#: `validation.MERGE_MODE_*`, held equal to them).
 DIRECT = "direct"
 TRAIN = "train"
 

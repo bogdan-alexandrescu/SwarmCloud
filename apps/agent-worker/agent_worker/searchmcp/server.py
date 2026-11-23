@@ -20,8 +20,7 @@ SPOOL_DIR_NAME = ".swarm-search"
 SPOOL_ENV = "SWARM_SEARCH"
 TOOL_NAME = "search"
 #: swarm-api's limits (`swarm_api.search.MAX_QUERY_CHARS`, `MAX_COUNT`),
-#: restated for the fast answer; tests/unit/worker/test_search_tool_wiring.py
-#: holds them equal.
+#: restated for the fast answer; the two are held equal.
 MAX_QUERY_CHARS = 400
 MAX_COUNT = 10
 DEFAULT_COUNT = 5

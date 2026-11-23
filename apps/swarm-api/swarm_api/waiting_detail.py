@@ -148,8 +148,7 @@ _PLACE_IN_LINE_WHY = "not counted on this route: only GET /v1/tasks/{id} counts 
 TASKS = "tasks"
 #: The scheduler's READY query order (`SchedulerStore.ready_tasks`), restated
 #: as the count's cursor order because swarm-api does not import the
-#: scheduler. `test_the_count_follows_the_schedulers_own_ready_query_order`
-#: holds the two together.
+#: scheduler.
 LINE_ORDER = (("priority", "DESCENDING"), ("created_at", "ASCENDING"))
 _LINE_ORDER_WORDS = ("priority descending, then created_at ascending: the scheduler's READY "
                      "query (SchedulerStore.ready_tasks)")
@@ -249,8 +248,7 @@ def _blocker_words(entry: Mapping[str, Any]) -> str:
 #: How long the wake tick's reading of a CI park stays fresh, so long the
 #: scheduler holds the park past its fallback instant: `scheduler.loop.
 #: MERGE_CI_FALLBACK_SECONDS` (900 s, the worker's fallback), restated because
-#: swarm-api does not import the scheduler; held equal by
-#: tests/unit/control_plane/test_waiting_held_merge_wait.py.
+#: swarm-api does not import the scheduler; a test holds the two equal.
 CI_READING_FRESH_SECONDS = 900
 
 

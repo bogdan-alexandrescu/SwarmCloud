@@ -113,8 +113,7 @@ DAY = "day"
 LINES = ("talk", "planner", "speech_machine", "work_running", "work_finished", "followups")
 NOT_COUNTED = ("pod compute for lanes", "CI runner minutes", "deploys")
 
-#: `detail.reason` of a refusal; the code is the established `conflict`
-#: (tests/unit/control_plane/test_new_refusals_ship_off.py).
+#: `detail.reason` of a refusal; the code is the established `conflict`.
 SESSION_CAP_REACHED = "voice_session_cap"
 DAY_CAP_REACHED = "voice_day_cap"
 

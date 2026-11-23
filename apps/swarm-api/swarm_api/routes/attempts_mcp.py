@@ -4,8 +4,7 @@
 
 docs/design/registered-mcp-servers.md §4.6, part of archived issue 1433. THE SECOND ROUTE
 THAT SERVES CREDENTIAL MATERIAL, by owner decision Q9 of 2026-10-17, beside
-`secrets:release`; named as a carve-out by
-tests/unit/control_plane/test_no_route_serves_credentials.py and listed in
+`secrets:release`; named as a carve-out by a test and listed in
 `main.UNCAPTURED_ROUTES`. WORKER-ONLY, like the release: it declares neither
 `current_auth` nor `tenant_scope`, and the request carries no tenant, task,
 server name or consumer to choose.

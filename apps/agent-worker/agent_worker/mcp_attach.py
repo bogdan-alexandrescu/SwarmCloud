@@ -76,7 +76,7 @@ from .secretrelease import _write_private
 
 #: swarm-api's purpose for this route (`swarm_api.routes.attempts_mcp.
 #: ATTACH_PURPOSE`), restated: this image does not carry swarm-api.
-#: tests/unit/worker/test_mcp_attach.py holds the two equal.
+#: The two are held equal.
 ATTACH_PURPOSE = "swarm-mcp-attach/v1"
 
 #: The runner's one variable: the relay file's PATH.
@@ -95,8 +95,8 @@ RETRYABLE_REASONS = frozenset({"unreadable"})
 
 #: Withheld reasons that are the per-run credential alone: swarm-api's
 #: `mcp_credentials.CREDENTIAL_EXPIRED` and `CREDENTIAL_MISSING`, restated
-#: (this image does not carry swarm-api); tests/unit/worker/test_mcp_attach.py
-#: holds them equal. A workflow's caller can re-store such a credential.
+#: (this image does not carry swarm-api); held equal to them. A workflow's
+#: caller can re-store such a credential.
 CREDENTIAL_EXPIRED = "credential_expired"
 CREDENTIAL_MISSING = "credential_missing"
 CREDENTIAL_REASONS = frozenset({CREDENTIAL_EXPIRED, CREDENTIAL_MISSING})

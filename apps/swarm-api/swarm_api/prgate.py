@@ -93,7 +93,7 @@ TASKS = "tasks"
 #: The gate's states. `scheduler.loop.AFTER_PRS_MERGED` / `AFTER_PRS_CLOSED`
 #: and `reconciler.model.AFTER_PRS_MERGED` restate them; the scheduler and the
 #: reconciler are separate images and cannot import this one.
-#: tests/unit/control_plane/test_workflow_after_pr.py holds them equal.
+#: A test holds them equal.
 STATE_WAITING = "waiting"
 STATE_MERGED = "merged"
 STATE_CLOSED = "closed"

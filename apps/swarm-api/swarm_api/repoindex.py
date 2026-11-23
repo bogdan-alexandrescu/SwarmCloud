@@ -300,13 +300,13 @@ MEASURE_LATENCY_LINE = "swarm-index-measure-latency-hours: "
 #: GitHub's compare lists at most 300 changed files, so a diff of 300 or more
 #: is exactly one this side cannot see whole. The extractor applies the same
 #: bound to the diff it measures (`repo_index_extract.MAX_INCREMENTAL_CHANGES`,
-#: held equal by tests/unit/worker/test_repo_index_incremental.py).
+#: held equal by a test).
 MAX_INCREMENTAL_CHANGES = 300
 #: The extractor version the indexer image runs
-#: (`repo_index_extract.EXTRACTOR_VERSION`, held equal by
-#: tests/unit/worker/test_repo_index_incremental.py). The extractor carries a
-#: base graph only when it extracted it itself, so a promoted graph of another
-#: version is a full run -- and `choose_kind` says so before the run is
+#: (`repo_index_extract.EXTRACTOR_VERSION`, held equal by a test). The
+#: extractor carries a base graph only when it extracted it itself, so a
+#: promoted graph of another version is a full run -- and `choose_kind` says
+#: so before the run is
 #: submitted, so it gets the full timeout instead of reading the whole
 #: repository inside the incremental one (lane IX2 review). "3" since lane
 #: KG2: module-object call edges, communities, search, fingerprints, flows.
@@ -317,10 +317,10 @@ MAX_INCREMENTAL_CHANGES = 300
 #: `unsupported` with no `lsp` edge an incremental run could carry.
 INDEXER_EXTRACTOR_VERSION = "5"
 #: The `truncated` entries a promoted graph may carry and still be built on
-#: (`repo_index_extract.DERIVED_TRUNCATIONS`, held equal by
-#: tests/unit/worker/test_repo_index_incremental.py): both test maps are
-#: walked again by every run, never read from its base. Refusing them made
-#: every one of SwarmCloud's 222 runs of a week (2026-11-03) a full rebuild.
+#: (`repo_index_extract.DERIVED_TRUNCATIONS`, held equal by a test): both
+#: test maps are walked again by every run, never read from its base.
+#: Refusing them made every one of SwarmCloud's 222 runs of a week
+#: (2026-11-03) a full rebuild.
 DERIVED_TRUNCATIONS = frozenset({"symbol_test_map", "file_test_map"})
 #: §3.4 and §3.5: a change to a build or test configuration, a lockfile, a CI
 #: workflow or a language server's configuration changes what `commands`,

@@ -1413,7 +1413,7 @@ _WEBAUTHN_TRAP = """(() => {
 
 #: The challenge frames §2.4 refuses: `mask.SHOWN_IN_CONTROL`, restated
 #: (written when mask.py imported the proxy, which imports this module);
-#: tests/unit/worker/test_qa_target_signin.py holds the two equal.
+#: the two are held equal.
 CHALLENGE_FRAMES = (
     ("www.google.com", "/recaptcha/"),
     ("www.recaptcha.net", "/recaptcha/"),

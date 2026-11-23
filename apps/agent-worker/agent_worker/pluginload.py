@@ -110,7 +110,7 @@ SKIPPED_KEY = "plugins_skipped"
 
 #: What the intake job puts before every hook and server command (section 4.4);
 #: `swarm_api.pluginconfig.LAUNCHER`, restated (the worker never imports the
-#: API); tests/unit/worker/test_pluginload.py holds them equal.
+#: API); the two are held equal.
 LAUNCHER = "/opt/swarm/bin/swarm-plugin-exec"
 #: The Jev adapter the launcher preloads into a TypeSafe-bound plugin's `node`.
 JEV_ADAPTER = "/opt/swarm/jev-gates/bin/jev-adapter.mjs"

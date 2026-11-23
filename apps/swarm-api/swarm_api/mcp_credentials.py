@@ -528,8 +528,7 @@ def _terminal(state: Any) -> bool:
 
 #: The scheduler's `mcp_admission.MCP_CREDENTIAL`, restated (this image does
 #: not carry the scheduler): what a park waiting for a re-store names as its
-#: `blocked_by[].credential`. tests/unit/control_plane/test_mcp_restore.py
-#: holds the two equal.
+#: `blocked_by[].credential`. A test holds the two equal.
 PARK_CREDENTIAL = "mcp"
 
 #: The `reason` of the READY event a re-store writes on a park it returns.
