@@ -655,18 +655,23 @@ else:
 from swarm_common.models import EndCause, Task             # noqa: E402
 
 frozen_fields = set(f.name for f in dataclasses.fields(Task))
-iface = re.search(r"export interface Task \{(.*?)\n\}", SRC, re.S)
+# The console's Task extends the type GENERATED from swarm-api's OpenAPI
+# document (scripts/gen_api_types.py, part of #72), so its fields are declared
+# in that file, not in types.ts.
+GENERATED_TS = Path(repo_root) / "apps/swarm-ui/src/generated/api-types.ts"
+iface = re.search(r"export interface Task \{(.*?)\n\}",
+                  GENERATED_TS.read_text() if GENERATED_TS.is_file() else "", re.S)
 wanted = ["parent_attempt_id", "parent_task_id"]
 if iface is None:
-    emit("MISSING", "Task.parent_*", "no export interface Task block")
+    emit("MISSING", "Task.parent_*", "no export interface Task block in the generated api-types.ts")
 elif not set(wanted) <= frozen_fields:
     emit("DRIFT", "Task.parent_*", "the frozen Task lacks %s" % " ".join(sorted(set(wanted) - frozen_fields)))
 else:
     declared = [w for w in wanted if re.search(r"\n\s*%s\??\s*:" % w, iface.group(1))]
     if declared == wanted:
-        emit("OK", "Task.parent_*", "types.ts declares %s" % " ".join(wanted))
+        emit("OK", "Task.parent_*", "the generated Task declares %s" % " ".join(wanted))
     else:
-        emit("DRIFT", "Task.parent_*", "types.ts declares %s of %s" % (" ".join(declared) or "none", " ".join(wanted)))
+        emit("DRIFT", "Task.parent_*", "the generated Task declares %s of %s" % (" ".join(declared) or "none", " ".join(wanted)))
 
 # -- 10. the credential an attempt ran on (contract request 152) ----------
 # Attempt.account_id, credential_source and credential_tier, restated on

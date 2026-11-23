@@ -1,0 +1,123 @@
+# The roles and join acceptance probes' preconditions (docs/design/workspace-roles.md
+# section 8, docs/design/join-requests.md section 8): terraform/bootstrap/
+# acceptance_probes.tf makes the two identities the probes act as, whose ID
+# tokens swarm-verify mints, and terraform/infra/acceptance_join.tf makes the
+# join probe person's credential secret, which swarm-verify alone reads. Both
+# are off by default: a fresh install has no probes until its owner provisions
+# their workspaces, and the join secret is dev only, so swarm install leaves
+# both switches off.
+version: 1
+entries:
+- id: sa.roles-probe-viewer
+  kind: service-account
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud iam service-accounts describe roles-probe-viewer@$P.iam.gserviceaccount.com
+  apply: terraform/bootstrap/acceptance_probes.tf resource "google_service_account" "probe_viewer", count=enable_acceptance_probes
+  verify: gcloud iam service-accounts keys list shows zero keys; never adopted (no create_ignore_already_exists, so a 409 fails the apply)
+  explain: the non-admin identity scripts/acceptance/groups/roles.sh acts as, a member of the roles-probe group only
+  guards: tests/terraform/bootstrap.tftest.hcl
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - terraform/bootstrap/acceptance_probes.tf
+  notes: absent until enable_acceptance_probes is true, which only the owner's bootstrap settings set
+  step: bootstrap.pass-2
+  refs:
+    terraform:
+    - bootstrap/google_service_account.probe_viewer
+- id: sa.accept-probe-admin
+  kind: service-account
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud iam service-accounts describe accept-probe-admin@$P.iam.gserviceaccount.com
+  apply: terraform/bootstrap/acceptance_probes.tf resource "google_service_account" "probe_admin", count=enable_acceptance_probes
+  verify: gcloud iam service-accounts keys list shows zero keys; never adopted (no create_ignore_already_exists, so a 409 fails the apply)
+  explain: the scoped probe admin the roles and join probes act as, in probe_admin_users for the roles-probe and join-probe workspaces only, never in admin_users
+  guards: tests/terraform/bootstrap.tftest.hcl
+  secret_entry: null
+  depends_on: []
+  evidence:
+  - terraform/bootstrap/acceptance_probes.tf
+  notes: absent until enable_acceptance_probes is true, which only the owner's bootstrap settings set
+  step: bootstrap.pass-2
+  refs:
+    terraform:
+    - bootstrap/google_service_account.probe_admin
+- id: iam-binding.acceptance-probe-id-token-minting
+  kind: iam-binding
+  scope: core
+  stage: 7
+  provider: engine
+  check: gcloud iam service-accounts get-iam-policy roles-probe-viewer@$P.iam.gserviceaccount.com; gcloud iam service-accounts get-iam-policy accept-probe-admin@$P.iam.gserviceaccount.com
+  apply: terraform/bootstrap/acceptance_probes.tf data "google_iam_policy" "probe_minting" + resource "google_service_account_iam_policy" "probe_viewer" and "probe_admin"
+  verify: 'each account''s whole policy is one binding: roles/iam.serviceAccountOpenIdTokenCreator -> serviceAccount:swarm-verify@$P.iam.gserviceaccount.com; never roles/iam.serviceAccountTokenCreator'
+  explain: swarm-verify mints the probes' ID tokens (scripts/acceptance/lib.sh, _acc_mint_id_token, generateIdToken) and nothing else; written authoritatively, so a hand-added member is removed on the next apply
+  guards: tests/terraform/bootstrap.tftest.hcl; the release deployer does not administer either account
+  secret_entry: null
+  depends_on:
+  - sa.roles-probe-viewer
+  - sa.accept-probe-admin
+  - sa.swarm-verify
+  - api.iamcredentials
+  evidence:
+  - terraform/bootstrap/acceptance_probes.tf
+  notes: absent until enable_acceptance_probes is true
+  step: bootstrap.pass-2
+  refs:
+    terraform:
+    - bootstrap/data.google_iam_policy.probe_minting
+    - bootstrap/google_service_account_iam_policy.probe_viewer
+    - bootstrap/google_service_account_iam_policy.probe_admin
+- id: secret.swarm-accept-join-person.container
+  kind: secret-container
+  scope: core
+  stage: 5
+  provider: engine
+  check: gcloud secrets describe swarm-accept-join-person --project=$P
+  apply: terraform/infra/acceptance_join.tf google_secret_manager_secret.accept_join_person, count=enable_acceptance_join_person
+  verify: ONLY swarm-verify can read it (an authoritative secretAccessor binding on this secret alone)
+  explain: holds the join probe person's authorized_user credential, which scripts/acceptance/groups/join.sh exchanges for an openid-email ID token
+  guards: tests/terraform/acceptance_join.tftest.hcl; dev only, never enabled in prod
+  secret_entry: scripts/create-secrets.sh --join-person --stdin
+  depends_on:
+  - api.secretmanager
+  - sa.swarm-verify
+  evidence:
+  - terraform/infra/acceptance_join.tf
+  notes: absent until enable_acceptance_join_person is true, which only the dev settings set
+  step: infra.pass-1
+  refs:
+    terraform:
+    - infra/google_secret_manager_secret.accept_join_person
+    - infra/google_secret_manager_secret_iam_binding.accept_join_person_accessor
+    secret:
+    - swarm-accept-join-person
+- id: secret.swarm-accept-join-person.value
+  kind: secret-value
+  scope: core
+  stage: 6
+  provider: human-in-terminal
+  check: gcloud secrets versions list swarm-accept-join-person --project $P --filter=state:ENABLED
+  apply: scripts/create-secrets.sh --join-person --stdin [--overwrite swarm-accept-join-person] < authorized_user.json
+  verify: the value is an authorized_user credential (type, client_id, refresh_token); the script refuses any other shape and prints none of it
+  explain: stdin only, never an argument, a file argument, tfvars or an environment variable; a replace needs a typed confirmation of the secret's own name
+  guards: tests/unit/scripts/test_create_secrets_join_person.py
+  secret_entry: scripts/create-secrets.sh --join-person --stdin
+  depends_on:
+  - secret.swarm-accept-join-person.container
+  evidence:
+  - scripts/create-secrets.sh
+  notes: dev only, and only once the container exists
+  step: secrets.platform-keys
+  refs:
+    secret_flag:
+    - --join-person
+ignored:
+  variable:
+  - match: bootstrap/enable_acceptance_probes
+    reason: 'the owner''s switch, default false: a new install has no acceptance probes until its owner provisions their workspaces (docs/design/workspace-roles.md section 8), so swarm install leaves it off'
+  - match: infra/enable_acceptance_join_person
+    reason: 'a dev-only switch, default false and never set in prod: the join probe runs only against dev, so swarm install leaves it off'
