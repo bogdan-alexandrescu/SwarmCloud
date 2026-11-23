@@ -208,6 +208,16 @@ moment you most need it is the moment the API is unhealthy. It prints no secrets
 no environment variables, no payloads, no tokens. `--json` gives the same data
 for scripting; `--watch [seconds]` refreshes; `--tenant <id>` narrows.
 
+### The weekly scorecard
+
+`scripts/scorecard.sh` (read-only) prints, per week, agent tasks, success
+rate, cost and tokens per merged pull request, cost by role and model, turns,
+workflow latency, merge-train ejections, review NOT_YET rates by model class,
+release and acceptance health and pre-publish gate outcomes; `--weeks 4` for
+a trend, `--no-github` to spend none of your GitHub quota. Every later change
+to models, the gate or the merge train is judged on it:
+[the scorecard](scorecard.md).
+
 ---
 
 ## 3. Changing capacity
