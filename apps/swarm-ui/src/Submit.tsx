@@ -34,7 +34,7 @@ import { ModelClassSelect, RoomFact, RunnerPicker, UnreadRoom, sentModelClass, u
 import { useInView } from './useInView'
 import { AUTO, BROWSER_TOOL_KEY, BrowserToolPicker, declaredBrowserTools, jevAllowed, profileEgress, useJevJudgment, useTypesafeKey, withBrowserTool } from './BrowserToolPicker'
 import { QA_IDENTITY_KEY, QaIdentityOption, declaredQaIdentities, useGrantedQaIdentity, withQaIdentity } from './QaIdentityGrants'
-import { useRoleGate } from './Profile'
+import { useRoleGate } from './roleGate'
 import { MCP_SERVERS_KEY, McpServerPicker, clearCredentials, declaredMcpServers, loadMcpServers, offeredMcpServers, readCredentials, withMcpServers, type McpServerList } from './McpServers'
 import { FailedPanel, Screen, useSubmitAs } from './Shell'
 import {

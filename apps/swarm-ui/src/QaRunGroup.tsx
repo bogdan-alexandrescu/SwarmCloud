@@ -21,7 +21,7 @@ import {
   type TargetFacts,
 } from './qaRunGroupApi'
 import { promoteQaScreen, type QaScreen, type QaTarget } from './qaTargetsApi'
-import { useRoleGate } from './Profile'
+import { useRoleGate } from './roleGate'
 import { UrCrumb, UrLink, UrRefresh, useUrRead, writeFailure } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import type { TaskState } from './types'

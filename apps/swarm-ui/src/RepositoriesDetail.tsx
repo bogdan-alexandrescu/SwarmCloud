@@ -18,7 +18,8 @@ import {
   useUrRead, writeFailure,
 } from './RepositoriesParts'
 import { RepoPermissions, useForgePermissions } from './PermissionCards'
-import { useRoleGate, WorkspaceTabWords } from './Profile'
+import { useRoleGate } from './roleGate'
+import { WorkspaceTabWords } from './workspaceName'
 import { PageHead } from './Shell'
 import { GraphTab, type GraphOpen } from './RepoGraph'
 import { AlwaysRun, EdgeGroups, PathLookup, Suites } from './RepoTestMap'

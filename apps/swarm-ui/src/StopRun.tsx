@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 import { cancelTask } from './api'
 import { Button } from './components'
 import { WarnGlyph } from './components/glyphs'
-import { useRoleGate } from './Profile'
+import { useRoleGate } from './roleGate'
 import { errorHeading, type ApiError } from './fetch'
 import { trapTab } from './focus'
 import {

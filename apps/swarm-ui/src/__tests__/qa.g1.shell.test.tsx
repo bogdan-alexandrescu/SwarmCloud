@@ -24,6 +24,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { TENANT_HEADER } from '../fetch'
+import { screenLoaded } from './screenLoaded'
 
 const JSON_HEADERS = { 'content-type': 'application/json' }
 const ok = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: JSON_HEADERS })
@@ -198,6 +199,7 @@ describe('G1-11 and G1-12: the 404 is titled as one, and every tab says its page
     const { App } = await import('../App')
     window.history.replaceState(null, '', path)
     render(<App />)
+    await screenLoaded()
   }
 
   it('drops Overview’s anchors from the panel, titles the phone header and the tab "Not found", and heads the page with an h1', async () => {

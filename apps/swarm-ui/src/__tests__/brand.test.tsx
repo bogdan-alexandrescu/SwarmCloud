@@ -41,6 +41,7 @@ import { WorkflowsScreen } from '../Workflows'
 import type { Me } from '../types'
 import { flatRules, type CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { screenLoaded } from './screenLoaded'
 
 /**
  * Put the SHIPPED stylesheet into the document so `getComputedStyle` answers
@@ -481,7 +482,7 @@ describe('the badge shouts only where shouting is a safety signal', () => {
     }
   })
 
-  it('and no rule in any sheet makes it shout, on the label or on anything it inherits from', () => {
+  it('and no rule in any sheet makes it shout, on the label or on anything it inherits from', async () => {
     // The casing is decided in the source, so CSS that shouts would undo the
     // decision above without touching Brand.tsx.
     //
@@ -520,6 +521,10 @@ describe('the badge shouts only where shouting is a safety signal', () => {
     ).toBeGreaterThan(0)
     expect(hits, `CSS makes the environment badge shout:\n  ${hits.join('\n  ')}`).toEqual([])
     style.remove()
+    // The route's lazy screen is still loading (issue 195: Home no longer comes
+    // with the spine); the frame tests below reset the modules, and a load left
+    // in flight across that reset never settles.
+    await screenLoaded()
   })
 })
 

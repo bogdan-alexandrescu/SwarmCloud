@@ -3,7 +3,7 @@ import { loadAccess, loadReadableRepositories, loadRunnerProfiles, registerRepos
 import { Banner, Button, Card, EmptyState } from './components'
 import { normRepo, triggerLabel, TRIGGER_OPTIONS, WEBHOOK_NOTE, WORKFLOW_FILES_WHY, type ChangeTrigger, type Readable, type ReadableList } from './RepositoriesData'
 import { LIST, UrCrumb, UrNavButton, UrRadio, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
-import { useRoleGate } from './Profile'
+import { useRoleGate } from './roleGate'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
 

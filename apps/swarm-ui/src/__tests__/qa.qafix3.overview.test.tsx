@@ -205,9 +205,8 @@ describe('overview-automate-006: a phone keeps the 10-character head of a workfl
 
 /**
  * THE BUNDLE'S ORDER FOR THE TWO SHEETS THAT STYLE AN OVERVIEW NAME. Vite
- * emits CSS in first-import order: App.tsx imports Overview before Workflows
- * (names.css's other importer), and Overview.tsx imports overview.css, then
- * names.css. So names.css comes AFTER overview.css, and a tie in specificity
+ * emits CSS in first-import order: App.tsx imports overview.css, then
+ * names.css, as Overview.tsx does. So names.css comes AFTER overview.css, and a tie in specificity
  * goes to names.css -- the opposite of `marks.ts`'s alphabetical glob, which
  * is how PR 1848's override passed its test and lost in the built console.
  */
@@ -221,11 +220,12 @@ describe('ffp-002, VQ-002: a phone Running row is one line that keeps the step, 
     expect(ov.indexOf('./styles/overview.css')).toBeGreaterThanOrEqual(0)
     expect(ov.indexOf('./styles/overview.css')).toBeLessThan(ov.indexOf('./styles/names.css'))
     const app = imports(APP_TSX)
-    // Overview is a lazy screen, so App.tsx imports overview.css itself; a lazy
-    // chunk's CSS would land after names.css, which the main chunk holds through Workflows.
-    // MUTATION: import Workflows (names.css's other importer) before overview.css in App.tsx.
+    // Overview and Workflows (names.css's other importer) are lazy screens, so
+    // App.tsx imports both sheets itself, in Overview's order; a lazy chunk's
+    // CSS would land after the main chunk's.
+    // MUTATION: import names.css before overview.css in App.tsx.
     expect(app.indexOf('./styles/overview.css')).toBeGreaterThanOrEqual(0)
-    expect(app.indexOf('./styles/overview.css')).toBeLessThan(app.indexOf('./Workflows'))
+    expect(app.indexOf('./styles/overview.css')).toBeLessThan(app.indexOf('./styles/names.css'))
   })
 
   it('cuts the title and keeps the step, in the cascade the built console paints', async () => {

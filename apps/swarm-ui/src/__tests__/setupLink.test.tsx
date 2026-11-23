@@ -23,6 +23,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { visible } from './repofixture'
+import { screenLoaded } from './screenLoaded'
 import { SETUP_LINK_PATH, setupLinkToken } from '../paths'
 
 type Json = Record<string, unknown>
@@ -63,6 +64,7 @@ async function mount(path: string) {
   const mod = await import('../App')
   window.history.replaceState(null, '', path)
   render(<mod.App />)
+  await screenLoaded()
 }
 
 // TEXT AND SELECTOR QUERIES, not `*ByRole`: a role query walks the whole
