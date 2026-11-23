@@ -706,6 +706,13 @@ class PlanStep(_PlanModel):
     #: when the decision is made; optional and never defaulted into the dump,
     #: so a plan stored before it keeps its digest (§4 rule 1).
     rationale: str | None = Field(default=None, min_length=1, max_length=1_000)
+    #: The numbers of the plan's `requirements` this step delivers, 1 up, as
+    #: `validation.tests[].requirements` numbers them: what the plan lint
+    #: (`planlint`, REQUIREMENT_UNCOVERED) reads coverage from. Optional and
+    #: never defaulted into the dump, so a plan stored before it keeps its
+    #: digest.
+    requirements: list[Annotated[int, Field(ge=1, le=MAX_PLAN_REQUIREMENTS)]] | None = Field(
+        default=None, max_length=MAX_PLAN_REQUIREMENTS)
 
     @field_validator("model_class")
     @classmethod
@@ -1992,6 +1999,7 @@ _PLAN_SHAPE = (
     '              "files": ["<repository path this step touches>"],\n'
     '              "tests": ["<a test this step adds, written first>"],\n'
     '              "estimate": "<this step>",\n'
+    '              "requirements": [<numbers of the requirements this step delivers, 1 up>],\n'
     '              "rationale": "<why this step is needed and built this way, two sentences>",\n'
     '              "depends_on": ["<step_id of an earlier step>"]}]}\n'
 )
@@ -2221,6 +2229,8 @@ def planner_prompt(
         'issue only if every one is delivered. "mode" is "single" when one engineer can '
         'do it as one step, "workflow" when it needs several. Each step names the files '
         "it touches and the tests it adds, and the tests are written before the change. "
+        '"requirements" on a step lists the numbers of the requirements it delivers, 1 up; '
+        "every requirement is delivered by at least one step. "
         f"Between 1 and {MAX_PLAN_STEPS} steps. step_id is lowercase letters, digits and "
         f"dashes, and may not be {REVIEW_STEP!r}, {FIX_STEP!r} or {REREVIEW_STEP!r}.\n\n"
         'Every overlap\'s "action" is mandatory: "none" when this plan does nothing about '
