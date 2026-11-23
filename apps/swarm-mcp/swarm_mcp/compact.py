@@ -1172,7 +1172,13 @@ def watch_progress(
     interval = POLL_SECONDS
     latest: dict[str, dict[str, Any]] = {}
     read_ok: set[str] = set()
-    wake_before = {t: (keys.get(t) or "").rsplit("|", 1)[0] for t in task_ids}
+    # The wake key is the token key's FIRST segment (`_wake_key` never holds a
+    # `|`). Not "all but the last": a fix-loop step's key carries one segment
+    # more (`<wake>|<waiting words>|<round k of N>`, `progress_line`), so that
+    # read-back never matched and every poll of every call was a change -- a
+    # summary row spent 120k tokens in four minutes on calls that returned at
+    # once, and the stage follow spun on reads (issue 238).
+    wake_before = {t: (keys.get(t) or "").split("|", 1)[0] for t in task_ids}
     parent_states: dict[str, Any] = {}
     parents_before: dict[str, Any] = {}
     backoff = RATE_LIMIT_BACKOFF_SECONDS
