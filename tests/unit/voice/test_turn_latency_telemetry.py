@@ -229,8 +229,11 @@ def _client(db: FakeFirestore, clock: Clock) -> TestClient:
                            tenant_id=TENANTS[email], is_admin=email == ROOT,
                            via=vgrant.VIA if grant else "", voice_session=grant)
 
+    def _tenant(request: Request) -> str:
+        return TENANTS[request.headers.get("x-test-user", ALICE)]
+
     app.dependency_overrides[current_auth] = _auth
-    app.dependency_overrides[tenant_scope] = lambda request: TENANTS[request.headers.get("x-test-user", ALICE)]
+    app.dependency_overrides[tenant_scope] = _tenant
     app.dependency_overrides[get_context] = lambda: ctx
     return TestClient(app)
 

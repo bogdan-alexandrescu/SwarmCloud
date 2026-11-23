@@ -108,6 +108,20 @@ AUDIT_UNREADABLE = "audit_unreadable"
 KIND_METRICS = "metrics"
 KIND_STT = "stt"
 KIND_TTS = "tts"
+#: One spoken turn's latency, end of speech to the reply's first audio (§12.6).
+KIND_TURN = "turn"
+
+#: The engines a turn record names: the own-speech chain (the relay) and the
+#: hosted voice (swarm-voice's sideband, through the session grant).
+ENGINE_OWN = "own"
+ENGINE_LIVE = "gpt-live"
+ENGINES = (ENGINE_OWN, ENGINE_LIVE)
+#: A turn's parts, per engine, in the order they happen (§12.6). The hosted
+#: voice's sideband shows no part of its span, so it records the span alone.
+TURN_PARTS: dict[str, tuple[str, ...]] = {
+    ENGINE_OWN: ("recognition_ms", "front_first_token_ms", "front_ms", "synthesis_ms"),
+    ENGINE_LIVE: (),
+}
 
 _NUM = (int, float)
 _ID = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
@@ -138,6 +152,14 @@ def _word(value: Any) -> bool:
     return value is None or (isinstance(value, str) and bool(_WORD.match(value)))
 
 
+def _engine(value: Any) -> bool:
+    return value in ENGINES
+
+
+def _present_ident(value: Any) -> bool:
+    return value is not None and _ident(value)
+
+
 _COUNTERS = {name: _number for name in (
     "utterances", "stt_errors", "stt_audio_seconds", "syntheses", "tts_errors",
     "tts_cancelled", "tts_audio_seconds", "protocol_errors")}
@@ -163,6 +185,13 @@ ALLOWED: dict[str, dict[str, Any]] = {
     KIND_TTS: {
         "id": _ident, "first_audio_ms": _number, "audio_s": _number, "synth_s": _number,
         "rtf": _number, "cancelled": _flag, "ok": _flag,
+    },
+    # Durations, the engine, the turn and the session: never a word, a reply
+    # or audio. A duration that could not be measured is None, never 0.
+    KIND_TURN: {
+        "engine": _engine, "turn_id": _present_ident, "session_id": _present_ident,
+        "span_ms": _number,
+        **{part: _number for part in TURN_PARTS[ENGINE_OWN]},
     },
 }
 
@@ -210,7 +239,7 @@ def kind_of(frame: Mapping[str, Any]) -> str:
     t = frame.get("t")
     if t == "metrics":
         return KIND_METRICS
-    if t == "timing" and frame.get("kind") in (KIND_STT, KIND_TTS):
+    if t == "timing" and frame.get("kind") in (KIND_STT, KIND_TTS, KIND_TURN):
         return str(frame["kind"])
     raise SampleRefused("not a telemetry frame")
 
@@ -222,7 +251,21 @@ def clean(frame: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
         raise SampleRefused("not a telemetry frame")
     kind = kind_of(frame)
     body = {k: v for k, v in frame.items() if k not in ("t", "kind")}
-    return kind, _check(body, ALLOWED[kind], "")
+    data = _check(body, ALLOWED[kind], "")
+    if kind == KIND_TURN:
+        _check_turn(data)
+    return kind, data
+
+
+def _check_turn(data: Mapping[str, Any]) -> None:
+    """A turn names its engine, its turn and its session, and carries only
+    the parts its engine has (TURN_PARTS)."""
+    for name in ("engine", "turn_id", "session_id"):
+        if data.get(name) is None:
+            raise SampleRefused(f"a turn record needs the field {name!r}")
+    extra = set(data) - {"engine", "turn_id", "session_id", "span_ms"} - set(TURN_PARTS[data["engine"]])
+    if extra:
+        raise SampleRefused(f"telemetry does not store the field {sorted(extra)[0]!r} for this engine")
 
 
 def _dig(data: Mapping[str, Any], path: tuple[str, ...]) -> Any:
@@ -356,9 +399,56 @@ class Telemetry:
 
         return _record(self._db.transaction())
 
+    def record_hosted(self, owner: sm.SessionRef, record: Mapping[str, Any]) -> str:
+        """Stores one hosted-voice turn record (§12.6) as a sample of its
+        session and folds it into the session's document; the sample's seq.
+        The caller is swarm-voice through the session's own grant
+        (routes/voice_trace.py), which is this write's fence: the hosted
+        voice holds no speech-machine lease, so the sample's generation is 0.
+        `SampleRefused` for a record of another engine or session, or with a
+        field the turn kind does not store."""
+        if not isinstance(record, Mapping):
+            raise SampleRefused("not a telemetry frame")
+        kind, data = clean({**record, "t": "timing", "kind": KIND_TURN})
+        if data["engine"] != ENGINE_LIVE:
+            raise SampleRefused("a hosted turn names the hosted engine")
+        if data["session_id"] != owner.session_id:
+            raise SampleRefused("a hosted turn names its own session")
+        session_ref = self._session_ref(owner.session_id)
+
+        @firestore.transactional
+        def _record(txn: Any) -> str:
+            snap = _snapshot(txn.get(session_ref))
+            current = (snap.to_dict() or {}) if snap.exists else {}
+            at = self._now()
+            seq = sample_seq(at, 0)
+            txn.set(session_ref.collection(SAMPLES).document(seq), {
+                "kind": kind, "at": at, "generation": 0,
+                "session_id": owner.session_id, "tenant_id": owner.tenant_id,
+                "expire_at": at + SAMPLE_RETENTION, "data": data,
+            })
+            folded = _folded(current, owner, int(current.get("generation") or 0), kind, data, at)
+            folded.setdefault("engine", ENGINE_LIVE)
+            txn.set(session_ref, folded)
+            return seq
+
+        return _record(self._db.transaction())
+
+    def latency(self, span: Span, *, tenant_id: str | None) -> dict[str, dict[str, Any]]:
+        """Per engine, over the sessions that started in the span: the turns,
+        and the count, p50 and p90 of the span and of each part with how many
+        turns did not measure it (§12.6). Computed now from the sessions'
+        documents; nothing of it is stored."""
+        docs = self._sessions_in(span, tenant_id, hosted=True)
+        return {engine: latency_of(docs, engine) for engine in ENGINES}
+
     # -- reading
 
-    def _sessions_in(self, span: Span, tenant_id: str | None) -> list[dict[str, Any]]:
+    def _sessions_in(self, span: Span, tenant_id: str | None, *,
+                     hosted: bool = False) -> list[dict[str, Any]]:
+        """The sessions that started in the span; a hosted-voice session
+        (one holding only turn records) only with `hosted`, so the
+        own-speech sessions and days never list one."""
         query = (self._db.collection(SESSIONS)
                  .where(filter=FieldFilter("first_at", ">=", span.start))
                  .where(filter=FieldFilter("first_at", "<", span.end)))
@@ -366,6 +456,8 @@ class Telemetry:
         for snap in query.stream():
             doc = snap.to_dict() or {}
             if tenant_id is not None and doc.get("tenant_id") != tenant_id:
+                continue
+            if not hosted and doc.get("engine") == ENGINE_LIVE:
                 continue
             found.append(doc)
         found.sort(key=lambda d: _utc(d.get("first_at")) or datetime.min.replace(tzinfo=timezone.utc))
@@ -502,7 +594,9 @@ def _folded(current: Mapping[str, Any], owner: sm.SessionRef, generation: int, k
         name = f"{kind}_audio_s"
         counts[name] = round(float(counts.get(name) or 0.0) + float(data["audio_s"]), 3)
     doc["counts"] = counts
-    if kind in VALUES:
+    if kind == KIND_TURN:
+        doc["latency"] = _folded_turn(doc.get("latency") or {}, data)
+    elif kind in VALUES:
         values = {k: list(v) for k, v in (doc.get("values") or {}).items()}
         for name, field in VALUES[kind].items():
             value = data.get(field)
@@ -518,6 +612,54 @@ def _folded(current: Mapping[str, Any], owner: sm.SessionRef, generation: int, k
                 peaks[name] = value
         doc["peaks"] = peaks
     return doc
+
+
+def _folded_turn(current: Mapping[str, Any], data: Mapping[str, Any]) -> dict[str, Any]:
+    """A session's `latency` after one more turn record: per engine, the
+    turns, each measured duration (at most MAX_VALUES a name) and, per name,
+    how many turns did not measure it. A None is counted, never kept as 0."""
+    engine = str(data["engine"])
+    latency = {k: dict(v) for k, v in current.items() if isinstance(v, Mapping)}
+    mine = latency.setdefault(engine, {})
+    values = {k: list(v) for k, v in (mine.get("values") or {}).items()}
+    unmeasured = dict(mine.get("unmeasured") or {})
+    for name in ("span_ms", *TURN_PARTS[engine]):
+        value = data.get(name)
+        if value is None:
+            unmeasured[name] = int(unmeasured.get(name) or 0) + 1
+            continue
+        kept = values.setdefault(name, [])
+        if len(kept) < MAX_VALUES:
+            kept.append(value)
+    mine.update({"turns": int(mine.get("turns") or 0) + 1, "values": values, "unmeasured": unmeasured})
+    return latency
+
+
+def _figure(values: list[Any], not_measured: int) -> dict[str, Any]:
+    p = percentiles(values)
+    return {"count": len(values), "p50": p["p50"], "p90": p["p90"], "not_measured": not_measured}
+
+
+def latency_of(docs: Iterable[Mapping[str, Any]], engine: str) -> dict[str, Any]:
+    """One engine's turns over `docs`, as `Telemetry.latency` serves them."""
+    turns = 0
+    values: dict[str, list[Any]] = {}
+    unmeasured: dict[str, int] = {}
+    for doc in docs:
+        mine = (doc.get("latency") or {}).get(engine)
+        if not isinstance(mine, Mapping):
+            continue
+        turns += int(mine.get("turns") or 0)
+        for name, kept in (mine.get("values") or {}).items():
+            values.setdefault(name, []).extend(v for v in kept if _number(v) and v is not None)
+        for name, count in (mine.get("unmeasured") or {}).items():
+            unmeasured[name] = unmeasured.get(name, 0) + int(count or 0)
+    return {
+        "turns": turns,
+        "span_ms": _figure(values.get("span_ms", []), unmeasured.get("span_ms", 0)),
+        "parts": {name: _figure(values.get(name, []), unmeasured.get(name, 0))
+                  for name in TURN_PARTS[engine]},
+    }
 
 
 def _minutes(doc: Mapping[str, Any]) -> float:
