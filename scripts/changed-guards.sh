@@ -141,6 +141,16 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # known kind; 1.0 s). A new runbook or agent breaks them and names neither,
 # so no diff selects them. test_agent_quality_inventory was a third until
 # issue 74 deleted it: its subject was the agent-quality docs, not the product.
+# Last, tests/unit/install/test_manifest_complete.py: every Terraform resource,
+# environment variable reference, secret, image and Kubernetes object in the
+# tree is listed in install/manifest.yaml. A lane's new resource changes a .tf
+# file the test never names, so no diff selects it; the merge train ran it
+# first and ejected six pull requests' checks (2026-11-23). It is OVER the
+# 10 CI-seconds above: 15.1 s alone at one pytest worker, and +15.7 s and
+# +22.7 s on this set's pass at -n 6 (its ~10 s tree collection is a module
+# fixture, run again on each worker that draws one of its tests), measured
+# 2026-11-23 in a 6-CPU lane container (docs/ci.md, "The install manifest
+# completeness test").
 GUARD_TESTS=(
   tests/unit/scripts/test_docs_describe_what_was_built.py
   tests/unit/scripts/test_docs_spec_amendments.py
@@ -186,6 +196,7 @@ GUARD_TESTS=(
   tests/unit/scripts/test_check_test_pointers.py
   tests/unit/scripts/test_runbook_index.py
   tests/unit/mcp/test_plugin_agents_ignore_chat.py
+  tests/unit/install/test_manifest_complete.py
 )
 # The guards that read docs: all a docs-only diff selects of GUARD_TESTS.
 # Pull-request CI runs the whole GUARD_TESTS even for a docs-only change.
