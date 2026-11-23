@@ -218,7 +218,7 @@ def test_the_loop_steps_row_holds_on_its_dependency_and_says_the_person_wait_onc
         reply = _step(world, since=reply["since"])
     assert reply["stop"] is True and reply["stop_reason"] == "waiting_on_person", reply
     assert len(said) == 1, said
-    assert said[0].startswith("[loop] WAITING ON A PERSON") and "fix loop" in said[0]
+    assert said[0].startswith("[loop ") and "fix loop round 3 of 3" in said[0]
 
 
 def test_the_stage_line_holds_rather_than_spinning_while_the_loop_waits():
