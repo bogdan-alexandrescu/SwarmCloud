@@ -653,3 +653,143 @@ def test_a_gated_claude_review_is_marked_for_the_gate_at_submission(client, db):
     assert tasks["review"]["metadata"]["class_chosen_by"] == stepclass.REVIEW_AT_GATE
     assert tasks["review"].get("model_class") is None  # signed on opus until the gate
     assert "class_chosen_by" not in tasks["implement"]["metadata"]
+
+
+# ---------------------------------------------------------------------------
+# The minors of the security review
+# ---------------------------------------------------------------------------
+
+
+def test_the_resign_guard_covers_the_spec_it_signs():
+    from swarm_api import verdictpublish
+
+    assert {"input", "depends_on", "metadata"} <= set(verdictpublish.RESIGN_GUARD)
+
+
+@pytest.mark.parametrize("field", ["input", "depends_on", "metadata"])
+def test_a_field_rewritten_after_the_gate_read_it_keeps_the_class(
+        pinned_client, db, monkeypatch, field):
+    from swarm_api import verdictpublish
+
+    _parent(db, SMALL_FILE, lines=400)
+    before = copy.deepcopy(_review(db))
+    picked = verdictpublish._review_class
+
+    def rewrite_after_the_read(ctx, doc, decision):
+        review_class = picked(ctx, doc, decision)
+        stored = db.docs[f"tasks/{REVIEW}"]
+        if field == "input":
+            stored["input"] = {"prompt": "something the gate never read"}
+        elif field == "depends_on":
+            stored["depends_on"] = [IMPL, "task_other0001"]
+        else:
+            stored["metadata"] = {**stored["metadata"],
+                                  "dispatch": {"strategy": "direct-pr"}}
+        return review_class
+
+    monkeypatch.setattr(verdictpublish, "_review_class", rewrite_after_the_read)
+
+    doc = _decide(pinned_client, db)
+
+    assert doc.get("model_class") is None
+    assert doc["spec_signature"] == before["spec_signature"]
+
+
+def _workflow(review_step: dict[str, Any]) -> dict[str, Any]:
+    return {"strategy": "integrate",
+            "repository_url": "https://github.com/example-org/example.git",
+            "steps": [
+                {"step_id": "implement", "runner_profile": CODE,
+                 "input": {"prompt": "implement the change"},
+                 "metadata": {"class_chosen_by": stepclass.REVIEW_AT_GATE}},
+                {"step_id": "review", "runner_profile": CODE, "depends_on": ["implement"],
+                 "builds_on": "implement", "input_from": {"implement": "swarm-work.patch"},
+                 "input": {"prompt": "review it; write verdict.json"}, **review_step},
+            ]}
+
+
+def test_a_callers_class_chosen_by_cannot_drop_its_own_class(pinned_client, db):
+    from .conftest import auth_header
+
+    response = pinned_client.post("/v1/workflows", headers=auth_header("alice"), json=_workflow({
+        "model_class": "haiku",
+        "metadata": {"class_chosen_by": "role default: review, no risk path"}}))
+    assert response.status_code == 201, response.text
+    tasks = {s["step_id"]: db.docs[f"tasks/{s['task_id']}"]
+             for s in response.json()["workflow"]["steps"]}
+    assert tasks["review"]["model_class"] == "haiku"
+    assert stepclass.explicit_class(tasks["review"]) == "haiku"
+    assert tasks["review"]["metadata"]["class_chosen_by"] == stepclass.CALLER
+    # A step the gate does not decide is never marked for it by its caller.
+    assert not stepclass.at_gate(tasks["implement"]["metadata"])
+
+
+def test_a_callers_gate_marker_on_a_standalone_task_is_dropped(pinned_client, db):
+    from .conftest import auth_header
+
+    response = pinned_client.post("/v1/tasks", headers=auth_header("alice"), json={
+        "runner_profile": CODE, "input": {"prompt": "do it"},
+        "metadata": {"class_chosen_by": stepclass.REVIEW_AT_GATE}})
+    assert response.status_code in (200, 201), response.text
+    (task,) = [d for k, d in db.docs.items()
+               if k.startswith("tasks/") and k.count("/") == 1 and d.get("id") != REVIEW
+               and (d.get("input") or {}).get("prompt") == "do it"]
+    assert not stepclass.at_gate(task["metadata"])
+
+
+def test_a_rerun_clone_is_gated_again_on_its_own_diff(db):
+    from swarm_api import steprerun
+    from swarm_api.codec import task_from_dict
+
+    doc = seed_task(db, task_id=REVIEW, tenant_id="eng", state="FAILED",
+                    runner_profile=BROWSER, provider="anthropic", depends_on=(IMPL,))
+    doc.update(model_class="sonnet", model=PINS["sonnet"])
+    doc["metadata"] = {
+        "review_gate": {"min_lines": 300},
+        "class_chosen_by": "role default: review, no risk path",
+        "runtime": {"policy": "browser_if_ui", "browser": BROWSER, "code": CODE,
+                    "alternate": {"runner_profile": CODE, "resource_class": "standard",
+                                  "timeout_seconds": 3600, "provider": "anthropic",
+                                  "model_class": "sonnet", "model": PINS["sonnet"]}}}
+    new = steprerun.clone(task_from_dict(doc), {REVIEW: "task_review0002", IMPL: IMPL},
+                          datetime.now(timezone.utc))
+    assert new.model_class is None
+    assert new.model is None
+    assert stepclass.at_gate(new.metadata)
+    alternate = new.metadata["runtime"]["alternate"]
+    assert alternate["model_class"] is None and alternate["model"] is None
+
+
+def test_a_rerun_clone_keeps_a_class_its_caller_named(db):
+    from swarm_api import steprerun
+    from swarm_api.codec import task_from_dict
+
+    doc = seed_task(db, task_id=REVIEW, tenant_id="eng", state="FAILED", runner_profile=CODE,
+                    provider="anthropic", depends_on=(IMPL,))
+    doc.update(model_class="haiku", model=PINS["haiku"])
+    doc["metadata"] = {"review_gate": {"min_lines": 300}, "class_chosen_by": stepclass.CALLER}
+    new = steprerun.clone(task_from_dict(doc), {REVIEW: "task_review0002", IMPL: IMPL},
+                          datetime.now(timezone.utc))
+    assert (new.model_class, new.model) == ("haiku", PINS["haiku"])
+    assert new.metadata["class_chosen_by"] == stepclass.CALLER
+
+
+@pytest.mark.parametrize("model", [scheduletypes.IssueSweepParams,
+                                   scheduletypes.IssuePlanOnlyParams,
+                                   scheduletypes.FailureReviewParams])
+def test_a_schedule_naming_an_unpinned_planner_class_is_refused(model):
+    from swarm_api.errors import ApiError
+
+    unpinned = {"opus": PINS["opus"]}
+    # Naming none: the role default, with its pin fallback downstream.
+    assert issue_sweep.planner_class(model.model_validate({}), unpinned) == "fable"
+    # Naming it where it is pinned: run as named.
+    assert issue_sweep.planner_class(
+        model.model_validate({"planner_model_class": "fable"}), PINS) == "fable"
+    # Naming the profile's default needs no pin.
+    assert issue_sweep.planner_class(
+        model.model_validate({"planner_model_class": "opus"}), {}) == "opus"
+    with pytest.raises(ApiError) as refused:
+        issue_sweep.planner_class(model.model_validate({"planner_model_class": "fable"}),
+                                  unpinned)
+    assert "planner_model_class" in str(refused.value) and "fable" in str(refused.value)
