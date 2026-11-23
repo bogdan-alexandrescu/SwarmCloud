@@ -10161,7 +10161,7 @@ rewritten document ends `SPEC_SIGNATURE_INVALID` with reason
 1. `apps/swarm-api/swarm_api/specsigning.py::sign_task_specs`'s 422 message,
    which lists the reasons a value has no canonical form, names this one.
 2. The worker reads its inputs through `check_inputs`'s **return**, not the
-   stored map: `apps/agent-worker/agent_worker/lifecycle.py::_recheck_runner_input`
+   stored map: `apps/agent-worker/agent_worker/publish_guard.py::_recheck_runner_input`
    calls `check_inputs` today and discards what it returns, so the issue
    number the worker uses (`apps/agent-worker/agent_worker/lifecycle.py::Worker._title_from_issue_input`
    and the fetch) is the stored value. Returning the normalised map and
