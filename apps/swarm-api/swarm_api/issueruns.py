@@ -201,7 +201,7 @@ from datetime import datetime
 from functools import lru_cache
 from enum import Enum
 from types import MappingProxyType
-from typing import Annotated, Any, Callable, Literal, Mapping
+from typing import Annotated, Any, Callable, Literal, Mapping, Sequence
 from urllib.parse import quote, urlencode
 
 from google.cloud import firestore
@@ -226,7 +226,7 @@ from .schemas import (
 )
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
-from . import sessiontag, stepclass, workcontract
+from . import planhistory, sessiontag, stepclass, workcontract
 from .plansections import (
     MAX_CHANGES,
     MAX_GRAPH_EDGES,
@@ -2200,7 +2200,8 @@ _INFLIGHT_USE = (
 
 def planner_prompt(
     ref: IssueRef, *, run_id: str = "", open_work: Mapping[str, Any] | None = None,
-    context: str | None = None,
+    context: str | None = None, earlier_runs: "Sequence[IssueRun] | None" = None,
+    tenant_id: str | None = None,
 ) -> str:
     """The planner's instructions, the index sections and the open work as
     delimited data, under the limit.
@@ -2209,6 +2210,12 @@ def planner_prompt(
     GRAPH sections, already bounded to `plancontext.MAX_CONTEXT_BYTES`, or
     None (no index, or one that could not be used) for exactly the prompt a
     run made before the index existed.
+
+    `earlier_runs` is what `IssueRuns.for_issue` read for `tenant_id` (the
+    run's own workspace): the EARLIER RUNS section, fenced and bounded to
+    `planhistory.MAX_EARLIER_RUNS_BYTES`, absent when there are none. The cost
+    model (`planhistory.cost_section`, from `plan_costs.json`) is in every
+    prompt, before the instructions.
     """
     marker = f"=== OPEN WORK {run_id or 'snapshot'} ==="
     lead = (
@@ -2271,20 +2278,29 @@ def planner_prompt(
     # prompt a run made before the section existed.
     use = (_CONTEXT_USE if _index_marker(run_id) in context else "") + (
         _INFLIGHT_USE if inflight_markers(run_id)[0] in context else "")
+    # The issue's earlier runs and the cost model (plan item 'better plans'),
+    # each bounded on its own; the open work gets what is left.
+    history = planhistory.earlier_runs_section(run_id, earlier_runs, ref=ref,
+                                               tenant_id=tenant_id)
+    instructions = planhistory.cost_section() + instructions
     if open_work is None:
-        return lead + context + use + instructions
+        return lead + context + use + history + instructions
     budget = (MAX_PLANNER_PROMPT_BYTES - _utf8(lead) - _utf8(context) - _utf8(use)
-              - _utf8(rules) - _utf8(instructions))
-    return (lead + context + use + _open_work_section(open_work, marker, budget) + rules
-            + instructions)
+              - _utf8(history) - _utf8(rules) - _utf8(instructions))
+    return (lead + context + use + history + _open_work_section(open_work, marker, budget)
+            + rules + instructions)
 
 
 def planner_task(
     ref: IssueRef, run_id: str, open_work: Mapping[str, Any] | None = None,
     context: str | None = None, claude_session: str | None = None,
     model_class: str | None = None, class_models: Mapping[str, str] | None = None,
+    earlier_runs: "Sequence[IssueRun] | None" = None, tenant_id: str | None = None,
 ) -> TaskCreate:
     """The planner: an ordinary task, signed by `submit_tasks` like any other.
+
+    `earlier_runs` and `tenant_id`: the issue's earlier runs in the run's own
+    workspace, shown to the planner as data (`planner_prompt`).
 
     The index sections are in the prompt, not a runner input: `issue` is the
     only input `claude-code` declares, and the profiles are frozen (request A
@@ -2302,7 +2318,8 @@ def planner_task(
     return TaskCreate(
         runner_profile=PLANNER_PROFILE,
         input={
-            "prompt": planner_prompt(ref, run_id=run_id, open_work=open_work, context=context),
+            "prompt": planner_prompt(ref, run_id=run_id, open_work=open_work, context=context,
+                                     earlier_runs=earlier_runs, tenant_id=tenant_id),
             "issue": ref.number,
         },
         repository_url=ref.repository_url,
