@@ -61,6 +61,7 @@ from .client import (
     chosen_tenant,
     enter_hold_lane,
     outputs_of,
+    submit_post,
     task_id_of,
     task_payload,
     tenant_listing,
@@ -3335,7 +3336,7 @@ def _send_task(client: Any, credentials: dict[str, Any] | None, **fields: Any) -
         return client.dispatch(**fields)
     payload = task_payload(**fields)
     payload["mcp_credentials"] = credentials
-    return unwrap_task(client.request("POST", "/v1/tasks", payload=payload))
+    return unwrap_task(submit_post(client, "/v1/tasks", payload))
 
 
 def _step_servers(steps: list[dict[str, Any]]) -> set[str]:

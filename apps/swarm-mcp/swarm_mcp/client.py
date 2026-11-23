@@ -1056,6 +1056,39 @@ def runs_of(summary: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+#: How long a dispatch or workflow submission's POST waits for its answer.
+#: 120, not the 60 every other call waits: a large batch or workflow is
+#: written in one transaction, and a POST that times out may still have been
+#: accepted, so a short timeout invites a re-send that duplicates the batch
+#: (improvement plan 2026-11-23, item 4).
+SUBMIT_TIMEOUT_SECONDS = 120
+
+
+def _timed_out(exc: BaseException) -> bool:
+    """True when `exc` (a SwarmError) was a socket timeout, not a refusal."""
+    cause = exc.__cause__
+    if isinstance(cause, urllib.error.URLError):
+        cause = cause.reason
+    return isinstance(cause, TimeoutError)
+
+
+def submit_post(client: Any, path: str, payload: dict[str, Any]) -> Any:
+    """`POST path` for a dispatch or a workflow submission, waiting
+    `SUBMIT_TIMEOUT_SECONDS`. A timeout's error tells the caller to read the
+    running workflows before sending again: the first call may have been
+    accepted, and a re-sent batch duplicates every task in it."""
+    try:
+        return client.request("POST", path, payload=payload, timeout=SUBMIT_TIMEOUT_SECONDS)
+    except SwarmError as exc:
+        if not _timed_out(exc):
+            raise
+        raise SwarmError(
+            f"POST {path} had no answer within {SUBMIT_TIMEOUT_SECONDS}s, but it may have "
+            "been accepted: read the running workflows (swarm_workflows, or "
+            "swarm_check) before sending again, because a re-sent batch can duplicate it."
+        ) from exc
+
+
 #: Which of the caller's tenants a request acts as (archived issue 447). The API honours it
 #: ONLY when the caller's verified membership includes that tenant's group and
 #: refuses anything else with 403 `tenant_not_member` (swarm_api/auth.py
@@ -2122,13 +2155,13 @@ class SwarmClient:
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,
         # which a shell then piped into `swarm tail`.
-        return unwrap_task(self.request("POST", "/v1/tasks", payload=payload))
+        return unwrap_task(submit_post(self, "/v1/tasks", payload))
 
     def dispatch_batch(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Several tasks at once. A LIST, matching what `dispatch` returns for
         one -- `{"tasks": [...], "count": n, ...}` is the route's envelope and
         a caller iterating it would iterate its keys."""
-        data = self.request("POST", "/v1/tasks/batch", payload={"tasks": tasks})
+        data = submit_post(self, "/v1/tasks/batch", {"tasks": tasks})
         created = data.get("tasks") if isinstance(data, dict) else None
         if created is None:
             raise SwarmError("the batch response carried no `tasks` field")

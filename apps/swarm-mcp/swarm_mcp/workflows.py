@@ -57,7 +57,7 @@ from swarm_common.workcontract import Requirement, WorkContract
 
 from . import awaitinput
 from . import profiles as catalogue
-from .client import SwarmClient, SwarmError, check_additional_repositories, session_tag
+from .client import SwarmClient, SwarmError, check_additional_repositories, session_tag, submit_post
 from .follow import follow_command
 from .patches import masked_counts
 from .progress import FIX_LOOP_PROFILE, browser_unused_line, questions_count
@@ -1093,7 +1093,7 @@ def submit(
         body["additional_repositories"] = additional_repositories
     if mcp_credentials:
         body[PER_RUN_FIELD] = mcp_credentials
-    envelope = _envelope(client.request("POST", "/v1/workflows", payload=body), "submitting")
+    envelope = _envelope(submit_post(client, "/v1/workflows", body), "submitting")
     _remember_launch(envelope["workflow"])
     return envelope
 
