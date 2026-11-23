@@ -28,20 +28,14 @@ import type { Result } from './fetch'
 import { Button, Dash, Tag } from './components'
 import { InfoTip } from './InfoTip'
 import { PersonName } from './PersonName'
-import { InApp, untilWords, useScheduleName } from './Schedules'
+import { untilWords } from './Schedules'
+import { InApp } from './InApp'
+import { useScheduleName } from './scheduleNames'
 import { Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
-import {
-  APPROVAL_KIND,
-  ApprovalDecisionScreen,
-  BackToList,
-  approvalAddress,
-  approvalsAddress,
-  decidersWords,
-  when,
-  type InboxItem,
-} from './ApprovalDecision'
+import { ApprovalDecisionScreen, BackToList, decidersWords, when, type InboxItem } from './ApprovalDecision'
+import { APPROVAL_KIND, approvalAddress, approvalsAddress } from './approvalPaths'
 import './styles/schedules.css'
 import './styles/automate-approvals.css'
 

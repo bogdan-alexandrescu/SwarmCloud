@@ -49,7 +49,7 @@ import {
   type ApprovalItem,
   type LiveSession,
 } from './api'
-import { approvalAddress } from './Approvals'
+import { approvalAddress } from './approvalPaths'
 import { Button, ButtonLink, Card, CardLink, StatTile, type TileValue } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { openGuide } from './GuideLink'

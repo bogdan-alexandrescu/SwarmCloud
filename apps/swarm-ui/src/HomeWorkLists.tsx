@@ -28,7 +28,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { answerQuestion, loadWorkflowsById, WORKFLOW_IDS_PER_READ, type ApprovalItem, type WorkflowRead } from './api'
-import { approvalAddress } from './Approvals'
+import { approvalAddress } from './approvalPaths'
 import { Button, ButtonLink, Card, Tooltip } from './components'
 import type { ApiError } from './fetch'
 import { errorHeading } from './fetch'
