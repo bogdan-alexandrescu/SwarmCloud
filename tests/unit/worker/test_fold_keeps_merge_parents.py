@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_worker import gitops, lifecycle
+from agent_worker import gitops, lifecycle, publish_guard
 
 from test_publish_to_pr import (  # noqa: F401 -- fixtures are used by name
     DIRECT,
@@ -443,7 +443,7 @@ def test_a_publish_whose_merged_head_cannot_be_read_pushes_nothing_and_keeps_the
             "cannot read"
         )
 
-    monkeypatch.setattr(lifecycle, "merged_head_kept", unreadable)
+    monkeypatch.setattr(publish_guard, "merged_head_kept", unreadable)
     monkeypatch.setattr(gitops, "merged_head_kept", unreadable)
     heads: list[str] = []
 

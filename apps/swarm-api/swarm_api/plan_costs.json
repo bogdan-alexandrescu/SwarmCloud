@@ -1,0 +1,11 @@
+{
+  "measured_on": "2026-11-23",
+  "window_days": 30,
+  "steps": {
+    "build": {"median_usd": 3.6, "median_turns": 63, "median_minutes": 36},
+    "review": {"median_usd": 1.1},
+    "fix": {"median_usd": 1.4}
+  },
+  "workflow": {"median_usd": 5.9, "p90_usd": 15.6},
+  "turns_knee": 100
+}

@@ -163,15 +163,15 @@ import os
 from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from . import readback
 from .follow import build_roster
 from .accountlease import (CAPABILITY, CAPABILITY_TEXT, NONE_AVAILABLE, NOT_IN_POOL, VoicePoolRefused,
                            build_broker)
-from .claudefront import (FRONT_MODELS, FrontDown, FrontRefused, FrontSessionEnded, FrontSessions,
-                          delegations_router)
+from .claudefront import (FRONT_MODELS, TURN_LINES_TYPE, FrontDown, FrontRefused, FrontSessionEnded, FrontSessions,
+                          delegations_router, turn_lines)
 from .claudefront import SessionExists as FrontExists
 from .claudeturn import admitted_model
 from .credential import CredentialError
@@ -306,6 +306,9 @@ class ReopenRequest(BaseModel):
 
 class TurnRequest(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_TURN_CHARS)
+    #: A speech session's turn as NDJSON (claudefront.turn_lines): its first
+    #: sentence as soon as it is complete, then the answer.
+    stream: bool = False
 
 
 def session_grant(body: StartRequest) -> SessionGrant | None:
@@ -728,6 +731,9 @@ def create_app(*, sessions: Sessions | None = None, verify_caller: CallerCheck |
     async def turn(voice_session_id: str, body: TurnRequest, _caller: str = Depends(caller)) -> Any:
         # By the session's mode: a speech session's turn is its front's alone.
         if app.state.fronts is not None and app.state.fronts.get(voice_session_id) is not None:
+            if body.stream:
+                return StreamingResponse(turn_lines(app.state.fronts, voice_session_id, body.text),
+                                         media_type=TURN_LINES_TYPE)
             return await speech_turn(voice_session_id, body.text)
         texts = app.state.texts
         if texts is None:

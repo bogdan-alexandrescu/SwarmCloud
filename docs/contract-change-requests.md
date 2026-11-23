@@ -160,6 +160,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 153 | `specsign.py`: the plugin record kind `bundle` in `PLUGIN_RECORD_KINDS`, ids `("bundle_id",)`, platform scope only, so a `plugin_bundles/{bundle_id}` record is MAC'd in request 140's canonical form (managed plugins P6, lane 13 of the design's table 17.1) | ACCEPTED by the owner 2026-11-09 (accepted by the owner 2026-11-09, answering docs/design/managed-plugins.md section 18, Q20) and APPLIED 2026-11-09 by the pull request that adds this line (lane plugins-bundle-contract): a bundle record names no tenant and a workspace-scope one has no canonical form |
 | 154 | `profiles.py` / `states.py`: five comment lines name the owner by initials, and take the placeholder "the owner", behaviour unchanged (the repository move) | ACCEPTED by the owner 11 November 2026 and APPLIED by the pull request that adds this line |
 | 155 | `specsign.py`: a `"plans"` block in `SETTINGS_MAC_FIELDS`, `("diagrams", "chat_model_class")`, so a workspace's plan-review settings (`workspace_settings/{tenant_id}.plans`, docs/design/plans-pipeline.md sections 6.4 and 7.8) are signed by the frozen list (PLAN-SETTINGS) | REQUESTED 2026-11-13 by the pull request that adds this line; not applied. Until it is, `canonical_settings_block` refuses the block and swarm-api cannot sign it through the frozen list |
+| 157 | `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, a re-review whose gate is shut is leased and dispatched as today |
 
 ---
 
@@ -10160,7 +10161,7 @@ rewritten document ends `SPEC_SIGNATURE_INVALID` with reason
 1. `apps/swarm-api/swarm_api/specsigning.py::sign_task_specs`'s 422 message,
    which lists the reasons a value has no canonical form, names this one.
 2. The worker reads its inputs through `check_inputs`'s **return**, not the
-   stored map: `apps/agent-worker/agent_worker/lifecycle.py::_recheck_runner_input`
+   stored map: `apps/agent-worker/agent_worker/publish_guard.py::_recheck_runner_input`
    calls `check_inputs` today and discards what it returns, so the issue
    number the worker uses (`apps/agent-worker/agent_worker/lifecycle.py::Worker._title_from_issue_input`
    and the fetch) is the stored value. Returning the normalised map and
@@ -18120,3 +18121,139 @@ grant's list order are canonical; an absent `expires_at` is omitted, not
 The owner, 13 November 2026: file the per-person signed submissions contract
 request with the owner's acceptance recorded, then start the phase 2 lanes in
 the design's order.
+
+## 157. `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate)
+
+**Status:** REQUESTED 2026-11-23 by the pull request that adds this section;
+not applied. Nothing in the scheduler was changed for it: a re-review whose
+gate is shut is leased and dispatched exactly as today until the owner
+decides.
+
+### What is true today
+
+A re-review step (`swarm_api.validation.rereview_step_for`) is gated on its
+review's verdict: `metadata.dispatch.verdict_gate` names the review task and
+a `verdict_in`. When the review's verdict is outside `verdict_in` (the first
+review said MERGE, or the fix step republished nothing) the gate is shut and
+the worker runs no agent: it reads the gate
+(`agent_worker.lifecycle.Worker._evaluate_verdict_gate`), re-publishes the
+staged verdict as its own artifact (`_republish_staged_verdict`), records
+`result_summary.verdict_gate` with `agent_ran: false` and
+`skipped_agent: "review verdict <V>"`, and ends RUNNING -> SUCCEEDED with
+the `succeeded` event. For that it is promoted PARKED -> READY, admitted
+(capacity reserved in every pool), leased, dispatched and started. One
+audited day had 43 such pods, often the browser profile's.
+
+The scheduler can already decide this gate before any lease, from what the
+platform recorded: `scheduler.runtime.republishes` reads the re-review's
+signed dispatch block and the integrator's `result_summary.verdict_gate`
+(the parent it builds on, SUCCEEDED, naming the same review) and returns the
+shut gate only when the recorded verdict is certainly outside `verdict_in`.
+Today it uses that answer only to run the copy on `claude-code`
+(`REASON_REPUBLISH`, archived issue 2322).
+
+### Why this is a contract request and not a scheduler change
+
+`_ALLOWED` has exactly one edge that ends a task SUCCEEDED without a lease:
+PARKED -> SUCCEEDED (request 52). Its frozen comment scopes it: "only
+swarm-api writes it, guarded on its own claim." The scheduler's promotion is
+PARKED -> READY, and READY -> SUCCEEDED is not an edge. So the scheduler has
+no transition it may write to finish the step: writing PARKED -> SUCCEEDED
+from the scheduler would contradict the accepted text of request 52, and the
+brief for this work says to stop there and ask.
+
+### The requested change
+
+In `apps/common/swarm_common/states.py`, the comment on the PARKED row only;
+the edges are unchanged:
+
+```python
+    # PARKED -> SUCCEEDED: a step the control plane finishes without a worker
+    # (#748, contract request 52). It held no lease, so there is nothing to
+    # release. Written by swarm-api, guarded on its own claim, and by the
+    # scheduler for a re-review whose verdict gate the platform's own record
+    # shows shut, in the same guarded write that would otherwise promote it
+    # (contract request 157).
+```
+
+### What the scheduler would then build (not built here)
+
+In `Scheduler._promote_dependant`, where `runtime.resolve` already calls
+`republishes`: when the shut gate is certain, write PARKED -> SUCCEEDED
+instead of PARKED -> READY, in the same `_write_if_unchanged` guard (same
+state, same park reason), with:
+
+* `result_summary.verdict_gate` = the record the worker writes (`task_id`,
+  `file`, `verdict`, `verdict_in`, `agent_ran: false`, `findings`,
+  `findings_dropped`, and `gate_reading`/`skipped_review` when the review was
+  size-skipped), copied from the integrator's record of the same verdict
+  file; `result_summary.skipped_agent: "review verdict <V>"`;
+  `result_summary.published_by: "control_plane"`;
+* one `succeeded` event, appended only when the guarded write applied, so a
+  second drain or a retried pass meets a SUCCEEDED task, its guard fails,
+  and nothing is written twice;
+* the parents' `task_finished` wake, as the worker's finish rings it, so the
+  merge step and every step that stages from the re-review are promoted.
+
+**One dependency outside the frozen package.** The merge step
+(`on_merge_verdict`) stages the re-review's `verdict.json` through its
+successful attempt's manifest (`agent_worker.inputs.artifact_reference`).
+A step with no attempt has no manifest object to point at, and the scheduler
+does not read GCS. The bytes the worker re-publishes are the first review's
+file, unchanged; the scheduler would record a manifest entry naming that
+file, and `inputs.inline_artifact` (today accepted only on a
+`review_skipped` task) or `artifact_reference` must accept a re-review's
+entry that points at its gate's review's own artifact, in the same tenant
+and workflow. That is a worker change, not a contract one, and lands with
+the scheduler half.
+
+**Fail open.** Everything `republishes` returns None for -- no integrator
+record, another review's record, a malformed gate, a verdict inside
+`verdict_in`, a NOT_YET the clone-bound no-op precheck might shut -- is
+promoted to READY and dispatched as today. The verdict is read only from
+the integrator's `result_summary.verdict_gate`, written by the worker or by
+`swarm_api.verdictpublish`; never from a caller-set field. The worst a
+forged record does is end this tenant's own re-review with the verdict its
+own first review published, which the merge step then re-reads with
+`read_verdict` from the review's own file.
+
+### What it would break if accepted
+
+Nothing that exists: no edge changes, only the comment. Readers that count
+attempts show none for such a step, which is true, as for request 52's
+control-plane publish; `published_by: "control_plane"` says why.
+
+### If it is declined
+
+The 43-pods-a-day cost stays. The step runs on `claude-code` rather than the
+browser (archived issue 2322), so the waste is a small pod, not a browser
+one. The alternative of moving the decision into swarm-api (a third
+`verdictpublish`-style path, holding the re-review PARKED like
+`_held_for_control_publish`) needs no contract change at all, at the cost of
+a hold and a claim on every gated re-review.
+
+### Invariants
+
+- **Invariant 1.** The step goes PARKED -> SUCCEEDED and is never LEASED,
+  DISPATCHED, STARTING or RUNNING, so it creates no demand.
+- **Invariant 2.** No pool is reserved: admission never sees the step. The
+  all-or-nothing reservation of every other step is unchanged.
+- **Invariant 3.** Concurrency counts from LEASED; the step is never LEASED,
+  so nothing is counted or released.
+- **Invariant 5.** No attempt exists, so there is no generation to fence.
+  The write is guarded on the PARKED state and park reason read, so it
+  races neither a promotion (one of the two guarded writes applies) nor a
+  cancel.
+
+### How it would be tested
+
+Committed red before the scheduler half: a shut gate ends SUCCEEDED with no
+reservation, no lease and no dispatch, and the merge step stages the same
+verdict bytes it reads today; an open gate and an undecidable gate are
+promoted READY and dispatched as today; a second drain or a retried
+promotion writes no second SUCCEEDED and no second event.
+
+### Who decides
+
+The owner: accepting it lets the scheduler write the edge. Awaiting the
+owner's acceptance.
