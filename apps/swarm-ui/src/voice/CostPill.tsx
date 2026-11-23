@@ -14,13 +14,19 @@
  * every usage bar does, by colour and the triangle, with no word. A read that
  * fails says so in the pill and shows no figure; swarm-api's words are in the
  * panel.
+ *
+ * THE CAPS, ENFORCED (the owner's decision of 23 November 2026; swarm-api's
+ * voice/budget.py, served as the ledger's `budget`): a cap warned of at 80%
+ * takes the warning tone whatever the console's own forms say, and a cap
+ * reached takes the bad tone and shows when the session ends for it, as a
+ * time in the pill (no word) and beside that cap's block in the panel.
  */
 
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 
 import { buttonClass, CIcon, usageForm, type UsageForm } from '../components'
 import { BadGlyph, WarnGlyph } from '../components/glyphs'
-import { LINE_WORDS, usd, useLedger, type Ledger, type LedgerCap } from './Meter'
+import { LINE_WORDS, usd, useLedger, type Ledger, type LedgerBudget, type LedgerCap } from './Meter'
 import { TalkTip } from './Stage'
 import '../styles/cost-pill.css'
 
@@ -38,6 +44,23 @@ const formOf = (c: LedgerCap) => usageForm(Number(c.total_usd.toFixed(2)), c.cap
 function worst(a: Tone, b: Tone): Tone {
   const rank: Tone[] = ['ok', 'warn', 'bad']
   return rank.indexOf(a) >= rank.indexOf(b) ? a : b
+}
+
+/** A cap's tone: its usage form, raised to the warning once swarm-api warned of it and to bad once it is reached. */
+function capTone(cap: LedgerCap, line: 'session' | 'day', budget: LedgerBudget): Tone {
+  if (budget.capped === line) return 'bad'
+  return worst(toneOf(formOf(cap)), budget.warned.includes(line) ? 'warn' : 'ok')
+}
+
+/** The glyph a tone carries. */
+function toneForm(tone: Tone): UsageForm {
+  return tone === 'bad' ? 'over' : tone === 'warn' ? 'nearly-full' : 'ok'
+}
+
+/** When the capped session ends, as the clock says it. */
+function clockOf(iso: string): string {
+  const d = new Date(iso)
+  return Number.isFinite(d.getTime()) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : iso
 }
 
 /** The cap's figure: whole dollars, as the cap is set. */
@@ -71,8 +94,8 @@ function CostRing({ ledger }: { ledger: Ledger }) {
   const d = ledger.day
   return (
     <svg className="vcp-ring" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <Arc r={10} share={d.total_usd / d.cap_usd} tone={toneOf(formOf(d))} />
-      <Arc r={6} share={s.total_usd / s.cap_usd} tone={toneOf(formOf(s))} />
+      <Arc r={10} share={d.total_usd / d.cap_usd} tone={capTone(d, 'day', ledger.budget)} />
+      <Arc r={6} share={s.total_usd / s.cap_usd} tone={capTone(s, 'session', ledger.budget)} />
     </svg>
   )
 }
@@ -92,16 +115,40 @@ function FormGlyph({ form }: { form: UsageForm }) {
   return null
 }
 
+/** When a reached cap ends the session: the time, the reason behind its title. */
+function Ends({ budget }: { budget: LedgerBudget }) {
+  if (budget.ends_at === null) return null
+  const at = clockOf(budget.ends_at)
+  return (
+    <time className="vcp-ends" dateTime={budget.ends_at} title={`The ${budget.capped} cap is reached: the session ends at ${at}`}>
+      {at}
+    </time>
+  )
+}
+
 /** One cap's block: the bar, spent then reserved against the cap, and every line. */
-function CapBlock({ title, meta, cap }: { title: string; meta?: string; cap: LedgerCap }) {
-  const form = formOf(cap)
-  const tone = toneOf(form)
+function CapBlock({
+  title,
+  meta,
+  cap,
+  line,
+  budget,
+}: {
+  title: string
+  meta?: string
+  cap: LedgerCap
+  line: 'session' | 'day'
+  budget: LedgerBudget
+}) {
+  const tone = capTone(cap, line, budget)
+  const form = toneForm(tone)
   const pct = (n: number) => `${Math.max(0, Math.min(100, (n / cap.cap_usd) * 100))}%`
   return (
     <section className="vcp-block" aria-label={title}>
       <p className="vcp-block-h">
         <span className="vcp-block-t">{title}</span>
         {meta !== undefined && <span className="vcp-block-meta">{meta}</span>}
+        {budget.capped === line && <Ends budget={budget} />}
         <span className={`vcp-block-fig is-${tone}`}>
           <FormGlyph form={form} />
           <b>{usd(cap.total_usd)}</b> / {capWord(cap.cap_usd)}
@@ -161,7 +208,7 @@ function BothCaps({ ledger }: { ledger: Ledger }) {
     ['This session', ledger.session],
     ['Today', ledger.day],
   ]
-  const tones = caps.map(([, c]) => toneOf(formOf(c)))
+  const tones = caps.map(([, c], i) => capTone(c, i === 0 ? 'session' : 'day', ledger.budget))
   const pct = (n: number, c: LedgerCap) => `${Math.max(0, Math.min(100, (n / c.cap_usd) * 100))}%`
   return (
     <table className="vcp-both">
@@ -174,7 +221,7 @@ function BothCaps({ ledger }: { ledger: Ledger }) {
             <th key={title} scope="colgroup" colSpan={2} className={`vcp-both-cap is-${tones[i]}`}>
               <span className="vcp-block-t">{title}</span>
               <span className={`vcp-block-fig is-${tones[i]}`}>
-                <FormGlyph form={formOf(c)} />
+                <FormGlyph form={toneForm(tones[i]!)} />
                 <b>{usd(c.total_usd)}</b> / {capWord(c.cap_usd)}
               </span>
               <span
@@ -185,6 +232,7 @@ function BothCaps({ ledger }: { ledger: Ledger }) {
                 <span className="vcp-bar-spent" style={{ width: pct(c.spent_usd, c) }} />
                 <span className="vcp-bar-held" style={{ width: pct(c.reserved_usd, c) }} />
               </span>
+              {ledger.budget.capped === (i === 0 ? 'session' : 'day') && <Ends budget={ledger.budget} />}
               {i === 1 && <span className="vcp-block-meta">{`${ledger.date} · ${ledger.time_zone}`}</span>}
             </th>
           ))}
@@ -242,11 +290,18 @@ function BothCaps({ ledger }: { ledger: Ledger }) {
 function said(ledger: Ledger): string {
   const s = ledger.session
   const d = ledger.day
+  const { capped, ends_at } = ledger.budget
   const forms = [formOf(s), formOf(d)]
-  const tone = worst(toneOf(forms[0]!), toneOf(forms[1]!))
+  const tone = worst(capTone(s, 'session', ledger.budget), capTone(d, 'day', ledger.budget))
   return (
     `Cost: this session ${usd(s.total_usd)} of ${capWord(s.cap_usd)}, today ${usd(d.total_usd)} of ${capWord(d.cap_usd)}` +
-    (forms.includes('over') ? ', over a cap' : tone === 'warn' ? ', nearly at a cap' : '')
+    (capped !== null
+      ? `, the ${capped} cap is reached${ends_at !== null ? `: the session ends at ${clockOf(ends_at)}` : ''}`
+      : forms.includes('over')
+        ? ', over a cap'
+        : tone === 'warn'
+          ? ', nearly at a cap'
+          : '')
   )
 }
 
@@ -259,9 +314,11 @@ export function CostPill({ sessionId, live }: { sessionId: string; live: boolean
   const panelId = useId()
   // A failed read shows no figure, the last one served included: the pill never stands on a stale ledger.
   const shown = problem === null ? ledger : null
-  const sForm = shown === null ? null : formOf(shown.session)
-  const dForm = shown === null ? null : formOf(shown.day)
-  const tone: Tone = problem !== null ? 'bad' : sForm === null || dForm === null ? 'ok' : worst(toneOf(sForm), toneOf(dForm))
+  const sTone = shown === null ? null : capTone(shown.session, 'session', shown.budget)
+  const dTone = shown === null ? null : capTone(shown.day, 'day', shown.budget)
+  const tone: Tone = problem !== null ? 'bad' : sTone === null || dTone === null ? 'ok' : worst(sTone, dTone)
+  // What enforcement did: `capped` once a cap is reached, `warned` once one was warned of; none before.
+  const budgetState = shown === null ? undefined : shown.budget.capped !== null ? 'capped' : shown.budget.warned.length > 0 ? 'warned' : undefined
 
   // The panel closes on Escape and on a press outside it, and gives focus back to the pill.
   useEffect(() => {
@@ -312,7 +369,7 @@ export function CostPill({ sessionId, live }: { sessionId: string; live: boolean
     problem !== null ? `Cost: the ledger could not be read: ${problem}` : shown === null ? 'Cost: reading the ledger' : said(shown)
 
   return (
-    <div className={`vcp${open ? ' is-open' : ''}`} ref={host} data-tone={tone}>
+    <div className={`vcp${open ? ' is-open' : ''}`} ref={host} data-tone={tone} data-budget={budgetState}>
       <button
         type="button"
         ref={pill}
@@ -324,21 +381,26 @@ export function CostPill({ sessionId, live }: { sessionId: string; live: boolean
         disabled={problem === null && shown === null}
         onClick={() => setOpen((o) => !o)}
       >
-        {shown !== null && sForm !== null && dForm !== null ? (
+        {shown !== null && sTone !== null && dTone !== null ? (
           <>
             <CostRing ledger={shown} />
-            <span className={`vcp-fig is-${toneOf(sForm)}`}>
+            <span className={`vcp-fig is-${sTone}`}>
               <span className="vcp-lbl">Session</span>
               <b>{usd(shown.session.total_usd)}</b>
-              <FormGlyph form={sForm} />
+              <FormGlyph form={toneForm(sTone)} />
             </span>
             <span className="vcp-sep" aria-hidden="true" />
-            <span className={`vcp-fig is-${toneOf(dForm)}`}>
+            <span className={`vcp-fig is-${dTone}`}>
               <span className="vcp-lbl">Today</span>
               <b>{usd(shown.day.total_usd)}</b>
               <span className="vcp-cap">/ {capWord(shown.day.cap_usd)}</span>
-              <FormGlyph form={dForm} />
+              <FormGlyph form={toneForm(dTone)} />
             </span>
+            {shown.budget.ends_at !== null && (
+              <span className="vcp-fig is-bad">
+                <Ends budget={shown.budget} />
+              </span>
+            )}
           </>
         ) : (
           <span className={`vcp-fig is-${tone}`}>
@@ -373,8 +435,8 @@ export function CostPill({ sessionId, live }: { sessionId: string; live: boolean
           {shown !== null && (
             <>
               <div className="vcp-blocks">
-                <CapBlock title="This session" cap={shown.session} />
-                <CapBlock title="Today" meta={`${shown.date} · ${shown.time_zone}`} cap={shown.day} />
+                <CapBlock title="This session" cap={shown.session} line="session" budget={shown.budget} />
+                <CapBlock title="Today" meta={`${shown.date} · ${shown.time_zone}`} cap={shown.day} line="day" budget={shown.budget} />
               </div>
               <BothCaps ledger={shown} />
               <p className="vcp-foot">

@@ -394,16 +394,44 @@ export function PlanCard({ card, spec, body }: CardProps) {
 
 // ---- budget -----------------------------------------------------------------------
 
+/** The time a capped session ends, as the clock says it; the ISO text when it is not a time. */
+function clockOf(iso: string): string {
+  const d = new Date(iso)
+  return Number.isFinite(d.getTime()) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : iso
+}
+
+/**
+ * The platform's Budget card (swarm-api voice/budget.py): `cap` names the cap it is about and `status`
+ * whether 80% of it is used (`warning`) or it is reached (`capped`, with `ends_at`, when the session ends
+ * for it). The figures are that cap's, so only that cap's bar is drawn; a card without `cap` (drawn by
+ * the planner) is held against both.
+ */
 export function BudgetCard({ card, spec, body }: CardProps) {
   const spent = num(body.spent_usd)
   const reserved = num(body.reserved_usd)
   const both = spent !== null && reserved !== null ? spent + reserved : null
   const lines = list(body.lines).map(obj)
   const notCounted = list(body.not_counted).map(str).filter((s): s is string => s !== null)
+  const which = str(body.cap)
+  const endsAt = str(body.status) === 'capped' ? str(body.ends_at) : null
   return (
     <VoiceCardFrame card={card} spec={spec}>
-      <AgainstCap label="Spent and reserved against the session cap" used={both} cap={num(body.session_cap_usd)} />
-      <AgainstCap label="Spent and reserved against the day cap" used={both} cap={num(body.day_cap_usd)} />
+      {endsAt !== null && (
+        <p className="vt-card-refs">
+          <Chip tone="bad">
+            Ends{' '}
+            <time dateTime={endsAt} title={endsAt}>
+              {clockOf(endsAt)}
+            </time>
+          </Chip>
+        </p>
+      )}
+      {which !== 'day' && (
+        <AgainstCap label="Spent and reserved against the session cap" used={both} cap={num(body.session_cap_usd)} />
+      )}
+      {which !== 'session' && (
+        <AgainstCap label="Spent and reserved against the day cap" used={both} cap={num(body.day_cap_usd)} />
+      )}
       {lines.length > 0 && (
         <div className="c-tbl vt-card-lines">
           <table>
