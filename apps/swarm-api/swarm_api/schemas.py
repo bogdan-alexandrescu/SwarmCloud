@@ -23,6 +23,7 @@ from pydantic import (
     StrictInt,
     StrictStr,
     field_validator,
+    model_serializer,
     model_validator,
 )
 
@@ -320,6 +321,15 @@ class StepVerdictGate(StrictModel):
     verdict_in: list[str] = Field(min_length=1, max_length=8)
     also: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
         default_factory=list, max_length=4)
+
+    @model_serializer(mode="wrap")
+    def _omit_no_further_review(self, handler: Any) -> Any:
+        """An empty `also` is not written: a gate on one review dumps exactly
+        the `{"step", "verdict_in"}` it always did."""
+        out = handler(self)
+        if isinstance(out, dict) and not out.get("also"):
+            out.pop("also", None)
+        return out
 
 
 class WorkflowStepCreate(StrictModel):

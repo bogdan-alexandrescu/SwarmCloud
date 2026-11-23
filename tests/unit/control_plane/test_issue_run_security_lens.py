@@ -61,7 +61,8 @@ def test_a_plan_touching_no_risk_path_compiles_exactly_as_before(plan, monkeypat
     assert LENS not in ids
     assert ids[-3:] == [REVIEW, FIX, REREVIEW_STEP_ID]
     fix = next(step for step in compiled["steps"] if step["step_id"] == FIX)
-    assert fix["when"] == {"step": REVIEW, "verdict_in": ["NOT_YET"], "also": []}
+    # Exactly the gate it always was: no `also` key at all.
+    assert fix["when"] == {"step": REVIEW, "verdict_in": ["NOT_YET"]}
     assert fix["input_from"] == {REVIEW: issueruns.VERDICT_FILE}
 
 
