@@ -1,8 +1,10 @@
 """What an attempt used: its token counts and cost, summed across its runs.
 
 Moved out of `lifecycle.py` unchanged (issue 68, the first slice of splitting
-that file by concern). `lifecycle` re-exports every name here, so a caller or a
-test that reads `lifecycle._usage_summary` and the rest still resolves.
+that file by concern). `lifecycle` binds only the names it or a test still
+reads through it -- `_add_spend`, `_stream_usage`, `_unpriced_sessions`,
+`_cost_incomplete` and `_usage_summary` (issue 193); read every other name
+here.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
 A CLI stopped before it reported a cost -- a cancel, a SIGTERM, a fence, a
 timeout (archived issue 627) -- leaves only the per-message usage its stream carried. The
-worker sums that usage per model (`lifecycle._stream_usage`) and asks
+worker sums that usage per model (`usage._stream_usage`) and asks
 `POST /v1/attempts/{attempt_id}/spend-estimate` (`swarm_api.spendestimate`)
 what it cost. THE WORKER HOLDS NO PRICE TABLE: list prices are a platform
 setting in Firestore (`model_prices`), and workers are moving off direct
@@ -16,7 +16,7 @@ figure is a wrong one. Signed with the attempt key the child path registered
 
 A MODEL PRICED IN TIERS by prompt length is priced per request by that
 request's own prompt (PRICES-TIER-PROMPT), so each model's counts go with
-their `prompt_buckets` (`lifecycle._stream_usage`). A body that would pass
+their `prompt_buckets` (`usage._stream_usage`). A body that would pass
 swarm-api's limit with them is sent as the sums alone instead: swarm-api
 prices those by the summed rule and answers `tier_estimated: true`, which the
 attempt's summary carries. A figure, marked, rather than a refusal and none.

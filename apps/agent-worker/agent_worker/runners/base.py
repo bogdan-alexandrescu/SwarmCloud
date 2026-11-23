@@ -54,7 +54,7 @@ EXIT_TERMINATED = 143
 #:
 #: Defined once, here, because two sides read them: the runner lifts exactly
 #: these out of a FAILED run's output (so they survive into result.json), and
-#: `lifecycle._usage_summary` looks for exactly these to decide which level of
+#: `usage._usage_summary` looks for exactly these to decide which level of
 #: a result holds the numbers. A second spelling of this tuple is a runner that
 #: carries a key the worker never reads.
 SPEND_KEYS: tuple[str, ...] = (
