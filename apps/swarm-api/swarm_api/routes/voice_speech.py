@@ -61,6 +61,7 @@ from ..errors import Forbidden, NotFound, Unauthenticated, UpstreamUnavailable
 from ..voice import budget as vbudget
 from ..voice import ledger as vledger
 from ..voice import readback as vreadback
+from ..voice import record as vrecord
 from ..voice import sessions as vs
 from ..voice import settings as vsettings
 from ..voice import speech_machine as sm
@@ -335,7 +336,10 @@ async def audio_socket(websocket: WebSocket, session_id: str) -> None:
             machine.fall_back(session, reason=reason)
         await run_in_threadpool(_down)
 
-    turns = getattr(app.state, "speech_turns", None) or sr.ClientTurns(client)
+    # Each spoken turn's two lines are kept, redacted, as the transcript (voice/record.py).
+    turns = vrecord.Recording(getattr(app.state, "speech_turns", None) or sr.ClientTurns(client), ctx.db,
+                              tenant_id=found.tenant_id, person=person, project_id=found.project_id,
+                              now=ctx.now)
     relay = sr.SpeechRelay(
         browser=_BrowserSocket(websocket), dial=vm_dialer(app, config), machine=machine,
         holder=holder, turns=turns, voice=str(chosen.get("tts_voice") or ""),

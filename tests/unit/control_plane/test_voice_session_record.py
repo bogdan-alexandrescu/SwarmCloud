@@ -140,8 +140,9 @@ def test_a_failed_summary_never_blocks_the_end(db, tokens, group_map, objects, v
 
 def test_a_session_at_its_cap_gets_no_summary(db, tokens, group_map, objects, voice):
     client = _client(db, tokens, group_map, objects, voice)
-    client.app.state.voice_budget_ledger = CappedLedger()
     session_id = _start(client).json()["session_id"]
+    # Set after the start: the start's own cap check reads the day alone.
+    client.app.state.voice_budget_ledger = CappedLedger()
 
     assert _end(client, session_id).status_code == 200
 
