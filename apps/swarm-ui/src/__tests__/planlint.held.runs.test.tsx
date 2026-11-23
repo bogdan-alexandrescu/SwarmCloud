@@ -6,7 +6,7 @@
  * is shown, code and sentence, with what the hold means behind the chip's
  * tooltip, and draws nothing on a run that is not held.
  */
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const WAIT = { timeout: 4000 }
@@ -52,9 +52,17 @@ function run(extra: Record<string, unknown> = {}) {
   }
 }
 
-async function mount(served: unknown) {
-  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+/** What the page POSTed: each write's path and body. */
+type Sent = { url: string; body: Record<string, unknown> }
+
+async function mount(served: unknown, sent: Sent[] = [], ready = '.rn-steps') {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
+    if (init?.method === 'POST') {
+      const body = JSON.parse(String(init.body ?? '{}')) as Record<string, unknown>
+      sent.push({ url, body })
+      return new Response(JSON.stringify({ run: served }), { status: 200, headers: JSON_HEADERS })
+    }
     if (url === `/v1/runs/${RUN_ID}`) return new Response(JSON.stringify({ run: served }), { status: 200, headers: JSON_HEADERS })
     return new Response(JSON.stringify({ code: 'not_found', message: url }), { status: 404, headers: JSON_HEADERS })
   }) as unknown as typeof fetch
@@ -62,7 +70,7 @@ async function mount(served: unknown) {
   vi.resetModules()
   const { RunsScreen } = await import('../Runs')
   const utils = render(<RunsScreen view={`run=${RUN_ID}`} go={vi.fn()} />)
-  await waitFor(() => expect(utils.container.querySelector('.rn-steps')).not.toBeNull(), WAIT)
+  await waitFor(() => expect(utils.container.querySelector(ready)).not.toBeNull(), WAIT)
   return utils.container
 }
 
@@ -99,6 +107,65 @@ describe("a held run's plan lint findings", () => {
       const page = await mount(served)
       expect(page.querySelector('.rn-lint')).toBeNull()
     }
+  })
+})
+
+describe('a held run with no plan', () => {
+  // Both planner outputs failed to parse and none earlier did: no plan, no digest.
+  const planless = () => run({
+    plan: null, plan_digest: null,
+    plan_lint: lint({ findings: [{ code: 'plan_invalid', step: null, requirement: null, message: 'plan.json is not JSON.' }] }),
+  })
+  const buttons = (page: HTMLElement) => Array.from(page.querySelectorAll('button')).map(visible)
+
+  it('draws Edit and Reject, and no Approve: there is no plan to approve', async () => {
+    const page = await mount(planless(), [], '.rn-lint')
+    expect(page.querySelector('.rn-lint')).not.toBeNull()
+    expect(buttons(page)).toContain('Edit plan')
+    expect(buttons(page)).toContain('Reject')
+    expect(buttons(page)).not.toContain('Approve and run')
+  })
+
+  it('edits a plan in from an empty one, sending no digest', async () => {
+    const sent: Sent[] = []
+    const page = await mount(planless(), sent, '.rn-lint')
+    fireEvent.click(Array.from(page.querySelectorAll('button')).find((b) => visible(b) === 'Edit plan')!)
+    const form = await waitFor(() => {
+      const f = page.querySelector<HTMLFormElement>('.rn-edit')
+      expect(f).not.toBeNull()
+      return f!
+    }, WAIT)
+    const fields = form.querySelectorAll<HTMLTextAreaElement | HTMLInputElement>('textarea, input')
+    const [summary] = fields
+    expect(summary.value).toBe('')
+    fireEvent.change(summary, { target: { value: 'Sort the widget list by name.' } })
+    const set = form.querySelector('fieldset')!
+    fireEvent.change(set.querySelector('input')!, { target: { value: 'Sort on the server' } })
+    fireEvent.change(set.querySelector('textarea')!, { target: { value: 'Edit the list route.' } })
+    fireEvent.submit(form)
+
+    await waitFor(() => expect(sent.length).toBe(1), WAIT)
+    expect(sent[0].url).toBe(`/v1/runs/${RUN_ID}/plan:edit`)
+    expect('plan_digest' in sent[0].body).toBe(false)
+    const plan = sent[0].body.plan as { summary: string; steps: { title: string; prompt: string }[] }
+    expect(plan.summary).toBe('Sort the widget list by name.')
+    expect(plan.steps.map((s) => [s.title, s.prompt])).toEqual([['Sort on the server', 'Edit the list route.']])
+  })
+
+  it('rejects it, sending no digest', async () => {
+    const sent: Sent[] = []
+    const page = await mount(planless(), sent, '.rn-lint')
+    fireEvent.click(Array.from(page.querySelectorAll('button')).find((b) => visible(b) === 'Reject')!)
+    const form = await waitFor(() => {
+      const f = page.querySelector<HTMLFormElement>('form.rn-reject')
+      expect(f).not.toBeNull()
+      return f!
+    }, WAIT)
+    fireEvent.submit(form)
+
+    await waitFor(() => expect(sent.length).toBe(1), WAIT)
+    expect(sent[0].url).toBe(`/v1/runs/${RUN_ID}/plan:reject`)
+    expect('plan_digest' in sent[0].body).toBe(false)
   })
 })
 

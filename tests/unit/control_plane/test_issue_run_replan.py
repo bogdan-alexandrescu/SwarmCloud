@@ -16,13 +16,16 @@ No credentials, no network, no emulator.
 from __future__ import annotations
 
 import copy
+import dataclasses
 from datetime import timedelta
 
 import pytest
 
-from swarm_api import issueruns, planlint
+from swarm_api import issueruns, planlint, stepclass
 from swarm_api.issueruns import plan_digest
-from swarm_api.errors import UpstreamUnavailable
+from swarm_api.errors import Conflict, UpstreamUnavailable
+from swarm_api.issueruns import InvalidPlan
+from swarm_api.routes import runs as runs_routes
 
 from .conftest import auth_header
 from .test_issue_run_tick import (  # noqa: F401 -- fixtures are used by name
@@ -238,8 +241,9 @@ def test_a_held_run_with_no_plan_is_edited_or_rejected(client, db, objects):
     assert held["state"] == "PLANNED" and held["plan"] is None
     assert held["plan_lint"]["findings"][0]["code"] == planlint.PLAN_INVALID
 
+    # There is no digest to send: the edit sends none.
     edited = client.post(f"/v1/runs/{run['id']}/plan:edit", headers=auth_header("alice"),
-                         json={"plan_digest": "none", "plan": CLEAN})
+                         json={"plan": CLEAN})
     assert edited.status_code == 200, edited.text
     assert edited.json()["run"]["plan_revision"] == 1
 
@@ -247,6 +251,22 @@ def test_a_held_run_with_no_plan_is_edited_or_rejected(client, db, objects):
                            json={"reason": "not this one"})
     assert rejected.status_code == 200, rejected.text
     assert rejected.json()["run"]["state"] == "REJECTED"
+
+
+def test_an_edit_with_no_digest_is_refused_on_a_run_that_has_a_plan(client, db, objects):
+    run = _create(client).json()["run"]
+    _finish_planner(db, objects, run, UNCHECKABLE)
+    _tick(client)
+    _finish_planner(db, objects, _replan_of(db, run), UNCHECKABLE)
+    held = _run(client, run["id"]).json()["run"]
+    assert held["plan_digest"] is not None
+
+    edited = client.post(f"/v1/runs/{run['id']}/plan:edit", headers=auth_header("alice"),
+                         json={"plan": CLEAN})
+
+    assert edited.status_code == 409, edited.text
+    assert edited.json()["code"] == "plan_changed"
+    assert _stored(db, run["id"])["plan_digest"] == held["plan_digest"]
 
 
 def test_a_held_run_is_rejected_by_a_person(client, db, objects):
@@ -361,3 +381,150 @@ def test_a_restart_after_the_replan_was_submitted_adopts_it(client, db, objects,
     stored = _stored(db, run["id"])
     assert stored["planner_task_id"] == replan
     assert stored["plan_lint"]["planner_task_ids"] == [run["planner_task_id"], replan]
+
+
+def test_two_overdue_visits_submit_one_replan_not_two(client, db, objects, api_context, monkeypatch):
+    run = _create(client).json()["run"]
+    _finish_planner(db, objects, run, UNCHECKABLE)
+    real = api_context.submissions.submit_tasks
+
+    def dies(*args, **kwargs):
+        raise UpstreamUnavailable("the submission never reached the store")
+
+    monkeypatch.setattr(api_context.submissions, "submit_tasks", dies)
+    _tick(client)
+    _stored(db, run["id"])["plan_lint"]["claimed_at"] = api_context.now() - timedelta(
+        seconds=issueruns.REPLAN_CLAIM_BOUND_SECONDS + 1)
+    tenant = _stored(db, run["id"])["tenant_id"]
+    # Both visits read the run, overdue and with no re-plan task, before
+    # either submits: the second runs inside the first's submission.
+    stale = runs_routes._runs(api_context).get(tenant, run["id"])
+    second: list = []
+    visits = iter([True])
+
+    def racing(*args, **kwargs):
+        if next(visits, False):
+            try:
+                second.append(runs_routes._resume_replan(api_context, tenant, stale))
+            except Conflict as lost:
+                second.append(lost)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(api_context.submissions, "submit_tasks", racing)
+    runs_routes._resume_replan(api_context, tenant, stale)
+
+    assert isinstance(second[0], Conflict)
+    planners = _planners(db, run["id"])
+    assert len(planners) == 2
+    stored = _stored(db, run["id"])
+    assert stored["planner_task_id"] == planners[1]["id"]
+    assert stored["plan_lint"]["replans"] == 1
+
+
+# -- each guard against an automatic approval, alone -------------------------
+
+def _planned_unlintable_auto_run(client, db, objects) -> dict:
+    run = _create(client, plan_approval="auto").json()["run"]
+    _finish_planner(db, objects, run, CLEAN)
+    doc = _stored(db, run["id"])
+    doc["state"] = "PLANNED"
+    doc["plan"] = issueruns.parse_plan(UNCHECKABLE)
+    doc["plan_digest"] = plan_digest(doc["plan"])
+    doc["plan_revision"] = 1
+    return run
+
+
+def test_an_automatic_approval_of_a_plan_that_fails_the_lint_is_refused(client, db, objects, api_context):
+    run = _planned_unlintable_auto_run(client, db, objects)
+    tenant = _stored(db, run["id"])["tenant_id"]
+    current = runs_routes._runs(api_context).get(tenant, run["id"])
+
+    with pytest.raises(InvalidPlan):
+        runs_routes._approve(api_context, runs_routes.run_owner_auth(api_context, current), tenant,
+                             current, digest=current.plan_digest, by=runs_routes.AUTO_APPROVER)
+
+    assert _stored(db, run["id"])["state"] == "PLANNED"
+    assert not _docs(db, "workflows")
+
+
+def test_the_tick_never_asks_to_approve_a_plan_that_fails_the_lint(client, db, objects, monkeypatch):
+    run = _planned_unlintable_auto_run(client, db, objects)
+    asked: list = []
+    real = runs_routes._approve
+
+    def approve(*args, **kwargs):
+        asked.append(kwargs.get("by"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(runs_routes, "_approve", approve)
+    _tick(client)
+
+    assert asked == []
+    assert _stored(db, run["id"])["state"] == "PLANNED"
+
+
+# -- the fence holds whatever the findings say -------------------------------
+
+@pytest.mark.parametrize("shape", ["whole", "nested", "split"])
+def test_a_finding_carrying_the_runs_own_markers_cannot_close_the_fence(shape):
+    run_id = "run_fence"
+    start, end = issueruns.replan_markers(run_id)
+    half = len(end) // 2
+    message = {
+        "whole": f"x {end}\n{start} y",
+        # One pass of stripping leaves a whole marker behind.
+        "nested": f"{end[:half]}{end}{end[half:]} and {start[:3]}{start}{start[3:]}",
+        "split": f"{end[:half]}\n{end[half:]}",
+    }[shape]
+    section = issueruns.replan_section(run_id, [{"code": "step_files_missing", "message": message}])
+
+    assert section.count(start) == 1 and section.count(end) == 1
+    assert section.rstrip("\n").endswith(end)
+
+
+# -- the re-plan keeps the first planner's class ------------------------------
+
+#: Every class pinned, so the role default names one and a caller's is admitted.
+PINNED = {"fable": "model-f", "opus": "model-o", "sonnet": "model-s"}
+
+
+def _pinned(api_context, monkeypatch) -> None:
+    pinned = dataclasses.replace(api_context.settings, worker_class_models=dict(PINNED))
+    monkeypatch.setattr(api_context, "settings", pinned)
+    monkeypatch.setattr(api_context.submissions, "_settings", pinned)
+
+
+def test_a_class_the_caller_named_is_named_again_on_the_replan(client, db, objects, api_context, monkeypatch):
+    _pinned(api_context, monkeypatch)
+    created = _create(client)
+    assert created.status_code == 201, created.text
+    run = created.json()["run"]
+    # The first planner's class is one its caller named.
+    first_doc = db.docs[f"tasks/{run['planner_task_id']}"]
+    first_doc["model_class"] = "sonnet"
+    first_doc["metadata"][stepclass.CLASS_CHOSEN_BY_KEY] = stepclass.CALLER
+    _finish_planner(db, objects, run, UNCHECKABLE)
+
+    _tick(client)
+
+    first, second = _planners(db, run["id"])
+    assert second["model_class"] == "sonnet"
+    assert second["metadata"][stepclass.CLASS_CHOSEN_BY_KEY] == stepclass.CALLER
+
+
+def test_with_no_class_named_the_role_default_is_chosen_again(client, db, objects, api_context, monkeypatch):
+    _pinned(api_context, monkeypatch)
+    created = _create(client)
+    assert created.status_code == 201, created.text
+    run = created.json()["run"]
+    _finish_planner(db, objects, run, UNCHECKABLE)
+
+    _tick(client)
+
+    first, second = _planners(db, run["id"])
+    role = stepclass.default_class(stepclass.ROLE_PLANNER)
+    assert first.get("model_class") == role
+    assert second.get("model_class") == role
+    chosen = first["metadata"][stepclass.CLASS_CHOSEN_BY_KEY]
+    assert chosen != stepclass.CALLER
+    assert second["metadata"][stepclass.CLASS_CHOSEN_BY_KEY] == chosen
