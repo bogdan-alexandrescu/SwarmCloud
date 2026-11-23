@@ -1022,8 +1022,10 @@ def runs_of(summary: dict[str, Any]) -> dict[str, Any]:
     The worker writes `runs` and `swaps` only when an attempt started more
     than one runner (SWAP-RUNS, archived issue 2457): then `duration_s` above is the SUM of
     the runs, `last_run_duration_s` the last run's alone, and `swap_cost` what
-    the swaps cost in seconds and tokens before the agent acted again. A
-    one-run attempt's outputs carry none of these keys, as before.
+    the swaps cost in seconds and tokens before the agent acted again.
+    `duration_partial: true` (and `swap_cost.partial: true`) say a run's
+    seconds were unknown and left out of that sum (issue 186). A one-run
+    attempt's outputs carry none of these keys, as before.
     """
     runs = summary.get("runs")
     if not isinstance(runs, list) or not runs:
@@ -1046,6 +1048,11 @@ def runs_of(summary: dict[str, Any]) -> dict[str, Any]:
     cost = summary.get("swap_cost")
     if isinstance(cost, dict):
         out["swap_cost"] = dict(cost)
+    # The worker leaves a run whose duration is unknown out of the sum and
+    # says so (issue 56); passed on so a shortened sum never reads as complete
+    # (issue 186). Absent when the sum is complete, as before.
+    if summary.get("duration_partial") is True:
+        out["duration_partial"] = True
     return out
 
 
