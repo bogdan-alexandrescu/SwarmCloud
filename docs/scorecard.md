@@ -80,6 +80,12 @@ was created.
 | turns | median and p90 of `usage.num_turns` | long sessions cost superlinearly: each turn re-reads the context |
 | context tokens per turn | (input + cache read + cache creation) / turns, median and p90 | the size of what each turn carries |
 | tasks over 100 turns, their share of cost | share of tasks at 100 turns or more, and of the cost on tasks with a turn count | what a turn cap would act on |
+| tool calls per attempt, by role | the sum of `result_summary.runner.metrics.tool_calls.families` (every `tool_use` block of the attempt's sessions, a subagent's included; absent when the stream was not read), median, p90 and p99 | what a per-role tool-call limit would act on, over the whole attempt |
+| turns per attempt, by role | `usage.num_turns`, median, p90 and p99 | the same for turns |
+| tool calls and turns per session, by role | a session stopped at the ceiling: its stop entry's `tool_calls` and `turn` (top-level calls only, as the ceiling counts them); the one session of a one-session attempt: the attempt's numbers; median, p90 and p99 | the number the per-role session limits are tuned from |
+| sessions with no numbers of their own | the last session of an attempt that ran several: `metrics.sessions.count` less its stops. Its own numbers are not recorded, so it is counted, not estimated | how much of the per-session distribution is missing, and that it is the sessions that did not hit the ceiling |
+| sessions ended at the ceiling %, by role | stops in `result_summary.runner.output.context_ceiling.stops` over `metrics.sessions.count`, for tasks with both; a ceiling record cut with the runner's output (8,000 characters) is not read, never "no stop" | how often today's limits end a session early, per role |
+| fresh sessions per attempt, by role | `metrics.sessions.count` - 1 (a handoff's fresh session or a refused first call's restart), median, p90 and p99 | each fresh session re-reads a handoff; many per attempt is a lane looping |
 | model time vs wall-clock | summed `usage.duration_api_ms` against summed `result_summary.duration_seconds` | time not spent in the model is tools, tests and waits: the gate and CI show here |
 | queue wait | created → started, median and p90, for tasks outside a workflow | admission and capacity; a workflow step's created → started also includes waiting on its parents, so it is printed apart |
 | workflows merged, submit → merged | first task's created_at to the merge, median and p90 | the end-to-end number the merge-train change is judged on |
@@ -98,7 +104,10 @@ was created.
 `state`, `runner_profile`, `model`, `model_class`, `tenant_id`, `workflow_id`,
 `step_id`, `created_at`, `started_at`, `completed_at`, `attempt_count`,
 `end_cause`, `attempt_totals.cost_usd_total`, `result_summary.runner.usage`,
-`result_summary.runner.output.prepublish`, `result_summary.duration_seconds`,
+`result_summary.runner.output.prepublish`,
+`result_summary.runner.output.context_ceiling`,
+`result_summary.runner.metrics.sessions`,
+`result_summary.runner.metrics.tool_calls`, `result_summary.duration_seconds`,
 `result_summary.git.publish_reason` and
 `result_summary.git.pull_request.number` (which links a workflow to the pull
 request GitHub reports merged; without GitHub, a merge step that succeeded
@@ -108,3 +117,17 @@ input, no log.
 The numbers are made by `scripts/lib/scorecard.py` (standard library only),
 unit-tested offline in `tests/unit/scripts/test_scorecard.py`; the shell only
 fetches.
+
+## Sessions: what is and is not recorded
+
+A task carries only its **last** attempt's `result_summary`, so "per attempt"
+is per last attempt; an earlier attempt's sessions are not on the task. The
+context ceiling (`apps/agent-worker/agent_worker/runners/ceiling.py`) records
+a stopped session's own turns and tool calls in its stop entry, but the last
+session of an attempt has no entry of its own: its numbers are the attempt's
+less the stops', and the two count differently (the attempt's tool calls
+include a subagent's; the ceiling's do not), so the scorecard does not
+subtract them and reports the session as having no numbers of its own. A
+task whose runner the ceiling does not watch carries no `metrics.sessions`
+and adds nothing to the session measures. These numbers are what the
+per-role session limits are to be tuned from.
