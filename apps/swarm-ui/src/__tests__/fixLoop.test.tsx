@@ -42,8 +42,8 @@ vi.mock('../fetch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../fetch')>()),
   write: api.write,
 }))
-vi.mock('../Profile', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../Profile')>()),
+vi.mock('../roleGate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../roleGate')>()),
   useRoleGate: () => null,
 }))
 

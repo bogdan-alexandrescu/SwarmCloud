@@ -7,7 +7,7 @@ import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure
 import type { MarkHue, MarkName } from './marks'
 import { Button, NamedMark, Segmented } from './components'
 import { FixLoopPill } from './components/StatePill'
-import { useRoleGate } from './Profile'
+import { useRoleGate } from './roleGate'
 import { Id } from './Shell'
 import { agentPath } from './OverviewRegions'
 import { addressToPath } from './paths'

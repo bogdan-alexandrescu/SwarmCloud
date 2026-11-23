@@ -12,8 +12,8 @@ import { UrCap, UrRadio, UrRefresh, UrRegion, useUrRead } from './RepositoriesPa
 import { notServed, type CapCell } from './RepositoriesData'
 import { githubTokenState } from './githubTokenState'
 import { PageHead } from './Shell'
-import { InfoTip } from './People'
-import { WorkspaceTabWords } from './Profile'
+import { InfoTip } from './InfoTip'
+import { WorkspaceTabWords } from './workspaceName'
 import { usePhoneTables } from './capacityPoll'
 import type {
   AccessDisableResponse, AccessGrant, AccessMode, AccessOverview, AccessOwner, AccessRepository, GitHubConnection,

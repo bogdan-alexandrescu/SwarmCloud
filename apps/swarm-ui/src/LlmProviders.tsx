@@ -34,25 +34,11 @@ import { LlmApiKeysBody } from './LlmApiKeys'
 import { LlmPlansScreen } from './LlmPlans'
 import { Screen } from './Shell'
 import { Segmented } from './components'
+import { LLM_SUB_PAGES, llmProvidersAddress, type LlmSubPage } from './llmPaths'
 
-/** Capacity's tab id (App.tsx SECTIONS). */
-export const LLM_PROVIDERS_TAB = 'llm-providers'
-
-/** The tab's two sub-pages, in the control's order; the first is the tab's default. */
-export const LLM_SUB_PAGES = ['plans', 'api-keys'] as const
-export type LlmSubPage = (typeof LLM_SUB_PAGES)[number]
+export { LLM_PROVIDERS_TAB, LLM_SUB_PAGES, llmProvidersAddress, llmSubPage, type LlmSubPage } from './llmPaths'
 
 const SUB_LABEL: Readonly<Record<LlmSubPage, string>> = { plans: 'Plans', 'api-keys': 'API Keys' }
-
-/** A sub-page off an address segment: anything else is Plans, the tab's first. */
-export function llmSubPage(seg: string | null | undefined): LlmSubPage {
-  return seg === 'api-keys' ? 'api-keys' : 'plans'
-}
-
-/** A sub-page's router address (`capacity/llm-providers/<sub>`). */
-export function llmProvidersAddress(sub: LlmSubPage): string {
-  return `capacity/${LLM_PROVIDERS_TAB}/${sub}`
-}
 
 /** Plans | API Keys, each its own address. */
 function SubPages({ sub }: { sub: LlmSubPage }) {

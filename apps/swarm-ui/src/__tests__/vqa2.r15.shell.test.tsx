@@ -24,6 +24,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import NOTIF_CSS from '../styles/notifications.css?raw'
 import { cascade, type CascadeEnv } from './cssgate'
 import { serve } from './repofixture'
+import { screenLoaded } from './screenLoaded'
 
 type Json = Record<string, unknown>
 type Reply = { status: number; body: unknown } | null
@@ -65,7 +66,9 @@ async function app(path: string, handler: Handler = live()) {
   vi.resetModules()
   window.history.replaceState(null, '', path)
   const { App } = await import('../App')
-  return render(<App />)
+  const r = render(<App />)
+  await screenLoaded()
+  return r
 }
 
 afterEach(() => {
