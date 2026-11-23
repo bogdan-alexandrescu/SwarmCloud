@@ -2,7 +2,7 @@
 # related-tests: name the test files a change reaches, and the runs of named
 # files that test it -- never a whole suite, a directory or a shard.
 #
-#   scripts/related-tests.sh [--base <rev>] [--files <file>|-] [--run]
+#   scripts/related-tests.sh [--base <rev>] [--files <file>|-] [--run] [--closure]
 #
 # WHY (RELATED-TESTS, part of archived issue 1694, owner decision 2026-10-20). Agents ran
 # whole suites and lost hours. Measured 2026-10-19/20: 36 vitest runs with no
@@ -59,6 +59,15 @@
 # SWARM_CLONE_BASE, else origin/main; an unresolvable base exits 2 rather than
 # reading as an empty diff. `--files` reads the paths from a file (or stdin).
 #
+# CAPPED (RELATED-CAP, owner plan 2026-11-23). Where CI's selector would run
+# the whole suite for the change itself (its fallback_reason: a conftest.py,
+# pyproject.toml, uv.lock, the frozen contract, a workflow), the full closure
+# was up to every test file and --run stopped at its first overrun. The selector then names the
+# change's own tests, the direct importers of each changed module, the code
+# graph's tests_for and the tests naming a changed path, and a note gives the
+# closure's size; CI (the merge train) runs the closure. `--closure` prints
+# the closure instead.
+#
 # stdout: the related test files, repo-relative, one a line; then one command
 # a line. `--run` also runs those commands in turn and stops at the first red.
 #
@@ -104,6 +113,7 @@ usage() {
 base="${SWARM_CLONE_BASE:-origin/main}"
 files_from=""
 run=0
+closure=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base)
@@ -113,6 +123,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { usage; exit 2; }
       files_from="$2"; shift 2 ;;
     --run) run=1; shift ;;
+    --closure) closure=(--closure); shift ;;
     -h|--help) usage; exit 0 ;;
     *) err "unknown option: $1"; usage; exit 2 ;;
   esac
@@ -154,7 +165,8 @@ fi
 # Standard library only (like select_unit_tests.py, which CI runs before any
 # sync), so the system python3 is enough.
 require_cmd python3
-python3 "${REPO_ROOT}/${SELECTOR}" --root "${REPO_ROOT}" --changed "${work}/changed" >"${work}/runs" \
+python3 "${REPO_ROOT}/${SELECTOR}" --root "${REPO_ROOT}" --changed "${work}/changed" \
+  ${closure[@]+"${closure[@]}"} >"${work}/runs" \
   || { err "${SELECTOR} could not select the related tests"; exit 2; }
 
 kinds=()

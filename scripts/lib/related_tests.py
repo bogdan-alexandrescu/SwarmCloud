@@ -2,7 +2,7 @@
 """The test files a change reaches, cut into runs of named files
 (RELATED-TESTS, part of archived issue 1694, owner decision 2026-10-20).
 
-    related_tests.py --changed FILE [--root DIR]
+    related_tests.py --changed FILE [--root DIR] [--closure]
 
 WHY. Agents ran whole suites and lost hours: 36 vitest runs with no file
 filter at about 22 min each (2.05 h), 8 pytest runs over whole tests/unit
@@ -10,8 +10,10 @@ directories (0.73 h), and both out-of-memory kills of 2026-10-19/20 came from
 four vitest shards started in the background. scripts/related-tests.sh asks
 this for the tests related to a change and prints (or runs) them as named
 files. It never answers with a directory or the whole suite: where CI's own
-selector (select_unit_tests.py) falls back to "all", this keeps the files it
-can name and leaves the rest to CI, which is the gate.
+selector (select_unit_tests.py) falls back to "all", this prints a capped
+selection (python_related: own tests, direct importers, the graph's tests_for,
+tests naming a changed path) and leaves the closure to CI, which is the gate;
+--closure prints the closure instead.
 
 WHAT IS RELATED:
 
@@ -25,8 +27,10 @@ WHAT IS RELATED:
     file still selects by imports. A type-only
     import (`import type`) is no edge: vitest does not run it (_TYPE_ONLY);
   * a change CI's selector runs the whole suite for -- the frozen contract,
-    a conftest.py, pyproject.toml ... -- still selects every test that
-    imports or reads it, and a note says it is wide by design;
+    a conftest.py, pyproject.toml ... (its fallback_reason) -- selects capped: its own tests, the tests that import a
+    changed module directly, the graph's tests_for and the tests naming a
+    changed path, and a note gives the closure's size (RELATED-CAP);
+    `--closure` selects every test that imports or reads it, as before;
   * swarm-ui (vitest): the change's own test files, and every test file that
     reaches a changed module through relative imports -- `import ... from`,
     `export ... from`, `import '...'`, `import('...')` and `vi.mock('...')` --
@@ -77,6 +81,7 @@ import os
 import posixpath
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
@@ -85,6 +90,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import select_unit_tests as sut  # noqa: E402
 
 UI = "apps/swarm-ui"
+# Where EdgeCache keeps its file; `off` turns it off.
+CACHE_DIR_ENV = "RELATED_TESTS_CACHE_DIR"
 DURATIONS = "tests/unit/scripts/unit_test_durations.json"
 # Per-file vitest CI-seconds, keyed relative to apps/swarm-ui. Only the files
 # far over the default are recorded; scripts/refresh-ui-weights.sh rewrites it
@@ -530,30 +537,141 @@ def graph_tests(graph: Graph | None, changed: list[str], is_test, known: set[str
     return chosen
 
 
-def python_related(root: Path, changed: list[str], graph: Graph | None = None) -> list[str]:
+class EdgeCache:
+    """select_unit_tests.import_edges, remembered by each file's content
+    (RELATED-CAP, owner plan 2026-11-23). Parsing every Python file is about
+    85% of a run: measured on main at 8dc58b4, 20 of 24 s in import_edges
+    over 2,903 files, and about 1 s in the test-text scan. The key is the
+    sha256 of the path and the text, in a file named for the hash of
+    select_unit_tests.py itself, so an edited file or an edited rule is a miss,
+    never a stale answer; nothing keyed on a commit's tree, which leaves out
+    the uncommitted files a lane's selection is about. Only this run's entries
+    are written back (atomically), so the file stays the size of one tree. A
+    cache that cannot be read or written is no cache: the run parses."""
+
+    def __init__(self, directory: Path | None):
+        self.path: Path | None = None
+        self.old: dict[str, dict[str, list[str] | None]] = {}
+        self.new: dict[str, dict[str, list[str] | None]] = {}
+        if directory is None:
+            return
+        rules = hashlib.sha256(Path(sut.__file__).read_bytes()).hexdigest()[:16]
+        self.path = directory / f"import-edges-{rules}.json"
+        try:
+            loaded = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            loaded = {}
+        self.old = loaded if isinstance(loaded, dict) else {}
+
+    def __call__(self, rel: str, text: str) -> dict[str, frozenset[str] | None]:
+        key = hashlib.sha256(f"{rel}\0{text}".encode("utf-8", "surrogatepass")).hexdigest()
+        found = self.new[key] if key in self.new else self.old.get(key)
+        if not isinstance(found, dict):
+            found = {name: None if owners is None else sorted(owners)
+                     for name, owners in sut.import_edges(rel, text).items()}
+        self.new[key] = found
+        return {name: None if owners is None else frozenset(owners) for name, owners in found.items()}
+
+    def save(self) -> None:
+        if self.path is None or not self.new or self.new.keys() == self.old.keys():
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            part = self.path.with_name(f"{self.path.name}.{os.getpid()}")
+            part.write_text(json.dumps(self.new))
+            os.replace(part, self.path)
+        except OSError:
+            pass
+
+
+def cache_dir(env: dict[str, str] | None = None) -> Path | None:
+    """$RELATED_TESTS_CACHE_DIR, else swarm-related-tests under $TMPDIR (the
+    cache volume in a SwarmCloud container); `off` turns the cache off."""
+    env = dict(os.environ) if env is None else env
+    named = (env.get(CACHE_DIR_ENV) or "").strip()
+    if named == "off":
+        return None
+    if named:
+        return Path(named)
+    return Path(env.get("TMPDIR") or tempfile.gettempdir()) / "swarm-related-tests"
+
+
+class PythonSelection(NamedTuple):
+    tests: list[str]      # what is printed
+    closure: int          # how many files the full selection reaches
+    capped: str | None    # why the selection was capped, None when it was not
+
+
+def direct_importers(root: Path, changed_py: list[str], edges) -> set[str]:
+    """One hop: the files that import a changed module themselves (at load or
+    lazily), and for a changed conftest.py the tests beside it."""
+    rels = [str(p.relative_to(root)) for top in ("apps", "scripts", "tests/unit")
+            for p in sut._python_files(root, top)]
+    names = set()
+    for path in changed_py:
+        names |= sut._suffixes(root, path)
+    out = {rel for rel in rels
+           if names & set(edges(rel, (root / rel).read_text(errors="replace")))}
+    for conf in (c for c in changed_py if c.rsplit("/", 1)[-1] == "conftest.py"):
+        under = conf[: -len("conftest.py")]
+        out.update(r for r in rels if r.startswith(under) and "/" not in r[len(under):])
+    return out
+
+
+def _names_any(root: Path, tests: list[str], chosen: set[str], paths: list[str]) -> set[str]:
+    """The tests outside `chosen` whose text names one of `paths`."""
+    found = set()
+    for test in tests:
+        if test not in chosen:
+            text = (root / test).read_text(errors="replace")
+            if any(sut.names_path(text, p) for p in paths):
+                found.add(test)
+    return found
+
+
+def python_related(root: Path, changed: list[str], graph: Graph | None = None,
+                   closure: bool = False, edges=None) -> PythonSelection:
     """tests/unit files related to the change, by select_unit_tests.py's rules
     without its fall-back to the whole suite, and the tests the code graph
-    names for a changed module it covers."""
+    names for a changed module it covers.
+
+    CAPPED (RELATED-CAP, owner plan 2026-11-23). Where CI's selector would run
+    the whole suite for the change itself -- fallback_reason fires: a
+    conftest.py, pyproject.toml, uv.lock, the frozen contract, a workflow,
+    more than MAX_CHANGED paths -- the full closure is up to 2,094 files,
+    which no 540 s run holds: --run stopped at its first overrun with "narrow
+    it", which an agent cannot do, and the pre-publish gate inherited the same
+    list. Then this answers with the change's own tests, the direct importers
+    of each changed module (one hop), the graph's tests_for and the tests that
+    name a changed path, and the closure's size for the note; CI (the merge
+    train) runs the closure. `closure` keeps the full list. Never "all".
+    A selection that reaches FULL_FRACTION without a fallback reason is not
+    capped: the brief keeps every other change's selection as it was."""
+    edges = edges or sut.import_edges
     all_tests = sorted(str(p.relative_to(root)) for p in sut._python_files(root, "tests/unit")
                        if sut.is_test(str(p.relative_to(root))))
     known = set(all_tests)
-    chosen = {c for c in changed if c in known}
+    own = {c for c in changed if c in known}
+    chosen = set(own)
     changed_py = [c for c in changed if c.endswith(".py") and c.startswith(("apps/", "scripts/", "tests/unit/"))]
     # What CI runs the whole suite for (the frozen contract, a conftest.py
     # ...) selects by imports alone, so its "wide by design" count is exact.
     wide = [c for c in changed_py if sut.fallback_reason([c])]
     chosen.update(graph_tests(graph, [c for c in changed_py if c not in wide], sut.is_test, known))
     if changed_py:
-        chosen.update(r for r in sut.import_closure(root, changed_py) if r in known)
+        chosen.update(r for r in sut.import_closure(root, changed_py, edges) if r in known)
     # The same text rule as CI and changed-guards.sh (archived issue 2299): a test naming a
     # doc that cites a changed path reaches the change through the doc.
     virtual = sut.script_closure(root, sut.doc_closure(root, changed))
-    for test in all_tests:
-        if test not in chosen:
-            text = (root / test).read_text(errors="replace")
-            if any(sut.names_path(text, p) for p in virtual):
-                chosen.add(test)
-    return sorted(chosen)
+    chosen |= _names_any(root, all_tests, chosen, virtual)
+    capped = sut.fallback_reason(changed)
+    if closure or not capped:
+        return PythonSelection(sorted(chosen), len(chosen), None)
+    narrow = set(own)
+    narrow.update(graph_tests(graph, changed_py, sut.is_test, known))
+    narrow.update(r for r in direct_importers(root, changed_py, edges) if r in known)
+    narrow |= _names_any(root, all_tests, narrow, changed)
+    return PythonSelection(sorted(narrow), len(chosen), capped)
 
 
 def pytest_runs(root: Path, tests: list[str]) -> list[list[str]]:
@@ -628,6 +746,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--stylesheet-guards", action="store_true",
                     help="print only the stylesheet guards the change selects, one a line, "
                          "relative to apps/swarm-ui (changed-guards.sh)")
+    ap.add_argument("--closure", action="store_true",
+                    help="where CI would run the whole suite, print the full closure, not the capped selection")
     args = ap.parse_args(argv)
     root = Path(args.root).resolve()
     changed = sorted({c.strip() for c in Path(args.changed).read_text().splitlines() if c.strip()})
@@ -647,18 +767,26 @@ def main(argv: list[str]) -> int:
     elif graph is not None:
         print(f"note\tcode graph snapshot of {graph.commit}: a changed file it knows a covering test for "
               "also selects its tests_for; every changed file selects by imports")
-    python = python_related(root, changed, graph)
-    # WIDE BY DESIGN: what CI's selector runs the whole suite for (the frozen
-    # contract every component imports, a conftest.py, pyproject.toml, uv.lock
-    # ...) still selects every test that imports or reads it here, and says so.
-    wide = sut.fallback_reason(changed)
-    if wide:
-        contract = next((c for c in changed if c.startswith("apps/common/swarm_common/")), None)
-        why = (f"{contract} is the frozen contract every component imports" if contract else wide)
-        print(f"note\t{why}: the selection is wide by design ({len(python)} test file(s) import or "
+    edges = EdgeCache(cache_dir())
+    python = python_related(root, changed, graph, closure=args.closure, edges=edges)
+    edges.save()
+    contract = next((c for c in changed if c.startswith("apps/common/swarm_common/")), None)
+    if python.capped:
+        why = (f"{contract} is the frozen contract every component imports" if contract else python.capped)
+        print(f"note\t{why}: the selection is capped at {len(python.tests)} test file(s) -- the change's own "
+              "tests, the direct importers of each changed module, the code graph's tests_for and the tests "
+              f"that name a changed path -- of the {python.closure} its full closure reaches; CI (the merge "
+              "train) runs the closure. --closure prints all of them")
+    # WIDE BY DESIGN: with --closure, what CI's selector runs the whole suite
+    # for (the frozen contract every component imports, a conftest.py,
+    # pyproject.toml, uv.lock ...) selects every test that imports or reads it.
+    elif args.closure and sut.fallback_reason(changed):
+        why = (f"{contract} is the frozen contract every component imports" if contract
+               else sut.fallback_reason(changed))
+        print(f"note\t{why}: the selection is wide by design ({len(python.tests)} test file(s) import or "
               "read it), and CI runs the whole suite for it")
     lines = []
-    for run in pytest_runs(root, python):
+    for run in pytest_runs(root, python.tests):
         lines.append("pytest\t" + " ".join(run))
     for run in vitest_runs(root, ui_related(root / UI, changed_ui, graph)):
         lines.append("vitest\t" + " ".join(run))
