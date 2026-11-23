@@ -23,9 +23,8 @@ below are the same families, in the same order, with the same `\\1********`
 shape, so an operator reading a redacted log in the terminal and a user reading
 one in the browser see the same thing.
 
-THEY GIVE THE SAME OUTPUT, held by ONE FIXTURE SET (wave 2026-09-27):
-`tests/fixtures/redaction-parity.json` is run through both filters by
-`tests/unit/control_plane/test_log_redaction.py` and by section 12 of
+THEY GIVE THE SAME OUTPUT, held by ONE FIXTURE SET (wave 2026-09-27): one JSON
+fixture of cases is run through both filters, by a test and by section 12 of
 `scripts/lib/check-contract-parity.sh`, and each must give every case's
 `expected` text exactly. This used to be described as a SUPERSET -- this
 module masking everything the shell's did "and possibly more" -- and the gap
@@ -428,7 +427,7 @@ def _private_key_rule() -> Rule:
 #: only where a run starts. The output is unchanged: a match that could start
 #: inside a run can also start at the run's first character, because the
 #: prefix takes any name characters.
-#: `tests/unit/control_plane/test_task_input_route.py` bounds it on 256 KiB.
+#: A test bounds it on 256 KiB.
 #:
 #: ESCAPED QUOTES (archived issue 221, owner decision 2026-09-26). In JSON TEXT a quote
 #: inside a string is `\"`, and the rule read a quote as a quote: over a raw
@@ -461,7 +460,7 @@ def _private_key_rule() -> Rule:
 #:     shared instance, over text an agent chose). The bound loses nothing: a
 #:     longer run still matches, from a later start, and the backslashes
 #:     before that start are left exactly where the match would have kept
-#:     them. `test_log_redaction.py` times 256 KiB of backslashes;
+#:     them. A test times 256 KiB of backslashes;
 #:   * after the key and before the value, `\\*` and `\\+` -- unbounded, since
 #:     both are only reached after a credential's name has matched;
 #:   * a value NOT opened by an escaped quote may not start with a run of
@@ -472,8 +471,8 @@ def _private_key_rule() -> Rule:
 #:
 #: THE SHELL FILTER HAS THE SAME RULE (`scripts/lib/common.sh` `redact`), in two
 #: expressions -- the escaped form, then the plain one -- because sed has no
-#: conditional group. `tests/unit/control_plane/test_log_redaction.py` runs both
-#: over the same lines and holds their output equal.
+#: conditional group. A test runs both over the same lines and holds their
+#: output equal.
 #:
 #: A PLURAL NAME IS A COUNT, A KEY-SUFFIXED NAME IS A CREDENTIAL (archived pull request 260). The
 #: wide group used to be one alternative, `s` or `s?[-_](access-key|key|hash)`,
@@ -1055,9 +1054,8 @@ def mask_code_literals(text: str) -> tuple[str, int]:
 #: that no identifier is: `eyJ` and 37 more characters (dots counted -- a JWT
 #: header alone can be 36), `sk-` and 32 more.
 #: The shell filter states each as two expressions, since sed has no
-#: look-around; tests/unit/control_plane/test_patch_artifact_applies.py holds
-#: the four to one output (its values are assembled, so they are not in the
-#: fixture file).
+#: look-around; a test holds the four to one output (its values are
+#: assembled, so they are not in the fixture file).
 RULES: tuple[Rule, ...] = (
     _private_key_rule(),
     # A PROVIDER-SHAPED VALUE ONLY (archived issue 2237). `sk-` and any six characters took

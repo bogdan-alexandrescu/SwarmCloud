@@ -77,8 +77,8 @@ _RULES_ONLY = TaskMasking(None, None)
 # one agent is `/agents/<tab>/<id>`, and a pasted link uses `live`, the tab
 # `addressToPath` defaults to; one workflow is `/workflows/<id>`, its id
 # URI-encoded exactly as `addressToPath` encodes it.
-# tests/unit/control_plane/test_console_links.py reads paths.ts, so a route
-# renamed in the UI fails that test instead of silently breaking every link.
+# A test reads paths.ts, so a route renamed in the UI fails that test
+# instead of silently breaking every link.
 
 #: The agent list a pasted link opens in (paths.ts `addressToPath`'s default).
 CONSOLE_AGENT_TAB = "live"

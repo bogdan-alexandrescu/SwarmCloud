@@ -34,7 +34,7 @@ is served.
 NOTHING HERE ADMITS, RESERVES OR RUNS WORK: it reads documents and answers.
 
 swarm-voice's follower (swarm_voice/follow.py) maps the served states with
-the same table; tests/unit/voice/test_follow.py holds the two equal.
+the same table; the two must stay equal.
 """
 
 from __future__ import annotations

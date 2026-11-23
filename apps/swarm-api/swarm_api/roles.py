@@ -137,8 +137,8 @@ VIA_PROBE_ADMIN = "probe_admin"
 #: /v1/workspace/members/person`), and nothing else a workspace admin does.
 #: Each passes `probe_admin=True` to the resolution its gate asks for (or
 #: declares `people.people_scope`); no other call does, so a new admin route
-#: refuses a probe admin until it is added here. Held to the call sites and
-#: the app's routes by tests/unit/control_plane/test_probe_admin_routes.py.
+#: refuses a probe admin until it is added here. A test holds it to the
+#: call sites and the app's routes.
 PROBE_ADMIN_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/v1/workspace/roles"),
     ("PUT", "/v1/workspace/roles/person"),

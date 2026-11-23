@@ -12,8 +12,8 @@ the key is `swarm-graph-ticket-key`, its payload read as UTF-8 and stripped
 (`mac_key`), as swarm-api reads SWARM_GRAPH_TICKET_KEY. Never swarm-egress-key,
 swarm-typesafe-fwd-key or swarm-live-key: a compromise of one ticket kind's
 key mints no other kind. This image carries no swarm-api, so the wire is
-restated here; tests/unit/graphsvc/test_graphsvc_ticket.py holds it equal to
-the reference, constant for constant and ticket for ticket.
+restated here, held equal to the reference, constant for constant and ticket
+for ticket.
 
 The MAC is checked FIRST, in constant time against every key in the ring,
 before a byte of the payload is parsed. Then (§3.3 step 2) every claim a GCS
@@ -40,13 +40,13 @@ STATS_TICKET_FIELDS, `swarm_api.graph_ticket.STATS_FIELDS` (the reference):
      "previous_digest" (null when there is no previous version), "exp", "nonce"}
 
 The set once differed here (`previous_manifest_digest`, no `nonce`), and every
-console read of the Cache section was `ticket_refused`;
-tests/unit/graphsvc/test_graphsvc_ticket.py now mints with the reference and
-verifies here, so the two cannot drift again. The nonce (16 hex, as the
-attempt ticket's) makes every minted ticket distinct and is shape-checked;
-it is not a single-use mark, because the replica that takes `/v1/stats`
-hands the SAME ticket to every peer's `/v1/stats/local`. A replayed stats
-ticket reads only its one tenant's figures for at most a minute.
+console read of the Cache section was `ticket_refused`; a test now mints
+with the reference and verifies here, so the two cannot drift again. The
+nonce (16 hex, as the attempt ticket's) makes every minted ticket distinct
+and is shape-checked; it is not a single-use mark, because the replica that
+takes `/v1/stats` hands the SAME ticket to every peer's `/v1/stats/local`.
+A replayed stats ticket reads only its one tenant's figures for at most a
+minute.
 
 `json.dumps(claims, sort_keys=True, separators=(",", ":"))`, base64url, as the
 attempt ticket's. It reads no object: it only selects which of this replica's

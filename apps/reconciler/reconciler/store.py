@@ -1307,8 +1307,7 @@ class ControlStore:
 
         The generation is part of the test on purpose. A task fenced past the
         lease's generation by an interrupted earlier repair still names the
-        lease, and holding THAT lease would leak its slots for ever
-        (test_orphan_lease_after_partial_repair.py).
+        lease, and holding THAT lease would leak its slots for ever.
 
         A concurrency state, not merely a non-terminal one: a QUEUED, READY or
         PARKED task holds no capacity (invariant 1), so a lease still naming

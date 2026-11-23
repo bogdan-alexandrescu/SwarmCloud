@@ -98,11 +98,10 @@ def _sized_env(name: str) -> float | None:
 # writes for nothing.
 #
 # `heartbeat_grace_seconds` restates the reconciler's default formula, and
-# reads the same `HEARTBEAT_GRACE_SECONDS` override it does; the parity is held
-# by tests/unit/worker/test_heartbeat_outlives_a_busy_checkpoint.py. The
-# worker cannot import the reconciler, and the platform `Settings` that both
-# read is frozen: moving the grace there is a contract change request, not a
-# change made here.
+# reads the same `HEARTBEAT_GRACE_SECONDS` override it does; a test holds the
+# parity. The worker cannot import the reconciler, and the platform `Settings`
+# that both read is frozen: moving the grace there is a contract change
+# request, not a change made here.
 
 #: The reconciler's floor under the grace: `max(90, 3 x interval)`.
 HEARTBEAT_GRACE_FLOOR_SECONDS = 90
@@ -512,9 +511,8 @@ class WorkerConfig:
         """The class the container was sized with, given the task's `resource_class`.
 
         `resource_class_for(task, profile)` restated (the worker image does not
-        install the scheduler; `tests/unit/worker/test_cpu_sampler.py` compares
-        the two): the task's own class when the catalogue still has it, else
-        the profile's.
+        install the scheduler; a test compares the two): the task's own class
+        when the catalogue still has it, else the profile's.
         """
         if isinstance(task_class, str) and task_class in RESOURCE_CLASSES:
             return task_class

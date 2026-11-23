@@ -59,9 +59,9 @@ THE TOKENIZER IS RESTATED HERE, AND HELD EQUAL BY A TEST. KG2 says
 `repo_graph_shards.tokenize` is the one implementation the postings are built
 with and queried with. That module ships in the indexer image; this one ships
 in `agent-runtime-base`, which does not carry it, so the worker cannot import
-it. `tokenize` and `bm25_search` below are a copy, and
-tests/unit/worker/test_graphmcp_tokenizer_parity.py fails if a word splits
-differently or a constant moves. The manifest records the tokenizer version:
+it. `tokenize` and `bm25_search` below are a copy, and a test fails if a word
+splits differently or a constant moves. The manifest records the tokenizer
+version:
 a snapshot built with another version is refused for search rather than
 queried with a tokenizer that splits words differently.
 """
@@ -115,7 +115,7 @@ class SnapshotError(Exception):
 
 
 # --- the tokenizer and BM25, restated from repo_graph_shards ------------------
-# Keep byte-for-byte equal in behaviour: test_graphmcp_tokenizer_parity.py.
+# Keep byte-for-byte equal in behaviour.
 
 TOKENIZER_VERSION = "1"
 BM25_K1 = 1.2

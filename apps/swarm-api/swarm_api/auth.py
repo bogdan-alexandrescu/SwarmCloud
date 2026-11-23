@@ -62,8 +62,7 @@ log = logging.getLogger(__name__)
 #: "unavailable" and `tenant_choices` keeps today's order. Every other route
 #: answers that request 503 `preferences_unavailable` (`require_known_default`).
 #:
-#: A CLOSED LIST, held equal to these three by
-#: tests/unit/control_plane/test_default_workspace.py: a route that acts in a
+#: A CLOSED LIST, held equal to these three by a test: a route that acts in a
 #: workspace -- the bell's `GET /v1/notifications` among them, whose items are
 #: a workspace's -- must not join it by accident, because joining it is
 #: running in a guessed workspace.
@@ -1979,9 +1978,9 @@ def person_refusal(auth: AuthContext) -> str | None:
 #: `include_router` keeps the original route and puts that route in
 #: `scope["route"]`, which is what `deps.admin_auth` reads. main.py includes
 #: every router without a prefix, so today these strings are also the public
-#: URLs; test_pool_admin_is_narrow.py holds every entry, and every admin-gated
-#: route, equal to a path the app publishes in its OpenAPI document, so a
-#: prefix added later fails there rather than closing the gate's route.
+#: URLs; a test holds every entry, and every admin-gated route, equal to a
+#: path the app publishes in its OpenAPI document, so a prefix added later
+#: fails there rather than closing the gate's route.
 #:
 #: AN ALLOW-LIST, AND THAT IS THE DESIGN. The owner decided on 2026-09-24 that
 #: the verification gate gets the runner ceiling and is NOT an admin: full
@@ -1991,8 +1990,8 @@ def person_refusal(auth: AuthContext) -> str | None:
 #: silently -- the new route would be open to the gate until somebody thought
 #: to deny it. Here a new admin route is admin-only until somebody decides
 #: otherwise and adds it below, where the decision is visible in review.
-#: tests/unit/control_plane/test_pool_admin_is_narrow.py holds this set equal to
-#: the decided one and sweeps every admin route in the routers against it.
+#: A test holds this set equal to the decided one and sweeps every admin
+#: route in the routers against it.
 #:
 #: Only the PUT: race-test reads the pool back from Firestore, not the API, so
 #: no admin GET is needed. The route takes the profile as a parameter, so the
@@ -2014,8 +2013,8 @@ POOL_ADMIN_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #: workflows nobody reads (docs/workflows.md, "Workflow state"). Admin would
 #: open every /v1/admin route to a scheduled job's identity, including
 #: `PUT /v1/admin/tenants/{tenant_id}/limits`, which disables a tenant.
-#: tests/unit/control_plane/test_rollup_sweeper_is_narrow.py holds this set
-#: equal to the decided one and sweeps every authenticated route against it.
+#: A test holds this set equal to the decided one and sweeps every
+#: authenticated route against it.
 #:
 #: And the issue-run tick (archived issue 454, terraform jobs.tf `issue_run_advance`): it
 #: moves one tenant's live issue runs as far as their tasks say, which a run
@@ -2107,8 +2106,8 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #: schedule's stored tenant, while the directory still says they are a member
 #: (`schedulefire.schedule_owner_auth`). The route also refuses an admin
 #: (`routes.schedule_tick`), so this list is the whole of who may tick.
-#: tests/unit/control_plane/test_schedule_tick.py holds this set to the
-#: decided one and sweeps every authenticated route against it.
+#: A test holds this set to the decided one and sweeps every authenticated
+#: route against it.
 SCHEDULE_TICK_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
         ("POST", "/v1/admin/schedules/tick"),
@@ -2174,9 +2173,9 @@ def schedule_tick_users(
 #: POOL_ADMIN_ROUTES: a route defaults to CLOSED for this scope until named
 #: here, where opening it is a decision visible in review. The templates follow
 #: the same rule as POOL_ADMIN_ROUTES (the declaring router's path, its own
-#: prefix included). tests/unit/control_plane/test_continuation_scope_is_narrow.py
-#: holds this set equal to the decided one and sweeps every route in every
-#: router against it, the same shape as test_pool_admin_is_narrow.py.
+#: prefix included). A test holds this set equal to the decided one and
+#: sweeps every route in every router against it, the same shape as the
+#: pool-admin test.
 #:
 #: Being here opens the ROUTE, not every request to it: `POST /v1/workflows`
 #: still refuses this scope without `continues_task` (service.py), and every
@@ -2297,8 +2296,7 @@ def require_admin(
     # to answer -- and for the gate that lookup is the likely one to fail: it
     # is not on admin_users, so every request asks the directory about a
     # service-account address. Swapped, race-test 503s at step 1 whenever the
-    # directory does not answer. Pinned in test_pool_admin_is_narrow.py by
-    # test_a_pool_admin_whose_admin_lookup_failed_can_still_narrow_the_pool.
+    # directory does not answer. A test pins this ordering.
     if ctx.is_pool_admin and route is not None and route in POOL_ADMIN_ROUTES:
         return ctx
     if ctx.is_schedule_tick:

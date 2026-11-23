@@ -183,8 +183,7 @@ RUNTIME_POLICY_PROFILES: Mapping[str, str] = MappingProxyType(
 #: profile into `metadata.runtime.alternate` at submission and signs that
 #: spec too (`specsigning.sign_task_specs`); the scheduler swaps them, with
 #: the signature, only to a spec swarm-api signed. Restated by
-#: `scheduler.runtime.RUNTIME_SWAP_FIELDS`, held equal by
-#: tests/unit/control_plane/test_runtime_by_diff.py.
+#: `scheduler.runtime.RUNTIME_SWAP_FIELDS`, held equal to this list.
 RUNTIME_SWAP_FIELDS = (
     "runner_profile", "resource_class", "timeout_seconds", "provider", "model", "model_class",
 )
@@ -808,9 +807,9 @@ def reject_non_finite(
     of that alone is covered as well.
 
     THE CODE A CALLER BRANCHES ON IS KEPT. A runner `input` was already
-    refused for a NaN at a DECLARED key, as 422 `invalid_input` naming the key
-    (test_runner_inputs_by_declaration.py), so a refusal in `input` is still
-    `InvalidInput` and its detail still carries `key` -- the top-level key the
+    refused for a NaN at a DECLARED key, as 422 `invalid_input` naming the
+    key, so a refusal in `input` is still `InvalidInput` and its detail
+    still carries `key` -- the top-level key the
     value sits under -- beside the new `path`. Metadata answers
     `validation_failed`, as its other storability refusals do.
 
@@ -1122,8 +1121,8 @@ REREVIEW_PREAMBLE = (
 )
 
 #: The signed dispatch block on a merge step naming what it merges. The
-#: worker spells it `agent_worker.merge.MERGE_TARGET_FIELD`;
-#: tests/unit/worker/test_merge_action.py holds the two equal.
+#: worker spells it `agent_worker.merge.MERGE_TARGET_FIELD`; the two are
+#: held equal.
 MERGE_TARGET_FIELD = "merge_target"
 #: `merge_target.merge_mode` (TRAIN-WS, docs/merge-trains.md §5.1): the
 #: two modes a workspace merges in. Defined here, where the signed block is
@@ -1135,7 +1134,7 @@ MERGE_MODE_TRAIN = "train"
 #: tenant's token is ever sent to (`agent_worker.forge.may_receive_forge_token`,
 #: archived issue 307), where `agent_worker.merge.GitHubMerger` is the one `ForgeMerger`.
 #: Another host is refused at SUBMISSION, never at merge time. The worker's
-#: `merge.MERGEABLE_HOSTS` is held equal to this by test_merge_action.py.
+#: `merge.MERGEABLE_HOSTS` is held equal to this.
 MERGE_FORGE_HOSTS = frozenset({"github.com", "www.github.com"})
 
 #: Attempts a merge step gets. A required check still running no longer
@@ -1445,10 +1444,9 @@ CI_FIX_HEAD_FIELD = "ci_fix_head"
 #: `{upstream TASK id: filename}`. Written by workflow expansion only
 #: (`SubmissionService.submit_workflow`), which rewrites a step's
 #: `{upstream_step: filename}` to the task ids it has just minted. The worker
-#: spells it `agent_worker.inputs.METADATA_KEY`, and
-#: tests/unit/control_plane/test_input_from_is_reserved.py and
-#: test_input_from_submission.py hold the two equal: reserving a key the worker
-#: does not read would refuse nothing that matters. Defined once, here, beside
+#: spells it `agent_worker.inputs.METADATA_KEY`, held equal to this:
+#: reserving a key the worker does not read would refuse nothing that
+#: matters. Defined once, here, beside
 #: the other reserved keys, and `submit_workflow` writes under it.
 INPUT_FROM_METADATA_KEY = "input_from"
 
@@ -1478,8 +1476,8 @@ DEFAULT_INPUT_LAYOUT = INPUT_LAYOUT_BY_NAME
 #: here, beside the other reserved keys, because `expected_outputs` imports this
 #: module and the reservation below needs the key: the other way round is an
 #: import cycle. `swarm_api.expected_outputs` re-exports it under the same name,
-#: and tests/unit/control_plane/test_expected_outputs_seam.py holds it equal to
-#: the worker's `agent_worker.expected_outputs.METADATA_KEY`.
+#: and this is held equal to the worker's
+#: `agent_worker.expected_outputs.METADATA_KEY`.
 EXPECTED_OUTPUTS_METADATA_KEY = "expected_outputs"
 
 #: The key inside `task.metadata` recording attempts the reconciler took back
@@ -1493,16 +1491,14 @@ EXPECTED_OUTPUTS_METADATA_KEY = "expected_outputs"
 #: path itself was also made total, see `reconciler.model._startup_refunds_int`,
 #: so a document written before this reservation existed cannot do it either).
 #: Defined here rather than imported from `reconciler.model`, which `swarm-api`
-#: does not depend on; tests/unit/control_plane/test_startup_refunds_reserved.py
-#: holds the two strings equal, the same seam `test_input_from_is_reserved.py`
-#: holds for `INPUT_FROM_METADATA_KEY`.
+#: does not depend on; held equal to the reconciler's string, the same seam
+#: that holds for `INPUT_FROM_METADATA_KEY`.
 STARTUP_REFUNDS_METADATA_KEY = "startup_refunds"
 
 #: The reconciler's count of a task's attempts lost to its pod passing its own
 #: disk limit (archived issue 893, `reconciler.model.DISK_EVICTIONS_KEY`). A caller who set it
 #: would choose how often its task is retried after an eviction. Restated for
-#: the reason STARTUP_REFUNDS_METADATA_KEY is;
-#: tests/unit/worker/test_worker_evicted.py holds them equal.
+#: the reason STARTUP_REFUNDS_METADATA_KEY is; the two are held equal.
 DISK_EVICTIONS_METADATA_KEY = "disk_evictions"
 
 #: Why the current attempt's GKE pod is not starting (F1-POD,
@@ -1510,7 +1506,7 @@ DISK_EVICTIONS_METADATA_KEY = "disk_evictions"
 #: reason, its restarts and message. Written and cleared only by the
 #: reconciler; a caller who set it would put a false "Pod not starting" on its
 #: task's page. Restated for the reason STARTUP_REFUNDS_METADATA_KEY is;
-#: tests/unit/reconciler/test_pod_start_problem.py holds them equal.
+#: the two are held equal.
 START_PROBLEM_METADATA_KEY = "start_problem"
 
 #: The owner's answers to the questions the task's agent asked (lane
@@ -1547,8 +1543,7 @@ FORGE_SOURCE_METADATA_KEY = "forge_credential_source"
 #: worker's await park; and the cascade marker on a child the API or the
 #: scheduler cancelled because of its parent, which tells whichever writer
 #: finishes a flagged child to end it CHILD_CASCADE. The worker and the
-#: scheduler restate the last two; tests/unit/control_plane/test_child_tasks*.py
-#: holds the strings equal.
+#: scheduler restate the last two; the strings are held equal.
 CHILD_REQUEST_ID_METADATA_KEY = "child_request_id"
 CHILD_AWAIT_RESUMES_METADATA_KEY = "child_await_resumes"
 CHILD_CASCADE_METADATA_KEY = "child_cascade"
@@ -1556,8 +1551,7 @@ CHILD_CASCADE_METADATA_KEY = "child_cascade"
 #: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
 #: §1): what its park waits on, written by the worker's CI_PENDING park, and
 #: the wake marker in it, written by the wake tick (`mergewake`). Restated by
-#: the worker and the scheduler; tests/unit/worker/test_merge_action.py holds
-#: the strings equal.
+#: the worker and the scheduler; the strings are held equal.
 MERGE_WAIT_METADATA_KEY = "merge_wait"
 
 #: The mark a schedule's firing puts on the work it creates (docs/schedules.md
@@ -1612,8 +1606,7 @@ TIME_LIMIT_CONTINUATIONS_METADATA_KEY = "time_limit_continuations"
 #: `reconciler.model.NEVER_STARTED_REQUEUES_KEY`), counted against
 #: NEVER_STARTED_REQUEUE_LIMIT. A caller who set it would choose how many more
 #: silent leases the task gets before it fails. Restated for the reason
-#: STARTUP_REFUNDS_METADATA_KEY is;
-#: tests/unit/control_plane/test_input_from_is_reserved.py holds them equal.
+#: STARTUP_REFUNDS_METADATA_KEY is; the two are held equal.
 NEVER_STARTED_REQUEUES_METADATA_KEY = "never_started_requeues"
 
 #: The pull requests a workflow's root step waits for before it may start
@@ -1674,8 +1667,8 @@ RESERVED_METADATA_KEYS = (
 #: Reserved like every key above, and refused by the same function in the
 #: same 422, but NOT YET IN `RESERVED_METADATA_KEYS`. That tuple is two more
 #: things besides a refusal list: `task_input.PLATFORM_METADATA_KEYS` (served
-#: as stored, unmasked) and, less the counters, the spec signature's key set
-#: (tests/unit/common/test_specsign_covers.py). `metadata.await_input` is
+#: as stored, unmasked) and, less the counters, the spec signature's key
+#: set. `metadata.await_input` is
 #: written by no one yet: the lane that writes it (HW-API-ANSWER) decides how
 #: it is served, and moves it into that tuple with the parity test's entry.
 #: Until then nothing a caller sends can reach the store under it.
@@ -1699,7 +1692,7 @@ REFUSED_UNWRITTEN_METADATA_KEYS = (AWAIT_INPUT_METADATA_KEY, TIMEOUT_ASKED_FIELD
 #: it when `/questions` serves it), so it must keep going through the masker
 #: as caller metadata does. Moving them into the tuple also needs them in
 #: `task_input.COLLECTED_METADATA_KEYS` and in the spec-signature parity
-#: test's `UNSIGNED_PLATFORM_KEYS` (tests/unit/common/test_specsign_covers.py).
+#: test's `UNSIGNED_PLATFORM_KEYS`.
 QUESTION_WAIT_METADATA_KEY = "question_wait"
 QUESTION_WAITS_EARLIER_METADATA_KEY = "question_waits_earlier"
 REFUSED_AGENT_TEXT_METADATA_KEYS = (
@@ -1721,8 +1714,7 @@ _EVERY_STEP_PUSHES_STRATEGIES = ("direct-pr", "integrate")
 #: [...]}` is the convention; a step's `when.verdict_in` names which of them
 #: run its agent. The worker restates this as
 #: `agent_worker.verdict.REVIEW_VERDICTS`, because it must not import the
-#: control plane, and tests/unit/worker/test_verdict_gate.py holds the two
-#: equal.
+#: control plane, and the two are held equal.
 REVIEW_VERDICTS = ("MERGE", "NOT_YET")
 #: The rule a `when` on a non-integrating step under `integrate` breaks
 #: (archived issue 4101), named in the refusal's message and `detail.rule`, and where it
@@ -4353,13 +4345,12 @@ class DagError(ValidationFailed):
     so on archived issue 64 on 2026-09-25: the New Workflow screen (`SubmitWorkflow.tsx`
     `KIND_BY_STATUS`) heads a 422 "That request was not valid", and a caller
     branching on the status or on the code must read every refusal in the
-    family the same way. `test_every_invalid_dag_refusal_answers_one_status`
-    holds it.
+    family the same way.
 
     A workflow-level `metadata.input_from` is NOT in this family. The key is
     reserved (owner decision on archived issue 151), so `reject_reserved_metadata` refuses it
-    with 422 `invalid_dispatch` before `validate_dag` runs, whatever its value.
-    The same test pins that ordering and the one status both codes share.
+    with 422 `invalid_dispatch` before `validate_dag` runs, whatever its value,
+    keeping that ordering and the one status both codes share.
     """
 
     code = "invalid_dag"
@@ -4466,13 +4457,11 @@ def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
 # was ~20 minutes of claude-code across nine steps, then four failed merges and
 # seventeen cancellations, for a mistake visible in the request body (archived issue 64).
 #
-# THE RULE IS RESTATED BECAUSE IT HAS TO BE, AND A TEST HOLDS THE COPY. The
-# swarm-api image ships apps/common and apps/swarm-api and nothing else, so
-# `agent_worker` cannot be imported here.
-# tests/unit/control_plane/test_input_from_submission.py runs the worker's own
-# functions against these rules: every filename accepted here must pass the
-# worker's `destination_for`, and the collision refused here must be one the
-# worker refuses.
+# THE RULE IS RESTATED BECAUSE IT HAS TO BE. The swarm-api image ships
+# apps/common and apps/swarm-api and nothing else, so `agent_worker` cannot
+# be imported here. Every filename accepted here must pass the worker's
+# `destination_for`, and the collision refused here must be one the worker
+# refuses.
 #
 # THE WORKER'S RESERVED NAMES ARE NOT RESTATED. The worker derives `repo`,
 # `.swarm` and the workspace control files from `Workspace` at run time, and a
@@ -4495,8 +4484,7 @@ _UNSAFE_SEGMENTS = ("", ".", "..")
 
 #: The longest `input_from` filename, in UTF-8 bytes. It is the worker's
 #: `agent_worker.artifact_manifest.MAX_NAME_BYTES`, restated because swarm-api
-#: cannot import `agent_worker`; tests/unit/control_plane/
-#: test_input_from_submission.py holds the two equal.
+#: cannot import `agent_worker`; the two are held equal.
 #:
 #: WHY THE MANIFEST'S BOUND (wave 2026-09-27, epic archived issue 227). An `input_from`
 #: filename is also the name the upstream step's artifact is uploaded under, and
@@ -4806,9 +4794,8 @@ AWAIT_INPUT_FIELD = "await_input"
 #: The longest a step may wait: 24 hours, the owner's Q4, which is the bound
 #: the scheduler holds a `HUMAN_REQUIRED` park to
 #: (`apps/scheduler/scheduler/loop.py`, `HUMAN_PARK_MAX_SECONDS`). swarm-api
-#: does not carry the scheduler, so the number is restated here, and
-#: tests/unit/control_plane/test_await_input_submission.py imports both and
-#: fails if they differ.
+#: does not carry the scheduler, so the number is restated here and held
+#: equal to it.
 AWAIT_INPUT_MAX_SECONDS = 86_400
 #: The shortest: five minutes. A shorter wait is a race with the person
 #: opening the page, not a question.
@@ -4880,8 +4867,8 @@ class AwaitInputRefused(ValidationFailed):
     `detail.field` names what was refused (`await_input.<key>` inside the
     block, the step's own field otherwise), and `detail.step_id` the step.
     The established code, not a new one: a new 4xx code ships behind a
-    switch (`swarm_api.refusals`, test_new_refusals_ship_off.py), and the
-    field is what a caller branches on here.
+    switch (`swarm_api.refusals`), and the field is what a caller branches
+    on here.
     """
 
 
@@ -5610,8 +5597,8 @@ def verdict_fix_loop_step(steps: Sequence[StepSpec], strategy: str) -> dict[str,
 MCP_SERVERS_INPUT_KEY = "mcp_servers"
 
 #: `mcp_servers.MODE_DISPATCH`, the one auth mode whose key the caller sends
-#: per run. Restated so this module imports no Firestore client;
-#: tests/unit/control_plane/test_mcp_submit.py holds the two equal.
+#: per run. Restated so this module imports no Firestore client; the two
+#: are held equal.
 MCP_DISPATCH_MODE = "dispatch"
 
 

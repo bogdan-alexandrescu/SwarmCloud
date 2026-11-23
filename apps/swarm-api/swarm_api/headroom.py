@@ -20,7 +20,7 @@ appears. That is the specific trap the minimum-across-pools rule sets.
 `docs/contract-change-requests.md`, "Why these requests keep arising", already
 settled which remedy works for this repository. There are three restatement
 surfaces: shell/jq is pinned by `scripts/lib/check-contract-parity.sh`,
-Terraform's catalogue is pinned by `tests/terraform/catalogue.tftest.hcl`, and
+Terraform's catalogue is pinned by a Terraform test, and
 TypeScript is pinned by **nothing** -- neither `make lint` nor `make test` runs
 `tsc`, and `apps/swarm-ui` has no test runner at all. Its conclusion, verbatim:
 "where one reader is TypeScript, nothing ends it today, and a route that serves
@@ -120,9 +120,9 @@ def group_for(reason: str) -> str | None:
 def blocked_reason_groups() -> dict[str, list[str]]:
     """The grouping, as data, so no client has to restate it.
 
-    Served on `/v1/capacity`. `tests/unit/control_plane/test_blocker_groups.py`
-    asserts the two sets partition `BlockedReason` exactly, so a new member of
-    the enum fails a test rather than quietly defaulting into a group.
+    Served on `/v1/capacity`. A test asserts the two sets partition
+    `BlockedReason` exactly, so a new member of the enum fails a test rather
+    than quietly defaulting into a group.
     """
     return {
         GROUP_NEEDS_ACTION: sorted(r.value for r in NEEDS_ACTION),

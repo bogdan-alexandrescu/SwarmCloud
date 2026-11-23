@@ -706,3 +706,124 @@ run "the_plugin_bundler_account_is_made_here" {
     error_message = "terraform/bootstrap makes swarm-plugin-bundler, labelled managed-by=swarm-terraform in its description"
   }
 }
+
+# The roles and join acceptance probes' identities (bootstrap/acceptance_probes.tf).
+# Off by default: no account and no policy, and the deployer's grantable roles
+# and administered accounts are what they were.
+run "the_acceptance_probe_identities_are_absent_by_default" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "example-org/example-repo"
+  }
+
+  assert {
+    condition = (
+      !var.enable_acceptance_probes
+      && length(google_service_account.probe_viewer) == 0
+      && length(google_service_account.probe_admin) == 0
+      && length(data.google_iam_policy.probe_minting) == 0
+      && length(google_service_account_iam_policy.probe_viewer) == 0
+      && length(google_service_account_iam_policy.probe_admin) == 0
+    )
+    error_message = "enable_acceptance_probes defaults to false, and while it is there is no probe account and no policy on one"
+  }
+}
+
+# On, each account's WHOLE policy is one binding:
+# roles/iam.serviceAccountOpenIdTokenCreator (getOpenIdToken only) for
+# swarm-verify, and nothing else -- never serviceAccountTokenCreator, which
+# also mints access tokens and signs blobs and JWTs. Neither account is one the
+# release deployer administers, so a release cannot rewrite either policy.
+run "the_acceptance_probe_accounts_let_swarm_verify_mint_id_tokens_and_nothing_else" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_acceptance_probes = true
+    enable_github_wif        = true
+    github_repository        = "example-org/example-repo"
+  }
+
+  # The mock's generated policy_data is not JSON, which the provider refuses at
+  # plan; a distinct string also fails the equality below if a policy resource
+  # is pointed at another data source.
+  override_data {
+    target = data.google_iam_policy.probe_minting
+    values = {
+      policy_data = "{\"probe\":\"swarm-verify-mints-id-tokens\"}"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.probe_viewer
+    override_during = plan
+    values = {
+      name = "projects/example-project/serviceAccounts/roles-probe-viewer@example-project.iam.gserviceaccount.com"
+    }
+  }
+
+  override_resource {
+    target          = google_service_account.probe_admin
+    override_during = plan
+    values = {
+      name = "projects/example-project/serviceAccounts/accept-probe-admin@example-project.iam.gserviceaccount.com"
+    }
+  }
+
+  assert {
+    condition = alltrue([
+      google_service_account.probe_viewer[0].account_id == "roles-probe-viewer",
+      google_service_account.probe_admin[0].account_id == "accept-probe-admin",
+      google_service_account.probe_viewer[0].project == "example-project",
+      google_service_account.probe_admin[0].project == "example-project",
+      startswith(google_service_account.probe_viewer[0].description, "managed-by=swarm-terraform;"),
+      startswith(google_service_account.probe_admin[0].description, "managed-by=swarm-terraform;"),
+      length(google_service_account.probe_viewer[0].description) <= 256,
+      length(google_service_account.probe_admin[0].description) <= 256,
+      !coalesce(google_service_account.probe_viewer[0].create_ignore_already_exists, false),
+      !coalesce(google_service_account.probe_admin[0].create_ignore_already_exists, false),
+    ])
+    error_message = "the probe accounts are roles-probe-viewer and accept-probe-admin in this project, say managed-by=swarm-terraform in a description the provider accepts, and are never adopted: a 409 on either is a squat"
+  }
+
+  assert {
+    condition = alltrue([
+      length(data.google_iam_policy.probe_minting[0].binding) == 1,
+      toset([for b in data.google_iam_policy.probe_minting[0].binding : b.role]) == toset(["roles/iam.serviceAccountOpenIdTokenCreator"]),
+      toset(flatten([for b in data.google_iam_policy.probe_minting[0].binding : tolist(b.members)])) == toset(["serviceAccount:swarm-verify@example-project.iam.gserviceaccount.com"]),
+      alltrue([for b in data.google_iam_policy.probe_minting[0].binding : length(b.condition) == 0]),
+    ])
+    error_message = "the probe accounts' policy holds exactly one binding: roles/iam.serviceAccountOpenIdTokenCreator for swarm-verify alone"
+  }
+
+  assert {
+    condition = (
+      length(google_service_account_iam_policy.probe_viewer) == 1
+      && length(google_service_account_iam_policy.probe_admin) == 1
+      && google_service_account_iam_policy.probe_viewer[0].service_account_id == "projects/example-project/serviceAccounts/roles-probe-viewer@example-project.iam.gserviceaccount.com"
+      && google_service_account_iam_policy.probe_admin[0].service_account_id == "projects/example-project/serviceAccounts/accept-probe-admin@example-project.iam.gserviceaccount.com"
+      && google_service_account_iam_policy.probe_viewer[0].policy_data == "{\"probe\":\"swarm-verify-mints-id-tokens\"}"
+      && google_service_account_iam_policy.probe_admin[0].policy_data == "{\"probe\":\"swarm-verify-mints-id-tokens\"}"
+    )
+    error_message = "each probe account's whole policy is written AUTHORITATIVELY from that one binding, so any other member added on the account is removed on the next apply"
+  }
+
+  assert {
+    condition = (
+      !contains(output.deployer_admin_accounts, "roles-probe-viewer")
+      && !contains(output.deployer_admin_accounts, "accept-probe-admin")
+      && output.deployer_admin_accounts == run.the_acceptance_probe_identities_are_absent_by_default.deployer_admin_accounts
+      && toset(output.deployer_grantable_project_roles) == toset(run.the_acceptance_probe_identities_are_absent_by_default.deployer_grantable_project_roles)
+    )
+    error_message = "turning the probes on changes neither the accounts the release deployer administers nor the roles it may grant: a release cannot change the probe accounts' policies"
+  }
+}

@@ -19,14 +19,14 @@ both ends with nothing in the middle.
 That rule is now `days_since_custom_time = artifact_retention_days` (D14), and
 the worker stamps customTime on every object it uploads except a checkpoint's
 (`agent_worker.objectstore.is_checkpoint_key`, held equal to
-`parse_checkpoint_key` below by tests/unit/worker/test_checkpoint_retention.py).
+`parse_checkpoint_key` below by a test).
 GCS never matches that condition against an object with no customTime, so the
 bucket's clock takes artifacts and logs and cannot reach a checkpoint at all:
 this module is the only thing that deletes one.
 
 WHAT CAN RESUME FROM A CHECKPOINT
 ---------------------------------
-One thing: `task.latest_checkpoint`, the pointer `agent_worker.lifecycle`
+One thing: `task.latest_checkpoint`, the pointer `agent_worker.checkpointing`
 resolves (`Worker._recorded_checkpoint`, through `find_by_uri`). The worker
 restores the checkpoint it names or nothing -- since archived issue 347 there is no fallback
 to `CheckpointManager.find_latest()`, which would take the newest manifest
@@ -89,10 +89,10 @@ MANIFEST_NAME = "manifest.json"
 
 #: The path segment that separates a checkpoint from the artifacts and logs of
 #: the same attempt. Kept as a constant because the layout it belongs to is
-#: `agent_worker.checkpoint.checkpoint_prefix`'s, not this module's;
-#: `tests/unit/worker/test_checkpoint_retention.py` asserts the two still agree,
-#: and that `parse_checkpoint_key` and the worker's `is_checkpoint_key` (which
-#: decides what the bucket's clock may delete) accept exactly the same keys.
+#: `agent_worker.checkpoint.checkpoint_prefix`'s, not this module's; a test
+#: asserts the two still agree, and that `parse_checkpoint_key` and the
+#: worker's `is_checkpoint_key` (which decides what the bucket's clock may
+#: delete) accept exactly the same keys.
 CHECKPOINTS_SEGMENT = "checkpoints"
 
 #: Every object this platform writes lives under this root.

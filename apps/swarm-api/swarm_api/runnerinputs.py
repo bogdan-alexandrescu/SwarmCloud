@@ -35,10 +35,10 @@ and nothing else, so the import would resolve in a developer's workspace and be
 an ImportError in production -- the exact trap the `google-cloud-storage` note in
 apps/swarm-api/pyproject.toml records. This is the same sort of permitted copy as
 Terraform's copy of the runner catalogue, and it is permitted for the same
-reason: a test asserts the copy still matches what it copies. That test is
-tests/unit/control_plane/test_workflow_step_input_surface.py, which reads the
-worker's own source for the call and then RUNS `run_cli_agent` against an empty
-payload to prove the refusal is real rather than merely written down.
+reason: a test asserts the copy still matches what it copies, by reading
+the worker's own source for the call and then RUNNING `run_cli_agent`
+against an empty payload to prove the refusal is real rather than merely
+written down.
 
 Nothing here is a second admission check. The runner remains the authority; this
 only lets a screen refuse locally, before a slot is spent, with the same reason

@@ -206,7 +206,7 @@ SNAPSHOT_ENV = "SWARM_GRAPH_SNAPSHOT"
 UNSTAGED_ENV = "SWARM_GRAPH_UNSTAGED"
 
 #: The MCP server's name in the agent's configuration (`graphmcp.server.SERVER_NAME`,
-#: held equal by tests/unit/worker/test_graphstage.py).
+#: held equal by a test).
 SERVER_NAME = "swarm-graph"
 #: Its module, started with this runner's own interpreter.
 SERVER_MODULE = "agent_worker.graphmcp"
@@ -228,7 +228,7 @@ GRAPH_RUNNERS = ("agent_worker.runners.claude_code", "agent_worker.runners.codex
 
 #: The pin `pin` writes in place of snapshot/ (§4.1 step 1), and the pinned
 #: manifest's bytes beside it: `contextpack.PIN_FILE` and `PIN_MANIFEST_FILE`,
-#: held equal by tests/unit/worker/test_graphstage.py.
+#: held equal by a test.
 PIN_NAME = "pin.json"
 PIN_MANIFEST_NAME = "pin-manifest.json"
 #: The pin's path, set only when the graph is served: the runner registers

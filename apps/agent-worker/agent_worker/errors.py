@@ -39,7 +39,7 @@ class ExitCode:
     #: refused. NON-RETRYABLE (owner, 2026-09-25): the reconciler reads it
     #: from the finished execution and fails the task with the worker's cause.
     #: `reconciler.detect.WORKER_EXIT_CANNOT_START` restates this number, and
-    #: tests/unit/worker/test_worker_cannot_start.py holds the two together.
+    #: a test holds the two together.
     CONFIG = 78
     #: A control-plane document the worker was pointed at belongs to a DIFFERENT
     #: tenant. The worker exits immediately, writing nothing at all.

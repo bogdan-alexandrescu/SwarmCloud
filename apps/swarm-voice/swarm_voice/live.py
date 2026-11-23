@@ -42,8 +42,7 @@ ATTACH_SECONDS each, after the lease and the create, took longer than that, so
 the person saw "could not be reached" in place of the refusal this process had.
 So a start -- lease, create, every attach try -- runs inside START_SECONDS, and a
 failed start waits at most RELEASE_WAIT_SECONDS for its lease's release before it
-answers: START_WORST_SECONDS is held below swarm-api's timeout with a margin by a
-unit test (tests/unit/voice/test_live_sideband_events.py).
+answers: START_WORST_SECONDS is held below swarm-api's timeout with a margin.
 * END: `{"type": "session.close"}`, answered by `session.closed` with the final
   `usage.seconds` and `reason` (/api/docs/guides/live-conversations, "Usage and
   graceful close"). The Live API documents no HTTP hangup, so the sideband is

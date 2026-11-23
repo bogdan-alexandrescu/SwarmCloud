@@ -80,8 +80,8 @@ wrote to the control plane, and left their leases holding every browser slot.
 That field is now `RunnerProfile.runner_argv` (contract request 18, accepted
 2026-09-24): the lifecycle's CHILD argv (`lifecycle._runner_argv`), renamed so
 the line that did this cannot be written again. The lifecycle finds it by the
-profile NAME in `RUNNER_PROFILE`, which `worker_env` below sets. tests/unit/control_plane/test_dispatch_manifests.py
-and tests/unit/worker/test_kubernetes_manifests.py hold both dispatchers to it.
+profile NAME in `RUNNER_PROFILE`, which `worker_env` below sets. Tests hold
+both dispatchers to it.
 
 SECRETS ARE NOT INJECTED ON THE GKE PATH. The worker reads its tenant's key from
 Secret Manager at runtime using Workload Identity (agent_worker/secrets.py), and
@@ -225,8 +225,8 @@ WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 #: the variable that tells the worker where it is. The worker puts the agent's
 #: tool caches (uv, npm, pip, terraform, XDG) and its TMPDIR under
 #: `<CACHE_MOUNT>/<attempt>/` and never checkpoints or uploads them
-#: (agent_worker/cachedirs.py, whose CACHE_ROOT_ENV is this name;
-#: tests/unit/control_plane/test_gke_cache_volume.py holds the two equal).
+#: (agent_worker/cachedirs.py, whose CACHE_ROOT_ENV is this name; a test
+#: holds the two equal).
 #: OUTSIDE the workspace mount, because the workspace's own sizeLimit is what
 #: evicted three claude-code attempts twice each on 2026-10-15 while it held
 #: every cache as well as the clone. GKE only: Cloud Run has no second disk,
@@ -238,11 +238,11 @@ CACHE_ROOT_ENV = "SWARM_CACHE_ROOT"
 #: "add both", 2026-11-03): `image_uri`'s value, the same one the Cloud Run
 #: Job and the GKE pod are given, so the worker's start-up line, the live
 #: gate's refusal record and the capture manifest's `worker` can say which
-#: image ran (agent_worker.buildinfo, whose IMAGE_ENV is this name;
-#: tests/unit/control_plane/test_dispatch_names_the_worker_image.py holds the
-#: two equal). Set on both backends, and on the GKE live pod's display sidecar,
-#: where the gate runs. A platform value from the scheduler's own settings,
-#: never a caller's (invariant 10), and not a secret: it is the pod's `image`.
+#: image ran (agent_worker.buildinfo, whose IMAGE_ENV is this name; a test
+#: holds the two equal). Set on both backends, and on the GKE live pod's
+#: display sidecar, where the gate runs. A platform value from the
+#: scheduler's own settings, never a caller's (invariant 10), and not a
+#: secret: it is the pod's `image`.
 WORKER_IMAGE_ENV = "SWARM_WORKER_IMAGE"
 
 #: THE GKE POD'S LOCAL SCRATCH VOLUMES, and the variable that tells the worker
@@ -301,8 +301,7 @@ CACHE_VOLUME_GIB = 20
 #: it is capped below it: a full workspace then fails a write with ENOSPC,
 #: which the worker can checkpoint through, instead of OOM-killing the agent
 #: (a SIGKILL: no checkpoint, no park). 0.5 is `var.workspace_memory_fraction`'s
-#: default, which terraform/infra does not override.
-#: tests/unit/scheduler/test_scheduler_job_matches_terraform_job.py reads the
+#: default, which terraform/infra does not override. A test reads the
 #: module and fails if the fraction, the formula, the medium or the launch
 #: stage moves on either side alone.
 WORKSPACE_MEMORY_FRACTION = 0.5
@@ -351,9 +350,8 @@ class GkeDisk:
 
 
 #: Per resource class, because one formula cannot fit them all under
-#: Autopilot's 10 GiB. tests/unit/control_plane/test_gke_workspace_fits.py
-#: renders the GKE manifest for every class and holds sum(sizeLimits) <=
-#: ephemeral-storage <= AUTOPILOT_MAX_EPHEMERAL_GIB.
+#: Autopilot's 10 GiB. A test renders the GKE manifest for every class and
+#: holds sum(sizeLimits) <= ephemeral-storage <= AUTOPILOT_MAX_EPHEMERAL_GIB.
 #:
 #: WHAT EACH VOLUME HOLDS, read from the worker (archived issue 893). Every value below is
 #: sized from this, not from a formula:
@@ -442,8 +440,8 @@ class GkeDisk:
 #:   (`detect_evicted`). The history of the other numbers, for the record:
 #:   - /tmp 4: the 2 GiB checkpoint archive (`max_checkpoint_bytes`) plus 2 GiB
 #:     an agent can write under a literal /tmp while one is being built, and 4
-#:     when none is. The checkpoint cap still fits on its own:
-#:     tests/unit/control_plane/test_gke_workspace_fits.py holds tmp >= the cap.
+#:     when none is. The checkpoint cap still fits on its own: a test holds
+#:     tmp >= the cap.
 #:   - workspace 5: one more than Cloud Run's 4 GiB tmpfs (the test holds it no
 #:     smaller); until CACHE-SCRATCH it also carried the agent's TMPDIR and
 #:     caches, and it keeps the GiB now that they are on the cache volume.
@@ -625,8 +623,7 @@ def step_model(settings: Any, profile: RunnerProfile, task: Task) -> str | None:
 #: enforcing the stronger policy would have rejected every job the dispatcher
 #: created. These two blocks are what `restricted` asks for, and they mirror
 #: kubernetes/worker-templates/worker-job-browser.yaml field for field -- which
-#: was a claim until 2026-09-24 and is now an assertion:
-#: test_the_rendered_job_and_the_dispatched_job_are_the_same_job renders both
+#: was a claim until 2026-09-24 and is now an assertion: a test renders both
 #: from the same inputs and fails on any field that changes what the pod does.
 POD_SECURITY_CONTEXT: dict[str, Any] = {
     "runAsNonRoot": True,
@@ -679,10 +676,10 @@ CONTAINER_SECURITY_CONTEXT: dict[str, Any] = {
 #:
 #: Every GKE profile, deliberately: browser was the first, and every GKE
 #: profile runs tenant code in the same cluster, so it gets the same
-#: resolver (test_gke_browser_pod_dns.py parametrises over all of them).
+#: resolver (a test parametrises over all of them).
 #: GKE pods only: Cloud Run has no cluster search path. Mirrored field for
-#: field in kubernetes/worker-templates/worker-job-browser.yaml, and held there
-#: by tests/unit/scheduler/test_gke_browser_pod_dns.py.
+#: field in kubernetes/worker-templates/worker-job-browser.yaml, and held
+#: there by a test.
 GKE_NODE_LOCAL_DNS_IP = "169.254.20.10"
 GKE_POD_DNS_POLICY = "None"
 GKE_POD_DNS_CONFIG: dict[str, Any] = {
@@ -755,7 +752,7 @@ TYPESAFE_POD_LABEL = ("swarm-typesafe", "inject")
 #: switched worker the policies do not open the forwarder to, is half a
 #: migration. RESTATED from `agent_worker.typesafe_shim.SWITCH_ENV` and
 #: `SWITCH_ON`, because the scheduler's image does not carry the worker;
-#: tests/unit/control_plane/test_typesafe_switch_parity.py holds them equal.
+#: a test holds them equal.
 TYPESAFE_INJECT_ENV = ("SWARM_TYPESAFE_INJECT", "on")
 #: THE DIRECT TYPESAFE LABEL (the TypeSafe egress allowlist,
 #: docs/runbooks/typesafe-egress.md; part of archived issue 2688). What
@@ -976,7 +973,7 @@ def with_live_display(job: dict[str, Any], *, rc: Any,
 
     Applied to the finished manifest, so a pod that is not live is not merely
     "the same by construction" -- it is the same object this function never
-    touched, which test_dispatch_live_sidecar.py holds byte for byte.
+    touched, which a test holds byte for byte.
 
     `split` is the (worker, display) pair admission pinned for this attempt
     (`sizes.Sized.live_split`, SIZES-SCHED-2); None renders the class's own
@@ -1176,8 +1173,7 @@ def typesafe_forwarder_on(settings: Any, *, tenant_id: str, profile: Any, backen
 #: runners/cliagent.py): the worker sets the judge up in `graphstage.prepare`,
 #: which does so only for these runners and never for an index run. RESTATED
 #: from `graphstage.GRAPH_RUNNERS` and `indexrun.INDEXER_PROFILE`, because the
-#: scheduler does not depend on the worker package;
-#: tests/unit/control_plane/test_typesafe_judge_on_gke.py holds them equal.
+#: scheduler does not depend on the worker package; a test holds them equal.
 JEV_CLIENT_RUNNERS = ("agent_worker.runners.claude_code", "agent_worker.runners.codex")
 JEV_CLIENT_EXCLUDED_PROFILES = ("indexer",)
 #: The worker's reading of the one settings document (`judge.attempt
@@ -1439,9 +1435,9 @@ def typesafe_judge_needs_gke(settings: Any, *, tenant_id: str, profile: Any,
 def with_browser_egress(job: dict[str, Any], *, bypass: Any) -> dict[str, Any]:
     """`job`, a live-browser Job from `with_live_display`, routed through swarm-egress.
 
-    Adds exactly three things and changes nothing else, which
-    test_dispatch_browser_egress.py holds byte for byte: the pod label the
-    proxy NetworkPolicy selects, and on the `display` container -- where
+    Adds exactly three things and changes nothing else, which a test holds
+    byte for byte: the pod label the proxy NetworkPolicy selects, and on the
+    `display` container -- where
     Chromium runs; the worker container gets neither -- the switch and the
     bypass list. The bypass list is configuration (egress.tf's
     `egress_bypass_hosts`); the gate adds GitHub itself, so an empty one still
@@ -1499,11 +1495,10 @@ def with_browser_egress(job: dict[str, Any], *, bypass: Any) -> dict[str, Any]:
 #: silent lease after `heartbeat_grace_seconds` (90) and terminates the
 #: execution itself, long before either backend deadline.
 #:
-#: tests/unit/control_plane/test_dispatch_manifests.py holds both dispatchers to
-#: it, feeding the worker's own `WorkerConfig.from_env` the environment the
-#: dispatcher built; tests/unit/worker/test_kubernetes_manifests.py holds the
-#: three YAML templates to it, and its parity test holds `render.py`'s value
-#: equal to this one's (render.py imports this function).
+#: A test holds both dispatchers to it, feeding the worker's own
+#: `WorkerConfig.from_env` the environment the dispatcher built; another
+#: holds the three YAML templates to it, and its parity test holds
+#: `render.py`'s value equal to this one's (render.py imports this function).
 #:
 #: WHAT THE LIFECYCLE DOES AFTER ITS OWN DEADLINE, which the backend must wait
 #: for: stop the runner child (TERMINATION_GRACE_SECONDS, 20 by default), take
@@ -2000,17 +1995,16 @@ def gke_worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -
     -- nothing here measured that it answers this address the same way. A
     Cloud Run execution override also MERGES into the Job's own environment,
     so a value in `worker_env` would change every Cloud Run worker to fix a
-    GKE-only fault. tests/unit/control_plane/test_gke_worker_metadata_env.py
-    fails if either variable reaches the Cloud Run execution override, the
-    Cloud Run Job the scheduler creates or `worker_env`, or is named in a
-    file terraform's Cloud Run Jobs take their environment from (terraform/
-    infra, modules/cloud_run_jobs, every environment's tfvars -- its
-    `settings_env` is merged into each of those Jobs). That last check reads
-    text, not a plan: a `-var settings_env=...` override is not seen by it.
+    GKE-only fault. A test fails if either variable reaches the Cloud Run
+    execution override, the Cloud Run Job the scheduler creates or
+    `worker_env`, or is named in a file terraform's Cloud Run Jobs take their
+    environment from (terraform/infra, modules/cloud_run_jobs, every
+    environment's tfvars -- its `settings_env` is merged into each of those
+    Jobs). That last check reads text, not a plan: a `-var settings_env=...`
+    override is not seen by it.
 
     The YAML copy of this Job (kubernetes/worker-templates/*.yaml) carries the
-    same two entries, held to these values by
-    tests/unit/worker/test_worker_templates_name_the_metadata_server.py.
+    same two entries, held to these values by a test.
     """
     env = worker_env(task=task, lease=lease, tenant=tenant, settings=settings)
     env["GCE_METADATA_HOST"] = GKE_METADATA_SERVER_IP
@@ -2875,10 +2869,9 @@ def gke_api_host(endpoint: str) -> str:
     the FROZEN `swarm_common` package -- images/swarm-scheduler/Dockerfile
     copies `apps/common/` and `apps/scheduler/` and nothing else -- so neither
     can import the other and there is nowhere in-image to put a single copy.
-    `tests/unit/control_plane/test_gke_client_host.py` pins the two together by
-    asserting they agree on the same inputs, which is exactly the check that was
-    missing while they did not: the reconciler added the scheme and this side
-    did not.
+    A test pins the two together by asserting they agree on the same inputs,
+    which is exactly the check that was missing while they did not: the
+    reconciler added the scheme and this side did not.
     """
     raw = (endpoint or "").strip()
     if not raw:
@@ -2956,9 +2949,9 @@ def install_google_bearer_token(configuration: Any, credentials: Any) -> None:
     the same reason `gke_api_host` is: the two services ship as separate images
     that share only the FROZEN `swarm_common` package, so neither can import the
     other and there is nowhere in-image to put a single copy.
-    `tests/unit/control_plane/test_gke_client_auth.py` pins the two copies
-    together, by running the same expiring credential through both and asserting
-    the same sequence of headers comes out.
+    A test pins the two copies together, by running the same expiring
+    credential through both and asserting the same sequence of headers comes
+    out.
     """
 
     def refresh(config: Any) -> None:
@@ -3063,9 +3056,8 @@ def authenticated_identity(credentials: Any) -> str:
 # .GkeBackend.namespace_for` (that image cannot import this one) derives the
 # same name when it is handed no recorded value, and still keeps a recorded
 # one inside the prefix; `reconciler.store.tenant_namespaces` is what hands it
-# that value, and lane ISO-RECON (archived issue 1457) makes it the derived one. tests/unit/
-# control_plane/test_reconciler_gke_namespaced.py pins the derived names of
-# the two together.
+# that value, and lane ISO-RECON (archived issue 1457) makes it the derived
+# one. A test pins the derived names of the two together.
 #
 # Logged at most once per tenant per process per hour: the dispatch loop asks
 # on every dispatch, and the alert (terraform/modules/monitoring,
@@ -3587,10 +3579,8 @@ class GkeJobDispatcher:
         # Job's own annotations are not copied onto the pods it creates -- so
         # until 2026-09-24, when it sat on the Job alone, every pod this
         # dispatcher created was evictable in a scale-down while this comment
-        # said it was not. kubernetes/worker-templates/ had it on both; the
-        # parity test in tests/unit/worker/test_kubernetes_manifests.py
-        # (test_the_rendered_job_and_the_dispatched_job_are_the_same_job) is
-        # what found the difference.
+        # said it was not. kubernetes/worker-templates/ had it on both; a
+        # parity test is what found the difference.
         not_evictable = {"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"}
         job = {
             "apiVersion": "batch/v1",

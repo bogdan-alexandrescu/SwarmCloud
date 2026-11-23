@@ -4,8 +4,8 @@
 
 docs/design/workspace-secrets.md §3.3, §4.1, §4.2, §4.4 and §4.5. THE ONE ROUTE
 THAT SERVES CREDENTIAL MATERIAL (owner decision Q2, §10), named as the only
-carve-out by tests/unit/control_plane/test_no_route_serves_credentials.py. It
-is WORKER-ONLY, like the git tools' and the search tool's routes: it declares
+carve-out by a test. It is WORKER-ONLY, like the git tools' and the search
+tool's routes: it declares
 neither `current_auth` nor `tenant_scope`, because no person may call it, and
 the request carries no tenant, task, lease, name or consumer to choose.
 
@@ -65,7 +65,7 @@ says which rule failed and never repeats a body, a name or a value. The
 request logger is `main.create_app`'s `observe`, which records the route
 template, the method and the status class, and NEVER a body or a response;
 `main.UNCAPTURED_ROUTES` names this route so a body capture added there later
-has to skip it (held by tests/unit/control_plane/test_secret_release.py).
+has to skip it (held by a test).
 """
 
 from __future__ import annotations

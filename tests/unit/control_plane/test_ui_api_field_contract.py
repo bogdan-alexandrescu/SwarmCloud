@@ -250,7 +250,9 @@ def _payloads(client) -> dict[str, dict[str, Any]]:
         "Pool": _first(capacity["pools"], "/v1/capacity .pools"),
         "RunnerProfile": profile,
         "ProfileAdmission": admission,
-        "Task": _get(client, "/v1/tasks/task_1", "alice")["task"],
+        # `Task` is not read out of types.ts any more: the console's `Task` is
+        # GENERATED from `swarm_api.wire_types.Task` (part of #72), and
+        # test_wire_types.py holds that model to these routes in both directions.
         "TaskPage": tasks,
         "AttemptRow": _first(attempts["attempts"], "/v1/tasks/{id}/attempts"),
         "LeasePage": leases,
@@ -293,30 +295,6 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         # declares it.
         "features": "caller_mcp/await_input/service_answer, each true, false or \"unknown\" "
         "(FEATURES-READ, part of #1748); read by API callers and sc whoami, not yet by the console",
-    },
-    "Task": {
-        "dispatch": "declared as the optional TaskDispatch, whose own fields are checked separately",
-        "links": "the console link, for surfaces OUTSIDE the console (MCP, sc, plugin, PR bodies); "
-        "inside it the address bar is the link",
-        # Served ahead of the client (archived issue 179, lane B10); types.ts is apps/swarm-ui
-        # work, held for the UI lane after archived pull request 432. Remove these three when
-        # types.ts declares them.
-        "heartbeat_at": "the current lease's last beat (#179); declared by the UI lane after PR #432",
-        "heartbeat_grace_seconds": "the reconciler's grace (#179); declared by the UI lane after PR #432",
-        "heartbeat": "what the heartbeat reading is (#179); declared by the UI lane after PR #432",
-        "claude_session": "the Claude Code session that submitted it (SC-SESSION-SCOPE), read by the "
-        "sc plugin's check, attach-all and watch; the console does not scope by it",
-        # Contract request 120 (BUDGET-CONTRACT, archived issue 2459): served ahead of the
-        # client. Remove when types.ts declares it.
-        "budget": "the attempt's resolved per-agent budget, {usd?, tokens?} (#2459); declared by "
-        "the budget console lane",
-        # `browser_used` and `browser_use` (BROWSER-USE-FLAG, archived issue 2322) were
-        # excused here while the API served them ahead of the client; types.ts
-        # declares both since lane BROWSER-USE-UI.
-        # `model_class` and `model_class_defaulted` (contract request 104,
-        # archived issue 1435) were excused here while the API served them ahead of the
-        # client. types.ts declares both since lane MODEL-UI, so they are held
-        # by the two directions below like every other field.
     },
     # U26, served ahead of the client the same way; remove when types.ts
     # declares them.
@@ -371,7 +349,7 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
     },
     # `Me.environment` and `Me.environment_declared` were excused the same way
     # and are declared the same way; Brand.tsx's badge reads both.
-    "TaskPage": {"tasks": "declared as Task[], checked as Task"},
+    "TaskPage": {"tasks": "declared as Task[], the generated type, checked by test_wire_types.py"},
     "LeaseHeartbeatPage": {
         "heartbeats": "declared as LeaseHeartbeat[], checked as LeaseHeartbeat",
     },
@@ -484,19 +462,6 @@ def test_the_paging_key_is_the_one_this_api_actually_sends(seeded):
     assert "next_page_token" in declared
     assert "next_cursor" not in declared
     assert "next_cursor" not in page
-
-
-def test_the_fields_the_trouble_board_is_built_on_are_declared(seeded):
-    """types.ts once declared 21 of task_to_api's 31 keys.
-
-    The ten it omitted were the ones the remaining screens need, so the screens
-    were built against a type that said their data did not exist.
-    """
-    declared = _fields("Task")
-    for field in ("last_error", "result_summary", "latest_checkpoint",
-                  "next_eligible_at", "metadata", "input", "model",
-                  "timeout_seconds", "repository_ref"):
-        assert field in declared, f"Task does not declare {field}, which task_to_api sends"
 
 
 def test_the_lease_state_is_not_offered_to_the_client_as_the_task_state(seeded):

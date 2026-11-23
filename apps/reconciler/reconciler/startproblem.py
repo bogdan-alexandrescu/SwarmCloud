@@ -51,7 +51,7 @@ from swarm_common.states import TaskState
 
 #: Where the record lives on the task. Reserved at the API
 #: (`swarm_api.validation.START_PROBLEM_METADATA_KEY`) so no caller can plant
-#: one; tests/unit/reconciler/test_pod_start_problem.py holds the two equal.
+#: one; a test holds the two equal.
 START_PROBLEM_KEY = "start_problem"
 
 #: kubelet's Waiting reasons that mean a container is failing to start, not

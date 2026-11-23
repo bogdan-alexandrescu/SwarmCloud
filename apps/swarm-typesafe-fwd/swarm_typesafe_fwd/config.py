@@ -12,8 +12,7 @@ missing, cannot be read, is not JSON, lacks a key, carries a key this module
 does not know, or holds a value of the wrong type is the switch OFF (`cause`
 says which), and every request is 503 `disabled`. An unknown key is refused
 rather than ignored so a setting renamed on one side cannot silently do
-nothing on the other; tests/unit/typesafe_fwd/test_typesafe_fwd_ticket.py
-reads typesafe_fwd.tf's keys and holds them equal to CONFIG_KEYS.
+nothing on the other; typesafe_fwd.tf's keys must equal CONFIG_KEYS.
 """
 
 from __future__ import annotations

@@ -18,7 +18,7 @@ request (see this lane's PR).
 
 THE RULE IS THE WORKER'S, WRITTEN TWICE: the two images copy only their own
 app and `apps/common/`, and `apps/common/swarm_common/` is frozen.
-tests/unit/worker/test_territory_warn.py holds the two to the same answers.
+A test holds the two to the same answers.
 What an entry means is documented in `agent_worker.territory`.
 
 A CI-FIX ROUND RUNS WITH ITS LANE'S TERRITORY (CIFIX-TERRITORY, part of
@@ -40,8 +40,7 @@ TERRITORY_INPUT_KEY = "territory"
 
 #: The label the worker puts on a pull request whose diff leaves the
 #: territory (`agent_worker.territory.OUT_OF_TERRITORY_LABEL`), named here
-#: for `round_brief`. tests/unit/worker/test_territory_warn.py holds the two
-#: equal.
+#: for `round_brief`. A test holds the two equal.
 OUT_OF_TERRITORY_LABEL = "out-of-territory"
 
 #: Bounds on a declaration; `agent_worker.territory` says why.

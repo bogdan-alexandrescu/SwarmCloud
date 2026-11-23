@@ -61,7 +61,7 @@ MAX_SCREENS = 60
 #: `RunBody.flows_per_step`'s bounds (`swarm_api.qaspec.MIN_FLOWS_PER_STEP`,
 #: `MAX_FLOWS_PER_STEP`; QA-FLOWS-CAP): how many flows one live-browser step
 #: of the run runs. Restated because the plugin does not import swarm-api;
-#: tests/unit/mcp/test_qa_run_flows_per_step.py holds the two equal. Left out
+#: held equal to it by a unit test. Left out
 #: of the body when the caller names none, so the workspace's
 #: `qa_flows_per_step` decides (else 15).
 MIN_FLOWS_PER_STEP = 1

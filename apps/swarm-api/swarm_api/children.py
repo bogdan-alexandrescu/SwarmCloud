@@ -204,9 +204,9 @@ class ChildFanOutExceeded(ApiError):
 class ChildParentUnsigned(ApiError):
     """The stored parent's spec signature does not verify (archived issue 1041).
 
-    Not a switch (tests/unit/control_plane/test_new_refusals_ship_off.py):
-    continuing past it is the breach -- a child signed by swarm-api over a
-    submitter and forge slot the agent wrote into its own task.
+    Not a switch: continuing past it is the breach -- a child signed by
+    swarm-api over a submitter and forge slot the agent wrote into its own
+    task.
     """
 
     status_code = 403
