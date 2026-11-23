@@ -2207,7 +2207,10 @@ else
   # in fixture order, exactly as before. A batch is waited on pid by pid, so a
   # redact() that fails is reported against its case instead of vanishing in a
   # bare `wait`, which always returns 0. Batches, not `wait -n`: bash 3.2.
-  REDACT_JOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+  # nproc, not getconf: getconf counts the node's CPUs (8 in a container
+  # limited to 6, measured 2026-11-23), nproc the ones this process may use.
+  # getconf is the fallback where nproc is missing (macOS).
+  REDACT_JOBS="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
   [[ "${REDACT_JOBS}" =~ ^[0-9]+$ && "${REDACT_JOBS}" -ge 1 ]] || REDACT_JOBS=4
   # Capped: past 8 the sed processes only contend for the same few cores a CI
   # runner has, and the check's own memory stays small.

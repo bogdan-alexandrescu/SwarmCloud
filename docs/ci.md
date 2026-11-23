@@ -5472,8 +5472,12 @@ path adds its own path and basename to what a test may name (the
 selector's `doc_closure` above): a test that resolves a doc's citations names
 the doc, not the file it cites. It runs them in **one** `pytest -q -n auto -p no:warnings` call
 (collecting `tests/unit/scripts` whole costs ~135 s, so files, not
-directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 60 s
-deadlines so one call stays under the ten minutes a lane allows a command. It
+directories), then `scripts/lib/check-contract-parity.sh`, with 540 s and 180 s
+deadlines (under the pre-publish gate the parity check is a part of its own,
+bounded again by what is left of the gate's budget). A deadline hit prints a
+`ran past N s` line for each of the three -- pytest, vitest, parity -- and the
+result record says `timed_out`, so the gate leaves the part to CI instead of
+spending its one fix turn on a timeout nobody can fix. It
 prints the last lines of the output and keeps the full log only on failure. An
 empty diff runs nothing and exits 0; a base that does not resolve exits 2
 rather than reading as an empty diff.
@@ -5616,7 +5620,9 @@ why the related set is cut into parts like the rest.
 
 The contract-parity check took 66 s alone in that container, past the
 script's own 60 s `PARITY_SECONDS`, so it failed in some of these runs whichever way the
-guards ran; that limit predates this change and is not changed by it.
+guards ran. The limit is 180 s since 2026-11-23 (owner's improvement plan), and an
+overrun now prints `contract parity ran past 180 s`: before, it printed only
+`contract parity failed (exit 124)`, which the gate read as a failure to fix.
 
 ### While it works, a SwarmCloud agent runs only the related tests
 

@@ -109,7 +109,8 @@ fix a timeout. So:
   `passed`, runs the script. The skip and its reason go into the advisory
   section of the pull request.
 * a guard run that TIMED OUT (`guards_timed_out`: the script's `ran past` line,
-  or this runner's kill) is reported as a timeout, is left out of the fix
+  its result record saying `timed_out` -- `GUARDS_RESULT_ENV`, read before the
+  output wherever the script wrote one -- or this runner's kill) is reported as a timeout, is left out of the fix
   prompt, and runs once more in at least the parts the script advised
   (`guards_parts`) -- never as-is. Under the time box below, only a script
   that could not list its selection still runs as one command and can time
@@ -382,9 +383,20 @@ PASSED, FAILED, SKIPPED, ERROR = "passed", "failed", "skipped", "error"
 GUARDS_CHECK = "changed-guards"
 GUARDS_SCRIPT = "scripts/changed-guards.sh"
 GUARDS_RECORD_DIR = "swarm-changed-guards"
-#: What a timed-out guard run prints: the script's own pytest deadline, or
-#: `run_command`'s kill at the check limit.
-_GUARDS_TIMEOUT = re.compile(r"ran past \d+ s|\[timed out after \d+s\]")
+#: Where the script writes how its run ended -- `passed`, `failed` or
+#: `timed_out` (`finish` in scripts/changed-guards.sh). The gate names a file
+#: per run and prefers this verdict to reading the output; a run killed at
+#: the gate's limit writes none, and the output decides as before.
+GUARDS_RESULT_ENV = "_CHANGED_GUARDS_RESULT"
+GUARDS_RESULTS = frozenset({"passed", "failed", "timed_out"})
+#: The line the gate adds when the record says `timed_out` and the output
+#: carries no `ran past` line of its own.
+_GUARDS_RECORDED_TIMEOUT = "[the guard script ran past its own limit: its record says timed_out]"
+#: What a timed-out guard run prints: the script's own deadlines (pytest,
+#: vitest, contract parity), `run_command`'s kill at the check limit, or the
+#: gate's note of a `timed_out` record.
+_GUARDS_TIMEOUT = re.compile(r"ran past \d+ s|\[timed out after \d+s\]"
+                             r"|" + re.escape(_GUARDS_RECORDED_TIMEOUT))
 #: The split the script advises: `--shard 1/<n>`.
 _GUARDS_SHARDS = re.compile(r"--shard 1/(\d+)")
 #: Parts to split a timed-out run into when its output advised none: the
@@ -660,6 +672,25 @@ def _simple(argv: Sequence[str]) -> Callable[[Runner, Path, Mapping[str, str], f
 def guards_timed_out(output: str) -> bool:
     """Whether a guard run's output says it ran out of time."""
     return bool(_GUARDS_TIMEOUT.search(output))
+
+
+def guards_result(path: Path) -> str | None:
+    """The guard script's own verdict from its result record, or None when it
+    wrote none (killed at the gate's limit, or a script that predates it)."""
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text if text in GUARDS_RESULTS else None
+
+
+def _run_recorded(runner: Runner, argv: Sequence[str], repo: Path, env: Mapping[str, str],
+                  timeout: float, record: Path) -> tuple[Ran, str | None]:
+    """`argv` run with the script's result record at `record`, and the verdict
+    it wrote. A run the runner killed has no verdict of its own."""
+    record.unlink(missing_ok=True)
+    ran = runner(argv, repo, {**env, GUARDS_RESULT_ENV: str(record)}, timeout)
+    return ran, (None if ran.timed_out else guards_result(record))
 
 
 #: `run_command`'s line when it killed a command at its limit, at the end.
@@ -963,8 +994,22 @@ def timeboxed_guards(argv: Sequence[str], *, report: GuardsRun, cpus: int,
         listing = parse_guards_listing(listed.output) if (
             listed.code == 0 and not listed.timed_out) else GuardsListing((), ())
         if not listing.tests and not listing.extras:
-            # Nothing changed, or no list: the script as one command decides.
-            return _verdict(runner(argv, repo, env, max(MIN_CHECK_SECONDS, left())))
+            # Nothing changed, or no list: the script as one command decides,
+            # its record before its output.
+            folder = Path(tempfile.mkdtemp(prefix="prepublish-guards-",
+                                           dir=scratch or _outside(repo, env)))
+            try:
+                ran, result = _run_recorded(runner, argv, repo, env,
+                                            max(MIN_CHECK_SECONDS, left()), folder / "result")
+            finally:
+                shutil.rmtree(folder, ignore_errors=True)
+            if result == "passed" and ran.code == 0:
+                return PASSED, ran.output
+            if result == "failed":
+                return FAILED, _no_timeout_marker(ran.output)
+            if result == "timed_out" and not guards_timed_out(ran.output):
+                return FAILED, f"{ran.output.rstrip()}\n{_GUARDS_RECORDED_TIMEOUT}"
+            return _verdict(ran)
         related: set[str] = set()
         if related_argv is not None and (repo / RELATED_SCRIPT).is_file():
             ran = runner(list(related_argv), repo, env,
@@ -984,7 +1029,7 @@ def timeboxed_guards(argv: Sequence[str], *, report: GuardsRun, cpus: int,
         firsts = cut_in_order(first, math.ceil(heft["first"] / share), weight)
         if listing.extras:
             # A part of their own, first: behind 50 test files under five
-            # other parts, the parity check ran past its 60 s limit
+            # other parts, the parity check ran past its then 60 s limit
             # (measured 2026-11-03), a red no change of the step's caused.
             firsts = [list(listing.extras), *firsts]
         rests = cut_in_order(rest, math.ceil(heft["rest"] / share), weight)
@@ -1001,11 +1046,17 @@ def timeboxed_guards(argv: Sequence[str], *, report: GuardsRun, cpus: int,
                 return "not_started", ""
             listfile = folder / f"{label.replace('/', '-').replace(' ', '-')}.txt"
             listfile.write_text("".join(f"{e}\n" for e in entries), encoding="utf-8")
-            ran = runner([*argv, "--only", str(listfile), "--workers", str(workers)],
-                         repo, env, limit)
-            if ran.code == 0 and not ran.timed_out:
+            ran, result = _run_recorded(
+                runner, [*argv, "--only", str(listfile), "--workers", str(workers)],
+                repo, env, limit, listfile.with_suffix(".result"))
+            # The script's own verdict first; its output only where it wrote none.
+            if result == "failed":
+                return "failed", ran.output
+            if result == "passed" and ran.code == 0:
                 return "passed", ran.output
-            if ((ran.timed_out or guards_timed_out(ran.output))
+            if result is None and ran.code == 0 and not ran.timed_out:
+                return "passed", ran.output
+            if ((result == "timed_out" or ran.timed_out or guards_timed_out(ran.output))
                     and not failed_before_timeout(ran.output)):
                 return "stopped", ran.output
             return "failed", ran.output
