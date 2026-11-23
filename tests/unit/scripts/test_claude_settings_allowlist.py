@@ -14,6 +14,11 @@ plan-shaped verbs:
 * NO ALLOW ENTRY IS A BARE OR GROUP WILDCARD that reaches one of those: an
   entry is a command prefix, so `kubectl:*`, `kubectl get:*` or
   `gcloud secrets:*` approve everything a forbidden command would do.
+* NO ALLOW ENTRY IS A BARE RUNNER WILDCARD (#188): `uv run:*`, `npx:*`,
+  `python -c:*` or `bash -c:*` approve whatever command follows the runner, so
+  `uv run kubectl get secret` or `uv run python -c '<anything>'` would run
+  without a prompt. A runner is allowed only with a named command after it
+  (`uv run pytest:*`, `uv run ruff:*`, `uv run python scripts/:*`).
 * WHAT WAS REMOVED STILL PROMPTS: each forbidden command is listed in `ask`.
 * NO ASK ENTRY SHADOWS AN ALLOW ENTRY: Claude Code ranks ask above allow, so a
   broad `ask` such as `kubectl:*` would silently turn every narrowed read-only
@@ -46,10 +51,33 @@ FORBIDDEN_COMMANDS = (
     "make deploy",
     "make destroy",
     "make tf-apply",
+    # The same commands behind a runner: an allowed `uv run:*` reaches them.
+    "uv run kubectl get secret",
+    "uv run gcloud secrets versions access",
 )
 
 # A tool that reaches a forbidden command through any subcommand.
 WILDCARD_TOOLS = ("gcloud", "kubectl", "terraform", "make")
+
+# A runner that executes whatever command or code follows it. An allow entry
+# whose whole prefix is one of these approves every command behind the runner.
+RUNNER_WILDCARDS = (
+    "uv run",
+    "uv",
+    "npx",
+    "npm exec",
+    "python -c",
+    "python",
+    "python3 -c",
+    "bash -c",
+    "bash",
+    "sh -c",
+    "sh",
+    "env",
+    "xargs",
+    "sudo",
+    "uv run python",
+)
 
 FORBIDDEN_WORDS = re.compile(r"\b(apply|destroy|deploy|delete)\b|secrets\s+versions\s+access|get\s+secrets?\b")
 
@@ -79,6 +107,11 @@ def _bash_prefix(entry: str) -> str | None:
 def _reaches(prefix: str, command: str) -> bool:
     """Whether a rule approving PREFIX approves COMMAND."""
     return command == prefix or command.startswith(prefix)
+
+
+def _is_runner_wildcard(prefix: str) -> bool:
+    """Whether a rule approving PREFIX approves any command behind a runner."""
+    return prefix.strip() in RUNNER_WILDCARDS
 
 
 def _bash_entries(kind: str) -> list[tuple[str, str]]:
@@ -111,6 +144,27 @@ def test_no_allow_entry_names_a_destructive_or_secret_verb() -> None:
 def test_no_bare_tool_wildcard_in_allow() -> None:
     offenders = [entry for entry, prefix in _bash_entries("allow") if prefix == "" or prefix in WILDCARD_TOOLS]
     assert not offenders, f"bare tool wildcards in allow: {offenders}"
+
+
+def test_no_runner_wildcard_in_allow() -> None:
+    offenders = [entry for entry, prefix in _bash_entries("allow") if _is_runner_wildcard(prefix)]
+    assert not offenders, f"runner wildcards in allow approve any command behind the runner: {offenders}"
+
+
+@pytest.mark.parametrize("entry", ["Bash(uv run:*)", "Bash(npx:*)", "Bash(python -c:*)", "Bash(bash -c:*)"])
+def test_planted_runner_wildcard_is_caught(entry: str) -> None:
+    prefix = _bash_prefix(entry)
+    assert prefix is not None
+    assert _is_runner_wildcard(prefix), entry
+
+
+@pytest.mark.parametrize(
+    "entry", ["Bash(uv run pytest:*)", "Bash(uv run ruff:*)", "Bash(uv run python scripts/:*)"]
+)
+def test_named_runner_command_is_not_a_runner_wildcard(entry: str) -> None:
+    prefix = _bash_prefix(entry)
+    assert prefix is not None
+    assert not _is_runner_wildcard(prefix), entry
 
 
 @pytest.mark.parametrize("command", FORBIDDEN_COMMANDS)
