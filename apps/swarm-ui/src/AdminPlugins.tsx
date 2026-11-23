@@ -17,7 +17,7 @@
 import { useState } from 'react'
 import { loadPluginCatalogue, PLATFORM_PLUGIN_CATALOGUE, type CatalogueEntry, type CatalogueSource, type PluginCatalogue } from './api'
 import { ButtonLink, Segmented } from './components'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { formatDateTime } from './timezone'

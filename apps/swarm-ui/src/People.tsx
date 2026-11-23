@@ -42,9 +42,12 @@ import type {
 } from './types'
 import { timeAgo } from './types'
 import { accountName } from './accountName'
+import { InfoTip } from './InfoTip'
 import './styles/repositories.css'
 import './styles/onboarding.css'
 import './styles/people.css'
+
+export { InfoTip } from './InfoTip'
 
 /**
  * ADMIN › PEOPLE (archived issue 847, lane W8; docs/workspaces.md §6.4, the admin half of
@@ -111,52 +114,6 @@ import './styles/people.css'
  * requests wait on it and where it is switched on; their rows say they wait,
  * draw no live step rows, and are not polled for, since nothing moves them.
  */
-
-/**
- * THE (i) (the owner's standing rule, 2026-11-05: no explanatory prose on the
- * surface). A sentence that explains a label sits behind this button beside
- * it: open on hover, on focus and on a tap (Safari never focuses a tapped
- * button, so focus alone is not enough), closed on Escape, on the pointer
- * leaving and on a tap elsewhere. The tip stays in the document, hidden, as
- * the button's description, so a screen reader and a test read it without
- * opening it; `data-help-description` keeps it out of the words the prose
- * ratchet counts (proseapp.tsx), as Profile's AboutTip and HelpNote are kept.
- * `.c-tip-host` and `.c-tip` are the components' tooltip; `end` anchors the
- * tip's right edge to the button, for an (i) near the right of the screen.
- * The negative block margin keeps the 28px button from heightening a line of
- * text it sits in.
- * Exported for GitHub access and Runner sizes. It lives here, not in Access.tsx,
- * because Access already imports People through the app's modules: an import
- * the other way closes a cycle, and vitest's loader deadlocks on one.
- */
-export function InfoTip({ about, tip, end = false }: { about: string; tip: string; end?: boolean }) {
-  const id = useId()
-  const [open, setOpen] = useState(false)
-  return (
-    <span className="c-tip-host info-tip" style={{ marginBlock: -6, verticalAlign: 'middle' }} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
-      <button
-        type="button"
-        className={buttonClass({ kind: 'ghost', size: 'sm', iconOnly: true })}
-        aria-label={`About ${about}`}
-        aria-describedby={id}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        onClick={() => setOpen(true)}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') setOpen(false)
-        }}
-      >
-        <svg className="c-ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-          <circle cx="12" cy="12" r="8.5" />
-          <path d="M12 11v5.5M12 7.75v.01" />
-        </svg>
-      </button>
-      <span role="tooltip" id={id} className="c-tip" data-help-description="" hidden={!open} style={end ? { left: 'auto', right: 0 } : undefined}>
-        {tip}
-      </span>
-    </span>
-  )
-}
 
 /** While a run is under way, how often the list is read (as the setup checklist reads a person's record). */
 export const PEOPLE_POLL_MS = 5_000

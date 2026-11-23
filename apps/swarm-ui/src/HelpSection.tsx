@@ -4,7 +4,7 @@ import { HELP, HELP_GROUPS, HELP_PLACES, HELP_ROUTE, TOPIC_IDS, topicFor, type T
 import { addressToPath } from './paths'
 import { EmptyState } from './components'
 import { CountNote, PageHead } from './Shell'
-import { GuideLink } from './Guide'
+import { GuideLink } from './GuideLink'
 import { helpPageOf } from './helpPage'
 
 export { helpPageOf } from './helpPage'

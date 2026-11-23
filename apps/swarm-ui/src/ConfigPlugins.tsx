@@ -49,7 +49,7 @@ import {
 } from './api'
 import { Banner, Button, Chip, Tabs } from './components'
 import type { ApiError, Result } from './fetch'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'

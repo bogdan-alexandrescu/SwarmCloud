@@ -26,7 +26,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 import { USE_FIXTURES } from './api'
 import { Button, Chip, Dash } from './components'
 import { read, route, type Result } from './fetch'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import type {
   ManagedPluginInstall, PluginConfigView, PluginFormField, PluginOverrideScalar, PluginOverrideValue, StepManagedPlugins,
   WorkspacePluginCatalogue, WorkspacePluginDefaults,
