@@ -14,7 +14,7 @@ WHAT IS COUNTED (the owner, 2026-10-26).
   * TOKENS are the runner's own usage reports: input plus output plus cache
     reads, as reported. claude-code's stream-json carries each message's
     `usage` on its `assistant` events (the last copy of each message id
-    counts, as `lifecycle._stream_usage` counts it); codex's `--json` stream
+    counts, as `usage._stream_usage` counts it); codex's `--json` stream
     (the codex profile runs `codex exec --json` since CODEX-JSON, the owner's
     answer to BUDGET-CAP question 6) carries a `turn.completed` event's
     `usage`, once per start, cached input inside its input; WHILE the start
@@ -138,7 +138,7 @@ _USAGE_FIELDS = (
 CODEX_TOOL_ITEMS = frozenset({"command_execution", "file_change", "mcp_tool_call", "web_search"})
 #: The model a message that names none is counted under: swarm-api prices
 #: nothing for it, so the dollar figure reads "not known" rather than one
-#: that left those tokens out (as `lifecycle._UNNAMED_MODEL`).
+#: that left those tokens out (as `usage._UNNAMED_MODEL`).
 UNNAMED_MODEL = "unknown"
 
 
