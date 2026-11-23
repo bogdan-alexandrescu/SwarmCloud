@@ -81,9 +81,11 @@ import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist
  * helper-only modules that import no screen -- guidePaths.ts,
  * workspacePaths.ts, pluginPaths.ts, helpPage.ts, llmPaths.ts,
  * schedulePaths.ts, scheduleNames.ts, recentName.ts, poolLook.ts,
- * homeJumps.ts, voice/voiceOpen.ts -- and Overview's `WaitingOnYouCard` is
- * its own module; each screen re-exports what moved, so its importers are
- * unchanged (__tests__/screensplit.test.ts).
+ * homeJumps.ts, approvalPaths.ts, roleGate.ts, voice/voiceOpen.ts -- and
+ * `WaitingOnYouCard`, `InApp`, `InfoTip` and `GuideLink` are their own
+ * modules. A screen still re-exports what moved, but every importer reads it
+ * from its helper module: in an import cycle, a name re-exported through a
+ * screen that is still evaluating is undefined (__tests__/screensplit.test.ts).
  *
  * THE GITHUB CALLBACK STAYS EAGER. `GitHubCallbackScreen` reads the code and
  * the state from the address as it mounts, and the router takes that query
