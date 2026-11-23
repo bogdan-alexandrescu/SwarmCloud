@@ -603,12 +603,12 @@ class EdgeCache:
         if (self.path is None or not self.new
                 or (self.new.keys() == self.old.keys() and not self.repaired)):
             return
+        part = self.path.with_name(f"{self.path.name}.{os.getpid()}")
         try:
-            part = self.path.with_name(f"{self.path.name}.{os.getpid()}")
             part.write_text(json.dumps(self.new))
             os.replace(part, self.path)
         except OSError:
-            pass
+            part.unlink(missing_ok=True)
 
 
 def private_dir(directory: Path) -> bool:
@@ -710,7 +710,8 @@ def python_related(root: Path, changed: list[str], graph: Graph | None = None,
     importers inside the closure (tests importing a module that imports the
     changed one), hop by hop, and stops at the first hop holding a test; past
     the last hop, the closure's tests. Kept even when heavier than one run:
-    never empty beats never heavy."""
+    never empty beats never heavy. A selection that is the whole closure and
+    no heavier than one run is not capped: nothing is left to CI to note."""
     edges = edges or sut.import_edges
     all_tests = sorted(str(p.relative_to(root)) for p in sut._python_files(root, "tests/unit")
                        if sut.is_test(str(p.relative_to(root))))
@@ -761,6 +762,9 @@ def python_related(root: Path, changed: list[str], graph: Graph | None = None,
             hop, narrow = 0, set(chosen)
         weight = closure_weight(root, narrow)
         heavy = weight if weight > SIZE_CAP_WEIGHT else None
+    if narrow and narrow == chosen and not heavy:
+        # Nothing is left to CI: a cap note would read "N of the N ... 0 are left".
+        capped = None
     return PythonSelection(sorted(narrow), len(chosen), capped, hop, heavy)
 
 
