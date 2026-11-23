@@ -46,6 +46,8 @@ from test_claude_front import PERSON, World, _grant  # noqa: E402
 
 API_URL = "http://swarm-api.test"
 WORK_PATH = "/v1/voice/sessions/{session_id}/work"
+#: How long a delegation waits for its `started` answer here (worksink.ADMIT_SECONDS).
+ADMIT_SECONDS = 0.05
 
 
 class SwarmApi:
@@ -55,12 +57,16 @@ class SwarmApi:
     def __init__(self) -> None:
         self.posts: list[tuple[str, dict, dict]] = []
         self.status = 200
+        #: A refusal's `detail.reason`, sent with a non-2xx `status`.
+        self.reason: str | None = None
         self.gate = asyncio.Event()
         self.gate.set()
 
     async def handler(self, request: httpx.Request) -> httpx.Response:
         await self.gate.wait()
         self.posts.append((request.url.path, json.loads(request.content or b"{}"), dict(request.headers)))
+        if self.reason is not None:
+            return httpx.Response(self.status, json={"error": "conflict", "detail": {"reason": self.reason}})
         return httpx.Response(self.status, json={"type": "work.delegation", "seq": len(self.posts)})
 
     def states(self) -> list[str]:
@@ -77,7 +83,8 @@ class Harness:
         async def tokens() -> str:
             return self.id_token
 
-        self.sink = worksink.WorkSink(self.api_http, api_base=API_URL, id_tokens=tokens)
+        self.sink = worksink.WorkSink(self.api_http, api_base=API_URL, id_tokens=tokens,
+                                      admit_seconds=ADMIT_SECONDS)
         self.front = claudefront.FrontSessions(accounts=world.accounts, planner=world.planner, claude=world.claude,
                                                clock=lambda: world.now[0], idle_seconds=900.0, sleep=world.sleep,
                                                work=self.sink)
@@ -222,6 +229,8 @@ def test_a_post_that_never_answers_never_holds_the_turn():
         h.api.gate.clear()
         _, answer = await _delegate(h)
         assert answer.reply == "Looking at that now."
+        # The start is asked: unanswered, the work runs after ADMIT_SECONDS.
+        await asyncio.sleep(ADMIT_SECONDS * 2)
         h.world.planner.gate.set()
         await _settle()
         # The delegation ended while swarm-api has not answered its start.
@@ -230,6 +239,41 @@ def test_a_post_that_never_answers_never_holds_the_turn():
         h.api.gate.set()
         await h.sink.drain()
         assert h.api.states() == ["started", "done"]
+    run(body)
+
+
+@pytest.mark.parametrize("reason", worksink.CAP_REASONS)
+def test_a_start_refused_at_a_cap_runs_nothing_and_says_the_caps_one_sentence(reason):
+    async def body(h: Harness):
+        h.api.status, h.api.reason = 409, reason
+        calls: list[dict] = []
+
+        async def never(**kwargs):
+            calls.append(kwargs)
+            raise AssertionError("the planner ran past a cap")
+
+        h.world.planner.delegate = never
+        _, answer = await _delegate(h)
+        assert answer.reply == "Looking at that now."
+        await _settle()
+        await h.sink.drain()
+        delegation = h.front.delegation(answer.delegation_id)
+        assert delegation.done.is_set() and delegation.state == "done"
+        assert delegation.spoken == worksink.CAP_SENTENCES[reason]
+        assert calls == []
+        # Only the start was asked; swarm-api wrote nothing, so no end is sent.
+        assert h.api.states() == ["started"]
+    run(body)
+
+
+def test_a_refusal_that_is_not_a_caps_admits_the_work():
+    async def body(h: Harness):
+        h.api.status, h.api.reason = 409, "voice_session_ended"
+        _, answer = await _delegate(h)
+        h.world.planner.gate.set()
+        await _settle()
+        await h.sink.drain()
+        assert h.front.delegation(answer.delegation_id).spoken == "It's on screen."
     run(body)
 
 

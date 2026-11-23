@@ -203,6 +203,7 @@ from ..brokerclient import AccountPool
 from .accounts import VOICE_POOL, account_pool
 from .profile import preferences_store
 from ..preferences import Preferences
+from ..voice import budget as vbudget
 from ..voice import cards as vcards
 from ..voice import grant as vgrant
 from ..voice import ledger as vledger
@@ -212,6 +213,7 @@ from ..voice import sessions as vs
 from ..voice import settings as vsettings
 from ..voice import store as vstore
 from ..voice import stream as vstream
+from ..voice import workfeed as vwork
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
 log = logging.getLogger("swarm_api.voice.refused")
@@ -301,6 +303,9 @@ class WorkReport(BaseModel):
 
     delegation: dict[str, Any] | None = None
     roster: list[Any] | None = None
+    #: The follower's question each tick: the caps' state, and the notices
+    #: the voice has not yet said (voice/budget.py `enforce`); nothing else.
+    budget: Literal[True] | None = None
 
 
 class Seen(BaseModel):
@@ -392,6 +397,7 @@ def _check_id(value: str, prefix: str, what: str) -> None:
 @router.post("/sessions")
 async def start_session(
     body: StartSession,
+    request: Request,
     person: str = Depends(allowed_person),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
@@ -412,6 +418,11 @@ async def start_session(
             tenant_id=tenant_id, person=person, session_id=body.session_id, offer=offer))
     if body.project_id is not None:
         _check_id(body.project_id, "vp_", "project_id")
+    # The day cap (§3.8), read before anything is written: a day at its cap
+    # starts no session, takes no marker and asks swarm-voice nothing.
+    await run_in_threadpool(lambda: _guard(ctx, request).refuse_start(
+        tenant_id=tenant_id, person=person))
+    if body.project_id is not None:
         # A session start reads its project: its merge is settled first
         # (voice-it.md §3.13.2, settled on read).
         project_id = body.project_id
@@ -501,17 +512,45 @@ async def work(
     request: Request,
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
+    client: Any = Depends(voice_client),
+    machine: Any = Depends(speech_machine),
 ) -> dict:
     """swarm-voice's report of a delegation's lifecycle or the roster's
     changed rows (voice-it.md §3.12.5, §3.12.6), through its session's grant
-    only, for that session only (`voice.grant.record_work`)."""
+    only, for that session only (`voice.grant.record_work`), or its question
+    about the caps (`{budget: true}`).
+
+    THE CAPS (§3.8; voice/budget.py). A delegation's `started` is asked
+    before it runs: at a cap, or when one more planner turn would pass one,
+    it is 409 `conflict` with `detail.reason` (voice_budget_capped,
+    voice_session_cap, voice_day_cap) and nothing is written, so the voice
+    says one sentence instead of starting it. Every answer carries `budget`:
+    the caps warned of, the cap reached, when the session ends for it and
+    the notices this call newly recorded, for the voice to say once."""
     if auth.via != vgrant.VIA:
         raise vgrant.RouteNotGranted("only swarm-voice reports a Voice it session's work")
     _check_id(session_id, "vs_", "session_id")
     session = vgrant.session_of(request.headers.get(vgrant.SESSION_HEADER),
                                 tenant_id=auth.tenant_id, person=auth.email)
+    if session_id != session.session_id:
+        raise vgrant.RouteNotGranted("a Voice it grant writes only to its own session")
     report = {k: v for k, v in (("delegation", body.delegation), ("roster", body.roster))
               if v is not None}
+    guard = _guard(ctx, request, end=_ender(ctx, client, machine))
+    where = {"tenant_id": session.tenant_id, "person": session.person,
+             "project_id": session.project_id, "session_id": session.session_id}
+    if body.budget:
+        if report:
+            raise ValidationFailed("work is {delegation}, {roster} or {budget}",
+                                   detail={"field": "work"})
+        state = await run_in_threadpool(lambda: guard.enforce(**where))
+        return {"session_id": session.session_id, "budget": state}
+    delegation = report.get("delegation")
+    if isinstance(delegation, dict) and delegation.get("state") == vwork.STARTED:
+        # Refused here, before the event is written: nothing starts.
+        state = await run_in_threadpool(lambda: guard.admit_work(**where))
+    else:
+        state = None
     at = ctx.now()
     answer = await run_in_threadpool(lambda: vgrant.record_work(
         ctx.db, session, session_id=session_id, body=report, at=at))
@@ -521,7 +560,9 @@ async def work(
         await run_in_threadpool(lambda: vstate.settle_on_read(
             ctx.db, tenant_id=session.tenant_id, person=session.person,
             project_id=session.project_id, now=ctx.now))
-    return answer
+    if state is None:
+        state = await run_in_threadpool(lambda: guard.enforce(**where))
+    return {**answer, "budget": state}
 
 
 @router.post("/sessions/{session_id}/seen")
@@ -809,6 +850,19 @@ def _ledger(ctx: AppContext, prefs: Preferences, request: Request) -> vledger.Vo
         prices=lambda: ctx.store.get_platform_settings()["model_prices"],
         time_zone=lambda email: prefs.read(email).time_zone,
         work=getattr(request.app.state, "voice_work", None))
+
+
+def _guard(ctx: AppContext, request: Request,
+           end: Callable[..., Any] | None = None) -> vbudget.BudgetGuard:
+    """The caps, enforced over the same ledger `GET .../ledger` serves (the
+    day in UTC when the preferences cannot be read: `budget.saved_zone`), as
+    the sweep enforces them (voice_speech.budget_ledger)."""
+    return vbudget.BudgetGuard(ctx.db, rvs.budget_ledger(request, ctx), now=ctx.now, end=end)
+
+
+def _ender(ctx: AppContext, client: Any, machine: Any) -> Callable[..., Any] | None:
+    """The person's End, with the cause `budget_cap`; None without swarm-voice."""
+    return _service(ctx, client, machine).end_for_budget if client is not None else None
 
 
 @router.get("/sessions/{session_id}/ledger")

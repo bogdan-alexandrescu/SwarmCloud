@@ -80,11 +80,29 @@ class NoGrant(PermissionError):
 class ApiRefused(RuntimeError):
     """swarm-api refused or failed a call. Names the route and status only."""
 
-    def __init__(self, route: str, status: int | None, what: str = "") -> None:
+    def __init__(self, route: str, status: int | None, what: str = "",
+                 reason: str | None = None) -> None:
         self.route = route
         self.status = status
+        #: A refusal's `detail.reason` when it is a short token (a cap's
+        #: refusal names which cap, worksink.py), else None. Never free text.
+        self.reason = reason
         detail = f"HTTP {status}" if status is not None else what or "no answer"
         super().__init__(f"swarm-api {route}: {detail}")
+
+
+_REASON_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+def _reason(response: Any) -> str | None:
+    """A refusal's `detail.reason` when it is a short token, else None."""
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    detail = body.get("detail") if isinstance(body, dict) else None
+    reason = detail.get("reason") if isinstance(detail, dict) else None
+    return reason if isinstance(reason, str) and _REASON_RE.match(reason) else None
 
 
 def google_id_tokens(audience: str) -> IdTokens:
@@ -146,7 +164,7 @@ class SwarmApi:
         except httpx.HTTPError as exc:
             raise ApiRefused(route, None, type(exc).__name__) from None
         if response.status_code >= 300:
-            raise ApiRefused(route, response.status_code)
+            raise ApiRefused(route, response.status_code, reason=_reason(response))
         try:
             return response.json()
         except ValueError:

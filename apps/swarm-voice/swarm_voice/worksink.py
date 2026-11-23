@@ -27,6 +27,17 @@ returns at once. A refused or failed post is logged once at WARNING with the
 route and its status (tools_read.ApiRefused), never the grant, a token or
 anything said, and is dropped: the turn and the delegation's result are the
 same whether swarm-api heard it or not.
+
+EXCEPT `started`, WHICH IS ASKED (the spend caps, voice-it.md §3.8; the
+owner's decision of 23 November 2026). `admit` posts a delegation's `started`
+behind the session's previous post and waits for the answer: swarm-api
+refuses it (409, `detail.reason` one of CAP_REASONS) when the session is at a
+cap or one more planner turn would pass one, writes nothing, and the caller
+says that reason's one sentence (`CAP_SENTENCES`) instead of starting the
+work. Any other failure admits it, as before: the cap is swarm-api's, and a
+post that never arrived is not a refusal. Nor does an answer that has not come
+within ADMIT_SECONDS hold the work longer: it runs, and the post goes on in
+the background.
 """
 
 from __future__ import annotations
@@ -50,17 +61,32 @@ WORK_ROUTE = "/v1/voice/sessions/{session_id}/work"
 STARTED, PROGRESS, DONE, FAILED, REFUSED = "started", "progress", "done", "failed", "refused"
 DELEGATION_STATES = (STARTED, PROGRESS, DONE, FAILED, REFUSED)
 
+#: swarm-api's refusals of a `started` at a cap (swarm_api/voice/ledger.py
+#: SESSION_CAPPED, SESSION_CAP_REACHED, DAY_CAP_REACHED), and the one sentence
+#: the voice says for each instead of starting the work.
+CAP_SENTENCES = {
+    "voice_budget_capped": "This session has reached its budget cap, so I won't start that.",
+    "voice_session_cap": "That would take this session past its budget cap, so I won't start it.",
+    "voice_day_cap": "That would take today past the day's budget cap, so I won't start it.",
+}
+CAP_REASONS = tuple(CAP_SENTENCES)
+#: The longest a delegation waits for swarm-api's answer to its `started`
+#: before it runs anyway: the cap's check is a ledger read, well under it.
+ADMIT_SECONDS = 5.0
+
 
 class WorkSink:
     """Posts each delegation's lifecycle to swarm-api through the session's
     grant, in order per session, never holding the caller."""
 
-    def __init__(self, http: Any, *, api_base: str, id_tokens: tools_read.IdTokens) -> None:
+    def __init__(self, http: Any, *, api_base: str, id_tokens: tools_read.IdTokens,
+                 admit_seconds: float = ADMIT_SECONDS) -> None:
         self._http = http
+        self._admit_seconds = admit_seconds
         self._base = api_base
         self._id_tokens = id_tokens
         #: Each voice session's last post in flight: the next one waits for it.
-        self._posts: dict[str, asyncio.Task[None]] = {}
+        self._posts: dict[str, asyncio.Task[str | None]] = {}
 
     def report(self, grant: SessionGrant | None, delegation_id: str, state: str) -> None:
         """Queue `{delegation_id, state}` behind the session's previous post
@@ -74,8 +100,27 @@ class WorkSink:
         self._posts[key] = task
         task.add_done_callback(lambda done: self._posts.pop(key, None) if self._posts.get(key) is done else None)
 
+    async def admit(self, grant: SessionGrant | None, delegation_id: str) -> str | None:
+        """Post `started` behind the session's previous post and wait for it:
+        the cap's refusal reason (one of CAP_REASONS) when swarm-api refused
+        it at a cap, else None (admitted, or not heard: the work runs)."""
+        if grant is None:
+            return None
+        key = grant.session_id
+        previous = self._posts.get(key)
+        task = asyncio.create_task(self._post(grant, {"delegation_id": delegation_id, "state": STARTED},
+                                              previous),
+                                   name=f"voice-work-{delegation_id}-{STARTED}")
+        self._posts[key] = task
+        task.add_done_callback(lambda done: self._posts.pop(key, None) if self._posts.get(key) is done else None)
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), self._admit_seconds)
+        except asyncio.TimeoutError:
+            log.warning("delegation %s: swarm-api has not answered its start; it runs", delegation_id)
+            return None
+
     async def _post(self, grant: SessionGrant, delegation: dict[str, str],
-                    previous: asyncio.Task[None] | None) -> None:
+                    previous: asyncio.Task[str | None] | None) -> str | None:
         if previous is not None:
             # Its own failure is already logged; only its order matters here.
             with contextlib.suppress(Exception, asyncio.CancelledError):
@@ -86,15 +131,20 @@ class WorkSink:
             await api._call("POST", WORK_ROUTE, WORK_ROUTE.format(session_id=grant.session_id),  # noqa: SLF001
                             json_body={"delegation": delegation})
         except tools_read.ApiRefused as exc:
+            if delegation["state"] == STARTED and exc.status == 409 and exc.reason in CAP_REASONS:
+                log.info("delegation %s: swarm-api refused its start at a cap (%s)",
+                         delegation["delegation_id"], exc.reason)
+                return exc.reason
             # The route and status only: never the grant, a token or what was said.
             log.warning("delegation %s: swarm-api was not told it is %s: %s", delegation["delegation_id"],
                         delegation["state"], exc)
-            return
+            return None
         except Exception as exc:  # noqa: BLE001 -- the type only; the turn never sees it
             log.warning("delegation %s: swarm-api was not told it is %s: %s %s", delegation["delegation_id"],
                         delegation["state"], WORK_ROUTE, type(exc).__name__)
-            return
+            return None
         log.info("delegation %s: swarm-api was told it is %s", delegation["delegation_id"], delegation["state"])
+        return None
 
     async def drain(self) -> None:
         """Wait for every post in flight."""

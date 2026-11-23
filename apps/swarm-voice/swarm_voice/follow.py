@@ -16,6 +16,11 @@ EVERY 15 SECONDS (`TICK_SECONDS`) IT MAKES TWO READS, whatever the count:
      something) read by id through the existing reads, `GET /v1/tasks/{id}`,
      `/v1/workflows/{id}` and `/v1/runs/{id}`, sent together.
 
+EACH TICK ALSO ASKS THE SPEND CAPS (voice-it.md §3.8): `POST .../work
+{budget: true}` answers the caps warned of and the cap reached (swarm-api's
+voice/budget.py `enforce`, which records them and draws the Budget card), and
+the update queue says each once (updates.py `budget`).
+
 Each read carries `X-Swarm-Voice-Quiet: roster` (`QUIET_HEADER`), so
 swarm-api writes its audit row and no `work.step` for it: the tick's reads
 never reach the working card (the owner's pick, 12 November 2026;
@@ -153,6 +158,11 @@ class RosterApi(SwarmApi):
         path = WORK_ROUTE.format(session_id=self.session_id)
         await self._call("POST", WORK_ROUTE, path, json_body={"roster": rows})
 
+    async def ask_budget(self) -> Any:
+        """The spend caps' state (`{budget: true}`; swarm_api/voice/budget.py)."""
+        path = WORK_ROUTE.format(session_id=self.session_id)
+        return await self._call("POST", WORK_ROUTE, path, json_body={"budget": True})
+
 
 def _ended(exc: ApiRefused) -> bool:
     return exc.status == 401
@@ -220,6 +230,18 @@ class ApiReads:
                 raise SessionGone(str(exc)) from None
             raise
 
+    async def budget(self) -> dict[str, Any] | None:
+        """The caps' state: `{warned, capped, ends_at, ...}`, None when the
+        answer carries none."""
+        try:
+            body = await self._api.ask_budget()
+        except ApiRefused as exc:
+            if _ended(exc):
+                raise SessionGone(str(exc)) from None
+            raise
+        state = body.get("budget") if isinstance(body, dict) else None
+        return state if isinstance(state, dict) else None
+
 
 @dataclass
 class Follower:
@@ -262,7 +284,26 @@ class Follower:
                 self.seen[(row["kind"], row["id"])] = row
             written += part
         self._tell(now, written, before)
+        await self._budget()
         return written
+
+    async def _budget(self) -> None:
+        """Ask the spend caps' state and tell the update queue (updates.py
+        `budget`: each warning and the reached cap said once). Reads without
+        `budget` ask nothing; a failed ask is retried on the next tick and
+        never fails the roster's pass."""
+        ask = getattr(self.reads, "budget", None)
+        if ask is None:
+            return
+        try:
+            state = await ask()
+        except (SessionGone, asyncio.CancelledError):
+            raise
+        except Exception as exc:  # noqa: BLE001 - the next tick asks again
+            log.warning("voice session %s: the caps could not be read: %s", self.voice_id, type(exc).__name__)
+            return
+        if state is not None and self.updates is not None:
+            self.updates.budget(self.voice_id, state)
 
     def _tell(self, now: dict[tuple[str, str], Row], written: list[Row],
               before: dict[tuple[str, str], Any]) -> None:

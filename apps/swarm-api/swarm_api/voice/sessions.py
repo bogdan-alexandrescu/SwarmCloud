@@ -294,6 +294,9 @@ END_TAB_CLOSED = "tab_closed"
 PERSON_END_CAUSES = (END_BY_PERSON, END_TAB_CLOSED)
 #: Live with no activity for LIVE_STALE_SECONDS: ended by the next start or the sweep.
 END_ABANDONED = "abandoned"
+#: A cap was reached and its grace ran out (voice/budget.py; the speech
+#: machine's END_BUDGET_CAP is this one value).
+END_BUDGET_CAP = "budget_cap"
 END_VOICE_UNREACHABLE = "voice_unreachable"
 END_VOICE_POOL_REFUSED = "voice_pool_refused"
 #: Another session holds the speech machine (speech_machine.MachineInUse).
@@ -1687,6 +1690,16 @@ class VoiceSessions:
         pagehide end (`tab_closed`), nothing else (PERSON_END_CAUSES)."""
         if cause not in PERSON_END_CAUSES:
             raise ValueError(f"no Voice it end cause {cause!r} a person may name")
+        return self._end(tenant_id=tenant_id, person=person, session_id=session_id, cause=cause)
+
+    def end_for_budget(self, *, tenant_id: str, person: str, session_id: str) -> dict[str, Any]:
+        """A cap's grace ran out (voice/budget.py): the same end as End, with
+        the cause `budget_cap`, so swarm-voice is told (billing stops) and a
+        speech session's machine stops, its lease ending with END_BUDGET_CAP."""
+        return self._end(tenant_id=tenant_id, person=person, session_id=session_id,
+                         cause=END_BUDGET_CAP)
+
+    def _end(self, *, tenant_id: str, person: str, session_id: str, cause: str) -> dict[str, Any]:
         person = person.strip().lower()
         project_id = self._project_of(tenant_id=tenant_id, person=person, session_id=session_id)
         before = self._close(tenant_id=tenant_id, person=person, project_id=project_id,
