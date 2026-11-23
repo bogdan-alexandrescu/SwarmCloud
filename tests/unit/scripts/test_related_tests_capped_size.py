@@ -162,7 +162,7 @@ def test_ci_selection_is_not_capped_on_size(tmp_path):
         capture_output=True, text=True, timeout=120,
     )
     assert result.returncode == 0, result.stderr
-    expected = (f"python=selected areas=(none): 2 changed path(s) reach 14 of 34 test files\n"
+    expected = ("python=selected areas=(none): 2 changed path(s) reach 14 of 34 test files\n"
                 + "".join(f"  {t}\n" for t in CLOSURE))
     assert result.stdout == expected
 
