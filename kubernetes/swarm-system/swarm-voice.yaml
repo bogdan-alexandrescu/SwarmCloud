@@ -159,6 +159,12 @@ spec:
               containerPort: 8080
               protocol: TCP
           env:
+            # THE PAUSE'S SWITCH (swarm_voice/main.py, PAUSE_SWITCH): "on" pauses
+            # the paid voice after 45 s of silence and reopens it on a wake. On
+            # here so a manual apply keeps it on; voice.tf's render replaces this
+            # one value with `voice_pause` (default "on").
+            - name: VOICE_PAUSE
+              value: "on"
             - name: PROJECT_ID
               value: __PROJECT_ID__
             - name: PORT

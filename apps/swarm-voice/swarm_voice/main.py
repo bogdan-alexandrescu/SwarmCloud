@@ -126,8 +126,8 @@ or anything said. The tier's post is unchanged: inline, once.
 
 THE PAUSE AND THE REOPEN (docs/design/voice-it.md §3.12.7, the design's lane
 V2; the owner picked the automatic pause on 11 November 2026). live.py pauses
-a GPT-Live session after live.PAUSE_AFTER_SECONDS of silence with a delegation
-in flight, and `POST /internal/sessions/{voice_session_id}/reopen` opens it
+a GPT-Live session after live.PAUSE_AFTER_SECONDS of silence, with or without a
+delegation in flight (the owner, 23 November 2026), and `POST /internal/sessions/{voice_session_id}/reopen` opens it
 again by cause. Body: `{"offer": <SDP>, "cause": "result"|"speech"|"resume"|
 "tier", "brief": {...}?, "cards": [<one-liner>]?, "planner_model": <id>?}`;
 the brief (the project's, as the planner last saved it) and the open cards'
