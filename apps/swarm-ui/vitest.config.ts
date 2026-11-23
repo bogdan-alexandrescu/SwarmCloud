@@ -106,9 +106,27 @@ export default defineConfig({
     // and no test imports `main.tsx`, so this processes one file and injects
     // nothing anywhere by itself.
     css: true,
-    // No watcher, no browser, no coverage instrumentation: this runs inside
-    // `make test`, which is a gate rather than a development loop.
+    // No watcher, no browser: this runs inside `make test`, which is a gate
+    // rather than a development loop.
     reporters: ['default'],
+    // COVERAGE ONLY WHEN SWARM_UI_COVERAGE_DIR NAMES WHERE TO WRITE IT (issue
+    // 64, docs/ci.md "Coverage floors"). The CI shards set it and upload the
+    // istanbul `coverage-final.json` written there; the `coverage` job merges
+    // the shards and judges the floor in coverage-floors.json
+    // (scripts/coverage-floors.sh). Unset -- `make test`, an agent's
+    // related-tests run -- nothing is instrumented. An env var rather than a
+    // `--coverage` flag: the shard's command line is the file list alone
+    // (tests/unit/scripts/test_ui_shards.py).
+    coverage: {
+      enabled: Boolean(process.env.SWARM_UI_COVERAGE_DIR),
+      provider: 'v8',
+      reporter: ['json'],
+      reportsDirectory: process.env.SWARM_UI_COVERAGE_DIR || 'coverage',
+      // The shipped source only, every file of it, so a file no test loads
+      // counts at 0 % rather than not at all.
+      include: ['src/**/*.{ts,tsx}'],
+      exclude: ['src/**/*.test.{ts,tsx}', 'src/__tests__/**', 'src/**/*.d.ts'],
+    },
     // 30s, not Vitest's default 5s, AND THE REASON IS THE `css: true` ABOVE.
     //
     // The tests that matter most here inject the shipped 66KB `styles.css`

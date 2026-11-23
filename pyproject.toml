@@ -88,6 +88,11 @@ dev = [
     # root's dependencies: an operator-side tool no service image ships; each
     # service Dockerfile's export prunes it (test_service_image_install.py).
     "swarm-install",
+    # The coverage ratchet (issue 64, docs/ci.md "Coverage floors"). Pinned:
+    # 7.1.0 was uploaded 2026-03-21, well outside the 14-day release-age
+    # window above; its `coverage` (7.17.2 in uv.lock) is the newest the
+    # window allowed on 2026-11-23.
+    "pytest-cov==7.1.0",
 ]
 
 [tool.pytest.ini_options]
@@ -109,6 +114,40 @@ filterwarnings = ["ignore::DeprecationWarning"]
 # makes that hold when a caller names files explicitly, as the pre-publish gate
 # does (`ruff format --check <files>`, apps/agent-worker/agent_worker/prepublish.py):
 # without it the gate would fail every changed .py file on formatting nobody adopted.
+# THE COVERAGE RATCHET (issue 64; docs/ci.md "Coverage floors"). Read by
+# pytest-cov in the unit shards (`--cov`, only when a shard runs the whole
+# suite) and by scripts/coverage-floors.sh, which combines the shards' data
+# files and groups the lines per `apps/<dir>` against coverage-floors.json.
+[tool.coverage.run]
+# Every Python package under apps/, by its import directory: a directory
+# source also reports the files no test imported (at 0 %), which a module
+# name would only do once something imported it.
+source = [
+    "apps/agent-worker/agent_worker",
+    "apps/common/swarm_common",
+    "apps/jev-client/swarm_jev",
+    "apps/plugin-intake/plugin_intake",
+    "apps/quota-broker/quota_broker",
+    "apps/reconciler/reconciler",
+    "apps/redaction/swarm_redaction",
+    "apps/scheduler/scheduler",
+    "apps/swarm-api/swarm_api",
+    "apps/swarm-egress/swarm_egress",
+    "apps/swarm-github-hooks/swarm_github_hooks",
+    "apps/swarm-graph/swarm_graph",
+    "apps/swarm-install/swarm_install",
+    "apps/swarm-live/swarm_live",
+    "apps/swarm-mcp/swarm_mcp",
+    "apps/swarm-speech/swarm_speech",
+    "apps/swarm-typesafe-fwd/swarm_typesafe_fwd",
+    "apps/swarm-voice/swarm_voice",
+    "apps/workflow-rollup/swarm_rollup",
+]
+omit = ["*/tests/*"]
+# Paths stored relative to the checkout, so shards that ran in different
+# runner work directories combine into one file per source path.
+relative_files = true
+
 [tool.ruff]
 # Exact pin in [dependency-groups] dev; tests/unit/scripts/test_ruff_config.py
 # holds the two equal.

@@ -1,0 +1,105 @@
+{
+  "about": "Line coverage floors per package (issue 64; docs/ci.md 'Coverage floors'). A floor is what a whole-suite CI run measured, less one point, rounded down; scripts/coverage-floors.sh fails a package under it and says RAISE at 2+ points over. NOT YET MEASURED (2026-11-23): neither suite fits a run in the agent container, so every floor is null and nothing is invented; set them from the first `coverage` job's `coverage-reports` artifact with scripts/lib/coverage_floors.py fill (docs/ci.md says the command), and replace this text with that run's URL and date.",
+  "packages": {
+    "apps/agent-worker": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/common": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/jev-client": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/plugin-intake": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/quota-broker": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/reconciler": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/redaction": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/scheduler": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/swarm-api": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/swarm-egress": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/swarm-github-hooks": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/swarm-graph": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/swarm-install": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/swarm-live": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/swarm-mcp": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/swarm-speech": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/swarm-typesafe-fwd": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/swarm-ui": {
+      "suite": "ui",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one sixth of the component suite (ui_shards.py pick, shard 1 of 6, v8 coverage) did not finish in 10 minutes in the 8 GiB agent container; the first `coverage` job prints the number and the floor to set"
+    },
+    "apps/swarm-voice": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    },
+    "apps/workflow-rollup": {
+      "suite": "python",
+      "floor": null,
+      "note": "not yet measured: on 2026-11-23 one eighth of the unit suite (unit_shards.py pick, shard 1 of 8, -n 5, --cov) did not finish in 10 minutes in the 8 GiB agent container, so the whole suite does not fit there; the first `coverage` job prints this package's number and the floor to set"
+    }
+  }
+}

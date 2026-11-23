@@ -4260,6 +4260,114 @@ so a refresh is due when a slice is added, split or made faster, or when the
 `pick` lines in a run's log (`shard k runs n, ~s s of measured test time
 (shards: ...)`) stop matching the shards' real test times.
 
+## Coverage floors
+
+**Why.** Until issue 64 nothing measured test coverage: there was no
+pytest-cov, no `fail_under`, and `vitest.config.ts` said "no coverage
+instrumentation". A pull request that deleted tests, or added code no test
+ran, passed every gate. Now each package's **line** coverage has a floor in
+[`coverage-floors.json`](../coverage-floors.json), and the `coverage floors`
+job -- in `ci-gate`'s `needs` -- fails when a package falls under it.
+
+**A ratchet, not a target.** A floor is what a whole-suite CI run measured,
+less one point, rounded down: high enough that deleting a test file's worth
+of coverage fails, low enough that ordinary churn does not. When a package
+stands 2 or more points above its floor the job says `RAISE` and the number
+to set; raising it is how the gain is kept. Lowering a floor is allowed, on
+purpose, with the reason in the commit.
+
+**How it is measured, and why the suite still runs once.** The coverage job
+runs no test. The shards that already run do the measuring:
+
+* `unit tests (k/N)`: when the `changes` job says `python=all` (the whole
+  suite: main, a merge train, a queue entry, a `full-ci` pull request),
+  pytest-cov (`--cov`, configured by `[tool.coverage.run]` in
+  `pyproject.toml`) writes the shard's data to `unit-<k>.coverage` -- its
+  xdist workers' data combined there -- and the shard uploads it. A narrowed
+  selection (`python=selected`) would measure a fraction of each package and
+  fail every floor, so it is not instrumented at all and pays nothing.
+* `swarm-ui component tests (k/N)`: `SWARM_UI_COVERAGE_DIR` turns on
+  vitest's v8 coverage in `vitest.config.ts`, which writes istanbul's
+  `coverage-final.json`; the shard uploads it. Unset (in `make test`, in an
+  agent's related-tests run) nothing is instrumented.
+* `coverage floors` (on the runner pool like the shards, needs `changes`, `python-unit`,
+  `ui-tests`) downloads the files and runs `scripts/coverage-floors.sh`:
+  `coverage combine` of the unit shards (paths are stored relative to the
+  checkout, `relative_files`, so shards on different runners combine), a
+  statement-by-statement merge of the component shards' JSON
+  (`scripts/lib/coverage_floors.py`; a line is covered when any statement
+  on it ran in any shard), then the judgement. It fails when fewer data files
+  arrived than shards ran, rather than read a partial run as lost coverage.
+
+A package is an `apps/<dir>`; the Python ones are every import directory
+`[tool.coverage.run] source` lists, so a module no test imports counts at
+0 % instead of not at all; swarm-ui is `apps/swarm-ui`, its `src/` without
+the tests.
+
+**What it judges.** Only a side that ran the whole suite and passed:
+Python when `python=all` and every unit shard succeeded, swarm-ui when its
+shards ran outside a lane's selection and succeeded. When main reuses a
+pull request's green (the shards are skipped), or neither side ran, the job
+is skipped, which `ci-gate` reads as a pass; a failed shard already fails
+`ci-gate` by its own name. `!cancelled()` in its `if:` keeps it from being
+skipped just because one of the two shard jobs was.
+
+**The verdict lines.** `BELOW` (under the floor: fails), `MISSING` (a floored
+package the report that ran does not have -- its tests or its code were
+deleted: fails), `RAISE` (2+ points over: passes), `ok`, `UNMEASURED` (a null
+floor: prints the measurement and the floor to set, never fails), `NO FLOOR`
+(a package the file does not list: never fails), and `not judged` (its suite
+did not run here). A floors file the script cannot read whole -- not JSON, an
+unknown key, a floor that is not a number from 0 to 100, a null floor
+without a `note` -- exits 2: no entry is ever skipped while the rest pass.
+`tests/unit/scripts/test_coverage_floors.py` holds each rule.
+
+**The measured numbers: none yet (2026-11-23).** The brief was to measure
+each floor by running the suites with coverage in the agent container and to
+leave a floor out, with a note, when its suite did not fit. Neither fit:
+one eighth of the unit suite (`unit_shards.py pick`, shard 1 of 8, `-n 5`,
+`--cov`) had not finished after 10 minutes, nor had one sixth of the
+component suite (`ui_shards.py pick`, shard 1 of 6, v8 coverage). So every
+floor in the file is `null` with that note, and no number was invented.
+Until they are set the job judges nothing and prints, per package, what it
+measured and the floor to set. Setting them from the first green run is one
+command:
+
+```bash
+gh run download <run-id> -n coverage-reports -D "$TMPDIR/coverage-reports"
+python3 scripts/lib/coverage_floors.py fill --floors coverage-floors.json \
+  --about "CI run <url>, <date>: whole-suite unit and component shards, line coverage" \
+  --report "$TMPDIR/coverage-reports/python.json" --report "$TMPDIR/coverage-reports/ui.json"
+```
+
+`fill` sets each null floor (and each new package) to the measurement less
+one point, rounded down, and records `measured`; with `--raise` it also
+raises every floor 2+ points under the measurement (the ratchet). Then copy
+the per-package table from the job's summary into this section.
+
+**The time it costs.** The suite is not run twice. What it adds:
+
+* the unit shards run under coverage.py's tracer when `python=all`. Python
+  3.11 has no `sys.monitoring` (3.12+), so this is the C tracer; its cost is
+  not measured yet: compare the shards' durations of the first instrumented
+  main run with the run before it (`unit-durations-<k>` artifacts) and write
+  the number here. A pull request's narrowed selection pays nothing;
+* the component shards run v8 coverage, which V8 collects natively; the
+  istanbul conversion at the end of each shard is the visible part, likewise
+  to be read off the first run;
+* one upload per shard (a few MB), and the `coverage floors` job on a
+  runner of the pool (hosted for a fork): a checkout, a `uv sync` from the cache, two
+  downloads, the combine -- about a minute, after the last shard and beside
+  the name-keepers, so it sits on the path to `ci-gate` only when it is the
+  last to finish.
+
+**The pins.** `pytest-cov==7.1.0` (uploaded 2026-03-21) and its `coverage`
+7.17.2 in `uv.lock` (2026-11-04); `@vitest/coverage-v8` 3.2.7, exactly the
+`vitest` it serves (the two must match). Each was resolved under the 14-day
+release-age quarantine (`[tool.uv] exclude-newer`, `apps/swarm-ui/.npmrc`
+`min-release-age`): the newest package the coverage provider added to
+`package-lock.json` was published 2026-11-08.
+
 ## Flaky tests and the quarantine
 
 **Owner decision, 2026-10-14: "Fix the known flakes and quarantine new

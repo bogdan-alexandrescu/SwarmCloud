@@ -90,6 +90,10 @@ VMS_BEFORE = {"application.yml": 15, "security.yml": 4, "terraform.yml": 4}
 VMS_AFTER = {"application.yml": 10, "security.yml": 3, "terraform.yml": 2}
 #: The claim in docs/ci.md and the pull request: this many fewer VMs a run.
 FEWER_VMS = 8
+#: Pool jobs added after the fold, left out of its before/after count: the
+#: claim is about the jobs the fold touched. `coverage` (issue 64) checks out
+#: and runs the repository's code, so it is on the pool like the shards.
+ADDED_SINCE_THE_FOLD = {"application.yml": {"coverage"}}
 
 needs_jq = pytest.mark.skipif(
     shutil.which("jq") is None or shutil.which("bash") is None, reason="the verdict step needs bash and jq"
@@ -406,13 +410,14 @@ def _pool_jobs_on_a_pull_request(file: str) -> list[str]:
 
 def test_a_pull_request_run_uses_the_claimed_number_fewer_vms():
     """MUTATION: put a name-keeper back on the pool, or unfold a check."""
-    now = {file: len(_pool_jobs_on_a_pull_request(file)) for file in VMS_BEFORE}
+    now = {file: len(set(_pool_jobs_on_a_pull_request(file)) - ADDED_SINCE_THE_FOLD.get(file, set()))
+           for file in VMS_BEFORE}
     assert now == VMS_AFTER, f"{now} {PATCH_NOTE}"
     assert sum(VMS_BEFORE.values()) - sum(now.values()) == FEWER_VMS, now
     # The heavy jobs are untouched: still on the pool.
     app = _jobs("application.yml")
     for job_id in ("shell", "changes", "python-unit", "ui-build", "ui-tests", "integration", "build-check",
-                   "tested-tree", "ci-gate"):
+                   "tested-tree", "ci-gate", "coverage"):
         assert _on_the_pool(app[job_id]), job_id
     assert _on_the_pool(_jobs("security.yml")["iac"]) and _on_the_pool(_jobs("terraform.yml")["checkov"])
 
