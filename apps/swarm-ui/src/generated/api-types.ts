@@ -275,6 +275,10 @@ export interface BindingBody {
   provider: string
 }
 
+export interface BriefWrite {
+  text: string
+}
+
 /**
  * `agent_budget_ceiling` (archived issue 2459): the most any workspace default
  * or step budget may name, per unit. A unit left out has no ceiling, so `{}`

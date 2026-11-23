@@ -174,6 +174,9 @@ ALLOWED_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/v1/failure-findings/{finding_id}"),
     ("GET", "/v1/runtimes"),
     ("GET", "/v1/voice/cards/schema"),
+    # The project's status view (routes/voice_status.py): its cards and roster,
+    # the person's own project page; a grant reads only its session's project.
+    ("GET", "/v1/voice/projects/{project_id}/status"),
 })
 
 
@@ -201,6 +204,10 @@ WRITE_ROUTES: frozenset[tuple[str, str]] = frozenset({
     # rows (`record_work`, routes/voice.py `work`); the route refuses any
     # caller that did not come through a grant, and any other session.
     vwork.WORK_ROUTE,
+    # The planner's brief after each turn (voice/projectbrief.py): one field of
+    # the session's own project, refused at a spend cap and to any caller that
+    # did not come through a grant.
+    ("POST", "/v1/voice/sessions/{session_id}/brief"),
 })
 
 
