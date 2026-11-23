@@ -97,6 +97,63 @@ def test_a_comment_is_not_a_uses_and_an_empty_tree_is_not_a_pass(tmp_path):
     assert proc.returncode == 1, proc.stderr
 
 
+def _raw_workflow(tmp_path: Path, *steps: str, name: str = "w.yml") -> Path:
+    """A workflow whose step lines are written as given, in any YAML shape."""
+    lines = ["on: push", "jobs:", "  a:", "    runs-on: ubuntu-24.04", "    steps:", *steps]
+    path = tmp_path / name
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def test_a_uses_in_a_shape_it_cannot_read_is_refused_by_file_and_line(tmp_path):
+    """Issue 190: a flow mapping and a quoted key are valid YAML that the
+    block-style reader skipped, so a planted workflow with both reported "1
+    finding of 1 uses:". A quoted block key is read as a block `uses:`; every
+    other shape is refused. MUTATION: drop the guard, or skip quoted keys."""
+    steps = [
+        "      - uses: actions/checkout@v5",              # line 6: block, a tag
+        "      - {uses: actions/setup-node@v4}",          # line 7: flow mapping
+        '      - "uses": actions/cache@v4',               # line 8: quoted key, a tag
+        "      - {name: x, 'uses': actions/cache@v4}",    # line 9: flow, quoted key
+        "      - uses :  actions/checkout@v5",            # line 10: space before ':'
+        "      - uses:",                                  # line 11: value on a later line
+        "          actions/checkout@v5",
+        f"      - 'uses': actions/cache@{SHA} # v4.3.0",  # line 13: quoted key, pinned
+    ]
+    path = _raw_workflow(tmp_path, *steps)
+    proc = _run(path)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    found = proc.stdout.splitlines()
+    assert [line.split(": ", 1)[0] for line in found] == [
+        f"{path}:{n}" for n in (6, 7, 8, 9, 10, 11)], found
+    assert found[0].endswith("(owner/repo@<40 hex> # <version>): actions/checkout@v5"), found[0]
+    assert found[2].endswith("(owner/repo@<40 hex> # <version>): actions/cache@v4"), found[2]
+    for n in (1, 3, 4, 5):
+        assert ": uses key in a shape this check cannot read (use block style): " in found[n], found[n]
+    assert "1 finding" not in proc.stderr and "1 uses:" not in proc.stderr, proc.stderr
+    assert "6 action(s)" in proc.stderr, proc.stderr
+
+
+def test_a_pinned_flow_mapping_is_still_refused_and_a_comment_is_not_read(tmp_path):
+    """Refusal is by shape, not by value: a pinned flow-mapping `uses` is
+    still a finding, since the check cannot read it. A comment that mentions
+    one is not. MUTATION: read comment lines, or accept a flow mapping."""
+    path = _raw_workflow(
+        tmp_path,
+        "      # - {uses: x}",
+        "      #   'uses': actions/cache@v4",
+        f"      - uses: actions/checkout@{SHA} # v5.1.0",
+    )
+    proc = _run(path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "1 uses: in 1 file(s)" in proc.stderr, proc.stderr
+    path = _raw_workflow(tmp_path, f"      - {{uses: actions/checkout@{SHA}}} # v5.1.0",
+                         name="flow.yml")
+    proc = _run(path)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert proc.stdout.startswith(f"{path}:6: uses key in a shape this check cannot read"), proc.stdout
+
+
 def test_it_reads_every_yaml_file_under_a_directory(tmp_path):
     """The composite actions under .github/actions are YAML files too, one
     directory down. MUTATION: read only the top directory, or only *.yml."""
