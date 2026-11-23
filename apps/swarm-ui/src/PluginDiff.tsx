@@ -14,7 +14,7 @@
 import type { ReactNode } from 'react'
 import type { PluginAddedRemoved, PluginHook, PluginVersionDiff } from './api'
 import { Chip } from './components'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 
 const MARK_TIP = 'Where a malicious update acts. Applying it needs the plugin’s name typed.'
 

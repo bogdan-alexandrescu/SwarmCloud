@@ -28,7 +28,7 @@ import { useState, type ReactNode } from 'react'
 
 import { HelpCard } from './HelpCard'
 import { agentPath } from './OverviewRegions'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import { addressToPath } from './paths'
 import { clockTime, formatDuration, type Task, type TaskState, type Waiting, type WaitingHistoryEntry } from './types'
 

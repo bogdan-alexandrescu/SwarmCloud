@@ -2,7 +2,7 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyn
 import { createRun, loadCapacity, loadIssuePreview, loadRuns } from './api'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import { chosenTenant, subscribeTenant, type ApiError } from './fetch'
-import { useWorkspaceName } from './Profile'
+import { useWorkspaceName } from './workspaceName'
 import { OWN_WORKSPACE_LABEL } from './Spine'
 import { Button, NamedMark, Tag, WarnMark } from './components'
 import { RunnerPicker, useProviderKeys } from './RunnerPicker'
