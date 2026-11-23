@@ -27,7 +27,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-import re
+import pkgutil
 import subprocess
 import threading
 import urllib.error
@@ -56,6 +56,8 @@ from swarm_mcp.client import SwarmClient, SwarmError
 # `tests/unit` is on sys.path via this directory's conftest, which says why.
 from control_plane.conftest import api_settings, seed_tenant
 from control_plane.fakes import FakeFirestore
+
+import bridge_route_scan
 
 REPO = Path(__file__).resolve().parents[3]
 AUTH = {"Authorization": "Bearer token-alice"}
@@ -179,22 +181,41 @@ def submit(api: TestClient) -> str:
 # --------------------------------------------------------------------------
 
 
-#: `client.request("GET", "/v1/...")` and `client.request("GET", f"/v1/...")`.
-#: Read out of the source rather than from a list kept in this file, because a
-#: list kept in this file is one more thing that only agrees with itself.
-_CALL = re.compile(r'request\(\s*"(GET|POST|PUT|DELETE)"\s*,\s*f?"(/v1[^"]*)"')
+PACKAGE = REPO / "apps/swarm-mcp/swarm_mcp"
+
+#: Calls the bridge makes ON PURPOSE to a route this API does not serve, each
+#: with the reason beside it: a route behind a setting, an older API the bridge
+#: still speaks to. A route here is still checked for being CALLED -- an entry
+#: whose call disappeared fails below, so the list cannot outlive its reason.
+NOT_SERVED_ON_PURPOSE: dict[tuple[str, str], str] = {}
+
+
+def scan() -> bridge_route_scan.Scan:
+    """Every request every module of the package builds, read from its source
+    rather than from a list kept in this file, because a list kept in this
+    file is one more thing that only agrees with itself. How a call is found:
+    `bridge_route_scan`'s docstring."""
+    return bridge_route_scan.scan(PACKAGE)
 
 
 def calls() -> set[tuple[str, str]]:
-    found: set[tuple[str, str]] = set()
-    for name in ("client.py", "cli.py", "sc.py", "workflows.py"):
-        source = (REPO / "apps/swarm-mcp/swarm_mcp" / name).read_text()
-        for method, raw in _CALL.findall(source):
-            # A query string is not part of the route, and an f-string hole is
-            # the path parameter the router declares -- so the comparison is
-            # about the SHAPE of the route rather than one instance of it.
-            found.add((method, raw.split("?", 1)[0]))
-    return found
+    # A query string is not part of the route, and every path parameter is one
+    # `{}` on both sides -- so the comparison is about the SHAPE of the route
+    # rather than one instance of it, or what the parameter is called.
+    return set(scan().calls)
+
+
+def served_routes(api: TestClient) -> set[tuple[str, str]]:
+    # The OpenAPI document rather than `app.routes`, which is a tree of
+    # `_IncludedRouter` wrappers whose `path` is None -- iterating it yields an
+    # empty set, and an empty set makes this assertion pass for every route in
+    # the world. The document is also what the API actually publishes.
+    spec = api.app.openapi()["paths"]
+    return {
+        (method.upper(), bridge_route_scan.shape(path))
+        for path, methods in spec.items()
+        for method in methods
+    }
 
 
 def test_every_route_the_bridge_calls_exists_on_this_api(api):
@@ -205,28 +226,58 @@ def test_every_route_the_bridge_calls_exists_on_this_api(api):
     comparison against the real router, not against a mock: a mock agrees with
     whatever the client happens to ask for.
     """
-    # The OpenAPI document rather than `app.routes`, which is a tree of
-    # `_IncludedRouter` wrappers whose `path` is None -- iterating it yields an
-    # empty set, and an empty set makes this assertion pass for every route in
-    # the world. The document is also what the API actually publishes.
-    spec = api.app.openapi()["paths"]
-    served = {
-        (method.upper(), path) for path, methods in spec.items() for method in methods
-    }
+    served = served_routes(api)
     assert ("GET", "/v1/stats") in served, "the served set was not built"
-    missing = sorted(call for call in calls() if call not in served)
+    found = scan()
+    missing = sorted(
+        f"{method} {path} (from {', '.join(sorted(found.calls[(method, path)]))})"
+        for method, path in found.calls
+        if (method, path) not in served and (method, path) not in NOT_SERVED_ON_PURPOSE
+    )
     assert not missing, (
         f"the bridge calls routes this API does not serve: {missing}. "
         "Both ends exist and the seam does not."
     )
 
 
+def test_every_route_kept_on_purpose_is_still_called_and_still_unserved(api):
+    """An entry of `NOT_SERVED_ON_PURPOSE` is a reason, and a reason for a call
+    nobody makes, or for a route the API now serves, is a hole in the seam."""
+    served, found = served_routes(api), calls()
+    for call, reason in NOT_SERVED_ON_PURPOSE.items():
+        assert reason.strip(), f"{call} is kept with no reason"
+        assert call in found, f"{call} is kept on purpose but the bridge no longer calls it"
+        assert call not in served, f"{call} is kept on purpose but the API serves it now"
+
+
+def test_the_route_scan_reads_every_module_of_the_package():
+    """The widening itself: the scan reads the package as Python lists it, not
+    four modules named in this file, and every request it meets it can read."""
+    found = scan()
+    package = sorted(m.name for m in pkgutil.walk_packages([str(PACKAGE)]))
+    assert package, "the package listed no modules"
+    # `__init__` is the package itself, which pkgutil does not list as a module.
+    read = [name for name in found.modules if name.rsplit(".", 1)[-1] != "__init__"]
+    assert read == package, "the scan did not read every module of the package"
+    # A call the scan cannot read would otherwise drop out of the seam test
+    # unseen; it is a failure here, to be made readable, never skipped.
+    assert not found.unread, (
+        f"request calls the scan cannot read: {found.unread}. Build the path from "
+        "constants the scan follows (see bridge_route_scan), or teach it the new form."
+    )
+    # Modules the four-module scan never read, each of which builds requests.
+    for module in ("answers", "awaitinput", "keys", "schedules", "secrets", "server"):
+        assert module in found.building, f"no request was read out of {module}.py"
+
+
 def test_the_route_scan_actually_found_the_calls():
-    """A regex that matched nothing would make the test above pass by silence
+    """A scan that matched nothing would make the seam test pass by silence
     -- the same failure as a probe that prints PASS having never looked."""
-    found = calls()
-    assert len(found) >= 9, found
-    for expected in (
+    found = scan()
+    assert len(found.modules) > 0 and len(found.building) > 0, found.modules
+    assert len(found.calls) > 0, found.calls
+    assert len(found.calls) >= 9, found.calls
+    for method, path in (
         ("GET", "/v1/accounts"),
         ("GET", "/v1/capacity"),
         ("GET", "/v1/stats"),
@@ -246,8 +297,24 @@ def test_the_route_scan_actually_found_the_calls():
         ("POST", "/v1/runs/{run_id}/plan:approve"),
         ("POST", "/v1/runs/{run_id}/plan:edit"),
         ("POST", "/v1/runs/{run_id}/plan:reject"),
+        # One of each form the old regex could not read: through a wrapper
+        # (`schedules._call`), a module constant, another module's constant,
+        # a `str.format` template, a path-returning helper behind a wrapper's
+        # caller, a `+` with a conditional query, a table row, an f-string
+        # extending a local path, and the transport under `request`.
+        ("GET", "/v1/schedules"),
+        ("GET", "/v1/admin/leases"),
+        ("GET", "/v1/jev-usage"),
+        ("GET", "/v1/tasks/{task_id}/questions"),
+        ("POST", "/v1/workflows/{workflow_id}/steps/{step_id}/input"),
+        ("POST", "/v1/tasks/{task_id}/answers"),
+        ("PUT", "/v1/workspace/roles/person"),
+        ("DELETE", "/v1/workspace/roles/person"),
+        ("POST", "/v1/workflows/{workflow_id}/fix-loop/end"),
+        ("GET", "/v1/tasks/{task_id}/artifacts/raw"),
     ):
-        assert expected in found, f"{expected} was not scanned out of the source"
+        expected = (method, bridge_route_scan.shape(path))
+        assert expected in found.calls, f"{expected} was not scanned out of the source"
 
 
 # --------------------------------------------------------------------------
