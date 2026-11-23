@@ -61,6 +61,8 @@ def _tree(root: Path) -> None:
     _write(root, "apps/other/other/lone.py", "Y = 2\n")
     _write(root, "tests/unit/other/test_lone.py", "from other.lone import Y\n")
     _write(root, "tests/unit/other/test_unrelated.py", "Z = 3\n")
+    # A recorded weight, light: with none readable the selection is capped.
+    _write(root, "tests/unit/scripts/unit_test_durations.json", '{"tests/unit/other/test_lone.py": 1.0}\n')
 
 
 def _select(root: Path, *changed: str, closure: bool = False, cache: Path | None = None) -> dict[str, list[str]]:

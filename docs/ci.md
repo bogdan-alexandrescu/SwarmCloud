@@ -5744,8 +5744,10 @@ more than 40 paths), or **on size**, where the closure's recorded CI weight is
 more than one 540 s run (`SIZE_CAP_WEIGHT`, owner answer 2026-11-23, "Also on
 size"; the weights are `tests/unit/scripts/unit_test_durations.json`, the same
 ones the runs are cut by, and a file it does not record counts at the median,
-never as zero, so unrecorded files cannot make a large selection look small).
-A selection at or under one run is unchanged. Either way the capped selection
+never as zero, so unrecorded files cannot make a large selection look small;
+when the file is missing, unreadable or records nothing there is no weight to
+trust -- every file at one second read a large selection as light -- so the
+selection is capped and the note says why). A selection at or under one run is unchanged. Either way the capped selection
 is the change's own tests, the tests that import a changed module **directly** (one
 hop; for a `conftest.py`, the tests beside it), the code graph's `tests_for`
 and the tests whose text names a changed path. **It is never empty while the
@@ -5762,7 +5764,14 @@ says so. A change no module imports and with no tests still selects nothing,
 and its note says the closure is empty too. A warning gives the capped count,
 the hop when it widened (`capped at N test file(s) at hop 2 of the 593`) and
 the closure's count, and says CI (the merge train) runs the closure;
-`--closure` prints the closure, byte for byte as before. Why: over 30 days model time was a fifth of a
+`--closure` prints the closure, byte for byte as before. **The pre-publish
+gate carries that warning into its report**: with a cut test map it asks
+`related-tests.sh` for its import pick, and when the pick was capped the
+"Widened:" line of `prepublish-checks.md` (appended to the pull request's
+body) and graph-pytest's output say `capped its selection at N of the M test
+file(s) ...; the merge train runs the rest, so M-N are left to CI, not
+passed` -- before, the gate kept only the file lines, so a test outside the
+cap failed on the merge train with no word of it here. Why: over 30 days model time was a fifth of a
 task's wall-clock and tests most of the rest; the closure was up to 2,094 files
 (1,844 for `swarm_common/models.py`), no 540 s run held it, `--run` stopped at
 its first overrun with "narrow it", which an agent cannot do, and the
@@ -5775,10 +5784,15 @@ import it directly), `scripts/lib/common.sh` through the script closure
 (3,784 s) to 110. CI's own selection (`select_unit_tests.py`) is unchanged by
 either trigger. The selector remembers each
 file's parsed imports by the hash of its path, its text and
-`select_unit_tests.py` (`EdgeCache`, under `$TMPDIR/swarm-related-tests`;
-`RELATED_TESTS_CACHE_DIR=off` turns it off): parsing was 20 of a run's 24 s,
-now 4-7 s once warm. Nothing is keyed on a commit's tree, which leaves out the
-uncommitted files a lane's selection is about.
+`select_unit_tests.py` (`EdgeCache`, under `swarm-related-tests-<uid>` in
+`$TMPDIR`, else the system temp directory; `RELATED_TESTS_CACHE_DIR=off` turns
+it off): parsing was 20 of a run's 24 s, now 4-7 s once warm. Nothing is keyed
+on a commit's tree, which leaves out the uncommitted files a lane's selection
+is about. The directory is created mode 0700 with the numeric user id in its
+name, and one another user owns or can write is not used: with `TMPDIR` unset
+it is in a temp directory every user of the host shares. A cache file that
+cannot be read -- nested too deep for `json` included -- is no cache, and a
+malformed entry is parsed again and written back, so it is parsed once.
 swarm-ui: the change's own test files and every vitest file that reaches a
 changed module through relative imports (`import ... from`, `export ... from`,
 `import '...'`, `import('...')`, `vi.mock('...')`), transitively -- the graph

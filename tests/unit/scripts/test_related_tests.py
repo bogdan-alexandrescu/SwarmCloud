@@ -72,6 +72,8 @@ def _tree(root: Path, *, many: int = 0) -> None:
     _write(root, "tests/unit/foo/test_lone.py", "from foo.lone import Y\n")
     _write(root, "tests/unit/foo/test_reads.py", 'TEXT = "apps/foo/foo/core.py"\n')
     _write(root, "tests/unit/control_plane/test_panel_text.py", 'SRC = "src/panel.tsx"\n')
+    # A recorded weight, light: with none readable the selection is capped.
+    _write(root, "tests/unit/scripts/unit_test_durations.json", '{"tests/unit/foo/test_core.py": 1.0}\n')
 
 
 def _select(root: Path, *changed: str, closure: bool = False) -> dict[str, list[str]]:

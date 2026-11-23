@@ -110,7 +110,10 @@ PYTEST_RUN_WEIGHT = 540
 # recorded CI weight (closure_weight: DURATIONS, an unrecorded file at the
 # median) is MORE than this: one pytest run, which --run holds to 540 s.
 # Owner answer 2026-11-23, "Also on size": agent_worker/lifecycle.py selected
-# 829 files with no fallback reason, far more than one run holds.
+# 829 files with no fallback reason, far more than one run holds. When
+# DURATIONS records nothing readable there is no weight to trust (each file at
+# one second read a large selection as light), so the selection is capped and
+# the note says why (review of the RELATED-CAP pull request, 2026-11-23).
 SIZE_CAP_WEIGHT = PYTEST_RUN_WEIGHT
 # One vitest run's weight in CI-seconds: the same 540 as PYTEST_RUN_WEIGHT and
 # related-tests.sh's RUN_SECONDS, the limit each run is held to with --run.
@@ -565,20 +568,24 @@ class EdgeCache:
     select_unit_tests.py itself, so an edited file or an edited rule is a miss,
     never a stale answer; nothing keyed on a commit's tree, which leaves out
     the uncommitted files a lane's selection is about. Only this run's entries
-    are written back (atomically), so the file stays the size of one tree. A
-    cache that cannot be read or written is no cache: the run parses."""
+    are written back (atomically), so the file stays the size of one tree, and
+    so is an entry parsed again because it was malformed, so it is parsed once.
+    A cache that cannot be read or written is no cache: the run parses -- a
+    file nested too deep for json (RecursionError) included. So is a directory
+    another user could write (private_dir): its file could be planted."""
 
     def __init__(self, directory: Path | None):
         self.path: Path | None = None
         self.old: dict[str, dict[str, list[str] | None]] = {}
         self.new: dict[str, dict[str, list[str] | None]] = {}
-        if directory is None:
+        self.repaired = False
+        if directory is None or not private_dir(directory):
             return
         rules = hashlib.sha256(Path(sut.__file__).read_bytes()).hexdigest()[:16]
         self.path = directory / f"import-edges-{rules}.json"
         try:
             loaded = json.loads(self.path.read_text())
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):
             loaded = {}
         self.old = loaded if isinstance(loaded, dict) else {}
 
@@ -586,16 +593,17 @@ class EdgeCache:
         key = hashlib.sha256(f"{rel}\0{text}".encode("utf-8", "surrogatepass")).hexdigest()
         found = self.new[key] if key in self.new else self.old.get(key)
         if not _cached_edges(found):
+            self.repaired = self.repaired or key in self.old
             found = {name: None if owners is None else sorted(owners)
                      for name, owners in sut.import_edges(rel, text).items()}
         self.new[key] = found
         return {name: None if owners is None else frozenset(owners) for name, owners in found.items()}
 
     def save(self) -> None:
-        if self.path is None or not self.new or self.new.keys() == self.old.keys():
+        if (self.path is None or not self.new
+                or (self.new.keys() == self.old.keys() and not self.repaired)):
             return
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
             part = self.path.with_name(f"{self.path.name}.{os.getpid()}")
             part.write_text(json.dumps(self.new))
             os.replace(part, self.path)
@@ -603,16 +611,31 @@ class EdgeCache:
             pass
 
 
+def private_dir(directory: Path) -> bool:
+    """Whether `directory` is this user's alone, creating it mode 0700 when it
+    is missing. With TMPDIR unset the default sits in the system temp
+    directory, shared by every user of the host: one this user does not own,
+    or that its group or others can write, is not used."""
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        st = directory.stat()
+    except OSError:
+        return False
+    return st.st_uid == os.getuid() and not st.st_mode & 0o022
+
+
 def cache_dir(env: dict[str, str] | None = None) -> Path | None:
-    """$RELATED_TESTS_CACHE_DIR, else swarm-related-tests under $TMPDIR (the
-    cache volume in a SwarmCloud container); `off` turns the cache off."""
+    """$RELATED_TESTS_CACHE_DIR, else swarm-related-tests-<uid> under $TMPDIR
+    (the cache volume in a SwarmCloud container) or the system temp directory;
+    `off` turns the cache off. The numeric user id keeps one user's cache
+    apart from another's on a shared host; private_dir creates it 0700."""
     env = dict(os.environ) if env is None else env
     named = (env.get(CACHE_DIR_ENV) or "").strip()
     if named == "off":
         return None
     if named:
         return Path(named)
-    return Path(env.get("TMPDIR") or tempfile.gettempdir()) / "swarm-related-tests"
+    return Path(env.get("TMPDIR") or tempfile.gettempdir()) / f"swarm-related-tests-{os.getuid()}"
 
 
 class PythonSelection(NamedTuple):
@@ -706,6 +729,10 @@ def python_related(root: Path, changed: list[str], graph: Graph | None = None,
     virtual = sut.script_closure(root, sut.doc_closure(root, changed))
     chosen |= _names_any(root, all_tests, chosen, virtual)
     capped = sut.fallback_reason(changed)
+    if not capped and not pytest_weights(root)[0]:
+        # Every file at one second would read a selection of any size as light.
+        capped = (f"no recorded CI weight is readable ({DURATIONS} is missing, unreadable or empty), "
+                  f"so the closure is treated as more than one {PYTEST_RUN_WEIGHT} s run")
     if not capped:
         weight = closure_weight(root, chosen)
         if weight > SIZE_CAP_WEIGHT:
@@ -740,11 +767,14 @@ def python_related(root: Path, changed: list[str], graph: Graph | None = None,
 def pytest_weights(root: Path) -> tuple[dict, float]:
     """Per-file pytest CI-seconds from DURATIONS (tests/unit/scripts/
     unit_test_durations.json), and the weight of a file it does not record:
-    the median of what it records (1 when it records nothing), never zero."""
+    the median of what it records (1 when it records nothing), never zero.
+    Nothing when it is missing or unreadable: python_related then caps."""
     try:
-        weights = json.loads((root / DURATIONS).read_text())
-    except (OSError, ValueError):
-        weights = {}
+        loaded = json.loads((root / DURATIONS).read_text())
+    except (OSError, ValueError, RecursionError):
+        loaded = {}
+    weights = ({k: float(v) for k, v in loaded.items() if isinstance(v, (int, float))}
+               if isinstance(loaded, dict) else {})
     values = sorted(weights.values())
     median = values[len(values) // 2] if values else 1
     return weights, median
