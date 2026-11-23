@@ -11,12 +11,17 @@ widened hop heavier than one 540 s run is kept and the note says so. A change
 with direct test importers selects what it did; `--closure` and CI's own
 selection (select_unit_tests.py) are unchanged.
 
-Held against a synthetic tree in tmp_path, so the answers are exact, and once
-against this repository for the checkpointing example.
+Held against a synthetic tree in tmp_path, so the answers are exact. The
+checkpointing example (the worker's module whose tests all reach it through
+its lifecycle module) is held by the synthetic hop tests below: the same shape,
+no test importing the change, tests two and three imports away. A run of the
+selector over the live repository took 25 to 50 s, and went red the day a
+test imported the module, though the selector was right.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -127,6 +132,8 @@ def test_size_cap_with_no_direct_test_importer_selects_the_second_hop(tmp_path):
     assert "capped at 4 test file(s) at hop 2 of the 10" in note, note
     assert "560" in note and "CI (the merge train) runs the closure" in note, note
     assert "more than one 540 s run, kept" not in note, note
+    # The narrow selection is part of the closure CI runs, not beside it.
+    assert set(_files(got["pytest"])) <= set(_files(_select(tmp_path, MID, closure=True)["pytest"]))
 
 
 def test_fallback_cap_with_no_direct_test_importer_widens_hop_by_hop(tmp_path):
@@ -201,34 +208,122 @@ def test_ci_selection_is_unchanged_by_the_widening(tmp_path):
     assert result.stdout == expected
 
 
-def test_checkpointing_change_on_the_real_tree_selects_at_least_one_file(tmp_path):
-    """The owner's example: the worker's checkpointing module's tests all
-    reach it through its lifecycle module, so its capped selection held no
-    file. Its path is built from words: a test naming it would be selected by
-    the text rule and hide the widening."""
-    listing = tmp_path / "changed.txt"
-    listing.write_text("/".join(["apps", "agent-worker", "agent_worker", "checkpointing"]) + ".py\n")
-    env = dict(os.environ)
-    env["RELATED_TESTS_CACHE_DIR"] = str(tmp_path / "cache")
-    env.pop("SWARM_CONTEXT_DIR", None)
+# An import cycle between the hops: ROOT <- CYC_A <-> CYC_B <- CYC_C <-> CYC_D
+# <- the CYC_TESTS, and a pair importing each other that no test reaches.
+ROOT = "apps/hub/hub/cyc_root.py"
+CYC_TESTS = [f"tests/unit/hub/test_cyc_{i}.py" for i in range(3)]
+CYC_PAD = [f"tests/unit/other/test_cyc_pad_{i:02d}.py" for i in range(10)]
+CYC_LONE = f"{CONTRACT}/cyc_lone.py"
+CYCLES = {
+    "cyc_a": "from hub.cyc_root import X\nfrom hub.cyc_b import Y\n",
+    "cyc_b": "from hub.cyc_a import X\nY = 2\n",
+    "cyc_c": "from hub.cyc_b import Y\nfrom hub.cyc_d import Z\n",
+    "cyc_d": "from hub.cyc_c import Y\nZ = 3\n",
+    "dead_a": "from hub.cyc_root import X\nfrom hub.dead_b import W\n",
+    "dead_b": "from hub.dead_a import X\nW = 4\n",
+}
 
-    def run(*extra: str) -> dict[str, list[str]]:
-        result = subprocess.run(
-            [sys.executable, str(SELECTOR), "--root", str(REPO), "--changed", str(listing), *extra],
-            capture_output=True, text=True, timeout=300, env=env,
-        )
-        assert result.returncode == 0, result.stderr
-        out: dict[str, list[str]] = {"pytest": [], "note": []}
-        for line in result.stdout.splitlines():
-            kind, _, rest = line.partition("\t")
-            out.setdefault(kind, []).append(rest)
-        return out
 
-    capped, full = run(), run("--closure")
-    narrow, closure = _files(capped["pytest"]), _files(full["pytest"])
-    assert narrow, capped["note"]
-    assert set(narrow) <= set(closure)
-    notes = [n for n in capped["note"] if "capped" in n]
-    assert len(notes) == 1, capped["note"]
-    assert f"capped at {len(narrow)} test file(s) at hop " in notes[0], notes[0]
-    assert f"of the {len(closure)} its full closure reaches" in notes[0], notes[0]
+def _cycle_tree(root: Path) -> None:
+    """Three tests import cyc_d, five imports from cyc_root through two pairs
+    that import each other; dead_a and dead_b import cyc_root and each other
+    and no test imports either. The closure is 3 tests of 600 CI-seconds
+    each, over one 540 s run, so the selection is capped."""
+    _write(root, "apps/hub/hub/__init__.py")
+    _write(root, ROOT, "X = 1\n")
+    for name, text in CYCLES.items():
+        _write(root, f"apps/hub/hub/{name}.py", text)
+    for test in CYC_TESTS:
+        _write(root, test, "from hub.cyc_d import Z\n")
+    for pad in CYC_PAD:
+        _write(root, pad, "Q = 5\n")
+    weights = {t: 200.0 for t in CYC_TESTS}
+    weights.update({t: 1.0 for t in CYC_PAD})
+    _write(root, DURATIONS, json.dumps(weights))
+
+
+def test_hops_through_import_cycles_terminate_at_the_first_test(tmp_path):
+    _cycle_tree(tmp_path)
+    got = _select(tmp_path, ROOT)
+    # MUTATION: a hop loop with no seen set never ends on cyc_a <-> cyc_b.
+    assert _files(got["pytest"]) == sorted(CYC_TESTS)
+    assert len(got["note"]) == 1, got["note"]
+    assert "capped at 3 test file(s) at hop 5 of the 3 its full closure reaches" in got["note"][0], got["note"]
+
+
+def test_a_cycle_that_reaches_no_test_selects_nothing_and_ends(tmp_path):
+    """The dead pair is imported by the changed module only: the loop leaves
+    it on the first hop and goes on to none."""
+    _cycle_tree(tmp_path)
+    _write(tmp_path, f"{CONTRACT}/__init__.py")
+    _write(tmp_path, CYC_LONE, "V = 6\n")
+    _write(tmp_path, "apps/hub/hub/dead_c.py", "from swarm_common.cyc_lone import V\nfrom hub.dead_d import U\n")
+    _write(tmp_path, "apps/hub/hub/dead_d.py", "from hub.dead_c import V\nU = 7\n")
+    got = _select(tmp_path, CYC_LONE)
+    assert got["pytest"] == []
+    capped = [n for n in got["note"] if "capped" in n]
+    assert len(capped) == 1, got["note"]
+    assert "capped at 0 test file(s) of the 0 its full closure reaches" in capped[0], capped[0]
+
+
+def test_a_cycle_beside_the_chain_to_the_tests_is_not_selected(tmp_path):
+    """dead_a and dead_b import cyc_root like cyc_a does: they are in hop 1
+    and in no test's way, so no test is chosen for them, closure or not."""
+    _cycle_tree(tmp_path)
+    assert _files(_select(tmp_path, ROOT, closure=True)["pytest"]) == sorted(CYC_TESTS)
+
+
+def test_a_cycle_between_a_test_and_a_changed_module_ends(tmp_path):
+    """The changed module and the helper that imports it import each other."""
+    _write(tmp_path, "apps/hub/hub/__init__.py")
+    _write(tmp_path, ROOT, "from hub.cyc_a import Y\nX = 1\n")
+    _write(tmp_path, "apps/hub/hub/cyc_a.py", "from hub.cyc_root import X\nY = 2\n")
+    _write(tmp_path, "apps/hub/hub/cyc_b.py", "from hub.cyc_a import Y\n")
+    _write(tmp_path, CYC_TESTS[0], "from hub.cyc_b import Y\n")
+    _write(tmp_path, DURATIONS, json.dumps({CYC_TESTS[0]: 600.0}))
+    got = _select(tmp_path, ROOT)
+    assert _files(got["pytest"]) == [CYC_TESTS[0]]
+    assert "capped at 1 test file(s) at hop 3 of the 1 its full closure reaches" in got["note"][0], got["note"]
+
+
+def _load_related_tests():
+    spec = importlib.util.spec_from_file_location("related_tests_capped_hops", SELECTOR)
+    assert spec and spec.loader
+    sys.path.insert(0, str(SELECTOR.parent))
+    try:
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(str(SELECTOR.parent))
+    return module
+
+
+def test_a_failed_cache_write_leaves_no_part_file_behind(tmp_path, monkeypatch):
+    related_tests = _load_related_tests()
+    cache_dir = tmp_path / "cache"
+    cache = related_tests.EdgeCache(cache_dir)
+    assert cache.path is not None
+    cache("apps/hub/hub/core.py", "X = 1\n")
+    real_write_text = Path.write_text
+
+    def failing_write_text(self, data, *args, **kwargs):
+        real_write_text(self, data[:4], *args, **kwargs)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(Path, "write_text", failing_write_text)
+    cache.save()
+    monkeypatch.undo()
+    assert sorted(p.name for p in cache_dir.iterdir()) == []
+
+
+def test_a_selection_that_is_the_whole_closure_prints_no_capped_note(tmp_path):
+    """With no readable unit_test_durations.json every selection is capped,
+    even a small one that holds the whole closure: 'capped at 2 of the 2'."""
+    _write(tmp_path, "apps/hub/hub/__init__.py")
+    _write(tmp_path, MID, "X = 1\n")
+    for test in DIRECT:
+        _write(tmp_path, test, "from hub.mid import X\n")
+    _write(tmp_path, PADDING[0], "Z = 3\n")
+    got = _select(tmp_path, MID)
+    assert _files(got["pytest"]) == DIRECT
+    assert got["note"] == [], got["note"]
