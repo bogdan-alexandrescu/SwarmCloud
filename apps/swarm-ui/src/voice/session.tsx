@@ -49,7 +49,7 @@ import {
 import { apiHeaders, chosenTenant, read, route, write } from '../fetch'
 import { noteActivity } from '../Shell'
 import { leave } from '../signoutState'
-import { applyStreamEvent, EMPTY_LIST, readSessionStream, seedCards, STAGE_EVENTS, STREAM_EVENTS, TIER_EVENTS, TRACE_EVENTS, type CardListState, type StreamEvent } from './CardList'
+import { applyStreamEvent, EMPTY_LIST, PAUSE_EVENTS, readSessionStream, seedCards, STAGE_EVENTS, STREAM_EVENTS, TIER_EVENTS, TRACE_EVENTS, type CardListState, type StreamEvent } from './CardList'
 import {
   applyCaption,
   captionEnd,
@@ -63,7 +63,7 @@ import {
 } from './captions'
 import { micEnabled, useMic, type MicMode, type MicState } from './mic'
 import { takeResumedProject } from './Projects'
-import { connectTalk, endVoiceSession, reopenTalk, sendTurn, TalkError, TURN_MAX, TurnError, VOICE_SESSION_END, type TalkCall, type TalkMode } from './rtc'
+import { connectTalk, endVoiceSession, reopenTalk, sendTurn, TalkError, TURN_MAX, TurnError, VOICE_SESSION_END, wakeTalk, type TalkCall, type TalkMode, type WakeCause } from './rtc'
 import { Listener, NO_RECOGNITION, recogniserClass, Speaker } from './speech'
 import {
   bootPhase,
@@ -106,6 +106,24 @@ export function reopenTier(ev: StreamEvent): VoiceTier | null {
  * stream's one-second poll, with room to spare.
  */
 export const REOPEN_WAIT_MS = 15_000
+
+/**
+ * THE PAUSE (voice-it.md §3.12.7): the stream's `paused` event carries the
+ * voice state swarm-voice reported. `paused`: its GPT-Live session is closed
+ * (after 45 s in which nobody spoke), so the page drops the peer, keeps the
+ * mic, and wakes it on the person's next word or Resume; `waking` with cause
+ * `result`: swarm-voice asks for the wake itself.
+ */
+export const VOICE_PAUSED = 'paused'
+export const VOICE_WAKING = 'waking'
+
+/** The end swarm-api did not confirm: the problem line, and what still ends the session behind its (i). */
+export function endUnconfirmed(message: string): { line: string; tip: string } {
+  return {
+    line: `swarm-api did not confirm the end (${message}). The call here is closed.`,
+    tip: 'The voice pauses after 45 seconds in which nobody speaks, which stops its billing; swarm-api ends a session nobody comes back to after about 30 minutes.',
+  }
+}
 
 /** The call the holder holds: GPT-Live's or a text session (rtc.ts), or our own engine's (speechSocket.ts). */
 type AnyCall = TalkCall | SpeechCall
@@ -311,6 +329,10 @@ export interface VoiceSession {
   dismissFallback: () => void
   /** The one caption of a tier change mid-session (§5.4). */
   tierLine: string | null
+  /** The voice is paused (its GPT-Live session closed after a silence); the session, its cards and its mic go on. */
+  paused: boolean
+  /** Open the paused voice again (the Resume control). */
+  resume: () => void
   onPlan: boolean
   /** A text session's spoken reply, 0..1, or null when nothing is spoken. */
   level: number | null
@@ -389,6 +411,14 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
   const socket = useRef<SpeechSocket | null>(null)
   const player = useRef<SpeechPlayer | null>(null)
   const detection = useRef<VoiceDetection | null>(null)
+  // THE PAUSE: whether the voice is paused, and the detection that hears the person's next word meanwhile.
+  const [paused, setPaused] = useState(false)
+  const pausedRef = useRef(false)
+  const wakeEar = useRef<VoiceDetection | null>(null)
+  const closeWakeEar = useCallback(() => {
+    wakeEar.current?.close()
+    wakeEar.current = null
+  }, [])
   // Settings' engine, read when a view opens; null until read, or when it could not be.
   const engine = useRef<string | null>(null)
   const listener = useRef<Listener | null>(null)
@@ -471,6 +501,9 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
   const hangUp = useCallback((): AnyCall | null => {
     const c = call.current
     call.current = null
+    pausedRef.current = false
+    setPaused(false)
+    closeWakeEar()
     c?.hangUp()
     closeSpeech()
     listener.current?.close()
@@ -487,7 +520,7 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     clearPauses(captionPause)
     setLines((l) => l.filter((x) => x.final))
     return c
-  }, [closeSpeech])
+  }, [closeSpeech, closeWakeEar])
 
   // A drop waits for a reopen; a reopen in flight is not a drop.
   const dropTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -504,16 +537,15 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     setPhase('ending')
     const refused = await endVoiceSession(c.sessionId)
     if (!mounted.current) return
-    setProblem(
-      refused === null
-        ? null
-        : `swarm-api did not confirm the end (${refused.message}). The call here is closed; Voice it ends a session after ten minutes of silence.`,
-    )
+    const said = refused === null ? null : endUnconfirmed(refused.message)
+    setProblem(said?.line ?? null)
+    setProblemTip(said?.tip ?? null)
     setPhase('idle')
   }, [hangUp, clearDrop])
 
   const dropped = useCallback(() => {
-    if (reopening.current || dropTimer.current !== null) return
+    // A paused voice's peer is meant to be gone: the wake replaces it.
+    if (reopening.current || dropTimer.current !== null || pausedRef.current) return
     dropTimer.current = setTimeout(() => {
       dropTimer.current = null
       void end()
@@ -554,6 +586,69 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
   )
   const reopenRef = useRef(reopen)
   reopenRef.current = reopen
+
+  /** The wake of a paused voice: a fresh offer to the same session, by `cause`. A refused wake leaves it paused for Resume. */
+  const wake = useCallback(
+    async (cause: WakeCause) => {
+      const c = call.current
+      if (c === null || !pausedRef.current || reopening.current || c.mode !== 'live' || !('dropPeer' in c)) return
+      reopening.current = true
+      closeWakeEar()
+      try {
+        const next = await wakeTalk({ onEvent, onVoice: (s) => setVoice(s), onDropped: dropped }, c, cause)
+        if (!mounted.current || call.current !== c) {
+          next.hangUp()
+          return
+        }
+        call.current = next
+        pausedRef.current = false
+        setPaused(false)
+        setProblem(null)
+        setProblemTip(null)
+      } catch (e) {
+        if (!mounted.current || call.current !== c) return
+        const said = startProblem(e)
+        setProblem(said.line)
+        setProblemTip(said.tip)
+      } finally {
+        reopening.current = false
+      }
+    },
+    [onEvent, dropped, closeWakeEar],
+  )
+
+  /** The stream's `paused` event: the voice closed, or asking for its wake. */
+  const onPause = useCallback(
+    (voiceState: unknown, cause: unknown) => {
+      const c = call.current
+      if (c === null || c.mode !== 'live' || !('dropPeer' in c)) return
+      if (voiceState === VOICE_WAKING && cause === 'result') {
+        void wake('result')
+        return
+      }
+      if (voiceState !== VOICE_PAUSED || pausedRef.current) return
+      pausedRef.current = true
+      setPaused(true)
+      clearDrop()
+      c.dropPeer()
+      setVoice(null)
+      setVoicePlaying(false)
+      // The person's next word wakes it: the mic stays open, heard here only.
+      void startVoiceDetection(c.micStream, { onStart: () => void wake('speech'), onFrame: () => {}, onEnd: () => {} }, micRef.current).then(
+        (d) => {
+          if (call.current === c && pausedRef.current && wakeEar.current === null) wakeEar.current = d
+          else d.close()
+        },
+        () => {
+          // No Web Audio: Resume still wakes it.
+        },
+      )
+    },
+    [wake, clearDrop],
+  )
+  const onPauseRef = useRef(onPause)
+  onPauseRef.current = onPause
+  const resume = useCallback(() => void wake('resume'), [wake])
 
   /** One turn of a text session: caption it, send it, caption and speak the reply. */
   const say = useCallback(
@@ -848,9 +943,10 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     const isStage: readonly string[] = STAGE_EVENTS
     const isTrace: readonly string[] = TRACE_EVENTS
     const isTier: readonly string[] = TIER_EVENTS
+    const isPause: readonly string[] = PAUSE_EVENTS
     return readSessionStream(streamId, lastSeq.current, {
-      // Every event the stream carries: the card list's, the stage's, the trace's and the tier's.
-      types: [...STREAM_EVENTS, ...isStage, ...isTrace, ...isTier],
+      // Every event the stream carries: the card list's, the stage's, the trace's, the tier's and the pause's.
+      types: [...STREAM_EVENTS, ...isStage, ...isTrace, ...isTier, ...isPause],
       onEvent: (ev) => {
         if (ev.seq <= lastSeq.current) return
         lastSeq.current = ev.seq
@@ -863,6 +959,7 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
           const tier = reopenTier(ev)
           if (tier !== null) void reopenRef.current(tier)
         }
+        if (isPause.includes(ev.type)) onPauseRef.current(ev.data.voice_state, ev.data.cause)
         if (ev.type === 'meter.update') setMeter(ev.data)
         setCards((s) => applyStreamEvent(s, ev))
       },
@@ -942,6 +1039,7 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
   // Voice detection sends only what the mic would: nothing muted, and on push-to-talk what is said while held.
   useEffect(() => {
     detection.current?.setMic(mic)
+    wakeEar.current?.setMic(mic)
   }, [mic])
 
   // The agent's voice plays from the WebRTC track itself, never through Web Audio; our own engine's from its player's stream.
@@ -970,6 +1068,8 @@ export function VoiceSessionHolder({ children, navigate = pushPath }: { children
     fallback,
     dismissFallback,
     tierLine,
+    paused,
+    resume,
     onPlan,
     level,
     typed,

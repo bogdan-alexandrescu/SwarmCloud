@@ -134,6 +134,17 @@ def test_the_pod_acts_as_its_own_account_and_checks_its_caller():
     assert env["PORT"] == "8080" and env["PROJECT_ID"] == "__PROJECT_ID__"
 
 
+def test_the_pause_is_on_in_the_manifest_itself_once():
+    # main.build_sessions arms the pause only with VOICE_PAUSE=on; the raw
+    # manifest carries it, so a manual apply keeps the pause on. Terraform's
+    # render (voice.tf, voice_pause) overrides this one line, never adds a second.
+    env = [e for e in _container()["env"] if e["name"] == "VOICE_PAUSE"]
+    assert env == [{"name": "VOICE_PAUSE", "value": "on"}]
+    voice_tf = (REPO / "terraform" / "infra" / "voice.tf").read_text()
+    assert '- name: VOICE_PAUSE\\n              value: \\"on\\"\\n' in voice_tf
+    assert '"\\n          env:\\n"' not in voice_tf
+
+
 def test_the_planner_reaches_swarm_api_at_the_host_its_egress_policy_admits():
     # main.build_sessions hands Sessions a planner only when SWARM_API_URL is
     # set; swarm-api is Cloud Run, so its address from the cluster is the
