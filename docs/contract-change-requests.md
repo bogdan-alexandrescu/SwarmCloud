@@ -155,7 +155,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 146 | `admission.py`: `acquire_leases_in_transaction` and `AdmissionRequest`, a batched admission that reads and writes each pool document once per batch, sharing the per-task checks, the lease document and the task write with `acquire_lease_in_transaction` (ADMISSION-BATCH, PR 3493, part of #2688) | ACCEPTED by the owner 6 November 2026 ("frozen-batch-function", answering question 0 of PR 3493; rejected: the scheduler's own copy of the per-task rules) and APPLIED by the pull request that adds this line (PR 3493): the scheduler's `SchedulerStore.acquire_leases` calls it |
 | 147 | `profiles.py`: a `medium` resource class (6 CPU requested, 12 limit, 16 GiB, 8 GiB workspace, 2 units) between `browser` and `large` in `CLASS_ORDER`, and a `claude-code-medium` runner profile, `claude-code`'s image and settings at the `medium` class (MIDDLE-RUNNER-SIZE, part of #2688) | ACCEPTED by the owner 6 November 2026 and APPLIED 2026-11-06 by the pull request that adds this line (lane middle-runner-size, part of #2688): the owner's pick after the 7-day load analysis, in which 771 large attempts (4.8% of 16,103) held 46% of all capacity unit-hours and used about a third of the CPU and memory they reserved; measured without page cache 66% would have fit `standard`, 96% fit 6 CPU and 16 GiB and only 31 needed `large`. Memory and ephemeral storage request equal limit, CPU request <= limit <= `CPU_BURST_MAX_RATIO` x request (invariant 7); the class needs the pools `resource:medium` and `runner:claude-code-medium` |
 | 150 | `specsign.py`: `"plugins"` in `PLATFORM_SETTINGS_MAC_FIELDS`, so the platform's plugins switch is inside the contract's platform-settings MAC (PR 3648, part of #2688) | REQUESTED 2026-11-08 by the pull request that adds this line, on the owner's pick 'Add a plugins switch' (PR 3648, question 0); not applied. Until it is, swarm-api's own second MAC (`platformswitches.SWITCHES_MAC_FIELD`) covers the switch |
-| 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | ACCEPTED by the owner 2026-11-09 on one condition: the workflow acceptance group runs against dev right after the release, and the switch-on is reverted at once if its fix-loop check fails. Applied 2026-11-09 (PR 3717) and reverted the same day (PR 3723: the check could not reach the loop). Applied again 2026-11-10 (PR 3759) after two loop bugs were fixed (PRs 3733 and 3743), and REVERTED AGAIN 2026-11-10 by the pull request that adds this text: the check "workflow: fix-loop" (`scripts/acceptance/groups/workflow.sh`) ran against dev and failed, the loop parked DEPENDENCY_INCOMPLETE for its full hour. Not applied; the profile is unavailable until the cause is found and the owner re-applies it |
+| 151 | `profiles.py`: `fix-loop` becomes available, `available=True` and its `disabled_reason` removed (FL-ENABLE, fix loop request A's second half) | ACCEPTED by the owner 2026-11-09 on one condition: the workflow acceptance group runs against dev right after the release, and the switch-on is reverted at once if its fix-loop check fails. Applied 2026-11-09 (PR 3717) and reverted the same day (PR 3723: the check could not reach the loop). Applied again 2026-11-10 (PR 3759) after two loop bugs were fixed (PRs 3733 and 3743), and REVERTED AGAIN 2026-11-10: the check "workflow: fix-loop" (`scripts/acceptance/groups/workflow.sh`) ran against dev and failed, the loop parked DEPENDENCY_INCOMPLETE for its full hour. APPLIED AGAIN 2026-11-23 on the owner's decision ('Unmeasured on quota park + rerun'), by the pull request that adds this text, with the same condition: the workflow acceptance group runs against dev right after the release, and the switch-on is reverted at once (one commit: this pull request reverted) if its fix-loop check fails. Different this time: the cause was found (the check's `fix` step was parked on its account's quota window, so the loop never started), and the check now reports that case as not measured, not FAIL (`_wf_fix_loop_quota_parked`, merged to main 2026-11-23) |
 | 152 | `models.py`: `Attempt.account_id`, `credential_source` and `credential_tier`, the account and the credential tier (plan or API key) an attempt ran on; request 13 taken up and extended (LLM providers, docs/design/llm-providers.md Q8) | ACCEPTED by the owner 2026-11-09 (accepted by the owner as Q8 of docs/design/llm-providers.md) and APPLIED 2026-11-10 by the pull request that adds this line (lane LP-C1): the three fields at the end of `Attempt`, `CREDENTIAL_TIERS` (`plan`, `api_key`) refused otherwise in `__post_init__`, restated on `AttemptRow` and as `CredentialTier` in `types.ts` and held by `check-contract-parity.sh` section 5; nothing writes or reads them yet (LP-W1 writes, LP-U5 reads) |
 | 153 | `specsign.py`: the plugin record kind `bundle` in `PLUGIN_RECORD_KINDS`, ids `("bundle_id",)`, platform scope only, so a `plugin_bundles/{bundle_id}` record is MAC'd in request 140's canonical form (managed plugins P6, lane 13 of the design's table 17.1) | ACCEPTED by the owner 2026-11-09 (accepted by the owner 2026-11-09, answering docs/design/managed-plugins.md section 18, Q20) and APPLIED 2026-11-09 by the pull request that adds this line (lane plugins-bundle-contract): a bundle record names no tenant and a workspace-scope one has no canonical form |
 | 154 | `profiles.py` / `states.py`: five comment lines name the owner by initials, and take the placeholder "the owner", behaviour unchanged (the repository move) | ACCEPTED by the owner 11 November 2026 and APPLIED by the pull request that adds this line |
@@ -17540,9 +17540,35 @@ Requested on the owner's pick of 2026-11-08; awaiting the owner's acceptance.
 
 ## 151. `profiles.py`: `fix-loop` becomes available (FL-ENABLE, fix loop request A's second half)
 
-**Status:** PENDING THE OWNER, AFTER FL-ISSUE, FL-UI AND FL-DOCS MERGE.
-Requested on 2026-11-09 by lane FL-ACCEPT, in the pull request that adds this
-section; not applied. Nothing under `apps/common/swarm_common/` is edited by it.
+**Status:** ACCEPTED by the owner on 2026-11-09, on a condition (below).
+APPLIED AGAIN 2026-11-23 on the owner's decision, after two reverts
+(2026-11-09 and 2026-11-10). Requested on 2026-11-09 by lane FL-ACCEPT, in a
+pull request that edited nothing under `apps/common/swarm_common/`.
+
+**Applied again, 2026-11-23, on the owner's decision.** The owner's words:
+'Unmeasured on quota park + rerun'. The pull request that adds this
+paragraph applies "The change" below exactly, and nothing else under
+`apps/common/swarm_common/`: in the `"fix-loop"` entry `available=False`
+becomes `available=True` and the four `disabled_reason` lines are removed.
+The condition is the same as on 2026-11-09: the workflow acceptance group
+runs against dev right after the release, and if its check
+"workflow: fix-loop" fails, the switch-on is reverted at once, as one commit
+(that pull request reverted). What is different this time: the 2026-11-10
+failure's cause was found. The check's `fix` step was PARKED
+`PROVIDER_QUOTA_EXHAUSTED` on its workspace account's quota window, never
+started, so the loop it waits on never started either and timed out the
+hour as DEPENDENCY_INCOMPLETE. The check now reports a loop held by a
+never-started, quota-parked step as not measured, not FAIL
+(`_wf_fix_loop_quota_parked` in `scripts/acceptance/groups/workflow.sh`,
+merged to main 2026-11-23 as "The fix-loop acceptance check reports not
+measured when a never-started step it waits on is quota-parked"), so a
+quota park no longer reverts the switch-on; a real failure still does. "What
+is true today" below describes the profile before this application.
+
+**Reverted again, 2026-11-10.** Applied again on 2026-11-10 (PR 3759) after
+two loop bugs were fixed (PRs 3733 and 3743), and reverted the same day: the
+check ran against dev and failed, the loop PARKED DEPENDENCY_INCOMPLETE for
+its full hour.
 
 **Applied, then reverted, 2026-11-09.** The switch-on was applied on dev at 16:48Z and reverted the same
 day: the revert was accepted by the owner in advance, as the switch-on's own condition (revert at
@@ -17550,9 +17576,9 @@ once if the live acceptance check fails). The check could not run, because every
 of the acceptance group was refused for a repository not granted to its caller, so the loop stayed
 unproven. The profile is unavailable again until that check can run and passes.
 
-### What is true today
+### What was true before it was applied
 
-`RUNNER_PROFILES["fix-loop"]` (entry 124) is `available=False` with a
+`RUNNER_PROFILES["fix-loop"]` (entry 124) was `available=False` with a
 `disabled_reason` that points at docs/design/fix-loop.md. While it is,
 swarm-api refuses any workflow that names it
 (`validation.validate_runner_profile`, which `resolve_fix_loop` calls before

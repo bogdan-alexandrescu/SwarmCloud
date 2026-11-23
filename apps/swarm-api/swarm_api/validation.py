@@ -5544,10 +5544,10 @@ def verdict_fix_loop_step(steps: Sequence[StepSpec], strategy: str) -> dict[str,
       `max_rounds` included: only the merge is appended behind it);
     * no security review judges the integrator's head: a merge behind a loop
       reads the loop alone (§4.6), and would drop that second verdict;
-    * the `fix-loop` profile is available. It ships unavailable (contract
-      request 124) until its acceptance run passes, and a loop appended
-      before then would refuse every such workflow as disabled; until then
-      the re-review (`rereview_step_for`) is appended as before.
+    * the `fix-loop` profile is available (contract request 151). Wherever
+      it is not (the request reverted), a loop appended would refuse every
+      such workflow as disabled, so the re-review (`rereview_step_for`) is
+      appended as before.
 
     The step is exactly what a caller would declare (§4.1): the review, the
     integrator as round 1's fix, `FIX_LOOP_VERDICT_MERGE_ROUNDS`, depending on

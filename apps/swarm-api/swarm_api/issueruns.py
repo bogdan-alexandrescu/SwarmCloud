@@ -115,17 +115,18 @@ re-publishes the review's verdict as its own. Its `verdict.json` is the
 latest verdict, the one `auto_merge` merges on (`issueci._review_verdict`);
 without it a fix that resolved every finding still failed the merge on the
 first review's NOT_YET. The run's `fix_rounds` (1-5, default 3) is the cap
-on review-then-fix rounds and travels in the workflow's metadata. While the
-`fix-loop` runner type is unavailable (contract request 124) ONE fix round is
-what compiles: under `integrate` only the integrator and that one re-review
-may be gated, and a re-review that still says NOT_YET leaves the pull request
-to a person. Once it is available, the plan compiles a `fix-loop` step in
-place of the re-review (docs/design/fix-loop.md §5.3, `_with_review_rounds`):
+on review-then-fix rounds and travels in the workflow's metadata. The
+`fix-loop` runner type is available (contract request 151, applied again
+2026-11-23), so the plan compiles a `fix-loop` step in place of the
+re-review (docs/design/fix-loop.md §5.3, `_with_review_rounds`):
 `{review, fix, max_rounds: fix_rounds}` depending on the fix, the step
 `validation.verdict_fix_loop_step` builds for a workflow that merges on its
 review's verdict, so submission checks and signs it as a declared loop. Its
 rounds run up to `fix_rounds` fixes, each re-reviewed, and the loop's
-`final_review` is the verdict `issueci` reads. The same cap also bounds the
+`final_review` is the verdict `issueci` reads. Wherever the runner type is
+unavailable (request 151 reverted) ONE fix round is what compiles: under
+`integrate` only the integrator and that one re-review may be gated, and a
+re-review that still says NOT_YET leaves the pull request to a person. The same cap also bounds the
 CI loop's fix rounds after the pull request opens (`issueci`): one
 continuation per red reading, at most `fix_rounds` of them.
 

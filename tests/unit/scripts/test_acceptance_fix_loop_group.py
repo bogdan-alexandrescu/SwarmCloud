@@ -3,8 +3,8 @@
 The design's row: a workflow whose review says NOT_YET twice and then MERGE
 ends SUCCEEDED with `re-review:1`, `review-fix:2` and `re-review:2` appended.
 scripts/acceptance/groups/workflow.sh submits it only where the deployment's
-catalogue offers `fix-loop` (it ships unavailable until the owner applies
-contract request 151) and judges it from the loop's task, the workflow's
+catalogue offers `fix-loop` (contract request 151 makes it available; a
+deployment without it, or with it reverted, ships it unavailable) and judges it from the loop's task, the workflow's
 steps and each review's verdict.json.
 
 Run here with lib.sh's and testlib.sh's helpers stubbed, so no deployment and
