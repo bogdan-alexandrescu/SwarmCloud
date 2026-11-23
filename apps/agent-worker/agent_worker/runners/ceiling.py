@@ -107,7 +107,7 @@ USAGE_FIELDS = (
 #: four-session attempt as its last 5-turn session ($0.20, qa4-docs,
 #: 2026-10-31). The worker prices these counts (`lifecycle._collect_spend`)
 #: and adds them to the reported cost, so the attempt's cost is every
-#: session's. The shape is `lifecycle._stream_usage`'s `usage_by_model`.
+#: session's. The shape is `usage._stream_usage`'s `usage_by_model`.
 UNPRICED_KEY = "unpriced_usage_by_model"
 #: What a spend says when one of its sessions' usage was not read
 #: (COST-ACROSS-SESSIONS, part of archived issue 2688): measured in experiment batches one
@@ -129,7 +129,7 @@ SESSIONS_METRIC = "sessions"
 EARLIER_TOOL_CALLS_KEY = "earlier_tool_calls"
 
 #: The width, in prompt tokens, of a `prompt_buckets` row: equal to
-#: `lifecycle._PROMPT_BUCKET_TOKENS` (a test holds the two equal).
+#: `usage._PROMPT_BUCKET_TOKENS` (a test holds the two equal).
 PROMPT_BUCKET_TOKENS = 1_000
 #: A message that named no model: priced by nobody, so the worker reads the
 #: whole figure as "not reported" rather than one that left it out.
@@ -602,7 +602,7 @@ class CeilingWatcher:
 def usage_by_model(
     messages: Any,
 ) -> dict[str, dict[str, Any]]:
-    """`(model, counts)` pairs as `lifecycle._stream_usage`'s `usage_by_model`:
+    """`(model, counts)` pairs as `usage._stream_usage`'s `usage_by_model`:
     each model's sums, and its `prompt_buckets` rows -- `[bucket, input,
     output, cache written, cache read]`, a request whose prompt is `p` tokens
     in bucket `ceil(p / PROMPT_BUCKET_TOKENS)`, rising."""

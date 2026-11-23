@@ -78,7 +78,7 @@ MAX_TIER_CEILING = 100_000_000
 #: `b * width` tokens. Every request in a row is on the same side of a ceiling
 #: that is a multiple of it, and every ceiling the pricing page listed on
 #: 2026-10-19 (100,000; and 128,000, 200,000, 272,000 elsewhere) is. MUST
-#: equal `agent_worker.lifecycle._PROMPT_BUCKET_TOKENS`; a test holds it.
+#: equal `agent_worker.usage._PROMPT_BUCKET_TOKENS`; a test holds it.
 PROMPT_BUCKET_TOKENS = 1_000
 #: The most `prompt_buckets` rows one model's usage carries: a million-token
 #: context at one row per 1,000 tokens, with room.
