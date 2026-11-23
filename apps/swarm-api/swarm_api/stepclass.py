@@ -54,6 +54,7 @@ ROLE_BUILD = "build"
 ROLE_REVIEW = "review, no risk path"
 ROLE_REVIEW_RISK = "review, risk path"
 ROLE_REVIEW_UNREAD = "review, diff not read"
+ROLE_REVIEW_LARGE = "review, over the size ceiling"
 ROLE_SECURITY_REVIEW = "security review"
 ROLE_FIX = "fix"
 ROLE_REREVIEW = "re-review"
@@ -68,12 +69,20 @@ ROLE_CLASSES: Mapping[str, str] = MappingProxyType({
     ROLE_REVIEW: "sonnet",
     ROLE_REVIEW_RISK: "opus",
     ROLE_REVIEW_UNREAD: "opus",
+    ROLE_REVIEW_LARGE: "opus",
     ROLE_SECURITY_REVIEW: "opus",
     ROLE_FIX: "opus",
     ROLE_REREVIEW: "sonnet",
     ROLE_CI_FIX: "sonnet",
     ROLE_CONFLICT_FIX: "sonnet",
 })
+
+#: The size ceiling (the owner's decision, 2026-11-23): a first review moves
+#: to `ROLE_CLASSES[ROLE_REVIEW]` only when its change touches no risk path
+#: AND is at most this many changed lines -- insertions plus deletions over
+#: every parent the gate read, `reviewgate.Decision.changed_lines`. Above it
+#: the review is `ROLE_REVIEW_LARGE` and keeps the default class.
+REVIEW_CHEAP_MAX_LINES = 1000
 
 #: The task metadata key that records which rule chose the class.
 CLASS_CHOSEN_BY_KEY = "class_chosen_by"
@@ -174,6 +183,9 @@ def review_role(decision: Any) -> str:
         return ROLE_REVIEW_UNREAD
     if not getattr(decision, "read", ()):
         return ROLE_REVIEW_UNREAD
+    lines = getattr(decision, "changed_lines", None)
+    if not isinstance(lines, int) or lines > REVIEW_CHEAP_MAX_LINES:
+        return ROLE_REVIEW_LARGE
     return ROLE_REVIEW
 
 
