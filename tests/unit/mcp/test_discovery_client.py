@@ -131,7 +131,8 @@ def test_one_value_with_no_document_names_the_address_and_status(tmp_path, monke
     with pytest.raises(discovery.DiscoveryUnreachable) as caught:
         config.resolve(_plugin_env(tmp_path))
 
-    assert str(caught.value) == f"cannot read {DOC_URL} (404)"
+    # Nothing configured and nothing stored: the error says what to do.
+    assert str(caught.value) == f"cannot read {DOC_URL} (404): {discovery.NO_CLIENT_ID}"
     assert caught.value.exit_code == 3
 
 

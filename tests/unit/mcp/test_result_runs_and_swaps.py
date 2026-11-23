@@ -84,3 +84,48 @@ def test_the_progress_duration_says_it_sums_the_runs() -> None:
         "duration_s": 60.6,
         "duration_basis": "the last attempt's runner",
     }
+
+
+#: The worker's shape when a run's duration was unknown (issue 56): the sum
+#: leaves it out and says `duration_partial`; a re-read whose seconds are
+#: unknown is skipped and `swap_cost.partial` says so.
+PARTIAL = {
+    **TWO_RUNS,
+    "duration_seconds": 2531.8,
+    "duration_partial": True,
+    "runs": [TWO_RUNS["runs"][0], {**TWO_RUNS["runs"][1], "duration_s": None}],
+    "swap_cost": {**TWO_RUNS["swap_cost"], "partial": True},
+}
+
+
+def test_a_partial_total_says_it_is_partial_everywhere_it_is_read() -> None:
+    """Issue 186: a shortened sum never reads as complete."""
+    from swarm_mcp import progress
+
+    produced = outputs_of(_task(PARTIAL))
+    assert produced["duration_partial"] is True
+    assert produced["swap_cost"]["partial"] is True
+
+    line = render.runs_line(produced)
+    assert "re-read 212s, 1,500,300 tokens, partial" in line
+    assert "duration partial (a run's time is unknown)" in line
+
+    assert progress._duration({"result_summary": PARTIAL})["duration_basis"] == (
+        "the last attempt's 2 agent runs, summed, partial (a run's time is unknown)"
+    )
+
+
+def test_a_partial_reread_with_no_measured_seconds_still_says_partial() -> None:
+    cost = {"reread_seconds": None, "reread_tokens": {"input_tokens": 5},
+            "measured_runs": 1, "reached_action": 0, "partial": True}
+    produced = outputs_of(_task({**TWO_RUNS, "swap_cost": cost}))
+    assert "re-read time unknown, 5 tokens, partial" in render.runs_line(produced)
+
+
+def test_a_complete_total_does_not_say_partial() -> None:
+    from swarm_mcp import progress
+
+    produced = outputs_of(_task(TWO_RUNS))
+    assert "duration_partial" not in produced
+    assert "partial" not in render.runs_line(produced)
+    assert "partial" not in progress._duration({"result_summary": TWO_RUNS})["duration_basis"]
