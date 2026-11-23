@@ -6,3 +6,7 @@ name = "swarmcloud-acceptance-generic"
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = []
+
+[tool.uv]
+# Release-age quarantine (#189): resolve only releases at least 14 days old, as the root pyproject.toml does.
+exclude-newer = "14 days"
