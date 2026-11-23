@@ -65,6 +65,9 @@ FIELD_MASK = (
     "attempt_totals.cost_usd_total",
     "result_summary.runner.usage",
     "result_summary.runner.output.prepublish",
+    "result_summary.runner.output.context_ceiling",
+    "result_summary.runner.metrics.sessions",
+    "result_summary.runner.metrics.tool_calls",
     "result_summary.duration_seconds",
     "result_summary.git.publish_reason",
     "result_summary.git.pull_request.number",
@@ -178,6 +181,12 @@ def median_p90(values: Sequence[float], what: str) -> Any:
     if not values:
         return NotRead(f"no {what} in the week")
     return {"median": percentile(values, 50), "p90": percentile(values, 90), "n": len(values)}
+
+
+def distribution(values: Sequence[float]) -> dict[str, Any]:
+    """Median, 90th and 99th percentile (nearest rank) and how many values."""
+    return {"median": percentile(values, 50), "p90": percentile(values, 90),
+            "p99": percentile(values, 99), "n": len(values)}
 
 
 def share(part: float, whole: float, what: str) -> Any:
@@ -664,6 +673,108 @@ def task_measures(m: dict[str, Any], tasks: Sequence[Mapping[str, Any]], merged_
     m["gate_guards_left_to_ci"] = (sum(n for _, n in gates) if gates
                                    else NotRead("no task in the week records a pre-publish gate"))
     m["unpublished_with_reason"] = sum(1 for r in tasks if dig(r, "result_summary", "git", "publish_reason"))
+    session_measures(m, tasks)
+
+
+def _count(value: Any) -> int | None:
+    """A recorded non-negative integer, or None (a bool is not a count)."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def attempt_tool_calls(record: Mapping[str, Any]) -> int | None:
+    """The attempt's tool calls: the sum of `result_summary.runner.metrics.
+    tool_calls.families` (every `tool_use` block of every session of the
+    attempt, a subagent's included), or None when the stream was not read."""
+    metric = dig(record, "result_summary", "runner", "metrics", "tool_calls")
+    families = metric.get("families") if isinstance(metric, Mapping) else None
+    if not isinstance(metric, Mapping) or metric.get("read") is not True or not isinstance(families, Mapping):
+        return None
+    counts = [_count(v) for v in families.values()]
+    return None if any(c is None for c in counts) else sum(c for c in counts if c is not None)
+
+
+def session_count(record: Mapping[str, Any]) -> int | None:
+    """`result_summary.runner.metrics.sessions.count`: the sessions the attempt
+    ran, written only where the context ceiling watched the CLI."""
+    count = _count(dig(record, "result_summary", "runner", "metrics", "sessions", "count"))
+    return count if count else None
+
+
+def ceiling_stops(record: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
+    """The stops of `result_summary.runner.output.context_ceiling`, or None
+    when the record is absent or was cut with the runner's output."""
+    stops = dig(record, "result_summary", "runner", "output", "context_ceiling", "stops")
+    if not isinstance(stops, list):
+        return None
+    return [s for s in stops if isinstance(s, Mapping)]
+
+
+def session_measures(m: dict[str, Any], tasks: Sequence[Mapping[str, Any]]) -> None:
+    """Per role: tool calls and turns per attempt and per session, the share of
+    sessions that ended at the context ceiling, and fresh sessions per attempt.
+
+    Only the task's LAST attempt is recorded on it, so "per attempt" is per
+    last attempt. A session's own numbers are recorded for a session stopped
+    at the ceiling (its stop entry) and for the one session of a one-session
+    attempt (the attempt's numbers); the last session of a longer attempt has
+    none of its own, and is counted in `sessions_without_own_numbers` rather
+    than estimated."""
+    att_calls: dict[str, list[int]] = {}
+    att_turns: dict[str, list[int]] = {}
+    ses_calls: dict[str, list[int]] = {}
+    ses_turns: dict[str, list[int]] = {}
+    fresh: dict[str, list[int]] = {}
+    stopped: dict[str, list[int]] = {}
+    unrecorded = 0
+    for r in tasks:
+        role = role_for_step(r.get("step_id"))
+        calls = attempt_tool_calls(r)
+        turns = _count(usage(r).get("num_turns"))
+        turns = turns if turns else None
+        if calls is not None:
+            att_calls.setdefault(role, []).append(calls)
+        if turns is not None:
+            att_turns.setdefault(role, []).append(turns)
+        sessions = session_count(r)
+        if sessions is None:
+            continue
+        fresh.setdefault(role, []).append(sessions - 1)
+        stops = ceiling_stops(r)
+        if stops is not None:
+            stopped.setdefault(role, [0, 0])
+            stopped[role][0] += len(stops)
+            stopped[role][1] += max(sessions, len(stops))
+        if sessions == 1 and not stops:
+            if calls is not None:
+                ses_calls.setdefault(role, []).append(calls)
+            if turns is not None:
+                ses_turns.setdefault(role, []).append(turns)
+            continue
+        for entry in stops or []:
+            if _count(entry.get("tool_calls")) is not None:
+                ses_calls.setdefault(role, []).append(entry["tool_calls"])
+            if _count(entry.get("turn")) is not None:
+                ses_turns.setdefault(role, []).append(entry["turn"])
+        unrecorded += max(sessions - len(stops or []), 0)
+
+    def by_role(values: Mapping[str, list[int]], what: str) -> Any:
+        out = {role: distribution(values[role]) for role in ROLES if values.get(role)}
+        return out or NotRead(f"no agent task in the week records {what}")
+
+    m["attempt_tool_calls_by_role"] = by_role(att_calls, "its tool calls")
+    m["attempt_turns_by_role"] = by_role(att_turns, "a turn count")
+    m["session_tool_calls_by_role"] = by_role(ses_calls, "a session's own tool calls")
+    m["session_turns_by_role"] = by_role(ses_turns, "a session's own turns")
+    pct = {role: round(100.0 * stopped[role][0] / stopped[role][1], 1)
+           for role in ROLES if role in stopped and stopped[role][1] > 0}
+    m["sessions_at_ceiling_pct_by_role"] = pct or NotRead(
+        "no agent task in the week records both its sessions and its ceiling stops")
+    m["fresh_sessions_per_attempt_by_role"] = by_role(fresh, "its session count")
+    m["sessions_without_own_numbers"] = (
+        unrecorded if any(fresh.values())
+        else NotRead("no agent task in the week records its session count"))
 
 
 def workflow_rows(records: Sequence[Mapping[str, Any]], merged_at: Mapping[int, datetime]) -> list[dict[str, Any]]:
@@ -800,6 +911,13 @@ ROWS = (
     ("context_tokens_per_turn", "context tokens per turn"),
     ("over_100_turns_pct", "tasks over 100 turns %"),
     ("over_100_turns_cost_pct", "  their share of cost %"),
+    ("attempt_tool_calls_by_role", "tool calls per attempt, by role"),
+    ("attempt_turns_by_role", "turns per attempt, by role"),
+    ("session_tool_calls_by_role", "tool calls per session, by role"),
+    ("session_turns_by_role", "turns per session, by role"),
+    ("sessions_without_own_numbers", "  sessions with no numbers of their own"),
+    ("sessions_at_ceiling_pct_by_role", "sessions ended at the ceiling %, by role"),
+    ("fresh_sessions_per_attempt_by_role", "fresh sessions per attempt, by role"),
     ("model_time_vs_wall_clock", "model time vs wall-clock"),
     ("queue_wait_s", "queue wait s (no workflow)"),
     ("step_created_to_started_s", "step created->started s"),
@@ -835,9 +953,13 @@ def render_value(value: Any) -> str:
     if isinstance(value, dict):
         if set(value) == {"median", "p90", "n"}:
             return f"median {value['median']:g}, p90 {value['p90']:g} (n={value['n']})"
+        if set(value) == {"median", "p90", "p99", "n"}:
+            return (f"median {value['median']:g}, p90 {value['p90']:g}, "
+                    f"p99 {value['p99']:g} (n={value['n']})")
         if not value:
             return "none"
         return "; ".join(f"{k} {render_value(v)}" if not isinstance(v, dict)
+                         else f"{k}: {render_value(v)}" if set(v) == {"median", "p90", "p99", "n"}
                          else f"{k}: " + ", ".join(f"{kk} {render_value(vv)}" for kk, vv in v.items())
                          for k, v in value.items())
     return str(value)
