@@ -174,6 +174,7 @@ from . import territory as territory_mod
 from . import testservices as testservices_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import usage as usage_mod
+from . import pythonenv as pythonenv_mod
 from . import heartbeat as heartbeat_mod
 from .heartbeat import HeartbeatMixin
 from . import checkpointing as checkpointing_mod
@@ -1134,6 +1135,13 @@ class Worker(HeartbeatMixin, CheckpointMixin):
         #: When the issue fetch started and ended, seconds since process
         #: start, for `agent_started`. None until a fetch has been joined.
         self._issue_fetch_timing: dict[str, Any] | None = None
+        #: The attempt's one Python environment warm-up (pythonenv.py), run
+        #: at the end of `_prepare`; it remembers it ran, so no later session
+        #: runs it again.
+        self._python_env = pythonenv_mod.PythonEnvWarmup(
+            redact=lambda text: redact_text(self.log.scrub_text(text)),
+            emit=self._note_python_env,
+        )
         #: The pull request this step works on (`_requested_pull_request`),
         #: worked out once: `False` until then, None when it names none.
         self._pull_request_number: int | None | bool = False
@@ -4115,11 +4123,38 @@ class Worker(HeartbeatMixin, CheckpointMixin):
             )
             if decision.park:
                 return functools.partial(self._park_for_quota, decision, source="preflight")
+        # STEP 6d: warm the clone's Python environment, once per attempt
+        # (pythonenv.py says why). After the preflight, so a park pays nothing
+        # for it; the generation and the cancel are read again before it
+        # starts, and the generation again after it ran, so a stale worker
+        # never starts the agent (invariant 5). Never fatal.
+        checkout = ws.checkout() if self._repo_url else None
+        if pythonenv_mod.applies(checkout):
+            self.phases.enter("python_env")
+            warmed = self._python_env.warm(
+                checkout, child_env,
+                may_start=lambda: not self.control.validate_generation().cancel_requested,
+                meanwhile=self._heartbeat_meanwhile,
+            )
+            if warmed is not None and warmed.status in pythonenv_mod.RAN:
+                self.control.validate_generation()
         return child_env
 
     # ------------------------------------------------------------------
     # child supervision
     # ------------------------------------------------------------------
+    def _note_python_env(self, detail: dict[str, Any]) -> None:
+        """The Python warm-up's one event line, on RUNNING with `detail.phase`
+        (as `verify_spec` notes): an event that does not land is logged, and
+        the attempt goes on."""
+        try:
+            self.control.emit(EventType.RUNNING, detail=detail)
+        except FencedError:
+            raise
+        except Exception as exc:
+            self.log.warning("the Python warm-up's event was not written",
+                             error=type(exc).__name__, warmup=detail)
+
     def _run_child_supervised(self, child_env: dict[str, str]) -> ChildResult | Outcome:
         cfg = self.cfg
         ws = self.ws

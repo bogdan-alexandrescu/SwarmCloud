@@ -271,6 +271,7 @@ from xml.etree import ElementTree
 from swarm_redaction import redact as redact_text
 
 from . import testservices
+from .pythonenv import UV_ENV_FLAGS
 from .graphmcp.snapshot import Snapshot, SnapshotError, load_freshness_record, path_of
 from .redact import scrub_text
 
@@ -1633,7 +1634,7 @@ def _pytest_project(runner: Runner, repo: Path, project: str, members: Sequence[
     # summary the repository's config can reshape (archived issue 1605).
     with tempfile.TemporaryDirectory(prefix="prepublish-pytest-") as tmp:
         report = Path(tmp) / "junit.xml"
-        argv = ["uv", "run", "--quiet", "pytest", "-q", "-n", "auto", "-p",
+        argv = ["uv", "run", *UV_ENV_FLAGS, "--quiet", "pytest", "-q", "-n", "auto", "-p",
                 "no:cacheprovider", f"--junitxml={report}",
                 *(_relative(project, t) for t in members)]
         ran = runner(argv, Path(repo) / project if project else Path(repo), env, timeout)
@@ -2344,7 +2345,7 @@ def select_checks(repo: Path, files: Sequence[str], *, base: str,
             # The repository's own ruff, at the version its lock pins, when the
             # image has none; `uv run` installs the project's dev group.
             prefix = ["ruff"] if _which("ruff", env) else (
-                ["uv", "run", "--quiet", "ruff"] if _which("uv", env) else None)
+                ["uv", "run", *UV_ENV_FLAGS, "--quiet", "ruff"] if _which("uv", env) else None)
             for name, sub in (("ruff-format", ["format", "--check"]), ("ruff-check", ["check"])):
                 if prefix is None:
                     checks.append(Check(name, tuple(py), f"ruff {' '.join(sub)}",
@@ -2366,7 +2367,8 @@ def select_checks(repo: Path, files: Sequence[str], *, base: str,
             # `scripts/refresh-build-mirror.sh --check` reads the mirror BUCKET
             # with gcloud, and this container holds no cloud credential; the
             # manifest-vs-Dockerfile tests are the part that needs none.
-            argv = ["uv", "run", "--quiet", "pytest", "-q", "-p", "no:cacheprovider", *tests]
+            argv = ["uv", "run", *UV_ENV_FLAGS, "--quiet", "pytest", "-q", "-p", "no:cacheprovider",
+                    *tests]
             checks.append(Check("build-mirror", tuple(mirror),
                                 "uv run pytest " + " ".join(tests), run=_simple(argv)))
     checks += graph_checks(repo, files, base=base, env=env, snapshot=snapshot, pick=pick,
