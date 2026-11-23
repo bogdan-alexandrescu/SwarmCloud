@@ -1,6 +1,12 @@
 # A workflow step that runs review-fix rounds until a review says MERGE
 
-Status: **built, and shipped unavailable** (contract request 124). The
+Status: **built, and switched on again on 2026-11-23** (contract request
+151, the owner's decision, on the same condition as before: the dev
+acceptance check "workflow: fix-loop" runs right after the release and the
+switch-on is reverted at once if it fails). The cause of the 2026-11-10
+failure below was found: the check's `fix` step was parked on its account's
+quota window, so the loop never started, and the check now reports that as
+not measured rather than failed (`_wf_fix_loop_quota_parked`). The
 switch-on (request 151) was reverted on 2026-11-10 after the dev acceptance
 check "workflow: fix-loop" left the loop PARKED DEPENDENCY_INCOMPLETE for its
 whole hour (issue 3). For that check's exact workflow, the scheduler and
@@ -9,8 +15,8 @@ review-fix:2 and re-review:2 in order. That holds with and without the
 deployed 60 s control-publish hold, with and without an appended merge, and
 when the finish event is lost
 (`tests/unit/control_plane/test_fix_loop_acceptance_flow.py`). So the dev run's
-`fix` step most likely never reached SUCCEEDED within the hour. That run's
-cause is not found yet.
+`fix` step most likely never reached SUCCEEDED within the hour, and so it
+proved: `fix` was quota-parked (2026-11-23, above).
 
 The design came first (lane FIX-LOOP-DESIGN). The owner asked for it (2026-10-26, about 17:20 PDT in Product
 Oracle's session, confirmed on an earlier issue at about 00:10Z on 2026-10-27). Build

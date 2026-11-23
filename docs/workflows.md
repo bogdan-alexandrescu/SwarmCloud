@@ -3006,8 +3006,8 @@ create response marked `added: true`, as the re-review did.
 
 Where the loop cannot apply -- the gate names other verdicts, a security
 review judges the integrator's head (the merge behind a loop reads the loop
-alone), or the `fix-loop` profile is still unavailable, as it ships until its
-acceptance run passes -- swarm-api appends two steps before signing, as
+alone), or the `fix-loop` profile is unavailable (contract request 151
+reverted) -- swarm-api appends two steps before signing, as
 before (`validation.rereview_step_for`, `merge_step_for`):
 
 | step | what it is | why |

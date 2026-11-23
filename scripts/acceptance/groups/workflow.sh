@@ -873,10 +873,12 @@ _wf_check_expire() {
 #
 # NO SWITCH TURNS IT ON FOR THIS RUN. `available` is the frozen catalogue's, and
 # swarm-api refuses a step that names an unavailable profile for every caller
-# (validation.validate_runner_profile). Unlike await-input (contract request
-# 105, made available on dev before its checks ran), the owner keeps fix-loop
-# off everywhere until FL-ISSUE, FL-UI and FL-DOCS are on main, then applies
-# request 151 and this check measures it. Until then, this is a SKIP.
+# (validation.validate_runner_profile). Contract request 151 makes fix-loop
+# available (applied again 2026-11-23 on the owner's decision, on the condition
+# that this check runs against dev right after the release and the switch-on
+# is reverted at once if it fails). A deployment still on a release without
+# it, or one where request 151 was reverted, ships the profile unavailable,
+# and there this is a SKIP.
 _wf_fix_loop_offered() {
   local out="${ACC_WORK}/wf-runtimes.json" offered
   WF_FIX_LOOP_SKIP=""

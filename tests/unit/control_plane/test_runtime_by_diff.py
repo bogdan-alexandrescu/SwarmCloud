@@ -46,6 +46,9 @@ from swarm_api.waker import NullWaker
 from .conftest import PROJECT, api_settings, auth_header, seed_pool, seed_task, seed_tenant
 from .spec_signer import LocalSpecSigner
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 BROWSER = "claude-code-browser"
 CODE = "claude-code"
 POLICY = {"policy": "browser_if_ui", "browser": BROWSER, "code": CODE}

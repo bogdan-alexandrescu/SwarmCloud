@@ -33,6 +33,9 @@ from swarm_api import issueci, issueruns, jevusage, mergewake, qaspec, validatio
 from swarm_api.issueruns import IssueRef, IssueRun, RunState
 from swarm_api.schedtypes import pr_shepherd
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 _PLAN = {
     "summary": "Make the widget list sortable by name.",
     "mode": "workflow",

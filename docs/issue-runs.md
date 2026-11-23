@@ -676,10 +676,11 @@ whose `max_rounds` is the run's `fix_rounds`, under the same two conditions
 as any workflow that merges on its review (the owner, 9 November 2026;
 `issueruns._with_review_rounds`):
 
-* **the `fix-loop` runner type is available.** Until contract request 151
-  makes it so, the run compiles the single re-review it always had
-  (`issueruns._with_rereview`). Why: the loop is built, but it is not
-  switched on until its acceptance check passes.
+* **the `fix-loop` runner type is available.** Contract request 151 makes
+  it so (applied again 2026-11-23). Wherever it is not (the request
+  reverted), the run compiles the single re-review it always had
+  (`issueruns._with_rereview`). Why: an appended loop on an unavailable
+  profile would refuse the whole run as disabled.
 * **the run asked for no security review.** A run with a security review
   keeps the single re-review. Why: a merge behind a loop reads only the
   loop, and the security review judges one head, which later rounds would

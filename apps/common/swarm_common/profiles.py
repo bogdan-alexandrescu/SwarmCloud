@@ -2360,11 +2360,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=(),
         timeout_seconds=300,          # unused; the rounds are steps with their own
         inputs={},
-        available=False,
-        disabled_reason=(
-            "fix-loop is not available yet: it ships unavailable until its "
-            "acceptance run passes, as docs/design/fix-loop.md says."
-        ),
+        available=True,
         runtime_capabilities=(),
     ),
 }

@@ -31,6 +31,9 @@ from .test_issue_run_ci import (  # noqa: F401  (fixtures, imported to be used)
 )
 from .test_issue_runs import BUCKET
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 
 def _with_security_review(db, objects, running: dict, verdict: str | None) -> None:
     """The run asked for the review, and its workflow's security review wrote

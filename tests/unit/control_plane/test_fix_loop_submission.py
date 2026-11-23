@@ -69,9 +69,17 @@ _DROP = object()
 
 @pytest.fixture
 def loop_enabled(monkeypatch):
-    """`fix-loop`, available for this test only (FL-ACCEPT makes it so for real)."""
+    """`fix-loop`, available whatever the catalogue says (contract request 151 makes it so)."""
     monkeypatch.setitem(RUNNER_PROFILES, FIX_LOOP_PROFILE,
                         replace(RUNNER_PROFILES[FIX_LOOP_PROFILE], available=True))
+
+
+@pytest.fixture
+def loop_disabled(monkeypatch):
+    """`fix-loop` switched off for this test, as it is wherever contract request 151 is reverted."""
+    monkeypatch.setitem(RUNNER_PROFILES, FIX_LOOP_PROFILE,
+                        replace(RUNNER_PROFILES[FIX_LOOP_PROFILE], available=False,
+                                disabled_reason="fix-loop is not available in this test."))
 
 
 @pytest.fixture(autouse=True)
@@ -170,8 +178,7 @@ def _refused(client, db, spec, field: str, *, step_id: str = "loop") -> dict[str
 # The profile ships unavailable
 # --------------------------------------------------------------------------
 
-def test_an_unavailable_fix_loop_is_refused_as_disabled(client, db):
-    assert not RUNNER_PROFILES[FIX_LOOP_PROFILE].available
+def test_an_unavailable_fix_loop_is_refused_as_disabled(client, db, loop_disabled):
     response = _post(client, _integrate())
     assert response.status_code == 422, response.text
     assert "not available" in response.text
@@ -373,12 +380,11 @@ def test_a_stated_merge_behind_a_loop_must_read_the_loop(client, db, loop_enable
 
 
 def test_on_merge_verdict_without_a_loop_appends_the_rereview_while_the_profile_is_unavailable(
-    client, db,
+    client, db, loop_disabled,
 ):
     # Q8 (b): with the profile available the loop is appended instead
     # (test_fix_loop_by_default.py); unavailable, an appended loop would be
     # refused as disabled, so the re-review is.
-    assert not RUNNER_PROFILES[FIX_LOOP_PROFILE].available
     spec = _integrate(metadata={"merge": "on_merge_verdict"})
     spec["steps"].pop()
     response = _post(client, spec)
