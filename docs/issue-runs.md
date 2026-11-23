@@ -104,6 +104,74 @@ run's own; the plan schema has no field for a profile, image, command,
 resource class, backend or branch. Text reaches agents between delimiter
 lines carrying the run id or a fresh nonce, as data.
 
+## The plan lint, the one re-plan and the hold for a person
+
+A plan that parses can still be one nobody can check: no requirement to hold
+it to, a step that names no file or no test, a requirement no step delivers,
+two parallel steps editing one file. `planlint.lint(plan)` names each of these
+as a finding with a stable code, the step or the 1-based requirement it names,
+and one sentence:
+
+| code | the plan |
+|---|---|
+| `requirements_missing` | states no requirement |
+| `step_files_missing` | has several steps, and this one names no file it edits |
+| `step_tests_missing` | has several steps, and this one names no test that proves it |
+| `requirement_uncovered` | has no step whose `requirements` names this one (the one step of a single-step plan covers all) |
+| `file_shared` | has two steps not on one dependency line naming one file (`parallel_file_conflicts`) |
+| `plan_invalid` | did not parse at all: the schema's errors, one finding each |
+
+A step links to what it delivers by `PlanStep.requirements`, the requirement
+numbers 1 up, as `validation.tests[].requirements` numbers them; the planner's
+prompt asks for it. The lint is pure: no model, no network, no clock, so the
+same plan always gives the same findings in the same order, and a run read
+twice shows the same list.
+
+**Where it runs.** In `advance_run`'s planner seam (`routes/runs.py`,
+`_from_planner`), after `parse_planner_output`, on every planner output. A
+plan with no finding goes on exactly as before: `PLANNED`, or straight on to an
+automatic approval; no extra task, no extra wait.
+
+**The one re-plan.** On a parse failure or any finding, and only while the
+run's `plan_lint.replans` is 0, the run stays `PLANNING` and one more planner
+task is submitted: the first planner's prompt whole, plus the findings between
+two delimiter lines carrying the run id (`PLAN ERRORS`), as data about the
+first output and never as instructions, and a line saying what to fix. It is
+submitted as the run's owner (`run_owner_auth`) with the first planner's model
+class, profile and limits, and admitted and reserved like any task. The claim
+is written first, in a `PLANNING → PLANNING` transaction that sets
+`plan_lint.replans = 1` with the findings; the task id is linked after. So the
+count is read from the run document: a restart, a second tick or a second
+replica between the first failure and the submit finds `replans == 1` and
+never starts a second re-plan; a claim whose task was never linked is adopted
+(the task found by `metadata.issue_run`) or, once older than
+`REPLAN_CLAIM_BOUND_SECONDS`, submitted again under the same claim.
+
+**The hold.** If the re-plan's output fails parse or lint too, the run is not
+`FAILED`: it moves to `PLANNED`, the run's existing wait for a person, with
+`plan_approval` made `required` and `plan_lint.held = true`. No new state:
+`PLANNED` is already where a person edits, approves or rejects, and it holds
+nothing. The plan shown is the re-plan's if it parsed, else the latest earlier
+output that did; with neither, the run is `PLANNED` with no plan and a person
+rejects it or starts again. The findings are on the run and served by
+`GET /v1/runs/{run_id}` as `plan_lint` (`replans`, `held`, `findings`,
+`replan_findings`, `planner_task_ids`, `replan_error`); the console's run page
+lists them, code and sentence, above the plan's steps. An edit relints: the
+findings shown are always the current plan's.
+
+**Never approved past a failed lint automatically.** An automatic approval
+(`plan_approval: auto`, or a schedule's) of a plan with any finding is refused
+inside the approval's transaction; a person's approval is not: the lint is
+advice to a person, a gate only on the automatic path.
+
+**Capacity (invariants 1 to 3).** A run waiting for its re-plan is `PLANNING`
+with one planner task: that task alone creates demand, from `LEASED`, reserved
+all-or-nothing by the ordinary admission path, exactly as the first planner. A
+held run is `PLANNED` and has no task: it costs nothing.
+
+**The switch.** `SWARM_PLAN_LINT=off` turns the whole of this off (no lint, no
+re-plan, no hold, no refusal of an automatic approval); it is on by default.
+
 ## Why the planner reads every open issue and pull request, and what caps apply
 
 The issue-run guardrails design asks the planner to avoid conflicts: work already in flight, two issues

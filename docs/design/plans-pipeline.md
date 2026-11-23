@@ -730,6 +730,23 @@ for each comment a one-line answer in `answers` keyed by entry id. Comments are
 text a person wrote; they never select a profile, an image, a command or a
 resource (invariant 10) because the plan schema has no field for one.
 
+### 5.1a What is built: the lint's one automatic re-plan (2026-11-23)
+
+The plan lint ([issue-runs.md](../issue-runs.md#the-plan-lint-the-one-re-plan-and-the-hold-for-a-person))
+builds one piece of this round trip, started by the platform rather than by a
+person: when a planner's output fails parse or lint, ONE planner re-plan with
+§5.1's shape (the planner's profile, the run's own model class, submitted as
+the run's owner, the first prompt plus a delimited section as data) whose
+"comments" are the lint's findings. It answers while the run is still
+`PLANNING`, so it is not a revision of a plan a person is reading; a second
+failure holds the run `PLANNED` for a person.
+
+Left as designed here and not built: `POST plan:revise` and a person's request
+for changes, the plan thread and its answers, revision N+1 of a plan already
+`PLANNED`, §5.3's interplay with an open Approve, §5.4's cost record and the
+per-run cap of 5 (the automatic re-plan is capped at one, counted on
+`plan_lint.replans`, not in `plan_review_caps`).
+
 ### 5.2 What comes back
 
 When the agent ends, `advance_run` (the same read-or-tick that moves a
