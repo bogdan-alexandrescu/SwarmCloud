@@ -98,11 +98,9 @@ to the CLI as `--model`. A caller's `model` field is attribution only
 | Class | Model id |
 |---|---|
 | `opus` | `claude-opus-5-5` |
-| `fable` | `claude-fable-5-2` |
+| `fable` | `claude-fable-5-1` |
 | `sonnet` | `claude-sonnet-5-5` |
 | `haiku` | `claude-haiku-5-5` |
-
-`fable` was `claude-fable-5-1` until the owner's re-pin of 2026-11-23.
 
 `swarm_common.profiles.ModelClass.admits` refuses an id below generation 5 at
 scheduler and swarm-api start.
