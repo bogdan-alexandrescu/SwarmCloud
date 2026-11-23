@@ -148,6 +148,28 @@ def test_an_approval_covers_only_the_extra_origins_it_names(client, db, seeded, 
     assert qatargets.QaTargetIssuer._answer(doc)["origins"] == [BASE, FILES]
 
 
+@pytest.mark.parametrize("moved", ["api.example.com", "shop.example.com", "auth.example.com"])
+def test_an_approval_rechecks_each_hosts_name_resolution(client, db, seeded, hosts, moved):
+    """Epic 21: name resolution was checked only at registration, so an
+    approved host could by then resolve to a private address. The approval
+    checks every origin it approves again, and approves none of them when
+    one now resolves to a private or internal address."""
+    target = _registered(client)
+    hosts.answers[moved] = ["10.0.0.1"]
+    before = target_docs(db)
+    response = approve(client, target["id"], extra_origin=IDP, extra_origins=[API])
+    assert response.status_code == 422, response.text
+    assert target_docs(db) == before
+    assert not [r for r in audit_rows(db) if r["action"] == "qa_target_host_approved"]
+
+
+def test_an_approval_does_not_resolve_a_declared_origin_it_leaves_out(client, db, seeded, hosts):
+    target = _registered(client)
+    hosts.answers["files.example.com"] = ["10.0.0.1"]
+    response = approve(client, target["id"], extra_origins=[API])
+    assert response.status_code == 200, response.text
+
+
 def test_an_undeclared_extra_origin_is_refused(client, db, seeded, hosts):
     target = _registered(client)
     for named in ([CDN], [API, CDN], [IDP]):
