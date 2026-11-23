@@ -152,7 +152,6 @@ def test_status_of_a_hand_off_keeps_the_sign_in_line(swarm, world):
 
 
 def test_the_skill_prints_the_waiting_line_after_the_state():
-    from pathlib import Path
 
     skill = sc_skill_text.text()
     section = skill.split("### `status <wf_id|task_id>`", 1)[1].split("\n### ", 1)[0]

@@ -339,7 +339,6 @@ def test_the_account_writers_are_not_granted_to_the_read_only_skill():
     """`sc` is read-only towards the cluster; the account verbs write to it, so
     no skill may be granted them. The grant tests hold the handlers; this holds
     the MCP names."""
-    from pathlib import Path
 
     skill = sc_skill_text.text()
     front = skill.split("---", 2)[1]
