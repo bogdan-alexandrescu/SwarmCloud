@@ -15,6 +15,7 @@ The person's own, in the tenant `X-Swarm-Tenant` selects (any role there;
 only the caller, never a subject):
 
     POST   /v1/workspace/leave            {reason?}         ends their platform membership
+                                                            (a JSON body, `{}` at least)
 
 A workspace admin's, in the tenant `X-Swarm-Tenant` selects (its `admin`, or
 a platform admin):
@@ -160,6 +161,12 @@ class MemberRemoval(StrictModel):
 
 
 class LeaveBody(StrictModel):
+    """REQUIRED, `{}` at least, as application/json (epic 21): no body, or
+    any body a cross-site form can send (urlencoded, multipart, text/plain),
+    is a 422 before anything is read, so another site cannot make a signed-in
+    person leave on their front-door cookie alone -- a page elsewhere cannot
+    send application/json without a CORS preflight swarm-api never grants."""
+
     #: No `email`: only the caller leaves, so a subject is a 422.
     reason: str | None = Field(default=None, max_length=memberships.REASON_MAX)
 
@@ -553,7 +560,7 @@ def _not_member() -> WorkspaceLeaveNotMember:
 @router.post(LEAVE_ROUTE)
 def leave_workspace(
     request: Request,
-    body: LeaveBody | None = None,
+    body: LeaveBody,
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
@@ -586,7 +593,7 @@ def leave_workspace(
     # Read fresh first, so a person with nothing to leave hears that before
     # any group lookup; read again inside the transaction, which decides.
     _leavable(store.read(email, fresh=True), tenant_id, registered)
-    reason = body.reason if body is not None else None
+    reason = body.reason
     message = ("you are this workspace's only admin who can still select it; name another "
                "admin who is a member before you leave. Nothing was written")
 

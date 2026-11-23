@@ -248,7 +248,7 @@ def test_leaving_keeps_a_role_override_as_removal_does(client, ctx, db) -> None:
     before = role_grants_for(db, LEE)
     assert [g["role"] for g in before] == ["viewer"]
 
-    assert client.post(LEAVE, headers=h("lee", "eng")).status_code == 200
+    assert client.post(LEAVE, headers=h("lee", "eng"), json={}).status_code == 200
     # MUTATION: clear the override on leaving -> a second grant appears.
     assert role_grants_for(db, LEE) == before
     assert ctx.roles.newest_valid("eng", LEE, fresh=True).role == "viewer"
@@ -257,7 +257,7 @@ def test_leaving_keeps_a_role_override_as_removal_does(client, ctx, db) -> None:
 
 def test_a_person_the_group_lists_too_is_told_they_are_still_in_it(client, ctx, db) -> None:
     grant_member(ctx, BOB)
-    response = client.post(LEAVE, headers=h("bob", "eng"))
+    response = client.post(LEAVE, headers=h("bob", "eng"), json={})
     assert response.status_code == 200, response.text
     # MUTATION: answer still_in_group False (or leave it out) -> this fails.
     assert response.json() == {"email": BOB, "state": "removed", "still_in_group": True}
@@ -280,7 +280,7 @@ def test_a_subject_in_the_body_is_refused_and_nothing_is_written(client, db) -> 
 def test_a_service_account_is_refused_and_nothing_is_written(client, ctx, db) -> None:
     assert selects(client, "builder", "eng") == 200
     before = written(db)
-    response = client.post(LEAVE, headers=h("builder", "eng"))
+    response = client.post(LEAVE, headers=h("builder", "eng"), json={})
     assert response.status_code == 403, response.text
     assert response.json()["code"] == "workspace_leave_person_only"
     assert written(db) == before
@@ -289,7 +289,7 @@ def test_a_service_account_is_refused_and_nothing_is_written(client, ctx, db) ->
 def test_a_personal_workspace_is_refused_and_nothing_is_written(client, db) -> None:
     # lee in no group and no workspace: their sign-in selects their personal one.
     before = written(db)
-    response = client.post(LEAVE, headers=h("lee"))
+    response = client.post(LEAVE, headers=h("lee"), json={})
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "join_not_offered"
     assert written(db) == before
@@ -299,7 +299,7 @@ def test_a_caller_with_no_platform_membership_is_refused_and_nothing_is_written(
         client, db) -> None:
     before = written(db)
     # bob is in eng through its group alone.
-    response = client.post(LEAVE, headers=h("bob", "eng"))
+    response = client.post(LEAVE, headers=h("bob", "eng"), json={})
     assert response.status_code == 404, response.text
     assert response.json()["code"] == "workspace_leave_not_member"
     assert written(db) == before
@@ -308,9 +308,9 @@ def test_a_caller_with_no_platform_membership_is_refused_and_nothing_is_written(
 
 def test_leaving_twice_is_refused_the_second_time(client, ctx, db) -> None:
     grant_member(ctx, BOB)
-    assert client.post(LEAVE, headers=h("bob", "eng")).status_code == 200
+    assert client.post(LEAVE, headers=h("bob", "eng"), json={}).status_code == 200
     before = written(db)
-    again = client.post(LEAVE, headers=h("bob", "eng"))
+    again = client.post(LEAVE, headers=h("bob", "eng"), json={})
     assert again.status_code == 404, again.text
     assert again.json()["code"] == "workspace_leave_not_member"
     assert written(db) == before
@@ -320,7 +320,7 @@ def test_a_person_leaves_only_the_workspace_their_sign_in_selected(client, ctx, 
     joined(client)
     # lee cannot select research, so nothing about eng is touched from there.
     before = written(db)
-    response = client.post(LEAVE, headers=h("lee", "research"))
+    response = client.post(LEAVE, headers=h("lee", "research"), json={})
     assert response.status_code == 403, response.text
     assert written(db) == before
     assert membership_store(ctx).read(LEE, fresh=True).newest["eng"].state == "member"
@@ -333,7 +333,7 @@ def test_the_last_admin_by_override_cannot_leave(client, ctx, db) -> None:
     set_role(client, LEE, "admin")
     set_role(client, ALICE, None)
     before = written(db)
-    response = client.post(LEAVE, headers=h("lee", "eng"))
+    response = client.post(LEAVE, headers=h("lee", "eng"), json={})
     # MUTATION: drop the guard -> 200 and eng has no admin of its own.
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "workspace_leave_last_admin"
@@ -346,7 +346,7 @@ def test_the_last_admin_by_override_cannot_leave(client, ctx, db) -> None:
 
     # With another admin named, they may.
     set_role(client, ALICE, "admin")
-    response = client.post(LEAVE, headers=h("lee", "eng"))
+    response = client.post(LEAVE, headers=h("lee", "eng"), json={})
     assert response.status_code == 200, response.text
 
 
@@ -355,7 +355,7 @@ def test_the_last_admin_the_group_still_holds_may_leave_the_platform_membership(
     grant_member(ctx, BOB)
     set_role(client, BOB, "admin")
     set_role(client, ALICE, None)
-    response = client.post(LEAVE, headers=h("bob", "eng"))
+    response = client.post(LEAVE, headers=h("bob", "eng"), json={})
     # The group keeps bob in eng, and his override with him: eng keeps its admin.
     assert response.status_code == 200, response.text
     assert response.json()["still_in_group"] is True
@@ -368,7 +368,7 @@ def test_a_membership_that_no_longer_counts_for_the_group_is_not_left(client, ct
                                 state=memberships.MEMBER, by="ops@example.com",
                                 via=memberships.VIA_PLATFORM_ADMIN)
     before = written(db)
-    response = client.post(LEAVE, headers=h("bob", "eng"))
+    response = client.post(LEAVE, headers=h("bob", "eng"), json={})
     # MUTATION: check only `state == member` -> 200 and a removed grant is written.
     assert response.status_code == 404, response.text
     assert response.json()["code"] == "workspace_leave_not_member"
@@ -388,7 +388,7 @@ def test_a_read_cut_short_before_it_answered_is_a_503_not_a_404(
 
     monkeypatch.setattr(memberships.MembershipStore, "read", read)
     before = written(db)
-    response = client.post(LEAVE, headers=h("bob", "eng"))
+    response = client.post(LEAVE, headers=h("bob", "eng"), json={})
     # MUTATION: drop `cut_short` -> 404 workspace_leave_not_member.
     assert response.status_code == 503, response.text
     assert response.json()["code"] == "membership_unavailable"
@@ -408,11 +408,11 @@ def test_an_admin_override_that_outlived_its_membership_is_no_admin(client, ctx,
     set_role(client, DAN, "admin")
     set_role(client, KIM, "admin")
     set_role(client, ALICE, None)
-    assert client.post(LEAVE, headers=h("dan", "eng")).status_code == 200
+    assert client.post(LEAVE, headers=h("dan", "eng"), json={}).status_code == 200
     assert ctx.roles.newest_valid("eng", DAN, fresh=True).role == "admin"
 
     before = written(db)
-    response = client.post(LEAVE, headers=h("lee", "eng"))
+    response = client.post(LEAVE, headers=h("lee", "eng"), json={})
     # MUTATION: count any other `admin` override -> 200 and eng has no admin left.
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "workspace_leave_last_admin"
@@ -442,7 +442,7 @@ def test_another_admin_a_fresh_group_check_finds_lets_the_admin_leave(client, ct
     set_role(client, ALICE, None)
     directory = FreshOnlyGroups()
     client.app.state.workspace_directory = directory
-    response = client.post(LEAVE, headers=h("lee", "eng"))
+    response = client.post(LEAVE, headers=h("lee", "eng"), json={})
     # MUTATION: count only platform memberships, or ask the group from cache -> 409.
     assert response.status_code == 200, response.text
     assert (BOB, True) in directory.asked
@@ -460,7 +460,7 @@ def test_a_stale_cached_admin_role_is_not_counted(client, ctx, db) -> None:
     other = serve(build(db, ctx.settings))
     set_role(other, DAN, None)
 
-    response = client.post(LEAVE, headers=h("lee", "eng"))
+    response = client.post(LEAVE, headers=h("lee", "eng"), json={})
     # MUTATION: read the roster through the cache -> 200 on dan's cleared role.
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "workspace_leave_last_admin"
@@ -520,10 +520,10 @@ def test_the_last_two_admins_leaving_at_once_cannot_both_go() -> None:
     set_role(client, ALICE, None)
 
     answers: list[Any] = []
-    db.on_commit = lambda: answers.append(client.post(LEAVE, headers=h("dan", "eng")))
-    first = client.post(LEAVE, headers=h("lee", "eng"))
+    db.on_commit = lambda: answers.append(client.post(LEAVE, headers=h("dan", "eng"), json={}))
+    first = client.post(LEAVE, headers=h("lee", "eng"), json={})
     if not answers:  # no transaction at all: dan leaves after lee
-        answers.append(client.post(LEAVE, headers=h("dan", "eng")))
+        answers.append(client.post(LEAVE, headers=h("dan", "eng"), json={}))
     (second,) = answers
     # MUTATION: check outside the transaction, or skip the guard -> both 200.
     assert sorted((first.status_code, second.status_code)) == [200, 409], (first.text,

@@ -584,6 +584,23 @@ route:
   subject; an `email` in it is 422. A person can only ever leave the
   workspace their own sign-in selected, so tenant isolation is the
   selection's, as on every tenant-scoped route.
+* takes **a JSON body, `{}` at least, sent as `application/json`**; no
+  body, or one a cross-site form can send (urlencoded, multipart,
+  `text/plain`), is 422 `validation_failed` before anything is read (epic
+  21). Why: the front door authenticates a browser by its cookie, whose
+  `SameSite` setting is the identity-aware proxy's and not this repository's
+  to record or rely on, and a bodiless POST is a "simple" request another
+  site's form can make with that cookie. `application/json` cannot be sent
+  cross-site without a CORS preflight, which swarm-api never grants, so a
+  signed-in person can be made to leave only by a request they chose to
+  make. The join decisions (`POST /v1/admin/join-requests/{ref}/approve`
+  and `/deny`) take the same rule (§4.8); the other `/v1/workspace/...` and
+  `/v1/workspaces/{tenant}/...` writes already require a JSON body through
+  their models (checked 2026-11-23). Withdrawing one's own open request
+  still takes no body: the console sends none, and the worst another site
+  can do with it is withdraw a request the person can make again.
+  `tests/unit/control_plane/test_workspace_leave.py` holds each form shape
+  to the refusal.
 * writes a `removed` grant **exactly as a removal does**, with `via: "self"`
   and `by` the person, and its `workspace_member_removed` row in the same
   batch (§4.7). It ends the platform membership only: when the Google group
@@ -816,6 +833,7 @@ there; only the caller, §4.4 "Leaving"):
 
 ```
 POST   /v1/workspace/leave              {reason?}         -> {email, state: "removed", still_in_group}
+                                        (JSON, `{}` at least; none is 422)
 ```
 
 **A workspace admin's, under the tenant `X-Swarm-Tenant` selects** (`admin`

@@ -189,7 +189,7 @@ def test_a_kept_override_of_someone_who_left_is_no_other_admin(client, ctx, db) 
     lee_is_the_last_admin(client)
     grant_member(ctx, DAN)
     set_role(client, DAN, "admin")
-    assert client.post(LEAVE, headers=h("dan", "eng")).status_code == 200
+    assert client.post(LEAVE, headers=h("dan", "eng"), json={}).status_code == 200
     response = client.put(ROLES, headers=h("lee", "eng"), json={"email": LEE, "role": "member"})
     assert response.status_code == 409, response.text
 
@@ -215,7 +215,7 @@ def test_an_unreadable_roster_is_a_503_and_nothing_is_written(client, ctx, db, m
     monkeypatch.setattr(roles.RoleStore, "overrides", _unreadable_roster)
     before = written(db)
     if call == "leave":
-        response = client.post(LEAVE, headers=h("lee", "eng"))
+        response = client.post(LEAVE, headers=h("lee", "eng"), json={})
     elif call == "remove":
         response = remove(client, "lee", LEE)
     else:
@@ -287,7 +287,7 @@ def test_a_leave_and_a_demotion_of_the_only_two_admins_leave_one(first: str) -> 
     set_role(client, ALICE, None)
 
     def leave() -> Any:
-        return client.post(LEAVE, headers=h("lee", "eng"))
+        return client.post(LEAVE, headers=h("lee", "eng"), json={})
 
     def demote() -> Any:
         return client.put(ADMIN_ROLES, headers=h("ops"), json={"email": DAN, "role": "member"})
@@ -354,7 +354,7 @@ def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, s
     def interleave() -> None:
         between.append(client.put(ROLES, headers=h("lee", "eng"),
                                   json={"email": DAN, "role": "admin"}))
-        between.append(client.post(LEAVE, headers=h("lee", "eng")))
+        between.append(client.post(LEAVE, headers=h("lee", "eng"), json={}))
 
     def newest_valid(self, tenant_id, subject, **kwargs):
         seen = real(self, tenant_id, subject, **kwargs)
@@ -368,7 +368,7 @@ def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, s
     if stale == "remove":
         outcome = remove(client, "lee", DAN)
     elif stale == "leave":
-        outcome = client.post(LEAVE, headers=h("dan", "eng"))
+        outcome = client.post(LEAVE, headers=h("dan", "eng"), json={})
     else:
         outcome = client.request("PUT" if stale == "demote" else "DELETE", ROLES,
                                  headers=h("lee", "eng"),
