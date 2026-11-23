@@ -49,6 +49,7 @@ Three reasons, in the order they cost the most:
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated)); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name)). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 | `publish-release.yml` | **manual dispatch on `main` only**, with a release name and a main commit whose `release` run succeeded ([the owner] 2026-10-30, "Move publishing into CI now"; [runbooks/release.md](runbooks/release.md)) — never on a push, a pull request or a schedule. `publish` waits in the GitHub environment `release` (a required reviewer) and authenticates as the deployer, which is why the file is on `wif.tf`'s `deployer_workflows`; in `swarmcloud-prod` that identity holds only the three roles `scripts/release-home.sh --ci-publisher` grants. It publishes; it never promotes | `check the version and the commit` · `publish <version> to the release home` |
+| `coverage.yml` | **once a day at 10:23 UTC** (`schedule`) and manual dispatch, **on `main` only** — never on a push, a pull request or a train, never a required check, and nothing on the merge path waits for it ([below](#coverage-floors)) | `plan the shards` · `unit tests with coverage (k/N)` · `swarm-ui component tests with coverage (k/N)` · `coverage floors` (combines and judges against `coverage-floors.json`) · `report the coverage` (the per-package summary; a red night opens or updates one `bug` issue, the next green night closes it) |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -4303,6 +4304,151 @@ figures alone. A shard's balance only moves when a heavy file's weight moves,
 so a refresh is due when a slice is added, split or made faster, or when the
 `pick` lines in a run's log (`shard k runs n, ~s s of measured test time
 (shards: ...)`) stop matching the shards' real test times.
+
+## Coverage floors
+
+**Why.** Until issue 64 nothing measured test coverage: there was no
+pytest-cov, no `fail_under`, and `vitest.config.ts` said "no coverage
+instrumentation". A change that deleted tests, or added code no test ran,
+went unnoticed. Now each package's **line** coverage has a floor in
+[`coverage-floors.json`](../coverage-floors.json), measured every night.
+
+### Where it runs: nightly, off the merge path
+
+[`.github/workflows/coverage.yml`](../.github/workflows/coverage.yml) runs
+once a day at **10:23 UTC**, and by hand (`workflow_dispatch`), on `main`
+only. **It adds zero time to a merge**: `application.yml` measures nothing,
+no pull-request check, merge-train job or `ci-gate` need waits for it, and
+it is not a required check. It has no `pull_request`, `push` or
+`merge_group` trigger, so a pull request or a train can never start it.
+
+The first design (2026-11-23) measured inside `application.yml`'s unit and
+component-test shards on every whole-suite run and judged it in a job
+`ci-gate` waited on. The whole suite runs once per merge, on the merge train
+(median 12 minutes that day), so coverage.py's tracer in every shard would
+have slowed every merge. The owner: "we should also make sure we have a fast
+CI. if our changes end up making merging changes slow or become a
+bottleneck, this will go against having everything move faster." So the
+suites run a second time, once a day, with coverage on.
+
+**Why 10:23 UTC.** The owner's pick (2026-11-23): the night in US Pacific
+time. It is not the quiet hour for merges. Of the 55 merges to `main` from
+2026-11-18 to 11-23, 36 landed between 07:00 and 15:00 UTC, and none at 19,
+20 or 21 UTC, the longest quiet stretch. The run takes about 20 runner-pool
+VMs for half an hour, so a train running at that hour shares the pool with
+it; nothing on the merge path waits for the run itself. `:23` keeps it off
+the top of the hour, when GitHub's scheduler is busiest and delays scheduled
+runs. If trains are seen queueing for runners at that hour, move it to
+20:23 UTC: the cron line is the only place it is set.
+
+**Two runs never overlap**: one `concurrency` group, `cancel-in-progress:
+false`, so a night (or a dispatch) that starts while another runs waits for
+it. **Permissions** are `contents: read` for the workflow; only the `report`
+job adds `issues: write`, plus `actions: read` to find the last green run.
+
+### What it runs
+
+* `plan the shards`: `scripts/lib/unit_shards.py count` over the whole
+  suite (`PYTHON_MODE=all`) and `scripts/lib/ui_shards.py count`, the counts
+  `application.yml`'s `changes` job computes.
+* `unit tests with coverage (k/N)`: the unit suite **sharded**, split by
+  `unit_shards.py pick` exactly as `python-unit` splits it, with the same
+  Node and user-namespace steps, under pytest-cov (`--cov --cov-report=`,
+  configured by `[tool.coverage.run]` in `pyproject.toml`). Sharded, not one
+  job: ~8,600 s of measured test time is over half an hour on one 4-vCPU
+  runner before the tracer's cost, and a job that long hides a hang. Each
+  shard uploads `unit-<k>.coverage`, its xdist workers' data combined.
+* `swarm-ui component tests with coverage (k/N)`: the component suite split
+  by `ui_shards.py pick`, with `SWARM_UI_COVERAGE_DIR` set, which turns on
+  vitest's v8 coverage in `vitest.config.ts` (inert when unset: in
+  `application.yml`, `make test`, an agent's related-tests run). Each shard
+  uploads istanbul's `coverage-final.json`.
+* `coverage floors` (the `judge` job): `scripts/coverage-floors.sh`.
+  `coverage combine` of the unit shards (paths are relative to the checkout,
+  `relative_files`, so shards on different runners combine), a
+  statement-by-statement merge of the component shards' JSON
+  (`scripts/lib/coverage_floors.py`; a line is covered when any statement on
+  it ran in any shard), then the judgement. Fewer data files than shards (a
+  shard failed or timed out) is an **incomplete** measurement, never read
+  as lost coverage. It uploads `coverage-reports` (per-package
+  `python.json`, `ui.json` and the verdict lines) for 30 days, and fails the
+  run when a package is under its floor or the measurement is incomplete.
+* `report the coverage`: `scripts/coverage-report.sh`, below.
+
+**Expected duration: about 25-35 minutes**, not yet measured. A merge-train
+unit shard takes ~12 minutes; the C tracer (Python 3.11 has no
+`sys.monitoring`) adds a share to each, and the shards run side by side, so
+the night takes about one traced shard plus the judge (~2 minutes). Each
+shard's ceiling is 60 minutes. Write the measured number here after the
+first runs.
+
+### What each night reports
+
+**The summary, every night**: a table of every package -- its suite, the
+measured coverage (covered/total lines), its floor and the verdict word --
+then the verdict lines:
+
+* `BELOW` under the floor; `MISSING` a floored package the report that ran
+  does not have (its tests or its code were deleted): both make the night red;
+* `RAISE` 2+ points over the floor, `ok` at or above, under 2 points;
+* `UNMEASURED` a null floor: the measurement and the floor to set;
+* `NO FLOOR` a package the file does not list; `not judged` its suite did
+  not run.
+
+A floors file the script cannot read whole -- not JSON, an unknown key, a
+floor that is not a number from 0 to 100, a null floor without a `note` --
+exits 2: no entry is ever skipped while the rest pass.
+`tests/unit/scripts/test_coverage_floors.py` holds each rule, and
+`tests/unit/scripts/test_coverage_workflow.py` the workflow and the report.
+
+**A red night opens ONE issue**, labelled `bug`, titled as a fact --
+`apps/<dir> line coverage is under its floor on main`, or `N packages' line
+coverage is under their floors on main` -- in the bug form's sections. Its
+body starts with the hidden marker `<!-- swarm-coverage: nightly line
+coverage is under a floor -->`, which is how a later night finds it (never
+by title, the way `accept.yml` files its red-acceptance issue). It names
+the commit measured, the run, every `BELOW`/`MISSING` line, and **the
+commits merged since the last green run** of `coverage.yml` (`git log
+<last green SHA>..<this SHA>`, at most 100 listed). A later red night
+retitles it and comments the same section; it never opens a second. **The
+next green night comments on it and closes it.** An incomplete measurement
+files nothing and closes nothing: a failed shard is not fallen coverage, and
+the red run says so by itself.
+
+### Filling and raising the floors
+
+**None is set yet (2026-11-23).** The first lane was asked to measure each
+floor by running the suites with coverage in the agent container; neither
+fit: one eighth of the unit suite (`unit_shards.py pick`, shard 1 of 8,
+`-n 5`, `--cov`) had not finished after 10 minutes, nor had one sixth of the
+component suite. So every floor is `null` with that note, and no number was
+invented. Until floors are set a night only reports (verdict `unset`) and
+its summary prints, with that run's id filled in, the command that sets
+them:
+
+```bash
+gh run download <run-id> -n coverage-reports -D "$TMPDIR/coverage-reports"
+python3 scripts/lib/coverage_floors.py fill --floors coverage-floors.json \
+  --about "Nightly coverage run <url>, <date>: whole-suite unit and component tests, line coverage" \
+  --report "$TMPDIR/coverage-reports/python.json" --report "$TMPDIR/coverage-reports/ui.json"
+```
+
+`fill` sets each null floor (and each package the file does not list) to the
+measurement less one point, rounded down, and records `measured`: high
+enough that deleting a test file's worth of coverage turns the night red,
+low enough that ordinary churn does not. Commit the file in a pull request.
+
+**A ratchet, not a target.** When a night says `RAISE`, run the same command
+with `--raise`: it also lifts every floor 2+ points under what was measured,
+which is how a gain is kept. Lowering a floor is allowed, on purpose, with
+the reason in the commit.
+
+**The pins.** `pytest-cov==7.1.0` (uploaded 2026-03-21) and its `coverage`
+7.17.2 in `uv.lock` (2026-11-04); `@vitest/coverage-v8` 3.2.7, exactly the
+`vitest` it serves (the two must match). Each was resolved under the 14-day
+release-age quarantine (`[tool.uv] exclude-newer`, `apps/swarm-ui/.npmrc`
+`min-release-age`): the newest package the coverage provider added to
+`package-lock.json` was published 2026-11-08.
 
 ## Flaky tests and the quarantine
 

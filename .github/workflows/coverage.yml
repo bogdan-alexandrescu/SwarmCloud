@@ -1,0 +1,452 @@
+# Line coverage per package, once a day, OFF THE MERGE PATH (issue 64; owner
+# decision 2026-11-23; docs/ci.md "Coverage floors").
+#
+# WHY A WORKFLOW OF ITS OWN. The first design measured coverage inside
+# application.yml's unit and component-test shards on every whole-suite run
+# and judged it in a job ci-gate waited on. The whole suite runs once per
+# merge, on the merge train (median 12 minutes on 2026-11-23), so tracing
+# every shard there would have slowed every merge. The owner: "we should also
+# make sure we have a fast CI. if our changes end up making merging changes
+# slow or become a bottleneck, this will go against having everything move
+# faster." So the suites run a second time here, once a day, with coverage
+# on, and application.yml does not change at all: this adds zero time to a
+# pull request's checks, the merge train and ci-gate.
+#
+# NEVER A REQUIRED CHECK, NEVER ON A PULL REQUEST OR A TRAIN. Its only
+# triggers are the schedule and a dispatch, and every job is skipped off main
+# (`plan`'s `if:`; the others need it). Nothing in main's ruleset or in
+# ci-gate's needs names it (tests/unit/scripts/test_coverage_workflow.py).
+#
+# WHAT A RED NIGHT DOES. The run goes red AND the `report` job opens ONE
+# issue (or comments on the open one, found by the marker in its body; never a
+# second) naming each package under its floor and the commits merged since
+# the last green run. The next green night comments on it and closes it
+# (scripts/coverage-report.sh). While coverage-floors.json has no floor set,
+# a night only reports and prints the `coverage_floors.py fill` command.
+
+name: coverage
+
+on:
+  # 10:23 UTC, the owner's pick (2026-11-23): the night in US Pacific time.
+  # It is NOT the quiet hour for merges: over the 55 merges of
+  # 2026-11-18..23, 07:00-15:00 UTC carried 36 (none landed at 19, 20 or 21
+  # UTC), and the run takes the runner pool's VMs for about half an hour, so
+  # a train running then shares the pool with it. It is never a required
+  # check and nothing on the merge path waits for it. :23, off the top of the
+  # hour, when GitHub's scheduler is busiest and delays or drops scheduled
+  # runs.
+  schedule:
+    - cron: '23 10 * * *'
+  # By hand, e.g. to measure a commit before setting the floors. On main only:
+  # `plan` skips the run anywhere else.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Two runs never overlap: a night that starts while the last one (or a
+# dispatch) still runs waits for it instead of cancelling it. A cancelled run
+# would leave a measurement half taken and a red issue neither filed nor closed.
+concurrency:
+  group: coverage-nightly
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+
+# RUNNERS. Every job holds no cloud identity, so each runs on the self-hosted
+# pool through the one guarded `runs-on` expression application.yml's jobs use
+# (tests/unit/scripts/test_fork_prs_off_self_hosted.py): a scheduled run
+# takes the pool, and SELF_HOSTED_CI=off sends it to ubuntu-24.04.
+jobs:
+  # -------------------------------------------------------------------------
+  # How many shards each suite gets: the same scripts/lib/unit_shards.py and
+  # ui_shards.py counts application.yml's `changes` job runs, over the WHOLE
+  # suite (PYTHON_MODE=all; no lane selection), so the split matches the one
+  # the merge train's shards already run in ~12 minutes each.
+  # -------------------------------------------------------------------------
+  plan:
+    name: plan the shards
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    # The default branch only. A schedule always runs there; a dispatch from
+    # another branch would measure code main does not have and could close
+    # main's red issue on its green.
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 10
+    outputs:
+      unit_shards: ${{ steps.unit.outputs.shards }}
+      ui_shards: ${{ steps.ui.outputs.shards }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: how many unit shards the whole suite needs
+        id: unit
+        env:
+          PYTHON_MODE: all
+          DURATIONS: tests/unit/scripts/unit_test_durations.json
+        run: |
+          set -euo pipefail
+          python3 scripts/lib/unit_shards.py count
+
+      - name: how many component-test shards the whole suite needs
+        id: ui
+        env:
+          DURATIONS: tests/unit/scripts/ui_test_durations.json
+        run: |
+          set -euo pipefail
+          python3 scripts/lib/ui_shards.py count
+
+  # -------------------------------------------------------------------------
+  # The unit suite under pytest-cov, sharded exactly as application.yml's
+  # `python-unit` shards it (scripts/lib/unit_shards.py pick), and with the
+  # same environment: Node for the WHATWG URL table, user namespaces for the
+  # real-kill reap test. Unsharded it would be ~8,600 s of measured test time
+  # on one 4-vCPU runner -- over half an hour before the tracer's cost -- so
+  # it is sharded, and the run takes as long as one shard.
+  # -------------------------------------------------------------------------
+  unit:
+    name: unit tests with coverage (${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    needs: plan
+    # A merge-train shard runs ~12 minutes; the tracer (Python 3.11 has no
+    # sys.monitoring, so it is coverage.py's C tracer) costs a share more.
+    # Off the merge path a generous ceiling slows nobody; a hung shard still
+    # fails rather than hold its runner for six hours.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.unit_shards) }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
+          enable-cache: true
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: read the platform's Node major for the WHATWG URL table
+        id: node
+        # As application.yml's python-unit reads it: from `ARG NODE_IMAGE` in
+        # images/swarm-ui/Dockerfile, the one place the platform states it.
+        run: |
+          set -euo pipefail
+          dockerfile=images/swarm-ui/Dockerfile
+          majors="$(sed -nE 's/^ARG NODE_IMAGE=node:([0-9]+)[^0-9].*/\1/p' "$dockerfile")"
+          count="$(printf '%s' "$majors" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error file=${dockerfile}::expected exactly one 'ARG NODE_IMAGE=node:<major>-...' line, found ${count}"
+            exit 1
+          fi
+          echo "major=${majors}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: ${{ steps.node.outputs.major }}
+
+      - name: sync
+        run: uv sync --frozen --all-extras --dev
+
+      - name: allow unprivileged user namespaces, so the real-kill reap test runs
+        # application.yml's python-unit says why, at length.
+        run: |
+          set -euo pipefail
+          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ ! -e "$knob" ]; then
+            echo "no $knob on this image; nothing to relax"
+          elif [ "$(cat "$knob")" = 0 ]; then
+            echo "$knob is already 0 on this runner; nothing to relax"
+          elif sudo -n true 2>/dev/null; then
+            sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          else
+            echo "::error::$knob is $(cat "$knob") and user $(id -un) on runner ${RUNNER_NAME:-?} has no passwordless sudo to relax it; the real-kill reap test (tests/unit/worker/test_procman_reap.py) cannot run here"
+            exit 1
+          fi
+
+      - name: pick this shard's test files
+        id: pick
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+          PYTHON_MODE: all
+          DURATIONS: tests/unit/scripts/unit_test_durations.json
+          SHARD_FILES: ${{ runner.temp }}/shard-files
+        run: |
+          set -euo pipefail
+          python3 scripts/lib/unit_shards.py pick
+
+      - name: unit tests, measured
+        # pytest-cov (`[tool.coverage.run]` in pyproject.toml) writes this
+        # shard's data, its xdist workers' combined, to COVERAGE_FILE.
+        # `--cov-report=`: no report here; the `judge` job writes one from
+        # every shard's data. `-m "not flaky"`: what the gate runs.
+        if: steps.pick.outputs.count != '0'
+        env:
+          SWARM_REQUIRE_REAL_REAP: "1"
+          SHARD_FILES: ${{ runner.temp }}/shard-files
+          COVERAGE_FILE: ${{ runner.temp }}/coverage/unit-${{ matrix.shard }}.coverage
+        run: |
+          set -euo pipefail
+          mapfile -t files < "${SHARD_FILES}"
+          mkdir -p "$(dirname "${COVERAGE_FILE}")"
+          uv run pytest -q -n auto --dist worksteal -o faulthandler_timeout=300 -m "not flaky" --cov --cov-report= "${files[@]}"
+
+      - name: upload this shard's coverage data
+        # Only from a shard that passed: `judge` counts one file per shard and
+        # calls fewer a partial run, never fallen coverage. Not a hidden
+        # file: upload-artifact leaves dotfiles out unless told otherwise.
+        if: steps.pick.outputs.count != '0'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: coverage-unit-${{ matrix.shard }}
+          path: ${{ runner.temp }}/coverage/unit-${{ matrix.shard }}.coverage
+          retention-days: 7
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
+  # The swarm-ui component suite with vitest's v8 coverage: SWARM_UI_COVERAGE_DIR
+  # turns it on in apps/swarm-ui/vitest.config.ts (inert when unset, as in
+  # application.yml's shards and `make test`), sharded by
+  # scripts/lib/ui_shards.py pick exactly as application.yml's ui-tests.
+  # -------------------------------------------------------------------------
+  ui:
+    name: swarm-ui component tests with coverage (${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    needs: plan
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.ui_shards) }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: pick this shard's test files
+        id: pick
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+          DURATIONS: tests/unit/scripts/ui_test_durations.json
+          SHARD_FILES: ${{ runner.temp }}/ui-shard-files
+        run: |
+          set -euo pipefail
+          python3 scripts/lib/ui_shards.py pick
+
+      - name: read the Node major the swarm-ui image builds with
+        id: node
+        if: steps.pick.outputs.count != '0'
+        # As application.yml's ui-tests reads it (test_ui_node_line.py says why).
+        run: |
+          set -euo pipefail
+          dockerfile=images/swarm-ui/Dockerfile
+          majors="$(sed -nE 's/^ARG NODE_IMAGE=node:([0-9]+)[^0-9].*/\1/p' "$dockerfile")"
+          count="$(printf '%s' "$majors" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error file=${dockerfile}::expected exactly one 'ARG NODE_IMAGE=node:<major>-...' line, found ${count}"
+            exit 1
+          fi
+          echo "major=${majors}" >> "$GITHUB_OUTPUT"
+          echo "swarm-ui builds with Node ${majors} (${dockerfile})"
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        if: steps.pick.outputs.count != '0'
+        with:
+          node-version: ${{ steps.node.outputs.major }}
+          cache: npm
+          cache-dependency-path: apps/swarm-ui/package-lock.json
+
+      - name: the Node that runs is the Node the image builds with
+        if: steps.pick.outputs.count != '0'
+        # setup-node@v5 installs nothing for an EMPTY node-version; this stops
+        # the job instead of measuring on the runner's own Node.
+        env:
+          WANT_NODE_MAJOR: ${{ steps.node.outputs.major }}
+        run: |
+          set -euo pipefail
+          got="$(node -p 'process.versions.node.split(".")[0]')"
+          if [ -z "${WANT_NODE_MAJOR}" ]; then
+            echo "::error::setup-node was given no Node major (steps.node.outputs.major is empty), so it installed nothing; this job would run on the runner's Node ${got}"
+            exit 1
+          fi
+          if [ "${got}" != "${WANT_NODE_MAJOR}" ]; then
+            echo "::error::this job runs Node ${got}, but images/swarm-ui/Dockerfile builds with Node ${WANT_NODE_MAJOR}"
+            exit 1
+          fi
+          echo "running Node ${got}, the major images/swarm-ui/Dockerfile builds with"
+
+      - name: install
+        working-directory: apps/swarm-ui
+        if: steps.pick.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          echo "node $(node --version), npm $(npm --version)"
+          npm ci --no-audit --no-fund
+
+      - name: component tests, measured
+        # Exactly the files the pick step wrote (never an empty `vitest run`,
+        # which runs the whole suite in one process); istanbul's
+        # coverage-final.json lands in SWARM_UI_COVERAGE_DIR.
+        if: steps.pick.outputs.count != '0'
+        working-directory: apps/swarm-ui
+        env:
+          SHARD_FILES: ${{ runner.temp }}/ui-shard-files
+          SWARM_UI_COVERAGE_DIR: ${{ runner.temp }}/ui-coverage
+        run: npm run test:components -- $(cat "${SHARD_FILES}")
+
+      - name: upload this shard's coverage data
+        if: steps.pick.outputs.count != '0'
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: coverage-ui-${{ matrix.shard }}
+          path: ${{ runner.temp }}/ui-coverage/coverage-final.json
+          retention-days: 7
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
+  # Combine every shard's data and judge each package against
+  # coverage-floors.json (scripts/coverage-floors.sh). It runs whatever the
+  # shards did -- `!cancelled()`, so a failed shard is reported as an
+  # incomplete measurement, by name, rather than skipping the report -- and
+  # writes the verdict for `report`:
+  #   green       every package with a floor is at or above it
+  #   unset       no package has a floor yet: report only
+  #   below       a package is BELOW its floor or MISSING from the report
+  #   incomplete  a shard's data is missing or the floors file is malformed
+  # -------------------------------------------------------------------------
+  judge:
+    name: coverage floors
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    needs: [plan, unit, ui]
+    if: ${{ !cancelled() && needs.plan.result == 'success' }}
+    timeout-minutes: 20
+    outputs:
+      verdict: ${{ steps.judge.outputs.verdict }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+        with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
+          enable-cache: true
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: sync
+        # `coverage combine` and `coverage json` at the version uv.lock pins
+        # with pytest-cov: the version that wrote the shards' data files.
+        run: uv sync --frozen --all-extras --dev
+
+      - name: download the unit shards' coverage data
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: coverage-unit-*
+          path: ${{ runner.temp }}/coverage-python
+
+      - name: download the swarm-ui shards' coverage data
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: coverage-ui-*
+          path: ${{ runner.temp }}/coverage-ui
+
+      - name: every package against its floor
+        id: judge
+        # Values reach the shell through env:, never through an expression in
+        # run:. This step records the verdict and never fails: the last step
+        # fails the run, after the reports are uploaded.
+        env:
+          UNIT_SHARDS: ${{ needs.plan.outputs.unit_shards }}
+          UI_SHARDS: ${{ needs.plan.outputs.ui_shards }}
+          REPORTS: ${{ runner.temp }}/coverage-reports
+        run: |
+          set -euo pipefail
+          mkdir -p "${REPORTS}" "${RUNNER_TEMP}/coverage-python" "${RUNNER_TEMP}/coverage-ui"
+          rc=0
+          scripts/coverage-floors.sh \
+            --python-data "${RUNNER_TEMP}/coverage-python" --expect-python-shards "$(printf '%s' "${UNIT_SHARDS}" | jq length)" \
+            --ui-data "${RUNNER_TEMP}/coverage-ui" --expect-ui-shards "$(printf '%s' "${UI_SHARDS}" | jq length)" \
+            --keep-reports "${REPORTS}" > "${REPORTS}/verdict.txt" 2>&1 || rc=$?
+          cat "${REPORTS}/verdict.txt"
+          if grep -qE '^(BELOW|MISSING)  ' "${REPORTS}/verdict.txt"; then
+            verdict=below
+          elif [ "${rc}" -ne 0 ]; then
+            verdict=incomplete
+          elif jq -e '[.packages[].floor] | all(. == null)' coverage-floors.json > /dev/null; then
+            verdict=unset
+          else
+            verdict=green
+          fi
+          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
+          echo "verdict: ${verdict} (coverage-floors.sh exit ${rc})"
+
+      - name: upload the per-package reports
+        # What `scripts/lib/coverage_floors.py fill` sets floors from, and the
+        # verdict lines `report` files: one artifact.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: coverage-reports
+          path: ${{ runner.temp }}/coverage-reports
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: a package under its floor, or a measurement not taken, fails the run
+        env:
+          VERDICT: ${{ steps.judge.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          case "${VERDICT}" in
+            green|unset) echo "coverage: ${VERDICT}" ;;
+            *) echo "::error title=coverage ${VERDICT}::see the run summary"; exit 1 ;;
+          esac
+
+  # -------------------------------------------------------------------------
+  # The summary every night, and the one issue (scripts/coverage-report.sh).
+  # The only job that writes to GitHub, so the only one with `issues: write`;
+  # `actions: read` to find the last green run of this workflow, whose commit
+  # starts the list of commits merged since. Full history (fetch-depth: 0) for
+  # that `git log`. It runs no code but the checkout's own script.
+  # -------------------------------------------------------------------------
+  report:
+    name: report the coverage
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
+    needs: [judge]
+    if: ${{ !cancelled() && needs.judge.result != 'skipped' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: download the verdict
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: coverage-reports
+          path: ${{ runner.temp }}/coverage-reports
+
+      - name: summary, and the one issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COVERAGE_VERDICT: ${{ needs.judge.outputs.verdict }}
+          COVERAGE_REPORTS: ${{ runner.temp }}/coverage-reports
+          COVERAGE_SHA: ${{ github.sha }}
+        run: ./scripts/coverage-report.sh
