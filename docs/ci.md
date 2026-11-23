@@ -4528,8 +4528,16 @@ clause is false on each.
 
 **Larger trains.** With the lane's own run gone, the train's run is the only
 test a change gets, so a train gathers more: it boards once 8 pull requests
-would board or once the oldest has been `ready` 15 minutes, up to 40 in one
-train (the owner, 13 November 2026: maximum merge speed) (`min_prs` and `max_wait_minutes` in
+would board or once the oldest has been `ready` 5 minutes, up to 40 in one
+train (the owner, 13 November 2026: maximum merge speed, with a 15-minute
+window; cut to 5 on 23 November 2026 by the improvement plan "a lone pull
+request boards the train sooner": over the 30 days to that date the time from
+the last review or fix finishing to merged had a median of 1.4 hours, and a
+lone ready pull request always waited the full 15 minutes before a train even
+started. The cost is more, smaller trains, so more CI minutes per merged pull
+request; it is judged on the weekly scorecard's trains per day and merge
+latency, and the fallback is `max_wait_minutes` 15, one line. No check is added
+or made slower) (`min_prs` and `max_wait_minutes` in
 `apps/swarm-api/swarm_api/merge_train_gather.json`, `MAX_PRS` in
 [`scripts/merge-train.sh`](../scripts/merge-train.sh); the repository
 variables `MERGE_TRAIN_MIN_PRS`, `MERGE_TRAIN_MAX_WAIT_MINUTES` and
