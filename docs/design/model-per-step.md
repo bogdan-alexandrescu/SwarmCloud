@@ -106,8 +106,10 @@ be stated:
   **`claude-fable-5-1` at $10 / $50 / $0.25**, so Fable costs 2.5 times Opus
   per token. Planning on Fable is therefore a quality choice, not a saving.
   The fable class's pin since 2026-11-23, `claude-fable-5-2`, is seeded at
-  the same figures, COPIED from Fable 5.1 until the owner confirms them
-  (its `updated_by` says so; docs/versions.md, "Re-pinning a model class").
+  the owner's stated **$8 / $40** (2026-11-23); its cache read ($0.20) and
+  cache write ($10.00) are derived from his input price at Fable 5.1's
+  ratios, not stated by him (its `updated_by` says so; docs/versions.md,
+  "Re-pinning a model class").
   Since the owner pinned the sonnet and haiku classes (6 November 2026), the
   seed (`SEED` in `apps/swarm-api/swarm_api/modelprices.py`) prices both 5.5
   classes from the provider's pricing page as read on 2026-10-19:

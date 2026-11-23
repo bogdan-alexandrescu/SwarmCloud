@@ -134,20 +134,26 @@ def test_the_parser_reads_the_saved_page_to_its_figures() -> None:
         assert modelprices.MODEL_NAME.fullmatch(name), name
 
 
-#: Seeded models the saved page predates, and the listed model whose figures
-#: each copies (modelprices.SEED's comment): claude-fable-5-2, the fable
-#: class's pin from 2026-11-23, at Fable 5.1's price until the owner confirms it.
-COPIED_SEEDS = {"claude-fable-5-2": "claude-fable-5-1"}
+#: Seeded models the saved page predates, whose price a person set: the model,
+#: its (input, output, cache_read, cache_write) and the day (modelprices.SEED's
+#: comment). claude-fable-5-2, the fable class's pin from 2026-11-23: the owner
+#: stated $8 / $40; its cache figures are derived from that input price at
+#: claude-fable-5-1's ratios, not stated by him.
+OWNER_SET = {"claude-fable-5-2": ((8.0, 40.0, 0.20, 10.0), "2026-11-23")}
 
 
 def test_every_seeded_model_is_on_the_page_at_its_seeded_figures() -> None:
     parsed = refresh.parse_page(PAGE)
     for name, seed in modelprices.SEED.items():
-        listed = COPIED_SEEDS.get(name, name)
-        assert rates(parsed.prices[listed]) == rates(seed), name
-    for name in COPIED_SEEDS:
-        assert name not in parsed.prices, f"{name} is on the page now: seed its own figures"
-        assert modelprices.SEED[name]["updated_by"].startswith("copied from "), name
+        if name in OWNER_SET:
+            figures, day = OWNER_SET[name]
+            assert rates(seed) == figures, name
+            assert seed["as_of"] == day, name
+            assert "owner" in seed["updated_by"] and day in seed["updated_by"], name
+            continue
+        assert rates(parsed.prices[name]) == rates(seed), name
+    for name in OWNER_SET:
+        assert name not in parsed.prices, f"{name} is on the page now: seed the page's figures"
 
 
 def test_the_parser_reads_haiku_5_5s_two_tiers_from_the_saved_page() -> None:
