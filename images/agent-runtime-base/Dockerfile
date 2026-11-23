@@ -343,7 +343,10 @@ ARG INSTALL_AGENT_CLIS=1
 # Pinned on 2026-09-15; CI bumps these deliberately rather than by rebuilding.
 # Claude Code 2.1.283 (2026-09-27): 2.1.273 refused the pinned MODEL=claude-opus-5-5
 # as unrecognized_model, so every claude-code task failed (task_2ad43c35a18448fca83b).
-ARG CLAUDE_CODE_VERSION=2.1.283
+# Claude Code 2.1.330 (2026-11-23): 2.1.283 refused the fable class's claude-fable-5-2
+# as unrecognized_model (2.1.290 or newer required), so the dev canary failed in 7 s
+# (task_6f6de9e8cbe948079cc5).
+ARG CLAUDE_CODE_VERSION=2.1.330
 ARG CODEX_VERSION=0.154.0
 # 1 (the default, and every runner profile but the browser's): codex is
 # installed beside Claude Code. 0: the same image without it -- the build
