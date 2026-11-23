@@ -2029,7 +2029,9 @@ class SubmissionService:
             # the profile's default, marked here, re-signed by the gate. Not a
             # requirements check, a security review or the re-review, and
             # never a step whose caller named a class.
+            claude = RUNNER_PROFILES.get(task.runner_profile)
             if (source.model_class is None and step_id != rereview_step_id
+                    and claude is not None and claude.model_classes
                     and not is_security_review(task.metadata, os.environ)
                     and task.metadata.get(REVIEW_GATE_METADATA_KEY)
                     and not reviewgate.is_requirements_check(task.metadata)):
@@ -2250,7 +2252,8 @@ class SubmissionService:
         if choice == "off":
             if fix_loop is not None:
                 return spec, None
-            return spec, self._stated_rereview(spec, step_specs, strategy)
+            return spec, self._stated_rereview(spec, step_specs, strategy,
+                                               self._settings.worker_class_models)
         explicit = choice is not None
         if not explicit:
             if not is_mergeable_forge(repository_url):
@@ -2295,6 +2298,7 @@ class SubmissionService:
     @staticmethod
     def _stated_rereview(
         spec: WorkflowCreate, step_specs: Sequence[StepSpec], strategy: str,
+        class_models: Mapping[str, str] | None = None,
     ) -> str | None:
         """The id of the re-review `spec` states itself, or None (archived issue 2217).
 
@@ -2323,7 +2327,7 @@ class SubmissionService:
             if sources is None or sources.review not in by_id:
                 continue
             derived = rereview_step_for(rest, by_id[sources.review].model_dump(), strategy,
-                                        self._settings.worker_class_models)
+                                        class_models)
             if derived is not None and (
                 WorkflowStepCreate.model_validate(derived).model_dump() == step.model_dump()
             ):

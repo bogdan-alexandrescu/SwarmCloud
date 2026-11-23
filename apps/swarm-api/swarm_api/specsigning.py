@@ -265,9 +265,10 @@ def resign_stored(doc: Mapping[str, Any], *, task_id: str, changes: Mapping[str,
     """
     updated = {**doc, **changes}
     metadata = dict(doc.get("metadata") or {}) if isinstance(doc.get("metadata"), Mapping) else {}
-    block = metadata.get(RUNTIME_METADATA_KEY)
-    alternate = (dict(block["alternate"]) if isinstance(block, Mapping)
-                 and isinstance(block.get("alternate"), Mapping) else None)
+    raw_block = metadata.get(RUNTIME_METADATA_KEY)
+    block: Mapping[str, Any] = raw_block if isinstance(raw_block, Mapping) else {}
+    alternate = (dict(block["alternate"]) if isinstance(block.get("alternate"), Mapping)
+                 else None)
     if alternate is not None and alternate_changes:
         alternate.update(alternate_changes)
     subjects = [updated]
