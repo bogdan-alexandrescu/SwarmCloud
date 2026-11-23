@@ -48,6 +48,26 @@ The capacity screen shows the shape: a failed read gets its own panel saying
 are running", and a genuinely empty result gets a different one explaining that
 pools are created at provisioning time.
 
+## Generated API types
+
+`src/generated/api-types.ts` is written from swarm-api's OpenAPI document by
+`scripts/gen_api_types.py` and is never edited by hand. Why: the shapes in
+`types.ts` were copied by hand from `codec.py`, and nothing noticed when the two
+drifted except regex tests that read both languages' source as text (#72).
+
+* The console's `Task` extends the generated `Task`; its fields, which are
+  required and their scalar types come from `swarm_api/wire_types.py`. To change
+  one, change the model, then regenerate from the repository root with
+  `uv run python scripts/gen_api_types.py` and commit the result.
+* `tests/unit/scripts/test_api_types_drift.py` fails while the committed file
+  differs from what the script writes now, and
+  `tests/unit/control_plane/test_wire_types.py` fails when a task route serves a
+  key the model does not declare.
+* The generator builds the app offline -- no credentials, and a database that
+  refuses every use -- so it runs anywhere the unit tests do.
+* The other shapes in `types.ts` are still hand-copied and held by the regex
+  contract tests until a later slice generates them.
+
 ## Fixtures are real
 
 `api.ts` ships the actual pool names and live values read from dev on
