@@ -99,8 +99,8 @@ def test_workflow_submission_goes_through_submit() -> None:
     import inspect
 
     source = inspect.getsource(workflows.submit)
-    assert 'with submit_guard("/v1/workflows")' in source
-    assert 'client.request("POST", "/v1/workflows", payload=body, timeout=SUBMIT_TIMEOUT_SECONDS)' in source
+    assert 'send_submission("/v1/workflows", body,' in source
+    assert '"POST", "/v1/workflows", payload=keyed, timeout=SUBMIT_TIMEOUT_SECONDS)' in source
 
 
 def test_a_refusal_is_not_called_a_timeout(wire):
