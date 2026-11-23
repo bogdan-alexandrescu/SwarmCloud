@@ -85,7 +85,7 @@ from swarm_common.states import TaskState
 
 from ..auth import AuthContext
 from .. import issueruns as issueruns_module
-from .. import refusals, roles
+from .. import refusals, roles, stepclass
 from ..admins import AUDIT_COLLECTION
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import (
@@ -1331,7 +1331,8 @@ def start_run(
     # one finished task nobody reads, while a run without its planner would
     # sit PLANNING for ever.
     planner_spec = planner_task(ref, run_id, open_work, context=context.section,
-                                claude_session=claude_session, model_class=model_class)
+                                claude_session=claude_session, model_class=model_class,
+                                class_models=stepclass.class_models_of(ctx))
     with issueruns_module.submitting(planner_spec):
         submission = ctx.submissions.submit_tasks(auth, [planner_spec])
     planner = submission.tasks[0]

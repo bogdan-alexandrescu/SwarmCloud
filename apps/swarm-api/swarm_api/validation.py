@@ -3832,6 +3832,7 @@ def _free_step_id(base: str, taken: set[str]) -> str:
 
 def rereview_step_for(
     steps: Sequence[StepSpec], review: Mapping[str, Any], strategy: str,
+    class_models: Mapping[str, str] | None = None,
 ) -> dict[str, Any] | None:
     """The re-review step `metadata.merge` "on_merge_verdict" appends, or None.
 
@@ -3870,7 +3871,14 @@ def rereview_step_for(
     files -- the browser only when they are UI, which is the archived issue 2322 cost
     decision. It carries no `inherit`: the review it would inherit from was
     pinned, not resolved (`SubmissionService.submit_workflow`).
+
+    Its class is the re-review's role default (`stepclass`, the owner
+    2026-11-23: `sonnet`), where its profile runs it and `class_models` (the
+    deployment's pins) pins it; a class the caller named on the review is
+    the caller's choice and is kept. `metadata.class_chosen_by` says which.
     """
+    from .stepclass import ROLE_REREVIEW, choose
+
     sources = merge_sources(steps, strategy)
     if (
         strategy != "integrate" or sources is None or sources.review is None
@@ -3911,6 +3919,11 @@ def rereview_step_for(
     for name in ("resource_class", "timeout_seconds"):
         if review.get(name) is not None:
             step[name] = review[name]
+    named = review.get("model_class")
+    choice = choose(ROLE_REREVIEW, profile, class_models,
+                    explicit=named if isinstance(named, str) and named else None)
+    step.update(choice.fields())
+    step["metadata"].update(choice.metadata())
     return step
 
 
