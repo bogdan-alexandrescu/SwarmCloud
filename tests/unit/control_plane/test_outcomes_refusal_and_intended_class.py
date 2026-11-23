@@ -30,6 +30,8 @@ from swarm_api.outcomes import classify_failure, tuple_from_docs
 
 ROOT = Path(__file__).resolve().parents[3]
 LIFECYCLE = ROOT / "apps/agent-worker/agent_worker/lifecycle.py"
+#: The credential refusal moved with the publish guard (issue 68's split).
+PUBLISH_GUARD = ROOT / "apps/agent-worker/agent_worker/publish_guard.py"
 
 LEAK = "the final tree adds a credential in .env (rule aws_access_key_id, line 1); remove it"
 TITLE = "pr-title.txt refused: names a task id; write a fact-style title"
@@ -70,10 +72,13 @@ def test_another_typed_cause_is_never_reread_as_a_refusal():
 def test_the_refusal_literals_are_the_workers_own():
     """Pinned to the writer, as test_outcomes_classifier_parity.py pins the
     others: a reworded refusal would drain back into runner_error."""
-    source = LIFECYCLE.read_text()
-    assert 'f"the final tree adds a credential in {hit.path} (rule ' in source
-    assert 'return f"{PR_TITLE_FILE} refused: {why}; write a fact-style title"' in source
-    assert 'PR_TITLE_FILE = "pr-title.txt"' in source
+    # Each literal is read from the module that defines it, never from both
+    # joined: a literal deleted from its own module must still fail here.
+    lifecycle = LIFECYCLE.read_text()
+    publish_guard = PUBLISH_GUARD.read_text()
+    assert 'f"the final tree adds a credential in {hit.path} (rule ' in publish_guard
+    assert 'return f"{PR_TITLE_FILE} refused: {why}; write a fact-style title"' in lifecycle
+    assert 'PR_TITLE_FILE = "pr-title.txt"' in lifecycle
 
 
 def test_a_task_that_failed_on_the_credential_scan_folds_into_publish_refused():
