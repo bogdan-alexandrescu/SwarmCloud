@@ -1,0 +1,28 @@
+# Voice it's two alerts (terraform/infra/voice_alerts.tf): the log-based metrics and alert policies
+# on the speech sweep's state line. Off with the engine, like the sweep (voice-speech-sweep.yaml).
+version: 1
+entries:
+- id: monitoring.voice-alerts
+  kind: monitoring
+  scope: core
+  stage: 7
+  provider: engine
+  step: infra.pass-2
+  check: gcloud alpha monitoring policies list --project=$P --filter='displayName~voice'
+  apply: terraform/infra/voice_alerts.tf google_logging_metric.voice_session_idle and google_logging_metric.speech_machine_unheld,
+    and the two google_monitoring_alert_policy of the same names (the policies only while create_alerts is true),
+    once voice_speech.enabled and voice_it is "on"
+  verify: a Voice it session left live with no activity, or a speech machine left running with nothing holding
+    it, opens an incident
+  explain: The speech sweep's state line, alerted on, so a stop that did not take reaches someone before the bill does.
+  depends_on:
+  - sched.voice-speech-sweep
+  - api.monitoring
+  evidence:
+  - terraform/infra/voice_alerts.tf
+  refs:
+    terraform:
+    - infra/google_logging_metric.voice_session_idle
+    - infra/google_logging_metric.speech_machine_unheld
+    - infra/google_monitoring_alert_policy.voice_session_idle
+    - infra/google_monitoring_alert_policy.speech_machine_unheld
