@@ -608,7 +608,8 @@ def _decline(db: Any, tenant_id: str, task_id: str, claim_id: str, now: datetime
         }
         fields: dict[str, Any] = {}
         if review_class is not None and data is not None and all(
-                data.get(name) == review_class.read.get(name) for name in RESIGN_GUARD):
+                _guarded(data, name) == _guarded(review_class.read, name)
+                for name in RESIGN_GUARD):
             fields = dict(review_class.fields)
             runtime = _mapping(fields.pop("metadata", None)).get(RUNTIME_METADATA_KEY)
             if runtime is not None:
@@ -1216,8 +1217,22 @@ def _check_requirements(ctx: Any, tenant_id: str,
 
 
 #: The stored fields a gate-time re-sign was computed from: the class is
-#: written only while every one is as the gate read it.
-RESIGN_GUARD = ("spec_signature", "spec_format", "model_class", "model", "runner_profile")
+#: written only while every one is as the gate read it. `input`,
+#: `depends_on` and `metadata` too: a re-sign signs them as read, so a new
+#: signature is never written beside a value rewritten after the gate's
+#: read, which it does not cover.
+#: `metadata` is compared without this module's own claim marker
+#: (`_guarded`), which the claim adds after the read.
+RESIGN_GUARD = ("spec_signature", "spec_format", "model_class", "model", "runner_profile",
+                "input", "depends_on", "metadata")
+
+
+def _guarded(doc: Mapping[str, Any], name: str) -> Any:
+    """`doc[name]` as `RESIGN_GUARD` compares it."""
+    if name != "metadata":
+        return doc.get(name)
+    return {k: v for k, v in _mapping(doc.get(name)).items()
+            if k != CONTROL_PUBLISH_METADATA_KEY}
 
 
 @dataclass(frozen=True)
