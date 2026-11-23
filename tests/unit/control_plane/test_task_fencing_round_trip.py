@@ -40,7 +40,6 @@ and it round-tripped throughout. If it ever fails, the harness is wrong.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -305,20 +304,19 @@ def test_the_task_list_route_serves_them(client, db):
 UI = Path(__file__).resolve().parents[3] / "apps/swarm-ui/src"
 
 
-def _task_interface() -> str:
-    source = (UI / "types.ts").read_text()
-    match = re.search(r"export interface Task \{(.*?)\n\}", source, re.S)
-    assert match is not None, "types.ts no longer declares `export interface Task`"
-    return match.group(1)
-
-
-@pytest.mark.skipif(not UI.is_dir(), reason="apps/swarm-ui/src is not present")
 @pytest.mark.parametrize("field", FENCING)
 def test_the_ui_declares_the_fencing_fields_on_task(field):
-    assert re.search(rf"^\s*{field}:", _task_interface(), re.M), (
-        f"apps/swarm-ui/src/types.ts does not type `{field}` on Task, so no "
-        "screen can render the fencing generation even though the API sends it"
+    """The console's `Task` is GENERATED from `swarm_api.wire_types.Task`
+    (part of #72; test_api_types_drift.py holds the generated file to the
+    model), so the field is declared there, REQUIRED: the API sends it on
+    every task, and 0 is an answer."""
+    from swarm_api.wire_types import Task as WireTask
+
+    assert field in WireTask.model_fields, (
+        f"wire_types.Task does not declare `{field}`, so the console's generated Task "
+        "cannot render the fencing generation even though the API sends it"
     )
+    assert WireTask.model_fields[field].is_required(), f"`{field}` is sent on every task"
 
 
 @pytest.mark.skipif(not UI.is_dir(), reason="apps/swarm-ui/src is not present")

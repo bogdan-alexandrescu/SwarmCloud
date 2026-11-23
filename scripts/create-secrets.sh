@@ -30,6 +30,7 @@
 #   scripts/create-secrets.sh --graph-ticket-key [--overwrite swarm-graph-ticket-key]
 #   scripts/create-secrets.sh --github-app-webhook-secret --stdin
 #   scripts/create-secrets.sh --settings-mac-key [--overwrite swarm-settings-key]
+#   scripts/create-secrets.sh --join-person --stdin [--overwrite swarm-accept-join-person] < authorized_user.json
 #
 # The forge token (`--provider git`, stored as swarm-tenant-<tenant>-git) is
 # read by the tenant's workers AND by swarm-api, which writes an issue run's
@@ -173,6 +174,17 @@
 # replaced version as SWARM_SETTINGS_KEY_PREVIOUS on both readers until the
 # re-sign has run.
 #
+# --join-person adds a version to `swarm-accept-join-person`, the join
+# acceptance probe's person credential: an authorized_user JSON object (`type`
+# "authorized_user", `client_id`, `refresh_token`) that
+# scripts/acceptance/groups/join.sh exchanges for an openid-email ID token
+# (docs/design/join-requests.md section 8). A copy of --egress-credential:
+# from --stdin ONLY into a private 0600 file, refused unless it has that
+# shape, never printed. Terraform owns the container and its one reader,
+# swarm-verify (terraform/infra/acceptance_join.tf, dev only); this never
+# creates it, and replacing an enabled version needs the same typed
+# confirmation (--overwrite swarm-accept-join-person).
+#
 # There is no --git-wf. The `-git-wf` slot (a person's workflow-scoped token
 # for the platform tenant) was removed on 2026-10-22 by the owner's decision (archived issue 2029,
 # WF-APP-TOKEN): swarm-api now pushes a change under .github/workflows/ or
@@ -212,6 +224,7 @@ GITHUB_APP_WEBHOOK_SECRET=0
 SETTINGS_MAC_KEY=0
 OVERWRITE=""
 TAILSCALE_OAUTH=0
+JOIN_PERSON=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -233,11 +246,12 @@ while [[ $# -gt 0 ]]; do
     --graph-ticket-key) GRAPH_TICKET_KEY=1; shift ;;
     --github-app-webhook-secret) GITHUB_APP_WEBHOOK_SECRET=1; shift ;;
     --settings-mac-key) SETTINGS_MAC_KEY=1; shift ;;
+    --join-person)      JOIN_PERSON=1; shift ;;
     --overwrite)        [[ $# -ge 2 ]] || die "--overwrite takes the name of the secret to add a version to"
                         OVERWRITE="$2"; shift 2 ;;
     # A value glued to a flag is a value on the command line, which argv
     # exposes through ps and shell history. Refused without repeating it.
-    --egress-key=*|--egress-credential=*|--typesafe-fwd-key=*|--workspace-grant-key=*|--graph-ticket-key=*|--github-app-webhook-secret=*|--settings-mac-key=*)
+    --egress-key=*|--egress-credential=*|--typesafe-fwd-key=*|--workspace-grant-key=*|--graph-ticket-key=*|--github-app-webhook-secret=*|--settings-mac-key=*|--join-person=*)
       die "${1%%=*} takes no value on the command line: the key is generated, and the credential is read from --stdin only. Nothing was stored." ;;
     --tailscale-oauth)  TAILSCALE_OAUTH=1; shift ;;
     # The removed slot's flag: unknown, and a glued value is never repeated.
@@ -353,6 +367,77 @@ confirm_overwrite() {
   die "${name} already has an enabled version and its reader takes the latest. Confirm by typing its name:
      --overwrite ${name}   (SWARM_ASSUME_YES is not a confirmation). Nothing was stored."
 }
+
+if [[ "${JOIN_PERSON}" -eq 1 ]]; then
+  # The secret's name is fixed: terraform/infra/acceptance_join.tf creates it
+  # and its one reader, swarm-verify, and scripts/acceptance/groups/join.sh
+  # reads it. A copy of the --egress-credential path below.
+  JOIN_NAME="swarm-accept-join-person"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 || "${TAILSCALE_OAUTH}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${TYPESAFE_FWD_KEY}" -eq 1 || "${WORKSPACE_GRANT_KEY}" -eq 1 || "${GRAPH_TICKET_KEY}" -eq 1 || "${GITHUB_APP_WEBHOOK_SECRET}" -eq 1 || "${SETTINGS_MAC_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--join-person takes only --stdin and --overwrite: the credential is the join probe's, not a tenant's, a file argument is a path to a plaintext copy, and an old version is disabled by hand once the probe runs on the new one"
+  fi
+  [[ "${READ_STDIN}" -eq 1 ]] || die "--join-person reads the value from --stdin and nothing else"
+  # Exists first: terraform/infra/acceptance_join.tf creates it with its reader.
+  JOIN_ERR=""
+  if ! JOIN_ERR="$(gcloud secrets describe "${JOIN_NAME}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${JOIN_ERR}"
+    die "${JOIN_NAME} does not exist in ${PROJECT_ID}. terraform creates it with its reader (terraform/infra/acceptance_join.tf, enable_acceptance_join_person = true, dev only): apply that first, then this"
+  fi
+  confirm_overwrite "${JOIN_NAME}"
+
+  step "Secret ${JOIN_NAME}"
+  JOIN_TMP="$(mktemp -d "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
+  chmod 0700 "${JOIN_TMP}"
+  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
+  trap "find '${JOIN_TMP}' -type f -exec rm -f {} + 2>/dev/null || true; rmdir '${JOIN_TMP}' 2>/dev/null || true" EXIT INT TERM
+  JOIN_FILE="${JOIN_TMP}/value"
+  ( umask 077; : >"${JOIN_FILE}" )
+  if [[ -t 0 ]]; then
+    die "the credential is a JSON document: redirect it into stdin (--stdin < <file>), then delete the file"
+  fi
+  cat >"${JOIN_FILE}"
+  if [[ -s "${JOIN_FILE}" ]]; then
+    printf '%s' "$(cat "${JOIN_FILE}")" >"${JOIN_FILE}.trimmed"
+    mv "${JOIN_FILE}.trimmed" "${JOIN_FILE}"
+    chmod 0600 "${JOIN_FILE}"
+  fi
+  JOIN_BYTES="$(wc -c <"${JOIN_FILE}" | tr -d ' ')"
+  [[ "${JOIN_BYTES}" -gt 0 ]] || die "refusing to store an empty secret"
+  [[ "${JOIN_BYTES}" -lt 65536 ]] || die "value is ${JOIN_BYTES} bytes; that is not an authorized_user credential. Nothing was stored"
+  # The shape BLOCKS: groups/join.sh exchanges the refresh token for an ID
+  # token, and a value it cannot use would show up only when the probe runs.
+  # The answer names the problem and never a value.
+  require_cmd python3
+  if ! python3 - "${JOIN_FILE}" <<'PYEOF3'; then
+import json, sys
+try:
+    body = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit("not JSON")
+if not isinstance(body, dict):
+    sys.exit("not a JSON object")
+if body.get("type") != "authorized_user":
+    sys.exit("type is not authorized_user")
+for field in ("client_id", "refresh_token"):
+    if not isinstance(body.get(field), str) or not body[field].strip():
+        sys.exit("no " + field)
+PYEOF3
+    die "the value is not an authorized_user credential (type authorized_user, client_id, refresh_token); nothing was stored"
+  fi
+  info "value is an authorized_user credential (${JOIN_BYTES} bytes)"
+  JOIN_ADD_ERR="${JOIN_TMP}/add.err"
+  if ! JOIN_VERSION="$(gcloud secrets versions add "${JOIN_NAME}" \
+       --project "${PROJECT_ID}" --data-file="${JOIN_FILE}" --format='value(name)' 2>"${JOIN_ADD_ERR}")"; then
+    die_if_auth_failure "$(cat "${JOIN_ADD_ERR}")"
+    redact <"${JOIN_ADD_ERR}" | head -n 3 | sed 's/^/     /' >&2
+    die "could not add a version of ${JOIN_NAME}; nothing was stored"
+  fi
+  ok "added version ${JOIN_VERSION##*/} of ${JOIN_NAME}; its value was never printed"
+  dim "swarm-verify is its one reader (terraform/infra/acceptance_join.tf); the join probe reads latest on its next run"
+  dim "delete any file you redirected from; Secret Manager is the only place the value lives"
+  exit 0
+fi
 
 if [[ "${SETTINGS_MAC_KEY}" -eq 1 ]]; then
   # The secret's name is fixed: swarm_api.judgment.SETTINGS_KEY_SECRET_ID reads
@@ -566,7 +651,7 @@ PYEOF2
 fi
 
 if [[ -n "${OVERWRITE}" ]]; then
-  die "--overwrite confirms a new version of swarm-egress-key, swarm-egress-credential, swarm-typesafe-fwd-key, swarm-graph-ticket-key or swarm-settings-key only"
+  die "--overwrite confirms a new version of swarm-egress-key, swarm-egress-credential, swarm-typesafe-fwd-key, swarm-graph-ticket-key, swarm-settings-key or swarm-accept-join-person only"
 fi
 
 if [[ "${CHILD_KEY}" -eq 1 && "${LIVE_KEY}" -eq 1 ]]; then
