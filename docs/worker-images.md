@@ -440,6 +440,16 @@ coderabbit review --agent --base main  # against a named base
 Nothing runs it for the lane. The platform does not start a review, read
 its findings or gate a pull request on them: the CLI is a tool, like `gh`.
 
+**The hosted CodeRabbit app does not review pull requests here** (issue 140).
+`.coderabbit.yaml` at the repository root sets `reviews.auto_review.enabled`
+and `drafts` to `false`, and the CLI reads the same file for the lane's local
+review. Why: lane PRs fold into merge trains and the train's CI is the gate, so
+a hosted review would cost quota and comment noise and gate nothing. The
+installed app still posts a `CodeRabbit` status; it is not a required check,
+nothing in the merge train or auto-merge waits on it, and its `success` with
+"Review skipped" says nothing about the code: never read it as reviewed.
+`tests/unit/worker/test_coderabbit_config.py` keeps the file from drifting.
+
 **What is installed.** The vendor's 0.9.1 linux/amd64 release, pinned and
 sha256-checked in `images/agent-runtime-base/Dockerfile` (which records where
 the checksum came from, the size, and the scan), root-owned at
