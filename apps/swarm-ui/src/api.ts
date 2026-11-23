@@ -9,7 +9,7 @@ import {
   type HealthStatus,
   type PoolHealth,
 } from './accountHealthModel'
-import { apiHeaders, chosenTenant, dropRefusedTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type Result } from './fetch'
+import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, noteFixtureProbe, read, route, tenantQuery, write, type ApiError, type ApiRoute, type ErrorEnvelope, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
@@ -18187,6 +18187,138 @@ export async function loadPendingReadback(sessionId: string): Promise<Result<Voi
   const r = await read<unknown>(target, () => false)
   if (r.status !== 'ok' && r.status !== 'stale') return r
   return { ...r, data: normVoiceReadback((r.data as { readback?: unknown } | null)?.readback) }
+}
+
+// ---- Voice it › one session: its transcript and its summary (swarm-api voice routes) ----
+
+/** `GET`: the session's transcript, text/plain, served as an attachment. */
+export const VOICE_SESSION_TRANSCRIPT = '/v1/voice/sessions/{session_id}/transcript'
+/** `GET`: the session's summary and where it stands. */
+export const VOICE_SESSION_SUMMARY = '/v1/voice/sessions/{session_id}/summary'
+
+/** Where a session's summary stands: written, still to be written, not written (the cap, a failure), or none to write. */
+export type VoiceSummaryState = 'written' | 'pending' | 'capped' | 'failed' | 'none'
+export const VOICE_SUMMARY_STATES: readonly VoiceSummaryState[] = ['written', 'pending', 'capped', 'failed', 'none']
+
+export interface VoiceSessionSummary {
+  session_id: string
+  state: VoiceSummaryState
+  text: string | null
+  at: string | null
+}
+
+/** A served summary; a state this console does not know is `none`, so nothing is drawn for it. */
+export function normVoiceSessionSummary(raw: unknown, sessionId: string): VoiceSessionSummary {
+  const o = raw !== null && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+  return {
+    session_id: typeof o.session_id === 'string' ? o.session_id : sessionId,
+    state: VOICE_SUMMARY_STATES.find((s) => s === o.state) ?? 'none',
+    text: typeof o.text === 'string' ? o.text : null,
+    at: typeof o.at === 'string' ? o.at : null,
+  }
+}
+
+/** `GET /v1/voice/sessions/{s}/summary`. */
+export async function loadVoiceSessionSummary(sessionId: string): Promise<Result<VoiceSessionSummary>> {
+  const target = route(VOICE_SESSION_SUMMARY, { session_id: sessionId })
+  if (USE_FIXTURES) {
+    return voiceFixtureOk(target, {
+      session_id: sessionId,
+      state: 'written',
+      text: 'Planned the export page, agreed its two lanes and opened the first.',
+      at: new Date(FIXTURE_NOW - 3_600_000).toISOString(),
+    })
+  }
+  const r = await read<unknown>(target, () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r
+  return { ...r, data: normVoiceSessionSummary(r.data, sessionId) }
+}
+
+/** A transcript read for saving: its bytes and the file name to save them under. */
+export interface VoiceTranscriptFile {
+  blob: Blob
+  filename: string
+}
+
+/** The transcript read's fetch options that never vary: the IAP cookie, same origin only. */
+const TRANSCRIPT_READ = { sameOrigin: 'same-origin' } as const satisfies Record<string, RequestCredentials>
+
+/**
+ * The file name from a Content-Disposition, its last path segment only, or
+ * the session's own name when the server gave none.
+ */
+export function transcriptFilename(disposition: string | null, sessionId: string): string {
+  const fallback = `voice-${sessionId}-transcript.txt`
+  if (disposition === null) return fallback
+  let name: string | undefined
+  const star = /filename\*\s*=\s*utf-8''([^;]+)/i.exec(disposition)?.[1]
+  if (star !== undefined) {
+    try {
+      name = decodeURIComponent(star.trim())
+    } catch {
+      name = undefined
+    }
+  }
+  name ??= /filename\s*=\s*"([^"]*)"/i.exec(disposition)?.[1] ?? /filename\s*=\s*([^;\s]+)/i.exec(disposition)?.[1]
+  const last = (name ?? '').split(/[\\/]/).pop()?.trim() ?? ''
+  return last === '' || last === '.' || last === '..' ? fallback : last
+}
+
+/**
+ * `GET /v1/voice/sessions/{s}/transcript`, for a download. Not `read()`: the
+ * body is text, not JSON. It carries what `read()` carries (the chosen
+ * tenant's header and the IAP cookie), which a bare link cannot, and it
+ * classifies a refusal as `read()` does. A sign-in page in place of the file
+ * (an expired IAP session answers 200 with HTML) is an expired sign-in,
+ * never a transcript.
+ */
+export async function loadVoiceTranscript(sessionId: string): Promise<Result<VoiceTranscriptFile>> {
+  const target = route(VOICE_SESSION_TRANSCRIPT, { session_id: sessionId })
+  if (USE_FIXTURES) {
+    return voiceFixtureOk(target, {
+      blob: new Blob(['person: Draw the export page\nvoice: On it\n'], { type: 'text/plain' }),
+      filename: transcriptFilename(null, sessionId),
+    })
+  }
+  const tenant = chosenTenant()
+  let res: Response
+  try {
+    res = await fetch(target.url, { headers: apiHeaders({ accept: 'text/plain' }, tenant), credentials: TRANSCRIPT_READ.sameOrigin })
+  } catch (err) {
+    return { status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: err instanceof Error ? err.message : 'The request did not complete.' } }
+  }
+  const type = res.headers.get('content-type') ?? ''
+  if (!res.ok) {
+    let env: ErrorEnvelope | null = null
+    if (type.includes('application/json')) {
+      try {
+        const v: unknown = await res.json()
+        if (v !== null && typeof v === 'object') {
+          const o = v as Record<string, unknown>
+          env = typeof o.message === 'string' ? (o as ErrorEnvelope) : { message: typeof o.detail === 'string' ? o.detail : undefined }
+        }
+      } catch {
+        env = null
+      }
+    }
+    const ra = Number(res.headers.get('retry-after'))
+    const err = classifyFailure(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+    dropRefusedTenant(res.status, err.code, tenant)
+    return { status: 'error', error: err.kind === 'not_found' ? { ...err, template: target.template } : err }
+  }
+  if (type.includes('text/html')) {
+    return {
+      status: 'error',
+      error: {
+        kind: 'session_expired',
+        httpStatus: res.status,
+        code: null,
+        message: 'The API answered with a page instead of the transcript, which is how an expired sign-in arrives. Reload to sign in again.',
+      },
+    }
+  }
+  const blob = await res.blob()
+  return { status: 'ok', fetchedAt: Date.now(), data: { blob, filename: transcriptFilename(res.headers.get('content-disposition'), sessionId) } }
 }
 
 /**
