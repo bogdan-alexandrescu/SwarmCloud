@@ -83,6 +83,8 @@ WF_START_BUDGET_SECONDS=120
 # review_round_spec), and the mock writes verdict.json only when its input
 # names it (`artifact_name`), and commits nothing, so a mock re-review would
 # park the loop `review_unreadable` and a mock fix round `fix_changed_nothing`.
+# So a step can wait on its workspace account's quota window; a loop held by
+# one that never started is NOT MEASURED, not FAIL (_wf_fix_loop_quota_parked).
 WF_FIX_LOOP_FILE="fix-loop-rounds.txt"
 WF_FIX_LOOP_MERGE_AT=2
 WF_FIX_LOOP_MAX_ROUNDS=3
@@ -96,6 +98,9 @@ WF_FIX_LOOP_SECONDS=3600
 # offer the profile, or a FAIL's when its catalogue could not be read.
 WF_FIX_LOOP_SKIP=""
 WF_FIX_LOOP_PROBLEM=""
+# Set by _wf_fix_loop_quota_parked: the not-measured reason and its task.
+WF_FIX_LOOP_PARKED=""
+WF_FIX_LOOP_PARKED_TASK=""
 
 workflow_checks() {
   cat <<'EOF'
@@ -944,6 +949,59 @@ _wf_fix_loop_settled() {
       else "running" end' <<<"${doc}")" == "settled" ]]
 }
 
+# _wf_fix_loop_quota_parked WORKFLOW_ID FIX LOOP -> 0, with WF_FIX_LOOP_PARKED
+# the check's "not measured" reason and WF_FIX_LOOP_PARKED_TASK the step's
+# task, when the loop did not settle only because the claude-code step it
+# waits on never ran: no attempt, never started, PARKED
+# PROVIDER_QUOTA_EXHAUSTED with next_eligible_at still ahead -- the park the
+# scheduler writes when no account of the workspace's pool can take the step
+# (scheduler/loop.py `_park_on_pool`, or the worker's `_park_no_account`).
+# Owner decision 2026-11-23 (issue 3): that is NOT MEASURED, not FAIL. On
+# 2026-11-10 `fix` sat in that park for the check's whole hour, its window 28
+# hours out, and the loop waited on its parent exactly as designed.
+#
+# The step the loop waits on: `fix` while the loop is PARKED
+# DEPENDENCY_INCOMPLETE; the newest appended round (review-fix:N or
+# re-review:N) while it is PARKED FIX_ROUNDS_RUNNING. Every round read is
+# recorded, so cleanup cancels it. 1 for anything else -- a loop parked on
+# its own phase, a round or dependency that ran, failed or started, a window
+# already past, and any read that failed: those stay the FAIL they were.
+_wf_fix_loop_quota_parked() {
+  local wid="$1" fix="$2" loop="$3" doc step="" task="" out rounds s t window
+  WF_FIX_LOOP_PARKED=""
+  WF_FIX_LOOP_PARKED_TASK=""
+  doc="$(task_doc "${loop}")" || return 1
+  case "$(jq -r '"\(.state // "MISSING") \(.park_reason // "none")"' <<<"${doc}")" in
+    "PARKED DEPENDENCY_INCOMPLETE")
+      step="fix"
+      task="${fix}" ;;
+    "PARKED FIX_ROUNDS_RUNNING")
+      out="${ACC_WORK}/wf-fix-loop-unsettled.json"
+      rounds="${ACC_WORK}/wf-fix-loop-unsettled-rounds.txt"
+      api_fetch "/workflows/${wid}" "${out}" || return 1
+      jq -r '.workflow.steps[]? | select((.step_id // "") | test("^(re-review|review-fix):"))
+        | "\(.step_id) \(.task_id // "")"' "${out}" >"${rounds}" || return 1
+      while read -r s t; do
+        [[ -n "${t}" ]] || continue
+        acc_record_task "${t}"
+        step="${s}"
+        task="${t}"
+      done <"${rounds}" ;;
+    *) return 1 ;;
+  esac
+  [[ -n "${task}" ]] || return 1
+  doc="$(task_doc "${task}")" || return 1
+  window="$(jq -r "${WF_JQ_EPOCH}"'
+      if .state == "PARKED" and .park_reason == "PROVIDER_QUOTA_EXHAUSTED"
+         and (.attempt_count // 0) == 0 and .started_at == null
+         and ((.next_eligible_at | epoch) // 0) > now
+      then .next_eligible_at | epoch | strftime("%Y-%m-%dT%H:%MZ") else empty end' <<<"${doc}")" || return 1
+  [[ -n "${window}" ]] || return 1
+  # The workspace the run used: the step's own tenant, else the one it was sent to.
+  WF_FIX_LOOP_PARKED="not measured: the $(jq -r --arg t "${SWARM_API_TENANT}" '.tenant_id // $t' <<<"${doc}") workspace's account is quota-parked until ${window} (${step}, ${task})"
+  WF_FIX_LOOP_PARKED_TASK="${task}"
+}
+
 # _wf_check_fix_loop WORKFLOW_JSON: the fix loop, live (docs/design/fix-loop.md
 # §8 row FL-ACCEPT). The loop ends SUCCEEDED on re-review:2's MERGE, the
 # workflow holds exactly the rounds WF_FIX_LOOP_ROUNDS, the reviews said
@@ -963,7 +1021,11 @@ _wf_check_fix_loop() {
   loop="$(workflow_step_task "${wf}" loop)"
 
   if ! wait_until "the fix loop ended, or parked for a person" "${WF_FIX_LOOP_SECONDS}" _wf_fix_loop_settled "${loop}"; then
-    acc_fail "the loop is $(task_field "${loop}" '"\(.state // "MISSING") \(.park_reason // "none")"') ${WF_FIX_LOOP_SECONDS} s after it was submitted" "${loop}"
+    if _wf_fix_loop_quota_parked "${wid}" "${fix}" "${loop}"; then
+      acc_skip "${WF_FIX_LOOP_PARKED}" "${WF_FIX_LOOP_PARKED_TASK}"
+    else
+      acc_fail "the loop is $(task_field "${loop}" '"\(.state // "MISSING") \(.park_reason // "none")"') ${WF_FIX_LOOP_SECONDS} s after it was submitted" "${loop}"
+    fi
     _wf_fix_loop_close "${fix}"
     return 0
   fi

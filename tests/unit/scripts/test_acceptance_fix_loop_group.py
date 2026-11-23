@@ -305,6 +305,92 @@ def test_an_unreadable_catalogue_is_a_failure_never_a_skip(tmp_path):
                      "this deployment offers fix-loop is not known"], lines
 
 
+# A loop that did not settle because a claude-code step it waits on never
+# started: parked for its workspace account's quota window (issue 3, the
+# owner 2026-11-23). Not measured, never a FAIL -- and only that.
+QUOTA_UNTIL = "2099-11-11T11:59:59.123456Z"
+
+
+def _quota_parked(tenant: str = "ws-run-7", **doc: Any) -> dict[str, Any]:
+    return {"state": "PARKED", "park_reason": "PROVIDER_QUOTA_EXHAUSTED", "attempt_count": 0,
+            "started_at": None, "next_eligible_at": QUOTA_UNTIL, "tenant_id": tenant,
+            "blocked_by": [{"reason": "PROVIDER_QUOTA_EXHAUSTED", "park_phase": "account_assign"}],
+            **doc}
+
+
+def _unsettled(tmp_path: Path, loop: dict[str, Any], rounds: tuple[str, ...],
+               docs: dict[str, dict[str, Any] | None]) -> list[str]:
+    """The wait ends with the loop as `loop`; `docs` rewrites (or, None, removes) task docs."""
+    wf = _world(tmp_path, loop={"attempt_count": 0, **loop}, rounds=rounds, verdicts=())
+    for task_id, doc in docs.items():
+        path = tmp_path / "tasks" / f"{task_id}.json"
+        if doc is None:
+            path.unlink()
+        else:
+            path.write_text(json.dumps({"id": task_id, **doc}))
+    return _judged(tmp_path, wf)
+
+
+def test_a_quota_parked_fix_step_is_not_measured_naming_the_step_the_workspace_and_the_time(tmp_path):
+    verdicts = _unsettled(tmp_path, {"state": "PARKED", "park_reason": "DEPENDENCY_INCOMPLETE"}, (),
+                          {"task_fix": _quota_parked()})
+    assert verdicts == [f"SKIP {CHECK}: not measured: the ws-run-7 workspace's account is "
+                        "quota-parked until 2099-11-11T11:59Z (fix, task_fix)"], verdicts
+    assert (tmp_path / "closed").read_text().strip().startswith("CLOSE")
+
+
+def test_a_quota_parked_re_review_round_is_not_measured(tmp_path):
+    rounds = ("re-review:1", "review-fix:2", "re-review:2")
+    verdicts = _unsettled(tmp_path, {"state": "PARKED", "park_reason": "FIX_ROUNDS_RUNNING"}, rounds,
+                          {"task_re_review_2": _quota_parked(tenant="smoke")})
+    assert verdicts == [f"SKIP {CHECK}: not measured: the smoke workspace's account is "
+                        "quota-parked until 2099-11-11T11:59Z (re-review:2, task_re_review_2)"], verdicts
+    # Every round it read is cancelled at exit if it still runs.
+    recorded = (tmp_path / "recorded").read_text().split()
+    assert [r for r in recorded if r != "RECORD"] == ["task_re_review_1", "task_review_fix_2",
+                                                     "task_re_review_2"]
+
+
+def test_a_loop_parked_for_a_person_with_a_quota_parked_fix_still_fails_on_its_phase(tmp_path):
+    loop = {"state": "PARKED", "park_reason": "HUMAN_REQUIRED",
+            "blocked_by": [{"park_phase": "fix_changed_nothing", "fix_loop": {"round": 2}}]}
+    verdicts = _unsettled(tmp_path, loop, ("re-review:1", "review-fix:2"),
+                          {"task_review_fix_2": _quota_parked()})
+    fails = [v for v in verdicts if v.startswith("FAIL")]
+    assert fails and "fix_changed_nothing" in fails[0], verdicts
+    assert not any(v.startswith("SKIP") for v in verdicts), verdicts
+
+
+@pytest.mark.parametrize("fix", [
+    {"state": "FAILED", "attempt_count": 1, "started_at": "2026-11-10T06:40:00Z"},
+    _quota_parked(attempt_count=1, started_at="2026-11-10T06:40:00Z"),
+    _quota_parked(next_eligible_at="2020-01-01T00:00:00Z"),
+    _quota_parked(park_reason="SCHEDULED_RETRY"),
+    None,
+], ids=["fix-failed", "fix-started-then-parked", "window-past", "not-quota", "fix-unreadable"])
+def test_any_other_fix_step_that_holds_the_loop_stays_a_failure(tmp_path, fix):
+    verdicts = _unsettled(tmp_path, {"state": "PARKED", "park_reason": "DEPENDENCY_INCOMPLETE"}, (),
+                          {"task_fix": fix})
+    assert verdicts == [f"FAIL {CHECK}: the loop is PARKED DEPENDENCY_INCOMPLETE "
+                        f"{_var('WF_FIX_LOOP_SECONDS')} s after it was submitted"], verdicts
+
+
+def test_a_round_that_failed_or_an_unreadable_workflow_stays_a_failure(tmp_path):
+    loop = {"state": "PARKED", "park_reason": "FIX_ROUNDS_RUNNING"}
+    failed = _unsettled(tmp_path, loop, ("re-review:1",), {"task_re_review_1": {"state": "FAILED"}})
+    assert [v[:4] for v in failed] == ["FAIL"], failed
+    (tmp_path / "workflow.json").unlink()
+    unreadable = _judged(tmp_path, json.dumps({"workflow": {"workflow_id": "wf-1", "steps": [
+        {"step_id": s, "task_id": f"task_{s}"} for s in ("review", "fix", "loop")]}}))
+    assert [v[:4] for v in unreadable] == ["FAIL"], unreadable
+
+
+def test_a_loop_parked_on_its_own_wait_with_a_quota_parked_fix_stays_a_failure(tmp_path):
+    verdicts = _unsettled(tmp_path, {"state": "PARKED", "park_reason": "SCHEDULED_RETRY"}, (),
+                          {"task_fix": _quota_parked()})
+    assert [v[:4] for v in verdicts] == ["FAIL"], verdicts
+
+
 @pytest.mark.parametrize("available", ["true", 1])
 def test_only_a_boolean_true_offers_the_profile(tmp_path, available):
     _world(tmp_path, available=available)
