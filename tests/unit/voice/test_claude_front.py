@@ -197,7 +197,7 @@ class FakePlanner:
         #: Every read the front ran (`Planner.read`).
         self.reads: list[dict] = []
 
-    async def delegate(self, *, person, grant, transcript, delegation_id=None, model=None):  # noqa: ANN001
+    async def delegate(self, *, person, grant, transcript, delegation_id=None, model=None, admitted=False):  # noqa: ANN001
         self.calls.append({"person": person, "grant": grant, "transcript": list(transcript),
                            "delegation_id": delegation_id})
         self.models.append(model)

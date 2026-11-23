@@ -148,6 +148,9 @@ class World:
         self.refuse: str | None = None
         self.broker_calls: list[tuple[str, dict]] = []
         self.api_requests: list[httpx.Request] = []
+        #: The caps' state swarm-api answers (swarm_api/voice/budget.py), and how often it was asked.
+        self.budget: dict = {"warned": [], "capped": None, "ends_at": None, "notices": [], "ended": False}
+        self.budget_asks = 0
         self.cards: list[dict] = []
         self.visuals: list[dict] = []
         #: The visual each write landed on, in order.
@@ -190,6 +193,11 @@ class World:
         return httpx.Response(404)
 
     def swarm_api(self, request: httpx.Request) -> httpx.Response:
+        if (request.method == "POST" and request.url.path == f"/v1/voice/sessions/{self.grant.session_id}/work"
+                and json.loads(request.content) == {"budget": True}):
+            # The caps' question a turn asks first (planner._capped): kept apart.
+            self.budget_asks += 1
+            return httpx.Response(200, json={"session_id": self.grant.session_id, "budget": self.budget})
         self.api_requests.append(request)
         if (request.headers.get("authorization") != f"Bearer {self.id_token}"
                 or request.headers.get(GRANT_HEADER) != self.grant.headers()[GRANT_HEADER]
@@ -818,3 +826,33 @@ def test_with_both_tiers_spent_the_turn_says_the_pool_is_full_and_holds_nothing(
     assert released == ["/v1/voice/lease/acct-0/release", "/v1/voice/lease/acct-1/release"]
     for key in world.keys.values():
         assert key not in caplog.text
+
+
+def test_a_turn_asks_the_caps_first_and_runs_below_them(world):
+    world.plan = {"calls": [["speak", {"summary": "Done."}]]}
+    result = _delegate(world)
+    assert world.budget_asks == 1
+    assert result.spoken != pl.CAP_SENTENCES[pl.CAPPED_REASON]
+    assert world.broker_calls
+
+
+def test_a_turn_at_a_cap_says_its_sentence_and_leases_nothing(world):
+    world.budget = {**world.budget, "capped": "session", "ends_at": "2026-11-23T10:02:00+00:00"}
+    result = _delegate(world)
+    assert result.spoken == pl.CAP_SENTENCES[pl.CAPPED_REASON]
+    # No account leased, no model run, nothing read or written.
+    assert world.broker_calls == [] and world.api_requests == [] and not world.dump.exists()
+
+
+def test_an_admitted_turn_does_not_ask_the_caps_again(world):
+    world.plan = {"calls": [["speak", {"summary": "Done."}]]}
+
+    async def main():
+        try:
+            return await world.planner().delegate(person=PERSON, grant=world.grant,
+                                                  transcript=[("person", "Plan it.")], admitted=True)
+        finally:
+            await world.http.aclose()
+
+    asyncio.run(main())
+    assert world.budget_asks == 0
