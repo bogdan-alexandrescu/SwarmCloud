@@ -327,7 +327,7 @@ board_wanted() {
 # needs no escaping.
 print_rearm() {
   printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' \
-    "The sc plugin's watch is on for this project: a \`/sc check\` every $1 minutes. Claude Code's scheduled prompts end with each session, so run \`/sc watch $1m\` now to re-arm it (\`/sc watch off\` turns it off)."
+    "The sc plugin's watch is on for this project: a \`/sc:check\` every $1 minutes. Claude Code's scheduled prompts end with each session, so run \`/sc watch $1m\` now to re-arm it (\`/sc watch off\` turns it off)."
 }
 
 # The session this hook fires for: Claude Code's stdin `session_id`. Read

@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from swarm_mcp import buildboard, server
+import sc_skill_text
 from test_plugin_skills import _load
 
 _REPO = Path(__file__).resolve().parents[3]
@@ -408,7 +409,8 @@ def _section(body: str, heading: str) -> str:
 
 
 def test_build_board_is_a_verb_of_sc():
-    fields, body = _load(_SKILL)
+    fields, _ = _load(_SKILL)
+    body = sc_skill_text.text()  # the core and its reference files
     assert "build-board" in str(fields["argument-hint"])  # MUTATION: leave it out of the hint -- absent.
     assert "| `build-board` |" in body  # MUTATION: no row in the verb table -- absent.
     section = _section(body, "### `build-board`")  # MUTATION: no section -- ValueError.

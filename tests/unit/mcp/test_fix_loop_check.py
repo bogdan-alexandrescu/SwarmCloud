@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -33,6 +32,7 @@ from test_plugin_agents_and_workflows import _ANSWERS, _SPEC, _run
 
 from swarm_mcp import browse, check, compact, progress, server
 from swarm_mcp.client import SwarmError
+import sc_skill_text
 
 NOW = datetime(2026, 11, 4, 9, 0, tzinfo=timezone.utc)
 WID = "wf_0a1b2c3d4e5f60718293"
@@ -332,7 +332,7 @@ def test_a_wrong_call_is_refused_and_sends_nothing(args):
 
 
 def test_the_skill_names_the_tool_and_the_rows():
-    text = (Path(__file__).resolve().parents[3] / "plugin" / "skills" / "sc" / "SKILL.md").read_text()
+    text = sc_skill_text.text()
     assert "swarm_fix_loop" in text and "round k of N" in text
 
 

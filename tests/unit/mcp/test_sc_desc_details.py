@@ -45,6 +45,7 @@ from swarm_mcp import compact, details, launch, sc, workflows
 
 from test_auto_attach import _BY_PROMPT
 from test_plugin_agents_and_workflows import _PLUGIN, _RUN_JS, _node, _step
+import sc_skill_text
 
 _MANIFEST = _PLUGIN / ".claude-plugin" / "plugin.json"
 _SKILL = _PLUGIN / "skills" / "sc" / "SKILL.md"
@@ -429,8 +430,8 @@ def _flat(text: str) -> str:
 
 
 def test_the_skill_and_readme_state_the_details_and_no_workspace_prefix():
-    for doc in (_SKILL, _README):
-        text = _flat(doc.read_text(encoding="utf-8"))
+    for doc, read in ((_SKILL, sc_skill_text.text), (_README, lambda: _README.read_text(encoding="utf-8"))):
+        text = _flat(read())
         assert "[SwarmCloud] [<workspace>]" not in text, doc
         assert "SC · [<workspace>]" not in text, doc
         assert ("`Workspace: <workspace> (<tenant>) · Started by: <submitted_by> · Profiles: <runner profiles> · "

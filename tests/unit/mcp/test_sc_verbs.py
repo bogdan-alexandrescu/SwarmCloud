@@ -19,13 +19,15 @@ from __future__ import annotations
 
 import re
 
+import sc_skill_text
 from test_plugin_skills import _PLUGIN, _granted, _load
 
 _SKILL = _PLUGIN / "skills" / "sc" / "SKILL.md"
 
 
 def _skill() -> tuple[dict, str, str]:
-    fields, body = _load(_SKILL)
+    fields, _ = _load(_SKILL)
+    body = sc_skill_text.text()  # the core and its reference files
     return fields, body, " ".join(body.split())
 
 
@@ -84,9 +86,10 @@ def test_a_titled_launch_runs_the_copy_with_the_replys_args():
     """The launch paragraph under "Every run is titled after its workflow" names
     the reply's `args` as given, `spec_handle` included, instead of args the
     session builds."""
-    _, _, flat = _skill()
+    # The section is reference/titling.md since the 2026-11-23 split: to its end.
+    flat = " ".join((sc_skill_text.REFERENCE_DIR / "titling.md").read_text().split())
     at = flat.index("then launch THAT copy with the Workflow tool")
-    launch = flat[at: flat.index("### `attach <wf_id>`", at)]
+    launch = flat[at:]
     # MUTATION: write `args: ...` back in place of the reply's args -> fails.
     assert "args: <the reply's `args`, as given>" in launch, launch
     # MUTATION: drop "`spec_handle` included" -> fails.

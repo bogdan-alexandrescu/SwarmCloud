@@ -27,6 +27,7 @@ from swarm_mcp import compact, sc
 import test_plugin_agents_and_workflows as plugin
 from test_auto_attach import _run_all
 from test_follow_cursor import NOW, World, swarm, world  # noqa: F401 - fixtures
+import sc_skill_text
 
 _REPO = Path(__file__).resolve().parents[3]
 _PLUGIN = _REPO / "plugin"
@@ -323,7 +324,7 @@ def test_attach_all_lists_every_followed_workflows_link(tmp_path):
 
 
 def test_the_sc_skill_says_every_step_and_row_carries_its_link():
-    flat = _flat(_SKILL_MD)
+    flat = " ".join(sc_skill_text.text().split())  # the core and its reference files
     assert "each current step's console link" in flat
     assert "every row's label carries its task's console link" in flat
 

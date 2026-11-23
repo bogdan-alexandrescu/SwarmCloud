@@ -43,6 +43,7 @@ import pytest
 from swarm_mcp import cli, launch, server, workflows
 
 from test_plugin_agents_and_workflows import _HARNESS, _PLUGIN, _RUN_JS, _node, _step
+import sc_skill_text
 
 _REPO = Path(__file__).resolve().parents[3]
 _DAG_TS = _REPO / "apps" / "swarm-ui" / "src" / "dag.ts"
@@ -522,7 +523,7 @@ def test_attach_all_through_the_bridge_writes_one_run_per_workflow(_plugin_root,
 
 
 def test_the_sc_skill_launches_attach_all_as_one_run_per_workflow():
-    text = " ".join(_SKILL.read_text().split())
+    text = " ".join(sc_skill_text.text().split())
     assert "swarm_workflow_launch" in text
     section = text[text.index("### `attach --all`"):]
     section = section[:section.index("### ", 5)]

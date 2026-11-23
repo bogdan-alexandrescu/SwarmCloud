@@ -34,6 +34,7 @@ import pytest
 
 from swarm_mcp import check, launch, sc, server, watch
 from swarm_mcp.client import SwarmError
+import sc_skill_text
 
 _REPO = Path(__file__).resolve().parents[3]
 _PLUGIN = _REPO / "plugin"
@@ -781,8 +782,8 @@ def test_watch_on_saves_the_preference_and_hands_back_the_cron_call(project):
     reply = json.loads(server._call(None, "swarm_check_schedule", {"interval": "2m"}))
     assert reply["interval_minutes"] == 5 and "clamped" in reply
     assert reply["arm_with"] == {"tool": "CronCreate",
-                                 "args": {"cron": watch.cron_for(5), "prompt": "/sc check", "recurring": True}}
-    assert reply["without_cron"] == "/loop 5m /sc check"
+                                 "args": {"cron": watch.cron_for(5), "prompt": "/sc:check", "recurring": True}}
+    assert reply["without_cron"] == "/loop 5m /sc:check"
     # A subdirectory of the project is the project.
     assert reply["project"] == str(project.resolve())
     assert watch.read(project.resolve())["interval_minutes"] == 5
@@ -876,10 +877,10 @@ def test_the_bridge_names_the_re_arm_beside_the_attach(monkeypatch):
 
 
 def test_the_skill_documents_both_verbs_and_may_schedule():
-    text = _SKILL.read_text()
+    text = sc_skill_text.text()
     assert "| `check` |" in text and "| `watch [interval]` |" in text and "| `watch off` |" in text
     assert "### `check`" in text and "### `watch [interval]`" in text
-    for named in ("swarm_check", "swarm_check_schedule", "new_only", "CronCreate", "/loop 30m /sc check"):
+    for named in ("swarm_check", "swarm_check_schedule", "new_only", "CronCreate", "/loop 30m /sc:check"):
         assert named in text, named
     front = text.split("---", 2)[1]
     for tool in ("CronCreate", "CronList", "CronDelete"):
