@@ -38,6 +38,7 @@ from swarm_common.models import utcnow
 from swarm_common.states import TaskState
 
 from worker_seeds import seed_attempt
+from virtual_clock import VirtualClock
 from test_clone_transient_retry import (  # noqa: F401 - `origin` is a fixture
     CLONE_CONNECT,
     _flaky_worker,
@@ -262,16 +263,17 @@ def test_a_200_s_clone_keeps_the_lease_beating_inside_the_grace(db, worker_facto
 
 
 def test_the_startup_clone_runs_under_the_heartbeat(db, worker_factory, monkeypatch):
-    """Through `run`, on the real clock: a clone of 2.5 s on a 1 s beat is
+    """Through `run`, on a virtual clock: a clone of 2.5 s on a 1 s beat is
     beaten during. MUTATION: call `_maybe_clone` from `_prepare` and no beat
     lands while the clone runs."""
     seed_attempt(db)
     beats_during: list[float] = []
     cloning = threading.Event()
+    clock = VirtualClock()
 
     def clone(**kwargs: Any) -> CloneResult:
         cloning.set()
-        time.sleep(2.5)
+        clock.advance(2.5)
         cloning.clear()
         return CloneResult(
             path=kwargs["destination"], url=kwargs["url"], ref=kwargs["ref"],
@@ -281,11 +283,12 @@ def test_the_startup_clone_runs_under_the_heartbeat(db, worker_factory, monkeypa
     monkeypatch.setattr(lifecycle, "shallow_clone", clone)
     worker, _, _ = worker_factory(repository_url=URL, heartbeat_interval_seconds=1)
     worker.egress_connect = lambda target, timeout=None: types.SimpleNamespace(close=lambda: None)
+    clock.install(worker)
     real = worker._heartbeat
 
     def counted() -> None:
         if cloning.is_set():
-            beats_during.append(time.monotonic())
+            beats_during.append(clock.now)
         real()
 
     worker._heartbeat = counted  # type: ignore[method-assign]
