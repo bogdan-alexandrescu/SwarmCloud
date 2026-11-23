@@ -100,8 +100,9 @@ variable "voice_it" {
 variable "voice_pause" {
   description = <<-EOT
     swarm-voice's automatic pause (VOICE_PAUSE, swarm_voice/main.py): "on"
-    (default) closes the paid GPT-Live voice after about 15 s of silence
-    while delegated work runs and reopens it on the result; "off" keeps the
+    (default) closes the paid GPT-Live voice after 45 s in which neither
+    side speaks, with or without delegated work running, and reopens it when
+    the person speaks, presses Resume or a result is ready; "off" keeps the
     voice open, and billed, until the session ends.
   EOT
   type        = string
@@ -374,13 +375,15 @@ output "voice" {
   }
 }
 
-# VOICE_PAUSE (`voice_pause`, above) is the container's first variable,
-# written in after the voice container's one `env:` line rather than as a
-# placeholder, so the template and its other renderers stay as they are. The
-# pause tests in tests/terraform/voice.tftest.hcl fail if that line moves.
+# VOICE_PAUSE (`voice_pause`, above): the manifest itself carries
+# VOICE_PAUSE="on" (so a manual apply keeps the pause on), and this render
+# replaces that one value rather than adding a second variable, so the
+# template and its other renderers stay as they are. The pause tests in
+# tests/terraform/voice.tftest.hcl and tests/unit/scripts/test_swarm_voice_manifest.py
+# fail if that line moves.
 locals {
-  voice_pause_anchor = "\n          env:\n"
-  voice_pause_env    = "\n          env:\n            - name: VOICE_PAUSE\n              value: \"${var.voice_pause}\"\n"
+  voice_pause_anchor = "- name: VOICE_PAUSE\n              value: \"on\"\n"
+  voice_pause_env    = "- name: VOICE_PAUSE\n              value: \"${var.voice_pause}\"\n"
 }
 
 # The two templates with their placeholders filled, as one manifest. Null
