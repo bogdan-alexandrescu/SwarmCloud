@@ -1280,7 +1280,8 @@ def _review_class(ctx: Any, doc: Mapping[str, Any], decision: Any) -> ReviewClas
     signer = getattr(getattr(ctx, "submissions", None), "signer", None)
     task_id = str(doc.get("id") or "")
     if signer is not None and stored_spec_refusal(ctx.settings, doc, task_id) is not None:
-        return ReviewClass({}, "spec does not verify, not signed again", doc)
+        return ReviewClass(
+            {}, f"{stepclass.REVIEW_AT_GATE}; spec does not verify, not signed again", doc)
     class_models = stepclass.class_models_of(ctx) or {}
     role = stepclass.review_role(decision)
     choice = stepclass.choose(role, str(doc.get("runner_profile") or ""), class_models)

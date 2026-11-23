@@ -186,6 +186,20 @@ def submitted_record(record: Any, named: str | None) -> str | None:
     return CALLER
 
 
+def gate_decided(metadata: Any) -> bool:
+    """Whether a review's class is, or was, the review gate's: still marked
+    `REVIEW_AT_GATE`, or recorded by the gate as one of the `GATE_ROLES`."""
+    if not isinstance(metadata, Mapping):
+        return False
+    chosen = metadata.get(CLASS_CHOSEN_BY_KEY)
+    if chosen == REVIEW_AT_GATE or (
+            isinstance(chosen, str) and chosen.startswith(f"{REVIEW_AT_GATE};")):
+        return True
+    return isinstance(chosen, str) and any(
+        chosen == f"role default: {role}" or chosen.startswith(f"role default: {role};")
+        for role in GATE_ROLES)
+
+
 def at_gate(metadata: Any) -> bool:
     """Whether a review's class is the review gate's to pick (`REVIEW_AT_GATE`)."""
     return isinstance(metadata, Mapping) and metadata.get(CLASS_CHOSEN_BY_KEY) == REVIEW_AT_GATE
