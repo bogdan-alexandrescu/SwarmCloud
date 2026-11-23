@@ -2495,8 +2495,9 @@ that does not exist yet. So for a **new tenant**:
    someone repairs it (issue 141). With the flag the script makes everything
    else as usual — the account the release adopts, its grants, its namespace —
    and leaves those three to the release; until the release nobody resolves to
-   the tenant, because the group is not yet in `TENANT_GROUPS`, which
-   `terraform/infra/locals.tf` sets from `var.tenants`. The run's closing
+   the tenant, because the group resolves only once the release adds it to `var.tenants` as a
+   directory group, which is what `TENANT_GROUPS` in
+   `terraform/infra/locals.tf` is set from. The run's closing
    lines say the same: the worker account, grants and namespace are made, and
    the tenant record and pool come with the release. Its provider keys wait for
    the release too: the release creates `swarm-tenant-<tenant>-<provider>` for
@@ -2512,7 +2513,10 @@ that does not exist yet. So for a **new tenant**:
    database still stops it at the preflight. Import blocks were not the fix:
    an `import` of an object that does not exist fails the plan, and these exist
    only when the script ran first. Without the flag the script makes all three,
-   as a tenant Terraform never manages needs. An environment that sets
+   as a tenant Terraform never manages needs; a workspace registered that way
+   which later becomes a Terraform tenant needs those three objects deleted
+   before the release (a Terraform tenant is registered with the flag from the
+   start). An environment that sets
    `bootstrap_firestore_documents = false` gets no documents from the release
    either: once the release has run, re-run the registration there without the
    flag, which writes them and finds the release's QA secret already in place.

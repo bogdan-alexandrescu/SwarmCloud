@@ -159,6 +159,58 @@ def test_the_resources_named_are_the_ones_terraform_declares() -> None:
     assert 'resource "google_firestore_document" "pool"' in text
 
 
+def _k8s_tree(tmp_path: Path, name: str) -> tuple[QaFakes, Path]:
+    """A copy of the repo whose scripts/ the namespace step runs from, with a
+    logging kubernetes/apply.sh and a kubectl that answers the preflight, and
+    the fakes whose PATH reaches that kubectl."""
+    tree = _sub(tmp_path, name) / "tree"
+    shutil.copytree(REPO / "scripts", tree / "scripts")
+    for entry in REPO.iterdir():
+        if entry.name not in ("scripts", "kubernetes", ".git"):
+            (tree / entry.name).symlink_to(entry)
+    (tree / "kubernetes").mkdir()
+    for entry in (REPO / "kubernetes").iterdir():
+        if entry.name != "apply.sh":
+            (tree / "kubernetes" / entry.name).symlink_to(entry)
+    apply_sh = tree / "kubernetes" / "apply.sh"
+    apply_sh.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        "printf '%s\\n' \"$@\" | jq -Rnc '{tool:\"apply.sh\", argv:[inputs]}' >>\"${FAKE_LOG}\"\n"
+    )
+    apply_sh.chmod(0o755)
+
+    fakes = QaFakes(_sub(tmp_path / name, "fakes"))
+    kubectl = fakes.tmp / "bin" / "kubectl"
+    kubectl.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        "case \"$*\" in\n"
+        "  \"version --client\"*) echo 'Client Version: v1.31.0' ;;\n"
+        "  \"config current-context\") echo swarm-dev ;;\n"
+        "  *readyz*) echo ok ;;\n"
+        "esac\n"
+    )
+    kubectl.chmod(0o755)
+    return fakes, tree / "scripts" / "register-tenant.sh"
+
+
+def _missing_secrets(fakes: Fakes, *names: str) -> dict[str, str]:
+    """Environment putting a gcloud first on PATH that answers `secrets describe`
+    of each name with NOT_FOUND and everything else as the harness's gcloud."""
+    wrapper = fakes.tmp / "secret-bin"
+    wrapper.mkdir()
+    gcloud = wrapper / "gcloud"
+    gcloud.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        "if [[ \"${1:-} ${2:-}\" == \"secrets describe\" && \" ${FAKE_MISSING_SECRETS} \" == *\" ${3:-} \"* ]]; then\n"
+        "  echo \"ERROR: (gcloud.secrets.describe) NOT_FOUND: Secret [${3}] not found or has no versions.\" >&2\n"
+        "  exit 1\n"
+        "fi\n"
+        f"exec \"{fakes.tmp / 'bin' / 'gcloud'}\" \"$@\"\n"
+    )
+    gcloud.chmod(0o755)
+    return {"PATH": f"{wrapper}{os.pathsep}{fakes.env['PATH']}", "FAKE_MISSING_SECRETS": " ".join(names)}
+
+
 def _normalised_changes(fakes: Fakes) -> Counter:
     """Every gcloud change, with the per-run condition file's path removed."""
     out: Counter = Counter()
@@ -175,17 +227,24 @@ def _normalised_patches(fakes: Fakes) -> Counter:
 
 
 def test_the_flag_skips_exactly_the_qa_secret_and_the_two_documents(tmp_path) -> None:
-    flagged = QaFakes(_sub(tmp_path, "flagged"))
-    plain = QaFakes(_sub(tmp_path, "plain"))
-    argv = [str(REGISTER), *FULL, "--providers", "anthropic"]
-    flagged_proc = flagged.run([*argv, "--terraform-tenant"])
-    plain_proc = plain.run(argv)
+    # The whole run: the namespace step (workload identity bindings) and the -git
+    # secret's forge-reader grant are held to equality too.
+    flagged, flagged_script = _k8s_tree(tmp_path, "flagged")
+    plain, plain_script = _k8s_tree(tmp_path, "plain")
+    argv = ["--group", "eng@example.com", "--providers", "anthropic,git"]
+    flagged_proc = flagged.run([str(flagged_script), *argv, "--terraform-tenant"])
+    plain_proc = plain.run([str(plain_script), *argv])
     assert flagged_proc.returncode == 0, _out(flagged_proc)
     assert plain_proc.returncode == 0, _out(plain_proc)
 
     flagged_changes, plain_changes = _normalised_changes(flagged), _normalised_changes(plain)
     # MUTATION: skip one more step under the flag and the unflagged run has a change this one lacks.
     assert not (flagged_changes - plain_changes), "the flag makes a gcloud change the plain run does not"
+    # The comparison reaches the changes it is meant to hold equal.
+    for fakes in (flagged, plain):
+        assert fakes.secret_grants().count(("swarm-tenant-eng-git", f"serviceAccount:{WORKER}")) == 1
+        assert sum(1 for c in fakes.gcloud_changes() if "roles/iam.workloadIdentityUser" in c["argv"]), "no workload identity binding"
+        assert [c for c in fakes.calls() if c["tool"] == "apply.sh"], "the namespace step did not run"
     skipped = plain_changes - flagged_changes
     for (change, _condition), count in skipped.items():
         assert change[:2] in (("secrets", "create"), ("secrets", "add-iam-policy-binding")), change
@@ -202,38 +261,8 @@ def test_the_flag_skips_exactly_the_qa_secret_and_the_two_documents(tmp_path) ->
 
 
 def test_a_terraform_tenant_still_applies_its_namespace(tmp_path) -> None:
-    tree = tmp_path / "tree"
-    shutil.copytree(REPO / "scripts", tree / "scripts")
-    for entry in REPO.iterdir():
-        if entry.name not in ("scripts", "kubernetes", ".git"):
-            (tree / entry.name).symlink_to(entry)
-    (tree / "kubernetes").mkdir()
-    for entry in (REPO / "kubernetes").iterdir():
-        if entry.name != "apply.sh":
-            (tree / "kubernetes" / entry.name).symlink_to(entry)
-    apply_sh = tree / "kubernetes" / "apply.sh"
-    apply_sh.write_text(
-        "#!/usr/bin/env bash\nset -euo pipefail\n"
-        "printf '%s\\n' \"$@\" | jq -Rnc '{tool:\"apply.sh\", argv:[inputs]}' >>\"${FAKE_LOG}\"\n"
-    )
-    apply_sh.chmod(0o755)
-
-    fakes = QaFakes(_sub(tmp_path, "fakes"))
-    kubectl = fakes.tmp / "bin" / "kubectl"
-    kubectl.write_text(
-        "#!/usr/bin/env bash\nset -euo pipefail\n"
-        "case \"$*\" in\n"
-        "  \"version --client\"*) echo 'Client Version: v1.31.0' ;;\n"
-        "  \"config current-context\") echo swarm-dev ;;\n"
-        "  *readyz*) echo ok ;;\n"
-        "esac\n"
-    )
-    kubectl.chmod(0o755)
-
-    proc = fakes.run([
-        str(tree / "scripts" / "register-tenant.sh"), "--group", "eng@example.com",
-        "--providers", "anthropic", "--terraform-tenant",
-    ])
+    fakes, script = _k8s_tree(tmp_path, "ns")
+    proc = fakes.run([str(script), "--group", "eng@example.com", "--providers", "anthropic", "--terraform-tenant"])
     out = _out(proc)
     assert proc.returncode == 0, out
     applied = [c["argv"] for c in fakes.calls() if c["tool"] == "apply.sh"]
@@ -309,3 +338,26 @@ def test_the_flag_sends_nobody_to_a_command_that_409s_or_dies_before_the_release
     assert "tenant record and pool come with the release" in out, out
     # Why nobody resolves yet: the group is not in TENANT_GROUPS, not an absent record.
     assert "TENANT_GROUPS" in out, out
+
+
+def test_a_provider_secret_the_release_creates_is_not_sent_to_create_secrets(tmp_path) -> None:
+    secret = "swarm-tenant-eng-anthropic"
+    create_line = "create it with: scripts/create-secrets.sh --tenant eng --provider anthropic --stdin"
+    argv = [str(REGISTER), *FULL, "--providers", "anthropic"]
+
+    flagged = QaFakes(_sub(tmp_path, "flagged"))
+    proc = flagged.run([*argv, "--terraform-tenant"], **_missing_secrets(flagged, secret))
+    out = _out(proc)
+    assert proc.returncode == 0, out
+    # MUTATION: drop the --terraform-tenant branch of the "does not exist yet" case and this line prints.
+    assert f"{secret} does not exist yet" in out, out
+    assert create_line not in out, f"create-secrets.sh before the release makes the secret and the release 409s:\n{out}"
+    assert "the release creates it" in out, out
+    assert all(name != secret for name, _ in flagged.secret_grants()), out
+
+    plain = QaFakes(_sub(tmp_path, "plain"))
+    proc = plain.run(argv, **_missing_secrets(plain, secret))
+    out = _out(proc)
+    assert proc.returncode == 0, out
+    assert create_line in out, out
+    assert all(name != secret for name, _ in plain.secret_grants()), out

@@ -3584,7 +3584,13 @@ if [[ "${#PROVIDERS[@]}" -gt 0 ]]; then
         ;;
       1)
         warn "${secret} does not exist yet"
-        dim "  create it with: scripts/create-secrets.sh --tenant ${TENANT_ID} --provider ${provider} --stdin"
+        if [[ "${TERRAFORM_TENANT}" -eq 1 ]]; then
+          # terraform/modules/secret_manager creates it with no import: a
+          # create-secrets.sh run first makes the secret and the release 409s.
+          dim "  the release creates it (terraform/modules/secret_manager); store the key after the release"
+        else
+          dim "  create it with: scripts/create-secrets.sh --tenant ${TENANT_ID} --provider ${provider} --stdin"
+        fi
         ;;
       3) refuse_foreign_secret "${secret}" "${provider}" ;;
       *)
@@ -3940,7 +3946,8 @@ if [[ "${TERRAFORM_TENANT}" -eq 1 ]]; then
 else
   TERRAFORM_NEXT="not as registered: this run made swarm-tenant-${TENANT_ID}-qa, tenants/${TENANT_ID} and
                         pools/tenant:${TENANT_ID}, which the release that adds a tenant to var.tenants creates
-                        and 409s on. A Terraform tenant is registered with --terraform-tenant (docs/ci.md)"
+                        and 409s on. A Terraform tenant is registered with --terraform-tenant (docs/ci.md);
+                        if this workspace later becomes one, delete those three objects before the release"
 fi
 # With the flag the release makes swarm-tenant-<tenant>-<provider> for each
 # provider in var.tenants[*].providers (terraform/modules/secret_manager) and the
@@ -3959,7 +3966,8 @@ Next:
 
 Worker account, grants and namespace made; tenant record and pool come with the
 release. ${PRINCIPAL} is not resolved to tenant '${TENANT_ID}' until that release
-adds it to var.tenants, which is what swarm-api's TENANT_GROUPS is set from.
+adds it to var.tenants as a directory group, which is what swarm-api's TENANT_GROUPS
+is set from.
 EOF
 else
   cat >&2 <<EOF
