@@ -5701,9 +5701,21 @@ never as zero, so unrecorded files cannot make a large selection look small).
 A selection at or under one run is unchanged. Either way the capped selection
 is the change's own tests, the tests that import a changed module **directly** (one
 hop; for a `conftest.py`, the tests beside it), the code graph's `tests_for`
-and the tests whose text names a changed path. A warning gives the capped
-count and the closure's, and says CI (the merge train) runs the closure;
-`--closure` prints the closure. Why: over 30 days model time was a fifth of a
+and the tests whose text names a changed path. **It is never empty while the
+closure holds a test** (owner answer 2026-11-23, "Widen by hops until
+non-empty"): a capped selection with no test file adds the next hop of
+importers inside the closure -- the tests that import a module that imports
+the changed module -- and so on hop by hop, and stops at the first hop that
+yields any test (past the last hop, the closure's tests that reach the change
+only by text). The agent worker's checkpointing module is the example: its
+tests all reach it through the lifecycle module, so it capped at 0 files; it
+now selects 163 at hop 2 of 593 (main at 7fc7aaa). A widened hop heavier than
+one 540 s run is kept, because never empty beats never heavy, and the note
+says so. A change no module imports and with no tests still selects nothing,
+and its note says the closure is empty too. A warning gives the capped count,
+the hop when it widened (`capped at N test file(s) at hop 2 of the 593`) and
+the closure's count, and says CI (the merge train) runs the closure;
+`--closure` prints the closure, byte for byte as before. Why: over 30 days model time was a fifth of a
 task's wall-clock and tests most of the rest; the closure was up to 2,094 files
 (1,844 for `swarm_common/models.py`), no 540 s run held it, `--run` stopped at
 its first overrun with "narrow it", which an agent cannot do, and the

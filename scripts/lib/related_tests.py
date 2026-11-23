@@ -31,7 +31,9 @@ WHAT IS RELATED:
     changed module directly, the graph's tests_for and the tests naming a
     changed path, and a note gives the closure's size (RELATED-CAP); so does
     any other change whose closure's recorded CI weight is more than one
-    540 s run (SIZE_CAP_WEIGHT, owner answer 2026-11-23);
+    540 s run (SIZE_CAP_WEIGHT, owner answer 2026-11-23); a capped
+    selection that holds no test widens hop by hop of importers to the first
+    hop that holds one (owner answer 2026-11-23, never empty);
     `--closure` selects every test that imports or reads it, as before;
   * swarm-ui (vitest): the change's own test files, and every test file that
     reaches a changed module through relative imports -- `import ... from`,
@@ -617,18 +619,30 @@ class PythonSelection(NamedTuple):
     tests: list[str]      # what is printed
     closure: int          # how many files the full selection reaches
     capped: str | None    # why the selection was capped, None when it was not
+    # The hop of importers a capped selection was widened to (1: the direct
+    # importers, not widened; 0: the whole closure, past every hop).
+    hop: int = 1
+    # A widened selection's recorded CI weight when it is more than one run.
+    heavy: float | None = None
 
 
-def direct_importers(root: Path, changed_py: list[str], edges) -> set[str]:
-    """One hop: the files that import a changed module themselves (at load or
-    lazily), and for a changed conftest.py the tests beside it."""
+def import_index(root: Path, edges) -> list[tuple[str, set[str]]]:
+    """Every Python file under apps/, scripts/ and tests/unit with the names it imports."""
     rels = [str(p.relative_to(root)) for top in ("apps", "scripts", "tests/unit")
             for p in sut._python_files(root, top)]
+    return [(rel, set(edges(rel, (root / rel).read_text(errors="replace")))) for rel in rels]
+
+
+def direct_importers(root: Path, changed_py: list[str], edges,
+                     index: list[tuple[str, set[str]]] | None = None) -> set[str]:
+    """One hop: the files that import a changed module themselves (at load or
+    lazily), and for a changed conftest.py the tests beside it."""
+    index = import_index(root, edges) if index is None else index
+    rels = [rel for rel, _ in index]
     names = set()
     for path in changed_py:
         names |= sut._suffixes(root, path)
-    out = {rel for rel in rels
-           if names & set(edges(rel, (root / rel).read_text(errors="replace")))}
+    out = {rel for rel, imported in index if names & imported}
     for conf in (c for c in changed_py if c.rsplit("/", 1)[-1] == "conftest.py"):
         under = conf[: -len("conftest.py")]
         out.update(r for r in rels if r.startswith(under) and "/" not in r[len(under):])
@@ -666,7 +680,14 @@ def python_related(root: Path, changed: list[str], graph: Graph | None = None,
     fallback reason is capped the same way when its closure's recorded CI
     weight (closure_weight) is more than SIZE_CAP_WEIGHT, one 540 s run --
     agent_worker/lifecycle.py reached 829 files. One at or under it is
-    unchanged. CI's FULL_FRACTION is no trigger here."""
+    unchanged. CI's FULL_FRACTION is no trigger here.
+    NEVER EMPTY (owner answer 2026-11-23, "Widen by hops until non-empty"): a
+    capped selection that holds no test -- agent_worker/checkpointing.py,
+    whose tests all reach it through lifecycle.py -- adds the next hop of
+    importers inside the closure (tests importing a module that imports the
+    changed one), hop by hop, and stops at the first hop holding a test; past
+    the last hop, the closure's tests. Kept even when heavier than one run:
+    never empty beats never heavy."""
     edges = edges or sut.import_edges
     all_tests = sorted(str(p.relative_to(root)) for p in sut._python_files(root, "tests/unit")
                        if sut.is_test(str(p.relative_to(root))))
@@ -678,8 +699,8 @@ def python_related(root: Path, changed: list[str], graph: Graph | None = None,
     # ...) selects by imports alone, so its "wide by design" count is exact.
     wide = [c for c in changed_py if sut.fallback_reason([c])]
     chosen.update(graph_tests(graph, [c for c in changed_py if c not in wide], sut.is_test, known))
-    if changed_py:
-        chosen.update(r for r in sut.import_closure(root, changed_py, edges) if r in known)
+    reached = sut.import_closure(root, changed_py, edges) if changed_py else set()
+    chosen.update(r for r in reached if r in known)
     # The same text rule as CI and changed-guards.sh (archived issue 2299): a test naming a
     # doc that cites a changed path reaches the change through the doc.
     virtual = sut.script_closure(root, sut.doc_closure(root, changed))
@@ -694,9 +715,26 @@ def python_related(root: Path, changed: list[str], graph: Graph | None = None,
         return PythonSelection(sorted(chosen), len(chosen), None)
     narrow = set(own)
     narrow.update(graph_tests(graph, changed_py, sut.is_test, known))
-    narrow.update(r for r in direct_importers(root, changed_py, edges) if r in known)
+    index = import_index(root, edges) if changed_py else []
+    frontier = direct_importers(root, changed_py, edges, index) if changed_py else set()
+    narrow.update(r for r in frontier if r in known)
     narrow |= _names_any(root, all_tests, narrow, changed)
-    return PythonSelection(sorted(narrow), len(chosen), capped)
+    hop, heavy = 1, None
+    if not narrow and chosen:
+        seen = set(changed_py)
+        frontier = (frontier & reached) - seen
+        while frontier and not narrow:
+            seen |= frontier
+            hop += 1
+            frontier = (direct_importers(root, sorted(frontier), edges, index) & reached) - seen
+            narrow = {r for r in frontier if r in known}
+        if not narrow:
+            # Tests the closure reaches by text alone (a doc or script naming
+            # the change), past every hop of importers.
+            hop, narrow = 0, set(chosen)
+        weight = closure_weight(root, narrow)
+        heavy = weight if weight > SIZE_CAP_WEIGHT else None
+    return PythonSelection(sorted(narrow), len(chosen), capped, hop, heavy)
 
 
 def pytest_weights(root: Path) -> tuple[dict, float]:
@@ -814,10 +852,27 @@ def main(argv: list[str]) -> int:
     contract = next((c for c in changed if c.startswith("apps/common/swarm_common/")), None)
     if python.capped:
         why = (f"{contract} is the frozen contract every component imports" if contract else python.capped)
-        print(f"note\t{why}: the selection is capped at {len(python.tests)} test file(s) -- the change's own "
-              "tests, the direct importers of each changed module, the code graph's tests_for and the tests "
-              f"that name a changed path -- of the {python.closure} its full closure reaches; CI (the merge "
-              "train) runs the closure. --closure prints all of them")
+        if python.hop == 1 and python.tests:
+            print(f"note\t{why}: the selection is capped at {len(python.tests)} test file(s) -- the change's own "
+                  "tests, the direct importers of each changed module, the code graph's tests_for and the tests "
+                  f"that name a changed path -- of the {python.closure} its full closure reaches; CI (the merge "
+                  "train) runs the closure. --closure prints all of them")
+        elif not python.tests:
+            print(f"note\t{why}: the selection is capped at 0 test file(s) of the {python.closure} its full "
+                  "closure reaches -- no test is the change's own, imports a changed module at any hop, is "
+                  "named by the code graph or names a changed path, so no test runs for it here")
+        else:
+            where = f"at hop {python.hop}" if python.hop else "at the whole closure"
+            past = ("tests that import a module that imports the changed module" if python.hop == 2 else
+                    f"tests {python.hop} imports away from the changed module" if python.hop else
+                    "the closure's tests, which reach the change only through a doc or script naming it")
+            heavy = (f"; its recorded CI weight is {python.heavy:.0f} s, more than one {PYTEST_RUN_WEIGHT} s run, "
+                     "kept since an empty selection runs nothing" if python.heavy else "")
+            print(f"note\t{why}: the selection is capped at {len(python.tests)} test file(s) {where} of the "
+                  f"{python.closure} its full closure reaches -- the change's own tests, its direct importers, "
+                  "the code graph's tests_for and the tests that name a changed path held none, so it widens "
+                  f"hop by hop to the first that holds a test: {past}{heavy}; CI (the merge train) runs the "
+                  "closure. --closure prints all of them")
     # WIDE BY DESIGN: with --closure, what CI's selector runs the whole suite
     # for (the frozen contract every component imports, a conftest.py,
     # pyproject.toml, uv.lock ...) selects every test that imports or reads it.
