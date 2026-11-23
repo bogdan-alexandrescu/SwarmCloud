@@ -257,7 +257,8 @@ run "the_thresholds_are_variables" {
   }
 }
 
-run "an_idle_threshold_the_sweep_would_beat_is_refused" {
+# One plan for both refusals: each validation fails on its own variable.
+run "thresholds_the_sweep_would_beat_are_refused" {
   command = plan
 
   module {
@@ -265,24 +266,14 @@ run "an_idle_threshold_the_sweep_would_beat_is_refused" {
   }
 
   variables {
-    voice_session_idle_alert_seconds = 1800
-  }
-
-  expect_failures = [var.voice_session_idle_alert_seconds]
-}
-
-run "a_running_threshold_under_ten_minutes_is_refused" {
-  command = plan
-
-  module {
-    source = "../../terraform/infra"
-  }
-
-  variables {
+    voice_session_idle_alert_seconds    = 1800
     speech_machine_unheld_alert_seconds = 300
   }
 
-  expect_failures = [var.speech_machine_unheld_alert_seconds]
+  expect_failures = [
+    var.voice_session_idle_alert_seconds,
+    var.speech_machine_unheld_alert_seconds,
+  ]
 }
 
 run "the_engine_off_makes_neither" {

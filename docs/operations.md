@@ -502,6 +502,27 @@ hour, as one incident per tenant and reason that stays open while any stays
 stranded and closes about seven hours after the last is merged. Before the seven-day incident-volume measurement
 every sweep entry (520 in seven days) opened its own incident.
 
+### Voice it alerts
+
+Two WARNING policies in `terraform/infra/voice_alerts.tf`, made only while
+Voice it's own speech engine is on (`voice_speech.enabled` and
+`voice_it = "on"`). Both read the one line swarm-api's speech sweep writes
+every two minutes, `jsonPayload.event="voice_sweep_state"`. The sweep is the
+only writer, and its Cloud Scheduler job exists only with the engine on, so
+with it off there is nothing to read and no policy is made. Each alert means a
+stop that already exists did not take; the alert is there so a person notices
+before the bill does.
+
+| Alert | Means | What to do |
+|---|---|---|
+| `voice-session-idle` | a session has been `live` with no activity (no turn, no Talk tab connected) for over `voice_session_idle_alert_seconds` (default 2700). The sweep should have ended it at 1800 seconds, as `abandoned`. | Look in swarm-api's log for `voice sweep: marker … failed` or `abandoned voice session` warnings: they name the session and say why the end failed. Check that the `<prefix>-voice-speech-sweep` job ran. The person's next Start, or Talk's end button, also ends it. |
+| `speech-machine-unheld` | the speech machine (an L4, billed while it runs) has been running for over `speech_machine_unheld_alert_seconds` (default 1200) with no session and no warm start holding it. The sweep should have stopped it at its next run. | Stop the `<prefix>-speech-machine` instance in Compute Engine, in whichever zone it is in; swarm-api starts it again for the next session. Then read swarm-api's `speech sweep` lines for the instance status and why the stop failed, and check the sweep job ran. |
+
+Both thresholds are variables, and each default is explained next to its
+value. Changing one only changes a metric filter or a condition duration, in
+place. Neither alert can see a sweep that never runs; if the sweep job stops,
+the lines stop and both alerts stay quiet.
+
 ### Alert notification channels
 
 Until 2026-10-21 all 21 policies had an empty channel list and reached nobody
