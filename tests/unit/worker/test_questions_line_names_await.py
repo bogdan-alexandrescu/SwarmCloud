@@ -75,6 +75,7 @@ BLOCKING_KEY = '"blocking": true'
 RECORDING_CLI = r'''#!/usr/bin/env python3
 import json, os, pathlib, sys
 pathlib.Path(os.environ["HOME"], "stdin.txt").write_text(sys.stdin.read())
+pathlib.Path(os.environ["HOME"], "argv.json").write_text(json.dumps(sys.argv[1:]))
 print(json.dumps({"type": "result", "subtype": "success", "is_error": False,
                   "result": "done", "num_turns": 1}), flush=True)
 '''
@@ -122,10 +123,16 @@ def test_a_repository_steps_prompt_names_await_answers_and_blocking(
     runner.body(ctx)
 
     prompt = (ctx.work_dir / "stdin.txt").read_text()
+    argv = json.loads((ctx.work_dir / "argv.json").read_text())
+    flag = runner.SPEC.system_prompt_flag
+    system = argv[argv.index(flag) + 1] if flag and flag in argv[:-1] else ""
     # A repository step: the agent started in the checkout and was told the
     # worker publishes its committed branch. Without this the test could pass
     # on a standalone prompt and say nothing about a pull-request step.
-    assert cliagent.PUBLISH_PARAGRAPH in prompt, prompt
+    # claude-code is told in its system prompt (standing paragraphs,
+    # 2026-11-23); codex, which has no such flag, in its prompt.
+    assert cliagent.PUBLISH_PARAGRAPH in (system if flag else prompt), (system, prompt)
+    assert (system + prompt).count(cliagent.PUBLISH_PARAGRAPH) == 1
     # MUTATION: the pre-archived issue 2180 sentence names neither, and an agent that must
     # wait for the owner fails `published_nothing` instead (task_adb791a17d2e47d6985f).
     assert AWAIT_FILE in prompt, prompt

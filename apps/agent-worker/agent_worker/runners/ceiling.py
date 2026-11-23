@@ -28,7 +28,10 @@ capture's tap, as `cliagent.AccountStreamWatcher` and
     the very context the stop was for. A resume the worker asks for (an
     account swap, a credential reload) or the runner's own finish, repair
     and gate passes follow the same rule when the session they would resume
-    ended over the ceiling.
+    ended over the ceiling. A resume the WORKER asks for is judged on the
+    last turn's whole prompt, `cache_creation_input_tokens` included
+    (`over_state`): that is what the restarted CLI writes to the new
+    account's cache.
 
 The number of fresh sessions per attempt is bounded (`MAX_FRESH_SESSIONS`):
 once spent, the ceiling stops nothing more and the last session runs to its
@@ -327,6 +330,10 @@ class CeilingWatcher:
         self.session_id: str | None = None
         self.context_tokens = 0
         self.peak_context_tokens = 0
+        #: The last top-level turn's WHOLE prompt: `context_tokens` plus what
+        #: the turn wrote to the cache. What a `--resume` on another account
+        #: sends again, and what `over_state` judges a worker's resume on.
+        self.prompt_tokens = 0
         self.turns = 0
         self._tool_ids: set[str] = set()
         self._anonymous_calls = 0
@@ -380,6 +387,7 @@ class CeilingWatcher:
             if seed:
                 self.session_id = _str_or_none(seed.get("session_id")) or self.session_id
                 self.context_tokens = _count(seed.get("context_tokens"))
+                self.prompt_tokens = _count(seed.get("prompt_tokens"))
                 self.peak_context_tokens = max(self.peak_context_tokens, self.context_tokens)
                 self._anonymous_calls += _count(seed.get("tool_calls"))
                 self.turns = _count(seed.get("turns"))
@@ -445,6 +453,7 @@ class CeilingWatcher:
             self._start_usage[slot] = {f: _count(usage.get(f)) for f in USAGE_FIELDS}
             self.context_tokens = context
             self.peak_context_tokens = max(self.peak_context_tokens, context)
+            self.prompt_tokens = context + _count(usage.get("cache_creation_input_tokens"))
         content = message.get("content")
         texts = []
         for block in content if isinstance(content, list) else []:
@@ -566,6 +575,7 @@ class CeilingWatcher:
         return {
             "session_id": self.session_id,
             "context_tokens": self.context_tokens,
+            "prompt_tokens": self.prompt_tokens,
             "tool_calls": self.tool_calls,
             "turns": self.turns,
             "fresh_sessions": self.fresh_sessions,
@@ -664,10 +674,24 @@ def carry_tool_calls(
 
 
 def over_state(state: Mapping[str, Any] | None, session: str, limits: CeilingLimits) -> str | None:
-    """Why `session`, as an earlier runner process left it, is over the ceiling, or None."""
+    """Why `session`, as an earlier runner process left it, is over the ceiling, or None.
+
+    A SWAP OF A LARGE SESSION GOES FRESH (the owner's "Shorter sessions"
+    plan, finding 3, 2026-11-23). This is the decision for every resume the
+    worker asks for -- an account swap, a credential reload -- and its measure
+    is the larger of the last turn's `cache_read + input` and its whole prompt
+    (`prompt_tokens`, the cache write included), against the same resolved
+    ceiling (`limits.tokens`: CONTEXT_CEILING_TOKENS, 200,000, unless a profile
+    or the step lowered it). `cache_read + input` alone is what the turn
+    re-read, and it misses what the turn wrote: on the cold first turn on the
+    account a session was moved to, the whole transcript (a session moved
+    twice was resumed twice at 230k reading as 2k), and on any turn the tool
+    results it just added. A `--resume` on another account writes ALL of it to
+    that account's cache, so a session whose prompt is past the ceiling starts
+    fresh from a handoff instead; under it, the resume stands."""
     if not state or state.get("session_id") != session:
         return None
-    if _count(state.get("context_tokens")) > limits.tokens:
+    if max(_count(state.get("context_tokens")), _count(state.get("prompt_tokens"))) > limits.tokens:
         return WHY_CONTEXT
     if _count(state.get("tool_calls")) > limits.tool_calls:
         return WHY_TOOL_CALLS
@@ -680,9 +704,10 @@ def spent_sessions(state: Mapping[str, Any] | None) -> int:
 
 
 def seed_numbers(state: Mapping[str, Any] | None) -> dict[str, int]:
-    """A stop's numbers, from the state an earlier runner process left."""
+    """A stop's numbers, from the state an earlier runner process left. Its
+    context is the measure `over_state` judged the resume on."""
     state = state or {}
-    context = _count(state.get("context_tokens"))
+    context = max(_count(state.get("context_tokens")), _count(state.get("prompt_tokens")))
     return {
         "turn": _count(state.get("turns")),
         "context_tokens": context,

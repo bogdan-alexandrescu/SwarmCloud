@@ -21,8 +21,10 @@ What the design's "Tests prove" column asks, each a test below:
 
 Over the shared graph service (graph-service.md §7, lane GS-PACK): a pinned
 graph read through `build.ServiceSource` gives the staged pack byte for byte,
-from the `index` tool alone, writing no shard to disk; a shard that cannot
-arrive whole is refused, never read short; the ticket goes as the bearer and
+from the `index` tool alone, writing no shard to disk; a shard short of its
+manifest count is refused, never read short, while one row over the service's
+4 KiB answer cap is dropped alone and named in CONTEXT.md's notes, so the rest
+of the pack is still delivered within its 16 KiB; the ticket goes as the bearer and
 nowhere else; `arm` is read from the stager's `decision`; and `pack.json`
 counts `shards_read` and `bytes_read` on both deliveries.
 
@@ -571,6 +573,7 @@ def test_the_cli_runner_appends_the_context_line_before_the_platform_s(
         "#!/usr/bin/env python3\n"
         "import json, os, pathlib, sys\n"
         "pathlib.Path(os.environ['HOME'], 'stdin.txt').write_text(sys.stdin.read())\n"
+        "pathlib.Path(os.environ['HOME'], 'argv.json').write_text(json.dumps(sys.argv[1:]))\n"
         "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,"
         " 'session_id': 's', 'result': 'done', 'total_cost_usd': 0.0, 'num_turns': 1}))\n")
     cli.chmod(0o755)
@@ -589,7 +592,19 @@ def test_the_cli_runner_appends_the_context_line_before_the_platform_s(
     line = contextpack.prompt_line(work / contextpack.CONTEXT_DIR_NAME
                                    / contextpack.CONTEXT_FILE)
     assert line in stdin
-    assert stdin.index(line) < stdin.index(cliagent.PUBLISH_PARAGRAPH)
+    # The platform's publishing paragraph rides claude-code's system prompt
+    # (`--append-system-prompt`, standing paragraphs, 2026-11-23), so it
+    # cannot follow the line in stdin: the line is in the user prompt, before
+    # the step's time-limit line, which ends it, and the paragraph is not.
+    argv = json.loads((work / "argv.json").read_text())
+    flag = claude_code.APPEND_SYSTEM_PROMPT_FLAG
+    assert argv.count(flag) == 1, argv
+    system = argv[argv.index(flag) + 1]
+    assert system.count(cliagent.PUBLISH_PARAGRAPH) == 1
+    assert cliagent.PUBLISH_PARAGRAPH not in stdin and line not in system
+    limit_at = stdin.rstrip().rindex("\n\n")
+    assert "wall-clock limit" in stdin[limit_at:], stdin[-600:]
+    assert stdin.index(line) < limit_at
 
 
 # --- the arm, and what the pack read (graph-service.md §7; lane GS-PACK) -------
@@ -710,26 +725,124 @@ def test_a_shard_is_paged_whole_and_its_rows_counted_against_the_manifest(work):
     assert blob_hexdigest(entry)
 
 
-def test_a_row_the_service_cannot_page_whole_is_refused_never_dropped(work):
+class _Oversized(_FakeService):
+    """The service with one row over its 4 KiB answer cap: the first row of
+    each shard in `over` (every shard when None) comes back as the
+    placeholder, as `tools.page` answers a row that cannot fit alone."""
+
+    def __init__(self, snapshot: Path, over: set[tuple[str, str]] | None = None) -> None:
+        super().__init__(snapshot)
+        self.over = over
+
+    def answer(self, name, arguments):
+        from agent_worker.graphmcp import tools
+
+        text, failed = super().answer(name, arguments)
+        answer = json.loads(text)
+        where = (arguments["layer"], arguments["key"])
+        if "cursor" not in arguments and answer.get("rows") and (
+                self.over is None or where in self.over):
+            answer["rows"] = [tools.ONE_ROW_OVER, *answer["rows"][1:]]
+        return tools.dumps(answer), failed
+
+
+def _read_shards(work: Path, payload: dict) -> list[tuple[str, str, int]]:
+    """(layer, key, rows) of every shard a service pack reads, in order."""
+    _where, served = _as_service_pin(work)
+    service = _FakeService(served)
+    _pack(work, payload, service=service)
+    seen: list[tuple[str, str, int]] = []
+    for call in service.calls:
+        arguments = call["params"]["arguments"]
+        if "cursor" not in arguments:
+            layer, key = arguments["layer"], arguments["key"]
+            seen.append((layer, key, len(service.snap.shard(layer, key).rows)))
+    return seen
+
+
+def test_a_row_the_service_cannot_page_whole_is_dropped_and_recorded(work):
     from agent_worker.contextpack.build import ServiceSource
-    from agent_worker.graphmcp import tools
-    from agent_worker.graphmcp.snapshot import Snapshot, SnapshotError
+    from agent_worker.graphmcp.snapshot import Snapshot
 
     _where, served = _as_service_pin(work)
-
-    class Oversized(_FakeService):
-        def answer(self, name, arguments):
-            text, failed = super().answer(name, arguments)
-            answer = json.loads(text)
-            answer["rows"] = [tools.ONE_ROW_OVER, *answer["rows"][1:]]
-            return tools.dumps(answer), failed
-
-    source = ServiceSource(Oversized(served))
+    service = _Oversized(served)
+    source = ServiceSource(service)
     snap = Snapshot.from_manifest((served / "manifest.json").read_bytes(),
                                   manifest_digest=None, source=source)
     source.name_blobs(snap.manifest)
-    with pytest.raises(SnapshotError, match="4 KiB"):
-        snap.shard("symbols", snap.keys("symbols")[0])
+    key = max(snap.keys("symbols"), key=lambda k: len(service.snap.shard("symbols", k).rows))
+    whole = service.snap.shard("symbols", key).rows
+    assert len(whole) > 1
+    # MUTATION: refusing the shard (the old rule) loses every other row with it.
+    assert snap.shard("symbols", key).rows == whole[1:]
+    assert source.dropped == [{"layer": "symbols", "key": key, "cursor": 0,
+                               "size": "over 4096 bytes with its answer's head"}]
+    # A second read of the same shard records it once.
+    source.drop()
+    snap.shard("symbols", key)
+    assert len(source.dropped) == 1
+
+
+def test_one_oversized_row_drops_that_row_and_the_rest_of_the_pack_is_delivered(work):
+    payload = {"prompt": _step_prompt(["src/pkg/store.py"])}
+    layer, key, _count = next(s for s in _read_shards(work, payload) if s[2] > 1)
+    whole = _pack(work, payload, service=_FakeService(
+        work.parent / "served-snapshot"))
+    pack = _pack(work, payload, service=_Oversized(
+        work.parent / "served-snapshot", over={(layer, key)}))
+    text = (work / contextpack.CONTEXT_DIR_NAME / contextpack.CONTEXT_FILE).read_text()
+    # MUTATION: refusing the whole pack for one row raised SnapshotError here.
+    assert pack["rows"] and pack["task_type"] == whole["task_type"]
+    assert "## Ranked context" in text and "## Never cut" in text
+    assert {r["ref"] for r in pack["rows"]} & {r["ref"] for r in whole["rows"]}
+    assert pack["dropped_rows"] == [{"layer": layer, "key": key, "cursor": 0,
+                                     "size": "over 4096 bytes with its answer's head"}]
+    assert whole["dropped_rows"] == []
+    assert len(text.encode()) <= contextpack.BUDGET_BYTES
+
+
+def test_the_note_names_the_dropped_row_and_its_size_in_one_line(work):
+    payload = {"prompt": _step_prompt(["src/pkg/store.py"])}
+    layer, key, _count = next(s for s in _read_shards(work, payload) if s[2] > 1)
+    _pack(work, payload, service=_Oversized(work.parent / "served-snapshot",
+                                            over={(layer, key)}))
+    text = (work / contextpack.CONTEXT_DIR_NAME / contextpack.CONTEXT_FILE).read_text()
+    lines = text.splitlines()
+    assert "## Notes" in lines
+    named = [line for line in lines if f"`{layer}/{key}`" in line]
+    assert named == [
+        f"- Dropped row 0 of `{layer}/{key}` (size: over 4096 bytes with its answer's "
+        "head; the service reports no exact size): it does not fit the graph service's "
+        "4 KiB answer cap, so this pack is partial without it."]
+    # The notes lead the ranked rows, so the budget can never cut them.
+    assert lines.index("## Notes") < lines.index(next(
+        line for line in lines if line.startswith("## Ranked context")))
+
+
+def test_many_oversized_rows_keep_the_16_kib_budget_and_count_the_notes(work):
+    many = [{"title": f"Lane L{i}: work on the store", "ref": f"PR #{1000 + i}",
+             "files": ["src/pkg/store.py"]} for i in range(40)]
+    payload = {"prompt": _step_prompt(["src/pkg/store.py"])}
+    _where, served = _as_service_pin(work)
+    (work / contextpack.CONTEXT_DIR_NAME / contextpack.INFLIGHT_FILE).write_text(
+        json.dumps({"rows": many}))
+    for i in range(400):
+        (work / "repo" / "tests" / f"test_guard_{i:03}.py").write_text(
+            f"def test_guard_{i:03}():\n    assert 'src/pkg/store.py'\n")
+    subprocess.run(["git", "-C", str(work / "repo"), "add", "-A"], check=True,
+                   capture_output=True)
+    pack = _pack(work, payload, service=_Oversized(served))
+    text = (work / contextpack.CONTEXT_DIR_NAME / contextpack.CONTEXT_FILE).read_text()
+    # MUTATION: notes rendered without a bound, or outside the budget, break it.
+    assert len(text.encode()) <= contextpack.BUDGET_BYTES == 16 * 1024
+    assert len(pack["dropped_rows"]) > 1
+    noted = sum(1 for line in text.splitlines() if line.startswith("- Dropped row "))
+    assert 0 < noted <= len(pack["dropped_rows"])
+    if noted < len(pack["dropped_rows"]):
+        assert (f"- … and {len(pack['dropped_rows']) - noted} more dropped rows in "
+                "pack.json beside this file") in text
+    for row in many:
+        assert row["ref"] in text, row["ref"]
 
 
 def test_a_shard_short_of_its_manifest_count_is_refused(work):
@@ -969,6 +1082,7 @@ def test_a_review_with_a_slow_graph_service_reaches_its_agent_within_the_bound(
         "#!/usr/bin/env python3\n"
         "import json, os, pathlib, sys, time\n"
         "pathlib.Path(os.environ['HOME'], 'stdin.txt').write_text(sys.stdin.read())\n"
+        "pathlib.Path(os.environ['HOME'], 'argv.json').write_text(json.dumps(sys.argv[1:]))\n"
         "pathlib.Path(os.environ['HOME'], 'first-turn').write_text(repr(time.time()))\n"
         "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,"
         " 'session_id': 's', 'result': 'done', 'total_cost_usd': 0.0, 'num_turns': 1}))\n")
@@ -1006,7 +1120,13 @@ def test_a_review_with_a_slow_graph_service_reaches_its_agent_within_the_bound(
     # "the graph is unavailable").
     assert "The context pack for this step could not be built" in stdin
     assert "within 1.0 s" in stdin
-    assert claude_code.GRAPH_FIRST_NOTE in stdin
+    # The graph line is a standing paragraph: it rides the system prompt
+    # (`--append-system-prompt`, 2026-11-23), once.
+    argv = json.loads((work / "argv.json").read_text())
+    flag = claude_code.APPEND_SYSTEM_PROMPT_FLAG
+    assert argv.count(flag) == 1, argv
+    assert argv[argv.index(flag) + 1].count(claude_code.GRAPH_FIRST_NOTE) == 1
+    assert claude_code.GRAPH_FIRST_NOTE not in stdin
     assert "work from the checkout as usual" not in stdin
     record = json.loads((ctx.artifacts_dir / contextpack.ARTIFACT_NAME).read_text())
     assert record["built"] is False and isinstance(record["seconds"], float)
@@ -1018,28 +1138,27 @@ def test_a_pack_failure_says_the_pack_failed_and_never_that_the_graph_is_missing
     monkeypatch.delenv(contextpack.CONTEXT_ENV, raising=False)
     where, served = _as_service_pin(work)
 
-    from agent_worker.graphmcp import tools
-
-    class OverCap(_FakeService):
+    # A shard short of its manifest count fails the pack (an oversized row
+    # no longer does: it is dropped and noted).
+    class Short(_FakeService):
         def answer(self, name, arguments):
-            return json.dumps({"rows": [tools.ONE_ROW_OVER], "next_cursor": None,
-                               "total": 1}), False
+            return json.dumps({"rows": [], "next_cursor": None, "total": 0}), False
 
     from agent_worker.contextpack import build
 
     monkeypatch.setattr(build.HttpService, "from_env",
-                        classmethod(lambda cls, **kwargs: OverCap(served)))
+                        classmethod(lambda cls, **kwargs: Short(served)))
     ctx = _ctx(work, tmp_path, {"prompt": _step_prompt(["src/pkg/store.py"])})
     line = contextpack.prepare(ctx, work / "repo")
     assert line is not None and "\n" not in line
     # MUTATION: the old line ("Repository context could not be built ...;
     # work from the checkout as usual") read as the graph being gone.
     assert line.startswith("The context pack for this step could not be built")
-    assert "4 KiB" in line
+    assert "the manifest records" in line
     assert "swarm-graph tools are connected" in line
     assert "work from the checkout as usual" not in line
     record = json.loads((ctx.artifacts_dir / contextpack.ARTIFACT_NAME).read_text())
-    assert record["built"] is False and "4 KiB" in record["error"]
+    assert record["built"] is False and "the manifest records" in record["error"]
 
 
 def test_a_built_pack_records_its_seconds(work, tmp_path, monkeypatch):
