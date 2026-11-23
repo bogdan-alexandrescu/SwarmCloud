@@ -5623,6 +5623,7 @@ guards ran; that limit predates this change and is not changed by it.
 ```bash
 scripts/related-tests.sh             # print the related test files and the runs that test them
 scripts/related-tests.sh --run       # run those, one after another, in the foreground
+scripts/related-tests.sh --closure   # where CI runs the whole suite, print the full closure, not the capped list
 scripts/related-tests.sh --base <rev> | --files <list>|-
 ```
 
@@ -5650,8 +5651,29 @@ end ([why](working-in-this-repository.md#swarmcloud-agent-tests)).
 Python: `select_unit_tests.py`'s rules, imported rather than restated -- the
 change's own tests, every test that imports a changed module through any chain
 of imports, every test whose text names a changed path or a script that names
-one -- but **without** its fall-back to the whole suite: where CI would run
-everything, this keeps the files it can name and leaves the rest to CI.
+one -- but **without** its fall-back to the whole suite. Where CI would run
+everything for the change itself (`fallback_reason`: a `conftest.py`,
+`pyproject.toml`, `uv.lock`, the frozen contract, a workflow, more than 40
+paths), the selection is **capped** (RELATED-CAP, owner plan 2026-11-23): the
+change's own tests, the tests that import a changed module **directly** (one
+hop; for a `conftest.py`, the tests beside it), the code graph's `tests_for`
+and the tests whose text names a changed path. A warning gives the capped
+count and the closure's, and says CI (the merge train) runs the closure;
+`--closure` prints the closure. Why: over 30 days model time was a fifth of a
+task's wall-clock and tests most of the rest; the closure was up to 2,094 files
+(1,844 for `swarm_common/models.py`), no 540 s run held it, `--run` stopped at
+its first overrun with "narrow it", which an agent cannot do, and the
+pre-publish gate inherited the same list. Measured on three merged changes
+against main at 8dc58b4: 8dc58b4 (`pyproject.toml`) 430 to 51 files, 38b31a8
+(`pyproject.toml`) 407 to 89, daf2a8e (31 paths, a workflow) 888 to 254. Every
+other change selects exactly what it did: a widely imported module that is not
+a fallback path (`agent_worker/lifecycle.py`, 829 files) or `common.sh` named
+through the script closure (715) is not capped. The selector remembers each
+file's parsed imports by the hash of its path, its text and
+`select_unit_tests.py` (`EdgeCache`, under `$TMPDIR/swarm-related-tests`;
+`RELATED_TESTS_CACHE_DIR=off` turns it off): parsing was 20 of a run's 24 s,
+now 4-7 s once warm. Nothing is keyed on a commit's tree, which leaves out the
+uncommitted files a lane's selection is about.
 swarm-ui: the change's own test files and every vitest file that reaches a
 changed module through relative imports (`import ... from`, `export ... from`,
 `import '...'`, `import('...')`, `vi.mock('...')`), transitively -- the graph
