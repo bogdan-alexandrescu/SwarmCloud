@@ -67,7 +67,7 @@ function SubPages({ sub }: { sub: LlmSubPage }) {
 
 /** What the tab is for, behind its (i) (no visible prose, §6.5). */
 const INFO = (
-  <Info about="LLM Providers" tip="Agents take a plan first, then the shared API key pool; Voice it then falls to its own dedicated OpenAI key. The vendors never stand in for each other." />
+  <Info about="LLM Providers" tip="Agents take a plan first, then the shared API key pool; Voice it then falls to its own OpenAI key. The vendors never stand in for each other." />
 )
 
 /**
