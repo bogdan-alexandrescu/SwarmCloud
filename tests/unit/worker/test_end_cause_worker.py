@@ -23,8 +23,6 @@ imported at module level, and until then no terminal write carried the field.
 
 from __future__ import annotations
 
-import threading
-import time
 from typing import Any
 
 from agent_worker import lifecycle as lifecycle_mod
@@ -118,15 +116,16 @@ def test_a_cancel_before_the_start_is_requested(db, worker_factory):
 def test_a_cancel_while_running_is_requested(db, worker_factory):
     seed_attempt(db, task_input={"prompt": "cancel me", "steps": 40, "sleep_seconds": 8.0})
     worker, _, _ = worker_factory(control_poll_seconds=1, timeout_seconds=30)
+    real_mark = worker._mark_agent_started
 
-    def cancel() -> None:
-        time.sleep(1.5)
+    def cancel_once_running() -> None:
+        # Once the agent process exists, so the loop meets it mid-run at its
+        # next control poll; never on a wall-clock guess at when that is.
+        real_mark()
         _task(db)["cancel_requested"] = True
 
-    thread = threading.Thread(target=cancel)
-    thread.start()
+    worker._mark_agent_started = cancel_once_running  # type: ignore[method-assign]
     exit_code = worker.run()
-    thread.join()
 
     assert exit_code == ExitCode.CANCELLED
     _ended(db, TaskState.CANCELLED, "cancel_requested")

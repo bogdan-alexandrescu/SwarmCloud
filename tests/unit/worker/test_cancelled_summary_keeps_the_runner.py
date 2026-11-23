@@ -13,9 +13,6 @@ summary had no `runner` key at all.
 
 from __future__ import annotations
 
-import threading
-import time
-
 from agent_worker.errors import ExitCode
 from swarm_common.states import TaskState
 
@@ -25,15 +22,16 @@ from worker_seeds import seed_attempt
 def test_a_cancelled_task_keeps_the_runner_block(db, worker_factory):
     seed_attempt(db, task_input={"prompt": "cancel me", "steps": 40, "sleep_seconds": 8.0})
     worker, _, _ = worker_factory(control_poll_seconds=1, timeout_seconds=30)
+    real_mark = worker._mark_agent_started
 
-    def cancel() -> None:
-        time.sleep(1.5)
+    def cancel_once_running() -> None:
+        # Once the agent process exists, so the loop meets it mid-run at its
+        # next control poll; never on a wall-clock guess at when that is.
+        real_mark()
         db.doc("tasks/task_1")["cancel_requested"] = True
 
-    thread = threading.Thread(target=cancel)
-    thread.start()
+    worker._mark_agent_started = cancel_once_running  # type: ignore[method-assign]
     exit_code = worker.run()
-    thread.join()
 
     assert exit_code == ExitCode.CANCELLED
     task = db.doc("tasks/task_1")
