@@ -55,9 +55,8 @@ says so; it is never handed to a person.
 
 THE WORKER READS NO METADATA. Whether an attempt has a target is swarm-api's
 answer, never the worker's reading of the task's `metadata`, which the
-step-spec signature does not cover (tests/unit/common/test_specsign_covers.py):
-so this design needs no frozen-contract change. Every other profile asks
-nothing.
+step-spec signature does not cover: so this design needs no frozen-contract
+change. Every other profile asks nothing.
 
 THE RUN SAYS WHICH STATE THE GATE'S SIGN-IN IS IN (`STATUS_NAME`, part of
 archived issue 2688). The gate lets an approved IdP token path through only while its own
@@ -94,7 +93,7 @@ from typing import Any
 from urllib.parse import quote
 
 #: `swarm_api.qatargets.QA_TARGET_PURPOSE`, restated (this image does not
-#: carry swarm-api); tests/unit/worker/test_qa_target_signin.py holds them equal.
+#: carry swarm-api); the two are held equal.
 QA_TARGET_PURPOSE = "swarm-qa-target-request/v1"
 #: The profile whose attempts ask (`swarm_api.qaspec.CAPTURE_PROFILE`).
 PROFILE = "claude-code-browser"

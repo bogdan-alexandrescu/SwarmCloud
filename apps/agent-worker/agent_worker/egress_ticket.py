@@ -37,7 +37,7 @@ from typing import Any
 from urllib.parse import quote
 
 #: `swarm_api.egress.EGRESS_TICKET_PURPOSE`, restated (this image does not
-#: carry swarm-api); tests/unit/worker/test_egress_gate_worker.py holds them equal.
+#: carry swarm-api); a test holds them equal.
 EGRESS_TICKET_PURPOSE = "swarm-egress-ticket-request/v1"
 
 #: Renew once this fraction of the ticket's life is left: a 600 s ticket is

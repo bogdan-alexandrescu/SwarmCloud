@@ -400,8 +400,7 @@ def people_scope(request: Request, auth: AuthContext = Depends(current_auth),
     is not is a scoped probe admin (`ApiSettings.probe_admin_users`): its
     entry is a workspace role, so it is answered with its listed workspaces
     among its memberships, exactly as a workspace admin is. Every route that
-    declares this is on `roles.PROBE_ADMIN_ROUTES`
-    (tests/unit/control_plane/test_probe_admin_routes.py holds that)."""
+    declares this is on `roles.PROBE_ADMIN_ROUTES` (a test holds that)."""
     try:
         admin_auth(request, auth)
         return None

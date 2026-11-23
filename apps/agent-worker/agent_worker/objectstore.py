@@ -67,9 +67,9 @@ def validate_key(key: str) -> str:
 #: The path segment that marks a checkpoint, at the position
 #: `agent_worker.checkpoint.checkpoint_prefix` puts it. The same rule as
 #: `reconciler.checkpoints.parse_checkpoint_key`, which decides what the
-#: collector may delete; tests/unit/worker/test_checkpoint_retention.py holds
-#: the two equal, key by key. They must be ONE rule: an object this leaves
-#: unstamped and the collector does not recognise is deleted by nothing.
+#: collector may delete; the two are held equal, key by key. They must be
+#: ONE rule: an object this leaves unstamped and the collector does not
+#: recognise is deleted by nothing.
 CHECKPOINTS_SEGMENT = "checkpoints"
 
 

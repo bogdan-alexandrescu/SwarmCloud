@@ -5,9 +5,8 @@ docs/design/graph-answer-cache.md §1.2, archived issue 1840).
 Two measurements share it, so they ask the same questions measured the same
 way and cannot drift apart:
 
-  * the CI gate, `tests/unit/worker/test_graphmcp_budgets.py`, on its
-    generated workload: answer p95 under `P95_BUDGET_RATIO` times the
-    reference;
+  * the CI gate, on its generated workload: answer p95 under
+    `P95_BUDGET_RATIO` times the reference;
   * the indexer's opt-in `latency.json` (`repo_graph_shards.measure_latency`),
     on the snapshot it has just written, which the graph-latency-report
     schedule type reads as the same ratio.

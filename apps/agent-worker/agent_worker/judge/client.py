@@ -4,9 +4,9 @@ The client lives in the shared package `swarm_jev` (apps/jev-client), which
 swarm-api installs too (docs/design/agent-quality/jev-contract.md section 13,
 lane 1; the owner's answer 10, 3 November 2026). This module hands out the
 package's OWN objects, not copies, so every existing import keeps working and
-the worker and swarm-api can never drift; tests/unit/jev_client holds them
-identical. The worker's `judge.settings.Backend` and `judge.budget.Ledger` are
-the package's `JevBackend` and `JevLedger`.
+the worker and swarm-api can never drift; a test holds them identical. The
+worker's `judge.settings.Backend` and `judge.budget.Ledger` are the
+package's `JevBackend` and `JevLedger`.
 
 Each name is bound by assignment rather than `from ... import` so that
 docs/jev-data-flow.md's cites of this file still resolve to a definition.

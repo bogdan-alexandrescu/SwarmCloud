@@ -110,9 +110,8 @@ ones, and the agent's client -- Playwright and Puppeteer alike keep a context
 id per frame and world, learnt only from `Runtime.executionContextCreated` --
 never hears of either. Its first evaluate after return names a context
 Chromium no longer has ("Cannot find context with specified id"), and its
-frame still has the URL the person left. MEASURED by
-tests/unit/worker/test_live_cdp_clients.py against a modelled Chromium, red
-before this.
+frame still has the URL the person left. MEASURED by a test against a
+modelled Chromium, red before this.
 
 So while the agent is held, the proxy keeps a JOURNAL per agent session of what
 the dropped events did to the page's state, and on return -- after the

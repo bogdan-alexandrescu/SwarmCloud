@@ -108,7 +108,7 @@ MAX_HOSTS = 16
 _VALUE = re.compile(r"[A-Za-z0-9._~+/=-]{16,1024}")
 #: A host name, lower case, at least one dot, no port, no IP literal, no
 #: wildcard: `swarm_api.workspace_secrets.SLOT_HOST`, restated (this image does
-#: not carry swarm-api); tests/unit/worker/test_cf_access_gate.py holds them equal.
+#: not carry swarm-api); the two are held equal.
 HOST = re.compile(r"(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?")
 #: The keys whose value is a header object (a dict, or a list of name/value).
 _HEADER_KEYS = frozenset({"headers", "requestHeaders", "responseHeaders", "associatedHeaders"})

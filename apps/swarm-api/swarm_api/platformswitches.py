@@ -115,9 +115,9 @@ UNSIGNED_LOG = "platform_switch_unsigned"
 CACHE_SECONDS = 30.0
 
 #: `detail.reason` of the 409s a write is refused with. Both are the
-#: established `conflict` code (tests/unit/control_plane/
-#: test_new_refusals_ship_off.py): a route that is new refuses nothing a
-#: caller relied on, so neither needs a refusal switch of its own.
+#: established `conflict` code (held by a test): a route that is new
+#: refuses nothing a caller relied on, so neither needs a refusal switch
+#: of its own.
 CONFLICT_CODE = "platform_switches_version_conflict"
 UNSIGNED_CODE = "platform_switches_unsigned"
 

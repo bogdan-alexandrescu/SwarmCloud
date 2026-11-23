@@ -469,8 +469,8 @@ def current_auth(
 
 
 #: Where `main.FrontDoor` leaves the values the error pages scrub
-#: (`main.SCRUB_STATE`; main imports this module, so it is restated, and
-#: tests/unit/control_plane/test_voice_grant.py holds the two equal).
+#: (`main.SCRUB_STATE`; main imports this module, so it is restated, and a
+#: test holds the two equal).
 _SCRUB_STATE = "_scrub_values"
 
 

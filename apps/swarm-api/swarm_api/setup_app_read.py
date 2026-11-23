@@ -6,8 +6,7 @@ the App's definition and its installation hold, and opens the page a person
 accepts the new permissions on. A private App answers `GET /app` only to the
 App itself, so the read is signed with the App's private key; swarm-api is
 that key's one accessor (`setup_github.ManifestFlow._signed`), so the read is
-here and the installer never reads a secret's value
-(tests/unit/install/test_switches.py).
+here and the installer never reads a secret's value.
 
 The answer carries the App's slug, its owner and its `permissions`, and the
 installation's id, account and `permissions`: never a token, a key, a JWT or

@@ -246,9 +246,9 @@ MAX_INPUT_BYTES: int = next(
 MAX_ISSUES = 30
 
 #: The live gate's presets, by name (`agent_worker.livegate.presets.PRESETS`,
-#: which swarm-api cannot import; tests/unit/control_plane/test_qaspec.py
-#: holds the two equal, and test_preset_lists_agree.py every copy). A viewport
-#: is never sent: the gate refuses one, and a raw width here is refused too.
+#: which swarm-api cannot import; tests hold the two equal, and every copy
+#: equal to each other). A viewport is never sent: the gate refuses one, and
+#: a raw width here is refused too.
 PRESETS = ("desktop", "iphone-15", "phone-390", "phone-380", "pixel-8", "iphone-se", "ipad-7")
 THEMES = ("light", "dark")
 DEFAULT_WIDTHS = ("desktop", "phone-390")
@@ -329,7 +329,7 @@ _BYPASS_NAME = re.compile(r"[A-Za-z0-9!#$%&'*+.^_|~-]{1,64}")
 #: several of them in `Fetch.continueRequest` anyway ("Unsafe header",
 #: docs/design/qa-identity-measurements.md M3). Restated by the gate
 #: (`agent_worker.livegate.qatarget`), which cannot import swarm-api;
-#: tests/unit/worker/test_qa_target_challenge_bypass.py holds the two equal.
+#: a test holds the two equal.
 RESERVED_BYPASS_HEADERS = frozenset({
     "authorization", "cookie", "host", "set-cookie", "content-length", "transfer-encoding",
     "connection", "upgrade", "te", "trailer", "keep-alive", "expect", "origin", "referer",
