@@ -269,3 +269,17 @@ repository (invariant 9).
 
 A caller still picks a profile and a catalogue plugin by name only. The
 image and the skill's install come from the catalogue (invariant 10).
+
+## Review round 1 amendments
+
+* The lens is compiled from the plan's files, which are advisory, so the merge
+  gate (`issueci.merge_gate`) re-reads the pull request's real changed files:
+  a risk-path change whose workflow has neither the lens nor the optional
+  security review waits for a `merge` approval at that head.
+* A plan entry naming a directory (`terraform/infra`, `apps/redaction`), a
+  `..` or backslash spelling, or different case counts as a risk-path hit.
+* A risk-path run has one fix round only: `resolve_fix_loop` refuses a gate
+  with `also`, so the fix loop does not apply to it.
+* The lens writes `security-verdict.json`, the same name as the optional
+  security-review step; they are separate step directories, and `issueci`
+  reads the plugin step's only.

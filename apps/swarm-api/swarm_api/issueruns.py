@@ -195,6 +195,7 @@ import hashlib
 import json
 import logging
 import os
+import posixpath
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -3070,8 +3071,35 @@ def risk_path_hits(plan: Mapping[str, Any] | None) -> list[str]:
     """
     return sorted(
         path for path in plan_files(plan)
-        if any(reviewgate.matches(path, glob) for glob in reviewgate.DEFAULT_RISK_PATHS)
+        if any(_risky_entry(path, glob) for glob in reviewgate.DEFAULT_RISK_PATHS)
     )
+
+
+def _risky_entry(path: str, glob: str) -> bool:
+    """Whether a plan's file entry is, or may hold, a path under one risk entry.
+
+    The entry is normalised first (backslashes to slashes, `.`/`..` segments
+    resolved, case folded), so a spelling of a risk path is still it. A plan
+    may name a DIRECTORY (`plan_files` strips its slash, as `territory_overlap`
+    reads it): such an entry is a hit when files under it can match the risk
+    entry, as `terraform/infra` holds `iam.tf` and `apps/common/swarm_common`
+    is the frozen contract's own directory.
+    """
+    norm = posixpath.normpath(path.replace("\\", "/")).lower().lstrip("/")
+    entry = glob.lower()
+    if reviewgate.matches(norm, entry):
+        return True
+    if "." in norm.rsplit("/", 1)[-1] and not norm.startswith("."):
+        return False  # a file (it has an extension): `matches` is the whole answer
+    gsegs = entry.lstrip("/").split("/")
+    for index, seg in enumerate(norm.split("/")):
+        if index >= len(gsegs):
+            return False  # deeper than the risk entry: `matches` decided it above
+        if gsegs[index] == "**":
+            return True
+        if gsegs[index] == "" or not reviewgate._pattern(gsegs[index]).match(seg):
+            return gsegs[index] == "" and index == len(gsegs) - 1
+    return True  # the whole entry names a directory above the risk entry
 
 
 def _security_lens_prompt(ref: IssueRef, plan: Mapping[str, Any], hits: list[str],

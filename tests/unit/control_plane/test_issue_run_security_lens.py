@@ -242,3 +242,47 @@ def test_swarm_api_does_not_publish_a_gate_with_further_reviews_itself():
                                      "builds_on": "task_impl"}}}
     with pytest.raises(verdictpublish.Decline, match="further reviews"):
         verdictpublish._dispatch_facts(doc)
+
+
+# --------------------------------------------------------------------------
+# review round 1: directory entries and spellings; the real-diff backstop
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("path", [
+    "apps/common/swarm_common", "apps/common/swarm_common/", "./apps/common/swarm_common",
+    ".github/workflows", "terraform/infra", "apps/redaction",
+    "apps/x/../common/swarm_common/m.py", "apps\\common\\swarm_common\\m.py",
+    "Apps/Common/Swarm_Common/m.py",
+])
+def test_a_directory_or_a_respelled_risk_path_in_a_plan_is_a_hit(path):
+    assert issueruns.risk_path_hits(_risky(FULL_PLAN, path)) != []
+
+
+@pytest.mark.parametrize("path", ["docs", "apps/swarm-api/swarm_api/issues.py", "tests/unit"])
+def test_a_plain_path_is_no_hit(path):
+    assert [h for h in issueruns.risk_path_hits({"steps": [{"files": [path]}]})] == []
+
+
+class _Store:
+    def __init__(self, ids):
+        self.ids = ids
+
+    def get_workflow(self, *_a, **_k):
+        from types import SimpleNamespace
+        return SimpleNamespace(steps=[SimpleNamespace(step_id=i) for i in self.ids])
+
+
+def _lacks(files, ids, security_review=False):
+    from types import SimpleNamespace
+
+    from swarm_api import issueci
+    run = SimpleNamespace(security_review=security_review, workflow_id="wf")
+    return issueci._lacks_security_review(SimpleNamespace(store=_Store(ids)), "t", run, files)
+
+
+def test_the_merge_backstop_reads_the_real_diff_not_the_plan():
+    risky = ["apps/common/swarm_common/models.py"]
+    assert _lacks(risky, ["implement", REVIEW]) is True
+    assert _lacks(risky, ["implement", REVIEW, LENS]) is False
+    assert _lacks(risky, ["implement", REVIEW], security_review=True) is False
+    assert _lacks(["docs/a.md"], ["implement", REVIEW]) is False
