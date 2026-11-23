@@ -18,6 +18,7 @@ Held against a synthetic tree in tmp_path, so the answers are exact.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -153,3 +154,15 @@ def test_the_script_passes_closure_through(tmp_path):
                             cwd=REPO, env=env, capture_output=True, text=True, timeout=300)
     assert result.returncode == 0, result.stderr
     assert "unknown option" not in result.stderr
+
+
+def test_a_malformed_cache_entry_is_parsed_again_not_trusted(tmp_path):
+    root = tmp_path / "repo"
+    cache = tmp_path / "cache"
+    _tree(root)
+    cold = _select(root, CORE, OWN, closure=True, cache=cache)
+    (path,) = cache.glob("import-edges-*.json")
+    entries = json.loads(path.read_text())
+    # MUTATION: accept any dict -> frozenset(1) raises and the run exits 1.
+    path.write_text(json.dumps({key: {"swarm_common.core": 1} for key in entries}))
+    assert _select(root, CORE, OWN, closure=True, cache=cache)["raw"] == cold["raw"]
