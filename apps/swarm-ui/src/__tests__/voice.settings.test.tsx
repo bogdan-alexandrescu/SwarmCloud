@@ -36,7 +36,7 @@ const CATALOGUE = {
     { name: 'claude-sonnet-5', label: 'Claude Sonnet 5', model: 'claude-sonnet-5', provider: 'anthropic' },
   ],
   planner_models: [
-    { name: 'fable', label: 'Fable class (planning)', model: 'claude-fable-5-1' },
+    { name: 'fable', label: 'Fable class (planning)', model: 'claude-fable-5-2' },
     { name: 'opus', label: 'Opus class (coding)', model: 'claude-opus-5-5' },
   ],
   idle: [
@@ -127,7 +127,7 @@ describe('Voice it › Settings draws the catalogue and the settings', () => {
     expect(fast.value).toBe('claude-haiku-5-5')
     const planner = engine.getByRole('combobox', { name: 'Planner model' }) as HTMLSelectElement
     expect([...planner.options].map((o) => o.value)).toEqual(['fable', 'opus'])
-    expect(planner.selectedOptions[0]!.textContent).toBe('Fable class (planning) · claude-fable-5-1')
+    expect(planner.selectedOptions[0]!.textContent).toBe('Fable class (planning) · claude-fable-5-2')
     // No model the catalogue does not list, the frames' older Haiku included.
     expect(document.body.textContent).not.toMatch(/haiku-4|Haiku 4/)
 
