@@ -27,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from agent_worker import lifecycle
+from agent_worker import usage
 from agent_worker.runners import ceiling
 from agent_worker.runners.base import RunnerContext, RunnerFailure
 from agent_worker.runners.cliagent import (
@@ -394,8 +394,8 @@ def test_the_session_tail_is_capped_and_keeps_the_newest_words():
 
 
 def test_the_prompt_buckets_width_is_the_workers():
-    assert ceiling.PROMPT_BUCKET_TOKENS == lifecycle._PROMPT_BUCKET_TOKENS
-    assert ceiling.UNNAMED_MODEL == lifecycle._UNNAMED_MODEL
+    assert ceiling.PROMPT_BUCKET_TOKENS == usage._PROMPT_BUCKET_TOKENS
+    assert ceiling.UNNAMED_MODEL == usage._UNNAMED_MODEL
 
 
 def _write(path, text: str, *, age: int = 0) -> None:

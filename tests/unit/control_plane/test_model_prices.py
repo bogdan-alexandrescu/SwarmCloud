@@ -509,10 +509,10 @@ def test_buckets_that_do_not_add_up_to_the_models_counts_are_refused(worker_clie
 
 
 def test_the_worker_and_swarm_api_agree_on_the_bucket_width_and_the_body_limit():
-    from agent_worker import lifecycle, spendprice
+    from agent_worker import spendprice, usage
     from swarm_api import spendestimate
 
-    assert lifecycle._PROMPT_BUCKET_TOKENS == modelprices.PROMPT_BUCKET_TOKENS
-    assert lifecycle._MAX_PROMPT_BUCKETS == modelprices.MAX_PROMPT_BUCKETS
-    assert lifecycle._BUCKET_FIELDS == modelprices.BUCKET_COUNTS
+    assert usage._PROMPT_BUCKET_TOKENS == modelprices.PROMPT_BUCKET_TOKENS
+    assert usage._MAX_PROMPT_BUCKETS == modelprices.MAX_PROMPT_BUCKETS
+    assert usage._BUCKET_FIELDS == modelprices.BUCKET_COUNTS
     assert spendprice.MAX_BODY_BYTES == spendestimate.MAX_BODY_BYTES

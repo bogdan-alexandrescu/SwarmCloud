@@ -36,7 +36,7 @@ from typing import Any
 
 import pytest
 
-from agent_worker import lifecycle as lifecycle_mod
+from agent_worker import checkpointing as checkpointing_mod
 from agent_worker import workspace as workspace_mod
 from agent_worker.checkpoint import CheckpointManager, CheckpointRecord
 from agent_worker.control import CHECKPOINT_DIGESTS_FIELD
@@ -406,7 +406,7 @@ def test_a_pointer_and_attempt_record_planted_together_are_restored(
     ],
 )
 def test_a_key_segment_is_one_safe_path_segment(segment, accepted):
-    assert bool(lifecycle_mod._KEY_SEGMENT_RE.fullmatch(segment)) is accepted
+    assert bool(checkpointing_mod._KEY_SEGMENT_RE.fullmatch(segment)) is accepted
 
 
 def test_a_manifest_whose_attempt_id_is_not_one_key_segment_is_refused(
