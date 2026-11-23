@@ -40,6 +40,9 @@ from .test_issue_runs import FULL_PLAN
 from .test_issue_writeback import _bare_run
 from .test_merge_verdict_workflows import _by_id, _post, _review_shape, _task
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 
 def _compiled(plan: dict):
     return compile_plan(_bare_run(plan=plan, plan_digest=issueruns.plan_digest(plan)))

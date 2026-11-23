@@ -63,6 +63,9 @@ from .test_approvals import (  # noqa: F401 -- fixtures, used by name
 from .test_issue_run_ci import PR, SHA_A, _read
 from .test_issue_runs import FULL_PLAN, _approve, _create, _docs, _edit, _finish_planner, _run
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 ROUTE = "/v1/runs/owner-signatures"
 
 

@@ -22,6 +22,9 @@ from .test_issue_run_keyword import STAGED_FULL_PLAN
 from .test_issue_runs import FULL_PLAN
 from .test_issue_writeback import _bare_run
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 
 @pytest.fixture
 def catalogue(monkeypatch):

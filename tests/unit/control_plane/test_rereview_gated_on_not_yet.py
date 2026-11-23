@@ -37,6 +37,9 @@ from .test_repository_merge_policy import (  # noqa: F401  (fixtures)
     make,
 )
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 
 # --------------------------------------------------------------------------
 # 1: the re-review is gated like the integrator
