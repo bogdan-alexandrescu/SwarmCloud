@@ -29,7 +29,7 @@ The decisions, for Admin › People and roles, which is not tenant-switched
 (`people_scope`, then `join_scope`: a platform admin, or an admin of THAT
 request's workspace, read fresh):
 
-    POST   /v1/admin/join-requests/{ref}/approve   {role?}
+    POST   /v1/admin/join-requests/{ref}/approve   {role?}  (JSON, `{}` at least)
     POST   /v1/admin/join-requests/{ref}/deny      {reason}
 
 WHAT A CODE SHOWS. A code that does not work -- unknown, rotated, switched
@@ -172,6 +172,9 @@ class LeaveBody(StrictModel):
 
 
 class ApproveBody(StrictModel):
+    """REQUIRED, `{}` at least, as application/json, as `LeaveBody` is: a
+    form on another site cannot approve on an admin's front-door cookie."""
+
     #: `viewer` or the workspace's default; none given is the default (Q4 (a)).
     role: str | None = Field(default=None, max_length=32)
 
@@ -660,7 +663,7 @@ def _role_change(ctx: AppContext, *, tenant_id: str, subject: str, chosen: str, 
 def approve_join_request(
     ref: str,
     request: Request,
-    body: ApproveBody | None = None,
+    body: ApproveBody,
     scope: dict[str, str] | None = Depends(people_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
@@ -691,7 +694,7 @@ def approve_join_request(
     store = ctx.roles
     assert store is not None
     default = store.default_role(tenant_id, fresh=True)[0]
-    chosen = default if body is None or body.role is None else roles.check_role(body.role)
+    chosen = default if body.role is None else roles.check_role(body.role)
     if chosen not in joinrequests.OFFERED_ROLES or chosen not in (default, roles.VIEWER):
         raise JoinRoleNotAllowed(
             f"an approval gives this workspace's default ({default}) or viewer below it; "

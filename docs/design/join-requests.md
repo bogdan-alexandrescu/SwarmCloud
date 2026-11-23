@@ -852,7 +852,7 @@ tenant-switched. They use a new `join_scope` dependency, beside
 workspace, read fresh:
 
 ```
-POST   /v1/admin/join-requests/{ref}/approve   {role?}
+POST   /v1/admin/join-requests/{ref}/approve   {role?}  (JSON, `{}` at least; none is 422)
 POST   /v1/admin/join-requests/{ref}/deny      {reason}
 ```
 
