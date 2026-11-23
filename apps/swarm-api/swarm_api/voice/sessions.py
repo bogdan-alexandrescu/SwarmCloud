@@ -1064,6 +1064,15 @@ def _valid_answer(answer: str) -> bool:
     return answer.startswith("v=0") and len(answer.encode("utf-8")) <= MAX_SDP_BYTES
 
 
+class _PlainReads:
+    """A transaction's `get` without the transaction, for `_holder`'s rule
+    read on its own (`VoiceSessions.holds_live`)."""
+
+    @staticmethod
+    def get(ref: Any) -> Any:
+        return ref.get()
+
+
 class VoiceSessions:
     """Starts and ends one person's sessions in one tenant."""
 
@@ -1160,6 +1169,16 @@ class VoiceSessions:
                 else STARTING_STALE_SECONDS
             return created is None or self._now() - created < timedelta(seconds=stale), None
         return False, None
+
+    def holds_live(self, *, person: str) -> bool:
+        """Whether a start would be refused for the person's live (or freshly
+        starting) session, by `_holder`'s rule, read outside a transaction and
+        writing nothing: the speech machine's warm asks it (routes/voice.py
+        `warm_speech`)."""
+        snap = _snapshot(self._db.collection(LIVE_MARKERS).document(
+            marker_id(self._marker_key, person)).get())
+        marker = snap.to_dict() if snap.exists else None
+        return self._holder(_PlainReads(), marker)[0]
 
     def _end_abandoned(self, txn: Any, marker: Mapping[str, Any], session: Mapping[str, Any]) -> None:
         """End the abandoned session the marker names, in the caller's
