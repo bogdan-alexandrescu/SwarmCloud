@@ -208,3 +208,36 @@ def test_a_run_touching_no_risk_path_submits_todays_gate(client, db, objects):
     assert LENS not in tasks
     assert tasks[FIX]["metadata"]["dispatch"]["verdict_gate"] == {
         "task_id": tasks[REVIEW]["id"], "verdict_in": ["NOT_YET"]}
+
+
+# --------------------------------------------------------------------------
+# the control plane's shortcuts leave a gate with further reviews to the worker
+# --------------------------------------------------------------------------
+
+def _gate_block(**gate) -> dict:
+    return {"builds_on": "task_fix", "verdict_gate": {
+        "task_id": "task_review", "verdict_in": ["NOT_YET"], **gate}}
+
+
+def test_the_scheduler_predicts_no_shut_gate_from_one_review_of_two():
+    from scheduler import runtime as runtime_mod
+
+    fix = {"state": "SUCCEEDED", "result_summary": {"verdict_gate": {
+        "task_id": "task_review", "verdict": "MERGE", "verdict_in": ["NOT_YET"]}}}
+    read = {"task_fix": fix}.get
+    # The one review's gate: its MERGE is a certain skip.
+    assert runtime_mod.republishes(["task_fix"], "task_review", _gate_block(), read) is not None
+    # MUTATION: drop the `also_task_ids` check and the security review's
+    # NOT_YET is predicted away: the re-review is resolved as a copy.
+    assert runtime_mod.republishes(
+        ["task_fix"], "task_review", _gate_block(also_task_ids=["task_lens"]), read) is None
+
+
+def test_swarm_api_does_not_publish_a_gate_with_further_reviews_itself():
+    from swarm_api import verdictpublish
+
+    doc = {"depends_on": ["task_review", "task_lens"],
+           "metadata": {"dispatch": {**_gate_block(also_task_ids=["task_lens"]),
+                                     "builds_on": "task_impl"}}}
+    with pytest.raises(verdictpublish.Decline, match="further reviews"):
+        verdictpublish._dispatch_facts(doc)
