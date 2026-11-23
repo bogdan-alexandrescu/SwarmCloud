@@ -58,7 +58,7 @@ NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 #: it. Test input: every assertion below compares a render to THIS map.
 CLASS_MODELS = {
     "opus": "claude-opus-5-5",
-    "fable": "claude-fable-5-2",
+    "fable": "claude-fable-5-1",
     "sonnet": "claude-sonnet-5-5",
     "haiku": "claude-haiku-5-5",
 }
@@ -171,7 +171,7 @@ def test_a_profile_keyed_map_in_the_class_variable_refuses_to_start():
         "not json",
         '["claude-opus-5-5"]',
         '{"opus": "claude-opus-5-5"}',
-        '{"opus": "claude-opus-5-5", "fable": "claude-fable-5-2", '
+        '{"opus": "claude-opus-5-5", "fable": "claude-fable-5-1", '
         '"sonnet": "claude-sonnet-5-5", "haiku": "claude-opus-5-5"}',
     ],
 )

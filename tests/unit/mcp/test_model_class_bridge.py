@@ -33,7 +33,7 @@ from swarm_mcp.client import SwarmClient, SwarmError, task_payload
 #: `runner_models`). Only the platform half of these tests reads it.
 PINS = {
     "opus": "claude-opus-5-5",
-    "fable": "claude-fable-5-2",
+    "fable": "claude-fable-5-1",
     "sonnet": "claude-sonnet-5-5",
     "haiku": "claude-haiku-5-5",
 }

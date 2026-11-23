@@ -392,17 +392,9 @@ locals {
   # tests/terraform/runner_model.tftest.hcl asserts the four keys and each
   # ID's family word; scripts/lib/check-contract-parity.sh (section 17)
   # applies `admits` to this map.
-  #
-  # fable MOVED to claude-fable-5-2 (owner decision of 2026-11-23) from
-  # claude-fable-5-1. Re-pinning a class follows the checklist in
-  # docs/versions.md ("Re-pinning a model class"): the canary on dev first,
-  # the price in the live `model_prices` setting, then this edit and a
-  # release; rollback is reverting this line and releasing.
-  # tests/unit/scripts/test_model_pins.py holds every class-pin literal under
-  # apps/ (the voice planner's default among them) equal to this map.
   runner_models = {
     opus   = "claude-opus-5-5"
-    fable  = "claude-fable-5-2"
+    fable  = "claude-fable-5-1"
     sonnet = "claude-sonnet-5-5"
     haiku  = "claude-haiku-5-5"
   }
