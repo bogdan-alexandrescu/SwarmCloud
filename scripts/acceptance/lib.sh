@@ -246,7 +246,9 @@ acc_submit() {
 
 # acc_api_as SA TENANT METHOD PATH BODY OUT -> one API request as the service
 # account SA (its ID token minted by impersonation: the caller needs
-# roles/iam.serviceAccountTokenCreator on it) with `X-Swarm-Tenant: TENANT`.
+# roles/iam.serviceAccountOpenIdTokenCreator on it, granted by
+# terraform/bootstrap/acceptance_probes.tf under enable_acceptance_probes,
+# never by hand) with `X-Swarm-Tenant: TENANT`.
 # Inside Cloud Run (swarm-verify, where accept.yml runs the roles probe) the
 # image has no gcloud, so _acc_mint_id_token mints it over REST instead.
 # The response body goes to OUT, the HTTP status to OUT.status (0 when no
@@ -299,7 +301,7 @@ _acc_mint_id_token() {
   reply="$(curl -sS -f -m "${HTTP_TIMEOUT:-30}" -H @"${header}" \
     -H "Content-Type: application/json" -X POST --data-binary "${request}" \
     "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${sa}:generateIdToken" \
-    2>/dev/null)" || { rm -f "${header}"; die "could not mint an ID token for ${sa} (generateIdToken); the job's identity needs roles/iam.serviceAccountTokenCreator on it"; }
+    2>/dev/null)" || { rm -f "${header}"; die "could not mint an ID token for ${sa} (generateIdToken); the job's identity needs roles/iam.serviceAccountOpenIdTokenCreator on it (granted by terraform/bootstrap/acceptance_probes.tf under enable_acceptance_probes, never by hand)"; }
   rm -f "${header}"
   _ID_TOKEN="$(printf '%s' "${reply}" | jq -r '.token // empty')"
   [[ -n "${_ID_TOKEN}" ]] || die "generateIdToken returned no ID token for ${sa}"
