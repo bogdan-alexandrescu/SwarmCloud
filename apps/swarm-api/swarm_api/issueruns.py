@@ -226,7 +226,7 @@ from .schemas import (
 )
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
-from . import planhistory, sessiontag, stepclass, workcontract
+from . import planhistory, reviewgate, sessiontag, stepclass, workcontract
 from .plansections import (
     MAX_CHANGES,
     MAX_GRAPH_EDGES,
@@ -248,6 +248,7 @@ from .validation import (
     REVIEW_GATE_METADATA_KEY,
     REVIEW_GATE_REQUIREMENTS_CHECK,
     RUNTIME_METADATA_KEY,
+    SECURITY_VERDICT_FILE,
     RUNTIME_POLICY_BROWSER_IF_UI,
     RUNTIME_POLICY_PROFILES,
     IssueRef,
@@ -432,6 +433,14 @@ IMPLEMENT_PREFIX = "impl-"
 SECURITY_REVIEW_STEP = "security-review"
 SECURITY_PLUGIN = "security-audit"
 SECURITY_PLUGIN_MODE = "unattended"
+#: The security lens BESIDE the first review, compiled when the plan's files
+#: touch a risk path (`risk_path_hits`): one review round covers both lenses,
+#: so the one fix step takes both verdicts (`_with_security_lens`). Its id
+#: does not end in `review`: it owes no `verdict.json` and is no UI review;
+#: it writes only `SECURITY_VERDICT_FILE`, the name the fix stages it by
+#: beside the first review's `verdict.json`. Not the optional plugin step
+#: above, which a run may still add after the fix.
+SECURITY_LENS_STEP = "security-lens"
 
 #: How the compiled review is told to write a finding. Objects, each saying
 #: where its blocker is, so the console can pin it beside its line (diff
@@ -3046,8 +3055,103 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
             ),
         },
     })
+    steps = _with_security_lens(run, plan, steps, by_parent=False)
     return _workflow(run, _with_security_review(
         run, _with_review_rounds(run, steps, class_models=class_models)))
+
+
+def risk_path_hits(plan: Mapping[str, Any] | None) -> list[str]:
+    """The plan's files that touch a risk path, sorted; [] for none.
+
+    The review gate's own list (`reviewgate.DEFAULT_RISK_PATHS`: the frozen
+    contract, redaction, credentials, tenant isolation, access rights, the
+    workflow files), matched as the gate matches a changed path
+    (`reviewgate.matches`), against every file a plan step says it touches.
+    """
+    return sorted(
+        path for path in plan_files(plan)
+        if any(reviewgate.matches(path, glob) for glob in reviewgate.DEFAULT_RISK_PATHS)
+    )
+
+
+def _security_lens_prompt(ref: IssueRef, plan: Mapping[str, Any], hits: list[str],
+                          staged: str | None) -> str:
+    """The security lens's instructions: what to judge, and the one file to write."""
+    shown = ", ".join(hits[:10]) + (f" and {len(hits) - 10} more" if len(hits) > 10 else "")
+    return (
+        f"Security review of the change on this branch for GitHub issue {ref.short}, "
+        f"beside the code review, against the approved plan: {plan['summary']}\n\n"
+        f"The plan touches risk paths ({shown}). Judge the change through the security "
+        "lens only: credentials and tokens (never written to the repository, a log or "
+        "an environment the task does not own), redaction of anything that could hold a "
+        "secret, tenant isolation (each tenant's own identity, secrets, storage prefix "
+        "and namespace), access rights and IAM, the frozen contract's invariants "
+        "(CONTRACT.md: a caller names a runner profile and nothing else), and CI "
+        "workflow files. Leave code style and the plan's requirements to the code "
+        "review. "
+        + (f"{staged} holds the diff; " if staged else "")
+        + "the whole change is this branch against the default branch. Do not edit "
+        f"files. Write $SWARM_ARTIFACTS_DIR/{SECURITY_VERDICT_FILE} -- that file only, "
+        "no verdict.json: "
+        '{"verdict": "MERGE" or "NOT_YET", ' + COMMIT_SHAPE + FINDINGS_SHAPE + "}. "
+        "NOT_YET only for a blocker this change brings or makes worse. "
+        + FINDINGS_LOCATION_NOTE + NO_CLOSING_KEYWORD
+    )
+
+
+def _with_security_lens(run: "IssueRun", plan: Mapping[str, Any], steps: list[dict[str, Any]],
+                        *, by_parent: bool) -> list[dict[str, Any]]:
+    """`steps`, with the security lens beside the first review when the plan's
+    files touch a risk path (`risk_path_hits`); exactly `steps` otherwise.
+
+    One review round covers both lenses: the lens depends on the same build
+    steps as the review and runs beside it, on `claude-code` at the profile's
+    default class (no class is chosen for it), writing its own
+    `SECURITY_VERDICT_FILE`. The fix stages BOTH verdicts and its gate also
+    reads the lens's (`when.also`): its agent runs when EITHER says NOT_YET,
+    and its prompt names both files. The re-review `rereview_step_for` then
+    derives covers both lenses, and it is the verdict the merge is read on.
+    """
+    hits = risk_path_hits(plan)
+    if not hits:
+        return steps
+    ref = run.issue
+    review = next(s for s in steps if s["step_id"] == REVIEW_STEP)
+    builds = [d for d in review["depends_on"] if d != REQUIREMENTS_CHECK_STEP]
+    staged = (", ".join(f"{sid}/{PATCH_FILE}" for sid in review["input_from"]) if by_parent
+              else PATCH_FILE)
+    lens: dict[str, Any] = {
+        "step_id": SECURITY_LENS_STEP,
+        "runner_profile": STEP_PROFILE,
+        # Read-only: it changes nothing, and no integrator merges it.
+        "allow_empty_diff": True,
+        "depends_on": builds,
+        "builds_on": review["builds_on"],
+        "input_from": dict(review["input_from"]),
+        "input": {"issue": ref.number,
+                  "prompt": _security_lens_prompt(ref, plan, hits, staged)},
+    }
+    if by_parent:
+        lens["metadata"] = {INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT}
+    out: list[dict[str, Any]] = []
+    for step in steps:
+        if step["step_id"] == FIX_STEP:
+            step = {
+                **step,
+                "depends_on": [*step["depends_on"], SECURITY_LENS_STEP],
+                "input_from": {**step["input_from"], SECURITY_LENS_STEP: SECURITY_VERDICT_FILE},
+                "when": {**step["when"], "also": [SECURITY_LENS_STEP]},
+                "input": {**step["input"], "prompt": (
+                    f"Fix every finding in {VERDICT_FILE} (the code review's verdict) and "
+                    f"in {SECURITY_VERDICT_FILE} (the security review's) for GitHub issue "
+                    f"{ref.short}; a file whose verdict is MERGE has no blocker for you. "
+                    "Change nothing else. " + NO_CLOSING_KEYWORD
+                )},
+            }
+        out.append(step)
+        if step["step_id"] == REVIEW_STEP:
+            out.append(lens)
+    return out
 
 
 def _step_specs(steps: list[dict[str, Any]]) -> list[StepSpec]:
@@ -3059,6 +3163,7 @@ def _step_specs(steps: list[dict[str, Any]]) -> list[StepSpec]:
             input_from=dict(s.get("input_from") or {}),
             when_step=s["when"]["step"] if s.get("when") else None,
             when_verdicts=tuple(s["when"]["verdict_in"]) if s.get("when") else (),
+            when_also=tuple(s["when"].get("also") or ()) if s.get("when") else (),
             builds_on=s.get("builds_on"),
             runner_profile=s.get("runner_profile"),
         )
@@ -3109,7 +3214,9 @@ def _with_rereview(steps: list[dict[str, Any]], *,
     `auto_merge` on the first review's NOT_YET (wf_3cc4026eb34a43a885a4).
     """
     review = next(s for s in steps if s["step_id"] == REVIEW_STEP)
-    rereview = rereview_step_for(_step_specs(steps), review, "integrate", class_models)
+    also = {s["step_id"]: s for s in steps
+            if any(s["step_id"] in (t.get("when") or {}).get("also", ()) for t in steps)}
+    rereview = rereview_step_for(_step_specs(steps), review, "integrate", class_models, also)
     if rereview is None or rereview["step_id"] != REREVIEW_STEP:
         # The fix is the integrator gated on the review, and the plan's ids
         # are reserved away from the re-review's: unreachable.
@@ -3371,6 +3478,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
             ),
         },
     })
+    steps = _with_security_lens(run, plan, steps, by_parent=True)
     return _with_review_rounds(run, steps, class_models=class_models)
 
 

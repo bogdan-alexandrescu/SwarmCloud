@@ -1120,6 +1120,16 @@ REREVIEW_PREAMBLE = (
     "are staged under the directory of the step that produced them ({staged}).\n\n"
 )
 
+#: After `REREVIEW_PREAMBLE`, when the fix was gated on further reviews too
+#: (`when.also`): the re-review is the one verdict in force for every lens.
+REREVIEW_ALSO_PREAMBLE = (
+    "The fix also answered the verdicts staged at {verdict_paths}, from reviews "
+    "that ran beside the earlier one through lenses of their own; check every "
+    "finding in them is resolved too, through each one's lens, whose instructions "
+    "follow the original review's. Your one verdict in {verdict_file} covers "
+    "them all: NOT_YET when any lens still finds a blocker.\n\n"
+)
+
 #: The signed dispatch block on a merge step naming what it merges. The
 #: worker spells it `agent_worker.merge.MERGE_TARGET_FIELD`; the two are
 #: held equal.
@@ -2279,6 +2289,10 @@ class DispatchOptions:
     #: decides whether this step's agent runs, and the verdicts that run it.
     gate_task_id: str | None = None
     gate_verdicts: tuple[str, ...] = ()
+    #: The gate's further reviews (`when.also`), as task ids: the agent runs
+    #: when ANY verdict read is in `gate_verdicts`. Written only when there
+    #: are some, so every other gate stores exactly the block it stored before.
+    gate_also_task_ids: tuple[str, ...] = ()
     #: The step's `allow_empty_diff` (owner decision, 2026-10-05): an empty
     #: diff ends it SUCCEEDED with `result_summary.no_change` instead of
     #: failing on `empty_diff`. Written only when true, inside the signed block.
@@ -2392,6 +2406,7 @@ class DispatchOptions:
         pr_label: str | None = None,
         findings_epic: int | None = None,
         step_ref: bool = False,
+        gate_also_task_ids: Sequence[str] = (),
     ) -> "DispatchOptions":
         """This step's `builds_on`, verdict gate, empty-diff permission and
         whether it names its own ref, already resolved to task ids.
@@ -2402,6 +2417,7 @@ class DispatchOptions:
             step_ref=bool(step_ref),
             gate_task_id=gate_task_id,
             gate_verdicts=tuple(gate_verdicts) if gate_task_id else (),
+            gate_also_task_ids=tuple(gate_also_task_ids) if gate_task_id else (),
             allow_empty_diff=bool(allow_empty_diff),
             pr_label=pr_label if gate_task_id and pr_label else None,
             findings_epic=findings_epic if gate_task_id and findings_epic else None,
@@ -2528,6 +2544,8 @@ class DispatchOptions:
                 "task_id": self.gate_task_id,
                 "verdict_in": list(self.gate_verdicts),
             }
+            if self.gate_also_task_ids:
+                block["verdict_gate"]["also_task_ids"] = list(self.gate_also_task_ids)
         # Absent unless asked for (2026-10-05), so every other step stores
         # exactly the block it stored before. The worker spells both keys in
         # `agent_worker.expected_outputs`.
@@ -3495,6 +3513,24 @@ def validate_step_routing(
                     "from the file this step stages from that step.",
                     detail={"step_id": step.step_id, "when": step.when_step},
                 )
+            also = list(step.when_also)
+            if (len(set(also)) != len(also) or step.when_step in also
+                    or step.step_id in also):
+                raise DagError(
+                    f"step {step.step_id!r}: when.also must name distinct reviews other "
+                    f"than {step.when_step!r} and the step itself.",
+                    detail={"step_id": step.step_id, "also": also},
+                )
+            unstaged = [a for a in also if a not in step.input_from]
+            if unstaged:
+                raise DagError(
+                    f"step {step.step_id!r} runs its agent on the verdicts of "
+                    + ", ".join(repr(a) for a in unstaged)
+                    + " (when.also) but stages no file from them. Stage each one's "
+                    "verdict through `input_from`, under a name of its own, and add it "
+                    "to depends_on: the verdict is read from the file this step stages.",
+                    detail={"step_id": step.step_id, "also": unstaged},
+                )
             verdicts = list(step.when_verdicts)
             unknown = [v for v in verdicts if v not in REVIEW_VERDICTS]
             if not verdicts or unknown or len(set(verdicts)) != len(verdicts):
@@ -3813,6 +3849,11 @@ def merge_step_for(
     sources = merge_sources(steps, strategy, continued_task, named_pull, rereview, loop)
     if sources is None:
         return None
+    # A fix gated on several reviews (`when.also`) is judged again only by the
+    # re-review: a merge reading the first review alone could merge a fix the
+    # other review asked for unjudged.
+    if loop is None and rereview is None and any(step.when_also for step in steps):
+        return None
     return {
         "step_id": _free_step_id(MERGE_STEP_ID, {step.step_id for step in steps}),
         "runner_profile": MERGE_STEP_ID,
@@ -3833,6 +3874,7 @@ def _free_step_id(base: str, taken: set[str]) -> str:
 def rereview_step_for(
     steps: Sequence[StepSpec], review: Mapping[str, Any], strategy: str,
     class_models: Mapping[str, str] | None = None,
+    also_reviews: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any] | None:
     """The re-review step `metadata.merge` "on_merge_verdict" appends, or None.
 
@@ -3876,6 +3918,14 @@ def rereview_step_for(
     2026-11-23: `sonnet`), where its profile runs it and `class_models` (the
     deployment's pins) pins it; a class the caller named on the review is
     the caller's choice and is kept. `metadata.class_chosen_by` says which.
+
+    When the integrator's gate also reads further reviews (`when.also`, the
+    security review beside an issue run's first review), the re-review
+    covers every lens in one verdict: it stages each one's verdict file too,
+    by the name the integrator staged it, carries the same gate, and its
+    prompt carries each further review's instructions after the first's
+    (`REREVIEW_ALSO_PREAMBLE`). `also_reviews` maps each of those step ids to
+    the step as submitted; one missing derives nothing.
     """
     from .stepclass import ROLE_REREVIEW, choose
 
@@ -3888,7 +3938,16 @@ def rereview_step_for(
     integrator = next((s for s in steps if s.step_id == sources.pull_request), None)
     if integrator is None:
         return None
+    also = list(integrator.when_also)
+    extra: dict[str, Mapping[str, Any]] = {}
+    for step_id in also:
+        found = (also_reviews or {}).get(step_id)
+        if found is None or step_id not in integrator.input_from:
+            return None
+        extra[step_id] = found
     staged = {**dict(review.get("input_from") or {}), sources.review: sources.verdict_file}
+    for step_id in also:
+        staged[step_id] = integrator.input_from[step_id]
     paths = ", ".join(f"{src}/{name}" for src, name in staged.items())
     original = dict(review.get("input") or {})
     prompt = original.get("prompt")
@@ -3897,6 +3956,17 @@ def rereview_step_for(
         verdict_file=sources.verdict_file,
         staged=paths,
     )
+    lenses = ""
+    if also:
+        preamble += REREVIEW_ALSO_PREAMBLE.format(
+            verdict_paths=", ".join(f"{a}/{integrator.input_from[a]}" for a in also),
+            verdict_file=sources.verdict_file,
+        )
+        for step_id, found in extra.items():
+            other = (found.get("input") or {}).get("prompt")
+            lenses += (f"\n\nThe {step_id} review's instructions, for reference (its "
+                       "lens is yours too; write no file but your one verdict):\n\n"
+                       + (other if isinstance(other, str) else ""))
     metadata = dict(review.get("metadata") or {})
     profile = review.get("runner_profile")
     if profile == RUNTIME_POLICY_PROFILES["code"] and RUNTIME_METADATA_KEY not in metadata:
@@ -3907,13 +3977,15 @@ def rereview_step_for(
     step: dict[str, Any] = {
         "step_id": _free_step_id(REREVIEW_STEP_ID, {s.step_id for s in steps}),
         "runner_profile": profile,
-        "input": {**original, "prompt": preamble + (prompt if isinstance(prompt, str) else "")},
+        "input": {**original, "prompt": preamble + (prompt if isinstance(prompt, str) else "")
+                  + lenses},
         "depends_on": list(dict.fromkeys([sources.pull_request, *staged])),
         "builds_on": sources.pull_request,
         "input_from": staged,
         # The integrator's own gate: the re-review runs after a fix, and
         # passes the review's verdict on when there was none.
-        "when": {"step": sources.review, "verdict_in": list(integrator.when_verdicts)},
+        "when": {"step": sources.review, "verdict_in": list(integrator.when_verdicts),
+                 **({"also": also} if also else {})},
         "metadata": {**metadata, INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT},
     }
     for name in ("resource_class", "timeout_seconds"):
@@ -3963,6 +4035,14 @@ def plan_merge(
             detail={"merge_steps": [step.step_id for step in found]},
         )
     merge = found[0]
+    if loop is None and rereview is None and any(step.when_also for step in steps):
+        raise DagError(
+            f"the merge step {merge.step_id!r} would read one review's verdict, and this "
+            "workflow's fix runs on any of several reviews' (when.also): a fix the other "
+            "review asked for would be merged unjudged. End the workflow with "
+            "`on_merge_verdict`, whose re-review judges the fixed head for every review.",
+            detail={"merge_step_id": merge.step_id},
+        )
     dependants = [step.step_id for step in steps if merge.step_id in step.depends_on]
     if dependants:
         raise DagError(
@@ -4329,6 +4409,9 @@ class StepSpec:
     #: `when.step` and `when.verdict_in` as submitted (archived issue 264), or None and ().
     when_step: str | None = None
     when_verdicts: tuple[str, ...] = ()
+    #: `when.also` as submitted: further reviews the gate reads, whose verdict
+    #: in `when_verdicts` runs the agent as `when_step`'s does. () for none.
+    when_also: tuple[str, ...] = ()
     #: `builds_on` as submitted (archived issue 264): an upstream step id, or None.
     builds_on: str | None = None
     #: Where this step's `input_from` files land (archived issue 75): `INPUT_LAYOUTS`,
@@ -5489,7 +5572,8 @@ def resolve_fix_loop(steps: Sequence[Any], *, strategy: str) -> FixLoopPlan | No
                    if dependants else ""),
             )
         gate = fix_step.when
-        if gate is None or gate.step != review or tuple(gate.verdict_in) != FIX_LOOP_GATE_VERDICTS:
+        if (gate is None or gate.step != review or tuple(gate.verdict_in) != FIX_LOOP_GATE_VERDICTS
+                or list(getattr(gate, "also", None) or [])):
             raise _loop_refused(
                 step_id, f"{FIX_LOOP_FIELD}.fix",
                 f"under 'integrate', the fix {fix!r} is gated on the loop's review: "
@@ -5581,7 +5665,10 @@ def verdict_fix_loop_step(steps: Sequence[StepSpec], strategy: str) -> dict[str,
             or sources.security_review is not None):
         return None
     integrator = next((s for s in steps if s.step_id == sources.pull_request), None)
-    if integrator is None or tuple(integrator.when_verdicts) != FIX_LOOP_GATE_VERDICTS:
+    # A gate that reads further reviews (`when.also`) is not the loop's: a
+    # round reads one review's verdict (docs/design/fix-loop.md §4.6).
+    if (integrator is None or tuple(integrator.when_verdicts) != FIX_LOOP_GATE_VERDICTS
+            or integrator.when_also):
         return None
     return {
         "step_id": _free_step_id(FIX_LOOP_STEP_ID, {s.step_id for s in steps}),
