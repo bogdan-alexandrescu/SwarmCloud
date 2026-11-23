@@ -329,7 +329,9 @@ class Deployment:
     iap_audience: str = ""
     #: How the client checks plugin/deployment version skew (`discovery.py`):
     #: SKEW_REQUIRED when the document supplied a value the user did not
-    #: configure, SKEW_CHECKED when every value was configured, "" for none.
+    #: configure, SKEW_DISCOVERED when it did but a stored context also
+    #: knows the client id, SKEW_CHECKED when every value was configured or
+    #: the stored context supplied it, "" for none.
     skew: str = ""
 
 
@@ -338,6 +340,10 @@ class Deployment:
 #: skew whenever the document can be read.
 SKEW_REQUIRED = "required"
 SKEW_CHECKED = "checked"
+#: The document supplied the client id, but this machine's stored context
+#: for the same address holds one too, so a document unreadable later is
+#: reported as not checked and never blocks a call (plan 2026-11-23, item 1).
+SKEW_DISCOVERED = "discovered"
 
 
 def validate_name(name: str) -> str:
@@ -721,8 +727,17 @@ def plugin_deployment(
     user configured no client id, the deployment's discovery document supplies
     it, its IAP audience and (only if the operator serves it) its secret. A
     configured value always wins. A *.run.app address is a solo deployment,
-    which has no IAP and no document, and is never asked for one."""
+    which has no IAP and no document, and is never asked for one.
+
+    The client id's order is the configured option, then the document, then
+    the stored context for the same address (a terminal's `sc login` writes
+    it). An unreadable document is fatal only when all three are empty, and
+    then says what to do (`discovery.NO_CLIENT_ID`); with a stored id the
+    skew is not checked, with the reason, and never blocks a call (defect
+    reproduced 2026-11-23: a deployment that does not serve the document
+    failed every call although this machine knew its client id)."""
     known = _by_url(config, plugin.url)
+    stored_id = known.oauth_client_id if known else ""
     client_id = env_id or plugin.client_id
     client_secret = env_secret or plugin.client_secret
     iap_audience = ""
@@ -733,11 +748,17 @@ def plugin_deployment(
         if client_id:
             skew = SKEW_CHECKED
         else:
-            client_id, client_secret, iap_audience = discovery.fill(
-                plugin.url, client_id="", client_secret=client_secret, cache=cache
-            )
-            skew = SKEW_REQUIRED
-    client_id = client_id or (known.oauth_client_id if known else "")
+            try:
+                client_id, client_secret, iap_audience = discovery.fill(
+                    plugin.url, client_id="", client_secret=client_secret, cache=cache
+                )
+            except discovery.DiscoveryUnreachable as exc:
+                if not stored_id:
+                    raise discovery.without_client_id(exc) from exc
+                skew = SKEW_CHECKED
+            else:
+                skew = SKEW_DISCOVERED if stored_id else SKEW_REQUIRED
+    client_id = client_id or stored_id
     return Deployment(
         context=known.name if known else context_name_for(plugin.url),
         url=plugin.url,

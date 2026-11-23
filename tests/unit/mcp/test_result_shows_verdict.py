@@ -48,12 +48,12 @@ def test_a_not_yet_shows_with_its_findings_count(swarm, world):
     body = json.dumps({"verdict": "NOT_YET", "findings": ["a.py:1 is wrong", "b.py:2 is wrong"]})
     _finish(world, "task_r", body=body)
     # MUTATION: leave `verdict` out of `_result_of` and this is a KeyError.
-    assert _result(swarm, "task_r")["verdict"] == {"verdict": "NOT_YET", "findings": 2, "file": NAME}
+    assert _result(swarm, "task_r")["verdict"] == {"verdict": "NOT_YET", "findings": 2, "blockers_and_majors": 2, "file": NAME}
 
 
 def test_a_merge_shows_with_no_findings(swarm, world):
     _finish(world, "task_m", body=json.dumps({"verdict": "merge", "findings": []}))
-    assert _result(swarm, "task_m")["verdict"] == {"verdict": "MERGE", "findings": 0, "file": NAME}
+    assert _result(swarm, "task_m")["verdict"] == {"verdict": "MERGE", "findings": 0, "blockers_and_majors": 0, "file": NAME}
 
 
 def test_a_task_with_no_verdict_file_has_no_verdict_and_reads_nothing(swarm, world, monkeypatch):

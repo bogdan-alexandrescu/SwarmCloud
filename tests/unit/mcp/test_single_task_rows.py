@@ -310,7 +310,7 @@ def test_attach_all_launches_one_more_run_for_my_single_tasks(_plugin_root, swar
 def test_a_dispatch_reply_starts_its_own_row(_plugin_root, swarm, api, db):  # noqa: F811
     payload = json.loads(server._call(swarm, "swarm_dispatch", {"prompt": "hi", "profile": "mock", "label": "lane-a"}))
     rows = payload["rows"]
-    (sent,) = rows["args"]["attach_tasks"]
+    (sent,) = rows["launches"][0]["args"]["attach_tasks"]
     assert (sent["task_id"], sent["title"]) == (payload["task_id"], "lane-a")
     assert sent.get("console") == payload.get("console"), "the row's link is the one the API served"
     assert Path(rows["script_path"]).is_file()
