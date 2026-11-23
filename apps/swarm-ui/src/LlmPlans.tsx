@@ -60,6 +60,7 @@ import {
   beginDeviceSignIn,
   finishAccountSignIn,
   loadAccountsBoard,
+  loadMyTenants,
   mintSetupLink,
   pollDeviceSignIn,
   refreshAccount,
@@ -79,7 +80,6 @@ import { accountName } from './accountName'
 import { MODEL_CLASSES, classesToSave, servedClasses, setAccountPools } from './Accounts'
 import { Info } from './AccountsVerdict'
 import { switchWorkspace } from './elsewhere'
-import { useStoredRoles } from './Profile'
 import { atLeast, roleOf } from './roles'
 import { displayNameOf, isReach, nameTenants } from './Spine'
 import { inVoiceItPool, poolsOf } from './AccountsTable'
@@ -172,6 +172,31 @@ export function ownerOf(tenant: string, mine: readonly TenantChoice[], board: Ac
   return { tenant_id: tenant, name: (named !== undefined && named !== tenant ? named : null) ?? listed ?? tenant, manages }
 }
 
+/**
+ * The person's workspaces and their role in each: `GET /v1/tenants/mine`,
+ * the switcher's own read, once per page. Empty while it is read and when it
+ * failed or threw: every lent card then offers no Sign in again, and the
+ * server decides as it always does.
+ */
+function useMine(): TenantChoice[] {
+  const [mine, setMine] = useState<TenantChoice[]>([])
+  useEffect(() => {
+    let live = true
+    void Promise.resolve()
+      .then(() => loadMyTenants())
+      .then(
+        (r) => {
+          if (live && (r.status === 'ok' || r.status === 'stale') && Array.isArray(r.data)) setMine(r.data)
+        },
+        () => undefined,
+      )
+    return () => {
+      live = false
+    }
+  }, [])
+  return mine
+}
+
 /* ---------------- the cells ---------------- */
 
 const STATE_WORD: Readonly<Record<string, string>> = {
@@ -189,7 +214,7 @@ const STATE_TIP: Readonly<Record<string, string>> = {
 }
 
 /** The state: a dot alone when it takes agents, the word where it asks for something. */
-function StateMark({ a, askOwner }: { a: Plan; askOwner?: string }) {
+function StateMark({ a, askOwner, quiet = false }: { a: Plan; askOwner?: string; quiet?: boolean }) {
   const word = STATE_WORD[a.state]
   const tone = a.state === 'AVAILABLE' ? 'is-ok' : a.state === 'REAUTH_REQUIRED' ? 'is-bad' : `is-${String(a.state).toLowerCase()}`
   // A lent plan the person cannot sign in: the (i) says whose it is to sign in.
@@ -198,7 +223,16 @@ function StateMark({ a, askOwner }: { a: Plan; askOwner?: string }) {
   return (
     <span className={`llp-st ${tone}`} title={tip || undefined}>
       <i aria-hidden="true" />
-      {word === undefined ? <span className="mono">{a.state}</span> : a.state === 'AVAILABLE' ? <span className="llp-vh">{word}</span> : word}
+      {word === undefined ? (
+        <span className="mono">{a.state}</span>
+      ) : a.state === 'AVAILABLE' ? (
+        <span className="llp-vh">{word}</span>
+      ) : quiet ? (
+        // Beside the card's Sign in again, which says it: the dot and its tip, the word for a screen reader.
+        <span className="sk-vh">{word}</span>
+      ) : (
+        word
+      )}
     </span>
   )
 }
@@ -433,7 +467,7 @@ function Card({
             )}
           </span>
         </span>
-        <StateMark a={a} askOwner={!owned && owner?.manages !== true ? (owner?.name ?? a.owner_tenant) : undefined} />
+        <StateMark a={a} quiet={resign} askOwner={!owned && owner?.manages !== true ? (owner?.name ?? a.owner_tenant) : undefined} />
       </div>
       <div className="lpc-quota">
         <Quota a={a} k={FIVE_HOUR} name="5-hour" now={now} />
@@ -1710,7 +1744,7 @@ function Plans({ board, reread }: { board: AccountsBoard; reread: () => Promise<
   const [rowError, setRowError] = useState<{ id: string; error: ApiError } | null>(null)
   // A press of a card's Sign in again draws Manage afresh, so its section takes focus again.
   const [presses, setPresses] = useState(0)
-  const mine = useStoredRoles()
+  const mine = useMine()
   const tenant = board.page.tenant_id
   const plans = (board.page.accounts as Plan[]).filter(isPlan)
   const find = (id: string) => plans.find((p) => p.account_id === id) ?? null

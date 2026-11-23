@@ -1020,6 +1020,8 @@ describe('Plans: a card that needs a sign-in has Sign in again', () => {
     await openPlans()
     const c = card('retired-laptop')
     expect(text(c)).toContain('Sign-in needed')
+    // Beside the button the state is its dot and tip; the words stay for a screen reader (the prose ratchet).
+    expect(text(c.querySelector('.llp-st .sk-vh'))).toBe('Sign-in needed')
     // MUTATION: leave the card with Manage alone and there is nothing named Sign in again on it.
     fireEvent.click(within(c).getByRole('button', { name: 'Sign in again retired-laptop' }))
     const sheet = await screen.findByRole('dialog', { name: 'retired-laptop' })
