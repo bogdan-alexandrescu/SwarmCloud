@@ -50,6 +50,9 @@ from swarm_api.validation import IssueRef, PullRequestReference, issue_run_mark_
 from . import forge_fakes
 from .conftest import api_settings, auth_header
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 REF = "example-org/widgets#42"
 BUCKET = "swarm-artifacts-example-project"
 

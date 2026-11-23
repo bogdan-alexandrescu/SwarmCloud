@@ -56,6 +56,9 @@ from .test_issue_run_ci import PR, SHA_A, _read
 from .test_issue_runs import FULL_PLAN, _docs
 from .test_schedule_tick import seed_schedule
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 SCHEDULE = "sch_000000000001"
 GH_ID = {"alice@example.com": 1001, "dave@example.com": 1004, "carol@example.com": 1003, OWNER: 1000}
 
