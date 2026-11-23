@@ -112,6 +112,7 @@ from ..repositories import Repositories, hard_stop_paths_of, platform_of
 from ..routes.runs import start_run
 from ..schemas import TaskCreate
 from ..scheduletypes import BudgetCaps
+from ..stepclass import class_models_of
 from ..validation import MERGE_WAIT_METADATA_KEY, SCHEDULE_METADATA_KEY, IssueRef
 from . import issue_sweep
 
@@ -716,8 +717,12 @@ class _Filing:
                 self.causes.record_run(cause.fingerprint, row.id, firing_id=self.review["firing_id"])
                 return row.id
         params = issue_sweep.params_of(self.firing)
-        options = issue_sweep.run_options(self.firing.schedule, params.fix_rounds)
         try:
+            # A planner class the schedule named and the deployment does not
+            # pin is refused here, as this run's start failure.
+            options = issue_sweep.run_options(self.firing.schedule, params.fix_rounds,
+                                              planner_model_class=issue_sweep.planner_class(
+                                                  params, class_models_of(self.ctx)))
             refuse_auto_merge(options.auto_merge)
             tenant = self.ctx.store.get_tenant(tenant_id)
             open_work = read_open_work(ref, tenant, tokens=self.ctx.forge_tokens, issues=self.ctx.forge,
@@ -727,6 +732,7 @@ class _Filing:
                 plan_approval=options.plan_approval, auto_merge=options.auto_merge,
                 fix_rounds=options.fix_rounds, created_by=f"schedule:{schedule_id}",
                 schedule=self.firing.mark, merge_approval=options.merge_approval,
+                model_class=options.planner_model_class,
                 # plans-pipeline §3.1: the cause this run fixes, beside `record_run`.
                 source=run_source(self.firing.mark, fingerprint=cause.fingerprint),
             )

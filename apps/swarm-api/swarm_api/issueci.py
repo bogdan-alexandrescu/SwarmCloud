@@ -178,7 +178,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.states import TaskState
 
-from . import approvals, refusals, reviewgate
+from . import approvals, refusals, reviewgate, stepclass
 from .cirerun import (
     RERUN_REFUSALS_MAX,
     RERUN_SETTLE_SECONDS,
@@ -1376,7 +1376,8 @@ EARLIER_FIX_ASK = (
 
 
 def ci_fix_workflow(run: IssueRun, round_no: int, excerpt: str, head_sha: str,
-                    context: str | None = None) -> WorkflowCreate:
+                    context: str | None = None,
+                    class_models: Mapping[str, str] | None = None) -> WorkflowCreate:
     """Round `round_no`: one `direct-pr` step continuing the run's integrator.
 
     `context` is `reviewcontext.read_fix_context`'s TESTED CODE block (lane
@@ -1399,6 +1400,7 @@ def ci_fix_workflow(run: IssueRun, round_no: int, excerpt: str, head_sha: str,
         rounds=run.fix_rounds,
         excerpt=excerpt,
         context=context,
+        class_models=class_models,
         step_input={"issue": ref.number},
         metadata={
             # The run's session (SC-SESSION-SCOPE): its fix rounds are its own.
@@ -1425,6 +1427,7 @@ def ci_fix_continuation(
     metadata: Mapping[str, Any],
     context: str | None = None,
     resource_class: str | None = None,
+    class_models: Mapping[str, str] | None = None,
 ) -> WorkflowCreate:
     """One CI fix round: a one-step `direct-pr` workflow continuing `continues_task`.
 
@@ -1438,7 +1441,10 @@ def ci_fix_continuation(
     TESTED CODE block, fenced by its own nonce (`reviewcontext.fix_block`).
     `resource_class`, when given, is the class of the step whose branch the
     round continues (lane SPEED-D2); None is the profile's own.
+    `class_models` (the deployment's pins) gives the round its role's class
+    (`stepclass`, the owner 2026-11-23: `sonnet`), else the profile's default.
     """
+    choice = stepclass.choose(stepclass.ROLE_CI_FIX, STEP_PROFILE, class_models)
     marker = f"=== FAILING CHECKS {secrets.token_hex(8)} ==="
     prompt = (
         f"{lead} This is CI fix round {round_no} of at most {rounds}.\n\n"
@@ -1462,6 +1468,8 @@ def ci_fix_continuation(
             "runner_profile": STEP_PROFILE,
             "input": {"prompt": prompt, **step_input},
             **({"resource_class": resource_class} if resource_class else {}),
+            **choice.fields(),
+            "metadata": choice.metadata(),
         }],
         "metadata": {
             # Never a merge inside a round: it would merge with no CI read and
@@ -2056,7 +2064,8 @@ def _start_round(
     try:
         # The run's own tenant's index only (invariant 9); None is today's prompt.
         context = read_fix_context(ctx, tenant_id, claimed, excerpt)
-        spec = ci_fix_workflow(claimed, round_no, excerpt, head, context)
+        spec = ci_fix_workflow(claimed, round_no, excerpt, head, context,
+                               class_models=stepclass.class_models_of(ctx))
         with submitting(spec):
             # A fix round builds: the platform picks its class from the
             # stage (contract request 135); a round's own escalated class

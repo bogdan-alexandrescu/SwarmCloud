@@ -423,7 +423,7 @@ from .redaction import redact
 from .repositories import parse_repository
 from .rollup import SKIPPED_SUMMARY_KEY, derived_state_write
 from .schemas import WorkflowCreate
-from . import sessiontag
+from . import sessiontag, stepclass
 from .validation import (
     CONFLICT_ROUND_METADATA_KEY,
     DISPATCH_METADATA_KEY,
@@ -1452,6 +1452,7 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
             excerpt=excerpt,
             step_input={},
             resource_class=resource_class,
+            class_models=stepclass.class_models_of(ctx),
             metadata={"merge_fix_round": {
                 "merge_task": task_id,
                 "round": round_no,
@@ -1483,6 +1484,7 @@ def _on_conflict(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: Is
             rounds=MERGE_CONFLICT_ROUNDS_MAX,
             files=_conflicting_files(ctx.forge_writer, ref, read.pull, token),
             resource_class=resource_class,
+            class_models=stepclass.class_models_of(ctx),
             metadata={CONFLICT_ROUND_METADATA_KEY: {
                 "merge_task": task_id,
                 "round": round_no,
@@ -1605,6 +1607,7 @@ def _on_train(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], wait: Mapp
             excerpt=excerpt,
             step_input={},
             resource_class=resource_class,
+            class_models=stepclass.class_models_of(ctx),
             metadata={"merge_fix_round": {
                 "merge_task": task_id,
                 "round": round_no,
@@ -2076,6 +2079,7 @@ def conflict_fix_continuation(
     metadata: Mapping[str, Any],
     files: Sequence[str] | None = None,
     resource_class: str | None = None,
+    class_models: Mapping[str, str] | None = None,
 ) -> WorkflowCreate:
     """One conflict fix round: a one-step `direct-pr` claude-code workflow continuing
     `continues_task`, on the pull request's own branch (archived issue 1076).
@@ -2091,7 +2095,10 @@ def conflict_fix_continuation(
     `files` (SPEED-D2) are the files both sides changed, from GitHub, so
     DATA between two nonce lines, redacted; None when they were not read.
     `resource_class` is the continued step's, or None for the profile's.
+    `class_models` (the deployment's pins) gives the round its role's class
+    (`stepclass`, the owner 2026-11-23: `sonnet`), else the profile's default.
     """
+    choice = stepclass.choose(stepclass.ROLE_CONFLICT_FIX, STEP_PROFILE, class_models)
     if not _SAFE_BRANCH.fullmatch(base or "") or ".." in base:
         raise ValueError("the pull request's base branch name is not one a round may quote")
     prompt = (
@@ -2132,6 +2139,8 @@ def conflict_fix_continuation(
             "runner_profile": STEP_PROFILE,
             "input": {"prompt": prompt},
             **({"resource_class": resource_class} if resource_class else {}),
+            **choice.fields(),
+            "metadata": choice.metadata(),
         }],
         "metadata": {
             # Never a merge inside a round: the merge step merges it, once
