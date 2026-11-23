@@ -115,8 +115,9 @@ filterwarnings = ["ignore::DeprecationWarning"]
 # does (`ruff format --check <files>`, apps/agent-worker/agent_worker/prepublish.py):
 # without it the gate would fail every changed .py file on formatting nobody adopted.
 # THE COVERAGE RATCHET (issue 64; docs/ci.md "Coverage floors"). Read by
-# pytest-cov in the unit shards (`--cov`, only when a shard runs the whole
-# suite) and by scripts/coverage-floors.sh, which combines the shards' data
+# pytest-cov in the nightly coverage run's unit shards (`--cov`,
+# .github/workflows/coverage.yml; never on the merge path) and by
+# scripts/coverage-floors.sh, which combines the shards' data
 # files and groups the lines per `apps/<dir>` against coverage-floors.json.
 [tool.coverage.run]
 # Every Python package under apps/, by its import directory: a directory

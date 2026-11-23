@@ -90,9 +90,7 @@ FAST = {
 }
 #: Aggregates and bookkeeping: they read other jobs' results.
 AGGREGATE = {
-    # coverage: judges the data the unit and component-test shards uploaded;
-    # it runs no test, so it is not heavy, and reads the shards' results.
-    "application.yml": {"python", "ui", "tested-tree", "ci-gate", "plugin-tag", "coverage"},
+    "application.yml": {"python", "ui", "tested-tree", "ci-gate", "plugin-tag"},
     "terraform.yml": set(),
     "security.yml": set(),
 }
@@ -300,11 +298,10 @@ def _values(event: str) -> dict:
         "github.event.pull_request.head.repo.full_name": head_repo if is_pr else None,
         "github.event.pull_request.labels.*.name": [] if is_pr else None,
     }
-    outputs = {"app": "true", "python": "all", "ui": "true", "full": full, "reused": "[]", "images": "true",
-               "lane": ""}
+    outputs = {"app": "true", "python": "all", "ui": "true", "full": full, "reused": "[]", "images": "true"}
     for key, value in outputs.items():
         values[f"needs.changes.outputs.{key}"] = value
-    for job in ("changes", "python", "offline", "checks", "python-unit", "ui-tests"):
+    for job in ("changes", "python", "offline", "checks"):
         values[f"needs.{job}.result"] = "success"
     return values
 

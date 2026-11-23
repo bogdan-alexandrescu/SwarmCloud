@@ -1,7 +1,8 @@
 """The coverage ratchet (issue 64): each package's line coverage, measured on
-the unit shards that already run, against the floor coverage-floors.json
-holds for it. scripts/lib/coverage_floors.py builds the per-package reports
-and judges them; scripts/coverage-floors.sh is what the `coverage` job runs.
+the nightly .github/workflows/coverage.yml run, against the floor
+coverage-floors.json holds for it. scripts/lib/coverage_floors.py builds the
+per-package reports and judges them; scripts/coverage-floors.sh is what that
+run's `judge` job runs.
 
 Held here: a package below its floor fails with one line naming it; a package
 at its floor passes; a floored package missing from a report that ran fails;
@@ -9,7 +10,8 @@ a malformed floors file fails rather than passing on what it could read; a
 package 2+ points above its floor passes with a hint to raise it; the shards'
 reports combine as one run (python: coverage.py's JSON grouped by
 `apps/<dir>/`; swarm-ui: istanbul's coverage-final.json summed statement by
-statement); and the workflow wires the job into ci-gate.
+statement); and `table` renders the judgement for the run's summary. The
+workflow itself is held by test_coverage_workflow.py.
 """
 
 from __future__ import annotations
@@ -21,13 +23,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "lib" / "coverage_floors.py"
 WRAPPER = ROOT / "scripts" / "coverage-floors.sh"
 FLOORS = ROOT / "coverage-floors.json"
-WORKFLOW = ROOT / ".github" / "workflows" / "application.yml"
 
 _spec = importlib.util.spec_from_file_location("coverage_floors", SCRIPT)
 floors_lib = importlib.util.module_from_spec(_spec)
@@ -262,43 +262,6 @@ def test_the_wrapper_fails_when_a_shard_s_data_is_missing(tmp_path):
     assert "1 of 3" in proc.stdout + proc.stderr, proc.stdout + proc.stderr
 
 
-def _jobs() -> dict:
-    return yaml.safe_load(WORKFLOW.read_text())["jobs"]
-
-
-def test_ci_gate_needs_the_coverage_job():
-    """MUTATION: drop `coverage` from ci-gate's needs."""
-    jobs = _jobs()
-    assert "coverage" in jobs, sorted(jobs)
-    assert "coverage" in jobs["ci-gate"]["needs"], jobs["ci-gate"]["needs"]
-    assert set(jobs["coverage"]["needs"]) == {"changes", "python-unit", "ui-tests"}, jobs["coverage"]["needs"]
-
-
-def test_the_coverage_job_runs_the_wrapper_and_no_test():
-    """The suite runs once, in the shards; this job only combines.
-    MUTATION: run pytest or vitest here."""
-    steps = _jobs()["coverage"]["steps"]
-    runs = "\n".join(str(step.get("run", "")) for step in steps)
-    assert "scripts/coverage-floors.sh" in runs, runs
-    assert "pytest" not in runs and "vitest" not in runs and "test:components" not in runs, runs
-
-
-def test_the_shards_measure_only_when_they_run_the_whole_suite():
-    """A pull request's narrowed selection measures a fraction of each
-    package; judged against a floor it would fail for no reason.
-    MUTATION: measure on python=selected."""
-    jobs = _jobs()
-    unit = next(s for s in jobs["python-unit"]["steps"] if s.get("name") == "unit tests")
-    assert unit["env"].get("MEASURE_COVERAGE") == "${{ needs.changes.outputs.python == 'all' }}", unit["env"]
-    assert "--cov" in unit["run"] and "COVERAGE_FILE" in unit["env"], unit
-    uploads = [s for s in jobs["python-unit"]["steps"] if "coverage" in str(s.get("with", {}).get("name", ""))]
-    assert len(uploads) == 1 and "python == 'all'" in uploads[0]["if"], uploads
-    ui_uploads = [s for s in jobs["ui-tests"]["steps"] if "coverage" in str(s.get("with", {}).get("name", ""))]
-    assert len(ui_uploads) == 1, ui_uploads
-    vitest = next(s for s in jobs["ui-tests"]["steps"] if "test:components" in str(s.get("run", "")))
-    assert "SWARM_UI_COVERAGE_DIR" in vitest["env"], vitest["env"]
-
-
 def test_pytest_cov_is_pinned():
     """MUTATION: a range, which a resolution could move past the quarantine's pick."""
     text = (ROOT / "pyproject.toml").read_text()
@@ -306,16 +269,6 @@ def test_pytest_cov_is_pinned():
     package = json.loads((ROOT / "apps" / "swarm-ui" / "package.json").read_text())
     pinned = package["devDependencies"]["@vitest/coverage-v8"]
     assert pinned == package["devDependencies"]["vitest"], (pinned, package["devDependencies"]["vitest"])
-
-
-def test_the_coverage_job_judges_only_what_ran_the_whole_suite():
-    """MUTATION: drop `!cancelled()` (the job would skip whenever one shard
-    job was skipped), or judge python on a narrowed selection."""
-    condition = str(_jobs()["coverage"]["if"])
-    assert condition.startswith("${{ !cancelled() && "), condition
-    assert "(needs.changes.outputs.python == 'all' && needs.python-unit.result == 'success')" in condition, condition
-    assert ("(needs.changes.outputs.ui == 'true' && needs.changes.outputs.lane != 'true' "
-            "&& needs.ui-tests.result == 'success')") in condition, condition
 
 
 def test_fill_sets_the_null_floors_from_a_report_and_leaves_the_rest(tmp_path):
@@ -339,3 +292,22 @@ def test_fill_sets_the_null_floors_from_a_report_and_leaves_the_rest(tmp_path):
                            "--report", str(report), "--raise"], capture_output=True, text=True, timeout=60)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert floors_lib.load_floors(floors)["apps/b"]["floor"] == 89
+
+
+def test_the_table_shows_each_package_s_measurement_floor_and_verdict(tmp_path):
+    """The nightly summary. MUTATION: drop a package, or misjudge one."""
+    floors = _floors(tmp_path, {"apps/a": {"suite": "python", "floor": 70},
+                                "apps/b": {"suite": "python", "floor": 40},
+                                "apps/gone": {"suite": "python", "floor": 10},
+                                "apps/swarm-ui": {"suite": "ui", "floor": None, "note": "not yet measured"}})
+    report = _report(tmp_path, "python", {"apps/a": (50, 100), "apps/b": (45, 100), "apps/new": (1, 2)})
+    proc = subprocess.run(["python3", str(SCRIPT), "table", "--floors", str(floors), "--report", str(report)],
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    rows = proc.stdout.splitlines()
+    assert rows[0] == "| package | suite | measured | floor | verdict |", rows
+    assert "| apps/a | python | 50.00% (50/100) | 70 | BELOW |" in rows, rows
+    assert "| apps/b | python | 45.00% (45/100) | 40 | RAISE |" in rows, rows
+    assert "| apps/gone | python | absent | 10 | MISSING |" in rows, rows
+    assert "| apps/new | python | 50.00% (1/2) | none | NO FLOOR |" in rows, rows
+    assert "| apps/swarm-ui | ui | not run | none | not judged |" in rows, rows

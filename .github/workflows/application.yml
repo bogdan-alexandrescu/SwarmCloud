@@ -1544,31 +1544,15 @@ jobs:
         # an idle worker take half of a busy one's queue. Shard 3 alone, 4
         # workers, same files: 404 s under `load`, 287 s under `worksteal`,
         # against a floor of 276 s (its summed test time / 4).
-        #
-        # LINE COVERAGE, ON THE RUN THAT ALREADY HAPPENS (issue 64, docs/ci.md
-        # "Coverage floors"). When the shards run the WHOLE suite (python=all)
-        # pytest-cov measures this shard into COVERAGE_FILE (its xdist workers'
-        # data combined there) and a step below uploads it; the `coverage`
-        # job combines every shard's file and judges the floors in
-        # coverage-floors.json. A narrowed selection (python=selected) would
-        # measure a fraction of each package, so it is not instrumented and
-        # pays nothing. `--cov-report=`: no report here, the job writes one.
         if: steps.pick.outputs.count != '0'
         env:
           SWARM_REQUIRE_REAL_REAP: "1"
           SHARD_FILES: ${{ runner.temp }}/shard-files
           JUNIT: ${{ runner.temp }}/unit.xml
-          MEASURE_COVERAGE: ${{ needs.changes.outputs.python == 'all' }}
-          COVERAGE_FILE: ${{ runner.temp }}/coverage/unit-${{ matrix.shard }}.coverage
         run: |
           set -euo pipefail
           mapfile -t files < "${SHARD_FILES}"
-          cov=()
-          if [ "${MEASURE_COVERAGE}" = "true" ]; then
-            mkdir -p "$(dirname "${COVERAGE_FILE}")"
-            cov=(--cov --cov-report=)
-          fi
-          uv run pytest -q -n auto --dist worksteal -o faulthandler_timeout=300 -m "not flaky" -o junit_family=xunit1 --junitxml="${JUNIT}" ${cov[@]+"${cov[@]}"} "${files[@]}"
+          uv run pytest -q -n auto --dist worksteal -o faulthandler_timeout=300 -m "not flaky" -o junit_family=xunit1 --junitxml="${JUNIT}" "${files[@]}"
 
       - name: quarantined unit tests (report only, never fail the gate)
         # THE FLAKY-TEST QUARANTINE (owner decision 2026-10-14, docs/ci.md
@@ -1605,19 +1589,6 @@ jobs:
           esac
           echo "${line}"
           echo "quarantined unit tests: ${line}" >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: upload this shard's coverage data
-        # The `coverage` job reads one file per shard, and only from a run of
-        # the whole suite; a red shard fails the run anyway, so a failed one
-        # uploads nothing (`success()`, the default). Not a hidden file:
-        # upload-artifact leaves dotfiles out unless told otherwise.
-        if: steps.pick.outputs.count != '0' && needs.changes.outputs.python == 'all'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: coverage-unit-${{ matrix.shard }}
-          path: ${{ runner.temp }}/coverage/unit-${{ matrix.shard }}.coverage
-          retention-days: 7
-          if-no-files-found: error
 
       - name: record this shard's measured durations
         # The weights the pick step splits by go stale as tests are added and
@@ -2082,28 +2053,10 @@ jobs:
         # and fails rather than write an empty list (`vitest run` with no file
         # argument runs the WHOLE suite), and this step runs only after it
         # passed.
-        #
-        # LINE COVERAGE (issue 64, docs/ci.md "Coverage floors"): with
-        # SWARM_UI_COVERAGE_DIR set, vitest.config.ts turns on its v8 coverage
-        # and writes istanbul's coverage-final.json there; the step below
-        # uploads it for the `coverage` job. The command line stays the file
-        # list alone (tests/unit/scripts/test_ui_shards.py).
         working-directory: apps/swarm-ui
         env:
           SHARD_FILES: ${{ runner.temp }}/ui-shard-files
-          SWARM_UI_COVERAGE_DIR: ${{ runner.temp }}/ui-coverage
         run: npm run test:components -- $(cat "${SHARD_FILES}")
-
-      - name: upload this shard's coverage data
-        # Outside a lane's selection (`lane` is empty on every run that
-        # reaches this job now) the shards run the whole component suite.
-        if: steps.pick.outputs.count != '0' && needs.changes.outputs.lane != 'true'
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: coverage-ui-${{ matrix.shard }}
-          path: ${{ runner.temp }}/ui-coverage/coverage-final.json
-          retention-days: 7
-          if-no-files-found: error
 
   ui:
     # THE CHECK NAME `swarm-ui typecheck / component tests` IS KEPT, on a job
@@ -2828,112 +2781,6 @@ jobs:
           overwrite: true
           retention-days: 7
 
-  # -------------------------------------------------------------------------
-  # THE COVERAGE RATCHET (issue 64; docs/ci.md "Coverage floors"). Before it
-  # nothing measured coverage, so a pull request that deleted tests, or added
-  # code no test ran, passed every gate. Each package's line coverage is now
-  # judged against its floor in coverage-floors.json, set a little below what
-  # was measured; scripts/coverage-floors.sh fails with one line per package
-  # below its floor (or gone from the report) and says which floors may be
-  # raised, 2+ points under what was measured.
-  #
-  # THE SUITE RUNS ONCE. The unit and component-test shards measure while
-  # they run (their `unit tests` / `component tests` steps) and upload one
-  # data file each; this job downloads them, combines them (`coverage
-  # combine` for python, a statement-by-statement merge of istanbul's JSON for
-  # swarm-ui) and runs no test.
-  #
-  # ONLY WHAT RAN THE WHOLE SUITE IS JUDGED. Python when `changes` said
-  # python=all and every unit shard passed; swarm-ui when its shards ran
-  # outside a lane's selection and passed. A narrowed selection, a shard that
-  # failed (ci-gate fails on it by name anyway) or shards skipped because main
-  # reused their green leave that side unjudged; neither side reached skips
-  # the job, which ci-gate reads as a pass. `!cancelled()`: without a status
-  # function GitHub ANDs `success()`, false whenever one of the two shard jobs
-  # was skipped (tests/unit/scripts/test_workflow_needs_result_status.py).
-  #
-  # On the runner pool's guarded expression like every job that checks out
-  # and runs the repository's code (tests/unit/scripts/
-  # test_fork_prs_off_self_hosted.py): a fork's pull request goes hosted. It
-  # holds a runner ~1 minute, for a sync and two downloads.
-  # -------------------------------------------------------------------------
-  coverage:
-    name: coverage floors
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
-    needs: [changes, python-unit, ui-tests]
-    if: ${{ !cancelled() && ((needs.changes.outputs.python == 'all' && needs.python-unit.result == 'success') || (needs.changes.outputs.ui == 'true' && needs.changes.outputs.lane != 'true' && needs.ui-tests.result == 'success')) && !(github.event_name == 'pull_request' && startsWith(github.head_ref, 'swarm/') && github.event.pull_request.head.repo.full_name == github.repository) }}
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          persist-credentials: false
-
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
-        if: needs.changes.outputs.python == 'all' && needs.python-unit.result == 'success'
-        with:
-          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
-          enable-cache: true
-
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: sync
-        # `coverage combine` and `coverage json`, at the version uv.lock pins
-        # with pytest-cov: the version that wrote the shards' data files.
-        if: needs.changes.outputs.python == 'all' && needs.python-unit.result == 'success'
-        run: uv sync --frozen --all-extras --dev
-
-      - name: download the unit shards' coverage data
-        if: needs.changes.outputs.python == 'all' && needs.python-unit.result == 'success'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          pattern: coverage-unit-*
-          path: ${{ runner.temp }}/coverage-python
-
-      - name: download the swarm-ui shards' coverage data
-        if: needs.changes.outputs.ui == 'true' && needs.changes.outputs.lane != 'true' && needs.ui-tests.result == 'success'
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          pattern: coverage-ui-*
-          path: ${{ runner.temp }}/coverage-ui
-
-      - name: every package at or above its floor
-        # Values reach the shell through env:, never through an expression in run:.
-        env:
-          JUDGE_PYTHON: ${{ needs.changes.outputs.python == 'all' && needs.python-unit.result == 'success' }}
-          JUDGE_UI: ${{ needs.changes.outputs.ui == 'true' && needs.changes.outputs.lane != 'true' && needs.ui-tests.result == 'success' }}
-          UNIT_SHARDS: ${{ needs.changes.outputs.unit_shards }}
-          UI_SHARDS: ${{ needs.changes.outputs.ui_shards }}
-        run: |
-          set -euo pipefail
-          args=()
-          if [ "${JUDGE_PYTHON}" = "true" ]; then
-            args+=(--python-data "${RUNNER_TEMP}/coverage-python" --expect-python-shards "$(printf '%s' "${UNIT_SHARDS}" | jq length)")
-          fi
-          if [ "${JUDGE_UI}" = "true" ]; then
-            args+=(--ui-data "${RUNNER_TEMP}/coverage-ui" --expect-ui-shards "$(printf '%s' "${UI_SHARDS}" | jq length)")
-          fi
-          { echo '### Coverage floors'; echo; echo '```'; } >> "${GITHUB_STEP_SUMMARY}"
-          rc=0
-          scripts/coverage-floors.sh "${args[@]}" --keep-reports "${RUNNER_TEMP}/coverage-reports" \
-            > "${RUNNER_TEMP}/coverage-floors.txt" 2>&1 || rc=$?
-          cat "${RUNNER_TEMP}/coverage-floors.txt"
-          { cat "${RUNNER_TEMP}/coverage-floors.txt"; echo '```'; } >> "${GITHUB_STEP_SUMMARY}"
-          exit "${rc}"
-
-      - name: upload the per-package reports
-        # What `scripts/lib/coverage_floors.py fill` sets floors from: a
-        # null floor, or one 2+ points under what was measured, is one
-        # command away (docs/ci.md, "Coverage floors"). Below a floor too.
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: coverage-reports
-          path: ${{ runner.temp }}/coverage-reports
-          retention-days: 30
-          if-no-files-found: ignore
-
   ci-gate:
     # THE ONE CHECK MAIN'S RULESET REQUIRES FOR THIS WORKFLOW AND terraform.yml
     # (ruleset main-protection, id 24160219; owner decision 2026-09-29). Its
@@ -2991,7 +2838,7 @@ jobs:
     # the gate's.
     name: ci-gate
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
-    needs: [shell, workflows, ruff, changes, quick-checks, python-checks, python-unit, ui-build, ui-tests, coverage, integration, manifests, build-check, build, tested-tree, plugin-tag]
+    needs: [shell, workflows, ruff, changes, quick-checks, python-checks, python-unit, ui-build, ui-tests, integration, manifests, build-check, build, tested-tree, plugin-tag]
     if: ${{ !cancelled() }}
     # The script gives up at 90 minutes (CI_GATE_WAIT) and says what was still
     # pending; this is only the backstop behind it.

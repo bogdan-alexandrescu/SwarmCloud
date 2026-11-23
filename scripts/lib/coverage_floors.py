@@ -6,9 +6,11 @@ floors in coverage-floors.json.
     coverage_floors.py ui-report --out REPORT SHARD_JSON...
     coverage_floors.py check --floors FLOORS [--report REPORT]...
     coverage_floors.py fill --floors FLOORS --about TEXT --report REPORT...
+    coverage_floors.py table --floors FLOORS [--report REPORT]...
 
-scripts/coverage-floors.sh runs all three in the `coverage` job; nothing else
-calls this file.
+scripts/coverage-floors.sh runs the first three in the nightly
+.github/workflows/coverage.yml `judge` job; scripts/coverage-report.sh runs
+`table` for that run's summary; the operator runs `fill`.
 
 `python-report` reads `coverage json` (the unit shards' data files already
 combined by `coverage combine`) and sums each file's measured and covered
@@ -40,7 +42,11 @@ reported package the file does not list yet): what the reports measured,
 less one point, rounded down; with --raise it also raises every floor 2+
 points under what was measured. It replaces `about` with --about (when and
 how the numbers were measured). The reports are the `coverage-reports`
-artifact of a `coverage` job (docs/ci.md, "Coverage floors").
+artifact of a nightly coverage run (docs/ci.md, "Coverage floors").
+
+`table` prints the same judgement as a Markdown table, one row per package:
+its suite, what was measured, its floor and the verdict word -- the job
+summary of every nightly run.
 
 A floors file it cannot read WHOLE is exit 2: an entry it could not parse is
 never skipped while the others pass. tests/unit/scripts/test_coverage_floors.py
@@ -211,6 +217,37 @@ def fill(path: Path, about: str, reports: dict[str, dict[str, tuple[int, int]]],
     return changed
 
 
+def table(floors: dict[str, dict], reports: dict[str, dict[str, tuple[int, int]]]) -> list[str]:
+    """`check`'s judgement as Markdown rows: package, suite, measured, floor, verdict."""
+    rows = ["| package | suite | measured | floor | verdict |", "| --- | --- | ---: | ---: | --- |"]
+    names = set(floors) | {name for packages in reports.values() for name in packages}
+    for name in sorted(names):
+        entry = floors.get(name)
+        suite = entry["suite"] if entry else next(s for s in sorted(reports) if name in reports[s])
+        floor = None if entry is None else entry["floor"]
+        shown_floor = "none" if floor is None else str(floor)
+        if suite not in reports:
+            rows.append(f"| {name} | {suite} | not run | {shown_floor} | not judged |")
+            continue
+        if name not in reports[suite]:
+            rows.append(f"| {name} | {suite} | absent | {shown_floor} | {'UNMEASURED' if floor is None else 'MISSING'} |")
+            continue
+        covered, total = reports[suite][name]
+        got = percent(covered, total)
+        if entry is None:
+            verdict = "NO FLOOR"
+        elif floor is None:
+            verdict = "UNMEASURED"
+        elif got < floor:
+            verdict = "BELOW"
+        elif got >= floor + RAISE_POINTS:
+            verdict = "RAISE"
+        else:
+            verdict = "ok"
+        rows.append(f"| {name} | {suite} | {got:.2f}% ({covered}/{total}) | {shown_floor} | {verdict} |")
+    return rows
+
+
 def _span(location: dict) -> tuple:
     start, end = location["start"], location["end"]
     return (start.get("line"), start.get("column"), end.get("line"), end.get("column"))
@@ -267,6 +304,9 @@ def main(argv: list[str]) -> int:
     fl.add_argument("--about", required=True)
     fl.add_argument("--report", action="append", required=True, type=Path)
     fl.add_argument("--raise", dest="raise_floors", action="store_true")
+    tb = sub.add_parser("table")
+    tb.add_argument("--floors", required=True, type=Path)
+    tb.add_argument("--report", action="append", default=[], type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "python-report":
@@ -284,6 +324,10 @@ def main(argv: list[str]) -> int:
             reports[suite] = packages
         if args.command == "fill":
             for line in fill(args.floors, args.about, reports, raise_floors=args.raise_floors) or ["no floor changed"]:
+                print(line)
+            return 0
+        if args.command == "table":
+            for line in table(floors, reports):
                 print(line)
             return 0
     except (FloorsError, KeyError, TypeError, ValueError) as exc:

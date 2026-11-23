@@ -130,10 +130,8 @@ def test_each_job_runs_only_on_the_gates_output():
     # tested-tree reads `changes`' result, not its outputs: it records whatever ran.
     # plugin-tag runs on a push to main once `python` passed, so `python`'s
     # result is its gate (test_plugin_tag.py holds its `if:`).
-    # coverage judges what the shards uploaded, so it reads the shards'
-    # results with the outputs (test_coverage_floors.py holds its `if:`).
     rest = set(jobs) - set(expected_if) - {"changes", "python", "ui", "ci-gate", "build", "tested-tree",
-                                           "quick-checks", "plugin-tag", "coverage"}
+                                           "quick-checks", "plugin-tag"}
     assert not rest, f"jobs that do not read the changes gate: {sorted(rest)}"
 
 

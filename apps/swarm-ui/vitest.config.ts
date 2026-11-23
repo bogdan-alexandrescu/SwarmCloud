@@ -110,11 +110,13 @@ export default defineConfig({
     // rather than a development loop.
     reporters: ['default'],
     // COVERAGE ONLY WHEN SWARM_UI_COVERAGE_DIR NAMES WHERE TO WRITE IT (issue
-    // 64, docs/ci.md "Coverage floors"). The CI shards set it and upload the
-    // istanbul `coverage-final.json` written there; the `coverage` job merges
-    // the shards and judges the floor in coverage-floors.json
-    // (scripts/coverage-floors.sh). Unset -- `make test`, an agent's
-    // related-tests run -- nothing is instrumented. An env var rather than a
+    // 64, docs/ci.md "Coverage floors"). Only the nightly coverage run's
+    // shards set it (.github/workflows/coverage.yml) and upload the istanbul
+    // `coverage-final.json` written there; its `judge` job merges the shards
+    // and judges the floor in coverage-floors.json
+    // (scripts/coverage-floors.sh). Unset -- application.yml's shards on the
+    // merge path, `make test`, an agent's related-tests run -- nothing is
+    // instrumented. An env var rather than a
     // `--coverage` flag: the shard's command line is the file list alone
     // (tests/unit/scripts/test_ui_shards.py).
     coverage: {

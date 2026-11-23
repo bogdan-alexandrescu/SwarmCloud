@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# THE COVERAGE RATCHET (issue 64): combine the unit shards' coverage data and
-# fail when a package's line coverage is under its floor in
+# THE COVERAGE RATCHET (issue 64): combine the nightly run's shards' coverage
+# data and fail when a package's line coverage is under its floor in
 # coverage-floors.json (docs/ci.md, "Coverage floors").
 #
 #   scripts/coverage-floors.sh [--python-data DIR] [--expect-python-shards N]
@@ -22,8 +22,9 @@
 #
 # A suite whose data is not given is not judged (its shards did not run the
 # whole suite here). Exit 1 when a package is below its floor or missing from
-# a report that ran; 2 when the floors file is malformed. The CI `coverage`
-# job runs this; locally it needs the same data files, so it is a CI step.
+# a report that ran; 2 when the floors file is malformed. The `judge` job of
+# the nightly .github/workflows/coverage.yml runs this; locally it needs the
+# same data files, so it is a CI step.
 # It reads no project and no credential and prints only coverage numbers.
 
 set -euo pipefail
@@ -48,7 +49,7 @@ while [ "$#" -gt 0 ]; do
     --expect-ui-shards) expect_ui="${2:?--expect-ui-shards needs a number}"; shift 2 ;;
     --floors) floors="${2:?--floors needs a file}"; shift 2 ;;
     --keep-reports) keep="${2:?--keep-reports needs a directory}"; shift 2 ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) die "coverage-floors.sh: unknown argument $1 (see --help)" ;;
   esac
 done
