@@ -26,6 +26,7 @@ from pathlib import Path
 
 from agent_worker import prepublish
 from agent_worker.prepublish import Ran
+from agent_worker.pythonenv import UV_ENV_FLAGS
 
 SPAWN = "error: Failed to spawn: `pytest`\n  Caused by: No such file or directory (os error 2)\n"
 
@@ -105,8 +106,9 @@ def test_two_projects_and_no_root_project_run_twice_from_their_own_directories(t
     # The argv the gate always ran, apart from the paths.
     for argv in (api_argv, runner_argv):
         # MUTATION: dropping `-n auto` or the junit report from the per-project argv turns this red.
-        assert argv[:9] == ["uv", "run", "--quiet", "pytest", "-q", "-n", "auto", "-p",
-                            "no:cacheprovider"]
+        # The environment flags are pythonenv.UV_ENV_FLAGS, the warm-up's own.
+        assert argv[:10] == ["uv", "run", *UV_ENV_FLAGS, "--quiet", "pytest", "-q", "-n",
+                             "auto", "-p", "no:cacheprovider"]
         assert len(_junit(argv)) == 1
     # MUTATION: sharing one junit report between projects turns this red: the
     # second run would overwrite the first one's report before it is read.
@@ -219,11 +221,11 @@ def test_a_root_project_repository_runs_the_argv_it_always_ran(tmp_path):
     (argv, where), = runner.uv_calls()
     # MUTATION: any change to the single root run's argv, cwd or output turns this red.
     assert where == "."
-    assert argv[:9] == ["uv", "run", "--quiet", "pytest", "-q", "-n", "auto", "-p",
-                        "no:cacheprovider"]
+    assert argv[:10] == ["uv", "run", *UV_ENV_FLAGS, "--quiet", "pytest", "-q", "-n", "auto",
+                         "-p", "no:cacheprovider"]
     assert len(_junit(argv)) == 1
-    assert argv[10:] == list(tests)
-    assert len(argv) == 12
+    assert argv[11:] == list(tests)
+    assert len(argv) == 13
     assert (status, output) == (prepublish.PASSED, reply.output)
 
 
