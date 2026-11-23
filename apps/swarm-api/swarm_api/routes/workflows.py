@@ -886,8 +886,9 @@ def rerun_workflow_step(
     A `member` or above, as cancel is (Q8): re-running spends what the steps
     spend. Refused 409 `conflict` with `detail.reason` `workflow_still_running`
     until every step has finished, `step_not_failed` for a step that did not
-    fail, `workflow_cancelled`, and `step_rerun_raced` when another re-run or
-    a cancel landed first; 404 `not_found` (`step_not_found`) for a step the
+    fail, `workflow_cancelled`, `step_rerun_raced` when another re-run or
+    a cancel landed first, and `step_spec_unverified` when a step to re-run
+    no longer verifies as stored (issue 207); 404 `not_found` (`step_not_found`) for a step the
     workflow has not. Established codes: a new code ships behind a switch.
     Answers each re-run step's old and new task id."""
     require_member(ctx, auth)
