@@ -276,6 +276,27 @@ def test_it_may_narrow_a_member(client, clock):
     assert me(client, "bob", "eng")["me"]["role"] == "viewer"
 
 
+def test_its_own_stored_admin_grant_is_capped_at_member_off_the_list(client, db):
+    """docs/design/workspace-roles.md section 8, "Its own stored admin grant
+    is capped too": a platform admin names the listed probe principal eng's
+    admin; it is still admin only on PROBE_ADMIN_ROUTES and member, marked
+    probe_admin, everywhere else (`RoleStore.resolve`)."""
+    name_admin(client, PROBE)
+    body = me(client, "probe", "eng")
+    assert (body["me"]["role"], body["me"]["source"]) == ("admin", "probe_admin")
+    store = client.app.state.ctx.roles
+    auth = AuthContext(principal=Principal(email=PROBE, subject="s", domain="example.com"),
+                       tenant_id="eng", is_admin=False, tenant_principal=ENG_GROUP)
+    off_list = store.resolve(auth, fresh=True)
+    assert (off_list.role, off_list.probe_admin) == ("member", True)
+    assert store.person_role("eng", PROBE, fresh=True).role == "admin"
+    response = client.request("DELETE", "/v1/workspace/members/person",
+                              headers=h("probe", "eng"),
+                              json={"email": "bob@example.com", "reason": "probe"})
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "probe_admin_not_permitted"
+
+
 @pytest.mark.parametrize("change", ["narrow", "clear"])
 def test_an_admin_grant_stored_between_its_check_and_its_write_is_refused(client, clock,
                                                                           monkeypatch, change):
