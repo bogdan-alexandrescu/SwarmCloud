@@ -4,8 +4,9 @@ collection and into the unit job (docs/ci.md, "Flaky tests and the quarantine").
 What is held here:
   * the list parses, and a malformed line is refused with its line number --
     a list that half-parsed would quarantine the wrong thing in silence;
-  * every listed test exists: a renamed test would leave its entry
-    quarantining nothing while the real flake gates again;
+  * an entry naming a test that does not exist stops collection: a renamed
+    test would leave its entry quarantining nothing while the real flake
+    gates again;
   * the `flaky` marker is registered, and tests/unit/conftest.py puts it on
     exactly the listed items;
   * the unit job deselects the marker from the gating run and runs it in a
@@ -190,32 +191,6 @@ def test_the_checked_in_list_parses():
     assert fq.LIST == REPO / "tests" / "flaky.txt"
     assert fq.LIST.is_file(), "tests/flaky.txt is gone: docs/ci.md and the unit job name it"
     fq.load()
-
-
-def test_every_quarantined_test_exists():
-    """A renamed or deleted test leaves its entry quarantining nothing. Remove
-    the line, or point it at the test's new id."""
-    entries = fq.load()
-    assert fq.missing(entries) == [], (
-        "tests/flaky.txt names tests that do not exist: " + ", ".join(fq.missing(entries)))
-
-
-def test_the_existence_check_finds_a_test_that_is_not_there():
-    """The check above must be able to fail: proven on ids that exist and ids
-    that do not, in this very file."""
-    real = _entries(
-        HERE_ID + "::test_every_quarantined_test_exists",
-        HERE_ID + "::test_a_malformed_line_is_refused_with_its_line_number[a-b]",
-        HERE_ID + "::_Item::add_marker",
-    )
-    assert fq.missing(real) == []
-    gone = _entries(
-        HERE_ID + "::test_that_was_renamed",
-        HERE_ID + "::_Item::no_such_method",
-        HERE_ID + "::NoSuchClass::test_one",
-        "tests/unit/scripts/test_no_such_file.py::test_one",
-    )
-    assert fq.missing(gone) == [e.nodeid for e in gone]
 
 
 # ---------------------------------------------------------------------------

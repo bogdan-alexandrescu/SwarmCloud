@@ -15561,8 +15561,9 @@ Each must change with it, in the pull request that applies it unless noted:
    (`"codex" not in known_runner_profiles`) and
    `::test_a_disabled_profile_is_refused_as_disabled_not_as_unknown` move to a
    profile that stays disabled (`post-verdict`, `claude-code-review`,
-   `fix-loop`); `tests/unit/docs/test_counts_mockups.py::test_the_fixture_names_a_profile_the_catalogue_marks_unavailable`
-   (`_CODEX in UNAVAILABLE`) is re-pointed the same way.
+   `fix-loop`). The counts mock-up guard that also pinned `_CODEX in
+   UNAVAILABLE` was deleted by issue 74 (a test whose subject is a mock-up,
+   not product behaviour), so there is nothing to re-point there.
 6. **The pool's eligibility, stated in three places, all keyed to
    `CLAUDE_CODE_OAUTH_TOKEN`** (the duplication request 22 names): the
    scheduler's `credentials.SUBSCRIPTION_TOKEN_ENV`
