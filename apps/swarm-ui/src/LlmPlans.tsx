@@ -45,8 +45,10 @@
  * AND A CARD THAT NEEDS ONE SAYS SO WITH ITS OWN BUTTON (the owner's report
  * of 23 November 2026: seven plans lent to his personal workspace read
  * Sign-in needed with nothing to press). "Sign in again" on the card opens
- * Manage at that section, addressed by `?account=` as the Manage button is.
- * On a plan LENT here it first switches this tab to the owning workspace, as
+ * Manage at that section, addressed by `?account=` as the Manage button is,
+ * for a person `/v1/tenants/mine` says is `admin` of the workspace that owns
+ * the plan (the sign-in route has no role gate of its own); a viewer or a
+ * member of it gets no button. On a plan LENT here it first switches this tab to the owning workspace, as
  * the switcher does (`switchWorkspace`), when `/v1/tenants/mine` -- the
  * switcher's own read -- says the person is `admin` there (a platform admin
  * is, by the API's rule); otherwise there is no button and the state's (i)
@@ -175,7 +177,7 @@ export function ownerOf(tenant: string, mine: readonly TenantChoice[], board: Ac
 /**
  * The person's workspaces and their role in each: `GET /v1/tenants/mine`,
  * the switcher's own read, once per page. Empty while it is read and when it
- * failed or threw: every lent card then offers no Sign in again, and the
+ * failed or threw: no card then offers Sign in again, and the
  * server decides as it always does.
  */
 function useMine(): TenantChoice[] {
@@ -413,6 +415,7 @@ function Card({
   a,
   tenant,
   owner,
+  managesHere,
   sel,
   now,
   open,
@@ -424,6 +427,8 @@ function Card({
   tenant: string | null
   /** The owning workspace as `/v1/tenants/mine` has it, for a plan lent here. */
   owner: Owner | null
+  /** Whether the person may manage this workspace: `admin` here, or the all-workspaces view. */
+  managesHere: boolean
   sel: boolean
   now: number
   open: (s: Sheet) => void
@@ -432,8 +437,8 @@ function Card({
   error: ApiError | null
 }) {
   const owned = tenant === null || a.owner_tenant === tenant
-  // Sign in again on the card: in the owning workspace, or lent here to a person who may manage the owner.
-  const resign = a.state === 'REAUTH_REQUIRED' && signsIn(a) && (owned || owner?.manages === true)
+  // Sign in again on the card: for a person who may manage the owning workspace, here or (lent here) there.
+  const resign = a.state === 'REAUTH_REQUIRED' && signsIn(a) && (owned ? managesHere : owner?.manages === true)
   const v = vendorOf(a.provider)
   const tier = a.organisation?.plan ? `${v?.plan ?? a.provider} ${a.organisation.plan}` : null
   const classes = servedClasses(a)
@@ -528,6 +533,8 @@ function Cards({
   const now = useNow(AGE_TICK_MS)
   const tenant = board.page.tenant_id
   const plans = (board.page.accounts as Plan[]).filter(isPlan)
+  // The all-workspaces view is a platform admin's; a workspace is managed by its admins.
+  const managesHere = tenant === null || ownerOf(tenant, mine, board).manages
   return (
     <div className="lpc-groups" aria-label="Plans" role="region">
       {byVendor(plans).map((g) => (
@@ -542,6 +549,7 @@ function Cards({
                 a={a}
                 tenant={tenant}
                 owner={tenant === null || a.owner_tenant === tenant ? null : ownerOf(a.owner_tenant, mine, board)}
+                managesHere={managesHere}
                 sel={sel === a.account_id}
                 now={now}
                 open={open}
