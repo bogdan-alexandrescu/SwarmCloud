@@ -9,6 +9,8 @@ Voice it lets you talk to SwarmCloud: say what you want, and it plans and starts
 4. Earlier conversations are on [Voice it › Projects](/voice/projects): **Resume**, **Rename** or **Delete** them.
 5. Standing preferences are on [Voice it › Preferences](/voice/preferences).
 
+Spend is capped at $100 a session and $300 a day: at 80% of a cap Voice it tells you once, at the cap it starts nothing new, and the session ends two minutes later.
+
 There is no Voice it command in the sc plugin.
 
 For operators: the paid voice pauses on its own while delegated work runs and reopens on the result. The switch is Terraform's `voice_pause` in `terraform/infra/voice.tf`, `"on"` by default; set it to `"off"` and apply to keep the voice open until the session ends.

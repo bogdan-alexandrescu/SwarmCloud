@@ -616,7 +616,7 @@ drifted here before.
 2. The ledger adds those budgets, times 1.2, to what is already spent and
    reserved.
 3. It refuses the start if the total would pass **$100 for the session or
-   $300 for the owner's day**. The owner's day is the calendar day in his saved time
+   $300 for the owner's day**. The owner's day is the calendar day in their saved time
    zone (`user_preferences`; UTC when none is saved).
 
 Turns run one at a time, and a person has at most one live session, so the
@@ -633,6 +633,50 @@ spend grow by the second; the meter on the Talk pane shows both caps.
   Budget card. Running lanes keep running inside what they reserved. The
   conversation stays open two more minutes so the owner can raise the cap on the
   card, then the session ends; the project is kept.
+
+**How it is enforced (built; the owner's decision of 23 November 2026: the
+caps are enforced as designed).** `swarm_api/voice/budget.py` reads the same
+`VoiceLedger` computation `GET .../ledger` serves; nothing stores a total. What
+it writes is what it *did*, on the session document's `budget` field: when each
+cap was warned of, when one was reached and when its grace ends. That field is
+what keeps the warning, the grace and the card to once each.
+
+* **Start.** `POST /v1/voice/sessions` reads the day first: a day already at
+  its $300 (spent plus reserved) is refused, 409 with `detail.reason`
+  `voice_day_cap`, the cap, what is spent and what is reserved, before any
+  session, marker or lease is written and before swarm-voice is asked.
+* **Work.** swarm-voice asks before a delegation runs: its `started` report on
+  `POST .../work` waits for swarm-api's answer (`swarm_voice/worksink.py`
+  `admit`; up to five seconds, then the work runs). A session at a cap, or
+  one where one more planner turn (`DELEGATION_ESTIMATE_USD`, times 1.2) would
+  pass a cap through `reserve_or_refuse`, is refused (`voice_budget_capped`,
+  `voice_session_cap`, `voice_day_cap`), nothing is written, and the voice
+  says that reason's one sentence instead. A GPT-Live session has no work
+  sink: its planner asks the caps' state first (`planner._capped`) and says
+  the same sentence at a cap.
+* **Warning.** Crossing `WARN_SHARE` (80%) of either cap records it once per
+  session per cap, draws the session's one Budget card (status `warning`,
+  which cap) and hands back a notice. The roster follower asks every tick
+  (`POST .../work {budget: true}`) and the update queue says each warning
+  once, at a conversational gap (`swarm_voice/updates.py` `budget`).
+* **End.** Reaching a cap refuses new work at once, starts the grace
+  (`CAP_GRACE_SECONDS`, 120, beside the caps in `ledger.py`), redraws the
+  Budget card (status `capped`, `ends_at`) and the voice says it once; at the
+  grace's end the session ends with the cause `budget_cap` through
+  `VoiceSessions.end_for_budget`, the person's End path, so swarm-voice is
+  told and billing stops, and a speech session's machine lease ends with
+  `END_BUDGET_CAP`. The speech sweep (`POST /v1/internal/voice/speech/sweep`,
+  every two minutes) runs the same check for every live session, so the
+  grace ends the session even when swarm-voice never calls back.
+* **Reservations count.** A cap is reached on spent *plus* reserved: running
+  work at its step budgets times 1.2, and subscription planner turns at their
+  estimate, which are reserved and never counted as spent. A session can be
+  capped while part of its total is a reservation that later shrinks to a
+  measured cost; it ends all the same, the conservative reading.
+* **Console.** The Cost pill takes the warning tone for a cap warned of and
+  the bad tone for a cap reached, with the session's end time (no word); the
+  Budget card shows its cap's bar, the lines spent and reserved, and the end
+  time once the cap is reached.
 
 **A raise is a click and a typed amount** on the Budget card, never a spoken
 yes. The microphone cannot tell the owner from a television (question 3).
