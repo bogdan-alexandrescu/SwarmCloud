@@ -99,6 +99,10 @@ CRASH_SECONDS = 180.0
 DELEGATION_SECONDS = 240.0
 #: How often the relay's clock looks at rotation, heartbeat and idle.
 TICK_SECONDS = 1.0
+#: The line speaker's slow fallback (DELEGATED LINES): a planner line is
+#: spoken on its wake-up at once; this recheck, every 5 s, only catches a
+#: wake-up that was lost, so a line can wait at most this long for it.
+LINE_RECHECK_SECONDS = 5.0
 #: §8.3: a pointer anchor rides on the utterance when under 5 s old.
 ANCHOR_SECONDS = 5.0
 MAX_TEXT_FRAME = 16 * 1024
@@ -144,10 +148,17 @@ class FrontLine:
 
     reply: str
     delegation_id: str | None = None
+    #: The first sentence the front handed to `on_sentence` while its turn
+    #: ran (EARLY FIRST SENTENCE); `reply` starts with it.
+    early: str | None = None
 
 
 class Turns(Protocol):
-    def turn(self, session_id: str, text: str, anchor: dict[str, Any] | None) -> FrontLine: ...
+    def turn(self, session_id: str, text: str, anchor: dict[str, Any] | None) -> FrontLine:
+        """The front's answer. A `Turns` whose `streams_sentences` is true
+        also takes `on_sentence=`, called (from the worker thread) with the
+        reply's first complete sentence while the turn still runs."""
+        ...
     def delegation(self, session_id: str, delegation_id: str, *, timeout: float) -> str | None:
         """The planner's spoken line once the delegation ends; None when it
         has none, or did not end in `timeout`."""
@@ -161,12 +172,21 @@ class ClientTurns:
 
     def __init__(self, client: Any) -> None:
         self._client = client
+        #: The session client streams a turn's first sentence when it says so
+        #: (`sessions.HttpVoiceClient.streams_sentences`).
+        self.streams_sentences = bool(getattr(client, "streams_sentences", False))
 
-    def turn(self, session_id: str, text: str, anchor: dict[str, Any] | None) -> FrontLine:
-        answered = self._client.turn(session_id, text)
+    def turn(self, session_id: str, text: str, anchor: dict[str, Any] | None, *,
+             on_sentence: Callable[[str], None] | None = None) -> FrontLine:
+        if on_sentence is not None and self.streams_sentences:
+            answered = self._client.turn(session_id, text, on_sentence=on_sentence)
+        else:
+            answered = self._client.turn(session_id, text)
         delegation = getattr(answered, "delegation_id", None)
+        early = getattr(answered, "early", None)
         return FrontLine(reply=str(getattr(answered, "reply", "") or ""),
-                         delegation_id=delegation if isinstance(delegation, str) and delegation else None)
+                         delegation_id=delegation if isinstance(delegation, str) and delegation else None,
+                         early=early if isinstance(early, str) and early else None)
 
     def delegation(self, session_id: str, delegation_id: str, *, timeout: float) -> str | None:
         ask = getattr(self._client, "delegation", None)
@@ -212,6 +232,16 @@ class _Turn:
     done: bool = False
 
 
+def _rest(reply: str, early: str) -> str:
+    """What is left of `reply` once `early`, already spoken, is taken off its
+    start; a reply that does not start with it is a different text and is
+    spoken whole, so nothing is ever said twice."""
+    reply = reply.strip()
+    if reply.startswith(early):
+        return reply[len(early):].strip()
+    return reply
+
+
 def _ms(start: float | None, end: float | None) -> float | None:
     if start is None or end is None:
         return None
@@ -223,7 +253,12 @@ class _State:
     utterance: int | None = None
     speaking: set[str] = field(default_factory=set)
     said: dict[str, dict[str, Any]] = field(default_factory=dict)
-    pending_lines: list[str] = field(default_factory=list)
+    #: Planner lines waiting for silence, oldest first, by delegation id.
+    pending_lines: list[tuple[str, str]] = field(default_factory=list)
+    #: The delegations whose line was taken: each is spoken once.
+    relayed: set[str] = field(default_factory=set)
+    #: Barge-ins so far: a turn that sees this move speaks nothing more.
+    barges: int = 0
     turns_in_flight: int = 0
     anchor: dict[str, Any] | None = None
     anchor_at: float = 0.0
@@ -272,6 +307,11 @@ class SpeechRelay:
         self._vm_lock = asyncio.Lock()
         self._tasks: set[asyncio.Task] = set()
         self._ended: str | None = None
+        #: Set when a planner line arrives or silence begins (DELEGATED LINES).
+        self._wake = asyncio.Event()
+        self._line_recheck: float | None = LINE_RECHECK_SECONDS
+        #: The socket is closing: nothing more is spoken (a stop cuts speech).
+        self._closing = False
 
     # -- small helpers
 
@@ -466,8 +506,11 @@ class SpeechRelay:
                 await self._to_vm(json.dumps({"t": "utt.end", "seq": message["seq"]}))
                 if self.state.utterance == message["seq"]:
                     self.state.utterance = None
-                    self._spawn(self._speak_waiting())
+                    self._wake.set()
             elif kind == "barge":
+                # Nothing of a turn in flight is spoken after this; what is
+                # already at the server is cancelled below.
+                self.state.barges += 1
                 self._active()
                 await self._to_vm(json.dumps({"t": "cancel"}))
             elif kind == "point" and isinstance(message.get("anchor"), dict):
@@ -600,15 +643,50 @@ class SpeechRelay:
                     self._close_turn(turn)
                     await self._tell(_status(LISTENING))
                     return
+            barges = self.state.barges
+            early: list[str] = []
+            handed: list[Any] = []
+            loop = asyncio.get_running_loop()
+
+            def cut() -> bool:
+                return self._closing or self._ended is not None or self.state.barges != barges
+
+            async def say_early(sentence: str) -> None:
+                if cut():
+                    return
+                if await self.say(sentence, turn=turn) is not None:
+                    early.append(sentence.strip())
+
+            def on_sentence(sentence: str) -> None:
+                # Called from the turn's worker thread; one sentence per turn.
+                if not handed and isinstance(sentence, str) and sentence.strip():
+                    handed.append(asyncio.run_coroutine_threadsafe(say_early(sentence), loop))
+
+            call: Callable[..., Any] = self._turns.turn
+            kwargs: dict[str, Any] = {}
+            if getattr(self._turns, "streams_sentences", False):
+                kwargs["on_sentence"] = on_sentence
             try:
-                line = await self._to_thread(self._turns.turn, self._holder.session_id, text,
-                                             self._fresh_anchor())
+                line = await self._to_thread(call, self._holder.session_id, text, self._fresh_anchor(),
+                                             **kwargs)
             except Exception as exc:  # noqa: BLE001 -- the class name only, never the words
                 log.warning("speech turn failed (%s)", type(exc).__name__)
-                self._close_turn(turn)
-                await self._tell(_status(LISTENING))
+                await self._settle(handed)
+                if not early:
+                    self._close_turn(turn)
+                    await self._tell(_status(LISTENING))
                 return
-            if await self.say(line.reply, turn=turn) is None:
+            await self._settle(handed)
+            if cut():
+                # Interrupted or stopped: the rest is never spoken.
+                if not early:
+                    self._close_turn(turn)
+                    await self._tell(_status(LISTENING))
+            elif early:
+                rest = _rest(line.reply, early[0])
+                if rest:
+                    await self.say(rest)
+            elif await self.say(line.reply, turn=turn) is None:
                 self._close_turn(turn)
                 await self._tell(_status(LISTENING))
             if line.delegation_id:
@@ -630,13 +708,50 @@ class SpeechRelay:
             self.state.turns_in_flight -= 1
             self._active()
         if line:
-            self.state.pending_lines.append(line)
+            self.line_arrived(delegation_id, line)
+
+    @staticmethod
+    async def _settle(handed: list[Any]) -> None:
+        """Wait for the early sentence's send, when one was handed out."""
+        for future in handed:
+            try:
+                await asyncio.wrap_future(future)
+            except Exception as exc:  # noqa: BLE001 -- its say already failed safe
+                log.warning("speech early sentence not sent (%s)", type(exc).__name__)
+
+    def line_arrived(self, delegation_id: str, line: str) -> None:
+        """A delegation's planner line: queued once per delegation, and the
+        line speaker woken at once (DELEGATED LINES)."""
+        if delegation_id in self.state.relayed or not line.strip():
+            return
+        self.state.relayed.add(delegation_id)
+        self.state.pending_lines.append((delegation_id, line))
+        self._wake.set()
+
+    async def _line_speaker(self) -> None:
+        """The one task that speaks planner lines: woken by `_wake`, it speaks
+        what waits while the person is not speaking. The wake is cleared
+        BEFORE the queue is read, so a line queued while it speaks sets it
+        again and is never missed; the slow recheck (`_line_recheck`) is the
+        fallback for a wake-up that is lost all the same."""
+        while self._ended is None:
+            self._wake.clear()
             await self._speak_waiting()
+            if self._line_recheck is None:
+                await self._wake.wait()
+            else:
+                try:
+                    await asyncio.wait_for(self._wake.wait(), self._line_recheck)
+                except asyncio.TimeoutError:
+                    pass
 
     async def _speak_waiting(self) -> None:
-        """Speak the planner lines that waited, while nobody is speaking."""
-        while self.state.pending_lines and self.state.utterance is None:
-            await self.say(self.state.pending_lines.pop(0))
+        """Speak the planner lines that waited, while nobody is speaking.
+        Only `_line_speaker` calls it, so each line is taken once."""
+        while self.state.pending_lines and self.state.utterance is None and self._ended is None \
+                and not self._closing:
+            _delegation, line = self.state.pending_lines.pop(0)
+            await self.say(line)
 
     # -- the clock: rotation, heartbeat, idle (§3.3, §4.4)
 
@@ -688,12 +803,14 @@ class SpeechRelay:
         await self._fenced(self._machine.ready, self._holder, self._started)
         await self._tell(_status(READY))
         self._active()
+        self._spawn(self._line_speaker())
         pumps = [asyncio.ensure_future(self._browser_pump()),
                  asyncio.ensure_future(self._vm_pump()),
                  asyncio.ensure_future(self._ticker(began))]
         done, _ = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
         why = next(iter(done)).result() if done else ENDED_SESSION
         why = self._ended if self._ended in (ENDED_STALE,) else why
+        self._closing = True
         for task in pumps + list(self._tasks):
             task.cancel()
         await asyncio.gather(*pumps, *self._tasks, return_exceptions=True)

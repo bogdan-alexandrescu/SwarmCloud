@@ -283,7 +283,7 @@ def test_a_lost_wake_up_is_caught_by_the_fallback_recheck():
         h = Harness(dialer=Dialer(vm), turns=turns)
         _threaded(h)
         h.relay._line_recheck = 0.05
-        h.relay._lose_wakes = True  # every wake-up is lost
+        h.relay._wake.set = lambda: None  # every wake-up is lost
         task = await h.ready()
         await h.utterance()
         await _settle(h, lambda: "The plan is on screen." in vm.spoken, "the planner's line")
