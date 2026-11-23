@@ -22,6 +22,9 @@ that tenant's forge credential, through `ctx.forge_writer`:
      (`graphreports.delivery_report`), and the replicas' merged served
      p50/p95 against 300 ms. These go on the firing record, the type's
      history, and write nothing to GitHub.
+  4. SAY WHETHER IT IS MEASURED (part of issue 9): the registration's
+     `index.measure_latency_hours` goes on the firing record too, None when
+     unset, so "no measurement" reads as the setting off for that repository.
 
 A repository's GitHub failure is that repository's (`failed`, with the code),
 as in `release-health`. DRY RUN (§2.8): the same reads, what each repository
@@ -42,7 +45,7 @@ from typing import Any, Iterator, Mapping
 from .. import graphreports
 from ..errors import ApiError
 from ..forgewrite import ISSUES_WRITE, ForgeWriteError, GitHubWriter
-from ..repositories import Repositories
+from ..repositories import Repositories, measure_latency_hours_of
 from ..routes.graph_cache import StatsReader, stats_url
 from ..scheduletypes import BudgetCaps
 from ..validation import IssueRef
@@ -71,6 +74,9 @@ class Reading:
     issue: int | None = None
     delivery: dict[str, Any] | None = None
     served: dict[str, Any] | None = None
+    #: The registration's `index.measure_latency_hours`; None is unset (or
+    #: refused), so no version of it is ever measured (part of issue 9).
+    measure_latency_hours: int | None = None
     written: dict[str, Any] = field(default_factory=dict)
     code: str | None = None
     message: str | None = None
@@ -85,6 +91,7 @@ class Reading:
             "reason": self.reason, "issue": self.issue,
             "readings": self.readings.as_dict() if self.readings is not None else None,
             "delivery": self.delivery, "served_latency": self.served,
+            "measure_latency_hours": self.measure_latency_hours,
             "written": self.written, "code": self.code, "message": self.message,
         }
 
@@ -194,6 +201,7 @@ def _readings(firing: Any, repo_ids: list[str], params: Any, *, writes: bool) ->
             reading.ref = IssueRef(owner=str(registration["owner"]),
                                    repo=str(registration["repo"]), number=0)
             reading.repository = reading.ref.repository
+            reading.measure_latency_hours = measure_latency_hours_of(registration.get("index"))
             if not token and token_error is None:
                 try:
                     token = ctx.forge_tokens.token_for(ctx.store.get_tenant(tenant_id))
@@ -244,7 +252,8 @@ def create(firing: Any) -> list[dict[str, Any]]:
 def dry_run(firing: Any) -> dict[str, Any]:
     params = issue_sweep.params_of(firing)
     room = max(0, int(firing.room))
-    rows = [reading.as_dict() for reading in _readings(firing, firing.repo_ids[:room], params, writes=False)]
+    readings = list(_readings(firing, firing.repo_ids[:room], params, writes=False))
+    rows = [reading.as_dict() for reading in readings]
     return {
         "ratio_threshold": params.ratio_threshold,
         "window": params.window,
@@ -252,4 +261,7 @@ def dry_run(firing: Any) -> dict[str, Any]:
         "room": room,
         "held_for_room": list(firing.repo_ids[room:]),
         "repositories": rows,
+        # Registered and in room, with no measurement setting: never measured.
+        "measure_latency_unset": [reading.repo_id for reading in readings
+                                  if reading.ref is not None and reading.measure_latency_hours is None],
     }
