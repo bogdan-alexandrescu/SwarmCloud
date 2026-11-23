@@ -209,6 +209,39 @@ def test_a_change_of_the_list_resets_the_approval(client, db, seeded, hosts, ext
     assert row["detail"]["host_reset"] is True
 
 
+@pytest.mark.parametrize("extra", [[API], [FILES, API], [API, CDN], None])
+def test_the_change_row_carries_the_lists_old_and_new_values(client, db, seeded, hosts, extra):
+    """Epic 21: the patch's audit row names the list's values before and
+    after, not only that `extra_origins` changed."""
+    target = _registered(client)
+    response = client.patch(f"{TARGETS}/{target['id']}", json={"extra_origins": extra},
+                            headers=auth_header("carol"))
+    assert response.status_code == 200, response.text
+    row = [r for r in audit_rows(db) if r["action"] == "qa_target_changed"][-1]
+    assert row["detail"]["extra_origins"] == {"from": [API, FILES], "to": extra or []}
+
+
+def test_an_unchanged_list_puts_no_values_in_the_change_row(client, db, seeded, hosts):
+    target = _registered(client)
+    response = client.patch(f"{TARGETS}/{target['id']}", json={"name": "Shop again"},
+                            headers=auth_header("carol"))
+    assert response.status_code == 200, response.text
+    row = [r for r in audit_rows(db) if r["action"] == "qa_target_changed"][-1]
+    assert "extra_origins" not in row["detail"]
+
+
+def test_an_approval_naming_an_overlong_extra_origin_is_a_422(client, db, seeded, hosts):
+    """Epic 21: `ApproveBody.extra_origins` bounds each entry, as
+    `extra_origin` is bounded, not only the list's length."""
+    target = _registered(client)
+    before = [dict(r) for r in audit_rows(db)]
+    response = approve(client, target["id"],
+                       extra_origins=["https://" + "a" * 300 + ".example.com"])
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "validation_failed"
+    assert [dict(r) for r in audit_rows(db)] == before
+
+
 def test_another_change_keeps_the_approval(client, db, seeded, hosts):
     target = _registered(client)
     assert approve(client, target["id"], extra_origins=[API]).status_code == 200
