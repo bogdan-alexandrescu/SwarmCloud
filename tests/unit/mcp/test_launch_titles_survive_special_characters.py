@@ -182,7 +182,7 @@ def test_an_attach_with_a_hostile_stored_title_parses_and_hands_the_name_back_as
     for title, reply, meta in zip(HOSTILE_TITLES, replies, got):
         name = workflows.title_name(stored=title)
         assert meta["parses"] is True, (title, meta["parses"])
-        assert reply["args"] == {"attach": "wf_9", "title": name, "rows": "summary", "titled_copy": reply["script_path"]}
+        assert reply["launches"][0]["args"] == {"attach": "wf_9", "title": name, "rows": "summary", "titled_copy": reply["script_path"]}
         assert meta["name"] == reply["title"] == launch.workflow_run_title(name, 2)
 
 

@@ -38,7 +38,8 @@ the workspace. A run's name is fixed when it is launched, so `run` and `attach`
 first call `swarm_workflow_launch`, which writes a copy of the
 `/sc:swarmcloud` script with that name and returns its `script_path`, and
 then launch THAT copy with the Workflow tool, `{scriptPath: <script_path>,
-args: <the reply's `args`, as given>}`, `spec_handle` included: the session
+args: <the reply's `args`, as given>}` -- an attach's are its `launches`
+entries' own, named there once -- `spec_handle` included: the session
 never builds those args itself, and never adds the spec to them -- a spec's
 `args` carry its handle, not the spec, so they stay small however large the
 spec is (archived issue 2875). If `swarm_workflow_launch` answers an error, say so in one

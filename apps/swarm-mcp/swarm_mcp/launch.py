@@ -451,11 +451,33 @@ def _js_string(text: str) -> str:
     return _UNSAFE_IN_SOURCE.sub(lambda m: "\\u%04x" % ord(m.group()), json.dumps(text, ensure_ascii=False))
 
 
-def write_script(title: str, description: str) -> Path:
+#: run.js's line that a titled copy fills with each step row's details line
+#: (`{step_id: line}`), so an attach reply does not carry them (improvement
+#: plan 2026-11-23, item 2: a 49-step attach returned every line twice). A
+#: run.js without it -- an older plugin -- gets them in the args, as before.
+STEP_DETAILS_LINE = "const BRIDGE_STEP_DETAILS = {}"
+
+
+def _js_value(value: Any) -> str:
+    """`value` as a JavaScript literal: JSON, escaped as `_js_string` escapes."""
+    return _UNSAFE_IN_SOURCE.sub(lambda m: "\\u%04x" % ord(m.group()), json.dumps(value, ensure_ascii=False))
+
+
+def embeds_step_details() -> bool:
+    """Does the plugin's run.js take step details in its titled copy?"""
+    try:
+        return STEP_DETAILS_LINE in template().split("\n")
+    except SwarmError:
+        return False
+
+
+def write_script(title: str, description: str, step_details: dict[str, str] | None = None) -> Path:
     """A copy of run.js with `meta.name` = `title` and `meta.description` =
     `description`, as `_js_string` literals. A title reaches the copy only
     here; everything else about a run travels in its `args`, a JSON value the
-    session hands the Workflow tool, never spliced into source."""
+    session hands the Workflow tool -- except `step_details`, each step row's
+    details line, written as one JSON literal on `STEP_DETAILS_LINE` (JSON,
+    never spliced text, escaped as the title is) so the reply stays small."""
     # Checked BEFORE the copy (PLUGIN-VERSION-GUARD): the reply carries it
     # (`server.serve`), and the bridge's log says it whether or not a sibling
     # version still titles this run.
@@ -472,6 +494,10 @@ def write_script(title: str, description: str) -> Path:
         )
     lines[1] = "  name: " + _js_string(title) + ","
     lines[2] = "  description: " + _js_string(_clip(description, DESCRIPTION_CHARS)) + ","
+    if step_details and STEP_DETAILS_LINE in lines:
+        lines[lines.index(STEP_DETAILS_LINE)] = (
+            STEP_DETAILS_LINE.removesuffix("{}") + _js_value(dict(step_details))
+        )
     folder = run_folder()
     _prune(folder)
     target = folder / f"{COPY_PREFIX}{slug(title)}-{secrets.token_hex(6)}.js"
@@ -871,7 +897,9 @@ def remember_row_follow(task_ids: Any) -> None:
 def rowless(running: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Of `running` (`{task_id, state, label?}` each), the tasks this session
     dispatched that no row has followed: `{task_id, state, line, launch}`,
-    `line` naming the task and the Workflow call that starts its row."""
+    `line` naming the task and saying to start its row from `launch`, which
+    alone carries the Workflow call's `script_path` and `args` (named once,
+    improvement plan 2026-11-23, item 2)."""
     with _ATTACHED_LOCK:
         launches = {key: dict(value) for key, value in _ROW_LAUNCHES.items() if key not in _ROWS_FOLLOWING}
     out = []
@@ -880,13 +908,13 @@ def rowless(running: list[dict[str, Any]]) -> list[dict[str, Any]]:
         copy = launches.get(task_id)
         if copy is None:
             continue
-        call = json.dumps({"scriptPath": copy["script_path"], "args": copy["args"]}, separators=(",", ":"))
         named = f"{task_id} ({task['label']})" if task.get("label") else task_id
         out.append({
             "task_id": task_id,
             "state": task.get("state"),
             "line": f"{named} is {task.get('state') or 'running'} with no row: its dispatch's row launch "
-                    f"was never started; start it now with the Workflow tool {call}",
+                    "was never started; start it now with the Workflow tool, "
+                    "{scriptPath: launch.script_path, args: launch.args}",
             "launch": copy,
         })
     return out
@@ -975,17 +1003,30 @@ def _launch(
     workspace: str | None,
     facts: dict[str, list] | None = None,
     labels: dict[str, str] | None = None,
+    step_details: dict[str, str] | None = None,
+    details_in_args: bool = False,
 ) -> dict[str, Any]:
     """Write the titled copy. The DETAILS line (`details.line`: `workspace`,
     `workspace_shown`'s text or None when the API named none, first, then
-    what `facts` hold) leads the description, ahead of anything clipped."""
+    what `facts` hold) leads the description, ahead of anything clipped.
+
+    `step_details`, each step row's line, go into the titled copy
+    (`write_script`) and not into the reply, unless `details_in_args` (the
+    caller's `details: true`) or the plugin's run.js predates the copy's
+    line; then they are the args' `details.steps`, as before."""
     head = details.line(workspace, facts or details.empty(), labels)
-    script = write_script(title, head + " · " + description)
+    embed = bool(step_details) and not details_in_args and embeds_step_details()
+    script = write_script(title, head + " · " + description, step_details if embed else None)
     out: dict[str, Any] = {"title": title, "script_path": str(script), "details": head}
     root_note = plugin_root_note()
     if root_note:
         out["plugin_root_note"] = root_note
+    if embed:
+        out["step_details_in_copy"] = len(step_details or {})
     if args is not None:
+        args = dict(args)
+        if step_details and not embed:
+            args["details"] = {"steps": dict(step_details)}
         # The copy this run is meant to be launched from: a session that
         # falls back to `sc:swarmcloud` by name hands it on in the same args,
         # and run.js's first line then says why the label is generic.
@@ -1173,7 +1214,7 @@ def _attach_launches(
     workflow_id: str, name: str, steps: int, workspace: str | None = None, tenant: str | None = None,
     envelope: dict[str, Any] | None = None, labels: dict[str, str] | None = None,
     repository: Any = None, *, rows: str | None = None, budget: int | None = None,
-    only_steps: list[str] | None = None,
+    only_steps: list[str] | None = None, with_details: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str], int]:
     """`(copies, steps_left_out, rows_used)` for attaching one workflow.
 
@@ -1195,7 +1236,10 @@ def _attach_launches(
     None), in copies of at most `rows_per_run()` rows each when there are more
     -- each copy's `row_share` names its steps and the other copies' (so the
     first, and only the first, reports the steps finished at launch). A
-    per-step attach with no envelope cannot split, and is one copy."""
+    per-step attach with no envelope cannot split, and is one copy.
+
+    The step rows' details lines go into each titled copy, not its args,
+    unless `with_details` (`swarm_workflow_launch`'s `details: true`)."""
     mode = layout.row_mode(rows)
     if repository is None and envelope is not None:
         repository = next((t.get("repository_url") for t in envelope.get("tasks") or []
@@ -1211,8 +1255,6 @@ def _attach_launches(
         step_id: details.line(shown, facts, labels)
         for step_id, facts in details.per_step(envelope).items()
     } if envelope is not None else {}
-    if step_details:
-        base["details"] = {"steps": step_details}
     record("attach", title=title, workflow_id=workflow_id, repository=repository)
     facts = details.for_workflow(envelope) if envelope is not None else None
 
@@ -1220,7 +1262,8 @@ def _attach_launches(
         args = dict(base)
         if share is not None:
             args["row_share"] = share
-        out = _launch(copy_title, description, args, shown, facts, labels)
+        out = _launch(copy_title, description, args, shown, facts, labels,
+                      step_details=step_details, details_in_args=with_details)
         out["workflow_id"] = workflow_id
         out["workspace"] = workspace
         out["rows"] = mode
@@ -1302,16 +1345,26 @@ def _launch_with(copies: list[dict[str, Any]]) -> str:
             "<args>}: each copy is a run of its own with its share of the rows (`rows 1-8`, "
             "`rows 9-16`...), so every row is live at once"
         )
-    return "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
+    return "the Workflow tool with {scriptPath: <script_path>, args: <args>} of the one entry of `launches`"
 
 
-def for_attach(client: SwarmClient, workflow_id: str, rows: str | None = None) -> dict[str, Any]:
+def _first_launch(copies: list[dict[str, Any]]) -> dict[str, Any]:
+    """The reply's own fields: the first copy's, WITHOUT its `args`, which
+    `launches` carries once (improvement plan 2026-11-23, item 2: an attach
+    and a dispatch reply named every launch argument twice)."""
+    return {key: value for key, value in copies[0].items() if key != "args"}
+
+
+def for_attach(
+    client: SwarmClient, workflow_id: str, rows: str | None = None, *, with_details: bool = False,
+) -> dict[str, Any]:
     """The titled copy -- or, per-step past the host's limit, copies -- for
     attaching one workflow: one read, for the name SwarmCloud stored, the step
     count and the unfinished steps. `rows` (`swarm_workflow_launch`'s
     argument) outranks the `rows` setting for this attach; a flag after the
-    id is refused (`attach_id`). The reply's own fields are the first copy's;
-    `launches` holds every copy."""
+    id is refused (`attach_id`). The reply's own fields are the first copy's
+    but its `args`; `launches` holds every copy, args included.
+    `with_details` puts the step rows' details lines in the args instead of the copy."""
     from . import session
 
     workflow_id = attach_id(workflow_id)
@@ -1324,8 +1377,8 @@ def for_attach(client: SwarmClient, workflow_id: str, rows: str | None = None) -
     workspace = workflows.workspace_of({"tenant_id": tenant}, workflows.workspace_names(client))
     copies, left, _ = _attach_launches(
         workflow_id, name, len(envelope["workflow"].get("steps") or []), workspace, tenant,
-        envelope, details.account_labels(client), rows=rows)
-    out = dict(copies[0])
+        envelope, details.account_labels(client), rows=rows, with_details=with_details)
+    out = _first_launch(copies)
     out["launches"] = copies
     out["not_followed"] = [
         {"workflow_id": workflow_id, "step_id": step_id,
@@ -1395,8 +1448,8 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
     running single tasks as two rows, `SC · oracle-train-am-rereview +7 · 8
     tasks 0/1`): a summary row of a batch read `0/1` and showed counts, not
     lanes. `launches` holds every copy, one Workflow call each; the reply's
-    own fields are the first copy's, so a caller that reads one launch still
-    starts a right one.
+    own fields are the first copy's but its `args`, which `launches` carries
+    once.
 
     `task`, the task document as the API served it, gives each row its
     DETAILS (`details.line`); it is read off the row, never copied into the
@@ -1453,7 +1506,7 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
             # Kept so `swarm_check` can hand it back if no row ever follows.
             remember_row_launch(row["task_id"], copy)
         launches.append(copy)
-    out = dict(launches[0])
+    out = _first_launch(launches)
     out["launches"] = launches
     out["task_ids"] = [row_id for copy in launches for row_id in copy["task_ids"]]
     remember_attached(out["task_ids"])
@@ -1465,7 +1518,8 @@ def for_tasks(entries: list[dict[str, Any]], client: SwarmClient | None = None, 
     out["launch_with"] = (
         "one Workflow call per entry of `launches`, each {scriptPath: <script_path>, args: <args>}: "
         "every single task is a run of its own, titled from its label, with one row"
-        if len(launches) > 1 else "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
+        if len(launches) > 1
+        else "the Workflow tool with {scriptPath: <script_path>, args: <args>} of the one entry of `launches`"
     )
     return out
 
@@ -1617,6 +1671,7 @@ def for_all(
     exclude: list[str] | None = None,
     rows: str | None = None,
     project: bool = False,
+    with_details: bool = False,
 ) -> dict[str, Any]:
     """One titled copy per running workflow, closest to finish first in
     workspace blocks (`sc.group_by_workspace`, `board.order`), up to the
@@ -1777,6 +1832,7 @@ def for_all(
             envelopes.get(workflow_id), labels, entry.get("repository_url"),
             rows=mode, budget=budget if mode == config.ROWS_PER_STEP else None,
             only_steps=sorted(resumed[workflow_id]) if workflow_id in resumed else None,
+            with_details=with_details,
         )
         if workflow_id in resumed:
             forget_person_wait(resumed[workflow_id].values())
