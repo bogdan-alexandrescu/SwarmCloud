@@ -84,7 +84,7 @@ What else exists and is reused here, not rebuilt:
 | CI read at a head sha | `apps/swarm-api/swarm_api/forgewrite.py::GitHubWriter.check_runs`, `commit_statuses`, `branch_rules`, `job_log_tail`; `apps/swarm-api/swarm_api/forgechecks.py::evaluate` | What `apps/swarm-api/swarm_api/issueci.py::_read_ci` uses to call a pull request green, pending or red. |
 | the push rules | `gitops.py::push_branch` | Refuses a branch outside `swarm/`, refuses the forge's own default branch, never forces, never pushes tags, never runs hooks. |
 | which branch is "the task's own" | `apps/agent-worker/agent_worker/continuation.py::publish_branch`, `Worker._pr_author_branch` | Derived from task ids in the **signed** dispatch block, never read as a name. |
-| leak scans | `lifecycle.py::final_tree_leak`, `replay_agent_commits` (`_leaks_in_added_text`) | Every commit and the final tree are scanned before a push. |
+| leak scans | `publish_guard.py::final_tree_leak`, `replay_agent_commits` (`lifecycle.py::_leaks_in_added_text`) | Every commit and the final tree are scanned before a push. |
 | App installation token | `apps/agent-worker/agent_worker/forge.py::mint_installation_token`, `revoke_installation_token` | One repository, explicit permissions, `DELETE /installation/token` in a `finally`. Its only caller today is post-verdict (`apps/agent-worker/agent_worker/post_verdict.py::run_post_verdict`). |
 
 **What does not exist yet:**

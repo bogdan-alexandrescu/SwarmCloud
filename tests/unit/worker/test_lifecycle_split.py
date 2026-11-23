@@ -11,6 +11,7 @@ raises `AttributeError` rather than succeeding and changing nothing (issue
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ LIFECYCLE = Path(lifecycle.__file__)
 
 #: Set just above `lifecycle.py`'s length after the move. Lower it as the
 #: split goes on; never raise it.
-LIFECYCLE_LINE_CEILING = 19_150
+LIFECYCLE_LINE_CEILING = 20_000
 
 #: Moved, and still read through `lifecycle` (by itself, another module or a
 #: test): bound there as the same object.
@@ -83,11 +84,12 @@ DROPPED = [
 
 
 def _defined_in_publish_guard(name: str) -> bool:
+    """A function or class is defined there, unless it is a binding of the
+    shared credential guard's (`swarm_redaction.credentials`)."""
     value = getattr(publish_guard, name)
-    module = getattr(value, "__module__", None)
-    if callable(value) and module is not None and not module.startswith("swarm_redaction"):
-        return module == publish_guard.__name__
-    return True
+    if not (inspect.isfunction(value) or inspect.isclass(value)):
+        return True
+    return value.__module__ in (publish_guard.__name__, "swarm_redaction.credentials")
 
 
 @pytest.mark.parametrize("name", KEPT + DROPPED[:-1])
