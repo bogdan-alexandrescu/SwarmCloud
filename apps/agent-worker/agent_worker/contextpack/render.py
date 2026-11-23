@@ -3,7 +3,11 @@
 CONTEXT.md, in this order:
   1. the header: task type, freshness, Jev (only when it is on), the seeds,
      the summary;
-  1a. THE GRAPH'S ANSWER for the brief (`answer.brief_answer`, the owner's pick of
+  1a. NOTES, only when there is one: each row the graph service could not
+     answer under its 4 KiB cap, named with its size, so the pack reads as
+     partial rather than complete -- bounded by `NOTES_MAX_BYTES` and counted
+     past it, never cut by the ranked rows;
+  1b. THE GRAPH'S ANSWER for the brief (`answer.brief_answer`, the owner's pick of
      6 November 2026): the files swarm-graph `search` ranks most relevant,
      each with its reason, or why there are none -- sized last, to what the
      bound leaves after every never-cut row and the checklist, so it leads
@@ -41,6 +45,9 @@ PAGED_BY = {"symbol": "context", "caller": "impact", "callee": "context",
 ALWAYS_MAX_BYTES = 10 * 1024
 #: Room kept for the paged-out section and the closing line.
 TAIL_RESERVE_BYTES = 768
+#: The notes section's bound: a few named rows, then a count. Small enough
+#: that the never-cut section, the checklist and the tail still fit beside it.
+NOTES_MAX_BYTES = 1024
 _FIELD_CHARS = 200
 
 UNKNOWN_IN_FLIGHT = (
@@ -98,6 +105,32 @@ def _always(rows: list[Candidate], in_flight: str | int) -> list[str]:
     return lines + kept + [f"- … and {more} more in pack.json beside this file"] + walls
 
 
+def _dropped_line(row: dict[str, Any]) -> str:
+    where = _clip(f"{row.get('layer')}/{row.get('key')}", 160)
+    return (f"- Dropped row {row.get('cursor')} of `{where}` (size: {row.get('size')}; the "
+            "service reports no exact size): it does not fit the graph service's 4 KiB "
+            "answer cap, so this pack is partial without it.")
+
+
+def _notes(dropped: list[dict[str, Any]]) -> list[str]:
+    """The notes section within `NOTES_MAX_BYTES`: one line per dropped row
+    while they fit, then how many more pack.json holds."""
+    if not dropped:
+        return []
+    head = ["## Notes", ""]
+    rows = [_dropped_line(row) for row in dropped]
+    kept: list[str] = []
+    for row in rows:
+        more = len(rows) - len(kept) - 1
+        tail = [f"- … and {more} more dropped rows in pack.json beside this file"] if more else []
+        if _size(head + kept + [row] + tail + [""]) > NOTES_MAX_BYTES:
+            break
+        kept.append(row)
+    more = len(rows) - len(kept)
+    tail = [f"- … and {more} more dropped rows in pack.json beside this file"] if more else []
+    return head + kept + tail + [""]
+
+
 GRAPH_ANSWER_HEADING = "## The graph's answer for this brief"
 GRAPH_ANSWER_LEAD = ("Files swarm-graph `search` ranks most relevant to the brief, best "
                      "first: open these before searching widely.")
@@ -133,11 +166,14 @@ def _graph_lines(answer: GraphAnswer | None, room: int) -> list[str]:
 
 def render_markdown(header: dict[str, Any], rows: list[Candidate], ranked: list[Candidate],
                     in_flight: str | int, *, answer: GraphAnswer | None = None,
+                    dropped: list[dict[str, Any]] | None = None,
                     ) -> tuple[str, set[tuple[str, str]], dict[str, int]]:
     """(the text, the keys of the ranked rows shown, paged-out counts by kind).
 
     `answer`, when given, leads after the header (`_graph_lines`); how many
-    of its files fit is set on it as `shown`."""
+    of its files fit is set on it as `shown`. `dropped`, the rows the graph
+    service could not answer under its cap (`ServiceSource.dropped`), are the
+    notes, right after the header (`_notes`)."""
     fresh = header["freshness"]
     lines = [f"# Repository context: {header['task_type']} step", ""]
     stale_note = " · rows marked STALE changed after the index" if any(
@@ -162,6 +198,7 @@ def render_markdown(header: dict[str, Any], rows: list[Candidate], ranked: list[
         lines.append("Not in the index (new since it, or misspelt): " + ", ".join(
             f"`{_clip(s, 120)}`" for s in seeds["unknown"][:8]))
     lines.append("")
+    lines += _notes(dropped or [])
     rest = _always(rows, in_flight)
     rest += ["", f"## Checklist: {header['task_type']} step", ""]
     rest += [f"- [ ] {item}" for item in checklist(header["task_type"])]
