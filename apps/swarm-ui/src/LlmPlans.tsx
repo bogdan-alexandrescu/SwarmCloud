@@ -42,14 +42,27 @@
  * while the plan reads Sign-in needed, last as "Replace sign-in" while it is
  * healthy, the same steps as Add plan's with the plan's label and lends.
  *
+ * AND A CARD THAT NEEDS ONE SAYS SO WITH ITS OWN BUTTON (the owner's report
+ * of 23 November 2026: seven plans lent to his personal workspace read
+ * Sign-in needed with nothing to press). "Sign in again" on the card opens
+ * Manage at that section, addressed by `?account=` as the Manage button is,
+ * for a person `/v1/tenants/mine` says is `admin` of the workspace that owns
+ * the plan (the sign-in route has no role gate of its own); a viewer or a
+ * member of it gets no button. On a plan LENT here it first switches this tab to the owning workspace, as
+ * the switcher does (`switchWorkspace`), when `/v1/tenants/mine` -- the
+ * switcher's own read -- says the person is `admin` there (a platform admin
+ * is, by the API's rule); otherwise there is no button and the state's (i)
+ * names the owner. Nothing starts a sign-in until Start sign-in is pressed.
+ *
  * No explanatory prose on the surface: every definition sits behind an (i).
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react'
 import {
   beginAccountSignIn,
   beginDeviceSignIn,
   finishAccountSignIn,
   loadAccountsBoard,
+  loadMyTenants,
   mintSetupLink,
   pollDeviceSignIn,
   refreshAccount,
@@ -63,10 +76,14 @@ import {
   type AccountsBoard,
   type DeviceSignIn,
   type ServedAccount,
+  type TenantChoice,
 } from './api'
 import { accountName } from './accountName'
 import { MODEL_CLASSES, classesToSave, servedClasses, setAccountPools } from './Accounts'
 import { Info } from './AccountsVerdict'
+import { switchWorkspace } from './elsewhere'
+import { atLeast, roleOf } from './roles'
+import { displayNameOf, isReach, nameTenants } from './Spine'
 import { inVoiceItPool, poolsOf } from './AccountsTable'
 import { DEFAULT_MAX_AGENTS, blocksOf, inTime, isWindowBlock, type PoolAccount } from './accountsPool'
 import { MAX_AGENTS_LIMIT } from './AccountSheet'
@@ -123,6 +140,65 @@ function goAccount(id: string | null): void {
   window.dispatchEvent(new HashChangeEvent('hashchange', { oldURL, newURL: window.location.href }))
 }
 
+/**
+ * THE PLAN WHOSE CARD'S "Sign in again" WAS PRESSED: its Manage sheet opens
+ * at that section. Kept in the module, not the page, because a lent plan's
+ * press switches the tab's workspace first and the shell remounts the page;
+ * cleared once the section has been focused.
+ */
+let signInFor: string | null = null
+
+/** The vendors whose sign-in Manage runs; a card offers Sign in again for these only. */
+function signsIn(a: { provider: string }): boolean {
+  return ADD_VENDORS.some((p) => p === a.provider)
+}
+
+/**
+ * Who a lent plan's sign-in is for, as `/v1/tenants/mine` says: the owner's
+ * name as the switcher draws it, and whether the person may sign it in
+ * there -- `admin` in the owning workspace (a platform admin is `admin` in
+ * every group workspace it reaches, by the API's rule; reach alone is only
+ * ever a platform admin's). No entry, or one with no role, is "may not".
+ */
+export interface Owner {
+  tenant_id: string
+  name: string
+  manages: boolean
+}
+
+export function ownerOf(tenant: string, mine: readonly TenantChoice[], board: AccountsBoard): Owner {
+  const choice = mine.find((c) => c.tenant_id === tenant)
+  const named = nameTenants(mine, null).find((c) => c.tenant_id === tenant)?.display_name
+  const listed = displayNameOf((board.tenants ?? []).find((t) => t.tenant_id === tenant)?.display_name)
+  const manages = choice !== undefined && (atLeast(roleOf(choice), 'admin') || (roleOf(choice) === null && isReach(choice)))
+  return { tenant_id: tenant, name: (named !== undefined && named !== tenant ? named : null) ?? listed ?? tenant, manages }
+}
+
+/**
+ * The person's workspaces and their role in each: `GET /v1/tenants/mine`,
+ * the switcher's own read, once per page. Empty while it is read and when it
+ * failed or threw: no card then offers Sign in again, and the
+ * server decides as it always does.
+ */
+function useMine(): TenantChoice[] {
+  const [mine, setMine] = useState<TenantChoice[]>([])
+  useEffect(() => {
+    let live = true
+    void Promise.resolve()
+      .then(() => loadMyTenants())
+      .then(
+        (r) => {
+          if (live && (r.status === 'ok' || r.status === 'stale') && Array.isArray(r.data)) setMine(r.data)
+        },
+        () => undefined,
+      )
+    return () => {
+      live = false
+    }
+  }, [])
+  return mine
+}
+
 /* ---------------- the cells ---------------- */
 
 const STATE_WORD: Readonly<Record<string, string>> = {
@@ -140,14 +216,25 @@ const STATE_TIP: Readonly<Record<string, string>> = {
 }
 
 /** The state: a dot alone when it takes agents, the word where it asks for something. */
-function StateMark({ a }: { a: Plan }) {
+function StateMark({ a, askOwner, quiet = false }: { a: Plan; askOwner?: string; quiet?: boolean }) {
   const word = STATE_WORD[a.state]
   const tone = a.state === 'AVAILABLE' ? 'is-ok' : a.state === 'REAUTH_REQUIRED' ? 'is-bad' : `is-${String(a.state).toLowerCase()}`
-  const tip = [STATE_TIP[a.state], a.reason].filter(Boolean).join(' · ')
+  // A lent plan the person cannot sign in: the (i) says whose it is to sign in.
+  const stateTip = a.state === 'REAUTH_REQUIRED' && askOwner !== undefined ? `Its sign-in no longer refreshes; ${askOwner} signs it in again` : STATE_TIP[a.state]
+  const tip = [stateTip, a.reason].filter(Boolean).join(' · ')
   return (
     <span className={`llp-st ${tone}`} title={tip || undefined}>
       <i aria-hidden="true" />
-      {word === undefined ? <span className="mono">{a.state}</span> : a.state === 'AVAILABLE' ? <span className="llp-vh">{word}</span> : word}
+      {word === undefined ? (
+        <span className="mono">{a.state}</span>
+      ) : a.state === 'AVAILABLE' ? (
+        <span className="llp-vh">{word}</span>
+      ) : quiet ? (
+        // Beside the card's Sign in again, which says it: the dot and its tip, the word for a screen reader.
+        <span className="sk-vh">{word}</span>
+      ) : (
+        word
+      )}
     </span>
   )
 }
@@ -327,21 +414,31 @@ function Failure({ error }: { error: ApiError | null }) {
 function Card({
   a,
   tenant,
+  owner,
+  managesHere,
   sel,
   now,
   open,
   onResume,
+  onSignIn,
   error,
 }: {
   a: Plan
   tenant: string | null
+  /** The owning workspace as `/v1/tenants/mine` has it, for a plan lent here. */
+  owner: Owner | null
+  /** Whether the person may manage this workspace: `admin` here, or the all-workspaces view. */
+  managesHere: boolean
   sel: boolean
   now: number
   open: (s: Sheet) => void
   onResume: (a: Plan) => void
+  onSignIn: (a: Plan) => void
   error: ApiError | null
 }) {
   const owned = tenant === null || a.owner_tenant === tenant
+  // Sign in again on the card: for a person who may manage the owning workspace, here or (lent here) there.
+  const resign = a.state === 'REAUTH_REQUIRED' && signsIn(a) && (owned ? managesHere : owner?.manages === true)
   const v = vendorOf(a.provider)
   const tier = a.organisation?.plan ? `${v?.plan ?? a.provider} ${a.organisation.plan}` : null
   const classes = servedClasses(a)
@@ -375,7 +472,7 @@ function Card({
             )}
           </span>
         </span>
-        <StateMark a={a} />
+        <StateMark a={a} quiet={resign} askOwner={!owned && owner?.manages !== true ? (owner?.name ?? a.owner_tenant) : undefined} />
       </div>
       <div className="lpc-quota">
         <Quota a={a} k={FIVE_HOUR} name="5-hour" now={now} />
@@ -392,16 +489,23 @@ function Card({
         )}
       </div>
       <LendsLine a={a} />
-      {owned && (
+      {(owned || resign) && (
         <div className="lpc-foot">
-          {a.state === 'PAUSED' && (
+          {resign && (
+            <Button kind="primary" aria-label={`Sign in again ${a.label}`} onClick={() => onSignIn(a)}>
+              Sign in again
+            </Button>
+          )}
+          {owned && a.state === 'PAUSED' && (
             <Button onClick={() => onResume(a)}>
               Resume
             </Button>
           )}
-          <Button aria-label={`Manage ${a.label}`} onClick={manage}>
-            Manage
-          </Button>
+          {owned && (
+            <Button aria-label={`Manage ${a.label}`} onClick={manage}>
+              Manage
+            </Button>
+          )}
         </div>
       )}
       <Failure error={error} />
@@ -411,20 +515,26 @@ function Card({
 
 function Cards({
   board,
+  mine,
   sel,
   open,
   onResume,
+  onSignIn,
   rowError,
 }: {
   board: AccountsBoard
+  mine: readonly TenantChoice[]
   sel: string | null
   open: (s: Sheet) => void
   onResume: (a: Plan) => void
+  onSignIn: (a: Plan) => void
   rowError: { id: string; error: ApiError } | null
 }) {
   const now = useNow(AGE_TICK_MS)
   const tenant = board.page.tenant_id
   const plans = (board.page.accounts as Plan[]).filter(isPlan)
+  // The all-workspaces view is a platform admin's; a workspace is managed by its admins.
+  const managesHere = tenant === null || ownerOf(tenant, mine, board).manages
   return (
     <div className="lpc-groups" aria-label="Plans" role="region">
       {byVendor(plans).map((g) => (
@@ -438,10 +548,13 @@ function Cards({
                 key={a.account_id}
                 a={a}
                 tenant={tenant}
+                owner={tenant === null || a.owner_tenant === tenant ? null : ownerOf(a.owner_tenant, mine, board)}
+                managesHere={managesHere}
                 sel={sel === a.account_id}
                 now={now}
                 open={open}
                 onResume={onResume}
+                onSignIn={onSignIn}
                 error={rowError?.id === a.account_id ? rowError.error : null}
               />
             ))}
@@ -472,8 +585,10 @@ function SheetFrame({
   foot?: ReactNode
 }) {
   const head = useRef<HTMLHeadingElement>(null)
+  const frame = useRef<HTMLElement>(null)
   useEffect(() => {
-    head.current?.focus()
+    // The heading takes focus, unless a section already took it (a card's Sign in again).
+    if (!frame.current?.contains(document.activeElement)) head.current?.focus()
   }, [title])
   useEffect(() => {
     const k = (e: KeyboardEvent) => {
@@ -483,7 +598,7 @@ function SheetFrame({
     return () => window.removeEventListener('keydown', k)
   }, [onClose])
   return (
-    <aside className="llp-sheet" role="dialog" aria-modal="false" aria-label={title}>
+    <aside ref={frame} className="llp-sheet" role="dialog" aria-modal="false" aria-label={title}>
       <header className="llp-sheet-head">
         {onBack && (
           <Button size="sm" kind="ghost" onClick={onBack}>
@@ -506,9 +621,22 @@ function SheetFrame({
   )
 }
 
-function Section({ title, info, aside, children }: { title: string; info?: string; aside?: ReactNode; children: ReactNode }) {
+function Section({
+  title,
+  info,
+  aside,
+  at,
+  children,
+}: {
+  title: string
+  info?: string
+  aside?: ReactNode
+  /** Where a card's Sign in again lands: the section, focusable from script. */
+  at?: Ref<HTMLElement>
+  children: ReactNode
+}) {
   return (
-    <section className="llp-ss" aria-label={title}>
+    <section className="llp-ss" aria-label={title} ref={at} tabIndex={at === undefined ? undefined : -1}>
       <h3>
         {title}
         {info && <Info about={title} tip={info} />}
@@ -659,8 +787,19 @@ function Manage({
   // The plan's sign-in: first while it is needed, last while the plan is
   // healthy. Only the two vendors whose sign-in this page runs; one keyed
   // element, so moving it between the two places keeps nothing stale.
-  const resign = ADD_VENDORS.some((p) => p === a.provider)
-  const signIn = <SignInAgain key={`sign-in-${a.state === 'REAUTH_REQUIRED'}`} a={a} reread={reread} />
+  const resign = signsIn(a)
+  const signInAt = useRef<HTMLElement>(null)
+  const signIn = <SignInAgain key={`sign-in-${a.state === 'REAUTH_REQUIRED'}`} a={a} reread={reread} at={signInAt} />
+
+  // Opened from the card's Sign in again: the section is scrolled to and
+  // focused, once it is drawn here (after a switch, once the owner's list is).
+  useEffect(() => {
+    const el = signInAt.current
+    if (signInFor !== a.account_id || el === null || a.state !== 'REAUTH_REQUIRED') return
+    signInFor = null
+    el.scrollIntoView?.({ block: 'start' })
+    el.focus()
+  }, [a.account_id, a.state, owned])
 
   return (
     <SheetFrame
@@ -1368,7 +1507,7 @@ function Left({ deadline, interval }: { deadline: number | null; interval: numbe
  * code, polled at the served interval until it is filed or expires. A refused
  * code or an expired device code changes nothing and offers Start again.
  */
-function SignInAgain({ a, reread }: { a: Plan; reread: () => Promise<void> }) {
+function SignInAgain({ a, reread, at }: { a: Plan; reread: () => Promise<void>; at?: Ref<HTMLElement> }) {
   const broken = a.state === 'REAUTH_REQUIRED'
   const title = broken ? 'Sign in again' : 'Replace sign-in'
   const device = a.provider === 'openai'
@@ -1501,6 +1640,7 @@ function SignInAgain({ a, reread }: { a: Plan; reread: () => Promise<void> }) {
   return (
     <Section
       title={title}
+      at={broken ? at : undefined}
       info={
         broken
           ? 'Its sign-in no longer refreshes. A new sign-in under the same label puts it back; nothing else changes.'
@@ -1610,6 +1750,9 @@ function Plans({ board, reread }: { board: AccountsBoard; reread: () => Promise<
   const linked = useLinkedParam('account')
   const [sheet, setSheet] = useState<Sheet | null>(null)
   const [rowError, setRowError] = useState<{ id: string; error: ApiError } | null>(null)
+  // A press of a card's Sign in again draws Manage afresh, so its section takes focus again.
+  const [presses, setPresses] = useState(0)
+  const mine = useMine()
   const tenant = board.page.tenant_id
   const plans = (board.page.accounts as Plan[]).filter(isPlan)
   const find = (id: string) => plans.find((p) => p.account_id === id) ?? null
@@ -1630,6 +1773,20 @@ function Plans({ board, reread }: { board: AccountsBoard; reread: () => Promise<
     } else setSheet(s)
   }
   const back = () => setSheet(null)
+  // Sign in again on a card: Manage at that section, in the owning workspace.
+  // A lent plan switches this tab there first, as the switcher does; the
+  // card offers the button only where the person may manage the owner.
+  const signInAgain = (a: Plan) => {
+    signInFor = a.account_id
+    setPresses((n) => n + 1)
+    if (tenant !== null && a.owner_tenant !== tenant) {
+      const here = nameTenants(mine, null).find((c) => c.tenant_id === tenant)?.display_name ?? tenant
+      const owner = ownerOf(a.owner_tenant, mine, board)
+      switchWorkspace({ tenant_id: tenant, name: here }, { tenant_id: owner.tenant_id, name: owner.name })
+    }
+    setSheet(null)
+    goAccount(a.account_id)
+  }
   const resume = async (a: Plan) => {
     setRowError(null)
     const refused = failed(await setAccountState(a.account_id, 'AVAILABLE', ''))
@@ -1660,7 +1817,15 @@ function Plans({ board, reread }: { board: AccountsBoard; reread: () => Promise<
               Add plan
             </Button>
           </div>
-          <Cards board={board} sel={acc?.account_id ?? null} open={open} onResume={(a) => void resume(a)} rowError={rowError} />
+          <Cards
+            board={board}
+            mine={mine}
+            sel={acc?.account_id ?? null}
+            open={open}
+            onResume={(a) => void resume(a)}
+            onSignIn={signInAgain}
+            rowError={rowError}
+          />
         </>
       )}
       {drawn && <div className="llp-scrim" onClick={close} aria-hidden="true" />}
@@ -1674,7 +1839,14 @@ function Plans({ board, reread }: { board: AccountsBoard; reread: () => Promise<
         />
       )}
       {active?.kind === 'manage' && acc !== null && (
-        <Manage a={acc} owned={tenant === null || acc.owner_tenant === tenant} close={close} go={open} reread={reread} />
+        <Manage
+          key={`${acc.account_id}:${presses}`}
+          a={acc}
+          owned={tenant === null || acc.owner_tenant === tenant}
+          close={close}
+          go={open}
+          reread={reread}
+        />
       )}
       {active?.kind === 'lend' && acc !== null && <LendSheet a={acc} board={board} edit={active.to} close={close} back={back} reread={reread} />}
       {active?.kind === 'remove' && acc !== null && (
