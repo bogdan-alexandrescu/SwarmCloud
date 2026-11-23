@@ -751,8 +751,11 @@ child per sentence.
   the middle term is the model's. Haiku is the smallest, fastest class, and the front's work (one or
   two sentences, one choice: answer or `delegate`) is a mechanical step, what that class is for;
   `opus` and `fable` would slow every sentence for planning the front never does. M8 checks it.
-* **The planner runs the planning class, `fable`** (`claude-fable-5-1`), as Q3 says, on both
-  engines, through `VOICE_PLANNER_MODEL` (the owner is asked to confirm its cost in questions.json).
+* **The planner runs the planning class, `fable`** (`claude-fable-5-2` since the owner's re-pin of
+  2026-11-23, `claude-fable-5-1` before it), as Q3 says, on both
+  engines, through `VOICE_PLANNER_MODEL`, which Terraform renders from `local.runner_models.fable`;
+  `claudeturn.MODEL`, the default with no variable, is held equal to that pin by
+  tests/unit/scripts/test_model_pins.py (the owner is asked to confirm its cost in questions.json).
 * **One warm child per session.** `claude -p --input-format stream-json --output-format
   stream-json`, started at the session's start with claudeturn.py's rules (built environment, `--tools
   ""`, `--strict-mcp-config` with only `delegate` and the read tools, private HOME, scrubbed output); each final is one

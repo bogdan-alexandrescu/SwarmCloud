@@ -37,7 +37,7 @@ GROUP = ROOT / "scripts" / "acceptance" / "groups" / "claude-code.sh"
 
 PINS = {
     "opus": "claude-opus-5-5",
-    "fable": "claude-fable-5-1",
+    "fable": "claude-fable-5-2",
     "sonnet": "claude-sonnet-5-5",
     "haiku": "claude-haiku-5-5",
 }
