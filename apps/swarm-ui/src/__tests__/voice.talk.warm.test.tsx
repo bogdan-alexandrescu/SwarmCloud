@@ -7,6 +7,7 @@
 //   * swarm-api's `{warming: true, within_seconds}` reads "Speech is starting"
 //     in the status, with the boot's usual progress mark, where "Not connected"
 //     stood, for those seconds at most; the why is behind the status's tooltip;
+//   * on a phone (390) the status is nothing wider than the viewport and wraps;
 //   * any other answer, a refusal included, changes nothing on the page: the
 //     start says its own refusal when the person presses it.
 //
@@ -14,9 +15,13 @@
 // the status for `warming: false`; keep the status past `within_seconds`;
 // draw a refusal of the warm as a problem line.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { cascade } from './cssgate'
 import { installMedia, settle } from './voice.fakes'
 
 const fetchMock = vi.hoisted(() => ({ write: vi.fn() }))
@@ -150,5 +155,40 @@ describe('Talk warms the speech machine once when it opens', () => {
     view.rerender(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
     await settle(act)
     expect(warms()).toHaveLength(0)
+  })
+})
+
+describe('on a phone (390) the warm status fits', () => {
+  const styles = join(__dirname, '..', 'styles')
+  const SHEETS = [
+    readFileSync(join(styles, 'talk-stage.css'), 'utf8'),
+    readFileSync(join(styles, 'talk-pane.css'), 'utf8'),
+    readFileSync(join(__dirname, '..', 'styles.css'), 'utf8'),
+  ].join('\n')
+  const won = (el: Element, prop: string, width: number) => cascade(SHEETS, el, prop, { width }).winner?.value ?? null
+  const fixedPx = (v: string | null) => (v === null ? 0 : [...v.replace(/minmax\([^)]*\)|calc\([^)]*\)/g, '').matchAll(/(\d+(?:\.\d+)?)px/g)].reduce((n, m) => n + parseFloat(m[1]!), 0))
+
+  beforeEach(() => {
+    installMedia({ audioContext: true })
+  })
+  afterEach(() => {
+    fetchMock.write.mockReset()
+  })
+
+  it('draws nothing wider than the viewport, and the words wrap rather than overflow', async () => {
+    answer(warming())
+    render(<VoiceSessionHolder><TalkPane /></VoiceSessionHolder>)
+    await settle(act)
+    const statusEl = document.querySelector('.vt-status') as HTMLElement
+    const mark = statusEl.querySelector('.vt-boot-step.is-now') as HTMLElement
+    expect(mark).toBeTruthy()
+    const wide = [statusEl, ...statusEl.querySelectorAll('*')].flatMap((el) =>
+      ['width', 'min-width', 'flex-basis'].filter((p) => fixedPx(won(el, p, 390)) > 390 - 2 * 18).map((p) => `${el.getAttribute('class')} ${p}`),
+    )
+    expect(wide).toEqual([])
+    expect(won(mark, 'min-width', 390)).toBe('0')
+    expect(won(mark, 'overflow-wrap', 390)).toBe('anywhere')
+    // Three words where "Not connected" stood: no new sentence on the page.
+    expect(status().split(/\s+/)).toHaveLength(3)
   })
 })
