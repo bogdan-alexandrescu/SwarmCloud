@@ -461,7 +461,7 @@ def test_an_attach_launch_takes_the_stored_title_else_the_unit_else_the_id(_plug
                          (_stored(), "wf_9")):
         reply = json.loads(server._call(_Recorder(stored), "swarm_workflow_launch", {"attach": "wf_9"}))
         assert reply["title"] == f"SC ∴ {name} · 2 steps"
-        assert reply["args"] == {"attach": "wf_9", "title": name, "rows": "summary", "titled_copy": reply["script_path"]}
+        assert reply["launches"][0]["args"] == {"attach": "wf_9", "title": name, "rows": "summary", "titled_copy": reply["script_path"]}
         assert _meta_of(Path(reply["script_path"]))["name"] == reply["title"]
 
 

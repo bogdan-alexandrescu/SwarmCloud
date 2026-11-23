@@ -145,7 +145,7 @@ def test_an_attached_workflow_is_named_by_its_workflow_alone(_plugin_root, monke
     assert out["title"] == name == "SC ∴ nightly · 3 steps"
     assert description.startswith("Workspace: eng@example.com (eng) · ")
     # The row's own workspace still travels to run.js for its step rows.
-    assert out["args"]["workspace"] == "eng@example.com"
+    assert out["launches"][0]["args"]["workspace"] == "eng@example.com"
 
 
 # --------------------------------------------------------------------------

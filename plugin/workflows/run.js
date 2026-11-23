@@ -1231,10 +1231,19 @@ function detailsText(text) {
   return flat ? clip(flat, DETAILS_CHARS) : null
 }
 
-// `{step_id: line}` from the args' `details` ({steps: {...}}), or {}.
+// Each step row's details line as the bridge wrote it INTO THIS COPY
+// (swarm_mcp.launch.STEP_DETAILS_LINE): an attach reply no longer carries
+// them in the args unless the caller asked with `details: true`, so a
+// 49-step attach does not hand the session every line twice. Empty in the
+// plugin's own run.js; the line is replaced whole, as one JSON literal.
+const BRIDGE_STEP_DETAILS = {}
+
+// `{step_id: line}` from the args' `details` ({steps: {...}}), else this
+// copy's BRIDGE_STEP_DETAILS, or {}.
 function readDetails(value) {
   const out = {}
-  const steps = value && typeof value === 'object' && value.steps && typeof value.steps === 'object' ? value.steps : {}
+  const given = value && typeof value === 'object' && value.steps && typeof value.steps === 'object' ? value.steps : null
+  const steps = given || BRIDGE_STEP_DETAILS
   for (const id of Object.keys(steps)) {
     const line = detailsText(steps[id])
     if (line) out[id] = line
