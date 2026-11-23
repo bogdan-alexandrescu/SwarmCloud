@@ -34,6 +34,7 @@ from swarm_mcp import check, launch, sc, server, watch
 from swarm_mcp.client import SwarmError
 
 from test_sc_watch import APP, NOW, OTHER, SESSION, Api, task, workflow
+import sc_skill_text
 
 _REPO = Path(__file__).resolve().parents[3]
 _PLUGIN = _REPO / "plugin"
@@ -64,7 +65,7 @@ def project(tmp_path, monkeypatch):
 
 
 def _armed(minutes: int) -> dict:
-    return {"cron": watch.cron_for(minutes), "prompt": "/sc check", "recurring": True}
+    return {"cron": watch.cron_for(minutes), "prompt": "/sc:check", "recurring": True}
 
 
 def _assert_arms(reply: dict, minutes: int = 30) -> None:
@@ -73,7 +74,9 @@ def _assert_arms(reply: dict, minutes: int = 30) -> None:
     assert arm["tool"] == "CronCreate"
     assert arm["args"] == _armed(minutes)
     assert arm["save_with"] == {"tool": "swarm_check_schedule", "args": {"interval": f"{minutes}m"}}
-    assert "CronList" in arm["unless"] and "/sc check" in arm["unless"]
+    assert "CronList" in arm["unless"] and "/sc:check" in arm["unless"]
+    # A watch armed before 0.5.88 fires `/sc check`: it is the watch too, never doubled.
+    assert "`/sc check`" in arm["unless"]
 
 
 def _off() -> None:
@@ -346,7 +349,7 @@ def _section(text: str, heading: str) -> str:
 
 
 def test_the_skill_makes_arming_the_final_step_of_every_attaching_verb():
-    text = _SKILL.read_text()
+    text = sc_skill_text.text()
     arming = _section(text, "### Arming the watch")
     assert arming.index("CronList") < arming.index("CronCreate"), "CronList must come first"
     for named in ("arm_watch", "swarm_check_schedule", "never a second", "/sc watch off"):
@@ -357,7 +360,7 @@ def test_the_skill_makes_arming_the_final_step_of_every_attaching_verb():
 
 
 def test_the_skills_watch_section_says_it_arms_itself():
-    watch_section = _section(_SKILL.read_text(), "### `watch [interval]`")
+    watch_section = _section(sc_skill_text.text(), "### `watch [interval]`")
     assert "arms itself" in watch_section
-    off = _section(_SKILL.read_text(), "### `watch off`")
+    off = _section(sc_skill_text.text(), "### `watch off`")
     assert "until" in off and "`/sc watch`" in off

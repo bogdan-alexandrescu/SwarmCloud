@@ -29,6 +29,7 @@ from swarm_mcp.client import SwarmError
 from test_follow_cursor import World, swarm, world  # noqa: F401 - fixtures
 from test_plugin_agents_and_workflows import _PLUGIN, _run
 from test_plugin_row_split import _RUN_JS, _SUMMARY_AGENT, SESSION, _Client, _envelope, _shares
+import sc_skill_text
 
 _README = _PLUGIN / "README.md"
 _MANIFEST = _PLUGIN / ".claude-plugin" / "plugin.json"
@@ -139,7 +140,7 @@ def test_the_suffix_reader_and_its_release_promise_are_gone():
     assert not hasattr(launch, "attach_target")  # MUTATION: keep the suffix reader -- present.
     # MUTATION: keep "drop it in plugin 0.5.52" beside the code -- a release named for a drop that happened.
     assert not re.search(r"0\.5\.5[0-9]", source)
-    flat = " ".join(_SKILL.read_text().split())
+    flat = " ".join(sc_skill_text.text().split())
     assert "is still read until" not in flat  # MUTATION: keep the skill's deprecation line -- present.
     assert '{attach: "<wf_id> --per-step"}' not in flat  # MUTATION: keep the old attach value in the skill -- present.
 
@@ -307,7 +308,7 @@ def test_the_readme_counts_every_agent_the_plugin_ships():
 
 
 def test_the_skill_names_the_rows_argument_for_both_attaches():
-    flat = " ".join(_SKILL.read_text().split())
+    flat = " ".join(sc_skill_text.text().split())
     assert '{attach: "<wf_id>", rows: "per-step"}' in flat  # MUTATION: keep the suffix as the way -- absent.
     assert '{attach: "all", rows: "per-step"}' in flat  # MUTATION: no per-step attach-all -- absent.
 
