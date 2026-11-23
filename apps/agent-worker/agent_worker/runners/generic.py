@@ -76,7 +76,7 @@ BASE_PATH = f"{VENV_BIN}:/usr/local/bin:/usr/local/share/npm-global/bin:/usr/bin
 #: just before a trailing newline, so `.match("safe\n")` passed (contract
 #: request 32, *Preconditions*). The catalogue restates this rule as the
 #: `argument` kind (`swarm_common.profiles._ARGUMENT`), and
-#: tests/unit/mcp/test_runner_inputs.py holds the two patterns together.
+#: the two patterns are held together.
 _ARGUMENT_SAFE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._\-/]{0,255}$")
 
 

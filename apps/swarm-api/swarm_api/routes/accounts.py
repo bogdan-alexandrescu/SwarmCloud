@@ -889,9 +889,9 @@ def set_model_classes(
 
 #: The most agents one account may be set to hold at once (archived issue 2222). The
 #: broker's `quota_broker.accounts.MAX_AGENTS_LIMIT`, restated because this
-#: service does not import the broker; `test_account_max_agents_api.py` holds
-#: the two equal. Checked HERE as well as there so a bad number is refused
-#: before any broker call, in the broker's own words.
+#: service does not import the broker; a test holds the two equal. Checked
+#: HERE as well as there so a bad number is refused before any broker call,
+#: in the broker's own words.
 MAX_AGENTS_LIMIT = 50
 
 

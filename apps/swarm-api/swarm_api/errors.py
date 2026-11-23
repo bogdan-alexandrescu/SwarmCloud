@@ -172,8 +172,8 @@ class WorkspaceNotRequested(Conflict):
 # by `POST /v1/admin/workspaces`, before any write, and the owner-only
 # approval by the approve and retry routes on a service record, which only
 # that route creates. None is a switch: no existing caller can meet one, and
-# continuing past any of them is the breach itself
-# (tests/unit/control_plane/test_new_refusals_ship_off.py, NOT_SWITCHABLE_CODES).
+# continuing past any of them is the breach itself (a test pins this,
+# NOT_SWITCHABLE_CODES).
 # --------------------------------------------------------------------------
 
 

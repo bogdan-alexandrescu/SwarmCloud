@@ -226,9 +226,7 @@ def _sanitize_name(*parts: str, max_length: int = 63) -> str:
 
     The worker image does not carry the scheduler (images/ ship apps/common
     and the service's own package only), so the rule is stated again here and
-    held to the scheduler's by
-    tests/unit/worker/test_spec_signature_worker.py
-    (`test_the_workers_job_name_is_the_schedulers`).
+    held equal to the scheduler's.
     """
     import hashlib
 

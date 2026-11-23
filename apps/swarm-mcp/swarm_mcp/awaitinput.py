@@ -28,9 +28,9 @@ file with a name of its own -- is checked before the API is called at all,
 and the step's own `max_files` before the person is asked.
 
 The bridge restates two numbers of swarm-api's, which it cannot import:
-`MAX_FILES` and `MAX_ANSWER_BYTES`. tests/unit/mcp/test_await_input_bridge.py
-reads both packages and fails if they differ. swarm-api repeats every check;
-the bridge's are for a refusal before anything travels, not for safety.
+`MAX_FILES` and `MAX_ANSWER_BYTES`, kept equal to swarm-api's own.
+swarm-api repeats every check; the bridge's are for a refusal before
+anything travels, not for safety.
 
 DARK UNTIL REQUEST D. While `await-input` is unavailable no such step can be
 submitted, so `swarm_inputs` lists nothing and `swarm_workflow_input` finds

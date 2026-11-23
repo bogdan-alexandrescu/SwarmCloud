@@ -81,8 +81,7 @@ CARRY_TTL_SECONDS = 24 * 3600
 
 #: The signing purpose of swarm-api's browser-session worker routes,
 #: `swarm_api.browser_logins.BROWSER_LOGIN_PURPOSE`, restated: this image does
-#: not carry swarm_api. tests/unit/worker/test_browser_session.py holds the two
-#: equal.
+#: not carry swarm_api. A test holds the two equal.
 SLOT_PURPOSE = "swarm-browser-login/v1"
 SLOT_PATH = "/v1/tasks/{task_id}/browser-session/slot"
 

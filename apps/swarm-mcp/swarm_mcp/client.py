@@ -311,8 +311,8 @@ def front_door_host() -> str:
     # pointed every installed `sc` plugin at the owner's deployment: the
     # hostname in Track C's tfvars is THIS repository's deployment, not the
     # user's. `config.py` is where a user's deployment comes from now, and
-    # `tests/unit/mcp/test_contexts.py` holds this gate with an audit hook
-    # that fails on any open of a tfvars file outside the mode.
+    # this gate is audited to fail on any open of a tfvars file outside the
+    # mode.
     from .config import repo_mode
 
     if not repo_mode():

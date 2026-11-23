@@ -283,8 +283,7 @@ FIX_HEAD_FIELD = "pr_fix_head"
 #: The record on the task whose `swarm/<id>` branch the pull request is on:
 #: a list of `{repository, pull_request, task_id, workflow_id, head, kind,
 #: recorded_at}`, oldest first. Restated as
-#: `agent_worker.merge.PR_FIX_HEADS_FIELD`, held equal by
-#: tests/unit/worker/test_merge_recorded_fix_heads.py.
+#: `agent_worker.merge.PR_FIX_HEADS_FIELD`, held equal by a test.
 FIX_HEADS_FIELD = "pull_request_fix_heads"
 #: The marker's states after `pending`.
 RECORDED = "recorded"
@@ -307,7 +306,7 @@ ROUND_KINDS = (CI_FIX_METADATA_FIELD, "merge_fix_round", CONFLICT_ROUND_METADATA
 #: pr-shepherd's conflict fix's mark, `metadata.pr_shepherd` (`{run_id,
 #: repository, pull_request, head_sha, base_ref}`). Restated here because
 #: `schedtypes.pr_shepherd` imports this module; held equal to
-#: `pr_shepherd.METADATA_KEY` by tests/unit/control_plane/test_cifix_conflict_fix_live.py.
+#: `pr_shepherd.METADATA_KEY` by a test.
 CONFLICT_FIX_METADATA_KEY = "pr_shepherd"
 #: The marks `live_pr_writer` reads, each a `pull_request` under `metadata.<kind>`.
 PR_WRITER_KINDS = ROUND_KINDS + (CONFLICT_FIX_METADATA_KEY,)

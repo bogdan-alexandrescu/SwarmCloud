@@ -433,8 +433,8 @@ def parse_repo(url: str) -> RepoRef | None:
 #
 # `_request` (the probe and the pull-request calls), `_open` (the pinned
 # client's transport) and `issue._open` (the issue fetch) are the call sites;
-# tests/unit/worker/test_forge_no_redirect.py fails if any of them, or any
-# other module that imports this one, opens a URL another way.
+# a test fails if any of them, or any other module that imports this one,
+# opens a URL another way.
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

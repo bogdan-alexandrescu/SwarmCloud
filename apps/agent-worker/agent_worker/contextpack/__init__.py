@@ -88,7 +88,7 @@ from .layout import (
 PIN_FILE = "pin.json"
 PIN_MANIFEST_FILE = "pin-manifest.json"
 #: stage.json's `delivery` for a pinned, served graph:
-#: `graphstage.DELIVERY_SERVICE`, held equal by test_contextpack.py.
+#: `graphstage.DELIVERY_SERVICE`, held equal by a test.
 DELIVERY_SERVICE = "service"
 
 if TYPE_CHECKING:

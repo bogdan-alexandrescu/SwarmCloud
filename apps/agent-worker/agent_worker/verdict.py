@@ -100,14 +100,13 @@ from .errors import InputUnavailable
 
 #: The verdicts a review writes, in the order every message lists them.
 #: swarm-api's `validation.REVIEW_VERDICTS`, restated because the worker must
-#: not import the control plane; tests/unit/worker/test_verdict_gate.py holds
-#: the two equal.
+#: not import the control plane; the two are held equal.
 REVIEW_VERDICTS = ("MERGE", "NOT_YET")
 #: The verdict of a review the size gate skipped (archived issue 4101): swarm-api ends it
 #: without a worker and writes `{"verdict": "SKIPPED", "findings": [],
 #: "skipped": "<reason>"}` (`swarm_api.reviewgate.SKIPPED_VERDICT`, held equal
-#: by tests/unit/control_plane/test_review_gate.py). Never MERGE: no review
-#: ran, so nothing was approved. Read only with its reason, and never one of
+#: to it). Never MERGE: no review ran, so nothing was approved. Read only
+#: with its reason, and never one of
 #: `REVIEW_VERDICTS`, so no gate names it and no review that ran may write it.
 SKIPPED_VERDICT = "SKIPPED"
 SKIPPED_REASON_KEY = "skipped"
@@ -127,7 +126,7 @@ MAX_FINDING_CHARS = 1000
 
 #: J3 (§5.2): a finding Jev puts under this reaches the fixer marked, never
 #: dropped. `judge.shapes.FINDING_VERIFY_BELOW`, restated so the verdict reader
-#: imports nothing of the Jev client; test_jev_wiring.py holds the two equal.
+#: imports nothing of the Jev client; the two are held equal.
 FINDING_VERIFY_BELOW = 0.15
 VERIFY_BEFORE_ACTING = "verify before acting"
 #: The annotation's keys on a finding object.
@@ -142,7 +141,7 @@ COMMIT_KEY = "commit"
 #: One `needs_owner` entry as the review is told to write it: the asking
 #: step's task and question index, which the merge reads, and an optional
 #: free-text `note` beside them, which it does not. It reads as a reference
-#: (`owner_question_refs`), which tests/unit/worker/test_merge_ready_past_unreadable.py holds.
+#: (`owner_question_refs`).
 NEEDS_OWNER_EXAMPLE = {"task_id": "task_1a2b3c", "step_id": "implement",
                        "question_index": 0, "question": "Keep the old flag?",
                        "note": "its answer could reverse a recorded owner decision"}
@@ -807,8 +806,8 @@ UI_PATH_PREFIXES = ("apps/swarm-ui/", "docs/web-ui/")
 #: Application code, CSS, index.html and configs stay gated. The scheduler
 #: resolves a `browser_if_ui` review's profile by the same rule
 #: (`scheduler.runtime.is_ui_path`), restated there because neither image
-#: carries the other's package and `swarm_common` is frozen;
-#: tests/unit/control_plane/test_runtime_by_diff.py holds the two equal.
+#: carries the other's package and `swarm_common` is frozen; the two are
+#: held equal.
 TEST_DIRECTORIES = ("__tests__", "tests")
 TEST_FILE_MARKS = (".test.", ".spec.")
 TEST_FILE_MARK_PREFIX = "apps/swarm-ui/"

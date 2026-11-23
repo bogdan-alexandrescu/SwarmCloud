@@ -27,8 +27,7 @@ next.
 THE SAME RULE IS IN swarm-api (`swarm_api.laneterritory`), which refuses a
 malformed entry at submit with a 422. The two images copy only their own app
 and `apps/common/`, and `apps/common/swarm_common/` is frozen, so the rule is
-written twice; tests/unit/worker/test_territory_warn.py holds the two to the
-same answers over one corpus.
+written twice; the two are held to the same answers over one corpus.
 """
 
 from __future__ import annotations

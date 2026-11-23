@@ -20,8 +20,7 @@ convention. That is the reference task, `task_73b5f4d9ca3641fbb914`.
 RESTATED, NOT IMPORTED. The swarm-api image installs swarm-api and
 swarm-common and nothing else, so `agent_worker.runners.streams` is not
 importable in the one environment that matters -- the precedent `inspect.py`
-records for the key layout. `tests/unit/control_plane/
-test_agent_stream_parity.py` compares this table with
+records for the key layout. A test compares this table with
 `agent_worker.runners.streams.agent_stream_files` for every profile in the
 frozen catalogue, so the two cannot drift silently.
 """

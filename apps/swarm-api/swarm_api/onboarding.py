@@ -180,8 +180,8 @@ STALE_AFTER = REVERIFY_EVERY + REVERIFY_RETRY
 MAX_REGISTRATIONS = 500
 
 #: §2.3's recovery copy, word for word -- the console and the plugin print
-#: these exact sentences. `tests/unit/control_plane/test_onboarding_state.py`
-#: reads the table in docs/onboarding.md and fails if either side drifts.
+#: these exact sentences. A test reads the table in docs/onboarding.md and
+#: fails if either side drifts.
 COPY: dict[str, str] = {
     "SSO_NOT_AUTHORISED": (
         "{owner} uses SAML single sign-on and GitHub has not linked your session to it "

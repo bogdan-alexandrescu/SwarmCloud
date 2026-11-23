@@ -46,8 +46,7 @@ ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34
 # at the version images/agent-runtime-base/Dockerfile pins (`ARG
 # CLAUDE_CODE_VERSION=`), read from that file in the `claudecli` stage below:
 # one source for the version, never a second copy. Node is the same pinned
-# image agent-runtime-base copies its `node` from (kept equal by
-# tests/unit/voice/test_planner_image.py).
+# image agent-runtime-base copies its `node` from (kept equal).
 ARG NODE_IMAGE=node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54
 # The uv the other service images use (images/swarm-api/Dockerfile says why
 # 0.12.15 and not older).

@@ -628,7 +628,6 @@ TOOLS: list[dict[str, Any]] = [
     # role -- an agent driving a person's own session must not be able to
     # raise anyone -- so the schema takes nothing, and a change is the
     # person's own, typed at their terminal (sc roles set).
-    # tests/unit/mcp/test_roles_bridge.py.
     {
         "name": "swarm_roles",
         "description": (
@@ -2605,7 +2604,7 @@ TOOLS: list[dict[str, Any]] = [
     # status and a one-time link to the console form, where the person pastes
     # it. Both schemas are enums and `additionalProperties: false`: no field a
     # key fits in, and an argument not in the schema is refused unsent
-    # (`_refuse_unknown_arguments`). tests/unit/mcp/test_provider_keys_bridge.py.
+    # (`_refuse_unknown_arguments`).
     {
         "name": "swarm_mcp_servers",
         "description": (
@@ -2798,7 +2797,7 @@ TOOLS: list[dict[str, Any]] = [
     # console form a one-time link opens, or a terminal's --stdin. Every
     # string below is an enum or a pattern a value does not fit, checked again
     # in `secrets` before anything is sent and refused without being repeated;
-    # every answer is copied field by field. tests/unit/mcp/test_secret_links.py.
+    # every answer is copied field by field.
     {
         "name": "swarm_secret_set_link",
         "description": (

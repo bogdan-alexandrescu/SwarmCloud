@@ -7,7 +7,7 @@
 # source for this package to this directory at that same commit. That holds
 # only while this stays a plain, self-contained package: a static [project]
 # table, a build backend, and no path source of its own that leaves
-# apps/common. tests/unit/mcp/test_plugin_bridge_install.py walks exactly that.
+# apps/common. A test walks exactly that path.
 [project]
 name = "swarm-common"
 version = "0.1.0"

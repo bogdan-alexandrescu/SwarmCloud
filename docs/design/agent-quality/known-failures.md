@@ -305,6 +305,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_swarm_live_image.py` | `test_the_export_the_builder_runs_hashes_every_requirement` | `skipif` | needs uv |
 | `tests/unit/scripts/test_swarm_speech_image.py` | `test_build_images_finds_the_speech_servers_recipe_and_reads_what_it_copies` | `skipif` | build-images.sh needs jq |
 | `tests/unit/scripts/test_terraform_install_inputs.py` | `_listed` | `skip_call` | no deployment pattern list (DEPLOYMENT_PATTERNS or DEPLOYMENT_PATTERNS_FILE): nothing says what is live |
+| `tests/unit/scripts/test_typecheck.py` | `<module>` | `skipif` | uv is not installed |
 | `tests/unit/scripts/test_typesafe_policies_wired.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_verify_remote_slash_targets.py` | `<module>` | `skipif` | verify-remote.sh and bash are required |
 | `tests/unit/scripts/test_verify_remote_smoke_fixture.py` | `<module>` | `skipif` | verify-remote.sh and bash are required |

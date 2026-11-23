@@ -162,9 +162,9 @@ UNCAPTURED_ROUTES = frozenset({
     # A QA target's challenge bypass value (§2.5, lane CAPTCHA-BYPASS): the
     # PUT's body is the value itself (the owner, 2026-10-23).
     qatargets.BYPASS_ROUTE,
-    # The rest take a credential in their body and were missing until
-    # test_uncaptured_routes_cover_credential_bodies.py read the routes
-    # instead of this list (lane BYPASS-UNCAPTURED, part of archived issue 2058):
+    # The rest take a credential in their body and were missing until a
+    # test read the routes instead of this list (lane BYPASS-UNCAPTURED,
+    # part of archived issue 2058):
     # a workspace secret's value, on its creation and its replacement;
     "/v1/workspace/secrets",
     "/v1/workspace/secrets/{name}/value",
