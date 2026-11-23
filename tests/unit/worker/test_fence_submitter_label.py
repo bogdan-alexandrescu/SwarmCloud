@@ -18,8 +18,6 @@ added for it. Offline: no credentials, no emulator.
 from __future__ import annotations
 
 import json
-import threading
-import time
 
 import pytest
 
@@ -122,15 +120,16 @@ def test_a_mid_run_fence_for_swarm_verify_names_it(db, worker_factory, log_strea
     )
     db.doc("tasks/task_1")["submitted_by"] = VERIFY_SA
     worker, _, _ = worker_factory(generation=1, control_poll_seconds=1, timeout_seconds=30)
+    real_mark = worker._mark_agent_started
 
-    def bump() -> None:
-        time.sleep(1.5)
+    def bump_once_running() -> None:
+        # Once the agent process exists, so the loop meets the fence mid-run at
+        # its next control poll; never on a wall-clock guess at when that is.
+        real_mark()
         db.doc("tasks/task_1")["current_generation"] = 99
 
-    thread = threading.Thread(target=bump)
-    thread.start()
+    worker._mark_agent_started = bump_once_running  # type: ignore[method-assign]
     exit_code = worker.run()
-    thread.join()
 
     assert exit_code == ExitCode.GENERATION_FENCED
     lines = _fence_lines(log_stream)
