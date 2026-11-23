@@ -387,6 +387,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/worker/test_prepublish_graph_gate.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_prepublish_guards_dedup.py` | `<module>` | `skipif` | git and jq are needed to run the guard script |
 | `tests/unit/worker/test_prepublish_guards_timebox.py` | `<module>` | `skipif` | git and jq are needed to run the guard script |
+| `tests/unit/worker/test_prepublish_lane_guards.py` | `<module>` | `skipif` | git runs the guard's diff |
 | `tests/unit/worker/test_prepublish_render_stderr.py` | `<module>` | `skipif` | needs a POSIX shell |
 | `tests/unit/worker/test_prepublish_test_services.py` | `<module>` | `skipif` | git is not installed |
 | `tests/unit/worker/test_prepublish_tree_restore.py` | `<module>` | `skipif` | git is not installed |
