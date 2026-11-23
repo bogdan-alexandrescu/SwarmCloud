@@ -171,7 +171,7 @@ def test_a_profile_keyed_map_in_the_class_variable_refuses_to_start():
         "not json",
         '["claude-opus-5-5"]',
         '{"opus": "claude-opus-5-5"}',
-        '{"opus": "claude-opus-5-5", "fable": "claude-fable-5-1", '
+        '{"opus": "claude-opus-5-5", "fable": "claude-fable-5-2", '
         '"sonnet": "claude-sonnet-5-5", "haiku": "claude-opus-5-5"}',
     ],
 )
