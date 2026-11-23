@@ -22,6 +22,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useEffect, useState } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { screenLoaded } from './screenLoaded'
 
 type Json = Record<string, unknown>
 
@@ -134,6 +135,7 @@ describe('the old addresses land on the new places', () => {
     // MUTATION: write the redirect with pushState -> fails.
     expect(push).not.toHaveBeenCalled()
     push.mockRestore()
+    await screenLoaded()
   })
 })
 
@@ -406,6 +408,7 @@ describe('an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEW
     await waitFor(() => expect(window.location.pathname + window.location.search).toBe(now))
     // MUTATION: read the tab off window.location at mount again (peopleViewFromUrl / secretsViewFromUrl) -> the hash rows fail.
     await waitFor(() => expect(screen.getByRole('tab', { name: tab }).getAttribute('aria-selected')).toBe('true'))
+    await screenLoaded()
   })
 
   // MEMBERS' GITHUB is a fold of the workspace page's People tab since the
@@ -421,5 +424,6 @@ describe('an old bookmark lands on the new page with its tab drawn (GA-MOVE-VIEW
     await waitFor(() => expect(window.location.pathname + window.location.search).toBe('/admin/workspaces?tab=people'))
     // The People tab is drawn; its Members' GitHub fold (a platform admin's) is held by workspacePage.test.tsx.
     await waitFor(() => expect(document.querySelector('.wpg-embed')).not.toBeNull())
+    await screenLoaded()
   })
 })

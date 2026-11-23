@@ -138,7 +138,8 @@ import { errorHeading, route, type ApiError, type Result } from './fetch'
 import { ElsewhereNotice, useElsewhere } from './elsewhere'
 import { STATE_MARK, StateMark } from './marks'
 import { Button, Chip, NamedMark, ProgressBar, Segmented, TOOLTIP_DELAY_MS, Tabs, TypedConfirm, type ChipTone } from './components'
-import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
+import { offerNewestWorkflows, rememberWorkflow } from './Spine'
+import { useRecentName } from './recentName'
 import { StopRun, earlierAttemptRan } from './StopRun'
 import { StepCard } from './StepCard'
 import { LiveThumb, showsLiveThumb, type OpenLive } from './LiveThumb'
@@ -193,6 +194,8 @@ import { Mark } from './primitives'
 import { stateWord } from './words'
 import './styles/workflows.css'
 import './styles/names.css'
+
+export { useRecentName } from './recentName'
 import { ownerQuestionsHold } from './Handoff'
 import { Inspector, startsFolded, useIsPhone } from './work/Inspector'
 import { finishedQuestionsOf, listNeedItems, workflowNeedItems } from './work/listNeeds'
@@ -501,21 +504,6 @@ export function WorkflowsScreen({
       {(d) => <WorkflowList board={d} query={query} choose={choose} go={go} reload={stores.reload} />}
     </Screen>
   )
-}
-
-/**
- * The name Recent holds for `id`, kept current as the list or the page records
- * it: the page's title, and the breadcrumb's last segment (App.tsx, VQ-015).
- */
-export function useRecentName(id: string | null): string | null {
-  const [name, setName] = useState<string | null>(() => (id === null ? null : recentName(id)))
-  useEffect(() => {
-    const again = () => setName(id === null ? null : recentName(id))
-    again()
-    globalThis.addEventListener?.(RECENT_WORKFLOWS_EVENT, again)
-    return () => globalThis.removeEventListener?.(RECENT_WORKFLOWS_EVENT, again)
-  }, [id])
-  return name
 }
 
 /**

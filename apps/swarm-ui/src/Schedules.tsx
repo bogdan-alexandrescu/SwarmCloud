@@ -22,7 +22,7 @@
  * run, a task, a workflow -- and is listed in Work like any other; this
  * screen lists the thing that makes it, and links each firing to its work.
  */
-import { Fragment, useEffect, useRef, useState, type ComponentProps, type MouseEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { AllTenantsSchedules } from './AdminSchedules'
 import {
   deleteSchedule,
@@ -46,49 +46,26 @@ import { Mark } from './primitives'
 import type { RepoRecord } from './RepositoriesData'
 import { Button, Dialog, EmptyState, Segmented, Tag, buttonClass } from './components'
 import { Info } from './AccountsVerdict'
-import { APPROVALS_ADDRESS, APPROVAL_KIND, approvalAddress } from './Approvals'
+import { APPROVALS_ADDRESS, APPROVAL_KIND, approvalAddress } from './approvalPaths'
 import { ScheduleDetail, detailTabOf } from './ScheduleDetail'
 import { NewSchedule } from './ScheduleEdit'
 import { servedTier } from './ScheduleTemplates'
-import { useRoleGate } from './Profile'
+import { useRoleGate } from './roleGate'
 import { PageHead, Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
+import { InApp } from './InApp'
+import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SCHEDULES_ADDRESS, scheduleAddress } from './schedulePaths'
+import { rememberScheduleNames } from './scheduleNames'
 import './styles/schedules.css'
 import './styles/automate-landing.css'
 import './styles/automate-cards.css'
 
-/**
- * The list's address, and one schedule's (`/automate/schedules/<id>`,
- * paths.ts). A tab other than History rides as `tab=`
- * (`/automate/schedules/<id>?tab=gate`) and the editor as `edit=1`
- * (`/automate/schedules/<id>/edit`), so a reload or a link lands there (AUT-11).
- */
-export const SCHEDULES_ADDRESS = 'automate/schedules'
-export function scheduleAddress(id: string, at: { tab?: string; edit?: boolean; type?: string } = {}): string {
-  const q = new URLSearchParams({ schedule: id })
-  if (at.tab !== undefined && at.tab !== 'history') q.set('tab', at.tab)
-  if (at.edit === true) q.set('edit', '1')
-  if (at.type !== undefined) q.set('type', at.type)
-  return `${SCHEDULES_ADDRESS}?${q.toString()}`
-}
+export { InApp } from './InApp'
+export { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SCHEDULES_ADDRESS, scheduleAddress } from './schedulePaths'
+export { SCHEDULE_NAMES_EVENT, rememberScheduleNames, scheduleNameOf, useScheduleName } from './scheduleNames'
+export { WaitingOnYouCard } from './WaitingOnYouCard'
 
-/**
- * The create form's address: `/automate/schedules/new`. A schedule id is `sch_`
- * and twelve hex digits (`schedules.new_schedule_id`), so `new` names none.
- * `?type=<name>` opens it with that type chosen (`scheduleAddress(NEW_SCHEDULE,
- * { type })`, a starter card's Use).
- */
-export const NEW_SCHEDULE = 'new'
-
-/**
- * THE LIST'S TWO SCOPES (SCHED-ONE-PAGE, owner decision 2026-10-13,
- * docs/schedules.md §6.1). Schedules are one page: the tenant's own, and for
- * an admin every tenant's (`AllTenantsSchedules`, what Admin › Schedules was).
- * The scope is in the address, `?scope=all`, so an admin can link it;
- * `/admin/schedules` lands there (paths.ts).
- */
-export const ALL_TENANTS_SCHEDULES = `${SCHEDULES_ADDRESS}?scope=all`
 type Scope = 'mine' | 'all'
 
 function scopeOf(view: string | null): Scope {
@@ -152,41 +129,6 @@ export function DryRunChip({ s }: { s: Pick<Schedule, 'policy'> }) {
     <span className="sc-dry" data-testid="sc-dry" title="Each firing records what it would do and creates nothing. Turn dry run off under Edit.">
       dry run
     </span>
-  )
-}
-
-/** A link inside the app: an href for a new tab, `go` for a plain click. */
-export function InApp({
-  to,
-  go,
-  children,
-  className,
-  current = false,
-  onGo,
-}: {
-  to: string
-  go: (to: string) => void
-  children: ReactNode
-  className?: string
-  /** The link to the item this page has open: `aria-current`, so the choice is not colour alone. */
-  current?: boolean
-  /** Called before a plain click goes. */
-  onGo?: () => void
-}) {
-  return (
-    <a
-      href={addressToPath(to)}
-      className={className}
-      aria-current={current ? 'true' : undefined}
-      onClick={(e: MouseEvent) => {
-        if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
-        e.preventDefault()
-        onGo?.()
-        go(to)
-      }}
-    >
-      {children}
-    </a>
   )
 }
 
@@ -1070,41 +1012,6 @@ interface Landing {
   notServed: boolean
 }
 
-/**
- * A SCHEDULE'S NAME BY ITS ID, as the list last read it (QA2 automate2-15):
- * the tab's title and an approval's "What asked for it" named a schedule by
- * its id ("sch_a · Schedules") though the list under the open sheet had read
- * its name. The list records every name it reads; `useScheduleName` gives the
- * name for an id, or null until one is read, and the caller keeps the id then.
- */
-const SCHEDULE_NAMES = new Map<string, string>()
-export const SCHEDULE_NAMES_EVENT = 'swarm:schedule-names'
-
-export function rememberScheduleNames(rows: readonly Pick<Schedule, 'schedule_id' | 'name'>[]): void {
-  let changed = false
-  for (const r of rows) {
-    if (r.name.trim() === '' || SCHEDULE_NAMES.get(r.schedule_id) === r.name) continue
-    SCHEDULE_NAMES.set(r.schedule_id, r.name)
-    changed = true
-  }
-  if (changed) globalThis.dispatchEvent?.(new Event(SCHEDULE_NAMES_EVENT))
-}
-
-export function scheduleNameOf(id: string): string | null {
-  return SCHEDULE_NAMES.get(id) ?? null
-}
-
-export function useScheduleName(id: string | null): string | null {
-  const [name, setName] = useState<string | null>(() => (id === null ? null : scheduleNameOf(id)))
-  useEffect(() => {
-    const again = () => setName(id === null ? null : scheduleNameOf(id))
-    again()
-    globalThis.addEventListener?.(SCHEDULE_NAMES_EVENT, again)
-    return () => globalThis.removeEventListener?.(SCHEDULE_NAMES_EVENT, again)
-  }, [id])
-  return name
-}
-
 function SchedulesBody({ d, go, scopeSwitch, open }: { d: Landing; go: (to: string) => void; scopeSwitch: ReactNode; open: string | null }) {
   const [filter, setFilter] = useState<Filter>('all')
   const rows = d.schedules
@@ -1276,87 +1183,5 @@ function ScheduleListScreen({ go, scopeSwitch, open = null }: { go: (to: string)
     >
       {(d) => <SchedulesBody d={d} go={go} scopeSwitch={scopeSwitch} open={open} />}
     </Screen>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Overview's "Waiting on you" (§6.1)
-// ---------------------------------------------------------------------------
-
-/** How often the card re-reads the inbox while Overview is open. */
-const WAITING_POLL_MS = 60_000
-
-const KIND_WORD: Readonly<Record<string, string>> = {
-  plan: 'Plan',
-  hold: 'Held plan',
-  merge: 'Merge',
-  run: 'Run',
-  proposal: 'Proposal',
-  spec: 'Spec',
-}
-
-/** Where an item is decided from today: its run's page, or its schedule's. */
-function subjectAddress(item: ApprovalItem): string | null {
-  const s = item.subject
-  if (typeof s.run_id === 'string' && s.run_id !== '') return `work/runs?${new URLSearchParams({ run: s.run_id }).toString()}`
-  if (typeof s.schedule_id === 'string' && s.schedule_id !== '') return scheduleAddress(s.schedule_id)
-  return null
-}
-
-/**
- * WAITING ON YOU: drawn ONLY when the inbox holds something (§6.1). Nothing
- * while reading, nothing for a measured zero, and nothing for a failed read
- * -- the spine's Automate badge carries that failure as a dash with its
- * reason, so a card that would say only "could not read" is not repeated
- * here. A waiting item holds no capacity (invariant 1), and the card says so.
- */
-export function WaitingOnYouCard({ go }: { go: (to: string) => void }) {
-  const [items, setItems] = useState<ApprovalItem[] | null>(null)
-  useEffect(() => {
-    let live = true
-    const read = () =>
-      void loadApprovals().then((r) => {
-        if (!live) return
-        if (r.status === 'ok' || r.status === 'stale') setItems(r.data.approvals)
-        else if (r.status === 'empty') setItems([])
-        // A failure keeps what the last read showed: the badge says it failed.
-      })
-    read()
-    const timer = setInterval(read, WAITING_POLL_MS)
-    return () => {
-      live = false
-      clearInterval(timer)
-    }
-  }, [])
-  const now = useNow()
-  if (items === null || items.length === 0) return null
-  const shown = items.slice(0, 5)
-  return (
-    <section className="ctl-card ov-card sc-waiting" aria-labelledby="sc-waiting-h">
-      <div className="sc-waiting-h">
-        <h2 id="sc-waiting-h">Waiting on you</h2>
-        <span className="sk-badge sc-count" aria-label={`${items.length} waiting`}>{items.length}</span>
-      </div>
-      <ul className="sc-waiting-list">
-        {shown.map((item) => {
-          const to = subjectAddress(item)
-          const word = KIND_WORD[item.kind] ?? item.kind
-          return (
-            <li key={item.approval_id} data-approval={item.approval_id}>
-              <span className="sc-kind">{word}</span>
-              {to === null ? (
-                <span className="sc-cut" title={item.summary}>{item.summary}</span>
-              ) : (
-                <InApp go={go} to={to} className="sc-cut">{item.summary}</InApp>
-              )}
-              {item.requested_at !== null && <span className="sc-sub" title={item.requested_at}>{timeAgo(item.requested_at, now)}</span>}
-            </li>
-          )
-        })}
-      </ul>
-      <p className="sb-note">
-        {items.length > shown.length ? `The oldest ${shown.length} of ${items.length}. ` : ''}Waiting items hold no capacity.
-      </p>
-    </section>
   )
 }

@@ -11,7 +11,10 @@ import { OWN_WORKSPACE_LABEL } from './Spine'
 import { timeAgo, type Profile, type WorkspaceRoleEvent, type WorkspaceRoles } from './types'
 import { WorkspacePeopleScreen } from './WorkspacePeople'
 import { WorkspaceSettingsScreen, effectiveRole } from './WorkspaceSettings'
+import type { WorkspaceTab } from './workspacePaths'
 import './styles/workspace-page.css'
+
+export { WORKSPACE_TABS, workspaceTabOf, type WorkspaceTab } from './workspacePaths'
 
 /**
  * ONE WORKSPACE'S PAGE (lane workspace-admin-page; part of archived issue 2688). The owner
@@ -56,16 +59,6 @@ import './styles/workspace-page.css'
  *
  * A COUNT THE CONSOLE CANNOT KNOW reads "not known", never 0.
  */
-
-export type WorkspaceTab = 'people' | 'roles' | 'settings' | 'setup'
-
-export const WORKSPACE_TABS: readonly WorkspaceTab[] = ['people', 'roles', 'settings', 'setup']
-
-/** The tab a query names (`tab=roles`); anything else is People. */
-export function workspaceTabOf(view: string | null | undefined): WorkspaceTab {
-  const t = new URLSearchParams(view ?? '').get('tab')
-  return (WORKSPACE_TABS as readonly string[]).includes(t ?? '') ? (t as WorkspaceTab) : 'people'
-}
 
 /** The Config pages the rest of a workspace's setup is done on, each named once. */
 const SETUP_PAGES: readonly { key: SetupStep['key'] | 'mcp'; label: string; to: string; what: string }[] = [

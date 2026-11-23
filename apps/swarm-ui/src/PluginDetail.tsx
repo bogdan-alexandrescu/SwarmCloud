@@ -42,7 +42,7 @@ import {
 } from './api'
 import { Banner, Breadcrumb, Button, Chip, EmptyState, Tabs, TypedConfirm } from './components'
 import type { ApiError, Result } from './fetch'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import { HookLine, PluginDiff, bytesWords, shortSha } from './PluginDiff'
 import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { formatDateTime } from './timezone'
