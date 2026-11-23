@@ -87,8 +87,8 @@ log = logging.getLogger("swarm_voice.claudeturn")
 #: The planning class's pin (`local.runner_models.fable`), read from
 #: VOICE_PLANNER_MODEL when set (Terraform renders the map's pin there, so a
 #: deployment never runs this literal). It is a fallback for a run with no
-#: environment, and tests/unit/scripts/test_model_pins.py holds it, and
-#: FRONT_MODEL below, equal to the map, so it cannot drift from the pin.
+#: environment. A test holds it, and FRONT_MODEL below, equal to the map, so
+#: it cannot drift from the pin.
 MODEL = "claude-fable-5-2"
 #: The haiku class's pin (`local.runner_models.haiku`), read from
 #: VOICE_FRONT_MODEL when set.
