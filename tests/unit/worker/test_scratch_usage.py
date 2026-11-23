@@ -248,10 +248,11 @@ def test_the_live_browser_stub_is_not_overwritten_by_the_cli_runners_passthrough
 # ---------------------------------------------------------------------------
 # The claude-code agent is told where big scratch data belongs
 # ---------------------------------------------------------------------------
-# Every repository step on this runner gets one sentence after its prompt:
-# big scratch data under $TMPDIR, never a literal /tmp, never the workspace --
-# and on Cloud Run, where there is no cache volume, a shorter one that
-# promises none.
+# Every repository step on this runner gets one sentence in its system prompt
+# (`--append-system-prompt`, where the standing paragraphs ride since
+# 2026-11-23): big scratch data under $TMPDIR, never a literal /tmp, never
+# the workspace -- and on Cloud Run, where there is no cache volume, a
+# shorter one that promises none.
 
 
 def _ctx(root: Path) -> RunnerContext:
@@ -278,6 +279,10 @@ def _run(ctx: RunnerContext, monkeypatch, *, tmpdir: Path, workspace: Path,
     def fake_run(run_ctx, spec, *, extra_args=(), extra_env=None):
         seen["prompt"] = run_ctx.payload["prompt"]
         seen["env"] = dict(extra_env or {})
+        args = list(extra_args)
+        flag = claude_code.APPEND_SYSTEM_PROMPT_FLAG
+        assert args.count(flag) <= 1, args
+        seen["system"] = args[args.index(flag) + 1] if flag in args else ""
         return {"summary": "ok"}
 
     monkeypatch.setattr(claude_code, "run_cli_agent", fake_run)
@@ -301,29 +306,33 @@ def test_the_claude_code_prompt_steers_scratch_data_to_tmpdir_not_literal_tmp(
     cache = tmp_path / "cache-volume" / "att_1"
     seen = _run(_ctx(tmp_path), monkeypatch, tmpdir=cache / "tmp",
                 workspace=tmp_path / "workspace" / "att_1")
-    prompt = seen["prompt"]
+    prompt, system = seen["prompt"], seen["system"]
 
     # MUTATION: stop appending the note in `body` -> this fails.
     assert prompt.startswith("Fix the thing.")
-    assert prompt.count(cachedirs.scratch_note(own_volume=True)) == 1
+    note = cachedirs.scratch_note(own_volume=True)
+    assert (system + prompt).count(note) == 1
+    assert system.count(note) == 1
     for phrase in ("$TMPDIR", "literal /tmp", "20 GiB", "never evicts the pod",
                    "Postgres data directory", "test logs", "unpacked libraries and fonts",
                    "3 GiB", "the workspace (at most 5 GiB", "checkpointed"):
-        assert phrase in prompt, phrase
+        assert phrase in system, phrase
 
 
 def test_the_cloud_run_note_does_not_promise_a_cache_volume(tmp_path, monkeypatch):
     # Cloud Run: TMPDIR is inside the attempt tree, on the workspace tmpfs.
     workspace = tmp_path / "workspace" / "att_1"
     seen = _run(_ctx(tmp_path), monkeypatch, tmpdir=workspace / "tmp", workspace=workspace)
-    prompt = seen["prompt"]
+    prompt, system = seen["prompt"], seen["system"]
     note = cachedirs.scratch_note(own_volume=False)
 
     # MUTATION: give Cloud Run the GKE sentence -> this fails.
-    assert prompt.count(note) == 1
+    assert (system + prompt).count(note) == 1
+    assert system.count(note) == 1
     assert "$TMPDIR" in note and "memory" in note
-    assert "20 GiB" not in prompt
-    assert "cache volume" not in prompt
+    for text in (prompt, system):
+        assert "20 GiB" not in text
+        assert "cache volume" not in text
 
 
 def test_the_cache_browsers_path_reaches_the_agent_and_is_not_an_image_browser(
@@ -350,8 +359,11 @@ def test_the_note_is_after_the_prompt_and_before_the_browser_note(tmp_path, monk
     seen = _run(_ctx(tmp_path), monkeypatch, tmpdir=cache / "tmp",
                 workspace=tmp_path / "workspace" / "att_1", browsers=str(browsers))
 
+    # The browser note is per step: it still ends the user prompt. The scratch
+    # note is a standing paragraph: the system prompt, not the user prompt.
     assert seen["prompt"].endswith(claude_code.BROWSER_NOTE)
-    assert cachedirs.scratch_note(own_volume=True) in seen["prompt"]
+    assert cachedirs.scratch_note(own_volume=True) in seen["system"]
+    assert cachedirs.scratch_note(own_volume=True) not in seen["prompt"]
     assert seen["env"][claude_code.BROWSERS_PATH_ENV] == str(browsers)
 
 

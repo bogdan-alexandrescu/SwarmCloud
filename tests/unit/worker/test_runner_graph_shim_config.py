@@ -167,13 +167,19 @@ def test_claude_code_registers_the_shim_with_the_url_in_its_env(monkeypatch, tmp
     assert graphstage.TICKET_FILE_ENV not in seen["env"]
     # A served graph's implement step gets the lookup line (the owner, 2026-11-06),
     # which names the graph in place of the exploration line's graph clause
-    # (LANE CAPS, part of archived issue 2524), and nothing else ...
-    # ... after the line saying what to ask the graph first (AGENTS-USE-TOOLS).
-    assert seen["prompt"] == ("Implement it.\n\n" + claude_code.SAVED_OUTPUT_NOTE + "\n\n"
-                              + claude_code.GRAPH_FIRST_NOTE + "\n\n"
+    # (LANE CAPS, part of archived issue 2524), and nothing else in the user prompt ...
+    assert seen["prompt"] == ("Implement it.\n\n"
                               + claude_code.graph_lookup_line(
                                   {"prompt": "Implement it."}, work,
                                   shape=graphstage.SHAPE_TOOLS))
+    # ... while the line saying what to ask the graph first (AGENTS-USE-TOOLS)
+    # ends the system prompt, after the saved-output note (standing paragraphs,
+    # 2026-11-23), in the one flag.
+    flag = claude_code.APPEND_SYSTEM_PROMPT_FLAG
+    assert seen["args"].count(flag) == 1, seen["args"]
+    system = seen["args"][seen["args"].index(flag) + 1]
+    assert system.endswith("\n\n" + claude_code.SAVED_OUTPUT_NOTE + "\n\n"
+                           + claude_code.GRAPH_FIRST_NOTE), system
 
 
 def test_claude_code_browser_registers_the_shim_beside_the_live_browser(monkeypatch, tmp_path):
