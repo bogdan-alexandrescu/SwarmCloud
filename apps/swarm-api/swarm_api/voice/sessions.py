@@ -161,7 +161,8 @@ swarm-voice's 404 (it holds no text conversation for the session: ended
 there, or lost to a restart) reads as 409 `conflict`, reason
 `voice_session_not_live`; its 429 `usage_limit_reached` as 429
 `rate_limited` with `detail.resets_at`. Neither the text nor the reply is
-logged or stored here.
+logged here; both are kept, redacted, as the session's transcript
+(voice/record.py), which only the session's person reads.
 
 A start swarm-voice refuses or does not answer ends the session at once with
 the cause `voice_unreachable` and frees the person's marker, so the next try
@@ -363,6 +364,9 @@ NO_LIVE_ACCOUNT = "no_voice_account_registered"
 #: A text turn, as the console sends it (swarm_voice.textchat.MAX_TURN_CHARS).
 MAX_TURN_CHARS = 4000
 TURN_TIMEOUT_SECONDS = 300.0
+#: The end-of-session summary's call (record.py): swarm-voice's own limit on
+#: the model call (summary.SUMMARY_SECONDS, 90 s) plus the lease's round trips.
+SUMMARY_TIMEOUT_SECONDS = 120.0
 #: swarm-voice's streamed speech turn (claudefront.TURN_LINES_TYPE).
 TURN_LINES_TYPE = "application/x-ndjson"
 #: `detail.reason` of the 409 for a turn on a session that takes none.
@@ -923,6 +927,25 @@ class HttpVoiceClient:
                           delegation_id=delegation if isinstance(delegation, str) and delegation else None,
                           early=early if isinstance(early, str) and early and reply.startswith(early) else None)
 
+    def summarise(self, session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """swarm-voice's summary of an ended session (record.py): `{summary,
+        model, billing, usage}`, or `VoiceUnreachable`. The body is never logged."""
+        path = "/internal/sessions/" + urllib.parse.quote(session_id, safe="") + "/summary"
+        try:
+            status, raw = self._post(path, body, SUMMARY_TIMEOUT_SECONDS)
+        except (OSError, ValueError) as exc:
+            log.warning("voice summary for session=%s did not reach swarm-voice (%s)", session_id,
+                        type(exc).__name__)
+            raise VoiceUnreachable("swarm-voice could not be reached for the summary.") from None
+        try:
+            answer = json.loads(raw.decode("utf-8")) if raw else None
+        except ValueError:
+            answer = None
+        if status != 200 or not isinstance(answer, dict) or not isinstance(answer.get("summary"), str):
+            log.warning("swarm-voice made no summary for session=%s (HTTP %s)", session_id, status)
+            raise VoiceUnreachable(f"swarm-voice made no summary (HTTP {status}).")
+        return answer
+
     def delegation(self, session_id: str, delegation_id: str, *, timeout: float) -> str | None:
         wait = max(0.0, min(float(timeout), DELEGATION_WAIT_SECONDS))
         path = ("/delegations/" + urllib.parse.quote(delegation_id, safe="") + "?"
@@ -1136,8 +1159,12 @@ class VoiceSessions:
     def __init__(self, db: Any, client: VoiceClient, *, marker_key: str = "",
                  now: Callable[[], datetime],
                  class_models: Mapping[str, str] | None = None,
-                 machine: Any = None) -> None:
+                 machine: Any = None,
+                 after_end: Callable[..., None] | None = None) -> None:
         self._db = db
+        #: Called once a session is closed (record.Summaries.after_end); it
+        #: never raises, so it never blocks the end.
+        self._after_end = after_end
         self._client = client
         self._marker_key = marker_key
         self._now = now
@@ -1692,7 +1719,8 @@ class VoiceSessions:
         ended, still starting, or a Live (WebRTC) one. A speech session's turn
         is the fast front's at swarm-voice, never the text conversation's, and
         carries `delegation_id` when the front delegated. The text and the
-        reply are neither logged nor stored here."""
+        reply are never logged; both are kept, redacted, as the session's
+        transcript (record.py), and a failed write never fails the turn."""
         person = person.strip().lower()
         project_id = self._project_of(tenant_id=tenant_id, person=person, session_id=session_id)
         snap = _snapshot(self._session_ref(project_id, session_id).get())
@@ -1721,6 +1749,10 @@ class VoiceSessions:
                 said["reply"] = f"{answered.reply} {line.strip()}".strip()
         elif delegation:
             said["delegation_id"] = delegation
+        from . import record  # record.py imports this module
+        record.record_turn_quietly(self._db, tenant_id=tenant_id, person=person, project_id=project_id,
+                                   session_id=session_id, said=text, reply=str(said["reply"] or ""),
+                                   handed=bool(delegation), now=self._now)
         return said
 
     def delegation(self, session_id: str, delegation_id: str, *, timeout: float) -> str | None:
@@ -1811,5 +1843,8 @@ class VoiceSessions:
                     self._machine.stop(holder, cause=cause)
             log.info("voice session ended tenant=%s project=%s session=%s cause=%s voice_told=%s",
                      tenant_id, project_id, session_id, cause, told)
+            if self._after_end is not None:
+                self._after_end(tenant_id=tenant_id, person=person, project_id=project_id,
+                                session_id=session_id, cause=cause)
         return {"project_id": project_id, "session_id": session_id, "state": ENDED,
                 "changed": before is not None, "voice_told": told}

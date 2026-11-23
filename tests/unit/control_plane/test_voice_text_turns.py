@@ -185,8 +185,9 @@ def test_a_turn_returns_the_reply_and_cards_and_never_logs_the_text(
     assert voice.turns == [(session_id, said)]
     logged = "\n".join(record.getMessage() for record in caplog.records)
     assert said not in logged and "Three steps" not in logged
-    # Nothing stores the text either.
-    assert said not in json.dumps({k: str(v) for k, v in db.docs.items()})
+    # Nothing stores the text but the session's own transcript (voice/record.py).
+    transcript = f"voice_transcripts/{session_id}/"
+    assert said not in json.dumps({k: str(v) for k, v in db.docs.items() if not k.startswith(transcript)})
 
 
 def test_a_turn_is_409_on_a_live_session_and_after_the_end(db, tokens, group_map, objects, voice):
