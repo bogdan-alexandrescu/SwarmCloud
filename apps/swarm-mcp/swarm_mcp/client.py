@@ -1072,6 +1072,13 @@ SUBMIT_TIMEOUT_SECONDS = 120
 #: that is not answering, and the caller is told to read before sending again.
 SUBMIT_SENDS = 2
 
+#: Re-sends (same key) when swarm-api answers 409 `idempotency_replay_incomplete`:
+#: the first send's claim is written but its workflow document is not yet. The
+#: key never leaves the bridge, so the caller cannot re-send; the bridge waits
+#: SUBMIT_INCOMPLETE_BACKOFF_SECONDS * attempt between tries, a few seconds in total.
+SUBMIT_INCOMPLETE_RETRIES = 4
+SUBMIT_INCOMPLETE_BACKOFF_SECONDS = 0.5
+
 #: The body field swarm-api reads the key from (`swarm_api.idempotency`).
 IDEMPOTENCY_FIELD = "idempotency_key"
 
@@ -1095,11 +1102,20 @@ def send_submission(path: str, payload: dict[str, Any], post: Callable[[dict[str
     submission is a new one, with a new key."""
     body = {**payload, IDEMPOTENCY_FIELD: submission_key()}
     sent = 1
+    incomplete = 0
     with submit_guard(path):
         while True:
             try:
                 return post(body)
             except SwarmError as exc:
+                if (
+                    exc.status == 409
+                    and exc.code == "idempotency_replay_incomplete"
+                    and incomplete < SUBMIT_INCOMPLETE_RETRIES
+                ):
+                    incomplete += 1
+                    time.sleep(SUBMIT_INCOMPLETE_BACKOFF_SECONDS * incomplete)
+                    continue
                 if sent >= SUBMIT_SENDS or not _timed_out(exc):
                     raise
                 sent += 1
