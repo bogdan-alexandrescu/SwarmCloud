@@ -1274,6 +1274,9 @@ class SpeechMachine:
         report["instance"] = found[0].status if found else None
         if holds(lease, now):
             return report
+        # The route logs this and drops it from its answer: a machine found
+        # not at rest with nothing holding it (terraform/infra/voice_alerts.tf).
+        report["unheld"] = any(i.status not in AT_REST for i in found)
         # No live lease: every machine in a listed zone that is not at rest
         # is stopped (there is one; a crash mid-move may have left two).
         for instance in found:
