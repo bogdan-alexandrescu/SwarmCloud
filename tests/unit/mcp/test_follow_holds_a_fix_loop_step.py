@@ -157,11 +157,11 @@ def _summary(world: Workflow, since=None, wait=compact.MAX_WAIT_SECONDS) -> dict
 
 def test_a_summary_call_holds_its_whole_window_while_the_loop_waits_on_its_dependency():
     world = Workflow(_build_running())
-    first = _summary(world, wait=0)
-    assert first["stop"] is False
+    reply = _summary(world, wait=0)
+    assert reply["stop"] is False
     for call in range(3):
         began = world.now
-        reply = _summary(world, since=first["since"] if call == 0 else reply["since"])
+        reply = _summary(world, since=reply["since"])
         assert world.now - began >= compact.MAX_WAIT_SECONDS, (
             f"call {call + 2} returned after {world.now - began:.0f} s with nothing new: "
             f"line_changed={reply['line_changed']} transitions={reply['transitions']}")
