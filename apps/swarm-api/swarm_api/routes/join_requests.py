@@ -504,6 +504,10 @@ def remove_member(
         message = (f"{subject} is this workspace's only admin who can still select it; name "
                    "another admin who is a member before removing them. Nothing was written")
 
+    # The directory's answers about the other admins, before the transaction.
+    known = last_admin.lookups_ahead(request, ctx, tenant_id=tenant_id, subject=subject,
+                                     group=group, registered=registered)
+
     def _apply(txn: Any) -> bool | None:
         last_admin.read_guard(ctx, txn, tenant_id)
         current = store.read(subject, transaction=txn).newest.get(tenant_id)
@@ -519,10 +523,10 @@ def remove_member(
                               else _still_in_group(request, ctx, subject, group))
         if admin and not still:
             last_admin.require_admin_remains(
-                request, ctx, txn, tenant_id=tenant_id, subject=subject, by=by, group=group,
-                registered=registered, message=message)
+                request, ctx, txn, tenant_id=tenant_id, subject=subject, group=group,
+                registered=registered, message=message, known=known)
         else:
-            last_admin.write_guard(ctx, txn, tenant_id, by=by)
+            last_admin.write_guard(ctx, txn, tenant_id)
         store.write(tenant_id=tenant_id, group=current.group, subject=subject,
                     state=memberships.REMOVED, by=auth.email, via=via, reason=body.reason,
                     detail={"still_in_group": still}, writer=txn)
@@ -600,6 +604,10 @@ def leave_workspace(
     message = ("you are this workspace's only admin who can still select it; name another "
                "admin who is a member before you leave. Nothing was written")
 
+    # The directory's answers about the other admins, before the transaction.
+    known = last_admin.lookups_ahead(request, ctx, tenant_id=tenant_id, subject=email,
+                                     group=group, registered=registered)
+
     def _apply(txn: Any) -> bool | None:
         last_admin.read_guard(ctx, txn, tenant_id)
         current = _leavable(store.read(email, transaction=txn), tenant_id, registered)
@@ -612,10 +620,10 @@ def leave_workspace(
             still = _still_in_group(request, ctx, email, group)
         if admin and not still:
             last_admin.require_admin_remains(
-                request, ctx, txn, tenant_id=tenant_id, subject=email, by=email, group=group,
-                registered=registered, message=message)
+                request, ctx, txn, tenant_id=tenant_id, subject=email, group=group,
+                registered=registered, message=message, known=known)
         else:
-            last_admin.write_guard(ctx, txn, tenant_id, by=email)
+            last_admin.write_guard(ctx, txn, tenant_id)
         store.write(tenant_id=tenant_id, group=current.group, subject=email,
                     state=memberships.REMOVED, by=email, via=memberships.VIA_SELF,
                     reason=reason, detail={"still_in_group": still}, writer=txn)
@@ -712,6 +720,10 @@ def approve_join_request(
     # eviction is what the person's next request reads, not a second cache's
     # 15 s (§4.4).
     grants = membership_store(ctx)
+    # The directory's answers about the other admins, before the transaction.
+    known = (last_admin.lookups_ahead(request, ctx, tenant_id=tenant_id, subject=subject,
+                                      group=group, registered=registered)
+             if admitted else {})
 
     def also(writer: Any, asked: JoinRequest, decision: Decision) -> None:
         same(writer, asked, decision)
@@ -735,13 +747,13 @@ def approve_join_request(
                       or _in_group(request, ctx, subject, group))
         if lowers:
             last_admin.require_admin_remains(
-                request, ctx, writer, tenant_id=tenant_id, subject=subject, by=by, group=group,
-                registered=registered,
+                request, ctx, writer, tenant_id=tenant_id, subject=subject, group=group,
+                registered=registered, known=known,
                 message=f"{subject} is this workspace's only admin who can still select it; "
                         "name another admin who is a member before approving them at a lower "
                         "role. Nothing was written")
         else:
-            last_admin.write_guard(ctx, writer, tenant_id, by=by)
+            last_admin.write_guard(ctx, writer, tenant_id)
         # The role first, the membership after: whichever fails, the
         # transaction carries both, so neither lands alone.
         if role_change is not None:

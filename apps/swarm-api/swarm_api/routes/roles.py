@@ -127,15 +127,19 @@ def _guarded_write(request: Request, ctx: AppContext, *, tenant_id: str, subject
     # `change` sets `to`, read on the try that decided; the refusal row reports it.
     detail: dict[str, Any] = {"route": route, "via": via}
 
+    # The directory's answers about the other admins, before the transaction.
+    known = last_admin.lookups_ahead(request, ctx, tenant_id=tenant_id, subject=subject,
+                                     group=group, registered=registered)
+
     def _apply(txn: Any) -> Any:
         last_admin.read_guard(ctx, txn, tenant_id)
         lowers, write = change(txn, detail)
         if lowers:
             last_admin.require_admin_remains(
-                request, ctx, txn, tenant_id=tenant_id, subject=subject, by=by, group=group,
-                registered=registered, message=message)
+                request, ctx, txn, tenant_id=tenant_id, subject=subject, group=group,
+                registered=registered, message=message, known=known)
         else:
-            last_admin.write_guard(ctx, txn, tenant_id, by=by)
+            last_admin.write_guard(ctx, txn, tenant_id)
         return write(txn)
 
     return last_admin.run(ctx, _apply, tenant_id=tenant_id, subject=subject, by=by,

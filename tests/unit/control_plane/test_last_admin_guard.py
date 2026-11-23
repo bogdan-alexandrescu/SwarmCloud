@@ -203,7 +203,7 @@ def test_naming_an_admin_is_never_guarded(ctx, db) -> None:
 
 # -- fail closed ---------------------------------------------------------------------
 
-def _unreadable_roster(self, tenant_id: str, *, fresh: bool = False) -> list:
+def _unreadable_roster(self, tenant_id: str) -> list:
     raise RoleUnavailable("this workspace's roles could not be read; retry shortly")
 
 
@@ -212,7 +212,8 @@ def test_an_unreadable_roster_is_a_503_and_nothing_is_written(client, ctx, db, m
                                                               call) -> None:
     joined(client)
     set_role(client, LEE, "admin")
-    monkeypatch.setattr(roles.RoleStore, "overrides", _unreadable_roster)
+    # The guard reads the workspace's admins through `admin_subjects` (epic 21).
+    monkeypatch.setattr(roles.RoleStore, "admin_subjects", _unreadable_roster)
     before = written(db)
     if call == "leave":
         response = client.post(LEAVE, headers=h("lee", "eng"), json={})
@@ -321,7 +322,8 @@ def test_a_leave_and_a_demotion_of_the_only_two_admins_leave_one(first: str) -> 
 # -- a promotion, a stale lowering and a leave ----------------------------------------
 
 @pytest.mark.parametrize("stale,read", [
-    ("demote", 1), ("demote", 2), ("clear", 1), ("clear", 2), ("remove", 1), ("leave", 1)])
+    ("demote", 1), ("demote", 2), ("demote", 3), ("clear", 1), ("clear", 2), ("clear", 3),
+    ("remove", 1), ("remove", 2), ("leave", 1), ("leave", 2)])
 def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, stale,
                                                                  read) -> None:
     """lee is eng's only admin; dan a member by platform membership. lee's
@@ -334,8 +336,9 @@ def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, s
 
     `read` is which of the change's reads of dan's role goes stale: the roles
     routes read it once before their transaction (to answer `role_unchanged`
-    early) and again inside it, which decides; removal and leave read it
-    inside only."""
+    early), once more for `last_admin.lookups_ahead` (whether to ask the
+    directory before the transaction, epic 21) and again inside it, which
+    decides; removal and leave read it for `lookups_ahead` and inside."""
     db = RacingFirestore()
     seed_tenant(db, "eng")
     seed_tenant(db, "research")
@@ -385,7 +388,8 @@ def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, s
     assert outcome.status_code == 409, outcome.text
     assert outcome.json()["code"] == LAST
     # A stale read inside the transaction is caught by the guard's abort.
-    assert db.aborts >= (1 if read == 2 or stale in ("remove", "leave") else 0)
+    inside = 2 if stale in ("remove", "leave") else 3
+    assert db.aborts >= (1 if read == inside else 0)
     assert role_of(ctx, DAN) == roles.ADMIN
     assert membership_store(ctx).read(DAN, fresh=True).newest["eng"].state == memberships.MEMBER
     assert [r["detail"]["route"] for r in refused(db)] == [

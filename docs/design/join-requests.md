@@ -643,7 +643,10 @@ route:
     and the other admins' memberships are read inside it, with the `removed`
     grant and its audit row written in it, and every leave also reads and
     writes the workspace's guard document
-    (`workspace_leave_guards/{tenant_id}`, which holds no authority); whether
+    (`workspace_leave_guards/{tenant_id}`, which holds no authority and
+    records no one: the workspace and the time it was last written, never
+    an address, so it needs no retention rule of its own; who changed what
+    is the audit rows', epic 21); whether
     the caller is an admin is read after the guard, inside it. Two
     admins leaving at once therefore conflict on that document; Firestore
     aborts one, the transaction runs again, and its re-read sees the other
@@ -681,6 +684,18 @@ above, unchanged, from `routes/last_admin.py`:
   group check are read fresh, and any of them that cannot be read is a 503
   (`role_unavailable`, `upstream_unavailable`, `membership_unavailable`),
   never a permissive answer.
+* **Every other admin is found, and the directory is asked before the
+  transaction** (epic 21). The other admins are read as the workspace's
+  `admin` grants themselves (`RoleStore.admin_subjects`, each confirmed by
+  `newest_valid`), never the capped, unordered roster `overrides()` lists,
+  which could miss the admin who remains in a large workspace and refuse a
+  leave 409. When the person changed holds `admin` by override, the group
+  checks for the other admins run BEFORE the transaction
+  (`last_admin.lookups_ahead`), stopping at the first the group holds:
+  made inside it, each network call held the guard document across it and
+  contention 503s grew under load. Inside, the roles and memberships are
+  read again and decide; an answer from before is used only for a person
+  still `admin` there, and anyone not asked before is asked there.
 * **One transaction per write, over the same guard document, and the
   decision inside it.** EVERY write these routes make -- guarded or not,
   naming an admin included -- reads `workspace_leave_guards/{tenant_id}`
