@@ -168,7 +168,9 @@ def test_dispatch_without_them_sends_todays_body():
     prompt = _prompt()
     server._call(wire, "swarm_dispatch", {"prompt": prompt, "repo": REPO})
     ((_, body),) = _posts(wire)
-    assert set(body) == {"runner_profile", "input", "metadata", "repository_url"}
+    # Today's body, plus the submission's idempotency key (`send_submission`).
+    assert set(body) == {"runner_profile", "input", "metadata", "repository_url",
+                         "idempotency_key"}
     assert body["input"] == {"prompt": prompt}
 
 

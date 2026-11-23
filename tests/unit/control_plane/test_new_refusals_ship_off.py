@@ -557,6 +557,16 @@ NOT_SWITCHABLE_CODES = frozenset({
     # the probes' identity writing a workspace's secrets, keys, plugins or
     # settings, or removing a member.
     "probe_admin_not_permitted",
+    # A submission's idempotency key (swarm_api.idempotency): raised only for
+    # a POST /v1/tasks, /v1/tasks/batch or /v1/workflows that carries
+    # `idempotency_key`, which that change introduces -- a submission without
+    # one is created as it always was -- so no existing caller can be refused
+    # by them, and a caller avoids both with a fresh key. Continuing past
+    # either is the breach itself: a key re-sent with another payload, or a
+    # re-send that arrives while the first is still being written, admitted
+    # as a SECOND submission under a key whose whole promise is one.
+    "idempotency_key_reused",
+    "idempotency_replay_incomplete",
 })
 
 #: What the guard lets through without a switch.
