@@ -72,13 +72,16 @@ def _tree(root: Path, *, many: int = 0) -> None:
     _write(root, "tests/unit/foo/test_lone.py", "from foo.lone import Y\n")
     _write(root, "tests/unit/foo/test_reads.py", 'TEXT = "apps/foo/foo/core.py"\n')
     _write(root, "tests/unit/control_plane/test_panel_text.py", 'SRC = "src/panel.tsx"\n')
+    # A recorded weight, light: with none readable the selection is capped.
+    _write(root, "tests/unit/scripts/unit_test_durations.json", '{"tests/unit/foo/test_core.py": 1.0}\n')
 
 
-def _select(root: Path, *changed: str) -> dict[str, list[str]]:
+def _select(root: Path, *changed: str, closure: bool = False) -> dict[str, list[str]]:
     listing = root / "changed.txt"
     listing.write_text("".join(f"{c}\n" for c in changed))
     result = subprocess.run(
-        [sys.executable, str(SELECTOR), "--root", str(root), "--changed", str(listing)],
+        [sys.executable, str(SELECTOR), "--root", str(root), "--changed", str(listing),
+         *(["--closure"] if closure else [])],
         capture_output=True, text=True, timeout=120,
     )
     assert result.returncode == 0, result.stderr
@@ -374,7 +377,9 @@ def test_a_heavy_pytest_selection_splits_by_ci_weight(tmp_path):
         _write(tmp_path, f"tests/unit/foo/test_heavy{i}.py", "from foo.core import X\n")
     weights = {f"tests/unit/foo/test_heavy{i}.py": 300 for i in range(6)}
     _write(tmp_path, "tests/unit/scripts/unit_test_durations.json", json.dumps(weights))
-    got = _select(tmp_path, "apps/foo/foo/core.py")
+    # 1,800 CI-seconds is more than one run, so the default is capped on size
+    # (test_related_tests_capped_size.py); --closure cuts the whole selection.
+    got = _select(tmp_path, "apps/foo/foo/core.py", closure=True)
     # MUTATION: ignore unit_test_durations.json -> one 1,800 CI-second run.
     assert len(got["pytest"]) >= 3
     assert len(_files(got["pytest"])) == 9
@@ -502,7 +507,9 @@ def test_a_frozen_contract_change_selects_widely_and_says_why(tmp_path):
     _write(tmp_path, f"{contract}/schema.py", "class Tenant:\n    pass\n")
     _write(tmp_path, "apps/foo/foo/model_user.py", "from swarm_common.schema import Tenant\n")
     _write(tmp_path, "tests/unit/foo/test_model_user.py", "from foo.model_user import Tenant\n")
-    got = _select(tmp_path, f"{contract}/schema.py")
+    # The full closure is --closure's (RELATED-CAP: the default is capped,
+    # test_related_tests_capped.py).
+    got = _select(tmp_path, f"{contract}/schema.py", closure=True)
     assert "tests/unit/foo/test_model_user.py" in _files(got["pytest"])
     # MUTATION: drop the note -> the wide selection reads as a selector bug.
     assert any("frozen contract" in n and "wide by design" in n and "CI runs the whole suite" in n
@@ -1253,8 +1260,8 @@ def test_a_staged_graph_never_narrows_what_selects_widely_by_design(tmp_path, mo
     )
     # MUTATION: let the graph's tests_for answer for the contract -> only
     # test_core.py comes back and the note's "wide by design" count is false.
-    got = _select(root, f"{contract}/schema.py")
+    got = _select(root, f"{contract}/schema.py", closure=True)
     assert "tests/unit/foo/test_model_user.py" in _files(got["pytest"])
     # A conftest.py reaches every test under it, whatever the graph says.
-    got = _select(root, "tests/unit/foo/conftest.py")
+    got = _select(root, "tests/unit/foo/conftest.py", closure=True)
     assert "tests/unit/foo/test_model_user.py" in _files(got["pytest"])

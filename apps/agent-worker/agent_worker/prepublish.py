@@ -1335,12 +1335,38 @@ def parse_related_tests(output: str) -> list[str]:
     return named
 
 
+#: related-tests' one note for a capped selection (scripts/lib/related_tests.py
+#: `main`): "the selection is capped at N test file(s) [at hop H] ... of the M
+#: its full closure reaches"; a `warn` line on its stderr, in colour on a tty.
+_RELATED_CAPPED = re.compile(r"the selection is capped at (\d+) test file\(s\).*?"
+                             r"\bof the (\d+) its full closure reaches")
+
+
+def parse_related_cap(output: str) -> str:
+    """The capped note `related-tests.sh` printed, as one line for the gate's
+    report: how many test files of how many it named, and that the merge
+    train runs the rest; "" when the selection was not capped.
+
+    WHY (review of the RELATED-CAP pull request, 2026-11-23). The gate kept
+    only the test-file lines, so with a capped selection it ran fewer tests
+    than the closure and its report never said so: a test outside the cap
+    then failed only on the merge train, with no word of it here."""
+    found = _RELATED_CAPPED.search(output)
+    if found is None:
+        return ""
+    named, closure = int(found[1]), int(found[2])
+    return (f"{RELATED_SCRIPT} capped its selection at {named} of the {closure} test file(s) "
+            f"its full closure reaches; the merge train runs the rest, so "
+            f"{max(0, closure - named)} are left to CI, not passed")
+
+
 def import_pick(repo: Path, base: str | None, *, runner: Runner, env: Mapping[str, str],
                 timeout: float = GUARDS_LIST_SECONDS) -> tuple[list[str] | None, str]:
     """The test files `RELATED_SCRIPT` (scripts/lib/related_tests.py: the
     tests that import a changed module, transitively, and the vitest files
     its imports reach) names for the diff from `base`, listed, never run; and
-    why there are none when the script is absent or fails (None)."""
+    why there are none when the script is absent or fails (None), or, when it
+    named them, its capped note (`parse_related_cap`), else ""."""
     if not (repo / RELATED_SCRIPT).is_file():
         return None, f"the repository has no {RELATED_SCRIPT}"
     argv = ["bash", RELATED_SCRIPT, *(["--base", base] if base else [])]
@@ -1349,13 +1375,14 @@ def import_pick(repo: Path, base: str | None, *, runner: Runner, env: Mapping[st
         return None, f"{RELATED_SCRIPT} did not list its selection within {timeout:.0f} s"
     if ran.code != 0:
         return None, f"{RELATED_SCRIPT} exited {ran.code}"
-    return parse_related_tests(ran.output), ""
+    return parse_related_tests(ran.output), parse_related_cap(ran.output)
 
 
 @dataclass(frozen=True)
 class TestPick:
     """`select_tests`'s selection (each test file and why) and, when the
-    graph's test map was cut, the line saying how the import pick widened it."""
+    graph's test map was cut, the line saying how the import pick widened it
+    -- and, when related-tests capped its pick, how many it left to CI."""
 
     __test__ = False  # a gate record, not a pytest class
 
@@ -1388,9 +1415,10 @@ def pick_tests(repo: Path, files: Sequence[str], snapshot: Snapshot | None, *,
                                f"could not widen the selection ({why}); the graph's "
                                "selection runs alone")
     added = sum(1 for reason in tests.values() if reason == "import")
+    capped = f"; {why}" if why else ""
     return TestPick(tests, f"the staged graph's {maps} is truncated, so the selection is "
                            f"widened by the import pick ({RELATED_SCRIPT}): it named "
-                           f"{len(picked)} test file(s), {added} not already selected")
+                           f"{len(picked)} test file(s), {added} not already selected{capped}")
 
 
 def select_tests(repo: Path, files: Sequence[str],
@@ -1746,17 +1774,19 @@ def test_maps_truncated(snapshot: Snapshot | None) -> bool:
 
 
 def _import_pick(runner: Runner, repo: Path, env: Mapping[str, str], base: str,
-                 timeout: float) -> list[str]:
+                 timeout: float) -> tuple[list[str], str]:
     """The pytest files `related-tests.sh` names for the diff (its import map,
-    plus the graph's tests_for), present in the checkout; empty when the
-    repository has no such script or it cannot say."""
+    plus the graph's tests_for), present in the checkout, and its capped note
+    (`parse_related_cap`, "" when uncapped); nothing when the repository has
+    no such script or it cannot say."""
     if not (repo / RELATED_SCRIPT).is_file():
-        return []
+        return [], ""
     ran = runner(["bash", RELATED_SCRIPT, "--base", base], repo, env,
                  max(MIN_CHECK_SECONDS, min(GUARDS_LIST_SECONDS, timeout)))
     if ran.code != 0 or ran.timed_out:
-        return []
-    return sorted(t for t in parse_related(ran.output) if (repo / t).is_file())
+        return [], ""
+    return (sorted(t for t in parse_related(ran.output) if (repo / t).is_file()),
+            parse_related_cap(ran.output))
 
 
 def _graph_pytest(tests: Sequence[str], base: str, *, widen: bool = False
@@ -1774,11 +1804,13 @@ def _graph_pytest(tests: Sequence[str], base: str, *, widen: bool = False
         selected = list(tests)
         note = ""
         if widen:
-            added = [t for t in _import_pick(runner, repo, env, base, timeout)
+            picked, capped = _import_pick(runner, repo, env, base, timeout)
+            added = [t for t in picked
                      if t not in selected][:max(0, GRAPH_TESTS_MAX - len(selected))]
             selected += added
             note = (f"the staged graph's test maps are truncated: {len(added)} test file(s) "
-                    f"added from {RELATED_SCRIPT}'s import pick\n")
+                    f"added from {RELATED_SCRIPT}'s import pick\n"
+                    + (f"{capped}\n" if capped else ""))
             timeout = max(1.0, timeout - (time.monotonic() - started))
         status, output = _graph_pytest_run(runner, repo, env, timeout, selected, base)
         return status, note + output
