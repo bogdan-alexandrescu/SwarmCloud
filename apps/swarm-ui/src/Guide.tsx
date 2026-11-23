@@ -27,23 +27,10 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import { USE_FIXTURES } from './api'
 import { GUIDE_SOURCES } from './guidePages'
+import { GUIDE_INDEX, guidePath, guideSlugFrom } from './guidePaths'
 import './styles/guide.css'
 
-export const GUIDE_PATH = '/guide'
-export const GUIDE_INDEX = 'index'
-
-/** The guide page a pathname names (`''` for the index), or null off the guide. */
-export function guideSlugFrom(pathname: string): string | null {
-  const p = pathname.replace(/\/+$/, '')
-  if (p === GUIDE_PATH) return ''
-  if (!p.startsWith(`${GUIDE_PATH}/`)) return null
-  const slug = p.slice(GUIDE_PATH.length + 1)
-  return slug === GUIDE_INDEX ? '' : slug
-}
-
-export function guidePath(slug: string): string {
-  return slug === '' || slug === GUIDE_INDEX ? GUIDE_PATH : `${GUIDE_PATH}/${slug}`
-}
+export { GUIDE_INDEX, GUIDE_PATH, guidePath, guideSlugFrom } from './guidePaths'
 
 /** A page's title: its first `# ` heading. */
 export function guideTitle(markdown: string): string {

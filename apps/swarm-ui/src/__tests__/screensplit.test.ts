@@ -19,7 +19,7 @@ function source(file: string): string {
 /** The modules a file imports statically, `import type` lines left out: they leave nothing in the bundle. */
 function staticImports(file: string): string[] {
   const out: string[] = []
-  for (const m of source(file).matchAll(/^\s*(import|export)\s+(?!type\b)(?:[^'";]*?\sfrom\s+)?['"]([^'"]+)['"]/gm)) out.push(m[2])
+  for (const m of source(file).matchAll(/^\s*(import|export)\s+(?!type\b)(?:[^'";]*?\sfrom\s+)?['"]([^'"]+)['"]/gm)) out.push(m[2]!)
   return out
 }
 
@@ -56,7 +56,7 @@ describe('the shell imports no lazy screen', () => {
 
   it("App.tsx takes GitHubConnect only for the callback, which must mount before the router rewrites the query", () => {
     const line = /^import\s+\{([^}]*)\}\s+from\s+'\.\/GitHubConnect'/m.exec(source('App.tsx'))
-    expect(line?.[1].trim()).toBe('GitHubCallbackScreen')
+    expect(line?.[1]?.trim()).toBe('GitHubCallbackScreen')
   })
 
   it('Schedules imports neither Approvals nor Profile, both lazy screens', () => {

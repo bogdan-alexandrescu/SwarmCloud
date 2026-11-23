@@ -55,7 +55,10 @@ import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { formatDateTime } from './timezone'
 import type { WorkspacePlugins } from './types'
+import type { PluginLinkAt } from './pluginPaths'
 import './styles/plugins.css'
+
+export { pluginLinkOf, type PluginLinkAt } from './pluginPaths'
 
 const ROUTE = 'GET /v1/workspaces/{tenant_id}/plugin-catalogue'
 
@@ -91,23 +94,6 @@ export function listKey(e: Pick<PluginEntry, 'scope' | 'name' | 'install_id'>): 
  */
 export function configPluginPath(installId: string): string {
   return `/config/plugins/${encodeURIComponent(installId)}`
-}
-
-/** The one-time link's address (`pluginconfig.mint_link`): `/config/plugins/<install_id>?field=<key>&t=<token>`. */
-export interface PluginLinkAt {
-  install_id: string
-  field: string
-  token: string
-}
-
-export function pluginLinkOf(pathname: string, search: string): PluginLinkAt | null {
-  const m = /^\/config\/plugins\/([pw]-[0-9a-f]{12})\/?$/.exec(pathname)
-  if (m === null) return null
-  const q = new URLSearchParams(search)
-  const field = q.get('field')
-  const token = q.get('t')
-  if (field === null || field === '' || token === null || token === '') return null
-  return { install_id: m[1]!, field, token }
 }
 
 function sameSet(a: readonly string[], b: readonly string[]): boolean {

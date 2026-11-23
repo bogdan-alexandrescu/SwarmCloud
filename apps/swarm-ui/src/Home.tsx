@@ -64,19 +64,13 @@ import { lentToRow, waitingRequests, type WaitingRequest } from './People'
 import type { LendableAccount, PeopleDoc, Profile, ScopedPeopleDoc, Stats, Task } from './types'
 import './styles/home.css'
 
+export { HOME_JUMPS } from './homeJumps'
+
 /** How many of the person's newest tasks Home reads: one page, the size the Agents list asks for. */
 export const HOME_TASK_LIMIT = 100
 
 /** How often Home reads again while it is open; each action reads again at once. */
 export const HOME_POLL_MS = 30_000
-
-/** The jump links of Home's own panel, in the order the page draws them (Spine.tsx). */
-export const HOME_JUMPS: readonly { id: string; label: string }[] = [
-  { id: 'home-needs', label: 'Needs you' },
-  { id: 'home-work', label: 'Your work' },
-  { id: 'home-finished', label: 'Recently finished' },
-  { id: 'home-start', label: 'Start' },
-]
 
 const LIVE: ReadonlySet<string> = new Set(['LEASED', 'DISPATCHED', 'STARTING', 'RUNNING'])
 const WAITING: ReadonlySet<string> = new Set(['QUEUED', 'READY', 'PARKED'])

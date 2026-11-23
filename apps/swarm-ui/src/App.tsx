@@ -35,9 +35,7 @@ import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCa
 import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
 import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, QA_LINK_ADDRESS, SETUP_LINK_PATH, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, isSetupLinkPath, movedToConfig, movedToWorkspacePage, pathToAddress, secretsLinkToken, secretsLinkView, setupLinkToken, workspacePageAddress } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
-import { WorkspaceSettingsScreen, workspacePartOf } from './WorkspaceSettings'
-import { ConfigPluginsScreen, pluginLinkOf, type PluginLinkAt } from './ConfigPlugins'
-import { ADMIN_PLUGINS_PATH, AdminPluginsScreen, catalogueCards } from './AdminPlugins'
+import { ADMIN_PLUGINS_PATH, catalogueCards, pluginLinkOf, type PluginLinkAt } from './pluginPaths'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { loadApproval, loadPluginCatalogue, loadWorkspacePlugins, PLATFORM_PLUGIN_CATALOGUE, pluginScopeOf } from './api'
 import { UrRegion, useUrRead } from './RepositoriesParts'
@@ -48,22 +46,24 @@ import { Icon, SkyShell, type SpineSection } from './Spine'
 import { NotificationBell } from './Notifications'
 import { routedClick, Segmented, ToneMark } from './components'
 import { Mark } from './primitives'
-import { HelpScreen, helpPageOf } from './HelpSection'
+import { helpPageOf } from './helpPage'
 import { SetupCard } from './Onboarding'
-import { WorkspacePage, workspaceTabOf, type WorkspaceTab } from './WorkspacePage'
-import { JOIN_PATH, JoinWorkspaceScreen, joinCodeFrom } from './JoinWorkspace'
-import { GuideScreen, guidePath, guideSlugFrom } from './Guide'
+import { JOIN_PATH, joinCodeFrom, workspacePartOf, workspaceTabOf, type WorkspaceTab } from './workspacePaths'
+import { guidePath, guideSlugFrom } from './guidePaths'
 import { tableMode, usePhoneTables } from './capacityPoll'
-import { LLM_PROVIDERS_TAB, LlmProvidersScreen, llmProvidersAddress, llmSubPage, type LlmSubPage } from './LlmProviders'
+import { LLM_PROVIDERS_TAB, llmProvidersAddress, llmSubPage, type LlmSubPage } from './llmPaths'
 import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
 import { interviewPageOf } from './interviewPaths'
-import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard, useScheduleName } from './Schedules'
+import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE } from './schedulePaths'
+import { useScheduleName } from './scheduleNames'
+import { WaitingOnYouCard } from './WaitingOnYouCard'
 import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
-// Overview is lazy, so its chunk's CSS would load after the main chunk's;
-// names.css (also Workflows') must come after overview.css, as Overview imports them.
+// Overview and Workflows are lazy, so their chunks' CSS would load after the
+// main chunk's; names.css must come after overview.css, as Overview imports them.
 import './styles/overview.css'
-import { useRecentName, WorkflowsScreen } from './Workflows'
+import './styles/names.css'
+import { useRecentName } from './recentName'
 import { VoiceSessionHolder } from './voice/session'
 import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
 
@@ -74,11 +74,16 @@ import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist
  * eager; a screen loads when its route is first opened, and `ScreenLoading`
  * stands in until it arrives.
  *
- * ONLY A MODULE APP IMPORTS NOTHING ELSE FROM IS LAZY. Where App.tsx also
- * reads a helper from a screen's module (Guide's `guidePath`, Workflows'
- * `useRecentName`, Schedules' `WaitingOnYouCard`, WorkspaceSettings'
- * `workspacePartOf` ...), the static import keeps the whole module in the
- * main chunk, and lazy-loading its screen would split nothing.
+ * A HELPER THE SHELL NEEDS LIVES APART FROM ITS SCREEN (issue 195). A static
+ * import of a screen's module, from App.tsx or from any module the shell
+ * loads, keeps the whole module in the main chunk, and lazy-loading its
+ * screen would split nothing. So App.tsx and Spine.tsx read their helpers from
+ * helper-only modules that import no screen -- guidePaths.ts,
+ * workspacePaths.ts, pluginPaths.ts, helpPage.ts, llmPaths.ts,
+ * schedulePaths.ts, scheduleNames.ts, recentName.ts, poolLook.ts,
+ * homeJumps.ts, voice/voiceOpen.ts -- and Overview's `WaitingOnYouCard` is
+ * its own module; each screen re-exports what moved, so its importers are
+ * unchanged (__tests__/screensplit.test.ts).
  *
  * THE GITHUB CALLBACK STAYS EAGER. `GitHubCallbackScreen` reads the code and
  * the state from the address as it mounts, and the router takes that query
@@ -126,6 +131,16 @@ const VoiceProjectsScreen = lazy(() => import('./voice/Section').then((m) => ({ 
 const VoiceSettingsSectionScreen = lazy(() => import('./voice/Section').then((m) => ({ default: m.VoiceSettingsSectionScreen })))
 const VoiceTalkScreen = lazy(() => import('./voice/Section').then((m) => ({ default: m.VoiceTalkScreen })))
 const HomeScreen = lazy(() => import('./Home').then((m) => ({ default: m.HomeScreen })))
+const WorkspaceSettingsScreen = lazy(() => import('./WorkspaceSettings').then((m) => ({ default: m.WorkspaceSettingsScreen })))
+const ConfigPluginsScreen = lazy(() => import('./ConfigPlugins').then((m) => ({ default: m.ConfigPluginsScreen })))
+const AdminPluginsScreen = lazy(() => import('./AdminPlugins').then((m) => ({ default: m.AdminPluginsScreen })))
+const HelpScreen = lazy(() => import('./HelpSection').then((m) => ({ default: m.HelpScreen })))
+const WorkspacePage = lazy(() => import('./WorkspacePage').then((m) => ({ default: m.WorkspacePage })))
+const JoinWorkspaceScreen = lazy(() => import('./JoinWorkspace').then((m) => ({ default: m.JoinWorkspaceScreen })))
+const GuideScreen = lazy(() => import('./Guide').then((m) => ({ default: m.GuideScreen })))
+const LlmProvidersScreen = lazy(() => import('./LlmProviders').then((m) => ({ default: m.LlmProvidersScreen })))
+const SchedulesScreen = lazy(() => import('./Schedules').then((m) => ({ default: m.SchedulesScreen })))
+const WorkflowsScreen = lazy(() => import('./Workflows').then((m) => ({ default: m.WorkflowsScreen })))
 
 /**
  * THE NAVIGATION, AND WHY IT IS AS FEW THINGS AS IT IS.

@@ -34,8 +34,11 @@ import { notServed } from './RepositoriesData'
 import { UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { OWN_WORKSPACE_LABEL } from './Spine'
+import type { WorkspacePart } from './workspacePaths'
 import { timeAgo, type OnboardingDoc, type Profile, type WorkspaceRoles } from './types'
 import './styles/workspace-settings.css'
+
+export { workspacePartOf, type WorkspacePart } from './workspacePaths'
 
 /**
  * CONFIG › WORKSPACE SETTINGS (WS-SETTINGS-PAGE; part of archived issue 2157, the owner's
@@ -74,19 +77,11 @@ import './styles/workspace-settings.css'
  * "Setup's next step is on Secrets · Go to Secrets").
  */
 
-export type WorkspacePart = 'settings' | 'setup' | 'new'
-
 /** Workspace Settings' own address; People and roles links a personal workspace back here. */
 export const WORKSPACE_SETTINGS_ADDRESS = 'config/workspace'
 const SETTINGS_ADDRESS = WORKSPACE_SETTINGS_ADDRESS
 /** The admin's part: a query on the tab, as Workspace setup's address was before it had a path of its own. */
 export const WORKSPACE_NEW_ADDRESS = 'config/workspace?part=new'
-
-/** The part a route's view names: `part=setup` or `part=new`; anything else is Settings. */
-export function workspacePartOf(view: string | null): WorkspacePart {
-  const part = new URLSearchParams(view ?? '').get('part')
-  return part === 'setup' || part === 'new' ? part : 'settings'
-}
 
 function routed(to: string, go?: (to: string) => void) {
   return (e: MouseEvent) => {
