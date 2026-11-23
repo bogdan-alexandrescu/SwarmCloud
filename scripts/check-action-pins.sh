@@ -28,10 +28,16 @@
 # version comment, a container by tag.
 #
 # WHAT IT READS. Every *.yml and *.yaml under each PATH (a file or a
-# directory), default .github/. A `uses:` key is a line whose first token,
-# after an optional `- `, is `uses:`; a comment line is not one. It prints how
-# many files and `uses:` it read, and a run that read no file fails: an empty
-# answer is not a pass (CLAUDE.md, "Empty output is not success").
+# directory), default .github/. It reads a `uses:` key in block style only: a
+# line whose first token, after an optional `- `, is `uses:`, `"uses":` or
+# `'uses':`, with its value on the same line. Any other line, outside a comment
+# line, where `uses` is a key (a flow mapping `- {uses: ...}`, a space before
+# the colon, a value on a later line) is a finding too, `uses key in a shape
+# this check cannot read (use block style)`, whatever it names: a line-reader
+# cannot check it, and skipping it would pass it in silence (issue 190). A
+# comment line is never read. It prints how many files and `uses:` it read,
+# and a run that read no file fails: an empty answer is not a pass (CLAUDE.md,
+# "Empty output is not success").
 #
 # Exit 0 when every `uses:` is pinned, 1 on any finding or when nothing was
 # read, 2 on a usage error. It touches no project and no network.
@@ -76,8 +82,12 @@ done
 files=0
 uses=0
 findings=0
-# A `uses:` line: its value (quotes stripped) and what follows it.
-USES_RE='^[[:space:]]*(-[[:space:]]+)?uses:[[:space:]]*(.*)$'
+# A block-style `uses:` line, key optionally quoted: its value and what follows.
+USES_RE='^[[:space:]]*(-[[:space:]]+)?("uses"|'"'uses'"'|uses):[[:space:]]*(.*)$'
+# `uses` as a key in any shape, quoted or not: what USES_RE must account for.
+ANY_USES_RE='(^|[-{,[:space:]])["'"'"']?uses["'"'"']?[[:space:]]*:'
+COMMENT_RE='^[[:space:]]*#'
+UNREADABLE="uses key in a shape this check cannot read (use block style)"
 SHA_RE='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(/[A-Za-z0-9_./-]+)?@[0-9a-f]{40}$'
 DIGEST_RE='^docker://[^[:space:]@]+@sha256:[0-9a-f]{64}$'
 VERSION_RE='^#[[:space:]]*v?[0-9]+(\.[0-9]+)*([.+-][0-9A-Za-z.+-]*)?$'
@@ -96,16 +106,26 @@ while IFS= read -r file; do
   # Read on fd 3, so nothing in the loop can read the file by accident.
   while IFS= read -r line <&3 || [[ -n "${line}" ]]; do
     number=$((number + 1))
-    [[ "${line}" =~ ${USES_RE} ]] || continue
-    rest="${BASH_REMATCH[2]}"
+    [[ ! "${line}" =~ ${COMMENT_RE} ]] || continue
+    if [[ ! "${line}" =~ ${USES_RE} ]]; then
+      if [[ "${line}" =~ ${ANY_USES_RE} ]]; then
+        uses=$((uses + 1))
+        finding "${number}" "${UNREADABLE}" "${line#"${line%%[![:space:]]*}"}"
+      fi
+      continue
+    fi
+    rest="${BASH_REMATCH[3]}"
     # The value is the first word, quoted or not; the comment is what follows.
     value="${rest%%[[:space:]]*}"
     comment="${rest#"${value}"}"
     comment="${comment#"${comment%%[![:space:]]*}"}"
     value="${value#[\"\']}"
     value="${value%[\"\']}"
-    [[ -n "${value}" ]] || continue
     uses=$((uses + 1))
+    if [[ -z "${value}" ]]; then
+      finding "${number}" "${UNREADABLE}" "${line#"${line%%[![:space:]]*}"}"
+      continue
+    fi
     case "${value}" in
       ./*) continue ;;
       docker://*)
@@ -125,7 +145,7 @@ if [[ "${files}" -eq 0 ]]; then
   die "check-action-pins: no *.yml or *.yaml file under ${roots[*]}: nothing was checked"
 fi
 if [[ "${findings}" -gt 0 ]]; then
-  err "check-action-pins: ${findings} action(s) not pinned to a commit SHA, of ${uses} uses: in ${files} file(s)"
+  err "check-action-pins: ${findings} action(s) not pinned to a commit SHA or not in block style, of ${uses} uses: in ${files} file(s)"
   exit 1
 fi
 ok "check-action-pins: every one of ${uses} uses: in ${files} file(s) is local or pinned to a commit SHA"
