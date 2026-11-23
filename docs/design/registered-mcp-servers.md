@@ -116,7 +116,7 @@ A side note, recorded because someone will think of it: a repository's own
 not pass `--strict-mcp-config` (it appears nowhere in the repository). That is
 not a route for this feature: the file is in a public-or-shared checkout, so it
 can never carry a credential, and when this was written nobody had verified
-what the pinned CLI (`CLAUDE_CODE_VERSION=2.1.283`,
+what the CLI then pinned (2.1.283; `CLAUDE_CODE_VERSION` in
 `images/agent-runtime-base/Dockerfile`) does with it under `--print`. The
 design delegated the question to the build lane MCP-RUNNERS (§6), to be
 decided with a test, because it bears on which servers an agent is actually
@@ -129,7 +129,7 @@ checks the repository out; an attached server wins a name the repository also
 declares; and the caller's credential is never within reach of a
 repository-declared server, because it is never in the CLI's config at all:
 only the relay holds it, and the relay sends it only to the registered URL
-(§4.8). Measured against the pinned 2.1.283 by
+(§4.8). Measured against the then-pinned 2.1.283 by
 `tests/unit/worker/test_mcp_runner_config.py::test_the_pinned_claude_code_loads_the_repositorys_mcp_json_and_ours_wins_a_name`
 (in the image, where the binary exists): a server named only in the checkout's
 `.mcp.json` reaches the model, and a checkout server under the attached
@@ -646,8 +646,8 @@ agent exists:
    * **codex**: `-c mcp_servers.kb.url=<relay url>` and
      `-c mcp_servers.kb.bearer_token_env_var="SWARM_MCP_RELAY_TOKEN"`, the local
      token in the CLI child's environment only. **Not verified:** that codex
-     0.154.0 (`CODEX_VERSION`) accepts both keys, and that claude-code 2.1.283
-     accepts an `http` entry with `headers` in `--mcp-config`. MCP-RUNNERS'
+     0.154.0 (`CODEX_VERSION`) accepts both keys, and that claude-code 2.1.283 (the pin
+     then) accepts an `http` entry with `headers` in `--mcp-config`. MCP-RUNNERS'
      first red test runs each pinned binary against a loopback fake and
      decides; if codex lacks the env-var key, the token goes in
      `http_headers` as an override (argv, which the agent can read anyway).

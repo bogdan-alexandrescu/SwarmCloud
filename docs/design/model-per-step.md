@@ -247,7 +247,9 @@ ends `cannot_start` with a code, §4.5), and new profiles (design A's
   Dockerfile records that CLI 2.1.273 refused the then-new `claude-opus-5-5`
   as `unrecognized_model`, and every claude-code agent failed
   (`images/agent-runtime-base/Dockerfile`, the comment above
-  `CLAUDE_CODE_VERSION`, now 2.1.283). The same can happen to any class's ID.
+  `CLAUDE_CODE_VERSION`, now 2.1.330). It happened again on 2026-11-23: 2.1.283
+  refused the fable class's `claude-fable-5-2` the same way, and the pin was
+  raised to 2.1.330. The same can happen to any class's ID.
   The acceptance canary runs one real step per class (§4.9).
 * **All three claude-code-family images share one CLI.**
   `images/agent-runtime-browser/Dockerfile` and
