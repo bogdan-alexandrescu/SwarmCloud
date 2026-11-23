@@ -163,7 +163,6 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/control_plane/test_state_colour_discriminability.py` | `<module>` | `skipif` | apps/swarm-ui/src/styles.css is not present |
 | `tests/unit/control_plane/test_stop_and_output_ui_surface.py` | `<module>` | `skipif` | apps/swarm-ui is not checked out |
 | `tests/unit/control_plane/test_subscription_headroom_surface.py` | `<module>` | `skipif` | apps/swarm-ui is not checked out |
-| `tests/unit/control_plane/test_task_fencing_round_trip.py` | `test_the_ui_declares_the_fencing_fields_on_task` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_task_fencing_round_trip.py` | `test_the_ui_no_longer_records_the_fields_as_unavailable` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_ui_fixture_input_contract.py` | `<module>` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_url_refusal_whatwg.py` | `_node` | `skip_call` | node is not installed here; CI runs this table |
@@ -231,6 +230,7 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/scripts/test_concurrency_sampler_by_file.py` | `<module>` | `skipif` | jq is required |
 | `tests/unit/scripts/test_create_secrets_egress.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/scripts/test_create_secrets_git_wf.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
+| `tests/unit/scripts/test_create_secrets_join_person.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/scripts/test_create_secrets_search_key.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/scripts/test_create_secrets_tailscale_oauth.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/scripts/test_deploy_promotion_mark.py` | `<module>` | `skipif` | the scripts need bash and jq |

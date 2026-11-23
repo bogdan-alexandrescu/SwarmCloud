@@ -75,6 +75,7 @@ from ..utilisation import utilisation_of
 from ..waiting import waiting_for_page
 from ..waiting_detail import build_waiting, read_inputs, waiting_row
 from ..waker import TASK_FINISHED, ring
+from ..wire_types import TaskEnvelope
 
 log = logging.getLogger(__name__)
 
@@ -800,7 +801,10 @@ def list_digests(
     return payload
 
 
-@router.get("/{task_id}")
+# DOCUMENTED, never validated: `responses=` puts `wire_types.TaskEnvelope` in
+# the OpenAPI document (and so in the console's generated types) while the
+# dict `task_to_api` builds is still served as built (part of #72).
+@router.get("/{task_id}", responses={200: {"model": TaskEnvelope}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def get_task(
     task_id: str,
