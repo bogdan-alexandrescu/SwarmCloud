@@ -1554,10 +1554,16 @@ the decision are `swarm_api/graphreports.py`. The design is
   answer). The runs go to `graph/<sha>/latency.json`, beside the manifest and
   never in it, so a timing never changes a manifest digest. The type reads a
   version's `index_versions/{sha}.answer_latency` when promotion recorded one,
-  else that `latency.json`. Who passes the flag (a registration setting,
-  `index.measure_latency_hours`) is the design's (§1.2, "When") and is not
-  wired yet: until it is, no version carries a measurement and every firing
-  reads "no promoted version in the window carries a measurement".
+  else that `latency.json`. Who passes the flag is the registration setting
+  `index.measure_latency_hours` (the design's §1.2, "When"):
+  `repositories.measure_latency_hours_of` (`swarm_api/repositories.py`) reads
+  it, whole hours in `MEASURE_LATENCY_HOURS_RANGE`, and `repoindex.py` puts it
+  in the index run's signed prompt (`MEASURE_LATENCY_LINE`), which the worker
+  passes to `swarm-repo-graph write --measure-latency-hours`. It has no
+  default: a registration that leaves it unset is never measured, so its
+  versions carry no measurement and its firings read "no promoted version in
+  the window carries a measurement" -- the setting is off for that
+  registration, not a missing platform piece.
 * **The ratio, never the milliseconds.** Each reading is the run's p95 over
   its own `reference_ms`, timed in the same process on the same node, so a
   busy or small node slows both and the ratio holds (the owner, Q3). Because
