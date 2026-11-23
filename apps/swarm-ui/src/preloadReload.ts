@@ -33,14 +33,18 @@ function readMark(): string | null {
   }
 }
 
-function onPreloadError(event: Event) {
+function onPreloadError() {
   if (readMark() !== null) return
   try {
     sessionStorage.setItem(CHUNK_RELOAD_KEY, String(Date.now()))
   } catch {
     return
   }
-  event.preventDefault()
+  // Not `event.preventDefault()`: Vite then resolves the failed import to
+  // undefined, React.lazy throws a TypeError that is no chunk-load error, and
+  // the root boundary shows "The interface crashed" until the reload lands.
+  // Left alone, the rejection reaches the route's ChunkBoundary, which says
+  // "A newer version is out" under the shell meanwhile.
   window.location.reload()
 }
 
