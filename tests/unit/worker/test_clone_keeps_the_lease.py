@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 
 from agent_worker import config as config_mod
-from agent_worker import egress, gitops, lifecycle
+from agent_worker import egress, gitops, heartbeat, lifecycle
 from agent_worker import workspace as workspace_mod
 from agent_worker.errors import ExitCode
 from agent_worker.gitops import CloneResult
@@ -162,10 +162,14 @@ def _fake_threading(clock: _Clock) -> types.SimpleNamespace:
 
 
 def _on_the_clock(monkeypatch, clock: _Clock) -> None:
-    monkeypatch.setattr(lifecycle, "threading", _fake_threading(clock))
-    monkeypatch.setattr(
-        lifecycle, "time", types.SimpleNamespace(monotonic=clock, sleep=time.sleep, time=time.time)
-    )
+    # Both modules: the clone's thread runs in `lifecycle`, the heartbeat's
+    # `_heartbeat_meanwhile` thread in `heartbeat`, where it moved (issue 68).
+    threads = _fake_threading(clock)
+    for module in (lifecycle, heartbeat):
+        monkeypatch.setattr(module, "threading", threads)
+        monkeypatch.setattr(
+            module, "time", types.SimpleNamespace(monotonic=clock, sleep=time.sleep, time=time.time)
+        )
 
 
 def _takes(clock: _Clock, seconds: float) -> None:
