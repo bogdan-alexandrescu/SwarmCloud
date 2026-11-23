@@ -20,6 +20,7 @@ life. It lives in this process and nowhere else.
 from __future__ import annotations
 
 import collections
+import contextlib
 import copy
 import email.utils
 import json
@@ -34,7 +35,7 @@ import urllib.parse
 import urllib.request
 import zlib
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 #: An ID token is good for an hour. Re-minting a few minutes early costs one
 #: subprocess and avoids the failure mode where a long `tail` dies at the
@@ -1072,13 +1073,17 @@ def _timed_out(exc: BaseException) -> bool:
     return isinstance(cause, TimeoutError)
 
 
-def submit_post(client: Any, path: str, payload: dict[str, Any]) -> Any:
-    """`POST path` for a dispatch or a workflow submission, waiting
-    `SUBMIT_TIMEOUT_SECONDS`. A timeout's error tells the caller to read the
-    running workflows before sending again: the first call may have been
-    accepted, and a re-sent batch duplicates every task in it."""
+@contextlib.contextmanager
+def submit_guard(path: str) -> Iterator[None]:
+    """Wrap a dispatch or workflow submission's POST, which passes
+    `timeout=SUBMIT_TIMEOUT_SECONDS` itself, with the route written out as a
+    literal so the route scan in tests/unit/mcp/test_against_the_real_api.py
+    reads it. A timeout's error
+    tells the caller to read the running workflows before sending again: the
+    first call may have been accepted, and a re-sent batch duplicates every
+    task in it."""
     try:
-        return client.request("POST", path, payload=payload, timeout=SUBMIT_TIMEOUT_SECONDS)
+        yield
     except SwarmError as exc:
         if not _timed_out(exc):
             raise
@@ -2155,13 +2160,15 @@ class SwarmClient:
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,
         # which a shell then piped into `swarm tail`.
-        return unwrap_task(submit_post(self, "/v1/tasks", payload))
+        with submit_guard("/v1/tasks"):
+            return unwrap_task(self.request("POST", "/v1/tasks", payload=payload, timeout=SUBMIT_TIMEOUT_SECONDS))
 
     def dispatch_batch(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Several tasks at once. A LIST, matching what `dispatch` returns for
         one -- `{"tasks": [...], "count": n, ...}` is the route's envelope and
         a caller iterating it would iterate its keys."""
-        data = submit_post(self, "/v1/tasks/batch", {"tasks": tasks})
+        with submit_guard("/v1/tasks/batch"):
+            data = self.request("POST", "/v1/tasks/batch", payload={"tasks": tasks}, timeout=SUBMIT_TIMEOUT_SECONDS)
         created = data.get("tasks") if isinstance(data, dict) else None
         if created is None:
             raise SwarmError("the batch response carried no `tasks` field")

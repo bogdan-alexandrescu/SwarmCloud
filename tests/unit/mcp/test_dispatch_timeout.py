@@ -90,7 +90,7 @@ def test_a_timed_out_batch_says_read_the_running_workflows_first(wire, failure):
 def test_a_timed_out_workflow_submission_says_the_same(wire):
     wire.fail = TimeoutError("timed out")
     with pytest.raises(SwarmError) as caught:
-        mcp_client.submit_post(SwarmClient(base_url="http://api.invalid"), "/v1/workflows", {"steps": []})
+        workflows.submit(SwarmClient(base_url="http://api.invalid"), steps=[{"id": "a", "prompt": "x"}])
     assert "read the running workflows" in str(caught.value)
     assert wire.timeouts[0][2] == 120
 
@@ -99,8 +99,8 @@ def test_workflow_submission_goes_through_submit() -> None:
     import inspect
 
     source = inspect.getsource(workflows.submit)
-    assert 'client.request("POST", "/v1/workflows"' not in source
-    assert 'submit_post(client, "/v1/workflows"' in source
+    assert 'with submit_guard("/v1/workflows")' in source
+    assert 'client.request("POST", "/v1/workflows", payload=body, timeout=SUBMIT_TIMEOUT_SECONDS)' in source
 
 
 def test_a_refusal_is_not_called_a_timeout(wire):

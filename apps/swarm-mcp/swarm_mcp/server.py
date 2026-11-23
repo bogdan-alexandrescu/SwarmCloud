@@ -54,6 +54,7 @@ from . import profiles as catalogue
 from . import workflows
 from .awaitinput import VERDICTS
 from .client import (
+    SUBMIT_TIMEOUT_SECONDS,
     TERMINAL,
     SwarmClient,
     SwarmError,
@@ -61,7 +62,7 @@ from .client import (
     chosen_tenant,
     enter_hold_lane,
     outputs_of,
-    submit_post,
+    submit_guard,
     task_id_of,
     task_payload,
     tenant_listing,
@@ -3365,7 +3366,8 @@ def _send_task(client: Any, credentials: dict[str, Any] | None, **fields: Any) -
         return client.dispatch(**fields)
     payload = task_payload(**fields)
     payload["mcp_credentials"] = credentials
-    return unwrap_task(submit_post(client, "/v1/tasks", payload))
+    with submit_guard("/v1/tasks"):
+        return unwrap_task(client.request("POST", "/v1/tasks", payload=payload, timeout=SUBMIT_TIMEOUT_SECONDS))
 
 
 def _step_servers(steps: list[dict[str, Any]]) -> set[str]:
