@@ -26,7 +26,7 @@ this module is the only thing that deletes one.
 
 WHAT CAN RESUME FROM A CHECKPOINT
 ---------------------------------
-One thing: `task.latest_checkpoint`, the pointer `agent_worker.lifecycle`
+One thing: `task.latest_checkpoint`, the pointer `agent_worker.checkpointing`
 resolves (`Worker._recorded_checkpoint`, through `find_by_uri`). The worker
 restores the checkpoint it names or nothing -- since archived issue 347 there is no fallback
 to `CheckpointManager.find_latest()`, which would take the newest manifest

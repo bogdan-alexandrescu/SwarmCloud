@@ -336,7 +336,7 @@ class TaskView:
     #: bound from; None on a task cancelled before it was written (archived issue 627).
     cancel_requested_at: datetime | None = None
     started_at: datetime | None = None
-    #: The resume pointer `agent_worker.lifecycle._restore_checkpoint` reads
+    #: The resume pointer `agent_worker.checkpointing._restore_checkpoint` reads
     #: first. Carried here because checkpoint retention has to know which
     #: checkpoint a future attempt of this task would come back to; the
     #: reconciliation pass itself never looks at it.
