@@ -138,6 +138,8 @@ from . import steprerun
 from . import wfdescription
 from .store import Store, derived_service_account
 from .task_accounts import takes_pool_account
+from . import reviewgate
+from .stepclass import CLASS_CHOSEN_BY_KEY, REVIEW_AT_GATE
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
     AWAIT_STEP_REFUSED_FIELDS,
@@ -2022,6 +2024,18 @@ class SubmissionService:
                 }
             if step_id in default_gated:
                 task.metadata[REVIEW_GATE_METADATA_KEY] = dict(REVIEW_GATE_DEFAULT_BLOCK)
+            # A first review's class is the review gate's to pick, from the
+            # diff it reads (`stepclass`, the owner 2026-11-23): submitted on
+            # the profile's default, marked here, re-signed by the gate. Not a
+            # requirements check, a security review or the re-review, and
+            # never a step whose caller named a class.
+            if (source.model_class is None and step_id != rereview_step_id
+                    and not is_security_review(task.metadata, os.environ)
+                    and task.metadata.get(REVIEW_GATE_METADATA_KEY)
+                    and not reviewgate.is_requirements_check(task.metadata)):
+                task.metadata[CLASS_CHOSEN_BY_KEY] = REVIEW_AT_GATE
+            elif task.metadata.get(CLASS_CHOSEN_BY_KEY) == REVIEW_AT_GATE:
+                task.metadata.pop(CLASS_CHOSEN_BY_KEY)
             step_task_id[step_id] = task.id
             step_model_class[step_id] = task.model_class
             tasks.append(task)
@@ -2308,7 +2322,8 @@ class SubmissionService:
             sources = merge_sources(rest, strategy)
             if sources is None or sources.review not in by_id:
                 continue
-            derived = rereview_step_for(rest, by_id[sources.review].model_dump(), strategy)
+            derived = rereview_step_for(rest, by_id[sources.review].model_dump(), strategy,
+                                        self._settings.worker_class_models)
             if derived is not None and (
                 WorkflowStepCreate.model_validate(derived).model_dump() == step.model_dump()
             ):
@@ -2359,7 +2374,8 @@ class SubmissionService:
         by_id = {s.step_id: s for s in spec.steps}
         sources = merge_sources(step_specs, strategy)
         rereview = (
-            rereview_step_for(step_specs, by_id[sources.review].model_dump(), strategy)
+            rereview_step_for(step_specs, by_id[sources.review].model_dump(), strategy,
+                              self._settings.worker_class_models)
             if sources is not None and sources.review in by_id else None
         )
         if rereview is None:

@@ -88,6 +88,7 @@ from ..forge import ForgeReadError, open_work_without
 from ..issueruns import IssueRun, IssueRuns, refuse_auto_merge, run_source
 from ..repositories import Repositories, repo_id_for
 from ..routes.runs import start_run
+from ..stepclass import ROLE_PLANNER, default_class
 from ..validation import workflow_label
 
 log = logging.getLogger(__name__)
@@ -108,6 +109,10 @@ class RunOptions:
     auto_merge: bool
     merge_approval: str | None
     fix_rounds: int
+    #: The planner's class to send (`start_run`'s `model_class`): None for
+    #: the role default, which `issueruns.planner_task` applies with its pin
+    #: fallback; a class the schedule named otherwise.
+    planner_model_class: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -118,7 +123,8 @@ class RunOptions:
         }
 
 
-def run_options(schedule: Mapping[str, Any], fix_rounds: int, *, plan_required: bool = False) -> RunOptions:
+def run_options(schedule: Mapping[str, Any], fix_rounds: int, *, plan_required: bool = False,
+                planner_model_class: str | None = None) -> RunOptions:
     """`merge: off` opens a pull request and never merges it; `approve` merges
     once a person approves it in the inbox (`merge_approval: required`);
     `auto` merges the reviewed, green pull request with no one asked."""
@@ -132,6 +138,8 @@ def run_options(schedule: Mapping[str, Any], fix_rounds: int, *, plan_required: 
         auto_merge=merge != "off",
         merge_approval="required" if merge == "approve" else None,
         fix_rounds=int(fix_rounds),
+        planner_model_class=(None if planner_model_class in (None, default_class(ROLE_PLANNER))
+                             else planner_model_class),
     )
 
 
@@ -458,6 +466,7 @@ def start(firing: Any, selection: Selection, options: RunOptions) -> list[dict[s
                 plan_approval=options.plan_approval, auto_merge=options.auto_merge,
                 fix_rounds=options.fix_rounds, created_by=f"schedule:{schedule_id}",
                 schedule=firing.mark, merge_approval=options.merge_approval,
+                model_class=options.planner_model_class,
                 # plans-pipeline §3.1: `sweep`, or `plan_only` for issue-plan-only's firing.
                 source=run_source(firing.mark),
             )
@@ -558,11 +567,13 @@ def create(firing: Any) -> list[dict[str, Any]]:
     params = params_of(firing)
     selection = select(firing, params, limits=_limits(firing, params), max_live_runs=params.max_live_runs,
                        own_live=_own_live(firing, params))
-    return fire(firing, selection, run_options(firing.schedule, params.fix_rounds))
+    return fire(firing, selection, run_options(
+        firing.schedule, params.fix_rounds, planner_model_class=params.planner_model_class))
 
 
 def dry_run(firing: Any) -> dict[str, Any]:
     params = params_of(firing)
     selection = select(firing, params, limits=_limits(firing, params), max_live_runs=params.max_live_runs,
                        own_live=_own_live(firing, params))
-    return describe(selection, run_options(firing.schedule, params.fix_rounds))
+    return describe(selection, run_options(
+        firing.schedule, params.fix_rounds, planner_model_class=params.planner_model_class))

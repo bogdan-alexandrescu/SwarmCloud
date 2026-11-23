@@ -47,7 +47,10 @@ from typing import Any, Callable, Literal, Mapping
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 from pydantic_core import to_jsonable_python
 
+from swarm_common.profiles import RUNNER_PROFILES
+
 from .schemas import WorkflowCreate
+from .stepclass import ROLE_PLANNER, default_class
 
 # --------------------------------------------------------------------------
 # Gate points and their order of strictness (§4.2)
@@ -127,6 +130,30 @@ def _repo_paths(values: list[str]) -> list[str]:
     return _unique(values, "paths")
 
 
+#: The planner's profile (`issueruns.PLANNER_PROFILE`), whose classes a
+#: schedule's `planner_model_class` may name.
+_PLANNER_PROFILE = "claude-code"
+
+
+class _PlannerClass(Params):
+    """`planner_model_class`: the class of the planner of each issue run a
+    schedule starts, by name (invariant 10). The default is the planner's role
+    default (`stepclass`, the owner 2026-11-23: `fable`), which falls back to
+    the profile's default where the deployment pins no model for it; a class
+    named here that is not the default is the schedule's choice, refused at
+    the run's submission where it is not pinned."""
+
+    planner_model_class: str = Field(default=default_class(ROLE_PLANNER), max_length=32)
+
+    @field_validator("planner_model_class")
+    @classmethod
+    def _planner_class(cls, value: str) -> str:
+        accepted = RUNNER_PROFILES[_PLANNER_PROFILE].model_classes
+        if value not in accepted:
+            raise ValueError(f"planner_model_class is one of {', '.join(accepted)}")
+        return value
+
+
 class _Selection(Params):
     """The issue selection §3.1 and §3.2 share."""
 
@@ -148,7 +175,7 @@ class _Selection(Params):
         return _unique(values, "labels")
 
 
-class IssueSweepParams(_Selection):
+class IssueSweepParams(_Selection, _PlannerClass):
     #: Lane SWEEP's cap of 8 is the upper bound. It counts THIS schedule's
     #: live runs only (`issue_sweep.schedule_live`, lane SCHED): another
     #: schedule's or a person's run takes no place in it.
@@ -163,7 +190,7 @@ class IssueSweepParams(_Selection):
     territory_guard: StrictBool = True
 
 
-class IssuePlanOnlyParams(_Selection):
+class IssuePlanOnlyParams(_Selection, _PlannerClass):
     #: A new plan is not made while this many are waiting for a person.
     max_pending_plans: int = Field(default=5, ge=1, le=20)
     fix_rounds: int = Field(default=3, ge=1, le=5)
@@ -334,7 +361,7 @@ class ModelPricesCheckParams(Params):
     issue_label: str = Field(default="bug", min_length=1, max_length=50)
 
 
-class FailureReviewParams(Params):
+class FailureReviewParams(_PlannerClass):
     """§3.16 (docs/design/failure-review.md). Nothing here names a window, a
     tenant, a profile or a gate: the window is the design's (7 h, one of
     overlap), the scope is every tenant, the profile is the type's, and the

@@ -58,7 +58,8 @@ def _limits(firing: Any, params: Any) -> issue_sweep.Limits:
 
 
 def _options(firing: Any, params: Any) -> issue_sweep.RunOptions:
-    return issue_sweep.run_options(firing.schedule, params.fix_rounds, plan_required=True)
+    return issue_sweep.run_options(firing.schedule, params.fix_rounds, plan_required=True,
+                                   planner_model_class=params.planner_model_class)
 
 
 def _own_live(firing: Any, params: Any) -> issue_sweep.OwnLive:

@@ -165,23 +165,26 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common import specsign
 from swarm_common.admission import _snapshot
 from swarm_common.models import FORGE_ACCESS, FORGE_CREDENTIAL
+from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import EventType, ParkReason, TaskState, can_transition
 
 from .cifix import BRANCH_PREFIX
 from .errors import ApiError
 from .forge import GIT_PROVIDER
 from .forgeapp import GRANTS
-from . import reviewgate
+from . import reviewgate, stepclass
 from .forgewrite import ForgeWriteError, GitHubWriter
 from .gittokens import secret_name_for
 from .issueci import NO_CHANGE_MARKER
 from .issuecomments import neutralise_mentions
 from .repositories import parse_repository, repo_id_for
 from .rollup import SKIPPED_SUMMARY_KEY
+from .specsigning import resign_stored
 from .validation import (
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     REVIEW_VERDICTS,
+    RUNTIME_METADATA_KEY,
     IssueRef,
 )
 from .waker import TASK_FINISHED, ring
@@ -579,15 +582,22 @@ def _ours(data: Mapping[str, Any] | None, tenant_id: str, claim_id: str) -> dict
 
 
 def _decline(db: Any, tenant_id: str, task_id: str, claim_id: str, now: datetime,
-             code: str, why: str) -> bool:
-    """Hand the claimed step back to the scheduler, saying why."""
+             code: str, why: str, review_class: "ReviewClass | None" = None) -> bool:
+    """Hand the claimed step back to the scheduler, saying why.
+
+    `review_class` is the first review's class (`_review_class`), written in
+    the same write, so the scheduler never promotes the step on the class it
+    was submitted with once the gate picked another. Only while the step is
+    still signed as the gate read it: a spec rewritten since keeps its own.
+    """
     ref = db.collection(TASKS).document(task_id)
     transaction = db.transaction()
 
     @firestore.transactional
     def _apply(txn: Any) -> bool:
         snap = _snapshot(txn.get(ref))
-        metadata = _ours(snap.to_dict() if snap.exists else None, tenant_id, claim_id)
+        data = snap.to_dict() if snap.exists else None
+        metadata = _ours(data, tenant_id, claim_id)
         if metadata is None:
             return False
         metadata[CONTROL_PUBLISH_METADATA_KEY] = {
@@ -595,7 +605,15 @@ def _decline(db: Any, tenant_id: str, task_id: str, claim_id: str, now: datetime
             "claimed_at": _mapping(metadata.get(CONTROL_PUBLISH_METADATA_KEY)).get("claimed_at"),
             "decided_at": now, "code": code, "reason": why[:500],
         }
-        txn.update(ref, {"metadata": metadata, "updated_at": now})
+        fields: dict[str, Any] = {}
+        if review_class is not None and data is not None and all(
+                data.get(name) == review_class.read.get(name) for name in RESIGN_GUARD):
+            fields = dict(review_class.fields)
+            runtime = _mapping(fields.pop("metadata", None)).get(RUNTIME_METADATA_KEY)
+            if runtime is not None:
+                metadata[RUNTIME_METADATA_KEY] = runtime
+            metadata[stepclass.CLASS_CHOSEN_BY_KEY] = review_class.chosen_by
+        txn.update(ref, {**fields, "metadata": metadata, "updated_at": now})
         return True
 
     return bool(_apply(transaction))
@@ -1170,6 +1188,65 @@ def _check_requirements(ctx: Any, tenant_id: str,
     return None
 
 
+#: The stored fields a gate-time re-sign was computed from: the class is
+#: written only while every one is as the gate read it.
+RESIGN_GUARD = ("spec_signature", "spec_format", "model_class", "model", "runner_profile")
+
+
+@dataclass(frozen=True)
+class ReviewClass:
+    """A first review's class, as the gate picked it (`stepclass`, the owner 2026-11-23)."""
+
+    #: The fields to write: none when the class is the one it was signed with.
+    fields: Mapping[str, Any]
+    chosen_by: str
+    #: The stored document the fields were computed from (`RESIGN_GUARD`).
+    read: Mapping[str, Any]
+
+
+def _class_fields(profile_name: Any, model_class: str,
+                  class_models: Mapping[str, str]) -> dict[str, Any] | None:
+    """`model_class` and `model` of a step on `profile_name` running `model_class`,
+    or None when that profile does not run it or it is not pinned."""
+    choice_profile = RUNNER_PROFILES.get(str(profile_name or ""))
+    if (choice_profile is None or model_class not in choice_profile.model_classes
+            or model_class not in class_models):
+        return None
+    stored = None if model_class == choice_profile.default_model_class else model_class
+    return {"model_class": stored, "model": class_models[model_class]}
+
+
+def _review_class(ctx: Any, doc: Mapping[str, Any], decision: Any) -> ReviewClass | None:
+    """The class of a first review the gate lets run, picked from what it read.
+
+    Only a review submitted with `stepclass.REVIEW_AT_GATE` (its caller named
+    no class): a risk path touched, or a diff that could not be read whole,
+    keeps the `opus` it was signed with; a diff read whole that touches none
+    runs `stepclass.ROLE_CLASSES[ROLE_REVIEW]` where the profile runs it and
+    the deployment pins it, signed again by swarm-api (`resign_stored`).
+    Anything that cannot be signed keeps the class the step was signed with.
+    """
+    if not stepclass.at_gate(doc.get("metadata")):
+        return None
+    class_models = stepclass.class_models_of(ctx) or {}
+    role = stepclass.review_role(decision)
+    choice = stepclass.choose(role, str(doc.get("runner_profile") or ""), class_models)
+    if choice.model_class is None:
+        return ReviewClass({}, choice.chosen_by, doc)
+    changes = _class_fields(doc.get("runner_profile"), choice.model_class, class_models)
+    block = _mapping(_mapping(doc.get("metadata")).get(RUNTIME_METADATA_KEY))
+    alternate = _mapping(block.get("alternate"))
+    alternate_changes = (_class_fields(alternate.get("runner_profile"), choice.model_class,
+                                       class_models) if alternate else None)
+    signer = getattr(getattr(ctx, "submissions", None), "signer", None)
+    fields = None if changes is None else resign_stored(
+        doc, task_id=str(doc.get("id") or ""), changes=changes,
+        alternate_changes=alternate_changes, signer=signer)
+    if fields is None:
+        return ReviewClass({}, f"{choice.chosen_by}; not signed again, profile default", doc)
+    return ReviewClass(fields, choice.chosen_by, doc)
+
+
 def _consider_review(ctx: Any, doc: Mapping[str, Any], report: FinishReport,
                      parent_id: str, claim_id: str) -> None:
     """A claimed gated review: end it SUCCEEDED when its parents' change buys
@@ -1250,7 +1327,8 @@ def _consider_review(ctx: Any, doc: Mapping[str, Any], report: FinishReport,
                  state=TaskState.SUCCEEDED.value)
         return
     report.declined.append({"task_id": task_id, "code": code})
-    if _decline(db, tenant_id, task_id, claim_id, ctx.now(), code, why):
+    review_class = None if check else _review_class(ctx, doc, decision)
+    if _decline(db, tenant_id, task_id, claim_id, ctx.now(), code, why, review_class):
         ring(ctx.waker, ctx.metrics, TASK_FINISHED, task_id=parent_id, tenant_id=tenant_id,
              state=TaskState.SUCCEEDED.value)
 

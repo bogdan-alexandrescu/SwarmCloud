@@ -716,7 +716,8 @@ class _Filing:
                 self.causes.record_run(cause.fingerprint, row.id, firing_id=self.review["firing_id"])
                 return row.id
         params = issue_sweep.params_of(self.firing)
-        options = issue_sweep.run_options(self.firing.schedule, params.fix_rounds)
+        options = issue_sweep.run_options(self.firing.schedule, params.fix_rounds,
+                                          planner_model_class=params.planner_model_class)
         try:
             refuse_auto_merge(options.auto_merge)
             tenant = self.ctx.store.get_tenant(tenant_id)
@@ -727,6 +728,7 @@ class _Filing:
                 plan_approval=options.plan_approval, auto_merge=options.auto_merge,
                 fix_rounds=options.fix_rounds, created_by=f"schedule:{schedule_id}",
                 schedule=self.firing.mark, merge_approval=options.merge_approval,
+                model_class=options.planner_model_class,
                 # plans-pipeline §3.1: the cause this run fixes, beside `record_run`.
                 source=run_source(self.firing.mark, fingerprint=cause.fingerprint),
             )

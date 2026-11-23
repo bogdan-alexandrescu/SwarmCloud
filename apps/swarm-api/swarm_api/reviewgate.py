@@ -388,6 +388,10 @@ class Decision:
     shots: tuple[str, ...] = field(default=())
     handed: tuple[str, ...] = ()
     renders: tuple[str, ...] = ()
+    #: A parent's file list was cut short: what it touched is not all known
+    #: (`stepclass.review_role` reads it; `REASON_CUT` only when nothing
+    #: decided the review first).
+    truncated: bool = False
 
     @property
     def text(self) -> str:
@@ -592,7 +596,7 @@ def resolve(
             queue.append(upstream)
     common = {"changed_lines": total, "min_lines": gate.min_lines, "read": tuple(visited),
               "unreadable": tuple(unknown), "shots": tuple(shots), "handed": tuple(handed),
-              "renders": tuple(renders)}
+              "renders": tuple(renders), "truncated": cut}
     if hits:
         return Decision(True, REASON_RISK, risk_hits=tuple(hits), **common)
     if total > gate.min_lines:
