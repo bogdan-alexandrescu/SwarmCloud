@@ -122,12 +122,31 @@ def scrub(text: str, secrets_: Iterable[str]) -> str:
     return text
 
 
-_TAG = re.compile(r"</?data\b[^>]*>", re.IGNORECASE)
+#: A fence tag in the data, as a lenient reader takes one: any case, whitespace
+#: after "<", any attributes, and no ">" at all at the end of the data (a cut can
+#: leave `<data source="x"`, which would swallow the fence's own closing tag).
+_TAG = re.compile(r"<\s*/?\s*data\b[^>]*(?:>|\Z)", re.IGNORECASE)
 
 
 def _untag(body: str) -> str:
-    """`body` with every fence tag replaced by "[tag]"."""
-    return _TAG.sub("[tag]", body)
+    """`body` with every fence tag replaced by "[tag]". Tags are matched on a
+    shadow of `body` with each character NFKC-folded and format characters
+    (zero-width space and joiners, BOM, soft hyphen) dropped, so neither
+    `</da` + U+200B + `ta>` nor fullwidth brackets can close the fence either."""
+    shadow: list[str] = []
+    where: list[int] = []
+    for i, ch in enumerate(body):
+        for c in unicodedata.normalize("NFKC", ch):
+            if unicodedata.category(c) != "Cf":
+                shadow.append(c)
+                where.append(i)
+    out: list[str] = []
+    last = 0
+    for m in _TAG.finditer("".join(shadow)):
+        start = max(where[m.start()], last)
+        out.append(body[last:start] + "[tag]")
+        last = where[m.end() - 1] + 1
+    return "".join(out) + body[last:]
 
 
 def fence(label: str, text: str, *, limit: int = RESULT_MAX) -> str:
