@@ -18211,6 +18211,7 @@ export const VOICE_TELEMETRY_SESSIONS = '/v1/voice/telemetry/sessions'
 export const VOICE_TELEMETRY_SESSION = '/v1/voice/telemetry/sessions/{id}'
 export const VOICE_TELEMETRY_DAYS = '/v1/voice/telemetry/days'
 export const VOICE_TELEMETRY_LIVE = '/v1/voice/telemetry/live'
+export const VOICE_TELEMETRY_LATENCY = '/v1/voice/telemetry/latency'
 
 /** The per-utterance and per-synthesis values a session keeps (speech_telemetry.VALUES). */
 export type VoiceTimingName = 'stt_final_ms' | 'stt_first_partial_ms' | 'stt_rtf' | 'tts_first_audio_ms' | 'tts_rtf'
@@ -18380,6 +18381,52 @@ export function loadVoiceTelemetryDays(span: VoiceTelemetrySpan): Promise<Result
     return Array.isArray(rows) ? rows.map(normVoiceTelemetryDay) : []
   }
   return telemetryRead(target, norm, [])
+}
+
+/**
+ * The engines a turn's latency names (speech_telemetry.ENGINES): the
+ * own-speech chain and the hosted voice.
+ */
+export type VoiceEngine = 'own' | 'gpt-live'
+export const VOICE_ENGINES: readonly VoiceEngine[] = ['own', 'gpt-live']
+
+/** One figure of the turns: how many measured it, p50 and p90 (null for none), and how many did not. */
+export interface VoiceLatencyFigure {
+  count: number
+  p50: number | null
+  p90: number | null
+  not_measured: number
+}
+
+/** One engine's turns (docs/design/voice-it-own-speech.md §12.6): the span and each part it has. */
+export interface VoiceEngineLatency {
+  turns: number
+  span_ms: VoiceLatencyFigure
+  parts: Record<string, VoiceLatencyFigure>
+}
+
+export type VoiceLatency = Record<VoiceEngine, VoiceEngineLatency>
+
+function normVoiceLatencyFigure(raw: unknown): VoiceLatencyFigure {
+  const o = telObj(raw)
+  return { count: telNum(o.count) ?? 0, p50: telNum(o.p50), p90: telNum(o.p90), not_measured: telNum(o.not_measured) ?? 0 }
+}
+
+export function normVoiceLatency(raw: unknown): VoiceLatency {
+  const engines = telObj(telObj(raw).engines)
+  const one = (e: VoiceEngine): VoiceEngineLatency => {
+    const o = telObj(engines[e])
+    const parts: Record<string, VoiceLatencyFigure> = {}
+    for (const [k, v] of Object.entries(telObj(o.parts))) parts[k] = normVoiceLatencyFigure(v)
+    return { turns: telNum(o.turns) ?? 0, span_ms: normVoiceLatencyFigure(o.span_ms), parts }
+  }
+  return { own: one('own'), 'gpt-live': one('gpt-live') }
+}
+
+/** `GET /v1/voice/telemetry/latency?from=&to=&tz=&scope=platform`: end of speech to first audio, per engine. */
+export function loadVoiceTelemetryLatency(span: VoiceTelemetrySpan): Promise<Result<VoiceLatency>> {
+  const target = route(VOICE_TELEMETRY_LATENCY, {}, telemetryQuery({ ...span }))
+  return telemetryRead(target, normVoiceLatency, normVoiceLatency({}))
 }
 
 /** `GET /v1/voice/telemetry/sessions/{id}?tz=&scope=platform`: the summary and its samples (kept 30 days). */

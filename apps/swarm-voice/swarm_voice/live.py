@@ -163,6 +163,7 @@ from websockets.exceptions import InvalidStatus, WebSocketException
 from .accountlease import SPENT_CODES, VoicePoolRefused
 from .credential import Credential, CredentialError
 from . import instructions as vinstructions
+from . import latency as vlatency
 from . import readback as vreadback
 from . import trace as vtrace
 from .grant import GRANT_HEADER, SessionGrant
@@ -737,6 +738,9 @@ class LiveSession:
         #: start body said `debug: true`; None counts and sends nothing.
         self.trace: vtrace.SessionTrace | None = None
         self._trace_writes: set[asyncio.Task] = set()
+        #: Every session's turn latency (latency.py, own-speech §12.6): the
+        #: person's end of speech to the voice's audio, on the session clock.
+        self.latency = vlatency.TurnLatency(voice_id, clock=self._clock)
         #: Told when the key is spent (Sessions moves the session to the next tier).
         self.on_spent: Callable[["LiveSession"], None] | None = None
         #: The next tier's credential, held for the reopen once the key is spent.
@@ -911,6 +915,7 @@ class LiveSession:
                             self._delegated(event)
                     # After the transcript has taken the event: a voice line's text is current.
                     self._note_activity(kind, event)
+                    self._note_latency(kind, event)
                     if kind == "error":
                         # The error's code only: its message may quote what was sent.
                         error = event.get("error") if isinstance(event.get("error"), dict) else {}
@@ -1271,6 +1276,15 @@ class LiveSession:
             self.person_spoke = True
         if speaker == "voice" and (final or ends_sentence(self._voice_text())):
             self._spoken()
+
+    def _note_latency(self, kind: str, event: dict) -> None:
+        """A finished turn's latency record goes to swarm-api beside the
+        sideband (its own task, through the session grant), never waited on."""
+        record = self.latency.note(kind, event)
+        write = getattr(self._planner, "write_latency", None)
+        if record is None or self.grant is None or not callable(write):
+            return
+        vtrace.spawn(write(self.grant, record), self._trace_writes)
 
     def _voice_text(self) -> str:
         for segment in reversed(self._segments):

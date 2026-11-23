@@ -2,6 +2,7 @@
 
     POST /v1/voice/sessions/{session_id}/trace
          {engine, tier, session_events, turn} -> {turn}     swarm-voice only
+         {latency: {engine, turn_id, session_id, span_ms}} -> {seq}
     GET  /v1/voice/trace/sessions[?scope=]   -> {sessions, scope}
     GET  /v1/voice/trace/sessions/{session_id}[?scope=]
                                              -> {session_id, engine, started,
@@ -17,6 +18,14 @@ the session's card stream as one `trace.turn` event (voice/stream.py), so Talk
 shows the turn's line as it finishes. `tier` is the tier the turn's planner
 ran on, beside the engine (absent: not recorded); voice/trace.py checks it. swarm-voice sends a trace only for a
 session that started with debug mode on; with it off nothing reaches here.
+
+A HOSTED TURN'S LATENCY (docs/design/voice-it-own-speech.md §12.6) rides the
+same grant write, for every hosted session, debug or not: a body that is
+`{latency: ...}` alone is one turn's end of speech to first audio, kept by
+Telemetry (voice/speech_telemetry.py `record_hosted`) beside the own-speech
+engine's turns, never in the trace. It is durations, the engine, the turn id
+and the session id; any other field is a 422 that names the field and keeps
+nothing. Reusing this write keeps the grant's list of writes as it was.
 
 THE READS follow Voice it › Telemetry's rule exactly (routes/voice_telemetry.py,
 `reader` and `_tenant`, imported, not restated): the caller is a Voice it person
@@ -37,7 +46,10 @@ from starlette.concurrency import run_in_threadpool
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
+from ..errors import ValidationFailed
 from ..voice import grant as vgrant
+from ..voice import speech_machine as sm
+from ..voice import speech_telemetry as vtelemetry
 from ..voice import store as vstore
 from ..voice import stream as vstream
 from ..voice import trace as vtrace
@@ -73,6 +85,9 @@ async def write_trace(
         raise vgrant.RouteNotGranted("a Voice it grant writes only to its own session")
     vstore.check_id(session_id, "vs_", "session_id")
     person = auth.email.strip().lower()
+    if set(body) == {"latency"}:
+        return await run_in_threadpool(_write_latency, ctx, person, session_id,
+                                       auth.tenant_id, body["latency"])
 
     def _write() -> dict[str, Any]:
         found = vstream.find_session(ctx.db, person=person, session_id=session_id,
@@ -89,6 +104,20 @@ async def write_trace(
         return {"turn": vtrace.served_turn(kept)}
 
     return await run_in_threadpool(_write)
+
+
+def _write_latency(ctx: AppContext, person: str, session_id: str, tenant_id: str,
+                   record: Any) -> dict[str, Any]:
+    found = vstream.find_session(ctx.db, person=person, session_id=session_id,
+                                 tenants=frozenset({tenant_id}))
+    owner = sm.SessionRef(tenant_id=found.tenant_id, person=person,
+                          project_id=found.project_id, session_id=found.session_id)
+    try:
+        seq = vtelemetry.Telemetry(ctx.db, now=ctx.now).record_hosted(owner, record)
+    except vtelemetry.SampleRefused as exc:
+        # The message names the field, never its value.
+        raise ValidationFailed(str(exc), detail={"field": "latency"}) from None
+    return {"seq": seq}
 
 
 @router.get("/sessions")
