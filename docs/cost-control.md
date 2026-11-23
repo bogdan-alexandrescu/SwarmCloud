@@ -118,7 +118,7 @@ comes from the profile catalogue. There are three routes, cheapest first:
    combines two `--settings` was not checked.
 
 The settings key and the env var need Claude Code v2.1.242 or later.
-`images/agent-runtime-base/Dockerfile` pins `CLAUDE_CODE_VERSION=2.1.283`.
+`images/agent-runtime-base/Dockerfile` pins `CLAUDE_CODE_VERSION=2.1.330`.
 `subagentPromptCacheTtl` / `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` govern
 subagents separately. `FORCE_PROMPT_CACHING_5M=1` forces 5m for both and wins
 over everything; `ENABLE_PROMPT_CACHING_1H=1` requests 1h for both.

@@ -1,8 +1,9 @@
 # Managed plugins: the `--plugin-dir` loading spike
 
 Lane 2 of [managed-plugins.md](managed-plugins.md) §17, measured on 6 November 2026. It does not merge into the
-product path. It answers the questions the design left to measurement, using the Claude Code CLI the image pins
-(2.1.283, `ARG CLAUDE_CODE_VERSION` in `images/agent-runtime-base/Dockerfile`). Each answer gives the evidence and
+product path. It answers the questions the design left to measurement, using the Claude Code CLI the image pinned then
+(2.1.283, `ARG CLAUDE_CODE_VERSION` in `images/agent-runtime-base/Dockerfile`; the pin is 2.1.330 since 23 November
+2026, see [Re-run on 2.1.330](#re-run-on-21330)). Each answer gives the evidence and
 what lane 8 (worker install, load and launcher) must do because of it.
 
 ## How it was measured
@@ -267,7 +268,7 @@ record.
 ## What this spike did not measure
 
 * **The real image.** The CLI was `/usr/local/share/npm-global/bin/claude` 2.1.283 in a SwarmCloud agent container.
-  That is the same version the image pins (the script checks), but it was not run inside `agent-runtime-base`.
+  That is the same version the image pinned then (the script checks), but it was not run inside `agent-runtime-base`.
 * **A real TypeSafe key or a real verdict.** The point was that the hooks ran, not what Jev answered.
 * **The owner's jev-enforce fork (`1.1.1-owner.3`).** It is on no remote. The upstream `v1.1.1` was used instead.
 * **Some CLI behaviours:**
@@ -277,3 +278,21 @@ record.
   * a plugin hook alongside the runner's own `--settings` hooks. The design says plugin hooks run in addition and
     never instead; the spike's settings carried no hooks.
 * **Network hosts.** Recording and enforcing them is a later lane by the owner's answer of 6 November 2026.
+
+## Re-run on 2.1.330
+
+On 23 November 2026 the pin was raised to 2.1.330 (2.1.283 refused the fable class's `claude-fable-5-2`), and
+`run-spike.sh` was run again, offline against the mock API, on 2.1.330 and on 2.1.283 side by side, each from a
+temporary npm prefix in a SwarmCloud agent container. Every case exited 0 on both, and §2 to §6 read the same, with
+two differences, neither a reason to keep the old pin:
+
+* **A plugin's MCP tools are deferred behind tool search.** 2.1.330 offers the model `ToolSearch` instead of
+  `mcp__plugin_probe_probe__probe_ping`, even against a local `ANTHROPIC_BASE_URL`, where 2.1.283 sent the tool
+  itself. The mock's plan names the tool directly, so on 2.1.330 the probe's tool is never called and §4's
+  `PostToolUse(mcp)` row has nothing to record; the plan would need a `ToolSearch` turn first. The hosted API already
+  defers MCP tools on 2.1.283, which is why the runner marks the servers a step must use with `alwaysLoad`; an
+  `--mcp-config` server carrying `alwaysLoad` was checked on 2.1.330 the same day and its tool is still sent
+  undeferred. Lane 8 has to decide the same for plugin MCP servers.
+* **More built-in plugins.** The plugin list carries `cc-plugin-agents-md`, `cc-plugin-privacy` and
+  `cc-plugin-plugin-authoring` (2.1.283: `agents-md` alone), and the CLI writes
+  `~/.claude/plugins/store/cc-plugin-agents-md_builtin-*.json` under HOME.
