@@ -109,7 +109,7 @@ def test_the_route_answers_for_an_admitted_caller_only():
     async def admit(token: str) -> str:
         if token != "ok":
             raise PermissionError("no")
-        return "api@example.iam"
+        return "api@example.com"
 
     app = create_app(verify_caller=admit)
     accounts, claude = FakeAccounts(), FakeClaude()
