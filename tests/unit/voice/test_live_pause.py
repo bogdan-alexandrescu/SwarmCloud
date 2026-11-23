@@ -1,4 +1,4 @@
-"""swarm-voice pauses a GPT-Live session while delegated work runs, and reopens
+"""swarm-voice pauses a GPT-Live session after a silence, work running or not, and reopens
 it by cause with refreshed instructions (docs/design/voice-it.md §3.12.7, the
 design's lane V2; the owner picked the automatic pause on 11 November 2026).
 
@@ -7,7 +7,12 @@ design's lane V2; the owner picked the automatic pause on 11 November 2026).
   be spoken (at most PAUSE_SAY_SECONDS), closes the Live session keeping its
   usage seconds, and tells the sink `session.state: paused`. The planner turn,
   the lease and the session keep running.
-* Speech inside the window resets it; no delegation means no pause.
+* Speech inside the window resets it; audio playing, a held read-back or a
+  side mid-sentence holds it.
+* PAUSE ON SILENCE (owner, 23 November 2026): with NO delegation in flight the
+  same window pauses too, saying PAUSE_IDLE_SENTENCE once; never within the
+  first window of a session or of a reopen; a wake reopens and a second
+  silence pauses again.
 * A wake by each cause (result, speech, Resume, and the tier move) opens a new
   Live session from the fresh offer, carrying the transcript segments, the
   grant, the planner model and the trace, with instructions rebuilt by
@@ -320,7 +325,7 @@ def test_speech_inside_the_window_resets_it():
     asyncio.run(asyncio.wait_for(scenario(), 10))
 
 
-def test_no_delegation_means_no_pause_and_nor_does_audio_playing_or_a_held_read_back():
+def test_audio_playing_or_a_held_read_back_holds_the_pause():
     world = World()
 
     async def scenario():
@@ -333,26 +338,172 @@ def test_no_delegation_means_no_pause_and_nor_does_audio_playing_or_a_held_read_
             socket.push(event)
             await _settle()
 
-        await after(0, {"type": PERSON_DELTA, "delta": "Hello there.", "item_id": "item_a"})
-        await after(120, {"type": AUDIO})
-        assert not _said(socket, live.PAUSE_SENTENCE) and not session.paused
-
         # A delegation, but the voice is still playing.
+        await after(0, {"type": PERSON_DELTA, "delta": "Hello there.", "item_id": "item_a"})
         await after(0, {"type": live.OUTPUT_AUDIO_STARTED})
         await after(0, {"type": live.DELEGATION_CREATED, "delegation": {"id": "item_d1"}})
-        await after(60, {"type": AUDIO})
+        await after(120, {"type": AUDIO})
         assert session.delegations and not _said(socket, live.PAUSE_SENTENCE)
         # Playing stopped, but a read-back is held for the person's answer.
         world.sessions.holds.hold(voice_id, "vr_" + secrets.token_hex(16), lambda readback_id: None)
         await after(0, {"type": live.OUTPUT_AUDIO_STOPPED})
         await after(60, {"type": AUDIO})
-        assert not _said(socket, live.PAUSE_SENTENCE)
+        assert not _said(socket, live.PAUSE_SENTENCE) and not session.paused
         # Neither: now it pauses.
         world.sessions.holds.forget(voice_id)
         await after(1, {"type": AUDIO})
         await _until(lambda: _said(socket, live.PAUSE_SENTENCE))
         world.planner.go.set()
         await world.sessions.end(voice_id)
+
+    asyncio.run(asyncio.wait_for(scenario(), 10))
+
+
+def _count(socket: FakeSocket, content: str) -> int:
+    return sum(1 for e in socket.sent if e.get("type") == live.COMMENTARY_APPEND and e.get("content") == content)
+
+
+async def _started(world: World) -> tuple[live.LiveSession, str]:
+    voice_id = _voice_id()
+    session = await world.sessions.start(voice_id, person=PERSON, offer=_offer(), grant=_grant(voice_id))
+    return session, voice_id
+
+
+async def _idle_paused(world: World, session: live.LiveSession) -> None:
+    """From a quiet session with nothing in flight: the window, the line, the close."""
+    socket = world.socket(session)
+    world.clock.now += live.PAUSE_AFTER_SECONDS
+    socket.push({"type": AUDIO})
+    await _until(lambda: _said(socket, live.PAUSE_IDLE_SENTENCE))
+    socket.push({"type": VOICE_FINAL, "transcript": live.PAUSE_IDLE_SENTENCE, "response_id": "resp_p"})
+    await _until(lambda: session.paused)
+
+
+def test_silence_with_no_delegation_pauses_at_45_s_and_says_the_line_once():
+    world = World()
+
+    async def scenario():
+        session, voice_id = await _started(world)
+        socket = world.socket(session)
+        assert not session.delegations
+        # The first window of the session: nobody has spoken, but not yet.
+        world.clock.now += live.PAUSE_AFTER_SECONDS - 1
+        socket.push({"type": AUDIO})
+        await _settle()
+        assert _count(socket, live.PAUSE_IDLE_SENTENCE) == 0 and not session.paused
+        world.clock.now += 1
+        socket.push({"type": AUDIO})
+        await _until(lambda: _said(socket, live.PAUSE_IDLE_SENTENCE))
+        appended = [e for e in socket.sent if e.get("content") == live.PAUSE_IDLE_SENTENCE][0]
+        assert "delegation_id" not in appended
+        # More silence while the line is said: no second announcement, no close yet.
+        for _ in range(3):
+            world.clock.now += live.PAUSE_AFTER_SECONDS
+            socket.push({"type": AUDIO})
+            await _settle()
+        assert _count(socket, live.PAUSE_IDLE_SENTENCE) == 1
+        assert not any(e.get("type") == "session.close" for e in socket.sent)
+        socket.push({"type": VOICE_FINAL, "transcript": live.PAUSE_IDLE_SENTENCE, "response_id": "resp_p"})
+        await _until(lambda: session.paused)
+        # Kept exactly as the pause with work running keeps it.
+        assert session.ended and session.talk_seconds == 21
+        assert world.sessions.get(voice_id) is session and session.grant is not None
+        assert world.states() == [live.PAUSED]
+        await world.sessions.drain_releases()
+        assert world.leases.leased[0].released == 0
+        assert _count(socket, live.PAUSE_IDLE_SENTENCE) == 1
+        await world.sessions.end(voice_id)
+        await world.sessions.drain_releases()
+        assert world.leases.leased[0].released == 1
+
+    asyncio.run(asyncio.wait_for(scenario(), 10))
+
+
+def test_speech_before_45_s_resets_the_idle_window():
+    world = World()
+
+    async def scenario():
+        session, voice_id = await _started(world)
+        socket = world.socket(session)
+
+        async def after(seconds: float, event: dict) -> None:
+            world.clock.now += seconds
+            socket.push(event)
+            await _settle()
+
+        await after(30, {"type": PERSON_DELTA, "delta": "Let me think.", "item_id": "item_a"})
+        await after(30, {"type": AUDIO})
+        await after(10, {"type": VOICE_DELTA, "delta": "Take your time.", "response_id": "resp_a"})
+        await after(live.PAUSE_AFTER_SECONDS - 1, {"type": AUDIO})
+        assert not _said(socket, live.PAUSE_IDLE_SENTENCE) and not session.paused
+        await after(1, {"type": AUDIO})
+        await _until(lambda: _said(socket, live.PAUSE_IDLE_SENTENCE))
+        await world.sessions.end(voice_id)
+
+    asyncio.run(asyncio.wait_for(scenario(), 10))
+
+
+def test_a_pending_read_back_or_a_side_mid_sentence_blocks_the_idle_pause():
+    world = World()
+
+    async def scenario():
+        session, voice_id = await _started(world)
+        socket = world.socket(session)
+
+        async def after(seconds: float, event: dict) -> None:
+            world.clock.now += seconds
+            socket.push(event)
+            await _settle()
+
+        # A read-back waiting for the person's answer.
+        world.sessions.holds.hold(voice_id, "vr_" + secrets.token_hex(16), lambda readback_id: None)
+        await after(120, {"type": AUDIO})
+        assert not _said(socket, live.PAUSE_IDLE_SENTENCE) and not session.paused
+        world.sessions.holds.forget(voice_id)
+        # The person started speaking and has not stopped.
+        await after(0, {"type": "session.input_audio.speech_started"})
+        await after(120, {"type": AUDIO})
+        assert not _said(socket, live.PAUSE_IDLE_SENTENCE)
+        # The voice's audio playing.
+        await after(0, {"type": "session.input_audio.speech_stopped"})
+        await after(0, {"type": live.OUTPUT_AUDIO_STARTED})
+        await after(120, {"type": AUDIO})
+        assert not _said(socket, live.PAUSE_IDLE_SENTENCE)
+        # Stopped: the window counts from the end of the audio.
+        await after(0, {"type": live.OUTPUT_AUDIO_STOPPED})
+        await after(live.PAUSE_AFTER_SECONDS - 1, {"type": AUDIO})
+        assert not _said(socket, live.PAUSE_IDLE_SENTENCE)
+        await after(1, {"type": AUDIO})
+        await _until(lambda: _said(socket, live.PAUSE_IDLE_SENTENCE))
+        await world.sessions.end(voice_id)
+
+    asyncio.run(asyncio.wait_for(scenario(), 10))
+
+
+@pytest.mark.parametrize("cause", ["speech", "resume"])
+def test_a_wake_reopens_the_idle_pause_and_a_second_silence_pauses_again(cause):
+    world = World()
+
+    async def scenario():
+        session, voice_id = await _started(world)
+        await _idle_paused(world, session)
+        woken = await world.sessions.reopen(voice_id, offer=_offer(), cause=cause)
+        assert woken is not session and world.sessions.get(voice_id) is woken
+        assert world.api.creates[-1]["credential"] is world.leases.leased[0]
+        assert world.states()[-1] == live.LISTENING
+        socket = world.socket(woken)
+        # The first window of the reopen: not yet.
+        world.clock.now += live.PAUSE_AFTER_SECONDS - 1
+        socket.push({"type": AUDIO})
+        await _settle()
+        assert not _said(socket, live.PAUSE_IDLE_SENTENCE) and not woken.paused
+        await _idle_paused(world, woken)
+        assert _count(socket, live.PAUSE_IDLE_SENTENCE) == 1
+        assert world.states().count(live.PAUSED) == 2
+        assert woken.talk_seconds == 42
+        await world.sessions.end(voice_id)
+        await world.sessions.drain_releases()
+        assert world.leases.leased[0].released == 1
 
     asyncio.run(asyncio.wait_for(scenario(), 10))
 

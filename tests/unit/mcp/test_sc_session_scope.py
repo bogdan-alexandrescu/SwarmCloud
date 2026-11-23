@@ -43,6 +43,7 @@ from swarm_mcp.client import SwarmClient, SwarmError
 
 from test_against_the_real_api import AUTH, DAG, api, db, swarm  # noqa: F401
 from test_plugin_agents_and_workflows import _SPEC, _run as _run_js
+import sc_skill_text
 
 _REPO = Path(__file__).resolve().parents[3]
 _PLUGIN = _REPO / "plugin"
@@ -467,7 +468,7 @@ def test_attaching_another_sessions_workflow_by_hand_works_and_says_so(plugin, s
 def _assert_arms(reply: dict) -> None:
     arm = reply["arm_watch"]
     assert arm is not None and arm["tool"] == "CronCreate", reply
-    assert arm["args"]["prompt"] == "/sc check"
+    assert arm["args"]["prompt"] == "/sc:check"
 
 
 def test_a_single_dispatch_and_a_batch_arm_the_watch(plugin, swarm, api, db, claude_session):  # noqa: F811
@@ -528,7 +529,7 @@ def _section(text: str, heading: str) -> str:
 
 
 def test_the_skill_scopes_check_watch_attach_all_and_workflows_to_this_session():
-    text = _SKILL.read_text()
+    text = sc_skill_text.text()
     for heading in ("### `check`", "### `attach --all`", "### `watch [interval]`"):
         assert "this Claude Code session" in _section(text, heading), heading
     assert "not this session's" in _section(text, "### `attach <wf_id>`")

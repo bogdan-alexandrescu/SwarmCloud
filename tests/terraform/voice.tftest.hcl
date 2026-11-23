@@ -347,7 +347,7 @@ run "voice_it_runs_only_on_gke" {
 # automatic pause only when VOICE_PAUSE is "on", and `voice_pause` is what
 # renders it into the StatefulSet's container. On by default (the owner's
 # answer of 11 November 2026, its two conditions merged on 12 November 2026);
-# "off" keeps the paid voice open while delegated work runs; nothing else.
+# "off" keeps the paid voice open, and billed, until the session ends; nothing else.
 run "the_pause_is_on_by_default" {
   command = plan
 

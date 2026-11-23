@@ -31,6 +31,7 @@ import subprocess
 
 from test_auto_attach import _BY_PROMPT
 from test_plugin_agents_and_workflows import _ANSWERS, _PLUGIN, _RUN_JS, _SPEC, _meta, _node, _run
+import sc_skill_text
 
 _SKILL = _PLUGIN / "skills" / "sc" / "SKILL.md"
 _LINK = "https://c.test/agents/task_1"
@@ -348,7 +349,7 @@ _DUTY = ("owner_questions", "AskUserQuestion", "swarm_task_answer")
 
 
 def test_the_skills_check_and_run_sections_say_to_ask_the_person():
-    skill = _SKILL.read_text()
+    skill = sc_skill_text.text()
     for heading in ("### `check`", "### `run <spec path|JSON>`", "### Answers given here are recorded on the task"):
         section = _section(skill, heading)
         # MUTATION: leaving any of these out of a section -- the session reads

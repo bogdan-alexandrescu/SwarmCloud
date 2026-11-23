@@ -28,6 +28,7 @@ from swarm_mcp.client import SwarmError
 from test_plugin_agents_and_workflows import _PLUGIN
 from test_plugin_rows_match_console import _answers, _run
 from test_submit_by_reference import _Recorder, _submitted_steps
+import sc_skill_text
 
 #: Claude Code's tool output is cut well before this; the issue's replies were
 #: 94,498 and 86,506 characters.
@@ -168,6 +169,6 @@ def test_the_script_submits_nothing_when_the_read_row_names_another_digest(_laun
 def test_the_agent_and_the_skill_say_how_to_read_a_handle():
     agent = (_PLUGIN / "agents" / "spec.md").read_text()
     assert '{"spec_handle": "<that path>", "spec_digest": "<that digest>"}' in agent
-    skill = (_PLUGIN / "skills" / "sc" / "SKILL.md").read_text()
+    skill = sc_skill_text.text()
     # MUTATION: a skill that still tells the session to pass `{spec, spec_handle, ...}` fails here.
     assert "`{spec,\n   spec_handle" not in skill and "never add `spec` beside it" in skill

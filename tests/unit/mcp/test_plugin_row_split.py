@@ -26,6 +26,7 @@ import pytest
 
 from swarm_mcp import config, launch
 from test_plugin_agents_and_workflows import _PLUGIN, _SPEC, _SUBMITTED, _run, _step
+import sc_skill_text
 
 SESSION = "11111111-2222-4333-8444-555555555555"
 _MANIFEST = _PLUGIN / ".claude-plugin" / "plugin.json"
@@ -398,7 +399,7 @@ def test_the_follower_counts_states_into_the_same_buckets_as_run_js():
 
 
 def test_the_skill_describes_both_modes_and_the_per_step_flag():
-    flat = " ".join(_SKILL.read_text().split())
+    flat = " ".join(sc_skill_text.text().split())
     assert "`rows`" in flat and "`summary`" in flat and "`per-step`" in flat  # MUTATION: no mode in the skill.
     assert "--per-step" in flat  # MUTATION: no override documented.
     assert "rows 9-16" in flat  # MUTATION: no word on the split copies.

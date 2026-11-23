@@ -55,6 +55,20 @@ provider builds and get two different results.
 Every `FROM` carries a digest, so a rebuild in six months produces the same
 toolchain rather than whatever the tag points at that day.
 
+### Model pins (one per model class)
+
+The model each class runs is stated once, in `terraform/infra/locals.tf`
+`runner_models` ([design/model-per-step.md](design/model-per-step.md) §4.2);
+`tests/unit/scripts/test_model_pins.py` holds every class-pin literal under
+`apps/` equal to it.
+
+| Class | Pinned ID | Since |
+|---|---|---|
+| `opus` | `claude-opus-5-5` | 2026-10-17 |
+| `fable` | `claude-fable-5-2` | 2026-11-23 (was `claude-fable-5-1`) |
+| `sonnet` | `claude-sonnet-5-5` | 2026-11-06 |
+| `haiku` | `claude-haiku-5-5` | 2026-11-06 |
+
 ### Agent image toolbox
 
 What an agent in `agent-runtime-base` can run besides the language toolchains
@@ -266,6 +280,48 @@ affected profile — a CLI's output format changes more often than its flags.
 **Scanners.** checkov and trivy update their rule sets constantly; a green build
 today can fail tomorrow on a newly published CVE. That is the point, and it is
 why `security.yml` also runs on a weekly schedule rather than only on PRs.
+
+### Re-pinning a model class
+
+A new model for a class is an edit to `runner_models` in
+`terraform/infra/locals.tf` and a release, never a contract request: the
+frozen `ModelClass.admits` already takes any later ID of the class's family
+(generation 5 or later). The order is merge, then canary, revert on failure
+(owner, 2026-11-23); the map is never applied to dev from a branch:
+
+1. **Add the new ID's price to the live price setting on the dev
+   deployment, first.** The seed in `apps/swarm-api/swarm_api/modelprices.py`
+   is read only while the `model_prices` setting has never been written; once
+   it has, a new ID is priced only when the setting holds it. Write it with
+   `PUT /v1/admin/settings` (admin only), body
+   `{"model_prices": {"<id>": {"input": …, "output": …, "cache_read": …,
+   "cache_write": …, "as_of": "YYYY-MM-DD", "source": "…"}}}` (only the rows
+   named change), or in the console at **Admin › Limits**
+   (`#admin/limits`), the **Model prices** card, which lists a pinned model
+   with no price as an unpriced row once the release serves the pin.
+   Without it, every attempt on the class reads "cost not reported".
+2. **Merge the map change** (with the seed entry and any restated literal
+   `test_model_pins.py` names) and let the ordinary dev release apply it.
+3. **At once, run one task on the class on dev** (`model_class` in the
+   submission) and read its attempt's `model` (the new ID) and its cost (a
+   figure, not "cost not reported"). The model-class canary does the same for
+   every class: the `claude-code` acceptance group,
+   `scripts/acceptance/groups/claude-code.sh`
+   (`tests/unit/scripts/test_model_class_canary.py` pins it offline), run
+   inside the VPC with
+   `ENVIRONMENT=dev ./scripts/verify-remote.sh acceptance/claude-code` (or
+   `scripts/acceptance/run.sh --only claude-code` from anywhere that reaches
+   the API).
+4. **If the runtime's command-line tool answers that the model is not
+   recognised** (`[claude-code:unrecognized_model]` in the attempt's
+   `runner_error`), the pinned Claude Code does not know the ID yet: revert
+   the map commit and release, keeping the old ID's price so tasks recorded on
+   it stay priced. Then raise `CLAUDE_CODE_VERSION` in
+   `images/agent-runtime-base/Dockerfile` as its own change. That rebuilds the
+   worker images (`agent-runtime-browser` and `agent-runtime-indexer` are
+   built `FROM` the base) and the swarm-voice image, which reads the same
+   version from that file. Release it, and only then merge the map change
+   again.
 
 ---
 

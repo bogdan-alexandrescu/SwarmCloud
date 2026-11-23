@@ -25,7 +25,10 @@ and while its session can still be continued, the claude-code runner
    `lifecycle.Worker._adopt_rebase_base`), so main's newer commits are not
    republished as the lane's.
 2. RUNS A FIXED CHECK SET, LIMITED TO WHAT THE DIFF TOUCHES (`select_checks`):
-   `scripts/changed-guards.sh` for any change; checkov over changed
+   for any change, the deployment-values guard from the base commit's copy
+   over the added lines and `scripts/publish-scan.sh` (the train's other
+   ejections, owner's plan 2026-11-23: `DEPLOYMENT_VALUES_CHECK`), then
+   `scripts/changed-guards.sh`; checkov over changed
    `terraform/` files and over the rendered manifests when `kubernetes/`
    changed; tflint over changed Terraform; `shellcheck -x` over changed
    shell scripts; `ruff format --check` and `ruff check` over changed Python
@@ -109,7 +112,8 @@ fix a timeout. So:
   `passed`, runs the script. The skip and its reason go into the advisory
   section of the pull request.
 * a guard run that TIMED OUT (`guards_timed_out`: the script's `ran past` line,
-  or this runner's kill) is reported as a timeout, is left out of the fix
+  its result record saying `timed_out` -- `GUARDS_RESULT_ENV`, read before the
+  output wherever the script wrote one -- or this runner's kill) is reported as a timeout, is left out of the fix
   prompt, and runs once more in at least the parts the script advised
   (`guards_parts`) -- never as-is. Under the time box below, only a script
   that could not list its selection still runs as one command and can time
@@ -255,6 +259,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import tarfile
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -382,9 +387,51 @@ PASSED, FAILED, SKIPPED, ERROR = "passed", "failed", "skipped", "error"
 GUARDS_CHECK = "changed-guards"
 GUARDS_SCRIPT = "scripts/changed-guards.sh"
 GUARDS_RECORD_DIR = "swarm-changed-guards"
-#: What a timed-out guard run prints: the script's own pytest deadline, or
-#: `run_command`'s kill at the check limit.
-_GUARDS_TIMEOUT = re.compile(r"ran past \d+ s|\[timed out after \d+s\]")
+#: Where the script writes how its run ended -- `passed`, `failed` or
+#: `timed_out` (`finish` in scripts/changed-guards.sh). The gate names a file
+#: per run and prefers this verdict to reading the output; a run killed at
+#: the gate's limit writes none, and the output decides as before.
+GUARDS_RESULT_ENV = "_CHANGED_GUARDS_RESULT"
+GUARDS_RESULTS = frozenset({"passed", "failed", "timed_out"})
+#: The line the gate adds when the record says `timed_out` and the output
+#: carries no `ran past` line of its own.
+_GUARDS_RECORDED_TIMEOUT = "[the guard script ran past its own limit: its record says timed_out]"
+#: THE TRAIN'S OTHER EJECTIONS (owner's improvement plan, 2026-11-23). A
+#: lane's pull request runs no CI before the merge train, so these two run
+#: here: the deployment-values guard over the lines the change adds, and the
+#: worker's own publish credential scan, which otherwise fails the attempt at
+#: the final leak scan, after the fix turn. About a second each (measured
+#: 2026-11-23: 0.5 s and 0.8 s), so they run before the guard script, whose
+#: budget never skips them.
+DEPLOYMENT_VALUES_CHECK = "deployment-values"
+DEPLOYMENT_VALUES_SCRIPT = "scripts/guards/deployment-values.sh"
+#: The guard's exits (`EXIT_*` in scripts/guards/deployment_values.py): 1 a
+#: finding, 2 the pattern list unavailable under CI, altered or malformed, 3
+#: no list here -- the shape layer ran and passed, the name layer did not.
+_DV_FINDINGS, _DV_CLOSED, _DV_NO_LIST = 1, 2, 3
+#: What the train reads beside the change: the BASE commit's guard, its
+#: library and its allowlist (security.yml checks the guard out from the base
+#: sha and the change "as data only"), so the gate runs that copy too.
+_DV_PATHS = ("scripts/guards", "scripts/lib")
+#: The fix turn's advice on a url-host finding: the allowlist the train reads
+#: is main's, so a host added to it in the same pull request does not count.
+DEPLOYMENT_VALUES_HOST_ADVICE = (
+    "A url-host finding is a public host the allowlist does not hold. The merge train "
+    "runs this guard from the MAIN branch's copy of scripts/guards/placeholders.json, "
+    "so adding the host to placeholders.json in this pull request does not help: it "
+    "is still ejected. Either use a placeholder host (example.com, example.org, "
+    "example.net) or drop the URL here; a public host this repository really needs "
+    "has to land on main first, in its own small pull request that adds it to "
+    "placeholders.json, before a change that names it.")
+PUBLISH_SCAN_CHECK = "publish-scan"
+PUBLISH_SCAN_SCRIPT = "scripts/publish-scan.sh"
+#: `scripts/publish-scan.sh`'s exits: 1 a hit, 2 the scan could not run.
+_SCAN_HITS, _SCAN_CLOSED = 1, 2
+#: What a timed-out guard run prints: the script's own deadlines (pytest,
+#: vitest, contract parity), `run_command`'s kill at the check limit, or the
+#: gate's note of a `timed_out` record.
+_GUARDS_TIMEOUT = re.compile(r"ran past \d+ s|\[timed out after \d+s\]"
+                             r"|" + re.escape(_GUARDS_RECORDED_TIMEOUT))
 #: The split the script advises: `--shard 1/<n>`.
 _GUARDS_SHARDS = re.compile(r"--shard 1/(\d+)")
 #: Parts to split a timed-out run into when its output advised none: the
@@ -660,6 +707,25 @@ def _simple(argv: Sequence[str]) -> Callable[[Runner, Path, Mapping[str, str], f
 def guards_timed_out(output: str) -> bool:
     """Whether a guard run's output says it ran out of time."""
     return bool(_GUARDS_TIMEOUT.search(output))
+
+
+def guards_result(path: Path) -> str | None:
+    """The guard script's own verdict from its result record, or None when it
+    wrote none (killed at the gate's limit, or a script that predates it)."""
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return text if text in GUARDS_RESULTS else None
+
+
+def _run_recorded(runner: Runner, argv: Sequence[str], repo: Path, env: Mapping[str, str],
+                  timeout: float, record: Path) -> tuple[Ran, str | None]:
+    """`argv` run with the script's result record at `record`, and the verdict
+    it wrote. A run the runner killed has no verdict of its own."""
+    record.unlink(missing_ok=True)
+    ran = runner(argv, repo, {**env, GUARDS_RESULT_ENV: str(record)}, timeout)
+    return ran, (None if ran.timed_out else guards_result(record))
 
 
 #: `run_command`'s line when it killed a command at its limit, at the end.
@@ -963,8 +1029,22 @@ def timeboxed_guards(argv: Sequence[str], *, report: GuardsRun, cpus: int,
         listing = parse_guards_listing(listed.output) if (
             listed.code == 0 and not listed.timed_out) else GuardsListing((), ())
         if not listing.tests and not listing.extras:
-            # Nothing changed, or no list: the script as one command decides.
-            return _verdict(runner(argv, repo, env, max(MIN_CHECK_SECONDS, left())))
+            # Nothing changed, or no list: the script as one command decides,
+            # its record before its output.
+            folder = Path(tempfile.mkdtemp(prefix="prepublish-guards-",
+                                           dir=scratch or _outside(repo, env)))
+            try:
+                ran, result = _run_recorded(runner, argv, repo, env,
+                                            max(MIN_CHECK_SECONDS, left()), folder / "result")
+            finally:
+                shutil.rmtree(folder, ignore_errors=True)
+            if result == "passed" and ran.code == 0:
+                return PASSED, ran.output
+            if result == "failed":
+                return FAILED, _no_timeout_marker(ran.output)
+            if result == "timed_out" and not guards_timed_out(ran.output):
+                return FAILED, f"{ran.output.rstrip()}\n{_GUARDS_RECORDED_TIMEOUT}"
+            return _verdict(ran)
         related: set[str] = set()
         if related_argv is not None and (repo / RELATED_SCRIPT).is_file():
             ran = runner(list(related_argv), repo, env,
@@ -984,7 +1064,7 @@ def timeboxed_guards(argv: Sequence[str], *, report: GuardsRun, cpus: int,
         firsts = cut_in_order(first, math.ceil(heft["first"] / share), weight)
         if listing.extras:
             # A part of their own, first: behind 50 test files under five
-            # other parts, the parity check ran past its 60 s limit
+            # other parts, the parity check ran past its then 60 s limit
             # (measured 2026-11-03), a red no change of the step's caused.
             firsts = [list(listing.extras), *firsts]
         rests = cut_in_order(rest, math.ceil(heft["rest"] / share), weight)
@@ -1001,11 +1081,17 @@ def timeboxed_guards(argv: Sequence[str], *, report: GuardsRun, cpus: int,
                 return "not_started", ""
             listfile = folder / f"{label.replace('/', '-').replace(' ', '-')}.txt"
             listfile.write_text("".join(f"{e}\n" for e in entries), encoding="utf-8")
-            ran = runner([*argv, "--only", str(listfile), "--workers", str(workers)],
-                         repo, env, limit)
-            if ran.code == 0 and not ran.timed_out:
+            ran, result = _run_recorded(
+                runner, [*argv, "--only", str(listfile), "--workers", str(workers)],
+                repo, env, limit, listfile.with_suffix(".result"))
+            # The script's own verdict first; its output only where it wrote none.
+            if result == "failed":
+                return "failed", ran.output
+            if result == "passed" and ran.code == 0:
                 return "passed", ran.output
-            if ((ran.timed_out or guards_timed_out(ran.output))
+            if result is None and ran.code == 0 and not ran.timed_out:
+                return "passed", ran.output
+            if ((result == "timed_out" or ran.timed_out or guards_timed_out(ran.output))
                     and not failed_before_timeout(ran.output)):
                 return "stopped", ran.output
             return "failed", ran.output
@@ -2085,6 +2171,95 @@ def jev_test_gap(judge: Any, repo: Path, base: str, files: Sequence[str],
             "uncovered": uncovered, "input_tokens": decision.input_tokens}
 
 
+def _deployment_values(base: str) -> Callable[[Runner, Path, Mapping[str, str], float],
+                                              tuple[str, str]]:
+    """The deployment-values guard as the train runs it: the BASE commit's
+    scripts/guards/ and scripts/lib/ over the lines the change adds, in
+    enforce mode. The guard diffs `base...HEAD`, so a tree with uncommitted or
+    untracked files -- which the worker commits at publish -- is checked out
+    as a detached temporary worktree of HEAD plus those files and scanned
+    there; the worktree is removed after, and HEAD and the index are never
+    moved. Exit 3 (no pattern list in a worker) is a pass of the shape layer
+    with the names left to CI; exit 1 a finding for the fix turn."""
+    def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float
+            ) -> tuple[str, str]:
+        if base == EMPTY_BASE:
+            return SKIPPED, "no base commit to diff from: the train's run decides"
+        # The gate is not CI: under CI=true a missing list is exit 2, not 3.
+        scoped = {k: v for k, v in env.items() if k != "CI"}
+        git_env = {"GIT_AUTHOR_NAME": "prepublish", "GIT_AUTHOR_EMAIL": "prepublish@example.invalid",
+                   "GIT_COMMITTER_NAME": "prepublish",
+                   "GIT_COMMITTER_EMAIL": "prepublish@example.invalid", **scoped}
+        with tempfile.TemporaryDirectory(prefix="prepublish-dv-", dir=_outside(repo, env),
+                                         ignore_cleanup_errors=True) as tmp:
+            root = Path(tmp)
+            archive = root / "guard.tar"
+            ran = _git(repo, "archive", "-o", str(archive), base, *_DV_PATHS,
+                       runner=runner, env=scoped)
+            guard = root / "guard"
+            if ran.code == 0:
+                with tarfile.open(archive) as tar:
+                    tar.extractall(guard, filter="data")
+            if not (guard / DEPLOYMENT_VALUES_SCRIPT).is_file():
+                return SKIPPED, (f"the base ({base[:12]}) has no {DEPLOYMENT_VALUES_SCRIPT}: "
+                                 "the train's run decides")
+            where = repo
+            tree = worktree_tree(repo, runner=runner, env=scoped)
+            head = _git(repo, "rev-parse", "--verify", "--quiet", "HEAD^{tree}",
+                        runner=runner, env=scoped)
+            if tree and head.code == 0 and head.output.strip() != tree:
+                made = _git(repo, "commit-tree", tree, "-p", "HEAD", "-m",
+                            "prepublish: the tree the publish would commit",
+                            runner=runner, env=git_env)
+                where = root / "tree"
+                added = _git(repo, "-c", "core.hooksPath=/dev/null", "worktree", "add",
+                             "--detach", "--quiet", str(where), made.output.strip(),
+                             runner=runner, env=scoped) if made.code == 0 else made
+                if added.code != 0:
+                    return ERROR, ("could not check out the tree the publish would commit: "
+                                   + added.output.strip()[-500:])
+            try:
+                ran = runner(["bash", str(guard / DEPLOYMENT_VALUES_SCRIPT), "--diff", base,
+                              "--mode", "enforce"], where, scoped, timeout)
+            finally:
+                if where != repo:
+                    _git(repo, "worktree", "remove", "--force", str(where),
+                         runner=runner, env=scoped)
+                    _git(repo, "worktree", "prune", runner=runner, env=scoped)
+        if ran.timed_out:
+            return FAILED, ran.output
+        if ran.code in (0, _DV_NO_LIST):
+            layer = ("the shape and name layers ran" if ran.code == 0 else
+                     "the shape layer ran; the name layer (the pattern list) is left to CI")
+            return PASSED, f"{ran.output.rstrip()}\nno finding in the added lines: {layer}"
+        if ran.code == _DV_FINDINGS:
+            out = ran.output.rstrip()
+            if re.search(r"\burl-host\b", out):
+                out += "\n\n" + DEPLOYMENT_VALUES_HOST_ADVICE
+            return FAILED, out
+        if ran.code == _DV_CLOSED:
+            return ERROR, f"the guard could not run (exit 2): {ran.output.strip()[-500:]}"
+        return FAILED, ran.output
+    return run
+
+
+def _publish_scan(base: str) -> Callable[[Runner, Path, Mapping[str, str], float],
+                                         tuple[str, str]]:
+    """The worker's own publish credential scan over what the change adds
+    (scripts/publish-scan.sh): a hit goes to the fix turn instead of failing
+    the attempt at the final leak scan. It prints `path:line rule`, never the
+    value; exit 2 (the scan could not run) is an error, not a finding."""
+    argv = ["bash", PUBLISH_SCAN_SCRIPT, "--base", base]
+
+    def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float
+            ) -> tuple[str, str]:
+        ran = runner(argv, repo, env, timeout)
+        if ran.code == _SCAN_CLOSED and not ran.timed_out:
+            return ERROR, f"the scan could not run (exit 2): {ran.output.strip()[-500:]}"
+        return _verdict(ran)
+    return run
+
+
 def select_checks(repo: Path, files: Sequence[str], *, base: str,
                   env: Mapping[str, str], python: str = "python3",
                   snapshot: Snapshot | None = None, pick: TestPick | None = None,
@@ -2100,6 +2275,13 @@ def select_checks(repo: Path, files: Sequence[str], *, base: str,
     if not files:
         return checks
 
+    if (repo / DEPLOYMENT_VALUES_SCRIPT).is_file():
+        checks.append(Check(DEPLOYMENT_VALUES_CHECK, tuple(files),
+                            f"bash <base>:{DEPLOYMENT_VALUES_SCRIPT} --diff {base} --mode enforce",
+                            run=_deployment_values(base)))
+    if (repo / PUBLISH_SCAN_SCRIPT).is_file():
+        checks.append(Check(PUBLISH_SCAN_CHECK, tuple(files),
+                            f"bash {PUBLISH_SCAN_SCRIPT} --base {base}", run=_publish_scan(base)))
     if (repo / GUARDS_SCRIPT).is_file():
         argv = ["bash", GUARDS_SCRIPT, "--base", base]
         checks.append(Check(GUARDS_CHECK, tuple(files), " ".join(argv), run=_simple(argv)))
