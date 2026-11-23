@@ -16,6 +16,11 @@ variable "enable_acceptance_join_person" {
   description = "Create swarm-accept-join-person and let swarm-verify read it, for the join acceptance probe. Default false; true only in the dev settings, never in prod."
   type        = bool
   default     = false
+
+  validation {
+    condition     = !var.enable_acceptance_join_person || var.environment == "dev"
+    error_message = "enable_acceptance_join_person is dev only: a probe person's credential is never stored in staging or prod, and swarm-verify there reads no secret."
+  }
 }
 
 resource "google_secret_manager_secret" "accept_join_person" {

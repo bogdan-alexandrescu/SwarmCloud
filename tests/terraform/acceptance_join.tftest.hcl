@@ -7,7 +7,10 @@
 #     managed-by=swarm-terraform label and its populated-by annotation, and
 #     terraform creates no version of it;
 #   * on, the accessor binding is AUTHORITATIVE for secretAccessor on that one
-#     secret, and swarm-verify is its only member.
+#     secret, and swarm-verify is its only member;
+#   * the accessor binding is the only IAM resource acceptance_join.tf declares
+#     on that secret, so a second binding or member added there goes red;
+#   * the switch is dev only: true in staging or prod fails the plan.
 mock_provider "google" {}
 
 override_data {
@@ -118,6 +121,18 @@ run "on_swarm_verify_alone_reads_the_join_person_secret" {
     error_message = "swarm-accept-join-person is deletion-protected, labelled managed-by=swarm-terraform, and says create-secrets.sh --join-person --stdin populates it"
   }
 
+  # The authoritative binding is the file's one IAM resource on the secret: a
+  # google_secret_manager_secret_iam_member, _policy or second _binding would
+  # sit beside it and could widen who reads the credential.
+  assert {
+    condition = (
+      length(google_secret_manager_secret_iam_binding.accept_join_person_accessor) == 1
+      && length(regexall("(?m)^\\s*resource\\s+\"google_secret_manager_secret_iam_[a-z_]+\"", file("../../terraform/infra/acceptance_join.tf"))) == 1
+      && length(regexall("(?m)^\\s*resource\\s+\"google_secret_manager_secret_iam_binding\"\\s+\"accept_join_person_accessor\"", file("../../terraform/infra/acceptance_join.tf"))) == 1
+    )
+    error_message = "acceptance_join.tf declares exactly one IAM resource on swarm-accept-join-person, the accessor binding"
+  }
+
   # Terraform creates no version: a version's payload would sit in state.
   assert {
     condition = length(regexall(
@@ -136,4 +151,34 @@ run "on_swarm_verify_alone_reads_the_join_person_secret" {
     )
     error_message = "secretAccessor on swarm-accept-join-person is held by swarm-verify alone, authoritatively"
   }
+}
+
+run "on_in_prod_fails_the_plan" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    environment                   = "prod"
+    enable_acceptance_join_person = true
+  }
+
+  expect_failures = [var.enable_acceptance_join_person]
+}
+
+run "on_in_staging_fails_the_plan" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    environment                   = "staging"
+    enable_acceptance_join_person = true
+  }
+
+  expect_failures = [var.enable_acceptance_join_person]
 }

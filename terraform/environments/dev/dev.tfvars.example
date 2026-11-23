@@ -139,6 +139,10 @@ enable_acceptance_fixture = true
 acceptance_qa_tenant      = "smoke"
 acceptance_console_url    = "https://swarm.example.com"
 
+# The join acceptance probe's person credential (docs/design/join-requests.md
+# section 8): dev only, a terraform validation refuses it anywhere else.
+enable_acceptance_join_person = true
+
 # --- operations ------------------------------------------------------------
 # swarm-api runs two uvicorn workers an instance in dev; prod keeps the
 # default of one.
