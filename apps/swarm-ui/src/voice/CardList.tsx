@@ -73,8 +73,11 @@ export const TRACE_EVENTS = ['trace.turn'] as const
 /** A spent Live key's next tier is held: Talk offers again (swarm_api/voice/stream.py `TIER_REOPEN`). */
 export const TIER_EVENTS = ['voice.tier.reopen'] as const
 
+/** The voice's pause and wake: swarm-voice's reported state (swarm_api/voice/stream.py `WORK_TYPES`' `paused`); session.tsx reads it. */
+export const PAUSE_EVENTS = ['paused'] as const
+
 /** Every event the stream carries (swarm_api/voice/stream.py `EVENT_TYPES`). */
-const SESSION_EVENTS: readonly string[] = [...STREAM_EVENTS, ...STAGE_EVENTS, ...TRACE_EVENTS, ...TIER_EVENTS]
+const SESSION_EVENTS: readonly string[] = [...STREAM_EVENTS, ...STAGE_EVENTS, ...TRACE_EVENTS, ...TIER_EVENTS, ...PAUSE_EVENTS]
 
 const IS_TRACE_EVENT: readonly string[] = TRACE_EVENTS
 

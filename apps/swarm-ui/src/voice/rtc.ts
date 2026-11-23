@@ -25,6 +25,13 @@
  * mic, and starts the SAME session again with a fresh offer
  * (`{offer_sdp, session_id}`); swarm-voice answers it on the next tier.
  *
+ * THE PAUSE'S WAKE (voice-it.md §3.12.7). After 45 s in which nobody speaks
+ * swarm-voice closes the GPT-Live session and keeps the voice session; the
+ * stream says `paused`. `wakeTalk` opens it again the same way, with a fresh
+ * offer to `/v1/voice/sessions/{id}/reopen` and its cause: `speech` (the
+ * person's next word), `resume` (the Resume control) or `result` (swarm-voice
+ * asked for the wake).
+ *
  * THE ONE PLACE THE SESSION ROUTES ARE CALLED. swarm-api's Voice it routes are
  * built by a parallel lane (section 10, "swarm-api starts and ends a Voice it
  * session"); every call to them is in `startVoiceSession` and
@@ -37,6 +44,10 @@ import { API_RATE_LIMITED, route, write, type ApiError } from '../fetch'
 export const VOICE_SESSIONS = '/v1/voice/sessions'
 /** End: closes the GPT-Live session, which is what stops OpenAI's per-second billing. */
 export const VOICE_SESSION_END = '/v1/voice/sessions/{id}/end'
+/** The person's reopen of a paused live session: `{offer_sdp, cause}`. */
+export const VOICE_SESSION_REOPEN = '/v1/voice/sessions/{id}/reopen'
+/** Why a paused session opens again (swarm_api.voice.sessions REOPEN_CAUSES, less the tier's). */
+export type WakeCause = 'speech' | 'resume' | 'result'
 /** One spoken (or typed) turn of a text-mode session: its text in, the model's reply out. */
 export const VOICE_SESSION_TURNS = '/v1/voice/sessions/{id}/turns'
 /** The longest turn swarm-api takes. */
@@ -112,6 +123,21 @@ export async function startVoiceSession(
     throw new TalkError("swarm-api's answer to the start carried no SDP answer.")
   }
   return { session_id: d.session_id, project_id, mode: 'live', answer_sdp: d.answer_sdp }
+}
+
+/** `POST /v1/voice/sessions/{id}/reopen`: the paused session's fresh offer and its cause in, the SDP answer out. */
+export async function wakeVoiceSession(sessionId: string, offerSdp: string, cause: WakeCause): Promise<string> {
+  const r = await write(route(VOICE_SESSION_REOPEN, { id: sessionId }), 'POST', { offer_sdp: offerSdp, cause })
+  if (r.status === 'error' || r.status === 'stale') throw new TalkError(r.error.message, r.error)
+  if (r.status !== 'ok') throw new TalkError('swarm-api answered the reopen with nothing.')
+  const d = r.data as { session_id?: unknown; answer_sdp?: unknown } | null
+  if (d === null || typeof d.answer_sdp !== 'string' || d.answer_sdp === '') {
+    throw new TalkError("swarm-api's answer to the reopen carried no SDP answer.")
+  }
+  if (typeof d.session_id === 'string' && d.session_id !== sessionId) {
+    throw new TalkError("swarm-api's answer to the reopen named another session.")
+  }
+  return d.answer_sdp
 }
 
 /** `POST /v1/voice/sessions/{id}/end`. Never throws: an end is also a page leaving. */
@@ -335,14 +361,26 @@ export async function connectTalk(h: TalkHandlers, projectId: string | null = nu
  * left to the caller, who ends the talk with the reason.
  */
 export async function reopenTalk(h: TalkHandlers, prev: TalkCall): Promise<TalkCall> {
+  return offerAgain(h, prev, async (offer) => {
+    const started = await startVoiceSession(offer, null, prev.sessionId)
+    if (started.mode !== 'live') throw new TalkError("swarm-api's answer to the reopen was not a live session.")
+    return started.answer_sdp
+  })
+}
+
+/** The pause's wake: as the reopen, to the paused session's reopen route with `cause`. */
+export async function wakeTalk(h: TalkHandlers, prev: TalkCall, cause: WakeCause): Promise<TalkCall> {
+  return offerAgain(h, prev, (offer) => wakeVoiceSession(prev.sessionId, offer, cause))
+}
+
+async function offerAgain(h: TalkHandlers, prev: TalkCall, answerOf: (offer: string) => Promise<string>): Promise<TalkCall> {
   prev.dropPeer()
   let peer: Peer | null = null
   try {
     peer = openPeer(h, prev.mic, prev.micStream)
     const p = peer
-    const started = await startVoiceSession(await offerOf(p.pc), null, prev.sessionId)
-    if (started.mode !== 'live') throw new TalkError("swarm-api's answer to the reopen was not a live session.")
-    await p.pc.setRemoteDescription({ type: 'answer', sdp: started.answer_sdp })
+    const answer = await answerOf(await offerOf(p.pc))
+    await p.pc.setRemoteDescription({ type: 'answer', sdp: answer })
     let open = true
     const hangUp = () => {
       if (!open) return
