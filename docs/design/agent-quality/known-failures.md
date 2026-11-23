@@ -5,19 +5,21 @@ What is skipped, expected to fail or quarantined on main at
 open defects documented in the program's areas, each with where it is recorded.
 An experiment reads this page first: a failure listed here is not the
 experiment's finding, and a skipped test is not a passing one. The skip table
-in [§3](#3-every-skip-by-location) is kept to the current tree, not the
-baseline's: the check below fails when the two differ.
+in [§3](#3-every-skip-by-location) is kept by hand to the current tree, not
+the baseline's.
 
 ## 1. Skipped, expected-to-fail and quarantined tests
 
 Every skip, expected failure and `importorskip` in a `.py` file under `tests/`
 is listed in [the table below](#3-every-skip-by-location), one row per file, test
 and kind, with its reason; every `tests/flaky.txt` entry is listed in
-[the quarantine](#the-quarantine). `scripts/agent_quality_inventory.py` finds
-them in code only (a marker named in a comment or a string is not one), and
-`tests/unit/scripts/test_agent_quality_inventory.py` fails, naming it, for a
-live skip or quarantine this page does not list (with the row to add) and for a
-row the tree no longer has.
+[the quarantine](#the-quarantine). Only a marker in code counts (one named in
+a comment or a string is not one). The table is kept by hand: since issue 74
+no test fails for a skip it does not list or a row the tree no longer has,
+because that census's subject was this page, not the product, and docs drift
+reddened code pull requests. `tests/flaky.txt` itself is still checked: an
+entry naming a test that does not exist stops collection
+(`tests/unit/flaky_quarantine.py`).
 
 There is no count on this page, on purpose (the owner, 6 November 2026): two green
 changes that each add a skip and bump a count conflict or fail when they land
@@ -112,10 +114,9 @@ finding for the package that owns it.
 
 ## 3. Every skip, by location
 
-The rows `scripts/agent_quality_inventory.py` checks. Add a row when you add a
-skip (the failing test prints it), delete it when you delete the skip, and
-rewrite its reason freely: only the file, test and kind are matched. Keep rows
-in path order, so two changes' rows land in different places.
+Add a row when you add a skip, delete it when you delete the skip, and
+rewrite its reason freely: a row is its file, test and kind. Keep rows in path
+order, so two changes' rows land in different places.
 
 | File | Test | Kind | Reason |
 |---|---|---|---|
@@ -170,7 +171,6 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/control_plane/test_workflow_graph_ui_surface.py` | `<module>` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_workflow_step_input_surface.py` | `<module>` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_workflow_step_measurements.py` | `<module>` | `skipif` | apps/swarm-ui is not checked out |
-| `tests/unit/docs/test_counts_mockups.py` | `test_counts_mockup_names_only_profiles_and_accounts_that_run` | `skipif` | no docs/web-ui/mockups/counts-*.html on main: nothing to check |
 | `tests/unit/hooks/test_hooks_create_secret.py` | `<module>` | `skipif` | create-secrets.sh needs bash |
 | `tests/unit/hooks/test_hooks_image.py` | `test_build_images_finds_the_recipe_and_reads_what_it_copies` | `skipif` | build-images.sh needs jq |
 | `tests/unit/hooks/test_hooks_image.py` | `test_target_selection_reaches_it_only_for_its_own_inputs` | `skipif` | build-images.sh needs jq |

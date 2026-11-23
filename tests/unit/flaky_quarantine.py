@@ -21,6 +21,8 @@ A node id with a parameter (`test_x[a-b]`) quarantines that one case; the bare
 id (`test_x`) quarantines every case of it. A node id containing whitespace
 cannot be listed. Blank lines and lines starting with `#` are comments.
 
+An entry naming a test that does not exist is refused like a malformed one.
+
 This module is pure -- no pytest import -- so its parser is tested directly
 (tests/unit/scripts/test_flaky_quarantine.py), and tests/unit/conftest.py is a
 thin wiring over it.
@@ -95,12 +97,23 @@ def parse(text: str) -> list[Entry]:
 
 
 def load(path: Path = LIST) -> list[Entry]:
-    """The checked-in list. A missing file is an empty quarantine."""
+    """The checked-in list. A missing file is an empty quarantine. An entry
+    that names no test stops collection: a renamed or deleted test would
+    otherwise sit on the list quarantining nothing while the real flake gates
+    again. Existence is read from the files under REPO, never from the
+    collected items, so a shard that collects a subset loads the same list."""
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return []
-    return parse(text)
+    entries = parse(text)
+    gone = set(missing(entries))
+    for entry in entries:
+        if entry.nodeid in gone:
+            raise QuarantineListError(
+                f"tests/flaky.txt:{entry.line}: {entry.nodeid} names no test on this tree; "
+                "remove the line, or point it at the test's new id")
+    return entries
 
 
 def is_quarantined(nodeid: str, entries: Iterable[Entry]) -> bool:

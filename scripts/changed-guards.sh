@@ -136,12 +136,11 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # refuses a comment under apps/ that names a test -- a new one names no test,
 # so only a whole-tree run reaches it (part of issue 69). Then the inventory
 # walkers the merge train ejected for (owner's improvement plan, 2026-11-23)
-# -- test_agent_quality_inventory (every skip, xfail and quarantine under
-# tests/ has its row in docs/design/agent-quality/known-failures.md; 6.3 s in
-# a 6-CPU container), test_runbook_index (every docs/runbooks/*.md is linked
-# from its README; 0.1 s) and test_plugin_agents_ignore_chat (every
-# plugin/agents/*.md is a known kind; 1.0 s). A new test file, runbook or
-# agent breaks them and names none of them, so no diff selects them.
+# -- test_runbook_index (every docs/runbooks/*.md is linked from its README;
+# 0.1 s) and test_plugin_agents_ignore_chat (every plugin/agents/*.md is a
+# known kind; 1.0 s). A new runbook or agent breaks them and names neither,
+# so no diff selects them. test_agent_quality_inventory was a third until
+# issue 74 deleted it: its subject was the agent-quality docs, not the product.
 GUARD_TESTS=(
   tests/unit/scripts/test_docs_describe_what_was_built.py
   tests/unit/scripts/test_docs_spec_amendments.py
@@ -185,7 +184,6 @@ GUARD_TESTS=(
   tests/unit/scripts/test_issue_forms.py
   tests/unit/scripts/test_verify_deployer_trust.py
   tests/unit/scripts/test_check_test_pointers.py
-  tests/unit/scripts/test_agent_quality_inventory.py
   tests/unit/scripts/test_runbook_index.py
   tests/unit/mcp/test_plugin_agents_ignore_chat.py
 )

@@ -568,7 +568,6 @@
   "tests/unit/control_plane/test_workspace_secrets_ttl_parity.py": 0.1,
   "tests/unit/control_plane/test_workspace_signed_approval.py": 10.6,
   "tests/unit/control_plane/test_workspaces.py": 13.9,
-  "tests/unit/docs/test_counts_mockups.py": 0.2,
   "tests/unit/egress/test_egress_gate_end_to_end.py": 0.1,
   "tests/unit/egress/test_egress_manifest.py": 0.3,
   "tests/unit/egress/test_egress_policy.py": 0.1,
