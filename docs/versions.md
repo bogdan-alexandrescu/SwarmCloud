@@ -49,7 +49,7 @@ provider builds and get two different results.
 | Node | `node:24-bookworm-slim` (Node 24.22.3, npm 11.19.1) | `sha256:dc26ae92...` |
 | uv | `ghcr.io/astral-sh/uv:0.11.7` | `sha256:240fb85a...` |
 | Playwright | `playwright==1.63.0` (pip) | — |
-| Claude Code CLI | `@anthropic-ai/claude-code@2.1.283` | — |
+| Claude Code CLI | `@anthropic-ai/claude-code@2.1.330` (2026-11-23; 2.1.283 refused `claude-fable-5-2`) | — |
 | Codex CLI | `@openai/codex@0.154.0` | — |
 
 Every `FROM` carries a digest, so a rebuild in six months produces the same
