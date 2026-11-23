@@ -31,7 +31,9 @@ platform admin can always name a new one; it only takes part in the guard.
 WHO COUNTS. Another person counts only while they hold `admin` by override,
 read fresh, AND can still select the workspace: their platform membership,
 read inside the transaction, still counts for the registered group, or a
-fresh per-group check finds them in it. A platform admin is never counted:
+per-group check finds them in it -- asked before the transaction when the
+person changed is an admin (`lookups_ahead`), so no network call holds the
+guard, and inside it only for an admin not asked before. A platform admin is never counted:
 their reach is the platform's, not the workspace's. Every read that fails is
 a 503, never an answer that lets the last admin go.
 
