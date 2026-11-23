@@ -198,6 +198,17 @@ def _plugins_field() -> Any:
     return Field(default=None, max_length=8)
 
 
+def _idempotency_key_field() -> Any:
+    # One logical submission's key (`swarm_api.idempotency`): the same key,
+    # re-sent by the same submitter in the same workspace within its window,
+    # answers the first submission's ids marked `idempotent_replay` and
+    # creates nothing; with another payload it is refused 409. Checked by
+    # `idempotency.check_key` (16-128 characters, URL-safe). Honoured on the
+    # body of `POST /v1/tasks`, `/v1/tasks/batch` and `/v1/workflows` only,
+    # never on a task inside a batch and never from a stored spec.
+    return Field(default=None, max_length=128)
+
+
 def _plugins_off_field() -> Any:
     # The workspace's every-step defaults this step turns off, by name
     # (install id or built-in name; docs/design/managed-plugins.md section
@@ -211,6 +222,7 @@ class TaskCreate(StrictModel):
     #: The ONLY execution knob a caller has. Image, command, resource spec and
     #: backend all come from the frozen catalogue keyed by this name.
     runner_profile: str = Field(min_length=1, max_length=64)
+    idempotency_key: str | None = _idempotency_key_field()
     input: dict[str, Any] = Field(default_factory=dict)
     priority: int = Field(default=0, ge=-100, le=100)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -292,6 +304,7 @@ class TaskCreate(StrictModel):
 
 class TaskBatchCreate(StrictModel):
     tasks: list[TaskCreate] = Field(min_length=1)
+    idempotency_key: str | None = _idempotency_key_field()
 
 
 # --------------------------------------------------------------------------
@@ -636,6 +649,7 @@ class AfterPullRequest(StrictModel):
 
 class WorkflowCreate(StrictModel):
     steps: list[WorkflowStepCreate] = Field(min_length=1)
+    idempotency_key: str | None = _idempotency_key_field()
     priority: int = Field(default=0, ge=-100, le=100)
     on_step_failure: Literal["fail_workflow", "continue"] = "fail_workflow"
     #: Free-form, copied onto every step's task. Two keys are the merge
