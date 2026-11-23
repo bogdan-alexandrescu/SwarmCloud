@@ -350,6 +350,68 @@ def test_what_a_live_issue_run_references_is_never_purged(client, db, purger):
     assert [w["id"] for w in body["workflows"]] == ["wf_dead"]
 
 
+def _fix_round(db, *, key: str, merge_state: str) -> None:
+    """A lane whose merge step (`merge`, in `wf_lane`) is `merge_state`, and
+    its failed fix round in a workflow of its own, `wf_round`, carrying the
+    `merge_task` pointer mergewake stamps on every round (issue 187)."""
+    _task(db, "t_merge", state=merge_state, workflow_id="wf_lane")
+    db.docs["tasks/t_merge"]["runner_profile"] = "merge"
+    db.docs["workflows/wf_lane"] = {
+        "workflow_id": "wf_lane", "tenant_id": "eng", "state": "RUNNING",
+        "created_at": OLD, "updated_at": OLD, "submitted_by": "seed@eng",
+        "steps": [{"step_id": "merge", "runner_profile": "merge", "input": {},
+                   "task_id": "t_merge"}],
+    }
+    _workflow(db, "wf_round", ["t_round"])
+    db.docs["tasks/t_round"]["metadata"] = {
+        key: {"merge_task": "t_merge", "round": 1, "head_sha": "a" * 40, "pull_request": 7}}
+
+
+@pytest.mark.parametrize("key", ["merge_fix_round", "merge_conflict_round"])
+def test_a_fix_round_whose_merge_step_is_live_is_never_purged(client, db, purger, key):
+    # Issue 187: the merge step reads its round's task until the round ends;
+    # a purged round is unreadable, and the step waited 6 h, then refused.
+    seed_tenant(db, "eng")
+    _fix_round(db, key=key, merge_state="PARKED")
+    purger.put("tenants/eng/tasks/t_round/attempts/a/logs/stdout")
+    body = _purge(client, dry_run=False, confirm="purge").json()
+    assert body["workflows"] == [] and body["tasks"] == []
+    assert [(s["id"], s["reason"]) for s in body["skipped"]] == [("wf_round", "live_merge")]
+    assert "t_merge" in body["skipped"][0]["detail"]
+    assert "workflows/wf_round" in db.docs and "tasks/t_round" in db.docs
+    assert purger.deleted == []
+
+
+@pytest.mark.parametrize("key", ["merge_fix_round", "merge_conflict_round"])
+def test_a_fix_round_is_purged_once_its_merge_step_is_terminal(client, db, purger, key):
+    seed_tenant(db, "eng")
+    _fix_round(db, key=key, merge_state="PARKED")
+    assert _purge(client, dry_run=False, confirm="purge").json()["workflows"] == []
+    db.docs["tasks/t_merge"]["state"] = "SUCCEEDED"
+    body = _purge(client, dry_run=False, confirm="purge").json()
+    assert [w["id"] for w in body["workflows"]] == ["wf_round"]
+    assert "workflows/wf_round" not in db.docs and "tasks/t_round" not in db.docs
+    assert "tasks/t_merge" in db.docs
+
+
+def test_a_live_merge_step_holds_only_its_own_rounds(client, db, purger):
+    # A workflow that is no fix round goes as before beside a live merge
+    # step; so does a round pointing at a live task that is no merge step,
+    # or at another tenant's merge step.
+    _seed(db, purger)
+    _fix_round(db, key="merge_fix_round", merge_state="RUNNING")
+    _task(db, "t_other", state="RUNNING")
+    _workflow(db, "wf_not_merge", ["t_r2"])
+    db.docs["tasks/t_r2"]["metadata"] = {"merge_fix_round": {"merge_task": "t_other"}}
+    _task(db, "t_foreign", tenant="research", state="RUNNING", workflow_id="wf_x")
+    db.docs["tasks/t_foreign"]["runner_profile"] = "merge"
+    _workflow(db, "wf_foreign", ["t_r3"])
+    db.docs["tasks/t_r3"]["metadata"] = {"merge_conflict_round": {"merge_task": "t_foreign"}}
+    body = _purge(client, dry_run=False, confirm="purge").json()
+    assert sorted(w["id"] for w in body["workflows"]) == ["wf_dead", "wf_foreign", "wf_not_merge"]
+    assert [(s["id"], s["reason"]) for s in body["skipped"]] == [("wf_round", "live_merge")]
+
+
 def test_exclude_ids_are_kept_and_a_named_step_keeps_its_workflow(client, db, purger):
     _seed(db, purger)
     _task(db, "t_other", state="CANCELLED")
