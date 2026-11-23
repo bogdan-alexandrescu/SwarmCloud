@@ -326,7 +326,7 @@ def test_an_attempt_that_restarts_its_runner_reports_every_runners_usage(
     exported 2.0s, wrote the second runner's lower memory peak over the
     first's, and restarted its HEARTBEAT total from zero with the second runner.
     """
-    from agent_worker import heartbeat, lifecycle, metrics
+    from agent_worker import heartbeat, metrics
 
     class TwoSecondsPerRunner:
         source = "scripted"
