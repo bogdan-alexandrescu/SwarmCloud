@@ -280,7 +280,8 @@ def say(item: dict[str, Any]) -> str:
     named = item.get("workflow_id") or item.get("task_id")
     head = f"{where}{named} · " if named else where
     line = f"{head}{item.get('kind')} · {item.get('reason')}"
-    note = RULE_SAY.get(item.get("rule"))
+    rule = item.get("rule")
+    note = RULE_SAY.get(rule) if isinstance(rule, str) else None
     return f"{line} -- {note}" if note else line
 
 
