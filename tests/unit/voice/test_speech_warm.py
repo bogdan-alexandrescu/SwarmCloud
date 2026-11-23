@@ -121,7 +121,8 @@ def test_a_warm_while_a_session_holds_the_machine_changes_nothing(db):
     started = machine.start(ALICE, chosen=CHOSEN)
     machine.ready(started.holder, started)
     machine.beat(started.holder, socket_id="sk_a", activity_at=clock.now())
-    clock.advance(200)
+    # Inside the heartbeat's two minutes, as a live socket keeps it.
+    clock.advance(100)
     before = dict(_lease(db))
     calls = list(compute.calls)
 

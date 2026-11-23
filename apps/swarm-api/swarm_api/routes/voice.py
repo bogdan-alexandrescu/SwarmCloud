@@ -211,6 +211,8 @@ from ..voice import preferences as vprefs
 from ..voice import projectstate as vstate
 from ..voice import sessions as vs
 from ..voice import settings as vsettings
+from ..voice import speech_catalogue as cat
+from ..voice import speech_machine as sm
 from ..voice import store as vstore
 from ..voice import stream as vstream
 from ..voice import workfeed as vwork
@@ -441,6 +443,55 @@ async def start_session(
                              chosen=chosen)
 
     return await run_in_threadpool(_start)
+
+
+class WarmSpeech(BaseModel):
+    """The warm takes no field: no machine, zone, image or engine (invariant 10)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+@router.post("/speech/warm")
+async def warm_speech(
+    request: Request,
+    body: WarmSpeech | None = None,
+    person: str = Depends(allowed_person),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+    client: Any = Depends(voice_client),
+    machine: Any = Depends(speech_machine),
+) -> dict:
+    """THE WARM (voice/speech_machine.py; own-speech §4.1). Talk posts it once
+    when it opens: the speech machine starts in the background when nothing
+    holds it, for a caller a session start would admit, with own speech the
+    engine Settings select. The same checks in the same order as a start: the
+    Voice it list (403), the console's workspace, swarm-voice deployed (503),
+    the day cap (409 voice_day_cap); then `{warming: false, reason}` and
+    nothing written when Settings name another engine or none is deployed
+    (`not_own_speech`), the person already has a session (`live_session`),
+    the lease is held (`held`) or this person warmed under
+    WARM_EVERY_SECONDS ago (`rate_limited`). Otherwise `{warming: true,
+    reason: started, within_seconds}`, answered before any Compute call:
+    the start is the one a session runs, on `rvs.warm_runner`'s thread. It
+    asks swarm-voice and the OpenAI pool nothing, and touches no task,
+    capacity reservation or task lease."""
+    service = _service(ctx, client, machine)
+    await run_in_threadpool(lambda: _guard(ctx, request).refuse_start(
+        tenant_id=tenant_id, person=person))
+    chosen = (await run_in_threadpool(vsettings.VoiceSettings(ctx.db, now=ctx.now).read))["settings"]
+    engine = chosen.get("engine")
+    engine = engine if engine in vs.ENGINE_MODES else cat.DEFAULTS["engine"]
+    if machine is None or vs.ENGINE_MODES[engine] != vs.MODE_SPEECH:
+        return {"warming": False, "reason": sm.WARM_NOT_SELECTED}
+    if await run_in_threadpool(lambda: service.holds_live(person=person)):
+        return {"warming": False, "reason": sm.WARM_LIVE_SESSION}
+    outcome, holder = await run_in_threadpool(lambda: machine.begin_warm(
+        tenant_id=tenant_id, person=person, chosen=chosen))
+    if holder is None:
+        return {"warming": False, "reason": outcome}
+    rvs.warm_runner(request.app)(lambda: machine.finish_warm(
+        holder, tenant_id=tenant_id, person=person, chosen=chosen))
+    return {"warming": True, "reason": outcome, "within_seconds": int(sm.READY_SECONDS)}
 
 
 @router.post("/sessions/{session_id}/reopen")

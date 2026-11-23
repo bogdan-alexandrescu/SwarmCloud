@@ -171,7 +171,16 @@ lease renewals share that CPU (voice-it.md §3.4).
    free for the front (a refusal, never a wait); for `gpt-live`, no OpenAI key. Text mode runs on
    the ChatGPT plan, but it is not this engine: no `speech` session reaches OpenAI (Q3). The session
    is not re-opened; its document gets `mode: "text"` and `fallback: {from, reason}`, and the page
-   draws one line (§9.2).
+   draws one line (§9.2). **The warm request** (owner, 2026-11-23): so the first spoken turn does
+   not wait out this cold start, Talk posts `POST /v1/voice/speech/warm` once when it opens, and
+   swarm-api starts the stopped machine in the background through this same start, for no session,
+   only for a caller a Start would admit (the Voice it list, swarm-voice deployed, the day cap, no
+   live session) with `own` the engine selected, and at most once per person per 30 minutes
+   (`WARM_EVERY_SECONDS`). The idle stop is unchanged: a warmed machine nobody talks to stops by
+   the same rule, `idle_minutes` after the start finished, so it runs at most 4 + 15 + 2 = 21
+   minutes (`READY_SECONDS`, Settings' longest idle, the sweep's two minutes; 11 at the default
+   idle), about $0.25 on the default g2-standard-4 ($0.71 an hour), and a session that starts meanwhile adopts
+   it and pays its minutes from the warm's start call (§13).
 
 ### 4.2 Starting the machine
 

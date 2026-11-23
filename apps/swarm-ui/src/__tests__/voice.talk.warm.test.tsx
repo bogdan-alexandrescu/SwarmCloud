@@ -48,7 +48,12 @@ import { VoiceSessionHolder } from '../voice/session'
 import { VOICE_SPEECH_WARM } from '../voice/warm'
 
 const SESSION = 'vs-0001'
-const status = () => document.querySelector('.vt-status')?.textContent ?? ''
+// What the status shows: a hidden tooltip's words are not on the page.
+function status(): string {
+  const el = document.querySelector('.vt-status')?.cloneNode(true) as HTMLElement | undefined
+  el?.querySelectorAll('[role="tooltip"][hidden]').forEach((t) => t.remove())
+  return el?.textContent ?? ''
+}
 const warms = () => fetchMock.write.mock.calls.filter(([t]) => (t as { url: string }).url === VOICE_SPEECH_WARM)
 
 function answer(warm: unknown): void {
@@ -94,7 +99,10 @@ describe('Talk warms the speech machine once when it opens', () => {
     const mark = document.querySelector('.vt-status .vt-boot-step.is-now')
     expect(mark?.textContent).toBe('Speech is starting')
     // The why is the tooltip's, not a sentence on the page.
-    expect(screen.getByRole('status').querySelector('[tabindex="0"]')).toBeTruthy()
+    const tip = document.querySelector('.vt-status [role="tooltip"]')
+    expect(tip?.hasAttribute('hidden')).toBe(true)
+    expect(tip?.textContent).toContain('idle time')
+    expect(document.querySelector('.vt-status [tabindex="0"]')).toBe(mark)
     await act(async () => {
       vi.advanceTimersByTime(239_000)
     })

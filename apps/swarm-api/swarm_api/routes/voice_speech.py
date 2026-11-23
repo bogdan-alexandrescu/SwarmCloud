@@ -48,7 +48,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Mapping
+import threading
+from typing import Any, Callable, Mapping
 
 from fastapi import APIRouter, Request, WebSocket
 from starlette.concurrency import run_in_threadpool
@@ -116,6 +117,22 @@ def machine_for(app: Any, ctx: AppContext) -> sm.SpeechMachine:
     return sm.SpeechMachine(ctx.db, compute, config=config, now=ctx.now,
                             marker_key=str(getattr(ctx.settings, "child_key", "") or ""),
                             applied=applied)
+
+
+def _on_a_thread(job: Callable[[], None]) -> None:
+    threading.Thread(target=job, name="speech-warm", daemon=True).start()
+
+
+def warm_runner(app: Any) -> Callable[[Callable[[], None]], None]:
+    """What runs the warm's start after the route has answered (THE WARM,
+    voice/speech_machine.py): a daemon thread, the start being the same
+    blocking one a session's runs in the threadpool. swarm-api keeps its CPU
+    between requests (cpu_idle false), so the thread runs on; an instance
+    that goes away mid-start leaves a lease whose heartbeat goes stale, and
+    the sweep stops it as it stops any abandoned start.
+    `app.state.speech_warm_runner` when one is set (a test's)."""
+    runner = getattr(app.state, "speech_warm_runner", None)
+    return runner if runner is not None else _on_a_thread
 
 
 def _voice_client(app: Any, ctx: AppContext) -> Any:
