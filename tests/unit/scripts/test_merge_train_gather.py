@@ -1,15 +1,15 @@
 """The merge train gathers before it boards (the owner's direction, 12 November
 2026: "15 pull requests or 30 minutes, up to 40", then 13 November: "8 ready or 15
-minutes, up to 40"; it was "6 ready or 20
-minutes" from 11 November).
+minutes, up to 40", then 23 November: "8 ready or 5 minutes, up to 40"; it was
+"6 ready or 20 minutes" from 11 November).
 
 WHY. A tick boarded every eligible `ready` pull request as soon as it was
 green, so trains were small and each one paid the whole suite; the full suite
 is moving to run only on the train and on main, so fewer, larger trains spend
 less CI time -- and since 12 November a lane's pull request runs no checks at
 all, so the train's run is the only one. Now a train boards once
-MERGE_TRAIN_MIN_PRS (15) pull requests are ready, or once the oldest of them
-has been ready for MERGE_TRAIN_MAX_WAIT_MINUTES (30), and holds at most
+MERGE_TRAIN_MIN_PRS (8) pull requests are ready, or once the oldest of them
+has been ready for MERGE_TRAIN_MAX_WAIT_MINUTES (5), and holds at most
 MERGE_TRAIN_MAX_PRS (40). "Ready since" is the time the `ready` label
 was last added, read from GitHub's issue events; one that cannot be read
 counts as the full wait, so an unreadable time never holds work. A
@@ -144,38 +144,38 @@ def gather(tmp_path: Path) -> Gather:
 
 
 # --------------------------------------------------------------------------
-# 8 ready or 15 minutes, up to 40
+# 8 ready or 5 minutes, up to 40
 # --------------------------------------------------------------------------
 
 
 def test_five_ready_for_five_minutes_board_nothing_and_say_so_in_one_line(gather):
     for i, n in enumerate(range(101, 106)):
-        gather.ready(n, [_labeled(5 - i * 0.5)])
+        gather.ready(n, [_labeled(2 - i * 0.25)])
     verdict, summary = gather.run()
     assert verdict == "wait"
     lines = [line for line in summary.splitlines() if line.strip()]
     assert len(lines) == 1, summary
     line = lines[0]
     assert "5 ready pull requests wait" in line
-    assert "#101" in line and "ready 5 minutes" in line
-    # It boards at the latest when archived issue 101 has waited 15 minutes: 10 from now.
-    assert "wait for 8 to board (or 15 minutes)" in line
-    assert "at the latest" in line and "in 10 minutes" in line
+    assert "#101" in line and "ready 2 minutes" in line
+    # It boards at the latest when archived issue 101 has waited 5 minutes: 3 from now.
+    assert "wait for 8 to board (or 5 minutes)" in line
+    assert "at the latest" in line and "in 3 minutes" in line
     assert re.search(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", line), line
 
 
 def test_a_gathering_tick_publishes_the_moment_the_oldest_window_ends(gather):
     """The workflow's `wake` job sleeps to this epoch and dispatches one more
     tick: no event is raised when a gather's window ends."""
-    gather.ready(101, [_labeled(5)])
-    gather.ready(102, [_labeled(2)])
+    gather.ready(101, [_labeled(2)])
+    gather.ready(102, [_labeled(1)])
     before = int(time.time())
     verdict, _ = gather.run()
     assert verdict == "wait"
     (line,) = (gather.tmp / "output.txt").read_text().splitlines()
     wake_at = int(line.removeprefix("wake_at="))
-    # #101 became ready 5 minutes ago: its 15-minute window ends 10 minutes on.
-    assert before + 9 * 60 <= wake_at <= before + 10 * 60 + 60
+    # #101 became ready 2 minutes ago: its 5-minute window ends 3 minutes on.
+    assert before + 2 * 60 <= wake_at <= before + 3 * 60 + 60
 
 
 def test_a_tick_that_boards_publishes_no_deadline(gather):
@@ -199,17 +199,27 @@ def test_seven_ready_wait_and_eight_board_without_reading_when_they_became_ready
 
 
 def test_five_board_once_the_oldest_has_waited_past_the_window(gather):
-    gather.ready(101, [_labeled(14)])
+    gather.ready(101, [_labeled(4)])
     for n in range(102, 106):
-        gather.ready(n, [_labeled(2)])
+        gather.ready(n, [_labeled(1)])
     assert gather.run()[0] == "wait"
     gather.prs.clear()
-    gather.ready(101, [_labeled(16)])
+    gather.ready(101, [_labeled(6)])
     for n in range(102, 106):
-        gather.ready(n, [_labeled(2)])
+        gather.ready(n, [_labeled(1)])
     verdict, summary = gather.run()
     assert verdict == "board"
     assert "wait" not in summary
+
+
+def test_a_lone_pull_request_boards_once_it_has_been_ready_five_minutes(gather):
+    """The plan of 23 November 2026: a lone pull request waits at most 5
+    minutes, not 15, to board. MUTATION: put the window back to 15."""
+    gather.ready(101, [_labeled(4)])
+    assert gather.run()[0] == "wait"
+    gather.prs.clear()
+    gather.ready(101, [_labeled(6)])
+    assert gather.run()[0] == "board"
 
 
 def test_the_time_ready_was_last_added_is_the_one_that_counts(gather):
@@ -317,7 +327,7 @@ def test_each_setting_is_explained_next_to_its_default():
     reads too (swarm_api.trainboard, board on time, 12 November 2026)."""
     code = SCRIPT.read_text()
     shared = json.loads(GATHER_FILE.read_text())
-    assert (shared["min_prs"], shared["max_wait_minutes"]) == (8, 15)
+    assert (shared["min_prs"], shared["max_wait_minutes"]) == (8, 5)
     assert "apps/swarm-api/swarm_api/merge_train_gather.json" in code
     for knob, key in (("MERGE_TRAIN_MIN_PRS", "min_prs"),
                       ("MERGE_TRAIN_MAX_WAIT_MINUTES", "max_wait_minutes")):
