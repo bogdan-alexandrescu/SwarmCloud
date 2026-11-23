@@ -275,17 +275,18 @@ describe('Plans: the cards', () => {
     expect(text(card('full-six').querySelector('.lpc-lends'))).toBe('Lent smoke')
   })
 
-  it('gives each card ONE Manage control, Resume only while paused, and no per-lend button', async () => {
+  it('gives each card ONE Manage control, Resume only while paused, Sign in again only while it needs one, and no per-lend button', async () => {
     await openPlans()
     const cards = screen.getAllByRole('article')
     expect(cards.length).toBeGreaterThan(3)
+    const first: Readonly<Record<string, string>> = { 'weekly-burn': 'Resume', 'retired-laptop': 'Sign in again' }
     for (const c of cards) {
       const names = within(c).queryAllByRole('button').map((b) => b.textContent)
       const label = c.getAttribute('aria-label')!
       // A plan lent to this workspace is its owner's to manage: its card carries no control.
       const owned = c.getAttribute('data-plan')!.startsWith('u-owner:')
       // MUTATION: put a button on each lend line and full-six carries three.
-      expect(names, label).toEqual(!owned ? [] : label === 'weekly-burn' ? ['Resume', 'Manage'] : ['Manage'])
+      expect(names, label).toEqual(!owned ? [] : first[label] !== undefined ? [first[label], 'Manage'] : ['Manage'])
     }
     expect(cards.some((c) => !c.getAttribute('data-plan')!.startsWith('u-owner:'))).toBe(true)
     expect(screen.queryByRole('button', { name: /Edit lend/ })).toBeNull()
