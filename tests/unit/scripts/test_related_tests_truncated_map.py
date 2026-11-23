@@ -42,6 +42,8 @@ TREE = {
        for n in range(4)},
     "tests/unit/foo/test_edge.py": "from foo.edge import use\n\n\ndef test_use():\n"
                                    "    assert use()\n",
+    # A recorded weight, light: with none readable the selection is capped.
+    "tests/unit/scripts/unit_test_durations.json": '{"tests/unit/foo/test_edge.py": 1.0}\n',
 }
 
 
