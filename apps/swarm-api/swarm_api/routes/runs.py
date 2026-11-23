@@ -85,7 +85,7 @@ from swarm_common.states import TaskState
 
 from ..auth import AuthContext
 from .. import issueruns as issueruns_module
-from .. import refusals, roles, stepclass
+from .. import planlint, refusals, roles, stepclass
 from ..admins import AUDIT_COLLECTION
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import (
@@ -113,6 +113,7 @@ from ..issueruns import (
     TERMINAL_RUN_STATES,
     InvalidPlan,
     IssueRun,
+    PlanChanged,
     IssueRuns,
     PLANNER_AUTHOR,
     PlanRevisionWrite,
@@ -390,6 +391,9 @@ def hard_stops_at_plan(ctx: AppContext, tenant_id: str, run: IssueRun, plan: dic
 
 def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     runs = _runs(ctx)
+    if issueruns_module.replan_pending(run):
+        # A re-plan claimed by a request that never linked its task.
+        return _resume_replan(ctx, tenant_id, run)
     try:
         task = ctx.store.get_task(tenant_id, run.planner_task_id, submitted_by=None)
     except NotFound:
@@ -401,10 +405,9 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
         try:
             kind, plan = _read_plan(ctx, tenant_id, task.id, lane_refs=_lane_refs(run))
         except InvalidPlan as refused:
-            return runs.transition(
-                tenant_id, run.id, RunState.FAILED, by=SYSTEM,
-                patch={"error": failure_text(refused.message)},
-            )
+            # An output that does not parse is re-planned once, then held
+            # for a person (`_plan_refused`); it no longer fails the run.
+            return _plan_refused(ctx, tenant_id, run, task, planlint.parse_findings(refused), None)
         except UpstreamUnavailable:
             # The bucket, not the plan: the next read tries again.
             log.warning("issue run %s: the planner's %s could not be read yet", run.id, PLAN_FILE)
@@ -446,6 +449,9 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
                 tenant_id, run.id, RunState.FAILED, by=SYSTEM,
                 patch={"error": failure_text(unlisted)},
             )
+        findings = planlint.lint(plan)
+        if findings:
+            return _plan_refused(ctx, tenant_id, run, task, findings, plan)
         patch = {"plan": plan, "plan_digest": plan_digest(plan), "plan_revision": 1,
                  "approval_hold": hard_stops_at_plan(ctx, tenant_id, run, plan)}
         advisory = read_plan_advisory(ctx, tenant_id, task.id)
@@ -476,6 +482,171 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             patch={"error": f"the planner task {task.id} was cancelled"},
         )
     return run
+
+
+_PLANNING_ONLY = frozenset({RunState.PLANNING})
+
+
+def _plan_refused(ctx: AppContext, tenant_id: str, run: IssueRun, task, findings: list[dict],
+                  plan: dict | None) -> IssueRun:
+    """A planner output that failed parse (`plan` None) or lint: the ONE
+    re-plan while the run's document counts none, else a hold for a person."""
+    if issueruns_module.replans(run) < issueruns_module.MAX_REPLANS:
+        return _start_replan(ctx, tenant_id, run, task, findings)
+    return _hold_for_person(ctx, tenant_id, run, findings, plan)
+
+
+def _start_replan(ctx: AppContext, tenant_id: str, run: IssueRun, first, findings: list[dict]) -> IssueRun:
+    """Claim the re-plan on the run, THEN submit it, then link it.
+
+    The claim comes first so the count is on the document before any task
+    exists: a request that dies after it leaves a claim another visit
+    resumes (`_resume_replan`), never a second re-plan. Two visits racing
+    write one claim; the loser's Conflict sends it to re-read.
+    """
+    first_id = first.id
+    now = ctx.now()
+
+    def claim(current: IssueRun) -> dict:
+        if current.planner_task_id != first_id or (
+                issueruns_module.replans(current) >= issueruns_module.MAX_REPLANS):
+            raise Conflict(f"run {current.id}'s re-plan was claimed by another request")
+        return {"plan_lint": {
+            "replans": issueruns_module.replans(current) + 1,
+            "planner_task_ids": [first_id],
+            "claimed_at": now,
+            "replan_findings": findings,
+            "findings": findings,
+            "held": False,
+        }}
+
+    log.info("issue run %s tenant=%s: the planner's output failed (%s); one re-plan",
+             run.id, tenant_id, ", ".join(sorted({f["code"] for f in findings})))
+    claimed = _runs(ctx).transition(tenant_id, run.id, RunState.PLANNING, by=SYSTEM,
+                                    from_states=_PLANNING_ONLY, patch=claim)
+    return _submit_replan(ctx, tenant_id, claimed, first)
+
+
+def _resume_replan(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
+    """A claimed re-plan whose task is not the run's planner yet.
+
+    Inside REPLAN_CLAIM_BOUND_SECONDS the claiming request may still be
+    submitting, so it is left alone. Past it, a planner task of the run's own
+    tenant that the run does not list yet WAS submitted and only its link was
+    lost, so it is adopted; otherwise the re-plan is submitted now. Either
+    way there is one re-plan task.
+    """
+    if not issueruns_module.replan_claim_overdue(run, ctx.now()):
+        return run
+    known = issueruns_module.replan_task_ids(run)
+    adopted = issueruns_module.linked_replan_task_id(ctx.db, tenant_id, run.id, known)
+    if adopted:
+        log.info("issue run %s tenant=%s adopts re-plan %s: its link was lost",
+                 run.id, tenant_id, adopted)
+        return _link_replan(ctx, tenant_id, run, adopted)
+    try:
+        first = ctx.store.get_task(tenant_id, run.planner_task_id, submitted_by=None)
+    except NotFound:
+        return _runs(ctx).transition(
+            tenant_id, run.id, RunState.FAILED, by=SYSTEM,
+            patch={"error": f"the planner task {run.planner_task_id} no longer exists"},
+        )
+    return _submit_replan(ctx, tenant_id, run, first)
+
+
+def _submit_replan(ctx: AppContext, tenant_id: str, run: IssueRun, first) -> IssueRun:
+    """The re-plan task, submitted as the run's creator in the run's tenant
+    (`run_owner_auth`), as `submit_tasks` admits and reserves any task."""
+    findings = list((run.plan_lint or {}).get("replan_findings") or [])
+    try:
+        owner = run_owner_auth(ctx, run)
+        spec = issueruns_module.replan_task(run, first, findings,
+                                            class_models=stepclass.class_models_of(ctx))
+        with issueruns_module.submitting(spec):
+            submission = ctx.submissions.submit_tasks(owner, [spec])
+    except (RunOwnerNotMember, RunOwnerUnverified) as gone:
+        return _runs(ctx).transition(
+            tenant_id, run.id, RunState.FAILED, by=SYSTEM, from_states=_PLANNING_ONLY,
+            patch={"error": failure_text(gone.message)},
+        )
+    except UpstreamUnavailable:
+        # The claim stays; a visit past the bound submits it.
+        log.warning("issue run %s: the re-plan could not be submitted yet", run.id)
+        return run
+    except ApiError as refused:
+        # Refused for good: a person reads the plan instead of a re-plan.
+        return _hold_for_person(ctx, tenant_id, run, findings, None,
+                                replan_error=failure_text(refused.message))
+    return _link_replan(ctx, tenant_id, run, submission.tasks[0].id)
+
+
+def _link_replan(ctx: AppContext, tenant_id: str, run: IssueRun, task_id: str) -> IssueRun:
+    """The re-plan's task becomes the run's planner, once."""
+    expected = issueruns_module.replan_task_ids(run)
+
+    def link(current: IssueRun) -> dict:
+        if (not issueruns_module.replan_pending(current)
+                or issueruns_module.replan_task_ids(current) != expected):
+            raise Conflict(f"run {current.id}'s re-plan is linked already")
+        return {"planner_task_id": task_id,
+                "plan_lint": {**current.plan_lint, "planner_task_ids": [*expected, task_id]}}
+
+    return _runs(ctx).transition(tenant_id, run.id, RunState.PLANNING, by=SYSTEM,
+                                 from_states=_PLANNING_ONLY, patch=link)
+
+
+def _earlier_plan(ctx: AppContext, tenant_id: str, run: IssueRun, *,
+                  skip_current: bool = True) -> dict | None:
+    """The latest planner output of `run` that parsed -- before the current
+    planner's, unless `skip_current` is False -- or None."""
+    for task_id in reversed(issueruns_module.replan_task_ids(run)):
+        if skip_current and task_id == run.planner_task_id:
+            continue
+        try:
+            kind, plan = _read_plan(ctx, tenant_id, task_id, lane_refs=_lane_refs(run))
+        except ApiError:
+            continue
+        if kind == "plan":
+            return plan
+    return None
+
+
+def _hold_for_person(ctx: AppContext, tenant_id: str, run: IssueRun, findings: list[dict],
+                     plan: dict | None, *, replan_error: str | None = None) -> IssueRun:
+    """PLANNED for a person, never FAILED: the run's existing wait for a
+    person, `plan_approval` made `required` as the Jev hold makes it, with the
+    findings on the run for its read. With no plan of its own, the latest
+    earlier output that parsed is shown, with its lint findings after the
+    parse failure's. With none at all the run is PLANNED with no plan: a
+    person edits one in, or rejects it. Holds nothing (invariant 1).
+    """
+    shown, shown_findings = plan, list(findings)
+    if shown is None:
+        # A refused re-plan submission holds the current output, whose
+        # findings these are; a re-plan that did not parse shows an earlier.
+        shown = _earlier_plan(ctx, tenant_id, run, skip_current=replan_error is None)
+        if shown is not None and replan_error is None:
+            shown_findings += planlint.lint(shown)
+    hold = hard_stops_at_plan(ctx, tenant_id, run, shown) if shown is not None else None
+
+    def held(current: IssueRun) -> dict:
+        record = {**(current.plan_lint or {}), "findings": shown_findings, "held": True}
+        if replan_error:
+            record["replan_error"] = replan_error
+        patch: dict = {"plan_approval": "required", "plan_lint": record}
+        if shown is not None:
+            patch.update({"plan": shown, "plan_digest": plan_digest(shown), "plan_revision": 1,
+                          "approval_hold": widen_hold(current.approval_hold, hold)})
+        return patch
+
+    log.info("issue run %s tenant=%s: the re-plan failed too (%s); held for a person",
+             run.id, tenant_id, ", ".join(sorted({f["code"] for f in shown_findings})))
+    return _runs(ctx).transition(
+        tenant_id, run.id, RunState.PLANNED, by=SYSTEM, from_states=_PLANNING_ONLY, patch=held,
+        sign=owner_resigner(ctx),
+        revision=(PlanRevisionWrite(author_kind="planner", by=PLANNER_AUTHOR, made_by="plan")
+                  if shown is not None else None),
+    )
 
 
 #: What the compiled workflow's end moves a run to. SUCCEEDED is not DONE:
@@ -589,6 +760,13 @@ def _approve(
                 detail={"hold": hold.get("code"), "approvers": hold.get("approvers"),
                         "reasons": list(hold.get("reasons") or []),
                         "matched": list(hold.get("matched") or [])},
+            )
+        if by == AUTO_APPROVER and issueruns_module.lint_failed(current.plan):
+            # Never approved past a failed plan lint without a person.
+            raise InvalidPlan(
+                f"run {current.id}'s plan fails the plan lint: an automatic approval never "
+                "approves it; a person reads it",
+                detail={"findings": planlint.lint(current.plan or {})},
             )
         if current.approval_hold != run.approval_hold:
             approvals.check_hold(ctx, current, email=by, is_owner=is_owner, confirm=confirm)
@@ -1009,6 +1187,12 @@ def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
                 # §4.5: an auto-approval never satisfies a hard-stop hold. The
                 # run stays PLANNED, holding nothing (invariant 1), and the
                 # inbox shows it as a `kind: hold` item for its approvers.
+                return run
+            if issueruns_module.lint_failed(run.plan):
+                # A plan that fails the plan lint (stored before it, or
+                # edited round it) waits for a person, holding nothing.
+                log.info("issue run %s: auto-approval refused, the plan fails the plan lint",
+                         run.id)
                 return run
             try:
                 run = _approve(
@@ -1572,16 +1756,34 @@ def edit_plan(
     # An edit can add a hold but never clears one (§4.5): `widen_hold` over
     # the hold the claim reads.
     found = hard_stops_at_plan(ctx, tenant_id, current, plan)
-    run = runs.transition(
-        tenant_id, run_id, RunState.PLANNED, by=auth.email, digest=body.plan_digest,
-        from_states=_PLANNED_ONLY,
-        patch=lambda latest: {
+    # A run held with no plan (both planner outputs failed to parse) has no
+    # digest to send: the edit is checked against there still being none.
+    planless = current.plan_digest is None
+
+    def edited(latest: IssueRun) -> dict:
+        if planless and latest.plan_digest is not None:
+            raise PlanChanged(
+                f"the plan of run {run_id!r} has changed since it was shown; read the run "
+                "again and act on the plan it now holds",
+                detail={"plan_digest": latest.plan_digest, "sent": body.plan_digest[:128]},
+            )
+        patch = {
             "plan": plan,
             "plan_digest": plan_digest(plan),
             "plan_revision": latest.plan_revision + 1,
             "plan_edited_by": auth.email,
             "approval_hold": widen_hold(latest.approval_hold, found),
-        },
+        }
+        if latest.plan_lint is not None:
+            # The findings the page shows are the edited plan's.
+            patch["plan_lint"] = {**latest.plan_lint, "findings": planlint.lint(plan)}
+        return patch
+
+    run = runs.transition(
+        tenant_id, run_id, RunState.PLANNED, by=auth.email,
+        digest=None if planless else body.plan_digest,
+        from_states=_PLANNED_ONLY,
+        patch=edited,
         # Re-signed over the edited plan, its new revision and the widened
         # hold, after the run as the claim read it verifies (RUN-SIG-2): a
         # signature from before this edit no longer verifies on the run.
