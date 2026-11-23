@@ -2477,11 +2477,31 @@ The release sets a new account's IAM policy in the same apply that creates it:
 those need bootstrap's grant on it, and bootstrap cannot grant on an account
 that does not exist yet. So for a **new tenant**:
 
-1. `scripts/register-tenant.sh --group <group>` creates `swarm-agent-worker-<tenant>`
-   and checks the grant (step 2b). If the account **already existed**, step 2b
-   refuses to go on when it carries any IAM binding the platform does not make,
-   any conditioned binding, or a user-managed key — see "Adoption is limited to
-   the tenant worker" below.
+1. `scripts/register-tenant.sh --group <group> --terraform-tenant` creates
+   `swarm-agent-worker-<tenant>` and checks the grant (step 2b). If the account
+   **already existed**, step 2b refuses to go on when it carries any IAM binding
+   the platform does not make, any conditioned binding, or a user-managed key —
+   see "Adoption is limited to the tenant worker" below.
+
+   `--terraform-tenant` is what keeps step 4's release from failing. That
+   release creates three objects a full registration also makes, and creates
+   them with no import: the QA target credential secret
+   `swarm-tenant-<tenant>-qa` (`terraform/infra/qa_targets.tf`,
+   `google_secret_manager_secret.qa_target`) and the documents
+   `tenants/<tenant>` and `pools/tenant:<tenant>`
+   (`terraform/modules/firestore/bootstrap.tf`,
+   `google_firestore_document.tenant` and `.pool`). Made first by the script,
+   each answers 409 "already exists" and the release keeps failing until
+   someone repairs it (issue 141). With the flag the script makes everything
+   else as usual — the account the release adopts, its grants, its namespace —
+   and leaves those three to the release; until the release the tenant has no
+   `tenants/` record, so nobody resolves to it. Import blocks were not the fix:
+   an `import` of an object that does not exist fails the plan, and these exist
+   only when the script ran first. Without the flag the script makes all three,
+   as a tenant Terraform never manages needs. An environment that sets
+   `bootstrap_firestore_documents = false` gets no documents from the release
+   either: once the release has run, re-run the registration there without the
+   flag, which writes them and finds the release's QA secret already in place.
 2. Write the new settings. The deployment's tfvars is not in this repository:
    it lives only in the state bucket, as `config/dev/dev.tfvars`. Copy the
    current one out, add the tenant to its `tenants` block, and have the copy

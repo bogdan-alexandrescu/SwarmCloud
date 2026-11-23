@@ -41,6 +41,19 @@
 # in the same apply, and the deployer holds that role per account, never on the
 # project. Section 2b checks the grant and prints the commands.
 #
+# --terraform-tenant IS HOW THAT FIRST RUN IS MADE (issue 141). The release
+# creates three of the objects a full registration makes, with no import:
+# swarm-tenant-<tenant>-qa (terraform/infra/qa_targets.tf,
+# google_secret_manager_secret.qa_target) and tenants/<tenant> and
+# pools/tenant:<tenant> (terraform/modules/firestore/bootstrap.tf,
+# google_firestore_document.tenant and .pool), so a registration that made
+# them first left that release failing 409 "already exists". With the flag
+# this run makes everything else as usual -- the worker account the release
+# adopts, its grants, its namespace -- and leaves those three to the release.
+# Without it nothing changes: a tenant Terraform never manages needs all three
+# from here.
+#   scripts/register-tenant.sh --group eng@example.com --terraform-tenant
+#
 # AN ACCOUNT THAT ALREADY EXISTED IS INSPECTED, AND REFUSED IF SOMEBODY ELSE
 # COULD HOLD IT. terraform adopts an existing worker account
 # (create_ignore_already_exists), so an account made first by anyone else would
@@ -158,6 +171,10 @@ WORKER_FIRESTORE_ACCESS="true"
 # --runs-no-work: the workspace never runs agents (see the header). 0 is every
 # tenant before the flag existed.
 RUNS_NO_WORK=0
+# --terraform-tenant: the release that adds this tenant to var.tenants makes
+# its QA secret and its two documents (see the header). 0 makes them here, as
+# every registration did before the flag existed.
+TERRAFORM_TENANT=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -172,6 +189,7 @@ while [[ $# -gt 0 ]]; do
     --skip-k8s)        SKIP_K8S=1; FULL_ONLY_FLAGS+=" $1"; shift ;;
     --worker-firestore-access) WORKER_FIRESTORE_ACCESS="${2-}"; FULL_ONLY_FLAGS+=" $1"; shift 2 ;;
     --runs-no-work)    RUNS_NO_WORK=1; FULL_ONLY_FLAGS+=" $1"; shift ;;
+    --terraform-tenant) TERRAFORM_TENANT=1; FULL_ONLY_FLAGS+=" $1"; shift ;;
     --add-provider)    ADD_PROVIDER="$2"; ADD_PROVIDER_GIVEN=1; shift 2 ;;
     --dry-run|-n)      DRY_RUN=1; shift ;;
     --workspace)       WORKSPACE_ID="$2"; WORKSPACE_GIVEN=1; shift 2 ;;
@@ -3623,7 +3641,14 @@ fi
 #
 # Made for every registration, whatever --providers says: a tenant with no
 # provider key can still have a QA target. A re-run reads and changes nothing.
+# Except with --terraform-tenant: qa_targets.tf makes it, empty, with V-1 and
+# V-2, in the release that adds the tenant, and one made here first is a 409
+# there, so nothing here touches it.
 step "QA target credential secret"
+if [[ "${TERRAFORM_TENANT}" -eq 1 ]]; then
+  info "skipped: swarm-tenant-${TENANT_ID}-qa is made by the release (terraform/infra/qa_targets.tf,"
+  dim "  google_secret_manager_secret.qa_target, with swarm-api's two bindings); one made here would 409 it"
+else
 QA_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-register-qa.XXXXXX")"
 qa_call() {
   local out="$1"
@@ -3661,6 +3686,7 @@ case "${QA_RC}" in
   *) die "could not make swarm-tenant-${TENANT_ID}-qa or its swarm-api bindings (the reason is above).
   Sections 1-4 above are made; a re-run makes what is missing." ;;
 esac
+fi  # --terraform-tenant
 
 # --- 5. Kubernetes ------------------------------------------------------------
 #
@@ -3775,6 +3801,16 @@ fi
 
 # --- 6. control-plane documents ----------------------------------------------
 step "Control plane"
+# --terraform-tenant: terraform/modules/firestore/bootstrap.tf makes both
+# documents in the release that adds the tenant (while
+# bootstrap_firestore_documents is on, its default), and one written here
+# first is a 409 there. Until that release the tenant has no tenants/ record,
+# so the API resolves nobody to it -- the same as before the registration.
+if [[ "${TERRAFORM_TENANT}" -eq 1 ]]; then
+  info "skipped: tenants/${TENANT_ID} and pools/tenant:${TENANT_ID} are made by the release"
+  dim "  (terraform/modules/firestore/bootstrap.tf, google_firestore_document.tenant and google_firestore_document.pool);"
+  dim "  documents written here would 409 it"
+else
 # require_fs_database is not used here: the cloud resources above were already
 # created, so the operator needs to be told that BEFORE the exit code, and both
 # non-zero cases end the same way.
@@ -3873,6 +3909,7 @@ else
     ok "updated pools/${POOL} hard_limit to ${POOL_HARD_LIMIT} (active ${CURRENT_ACTIVE} left untouched)"
   fi
 fi
+fi  # --terraform-tenant
 
 hr
 ok "tenant ${TENANT_ID} registered"
@@ -3882,13 +3919,24 @@ ok "tenant ${TENANT_ID} registered"
 # defaults reset the limits. --add-provider is
 # section A; tests/integration/test_register_tenant_add_provider.py runs this
 # line as printed and reads what it wrote.
+# The Terraform line differs by --terraform-tenant: a registration without it
+# made the three objects the release creates, so adding this tenant to
+# var.tenants now would 409 that release (issue 141).
+if [[ "${TERRAFORM_TENANT}" -eq 1 ]]; then
+  TERRAFORM_NEXT="add '${TENANT_ID}' to a reviewed copy of the bucket's config/dev/dev.tfvars; BEFORE it goes back
+                        to the bucket, the owner applies terraform/bootstrap FROM MAIN with that copy:
+                        -var infra_tenants_tfvars=<copy> -target='${BOOTSTRAP_TARGET}'
+                        (the release 403s on this account's IAM without it -- docs/ci.md has the plan checks);
+                        the release makes swarm-tenant-${TENANT_ID}-qa, tenants/${TENANT_ID} and pools/tenant:${TENANT_ID}"
+else
+  TERRAFORM_NEXT="not as registered: this run made swarm-tenant-${TENANT_ID}-qa, tenants/${TENANT_ID} and
+                        pools/tenant:${TENANT_ID}, which the release that adds a tenant to var.tenants creates
+                        and 409s on. A Terraform tenant is registered with --terraform-tenant (docs/ci.md)"
+fi
 cat >&2 <<EOF
 
 Next:
-  terraform-managed?    add '${TENANT_ID}' to a reviewed copy of the bucket's config/dev/dev.tfvars; BEFORE it goes back
-                        to the bucket, the owner applies terraform/bootstrap FROM MAIN with that copy:
-                        -var infra_tenants_tfvars=<copy> -target='${BOOTSTRAP_TARGET}'
-                        (the release 403s on this account's IAM without it -- docs/ci.md has the plan checks)
+  terraform-managed?    ${TERRAFORM_NEXT}
   store a provider key  scripts/create-secrets.sh --tenant ${TENANT_ID} --provider anthropic --stdin
   then add it           scripts/register-tenant.sh --tenant ${TENANT_ID} --add-provider anthropic
   check it              scripts/status.sh --tenant ${TENANT_ID}
