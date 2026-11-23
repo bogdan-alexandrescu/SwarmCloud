@@ -13,6 +13,7 @@ allowed-tools:
   - mcp__swarmcloud__swarm_status
   - mcp__swarmcloud__swarm_wait
   - mcp__swarmcloud__swarm_collect
+  - mcp__swarmcloud__swarm_outcomes
   - mcp__swarmcloud__swarm_debug
   - mcp__swarmcloud__swarm_result
   - mcp__swarmcloud__swarm_artifact
@@ -36,6 +37,7 @@ allowed-tools:
   - mcp__plugin_sc_swarmcloud__swarm_status
   - mcp__plugin_sc_swarmcloud__swarm_wait
   - mcp__plugin_sc_swarmcloud__swarm_collect
+  - mcp__plugin_sc_swarmcloud__swarm_outcomes
   - mcp__plugin_sc_swarmcloud__swarm_debug
   - mcp__plugin_sc_swarmcloud__swarm_result
   - mcp__plugin_sc_swarmcloud__swarm_artifact
@@ -278,6 +280,7 @@ succeeded.
 | is it done yet? | `swarm_status` |
 | block until it is done, then tell me what it made | `swarm_wait` |
 | wait for several, then each one's state and result in one reply | `swarm_collect` |
+| each one's state, pull request, review verdict, cost and open questions, short | `swarm_outcomes` |
 | what did it produce — and if nothing, why | `swarm_result` |
 | why did this one task fail — attempts, events, the log's tail | `swarm_debug` |
 | read one file it produced | `swarm_artifact` |
