@@ -166,7 +166,10 @@ def test_the_sc_skill_and_command_say_to_record_an_answer_given_here():
     from pathlib import Path
 
     plugin = Path(__file__).resolve().parents[3] / "plugin"
-    for doc in (plugin / "skills" / "sc" / "SKILL.md", plugin / "commands" / "sc.md"):
-        text = " ".join(doc.read_text(encoding="utf-8").split())
+    import sc_skill_text
+
+    for doc, read in ((plugin / "skills" / "sc" / "SKILL.md", sc_skill_text.text),
+                      (plugin / "commands" / "sc.md", (plugin / "commands" / "sc.md").read_text)):
+        text = " ".join(read().split())
         assert "swarm_task_answer" in text, doc
         assert "never an answer" in text, doc

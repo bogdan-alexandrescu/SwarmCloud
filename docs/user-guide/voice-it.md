@@ -13,4 +13,4 @@ Spend is capped at $100 a session and $300 a day: at 80% of a cap Voice it tells
 
 There is no Voice it command in the sc plugin.
 
-For operators: the paid voice pauses on its own while delegated work runs and reopens on the result. The switch is Terraform's `voice_pause` in `terraform/infra/voice.tf`, `"on"` by default; set it to `"off"` and apply to keep the voice open until the session ends.
+For operators: the paid voice pauses on its own after 45 seconds in which nobody speaks, and reopens when you speak, press **Resume**, or a result is ready. The switch is Terraform's `voice_pause` in `terraform/infra/voice.tf`, `"on"` by default; set it to `"off"` and apply to keep the voice open until the session ends. The manifest itself also carries `VOICE_PAUSE: "on"`.

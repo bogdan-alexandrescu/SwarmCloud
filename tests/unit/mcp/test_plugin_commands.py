@@ -41,6 +41,7 @@ from pathlib import Path
 import pytest
 
 from swarm_mcp import cli, sc
+import sc_skill_text
 
 _REPO = Path(__file__).resolve().parents[3]
 _PLUGIN = _REPO / "plugin"
@@ -51,6 +52,8 @@ _PLUGIN = _REPO / "plugin"
 #: reader the same half hour it costs a model.
 _MARKDOWN = (
     sorted(_PLUGIN.glob("skills/*/SKILL.md"))
+    # A skill's on-demand reference files are its prose too (the sc split, 2026-11-23).
+    + sorted(_PLUGIN.glob("skills/*/reference/*.md"))
     + sorted(_PLUGIN.glob("commands/*.md"))
     + [_PLUGIN / "README.md"]
 )
@@ -222,7 +225,7 @@ def test_the_read_only_skill_never_gains_a_command_that_writes():
     `plugin/skills/sc/SKILL.md` and this goes red, while every other test in the
     suite stays green.
     """
-    text = (_PLUGIN / "skills" / "sc" / "SKILL.md").read_text()
+    text = sc_skill_text.text()
     granted = _commands_named(text)
     writes = sorted(
         " ".join(words)
