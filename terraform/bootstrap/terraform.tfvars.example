@@ -37,3 +37,9 @@ enable_github_hooks_dedup_role = true
 # Workspace secrets (docs/design/secrets-store.md): the bootstrap side of the
 # per-workspace secret store.
 enable_workspace_secrets = true
+
+# The roles and join acceptance probes' two identities (acceptance_probes.tf):
+# roles-probe-viewer and accept-probe-admin, whose ID tokens swarm-verify mints.
+# Default false: true only in the owner's bootstrap settings, once the probes'
+# workspaces are provisioned (docs/design/workspace-roles.md section 8).
+enable_acceptance_probes = false
