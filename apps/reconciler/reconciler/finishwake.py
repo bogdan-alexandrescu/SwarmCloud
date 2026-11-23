@@ -13,8 +13,8 @@ THE SAME MESSAGE AS THE WORKER'S, ON THE SAME TOPIC. The scheduler's
 re-reads the task and acts only if it has ended. This module is not the
 worker's import because the reconciler's image does not carry the worker
 package (images/swarm-reconciler/Dockerfile builds common, workflow-rollup
-and reconciler only); `tests/unit/reconciler/test_reconciler_finish_wake.py`
-holds the two requests equal, field for field, so they cannot drift.
+and reconciler only); a test holds the two requests equal, field for field,
+so they cannot drift.
 
 A DOORBELL. A lost wake costs one tick: the scheduler's dependency sweep is
 unchanged. So `announce` never raises, and it carries identifiers only.

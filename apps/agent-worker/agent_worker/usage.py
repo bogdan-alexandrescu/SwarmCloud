@@ -343,8 +343,7 @@ def _usage_summary(output: Any) -> dict[str, Any]:
     # none of those keys and returned {} for every attempt -- while its unit
     # test, which feeds the raw CLI shape, passed. A test exercising a shape
     # production never produces is worse than no test: it reports a working
-    # extractor when there is none. tests/unit/worker/test_usage_summary.py now
-    # also feeds the real envelope.
+    # extractor when there is none. The test now also feeds the real envelope.
     #
     # Preferring whichever level actually carries the keys, rather than always
     # descending, keeps this correct for a runner that returns the CLI JSON

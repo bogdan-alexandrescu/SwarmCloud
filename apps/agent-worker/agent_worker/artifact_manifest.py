@@ -104,9 +104,8 @@ MAX_NAME_BYTES = 256
 #: `swarm_common.config.Settings.max_workflow_steps` (50) minus this
 #: step -- but the 1 MiB budget above is arithmetic on THIS number, so it is
 #: held here rather than trusted to hold upstream.
-#: tests/unit/worker/test_artifact_manifest_declared_bound.py fails when the
-#: frozen `max_workflow_steps` default passes `MAX_DECLARED_NAMES + 1`: raise
-#: this and redo the budget then, not before.
+#: A test fails when the frozen `max_workflow_steps` default passes
+#: `MAX_DECLARED_NAMES + 1`: raise this and redo the budget then, not before.
 MAX_DECLARED_NAMES = 49
 
 #: The reasons a file in the folder is named in the log as not uploaded.

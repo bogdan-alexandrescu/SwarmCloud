@@ -294,7 +294,7 @@ ROUND_METADATA_KEYS = ("merge_fix_round", CONFLICT_ROUND_METADATA_KEY)
 #: The merge's own record of its rounds (`mergewake.MERGE_FIX_METADATA_KEY`)
 #: and its round lists: CI, conflict and pick (`mergewake.ROUND_KIND`).
 #: Spelled again, as `mergewake` brings the forge clients with it; held
-#: equal by tests/unit/control_plane/test_answer_wakes_the_merge_round.py.
+#: equal by a test.
 MERGE_FIX_METADATA_KEY = "merge_fix"
 MERGE_ROUND_LISTS = ("rounds", "conflict_rounds", "pick_rounds")
 #: The most distinct asking tasks one hold may name before it is read as
@@ -305,8 +305,7 @@ MAX_HOLD_TASKS = 25
 #: A merge step goes ahead past an unanswered non-blocking question with a
 #: recommended option its branch built, about nothing sensitive, and lists
 #: it in its `result_summary` under this key (`agent_worker.merge.
-#: ADVISORY_MERGED_PAST_KEY`, held equal by
-#: tests/unit/worker/test_merge_advisory_questions.py): `{task_id, step_id,
+#: ADVISORY_MERGED_PAST_KEY`, held equal by a test): `{task_id, step_id,
 #: question_index, question, recommended, built}`. The question stays open.
 ADVISORY_MERGED_PAST_KEY = "advisory_merged_past"
 #: The merge task's metadata record of the pick-fix rounds later answers to

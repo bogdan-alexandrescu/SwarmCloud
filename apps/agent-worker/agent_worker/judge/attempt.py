@@ -115,8 +115,8 @@ SWITCH = "jev_judgments"
 ON, OFF = "on", "off"
 SOURCE_SWITCH = "workflow switch"
 #: The scheduler's verdict on the signed `code_intelligence` block
-#: (`scheduler.judgment.JEV_JUDGMENTS_ENV`; tests/unit/worker/
-#: test_jev_judgments_run.py holds the names equal): "true" or not on.
+#: (`scheduler.judgment.JEV_JUDGMENTS_ENV`; a test holds the names equal):
+#: "true" or not on.
 VERDICT_ENV = "SWARM_JEV_JUDGMENTS"
 VERDICT_REFUSED_ENV = "SWARM_JEV_JUDGMENTS_REFUSED"
 VERDICT_ON = "true"

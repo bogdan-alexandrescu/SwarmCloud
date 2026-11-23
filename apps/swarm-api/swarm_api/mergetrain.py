@@ -124,7 +124,7 @@ from .validation import IssueRef
 
 log = logging.getLogger(__name__)
 
-#: `agent_worker.mergetrain`'s names, held equal by test_merge_train_rules.py.
+#: `agent_worker.mergetrain`'s names, held equal by a test.
 ENTRIES_COLLECTION = "merge_train_entries"
 TRAIN_WAITING = MERGE_TRAIN_WAITING
 QUEUED = "queued"

@@ -6,9 +6,8 @@
 
 `agent_worker.statemcp.relay` imports every constant below, so the worker and
 the shim cannot disagree about a tool or an argument; swarm-api's
-`attemptreads.ARGUMENTS` is the server's copy, and
-tests/unit/worker/test_state_mcp.py holds the two equal. The loop and the
-spool protocol are `gitmcp.server`'s, reused.
+`attemptreads.ARGUMENTS` is the server's copy, held equal to it. The loop
+and the spool protocol are `gitmcp.server`'s, reused.
 
 Every tool is a READ of the agent's own tenant's records. None takes a
 tenant, a namespace, a filter or a path: the tenant is the lease's, and the

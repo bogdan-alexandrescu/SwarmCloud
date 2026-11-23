@@ -100,7 +100,7 @@ REFUSED_HEADER = "X-Swarm-Typesafe-Refused"
 SHIM_REFUSED_HEADER = "X-Swarm-Typesafe-Shim"
 
 #: `swarm_api.typesafe_ticket.TICKET_PURPOSE`, restated (this image does not
-#: carry swarm-api); tests/unit/worker/test_typesafe_shim.py holds them equal.
+#: carry swarm-api); the two are held equal.
 TYPESAFE_TICKET_PURPOSE = "swarm-typesafe-ticket-request/v1"
 #: `swarm_api.typesafe_ticket.MAX_TICKET_SECONDS`: no answer claiming more
 #: life is believed, so a misconfigured setting cannot push renewal past exp.

@@ -80,7 +80,7 @@ class SetupUnconfigured(Conflict):
     """A setting the install has not rendered yet (SETUP_GITHUB_ORG, the
     hostname, GITHUB_HOOKS_URL). 409, not 503: the deployment is reachable
     and answering; it is not yet at the step that sets the value, and a 503
-    reads as a gate that could not decide (test_pool_admin_is_narrow.py).
+    reads as a gate that could not decide.
 
     It keeps the established code `conflict` (above). What tells a caller
     "not yet" apart from every other 409 is `detail.unset`, the settings this

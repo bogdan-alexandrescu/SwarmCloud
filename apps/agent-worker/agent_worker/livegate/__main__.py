@@ -2151,8 +2151,8 @@ class LiveGate:
             # lands as the grant finishes is swallowed by `wait_for`, which
             # returns the grant's result instead, so the tunnel task read on
             # with control held and its cleanup never ended it (FLAKE-LIVEGATE,
-            # part of archived issue 2230; reproduced 2026-10-29 under CPU load in
-            # test_a_gate_cancelled_while_a_person_holds_control_finishes).
+            # part of archived issue 2230; reproduced 2026-10-29 under CPU load
+            # by a test of a gate cancelled while a person holds control).
             try:
                 async with asyncio.timeout(CONTROL_GRANT_SECONDS):
                     await self._grant(conn_id)

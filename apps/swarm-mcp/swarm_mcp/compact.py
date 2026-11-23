@@ -1441,8 +1441,8 @@ def watch_progress(
 # --------------------------------------------------------------------------
 
 #: The buckets a summary line sorts a state into -- run.js's SUMMARY_RUNNING,
-#: SUMMARY_DONE and SUMMARY_FAILED, and a unit test holds the three equal
-#: (test_plugin_row_split_2.py). Capacity-holding states run (invariant 3:
+#: SUMMARY_DONE and SUMMARY_FAILED, held equal to the three by a unit test.
+#: Capacity-holding states run (invariant 3:
 #: concurrency counts from LEASED), a success is done, the other terminal
 #: states failed, and every other state -- waiting, parked, ready, not read
 #: yet -- is queued. The row used to count these itself, from a list in
@@ -1621,8 +1621,7 @@ def watch_summary(
 #: first (stageCensus in apps/swarm-ui/src/dag.ts leads with them too), then
 #: what holds capacity, then what waits. A success is not news on a row whose
 #: job is to notice the finish, so the line leaves it out; the pane counts it.
-#: run.js's STAGE_WORDS say the same, and a unit test holds the two equal
-#: (test_sc_browser_rows.py).
+#: run.js's STAGE_WORDS say the same, held equal to it by a unit test.
 STAGE_WORDS = ("failed", "running", "parked", "waiting")
 
 

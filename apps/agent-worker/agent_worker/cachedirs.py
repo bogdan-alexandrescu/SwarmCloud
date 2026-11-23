@@ -172,8 +172,8 @@ def image_browsers_path(environ: Mapping[str, str]) -> str:
 #: The scratch volumes' sizes the note names, MIRRORED from
 #: apps/scheduler/scheduler/dispatch.py (the worker does not import the
 #: scheduler): `CACHE_VOLUME_GIB`; `GKE_DISK`'s `tmp_gib`, 3 in every class;
-#: and its largest `workspace_gib` (5; the browser class's is 4).
-#: tests/unit/worker/test_scratch_usage.py holds them to dispatch's values.
+#: and its largest `workspace_gib` (5; the browser class's is 4). A test holds
+#: them to dispatch's values.
 CACHE_VOLUME_GIB = 20
 TMP_VOLUME_GIB = 3
 WORKSPACE_VOLUME_GIB = 5

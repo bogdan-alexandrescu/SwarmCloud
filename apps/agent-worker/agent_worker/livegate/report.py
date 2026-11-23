@@ -71,18 +71,18 @@ from swarm_redaction import redact
 
 from .presets import Device
 
-#: The largest report the relay keeps (swarm_live.rendezvous.MAX_REPORT_BYTES;
-#: test_livegate_main.py holds the two equal). The largest legal origin -- a
-#: 253-character host, a port -- and a device fit in well under half of it.
+#: The largest report the relay keeps (swarm_live.rendezvous.MAX_REPORT_BYTES,
+#: held equal to it). The largest legal origin -- a 253-character host, a
+#: port -- and a device fit in well under half of it.
 MAX_REPORT_BYTES = 4096
 
 #: A URL longer than this is not read at all.
 MAX_URL_CHARS = 8192
 #: RFC 1035's limit on a host name.
 MAX_HOST_CHARS = 253
-#: The longest path reported (swarm_api.live.MAX_PATH_CHARS, held equal by
-#: test_live_session_path.py's limits): a caption, not a URL to follow. A
-#: longer one is cut and ends in "…", so it never reads as the whole path.
+#: The longest path reported (swarm_api.live.MAX_PATH_CHARS, held equal to
+#: it): a caption, not a URL to follow. A longer one is cut and ends in "…",
+#: so it never reads as the whole path.
 MAX_PATH_CHARS = 256
 
 _SCHEMES = {"http": 80, "https": 443}

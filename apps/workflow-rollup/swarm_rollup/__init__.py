@@ -58,8 +58,7 @@ SKIPPED_SUMMARY_KEY = "skipped"
 #: branch did not build, to a round. `pick` since ROLLUP-PICK-FIX (the owner,
 #: 2026-10-26: a pick-fix round is a step of the lane, as the other rounds
 #: are); every kind in `mergewake.ROUND_KIND` must match, or the tick's
-#: append is refused -- tests/unit/control_plane/test_merge_auto_fix_rounds.py
-#: holds the two equal. A caller can never submit one: a
+#: append is refused. A caller can never submit one: a
 #: submitted step id holds no ':' (`WorkflowStepCreate.step_id`'s pattern),
 #: so the id alone marks a step only the platform appended. The id, not the
 #: step's input, because the reconciler decodes steps without their input

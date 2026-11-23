@@ -42,7 +42,7 @@ one. In this order:
      `--from` -- and for a directory as its `file://` URL. Rebuilt into `uv
      tool run --from '<requirement>'`, the command runs the SAME version as
      the bridge that printed it. CI's install step reads what a real `uv tool
-     run` install answers here (tests/unit/mcp/test_plugin_bridge_install.py).
+     run` install answers here.
   5. Nothing known -- a pip install, an import off PYTHONPATH -- and the bare
      word, which is at least the program's real name.
 

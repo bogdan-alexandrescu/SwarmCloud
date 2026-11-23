@@ -112,7 +112,7 @@ UNREADABLE_PIN = "the pin of repository {name} is not readable ({why}); no answe
 
 #: `graphstage.REPOS_CONTEXT_DIR_NAME`, `graphstage.PIN_NAME` and
 #: `graphstage.REPOS_DIR_NAME`, restated so the shim does not import the
-#: stager; tests/unit/worker/test_graphstage_additional.py holds them equal.
+#: stager; a test holds them equal.
 REPOS_CONTEXT_DIR_NAME = "repos"
 PIN_NAME = "pin.json"
 REPOS_DIR_NAME = "repos"

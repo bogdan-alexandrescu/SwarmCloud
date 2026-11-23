@@ -35,7 +35,7 @@ the tenant said:
   * every `@` that could mention someone broken with a zero-width joiner, by
     the worker's own rule (`agent_worker.lifecycle._neutralise_mentions`,
     restated here because swarm-api does not import the worker;
-    tests/unit/control_plane/test_issue_writeback.py pins the two equal);
+    a test pins the two equal);
   * every closing keyword (`fixes #12`) turned into `refs`, so quoted text in
     a pull request body cannot close an issue the review did not confirm.
 

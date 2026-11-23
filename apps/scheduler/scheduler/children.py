@@ -56,8 +56,7 @@ EVENTS = "events"
 #: swarm-api's children ledger for the run kinds (`swarm_api.children`), and
 #: the documents its rows point at (`swarm_api.issueruns.RUNS_COLLECTION`,
 #: `swarm_api.store.WORKFLOWS`), restated: this image does not carry
-#: swarm-api. tests/unit/scheduler/test_await_counts_run_children.py holds
-#: every name below equal to its original.
+#: swarm-api. A test holds every name below equal to its original.
 CHILD_RUNS = "child_runs"
 ISSUE_RUNS = "issue_runs"
 WORKFLOWS = "workflows"
@@ -71,8 +70,7 @@ LEDGER_ENDED = frozenset({"FAILED", "CANCELLED"})
 TERMINAL_RUN_STATES = frozenset({"DONE", "FAILED", "REJECTED", "CANCELLED", "NOT_READY"})
 
 #: `swarm_api.childkey.NONCE_PURPOSE`, restated: this image does not carry
-#: swarm-api. tests/unit/control_plane/test_child_tasks_scheduler.py holds the
-#: two derivations equal.
+#: swarm-api. A test holds the two derivations equal.
 NONCE_PURPOSE = "swarm-child-nonce/v1"
 
 #: `swarm_api.validation.CHILD_CASCADE_METADATA_KEY`, restated for the same

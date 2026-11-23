@@ -49,7 +49,7 @@ that answers nothing, is `no_route` -- never TypeSafe in its place.
 
 `scheduler.judgment` restates the backend names, the collection and the
 service address for the dispatcher (the scheduler does not import swarm-api);
-tests/unit/control_plane/test_dispatch_judgment.py holds the two equal.
+a test holds the two equal.
 
 THE SETTINGS MAC (archived issue 1457; docs/design/tenant-settings-integrity.md §3.4 and
 §4.5, owner decision Q2 2026-10-17). Every tenant worker can write any
@@ -137,7 +137,7 @@ AUDIT_JUDGMENT_SET = "judgment_backend_set"
 #: locals.tf renders it from `tailscale_egress_target`; NO DEFAULT, because the
 #: name identifies one deployment (owner decision 2026-11-07, part of archived issue 2688).
 #: Restates `scheduler.judgment.DECISION_API_TAILNET_NAME_ENV`;
-#: tests/unit/control_plane/test_dispatch_judgment.py holds them equal.
+#: a test holds them equal.
 DECISION_API_TAILNET_NAME_ENV = "SWARM_DECISION_API_TAILNET_NAME"
 
 NO_EGRESS = ("the tailnet egress to the decision API is not enabled on this platform "
@@ -486,7 +486,7 @@ def trusted_block(tenant_id: str, block: str, fields: Mapping[str, Any] | None,
 
 #: The covered keys each block's swarm-api writer writes: this module's
 #: `set`, `mergesettings.MergeSettings.as_dict`, `codeintel.OWNED_FIELDS`,
-#: `budget.COVERED` (tests/unit/control_plane/test_settings_mac.py holds them equal). A covered
+#: `budget.COVERED` (a test holds them equal). A covered
 #: key outside its writer's list -- today only `code_intelligence.
 #: judgment_backend` -- is written by no swarm-api path, so it is present only
 #: through a direct Firestore write.

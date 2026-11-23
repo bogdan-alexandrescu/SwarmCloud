@@ -88,7 +88,7 @@ from .pluginload import INSTALL_ID, VARIABLE
 
 #: swarm-api's purpose for this route (`swarm_api.routes.attempts_secrets.
 #: RELEASE_PURPOSE`), restated: this image does not carry swarm-api.
-#: tests/unit/worker/test_secretrelease.py holds the two equal.
+#: The two are held equal.
 RELEASE_PURPOSE = "swarm-secrets-release/v1"
 
 #: The runner's one variable: the manifest's PATH, never a value.
@@ -103,7 +103,7 @@ _SLOT = re.compile(r"[a-z][a-z0-9-]{0,31}")
 
 #: Slots whose items go to the live gate and never to a file (module docstring).
 #: `swarm_api.workspace_secrets.HOST_SCOPED_SLOTS`, restated (this image does
-#: not carry swarm-api); tests/unit/worker/test_cf_access_worker.py holds them equal.
+#: not carry swarm-api); the two are held equal.
 GATE_SLOTS = ("cf-access",)
 #: A gate slot's host list, bounded as swarm-api bounds it (`MAX_SLOT_HOSTS`).
 MAX_GATE_HOSTS = 16

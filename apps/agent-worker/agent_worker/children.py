@@ -75,7 +75,7 @@ SPOOL_DIR_NAME = ".swarm-children"
 CHILDREN_ENV = "SWARM_CHILDREN"
 
 #: `swarm_api.children.REQUEST_ID`, restated (this image does not carry
-#: swarm-api); tests/unit/worker/test_child_tasks_worker.py holds them equal.
+#: swarm-api); a test holds them equal.
 REQUEST_ID = re.compile(r"^[a-z0-9-]{1,64}$")
 #: What a request may say about its child (§6.1). Anything else is refused here
 #: and by the route's strict model.
@@ -106,8 +106,8 @@ CHILD_PATH_OFF = "child_path_off"
 #: and named by the one prompt line the CLI runners add (`prompt_line`). The
 #: prompt is the one instruction channel every CLI runner shares, so it says
 #: only where the guide is; the guide says everything else. docs/child-tasks-
-#: for-agents.md carries the same text for people, and
-#: tests/unit/worker/test_child_tasks_worker.py holds the two equal.
+#: for-agents.md carries the same text for people, and a test holds the two
+#: equal.
 GUIDE_NAME = "README.md"
 AGENT_GUIDE = """\
 # Child tasks: how this agent submits helpers
@@ -338,9 +338,8 @@ viewport, what is wrong or "ok".
 #: The runners the `swarm-git` shim is named in: claude-code's `--mcp-config`,
 #: codex's MCP configuration (docs/runner-git-tools.md §7, lane G6).
 #: `scheduler.dispatch.GIT_TOOL_RUNNERS`, restated (this image does not carry
-#: the scheduler); tests/unit/worker/test_git_tools_wiring.py holds them equal,
-#: so the scheduler issues a child its nonce exactly when this worker offers it
-#: the tools the nonce is for.
+#: the scheduler); a test holds them equal, so the scheduler issues a child
+#: its nonce exactly when this worker offers it the tools the nonce is for.
 GIT_TOOL_RUNNERS = ("agent_worker.runners.claude_code", "agent_worker.runners.codex")
 #: The shim's module, as the runners name it.
 GIT_SHIM_MODULE = "agent_worker.gitmcp"
@@ -428,7 +427,7 @@ def git_push_policy(
     a task id gives NO branch, never a guessed one, so the worker refuses the
     push locally as `not_this_tasks_branch`. swarm-api derives the same set
     (`swarm_api.gittools.push_policy`) and its answer is the one that counts;
-    tests/unit/worker/test_git_tools_wiring.py holds the two equal.
+    a test holds the two equal.
     """
     metadata = task.get("metadata") if isinstance(task, dict) else None
     block = metadata.get("dispatch") if isinstance(metadata, dict) else None

@@ -58,7 +58,7 @@ from ..statecall import FENCED_CODES, state_request_message
 from .server import ARGUMENTS, REQUIRED, SPOOL_DIR_NAME, SPOOL_ENV, TOOL_NAMES
 
 #: Per attempt, per hour: swarm-api's `attemptreads.CALLS_PER_HOUR`, restated
-#: for the fast answer; tests/unit/worker/test_state_mcp.py holds them equal.
+#: for the fast answer; the two are held equal.
 CALLS_PER_HOUR = 120
 _HOUR = 3600.0
 #: One argument's longest text. Ids, a state, an instant, an artifact name.

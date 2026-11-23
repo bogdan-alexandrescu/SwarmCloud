@@ -157,10 +157,9 @@ ARCHIVE_DIGEST_RE = re.compile(r"[0-9a-f]{64}")
 _UNPINNED = object()
 
 #: Child tasks (docs/design/child-tasks.md §6.4), restated from
-#: `swarm_api.validation`, which this image does not carry;
-#: tests/unit/worker/test_child_tasks_worker.py holds them equal. The awaits a
-#: parent has had refunded, and the marker on a child cancelled because of
-#: its parent.
+#: `swarm_api.validation`, which this image does not carry; a test holds them
+#: equal. The awaits a parent has had refunded, and the marker on a child
+#: cancelled because of its parent.
 CHILD_AWAIT_RESUMES_METADATA_KEY = "child_await_resumes"
 CHILD_CASCADE_METADATA_KEY = "child_cascade"
 
@@ -168,8 +167,7 @@ CHILD_CASCADE_METADATA_KEY = "child_cascade"
 #: §3.8): the waits whose attempt `park_release_wait` refunded, and the bound
 #: on them. Restated as `swarm_api.attemptstate.RELEASE_WAIT_RESUMES` and
 #: `RELEASE_WAIT_MAX_RESUMES`, the routes' park's own key and bound, and
-#: reserved from callers by `swarm_api.validation`;
-#: tests/unit/worker/test_release_wait_refund.py holds them equal.
+#: reserved from callers by `swarm_api.validation`; a test holds them equal.
 #: 4, NOT THE CI WAIT'S 60: the CI bound counts the wakes of ONE wait, which
 #: its 15-minute fallback wakes over and over (60 is about 15 h of one pull
 #: request). A release wait is woken once, by the merge-wake tick on a
@@ -184,9 +182,9 @@ RELEASE_WAIT_MAX_RESUMES = 4
 #: PROVIDER_QUOTA_EXHAUSTED parks whose attempt `park` refunded, and the bound
 #: on them. Restated as `swarm_api.attemptstate.QUOTA_PARK_RESUMES` and
 #: `QUOTA_MAX_RESUMES`, which say why 5, and reserved from callers by
-#: `swarm_api.validation`; tests/unit/worker/test_quota_park_refund.py holds
-#: them equal. A MODULE CONSTANT, NOT A PARAMETER: no caller of `park` picks
-#: the bound, and on the routes' path swarm-api's own value decides.
+#: `swarm_api.validation`; a test holds them equal. A MODULE CONSTANT, NOT A
+#: PARAMETER: no caller of `park` picks the bound, and on the routes' path
+#: swarm-api's own value decides.
 QUOTA_PARK_RESUMES_METADATA_KEY = "quota_park_resumes"
 QUOTA_MAX_RESUMES = 5
 
@@ -197,9 +195,8 @@ QUOTA_MAX_RESUMES = 5
 #: TIME_LIMIT_MAX_CONTINUATIONS were; past it the park spends an attempt. Restated as
 #: `swarm_api.attemptstate.TIME_LIMIT_CONTINUATIONS` and
 #: `TIME_LIMIT_MAX_CONTINUATIONS`, which say why 2, and reserved from callers
-#: by `swarm_api.validation`; tests/unit/worker/test_time_limit_continuation.py
-#: holds them equal. The lifecycle continues no further than the bound: the
-#: third stop at the limit fails the task.
+#: by `swarm_api.validation`; a test holds them equal. The lifecycle continues
+#: no further than the bound: the third stop at the limit fails the task.
 TIME_LIMIT_DETAIL_KEY = "time_limit"
 TIME_LIMIT_CONTINUATIONS_METADATA_KEY = "time_limit_continuations"
 TIME_LIMIT_MAX_CONTINUATIONS = 2
@@ -207,8 +204,8 @@ TIME_LIMIT_MAX_CONTINUATIONS = 2
 #: A merge step's CI wait (lane MS2, docs/merge-step.md "Revised 2026-10-06"
 #: §1): `metadata.merge_wait` on the task, written by `park_ci_pending`. Read by
 #: swarm-api's wake tick (`swarm_api.mergewake`), which adds the marker below,
-#: and by the scheduler's `_promote_ci_waits`, which wakes on it.
-#: tests/unit/worker/test_merge_action.py holds the three restatements equal.
+#: and by the scheduler's `_promote_ci_waits`, which wakes on it. A test holds
+#: the three restatements equal.
 MERGE_WAIT_METADATA_KEY = "merge_wait"
 
 #: Where a park records its uploads for the attempt that finishes the task
@@ -485,9 +482,9 @@ def ci_wait_span(metadata: Mapping[str, Any], last: Mapping[str, Any], head: str
 # NOTHING that admits, leases or counts capacity reads them (invariants 2, 3).
 # The rules are swarm-api's (`swarm_api.attempt_totals.attempt_totals`,
 # `swarm_api.task_accounts.account_after`), restated here because the worker
-# is a separate image; tests/unit/worker/test_stored_task_totals.py holds the
-# stored copy equal to swarm-api's derivation on both write paths. A view that
-# cannot be computed is not written, and never fails the write it rides on.
+# is a separate image; a test holds the stored copy equal to swarm-api's
+# derivation on both write paths. A view that cannot be computed is not
+# written, and never fails the write it rides on.
 
 ATTEMPT_TOTALS_FIELD = "attempt_totals"
 CURRENT_ACCOUNT_FIELD = "current_account"
@@ -795,9 +792,8 @@ def _with_budget(base: type) -> type:
     These three overrides make the same requests the library makes, with the
     budget added. They read the same private attributes the library's own
     methods read (`_client._firestore_api`, `_id`, `_write_pbs`), and uv.lock
-    pins the library version they were read from.
-    `tests/unit/worker/test_startup_window_under_real_transactions.py` runs
-    them inside the library's own `firestore.transactional`.
+    pins the library version they were read from. A test runs them inside
+    the library's own `firestore.transactional`.
 
     TWO CHANGES TO ROLLBACK, besides the budget. `firestore.transactional`
     calls `_rollback` from `except BaseException`, and whatever `_rollback`

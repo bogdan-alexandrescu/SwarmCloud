@@ -263,7 +263,7 @@ def runtimes(
             # Null for a control_plane profile, which runs no image. The
             # frozen catalogue has no toolchain field, so the table is
             # `runnerimages`, held to the base Dockerfile's NODE_VERSION by
-            # tests/unit/control_plane/test_runtimes_node_version.py.
+            # a test.
             "node_version": runnerimages.node_version_for(profile),
             # DECLARED and RESOLVED, both, because they are different questions.
             # `Backend.AUTO` is a value the frozen enum permits and

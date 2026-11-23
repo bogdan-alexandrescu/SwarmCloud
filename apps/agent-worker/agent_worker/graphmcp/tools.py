@@ -44,9 +44,8 @@ observation: it marks the head (by its `symbol` or `file`) and every row
 stale. `remark` turns an answer computed under the empty observation into the
 one the local server would have given under a real one: the pod's shim does
 nothing else. `TOOLS_VERSION` names the handlers' output, and is part of
-every cached answer's key; bump it whenever an answer changes
-(tests/unit/worker/test_graphmcp_tools_version.py fails when one changes and
-it does not).
+every cached answer's key; bump it whenever an answer changes (a test fails
+when one changes and it does not).
 
 `territory` answers what a local snapshot can know: each file's community,
 how many other files depend on it and which. Which in-flight steps and lanes
@@ -86,7 +85,7 @@ from agent_worker.graphmcp.snapshot import (
 
 #: The version of every handler's output (graph-service.md §5.2): part of the
 #: shared service's result-cache key. Bump it in the same change as any edit
-#: that changes an answer; test_graphmcp_tools_version.py holds the two together.
+#: that changes an answer; a test holds the two together.
 TOOLS_VERSION = "2"
 #: §7.7: an answer is capped at 4 KiB, paged beyond.
 ANSWER_CAP = 4096

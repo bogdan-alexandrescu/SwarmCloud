@@ -116,7 +116,7 @@ class PluginEntry:
 
 
 #: `swarm_api.plugincatalogue`, restated (the worker imports nothing from
-#: swarm-api); tests/unit/worker/test_plugins_start.py holds them equal.
+#: swarm-api); the two are held equal.
 CLAUDE_CODE_PROFILES = (
     "claude-code",
     "claude-code-large",

@@ -90,8 +90,7 @@ BUILT_KEY = "built"
 #: answer) and `builds_pick` whether the branch now builds it. Written by the
 #: round's agent beside its other artifacts, read back by the merge
 #: (`picks_built`); swarm-api's brief names the file
-#: (`swarm_api.mergewake.PICKS_BUILT_NAME`, held equal by
-#: tests/unit/worker/test_merge_pick_fix_round.py).
+#: (`swarm_api.mergewake.PICKS_BUILT_NAME`, held equal to it).
 PICKS_BUILT_NAME = "picks-built.json"
 #: The most task documents the ancestor walk reads: every ancestor is a
 #: distinct step of one workflow, so the most steps a workflow may have, read

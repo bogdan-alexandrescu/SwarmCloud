@@ -10,8 +10,8 @@ restart and no image.
 FAIL CLOSED. A file that is missing, cannot be read, is not JSON, or carries a
 key this module does not know is the switch OFF (`cause` says which). An
 unknown key is refused rather than ignored so a setting renamed on one side
-cannot silently do nothing on the other; tests/unit/egress/test_egress_manifest.py
-holds egress.tf's keys equal to CONFIG_KEYS.
+cannot silently do nothing on the other; egress.tf's keys must equal
+CONFIG_KEYS.
 
 OFF stops every new CONNECT with `egress_disabled` and closes the open tunnels
 (owner decision Q7, fail closed): a proxied attempt's pages stop loading, and

@@ -26,9 +26,8 @@ are restated here and held to the same rules:
     run must be green, so a red push run is never outvoted by a green
     pull_request run (CI-EARLY, archived issue 1694). The event is what
     `forgewrite.GitHubWriter.check_runs` adds to each run; without one a
-    run's check suite is its group. tests/unit/control_plane/
-    test_forgechecks_per_event.py runs this rule and the merge step's over
-    one table;
+    run's check suite is its group. A test runs this rule and the merge
+    step's over one table;
   * green is `success` or `skipped`, nothing else, `neutral` included;
   * no runs, or an event's latest run not completed, is pending; so is a
     check whose every latest run not green is `cancelled` (archived issue 1778): a run
@@ -176,8 +175,8 @@ def cancelled_by_its_workflow(run: Mapping[str, Any], deciding: Sequence[Mapping
     workflow and event is at the sha (`workflow_superseded`) or another
     event's deciding run passed the check. A red check in a run nobody
     cancelled stays red, as does one in a cancelled run with neither. The
-    worker's `merge.cancelled_by_its_workflow` is the same rule, held equal by
-    tests/unit/control_plane/test_forgechecks_cancelled_workflow_run.py.
+    worker's `merge.cancelled_by_its_workflow` is the same rule, held equal
+    by a test.
     """
     if run.get("workflow_conclusion") != CANCELLED_CONCLUSION or not check_run_finished(run):
         return False
@@ -220,8 +219,8 @@ def unreported_failure(runs: Sequence[Mapping[str, Any]]) -> list[Mapping[str, A
     (so a free re-run asks for exactly that run). None when no run failed,
     when no check run carries an Actions run (they were not read: nothing
     at the head finished red), or when a failed run left no failing job to
-    name. The worker's `merge.unreported_failure` is the same rule, held equal
-    by tests/unit/control_plane/test_unreported_required_check.py.
+    name. The worker's `merge.unreported_failure` is the same rule, held
+    equal by a test.
     """
     by_run: dict[int, list[Mapping[str, Any]]] = {}
     for run in runs:
@@ -316,7 +315,7 @@ def check_run_finished(run: Mapping[str, Any]) -> bool:
     `status` says -- GitHub left PR 2006's `secret scan` at `in_progress`
     with `conclusion: success` and a `completed_at`. A run with no
     conclusion stays pending. The worker's `merge.check_run_finished` is the
-    same rule, held equal by tests/unit/scripts/test_auto_merge_workflow.py.
+    same rule, held equal by a test.
     """
     if run.get("status") == "completed":
         return True
@@ -329,8 +328,8 @@ def cancelled_run(run: Mapping[str, Any]) -> bool:
     archived issue 1778's second expectation (the owner released bundle H09, 2026-10-27): "a
     check whose LATEST run is cancelled is still not green and waits, rather
     than failing the merge". A red latest run of another event still wins.
-    The worker's `merge.cancelled_run` is the same rule, held equal by
-    tests/unit/control_plane/test_forgechecks_per_event.py.
+    The worker's `merge.cancelled_run` is the same rule, held equal by a
+    test.
     """
     return check_run_finished(run) and run.get("conclusion") == CANCELLED_CONCLUSION
 
@@ -509,7 +508,7 @@ def evaluate(
         # run of each event, as the worker's `judge_other_checks` judges it,
         # and only those deciding runs are counted and excerpted: a
         # superseded failure, or a superseded run still in progress, is
-        # neither. Held equal by tests/unit/scripts/test_auto_merge_workflow.py.
+        # neither. Held equal by a test.
         by_check: dict[tuple[Any, Any], list[Mapping[str, Any]]] = {}
         for run in runs:
             by_check.setdefault((run.get("name"), _app_id(run)), []).append(run)

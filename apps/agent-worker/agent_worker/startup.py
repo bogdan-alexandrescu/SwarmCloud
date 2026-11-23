@@ -241,8 +241,8 @@ FIRESTORE_STARTUP_CALL_SECONDS = 10.0
 #: old 300 s a worker that cold-started in 195 s and was still asking at 180 s
 #: was past the deadline and fenced. Contract request 37 (accepted by the
 #: owner 2026-09-30) made it 480 s: 195 + 200 + 60 s margin.
-#: tests/unit/worker/test_control_plane_read_retries.py holds the three
-#: numbers to each other. A cold start slower than about 274 s (480 - 200 - 6
+#: The three numbers are held to each other. A cold start slower than about
+#: 274 s (480 - 200 - 6
 #: s from `Started` to the check) that also meets an API with no reply for
 #: the whole window is still fenced, and that attempt is lost where it used to
 #: be lost. A SIGTERM between attempts exits 143 at once having written

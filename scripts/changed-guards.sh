@@ -131,7 +131,10 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # merge (2.6 s), test_issue_forms (0.6 s) and test_verify_deployer_trust
 # (4.0 s), +7.2 CI-seconds a pull request; they also read CLAUDE.md or
 # docs/runbooks/merge-app.md by name, so a docs-only diff of those selects
-# them as readers (CI-GUARDS-THREE, part of archived issue 1822).
+# them as readers (CI-GUARDS-THREE, part of archived issue 1822). Last:
+# test_check_test_pointers (about 2.5 s), which refuses a comment under apps/
+# that names a test -- a new one names no test, so only a whole-tree run
+# reaches it (part of issue 69).
 GUARD_TESTS=(
   tests/unit/scripts/test_docs_describe_what_was_built.py
   tests/unit/scripts/test_docs_spec_amendments.py
@@ -174,6 +177,7 @@ GUARD_TESTS=(
   tests/unit/scripts/test_auto_merge_base_merge.py
   tests/unit/scripts/test_issue_forms.py
   tests/unit/scripts/test_verify_deployer_trust.py
+  tests/unit/scripts/test_check_test_pointers.py
 )
 # The guards that read docs: all a docs-only diff selects of GUARD_TESTS.
 # Pull-request CI runs the whole GUARD_TESTS even for a docs-only change.

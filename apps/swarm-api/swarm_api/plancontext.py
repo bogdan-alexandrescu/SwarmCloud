@@ -96,8 +96,8 @@ WHY EACH RULE:
 
 The tokenizer and the BM25 scoring are restated from the writer
 (images/agent-runtime-indexer/repo-index/repo_graph_shards.py), which runs in
-another image; tests/unit/control_plane/test_plan_context.py holds the two
-equal, so a query here splits words exactly as the postings were built.
+another image; a test holds the two equal, so a query here splits words
+exactly as the postings were built.
 """
 
 from __future__ import annotations
