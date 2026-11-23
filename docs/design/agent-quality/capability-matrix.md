@@ -9,10 +9,9 @@ live-verified apart:
 * **Implemented**: the file and symbol on this commit. "Not implemented" when
   the tree has no code for it, with where it is proposed.
 * **Behaviourally tested**: a test id that exercises the behaviour. A test that
-  only reads a document or a file's text says so. `scripts/agent_quality_inventory.py`
-  checks that every cited pytest id names a test function that exists, and every
-  console test file exists; it cannot say the test ran or passed, which only a
-  CI run says.
+  only reads a document or a file's text says so. A cited id is as of the
+  commit this page names; no test re-checks it against the tree (issue 74
+  retired that census), and only a CI run says a test ran or passed.
 * **Enabled in configuration**: the file and key that switch it, with the
   default. "Always on" means no switch exists. A workspace setting's live value
   is in Firestore and is not read from here.
@@ -143,7 +142,6 @@ Paths are relative to the repository root; `agent_worker/` is
 | Quality metrics M1-M12 from recorded data | `scripts/lib/quality_metrics.py::build_report` | `tests/unit/scripts/test_quality_metrics.py::test_m6_counts_prs_and_commits`, `tests/unit/scripts/test_quality_metrics.py::test_cost_null_is_not_zero_and_an_incomplete_total_is_a_floor` | Run by `scripts/quality-baseline.sh` | not read from here |
 | Benchmark gate (p50/p95/p99, missing samples) | `scripts/benchstat.py::compare` | `tests/unit/scripts/test_benchstat.py::test_all_missing_fails_against_a_baseline`, `tests/unit/scripts/test_benchstat.py::test_a_regression_beyond_the_threshold_fails` | `benchmarks/thresholds.json` | **None**: `benchmarks/baselines/` holds no baseline yet |
 | Console links in the PR body | `agent_worker/lifecycle.py::pr_body_with_console_links` | `tests/unit/worker/test_pr_body_console_links.py` (file) | `pr_console_links`, false by default | not read from here |
-| This inventory re-checked against the tree | `scripts/agent_quality_inventory.py::report` | `tests/unit/scripts/test_agent_quality_inventory.py::test_every_test_the_agent_quality_documents_cite_exists_on_this_tree` | Run by hand or by `make test` | n/a: reads only the tree |
 
 ## 10. Agent plugins
 
