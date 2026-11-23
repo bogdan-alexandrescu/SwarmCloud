@@ -3,9 +3,10 @@
 docs/design/fix-loop.md §7 requests A and B, accepted by the owner on 2026-10-27
 (Q1, Q2 and Q10 of §9). What is held here:
 
-  * the `fix-loop` entry is `control_plane`, ships unavailable with a reason,
-    and Terraform makes no Job for it (`profiles_without_a_job`), and its
-    Terraform mirror states what the Python entry does;
+  * the `fix-loop` entry is `control_plane`, is available (contract request
+    151, applied again 2026-11-23 on the owner's decision), Terraform makes
+    no Job for it (`profiles_without_a_job`), and its Terraform mirror states
+    what the Python entry does;
   * `ParkReason.FIX_ROUNDS_RUNNING` exists, rides on PARKED and so holds no
     capacity (invariant 1), and no scheduler sweep promotes it: the scheduler
     promotes a park only through a sweep that names its reason
@@ -16,8 +17,8 @@ docs/design/fix-loop.md §7 requests A and B, accepted by the owner on 2026-10-2
     `EndCause` has `FIX_LOOP_EXHAUSTED`, appended, the outcome ledger classes
     it as its own failure class, and the console's `EndCause` list carries it.
 
-MUTATION: set `available=True` on `fix-loop` and
-`test_fix_loop_ships_unavailable_with_a_reason` fails; drop "fix-loop" from
+MUTATION: set `available=False` (with a reason) on `fix-loop` and
+`test_fix_loop_is_available` fails; drop "fix-loop" from
 `profiles_without_a_job` in locals.tf and
 `test_terraform_makes_no_job_for_fix_loop` fails; add
 `ParkReason.FIX_ROUNDS_RUNNING` to PREWARM_REASONS and
@@ -76,11 +77,14 @@ def test_fix_loop_is_a_control_plane_profile_that_runs_nothing():
     assert profile.backend is Backend.CLOUD_RUN_JOB
 
 
-def test_fix_loop_ships_unavailable_with_a_reason():
-    """As await-input did, until FL-ACCEPT passes (design §7 request A)."""
+def test_fix_loop_is_available():
+    """Contract request 151, applied again 2026-11-23 on the owner's decision:
+    `available=True` and its `disabled_reason` removed, and nothing else about
+    the entry changed."""
     profile = RUNNER_PROFILES["fix-loop"]
-    assert profile.available is False
-    assert profile.disabled_reason.strip()
+    assert profile.available is True
+    assert profile.disabled_reason == ""
+    assert profile.control_plane is True
 
 
 def _profiles_without_a_job() -> set[str]:

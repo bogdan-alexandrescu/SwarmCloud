@@ -51,6 +51,9 @@ from .test_issue_run_keyword import _review_writes, _verdict
 from .test_issue_runs import FULL_PLAN, _approve, _create, _finish_planner, _run
 from .test_schedule_tick import seed_schedule
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 SCHEDULE = "sch_000000000001"
 DAVE = "dave@example.com"
 #: The hold archived issue 2259 measured: NEEDS_OWNER for `contract` and `workflows`.

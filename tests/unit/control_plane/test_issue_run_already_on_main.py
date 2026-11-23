@@ -54,6 +54,9 @@ from .test_issue_run_keyword import STAGED_FULL_PLAN
 from .test_issue_runs import BUCKET, FULL_PLAN, _approve, _create, _docs, _finish_planner, _run
 from .test_issue_writeback import _bare_run
 
+#: Holds the one-re-review shape: `fix-loop` switched off (tests/unit/conftest.py).
+pytestmark = pytest.mark.usefixtures("fix_loop_off")
+
 ISSUE = 42
 REQUIREMENTS = FULL_PLAN["requirements"]
 
