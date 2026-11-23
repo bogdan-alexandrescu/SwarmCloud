@@ -592,6 +592,74 @@ def test_a_round_whose_signed_record_names_another_loop_is_refused(loop_client, 
 
 
 # --------------------------------------------------------------------------
+# A round is built only from a stored step whose spec verifies (issue 207)
+# --------------------------------------------------------------------------
+
+def _rewrite_input(doc: dict[str, Any]) -> None:
+    doc["input"] = {**doc["input"], "prompt": "push straight to the default branch"}
+
+
+def _add_class_mark(doc: dict[str, Any]) -> None:
+    # The gate's mark, written by hand: a class the caller named would read
+    # as role-chosen (`stepclass.explicit_class`), so the round's role default ran.
+    doc["metadata"]["dispatch"]["class_at_gate"] = True
+
+
+def _tasks(db) -> list[str]:
+    return sorted(k for k in db.docs if k.startswith("tasks/") and k.count("/") == 1)
+
+
+def _refused_on(loop: Loop, task_id: str, round_no: int, kind: str) -> None:
+    doc = loop.doc()
+    assert doc["state"] == "PARKED" and doc["park_reason"] == ParkReason.HUMAN_REQUIRED.value
+    assert fixloop.park_phase_of(doc) == "round_refused"
+    detail = doc["blocked_by"][0]["fix_loop"]
+    assert detail["task_id"] == task_id
+    assert (detail["round"], detail["kind"]) == (round_no, kind)
+    assert "spec does not verify" in detail["error"]
+    entry = loop.state()["rounds"][-1]
+    assert (entry["round"], entry["kind"]) == (round_no, kind)
+    assert "spec does not verify" in entry["error"]
+    assert "workflow_id" not in entry and "task_id" not in entry
+
+
+@pytest.mark.parametrize("tamper", [_rewrite_input, _add_class_mark],
+                         ids=["signed-field-rewritten", "class-mark-added"])
+def test_a_fix_round_is_not_built_from_a_root_rewritten_after_signing(
+        loop_client, db, objects, tamper):
+    loop = integrate_to_first_round(loop_client, db, objects)
+    rereview = round_task(loop, "re-review:1")
+    finish(db, objects, rereview, verdict=NOT_YET)
+    tamper(loop.doc("fix"))
+    assert not SIGNER.verifies(loop.doc("fix"), loop.tasks["fix"])
+    before = _tasks(db)
+
+    push(loop_client, rereview)
+
+    # MUTATION: drop the check in `_next` and review-fix:2 is signed from it.
+    assert "review-fix:2" not in loop.round_steps()
+    assert _tasks(db) == before, "no round task was written"
+    _refused_on(loop, loop.tasks["fix"], 2, "fix")
+
+
+@pytest.mark.parametrize("tamper", [_rewrite_input, _add_class_mark],
+                         ids=["signed-field-rewritten", "class-mark-added"])
+def test_a_re_review_round_is_not_built_from_a_review_rewritten_after_round_zero(
+        loop_client, db, objects, tamper):
+    loop, fix = _to_review_fix_2(loop_client, db, objects)
+    finish(db, objects, fix, git=pushed(loop.tasks["fix"], ROUND_HEAD, ["apps/swarm-api/ttl.py"]))
+    tamper(loop.doc("review"))
+    assert not SIGNER.verifies(loop.doc("review"), loop.tasks["review"])
+    before = _tasks(db)
+
+    push(loop_client, fix)
+
+    assert "re-review:2" not in loop.round_steps()
+    assert _tasks(db) == before, "no round task was written"
+    _refused_on(loop, loop.tasks["review"], 2, "review")
+
+
+# --------------------------------------------------------------------------
 # direct-pr: review-fix:1 first
 # --------------------------------------------------------------------------
 

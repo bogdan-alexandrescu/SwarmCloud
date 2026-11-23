@@ -988,6 +988,32 @@ SIGNED data licenses the pick (the mark, no class named), and changes only
 no field, profile, input or class the submission did not sign as the gate's
 to pick. The generation is not touched.
 
+**The submission signature stays valid after a re-sign, and grants nothing.**
+Signing again does not revoke the old signature: a key version verifies
+every digest it ever signed, and swarm-api keeps no list of superseded
+signatures. Whoever copies the submission's `spec_signature` back onto the
+document together with the submission's class gets a spec that verifies --
+exactly the one the caller submitted, on the class it was submitted with
+(the `opus` default for a gated review). Pairing the old signature with any
+other field fails verification, so the old signature can only restore what
+submission already vouched for; it is a valid signature that grants nothing
+new, and it is not a defect to be closed.
+
+**Every re-sign from a stored task verifies it first (issue 207).** The gate
+is not the only path that signs a new spec from a stored document. A fix
+loop's round takes its profile, class and prompt from the step it repeats
+(the root for a fix, the first review for a re-review, `fixloop._override`),
+and a step re-run copies the stored task over every signed field, `input`
+included (`steprerun.clone`). Both ask `specsigning.stored_refusal` -- the
+gate's rule, `stored_spec_refusal` on the document and its runtime alternate
+-- on the pass that signs: a round built from a document that no longer
+verifies is not submitted and the loop parks `round_refused` naming the
+task; a re-run of one is refused 409 `step_spec_unverified` before anything
+is signed or written. So the gate's mark written by hand on a finished
+document never makes a caller's class read as role-chosen in a later round.
+A deployment with no signer verifies nothing on any of these paths and
+writes unsigned, as submission does there.
+
 **A caller's record is not trusted.** `class_chosen_by` is unsigned and in
 the caller's metadata, so submission stores it only as a role rule would
 have written it (`stepclass.submitted_record`): never `REVIEW_AT_GATE`
