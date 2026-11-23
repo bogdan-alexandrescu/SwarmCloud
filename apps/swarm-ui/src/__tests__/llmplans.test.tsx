@@ -96,10 +96,13 @@ const { LlmProvidersScreen } = await import('../LlmProviders')
 
 const WAIT = { timeout: 5000 } as const
 
+/** The person's own workspace, theirs to manage: `/v1/tenants/mine` as it serves the owner of u-owner's plans. */
+const PERSONAL = { tenant_id: 'u-owner', display_name: 'Your workspace (u-owner)', kind: 'user', via: 'personal', role: { name: 'admin', source: 'personal' } } as const
+
 beforeEach(() => {
   spies.loadAccountsBoard.mockImplementation(realLoad)
   for (const k of Object.keys(spies) as (keyof typeof spies)[]) if (k !== 'loadAccountsBoard') spies[k].mockResolvedValue(OK)
-  spies.loadMyTenants.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: [] })
+  spies.loadMyTenants.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: [PERSONAL] })
   spies.refreshAccount.mockResolvedValue({
     status: 'ok',
     fetchedAt: 0,
@@ -277,6 +280,8 @@ describe('Plans: the cards', () => {
 
   it('gives each card ONE Manage control, Resume only while paused, Sign in again only while it needs one, and no per-lend button', async () => {
     await openPlans()
+    // Sign in again waits on the roles read: the owner is an admin of u-owner.
+    await within(card('retired-laptop')).findByRole('button', { name: 'Sign in again retired-laptop' }, WAIT)
     const cards = screen.getAllByRole('article')
     expect(cards.length).toBeGreaterThan(3)
     const first: Readonly<Record<string, string>> = { 'weekly-burn': 'Resume', 'retired-laptop': 'Sign in again' }
@@ -989,7 +994,6 @@ describe('Plans: Manage signs a plan in again', () => {
 })
 
 describe('Plans: a card that needs a sign-in has Sign in again', () => {
-  const PERSONAL = { tenant_id: 'u-owner', display_name: 'Your workspace (u-owner)', kind: 'user', via: 'personal', role: { name: 'admin', source: 'personal' } } as const
   const eng = (role: string | null, via: 'member' | 'platform_admin') => ({
     tenant_id: 'eng',
     display_name: 'Engineering',
@@ -1016,14 +1020,16 @@ describe('Plans: a card that needs a sign-in has Sign in again', () => {
     chooseTenant(null)
   })
 
-  it('in the owning workspace: the card opens Manage at "Sign in again", focused, and starts nothing', async () => {
+  it('in the owning workspace, for an admin of it: the card opens Manage at "Sign in again", focused, and starts nothing', async () => {
+    mine(PERSONAL)
     await openPlans()
     const c = card('retired-laptop')
     expect(text(c)).toContain('Sign-in needed')
+    // MUTATION: leave the card with Manage alone and there is nothing named Sign in again on it.
+    const press = await within(c).findByRole('button', { name: 'Sign in again retired-laptop' }, WAIT)
     // Beside the button the state is its dot and tip; the words stay for a screen reader (the prose ratchet).
     expect(text(c.querySelector('.llp-st .sk-vh'))).toBe('Sign-in needed')
-    // MUTATION: leave the card with Manage alone and there is nothing named Sign in again on it.
-    fireEvent.click(within(c).getByRole('button', { name: 'Sign in again retired-laptop' }))
+    fireEvent.click(press)
     const sheet = await screen.findByRole('dialog', { name: 'retired-laptop' })
     const sec = sheet.querySelector('section[aria-label="Sign in again"]')
     // MUTATION: open Manage the way its own button does and focus stays on the sheet's heading.
@@ -1032,6 +1038,22 @@ describe('Plans: a card that needs a sign-in has Sign in again', () => {
     expect(api.beginAccountSignIn).not.toHaveBeenCalled()
     expect(api.beginDeviceSignIn).not.toHaveBeenCalled()
   })
+
+  for (const role of ['viewer', 'member']) {
+    it(`in the owning workspace, for a ${role} of it: no button on the card`, async () => {
+      mine({ ...PERSONAL, role: { name: role, source: 'override' } })
+      await openPlans()
+      await waitFor(() => expect(spies.loadMyTenants).toHaveBeenCalled())
+      await act(async () => {
+        await Promise.resolve()
+      })
+      const c = card('retired-laptop')
+      expect(text(c)).toContain('Sign-in needed')
+      // MUTATION: draw the button on every owned card and a viewer of the owner gets one.
+      expect(within(c).queryByRole('button', { name: /Sign in again/ })).toBeNull()
+      expect(within(c).getByRole('button', { name: 'Manage retired-laptop' })).toBeTruthy()
+    })
+  }
 
   for (const [who, owner] of [
     ['a platform admin', eng('admin', 'platform_admin')],
@@ -1080,7 +1102,7 @@ describe('Plans: a card that needs a sign-in has Sign in again', () => {
 
   it('fits a phone at 390: the button is held inside its card', async () => {
     await openPlans()
-    const press = within(card('retired-laptop')).getByRole('button', { name: 'Sign in again retired-laptop' })
+    const press = await within(card('retired-laptop')).findByRole('button', { name: 'Sign in again retired-laptop' }, WAIT)
     const flat = PLANS_CSS.replace(/\/\*[\s\S]*?\*\//g, '')
     const rules = [...flat.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1]!.trim(), body: m[2]! }))
     // MUTATION: drop the cap and a long label in a 358px card runs past its edge.
