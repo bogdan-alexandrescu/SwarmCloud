@@ -105,7 +105,7 @@ USAGE_FIELDS = (
 #: session after it does print one, and its `total_cost_usd` is that
 #: session's alone. Summing tokens and keeping that cost read a 30-minute,
 #: four-session attempt as its last 5-turn session ($0.20, qa4-docs,
-#: 2026-10-31). The worker prices these counts (`lifecycle._collect_spend`)
+#: 2026-10-31). The worker prices these counts (`spend.SpendMixin._collect_spend`)
 #: and adds them to the reported cost, so the attempt's cost is every
 #: session's. The shape is `usage._stream_usage`'s `usage_by_model`.
 UNPRICED_KEY = "unpriced_usage_by_model"
@@ -116,7 +116,7 @@ UNPRICED_KEY = "unpriced_usage_by_model"
 #: streams). A session whose stream showed no usage is not a free one, so the
 #: runner never reports such a cost as complete: it drops the reported
 #: `total_cost_usd`, which the worker then prices from the whole capture and
-#: marks estimated (`lifecycle._collect_spend`), and says so under this key.
+#: marks estimated (`spend.SpendMixin._collect_spend`), and says so under this key.
 COST_INCOMPLETE_KEY = "cost_incomplete"
 #: Where the runner reports the attempt's sessions, in its `metrics` (copied
 #: whole into `result_summary.runner.metrics`): `count`, `usage_unread` (the
