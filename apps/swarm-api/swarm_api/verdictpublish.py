@@ -185,6 +185,7 @@ from .validation import (
     INPUT_FROM_METADATA_KEY,
     REVIEW_VERDICTS,
     RUNTIME_METADATA_KEY,
+    RUNTIME_SWAP_FIELDS,
     IssueRef,
 )
 from .waker import TASK_FINISHED, ring
@@ -914,6 +915,32 @@ def spec_refusal(settings: Any, doc: Mapping[str, Any], task_id: str) -> str | N
     return None
 
 
+def stored_spec_refusal(settings: Any, doc: Mapping[str, Any], task_id: str) -> str | None:
+    """Why a stored step must not be signed again, or None when it may.
+
+    `spec_refusal` on the document as stored and, for a `browser_if_ui` step
+    (archived issue 2322), on its `metadata.runtime.alternate` subject -- the
+    scheduler's swap, with the alternate's own signature in place -- so a
+    re-sign (`specsigning.resign_stored`) never puts swarm-api's signature on
+    a field a tenant's agent rewrote since submission. The reason names the
+    subject and the check, never a value from the document.
+    """
+    refusal = spec_refusal(settings, doc, task_id)
+    if refusal is not None:
+        return refusal
+    block = _mapping(_mapping(doc.get("metadata")).get(RUNTIME_METADATA_KEY))
+    if "alternate" not in block:
+        return None
+    alternate = block.get("alternate")
+    if not isinstance(alternate, Mapping):
+        return "the step's runtime alternate is not a map"
+    subject = {**doc, **{name: alternate.get(name) for name in RUNTIME_SWAP_FIELDS},
+               **{name: alternate.get(name)
+                  for name in ("spec_signature", "spec_key_version", "spec_format")}}
+    refusal = spec_refusal(settings, subject, task_id)
+    return None if refusal is None else f"runtime alternate: {refusal}"
+
+
 #: `agent_worker.secrets._USER_SLOT`: a person's slot, its hex their `user_hash`.
 _USER_SLOT = re.compile(r"git-u-([0-9a-f]{16})")
 
@@ -1225,9 +1252,20 @@ def _review_class(ctx: Any, doc: Mapping[str, Any], decision: Any) -> ReviewClas
     runs `stepclass.ROLE_CLASSES[ROLE_REVIEW]` where the profile runs it and
     the deployment pins it, signed again by swarm-api (`resign_stored`).
     Anything that cannot be signed keeps the class the step was signed with.
+
+    The stored spec -- and its runtime alternate -- must verify FIRST
+    (`stored_spec_refusal`, this module's rule that the signature verifies
+    before any field is acted on): the marker that brings a review here is
+    unsigned, and a tenant's agents can write its task, so a spec rewritten
+    since submission is left exactly as stored, signed by no one, and the
+    worker refuses it as before.
     """
     if not stepclass.at_gate(doc.get("metadata")):
         return None
+    signer = getattr(getattr(ctx, "submissions", None), "signer", None)
+    task_id = str(doc.get("id") or "")
+    if signer is not None and stored_spec_refusal(ctx.settings, doc, task_id) is not None:
+        return ReviewClass({}, "spec does not verify, not signed again", doc)
     class_models = stepclass.class_models_of(ctx) or {}
     role = stepclass.review_role(decision)
     choice = stepclass.choose(role, str(doc.get("runner_profile") or ""), class_models)
@@ -1238,10 +1276,9 @@ def _review_class(ctx: Any, doc: Mapping[str, Any], decision: Any) -> ReviewClas
     alternate = _mapping(block.get("alternate"))
     alternate_changes = (_class_fields(alternate.get("runner_profile"), choice.model_class,
                                        class_models) if alternate else None)
-    signer = getattr(getattr(ctx, "submissions", None), "signer", None)
     fields = None if changes is None else resign_stored(
-        doc, task_id=str(doc.get("id") or ""), changes=changes,
-        alternate_changes=alternate_changes, signer=signer)
+        doc, task_id=task_id, changes=changes,
+        alternate_changes=alternate_changes, signer=signer, settings=ctx.settings)
     if fields is None:
         return ReviewClass({}, f"{choice.chosen_by}; not signed again, profile default", doc)
     return ReviewClass(fields, choice.chosen_by, doc)

@@ -246,7 +246,7 @@ def sign_task_specs(tasks: Sequence[Task], signer: SpecSigner | None) -> None:
 
 def resign_stored(doc: Mapping[str, Any], *, task_id: str, changes: Mapping[str, Any],
                   alternate_changes: Mapping[str, Any] | None,
-                  signer: SpecSigner | None) -> dict[str, Any] | None:
+                  signer: SpecSigner | None, settings: Any) -> dict[str, Any] | None:
     """The fields to write so a STORED task runs with `changes`, signed again.
 
     For the review gate's class (`stepclass`, the owner 2026-11-23): the step
@@ -262,7 +262,22 @@ def resign_stored(doc: Mapping[str, Any], *, task_id: str, changes: Mapping[str,
     canonical form, or a KMS failure. The caller then leaves the task as it
     was. With no signer and an unsigned task, the fields are written
     unsigned, exactly as `sign_task_specs` writes a task with no key.
+
+    None, too, when the document as stored does not verify against the
+    deployment's keys (`settings`), or its runtime alternate does not
+    (`verdictpublish.stored_spec_refusal`): a tenant's agents can write any
+    task document of their tenant, and signing `{**doc, **changes}` over a
+    field one of them rewrote would make swarm-api vouch for it. Checked
+    here, not only by the caller, so no later caller can sign a tampered
+    spec again.
     """
+    if signer is not None:
+        from .verdictpublish import stored_spec_refusal  # verdictpublish imports this module
+
+        refusal = stored_spec_refusal(settings, doc, task_id)
+        if refusal is not None:
+            log.warning("task %s is not signed again: %s", task_id, refusal)
+            return None
     updated = {**doc, **changes}
     metadata = dict(doc.get("metadata") or {}) if isinstance(doc.get("metadata"), Mapping) else {}
     raw_block = metadata.get(RUNTIME_METADATA_KEY)
