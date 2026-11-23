@@ -33,7 +33,7 @@ import {
 } from './api'
 import { Banner, Button } from './components'
 import type { ApiError, Result } from './fetch'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import { UrRegion } from './RepositoriesParts'
 import { formatDateTime } from './timezone'
 import './styles/plugins.css'

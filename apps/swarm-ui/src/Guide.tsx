@@ -24,26 +24,15 @@
  * reader replaces, never an empty string and never the served text:
  * `github.com/@sc-v#` reads as a command and is not one.
  */
-import { createContext, useContext, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { USE_FIXTURES } from './api'
 import { GUIDE_SOURCES } from './guidePages'
+import { GuideLink, onGuideClick } from './GuideLink'
+import { GUIDE_INDEX, guidePath } from './guidePaths'
 import './styles/guide.css'
 
-export const GUIDE_PATH = '/guide'
-export const GUIDE_INDEX = 'index'
-
-/** The guide page a pathname names (`''` for the index), or null off the guide. */
-export function guideSlugFrom(pathname: string): string | null {
-  const p = pathname.replace(/\/+$/, '')
-  if (p === GUIDE_PATH) return ''
-  if (!p.startsWith(`${GUIDE_PATH}/`)) return null
-  const slug = p.slice(GUIDE_PATH.length + 1)
-  return slug === GUIDE_INDEX ? '' : slug
-}
-
-export function guidePath(slug: string): string {
-  return slug === '' || slug === GUIDE_INDEX ? GUIDE_PATH : `${GUIDE_PATH}/${slug}`
-}
+export { GuideLink, openGuide } from './GuideLink'
+export { GUIDE_INDEX, GUIDE_PATH, guidePath, guideSlugFrom } from './guidePaths'
 
 /** A page's title: its first `# ` heading. */
 export function guideTitle(markdown: string): string {
@@ -345,19 +334,6 @@ export function guideHref(href: string): string {
   return href
 }
 
-/** Opens a guide address in place: pushed, so Back returns, and read by App's `popstate`. */
-export function openGuide(href: string) {
-  window.history.pushState(null, '', href)
-  window.dispatchEvent(new PopStateEvent('popstate'))
-}
-
-function onGuideClick(e: MouseEvent<HTMLAnchorElement>, href: string) {
-  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
-  if (guideSlugFrom(href.split('#')[0] ?? '') === null) return
-  e.preventDefault()
-  openGuide(href)
-}
-
 /** Bold, code spans and links, inside one block's text. */
 export function inline(text: string, key = 'i'): ReactNode[] {
   const out: ReactNode[] = []
@@ -460,16 +436,6 @@ export function GuideArticle({ markdown }: { markdown: string }) {
         <BlockView key={j} block={b} k={`b${j}`} />
       ))}
     </article>
-  )
-}
-
-/** A link to the guide from another console page, opened in place. */
-export function GuideLink({ slug = '', children, className = 'ctl-link', label }: { slug?: string; children: ReactNode; className?: string; label?: string }) {
-  const href = guidePath(slug)
-  return (
-    <a className={className} href={href} aria-label={label} onClick={(e) => onGuideClick(e, href)}>
-      {children}
-    </a>
   )
 }
 

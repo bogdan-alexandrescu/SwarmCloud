@@ -109,7 +109,7 @@ import {
 } from './api'
 import { Banner, Button, ButtonLink, Card, Chip, CodeBlock, ToneMark, Tooltip, buttonClass, type MarkTone } from './components'
 import { read, route, write } from './fetch'
-import { ADMIN_PLUGIN_ADD_PATH, adminPluginPath } from './AdminPlugins'
+import { ADMIN_PLUGIN_ADD_PATH, adminPluginPath } from './pluginPaths'
 import { agentPath } from './OverviewRegions'
 import { OWN_SIGN_IN_WINDOW } from './SetupLink'
 import type { TaskState } from './types'

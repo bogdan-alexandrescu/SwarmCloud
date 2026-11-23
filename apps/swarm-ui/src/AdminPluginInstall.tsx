@@ -44,10 +44,11 @@ import {
   type CatalogueIntake,
   type PluginVersion,
 } from './api'
-import { ADMIN_PLUGINS_PATH, adminPluginPath, Badges, Mono } from './AdminPlugins'
+import { Badges, Mono } from './AdminPlugins'
+import { ADMIN_PLUGINS_PATH, adminPluginPath } from './pluginPaths'
 import { Banner, Breadcrumb, Button, ButtonLink, Chip, CodeBlock, Segmented } from './components'
 import type { ApiError } from './fetch'
-import { InfoTip } from './People'
+import { InfoTip } from './InfoTip'
 import { UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import './styles/admin-plugins.css'
