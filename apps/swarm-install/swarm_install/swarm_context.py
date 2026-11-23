@@ -8,9 +8,8 @@ with the person's own credentials and writes it into the swarm CLI's
 credential store for this context (`swarm context add
 --client-secret-stdin`, the value on stdin, never in argv), so
 `verify.end-to-end` (stage 14) only signs in to a context that already holds
-it. That secret is the only one the engine ever reads a value of
-(tests/unit/install/test_switches.py); the value is in this process only
-while it is handed on, and the buffer is wiped after.
+it. That secret is the only one the engine ever reads a value of; the value
+is in this process only while it is handed on, and the buffer is wiped after.
 
 The context is named after the hostname. The person's current context is
 never switched (`context add` without `--use`), and a context of that name

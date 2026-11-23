@@ -70,7 +70,7 @@ log = logging.getLogger(__name__)
 
 #: The worker's per-task limits (`agent_worker.judge.budget.MAX_CALLS_PER_TASK`,
 #: `MAX_INPUT_TOKENS_PER_TASK`): restated, the worker's image is not this
-#: package; tests/unit/control_plane/test_jev_account.py holds them equal.
+#: package; a test holds them equal.
 #: MEASURED_TOKENS_PER_CALL is imported from `swarm_jev.client`, where alone
 #: it is stated (owner, 4 November 2026).
 #: 9 calls and 150,000 tokens: today's 8 and 120,000 plus JC2's reserve of one

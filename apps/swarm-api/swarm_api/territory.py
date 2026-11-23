@@ -45,9 +45,8 @@ WHY EACH RULE:
     `repograph.py` restates the shard format the same way. A query split
     into other terms than the postings were built with finds nothing, so a
     manifest whose `term_stats.tokenizer` is not TOKENIZER_VERSION is
-    searched by substring and says so. tests/unit/control_plane/
-    test_repository_territory.py runs both tokenizers and both scorers over
-    the same inputs.
+    searched by substring and says so. A test runs both tokenizers and both
+    scorers over the same inputs.
   * A WHOLE-REPOSITORY TABLE IS COMPUTED ONCE PER DIGEST (`RepoGraph.view`),
     as the module graph is: the seam ranks read every `callees` and `files`
     shard and the index document, and a promoted graph cannot change under

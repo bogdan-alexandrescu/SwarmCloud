@@ -55,9 +55,8 @@ from typing import Any, Iterable, Mapping, Sequence
 #: spelling in this package. The worker reads the same key through its own
 #: constant, `agent_worker.expected_outputs.METADATA_KEY`. The two packages never
 #: import each other (a worker that imported swarm-api would carry the control
-#: plane into every agent image), so the two spellings are held equal by
-#: tests/unit/control_plane/test_expected_outputs_seam.py and recorded in
-#: docs/mirrored-values.md.
+#: plane into every agent image), so the two spellings are held equal by a
+#: test and recorded in docs/mirrored-values.md.
 from .validation import EXPECTED_OUTPUTS_METADATA_KEY
 
 __all__ = [

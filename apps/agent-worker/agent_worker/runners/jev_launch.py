@@ -60,8 +60,7 @@ KEY_ENV = "TYPESAFE_API_KEY"
 #: jev-browser's API address (`jev.mjs` API_URL), the shim's in shim mode.
 URL_ENV = "JEV_API_URL"
 #: `typesafe_shim.SHIM_URL_FIELD` / `TOKEN_FIELD`, restated: this file runs
-#: with the standard library alone. tests/unit/worker/test_typesafe_shim.py
-#: holds them equal.
+#: with the standard library alone. The two are held equal.
 SHIM_URL_FIELD = "shim_url"
 TOKEN_FIELD = "token"
 SHIM_URL = re.compile(r"http://127\.0\.0\.1:[0-9]{1,5}/v1/systemone")
@@ -72,11 +71,11 @@ SHIM_PASSTHROUGH_MARKER = "swarm-typesafe-shim-passthrough/v1"
 COUNTS_ENV = "SWARM_JEV_BROWSER_COUNTS"
 SECRET_NAMES_ENV = "SWARM_JEV_SECRET_ENV_NAMES"
 #: `qualitygates.BROWSER_COUNTS_FILE_NAME`, restated (standard library);
-#: tests/unit/worker/test_quality_gates.py holds them equal.
+#: the two are held equal.
 BROWSER_COUNTS_FILE_NAME = "jev-browser.counts"
 #: The wrapper's per-call records (`swarm-jev-gate.mjs` `recordedSend`):
 #: `judge.account.TOOL_CALL_FILES`' browser file, restated (standard library);
-#: tests/unit/worker/test_jev_tool_calls.py holds them equal.
+#: the two are held equal.
 CALLS_ENV = "SWARM_JEV_BROWSER_CALLS"
 BROWSER_CALLS_FILE_NAME = "jev-browser.calls"
 #: Where the names come from: the worker's profile variable

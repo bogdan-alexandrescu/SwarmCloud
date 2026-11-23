@@ -31,8 +31,7 @@ the generation, the scope and a short expiry, MAC'd under `swarm-typesafe-fwd-ke
 with its own domain. It carries NO VALUE: swarm-api never reads one here, and
 the forwarder (lane SEC-INJECT-B, apps/swarm-typesafe-fwd/) reads the named
 version with its own Workload Identity. The wire is specified in the design's
-§3.5 so the forwarder implements exactly this; tests/unit/control_plane/
-test_typesafe_ticket_api.py holds it.
+§3.5 so the forwarder implements exactly this.
 
 Read-only: minting writes nothing. Nothing here logs, stores or serves a key,
 a signature or a ticket, other than the one ticket in the response body.

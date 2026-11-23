@@ -366,9 +366,8 @@ def mint_ticket(key: bytes, *, session_id: str, tenant_id: str, task_id: str, at
                 generation: int, role: str, email: str = "", now: float | None = None,
                 ttl: int | None = None) -> str:
     """A ticket as swarm-api mints it. The relay never mints one in production;
-    `swarm_api.live.mint_ticket` restates this format, and
-    tests/unit/control_plane/test_live_relay_wire.py holds the two to each
-    other (a frozen-contract home for it is a request, not a change)."""
+    `swarm_api.live.mint_ticket` restates this format, held equal to it
+    (a frozen-contract home for it is a request, not a change)."""
     if role not in TICKET_TTL_SECONDS:
         raise ValueError(f"unknown ticket role {role!r}")
     issued = int(time.time() if now is None else now)
@@ -407,8 +406,7 @@ def verify_ticket(key: bytes, raw: str, *, now: float) -> Ticket:
 def mint_close(key: bytes, session_id: str, *, now: float | None = None,
                ttl: int = CLOSE_TTL_SECONDS) -> str:
     """A close request as swarm-api mints it (`swarm_api.live.mint_close`
-    restates it; tests/unit/control_plane/test_live_relay_wire.py holds the two
-    to each other)."""
+    restates it, held equal to it)."""
     issued = int(time.time() if now is None else now)
     return _signed(key, {"session_id": session_id, "exp": issued + int(ttl),
                          "nonce": secrets.token_hex(16)}, CLOSE_DOMAIN)
@@ -442,8 +440,7 @@ def mint_device(key: bytes, *, session_id: str, tenant_id: str, task_id: str, at
                 touch: bool | None = None, now: float | None = None,
                 ttl: int = DEVICE_TTL_SECONDS) -> str:
     """A device request as swarm-api mints it (`swarm_api.live.mint_device`
-    restates it; tests/unit/control_plane/test_live_relay_wire.py holds the two
-    to each other)."""
+    restates it, held equal to it)."""
     issued = int(time.time() if now is None else now)
     return _signed(key, {
         "session_id": session_id, "tenant_id": tenant_id, "task_id": task_id,
@@ -498,8 +495,7 @@ def mint_control(key: bytes, *, session_id: str, tenant_id: str, task_id: str, a
                  generation: int, email: str, action: str, cause: str = "",
                  now: float | None = None, ttl: int = CONTROL_TTL_SECONDS) -> str:
     """A control request as swarm-api mints it (`swarm_api.live.mint_control`
-    restates it; tests/unit/control_plane/test_live_relay_wire.py holds the two
-    to each other)."""
+    restates it, held equal to it)."""
     issued = int(time.time() if now is None else now)
     return _signed(key, {
         "session_id": session_id, "tenant_id": tenant_id, "task_id": task_id,

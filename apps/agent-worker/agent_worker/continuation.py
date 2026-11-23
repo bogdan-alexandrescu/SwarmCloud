@@ -34,8 +34,8 @@ from typing import Any
 
 from .errors import WorkerError
 
-#: The shape `swarm_common.models.new_id("task")` mints; the parity test
-#: (tests/unit/worker/test_continue_swarm_branch.py) holds the two together.
+#: The shape `swarm_common.models.new_id("task")` mints; a parity test holds
+#: the two together.
 TASK_ID_RE = re.compile(r"^task_[0-9a-f]{20}$")
 
 #: The one strategy that pushes a branch named for a task and opens its PR.

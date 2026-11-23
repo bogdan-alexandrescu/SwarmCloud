@@ -403,10 +403,10 @@ MAX_SDP_BYTES = 64 * 1024
 #: How long a start waits for swarm-voice's answer; past it the person reads
 #: "swarm-voice could not be reached". swarm-voice bounds its whole Live start
 #: (lease, create, every sideband attach try, the lease's release on a failure)
-#: by swarm_voice.live.START_WORST_SECONDS (17.0), held below this with a margin
-#: for the hop by tests/unit/voice/test_live_sideband_events.py, so a refusal
-#: swarm-voice has reaches the person as itself (10 November 2026: two 10 s attach
-#: tries after the create outran this and the console said "could not be reached").
+#: by swarm_voice.live.START_WORST_SECONDS (17.0), held below this with a
+#: margin for the hop, so a refusal swarm-voice has reaches the person as
+#: itself (10 November 2026: two 10 s attach tries after the create outran
+#: this and the console said "could not be reached").
 #: Raise both together, never this alone below swarm-voice's bound.
 START_TIMEOUT_SECONDS = 20.0
 
@@ -433,10 +433,9 @@ METADATA_IDENTITY_URL = (
 _MARKER_PURPOSE = "voice-live:"
 
 
-#: The two refusals keep the established codes, `forbidden` and `conflict`
-#: (tests/unit/control_plane/test_new_refusals_ship_off.py): a new code would
-#: have to ship behind a switch, and a switch that lets a stranger start a
-#: session, or a person hold two, is the breach itself.
+#: The two refusals keep the established codes, `forbidden` and `conflict`:
+#: a new code would have to ship behind a switch, and a switch that lets a
+#: stranger start a session, or a person hold two, is the breach itself.
 class VoiceNotAllowed(Forbidden):
     pass
 

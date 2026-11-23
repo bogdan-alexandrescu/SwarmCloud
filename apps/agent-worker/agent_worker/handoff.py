@@ -162,7 +162,7 @@ AGENT_PASSTHROUGH_ENV = ("SWARM_CDP_ENDPOINT", "SWARM_BROWSER_UPLOADS",
 
 #: §5.4.1: each worker-only route signs a domain-separated message, so a
 #: signature for one is never a signature for another. `swarm_api.handoff`
-#: holds HANDOFF_PURPOSE; tests/unit/worker/test_handoff.py holds them equal.
+#: holds HANDOFF_PURPOSE; a test holds them equal.
 HANDOFF_PURPOSE = "swarm-handoff/v1"
 LIVE_SESSION_PURPOSE = "swarm-live-session/v1"
 
@@ -186,7 +186,7 @@ _HOST = re.compile(r"^[a-z0-9.-]{1,253}$")
 _PRESET = re.compile(r"^[a-z0-9-]{1,32}$")
 #: `livegate.presets.THEMES`, restated (QA-KIT): the colour schemes the agent
 #: may name. Checked here, again by the gate, and by `swarm-handoff` itself;
-#: tests/unit/worker/test_handoff.py holds the three equal.
+#: a test holds the three equal.
 THEMES = ("dark", "light", "system")
 
 #: §4.1 step 1.
@@ -201,9 +201,9 @@ MAX_HUMAN_RESUMES = 2
 #: `human_park_max_seconds`, measured from the park instant. Restated from
 #: `scheduler.loop.HUMAN_PARK_MAX_SECONDS`, which this image does not carry;
 #: the scheduler reads the setting through `getattr` with that default and its
-#: settings have no such field, so the default IS the setting.
-#: tests/unit/worker/test_wait_record.py holds both, and fails the day the
-#: setting becomes configurable without the worker being handed its value.
+#: settings have no such field, so the default IS the setting. A test holds
+#: both, and fails the day the setting becomes configurable without the
+#: worker being handed its value.
 #: The park records `expires_at` from it (WAIT-RECORD, part of archived issue 1782).
 HUMAN_PARK_MAX_SECONDS = 86_400
 #: One request file, as read. swarm-api refuses a body over 4096 bytes.

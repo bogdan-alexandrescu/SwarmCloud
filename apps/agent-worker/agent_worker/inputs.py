@@ -104,9 +104,8 @@ METADATA_KEY = "input_from"
 #: `{upstream task id: upstream step id}`. Its presence IS the opt-in. In the
 #: dispatch block rather than in `input_from` because `input_from` is read as
 #: `{task id: filename}` by the UI and the masking, and because the dispatch
-#: block is signed. swarm-api spells it `DispatchOptions.to_metadata`;
-#: tests/unit/control_plane/test_input_from_by_parent_layout.py runs this
-#: module on what the API stores, so the two cannot drift apart.
+#: block is signed. swarm-api spells it `DispatchOptions.to_metadata`; a test
+#: runs this module on what the API stores, so the two cannot drift apart.
 DISPATCH_KEY = "dispatch"
 PARENTS_KEY = "input_parents"
 
@@ -559,8 +558,7 @@ def find_ci_fix_tasks(
 #: ends the review without a worker (archived issue 2524, `swarm_api.reviewgate`): no
 #: attempt ran, so there is no attempt prefix to upload it under. The entry
 #: carries the text under `inline` and no `uri`. Held equal to
-#: `swarm_api.reviewgate.INLINE_ARTIFACT_KEY` / `INLINE_WRITER` by
-#: tests/unit/control_plane/test_review_gate.py.
+#: `swarm_api.reviewgate.INLINE_ARTIFACT_KEY` / `INLINE_WRITER` by a test.
 INLINE_ARTIFACT_KEY = "inline"
 INLINE_WRITER = "control_plane"
 INLINE_ARTIFACT_NAMES = frozenset({"verdict.json"})

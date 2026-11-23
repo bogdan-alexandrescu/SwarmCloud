@@ -34,9 +34,9 @@ per-attempt LOCAL token in the CLI's environment only, never in the argv or a
 file; the caller's credential is in neither (the relay adds it on the way
 out). The prompt gains claude-code's line per server
 (`claude_code.mcp_servers_note`). Measured against the pinned 0.154.0 with a
-loopback fake (tests/unit/worker/test_mcp_runner_config.py): both keys are
-accepted and the CLI initializes and lists the server's tools through the
-relay. 0.154.0 offers MCP tools to the model as deferred nested tools of its
+loopback fake: both keys are accepted and the CLI initializes and lists the
+server's tools through the relay. 0.154.0 offers MCP tools to the model as
+deferred nested tools of its
 `exec` tool (found through `ALL_TOOLS`), not in the first request's tool list.
 
 ON A CHATGPT PLAN FROM THE SHARED POOL (part of archived issue 2688; the owner, 2026-11-01: codex

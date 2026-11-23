@@ -25,8 +25,8 @@ dispatcher's `consumes_workspace_secrets` also reads). The release also derives
 require nothing and are not derived here. The spelling is `consumer_name`'s.
 The scheduler cannot import swarm-api, and the frozen module has no home for
 the release's derivation, so it is composed here from the same frozen pieces
-and held to swarm-api's function by tests/unit/control_plane/
-test_secret_slot_admission.py over every profile and every `browser_tool`.
+and held to swarm-api's function by a test over every profile and every
+`browser_tool`.
 
 A GRANT IS PRESENT WHEN IT IS ENABLED (§2.2). Admission reads no secret
 record of a workspace secret's own, and no `attestation` (lane SEC-GRANT-ATTEST).

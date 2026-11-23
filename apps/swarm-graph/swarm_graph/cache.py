@@ -50,23 +50,22 @@ real one after the hit (§4.4).
 
 SIZING (§5.1, Q8), MEASURED BY THIS LANE on 2026-10-16 at 71ec64c. This
 repository's graph, built by the indexer's own extractor and shard writer
-(tests/unit/worker/graphmcp_fixtures.py's `graph_of` + `repo_graph_shards.build`),
-is 795 blobs, 9.4 MB stored and 116 MB raw (the snapshot.py docstring's
-"about 70 MB" is from an older tree). Every shard was decoded with
-`decode_blob` under `tracemalloc`, with the `by(field)` lookups the tools build
-on that layer: decoded is 2.93x raw over the whole graph, and at most 3.41x
-for any shard of 1 MiB or more (a `callees` shard). The `terms` layer runs
-5.53x, but is 6.4 MB raw of 116. A manifest opened as a `Snapshot` is 3.11x
-its 122 KB. Shorter strings decode fatter: a 1.9 MB synthetic edge shard with
-shorter paths than this repository's measured 3.73x
-(test_graphsvc_cache.py re-measures it). DECODED_RATIO is 4.0, above all of
-those but the small `terms` shards.
+(`graph_of` + `repo_graph_shards.build`), is 795 blobs, 9.4 MB stored and
+116 MB raw (the snapshot.py docstring's "about 70 MB" is from an older
+tree). Every shard was decoded with `decode_blob` under `tracemalloc`, with
+the `by(field)` lookups the tools build on that layer: decoded is 2.93x raw
+over the whole graph, and at most 3.41x for any shard of 1 MiB or more (a
+`callees` shard). The `terms` layer runs 5.53x, but is 6.4 MB raw of 116. A
+manifest opened as a `Snapshot` is 3.11x its 122 KB. Shorter strings decode
+fatter: a 1.9 MB synthetic edge shard with shorter paths than this
+repository's measured 3.73x. DECODED_RATIO is 4.0, above all of those but
+the small `terms` shards.
 
 At 4.0x, §5.1's 768 MiB raw bound is 3 GiB decoded on its own and does not fit
 the limit. THE BOUND SHRINKS, THE LIMIT DOES NOT GROW: SHARD_CACHE_RAW_BYTES is
-512 MiB, and `resident_bytes()` (held under MEMORY_LIMIT_BYTES by
-tests/unit/graphsvc/test_graphsvc_cache.py) is 2944 MiB. 512 MiB raw holds
-about four repositories this size, hot (§5.1 estimated ten, from 70 MB at 2x).
+512 MiB, and `resident_bytes()` (held under MEMORY_LIMIT_BYTES) is 2944 MiB.
+512 MiB raw holds about four repositories this size, hot (§5.1 estimated ten,
+from 70 MB at 2x).
 """
 
 from __future__ import annotations

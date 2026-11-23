@@ -11,9 +11,8 @@ So from now on a refusal added to swarm-api ships REPORT-ONLY: the request
 goes through, and the refusal it would have made is logged with its code. A
 later release turns it on once the log shows only the refusals that were
 meant. Every refusal that existed on main on 2026-10-08 is ESTABLISHED and
-always enforced; `tests/unit/control_plane/test_new_refusals_ship_off.py`
-lists them and fails on a 4xx code that is neither listed there nor in
-`SWITCHES` below.
+always enforced; a test lists them and fails on a 4xx code that is neither
+listed there nor in `SWITCHES` below.
 
 How a refusal is added:
 

@@ -118,9 +118,9 @@ def _seed(inp: float, out: float, read: float) -> dict[str, Any]:
 
 #: Where the figures `_published` seeds were read: the provider's pricing
 #: page (`schedtypes.model_prices_refresh.PRICING_PAGE_URL`), as saved on the
-#: day it was fetched in tests/unit/control_plane/pricing_page_2026-10-19.md,
-#: whose "Model pricing" table lists each figure below. Base input, output,
-#: cache hits and the 5-minute cache write, USD per million tokens.
+#: day it was fetched, whose "Model pricing" table lists each figure below.
+#: Base input, output, cache hits and the 5-minute cache write, USD per
+#: million tokens.
 _PAGE = "https://platform.claude.com/docs/en/about-claude/pricing.md"
 _PAGE_READ = "2026-10-19"
 

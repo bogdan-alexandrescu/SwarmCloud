@@ -475,8 +475,8 @@ class Uninstall:
     def refusal(self) -> str | None:
         # R4: the state carries a deny-list only in the shared project (CLAUDE.md
         # rule 2), so any deny-list at all refuses the whole uninstall. No
-        # project id is written here: a live-deployment literal is refused in
-        # apps/ (tests/unit/scripts/test_no_live_literals.py).
+        # project id is written here: a live-deployment literal anywhere in
+        # apps/ is refused.
         deny = list(self.state.deny_list)
         if self.project in deny:
             return f"{self.project} is on the shared deny-list; swarm uninstall never touches it"

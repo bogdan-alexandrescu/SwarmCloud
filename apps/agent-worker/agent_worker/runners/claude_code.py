@@ -234,8 +234,8 @@ process or the CLI's environment: the relay adds it on the way out. The
 config is in `work/`, which checkpoints carry, and that is deliberate: a
 loopback URL and a token nothing outside this pod can reach and nothing after
 this attempt accepts (§4.7 step 5). Measured against the pinned 2.1.283 with
-a loopback fake (tests/unit/worker/test_mcp_runner_config.py): the entry is
-accepted, the server's tools reach the model as `mcp__<name>__<tool>`, and
+a loopback fake: the entry is accepted, the server's tools reach the model
+as `mcp__<name>__<tool>`, and
 the repository's own `.mcp.json` IS loaded under `--print` (no
 `--strict-mcp-config` here), with this config's server winning a name both
 declare. While SWARM_MCP_SERVERS is off no task names a server, nothing is
@@ -771,7 +771,7 @@ LIVE_BROWSER_NOTE = (
     # batch from searches typed into google.com in this browser. WebSearch is
     # the CLI's built-in tool and this runner restricts none: SPEC passes no
     # --allowedTools and the generated settings deny nothing, so the tool
-    # named here is one the agent has (test_captcha_avoid_note.py holds it).
+    # named here is one the agent has.
     "For a web search, use the WebSearch tool, never a search engine's page in "
     "the browser. When a site has an official API for what is asked, prefer it "
     "to scraping its pages. And on any one site, keep to about one navigation a "
@@ -900,7 +900,7 @@ JEV_NO_INSTALL_ENV = "JEV_BROWSER_NO_INSTALL"
 #: from what it sends (docs/jev-data-flow.md, "The lane hooks").
 JEV_GATES_LAUNCHER = "/opt/swarm/jev-gates/bin/swarm-jev-gate.mjs"
 #: `qualitygates.CONFIG_ENV`, restated so the runner never imports the key
-#: code; tests/unit/worker/test_quality_gates.py holds them equal.
+#: code; the two are held equal.
 JEV_GATES_CONFIG_ENV = "SWARM_JEV_GATES_CONFIG"
 JEV_GATES_NODE = "/usr/local/bin/node"
 JEV_ENFORCE_MODE_ENV = "JEV_ENFORCE_MODE"
@@ -933,8 +933,8 @@ def _jev_gate_hook(config: str, mode: str, timeout: int) -> dict[str, Any]:
 #: `agent_worker.pluginload`). The worker installs each plugin of the signed
 #: set under `private/plugins/<install_id>` and hands this runner the load
 #: file's PATH (`pluginload.LOAD_ENV`, restated so the runner never imports
-#: the worker's install code; tests/unit/worker/test_pluginload_runner.py
-#: holds them equal): per plugin its folder, its manifest name, the
+#: the worker's install code; the two are held equal): per plugin its
+#: folder, its manifest name, the
 #: `userConfig` options (a sensitive one only as a placeholder) and the skills
 #: the step turned off.
 PLUGIN_LOAD_ENV = "SWARM_PLUGIN_LOAD"
@@ -2046,9 +2046,9 @@ def live_browser_refusal(env: dict[str, str], browsers: str, endpoint: str) -> s
 
 
 #: The verified task's resolved turn cap (contract request 133), exported by
-#: the worker from `Task.max_turns` (`lifecycle.MAX_TURNS_ENV`, held equal by
-#: tests/unit/worker/test_runners.py). Never `input.max_turns`: a caller
-#: writes the input, and swarm-api refuses that key at every door.
+#: the worker from `Task.max_turns` (`lifecycle.MAX_TURNS_ENV`, held equal to
+#: it). Never `input.max_turns`: a caller writes the input, and swarm-api
+#: refuses that key at every door.
 MAX_TURNS_ENV = "SWARM_MAX_TURNS"
 
 

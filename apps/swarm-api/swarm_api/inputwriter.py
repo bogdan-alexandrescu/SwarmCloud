@@ -60,8 +60,8 @@ _KEY_RE = re.compile(
 )
 
 #: Where an artifact's attachments sit: `review.json` -> `review.files/`. The
-#: worker's `agent_worker.inputs.ATTACHMENTS_DIR_SUFFIX`;
-#: tests/unit/control_plane/test_await_input_files.py holds the two equal.
+#: worker's `agent_worker.inputs.ATTACHMENTS_DIR_SUFFIX`; a test holds the
+#: two equal.
 ATTACHMENTS_DIR_SUFFIX = ".files"
 
 

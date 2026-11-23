@@ -154,7 +154,7 @@ MAX_COUNTS_BYTES = 256 * 1024
 
 #: The scheduler's verdict on this attempt's stored block, in the job's
 #: environment (restated from `scheduler.judgment`, which the worker does not
-#: import; tests/unit/worker/test_quality_gates.py holds them equal).
+#: import; the two are held equal).
 VERDICT_ENV = "SWARM_QUALITY_GATES_JEV"
 REFUSED_ENV = "SWARM_QUALITY_GATES_REFUSED"
 #: Why a stored "on" is off when the scheduler gave no "true". The

@@ -10,10 +10,9 @@ ONE SCHEMA, THREE READERS.
   * The planner reads it as strict tool schemas, one `draw_<kind>` tool a kind
     (`tool_schemas`), from `GET /v1/voice/cards/schema` (routes/voice.py).
   * The console names the same kinds, fields, states and actions in
-    apps/swarm-ui/src/voice/cards.ts, and
-    tests/unit/control_plane/test_voice_cards.py holds the two equal, the way
-    test_issue_forms.py holds the forms to `SECTIONS`. The console renders only
-    kinds it knows; an unknown kind is not drawn.
+    apps/swarm-ui/src/voice/cards.ts; a test holds the two equal, the way
+    another test holds the issue forms equal to `SECTIONS`. The console
+    renders only kinds it knows; an unknown kind is not drawn.
 
 THE SHAPE follows Google's A2UI (§4): declarative data drawn only from a
 catalogue of trusted components, never executable code. A mock-up's HTML is
@@ -120,7 +119,6 @@ _PULL_NUMBER_RE = re.compile(r"^[1-9][0-9]{0,9}$")
 #: apps/swarm-ui/src/paths.ts that a person reads, in its order, never an
 #: admin page, a submit form or a callback. The console maps the key through
 #: `FIXED` itself, so no string of the card becomes an address.
-#: tests/unit/control_plane/test_voice_navigate.py holds this to paths.ts.
 NAVIGATE_DESTINATIONS: tuple[str, ...] = (
     "overview/now", "work/running", "work/workflows", "work/timeline",
     "work/timeline/outcomes", "work/runs", "automate/schedules", "automate/approvals",

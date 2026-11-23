@@ -5,7 +5,7 @@
     tenants/<tenant_id>/repos/<repo_id>/graph/blobs/<sha256>.jsonl.gz
 
 the layout of `swarm_api.repograph.manifest_key` and `repograph.blob_key`
-(tests/unit/graphsvc/test_graphsvc_store.py holds the two equal). Every part
+(the two are held equal). Every part
 of a name comes from a VERIFIED ticket (`ticket.verify_graph_ticket` checked
 each against its exact shape) or from a manifest entry's sha256; no tool
 argument ever reaches a name. As knowledge-graph.md §5.3 says of the local

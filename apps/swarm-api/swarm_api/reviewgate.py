@@ -203,8 +203,7 @@ VERDICT_FILE = "verdict.json"
 #: The `verdict` a skipped review's verdict.json carries (archived issue 4101), beside its
 #: `skipped` reason. Not one of `validation.REVIEW_VERDICTS`: no review writes
 #: it, and no gate or spec may name it. `agent_worker.verdict.SKIPPED_VERDICT`
-#: and `verdictpublish.SKIPPED_VERDICT` restate it; test_review_gate.py holds
-#: them equal.
+#: and `verdictpublish.SKIPPED_VERDICT` restate it; a test holds them equal.
 SKIPPED_VERDICT = "SKIPPED"
 #: The key of a skipped review's verdict.json that says why it was skipped.
 SKIPPED_REASON_KEY = "skipped"
@@ -721,8 +720,8 @@ def gated(metadata: Any) -> bool:
     """The steps the scheduler holds for this gate: any carrying a `review_gate` block.
 
     Restated as part of `scheduler.loop.held_for_control_publish`; the two
-    are held equal over the same documents by test_review_gate.py. A block
-    `policy_of` cannot read is still held, and then declined: the review runs.
+    are held equal over the same documents by a test. A block `policy_of`
+    cannot read is still held, and then declined: the review runs.
     """
     return isinstance(_mapping(metadata).get(REVIEW_GATE_METADATA_KEY), Mapping)
 

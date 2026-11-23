@@ -243,9 +243,9 @@ WILSON_Z = 1.959964
 
 #: The worker's CANNOT-START exit (`agent_worker.errors.ExitCode.CONFIG`, and
 #: `reconciler.detect.WORKER_EXIT_CANNOT_START`). The swarm-api image carries
-#: neither package, so it is restated here and held to both by
-#: tests/unit/control_plane/test_outcomes_classifier_parity.py. Contract request
-#: 21 names this module as the third reader it anticipated.
+#: neither package, so it is restated here and held to both by a parity
+#: test. Contract request 21 names this module as the third reader it
+#: anticipated.
 EXIT_CANNOT_START = 78
 
 #: What each worker exit status means, for `retries.not_final.by_exit`. The
@@ -383,14 +383,13 @@ _check_coverage()
 # The classifier. A task that carries `end_cause` is classified by it alone
 # (`_FAILURE_OF_CAUSE`, `_CANCEL_OF_CAUSE`). The text rules below are the
 # FALLBACK, for tasks that ended before the field existed. Every pattern is
-# pinned against its writer's source literal by
-# tests/unit/control_plane/test_outcomes_classifier_parity.py, so a reworded
+# pinned against its writer's source literal by a test, so a reworded
 # message turns CI red instead of drifting into "other".
 # --------------------------------------------------------------------------
 
 #: What each typed end cause is, as a failure class. Keyed by the frozen enum,
-#: so a value added there and not here is caught by
-#: `test_every_end_cause_has_exactly_one_class`, not read as "other".
+#: so a value added there and not here is caught by a test, not read as
+#: "other".
 _FAILURE_OF_CAUSE: dict[str, str] = {
     EndCause.TIMEOUT.value: "timeout",
     EndCause.CANNOT_START.value: "could_not_start",
@@ -985,8 +984,7 @@ DEFAULT_SPAN = "14d"
 BUCKETS = ("hour", "day", "week", "month")
 SCOPES = ("tenant", "platform")
 KINDS = ("all", "standalone", "steps")
-#: The Timeline's group picker, held to `outcomes.ts` GROUPS by
-#: test_outcomes_ui_field_contract.py.
+#: The Timeline's group picker, held to `outcomes.ts` GROUPS by a test.
 GROUPS = ("runner_profile", "submitted_by", "tenant_id", "model", "model_class")
 #: Groups the route accepts beyond the Timeline's (archived issue 2149): Admin > Platform
 #: counts breaks its agents down by pool account and provider. Kept apart from

@@ -66,7 +66,7 @@ from urllib.parse import quote
 from swarm_common.models import ADDITIONAL_REPOSITORY_NAME
 
 #: `swarm_api.graph_ticket.TICKET_PURPOSE`, restated (this image does not carry
-#: swarm-api); tests/unit/worker/test_graph_ticket_worker.py holds them equal.
+#: swarm-api); a test holds them equal.
 GRAPH_TICKET_PURPOSE = "swarm-graph-ticket-request/v1"
 #: `swarm_api.graph_ticket.GraphTicketRequest`'s fields, exactly: a repository,
 #: a tenant registration or a digest in the body is swarm-api's 422.

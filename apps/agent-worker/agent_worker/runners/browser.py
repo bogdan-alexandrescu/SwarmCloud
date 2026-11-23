@@ -5,8 +5,7 @@ large `/dev/shm`, and Cloud Run does not let us size it; GKE Autopilot does, via
 an in-memory emptyDir, so `RUNNER_PROFILES["browser"]` pins the backend to
 Autopilot and the worker Job template mounts 2Gi at /dev/shm. That 2 GiB counts
 against the container's memory limit, which is why the `browser` resource class
-is 16 GiB rather than 8 -- the number is asserted by
-`tests/unit/worker/test_kubernetes_manifests.py::test_the_browser_job_sizes_dev_shm`,
+is 16 GiB rather than 8 -- the number is asserted against the manifest,
 so this comment and the manifest cannot drift apart silently.
 
 Chromium's own sandbox is disabled here, and that is deliberate rather than

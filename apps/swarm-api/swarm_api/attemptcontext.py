@@ -128,10 +128,10 @@ _GITHUB_REPOSITORY = re.compile(
 
 # THE CODES ARE THE CHILD ROUTES' OWN. The attempt proof and the fence here are
 # `ChildService`'s, so a caller is refused with the codes that already name
-# them, on main and always enforced (tests/unit/control_plane/
-# test_new_refusals_ship_off.py). A new code would have to ship behind a
-# refusal switch, whose off position lets an unproven or fenced caller
-# through -- the breach itself. The worker reads any 409 as the fence.
+# them, on main and always enforced (a test holds this). A new code would
+# have to ship behind a refusal switch, whose off position lets an unproven
+# or fenced caller through -- the breach itself. The worker reads any 409 as
+# the fence.
 
 
 class ContextUnproven(ApiError):
