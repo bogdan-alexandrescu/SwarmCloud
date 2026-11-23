@@ -52,7 +52,12 @@ ONE WARM CHILD PER SESSION (`ClaudeCode.converse`, the front's): the same
 rules -- built environment, `--tools ""`, `--strict-mcp-config` with only the
 tools it is handed, private HOME -- with `--input-format stream-json`, so each
 sentence is one user message on the running child's stdin and none pays
-Claude Code's start. `Conversation.close` stops it and removes its HOME.
+Claude Code's start. `Conversation.close` stops it and removes its HOME. It
+also runs with `--include-partial-messages`, so `Conversation.say(on_text=)`
+hands out the turn's text as it is written (`feed_text`): the front speaks its
+first sentence before its turn ends. Each delta line is scrubbed as every line
+is; claudefront re-scrubs the joined text, so a token cut across two deltas
+is still masked.
 
 NOTHING SECRET IN WHAT IS CAPTURED: every stdout event is scrubbed of the
 token and the grant (prompts.scrub, the worker's redaction rule: each known
@@ -257,6 +262,47 @@ def _counts(usage: Any) -> dict[str, int]:
     return {k: v for k in _COUNTS if isinstance(v := usage.get(k), int) and not isinstance(v, bool)}
 
 
+TextSink = Callable[[str], None]
+
+
+def feed_text(event: dict[str, Any], on_text: TextSink, state: dict[str, Any]) -> None:
+    """Hand the (scrubbed) text an event carries to `on_text`, in order: each
+    `text_delta` of `--include-partial-messages`' stream events, or, when no
+    delta came this turn (a CLI without partial messages), a whole assistant
+    message's text blocks. `state` is the turn's, kept by the caller."""
+    kind = event.get("type")
+    if kind == "stream_event":
+        inner = event.get("event") if isinstance(event.get("event"), dict) else {}
+        if inner.get("type") == "message_start" and state.get("text"):
+            # A new model message after text: the two are one spoken line.
+            state["gap"] = True
+        delta = inner.get("delta") if isinstance(inner.get("delta"), dict) else {}
+        if inner.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
+            text = delta.get("text")
+            if isinstance(text, str) and text:
+                state["deltas"] = True
+                _hand(text, on_text, state)
+    elif kind == "assistant" and not state.get("deltas"):
+        message = event.get("message") if isinstance(event.get("message"), dict) else {}
+        content = message.get("content") if isinstance(message.get("content"), list) else []
+        texts = [b.get("text") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+        joined = "".join(t for t in texts if isinstance(t, str))
+        if joined:
+            if state.get("text"):
+                state["gap"] = True
+            _hand(joined, on_text, state)
+
+
+def _hand(text: str, on_text: TextSink, state: dict[str, Any]) -> None:
+    if state.pop("gap", False):
+        text = " " + text
+    state["text"] = True
+    try:
+        on_text(text)
+    except Exception as exc:  # noqa: BLE001 -- a listener never breaks the turn
+        log.warning("voice front text listener failed (%s)", type(exc).__name__)
+
+
 class ClaudeCode:
     """Starts one turn's `claude -p` child (module docstring)."""
 
@@ -286,7 +332,9 @@ class ClaudeCode:
     def converse_args(self, *, system: str, mcp_config: str) -> list[str]:
         """The session-long child's: `args`, reading user messages as stream-json."""
         argv = self.args(system=system, mcp_config=mcp_config)
-        return [*argv[:4], "--input-format", "stream-json", *argv[4:]]
+        # Text deltas as they are written (`feed_text`), so the front's first
+        # sentence can be spoken before its turn ends (§12.6).
+        return [*argv[:4], "--input-format", "stream-json", "--include-partial-messages", *argv[4:]]
 
     def env(self, *, home: str, token: str) -> dict[str, str]:
         """The child's whole environment: a key's token (`ApiKey`) as
@@ -487,8 +535,10 @@ class Conversation:
         finally:
             self._events.put_nowait(None)
 
-    async def say(self, text: str) -> ChildOutcome:
-        """One user message; the turn's scrubbed outcome. Raises ChildGone."""
+    async def say(self, text: str, *, on_text: TextSink | None = None) -> ChildOutcome:
+        """One user message; the turn's scrubbed outcome. Raises ChildGone.
+        `on_text`, when given, is handed the turn's text as it streams
+        (`feed_text`), before the outcome returns."""
         async with self._lock:
             if not self.alive:
                 raise ChildGone("the conversation's child is not running")
@@ -501,15 +551,22 @@ class Conversation:
                 raise ChildGone(f"the conversation's child stopped reading ({type(exc).__name__})") from None
             outcome = ChildOutcome()
             by_message: dict[str, dict[str, int]] = {}
+            streamed: dict[str, Any] = {}
             while True:
                 event = await self._events.get()
                 if event is None:
                     # EOF: put it back, so the next say sees it too.
                     self._events.put_nowait(None)
                     raise ChildGone("the conversation's child exited before it answered")
+                kind = event.get("type")
+                if on_text is not None:
+                    feed_text(event, on_text, streamed)
+                if kind == "stream_event":
+                    # Deltas repeat the assistant messages that follow them:
+                    # not kept, so the outcome's events stay as they were.
+                    continue
                 if len(outcome.events) < MAX_EVENTS:
                     outcome.events.append(event)
-                kind = event.get("type")
                 message_ = event.get("message") if isinstance(event.get("message"), dict) else {}
                 if kind == "assistant" and message_:
                     by_message[str(message_.get("id") or len(by_message))] = _counts(message_.get("usage"))
