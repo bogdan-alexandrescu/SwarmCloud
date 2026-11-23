@@ -167,7 +167,7 @@ def _grant(session_id: str) -> SessionGrant:
 def test_a_live_session_hands_each_record_to_the_planner_off_the_sideband():
     clock = Clock()
     planner = FakePlanner()
-    voice_id = "vs_" + secrets.token_hex(6)
+    voice_id = "vs_" + secrets.token_hex(16)
 
     async def main() -> live.LiveSession:
         session = live.LiveSession(voice_id, "live_" + secrets.token_hex(4), credential=None, api=None,

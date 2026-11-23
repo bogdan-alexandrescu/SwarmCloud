@@ -182,3 +182,7 @@
   .vdg-detail dd { margin-bottom: 8px; }
   .vdg-lines li, .vdg-handoff { grid-template-columns: minmax(0, 1fr); gap: 0; }
 }
+
+/* Reply latency (§12.6): a part's row sits under its engine's. */
+.vtel-lat tr.is-part th:first-child { padding-left: 16px; }
+.vtel-lat + .vtel-fig { margin-top: 8px; }
