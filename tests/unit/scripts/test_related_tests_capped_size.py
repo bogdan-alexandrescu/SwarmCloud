@@ -10,8 +10,8 @@ same capped selection and the same one note as a fallback path; `--closure`
 prints the closure as before; a selection at or under one run is unchanged.
 CI's own selection (select_unit_tests.py) is untouched.
 
-Held against a synthetic tree in tmp_path, so the answers are exact, and once
-against this repository for the lifecycle.py example.
+Held against a synthetic tree in tmp_path, so the answers are exact; never
+against this repository's own tree, which moves under the assertions.
 """
 
 from __future__ import annotations
@@ -77,11 +77,13 @@ UNDER = _closure_weights(far=50.0, reads=9.0)
 OVER = _closure_weights(far=50.0, reads=11.0)
 
 
-def _select(root: Path, *changed: str, closure: bool = False) -> dict[str, list[str]]:
+def _select(root: Path, *changed: str, closure: bool = False,
+            cache: Path | None = None) -> dict[str, list[str]]:
     listing = root / "changed.txt"
     listing.write_text("".join(f"{c}\n" for c in changed))
     env = dict(os.environ)
-    env["RELATED_TESTS_CACHE_DIR"] = "off"
+    env["RELATED_TESTS_CACHE_DIR"] = str(cache) if cache else "off"
+    env.pop("SWARM_CONTEXT_DIR", None)
     result = subprocess.run(
         [sys.executable, str(SELECTOR), "--root", str(root), "--changed", str(listing),
          *(["--closure"] if closure else [])],
@@ -167,38 +169,42 @@ def test_ci_selection_is_not_capped_on_size(tmp_path):
     assert result.stdout == expected
 
 
-def test_lifecycle_change_is_capped_and_closure_keeps_every_file(tmp_path):
-    """The owner's example: agent_worker/lifecycle.py selected 829 files with
-    no fallback reason; now its direct importers and text readers, and
-    --closure still prints them all."""
-    listing = tmp_path / "changed.txt"
-    listing.write_text("apps/agent-worker/agent_worker/lifecycle.py\n")
-    env = dict(os.environ)
-    env["RELATED_TESTS_CACHE_DIR"] = str(tmp_path / "cache")
-    env.pop("SWARM_CONTEXT_DIR", None)
+def test_a_large_change_is_capped_and_closure_keeps_every_file_with_the_cache_on(tmp_path):
+    """The owner's example (agent_worker/lifecycle.py selected 829 files with
+    no fallback reason) on the synthetic tree, through a warm edge cache: the
+    capped run prints the direct importers, the own test and the text reader,
+    exactly; --closure prints the whole closure, exactly, with no cap note."""
+    _tree(tmp_path, OVER)
+    cache = tmp_path / "cache"
+    for _ in range(2):  # cold, then warm
+        capped = _select(tmp_path, MID, OWN, cache=cache)
+        full = _select(tmp_path, MID, OWN, closure=True, cache=cache)
+        assert _files(capped["pytest"]) == CAPPED
+        assert len(capped["note"]) == 1, capped["note"]
+        assert "capped at 4 test file(s) -- " in capped["note"][0], capped["note"]
+        assert "of the 14 its full closure reaches" in capped["note"][0], capped["note"]
+        assert full["raw"] == [_closure_output(OVER)]
+    assert list(cache.glob("import-edges-*.json"))
 
-    def run(*extra: str) -> dict[str, list[str]]:
-        result = subprocess.run(
-            [sys.executable, str(SELECTOR), "--root", str(REPO), "--changed", str(listing), *extra],
-            capture_output=True, text=True, timeout=300, env=env,
-        )
-        assert result.returncode == 0, result.stderr
-        out: dict[str, list[str]] = {"pytest": [], "note": []}
-        for line in result.stdout.splitlines():
-            kind, _, rest = line.partition("\t")
-            out.setdefault(kind, []).append(rest)
-        return out
 
-    capped, full = run(), run("--closure")
-    closure = _files(full["pytest"])
-    narrow = _files(capped["pytest"])
-    notes = [n for n in capped["note"] if "capped" in n]
-    assert len(notes) == 1, capped["note"]
-    assert f"of the {len(closure)} its full closure reaches" in notes[0], notes[0]
-    assert f"capped at {len(narrow)} test file(s)" in notes[0], notes[0]
-    assert len(closure) > 500, len(closure)
-    # Measured 2026-11-23: 189 of 831 (163 tests import lifecycle.py itself),
-    # 686 of 3,954 recorded CI-seconds. Bounded, not pinned, as the tree grows.
-    assert 10 <= len(narrow) <= len(closure) // 3, narrow
-    assert set(narrow) <= set(closure)
-    assert not any("capped" in n for n in full["note"]), full["note"]
+def test_with_no_readable_durations_a_selection_is_capped_and_says_why(tmp_path):
+    """No unit_test_durations.json (or one that cannot be read) gives no
+    weight to trust: every file at one second read a large selection as
+    light. Now the selection is treated as over the size cap, and the note
+    says why; --closure prints the closure as before."""
+    for durations in (None, "{not json", "{}"):
+        _tree(tmp_path, OVER)
+        if durations is None:
+            (tmp_path / DURATIONS).unlink()
+        else:
+            (tmp_path / DURATIONS).write_text(durations)
+        got = _select(tmp_path, MID, OWN)
+        # MUTATION: weigh each file one second -> 14 s, nothing is capped.
+        assert _files(got["pytest"]) == CAPPED, durations
+        assert len(got["note"]) == 1, got["note"]
+        assert "capped at 4 test file(s)" in got["note"][0] and "of the 14" in got["note"][0]
+        assert "no recorded CI weight is readable" in got["note"][0], got["note"]
+        assert DURATIONS in got["note"][0], got["note"]
+        full = _select(tmp_path, MID, OWN, closure=True)
+        assert _files(full["pytest"]) == CLOSURE
+        assert full["note"] == []
