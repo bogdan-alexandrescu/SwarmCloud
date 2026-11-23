@@ -13,6 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import CONFIG_CSS from '../styles/config.css?raw'
+import { screenLoaded } from './screenLoaded'
 
 type Json = Record<string, unknown>
 
@@ -77,6 +78,10 @@ async function app(path: string) {
   const mod = await import('../App')
   window.history.replaceState(null, '', path)
   render(<mod.App />)
+  // The page under the strip loads with its route (React.lazy, issue 79):
+  // a case that ended with its import in flight would leave the next case's
+  // `resetModules` and `import('../App')` waiting on it.
+  await screenLoaded()
   return mod
 }
 

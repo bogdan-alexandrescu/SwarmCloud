@@ -216,13 +216,14 @@ jobs:
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main') || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON(format('["self-hosted","linux","x64","{0}"]', vars.SWARM_CI_RUNNER_LABEL || 'swarm-ci')) }}
     if: github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
           enable-cache: true
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -245,7 +246,7 @@ jobs:
           fi
           echo "major=${majors}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: ${{ steps.node.outputs.major }}
 
@@ -304,7 +305,7 @@ jobs:
       # (image switches); the bucket's name is never assumed from the project.
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: is this commit still main's newest?
         id: newest
@@ -331,12 +332,12 @@ jobs:
 
       - id: auth
         if: steps.newest.outputs.superseded != 'true'
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
         if: steps.newest.outputs.superseded != 'true'
 
       - name: the images CI built for this commit, scanned (nothing is promoted yet)
@@ -480,17 +481,17 @@ jobs:
     steps:
       # Full history: the order guard asks git whether the commit already out
       # is an ancestor of this one, which a depth-1 clone cannot answer.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
       - id: auth
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: scan and promote the recorded digests
         # .github/actions/release-promote, shared with hotfix.yml: fetch the
@@ -560,19 +561,19 @@ jobs:
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
     steps:
       # Full history, for the order guard (see `promote`).
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
       - id: auth
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
@@ -655,19 +656,19 @@ jobs:
       # Full history for the order guard (scripts/lib/release-order.sh): this
       # job takes the same release lock as `terraform apply` -- an IAM apply is
       # an apply, and the hotfix lane must not interleave with it.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
       - id: auth
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
@@ -795,12 +796,12 @@ jobs:
       TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
     steps:
       # Full history, for the order guard (see `promote`).
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
       - id: auth
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.GCP_DEPLOY_SA }}
@@ -815,7 +816,7 @@ jobs:
           # the VPC as the swarm-verify job, which gets its own token from the
           # metadata server; this job only needs gcloud's access token.
 
-      - uses: google-github-actions/setup-gcloud@v3
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: verify every service, job and worker image runs the pinned digests
         id: verify
@@ -854,7 +855,7 @@ jobs:
         timeout-minutes: 30
         run: ./scripts/warm-jobs.sh
 
-      - uses: hashicorp/setup-terraform@v4
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
@@ -866,9 +867,10 @@ jobs:
       # ModuleNotFoundError on the runner's bare python3 (archived issue 346, archived pull request 354 review).
       # So it runs on the project's own interpreter, synced from the lockfile
       # as `verify` syncs it, and only when the apply runs.
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' && vars.APPLY_TENANT_NAMESPACES == 'true' }}
         with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
           enable-cache: true
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -918,9 +920,10 @@ jobs:
       # Its own uv setup and sync, NOT switched by vars.APPLY_TENANT_NAMESPACES:
       # apply.sh runs render.py and network_parity.py on PYTHON_BIN, and the
       # relay rolls whether or not tenant namespaces are applied.
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
         with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
           enable-cache: true
           python-version: ${{ env.PYTHON_VERSION }}
 
@@ -944,9 +947,10 @@ jobs:
       # as the tenant-namespace setup above is (that one stays off until the
       # owner turns the namespaces on). A second sync is a no-op when the first
       # ran.
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
         with:
+          version: "0.12.15"  # the uv images/*/Dockerfile UV_IMAGE pins (test_ci_tool_versions.py)
           enable-cache: true
           python-version: ${{ env.PYTHON_VERSION }}
 

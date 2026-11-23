@@ -73,7 +73,7 @@ jobs:
     steps:
       # main, for scripts/ci-fix.sh and scripts/lib/common.sh. NOT the branch
       # being fixed: its code runs in the fix step's container, never here.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       # Only when the fixer is configured. Unconfigured, the script says so on
       # the pull request once and submits nothing, rather than failing here on
@@ -86,13 +86,13 @@ jobs:
       # Owner decision, 2026-09-28.
       - id: auth
         if: ${{ env.SWARM_CI_FIX_SA != '' }}
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
           service_account: ${{ env.SWARM_CI_FIX_SA }}
 
       - if: ${{ env.SWARM_CI_FIX_SA != '' }}
-        uses: google-github-actions/setup-gcloud@v3
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
 
       - name: submit one fix attempt
         env:

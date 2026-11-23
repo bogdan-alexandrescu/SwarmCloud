@@ -43,6 +43,7 @@ import { act, fireEvent, render } from '@testing-library/react'
 
 import { App, SECTIONS } from '../App'
 import { chooseBase, ensureCommit, extractApp, type BaseTree, type ProseBase } from './prosebase'
+import { screenLoaded } from './screenLoaded'
 
 type Persona = 'platform-admin'
 
@@ -252,9 +253,11 @@ async function renderPage(tree: Tree, page: ProsePage): Promise<Measure> {
   const Shown = tree.App
   const { unmount } = render(<Shown />)
   try {
+    await screenLoaded()
     await settle()
     if (page.then !== undefined) {
       page.then()
+      await screenLoaded()
       await settle()
     }
     return measure(document.body)

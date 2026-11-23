@@ -44,6 +44,7 @@ from pathlib import Path
 
 import pytest
 
+from .test_ci_built_images import gating_job_names
 from .test_release_reuses_ci_images import _evaluate, _load_workflow, _render
 
 REPO_NAME = "owner/repo"
@@ -213,10 +214,12 @@ def _run_step(tmp_path: Path, step_id: str, responses: dict, *, stage: str = "")
 
 
 def _cancelled_run(build_conclusion: str | None) -> dict:
-    jobs = [{"name": "unit tests (1/4)", "conclusion": "cancelled"}]
+    # `format / unit tests` (`python`) is a name-keeper ci-gate does not need:
+    # cancelled, it gates nothing.
+    jobs = [{"name": "format / unit tests", "conclusion": "cancelled"}]
     # The jobs that gate the release (CI_RELEASE_TEST_JOBS, common.sh) passed:
     # a build that succeeded beside them is then no supersession.
-    jobs += [{"name": n, "conclusion": "success"} for n in ("format / unit tests", "shellcheck", "kubernetes manifests")]
+    jobs += [{"name": n, "conclusion": "success"} for n in gating_job_names()]
     if build_conclusion is not None:
         jobs.append({"name": "build images", "conclusion": build_conclusion})
     return {

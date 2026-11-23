@@ -64,9 +64,41 @@ REGISTRY = "us-central1-docker.pkg.dev/swarm-test-project/swarm-images"
 SHA = "c0ffee" * 6 + "abcd"
 OTHER_SHA = "0badc0de" * 5
 # The jobs that gate the release, as scripts/lib/common.sh names them
-# (CI_RELEASE_TEST_JOBS); test_the_release_is_gated_on_the_tests_the_build_no_longer_needs
-# holds the list to common.sh and to application.yml.
-TEST_JOBS = ("format / unit tests", "shellcheck", "kubernetes manifests")
+# (CI_RELEASE_TEST_JOBS): every job application.yml's ci-gate needs.
+# test_the_release_is_gated_on_every_job_ci_gate_needs holds the list to
+# common.sh and to application.yml.
+TEST_JOBS = (
+    "shellcheck",
+    "release workflow wiring (actionlint)",
+    "ruff check",
+    "what this change reaches",
+    "sub-minute checks (actionlint, ruff, manifests, python checks)",
+    "lock / contract / format / bridge install",
+    "unit tests",
+    "swarm-ui typecheck / build",
+    "swarm-ui component tests",
+    "integration tests (emulator)",
+    "kubernetes manifests",
+    "build changed images without pushing",
+    "build images",
+    "record the tested tree",
+    "tag the plugin's bridge (sc-v<version>)",
+)
+# Listed by the name up to their matrix part; each leg is `<entry> (k/N)`.
+MATRIX_TEST_JOBS = ("unit tests", "swarm-ui component tests")
+
+
+def gating_job_names() -> list[str]:
+    """The job names a run lists for TEST_JOBS: a matrix job's entry once per
+    leg, as GitHub names them, and never `build images`, which each world
+    lists itself."""
+    names: list[str] = []
+    for name in TEST_JOBS:
+        if name in MATRIX_TEST_JOBS:
+            names += [f"{name} (1/2)", f"{name} (2/2)"]
+        elif name != "build images":
+            names.append(name)
+    return names
 IMAGES = [
     "agent-runtime-base",
     "agent-runtime-base-nocodex",
@@ -396,7 +428,7 @@ def ci_run(
         "pending_polls": run_pending,
         "jobs": [
             *(
-                [{"name": name, "conclusion": tests_conclusion, "pending_polls": tests_pending} for name in TEST_JOBS]
+                [{"name": name, "conclusion": tests_conclusion, "pending_polls": tests_pending} for name in gating_job_names()]
                 if tests_conclusion is not None else []
             ),
             {
@@ -1046,7 +1078,24 @@ def test_a_finished_run_without_the_gating_tests_is_refused(tmp_path):
     assert proc.returncode == 1, proc.stderr[-3000:]
     assert not out.exists()
     summary = _last_line(proc)
-    assert "run finished without format / unit tests, shellcheck, kubernetes manifests" in summary, summary
+    missing = ", ".join(n for n in TEST_JOBS if n != "build images")
+    assert f"run finished without {missing}" in summary, summary
+
+
+@pytest.mark.parametrize("leg", ["unit tests (2/2)", "swarm-ui component tests (1/2)"])
+def test_one_failed_leg_of_a_matrix_job_keeps_the_release_back(tmp_path, leg):
+    """A matrix job is listed by its name up to the matrix part, and each leg
+    GitHub runs is `<entry> (k/N)`. MUTATION: match an entry by its whole
+    name only (the legs then read as never run, and the reason misleads), or
+    by a bare prefix without " (" ."""
+    run = ci_run(124)
+    run["jobs"] = [dict(j, conclusion="failure") if j["name"] == leg else j for j in run["jobs"]]
+    proc, out, _ = lookup(tmp_path, {"runs": [run]}, if_absent="build")
+    assert proc.returncode == 1, proc.stderr[-3000:]
+    assert not out.exists()
+    summary = _last_line(proc)
+    entry = leg.rsplit(" (", 1)[0]
+    assert f"did not pass: {entry} (failure,success)" in summary, summary
 
 
 def test_gating_tests_skipped_by_their_paths_pass_the_gate(tmp_path):
@@ -1056,20 +1105,47 @@ def test_gating_tests_skipped_by_their_paths_pass_the_gate(tmp_path):
     assert json.loads(out.read_text()) == record_for()
 
 
-def test_the_release_is_gated_on_the_tests_the_build_no_longer_needs():
-    """`build images` starts with its run, and the jobs it used to need --
-    python, shell, manifests -- are the ones CI_RELEASE_TEST_JOBS names, by
-    the names they run under. A rename would leave every release waiting for
-    a job that never comes, so it is held here."""
+def test_the_release_is_gated_on_every_job_ci_gate_needs():
+    """`build images` starts with its run (owner pick on PR 3344), and the
+    release waits instead for the jobs CI_RELEASE_TEST_JOBS names. Those are
+    exactly the jobs application.yml's `ci-gate` needs, by the names they run
+    under, in the same order (audit, 2026-11-21: the list was three jobs by
+    hand, so a failed integration or UI test did not keep a release back).
+    A matrix job runs as `<name up to its matrix part> (k/N)`, and is listed
+    by that part. MUTATION: add a job to ci-gate's `needs:` and not to the
+    list, rename a job, or list one ci-gate does not need."""
     jobs = _workflow("application.yml")["jobs"]
     build = next(job for job in jobs.values() if job.get("name") == "build images")
     assert not build.get("needs"), f"`build images` waits for {build.get('needs')} again"
+    needs = jobs["ci-gate"]["needs"]
+    needs = [needs] if isinstance(needs, str) else list(needs)
+    expected = []
+    for job_id in needs:
+        name = str(jobs[job_id].get("name") or job_id)
+        if "${{" in name:
+            assert "strategy" in jobs[job_id], f"{job_id}: an expression in the name of a job with no matrix"
+            stem, _, tail = name.partition(" (")
+            assert "${{" in tail and "${{" not in stem and tail.endswith(")"), \
+                f"{job_id}: {name!r} is not `<name> (<matrix part>)`, the shape the readers match"
+            name = stem
+        expected.append(name)
     common = (REPO / "scripts" / "lib" / "common.sh").read_text()
     listed = re.search(r"^CI_RELEASE_TEST_JOBS=\(\n(.*?)^\)", common, re.M | re.S)
     assert listed, "common.sh no longer declares CI_RELEASE_TEST_JOBS=( ... )"
     names = tuple(re.findall(r'^\s*"([^"]+)"', listed.group(1), re.M))
+    assert names == tuple(expected), (
+        f"CI_RELEASE_TEST_JOBS differs from ci-gate's needs: missing {sorted(set(expected) - set(names))}, "
+        f"extra {sorted(set(names) - set(expected))} (or the order)")
     assert names == TEST_JOBS, names
-    assert {jobs[j].get("name", j) for j in ("python", "shell", "manifests")} == set(names)
+    assert {n for n in names if any("${{" in str(j.get("name", "")) and str(j["name"]).startswith(n + " (")
+                                     for j in jobs.values())} == set(MATRIX_TEST_JOBS)
+    # No entry also catches another job of the workflow by the matrix rule:
+    # `<entry> (...)` names only that entry's own legs.
+    for n in names:
+        for job_id, job in jobs.items():
+            other = str(job.get("name") or job_id)
+            assert not (other != n and other.startswith(n + " (") and "${{" not in other), (n, other)
+
 
 
 def test_main_builds_even_when_a_needed_check_was_skipped_by_its_paths():

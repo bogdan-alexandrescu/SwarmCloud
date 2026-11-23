@@ -1,5 +1,7 @@
 import {
   Fragment,
+  lazy,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -11,16 +13,8 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList, type AgentTab } from './agentlist'
-import { ActivityScreen, TenantsScreen } from './Activity'
-import { AdminSettingsScreen } from './AdminSettings'
-import { AdminSetupHealthScreen, AdminSetupScreen } from './AdminSetup'
-import { AgentsScreen } from './Agents'
-import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
 import { HostedAgent, hostsAgent, type HostedAgentView } from './work/hostedAgent'
-import { AccountHealthScreen } from './AccountHealthPage'
-import { JevUsageScreen } from './JevUsagePage'
-import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import {
   beginScreenReads,
@@ -41,16 +35,11 @@ import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId }
 import { CONFIG_SECRETS_ADDRESS, GITHUB_CALLBACK_ADDRESS, QA_LINK_ADDRESS, SETUP_LINK_PATH, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, isSetupLinkPath, movedToConfig, movedToWorkspacePage, pathToAddress, secretsLinkToken, secretsLinkView, setupLinkToken, workspacePageAddress } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { WorkspaceSettingsScreen, workspacePartOf } from './WorkspaceSettings'
-import { McpServersScreen } from './McpServers'
 import { ConfigPluginsScreen, pluginLinkOf, type PluginLinkAt } from './ConfigPlugins'
 import { ADMIN_PLUGINS_PATH, AdminPluginsScreen, catalogueCards } from './AdminPlugins'
-import { AdminPluginInstallScreen } from './AdminPluginInstall'
-import { PluginDetailScreen } from './PluginDetail'
 import { PluginSettingsForm } from './PluginSettingsForm'
 import { loadApproval, loadPluginCatalogue, loadWorkspacePlugins, PLATFORM_PLUGIN_CATALOGUE, pluginScopeOf } from './api'
 import { UrRegion, useUrRead } from './RepositoriesParts'
-import { SecretsScreen } from './Secrets'
-import { AdminPlatformSecretsScreen } from './AdminPlatformSecrets'
 import { SetupStrip } from './ConfigSetup'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
@@ -59,43 +48,83 @@ import { NotificationBell } from './Notifications'
 import { routedClick, Segmented, ToneMark } from './components'
 import { Mark } from './primitives'
 import { HelpScreen, helpPageOf } from './HelpSection'
-import { HoldersScreen } from './Holders'
-import { OverviewScreen } from './Overview'
 import { SetupCard } from './Onboarding'
-import { AccessScreen } from './Access'
-import { PeopleScreen } from './People'
-import { PlatformCountsScreen } from './PlatformCounts'
-import { RunnerSizesScreen } from './RunnerSizes'
-import { ProfilesScreen } from './Profiles'
-import { ProfileScreen } from './Profile'
 import { WorkspacePage, workspaceTabOf, type WorkspaceTab } from './WorkspacePage'
 import { JOIN_PATH, JoinWorkspaceScreen, joinCodeFrom } from './JoinWorkspace'
 import { GuideScreen, guidePath, guideSlugFrom } from './Guide'
-import { SetupLinkScreen } from './SetupLink'
-import { WorkspacesYouAdminScreen } from './WorkspacesYouAdmin'
-import { QuotaDetailScreen } from './QuotaDetail'
 import { tableMode, usePhoneTables } from './capacityPoll'
 import { LLM_PROVIDERS_TAB, LlmProvidersScreen, llmProvidersAddress, llmSubPage, type LlmSubPage } from './LlmProviders'
-import { RuntimesScreen } from './Runtimes'
 import { CountNote, FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
-import { SubmitScreen } from './Submit'
-import { SubmitChooser } from './SubmitChooser'
-import { SubmitWorkflowScreen } from './SubmitWorkflow'
-import { QaRunGroupScreen } from './QaRunGroup'
-import { InterviewRoute } from './InterviewPage'
 import { interviewPageOf } from './interviewPaths'
-import { IssueSubmitScreen } from './IssueSubmit'
-import { RunsScreen } from './Runs'
 import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard, useScheduleName } from './Schedules'
-import { ApprovalsScreen } from './Approvals'
-import { RepositoriesScreen } from './Repositories'
 import { qaCredentialLinkFrom, type QaLink } from './qaTargetsApi'
 import { AGE_TICK_MS, useNow } from './useNow'
+// Overview is lazy, so its chunk's CSS would load after the main chunk's;
+// names.css (also Workflows') must come after overview.css, as Overview imports them.
+import './styles/overview.css'
 import { useRecentName, WorkflowsScreen } from './Workflows'
-import { VoicePreferencesScreen, VoiceProjectsScreen, VoiceSettingsSectionScreen, VoiceTalkScreen } from './voice/Section'
 import { VoiceSessionHolder } from './voice/session'
 import { backLabel, filterQueryString, parseWorkflowQuery } from './workflowlist'
-import { HomeScreen } from './Home'
+
+/**
+ * EACH ROUTE'S SCREEN LOADS WITH ITS ROUTE (issue 79). Before this, App.tsx
+ * imported every screen statically, so the first load shipped all of them in
+ * one chunk. The shell -- SkyShell, the rail, the header, the dock -- stays
+ * eager; a screen loads when its route is first opened, and `ScreenLoading`
+ * stands in until it arrives.
+ *
+ * ONLY A MODULE APP IMPORTS NOTHING ELSE FROM IS LAZY. Where App.tsx also
+ * reads a helper from a screen's module (Guide's `guidePath`, Workflows'
+ * `useRecentName`, Schedules' `WaitingOnYouCard`, WorkspaceSettings'
+ * `workspacePartOf` ...), the static import keeps the whole module in the
+ * main chunk, and lazy-loading its screen would split nothing.
+ *
+ * THE GITHUB CALLBACK STAYS EAGER. `GitHubCallbackScreen` reads the code and
+ * the state from the address as it mounts, and the router takes that query
+ * out of the bar (`canonical`). Loaded lazily it mounts after the rewrite and
+ * finds nothing to finish (github.callback.test.tsx, the router case).
+ */
+const ActivityScreen = lazy(() => import('./Activity').then((m) => ({ default: m.ActivityScreen })))
+const TenantsScreen = lazy(() => import('./Activity').then((m) => ({ default: m.TenantsScreen })))
+const AdminSettingsScreen = lazy(() => import('./AdminSettings').then((m) => ({ default: m.AdminSettingsScreen })))
+const AdminSetupHealthScreen = lazy(() => import('./AdminSetup').then((m) => ({ default: m.AdminSetupHealthScreen })))
+const AdminSetupScreen = lazy(() => import('./AdminSetup').then((m) => ({ default: m.AdminSetupScreen })))
+const AgentsScreen = lazy(() => import('./Agents').then((m) => ({ default: m.AgentsScreen })))
+const TimelineLanesScreen = lazy(() => import('./TimelineLanes').then((m) => ({ default: m.TimelineLanesScreen })))
+const AccountHealthScreen = lazy(() => import('./AccountHealthPage').then((m) => ({ default: m.AccountHealthScreen })))
+const JevUsageScreen = lazy(() => import('./JevUsagePage').then((m) => ({ default: m.JevUsageScreen })))
+const CapacityScreen = lazy(() => import('./Capacity').then((m) => ({ default: m.CapacityScreen })))
+const McpServersScreen = lazy(() => import('./McpServers').then((m) => ({ default: m.McpServersScreen })))
+const AdminPluginInstallScreen = lazy(() => import('./AdminPluginInstall').then((m) => ({ default: m.AdminPluginInstallScreen })))
+const PluginDetailScreen = lazy(() => import('./PluginDetail').then((m) => ({ default: m.PluginDetailScreen })))
+const SecretsScreen = lazy(() => import('./Secrets').then((m) => ({ default: m.SecretsScreen })))
+const AdminPlatformSecretsScreen = lazy(() => import('./AdminPlatformSecrets').then((m) => ({ default: m.AdminPlatformSecretsScreen })))
+const HoldersScreen = lazy(() => import('./Holders').then((m) => ({ default: m.HoldersScreen })))
+const OverviewScreen = lazy(() => import('./Overview').then((m) => ({ default: m.OverviewScreen })))
+const AccessScreen = lazy(() => import('./Access').then((m) => ({ default: m.AccessScreen })))
+const PeopleScreen = lazy(() => import('./People').then((m) => ({ default: m.PeopleScreen })))
+const PlatformCountsScreen = lazy(() => import('./PlatformCounts').then((m) => ({ default: m.PlatformCountsScreen })))
+const RunnerSizesScreen = lazy(() => import('./RunnerSizes').then((m) => ({ default: m.RunnerSizesScreen })))
+const ProfilesScreen = lazy(() => import('./Profiles').then((m) => ({ default: m.ProfilesScreen })))
+const ProfileScreen = lazy(() => import('./Profile').then((m) => ({ default: m.ProfileScreen })))
+const SetupLinkScreen = lazy(() => import('./SetupLink').then((m) => ({ default: m.SetupLinkScreen })))
+const WorkspacesYouAdminScreen = lazy(() => import('./WorkspacesYouAdmin').then((m) => ({ default: m.WorkspacesYouAdminScreen })))
+const QuotaDetailScreen = lazy(() => import('./QuotaDetail').then((m) => ({ default: m.QuotaDetailScreen })))
+const RuntimesScreen = lazy(() => import('./Runtimes').then((m) => ({ default: m.RuntimesScreen })))
+const SubmitScreen = lazy(() => import('./Submit').then((m) => ({ default: m.SubmitScreen })))
+const SubmitChooser = lazy(() => import('./SubmitChooser').then((m) => ({ default: m.SubmitChooser })))
+const SubmitWorkflowScreen = lazy(() => import('./SubmitWorkflow').then((m) => ({ default: m.SubmitWorkflowScreen })))
+const QaRunGroupScreen = lazy(() => import('./QaRunGroup').then((m) => ({ default: m.QaRunGroupScreen })))
+const InterviewRoute = lazy(() => import('./InterviewPage').then((m) => ({ default: m.InterviewRoute })))
+const IssueSubmitScreen = lazy(() => import('./IssueSubmit').then((m) => ({ default: m.IssueSubmitScreen })))
+const RunsScreen = lazy(() => import('./Runs').then((m) => ({ default: m.RunsScreen })))
+const ApprovalsScreen = lazy(() => import('./Approvals').then((m) => ({ default: m.ApprovalsScreen })))
+const RepositoriesScreen = lazy(() => import('./Repositories').then((m) => ({ default: m.RepositoriesScreen })))
+const VoicePreferencesScreen = lazy(() => import('./voice/Section').then((m) => ({ default: m.VoicePreferencesScreen })))
+const VoiceProjectsScreen = lazy(() => import('./voice/Section').then((m) => ({ default: m.VoiceProjectsScreen })))
+const VoiceSettingsSectionScreen = lazy(() => import('./voice/Section').then((m) => ({ default: m.VoiceSettingsSectionScreen })))
+const VoiceTalkScreen = lazy(() => import('./voice/Section').then((m) => ({ default: m.VoiceTalkScreen })))
+const HomeScreen = lazy(() => import('./Home').then((m) => ({ default: m.HomeScreen })))
 
 /**
  * THE NAVIGATION, AND WHY IT IS AS FEW THINGS AS IT IS.
@@ -1904,7 +1933,10 @@ export function App() {
           <HostedAgent.Provider value={hostedView}>
           <div className={`app${inspector ? ' has-inspector' : ''}`}>
             <main className="work">
-
+              {/* One boundary for the screens outside a section, and one round
+                  each section's body below, so a Config page's setup strip
+                  stays up while its page loads. */}
+              <Suspense fallback={<ScreenLoading />}>
               {section === null ? (
                 at.sectionId === HELP ? (
                   <HelpScreen topic={at.tab} />
@@ -1938,6 +1970,7 @@ export function App() {
                   <FrameAge.Provider value={at.taskId === null}>
                   {at.missing ? <NotFound path={at.missing} go={go} /> : (() => {
                     const body = (
+                      <Suspense fallback={<ScreenLoading />}>
                       <SectionBody
                         sectionId={section.id}
                         tab={at.tab}
@@ -1954,12 +1987,14 @@ export function App() {
                         secretsLink={onSecretsPage && at.view ? secretsLink.current : null}
                         pluginLink={onPluginsPage ? pluginLink.current : null}
                       />
+                      </Suspense>
                     )
                     return section.id === CONFIG ? <ConfigPage go={go}>{body}</ConfigPage> : body
                   })()}
                   </FrameAge.Provider>
                 </RoutedPage.Provider>
               )}
+              </Suspense>
             </main>
 
             {inspector && split}
@@ -2777,10 +2812,19 @@ function SectionBody({
  * platform install is read as the platform's. A workspace's install (`w-`) is
  * read in its own workspace, which the platform catalogue names: the card's
  * address carries only the install id.
+ *
+ * Both plugin routes carry their own Suspense boundary round the lazy
+ * `PluginDetailScreen`: they are exported and mounted on their own, outside
+ * the page's boundary in `App`.
  */
 export function AdminPluginRoute({ installId }: { installId: string }) {
-  if (pluginScopeOf(installId) === 'platform') return <PluginDetailScreen installId={installId} tenantId={null} backHref={ADMIN_PLUGINS_PATH} />
-  return <AdminWorkspacePluginRoute installId={installId} />
+  return (
+    <Suspense fallback={<ScreenLoading />}>
+      {pluginScopeOf(installId) === 'platform'
+        ? <PluginDetailScreen installId={installId} tenantId={null} backHref={ADMIN_PLUGINS_PATH} />
+        : <AdminWorkspacePluginRoute installId={installId} />}
+    </Suspense>
+  )
 }
 
 function AdminWorkspacePluginRoute({ installId }: { installId: string }) {
@@ -2804,8 +2848,10 @@ export function WorkspacePluginRoute({ installId }: { installId: string }) {
   return (
     <UrRegion state={read.state} route="GET /v1/plugins" what="The workspace's plugins" plural onRetry={read.reload}>
       {(d) => (
-        <PluginDetailScreen installId={installId} tenantId={d.tenant_id} backHref={addressToPath(`${CONFIG}/${PLUGINS_TAB}`)}
-          settings={(name) => <PluginSettingsForm tenantId={d.tenant_id} installId={installId} name={name} />} />
+        <Suspense fallback={<ScreenLoading />}>
+          <PluginDetailScreen installId={installId} tenantId={d.tenant_id} backHref={addressToPath(`${CONFIG}/${PLUGINS_TAB}`)}
+            settings={(name) => <PluginSettingsForm tenantId={d.tenant_id} installId={installId} name={name} />} />
+        </Suspense>
       )}
     </UrRegion>
   )
@@ -2873,6 +2919,19 @@ function WorkspacePageRoute({ tenant, tab, onView, go }: { tenant: string | null
       go={go}
       back={{ label: 'Workspaces', href: addressToPath(WORKSPACES_TAB_ADDRESS) }}
     />
+  )
+}
+
+/**
+ * WHAT STANDS IN WHILE A SCREEN'S CHUNK LOADS: one short line, the same on
+ * every route, in the console's empty-state style, announced politely.
+ * `data-screen-loading` is what the tests wait on (__tests__/screenLoaded.ts).
+ */
+function ScreenLoading() {
+  return (
+    <p className="ctl-empty" role="status" data-screen-loading="">
+      Loading…
+    </p>
   )
 }
 

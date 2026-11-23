@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { HELP, HELP_GROUPS, TOPIC_IDS, type TopicId } from '../help'
 import { HelpScreen } from '../HelpSection'
+import { screenLoaded } from './screenLoaded'
 
 afterEach(() => {
   cleanup()
@@ -97,6 +98,7 @@ async function cardAt(path: string): Promise<HTMLElement> {
   window.history.replaceState(null, '', path)
   const { App } = await import('../App')
   render(<App />)
+  await screenLoaded()
   const glyph = await waitFor(() => {
     const g = document.querySelector<HTMLButtonElement>('.ctl-q .ctl-q-glyph')
     expect(g).not.toBeNull()

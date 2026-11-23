@@ -150,9 +150,18 @@ def test_a_docs_only_change_still_selects_the_tests_that_read_the_changed_doc():
     selected = _selected(result.stdout)
     for guard in DOC_GUARDS:
         assert guard in selected
-    # test_merge_step_docs.py reads docs/runbooks/merge-app.md by name.
+    # Every non-guard test whose text names a changed doc is a reader, found
+    # here by the selector's own rule rather than pinned by name (issue 71:
+    # which tests read which doc changes as doc tests are retired).
     # MUTATION: skipping the reader grep for a docs-only diff turns this red.
-    assert "tests/unit/scripts/test_merge_step_docs.py" in selected
+    readers = [
+        str(path.relative_to(REPO)) for path in sorted((REPO / "tests" / "unit").rglob("test_*.py"))
+        if str(path.relative_to(REPO)) not in GUARDS
+        and _names_a_changed_doc(str(path.relative_to(REPO)), changed)
+    ]
+    assert readers, "no non-guard test names either changed doc: the reader check checks nothing"
+    for reader in readers:
+        assert reader in selected, reader
     # A non-doc guard may also be a READER of a changed doc: test_auto_merge_
     # base_merge reads docs/runbooks/merge-app.md and test_issue_forms reads
     # CLAUDE.md (CI-GUARDS-THREE, part of archived issue 1822). Such a guard is selected as a
@@ -327,14 +336,6 @@ def test_the_tests_run_in_the_callers_environment_not_common_sh_s(tmp_path: Path
     recorded = dict(line.split("=", 1) for line in dump.read_text().splitlines() if "=" in line)
     assert recorded["PATH"].split(":")[0] == str(python.parent)
     assert recorded["VIRTUAL_ENV"] == str(python.parent.parent)
-
-
-def test_ci_doc_and_claude_md_name_it_as_the_pre_finish_command():
-    assert "scripts/changed-guards.sh" in (REPO / "docs" / "ci.md").read_text()
-    claude = (REPO / "CLAUDE.md").read_text()
-    paragraph = claude[claude.index("**A SwarmCloud agent is not this machine.**"):]
-    paragraph = paragraph[: paragraph.index("\n\n")]
-    assert "scripts/changed-guards.sh" in paragraph
 
 
 def test_an_overrun_names_the_test_that_was_still_running(tmp_path: Path):

@@ -101,7 +101,7 @@ runs:
     # that far only because no release had yet passed its build.
     - name: fetch the promotion manifest
       if: inputs.promoted == 'true' && steps.order.outputs.superseded != 'true'
-      uses: actions/download-artifact@v7
+      uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
       with:
         name: deployed-images-${{ inputs.environment }}
         path: build/
@@ -124,7 +124,7 @@ runs:
             --out "build/image-refs-${ENVIRONMENT}.tfvars.json"
         fi
 
-    - uses: actions/upload-artifact@v6
+    - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
       if: steps.order.outputs.superseded != 'true'
       with:
         name: pinned-images-${{ inputs.environment }}
