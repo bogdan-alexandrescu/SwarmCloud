@@ -78,6 +78,22 @@ export const REDEEM_RETRY_MS = 10_000
 export const SIGN_IN_RETRY_MS = 10_000
 export const SIGN_IN_RETRIES = 6
 
+type RetryHandle = ReturnType<typeof setTimeout>
+
+/**
+ * The page's own retries (the 409 and the 403 above), behind a seam so a test
+ * fires each one when it chooses instead of racing a real clock. A spy on the
+ * global `setTimeout` cannot tell them from Testing Library's own deadlines.
+ */
+export const retryClock = {
+  after(fn: () => void, ms: number): RetryHandle {
+    return setTimeout(fn, ms)
+  },
+  cancel(handle: RetryHandle): void {
+    clearTimeout(handle)
+  },
+}
+
 interface PoolLink {
   label: string
   tenant: string
@@ -358,12 +374,12 @@ function OpenLink({ token, auto, onPart, onPool }: { token: string; auto: boolea
   const [needs, setNeeds] = useState<FormKind | null>(null)
   const [written, setWritten] = useState<Opened | null>(null)
   const [notReady, setNotReady] = useState<string | null>(null)
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const timer = useRef<RetryHandle | null>(null)
   const autoOpened = useRef(false)
 
   useEffect(
     () => () => {
-      if (timer.current !== null) clearTimeout(timer.current)
+      if (timer.current !== null) retryClock.cancel(timer.current)
     },
     [],
   )
@@ -379,7 +395,7 @@ function OpenLink({ token, auto, onPart, onPool }: { token: string; auto: boolea
 
   async function open() {
     if (busy) return
-    if (timer.current !== null) clearTimeout(timer.current)
+    if (timer.current !== null) retryClock.cancel(timer.current)
     timer.current = null
     setBusy(true)
     setRefused(null)
@@ -390,7 +406,7 @@ function OpenLink({ token, auto, onPart, onPool }: { token: string; auto: boolea
         // The workspace is not ready: swarm-api kept the link unused, so open it again shortly.
         setNotReady(r.error.message)
         onPart({ link: 'unused', kind: 'pool-account', expiresAt: expiresFrom(r.error) })
-        timer.current = setTimeout(() => void open(), REDEEM_RETRY_MS)
+        timer.current = retryClock.after(() => void open(), REDEEM_RETRY_MS)
         return
       }
       setNotReady(null)
@@ -557,17 +573,17 @@ function PoolSignIn({ link, startNow, onSignedIn }: { link: PoolLink; startNow: 
   const [at, setAt] = useState<SignIn>({ kind: 'idle' })
   const started = useRef(false)
   const retries = useRef(0)
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const timer = useRef<RetryHandle | null>(null)
 
   useEffect(
     () => () => {
-      if (timer.current !== null) clearTimeout(timer.current)
+      if (timer.current !== null) retryClock.cancel(timer.current)
     },
     [],
   )
 
   async function start(again: boolean = false) {
-    if (timer.current !== null) clearTimeout(timer.current)
+    if (timer.current !== null) retryClock.cancel(timer.current)
     timer.current = null
     if (!again) retries.current = 0
     setAt({ kind: 'starting' })
@@ -581,7 +597,7 @@ function PoolSignIn({ link, startNow, onSignedIn }: { link: PoolLink; startNow: 
       // A workspace just made ready: swarm-api may still hold "not a member" for a few seconds.
       if (r.error.httpStatus === 403 && retries.current < SIGN_IN_RETRIES) {
         retries.current += 1
-        timer.current = setTimeout(() => void start(true), SIGN_IN_RETRY_MS)
+        timer.current = retryClock.after(() => void start(true), SIGN_IN_RETRY_MS)
         setAt({ kind: 'starting' })
         return
       }
