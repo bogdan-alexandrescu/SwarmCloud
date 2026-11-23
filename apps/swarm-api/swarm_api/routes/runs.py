@@ -406,8 +406,15 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             kind, plan = _read_plan(ctx, tenant_id, task.id, lane_refs=_lane_refs(run))
         except InvalidPlan as refused:
             # An output that does not parse is re-planned once, then held
-            # for a person (`_plan_refused`); it no longer fails the run.
-            return _plan_refused(ctx, tenant_id, run, task, planlint.parse_findings(refused), None)
+            # for a person (`_plan_refused`); with the lint switched off it
+            # fails the run, as it did before the lint.
+            if issueruns_module.plan_lint_enabled():
+                return _plan_refused(ctx, tenant_id, run, task,
+                                     planlint.parse_findings(refused), None)
+            return runs.transition(
+                tenant_id, run.id, RunState.FAILED, by=SYSTEM,
+                patch={"error": failure_text(refused.message)},
+            )
         except UpstreamUnavailable:
             # The bucket, not the plan: the next read tries again.
             log.warning("issue run %s: the planner's %s could not be read yet", run.id, PLAN_FILE)
@@ -449,7 +456,7 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
                 tenant_id, run.id, RunState.FAILED, by=SYSTEM,
                 patch={"error": failure_text(unlisted)},
             )
-        findings = planlint.lint(plan)
+        findings = planlint.lint(plan) if issueruns_module.plan_lint_enabled() else []
         if findings:
             return _plan_refused(ctx, tenant_id, run, task, findings, plan)
         patch = {"plan": plan, "plan_digest": plan_digest(plan), "plan_revision": 1,

@@ -48,6 +48,12 @@ CLEAN = {
     ],
 }
 
+@pytest.fixture(autouse=True)
+def _lint_on(plan_lint_on):
+    """The lint is on in every deployment; the conftest turns it off for the
+    fixtures that predate it."""
+
+
 #: Parses, and fails the lint: no requirement, no files, no tests.
 UNCHECKABLE = {
     "summary": "Make the widget list sortable by name.",
@@ -269,6 +275,18 @@ def test_an_auto_run_whose_replan_fails_is_held_not_approved(client, db, objects
     stored = _stored(db, run["id"])
     assert stored["state"] == "PLANNED" and stored["plan_approval"] == "required"
     assert not _docs(db, "workflows")
+
+
+def test_with_the_lint_switched_off_a_failed_output_fails_the_run(client, db, objects, monkeypatch):
+    monkeypatch.setenv(issueruns.PLAN_LINT_ENV, "off")
+    run = _create(client).json()["run"]
+    _finish_planner(db, objects, run, "{not json")
+
+    _tick(client)
+
+    stored = _stored(db, run["id"])
+    assert stored["state"] == "FAILED" and stored.get("plan_lint") is None
+    assert len(_planners(db, run["id"])) == 1
 
 
 def test_an_auto_run_never_approves_a_plan_that_fails_the_lint(client, db, objects):

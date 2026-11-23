@@ -2422,11 +2422,25 @@ def replan_claim_overdue(run: "IssueRun", now: datetime) -> bool:
     return (now - since).total_seconds() > REPLAN_CLAIM_BOUND_SECONDS
 
 
+#: The plan lint's switch (`planlint`): on unless this says `off`. ON BY
+#: DEFAULT -- every planner output is linted, re-planned once and held for a
+#: person -- and a kill switch, not a staged rollout: `off` restores the path
+#: before the lint (a parse failure fails the run, nothing is linted) without
+#: a redeploy of the code. Any other value is on, so a typo never turns it off.
+PLAN_LINT_ENV = "SWARM_PLAN_LINT"
+
+
+def plan_lint_enabled() -> bool:
+    return os.environ.get(PLAN_LINT_ENV, "").strip().lower() != "off"
+
+
 def lint_failed(plan: Mapping[str, Any] | None) -> bool:
     """Whether `plan` fails the plan lint, or there is no plan: what an
-    auto-approval refuses."""
+    auto-approval refuses. Never, with the lint switched off."""
     from .planlint import lint  # it imports this module
 
+    if not plan_lint_enabled():
+        return False
     return plan is None or bool(lint(plan))
 
 

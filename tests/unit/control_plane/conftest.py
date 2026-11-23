@@ -103,6 +103,20 @@ RENDERED_DENY_LIST = ("peer-cluster", "peer-vpc", "peer-subnet", "default", "pee
 
 
 @pytest.fixture(autouse=True)
+def _plan_lint_off(monkeypatch):
+    """The plan lint (`swarm_api.planlint`) is on in every deployment; it is
+    off here because the issue-run fixtures' plans predate it (no
+    requirements, no files or tests on their steps). The lint's own tests,
+    and the re-plan and hold tests, switch it on (`plan_lint_on`)."""
+    monkeypatch.setenv("SWARM_PLAN_LINT", "off")
+
+
+@pytest.fixture
+def plan_lint_on(monkeypatch):
+    monkeypatch.setenv("SWARM_PLAN_LINT", "on")
+
+
+@pytest.fixture(autouse=True)
 def _rendered_deny_list(monkeypatch):
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST", json.dumps(list(RENDERED_DENY_LIST)))
     monkeypatch.setenv("SWARM_SHARED_DENY_LIST_SET", "1")
