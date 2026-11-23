@@ -163,7 +163,6 @@ in path order, so two changes' rows land in different places.
 | `tests/unit/control_plane/test_state_colour_discriminability.py` | `<module>` | `skipif` | apps/swarm-ui/src/styles.css is not present |
 | `tests/unit/control_plane/test_stop_and_output_ui_surface.py` | `<module>` | `skipif` | apps/swarm-ui is not checked out |
 | `tests/unit/control_plane/test_subscription_headroom_surface.py` | `<module>` | `skipif` | apps/swarm-ui is not checked out |
-| `tests/unit/control_plane/test_task_fencing_round_trip.py` | `test_the_ui_declares_the_fencing_fields_on_task` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_task_fencing_round_trip.py` | `test_the_ui_no_longer_records_the_fields_as_unavailable` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_ui_fixture_input_contract.py` | `<module>` | `skipif` | apps/swarm-ui/src is not present |
 | `tests/unit/control_plane/test_url_refusal_whatwg.py` | `_node` | `skip_call` | node is not installed here; CI runs this table |
