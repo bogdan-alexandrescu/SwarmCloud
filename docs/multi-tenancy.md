@@ -89,7 +89,11 @@ terraform/bootstrap's per-account `serviceAccountAdmin` grant on it to the
 release deployer from `main`, reading the pull request's `dev.tfvars` as data
 (the script checks for the grant and prints the commands), and
 only then does the release that adds the tenant run. The release sets the
-account's IAM in the same apply, and without the grant it 403s.
+account's IAM in the same apply, and without the grant it 403s. That
+registration takes `--terraform-tenant`: the release creates the tenant's QA
+secret `swarm-tenant-<id>-qa` and its `tenants/<id>` and `pools/tenant:<id>`
+documents with no import, so the script leaves those three to it — made first,
+each is a 409 "already exists" that fails the release (issue 141).
 [docs/ci.md](ci.md#a-new-account-exists-before-the-release-that-adds-it) says
 why.
 
