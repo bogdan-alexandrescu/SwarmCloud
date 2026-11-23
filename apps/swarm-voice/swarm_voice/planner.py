@@ -389,6 +389,15 @@ class Planner:
         return await trace.send(self._http, base_url=self._api_base, id_tokens=self._id_tokens,
                                 grant=grant, body=body)
 
+    async def write_latency(self, grant: SessionGrant | None, record: dict[str, Any]) -> bool:
+        """Send one hosted turn's latency record (latency.py) to swarm-api on
+        the grant's trace write, as `{latency: record}`, for every session,
+        debug or not; never raises (trace.send logs a failure by type)."""
+        from . import trace
+
+        return await trace.send(self._http, base_url=self._api_base, id_tokens=self._id_tokens,
+                                grant=grant, body={"latency": record})
+
     def ledger(self, session_id: str) -> actledger.ActLedger:
         return self._acts.setdefault(session_id, actledger.ActLedger())
 

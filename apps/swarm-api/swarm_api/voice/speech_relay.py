@@ -53,6 +53,24 @@ A CRASH (§4.5). The VM socket dropping is `reconnecting`, retried every
 RETRY_SECONDS for CRASH_SECONDS; recovered is `ready` again and one crash
 counted; not recovered is `engine down`.
 
+TURN LATENCY (§12.6). Each turn, an utterance whose final has words, is one
+`{"t": "timing", "kind": "turn"}` frame handed to `on_frame`, the telemetry
+sink: from end of speech (the browser's `utt.end`, which the page sends at
+the voice detector's end of the utterance and at the push-to-talk release
+alike) to the first audio byte of the reply sent to the browser (`span_ms`),
+and its parts: `utt.end` to the final (`recognition_ms`), the final to the
+reply handed to synthesis as `speak` (`front_ms`, the read-back matcher and
+the front's round trip through swarm-voice), and that to the first audio byte
+sent (`synthesis_ms`). Every stamp is this relay's own clock (`clock`,
+monotonic, one process), so no two clocks are compared. The front's first
+token (`front_first_token_ms`) is not seen here or anywhere: the front's
+child streams whole messages (claudeturn.py), so it is always None. A part
+after the point a turn stopped at (no reply, a failed turn, a barge-in, the
+next utterance or the socket closing first) is None too, never 0. The record
+holds durations, the engine, the turn id and the session id only. `on_frame`
+is called inline and stores off the event loop (speech_telemetry.sink), so
+measuring adds no wait to the turn.
+
 Nothing the socket carries is logged: not audio, not words, not the token.
 """
 
@@ -181,6 +199,26 @@ def _boot_status(phase: str) -> str:
 
 
 @dataclass
+class _Turn:
+    """One turn's stamps on the relay's clock (§12.6); None until reached."""
+
+    seq: int
+    ended_at: float
+    turn_id: str = field(default_factory=lambda: "turn_" + secrets.token_hex(6))
+    final_at: float | None = None
+    handed_at: float | None = None
+    say_id: str | None = None
+    audio_at: float | None = None
+    done: bool = False
+
+
+def _ms(start: float | None, end: float | None) -> float | None:
+    if start is None or end is None:
+        return None
+    return round(max(0.0, end - start) * 1000.0, 1)
+
+
+@dataclass
 class _State:
     utterance: int | None = None
     speaking: set[str] = field(default_factory=set)
@@ -192,6 +230,8 @@ class _State:
     activity_at: datetime | None = None
     crashes: int = 0
     rotated: bool = False
+    #: The turn being measured: from its `utt.end` to its first audio (§12.6).
+    turn: _Turn | None = None
 
 
 class SpeechRelay:
@@ -258,6 +298,40 @@ class SpeechRelay:
         task = asyncio.ensure_future(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    def _hand_frame(self, frame: dict[str, Any]) -> None:
+        if self._on_frame is None:
+            return
+        try:
+            self._on_frame(frame)
+        except Exception as exc:  # noqa: BLE001 -- telemetry never stops speech
+            log.warning("speech telemetry frame dropped (%s)", type(exc).__name__)
+
+    def _close_turn(self, turn: _Turn | None) -> None:
+        """Hand `turn`'s record to the telemetry sink, once (§12.6)."""
+        if turn is None or turn.done:
+            return
+        turn.done = True
+        if self.state.turn is turn:
+            self.state.turn = None
+        if turn.final_at is None:
+            # An utterance that never became a turn (no words, no final).
+            return
+        self._hand_frame({
+            "t": "timing", "kind": "turn", "engine": "own", "turn_id": turn.turn_id,
+            "session_id": self._holder.session_id,
+            "span_ms": _ms(turn.ended_at, turn.audio_at),
+            "recognition_ms": _ms(turn.ended_at, turn.final_at),
+            "front_first_token_ms": None,
+            "front_ms": _ms(turn.final_at, turn.handed_at),
+            "synthesis_ms": _ms(turn.handed_at, turn.audio_at),
+        })
+
+    def _audio_sent(self) -> None:
+        turn = self.state.turn
+        if turn is not None and turn.say_id is not None and turn.say_id in self.state.speaking:
+            turn.audio_at = self._clock()
+            self._close_turn(turn)
 
     async def _fenced(self, call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         """A lease write; a stale generation ends the relay (invariant 5)."""
@@ -384,6 +458,10 @@ class SpeechRelay:
                 self._active()
                 await self._to_vm(json.dumps({"t": "utt.start", "seq": message["seq"]}))
             elif kind == "utt.end" and isinstance(message.get("seq"), int):
+                # End of speech, stamped before anything is sent on (§12.6);
+                # a turn still waiting for its audio is closed unmeasured.
+                self._close_turn(self.state.turn)
+                self.state.turn = _Turn(seq=message["seq"], ended_at=self._clock())
                 self._active()
                 await self._to_vm(json.dumps({"t": "utt.end", "seq": message["seq"]}))
                 if self.state.utterance == message["seq"]:
@@ -412,6 +490,7 @@ class SpeechRelay:
                 continue
             if isinstance(frame, (bytes, bytearray)):
                 await self._tell_bytes(bytes(frame))
+                self._audio_sent()
                 continue
             try:
                 message = json.loads(frame)
@@ -433,12 +512,20 @@ class SpeechRelay:
             await self._tell({"t": "partial", "seq": message.get("seq"), "text": message.get("text", "")})
             await self._tell(_status(HEARING))
         elif kind == "final":
+            turn = self.state.turn
+            if turn is not None and (turn.seq != message.get("seq") or turn.final_at is not None):
+                turn = None
+            if turn is not None:
+                turn.final_at = self._clock()
             text = str(message.get("text") or "")
             await self._tell({"t": "final", "seq": message.get("seq"), "text": text})
             if text.strip():
                 self._active()
-                self._spawn(self._final(text))
+                self._spawn(self._final(text, turn))
             else:
+                if turn is not None:
+                    turn.final_at = None
+                    self._close_turn(turn)
                 await self._tell(_status(LISTENING))
         elif kind == "speak.start":
             say_id = str(message.get("id") or "")
@@ -457,11 +544,7 @@ class SpeechRelay:
             if not self.state.speaking:
                 await self._tell(_status(LISTENING))
         elif kind in ("timing", "metrics"):
-            if self._on_frame is not None:
-                try:
-                    self._on_frame(message)
-                except Exception as exc:  # noqa: BLE001 -- telemetry never stops speech
-                    log.warning("speech telemetry frame dropped (%s)", type(exc).__name__)
+            self._hand_frame(message)
         elif kind == "boot" and message.get("phase") == "failed" and self._vm is not None:
             # A server that restarted and failed its boot: the drop recovers or
             # ends as engine down.
@@ -480,12 +563,17 @@ class SpeechRelay:
 
     # -- turns (§3.3 steps 4-5)
 
-    async def say(self, text: str, *, point_at: dict[str, Any] | None = None) -> str | None:
+    async def say(self, text: str, *, point_at: dict[str, Any] | None = None,
+                  turn: _Turn | None = None) -> str | None:
         text = text.strip()
         if not text:
             return None
         say_id = "say_" + secrets.token_hex(6)
         self.state.said[say_id] = {"text": text, "point_at": point_at}
+        if turn is not None and not turn.done:
+            # Handed to synthesis now, and named before the send so that the
+            # server's answer can never arrive ahead of its turn's id.
+            turn.handed_at, turn.say_id = self._clock(), say_id
         sent = await self._to_vm(json.dumps({"t": "speak", "id": say_id, "text": text,
                                              "voice": self._voice}))
         if not sent:
@@ -498,7 +586,7 @@ class SpeechRelay:
             return self.state.anchor
         return None
 
-    async def _final(self, text: str) -> None:
+    async def _final(self, text: str, turn: _Turn | None = None) -> None:
         self.state.turns_in_flight += 1
         try:
             await self._tell(_status(THINKING))
@@ -509,6 +597,7 @@ class SpeechRelay:
                     log.warning("speech read-back answer failed (%s)", type(exc).__name__)
                     to_front = True
                 if not to_front:
+                    self._close_turn(turn)
                     await self._tell(_status(LISTENING))
                     return
             try:
@@ -516,9 +605,11 @@ class SpeechRelay:
                                              self._fresh_anchor())
             except Exception as exc:  # noqa: BLE001 -- the class name only, never the words
                 log.warning("speech turn failed (%s)", type(exc).__name__)
+                self._close_turn(turn)
                 await self._tell(_status(LISTENING))
                 return
-            if not await self.say(line.reply):
+            if await self.say(line.reply, turn=turn) is None:
+                self._close_turn(turn)
                 await self._tell(_status(LISTENING))
             if line.delegation_id:
                 self._spawn(self._delegated(line.delegation_id))
@@ -606,6 +697,7 @@ class SpeechRelay:
         for task in pumps + list(self._tasks):
             task.cancel()
         await asyncio.gather(*pumps, *self._tasks, return_exceptions=True)
+        self._close_turn(self.state.turn)
         if self._vm is not None:
             await self._close_vm(self._vm)
         if why == ENDED_ENGINE_DOWN:
