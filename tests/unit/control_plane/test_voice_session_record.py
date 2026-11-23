@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from swarm_api.voice import ledger as vledger
 from swarm_api.voice import record as vrecord
 from swarm_api.voice import sessions as vs
+from swarm_api.voice import store as vstore
 
 from .conftest import auth_header
 from .test_voice_text_turns import FakePool, TextVoice, _start, _text_app, _turn
@@ -149,3 +150,20 @@ def test_a_session_at_its_cap_gets_no_summary(db, tokens, group_map, objects, vo
     assert voice.summaries == []
     assert _summary(client, session_id).json()["state"] == vrecord.CAPPED
 
+
+
+def test_deleting_the_project_deletes_the_transcript(db, tokens, group_map, objects, voice):
+    client = _client(db, tokens, group_map, objects, voice)
+    client.app.state.voice_blobs = vstore.InMemoryVoiceBlobs()
+    started = _start(client).json()
+    session_id, project_id = started["session_id"], started["project_id"]
+    _turn(client, session_id, "Plan the rollout")
+    _end(client, session_id)
+    assert any(p.startswith(f"{vrecord.COLLECTION}/{session_id}") for p in db.docs)
+    title = client.get(f"/v1/voice/projects/{project_id}", headers=auth_header("alice")).json()["title"]
+
+    deleted = client.request("DELETE", f"/v1/voice/projects/{project_id}", json={"confirm": title},
+                             headers=auth_header("alice"))
+
+    assert deleted.status_code == 200, deleted.text
+    assert not any(p.startswith(f"{vrecord.COLLECTION}/{session_id}") for p in db.docs)
