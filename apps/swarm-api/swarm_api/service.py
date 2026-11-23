@@ -139,7 +139,13 @@ from . import wfdescription
 from .store import Store, derived_service_account
 from .task_accounts import takes_pool_account
 from . import reviewgate
-from .stepclass import CLASS_CHOSEN_BY_KEY, REVIEW_AT_GATE, submitted_record
+from .stepclass import (
+    CLASS_AT_GATE_KEY,
+    CLASS_CHOSEN_BY_KEY,
+    REVIEW_AT_GATE,
+    signed_record,
+    submitted_record,
+)
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
     AWAIT_STEP_REFUSED_FIELDS,
@@ -1053,6 +1059,12 @@ class SubmissionService:
         recorded = submitted_record(metadata.pop(CLASS_CHOSEN_BY_KEY, None), spec.model_class)
         if recorded is not None:
             metadata[CLASS_CHOSEN_BY_KEY] = recorded
+        # A role's record for a NAMED class is copied into the signed block,
+        # the only copy `stepclass.explicit_class` reads; absent for a
+        # caller's class and for none, so those blocks keep their bytes.
+        role_record = signed_record(recorded, spec.model_class)
+        if role_record is not None:
+            metadata[DISPATCH_METADATA_KEY][CLASS_CHOSEN_BY_KEY] = role_record
         # The limits go in the typed `Task.budget` below (contract request
         # 120, signed at spec format 6); where each came from goes in the
         # signed dispatch block, which no caller can write
@@ -2033,13 +2045,17 @@ class SubmissionService:
             # diff it reads (`stepclass`, the owner 2026-11-23): submitted on
             # the profile's default, marked here, re-signed by the gate. Not a
             # requirements check, a security review or the re-review, and
-            # never a step whose caller named a class.
+            # never a step whose caller named a class. The mark the gate acts
+            # on is inside the SIGNED dispatch block, which no caller writes;
+            # `class_chosen_by` beside it is only the display record.
             claude = RUNNER_PROFILES.get(task.runner_profile)
-            if (source.model_class is None and step_id != rereview_step_id
+            if (source.model_class is None and task.model_class is None
+                    and step_id != rereview_step_id
                     and claude is not None and claude.model_classes
                     and not is_security_review(task.metadata, os.environ)
                     and task.metadata.get(REVIEW_GATE_METADATA_KEY)
                     and not reviewgate.is_requirements_check(task.metadata)):
+                task.metadata[DISPATCH_METADATA_KEY][CLASS_AT_GATE_KEY] = True
                 task.metadata[CLASS_CHOSEN_BY_KEY] = REVIEW_AT_GATE
             elif task.metadata.get(CLASS_CHOSEN_BY_KEY) == REVIEW_AT_GATE:
                 task.metadata.pop(CLASS_CHOSEN_BY_KEY)

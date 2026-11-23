@@ -491,20 +491,30 @@ def files_of(document: Any) -> tuple[list[str], bool]:
     """`(paths, read whole)` from every `files` row's `path` and `old_path`.
 
     Not whole when `files` is absent, not a list, or cut short
-    (`files_truncated`). For the review's model class (`Decision.class_risk_hits`),
-    which reads `files` even where `change_of` reads `own_files`.
+    (`files_truncated`), and not whole when any row is malformed: not a map,
+    its `path` not a non-empty string, or an `old_path` that is set but not
+    one -- a row skipped would hide its path from the risk-path check, so the
+    review keeps the default class instead (`stepclass.ROLE_REVIEW_UNREAD`).
+    For the review's model class (`Decision.class_risk_hits`), which reads
+    `files` even where `change_of` reads `own_files`.
     """
     git = _mapping(_mapping(_mapping(document).get("result_summary")).get("git"))
     rows = git.get("files")
     if not isinstance(rows, list):
         return [], False
     paths: list[str] = []
+    whole = git.get("files_truncated") is not True
     for row in rows:
+        if not isinstance(row, Mapping):
+            whole = False
+            continue
         for key in ("path", "old_path"):
-            value = _mapping(row).get(key)
+            value = row.get(key)
             if isinstance(value, str) and value:
                 paths.append(value)
-    return paths, git.get("files_truncated") is not True
+            elif key == "path" or value is not None:
+                whole = False
+    return paths, whole
 
 
 def shots_of(document: Any) -> list[str]:

@@ -916,10 +916,14 @@ The review gate already reads the change's paths and size there
 1. At submission, `SubmissionService.submit_workflow` stores every review
    step the gate recognises (one with a `review_gate` block, the default
    block included; not a requirements check, a security review or the
-   re-review) on its profile's default (`opus`), signed as before, and
-   marks it `metadata.class_chosen_by: stepclass.REVIEW_AT_GATE`, but only
-   when its caller named no class and its profile runs a Claude model. This
-   covers issue runs and workflows submitted through the API alike.
+   re-review) on its profile's default (`opus`), and marks it
+   `metadata.dispatch.class_at_gate: true` (`stepclass.CLASS_AT_GATE_KEY`)
+   -- inside the dispatch block, which the spec signature covers at every
+   format and which no caller can write -- but only when its caller named
+   no class and its profile runs a Claude model. The mark is signed with
+   the rest. `metadata.class_chosen_by: stepclass.REVIEW_AT_GATE` beside it
+   is the unsigned display record and decides nothing. This covers issue
+   runs and workflows submitted through the API alike.
 2. When the gate lets the review run, `stepclass.review_role` picks its role
    from what the gate read: a risk path touched is "review, risk path"; no
    decision, a parent that could not be read, or a file list cut short
@@ -933,14 +937,22 @@ The review gate already reads the change's paths and size there
    a risk-path file committed on a side branch and merged with a merge
    commit is in `files` alone (`Decision.class_risk_hits`). A parent whose
    `files` is absent, cut short or unreadable is "diff not read"
-   (`Decision.files_unread`). What the gate runs or skips still reads
+   (`Decision.files_unread`), and so is one with a malformed row (not a
+   map, a `path` that is not a non-empty string, an `old_path` set to
+   anything but one): a row skipped would hide its path from the risk-path
+   check (`reviewgate.files_of`). What the gate runs or skips still reads
    `own_files` as before.
 3. FIRST, the stored spec must verify (`verdictpublish.stored_spec_refusal`:
    `spec_refusal` on the document as stored and on its `browser_if_ui`
-   alternate subject). The marker that brings a review here is unsigned and
-   a tenant's agents can write any task of their tenant, so a spec rewritten
-   since submission is left exactly as stored, its class untouched and
-   nothing signed, and the worker refuses it as before.
+   alternate subject). A tenant's agents can write any task of their
+   tenant, so a spec rewritten since submission is left exactly as stored,
+   its class untouched and nothing signed, and the worker refuses it as
+   before. The gate acts only on the SIGNED mark (`stepclass.at_gate`), and
+   only when the verified document is still one submission would have
+   marked: `model_class` unset, not a security review, not a requirements
+   check. An unsigned `class_chosen_by` added after signing therefore moves
+   no class and earns no signature: a caller's `haiku` stays `haiku`, a
+   security review stays `opus`.
    `specsigning.resign_stored` refuses such a document itself too, so no
    later caller can sign a tampered spec again.
    Where the role's class differs from what the step was signed with,
@@ -956,8 +968,10 @@ The review gate already reads the change's paths and size there
    stored task with its class (a set class needs format 5, which already
    covers it).
 4. A re-run (`steprerun.clone`) of a review whose class the gate decided
-   goes back to the profile's default and is marked `REVIEW_AT_GATE` again,
-   so the clone is decided on its own diff.
+   (its signed mark, which the gate's re-sign keeps, `stepclass.gate_decided`)
+   goes back to the profile's default and is marked again, so the clone is
+   decided on its own diff. A class the caller named is kept, whatever the
+   unsigned record says.
 
 **Fencing (invariant 5).** The re-sign happens while the step is PARKED and
 held by the gate's claim, before any attempt or fencing generation exists,
@@ -966,14 +980,22 @@ worker verifies only the signature stored on the document, so there is one
 signed spec per step. The superseded signature still matches only the spec
 swarm-api signed at submission, identical but for the class; a writer who
 restores it restores the dearer `opus` run, never anything swarm-api did
-not sign. The generation is not touched.
+not sign. The gate signs only a step whose stored spec verifies and whose
+SIGNED data licenses the pick (the mark, no class named), and changes only
+`model_class` and `model` (on the alternate too): the new signature grants
+no field, profile, input or class the submission did not sign as the gate's
+to pick. The generation is not touched.
 
 **A caller's record is not trusted.** `class_chosen_by` is unsigned and in
 the caller's metadata, so submission stores it only as a role rule would
 have written it (`stepclass.submitted_record`): never `REVIEW_AT_GATE`
 (only `submit_workflow` marks a review), and for a named class only
 `role default: <role>` whose role picks exactly that class and is not a
-gate role; anything else is `caller`.
+gate role; anything else is `caller`. A role's record for a named class is
+also copied into the signed dispatch block (`metadata.dispatch.class_chosen_by`,
+`stepclass.signed_record`), and that copy is the only one
+`stepclass.explicit_class` reads, so a tenant's agent rewriting the unsigned
+record after signing cannot relabel a caller's class as a role's.
 
 **Fail-safe.** A review whose gate never decides it (a lost wake, a
 swarm-api that is down, a gate switched off for the step or for the
@@ -984,8 +1006,9 @@ one on a risk path.
 **What is recorded.** Every step a role default touched carries
 `metadata.class_chosen_by`: `caller`, `role default: <role>`, or the role
 plus why it fell back (for example `role default: review, no risk path;
-sonnet not pinned, profile default`). It is unsigned and selects nothing. It
-is served with the task's metadata so the console can show it and a later
+sonnet not pinned, profile default`). It is unsigned and selects nothing: never a
+model, never the gate's licence to re-sign, never whether a class was the
+caller's (those read the signed dispatch block). It is served with the task's metadata so the console can show it and a later
 scorecard can count verdicts by class.
 
 **Invariant 10 is untouched.** A model class is already a named choice from

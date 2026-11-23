@@ -31,11 +31,27 @@ back to the scheduler. A review whose gate never decides it (a lost wake, a
 gate switched off for the step) runs the `opus` it was signed with: the
 fallback spends the dearer class, never the cheaper one on a risk path.
 
-Every choice is recorded on the task as `metadata.class_chosen_by` (unsigned:
-a record the console shows and a scorecard counts verdicts by, never read to
-pick a model). A model class is a name from `profiles.MODEL_CLASSES`, so none
-of this accepts an image, a command, a resource spec or a backend parameter
-from anyone (invariant 10).
+WHAT IS SIGNED, AND WHAT IS ONLY A RECORD. A tenant's agents can write any
+task document of their tenant, so nothing here decides from a field outside
+the signed spec:
+
+  * the gate's licence to pick a first review's class is
+    `metadata.dispatch.class_at_gate` (`CLASS_AT_GATE_KEY`), written by
+    submission alone inside the dispatch block the spec signature covers at
+    every format, and which no caller can write (`reject_reserved_metadata`);
+    the gate acts on it only once the stored spec verifies (`at_gate`,
+    `verdictpublish._review_class`);
+  * a class a role chose for a step whose submission NAMED one (a fix
+    loop's round, a CI-fix round) is recorded in the same signed block as
+    `metadata.dispatch.class_chosen_by`, so `explicit_class` and
+    `gate_decided` tell a caller's class from a role's by signed data only.
+
+`metadata.class_chosen_by` is the unsigned DISPLAY record of every choice:
+the console shows it and a scorecard counts verdicts by it. It is never read
+to pick a model, to let the gate re-sign a step, or to decide whether a
+stored class was the caller's. A model class is a name from
+`profiles.MODEL_CLASSES`, so none of this accepts an image, a command, a
+resource spec or a backend parameter from anyone (invariant 10).
 """
 
 from __future__ import annotations
@@ -90,6 +106,11 @@ CLASS_CHOSEN_BY_KEY = "class_chosen_by"
 CALLER = "caller"
 #: What a first review's submission records: the class is the gate's to pick.
 REVIEW_AT_GATE = "role default: review, decided at the review gate"
+#: The task's signed `metadata.dispatch` block (`specsign.SIGNED_METADATA_KEYS`).
+DISPATCH_KEY = "dispatch"
+#: The key, inside the signed dispatch block, that submission sets to True on
+#: a first review whose class the gate picks (the module doc).
+CLASS_AT_GATE_KEY = "class_at_gate"
 
 
 @dataclass(frozen=True)
@@ -142,18 +163,38 @@ def choose(role: str, profile: str | RunnerProfile | None,
     return Choice(wanted, by_role)
 
 
+def _signed_block(metadata: Any) -> Mapping[str, Any]:
+    """The signed dispatch block of a task's `metadata`, or an empty map."""
+    block = metadata.get(DISPATCH_KEY) if isinstance(metadata, Mapping) else None
+    return block if isinstance(block, Mapping) else {}
+
+
+def signed_record(record: str | None, named: str | None) -> str | None:
+    """What submission copies into the signed dispatch block for a step
+    stored with the record `record` (`submitted_record`) and the class
+    `named`: the role's record when a role chose a NAMED class, else None
+    (nothing: a named class without one is the caller's)."""
+    if named is None or record is None or record == CALLER:
+        return None
+    return record
+
+
 def explicit_class(doc: Mapping[str, Any]) -> str | None:
     """A stored task's class when its CALLER named it, else None.
 
-    A task with no `class_chosen_by` predates this module, when only a caller
-    ever set a class, so its stored class is the caller's.
+    Decided from signed fields only (the module doc): the class is a role's
+    when the signed dispatch block carries a role record for it
+    (`signed_record`) or the gate's mark (`CLASS_AT_GATE_KEY`); otherwise
+    it is the caller's -- a task from before this module, when only a caller
+    ever set a class, included. The unsigned `class_chosen_by` is not read.
     """
     stored = doc.get("model_class")
     if not isinstance(stored, str) or not stored:
         return None
-    metadata = doc.get("metadata")
-    chosen = metadata.get(CLASS_CHOSEN_BY_KEY) if isinstance(metadata, Mapping) else None
-    return stored if chosen in (None, CALLER) else None
+    block = _signed_block(doc.get("metadata"))
+    if block.get(CLASS_AT_GATE_KEY) is True or block.get(CLASS_CHOSEN_BY_KEY) is not None:
+        return None
+    return stored
 
 
 #: The roles only the review gate picks, after submission (`review_role`).
@@ -170,9 +211,9 @@ def submitted_record(record: Any, named: str | None) -> str | None:
     writes for exactly that class (`role default: <role>`, `ROLE_CLASSES[role]`
     equal to it, and not one of the `GATE_ROLES`, which no submission
     writes); any other is `CALLER`, so a caller cannot make its own class
-    look role-chosen to `explicit_class` -- short of naming the very class
-    a non-gate role would have picked, which only gives up its own
-    fix-loop carry. With no class named the record selects nothing and is
+    look role-chosen to `explicit_class` (which reads the copy submission
+    signs, `signed_record`) -- short of naming the very class a non-gate
+    role would have picked, which only gives up its own fix-loop carry. With no class named the record selects nothing and is
     kept.
     """
     if not isinstance(record, str) or record == REVIEW_AT_GATE:
@@ -186,23 +227,19 @@ def submitted_record(record: Any, named: str | None) -> str | None:
     return CALLER
 
 
-def gate_decided(metadata: Any) -> bool:
-    """Whether a review's class is, or was, the review gate's: still marked
-    `REVIEW_AT_GATE`, or recorded by the gate as one of the `GATE_ROLES`."""
-    if not isinstance(metadata, Mapping):
-        return False
-    chosen = metadata.get(CLASS_CHOSEN_BY_KEY)
-    if chosen == REVIEW_AT_GATE or (
-            isinstance(chosen, str) and chosen.startswith(f"{REVIEW_AT_GATE};")):
-        return True
-    return isinstance(chosen, str) and any(
-        chosen == f"role default: {role}" or chosen.startswith(f"role default: {role};")
-        for role in GATE_ROLES)
-
-
 def at_gate(metadata: Any) -> bool:
-    """Whether a review's class is the review gate's to pick (`REVIEW_AT_GATE`)."""
-    return isinstance(metadata, Mapping) and metadata.get(CLASS_CHOSEN_BY_KEY) == REVIEW_AT_GATE
+    """Whether a review's class is the review gate's to pick: its signed
+    dispatch block carries `CLASS_AT_GATE_KEY` True. Only submission writes
+    it, so the unsigned `REVIEW_AT_GATE` record is not read; a reader that
+    acts on it verifies the stored spec first (`verdictpublish._review_class`)."""
+    return _signed_block(metadata).get(CLASS_AT_GATE_KEY) is True
+
+
+def gate_decided(metadata: Any) -> bool:
+    """Whether a review's class is, or was, the review gate's. The gate
+    re-signs the step with its dispatch block unchanged, so the signed mark
+    stays after it picks: the same test as `at_gate`."""
+    return at_gate(metadata)
 
 
 def review_role(decision: Any) -> str:

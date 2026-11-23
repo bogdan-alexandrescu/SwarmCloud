@@ -296,8 +296,10 @@ def test_the_ci_fix_and_conflict_fix_rounds_run_sonnet(build, role):
 
 
 def test_the_fix_loops_rereview_rounds_run_sonnet_and_its_fix_rounds_opus():
+    # As the gate leaves it: re-signed onto sonnet, its signed mark kept.
     review_doc = {"runner_profile": CODE, "model_class": "sonnet",
-                  "metadata": {"class_chosen_by": "role default: review, no risk path"}}
+                  "metadata": {"class_chosen_by": "role default: review, no risk path",
+                               "dispatch": {"class_at_gate": True}}}
     loop = type("L", (), {"block": {}})()
     profile, model_class, _ = fixloop._override(loop, "re_review", review_doc)
     # A class a role default chose for the review is not the caller's.

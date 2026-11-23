@@ -152,6 +152,7 @@ import base64
 import binascii
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -187,6 +188,7 @@ from .validation import (
     RUNTIME_METADATA_KEY,
     RUNTIME_SWAP_FIELDS,
     IssueRef,
+    is_security_review,
 )
 from .waker import TASK_FINISHED, ring
 
@@ -1261,8 +1263,9 @@ def _class_fields(profile_name: Any, model_class: str,
 def _review_class(ctx: Any, doc: Mapping[str, Any], decision: Any) -> ReviewClass | None:
     """The class of a first review the gate lets run, picked from what it read.
 
-    Only a review submitted with `stepclass.REVIEW_AT_GATE` (its caller named
-    no class): a risk path touched, or a diff that could not be read whole,
+    Only a review whose SIGNED dispatch block carries the gate's mark
+    (`stepclass.at_gate`, written by submission alone, its caller having
+    named no class): a risk path touched, or a diff that could not be read whole,
     keeps the `opus` it was signed with; a diff read whole that touches none
     runs `stepclass.ROLE_CLASSES[ROLE_REVIEW]` where the profile runs it and
     the deployment pins it, signed again by swarm-api (`resign_stored`).
@@ -1270,18 +1273,27 @@ def _review_class(ctx: Any, doc: Mapping[str, Any], decision: Any) -> ReviewClas
 
     The stored spec -- and its runtime alternate -- must verify FIRST
     (`stored_spec_refusal`, this module's rule that the signature verifies
-    before any field is acted on): the marker that brings a review here is
-    unsigned, and a tenant's agents can write its task, so a spec rewritten
-    since submission is left exactly as stored, signed by no one, and the
-    worker refuses it as before.
+    before any field is acted on): a tenant's agents can write its task, so
+    a spec rewritten since submission is left exactly as stored, signed by
+    no one, and the worker refuses it as before. Then the VERIFIED document
+    must still be one submission would have marked: no class named
+    (`model_class` unset) and neither a security review nor a requirements
+    check -- the same predicates `submit_workflow` applies -- so the mark
+    alone never moves a class. The unsigned `class_chosen_by` record is
+    never read here.
     """
-    if not stepclass.at_gate(doc.get("metadata")):
+    metadata = doc.get("metadata")
+    if not stepclass.at_gate(metadata):
         return None
     signer = getattr(getattr(ctx, "submissions", None), "signer", None)
     task_id = str(doc.get("id") or "")
     if signer is not None and stored_spec_refusal(ctx.settings, doc, task_id) is not None:
         return ReviewClass(
             {}, f"{stepclass.REVIEW_AT_GATE}; spec does not verify, not signed again", doc)
+    if (doc.get("model_class") is not None or is_security_review(metadata, os.environ)
+            or reviewgate.is_requirements_check(metadata)):
+        return ReviewClass(
+            {}, f"{stepclass.REVIEW_AT_GATE}; not the gate's to pick, not signed again", doc)
     class_models = stepclass.class_models_of(ctx) or {}
     role = stepclass.review_role(decision)
     choice = stepclass.choose(role, str(doc.get("runner_profile") or ""), class_models)
