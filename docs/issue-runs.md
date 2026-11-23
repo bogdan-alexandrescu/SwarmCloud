@@ -179,6 +179,54 @@ held run is `PLANNED` and has no task: it costs nothing.
 **The switch.** `SWARM_PLAN_LINT=off` turns the whole of this off (no lint, no
 re-plan, no hold, no refusal of an automatic approval); it is on by default.
 
+## The planner is told what a step costs and how the issue's earlier runs ended
+
+A planner that cannot see the price of a step splits work too finely, and one
+that cannot see the issue's past repeats a plan that was already refused. So
+the planner's prompt carries two more sections (`swarm_api/planhistory.py`),
+both plain text in the one planner task `start_run` already submits: no new
+model call, no new task, no schedule change.
+
+**The cost model is data.** The numbers live in ONE file,
+`apps/swarm-api/swarm_api/plan_costs.json`, with the date they were measured
+(`measured_on`) and the window (`window_days`): a build step's median cost,
+turns and minutes, a review's and a fix's median cost, a whole
+build-review-fix workflow's median and ninetieth percentile, and the turn
+count past which a step costs disproportionately (`turns_knee`). Measured
+2026-11-23 over the previous 30 days: a build step about $3.60, 63 turns and
+36 minutes; a review about $1.10; a fix about $1.40; a workflow $5.90 at the
+median and $15.60 at the ninetieth percentile; the knee at about 100 turns.
+Re-measuring is an edit to that file, never a code change. The sentences
+around the numbers (each extra step adds a review and a merge; size a step
+well under the knee) are in the code. A file that cannot be read, lacks a
+number or would render past 2 KiB leaves the section out, logged: a planner
+is never refused for its cost note.
+
+**The earlier runs are the workspace's own.** `start_run` reads the runs of
+the same repository and issue number with `IssueRuns.for_issue` and the run's
+own tenant, the same tenant-scoped read every run route uses: the query
+filters on `tenant_id` and every row is checked again. `planhistory` checks
+the tenant, the repository and the number a third time, so another
+workspace's run of the same issue number is never shown. Of those, the ended
+runs, most recent first, at most five: each one's plan step titles, how it
+ended -- merged, done with no change, refused by review, failed plan lint
+(held, or then rejected), rejected by a person, cancelled, failed, not ready
+-- and the reason stored with it (`error`, `rejection_reason`, the lint's
+codes, the NOT_READY reason). Live runs are left to the IN FLIGHT section; a
+run held after failing the lint is listed, since its plan was already
+refused.
+
+**Fenced as the open work is.** A stored reason can carry text an agent or a
+person wrote. The section sits between two delimiter lines carrying the new
+run's id and says it is data; every free text is folded onto one line with
+its @-mentions broken (`forge.neutral_line`), each reason cut to 500
+characters, and the run's own delimiters are stripped until none is left.
+
+**Bounded.** The section takes at most 6 KiB (`MAX_EARLIER_RUNS_BYTES`),
+delimiters and notes included; past it the OLDER runs are dropped and the
+section says how many. The open work's share of the 64 KiB prompt is what is
+left after both sections. With no earlier run the section is absent.
+
 ## Why the planner reads every open issue and pull request, and what caps apply
 
 The issue-run guardrails design asks the planner to avoid conflicts: work already in flight, two issues
