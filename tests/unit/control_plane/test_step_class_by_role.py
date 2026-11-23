@@ -132,10 +132,25 @@ def test_only_a_callers_stored_class_is_explicit():
     assert stepclass.explicit_class({"model_class": "haiku"}) == "haiku"
     assert stepclass.explicit_class(
         {"model_class": "haiku", "metadata": {"class_chosen_by": "caller"}}) == "haiku"
+    # Role-chosen only by what was SIGNED: the role record submission copies
+    # into the dispatch block, or the gate's mark there.
     assert stepclass.explicit_class(
         {"model_class": "sonnet",
-         "metadata": {"class_chosen_by": "role default: review, no risk path"}}) is None
+         "metadata": {"dispatch": {"class_chosen_by": "role default: CI fix"}}}) is None
+    assert stepclass.explicit_class(
+        {"model_class": "sonnet", "metadata": {"dispatch": {"class_at_gate": True}}}) is None
     assert stepclass.explicit_class({"model_class": None}) is None
+
+
+@pytest.mark.parametrize("relabel", ["role default: review, no risk path",
+                                     "role default: CI fix", stepclass.REVIEW_AT_GATE])
+def test_an_unsigned_record_cannot_relabel_a_callers_class_as_role_chosen(relabel):
+    # A tenant's agent rewrites the unsigned record on a stored task whose
+    # caller pinned `haiku`: the class stays the caller's.
+    doc = {"model_class": "haiku", "metadata": {"class_chosen_by": relabel, "dispatch": {}}}
+    assert stepclass.explicit_class(doc) == "haiku"
+    assert not stepclass.gate_decided(doc["metadata"])
+    assert not stepclass.at_gate(doc["metadata"])
 
 
 # ---------------------------------------------------------------------------
@@ -350,15 +365,33 @@ def _parent(db, *paths: str, lines: int, truncated: bool = False,
     return doc
 
 
+#: What submission writes, inside the SIGNED dispatch block, on a first
+#: review whose class is the gate's to pick (`stepclass.CLASS_AT_GATE_KEY`).
+SIGNED_AT_GATE = {"dispatch": {"class_at_gate": True}}
+
+
 def _review(db, *, marked: bool = True, model_class: str | None = None,
-            runner_profile: str = CODE) -> dict[str, Any]:
+            runner_profile: str = CODE, record: bool = True,
+            metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """A held first review, signed as submission signs it. `marked`: its
+    signed dispatch block says the gate picks its class; `record`: the
+    unsigned `class_chosen_by` display record says so too."""
     doc = seed_task(db, task_id=REVIEW, tenant_id="eng", state="PARKED",
                     park_reason="DEPENDENCY_INCOMPLETE", runner_profile=runner_profile,
                     provider="anthropic", depends_on=(IMPL,))
     doc["model_class"] = model_class
-    doc["metadata"] = {"review_gate": {"min_lines": 300},
-                       **({"class_chosen_by": stepclass.REVIEW_AT_GATE} if marked else {})}
+    doc["metadata"] = {"review_gate": {"min_lines": 300}, **(metadata or {}),
+                       **(copy.deepcopy(SIGNED_AT_GATE) if marked else {}),
+                       **({"class_chosen_by": stepclass.REVIEW_AT_GATE}
+                          if marked and record else {})}
     return SIGNER.sign_document(doc, REVIEW)
+
+
+def _inject_marker(db) -> None:
+    """A tenant's agent adds the unsigned marker AFTER signing: the spec still verifies."""
+    stored = db.docs[f"tasks/{REVIEW}"]
+    stored["metadata"] = {**stored["metadata"], "class_chosen_by": stepclass.REVIEW_AT_GATE}
+    assert SIGNER.verifies(stored, REVIEW)
 
 
 def _decide(client, db) -> dict[str, Any]:
@@ -446,6 +479,42 @@ def test_own_files_without_a_whole_file_list_keeps_the_review_on_opus(pinned_cli
     assert doc["metadata"]["class_chosen_by"] == "role default: review, diff not read"
 
 
+def _git(files: Any) -> dict[str, Any]:
+    return {"result_summary": {"git": {"files": files, "files_truncated": False}}}
+
+
+@pytest.mark.parametrize("files", [
+    [{"path": SMALL_FILE}, "apps/agent-worker/agent_worker/secrets.py"],
+    [{"path": SMALL_FILE}, {"path": 7}],
+    [{"path": SMALL_FILE}, {"path": ""}],
+    [{"path": SMALL_FILE}, {"status": "M"}],
+    [{"path": SMALL_FILE}, {"path": "b.py", "old_path": ["apps/agent-worker/x.py"]}],
+], ids=["row-not-a-map", "path-not-a-string", "path-empty", "path-absent", "old-path-bad"])
+def test_a_malformed_files_row_is_not_read_whole(files):
+    paths, whole = reviewgate.files_of(_git(files))
+    assert whole is False
+    assert SMALL_FILE in paths
+
+
+def test_a_well_formed_files_list_is_read_whole():
+    paths, whole = reviewgate.files_of(_git(
+        [{"path": SMALL_FILE, "status": "M"}, {"path": "b.py", "old_path": None},
+         {"path": "c.py", "old_path": "d.py", "status": "R"}]))
+    assert whole is True
+    assert paths == [SMALL_FILE, "b.py", "c.py", "d.py"]
+
+
+def test_a_malformed_files_row_keeps_the_review_on_opus(pinned_client, db):
+    parent = _parent(db, SMALL_FILE, lines=400)
+    parent["result_summary"]["git"]["files"].append({"path": {"hidden": RISK_FILE}})
+    before = copy.deepcopy(_review(db))
+
+    doc = _decide(pinned_client, db)
+
+    assert doc.get("model_class") is None
+    assert doc["spec_signature"] == before["spec_signature"]
+
+
 def test_what_the_gate_runs_or_skips_still_reads_own_files():
     # The class reads `files` too; the gate's run-or-skip decision does not.
     gate = reviewgate.Gate(min_lines=300, risk_paths=reviewgate.DEFAULT_RISK_PATHS)
@@ -496,6 +565,67 @@ def test_a_review_on_a_profile_with_no_claude_model_is_not_touched(pinned_client
 
 
 # ---------------------------------------------------------------------------
+# The gate picks a class only where SIGNED data says it may
+# ---------------------------------------------------------------------------
+
+
+def test_a_callers_class_with_a_marker_injected_after_signing_is_not_touched(
+        pinned_client, db):
+    _parent(db, SMALL_FILE, lines=400)
+    before = copy.deepcopy(_review(db, marked=False, model_class="haiku"))
+    _inject_marker(db)
+
+    doc = _decide(pinned_client, db)
+
+    assert doc["model_class"] == "haiku"
+    assert doc.get("model") == before.get("model")
+    assert doc["spec_signature"] == before["spec_signature"]
+    assert SIGNER.verifies(doc, REVIEW)
+
+
+@pytest.mark.parametrize("signed_mark", [False, True], ids=["injected", "signed"])
+def test_a_security_review_keeps_the_default_class(pinned_client, db, monkeypatch,
+                                                    signed_mark):
+    from swarm_api import workcontract
+
+    monkeypatch.setenv(workcontract.SWITCH_ENV, "on")
+    _parent(db, SMALL_FILE, lines=400)
+    contract = {"capabilities": {"plugins": {"security-audit": {}}}}
+    before = copy.deepcopy(_review(db, marked=signed_mark, record=False,
+                                   metadata={"work_contract": contract}))
+    _inject_marker(db)
+
+    doc = _decide(pinned_client, db)
+
+    assert doc.get("model_class") is None
+    assert doc.get("model") is None
+    assert doc["spec_signature"] == before["spec_signature"]
+
+
+def test_the_gate_reads_only_the_signed_mark(pinned_client, db):
+    # The signed dispatch block alone: no unsigned record at all.
+    _parent(db, SMALL_FILE, lines=400)
+    _review(db, record=False)
+
+    doc = _decide(pinned_client, db)
+
+    assert doc["model_class"] == "sonnet"
+    assert doc["model"] == PINS["sonnet"]
+    assert SIGNER.verifies(doc, REVIEW)
+
+
+def test_a_signed_mark_beside_a_signed_class_is_not_acted_on(pinned_client, db):
+    # The verified document names a class: whatever marks it, not the gate's.
+    _parent(db, SMALL_FILE, lines=400)
+    before = copy.deepcopy(_review(db, model_class="haiku"))
+
+    doc = _decide(pinned_client, db)
+
+    assert doc["model_class"] == "haiku"
+    assert doc["spec_signature"] == before["spec_signature"]
+
+
+# ---------------------------------------------------------------------------
 # The gate re-signs only a spec that verifies as stored
 # ---------------------------------------------------------------------------
 
@@ -523,6 +653,7 @@ def _review_with_alternate(db) -> dict[str, Any]:
                  "provider": "anthropic", "model": None, "model_class": None}
     doc["metadata"] = {
         "review_gate": {"min_lines": 300}, "class_chosen_by": stepclass.REVIEW_AT_GATE,
+        **copy.deepcopy(SIGNED_AT_GATE),
         "runtime": {"policy": "browser_if_ui", "browser": BROWSER, "code": CODE,
                     "alternate": alternate}}
     swapped = SIGNER.sign_document(
@@ -548,6 +679,36 @@ def test_a_tampered_review_is_not_signed_again(pinned_client, db, field, value):
     assert doc.get("model") is None
     assert not SIGNER.verifies(doc, REVIEW)  # the worker refuses it, as before
     assert "not signed again" in doc["metadata"]["class_chosen_by"]
+
+
+def test_the_gate_verifies_before_it_calls_resign_stored(db, monkeypatch):
+    # Pins the gate-side check on its own: `resign_stored` verifies too, so
+    # without this test removing the gate's call would leave every test green.
+    from types import SimpleNamespace
+
+    from swarm_api import verdictpublish
+
+    _review(db)
+    doc = copy.deepcopy(db.docs[f"tasks/{REVIEW}"])
+    doc["input"] = {"prompt": "something the caller never signed"}
+
+    def never(*args, **kwargs):
+        raise AssertionError("resign_stored called on a spec that does not verify")
+
+    monkeypatch.setattr(verdictpublish, "resign_stored", never)
+    ctx = SimpleNamespace(
+        settings=api_settings(spec_signing_key_version=KEY_VERSION,
+                              spec_verify_keys=json.dumps({KEY_VERSION: SIGNER.public_pem()}),
+                              worker_class_models=dict(PINS)),
+        submissions=SimpleNamespace(signer=SIGNER))
+    decision = SimpleNamespace(risk_hits=(), class_risk_hits=(), unreadable=(), truncated=False,
+                               files_unread=False, read=(IMPL,), changed_lines=10)
+
+    review_class = verdictpublish._review_class(ctx, doc, decision)
+
+    assert review_class is not None
+    assert dict(review_class.fields) == {}
+    assert "spec does not verify" in review_class.chosen_by
 
 
 def test_a_resign_changes_no_signed_field_but_the_class(pinned_client, db):
@@ -651,6 +812,11 @@ def test_a_gated_claude_review_is_marked_for_the_gate_at_submission(client, db):
     tasks = {s["step_id"]: db.docs[f"tasks/{s['task_id']}"]
              for s in response.json()["workflow"]["steps"]}
     assert tasks["review"]["metadata"]["class_chosen_by"] == stepclass.REVIEW_AT_GATE
+    # The mark the gate acts on is inside the signed dispatch block.
+    assert tasks["review"]["metadata"]["dispatch"]["class_at_gate"] is True
+    assert stepclass.at_gate(tasks["review"]["metadata"])
+    assert "class_at_gate" not in tasks["implement"]["metadata"]["dispatch"]
+    assert "class_at_gate" not in tasks["fix"]["metadata"]["dispatch"]
     assert tasks["review"].get("model_class") is None  # signed on opus until the gate
     assert "class_chosen_by" not in tasks["implement"]["metadata"]
 
@@ -720,8 +886,24 @@ def test_a_callers_class_chosen_by_cannot_drop_its_own_class(pinned_client, db):
     assert tasks["review"]["model_class"] == "haiku"
     assert stepclass.explicit_class(tasks["review"]) == "haiku"
     assert tasks["review"]["metadata"]["class_chosen_by"] == stepclass.CALLER
+    assert "class_chosen_by" not in tasks["review"]["metadata"]["dispatch"]
+    assert "class_at_gate" not in tasks["review"]["metadata"]["dispatch"]
     # A step the gate does not decide is never marked for it by its caller.
     assert not stepclass.at_gate(tasks["implement"]["metadata"])
+
+
+def test_a_role_chosen_class_is_recorded_inside_the_signed_block(pinned_client, db):
+    from .conftest import auth_header
+
+    response = pinned_client.post("/v1/workflows", headers=auth_header("alice"), json=_workflow({
+        "model_class": "sonnet", "metadata": {"class_chosen_by": "role default: CI fix"}}))
+    assert response.status_code == 201, response.text
+    tasks = {s["step_id"]: db.docs[f"tasks/{s['task_id']}"]
+             for s in response.json()["workflow"]["steps"]}
+    review = tasks["review"]
+    assert review["metadata"]["dispatch"]["class_chosen_by"] == "role default: CI fix"
+    assert stepclass.explicit_class(review) is None
+    assert SIGNER.verifies(review, review["id"])
 
 
 def test_a_callers_gate_marker_on_a_standalone_task_is_dropped(pinned_client, db):
@@ -747,6 +929,7 @@ def test_a_rerun_clone_is_gated_again_on_its_own_diff(db):
     doc["metadata"] = {
         "review_gate": {"min_lines": 300},
         "class_chosen_by": "role default: review, no risk path",
+        **copy.deepcopy(SIGNED_AT_GATE),
         "runtime": {"policy": "browser_if_ui", "browser": BROWSER, "code": CODE,
                     "alternate": {"runner_profile": CODE, "resource_class": "standard",
                                   "timeout_seconds": 3600, "provider": "anthropic",
@@ -772,6 +955,21 @@ def test_a_rerun_clone_keeps_a_class_its_caller_named(db):
                           datetime.now(timezone.utc))
     assert (new.model_class, new.model) == ("haiku", PINS["haiku"])
     assert new.metadata["class_chosen_by"] == stepclass.CALLER
+
+
+def test_a_rerun_clone_keeps_a_callers_class_relabelled_as_the_gates(db):
+    from swarm_api import steprerun
+    from swarm_api.codec import task_from_dict
+
+    doc = seed_task(db, task_id=REVIEW, tenant_id="eng", state="FAILED", runner_profile=CODE,
+                    provider="anthropic", depends_on=(IMPL,))
+    doc.update(model_class="haiku", model=PINS["haiku"])
+    # Unsigned, rewritten by a tenant's agent after signing.
+    doc["metadata"] = {"review_gate": {"min_lines": 300}, "dispatch": {},
+                       "class_chosen_by": "role default: review, no risk path"}
+    new = steprerun.clone(task_from_dict(doc), {REVIEW: "task_review0002", IMPL: IMPL},
+                          datetime.now(timezone.utc))
+    assert (new.model_class, new.model) == ("haiku", PINS["haiku"])
 
 
 @pytest.mark.parametrize("model", [scheduletypes.IssueSweepParams,
