@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_worker.runners import claude_code, cliagent
+from agent_worker.runners import ceiling, claude_code, cliagent
 from agent_worker.runners.base import RunnerContext
 from test_cli_prompt_names_time_limit import without_limit_line
 
@@ -344,6 +344,15 @@ def test_a_finish_pass_runs_before_the_repair_checks(tmp_path, monkeypatch):
     assert "scan-01.md" in runs[2]["prompt"]
     assert out["resumed_to_finish"] is True
     assert out["repair_turns"] == 1
+    # The finish pass and the repair turn start from the runner's base argv:
+    # each carries the standing paragraphs in its one system prompt, as the
+    # first start did, and none restates them in its user prompt.
+    # MUTATION: stop adding them to `base_argv` in run_cli_agent -> red.
+    assert runs[0]["system"]
+    for run in runs:
+        assert run["system"] == runs[0]["system"]
+        assert run["system"].count(ceiling.HANDOFF_NOTE) == 1
+        assert ceiling.HANDOFF_NOTE not in run["prompt"]
 
 
 def test_the_session_id_never_reaches_the_runner_log(tmp_path, monkeypatch, capfd):
