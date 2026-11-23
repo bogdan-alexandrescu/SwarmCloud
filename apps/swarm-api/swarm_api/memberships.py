@@ -73,7 +73,8 @@ COLLECTION = "workspace_memberships"
 #: One document per group workspace, `{tenant_id}`, that every leave by an
 #: `admin` reads and writes inside its own transaction, so two admins leaving
 #: at once conflict and the retried one re-checks who is left (§4.4). It
-#: holds no authority: nothing reads its fields to decide anything.
+#: holds no authority: nothing reads its fields to decide anything, and it
+#: records no one -- the workspace and the time alone (`last_admin.write_guard`).
 LEAVE_GUARD_COLLECTION = "workspace_leave_guards"
 
 MEMBER = "member"
