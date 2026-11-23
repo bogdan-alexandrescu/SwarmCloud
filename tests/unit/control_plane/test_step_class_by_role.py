@@ -585,6 +585,22 @@ def test_a_callers_class_with_a_marker_injected_after_signing_is_not_touched(
     assert SIGNER.verifies(doc, REVIEW)
 
 
+def test_an_unmarked_classless_review_with_the_marker_injected_is_not_touched(
+        pinned_client, db):
+    # No class named and no signed mark: only the unsigned record says the
+    # gate picks, and the gate reads only the signed mark (issue 207).
+    _parent(db, SMALL_FILE, lines=400)
+    before = copy.deepcopy(_review(db, marked=False))
+    _inject_marker(db)
+
+    doc = _decide(pinned_client, db)
+
+    assert doc.get("model_class") is None
+    assert doc.get("model") == before.get("model")
+    assert doc["spec_signature"] == before["spec_signature"]
+    assert SIGNER.verifies(doc, REVIEW)
+
+
 @pytest.mark.parametrize("signed_mark", [False, True], ids=["injected", "signed"])
 def test_a_security_review_keeps_the_default_class(pinned_client, db, monkeypatch,
                                                     signed_mark):
