@@ -1743,6 +1743,11 @@ class QaTargets:
         if any(named not in listed for named in extra_origins):
             raise Conflict("an extra origin named is not one this QA target's leg declares")
         approved.extend(o for o in listed if o in extra_origins)
+        # Resolved again, each origin approved (epic 21): registration's check
+        # is only as old as the registration, and a name can move to a
+        # private address before an admin approves it. A 422 approves none.
+        for approved_origin in approved:
+            check_public_host(urlsplit(approved_origin).hostname or "", self._resolve)
         now = self._now()
         tenant_id = str(current.get("tenant_id") or "")
         new = _replace_entry(current, name, {"host_state": HOST_APPROVED, "approved_by": by, "approved_at": now,
