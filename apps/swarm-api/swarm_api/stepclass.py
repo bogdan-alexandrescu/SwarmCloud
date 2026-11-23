@@ -156,16 +156,21 @@ def review_role(decision: Any) -> str:
     """A first review's role from what the review gate read (`reviewgate.Decision`).
 
     A risk path touched (the platform's `DEFAULT_RISK_PATHS` plus the step's
-    and the workspace's, `reviewgate._gate_from`) is `ROLE_REVIEW_RISK`; no
-    decision, a parent that could not be read, or a file list cut short is
-    `ROLE_REVIEW_UNREAD`; only a diff read whole that touches none is
-    `ROLE_REVIEW`.
+    and the workspace's, `reviewgate._gate_from`) is `ROLE_REVIEW_RISK`,
+    looked for over the UNION of each parent's `own_files` and `files` (a
+    risk path merged in from a side branch is in `files` alone,
+    `Decision.class_risk_hits`); no decision, a parent that could not be
+    read, or a file list cut short, absent or unreadable is
+    `ROLE_REVIEW_UNREAD`; a diff read whole that touches none but is over
+    `REVIEW_CHEAP_MAX_LINES` is `ROLE_REVIEW_LARGE`; only the rest is
+    `ROLE_REVIEW`. What the gate runs or skips is not read from here.
     """
     if decision is None:
         return ROLE_REVIEW_UNREAD
-    if getattr(decision, "risk_hits", ()):
+    if getattr(decision, "risk_hits", ()) or getattr(decision, "class_risk_hits", ()):
         return ROLE_REVIEW_RISK
-    if getattr(decision, "unreadable", ()) or getattr(decision, "truncated", False):
+    if (getattr(decision, "unreadable", ()) or getattr(decision, "truncated", False)
+            or getattr(decision, "files_unread", False)):
         return ROLE_REVIEW_UNREAD
     if not getattr(decision, "read", ()):
         return ROLE_REVIEW_UNREAD
