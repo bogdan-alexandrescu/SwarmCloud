@@ -3,6 +3,7 @@
 
     uv run python scripts/gen_api_types.py           # (re)write the file
     uv run python scripts/gen_api_types.py --check   # exit 1 if it is stale
+    python3 scripts/gen_api_types.py --inputs        # the files it reads (stdlib only)
 
 THE SOURCE. swarm-api's own `create_app()`, built OFFLINE: no cloud
 credentials, no emulator, no network. Every client `build_context` would make
@@ -42,6 +43,26 @@ from typing import Any
 REPO = Path(__file__).resolve().parents[1]
 OUTPUT = REPO / "apps/swarm-ui/src/generated/api-types.ts"
 REGENERATE = "uv run python scripts/gen_api_types.py"
+
+#: What the generated file is a function of, repository-relative: this
+#: script, every package of the repository that building the document
+#: imports (swarm-api and what it imports in turn; a directory ends in "/"),
+#: the lock that pins FastAPI and pydantic, and the generated file itself.
+#: `--inputs` prints them: the worker's pre-publish gate runs `--check` only
+#: when a lane's change touches one, so a lane that changes a request model
+#: finds the stale file in its own container instead of on the merge train.
+#: The drift test holds the package entries equal, both ways, to the modules
+#: building the document actually loads.
+INPUTS = (
+    "scripts/gen_api_types.py",
+    "apps/swarm-api/swarm_api/",
+    "apps/common/swarm_common/",
+    "apps/jev-client/swarm_jev/",
+    "apps/redaction/swarm_redaction/",
+    "apps/workflow-rollup/swarm_rollup/",
+    "apps/swarm-ui/src/generated/api-types.ts",
+    "uv.lock",
+)
 
 HEADER = f"""\
 // GENERATED FILE -- DO NOT EDIT BY HAND.
@@ -257,11 +278,22 @@ def render(document: dict[str, Any]) -> str:
     return "\n\n".join(blocks) + "\n"
 
 
+def relpath(path: Path) -> str:
+    """`path` relative to the repository root, as `INPUTS` names it."""
+    return path.relative_to(REPO).as_posix()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--check", action="store_true",
                         help="write nothing; exit 1 if the committed file is stale")
+    parser.add_argument("--inputs", action="store_true",
+                        help="print the files the output is a function of, one a line "
+                             "(a directory ends in /), and build nothing")
     args = parser.parse_args(argv)
+    if args.inputs:
+        print("\n".join(INPUTS))
+        return 0
     text = render(openapi_document())
     if args.check:
         current = OUTPUT.read_text() if OUTPUT.is_file() else ""
