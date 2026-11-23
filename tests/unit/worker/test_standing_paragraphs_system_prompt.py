@@ -40,6 +40,7 @@ from agent_worker import cachedirs, children, expected_outputs, lightpanda, step
 from agent_worker.runners import ceiling, claude_code, cliagent
 from agent_worker.runners.base import RunnerContext
 from agent_worker.runners.limits import TIMEOUT_ENV
+from test_cli_prompt_names_time_limit import is_limit_line
 
 SESSION = "sess-" + "a1b2c3d4e5f60718"
 
@@ -155,12 +156,19 @@ def test_the_per_task_paragraphs_stay_in_the_user_prompt(tmp_path, monkeypatch):
         BRIEF,
         expected_outputs.deliverables_line(ctx_artifacts),
         children.prompt_line(str(tmp_path / "work" / ".swarm-children")),
-        cliagent.time_limit_line(TIMEOUT),
     ]
     for paragraph in per_task:
         assert user.count(paragraph) == 1, paragraph[:60]
         assert paragraph not in system, paragraph[:60]
     assert user.startswith(BRIEF)
+    # The time-limit line names an end time that moves with the clock, so it
+    # is read back out (`is_limit_line`) rather than rebuilt here: rebuilt, a
+    # second ticking between the runner and this line failed the test.
+    last = user.rstrip().rpartition("\n\n")[2]
+    assert is_limit_line(last), user[-600:]
+    assert f"{TIMEOUT // 60} minutes" in last
+    assert user.count("wall-clock limit") == 1
+    assert "wall-clock limit" not in system
 
 
 def test_the_system_prompt_flag_is_passed_once(tmp_path, monkeypatch):

@@ -87,7 +87,8 @@ def _ctx(tmp_path: Path, payload: dict, *, repo: bool) -> RunnerContext:
 
 
 #: The fake CLI. Its plan is `$HOME/plan.json` (HOME is the work directory);
-#: each start appends how it was started to `$HOME/runs.jsonl`, then writes
+#: each start appends how it was started (its `--resume` value, its stdin
+#: prompt and its `--append-system-prompt` value) to `$HOME/runs.jsonl`, then writes
 #: the files its step names: `$ARTIFACTS/<name>` into the artifacts directory,
 #: anything else relative to where it was started (the checkout), runs each
 #: argv of the step's `git` list as `git <argv>` there, and, when the step
@@ -98,8 +99,12 @@ argv = sys.argv[1:]
 home = pathlib.Path(os.environ["HOME"])
 plan = json.loads((home / "plan.json").read_text())
 resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
+# The standing paragraphs ride `--append-system-prompt` (2026-11-23).
+flag = "--append-system-prompt"
+system = argv[argv.index(flag) + 1] if flag in argv[:-1] else ""
 with (home / "runs.jsonl").open("a") as f:
-    f.write(json.dumps({"resume": resume, "prompt": sys.stdin.read()}) + "\n")
+    f.write(json.dumps({"resume": resume, "prompt": sys.stdin.read(),
+                        "system": system}) + "\n")
 runs = sum(1 for _ in (home / "runs.jsonl").open())
 step = plan["runs"][min(runs - 1, len(plan["runs"]) - 1)]
 for name, text in step.get("write", {}).items():

@@ -12,7 +12,9 @@
      No change and no verification fails as before.
   3. Proposal A. Every claude-code (and codex) prompt with a repository ends
      with one fixed paragraph: the worker publishes; commit, and write the
-     title and body files. 31 answers on 2026-10-08 said no pull request
+     title and body files. For claude-code it ends the system prompt
+     (`--append-system-prompt`, standing paragraphs, 2026-11-23); codex keeps
+     it at the end of its prompt. 31 answers on 2026-10-08 said no pull request
      existed because the agent lacked GitHub credentials.
   4. Proposal B. An issue step is asked for `pr-title.txt` too, given ONE
      follow-up turn for it, and only then titled from its issue -- prefixed
@@ -48,6 +50,7 @@ from swarm_common.states import EventType, TaskState
 
 from worker_seeds import seed_attempt
 from test_claude_repair_turns import DONE, SESSION, _ctx, _git, _install, _runs
+from test_cli_prompt_names_time_limit import is_limit_line
 from test_strategy_end_to_end import (  # noqa: F401 -- fixtures
     _the_fence_holds,
     agent_edits_without_committing,
@@ -274,9 +277,15 @@ def test_a_prompt_with_a_repository_ends_with_the_publish_paragraph(tmp_path, mo
     ctx = _ctx(tmp_path, {"prompt": "fix it"}, repo=True)
     _install(tmp_path, monkeypatch, ctx, [{"answer": DONE}])
     claude_code.body(ctx)
-    prompt = _runs(ctx)[0]["prompt"]
-    assert prompt.rstrip().endswith(cliagent.PUBLISH_PARAGRAPH), prompt[-600:]
-    assert prompt.count(cliagent.PUBLISH_PARAGRAPH) == 1
+    run = _runs(ctx)[0]
+    prompt, system = run["prompt"], run["system"]
+    # claude-code: the paragraph ends the system prompt (standing paragraphs,
+    # 2026-11-23), once, and the user prompt no longer restates it; the user
+    # prompt ends with the step's time-limit line.
+    assert system.rstrip().endswith(cliagent.PUBLISH_PARAGRAPH), system[-600:]
+    assert (system + prompt).count(cliagent.PUBLISH_PARAGRAPH) == 1
+    assert cliagent.PUBLISH_PARAGRAPH not in prompt
+    assert is_limit_line(prompt.rstrip().rpartition("\n\n")[2]), prompt[-600:]
     for phrase in ("You do not push or open a pull request",
                    "$SWARM_ARTIFACTS_DIR/pr-title.txt", "$SWARM_ARTIFACTS_DIR/pr-body.md",
                    "Commit your work."):
@@ -291,10 +300,11 @@ def test_a_prompt_with_a_repository_says_how_to_end_with_no_change(tmp_path, mon
     ctx = _ctx(tmp_path, {"prompt": "fix it"}, repo=True)
     _install(tmp_path, monkeypatch, ctx, [{"answer": DONE}])
     claude_code.body(ctx)
-    prompt = _runs(ctx)[0]["prompt"]
+    # The paragraph rides claude-code's system prompt (2026-11-23).
+    system = _runs(ctx)[0]["system"]
     named = f"$SWARM_ARTIFACTS_DIR/{lifecycle.VERIFICATION_FILE}"
     assert named == "$SWARM_ARTIFACTS_DIR/verification.md"
-    assert named in prompt, prompt[-800:]
+    assert named in system, system[-800:]
     assert named in cliagent.PUBLISH_PARAGRAPH
     assert "commit nothing" in cliagent.PUBLISH_PARAGRAPH
     assert "no change" in cliagent.PUBLISH_PARAGRAPH
@@ -307,7 +317,8 @@ def test_a_prompt_with_a_repository_says_to_stay_on_the_cloned_line(tmp_path, mo
     ctx = _ctx(tmp_path, {"prompt": "fix it"}, repo=True)
     _install(tmp_path, monkeypatch, ctx, [{"answer": DONE}])
     claude_code.body(ctx)
-    prompt = _runs(ctx)[0]["prompt"].lower()
+    # The paragraph rides claude-code's system prompt (2026-11-23).
+    prompt = _runs(ctx)[0]["system"].lower()
     for phrase in ("keep your commits on the branch you were cloned onto",
                    "merge it in", "git merge fetch_head",
                    "never git checkout -b", "git switch", "git reset",
@@ -332,7 +343,8 @@ def test_a_prompt_without_a_repository_has_no_publish_paragraph(tmp_path, monkey
     ctx = _ctx(tmp_path, {"prompt": "summarise the notes"}, repo=False)
     _install(tmp_path, monkeypatch, ctx, [{"answer": DONE}])
     claude_code.body(ctx)
-    assert cliagent.PUBLISH_PARAGRAPH not in _runs(ctx)[0]["prompt"]
+    run = _runs(ctx)[0]
+    assert cliagent.PUBLISH_PARAGRAPH not in run["prompt"] + run["system"]
 
 
 def test_the_publish_paragraph_carries_no_marker_a_cli_echo_would_trip():

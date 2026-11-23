@@ -573,6 +573,7 @@ def test_the_cli_runner_appends_the_context_line_before_the_platform_s(
         "#!/usr/bin/env python3\n"
         "import json, os, pathlib, sys\n"
         "pathlib.Path(os.environ['HOME'], 'stdin.txt').write_text(sys.stdin.read())\n"
+        "pathlib.Path(os.environ['HOME'], 'argv.json').write_text(json.dumps(sys.argv[1:]))\n"
         "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,"
         " 'session_id': 's', 'result': 'done', 'total_cost_usd': 0.0, 'num_turns': 1}))\n")
     cli.chmod(0o755)
@@ -591,7 +592,19 @@ def test_the_cli_runner_appends_the_context_line_before_the_platform_s(
     line = contextpack.prompt_line(work / contextpack.CONTEXT_DIR_NAME
                                    / contextpack.CONTEXT_FILE)
     assert line in stdin
-    assert stdin.index(line) < stdin.index(cliagent.PUBLISH_PARAGRAPH)
+    # The platform's publishing paragraph rides claude-code's system prompt
+    # (`--append-system-prompt`, standing paragraphs, 2026-11-23), so it
+    # cannot follow the line in stdin: the line is in the user prompt, before
+    # the step's time-limit line, which ends it, and the paragraph is not.
+    argv = json.loads((work / "argv.json").read_text())
+    flag = claude_code.APPEND_SYSTEM_PROMPT_FLAG
+    assert argv.count(flag) == 1, argv
+    system = argv[argv.index(flag) + 1]
+    assert system.count(cliagent.PUBLISH_PARAGRAPH) == 1
+    assert cliagent.PUBLISH_PARAGRAPH not in stdin and line not in system
+    limit_at = stdin.rstrip().rindex("\n\n")
+    assert "wall-clock limit" in stdin[limit_at:], stdin[-600:]
+    assert stdin.index(line) < limit_at
 
 
 # --- the arm, and what the pack read (graph-service.md §7; lane GS-PACK) -------
@@ -1069,6 +1082,7 @@ def test_a_review_with_a_slow_graph_service_reaches_its_agent_within_the_bound(
         "#!/usr/bin/env python3\n"
         "import json, os, pathlib, sys, time\n"
         "pathlib.Path(os.environ['HOME'], 'stdin.txt').write_text(sys.stdin.read())\n"
+        "pathlib.Path(os.environ['HOME'], 'argv.json').write_text(json.dumps(sys.argv[1:]))\n"
         "pathlib.Path(os.environ['HOME'], 'first-turn').write_text(repr(time.time()))\n"
         "print(json.dumps({'type': 'result', 'subtype': 'success', 'is_error': False,"
         " 'session_id': 's', 'result': 'done', 'total_cost_usd': 0.0, 'num_turns': 1}))\n")
@@ -1106,7 +1120,13 @@ def test_a_review_with_a_slow_graph_service_reaches_its_agent_within_the_bound(
     # "the graph is unavailable").
     assert "The context pack for this step could not be built" in stdin
     assert "within 1.0 s" in stdin
-    assert claude_code.GRAPH_FIRST_NOTE in stdin
+    # The graph line is a standing paragraph: it rides the system prompt
+    # (`--append-system-prompt`, 2026-11-23), once.
+    argv = json.loads((work / "argv.json").read_text())
+    flag = claude_code.APPEND_SYSTEM_PROMPT_FLAG
+    assert argv.count(flag) == 1, argv
+    assert argv[argv.index(flag) + 1].count(claude_code.GRAPH_FIRST_NOTE) == 1
+    assert claude_code.GRAPH_FIRST_NOTE not in stdin
     assert "work from the checkout as usual" not in stdin
     record = json.loads((ctx.artifacts_dir / contextpack.ARTIFACT_NAME).read_text())
     assert record["built"] is False and isinstance(record["seconds"], float)

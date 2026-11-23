@@ -8,8 +8,9 @@ Jev groups and got no calls; Playwright did every one. So, in the Claude Code
 runner:
 
 * a switched-on graph is loaded at the session's start (the `--mcp-config`
-  entry's `alwaysLoad`) and the prompt says what it answers better than a
-  text search; a switched-off step has neither;
+  entry's `alwaysLoad`) and the system prompt (`--append-system-prompt`,
+  where the standing paragraphs ride since 2026-11-23) says what it answers
+  better than a text search; a switched-off step has neither;
 * a ready jev browser is the first choice on a rendered step, loaded up
   front, with Playwright still registered as the fallback;
 * the agent's `jev_decide` tool is registered, loaded up front, only on a
@@ -98,6 +99,14 @@ def _run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, env: dict[str, str], *
     return seen
 
 
+def _system_prompt(seen: dict[str, Any]) -> str:
+    """The value of the one `--append-system-prompt` handed the CLI, or ''."""
+    args = seen["args"]
+    flag = claude_code.APPEND_SYSTEM_PROMPT_FLAG
+    assert args.count(flag) <= 1, args
+    return args[args.index(flag) + 1] if flag in args else ""
+
+
 def _servers(seen: dict[str, Any]) -> dict[str, Any]:
     args = seen["args"]
     if "--mcp-config" not in args:
@@ -148,7 +157,9 @@ def test_a_switched_on_graph_loads_up_front_and_the_prompt_says_to_use_it_first(
     entry = _servers(seen)[graphstage.SERVER_NAME]
     # MUTATION: drop `alwaysLoad` and the graph's tools wait behind tool search.
     assert entry["alwaysLoad"] is True
-    assert claude_code.GRAPH_FIRST_NOTE in seen["prompt"]
+    # A standing paragraph: the system prompt, never the user prompt (2026-11-23).
+    assert _system_prompt(seen).count(claude_code.GRAPH_FIRST_NOTE) == 1
+    assert claude_code.GRAPH_FIRST_NOTE not in seen["prompt"]
     for phrase in ("callers", "defin", "change touches", "first", "text search"):
         assert phrase in claude_code.GRAPH_FIRST_NOTE
     # One short line.
@@ -159,6 +170,7 @@ def test_a_switched_off_step_has_neither_the_graph_nor_its_line(monkeypatch, tmp
     seen = _run(monkeypatch, tmp_path, {})
     assert graphstage.SERVER_NAME not in _servers(seen)
     assert claude_code.GRAPH_FIRST_NOTE not in seen["prompt"]
+    assert claude_code.GRAPH_FIRST_NOTE not in _system_prompt(seen)
 
 
 # --------------------------------------------------------------------------
@@ -215,7 +227,9 @@ def test_the_decision_tool_is_registered_up_front_when_the_workspace_opted_in(mo
     assert entry == {"type": "stdio", "command": sys.executable,
                      "args": ["-I", "-m", "agent_worker.judge", "--config", str(config)],
                      "alwaysLoad": True}
-    assert claude_code.JEV_DECIDE_NOTE in seen["prompt"]
+    # A standing paragraph: the system prompt, never the user prompt (2026-11-23).
+    assert _system_prompt(seen).count(claude_code.JEV_DECIDE_NOTE) == 1
+    assert claude_code.JEV_DECIDE_NOTE not in seen["prompt"]
     assert judge_mcp.TOOL_NAME in claude_code.JEV_DECIDE_NOTE
 
 
@@ -223,10 +237,12 @@ def test_the_decision_tool_is_absent_without_the_opt_in(monkeypatch, tmp_path):
     seen = _run(monkeypatch, tmp_path, {})
     assert judge_mcp.SERVER_NAME not in _servers(seen)
     assert claude_code.JEV_DECIDE_NOTE not in seen["prompt"]
+    assert claude_code.JEV_DECIDE_NOTE not in _system_prompt(seen)
     # A config the worker did not write (a stale variable) registers nothing.
     gone = _run(monkeypatch, tmp_path, {judge_attempt.CONFIG_ENV: str(tmp_path / "nowhere.json")})
     assert judge_mcp.SERVER_NAME not in _servers(gone)
     assert claude_code.JEV_DECIDE_NOTE not in gone["prompt"]
+    assert claude_code.JEV_DECIDE_NOTE not in _system_prompt(gone)
 
 
 def test_the_config_names_no_key(monkeypatch, tmp_path):

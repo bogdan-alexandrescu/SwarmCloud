@@ -11,7 +11,9 @@ tools were registered on build steps that never rendered; and 37 oversized
 shell results the CLI had saved to files were read back whole (about 175,000
 tokens).
 
-So, held here against the real runner and a fake CLI that records its stdin:
+So, held here against the real runner and a fake CLI that records its stdin
+and its argv -- a first message is the `--append-system-prompt` value, where
+the standing paragraphs ride since 2026-11-23, and the stdin prompt together:
 
 * a step the worker says publishes nothing (`SWARM_STEP_PUBLISHES=0`) gets no
   PUBLISH_PARAGRAPH, and so no `pr-title.txt`; one that publishes, or a worker
@@ -145,9 +147,18 @@ def _first_start(ctx: RunnerContext) -> dict[str, Any]:
     return runs[0]
 
 
-def _first_message(tmp_path, monkeypatch, payload, *, repo=True, publishes=None) -> str:
+def _first_message(tmp_path, monkeypatch, payload, *, repo=True,
+                   publishes=None) -> tuple[str, str]:
+    """(system prompt, user prompt) of the first start. The standing
+    paragraphs ride the one `--append-system-prompt` (2026-11-23), so a first
+    message is the two together."""
     _install(tmp_path, monkeypatch, publishes=publishes)
-    return _first_start(_ctx(tmp_path, payload, repo=repo))["stdin"]
+    run = _first_start(_ctx(tmp_path, payload, repo=repo))
+    argv = run["argv"]
+    flag = claude_code.APPEND_SYSTEM_PROMPT_FLAG
+    assert argv.count(flag) <= 1, argv
+    system = argv[argv.index(flag) + 1] if flag in argv else ""
+    return system, run["stdin"]
 
 
 def _servers(run: dict[str, Any]) -> dict[str, Any]:
@@ -175,18 +186,22 @@ def _assert_said_once(text: str) -> None:
 # --- the publishing paragraph, only where the step publishes ----------------
 
 def test_a_step_that_publishes_nothing_gets_no_publishing_paragraph(tmp_path, monkeypatch):
-    prompt = _first_message(tmp_path, monkeypatch, {"prompt": BRIEF}, publishes="0")
+    system, prompt = _first_message(tmp_path, monkeypatch, {"prompt": BRIEF}, publishes="0")
     assert prompt.startswith(BRIEF)
-    assert cliagent.PUBLISH_PARAGRAPH not in prompt, prompt[-1200:]
-    assert "pr-title.txt" not in prompt and "pr-body.md" not in prompt
-    assert "pull request" not in prompt, prompt[-1200:]
+    for text in (system, prompt):
+        assert cliagent.PUBLISH_PARAGRAPH not in text, text[-1200:]
+        assert "pr-title.txt" not in text and "pr-body.md" not in text
+        assert "pull request" not in text, text[-1200:]
 
 
 @pytest.mark.parametrize("publishes", [None, "1"])
 def test_a_publishing_step_keeps_the_paragraph_once(tmp_path, monkeypatch, publishes):
-    prompt = _first_message(tmp_path, monkeypatch, {"prompt": BRIEF}, publishes=publishes)
-    assert prompt.rstrip().endswith(cliagent.PUBLISH_PARAGRAPH)
-    assert prompt.count("pr-title.txt") == 1
+    system, prompt = _first_message(tmp_path, monkeypatch, {"prompt": BRIEF},
+                                    publishes=publishes)
+    # claude-code: the paragraph ends the system prompt (2026-11-23), and the
+    # user prompt does not restate it.
+    assert system.rstrip().endswith(cliagent.PUBLISH_PARAGRAPH)
+    assert (system + prompt).count("pr-title.txt") == 1
 
 
 def test_step_publishes_is_false_only_for_zero():
@@ -202,13 +217,17 @@ def test_no_instruction_appears_twice_in_a_first_message(tmp_path, monkeypatch, 
     payload: dict[str, Any] = {"prompt": BRIEF}
     if kind == "review":
         payload["expected_outputs"] = ["verdict.json"]
-    prompt = _first_message(tmp_path, monkeypatch, payload, repo=kind != "no-repository",
-                            publishes="0" if kind == "review" else None)
-    _assert_said_once(prompt[len(BRIEF):])
+    system, prompt = _first_message(tmp_path, monkeypatch, payload,
+                                    repo=kind != "no-repository",
+                                    publishes="0" if kind == "review" else None)
+    assert prompt.startswith(BRIEF)
+    # The first message is the system prompt and the user prompt together.
+    _assert_said_once(system + "\n\n" + prompt[len(BRIEF):])
     # The Jev lines only when Jev is on: this attempt has no judge config.
-    assert "Jev" not in prompt
+    assert "Jev" not in system + prompt
     if kind != "no-repository":
-        assert prompt.count(claude_code.RELATED_TESTS_NOTE) == 1
+        assert (system + prompt).count(claude_code.RELATED_TESTS_NOTE) == 1
+        assert claude_code.RELATED_TESTS_NOTE in system
 
 
 @pytest.mark.parametrize("selected", sorted(browser_tools.SELECTIONS))
@@ -239,8 +258,9 @@ def test_the_live_browser_note_is_short():
 # --- saved oversized outputs are read by window -----------------------------
 
 def test_every_start_is_told_to_read_a_saved_output_by_window(tmp_path, monkeypatch):
-    prompt = _first_message(tmp_path, monkeypatch, {"prompt": BRIEF})
-    assert prompt.count(claude_code.SAVED_OUTPUT_NOTE) == 1
+    system, prompt = _first_message(tmp_path, monkeypatch, {"prompt": BRIEF})
+    assert (system + prompt).count(claude_code.SAVED_OUTPUT_NOTE) == 1
+    assert claude_code.SAVED_OUTPUT_NOTE in system
     assert "by window" in claude_code.SAVED_OUTPUT_NOTE
     assert "offset" in claude_code.SAVED_OUTPUT_NOTE and "never whole" in claude_code.SAVED_OUTPUT_NOTE
 

@@ -2242,8 +2242,9 @@ def run_cli_agent(
         first_prompt = f"{TIME_LIMIT_RESUME_PROMPT}\n\n{first_prompt}"
     if cwd != ctx.work_dir and step_publishes(os.environ):
         # A task with a repository (Proposal A, owner decision 2026-10-08):
-        # the platform paragraph, last. Not on a resume: the session
-        # already holds it. Nor on a step the worker says publishes nothing
+        # the platform paragraph, last. In a user prompt, not on a resume:
+        # the session already holds it; in the system prompt (claude-code),
+        # on every start, which is still once per session. Nor on a step the worker says publishes nothing
         # (`step_publishes`): 88 of 90 measured steps wrote pr-title.txt
         # and pr-body.md because this paragraph asked, where no pull
         # request was ever opened.
