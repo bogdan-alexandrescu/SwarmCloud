@@ -188,3 +188,11 @@
 /* The table scrolls inside its card rather than widen a 390 px page. */
 .vtel-lat-wrap { max-width: 100%; overflow-x: auto; }
 .vtel-lat-wrap + .vtel-fig { margin-top: 8px; }
+
+/* One session's record (voice/SessionRecord.tsx): the transcript button, then the summary. */
+.vtel-record { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.vtel-record-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.vtel-record-fail { color: var(--text-dim); font-size: var(--t-body); }
+.vtel-summary h2 { margin: 0 0 6px; font-size: var(--t-body); }
+.vtel-summary p { margin: 0; font-size: var(--t-body); white-space: pre-wrap; }
+.vtel-summary-line { margin: 0; color: var(--text-dim); font-size: var(--t-body); }
