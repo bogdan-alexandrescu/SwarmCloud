@@ -5859,6 +5859,71 @@ guards ran. The limit is 180 s since 2026-11-23 (owner's improvement plan), and 
 overrun now prints `contract parity ran past 180 s`: before, it printed only
 `contract parity failed (exit 124)`, which the gate read as a failure to fix.
 
+### The generated-types and test-pointer checks
+
+Three merge trains went red on 2026-11-23 on things a lane could have caught
+in its own container: twice the console's generated API types
+(`apps/swarm-ui/src/generated/api-types.ts`) were stale after a lane changed a
+request model, and once a docstring under `apps/` named a test file. A lane's
+pull request runs no CI of its own, so the train was the first place either
+ran, and each red train cost every pull request aboard about half an hour and
+a bisection. So the pre-publish gate runs both, ahead of the guard script
+(`lane_drift_checks` in `agent_worker/prepublish.py`):
+
+| Check | Command | Runs when the change touches | Budget |
+|---|---|---|---|
+| `api-types` | `uv run python scripts/gen_api_types.py --check` | a file the generator reads, as the generator itself prints them with `python3 scripts/gen_api_types.py --inputs` (the script, the repository packages building the document imports, `uv.lock`, the generated file) | 45 s |
+| `test-pointers` | `python3 scripts/check_test_pointers.py --root .` (the whole tree, as the train runs it) | anything under `apps/` or `tests/` (a new test's name can turn a comment nobody touched into a pointer) | 15 s |
+
+**The trigger list is the generator's, not the gate's.** `INPUTS` in
+`scripts/gen_api_types.py` names what the output is a function of, and the
+drift test holds its package entries equal, both ways, to the repository
+modules that building the document actually loads, in a fresh interpreter;
+`--inputs` prints the list with the standard library only, so the trigger
+costs one interpreter start. A generator that cannot print it is checked on
+every change.
+
+**A failure goes to the fix turn with its fix.** A stale file is handed back
+with the one command that fixes it: run `uv run python scripts/gen_api_types.py`
+from the repository root and commit what it writes. A pointer is handed back
+as `path:line: text`, with "keep the reason, drop the pointer": rewrite the
+comment to say why the code is as it is, without naming the test.
+
+**An overrun is left to CI.** Each check runs under its own budget (and never
+past the step's deadline). One killed at it with no failure of its own is
+`skipped`, named on the round's record (`left_to_ci`) and under "Left to CI"
+in the pull request's advisory section, never passed and never sent to the
+agent: the way a guard part stopped at the guard budget, the contract-parity
+part among them, is left to CI.
+
+**Measured** on 2026-11-23 in a 6-CPU lane container, three runs each
+(`time` around the gate's own command):
+
+| Check | Cold | Warm |
+|---|---|---|
+| `api-types` | 13.52 s, 11.05 s, 12.10 s (a new uv project environment each run, as every gate round has) | 10.03 s, 8.71 s, 8.71 s (one environment reused) |
+| `test-pointers`, whole tree | 3.16 s, 3.05 s, 3.07 s (no bytecode cache) | 3.18 s, 3.05 s, 3.08 s |
+| `--inputs` (the trigger) | 0.096 s, 0.097 s, 0.081 s | (one interpreter start; no cache to warm) |
+
+Most of `api-types` is importing swarm-api to build the document, which is
+why it is conditional. `test-pointers` over 20 named files took 0.83-0.89 s,
+most of it reading the tests tree, so a whole-tree run (about 3 s) is kept:
+it is what the train runs, and it catches the pointer a new test name makes.
+
+**The budget arithmetic** (held by a test against the gate's constants). The
+gate starts with as little as `MIN_GATE_SECONDS` = 120 s left, and every check
+keeps `CHECK_MARGIN_SECONDS` = 30 s back, so at that floor 90 s are the
+checks'. Ahead of the guard script now run `deployment-values` and
+`publish-scan` (0.5 s + 0.8 s measured, 2 s held) and these two at their full
+budgets (45 s + 15 s): 62 s, leaving the guard script 28 s, over the
+`MIN_CHECK_SECONDS` = 10 s it needs to start. At their measured worst the two
+take 13.5 s + 3.2 s = 16.7 s, leaving it about 71 s. Each budget is over three
+times its slowest measured run (45 ≥ 3 × 13.6, 15 ≥ 3 × 3.2), so a normal
+run is never cut. `GUARDS_BUDGET_SECONDS` (600 s) is wall time from the guard
+check's own start, so nothing ahead of it shortens it; only the step's
+deadline is shared. None of this is on the merge path: it runs in the lane's
+own container before it publishes.
+
 ### While it works, a SwarmCloud agent runs only the related tests
 
 ```bash

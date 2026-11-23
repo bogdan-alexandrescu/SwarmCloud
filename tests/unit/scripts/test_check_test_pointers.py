@@ -65,6 +65,15 @@ def test_a_planted_pointer_is_flagged(tmp_path, capsys, comment):
     assert "apps/app/app/mod.py:2:" in capsys.readouterr().out
 
 
+def test_an_untracked_new_file_with_a_pointer_is_flagged(tmp_path, capsys):
+    root = _repo(tmp_path, TESTS)
+    new = root / "apps" / "app" / "app" / "new.py"
+    new.parent.mkdir(parents=True)
+    new.write_text("X = 1\n# held equal by tests/unit/worker/test_widget.py\n", encoding="utf-8")
+    assert ctp.main(["--root", str(root)]) == 1
+    assert "apps/app/app/new.py:2:" in capsys.readouterr().out
+
+
 def test_a_pointer_in_a_docstring_is_flagged(tmp_path, capsys):
     source = 'def f():\n    """Held equal by\n    tests/unit/worker/test_widget.py."""\n'
     root = _repo(tmp_path, {**TESTS, "apps/app/app/mod.py": source})

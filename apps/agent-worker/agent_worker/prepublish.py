@@ -27,7 +27,11 @@ and while its session can still be continued, the claude-code runner
 2. RUNS A FIXED CHECK SET, LIMITED TO WHAT THE DIFF TOUCHES (`select_checks`):
    for any change, the deployment-values guard from the base commit's copy
    over the added lines and `scripts/publish-scan.sh` (the train's other
-   ejections, owner's plan 2026-11-23: `DEPLOYMENT_VALUES_CHECK`), then
+   ejections, owner's plan 2026-11-23: `DEPLOYMENT_VALUES_CHECK`); the
+   generated API types' drift check when the change touches a file the
+   generator reads, and the whole-tree test-pointer scan when it touches
+   apps/ or tests/, each under a budget of its own past which it is left to
+   CI (`API_TYPES_CHECK`, `TEST_POINTERS_CHECK`); then
    `scripts/changed-guards.sh`; checkov over changed
    `terraform/` files and over the rendered manifests when `kubernetes/`
    changed; tflint over changed Terraform; `shellcheck -x` over changed
@@ -428,6 +432,65 @@ PUBLISH_SCAN_CHECK = "publish-scan"
 PUBLISH_SCAN_SCRIPT = "scripts/publish-scan.sh"
 #: `scripts/publish-scan.sh`'s exits: 1 a hit, 2 the scan could not run.
 _SCAN_HITS, _SCAN_CLOSED = 1, 2
+#: What the two checks above take together, rounded up from the 0.5 s and
+#: 0.8 s measured on 2026-11-23: the share of the gate's floor they hold
+#: ahead of the guard script, in the budget arithmetic below.
+PRE_GUARD_MEASURED_SECONDS = 2.0
+
+#: TWO WHOLE-TREE CHECKS THE TRAIN WAS THE FIRST TO RUN (2026-11-23: three
+#: merge trains red, each costing every pull request aboard about half an
+#: hour and a bisection). Both run ahead of the guard script, each under a
+#: budget of its own; one that overruns it is LEFT TO CI -- named on the
+#: check and in the advisory section, never passed and never sent to the
+#: agent -- as a guard part stopped at the guard budget is.
+#:
+#: `api-types`: the console's generated API types against what the generator
+#: writes now. Run only when the change touches a file the generator reads,
+#: which the generator itself names (`--inputs`, standard library only, so
+#: the trigger costs one interpreter start and is never restated here).
+API_TYPES_CHECK = "api-types"
+API_TYPES_SCRIPT = "scripts/gen_api_types.py"
+#: The one command that fixes a stale file: the generator's own `REGENERATE`.
+API_TYPES_FIX = "uv run python scripts/gen_api_types.py"
+#: How long `--inputs` may take: one interpreter start.
+API_TYPES_INPUTS_SECONDS = 10.0
+#: The slowest of three cold runs (a new uv project environment, as every
+#: gate round has) measured 2026-11-23 on a 6-CPU lane container: 13.52 s,
+#: 11.05 s, 12.10 s; warm 10.03 s, 8.71 s, 8.71 s. Most of it is importing
+#: swarm-api to build the document.
+API_TYPES_MEASURED_SECONDS = 13.6
+#: Over three times the slowest run: a normal run is never cut.
+API_TYPES_BUDGET_SECONDS = 45.0
+#: `test-pointers`: no comment or docstring under apps/ names a test. Over
+#: the whole tree, as the train runs it -- a new test's name can turn a
+#: comment nobody touched into a pointer -- and only when the change touches
+#: apps/ or tests/.
+TEST_POINTERS_CHECK = "test-pointers"
+TEST_POINTERS_SCRIPT = "scripts/check_test_pointers.py"
+#: `scripts/check_test_pointers.py`'s exits: 1 a pointer, 2 a usage error.
+_POINTERS_FOUND, _POINTERS_USAGE = 1, 2
+#: The prefixes whose change runs it: the comments it scans, and the tests
+#: whose names make a pointer.
+TEST_POINTERS_TRIGGERS = ("apps/", "tests/")
+#: The slowest of three whole-tree runs measured 2026-11-23 (cold, without a
+#: bytecode cache: 3.16 s, 3.05 s, 3.07 s; warm 3.18 s, 3.05 s, 3.08 s).
+TEST_POINTERS_MEASURED_SECONDS = 3.2
+#: Over three times the slowest run.
+TEST_POINTERS_BUDGET_SECONDS = 15.0
+TEST_POINTERS_ADVICE = (
+    "Keep the reason, drop the pointer: each line above is a comment or docstring "
+    "under apps/ that names a test file or test. Rewrite it to say WHY the code is "
+    "as it is, without naming the test that holds it -- find-references already "
+    "answers what covers a line. Do not move the comment into an allowlist.")
+# THE BUDGET ARITHMETIC. The gate starts with as little as MIN_GATE_SECONDS
+# (120 s) left, and every check keeps CHECK_MARGIN_SECONDS (30 s) back, so at
+# that floor 90 s are the checks'. Ahead of the guard script now run the two
+# checks above (2 s) and these two at their full budgets (45 + 15 s): 62 s,
+# which leaves the guard script 28 s, over the MIN_CHECK_SECONDS (10 s) it
+# needs to start. Measured, the two take 16.8 s at worst together, leaving it
+# 71 s. GUARDS_BUDGET_SECONDS is wall time from the guard check's own start,
+# so nothing that runs ahead of it shortens it; only the step's deadline is
+# shared.
 #: What a timed-out guard run prints: the script's own deadlines (pytest,
 #: vitest, contract parity), `run_command`'s kill at the check limit, or the
 #: gate's note of a `timed_out` record.
@@ -658,6 +721,9 @@ class Check:
     command: str
     run: Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]] | None = None
     skipped: str | None = None
+    #: A budget of the check's own, under the limit every check has: killed
+    #: at it with no failure of its own, the check is LEFT TO CI, not failed.
+    budget: float | None = None
 
 
 @dataclass
@@ -2293,6 +2359,101 @@ def _publish_scan(base: str) -> Callable[[Runner, Path, Mapping[str, str], float
     return run
 
 
+def api_types_inputs(repo: Path, *, python: str, runner: Runner, env: Mapping[str, str]
+                     ) -> tuple[str, ...] | None:
+    """The files the generator says its output is a function of (`--inputs`;
+    a directory ends in "/"), or None when it could not say."""
+    try:
+        ran = runner([python, API_TYPES_SCRIPT, "--inputs"], repo, env,
+                     API_TYPES_INPUTS_SECONDS)
+    except OSError:
+        return None
+    if ran.code != 0 or ran.timed_out:
+        return None
+    entries = tuple(line.strip() for line in ran.output.splitlines() if line.strip())
+    return entries or None
+
+
+def touches(files: Iterable[str], inputs: Iterable[str]) -> list[str]:
+    """The files in `files` that are one of `inputs` or under one of its
+    directories (an entry ending in "/")."""
+    entries = tuple(inputs)
+    return [f for f in files
+            if any(f == e or (e.endswith("/") and f.startswith(e)) for e in entries)]
+
+
+def _api_types(argv: Sequence[str]) -> Callable[[Runner, Path, Mapping[str, str], float],
+                                                tuple[str, str]]:
+    """The generator's `--check`: a stale file fails with the one command
+    that regenerates it; a generator that cannot build the document (an
+    import error in the change) fails with what it printed."""
+    def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float
+            ) -> tuple[str, str]:
+        ran = runner(list(argv), repo, env, timeout)
+        if ran.code == 0 and not ran.timed_out:
+            return PASSED, ran.output
+        out = ran.output.rstrip()
+        if not ran.timed_out and "is stale" in out:
+            out += (f"\n\nThe generated API types are not what the generator writes now. "
+                    f"Run `{API_TYPES_FIX}` from the repository root and commit the file it "
+                    "writes; never edit the generated file by hand.")
+        return FAILED, out
+    return run
+
+
+def _test_pointers(argv: Sequence[str]) -> Callable[[Runner, Path, Mapping[str, str], float],
+                                                    tuple[str, str]]:
+    """The whole-tree pointer scan: each pointer is printed `path:line: text`,
+    and the fix turn is told to keep the reason and drop the pointer."""
+    def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float
+            ) -> tuple[str, str]:
+        ran = runner(list(argv), repo, env, timeout)
+        if ran.code == 0 and not ran.timed_out:
+            return PASSED, ran.output
+        if ran.code == _POINTERS_USAGE and not ran.timed_out:
+            return ERROR, f"the scan could not run (exit 2): {ran.output.strip()[-500:]}"
+        out = ran.output.rstrip()
+        if ran.code == _POINTERS_FOUND and not ran.timed_out:
+            out += "\n\n" + TEST_POINTERS_ADVICE
+        return FAILED, out
+    return run
+
+
+def lane_drift_checks(repo: Path, files: Sequence[str], *, env: Mapping[str, str],
+                      python: str, runner: Runner) -> list[Check]:
+    """`api-types` and `test-pointers` for this diff: each chosen when the
+    repository has its script, run when the change touches its trigger and
+    skipped with the reason otherwise, under its own budget."""
+    checks: list[Check] = []
+    if (repo / API_TYPES_SCRIPT).is_file():
+        argv = ["uv", "run", *UV_ENV_FLAGS, "--quiet", "python", API_TYPES_SCRIPT, "--check"]
+        command = f"uv run python {API_TYPES_SCRIPT} --check"
+        inputs = api_types_inputs(repo, python=python, runner=runner, env=env)
+        # A generator that cannot name its inputs is checked on every change:
+        # a missed stale file costs a train, a needless run seconds.
+        hit = list(files) if inputs is None else touches(files, inputs)
+        if not hit:
+            checks.append(Check(API_TYPES_CHECK, (), command,
+                                skipped="no file the generator reads changed"))
+        elif not _which("uv", env):
+            checks.append(Check(API_TYPES_CHECK, tuple(hit), command,
+                                skipped="uv is not on PATH in this image"))
+        else:
+            checks.append(Check(API_TYPES_CHECK, tuple(hit), command, run=_api_types(argv),
+                                budget=API_TYPES_BUDGET_SECONDS))
+    if (repo / TEST_POINTERS_SCRIPT).is_file():
+        argv = [python, TEST_POINTERS_SCRIPT, "--root", "."]
+        command = f"python3 {TEST_POINTERS_SCRIPT} --root ."
+        hit = [f for f in files if f.startswith(TEST_POINTERS_TRIGGERS)]
+        if hit:
+            checks.append(Check(TEST_POINTERS_CHECK, tuple(hit), command,
+                                run=_test_pointers(argv), budget=TEST_POINTERS_BUDGET_SECONDS))
+        else:
+            checks.append(Check(TEST_POINTERS_CHECK, (), command,
+                                skipped="nothing under apps/ or tests/ changed"))
+    return checks
+
+
 def select_checks(repo: Path, files: Sequence[str], *, base: str,
                   env: Mapping[str, str], python: str = "python3",
                   snapshot: Snapshot | None = None, pick: TestPick | None = None,
@@ -2315,6 +2476,7 @@ def select_checks(repo: Path, files: Sequence[str], *, base: str,
     if (repo / PUBLISH_SCAN_SCRIPT).is_file():
         checks.append(Check(PUBLISH_SCAN_CHECK, tuple(files),
                             f"bash {PUBLISH_SCAN_SCRIPT} --base {base}", run=_publish_scan(base)))
+    checks += lane_drift_checks(repo, files, env=env, python=python, runner=runner)
     if (repo / GUARDS_SCRIPT).is_file():
         argv = ["bash", GUARDS_SCRIPT, "--base", base]
         checks.append(Check(GUARDS_CHECK, tuple(files), " ".join(argv), run=_simple(argv)))
@@ -2438,6 +2600,8 @@ def _run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
                 out_of_budget = (f"the step's budget ran out before this check "
                                  f"({max(0, int(left))} s left)")
             limit = min(timeout, left)
+        if check.budget is not None:
+            limit = min(limit, check.budget)
         if out_of_budget is not None:
             # Once out of budget, no later check starts either (archived issue 2274).
             outcomes.append(Outcome(check.name, SKIPPED, 0.0, check.files, check.command,
@@ -2458,11 +2622,18 @@ def _run_checks(repo: Path, checks: Sequence[Check], *, env: Mapping[str, str],
         timed_out = status == FAILED and (
             guards_timed_out(output) if check.name == GUARDS_CHECK
             else killed_at_limit(output))
-        if timed_out:
+        left_to_ci: tuple[str, ...] = ()
+        if timed_out and check.budget is not None:
+            # Its own budget, like a guard part stopped at the guard budget:
+            # left to CI, which runs it in full -- not a failure to fix.
+            status, timed_out, left_to_ci = SKIPPED, False, (check.command,)
+            reason = (f"ran past its {int(limit)} s budget: left to CI, not passed "
+                      f"({check.command})")
+        elif timed_out:
             reason = "ran out of time"
         outcomes.append(Outcome(check.name, status, clock() - started, check.files,
                                 check.command, output=output, reason=reason,
-                                timed_out=timed_out))
+                                timed_out=timed_out, left_to_ci=left_to_ci))
     return outcomes
 
 
@@ -2883,6 +3054,10 @@ def advisory_section(*, graph: Mapping[str, Any], outcomes: Sequence[Outcome],
                                        else "") for o in ran) + ".")
     if guards:
         parts += ["", f"### {GUARDS_CHECK}", *(f"- {note}" for note in guards)]
+    left = [o for o in outcomes if o.left_to_ci and o.name != GUARDS_CHECK]
+    if left:
+        parts += ["", "### Left to CI", *(f"- `{o.name}` {o.reason or 'left to CI'}."
+                                          for o in left)]
     services = [o for o in outcomes if o.name == TEST_SERVICES_CHECK and o.status == ERROR]
     for outcome in services:
         parts += ["", f"### {TEST_SERVICES_CHECK} (error, not the change's)",
