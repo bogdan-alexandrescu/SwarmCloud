@@ -54,6 +54,7 @@ from . import profiles as catalogue
 from . import workflows
 from .awaitinput import VERDICTS
 from .client import (
+    SUBMIT_TIMEOUT_SECONDS,
     TERMINAL,
     SwarmClient,
     SwarmError,
@@ -61,6 +62,7 @@ from .client import (
     chosen_tenant,
     enter_hold_lane,
     outputs_of,
+    submit_guard,
     task_id_of,
     task_payload,
     tenant_listing,
@@ -691,6 +693,27 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "swarm_outcomes",
+        "description": (
+            "One short object per task, read once and at once (no wait): `state`, "
+            "`pull_request` {number, url}, `review` {verdict MERGE/NOT_YET/SKIPPED, "
+            "blockers_and_majors}, `merge_refused` {code, message} when a merge step "
+            "was refused (the message names the failing check), `cost_usd` and "
+            "`duration_s` over every attempt (null when not measured, never 0) and "
+            "`owner_questions_open`. Give `task_ids`, or one `workflow_id` for one "
+            "outcome per step in step order. Read-only. For everything a task "
+            "produced, use swarm_result."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "task_ids": {"type": "array", "items": {"type": "string"}},
+                "workflow_id": {"type": "string"},
+            },
+        },
+    },
+    {
         "name": "swarm_follow",
         "description": (
             "What these agents have produced SINCE a cursor: new events and new "
@@ -969,6 +992,9 @@ TOOLS: list[dict[str, Any]] = [
             "cost), `swaps` (when, from, to, reason), `last_run_duration_s` and "
             "`swap_cost` (the seconds and tokens a restarted run spent before it "
             "acted again); its `duration_s` is the sum of the runs. "
+            "`duration_partial: true` (or `swap_cost.partial: true`) means a "
+            "run's time is unknown and was left out of that sum: a floor, not "
+            "the whole. "
             "`artifacts_complete: false` means the task has not finished and its "
             "artifacts are uploaded when the attempt ends -- not that it produced "
             "none; `artifacts: null` means they could not be listed, and "
@@ -1723,6 +1749,14 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "With attach \"all\" only: workflow or task ids with a live row you can see; left out.",
+                },
+                "details": {
+                    "type": "boolean",
+                    "description": (
+                        "With attach only: put each step row's details line in the reply's "
+                        "`args` (`details.steps`). Without it they go into the titled copy the "
+                        "run is launched from, and the reply stays small."
+                    ),
                 },
             },
         },
@@ -3332,7 +3366,8 @@ def _send_task(client: Any, credentials: dict[str, Any] | None, **fields: Any) -
         return client.dispatch(**fields)
     payload = task_payload(**fields)
     payload["mcp_credentials"] = credentials
-    return unwrap_task(client.request("POST", "/v1/tasks", payload=payload))
+    with submit_guard("/v1/tasks"):
+        return unwrap_task(client.request("POST", "/v1/tasks", payload=payload, timeout=SUBMIT_TIMEOUT_SECONDS))
 
 
 def _step_servers(steps: list[dict[str, Any]]) -> set[str]:
@@ -4463,6 +4498,10 @@ VERDICT_MAX_BYTES = 256 * 1024
 #: `skipped` reason: never as MERGE, since no review ran.
 SKIPPED_VERDICT = "SKIPPED"
 SKIPPED_REASON_KEY = "skipped"
+#: The severity a review marks a finding that goes to the wave epic instead of
+#: the fix step (`agent_worker.verdict.SEVERITY_MINOR`, archived issue 638).
+#: Every other finding, unmarked included, is a blocker or a major.
+SEVERITY_MINOR = "minor"
 
 
 def _verdict_of(client: Any, task_id: str, listing: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -4515,10 +4554,127 @@ def _verdict_of(client: Any, task_id: str, listing: dict[str, Any] | None) -> di
         return unavailable(f"its `verdict` is {raw!r}, not {' or '.join(VERDICTS)}")
     findings = document.get("findings")
     if isinstance(findings, list):
-        count = sum(1 for item in findings if item not in (None, "", {}, []))
+        kept = [item for item in findings if item not in (None, "", {}, [])]
     else:
-        count = 0 if findings in (None, "") else 1
-    return {"verdict": verdict, "findings": count, "file": VERDICT_NAME}
+        kept = [] if findings in (None, "") else [findings]
+    # `blockers_and_majors` (improvement plan 2026-11-23, item 3): the
+    # findings the fix step must clear, i.e. all but those marked minor.
+    serious = sum(1 for item in kept if not (
+        isinstance(item, dict) and isinstance(item.get("severity"), str)
+        and item["severity"].strip().lower() == SEVERITY_MINOR))
+    return {"verdict": verdict, "findings": len(kept), "blockers_and_majors": serious,
+            "file": VERDICT_NAME}
+
+
+def _review_verdict(client: Any, task_id: str) -> dict[str, Any] | None:
+    """`_verdict_of` with the artifacts listing it needs read first; a listing
+    that cannot be read is `unavailable_because`, never a missing verdict."""
+    try:
+        listing = client.artifacts(task_id)
+    except SwarmError as exc:
+        return {"verdict": None, "file": VERDICT_NAME,
+                "unavailable_because": f"the artifacts could not be listed: {exc}"}
+    return _verdict_of(client, task_id, listing)
+
+
+def _outcome_of(client: Any, task: dict[str, Any]) -> dict[str, Any]:
+    """`swarm_outcomes`' short object for one read task (improvement plan
+    2026-11-23, item 3).
+
+    WHY. A session that launched a batch read each task through
+    `swarm_result` -- every output, every attempt, every question -- to learn
+    six facts; a scheduled check paid that per task. This reads only what the
+    API already serves: the task document as given, `verdict.json` through
+    the artifacts route when the listing names it, and the questions route
+    only when the worker counted questions. Unmeasured is null, never 0.
+    """
+    task_id = str(task_id_of(task) or "")
+    summary = task.get("result_summary") if isinstance(task.get("result_summary"), dict) else {}
+    git = summary.get("git") if isinstance(summary.get("git"), dict) else {}
+    pr = git.get("pull_request") if isinstance(git.get("pull_request"), dict) else None
+    number = summary.get("pull_request")
+    if pr is not None:
+        pull_request: dict[str, Any] | None = {"number": pr.get("number"), "url": pr.get("url")}
+    elif isinstance(number, int) and not isinstance(number, bool):
+        # A merge or post-verdict step names the pull request it acted on by number.
+        pull_request = {"number": number, "url": None}
+    else:
+        pull_request = None
+    out: dict[str, Any] = {"task_id": task_id, "state": task.get("state"), "pull_request": pull_request}
+    # THE REVIEW: the task's own verdict.json (a review step), else the verdict
+    # a merge step or a gated step recorded from its review, whose findings it
+    # keeps as text only -- so their severity is not known there.
+    shown = _review_verdict(client, task_id) if task_id else None
+    gate = summary.get("verdict_gate") if isinstance(summary.get("verdict_gate"), dict) else {}
+    recorded = summary.get("verdict") if isinstance(summary.get("verdict"), str) else gate.get("verdict")
+    if shown is not None:
+        out["review"] = {"verdict": shown.get("verdict"),
+                         "blockers_and_majors": shown.get("blockers_and_majors")}
+        for key in ("skipped", "unavailable_because"):
+            if shown.get(key):
+                out["review"][key] = shown[key]
+    elif isinstance(recorded, str):
+        out["review"] = {"verdict": recorded, "blockers_and_majors": None}
+    else:
+        out["review"] = None
+    refusal = summary.get("refusal") if isinstance(summary.get("refusal"), dict) else None
+    if summary.get("action") == "merge" and refusal is not None:
+        out["merge_refused"] = {"code": refusal.get("code"), "message": refusal.get("message")}
+    # SPEND over every attempt, as the task read served it: no extra read.
+    totals = progress.spend_totals(client, task, read_attempts=False)
+    out["cost_usd"] = totals.get("cost_usd_total")
+    if totals.get("cost_incomplete"):
+        out["cost_incomplete"] = True
+    duration = totals.get("duration_s_total")
+    out["duration_s"] = duration if duration is not None else progress._duration(task)["duration_s"]
+    if summary.get("duration_partial") is True:
+        out["duration_partial"] = True
+    # OWNER QUESTIONS: a merge step held on them names them; any other task's
+    # are its questions.json less the answered ones.
+    wait = summary.get("wait") if isinstance(summary.get("wait"), dict) else {}
+    held = summary.get("open_questions")
+    if wait.get("code") == "owner_questions_open" and isinstance(held, list):
+        out["owner_questions_open"] = len(held)
+    else:
+        asked = progress.open_owner_questions(client, task)
+        out["owner_questions_open"] = len(asked.get("questions") or [])
+        if asked.get("questions_unavailable_because"):
+            out["owner_questions_open"] = None
+            out["questions_unavailable_because"] = asked["questions_unavailable_because"]
+    return out
+
+
+def _outcomes(client: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """`swarm_outcomes`: `_outcome_of` for each task id, or for each step of
+    one workflow in step order, joined to the tasks that one workflow read
+    returned (no read per task)."""
+    task_ids = args.get("task_ids")
+    workflow_id = args.get("workflow_id")
+    if bool(task_ids) == bool(workflow_id):
+        raise SwarmError(
+            "swarm_outcomes takes task_ids (a non-empty list) or one workflow_id, "
+            "exactly one of them. Nothing was read"
+        )
+    rows: list[dict[str, Any]] = []
+    if workflow_id:
+        envelope = workflows.fetch(client, str(workflow_id))
+        tasks = {str(t["id"]): t for t in envelope.get("tasks") or [] if isinstance(t, dict) and t.get("id")}
+        for step in envelope["workflow"].get("steps") or []:
+            step_task = step.get("task_id")
+            task = tasks.get(str(step_task)) if step_task else None
+            if task is None:
+                rows.append({"step_id": step.get("step_id"), "task_id": step_task, "state": None})
+                continue
+            rows.append({"step_id": step.get("step_id"), **_outcome_of(client, task)})
+        return {"workflow_id": workflow_id, "outcomes": rows}
+    for task_id in task_ids:
+        try:
+            task = client.task(str(task_id))
+        except SwarmError as exc:
+            rows.append({"task_id": task_id, "read_error": str(exc)})
+            continue
+        rows.append({**_outcome_of(client, task), "task_id": task_id})
+    return {"outcomes": rows}
 
 
 def _collect(client: Any, task_ids: list[str], wait_seconds: int) -> dict[str, Any]:
@@ -5933,6 +6089,11 @@ def _call(
                 task = client.task(task_id)
                 if task.get("state") in TERMINAL:
                     finished[task_id] = describe_task(task, client)
+                    # The review's verdict, as swarm_result shows it (improvement
+                    # plan 2026-11-23, item 3); no key when it wrote none.
+                    shown_verdict = _review_verdict(client, task_id)
+                    if shown_verdict is not None:
+                        finished[task_id]["verdict"] = shown_verdict
                     pending.remove(task_id)
             remaining = deadline - time.monotonic()
             if not pending or remaining <= 0:
@@ -6049,6 +6210,9 @@ def _call(
         task = client.task(args["task_id"])
         return json.dumps(_result_of(client, args["task_id"], task), indent=2)
 
+    if name == "swarm_outcomes":
+        return json.dumps(_outcomes(client, args), indent=2)
+
     if name == "swarm_collect":
         return json.dumps(
             _collect(client, list(args["task_ids"]), _int_arg(args, "wait_seconds", 3600)),
@@ -6134,7 +6298,7 @@ def _call(
         if target is not None:
             if target in ("all", "--all"):
                 if not filters:
-                    attached = launch.for_all(client, rows=rows)
+                    attached = launch.for_all(client, rows=rows, with_details=_flag(args, "details"))
                 else:
                     exclude = args.get("exclude")
                     if exclude is not None and not (
@@ -6148,12 +6312,14 @@ def _call(
                         exclude=exclude,
                         rows=rows,
                         project=_flag(args, "project"),
+                        with_details=_flag(args, "details"),
                     )
                 # The band launches no row but still puts this session's work in
                 # front of it: arming is unchanged there (SC-BAND).
                 attached.update(watch.arm_fields(bool(attached.get("launches")) or attached.get("followed_by") == "band"))
                 return json.dumps(attached, indent=2, default=str)
-            return json.dumps({**launch.for_attach(client, target, rows=rows), **watch.arm_fields(True)}, indent=2)
+            return json.dumps({**launch.for_attach(client, target, rows=rows, with_details=_flag(args, "details")),
+                               **watch.arm_fields(True)}, indent=2)
         document = (
             _read_spec_file(str(args["spec_path"]), base=checkout.directory())["spec"]
             if args.get("spec_path") is not None

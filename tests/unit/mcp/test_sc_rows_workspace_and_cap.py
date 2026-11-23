@@ -377,7 +377,7 @@ def test_for_tasks_follows_100_and_lists_the_rest_with_their_workspace(_plugin_r
     out = launch.for_tasks(entries)
     assert len(out["launches"]) == 100 and out["task_ids"] == [f"task_{n:03d}" for n in range(100)]
     assert all(len(copy["args"]["attach_tasks"]) == 1 and copy["args"]["max_rows"] == 1 for copy in out["launches"])
-    first = dict(out["args"]["attach_tasks"][0])
+    first = dict(out["launches"][0]["args"]["attach_tasks"][0])
     assert first.pop("details").startswith("Workspace: u-owner · ")
     assert first == {"task_id": "task_000", "title": "lane 0", "workspace": "u-owner"}
     assert [n["workspace"] for n in out["not_followed"]] == ["u-owner"] * 3
