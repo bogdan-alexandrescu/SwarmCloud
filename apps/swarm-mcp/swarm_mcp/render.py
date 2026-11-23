@@ -2166,10 +2166,21 @@ def runs_line(produced: dict[str, Any]) -> str | None:
         )
         text += f" · {len(swaps)} {noun} ({moves})"
     cost = produced.get("swap_cost")
-    if isinstance(cost, dict) and isinstance(cost.get("reread_seconds"), (int, float)):
+    if isinstance(cost, dict):
+        # `partial`: a re-read's seconds were unknown and left out of the sum
+        # (issue 56), said so the figure is not read as complete (issue 186).
+        partial = cost.get("partial") is True
         tokens = cost.get("reread_tokens") if isinstance(cost.get("reread_tokens"), dict) else {}
         total = sum(v for v in tokens.values() if isinstance(v, int) and not isinstance(v, bool))
-        text += f" · re-read {round(float(cost['reread_seconds']))}s, {total:,} tokens"
+        seconds = cost.get("reread_seconds")
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):
+            text += f" · re-read {round(float(seconds))}s, {total:,} tokens"
+            if partial:
+                text += ", partial"
+        elif partial:
+            text += f" · re-read time unknown, {total:,} tokens, partial"
+    if produced.get("duration_partial") is True:
+        text += " · duration partial (a run's time is unknown)"
     last = produced.get("last_run_duration_s")
     if isinstance(last, (int, float)) and not isinstance(last, bool):
         text += f" · last run {last}s"

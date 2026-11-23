@@ -78,6 +78,20 @@ class DiscoveryUnreachable(SwarmError):
     exit_code = EXIT_UNREACHABLE
 
 
+#: What to do when the document cannot be read and nothing else supplies the
+#: plugin's client id (improvement plan 2026-11-23, item 1): one sentence,
+#: appended to the `cannot read <url> (<why>)` that says what failed.
+NO_CLIENT_ID = (
+    "set the sc plugin's client id option (/plugin configure), "
+    "or sign in from a terminal (sc login) so this machine knows the deployment."
+)
+
+
+def without_client_id(exc: DiscoveryUnreachable) -> DiscoveryUnreachable:
+    """`exc` with `NO_CLIENT_ID` appended: the document was the last source."""
+    return DiscoveryUnreachable(f"{exc}: {NO_CLIENT_ID}", status=exc.status)
+
+
 class VersionSkew(SwarmError):
     """The plugin and the deployment do not support each other."""
 
@@ -363,7 +377,7 @@ class Checker:
             )
         except DiscoveryUnreachable as exc:
             if self.required:
-                raise
+                raise without_client_id(exc) from exc
             self.unchecked = str(exc)
             self._unchecked_at = self.cache.clock()
             return None
