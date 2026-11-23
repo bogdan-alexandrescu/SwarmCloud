@@ -26,7 +26,8 @@ from agent_worker.pythonenv import PythonEnvWarmup, Synced
 
 
 class Recorder:
-    """A stand-in for `pythonenv.SyncRunner` that records every call."""
+    """A stand-in for `pythonenv.SyncRunner` that records every call and, on
+    success, leaves the `.venv` a real sync would."""
 
     def __init__(self, result: Synced | Exception | None = None) -> None:
         self.calls: list[tuple[list[str], Path, dict[str, str], float]] = []
@@ -37,12 +38,14 @@ class Recorder:
         self.calls.append((list(argv), Path(cwd), dict(env), timeout))
         if isinstance(self.result, Exception):
             raise self.result
+        if self.result.code == 0:
+            (Path(cwd) / ".venv").mkdir(exist_ok=True)
         return self.result
 
 
 def _checkout(tmp_path: Path, *, lock: bool = True) -> Path:
     repo = tmp_path / "repo"
-    repo.mkdir()
+    repo.mkdir(parents=True)
     (repo / "pyproject.toml").write_text("[project]\nname = 'x'\nversion = '0'\n")
     if lock:
         (repo / "uv.lock").write_text("version = 1\n")
