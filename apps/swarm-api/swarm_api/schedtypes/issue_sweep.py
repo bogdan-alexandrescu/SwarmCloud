@@ -80,16 +80,17 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Callable, Iterable, Mapping
 
+from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import TERMINAL_STATES
 
 from .. import issuesweep, scheduletypes
 from ..errors import ApiError
 from ..forge import ForgeReadError, open_work_without
-from ..issueruns import IssueRun, IssueRuns, refuse_auto_merge, run_source
+from ..issueruns import PLANNER_PROFILE, IssueRun, IssueRuns, refuse_auto_merge, run_source
 from ..repositories import Repositories, repo_id_for
 from ..routes.runs import start_run
-from ..stepclass import ROLE_PLANNER, default_class
-from ..validation import workflow_label
+from ..stepclass import ROLE_PLANNER, class_models_of, default_class
+from ..validation import ModelClassNotYetAvailable, workflow_label
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +122,33 @@ class RunOptions:
             "merge_approval": self.merge_approval,
             "fix_rounds": self.fix_rounds,
         }
+
+
+def planner_class(params: Any, class_models: Mapping[str, str] | None) -> str | None:
+    """The planner class a schedule's firing hands `run_options`.
+
+    The schedule's `planner_model_class`; the default (`fable`, the planner's
+    role default) when it names none, which `issueruns.planner_task` falls
+    back from to the profile's default where the deployment pins no model
+    for it. A class the schedule NAMED -- the planning class included --
+    that is not the profile's default and that this deployment does not pin
+    (`class_models`, `Settings.worker_class_models`) is refused here, rather
+    than silently run on the default class.
+    """
+    named = params.planner_model_class
+    if "planner_model_class" not in params.model_fields_set:
+        return named
+    profile = RUNNER_PROFILES[PLANNER_PROFILE]
+    if named != profile.default_model_class and named not in (class_models or {}):
+        raise ModelClassNotYetAvailable(
+            f"this schedule names planner_model_class {named!r}, and this deployment pins "
+            f"no model for it, so its planners cannot run it; name a pinned class, or remove "
+            f"planner_model_class to run the planner's role default (the profile's default, "
+            f"{profile.default_model_class!r}, where that is not pinned)",
+            detail={"planner_model_class": named, "runner_profile": profile.name,
+                    "default_model_class": profile.default_model_class},
+        )
+    return named
 
 
 def run_options(schedule: Mapping[str, Any], fix_rounds: int, *, plan_required: bool = False,
@@ -568,7 +596,7 @@ def create(firing: Any) -> list[dict[str, Any]]:
     selection = select(firing, params, limits=_limits(firing, params), max_live_runs=params.max_live_runs,
                        own_live=_own_live(firing, params))
     return fire(firing, selection, run_options(
-        firing.schedule, params.fix_rounds, planner_model_class=params.planner_model_class))
+        firing.schedule, params.fix_rounds, planner_model_class=planner_class(params, class_models_of(firing.ctx))))
 
 
 def dry_run(firing: Any) -> dict[str, Any]:
@@ -576,4 +604,4 @@ def dry_run(firing: Any) -> dict[str, Any]:
     selection = select(firing, params, limits=_limits(firing, params), max_live_runs=params.max_live_runs,
                        own_live=_own_live(firing, params))
     return describe(selection, run_options(
-        firing.schedule, params.fix_rounds, planner_model_class=params.planner_model_class))
+        firing.schedule, params.fix_rounds, planner_model_class=planner_class(params, class_models_of(firing.ctx))))
