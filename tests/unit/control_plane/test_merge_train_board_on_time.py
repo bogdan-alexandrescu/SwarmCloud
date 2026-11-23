@@ -362,10 +362,11 @@ def test_the_window_comes_from_the_one_shared_source():
     data = json.loads(trainboard.GATHER_SOURCE.read_text())
     assert trainboard.gather_defaults() == trainboard.Gather(
         min_prs=data["min_prs"], max_wait_minutes=data["max_wait_minutes"])
-    # The owner's direction of 13 November 2026, "8 ready or 15 minutes, up
-    # to 40" (it was "15 pull requests or 30 minutes", before that "6 ready or
+    # The improvement plan of 23 November 2026, "a lone pull request boards
+    # sooner": 8 ready or 5 minutes, up to 40 (13 November: 8 ready or 15
+    # minutes; before that "15 pull requests or 30 minutes", and "6 ready or
     # 20 minutes").
-    assert (data["min_prs"], data["max_wait_minutes"]) == (8, 15)
+    assert (data["min_prs"], data["max_wait_minutes"]) == (8, 5)
 
 
 def test_the_script_reads_the_same_file_and_states_no_second_copy():
@@ -384,8 +385,8 @@ def test_the_script_reads_the_same_file_and_states_no_second_copy():
 def test_the_repository_variable_sets_the_window_as_merge_train_yml_hands_it(db, wake_client,
                                                                             github):
     _train_park(db)
-    github.variables[trainboard.WAIT_VARIABLE] = "5"
-    github.ready_at(NUMBER, NOW - timedelta(minutes=6))
+    github.variables[trainboard.WAIT_VARIABLE] = "3"
+    github.ready_at(NUMBER, NOW - timedelta(minutes=4))
 
     _tick(wake_client)
 
@@ -396,7 +397,7 @@ def test_the_repository_variable_sets_the_window_as_merge_train_yml_hands_it(db,
 def test_a_window_variable_that_is_not_minutes_is_the_default(db, wake_client, github, value):
     _train_park(db)
     github.variables[trainboard.WAIT_VARIABLE] = value
-    github.ready_at(NUMBER, NOW - timedelta(minutes=6))
+    github.ready_at(NUMBER, NOW - timedelta(minutes=WINDOW - 1))
 
     _tick(wake_client)
 

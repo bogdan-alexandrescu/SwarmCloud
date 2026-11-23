@@ -2334,17 +2334,18 @@ def test_a_mergeability_read_that_is_not_found_is_not_retried_by_gh_read(tmp_pat
     assert "failed transiently" not in proc.stderr
 
 
-def test_the_gather_defaults_are_8_or_15_minutes_up_to_40():
+def test_the_gather_defaults_are_8_or_5_minutes_up_to_40():
     """The owner's direction, 12 November 2026: a lane's pull request runs no
     checks, so the train's run is the only test a change gets, and trains are
     large -- "15 pull requests or 30 minutes, up to 40", then for speed on
-    13 November, "8 ready or 15 minutes, up to 40". The minimum and the
+    13 November, "8 ready or 15 minutes, up to 40", then on 23 November
+    "8 ready or 5 minutes, up to 40". The minimum and the
     window live in the gather file swarm-api reads too; the maximum is the
     script's own; the workflow says all three where the variables override
     them. MUTATION: put any default back (4, 6, 15, 20 or 30)."""
     code = SCRIPT.read_text()
     gather = json.loads((REPO / "apps" / "swarm-api" / "swarm_api" / "merge_train_gather.json").read_text())
-    assert (gather["min_prs"], gather["max_wait_minutes"]) == (8, 15)
+    assert (gather["min_prs"], gather["max_wait_minutes"]) == (8, 5)
     assert 'MAX_PRS="${MERGE_TRAIN_MAX_PRS:-40}"' in code.splitlines()
     for knob, key in (("MERGE_TRAIN_MIN_PRS", "min_prs"), ("MERGE_TRAIN_MAX_WAIT_MINUTES", "max_wait_minutes")):
         assert f"${{{knob}:-$(gather_default {key})}}" in code, knob
