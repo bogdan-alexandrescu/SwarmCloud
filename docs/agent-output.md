@@ -822,7 +822,7 @@ also name a **model class**, one of four classes from the frozen
 | class | pinned ID | meant for |
 |---|---|---|
 | `opus` | `claude-opus-5-5` | the default: coding and implementation |
-| `fable` | `claude-fable-5-1` | planning |
+| `fable` | `claude-fable-5-2` (from `claude-fable-5-1`, owner 2026-11-23) | planning |
 | `sonnet` | `claude-sonnet-5-5` | summarising, reformatting |
 | `haiku` | `claude-haiku-5-5` | classifying, extracting |
 

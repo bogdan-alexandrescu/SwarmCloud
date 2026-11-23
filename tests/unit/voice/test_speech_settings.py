@@ -206,7 +206,7 @@ def test_an_admin_picks_another_listed_conversation_model_and_an_unlisted_one_is
 
 
 #: Terraform's `local.runner_models`, as `model_class_env` hands it to swarm-api.
-PINS = {"opus": "claude-opus-5-5", "fable": "claude-fable-5-1", "sonnet": "claude-sonnet-5-5",
+PINS = {"opus": "claude-opus-5-5", "fable": "claude-fable-5-2", "sonnet": "claude-sonnet-5-5",
         "haiku": "claude-haiku-5-5"}
 
 
