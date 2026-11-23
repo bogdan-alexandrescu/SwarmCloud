@@ -131,10 +131,17 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # merge (2.6 s), test_issue_forms (0.6 s) and test_verify_deployer_trust
 # (4.0 s), +7.2 CI-seconds a pull request; they also read CLAUDE.md or
 # docs/runbooks/merge-app.md by name, so a docs-only diff of those selects
-# them as readers (CI-GUARDS-THREE, part of archived issue 1822). Last:
-# test_check_test_pointers (about 2.5 s), which refuses a comment under apps/
-# that names a test -- a new one names no test, so only a whole-tree run
-# reaches it (part of issue 69).
+# them as readers (CI-GUARDS-THREE, part of archived issue 1822). After
+# test_verify_deployer_trust: test_check_test_pointers (about 2.5 s), which
+# refuses a comment under apps/ that names a test -- a new one names no test,
+# so only a whole-tree run reaches it (part of issue 69). Then the inventory
+# walkers the merge train ejected for (owner's improvement plan, 2026-11-23)
+# -- test_agent_quality_inventory (every skip, xfail and quarantine under
+# tests/ has its row in docs/design/agent-quality/known-failures.md; 6.3 s in
+# a 6-CPU container), test_runbook_index (every docs/runbooks/*.md is linked
+# from its README; 0.1 s) and test_plugin_agents_ignore_chat (every
+# plugin/agents/*.md is a known kind; 1.0 s). A new test file, runbook or
+# agent breaks them and names none of them, so no diff selects them.
 GUARD_TESTS=(
   tests/unit/scripts/test_docs_describe_what_was_built.py
   tests/unit/scripts/test_docs_spec_amendments.py
@@ -178,6 +185,9 @@ GUARD_TESTS=(
   tests/unit/scripts/test_issue_forms.py
   tests/unit/scripts/test_verify_deployer_trust.py
   tests/unit/scripts/test_check_test_pointers.py
+  tests/unit/scripts/test_agent_quality_inventory.py
+  tests/unit/scripts/test_runbook_index.py
+  tests/unit/mcp/test_plugin_agents_ignore_chat.py
 )
 # The guards that read docs: all a docs-only diff selects of GUARD_TESTS.
 # Pull-request CI runs the whole GUARD_TESTS even for a docs-only change.

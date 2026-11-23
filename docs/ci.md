@@ -4384,7 +4384,40 @@ offline, path-filtered job) and `checkov`. The deployment-values guard on the
 diff is not a job of these three workflows
 ([design/generic-repository.md](design/generic-repository.md)), so this rule
 does not touch it; a SwarmCloud lane also meets it in its worker's
-pre-publish gate (`scripts/changed-guards.sh`).
+pre-publish gate, as the gate's `deployment-values` check (since 2026-11-23;
+before that this sentence named `scripts/changed-guards.sh`, which never ran
+the guard, and a lane met it first on the merge train).
+
+**The gate's `deployment-values` check runs the guard the way the train
+does.** A lane's pull request runs no CI before the merge train, so the gate
+is the only check before it, and a finding there is fixed in the agent's fix
+turn instead of ejecting the pull request. The check runs
+`scripts/guards/deployment-values.sh --diff <base> --mode enforce` over the
+lines the change adds, from the **base commit's** copy of `scripts/guards/`
+and `scripts/lib/` -- security.yml checks the guard out from the base sha and
+the change "as data only", so the allowlist it reads,
+`scripts/guards/placeholders.json`, is **main's**, never the pull request's.
+Uncommitted and untracked files, which the worker commits at publish, are
+scanned too: the gate checks the tree it would publish out as a detached
+temporary worktree and removes it after. A worker holds no pattern list, so
+the guard runs its shape layer and exits 3 (`name layer skipped`): the gate
+reads that as the shape layer passing, the names left to CI; exit 1 is a
+finding the agent fixes, exit 2 an error.
+
+**A public host lands on main first.** When the finding is a `url-host`
+rule, the fix turn is told plainly: adding the host to `placeholders.json`
+in the same pull request does not help, because the train reads main's copy
+and ejects the pull request anyway. Use a placeholder host (`example.com`,
+`example.org`, `example.net`) or drop the URL; a public host the repository
+really needs goes to main first, in its own small pull request that adds it
+to the allowlist, and only then into a change that names it.
+
+The gate's `publish-scan` check runs `scripts/publish-scan.sh --base <base>`
+beside it, the worker's own credential scan, so a credential-shaped literal
+is fixed in the fix turn rather than failing the attempt at the worker's
+final leak scan after it. Both checks take about a second (0.5 s and 0.8 s,
+measured 2026-11-23) and run before `scripts/changed-guards.sh`, whose time
+box never skips them.
 
 **The rule is written once**, as the `what this change reaches` job's `full`
 output: `true` when the event is not `pull_request`, when the head branch
