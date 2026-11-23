@@ -162,7 +162,7 @@ start — with macOS as the first profile.
   (module docstring; invariant 8).
 * Park and exit: `lifecycle.py::Worker._park_for_quota` — checkpoint, upload,
   `control.park`, release, exit 75 (invariant 4).
-* Heartbeat: `lifecycle.py::Worker._heartbeat` → `ControlPlane.heartbeat`.
+* Heartbeat: `heartbeat.py::HeartbeatMixin._heartbeat` (inherited by `Worker`) → `ControlPlane.heartbeat`.
 * Artifacts: `lifecycle.py::Worker._upload_outputs` walks `$SWARM_ARTIFACTS_DIR`
   and uploads under the attempt's `artifact_prefix` in the object store built
   by `__main__.py::build_worker`.
