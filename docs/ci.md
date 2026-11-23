@@ -4489,7 +4489,12 @@ skipped, while its issue is worked:
 * **`tests/unit/conftest.py`** marks every listed test `flaky` at collection
   (the marker is registered in `pyproject.toml`), through
   `tests/unit/flaky_quarantine.py`. A malformed list stops collection with its
-  line number rather than quarantine the wrong thing.
+  line number rather than quarantine the wrong thing, and so does an entry
+  naming a test that does not exist: a renamed test would otherwise leave its
+  entry quarantining nothing while the real flake gates again. The loader
+  reads existence from the files on disk, not from the collected items, so a
+  shard that collects a subset loads the same list. The check lived in a test
+  of its own until issue 74 folded it into the loader.
 * **The unit job** runs the gating suite with `-m "not flaky"`, then runs the
   shard's quarantined tests in `quarantined unit tests (report only, never fail
   the gate)`. That step's failure is a warning annotation and a line in the
@@ -4502,9 +4507,8 @@ skipped, while its issue is worked:
   2026-11-21 audit it read the shard's file count, so with the list empty
   every shard still started a second pytest to select nothing.
 * **`tests/unit/scripts/test_flaky_quarantine.py`** holds the parser, the
-  marking, the job's two steps, and that every listed test exists: a renamed
-  test would otherwise leave its entry quarantining nothing while the real
-  flake gates again.
+  marking, the job's two steps, and that the conftest stops collection on a
+  malformed list or one naming a test that is not there.
 
 The list covers `tests/unit` only. The UI suite and the integration suite have
 no quarantine; a flake there is fixed at its cause.

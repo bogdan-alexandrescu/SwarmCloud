@@ -18,7 +18,7 @@ is frozen and owned by no package; a need there is a contract request.
 
 | Package | Owns | Its tests |
 |---|---|---|
-| Baseline and capability inventory (this one) | `docs/design/agent-quality/`, `scripts/agent_quality_inventory.py` | `tests/unit/scripts/test_agent_quality_inventory.py` |
+| Baseline and capability inventory (this one) | `docs/design/agent-quality/` | none: documents kept by hand (issue 74 retired their census) |
 | Work contracts and territory | `apps/agent-worker/agent_worker/territory.py`, `expected_outputs.py`, `specverify.py`, `verdict.py`, `questions.py`, `owner_questions.py`; `apps/swarm-api/swarm_api/territory.py`, `laneterritory.py` | `tests/unit/worker/test_territory_warn.py`, `test_specverify_upstream.py`, `test_verdict_gate.py`, `test_fencing.py`; `tests/unit/control_plane/test_plan_territory.py`, `test_territory_input.py` |
 | Jev accounting and adapter | `apps/agent-worker/agent_worker/judge/`, `jevkey.py`, `qualitygates.py`, `runners/jev_launch.py`; `apps/swarm-api/swarm_api/jevusage.py`, `routes/jev_usage.py`, `judgment.py`; `apps/swarm-ui/src/JevUsagePage.tsx`; `images/agent-runtime-base/jev-gates/` | `tests/unit/worker/test_jev_*.py`, `test_judge_*.py`, `test_quality_gates.py`; `tests/unit/control_plane/test_jev_usage.py`, `test_issue_run_jev_hold.py`; `apps/swarm-ui/src/__tests__/jev.*.test.tsx` |
 | Index and freshness | `apps/agent-worker/agent_worker/indexrun.py`, `indexspec.py`; `apps/swarm-api/swarm_api/repoindex.py`, `indexfailure.py`, `schedtypes/repo_index_refresh.py`; `apps/swarm-graph/`; `images/agent-runtime-indexer/` | `tests/unit/control_plane/test_repository_index*.py`; `tests/unit/worker/test_index_run_*.py`, `test_repo_index_*.py`; `tests/unit/graphsvc/` |

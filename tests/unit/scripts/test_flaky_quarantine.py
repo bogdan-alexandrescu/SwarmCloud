@@ -4,8 +4,9 @@ collection and into the unit job (docs/ci.md, "Flaky tests and the quarantine").
 What is held here:
   * the list parses, and a malformed line is refused with its line number --
     a list that half-parsed would quarantine the wrong thing in silence;
-  * every listed test exists: a renamed test would leave its entry
-    quarantining nothing while the real flake gates again;
+  * an entry naming a test that does not exist stops collection: a renamed
+    test would leave its entry quarantining nothing while the real flake
+    gates again;
   * the `flaky` marker is registered, and tests/unit/conftest.py puts it on
     exactly the listed items;
   * the unit job deselects the marker from the gating run and runs it in a
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import re
 import tomllib
 from pathlib import Path
 
@@ -145,6 +147,38 @@ def test_the_conftest_stops_collection_on_a_malformed_list(monkeypatch):
         module.pytest_collection_modifyitems(None, [_Item(HERE_ID + "::t")])
 
 
+def test_the_conftest_stops_collection_on_a_list_naming_a_test_that_is_not_there(monkeypatch, tmp_path):
+    """A renamed or deleted test leaves its entry quarantining nothing, so the
+    loader refuses it and collection stops. Existence is read from the files
+    on disk, never from the collected items, so a shard that collects a subset
+    still loads a good list. MUTATION: drop the check from load() -- red."""
+    spec = importlib.util.spec_from_file_location("_quarantine_conftest_missing", CONFTEST)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    real_load = fq.load
+    listed = tmp_path / "flaky.txt"
+    monkeypatch.setattr(fq, "load", lambda: real_load(listed))
+
+    real = (
+        HERE_ID + "::test_apply_marks_exactly_the_listed_items",
+        HERE_ID + "::test_a_malformed_line_is_refused_with_its_line_number[a-b]",
+        HERE_ID + "::_Item::add_marker",
+    )
+    listed.write_text("".join(f"{i} #1 2026-10-14\n" for i in real), encoding="utf-8")
+    module.pytest_collection_modifyitems(None, [_Item(HERE_ID + "::t")])
+
+    for gone in (
+        HERE_ID + "::test_that_was_renamed",
+        HERE_ID + "::_Item::no_such_method",
+        HERE_ID + "::NoSuchClass::test_one",
+        "tests/unit/scripts/test_no_such_file.py::test_one",
+    ):
+        listed.write_text(f"{real[0]} #1 2026-10-14\n{gone} #1 2026-10-14\n", encoding="utf-8")
+        with pytest.raises(pytest.UsageError, match=r"tests/flaky\.txt:2: .*" + re.escape(gone)):
+            module.pytest_collection_modifyitems(None, [_Item(HERE_ID + "::t")])
+
+
 def test_the_flaky_marker_is_registered():
     markers = tomllib.loads((REPO / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]["markers"]
     assert any(m.split(":", 1)[0].strip() == "flaky" for m in markers), markers
@@ -157,32 +191,6 @@ def test_the_checked_in_list_parses():
     assert fq.LIST == REPO / "tests" / "flaky.txt"
     assert fq.LIST.is_file(), "tests/flaky.txt is gone: docs/ci.md and the unit job name it"
     fq.load()
-
-
-def test_every_quarantined_test_exists():
-    """A renamed or deleted test leaves its entry quarantining nothing. Remove
-    the line, or point it at the test's new id."""
-    entries = fq.load()
-    assert fq.missing(entries) == [], (
-        "tests/flaky.txt names tests that do not exist: " + ", ".join(fq.missing(entries)))
-
-
-def test_the_existence_check_finds_a_test_that_is_not_there():
-    """The check above must be able to fail: proven on ids that exist and ids
-    that do not, in this very file."""
-    real = _entries(
-        HERE_ID + "::test_every_quarantined_test_exists",
-        HERE_ID + "::test_a_malformed_line_is_refused_with_its_line_number[a-b]",
-        HERE_ID + "::_Item::add_marker",
-    )
-    assert fq.missing(real) == []
-    gone = _entries(
-        HERE_ID + "::test_that_was_renamed",
-        HERE_ID + "::_Item::no_such_method",
-        HERE_ID + "::NoSuchClass::test_one",
-        "tests/unit/scripts/test_no_such_file.py::test_one",
-    )
-    assert fq.missing(gone) == [e.nodeid for e in gone]
 
 
 # ---------------------------------------------------------------------------
