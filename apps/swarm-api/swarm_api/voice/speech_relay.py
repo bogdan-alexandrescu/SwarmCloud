@@ -29,6 +29,25 @@ planner's line (waiting at most DELEGATION_SECONDS, the planner's
 TURN_SECONDS) and speaks it at the next silence, after the front's line. A
 newer utterance never waits for it.
 
+EARLY FIRST SENTENCE (§3.3 step 5). When the `Turns` streams
+(`streams_sentences`), the turn is asked with `on_sentence`: the front's first
+complete sentence arrives from the worker thread while the front still writes,
+and is sent to `speak` at once (the turn's `handed_at`, so `front_ms` is the
+final to that sentence). At the answer only the rest is spoken: `FrontLine.reply`
+starts with the sentence, so nothing is said twice and the page's `say.start`
+lines join to the reply the transcript records. A `barge` (or the socket
+closing) after it cuts the turn: the `cancel` ends the sentence's synthesis,
+an early sentence that comes after the cut is dropped, and the rest is never
+spoken.
+
+DELEGATED LINES. One task, `_line_speaker`, speaks the planner's lines. It is
+woken by an event (`_wake`) the moment a line arrives (`line_arrived`) or
+silence begins (`utt.end`), never by the one-second clock. A line is keyed by
+its delegation id, so a duplicated line or wake-up speaks it once; the wake is
+cleared before the queue is read, so a line queued while another is spoken
+sets it again. LINE_RECHECK_SECONDS (5 s) is the fallback for a wake-up lost
+all the same.
+
 THE MEETING POINT WITH THE START LANE (§14 L4 and L6). `Turns` is the
 interface: `turn(session_id, text, anchor)` returns a `FrontLine`;
 `delegation(session_id, delegation_id, timeout)` returns the planner's line
@@ -61,10 +80,11 @@ alike) to the first audio byte of the reply sent to the browser (`span_ms`),
 and its parts: `utt.end` to the final (`recognition_ms`), the final to the
 reply handed to synthesis as `speak` (`front_ms`, the read-back matcher and
 the front's round trip through swarm-voice), and that to the first audio byte
-sent (`synthesis_ms`). Every stamp is this relay's own clock (`clock`,
+sent (`synthesis_ms`); with an early first sentence the reply is handed to
+synthesis at that sentence. Every stamp is this relay's own clock (`clock`,
 monotonic, one process), so no two clocks are compared. The front's first
-token (`front_first_token_ms`) is not seen here or anywhere: the front's
-child streams whole messages (claudeturn.py), so it is always None. A part
+token (`front_first_token_ms`) is not seen here: the relay is handed the
+first complete sentence, never a token, so it is always None. A part
 after the point a turn stopped at (no reply, a failed turn, a barge-in, the
 next utterance or the socket closing first) is None too, never 0. The record
 holds durations, the engine, the turn id and the session id only. `on_frame`

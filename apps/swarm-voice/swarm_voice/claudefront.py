@@ -52,6 +52,16 @@ hold mid-session re-leases ONCE, excluding that account, with the last turns
 as the first message; if that fails too the turn raises `FrontDown`, the
 page's `engine down` (§4.5).
 
+EARLY FIRST SENTENCE (voice-it-own-speech.md §3.3 step 5, §12.6). `turn`
+takes `on_sentence`: the child streams its text deltas (claudeturn
+`--include-partial-messages`, `Conversation.say(on_text=)`), `EarlySentence`
+finds the first complete sentence, scrubs it and makes it spoken as the reply
+is, and hands it out once while the turn still runs. The recorded reply starts
+with it (`EarlySentence.reply`) and the answer's `rest` is what is left to
+speak, so what is spoken early is what the transcript records, once.
+`turn_lines` is the same turn as NDJSON for swarm-api's relay (main.py's
+`/turns` with `stream: true`).
+
 DELEGATIONS RUN IN THE BACKGROUND, one at a time per session, at most two
 waiting behind it; a third is refused to the model, which says so. The turn
 answers with the front's sentence and the delegation's id at once; swarm-api

@@ -52,7 +52,12 @@ ONE WARM CHILD PER SESSION (`ClaudeCode.converse`, the front's): the same
 rules -- built environment, `--tools ""`, `--strict-mcp-config` with only the
 tools it is handed, private HOME -- with `--input-format stream-json`, so each
 sentence is one user message on the running child's stdin and none pays
-Claude Code's start. `Conversation.close` stops it and removes its HOME.
+Claude Code's start. `Conversation.close` stops it and removes its HOME. It
+also runs with `--include-partial-messages`, so `Conversation.say(on_text=)`
+hands out the turn's text as it is written (`feed_text`): the front speaks its
+first sentence before its turn ends. Each delta line is scrubbed as every line
+is; claudefront re-scrubs the joined text, so a token cut across two deltas
+is still masked.
 
 NOTHING SECRET IN WHAT IS CAPTURED: every stdout event is scrubbed of the
 token and the grant (prompts.scrub, the worker's redaction rule: each known
