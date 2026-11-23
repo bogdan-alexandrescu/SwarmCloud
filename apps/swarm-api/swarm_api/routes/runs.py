@@ -85,7 +85,7 @@ from swarm_common.states import TaskState
 
 from ..auth import AuthContext
 from .. import issueruns as issueruns_module
-from .. import planhistory, planlint, refusals, roles, stepclass
+from .. import planfiles, planhistory, planlint, refusals, roles, stepclass
 from ..admins import AUDIT_COLLECTION
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import (
@@ -817,7 +817,9 @@ def _approve(
     try:
         # The review's IMPACT block from the run's own tenant's index (lane
         # KG6); None, and today's review prompt, when there is no v3 index.
-        review = read_review_context(ctx, tenant_id, approved)
+        # No build has run yet, so it is computed from the plan's files and
+        # says why (`planfiles.AT_APPROVAL`).
+        review = read_review_context(ctx, tenant_id, approved, planfiles.AT_APPROVAL)
         # The deployment's pinned classes: the requirements check runs the
         # cheap one only where it is pinned (archived issue 2524, `issueruns._check_class`).
         compiled = compile_plan(approved, review, class_models=ctx.settings.worker_class_models)
