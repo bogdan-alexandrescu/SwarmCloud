@@ -872,3 +872,25 @@ resource "google_firestore_index" "await_input_expiry" {
     order      = "ASCENDING"
   }
 }
+
+# Submission idempotency claims (swarm_api.idempotency): one document per keyed
+# POST /v1/tasks, /v1/tasks/batch or /v1/workflows, holding the ids a re-send
+# of that submission is answered with. swarm_api stamps `expires_at` = created
+# + KEY_WINDOW (24 hours) on the create, and treats an expired claim as absent
+# itself, so this policy only removes what no request can use any more. Not
+# gated on var.event_ttl_field: swarm_api writes the literal `expires_at`.
+#
+# google_firestore_field takes no labels, so managed-by=swarm-terraform cannot
+# be carried here; it is owned by the database it sits on.
+resource "google_firestore_field" "submission_keys_ttl" {
+  project    = var.project_id
+  database   = google_firestore_database.this.name
+  collection = "submission_keys"
+  field      = "expires_at"
+
+  ttl_config {}
+
+  # Never queried on: a claim is read by its hashed document id. The default
+  # single-field index would be write amplification on every keyed submit.
+  index_config {}
+}
