@@ -244,6 +244,30 @@ def sign_task_specs(tasks: Sequence[Task], signer: SpecSigner | None) -> None:
             )
 
 
+def stored_refusal(doc: Mapping[str, Any], *, task_id: str, signer: SpecSigner | None,
+                   settings: Any) -> str | None:
+    """Why a STORED task must not be signed again, or None when it may.
+
+    The one verify-before-resign rule (issue 207): every path that signs a
+    new spec from a stored task document -- the review gate's class
+    (`resign_stored`), a fix loop's round (`fixloop._next`), a step re-run's
+    clone (`steprerun.build`) -- asks this first, because a tenant's agents
+    can write any task document of their tenant. The check itself is
+    `verdictpublish.stored_spec_refusal`: the document, and its runtime
+    alternate, verify against the deployment's keys.
+
+    None with no signer: a deployment with no key (local development and
+    tests only, `signer_from_settings`) writes every spec unsigned and
+    verifies none, as the review gate does there. Nothing it writes carries
+    swarm-api's signature, so nothing is vouched for.
+    """
+    if signer is None:
+        return None
+    from .verdictpublish import stored_spec_refusal  # verdictpublish imports this module
+
+    return stored_spec_refusal(settings, doc, task_id)
+
+
 def resign_stored(doc: Mapping[str, Any], *, task_id: str, changes: Mapping[str, Any],
                   alternate_changes: Mapping[str, Any] | None,
                   signer: SpecSigner | None, settings: Any) -> dict[str, Any] | None:
@@ -269,15 +293,12 @@ def resign_stored(doc: Mapping[str, Any], *, task_id: str, changes: Mapping[str,
     task document of their tenant, and signing `{**doc, **changes}` over a
     field one of them rewrote would make swarm-api vouch for it. Checked
     here, not only by the caller, so no later caller can sign a tampered
-    spec again.
+    spec again (`stored_refusal`).
     """
-    if signer is not None:
-        from .verdictpublish import stored_spec_refusal  # verdictpublish imports this module
-
-        refusal = stored_spec_refusal(settings, doc, task_id)
-        if refusal is not None:
-            log.warning("task %s is not signed again: %s", task_id, refusal)
-            return None
+    refusal = stored_refusal(doc, task_id=task_id, signer=signer, settings=settings)
+    if refusal is not None:
+        log.warning("task %s is not signed again: %s", task_id, refusal)
+        return None
     updated = {**doc, **changes}
     metadata = dict(doc.get("metadata") or {}) if isinstance(doc.get("metadata"), Mapping) else {}
     raw_block = metadata.get(RUNTIME_METADATA_KEY)
