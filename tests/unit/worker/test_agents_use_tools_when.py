@@ -20,7 +20,8 @@ So, in the Claude Code runner, a step with the switch on gets:
   a context handoff, whose own prompt is only the handoff;
 * the same tool descriptions, which now say when each tool is worth a call.
 
-A step with both switches off gets no system-prompt block at all.
+A step with both switches off gets none of these blocks (the standing
+platform paragraphs ride the same flag regardless).
 
 Offline: the CLI is never started; `run_cli_agent` is replaced.
 """
@@ -45,6 +46,15 @@ def _system(seen: dict) -> str | None:
         return None
     assert args.count(FLAG) == 1
     return args[args.index(FLAG) + 1]
+
+
+def _tools_when_blocks(seen: dict) -> list[str]:
+    """The tools-when blocks (graph, graph skill, Jev) found in the system
+    prompt. The standing platform paragraphs ride the same flag in every step
+    (2026-11-23), so the flag's presence says nothing about these blocks."""
+    system = _system(seen) or ""
+    return [note for note in (claude_code.GRAPH_SYSTEM_NOTE, claude_code.GRAPH_SKILL_SYSTEM_NOTE,
+                              claude_code.JEV_SYSTEM_NOTE) if note in system]
 
 
 # --------------------------------------------------------------------------
@@ -79,14 +89,17 @@ def test_the_graph_block_names_when_each_call_helps():
 
 def test_a_switched_off_step_gets_no_system_prompt_block(monkeypatch, tmp_path):
     seen = _run(monkeypatch, tmp_path, {})
-    assert _system(seen) is None
+    # MUTATION: pass graph=True or jev=True to `system_note` for a step with
+    # both switches off and a block appears.
+    assert _tools_when_blocks(seen) == []
     assert claude_code.GRAPH_SYSTEM_NOTE not in seen["prompt"]
     assert claude_code.JEV_SYSTEM_NOTE not in seen["prompt"]
 
 
 def test_an_unstaged_graph_gets_no_graph_block(monkeypatch, tmp_path):
     seen = _run(monkeypatch, tmp_path, {graphstage.UNSTAGED_ENV: "the snapshot could not be read"})
-    assert _system(seen) is None
+    # MUTATION: treat an unstaged graph as on and its block appears.
+    assert _tools_when_blocks(seen) == []
 
 
 # --------------------------------------------------------------------------
@@ -102,7 +115,8 @@ def test_a_switched_on_jev_puts_its_moments_in_the_system_prompt(monkeypatch, tm
 
 def test_a_jev_config_that_is_not_a_file_gets_no_block(monkeypatch, tmp_path):
     seen = _run(monkeypatch, tmp_path, {claude_code.JUDGE_CONFIG_ENV: str(tmp_path / "absent.json")})
-    assert _system(seen) is None
+    # MUTATION: treat a config path that is not a file as on and Jev's block appears.
+    assert _tools_when_blocks(seen) == []
 
 
 def test_the_jev_block_names_when_a_call_helps():
