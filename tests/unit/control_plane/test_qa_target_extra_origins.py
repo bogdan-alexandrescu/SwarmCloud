@@ -148,6 +148,28 @@ def test_an_approval_covers_only_the_extra_origins_it_names(client, db, seeded, 
     assert qatargets.QaTargetIssuer._answer(doc)["origins"] == [BASE, FILES]
 
 
+@pytest.mark.parametrize("moved", ["api.example.com", "shop.example.com", "auth.example.com"])
+def test_an_approval_rechecks_each_hosts_name_resolution(client, db, seeded, hosts, moved):
+    """Epic 21: name resolution was checked only at registration, so an
+    approved host could by then resolve to a private address. The approval
+    checks every origin it approves again, and approves none of them when
+    one now resolves to a private or internal address."""
+    target = _registered(client)
+    hosts.answers[moved] = ["10.0.0.1"]
+    before = target_docs(db)
+    response = approve(client, target["id"], extra_origin=IDP, extra_origins=[API])
+    assert response.status_code == 422, response.text
+    assert target_docs(db) == before
+    assert not [r for r in audit_rows(db) if r["action"] == "qa_target_host_approved"]
+
+
+def test_an_approval_does_not_resolve_a_declared_origin_it_leaves_out(client, db, seeded, hosts):
+    target = _registered(client)
+    hosts.answers["files.example.com"] = ["10.0.0.1"]
+    response = approve(client, target["id"], extra_origins=[API])
+    assert response.status_code == 200, response.text
+
+
 def test_an_undeclared_extra_origin_is_refused(client, db, seeded, hosts):
     target = _registered(client)
     for named in ([CDN], [API, CDN], [IDP]):
@@ -207,6 +229,39 @@ def test_a_change_of_the_list_resets_the_approval(client, db, seeded, hosts, ext
     assert changed["approved_origins"] == [] and changed["approved_idp_token_path"] is None
     row = [r for r in audit_rows(db) if r["action"] == "qa_target_changed"][-1]
     assert row["detail"]["host_reset"] is True
+
+
+@pytest.mark.parametrize("extra", [[API], [FILES, API], [API, CDN], None])
+def test_the_change_row_carries_the_lists_old_and_new_values(client, db, seeded, hosts, extra):
+    """Epic 21: the patch's audit row names the list's values before and
+    after, not only that `extra_origins` changed."""
+    target = _registered(client)
+    response = client.patch(f"{TARGETS}/{target['id']}", json={"extra_origins": extra},
+                            headers=auth_header("carol"))
+    assert response.status_code == 200, response.text
+    row = [r for r in audit_rows(db) if r["action"] == "qa_target_changed"][-1]
+    assert row["detail"]["extra_origins"] == {"from": [API, FILES], "to": extra or []}
+
+
+def test_an_unchanged_list_puts_no_values_in_the_change_row(client, db, seeded, hosts):
+    target = _registered(client)
+    response = client.patch(f"{TARGETS}/{target['id']}", json={"name": "Shop again"},
+                            headers=auth_header("carol"))
+    assert response.status_code == 200, response.text
+    row = [r for r in audit_rows(db) if r["action"] == "qa_target_changed"][-1]
+    assert "extra_origins" not in row["detail"]
+
+
+def test_an_approval_naming_an_overlong_extra_origin_is_a_422(client, db, seeded, hosts):
+    """Epic 21: `ApproveBody.extra_origins` bounds each entry, as
+    `extra_origin` is bounded, not only the list's length."""
+    target = _registered(client)
+    before = [dict(r) for r in audit_rows(db)]
+    response = approve(client, target["id"],
+                       extra_origins=["https://" + "a" * 300 + ".example.com"])
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "validation_failed"
+    assert [dict(r) for r in audit_rows(db)] == before
 
 
 def test_another_change_keeps_the_approval(client, db, seeded, hosts):

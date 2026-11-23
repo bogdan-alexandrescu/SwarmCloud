@@ -191,3 +191,49 @@ def test_it_lists_members_and_never_removes_one(db) -> None:
     assert response.status_code == 403, response.text
     assert response.json()["code"] == "probe_admin_not_permitted"
     assert written(db) == before
+
+
+def test_an_admin_grant_stored_between_its_check_and_its_write_is_never_cleared(db, monkeypatch):
+    """The race the security re-check found (epic 21): a platform admin names
+    kim eng's admin AFTER the probe admin's approval passed its early check
+    and BEFORE its transaction writes. The refusal is decided again inside
+    the transaction, on the role read after the last-admin guard, so the
+    approval is still 403 `role_admin_required` and writes nothing."""
+    client = _client(db, ((PROBE, ("eng",)),), platform_memberships=True)
+    ref = ask(client, "kim", link_on(client, "roles-probe", "eng"))["ref"]
+    real = roles.probe_admin_admin_target
+    raced: list[int] = []
+    before: list[dict] = []
+
+    def check_then_race(*args, **kwargs):
+        real(*args, **kwargs)
+        response = client.put("/v1/admin/workspaces/eng/roles/person", headers=h("ops"),
+                              json={"email": "kim@example.com", "role": "admin"})
+        raced.append(response.status_code)
+        before.append(written(db))
+
+    monkeypatch.setattr(roles, "probe_admin_admin_target", check_then_race)
+    response = approve(client, "roles-probe", ref)
+    monkeypatch.setattr(roles, "probe_admin_admin_target", real)
+    assert raced == [200]
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "role_admin_required"
+    assert decisions(db) == []
+    assert written(db) == before[0]
+    assert _grant(client, "eng", "kim@example.com") == "admin"
+
+
+@pytest.mark.parametrize("tenant", ["eng", "research"])
+def test_its_notification_feed_is_its_listed_workspaces_join_requests_only(client, tenant):
+    """Pinned so a later widening of the feed cannot widen it silently (epic
+    21): the probe admin is rung for the open join request of eng, the one
+    workspace its entry lists, whichever workspace it reads the feed in --
+    never research's (erin's), never an admin's platform-wide view, and
+    nothing besides that one item."""
+    lee_ref = ask(client, "lee", link_on(client, "roles-probe", "eng"))["ref"]
+    ask(client, "kim", link_on(client, "erin", "research"))
+    response = client.get("/v1/notifications", headers=h("roles-probe", tenant))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [item["id"] for item in body["items"]] == [f"admin:join:{lee_ref}"]
+    assert body["partial"] is False

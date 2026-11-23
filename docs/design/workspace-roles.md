@@ -1701,6 +1701,31 @@ it is added to the list, and
 `tests/unit/control_plane/test_probe_admin_routes.py` holds the list, its
 call sites and the app's routes to each other.
 
+**Its own stored `admin` grant is capped too.** The cap applies to the
+listed principal, not to where its role came from: if it also holds its
+own stored `admin` grant in a listed workspace (a platform admin named it
+there), it is still `admin` only on `PROBE_ADMIN_ROUTES` and `member`
+everywhere else -- secrets, MCP servers, settings, removing a member -- 403
+`probe_admin_not_permitted`, exactly as without the grant
+(`RoleStore.resolve`). Why: the entry is the narrower decision, and an
+identity the probes run as must not widen back to a full workspace admin
+through a grant that outlives the probe; it fails closed, so it is kept
+rather than refused as an overlap at start. To give that principal full
+workspace admin, remove its `probe_admin_users` entry: its grant then
+applies as anyone's does. `tests/unit/control_plane/test_probe_admin_scope.py`
+pins it (`test_its_own_stored_admin_grant_is_capped_at_member_off_the_list`).
+
+**The refusal is decided inside the write's transaction.** The check that
+a probe admin's role write or approval does not name, change or clear a
+stored `admin` runs early (a fast 403), and again inside the write's own
+Firestore transaction, on the role read after the last-admin guard
+(`roles.refuse_probe_admin_admin_target`, in `routes/roles.py` and the
+approval's `also`). Every role write takes part in that guard, so a
+platform admin storing an `admin` grant between the early check and the
+write aborts the probe admin's transaction, and its retry refuses it 403
+`role_admin_required` with nothing written (epic 21; the race tests in
+`test_probe_admin_scope.py` and `test_probe_admin_join_approval.py`).
+
 **What outlives the entry.** It never sets `is_admin`, so it is not in the
 `ADMIN_USERS` migration into `admin_roles`, not in any admin listing, and
 reaches no platform-admin route (Admin › People and the join decisions

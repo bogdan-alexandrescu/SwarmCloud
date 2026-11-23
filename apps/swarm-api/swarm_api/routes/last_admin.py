@@ -31,7 +31,9 @@ platform admin can always name a new one; it only takes part in the guard.
 WHO COUNTS. Another person counts only while they hold `admin` by override,
 read fresh, AND can still select the workspace: their platform membership,
 read inside the transaction, still counts for the registered group, or a
-fresh per-group check finds them in it. A platform admin is never counted:
+per-group check finds them in it -- asked before the transaction when the
+person changed is an admin (`lookups_ahead`), so no network call holds the
+guard, and inside it only for an admin not asked before. A platform admin is never counted:
 their reach is the platform's, not the workspace's. Every read that fails is
 a 503, never an answer that lets the last admin go.
 
@@ -107,27 +109,67 @@ def admin_by_override(ctx: AppContext, tenant_id: str, email: str) -> bool:
     return mine is not None and mine.role == roles.ADMIN
 
 
+def lookups_ahead(request: Request, ctx: AppContext, *, tenant_id: str, subject: str,
+                  group: str, registered: Mapping[str, str]) -> dict[str, bool]:
+    """The directory answers `admin_remains` would need, asked BEFORE the
+    transaction (epic 21): a per-group check is a network call, and made
+    inside the transaction it holds the guard across it, so contention 503s
+    grow under load. Empty unless `subject` holds `admin` by override now,
+    so a write that lowers no admin asks the directory nothing more than it
+    did. Stops at the first other admin the group holds, after any whose
+    platform membership already counts (that needs no lookup at all).
+
+    Nothing is decided on these answers alone: inside the transaction the
+    roles are read again (`admin_remains`), an answer is used only for a
+    person still `admin` there, and anyone not asked here is asked there.
+    A lookup that fails is a 503 here, as it would be inside."""
+    from .people import membership_store
+
+    if not admin_by_override(ctx, tenant_id, subject):
+        return {}
+    store = ctx.roles
+    assert store is not None
+    members = membership_store(ctx)
+    answers: dict[str, bool] = {}
+    for other in store.admin_subjects(tenant_id):
+        if other == subject:
+            continue
+        grant = members.read(other, fresh=True).newest.get(tenant_id)
+        if grant is not None and grant.counts_for(registered):
+            return answers
+        answers[other] = in_group(request, ctx, other, group)
+        if answers[other]:
+            return answers
+    return answers
+
+
 def admin_remains(request: Request, ctx: AppContext, txn: Any, *, tenant_id: str,
-                  email: str, group: str, registered: Mapping[str, str]) -> bool:
+                  email: str, group: str, registered: Mapping[str, str],
+                  known: Mapping[str, bool] | None = None) -> bool:
     """Whether someone other than `email` is this workspace's `admin` by
     override AND can still select it: their platform membership, read inside
-    `txn`, still counts for the registered group, or a fresh per-group check
-    finds them in it. An override alone is not an admin: it outlives a leave
-    and a removal by design, and an admin can be named before they join.
-    The roster is read fresh; a group check that fails is a 503, never a
-    guess that lets the last admin go."""
+    `txn`, still counts for the registered group, or a per-group check finds
+    them in it -- the answer `lookups_ahead` got before the transaction
+    (`known`) when there is one, else a fresh check here. An override alone
+    is not an admin: it outlives a leave and a removal by design, and an
+    admin can be named before they join. The admins are read fresh, every
+    one of them (`RoleStore.admin_subjects`, never the capped roster); a
+    group check that fails is a 503, never a guess that lets the last admin
+    go."""
     from .people import membership_store
 
     store = ctx.roles
     assert store is not None
-    others = [other for other, grant in store.overrides(tenant_id, fresh=True)
-              if other != email and grant.role == roles.ADMIN]
+    others = [other for other in store.admin_subjects(tenant_id) if other != email]
     members = membership_store(ctx)
     for other in others:
         grant = members.read(other, transaction=txn).newest.get(tenant_id)
         if grant is not None and grant.counts_for(registered):
             return True
-    return any(in_group(request, ctx, other, group) for other in others)
+    known = known or {}
+    if any(known.get(other) for other in others):
+        return True
+    return any(in_group(request, ctx, other, group) for other in others if other not in known)
 
 
 def guard_ref(ctx: AppContext, tenant_id: str) -> Any:
@@ -139,25 +181,31 @@ def read_guard(ctx: AppContext, txn: Any, tenant_id: str) -> None:
     _snapshot(txn.get(guard_ref(ctx, tenant_id)))
 
 
-def write_guard(ctx: AppContext, txn: Any, tenant_id: str, *, by: str) -> None:
+def write_guard(ctx: AppContext, txn: Any, tenant_id: str) -> None:
     """Write the guard document inside `txn`: every transaction that read it
     (`read_guard`) and has not committed yet is aborted and retried, and
-    decides again on what this one changed."""
-    txn.set(guard_ref(ctx, tenant_id), {"tenant_id": tenant_id, "by": by,
+    decides again on what this one changed.
+
+    It records no one (epic 21): the document holds no authority and lives
+    as long as its workspace, one per workspace, overwritten in place, so
+    it carries the workspace and the time alone. Who changed what is the
+    audit rows' (`admin_audit`), which have their own retention."""
+    txn.set(guard_ref(ctx, tenant_id), {"tenant_id": tenant_id,
                                         "at": datetime.now(timezone.utc)})
 
 
 def require_admin_remains(request: Request, ctx: AppContext, txn: Any, *, tenant_id: str,
-                          subject: str, by: str, group: str, registered: Mapping[str, str],
-                          message: str) -> None:
+                          subject: str, group: str, registered: Mapping[str, str],
+                          message: str, known: Mapping[str, bool] | None = None) -> None:
     """Refuse (409 `workspace_leave_last_admin`) unless another admin who can
     still select the workspace remains once `subject` is no longer one; when
     one does, write the guard document inside `txn`. Call it after
-    `read_guard` and the route's own reads, before the route's writes."""
+    `read_guard` and the route's own reads, before the route's writes;
+    `known` is `lookups_ahead`'s, made before the transaction."""
     if not admin_remains(request, ctx, txn, tenant_id=tenant_id, email=subject, group=group,
-                         registered=registered):
+                         registered=registered, known=known):
         raise WorkspaceLeaveLastAdmin(message)
-    write_guard(ctx, txn, tenant_id, by=by)
+    write_guard(ctx, txn, tenant_id)
 
 
 def contended(exc: BaseException) -> bool:
