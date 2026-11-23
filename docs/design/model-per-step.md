@@ -868,8 +868,8 @@ ROLE, applied only when the caller named no class:
 |---|---|
 | planner (issue runs; the `issue-sweep`, `issue-plan-only` and `failure-review` schedules' runs) | `fable` |
 | build / implement | `opus` (unchanged) |
-| first review, when the change touches NO risk path | `sonnet` |
-| first review, when the change touches a risk path (`reviewgate.DEFAULT_RISK_PATHS` plus the step's and the workspace's) or the diff cannot be read | `opus` (unchanged) |
+| first review, when the change touches NO risk path and is at most 1,000 changed lines | `sonnet` |
+| first review, when the change touches a risk path (`reviewgate.DEFAULT_RISK_PATHS` plus the step's and the workspace's), is over 1,000 changed lines, or the diff cannot be read | `opus` (unchanged) |
 | security review | `opus` (unchanged) |
 | fix | `opus` (unchanged) |
 | re-review | `sonnet` |
@@ -892,8 +892,12 @@ the bytes and the signing format they had before (§4.3).
 * planner: `issueruns.planner_task`, called by `routes.runs.start_run`; the
   three schedules take a `planner_model_class` parameter
   (`scheduletypes._PlannerClass`, default the table's planner class) and pass
-  it through `issue_sweep.run_options`. The default is sent as "none named",
-  so its pin fallback applies; any other value is the schedule's own choice.
+  it through `issue_sweep.run_options`. A schedule that names no class gets
+  the default, sent as "none named", so its pin fallback applies. A class
+  the schedule NAMED (the planning class included) that is not the
+  profile's default and that the deployment does not pin is refused
+  (`issue_sweep.planner_class`, `model_class_not_yet_available`) rather
+  than silently run on the default class.
 * re-review: `validation.rereview_step_for`, the step the platform appends to
   any workflow that merges on a review's verdict and to every issue run
   (`issueruns._with_rereview`). A class the caller named on the review is
@@ -919,17 +923,57 @@ The review gate already reads the change's paths and size there
 2. When the gate lets the review run, `stepclass.review_role` picks its role
    from what the gate read: a risk path touched is "review, risk path"; no
    decision, a parent that could not be read, or a file list cut short
-   (`Decision.truncated`) is "review, diff not read"; only a diff read whole
-   that touches none is "review, no risk path".
-3. Where that role's class differs from what the step was signed with,
+   (`Decision.truncated`) is "review, diff not read"; a diff read whole
+   that touches none but is over `stepclass.REVIEW_CHEAP_MAX_LINES` (1,000
+   changed lines, insertions plus deletions, the owner's ceiling of
+   2026-11-23) is "review, over the size ceiling"; only the rest is
+   "review, no risk path". For the CLASS, risk paths are looked for over
+   the union of each parent's `own_files` and `files` (`path` and
+   `old_path`): `own_files` comes from first-parent, no-merges history, so
+   a risk-path file committed on a side branch and merged with a merge
+   commit is in `files` alone (`Decision.class_risk_hits`). A parent whose
+   `files` is absent, cut short or unreadable is "diff not read"
+   (`Decision.files_unread`). What the gate runs or skips still reads
+   `own_files` as before.
+3. FIRST, the stored spec must verify (`verdictpublish.stored_spec_refusal`:
+   `spec_refusal` on the document as stored and on its `browser_if_ui`
+   alternate subject). The marker that brings a review here is unsigned and
+   a tenant's agents can write any task of their tenant, so a spec rewritten
+   since submission is left exactly as stored, its class untouched and
+   nothing signed, and the worker refuses it as before.
+   `specsigning.resign_stored` refuses such a document itself too, so no
+   later caller can sign a tampered spec again.
+   Where the role's class differs from what the step was signed with,
    swarm-api, the only holder of the signing key, signs the step again
    (`specsigning.resign_stored`) as it will be stored, and its
    `browser_if_ui` alternate with it. It writes the class, the pin and the
    signature in the same transaction that hands the step back to the
    scheduler (`verdictpublish._decline`). That write happens only while the
-   stored spec is still as the gate read it (`RESIGN_GUARD`). Nothing under
-   `apps/common/swarm_common/` changes, and the signed spec's format is
-   unchanged: the class is a field format 5 already covers.
+   stored spec is still as the gate read it (`RESIGN_GUARD`: the signature,
+   format, class, model, profile, `input`, `depends_on` and `metadata` less
+   the gate's own claim marker). Nothing under `apps/common/swarm_common/`
+   changes; the format is the one `specsign.signing_format` picks for the
+   stored task with its class (a set class needs format 5, which already
+   covers it).
+4. A re-run (`steprerun.clone`) of a review whose class the gate decided
+   goes back to the profile's default and is marked `REVIEW_AT_GATE` again,
+   so the clone is decided on its own diff.
+
+**Fencing (invariant 5).** The re-sign happens while the step is PARKED and
+held by the gate's claim, before any attempt or fencing generation exists,
+and replaces the stored signature in the one transactional write: the
+worker verifies only the signature stored on the document, so there is one
+signed spec per step. The superseded signature still matches only the spec
+swarm-api signed at submission, identical but for the class; a writer who
+restores it restores the dearer `opus` run, never anything swarm-api did
+not sign. The generation is not touched.
+
+**A caller's record is not trusted.** `class_chosen_by` is unsigned and in
+the caller's metadata, so submission stores it only as a role rule would
+have written it (`stepclass.submitted_record`): never `REVIEW_AT_GATE`
+(only `submit_workflow` marks a review), and for a named class only
+`role default: <role>` whose role picks exactly that class and is not a
+gate role; anything else is `caller`.
 
 **Fail-safe.** A review whose gate never decides it (a lost wake, a
 swarm-api that is down, a gate switched off for the step or for the
