@@ -107,6 +107,18 @@ they are not archived (owner decision 2026-10-05):
 The lists are `TOOL_CACHES` and `BUILD_DIRS` in
 `apps/agent-worker/agent_worker/checkpoint.py`.
 
+**The worker rebuilds the root `.venv` itself, once per attempt.** Because
+`.venv/` is never archived, every attempt (a restore included) starts without
+one, and the uv cache is emptied at attempt start too. So, when the clone has
+a `uv.lock` at its root, the worker runs `uv sync --inexact --frozen` once,
+after the clone and before the agent's first turn
+(`apps/agent-worker/agent_worker/pythonenv.py`). Otherwise the agent's first
+`uv run` and the pre-publish gate would each pay a cold sync inside their own
+budgets. It is bounded (`WARM_DEADLINE_SECONDS`), never fatal, records one
+`running` event with `detail.phase = "python_env"`, and is skipped when the
+environment already carries the marker for the same lock. It changes nothing
+here: `.venv/` stays left out of every checkpoint.
+
 **A restore still produces a working tree.** Every row above is output of a
 command, never the agent's work, and a resumed agent runs the command again the
 way a fresh clone needs it run. The one way that could fail is a build
