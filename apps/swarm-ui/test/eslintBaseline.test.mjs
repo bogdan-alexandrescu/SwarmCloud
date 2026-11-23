@@ -86,3 +86,18 @@ test('one violation more than the baseline counts fails', () => {
     assert.match(run.stdout, new RegExp(RULE))
   })
 })
+
+// The tests above run the CLI directly; this holds `npm run lint` to the same
+// gate. `--suppress-all` or `--suppress-rule` would write every new violation
+// into the baseline and pass, and `--pass-on-unpruned-suppressions` would let
+// the baseline stop shrinking.
+test('npm run lint lints the whole package against the committed baseline', () => {
+  const { scripts } = JSON.parse(readFileSync(join(PACKAGE_DIR, 'package.json'), 'utf8'))
+  const words = scripts.lint.split(/\s+/)
+  assert.ok(words.includes('eslint'), scripts.lint)
+  assert.equal(words.at(-1), '.', scripts.lint)
+  assert.equal(words[words.indexOf('--max-warnings') + 1], '0', scripts.lint)
+  for (const flag of ['--suppress-all', '--suppress-rule', '--pass-on-unpruned-suppressions', '--suppressions-location']) {
+    assert.ok(!words.includes(flag), `${flag} in: ${scripts.lint}`)
+  }
+})

@@ -8,8 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
-    "lint": "eslint --max-warnings 0 .",
-    "lint:prune": "eslint --prune-suppressions .",
+    "lint": "NODE_OPTIONS=--max-old-space-size=3072 eslint --concurrency 2 --max-warnings 0 .",
+    "lint:prune": "NODE_OPTIONS=--max-old-space-size=3072 eslint --concurrency 2 --prune-suppressions .",
     "test": "npm run test:components && npm run test:node",
     "test:components": "vitest run",
     "test:node": "node tests/run.mjs && node --import ./test/register-ts.mjs --test test/*.test.mjs"

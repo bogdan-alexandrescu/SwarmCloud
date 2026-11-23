@@ -14,6 +14,12 @@
 // suppressions that are not used, so the baseline can only shrink. Never
 // regenerate it with `--suppress-all` to make a new violation pass.
 //
+// THE LINT SCRIPT'S FLAGS. Typed linting holds the whole TypeScript program in
+// memory: one process over every file ran out of Node's default ~2 GiB heap
+// after eight minutes. `--concurrency 2` splits the files over two workers at
+// 3 GiB each (measured: about six minutes, inside an 8 GiB container); more
+// workers were killed for memory there.
+//
 // test/eslintBaseline.test.mjs proves a violation outside the baseline fails
 // and the same violation inside it passes.
 
