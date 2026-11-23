@@ -1533,8 +1533,14 @@ class QaTargets:
             if migrated and "legacy_map_key" not in status:
                 status["legacy_map_key"] = False
             entries.append({**leg, **status})
-            legs.append({"name": leg["name"], "host": leg["host"], "host_reset": host_reset,
-                         "bypass_value_cleared": cleared})
+            summary = {"name": leg["name"], "host": leg["host"], "host_reset": host_reset,
+                       "bypass_value_cleared": cleared}
+            # Origins are hosts, not secrets: the row says what the list was
+            # and became, so the change can be read without the target (epic 21).
+            was, now_listed = list(old.get("extra_origins") or []), list(leg.get("extra_origins") or [])
+            if was != now_listed:
+                summary["extra_origins"] = {"from": was, "to": now_listed}
+            legs.append(summary)
         names = {leg["name"] for leg in doc["environments"]}
         removed = sorted(name for name in before if name not in names) if migrated else []
         for name in removed:
@@ -1563,6 +1569,8 @@ class QaTargets:
             (leg,) = legs
             detail = {"fields": changed, "host": leg["host"], "host_reset": leg["host_reset"],
                       "bypass_value_cleared": leg["bypass_value_cleared"], "revision": new["revision"]}
+            if "extra_origins" in leg:
+                detail["extra_origins"] = leg["extra_origins"]
         ref = self._ref(target_id)
         stored = _stored(new)
         transaction = self._db.transaction()
