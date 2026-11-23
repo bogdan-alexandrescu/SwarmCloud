@@ -177,6 +177,7 @@ run "on_in_staging_fails_the_plan" {
 
   variables {
     environment                   = "staging"
+    tenants                       = {}
     enable_acceptance_join_person = true
   }
 
