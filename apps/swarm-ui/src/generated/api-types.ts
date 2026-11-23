@@ -1658,10 +1658,12 @@ export interface Task {
 
 export interface TaskBatchCreate {
   tasks: TaskCreate[]
+  idempotency_key?: string | null
 }
 
 export interface TaskCreate {
   runner_profile: string
+  idempotency_key?: string | null
   input?: { [key: string]: unknown }
   priority?: number
   metadata?: { [key: string]: unknown }
@@ -1816,6 +1818,7 @@ export interface WorkReport {
 
 export interface WorkflowCreate {
   steps: WorkflowStepCreate[]
+  idempotency_key?: string | null
   priority?: number
   on_step_failure?: 'fail_workflow' | 'continue'
   metadata?: { [key: string]: unknown }
