@@ -85,7 +85,7 @@ from swarm_common.states import TaskState
 
 from ..auth import AuthContext
 from .. import issueruns as issueruns_module
-from .. import planlint, refusals, roles, stepclass
+from .. import planhistory, planlint, refusals, roles, stepclass
 from ..admins import AUDIT_COLLECTION
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import (
@@ -1548,9 +1548,15 @@ def start_run(
     # The planner next, carrying the run's id: a planner without its run is
     # one finished task nobody reads, while a run without its planner would
     # sit PLANNING for ever.
+    # The issue's earlier runs (plan item 'better plans'): read for THIS
+    # tenant only (`for_issue` filters on it, then again on every row), so
+    # another workspace's run of the same issue is never in the prompt.
+    earlier = _runs(ctx).for_issue(tenant_id, ref,
+                                   limit=planhistory.EARLIER_RUNS_READ)
     planner_spec = planner_task(ref, run_id, open_work, context=context.section,
                                 claude_session=claude_session, model_class=model_class,
-                                class_models=stepclass.class_models_of(ctx))
+                                class_models=stepclass.class_models_of(ctx),
+                                earlier_runs=earlier, tenant_id=tenant_id)
     with issueruns_module.submitting(planner_spec):
         submission = ctx.submissions.submit_tasks(auth, [planner_spec])
     planner = submission.tasks[0]

@@ -201,7 +201,8 @@ def test_a_step_title_cannot_close_the_fence_either():
 
 
 def test_past_the_byte_bound_older_runs_are_dropped_and_counted():
-    runs = [_stored(f"run_{i:02d}", T0 + timedelta(hours=i), error="x" * 5000)
+    # Multi-byte reasons at the character cap: five of them pass the bound.
+    runs = [_stored(f"run_{i:02d}", T0 + timedelta(hours=i), error="\u00e9" * 5000)
             for i in range(planhistory.MAX_EARLIER_RUNS)]
     section = planhistory.earlier_runs_section(
         "run_new", runs, ref=parse_issue_ref(REF), tenant_id="eng")
@@ -231,7 +232,7 @@ def test_the_whole_prompt_stays_under_the_planner_limit_with_both_sections():
             "issues": [{"number": n, "title": "t" * 300} for n in range(400)],
             "pull_requests": []}
     prompt = issueruns.planner_prompt(parse_issue_ref(REF), run_id="run_new", open_work=work,
-                                      earlier_runs=runs)
+                                      earlier_runs=runs, tenant_id="eng")
     assert len(prompt.encode()) <= issueruns.MAX_PLANNER_PROMPT_BYTES
     assert planhistory.earlier_runs_markers("run_new")[0] in prompt
     assert planhistory.cost_section() in prompt
