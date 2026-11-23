@@ -31,6 +31,7 @@ import pytest
 from swarm_mcp import check, compact, follow, progress, server
 
 from test_follow_cursor import World, swarm, world  # noqa: F401 - fixtures
+import sc_skill_text
 
 _CI_SUMMARY = "CI on PR #1779: 5 checks pending; re-checked 2 times; next check 02:46Z"
 _CI_LATER = "CI on PR #1779: 3 checks pending; re-checked 3 times; next check 03:01Z"
@@ -153,7 +154,7 @@ def test_status_of_a_hand_off_keeps_the_sign_in_line(swarm, world):
 def test_the_skill_prints_the_waiting_line_after_the_state():
     from pathlib import Path
 
-    skill = (Path(__file__).resolve().parents[3] / "plugin" / "skills" / "sc" / "SKILL.md").read_text()
+    skill = sc_skill_text.text()
     section = skill.split("### `status <wf_id|task_id>`", 1)[1].split("\n### ", 1)[0]
     flat = " ".join(section.split())
     assert "`waiting_line`" in flat  # MUTATION: leave the status section as it was -- absent.

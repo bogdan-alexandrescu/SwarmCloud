@@ -34,6 +34,7 @@ from swarm_mcp.client import SwarmError
 from test_follow_cursor import World, swarm, world  # noqa: F401 - fixtures
 from test_plugin_agents_and_workflows import _PLUGIN, _run
 from test_plugin_row_split import SESSION, _Client, _envelope
+import sc_skill_text
 
 _RUN_JS = _PLUGIN / "workflows" / "run.js"
 _FINISH = _PLUGIN / "agents" / "finish.md"
@@ -115,7 +116,7 @@ def test_the_layout_option_reaches_the_bridge_and_the_version_moved_with_its_pin
 
 
 def test_the_skill_and_the_command_describe_both_layouts_and_the_toggle():
-    skill = " ".join(_SKILL.read_text().split())
+    skill = " ".join(sc_skill_text.text().split())
     command = " ".join(_COMMAND.read_text().split())
     for text in (skill, command):
         assert "/sc layout rows" in text and "/sc layout pane" in text  # MUTATION: no toggle documented.

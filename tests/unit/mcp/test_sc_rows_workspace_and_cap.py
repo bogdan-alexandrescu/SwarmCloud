@@ -45,6 +45,7 @@ from swarm_mcp import config, launch, sc, server, workflows
 
 from test_auto_attach import _BY_PROMPT
 from test_plugin_agents_and_workflows import _PLUGIN, _RUN_JS, _node, _step
+import sc_skill_text
 
 _MANIFEST = _PLUGIN / ".claude-plugin" / "plugin.json"
 _SKILL = _PLUGIN / "skills" / "sc" / "SKILL.md"
@@ -468,7 +469,7 @@ def test_entries_with_nothing_to_order_by_keep_their_order_within_each_workspace
 def test_the_skill_doc_says_100_and_that_scrolling_is_claude_codes():
     import re
 
-    text = " ".join(_SKILL.read_text().split())
+    text = " ".join(sc_skill_text.text().split())
     assert not re.search(r"at most (10|30)\b", text) and "past 10 workflows" not in text
     assert "max_live_rows" in text and "at most 100" in text and "1-200" in text and "1-50" not in text
     assert "newest first, grouped by workspace" not in text and "closest to finish first" in text

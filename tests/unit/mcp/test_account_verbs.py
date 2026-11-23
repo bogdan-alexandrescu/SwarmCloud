@@ -22,6 +22,7 @@ import pytest
 
 from swarm_mcp import sc, server
 from swarm_mcp.client import SwarmError
+import sc_skill_text
 
 TENANT = "acme"
 
@@ -340,7 +341,7 @@ def test_the_account_writers_are_not_granted_to_the_read_only_skill():
     the MCP names."""
     from pathlib import Path
 
-    skill = (Path(__file__).resolve().parents[3] / "plugin" / "skills" / "sc" / "SKILL.md").read_text()
+    skill = sc_skill_text.text()
     front = skill.split("---", 2)[1]
     for tool in ("swarm_account_pause", "swarm_account_resume", "swarm_account_drain", "swarm_account_remove"):
         assert tool not in front

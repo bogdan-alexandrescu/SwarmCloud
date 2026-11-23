@@ -37,6 +37,7 @@ from swarm_mcp import browse, check, details, launch, sc, server, session
 
 from test_plugin_agents_and_workflows import _PLUGIN, _node
 from test_sc_watch import APP, NOW, OTHER, SESSION, Api, task, workflow
+import sc_skill_text
 
 _MODEL = _PLUGIN / "hooks" / "pane" / "model.ts"
 _PANE = _PLUGIN / "hooks" / "pane.tsx"
@@ -292,7 +293,7 @@ def test_the_hook_hands_the_layout_option_to_the_bridge():
 
 
 def test_the_skill_and_the_command_say_a_switch_reattaches_and_which_attach_is_project_wide():
-    skill = " ".join(_SKILL.read_text().split())
+    skill = " ".join(sc_skill_text.text().split())
     command = " ".join(_COMMAND.read_text().split())
     assert "/sc attach --all --project" in skill and '"project": true' in skill.replace("project: true", '"project": true')
     assert "the plain `/sc attach --all`'s" in skill  # MUTATION: no word of when the widening applies.

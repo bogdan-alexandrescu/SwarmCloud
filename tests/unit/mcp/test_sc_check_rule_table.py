@@ -1,12 +1,14 @@
 """Every rule `swarm_check` can return has a row in the /sc check rule table.
 
-The `check` section of plugin/skills/sc/SKILL.md tells a session, rule by
+The `check` rule table (plugin/skills/sc/reference/check.md since the skill's
+split, 2026-11-23) tells a session, rule by
 rule, what is flagged and what is not (`| `rule` | flags | is NOT flagged |`).
 `plugin_files_missing` and `deploy_behind` merged on 2026-11-09 without a row,
 so a session reporting them had nothing to say what they mean. The rules are
 read from the bridge's own source -- every `"rule": ...` in a dict literal of
 swarm_mcp/check.py, a string or a module-level name -- so the next rule cannot
-merge without its row.
+merge without its row -- nor without its `say` note in the bridge's own reply
+(`check.RULE_SAY`), which is what `/sc:check` reads instead of the table.
 """
 
 from __future__ import annotations
@@ -16,9 +18,10 @@ import re
 from pathlib import Path
 
 from swarm_mcp import check
+import sc_skill_text
 
 _REPO = Path(__file__).resolve().parents[3]
-_SKILL = _REPO / "plugin" / "skills" / "sc" / "SKILL.md"
+_SKILL = sc_skill_text.REFERENCE_DIR / "check.md"
 _HEADER = "| `rule` | flags | is NOT flagged |"
 _ROW = re.compile(r"^\|\s*`([a-z_]+)`\s*\|")
 
@@ -40,8 +43,8 @@ def _returned_rules() -> set[str]:
 
 
 def _table_rows() -> list[str]:
-    lines = [line.strip() for line in _SKILL.read_text(encoding="utf-8").splitlines()]
-    assert lines.count(_HEADER) == 1, f"SKILL.md holds {lines.count(_HEADER)} rule tables, not one"
+    lines = [line.strip() for line in sc_skill_text.text().splitlines()]
+    assert lines.count(_HEADER) == 1, f"the sc skill holds {lines.count(_HEADER)} rule tables, not one"
     rows = []
     for line in lines[lines.index(_HEADER) + 2:]:
         match = _ROW.match(line)
@@ -71,9 +74,17 @@ def test_every_row_names_a_rule_the_bridge_returns_once():
 
 
 def test_the_two_new_rows_say_what_the_owner_accepted():
-    text = _SKILL.read_text(encoding="utf-8")
+    text = sc_skill_text.text()
     deploy = next(line for line in text.splitlines() if line.strip().startswith("| `deploy_behind` |"))
     assert "more than 60 min" in deploy and "60 min or less" in deploy
     assert "not read: " in deploy and "release run" in deploy
     plugin = next(line for line in text.splitlines() if line.strip().startswith("| `plugin_files_missing` |"))
     assert "type /reload-plugins in this session" in plugin and "run.js" in plugin
+
+
+def test_every_rule_swarm_check_returns_has_a_say_note_in_the_reply():
+    """`/sc:check` loads no skill: each flagged item's `say` carries its rule's
+    reading, so a rule without a RULE_SAY entry is reported bare."""
+    missing = sorted(_returned_rules() - set(check.RULE_SAY))
+    assert not missing, f"check.RULE_SAY has no note for {missing}"
+    assert set(check.RULE_SAY) <= _returned_rules(), sorted(set(check.RULE_SAY) - _returned_rules())

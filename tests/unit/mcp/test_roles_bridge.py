@@ -31,6 +31,7 @@ import pytest
 
 from swarm_mcp import sc, server
 from swarm_mcp.client import SwarmError, tenant_listing
+import sc_skill_text
 
 _PACKAGE = Path(server.__file__).resolve().parent
 _REPO = Path(__file__).resolve().parents[3]
@@ -423,4 +424,6 @@ def test_the_surfaces_grant_the_roster_read_and_never_a_role_change(relative):
     front = text.split("---", 2)[1]
     assert "Bash(sc roles)" in front and "Bash(sc roles list:*)" in front, relative
     assert not re.search(r"Bash\([^)]*roles(:\*| \*|\s+(set|clear|default))", front), relative
+    if relative.endswith("SKILL.md"):
+        text = sc_skill_text.text()  # the core and its reference files
     assert "sc roles set" in text, f"{relative} does not tell the person how to change a role"
