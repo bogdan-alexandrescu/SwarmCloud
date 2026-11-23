@@ -38,6 +38,7 @@ TYPES = "apps/swarm-ui/src/types.ts"
 FILES = (
     TYPES,
     "apps/swarm-ui/src/outcomes.ts",
+    "apps/swarm-ui/src/generated/api-types.ts",
     "terraform/modules/scheduler/variables.tf",
 )
 
