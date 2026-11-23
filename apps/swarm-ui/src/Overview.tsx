@@ -593,8 +593,6 @@ function useRead<T>(load: () => Promise<Result<T>>, nonce: number): Result<T> {
     return () => {
       live = false
     }
-    // `load` is recreated per render by most callers; the nonce is the trigger.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nonce, load])
   return state
 }
