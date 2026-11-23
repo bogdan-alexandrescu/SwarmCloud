@@ -77,7 +77,7 @@
       "opentelemetry.io", "playwright.dev", "vitest.dev", "vitejs.dev", "nextjs.org",
       "reactjs.org", "react.dev", "typescriptlang.org", "pydantic.dev", "fastapi.tiangolo.com",
       "pytest.org", "mypy-lang.org", "checkov.io", "aquasec.com", "trivy.dev", "chromium.org",
-      "gitlab.com", "bitbucket.org", "httpbin.org", "opencollective.com"
+      "gitlab.com", "bitbucket.org", "httpbin.org", "opencollective.com", "eslint.org"
     ],
     "_rulings": "The owner's rulings of 2026-11-07 (part of #2688): the entries below are public or generic, not deployment values. Each carries its reason in `why`. Nothing on the private pattern list may be added here; a tenant slug that a list entry matches is reported regardless (deployment_values.py, Allow.screened).",
     "public_product_hosts": [
