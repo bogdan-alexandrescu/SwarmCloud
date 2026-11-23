@@ -141,7 +141,7 @@ def test_model_travels_as_a_top_level_field_and_never_as_runner_input() -> None:
 #: this map, through the settings the scheduler reads it into.
 CLASS_MODELS = {
     "opus": "claude-opus-5-5",
-    "fable": "claude-fable-5-2",
+    "fable": "claude-fable-5-1",
     "sonnet": "claude-sonnet-5-5",
     "haiku": "claude-haiku-5-5",
 }

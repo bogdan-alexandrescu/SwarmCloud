@@ -48,7 +48,7 @@ PERSON = "person@example.com"
 BROKER = "http://broker.test"
 OPENAI_HOSTS = {"chatgpt.com", "api.openai.com"}
 FRONT_PIN = "claude-haiku-5-5"
-PLANNER_PIN = "claude-fable-5-2"
+PLANNER_PIN = "claude-fable-5-1"
 
 
 class Sleeper:

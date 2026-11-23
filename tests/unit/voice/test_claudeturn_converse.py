@@ -132,8 +132,8 @@ def test_the_two_pins_are_read_from_the_environment(monkeypatch):
     monkeypatch.delenv("VOICE_FRONT_MODEL", raising=False)
     monkeypatch.delenv("VOICE_PLANNER_MODEL", raising=False)
     assert claudeturn.front_model() == "claude-haiku-5-5"
-    assert claudeturn.planner_model() == "claude-fable-5-2"
-    assert claudeturn.ClaudeCode().model == "claude-fable-5-2"
+    assert claudeturn.planner_model() == "claude-fable-5-1"
+    assert claudeturn.ClaudeCode().model == "claude-fable-5-1"
     monkeypatch.setenv("VOICE_FRONT_MODEL", "claude-haiku-6")
     monkeypatch.setenv("VOICE_PLANNER_MODEL", "claude-fable-6")
     assert claudeturn.front_model() == "claude-haiku-6"

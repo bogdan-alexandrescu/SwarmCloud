@@ -79,7 +79,7 @@ from .test_child_tasks_api import (  # noqa: F401 -- `worker_tokens` is a fixtur
 #: it to swarm-api (`local.model_class_env`).
 CLASS_MODELS = {
     "opus": "claude-opus-5-5",
-    "fable": "claude-fable-5-2",
+    "fable": "claude-fable-5-1",
     "sonnet": "claude-sonnet-5-5",
     "haiku": "claude-haiku-5-5",
 }
