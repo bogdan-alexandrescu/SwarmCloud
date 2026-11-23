@@ -1,4 +1,4 @@
-"""swarm-voice pauses a GPT-Live session while delegated work runs, and reopens
+"""swarm-voice pauses a GPT-Live session after a silence, work running or not, and reopens
 it by cause with refreshed instructions (docs/design/voice-it.md §3.12.7, the
 design's lane V2; the owner picked the automatic pause on 11 November 2026).
 
