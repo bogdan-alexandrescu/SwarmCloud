@@ -223,9 +223,11 @@ def needs_no_secret(deployment: Deployment, store: credentials.Store | None = No
     `discovery_serves_client_secret` off because Google accepted the PKCE-only
     exchange for this Desktop client (`sc login --pkce-only`, the probe).
     """
-    from .config import SKEW_REQUIRED
+    from .config import SKEW_DISCOVERED, SKEW_REQUIRED
 
-    return deployment.skew == SKEW_REQUIRED and not client_secret_for(deployment, store)
+    return deployment.skew in (SKEW_REQUIRED, SKEW_DISCOVERED) and not client_secret_for(
+        deployment, store
+    )
 
 
 def _secret_or_ask(deployment: Deployment, store: credentials.Store, supplied: str | None) -> str:

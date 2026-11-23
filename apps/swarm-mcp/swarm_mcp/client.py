@@ -1022,8 +1022,10 @@ def runs_of(summary: dict[str, Any]) -> dict[str, Any]:
     The worker writes `runs` and `swaps` only when an attempt started more
     than one runner (SWAP-RUNS, archived issue 2457): then `duration_s` above is the SUM of
     the runs, `last_run_duration_s` the last run's alone, and `swap_cost` what
-    the swaps cost in seconds and tokens before the agent acted again. A
-    one-run attempt's outputs carry none of these keys, as before.
+    the swaps cost in seconds and tokens before the agent acted again.
+    `duration_partial: true` (and `swap_cost.partial: true`) say a run's
+    seconds were unknown and left out of that sum (issue 186). A one-run
+    attempt's outputs carry none of these keys, as before.
     """
     runs = summary.get("runs")
     if not isinstance(runs, list) or not runs:
@@ -1046,7 +1048,45 @@ def runs_of(summary: dict[str, Any]) -> dict[str, Any]:
     cost = summary.get("swap_cost")
     if isinstance(cost, dict):
         out["swap_cost"] = dict(cost)
+    # The worker leaves a run whose duration is unknown out of the sum and
+    # says so (issue 56); passed on so a shortened sum never reads as complete
+    # (issue 186). Absent when the sum is complete, as before.
+    if summary.get("duration_partial") is True:
+        out["duration_partial"] = True
     return out
+
+
+#: How long a dispatch or workflow submission's POST waits for its answer.
+#: 120, not the 60 every other call waits: a large batch or workflow is
+#: written in one transaction, and a POST that times out may still have been
+#: accepted, so a short timeout invites a re-send that duplicates the batch
+#: (improvement plan 2026-11-23, item 4).
+SUBMIT_TIMEOUT_SECONDS = 120
+
+
+def _timed_out(exc: BaseException) -> bool:
+    """True when `exc` (a SwarmError) was a socket timeout, not a refusal."""
+    cause = exc.__cause__
+    if isinstance(cause, urllib.error.URLError):
+        cause = cause.reason
+    return isinstance(cause, TimeoutError)
+
+
+def submit_post(client: Any, path: str, payload: dict[str, Any]) -> Any:
+    """`POST path` for a dispatch or a workflow submission, waiting
+    `SUBMIT_TIMEOUT_SECONDS`. A timeout's error tells the caller to read the
+    running workflows before sending again: the first call may have been
+    accepted, and a re-sent batch duplicates every task in it."""
+    try:
+        return client.request("POST", path, payload=payload, timeout=SUBMIT_TIMEOUT_SECONDS)
+    except SwarmError as exc:
+        if not _timed_out(exc):
+            raise
+        raise SwarmError(
+            f"POST {path} had no answer within {SUBMIT_TIMEOUT_SECONDS}s, but it may have "
+            "been accepted: read the running workflows (swarm_workflows, or "
+            "swarm_check) before sending again, because a re-sent batch can duplicate it."
+        ) from exc
 
 
 #: Which of the caller's tenants a request acts as (archived issue 447). The API honours it
@@ -2115,13 +2155,13 @@ class SwarmClient:
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,
         # which a shell then piped into `swarm tail`.
-        return unwrap_task(self.request("POST", "/v1/tasks", payload=payload))
+        return unwrap_task(submit_post(self, "/v1/tasks", payload))
 
     def dispatch_batch(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Several tasks at once. A LIST, matching what `dispatch` returns for
         one -- `{"tasks": [...], "count": n, ...}` is the route's envelope and
         a caller iterating it would iterate its keys."""
-        data = self.request("POST", "/v1/tasks/batch", payload={"tasks": tasks})
+        data = submit_post(self, "/v1/tasks/batch", {"tasks": tasks})
         created = data.get("tasks") if isinstance(data, dict) else None
         if created is None:
             raise SwarmError("the batch response carried no `tasks` field")
