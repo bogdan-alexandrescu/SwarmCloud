@@ -340,13 +340,16 @@ def test_the_reads_and_the_write_go_through_the_existing_routes_with_the_grant()
     assert tag.url.params["claude_session"] == "voice:" + grant.project_id
     assert sorted(r.url.path for r in seen[1:5]) == [
         "/v1/runs/run-1", "/v1/runs/run-gone", "/v1/tasks/t-1", "/v1/workflows/wf-1"]
-    post = seen[-1]
-    assert post.method == "POST" and len(seen) == 6
+    post, ask = seen[-2], seen[-1]
+    assert post.method == "POST" and len(seen) == 7
+    # Then the caps' question, once a tick (swarm_api/voice/budget.py).
+    assert ask.method == "POST" and json.loads(ask.content) == {"budget": True}
     for request in seen:
         assert request.headers[follow.QUIET_HEADER] == follow.QUIET_ROSTER
         assert request.headers[GRANT_HEADER] == grant.headers()[GRANT_HEADER]
         assert request.headers[SESSION_HEADER] == f"{grant.project_id}/{grant.session_id}"
     rows = json.loads(post.content)["roster"]
+    seen.pop()
     assert rows == written == [
         {"kind": "agent", "id": "t-tag", "state": "queued", "done": None, "total": None},
         {"kind": "agent", "id": "t-1", "state": "running", "done": None, "total": None},
@@ -402,8 +405,9 @@ def test_through_swarm_apis_grant_a_tick_writes_its_roster_event_and_no_steps(
     assert [e["type"] for e in after_first] == [vwork.ROSTER_UPDATE]
     assert second == []
     assert _stream(db, call) == after_first
-    # Every read is still audited: two a tick, the write once.
-    assert len(audits()) == 5
+    # Every read is still audited: two a tick, the write once, and the caps'
+    # question once a tick (a write route: never quiet).
+    assert len(audits()) == 7
     assert sum(1 for row in audits() if row["quiet"]) == 4
 
 
