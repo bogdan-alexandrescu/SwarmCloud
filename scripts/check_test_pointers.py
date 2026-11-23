@@ -89,9 +89,14 @@ def is_allowlisted(path: str) -> bool:
 
 
 def tracked_files(root: Path, under: str) -> list[str]:
-    out = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", under],
-                         check=True, capture_output=True).stdout.decode()
-    return [p for p in out.split("\0") if p]
+    # Tracked and untracked-but-not-ignored: the gate runs before the publish's
+    # `git add --all`, so a lane's new files are not tracked yet.
+    names: list[str] = []
+    for extra in ((), ("--others", "--exclude-standard")):
+        out = subprocess.run(["git", "-C", str(root), "ls-files", "-z", *extra, "--", under],
+                             check=True, capture_output=True).stdout.decode()
+        names.extend(p for p in out.split("\0") if p)
+    return names
 
 
 class Known:
