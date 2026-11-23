@@ -26,7 +26,7 @@ from test_sc_desc_details import _STATUS, ASSIGNED, SESSION, _Api, _envelope, _t
 
 #: The bytes a 49-step attach reply may take, as `swarm_workflow_launch`
 #: serves it (indent 2). Measured 2026-11-23 on this fixture: 29,562 before
-#: (every details line twice), about 2,600 after.
+#: (every details line twice), 2,313 after.
 MAX_49_STEP_ATTACH_BYTES = 4_000
 
 

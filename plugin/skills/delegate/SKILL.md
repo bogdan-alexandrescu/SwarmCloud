@@ -424,12 +424,11 @@ the other agent started" describes something the agent cannot do.
 **A dispatched task shows as a row without anyone asking (archived issue 830).** Every
 `swarm_dispatch` reply carries `rows`: ONE titled copy of the `/sc:swarmcloud`
 script PER TASK just sent, in `rows.launches`, each with args `{attach_tasks:
-[<that task>]}` and its run titled `SC · <label>` from that task alone (the
-reply's own `script_path` and `args` are the first entry's). Launch them AT
-ONCE, before anything else, with the Workflow tool — one call per entry of
-`rows.launches`, `{scriptPath: <its script_path>, args: <its args>}` (one task
-sent: `{scriptPath: <rows.script_path>, args: <rows.args>}`, as
-`rows.start_now` says). Each submits nothing and starts ONE `[SwarmCloud]` row,
+[<that task>]}` and its run titled `SC · <label>` from that task alone (each
+entry's `args` are named there once, never again at the top of `rows`). Launch
+them AT ONCE, before anything else, with the Workflow tool — one call per entry
+of `rows.launches`, `{scriptPath: <its script_path>, args: <its args>}`, one
+task sent or several, as `rows.start_now` says. Each submits nothing and starts ONE `[SwarmCloud]` row,
 titled from its task's `label`, that follows the task (`sc:task`,
 `swarm_follow` without `step_id`) until it finishes -- one row per task,
 whatever the plugin's `rows` setting: a batch of tasks is never one summary

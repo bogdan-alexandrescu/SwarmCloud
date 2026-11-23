@@ -393,8 +393,8 @@ def _logs(tmp_path: Path, script: Path, args) -> list[str]:
 def test_run_js_launched_by_name_with_a_title_says_why_first(where, monkeypatch, tmp_path):
     _in_project(monkeypatch, where["project"])
     reply = launch.for_attach(_Recorder(_stored("nightly")), "wf_9")
-    assert reply["args"]["titled_copy"] == reply["script_path"]
-    by_name = _logs(tmp_path, _PLUGIN / "workflows" / "run.js", reply["args"])
+    assert reply["launches"][0]["args"]["titled_copy"] == reply["script_path"]
+    by_name = _logs(tmp_path, _PLUGIN / "workflows" / "run.js", reply["launches"][0]["args"])
     assert by_name, "run.js logged nothing"
     assert 'labelled "swarmcloud"' in by_name[0] and reply["script_path"] in by_name[0]
     # A title alone (an older bridge) still says why, without a path.
@@ -405,7 +405,7 @@ def test_run_js_launched_by_name_with_a_title_says_why_first(where, monkeypatch,
 def test_the_titled_copy_and_a_plain_launch_by_name_say_nothing_of_it(where, monkeypatch, tmp_path):
     _in_project(monkeypatch, where["project"])
     reply = launch.for_attach(_Recorder(_stored("nightly")), "wf_9")
-    from_copy = _logs(tmp_path, Path(reply["script_path"]), reply["args"])
+    from_copy = _logs(tmp_path, Path(reply["script_path"]), reply["launches"][0]["args"])
     assert not any("labelled" in line for line in from_copy), from_copy
     plain = _logs(tmp_path, _PLUGIN / "workflows" / "run.js", {"attach": "wf_9"})
     assert not any("labelled" in line for line in plain), plain

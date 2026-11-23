@@ -1728,6 +1728,14 @@ TOOLS: list[dict[str, Any]] = [
                     "items": {"type": "string"},
                     "description": "With attach \"all\" only: workflow or task ids with a live row you can see; left out.",
                 },
+                "details": {
+                    "type": "boolean",
+                    "description": (
+                        "With attach only: put each step row's details line in the reply's "
+                        "`args` (`details.steps`). Without it they go into the titled copy the "
+                        "run is launched from, and the reply stays small."
+                    ),
+                },
             },
         },
     },
@@ -6138,7 +6146,7 @@ def _call(
         if target is not None:
             if target in ("all", "--all"):
                 if not filters:
-                    attached = launch.for_all(client, rows=rows)
+                    attached = launch.for_all(client, rows=rows, with_details=_flag(args, "details"))
                 else:
                     exclude = args.get("exclude")
                     if exclude is not None and not (
@@ -6152,12 +6160,14 @@ def _call(
                         exclude=exclude,
                         rows=rows,
                         project=_flag(args, "project"),
+                        with_details=_flag(args, "details"),
                     )
                 # The band launches no row but still puts this session's work in
                 # front of it: arming is unchanged there (SC-BAND).
                 attached.update(watch.arm_fields(bool(attached.get("launches")) or attached.get("followed_by") == "band"))
                 return json.dumps(attached, indent=2, default=str)
-            return json.dumps({**launch.for_attach(client, target, rows=rows), **watch.arm_fields(True)}, indent=2)
+            return json.dumps({**launch.for_attach(client, target, rows=rows, with_details=_flag(args, "details")),
+                               **watch.arm_fields(True)}, indent=2)
         document = (
             _read_spec_file(str(args["spec_path"]), base=checkout.directory())["spec"]
             if args.get("spec_path") is not None

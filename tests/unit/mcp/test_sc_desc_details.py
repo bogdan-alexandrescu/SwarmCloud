@@ -75,6 +75,13 @@ def _meta(script: str) -> tuple[str, str]:
     return json.loads(lines[1][len("  name: "):-1]), json.loads(lines[2][len("  description: "):-1])
 
 
+def _embedded(script: str) -> dict[str, str]:
+    """The step rows' details lines the bridge wrote into a titled copy."""
+    head = launch.STEP_DETAILS_LINE.removesuffix("{}")
+    (line,) = [entry for entry in Path(script).read_text(encoding="utf-8").split("\n") if entry.startswith(head)]
+    return json.loads(line[len(head):])
+
+
 def _fields(text: str) -> dict[str, str]:
     """`{field: value}` of a details line, in the order found."""
     out: dict[str, str] = {}
@@ -178,8 +185,8 @@ def test_an_attached_workflows_description_names_the_account_label_and_model(mon
     assert got["Started by"] == "dev@example.com"
     assert got["LLM"] == "Team Max (anthropic), model claude-opus-5-5"
     assert got["Browser tool"] == "auto", "browser_tool absent on claude-code-browser is auto"
-    # Each step row's line, in the args the run hands run.js.
-    steps = out["args"]["details"]["steps"]
+    # Each step row's line, in the titled copy the run is launched from.
+    steps = _embedded(out["script_path"])
     assert _fields(steps["implement"])["LLM"] == "Team Max (anthropic), model claude-opus-5-5"
     assert _fields(steps["verify"])["LLM"] == "not assigned yet, model claude-opus-5-5"
 
@@ -213,7 +220,7 @@ def test_another_sessions_workflow_says_whose_it_is(monkeypatch):
 def test_a_dispatched_tasks_row_and_run_carry_its_details():
     task = _task("x", step_id=None, account=None)
     out = launch.for_tasks([{"task_id": "t_x", "label": "lane-a", "workspace": "eng", "task": task}])
-    (row,) = out["args"]["attach_tasks"]
+    (row,) = out["launches"][0]["args"]["attach_tasks"]
     assert "task" not in row, "the task document is read, never copied into the args"
     got = _fields(row["details"])
     assert got["Started by"] == "dev@example.com" and got["Profiles"] == "claude-code"
@@ -232,7 +239,7 @@ def test_attach_all_gives_every_run_and_task_row_its_details(monkeypatch):
     out = launch.for_all(api)
     flow, tasks = out["launches"]
     assert _fields(_meta(flow["script_path"])[1])["LLM"] == "Team Max (anthropic), model claude-opus-5-5"
-    assert _fields(flow["args"]["details"]["steps"]["implement"])["Started by"] == "dev@example.com"
+    assert _fields(_embedded(flow["script_path"])["implement"])["Started by"] == "dev@example.com"
     assert _fields(tasks["args"]["attach_tasks"][0]["details"])["LLM"] == "Team Max (anthropic), model claude-opus-5-5"
 
 
