@@ -187,6 +187,10 @@ for hexname, text in sorted((plan.get("write_raw_name_artifact") or {}).items())
 out = {"type": "result", "subtype": "success", "is_error": False, "result": "done"}
 if plan.get("echo_prompt"):
     out["prompt"] = prompt
+    # The standing paragraphs ride `--append-system-prompt` (2026-11-23).
+    flag = "--append-system-prompt"
+    argv = sys.argv[1:]
+    out["system"] = argv[argv.index(flag) + 1] if flag in argv[:-1] else ""
 print(json.dumps(out))
 """
 
@@ -344,12 +348,17 @@ def test_the_deliverables_line_is_not_repeated_when_later_steps_expect_files(
     _seed(db, plan, metadata={"expected_outputs": ["scan-01.md"]})
 
     assert _run(worker_factory) == ExitCode.OK
-    prompt = _agent_output(db)["prompt"]
-    assert prompt.count(LINE_START) == 1, prompt
+    output = _agent_output(db)
+    prompt = output["prompt"]
+    system = output["system"]
+    assert (system + prompt).count(LINE_START) == 1, prompt
     # The context-ceiling note (archived issue 2524) names $SWARM_ARTIFACTS_DIR/handoff.md,
-    # a note for the next session and not a deliverable; set it aside.
-    assert prompt.count(ceiling.HANDOFF_NOTE) == 1, prompt
-    assert prompt.replace(ceiling.HANDOFF_NOTE, "").count("$SWARM_ARTIFACTS_DIR") == 1, prompt
+    # a note for the next session and not a deliverable; it rides the system
+    # prompt (2026-11-23), said once, and is set aside.
+    assert system.count(ceiling.HANDOFF_NOTE) == 1, system
+    assert ceiling.HANDOFF_NOTE not in prompt, prompt
+    together = system + "\n\n" + prompt
+    assert together.replace(ceiling.HANDOFF_NOTE, "").count("$SWARM_ARTIFACTS_DIR") == 1, together
     # The expected-output list is still there, with each file's full path.
     assert "Later steps of this workflow need these files from you: scan-01.md." in prompt
     assert "/artifacts/scan-01.md" in prompt
@@ -412,13 +421,23 @@ def test_both_cli_runners_end_the_prompt_with_the_line_once(tmp_path, monkeypatc
     argv = json.loads((ctx.work_dir / ".argv.json").read_text())
     assert "compute primes" not in json.dumps(argv), argv
 
+    flag = spec.system_prompt_flag
+    system = argv[argv.index(flag) + 1] if flag and flag in argv[:-1] else ""
+
     assert prompt.startswith("compute primes\n\n"), prompt
+    assert (system + prompt).count(deliverables_line(ctx.artifacts_dir)) == 1, prompt
     assert prompt.count(deliverables_line(ctx.artifacts_dir)) == 1, prompt
     # claude-code alone carries the context-ceiling note (archived issue 2524), which names
     # $SWARM_ARTIFACTS_DIR/handoff.md for the next session, not a deliverable.
-    note = f"\n\n{ceiling.HANDOFF_NOTE}" if spec.context_ceiling else ""
+    # Where the CLI has a system-prompt flag (claude-code, 2026-11-23) the
+    # note rides it; codex keeps it in its prompt (it has no ceiling note).
+    has_note = bool(spec.context_ceiling)
+    in_system = has_note and bool(flag)
+    note = f"\n\n{ceiling.HANDOFF_NOTE}" if has_note and not in_system else ""
+    assert system.count(ceiling.HANDOFF_NOTE) == (1 if in_system else 0), system
     assert prompt.count(ceiling.HANDOFF_NOTE) == (1 if note else 0), prompt
-    assert prompt.replace(ceiling.HANDOFF_NOTE, "").count("$SWARM_ARTIFACTS_DIR") == 1, prompt
+    together = system + "\n\n" + prompt
+    assert together.replace(ceiling.HANDOFF_NOTE, "").count("$SWARM_ARTIFACTS_DIR") == 1, together
     if "expected_outputs" not in payload:
         # Nothing else is appended when no later step expects a file: the
         # line, and the questions sentence after it (2026-10-05), then the
@@ -964,30 +983,42 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     # appends orders the agent to write its deliverable anywhere. An order
     # here is how "write docs/design.md" ends up in the artifacts folder and
     # out of the pull request.
-    prompt = _agent_output(db)["prompt"]
+    output = _agent_output(db)
+    prompt = output["prompt"]
+    system = output["system"]
     assert prompt.startswith(json.dumps(plan)), prompt
     appended = prompt[len(json.dumps(plan)):]
     lines = [line for line in appended.splitlines() if line.strip()]
-    # The context pack's line (context-quality.md §4.4, CTXQ-P) comes first
-    # when a stager left a stage.json: this file:// repository is not on
-    # github.com, so the stager stages nothing and says so in one line. It
-    # names no destination for a deliverable; it is set aside here, and the
-    # "write" check below still reads it.
+    system_lines = [line for line in system.splitlines() if line.strip()]
+    # The standing paragraphs ride the system prompt (`--append-system-prompt`,
+    # 2026-11-23), never the user prompt.
     # The claude-code runner's scratch note (archived issue 2436,
-    # `cachedirs.scratch_note`) comes first: where big scratch data goes --
-    # $TMPDIR, not /tmp -- never where a deliverable goes. Set aside the same
-    # way; the "write" check below still reads it.
+    # `cachedirs.scratch_note`): where big scratch data goes -- $TMPDIR, not
+    # /tmp -- never where a deliverable goes. Set aside; the "write" check
+    # below still reads it.
     notes = (cachedirs.scratch_note(own_volume=True), cachedirs.scratch_note(own_volume=False))
-    assert sum(line in notes for line in lines) == 1 and lines[0] in notes, lines
+    assert sum(line in notes for line in system_lines) == 1, system_lines
+    assert not any(line in notes for line in lines), lines
     # Then the saved-output line (ONE-PLACE): how to read a big tool result,
     # never where anything goes.
     from agent_worker.runners import claude_code as claude_code_runner
 
-    assert lines[1] == claude_code_runner.SAVED_OUTPUT_NOTE, lines
-    after_note = lines[2:]
-    context = [line for line in after_note if line.startswith(CONTEXT_LINE_START)]
-    assert len(context) <= 1 and (not context or after_note[0] == context[0]), lines
-    rest = after_note[len(context):]
+    assert system_lines.count(claude_code_runner.SAVED_OUTPUT_NOTE) == 1, system_lines
+    scratch_at = next(i for i, line in enumerate(system_lines) if line in notes)
+    assert system_lines[scratch_at + 1] == claude_code_runner.SAVED_OUTPUT_NOTE, system_lines
+    assert claude_code_runner.SAVED_OUTPUT_NOTE not in prompt, prompt
+    # The context-ceiling note (archived issue 2524): a note for the session
+    # that may carry the task on, not a destination for the deliverable.
+    assert system.count(ceiling.HANDOFF_NOTE) == 1, system
+    assert ceiling.HANDOFF_NOTE not in prompt, prompt
+    # The context pack's line (context-quality.md §4.4, CTXQ-P) comes first
+    # in the user prompt when a stager left a stage.json: this file://
+    # repository is not on github.com, so the stager stages nothing and says
+    # so in one line. It names no destination for a deliverable; it is set
+    # aside here, and the "write" check below still reads it.
+    context = [line for line in lines if line.startswith(CONTEXT_LINE_START)]
+    assert len(context) <= 1 and (not context or lines[0] == context[0]), lines
+    rest = lines[len(context):]
     # The memory budget line (archived issue 2504) follows it, when the container has a
     # limit; it says how much memory there is, not where anything goes.
     budget = [line for line in rest if line.startswith(BUDGET_LINE_START)]
@@ -995,23 +1026,19 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     rest = rest[len(budget):]
     # The line, then the questions sentence (2026-10-05), which is about a
     # decision for the owner, not about where the deliverable goes; then the
-    # publish paragraph (Proposal A, 2026-10-08), which says the worker
-    # publishes the committed branch -- the deliverable stays the diff, and
-    # only the pull request's title and body go to the artifacts folder.
-    # Between them, the context-ceiling note (archived issue 2524): a note for the session
-    # that may carry the task on, not a destination for the deliverable. The
-    # step's time-limit line (archived issue 2139) comes just before the publish paragraph.
-    # This task is `collect` (no dispatch block): its branch is not its
-    # deliverable, so the worker says it publishes nothing
+    # step's time-limit line (archived issue 2139), last of the user prompt.
+    # The publish paragraph (Proposal A, 2026-10-08) would ride the system
+    # prompt, but this task is `collect` (no dispatch block): its branch is
+    # not its deliverable, so the worker says it publishes nothing
     # (`SWARM_STEP_PUBLISHES=0`, ONE-PLACE) and the paragraph is left out.
-    assert len(rest) == 4, appended
+    assert len(rest) == 3, appended
     assert rest[0].startswith(LINE_START) and rest[0].endswith(LINE_END), rest[0]
     assert rest[1] == QUESTIONS_LINE, rest[1]
-    assert rest[2] == ceiling.HANDOFF_NOTE, rest[2]
-    assert is_limit_line(rest[3]), rest[3]
-    assert cliagent.PUBLISH_PARAGRAPH not in prompt, prompt
-    assert "Write deliverables" not in prompt, prompt
+    assert is_limit_line(rest[2]), rest[2]
+    assert cliagent.PUBLISH_PARAGRAPH not in prompt + system, prompt
+    assert "Write deliverables" not in prompt + system, prompt
     assert not any(line.lstrip().lower().startswith("write") for line in lines), lines
+    assert not any(line.lstrip().lower().startswith("write") for line in system_lines), system
 
 
 def test_a_mock_task_uploads_nothing_from_its_working_folder(db, worker_factory):

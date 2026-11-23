@@ -1755,6 +1755,9 @@ SPEC = CliAgentSpec(
     # turn boundary and continued under the next account with
     # `--resume <session_id>` (S13/S14, `cliagent.AccountStreamWatcher`).
     resume_flag="--resume",
+    # The standing paragraphs ride the system prompt (finding 1 of the
+    # owner's "Shorter sessions" plan, 2026-11-23; `body`).
+    system_prompt_flag=APPEND_SYSTEM_PROMPT_FLAG,
     # An answer that announces pending work is resumed once to finish it
     # (owner decision 2026-10-05; `cliagent.pending_work`).
     finish_on_pending=True,
@@ -2162,28 +2165,33 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if unstaged and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{unstaged}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
+    # STANDING PARAGRAPHS RIDE THE SYSTEM PROMPT (the owner's "Shorter
+    # sessions" plan, finding 1, 2026-11-23). 30 days of task records: a
+    # median of 54,000 cached tokens re-read per turn, 27 turns a task. The
+    # paragraphs below never vary per task, so they go in the one
+    # `--append-system-prompt` (`system_note` below, `cliagent.run_cli_agent`
+    # adds its own), word for word and in this order: one cached system
+    # prefix for every session of the attempt -- a resumed one and a fresh one
+    # after a handoff included -- never restated by a fresh session's first
+    # message. The user prompt keeps what varies per task.
+    standing: list[str] = []
     # The standing test rule, where the checkout has its helper (RELATED-TESTS).
     narrow = related_tests_note(ctx.repo_dir)
-    if narrow and isinstance(prompt, str) and prompt.strip():
-        prompt = f"{prompt.rstrip()}\n\n{narrow}"
-        ctx.payload = {**ctx.payload, "prompt": prompt}
+    if narrow:
+        standing.append(narrow)
     # Where big scratch data goes (archived issue 2436): every repository step, after the
-    # test rule and before the browser note.
+    # test rule.
     scratch = scratch_note_for(os.environ) if ctx.repo_dir is not None else None
-    if scratch and isinstance(prompt, str) and prompt.strip():
-        prompt = f"{prompt.rstrip()}\n\n{scratch}"
-        ctx.payload = {**ctx.payload, "prompt": prompt}
+    if scratch:
+        standing.append(scratch)
     # Saved oversized outputs, by window: every repository step, after the
-    # scratch note (a task with no repository keeps the prompt it had).
-    if ctx.repo_dir is not None and isinstance(prompt, str) and prompt.strip():
-        prompt = f"{prompt.rstrip()}\n\n{SAVED_OUTPUT_NOTE}"
-        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # scratch note.
+    if ctx.repo_dir is not None:
+        standing.append(SAVED_OUTPUT_NOTE)
     # The graph, loaded up front, and what to ask it first (AGENTS-USE-TOOLS):
     # only when it is registered below.
-    if (graph_snapshot or graph_served) and shape == GRAPH_SHAPE_TOOLS \
-            and isinstance(prompt, str) and prompt.strip():
-        prompt = f"{prompt.rstrip()}\n\n{GRAPH_FIRST_NOTE}"
-        ctx.payload = {**ctx.payload, "prompt": prompt}
+    if (graph_snapshot or graph_served) and shape == GRAPH_SHAPE_TOOLS:
+        standing.append(GRAPH_FIRST_NOTE)
     # The agent's own `jev_decide` (AGENTS-USE-TOOLS): the worker writes this
     # config only for a workspace opted in to Jev judgments, under the signed
     # setting and the step's switch (`judge.attempt.setup`). Registered over
@@ -2191,9 +2199,8 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     judge_config = os.environ.get(JUDGE_CONFIG_ENV, "").strip()
     if judge_config and not Path(judge_config).is_file():
         judge_config = ""
-    if judge_config and isinstance(prompt, str) and prompt.strip():
-        prompt = f"{prompt.rstrip()}\n\n{JEV_DECIDE_NOTE}"
-        ctx.payload = {**ctx.payload, "prompt": prompt}
+    if judge_config:
+        standing.append(JEV_DECIDE_NOTE)
     # Where to look a symbol up (the owner, 2026-11-06): an implement, review or fix
     # step with the graph gets the one line naming the tool, and the
     # exploration line then leaves its graph clause out, so it is named once.
@@ -2343,8 +2350,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     # every session of the attempt (AGENTS-USE-TOOLS-WHEN; `system_note`).
     moments = system_note(graph=bool(graph_snapshot or graph_served), jev=bool(judge_config),
                           shape=shape)
-    if moments:
-        extra += [APPEND_SYSTEM_PROMPT_FLAG, moments]
+    # Then the standing paragraphs, in the SAME flag: a second one would
+    # replace the first. `run_cli_agent` appends the publishing paragraph and
+    # the ceiling's handoff note to this value (`SPEC.system_prompt_flag`).
+    system = "\n\n".join([*([moments] if moments else []), *standing])
+    if system:
+        extra += [APPEND_SYSTEM_PROMPT_FLAG, system]
     supervisor: lightpanda.Supervisor | None = None
     agent_stream = Path(ctx.artifacts_dir) / cli_stream_files(spec).stdout
     cli_started: float | None = None

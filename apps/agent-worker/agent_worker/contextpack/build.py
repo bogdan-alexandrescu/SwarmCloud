@@ -26,8 +26,12 @@ the ticket's manifest digest (§3.3, §5.2). Here the pinned manifest is
 checked against the pin's digest before it is parsed, and every shard must
 arrive whole: contiguous pages, one `total`, and exactly the manifest's
 `records` rows. A row over the service's 4 KiB answer cap comes back as a
-placeholder, and is refused rather than silently dropped -- a pack missing
-a caller would read as "no caller".
+placeholder (`tools.ONE_ROW_OVER`) in its place. That row alone is dropped,
+never silently: `ServiceSource.dropped` records where it was, pack.json
+carries it as `dropped_rows`, and CONTEXT.md's notes name it with its size,
+so a missing caller reads as a partial pack, not as "no caller". Refusing
+the whole pack for it (the old rule) left a step with no pack at all for
+one row (the owner's "Shorter sessions" plan, finding 2, 2026-11-23).
 """
 
 from __future__ import annotations
@@ -115,6 +119,9 @@ SERVICE_STATUS = {
 
 #: One JSON-RPC message in, its response out: `HttpService`, or a test's fake.
 Transport = Callable[[dict], dict]
+#: A dropped row's size, as far as it is known: the placeholder says only that
+#: the row did not fit one answer beside that answer's head, never how big it is.
+DROPPED_ROW_SIZE = f"over {tools.ANSWER_CAP} bytes with its answer's head"
 
 
 class PackDeadlineExceeded(SnapshotError):
@@ -252,6 +259,10 @@ class ServiceSource:
         self._seen: set[str] = set()
         self.shards_read = 0
         self.bytes_read = 0
+        #: The rows dropped for the answer cap, in the order met, each once
+        #: however often its shard is re-read after an eviction.
+        self.dropped: list[dict[str, Any]] = []
+        self._dropped_at: set[tuple[str, str, int]] = set()
 
     def name_blobs(self, manifest: Mapping[str, Any]) -> None:
         for table in (manifest.get("shards"), manifest.get("index_shards")):
@@ -307,26 +318,33 @@ class ServiceSource:
             raise SnapshotError(f"blob {hexdigest[:12]} is not named by the pinned manifest")
         layer, key, records = named
         rows: list[dict] = []
+        # Rows served so far, a dropped one included: the cursor and the
+        # manifest's count are both positions in the whole shard.
+        served = 0
         total: int | None = None
         while True:
-            answer = self._index(layer, key, len(rows))
+            answer = self._index(layer, key, served)
             page, following, count = (answer.get("rows"), answer.get("next_cursor"),
                                       answer.get("total"))
             if not isinstance(page, list) or not isinstance(count, int) \
                     or (total is not None and count != total):
                 raise SnapshotError(f"the graph service paged {layer}/{key} inconsistently")
             total = count
-            if any(row == tools.ONE_ROW_OVER or not isinstance(row, dict) for row in page):
-                raise SnapshotError(f"a row of {layer}/{key} is over the service's 4 KiB "
-                                    "answer cap, so the shard cannot be read whole; "
-                                    "it is refused rather than read short")
-            rows.extend(page)
+            for row in page:
+                if row == tools.ONE_ROW_OVER:
+                    self._record_dropped(layer, key, served)
+                elif isinstance(row, dict):
+                    rows.append(row)
+                else:
+                    raise SnapshotError(f"the graph service answered a row of {layer}/{key} "
+                                        "that is not an object")
+                served += 1
             if following is None:
                 break
-            if not page or str(following) != str(len(rows)):
+            if not page or str(following) != str(served):
                 raise SnapshotError(f"the graph service paged {layer}/{key} out of order")
-        if len(rows) != total or (isinstance(records, int) and records != total):
-            raise SnapshotError(f"the graph service served {len(rows)} rows of {layer}/{key}; "
+        if served != total or (isinstance(records, int) and records != total):
+            raise SnapshotError(f"the graph service served {served} rows of {layer}/{key}; "
                                 f"the manifest records {records}")
         shard = _Shard(rows, _raw_bytes(rows))
         if hexdigest not in self._seen:
@@ -338,6 +356,14 @@ class ServiceSource:
             _key, evicted = self._cache.popitem(last=False)
             self._cache_bytes -= evicted.raw_bytes
         return shard
+
+    def _record_dropped(self, layer: str, key: str, cursor: int) -> None:
+        """Record the row at `cursor` of `layer/key`, over the answer cap."""
+        if (layer, key, cursor) in self._dropped_at:
+            return
+        self._dropped_at.add((layer, key, cursor))
+        self.dropped.append({"layer": layer, "key": key, "cursor": cursor,
+                             "size": DROPPED_ROW_SIZE})
 
     def drop(self) -> None:
         """Release every shard: the pack is written, the agent reads the tools."""
@@ -505,7 +531,11 @@ def _build(where: Path, snap: Snapshot, record: dict | None, source: Any, delive
     ranked = select(rows, kind)
     header = {"task_type": kind, "freshness": freshness, "jev": _jev(stage, j1),
               "seeds": seeds.as_dict()}
-    text, shown, paged = render_markdown(header, rows, ranked, in_flight, answer=graph_answer)
+    # Every shard is read by now: what the answer cap dropped is final. A
+    # staged snapshot is read whole, so it drops nothing.
+    dropped = list(getattr(source, "dropped", ()))
+    text, shown, paged = render_markdown(header, rows, ranked, in_flight, answer=graph_answer,
+                                         dropped=dropped)
     size = len(text.encode("utf-8"))
     tokens = -(-size // 4)
     arm = _arm(stage)
@@ -532,6 +562,8 @@ def _build(where: Path, snap: Snapshot, record: dict | None, source: Any, delive
         "delivery": delivery,
         "shards_read": source.shards_read,
         "bytes_read": source.bytes_read,
+        # The rows over the service's answer cap, left out of this pack.
+        "dropped_rows": dropped,
         # Whether CONTEXT.md carried the graph's files, and how many: the next
         # report tells an answer the agent ignored from one it never got.
         "graph_answer": graph_answer.record(),

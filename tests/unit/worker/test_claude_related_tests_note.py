@@ -5,7 +5,8 @@ Measured 2026-10-19/20: 36 vitest runs with no file filter (~22 min each,
 2.05 h), 8 pytest runs over whole tests/unit directories (0.73 h), and both
 out-of-memory kills from `npx vitest run --shard=$i/4 &` in a loop. So when
 the checkout carries `scripts/related-tests.sh`, the runner adds the standing
-rule to the agent's prompt: related tests through that script, never vitest
+rule to the agent's system prompt (`--append-system-prompt`, where the
+standing paragraphs ride since 2026-11-23): related tests through that script, never vitest
 without file arguments, never pytest over a directory or `-n auto` across the
 suite, never parallel shards or background batches polled with sleep. A
 checkout without the script (another tenant's repository) gets no note naming
@@ -49,11 +50,14 @@ def _ctx(root: Path, *, helper: bool) -> RunnerContext:
     )
 
 
-def _prompt_given_to_the_cli(ctx: RunnerContext, monkeypatch) -> str:
-    seen: dict[str, str] = {}
+def _prompts_given_to_the_cli(ctx: RunnerContext, monkeypatch) -> tuple[str, str]:
+    """(user prompt, system prompt) handed to `run_cli_agent`: the system
+    prompt is the value of the one `--append-system-prompt` in its extra args."""
+    seen: dict[str, object] = {}
 
     def fake_run(run_ctx, spec, *, extra_args=(), extra_env=None):
         seen["prompt"] = run_ctx.payload["prompt"]
+        seen["args"] = list(extra_args)
         return {"summary": "ok"}
 
     monkeypatch.setattr(claude_code, "run_cli_agent", fake_run)
@@ -61,7 +65,12 @@ def _prompt_given_to_the_cli(ctx: RunnerContext, monkeypatch) -> str:
                  claude_code.BROWSERS_PATH_ENV, claude_code.CDP_ENDPOINT_ENV):
         monkeypatch.delenv(name, raising=False)
     claude_code.body(ctx)
-    return seen["prompt"]
+    args = seen["args"]
+    assert isinstance(args, list)
+    flag = claude_code.APPEND_SYSTEM_PROMPT_FLAG
+    assert args.count(flag) <= 1, args
+    system = args[args.index(flag) + 1] if flag in args else ""
+    return str(seen["prompt"]), system
 
 
 @pytest.mark.parametrize("rule", [
@@ -74,29 +83,33 @@ def _prompt_given_to_the_cli(ctx: RunnerContext, monkeypatch) -> str:
     "gate runs it after your turn and hands you back what fails",
 ])
 def test_the_rule_text_is_staged_in_the_agents_prompt(tmp_path, monkeypatch, rule):
-    prompt = _prompt_given_to_the_cli(_ctx(tmp_path, helper=True), monkeypatch)
+    prompt, system = _prompts_given_to_the_cli(_ctx(tmp_path, helper=True), monkeypatch)
     # MUTATION: stop appending RELATED_TESTS_NOTE in `body`, or drop this
-    # clause from the note -> this fails.
+    # clause from the note -> this fails. The note is a standing paragraph:
+    # it rides the system prompt (2026-11-23), not the user prompt.
     assert prompt.startswith("Fix the thing.")
-    assert rule in prompt
+    assert rule in system
+    assert claude_code.RELATED_TESTS_NOTE not in prompt
 
 
 def test_the_note_no_longer_tells_the_agent_to_run_the_guards(tmp_path, monkeypatch):
-    prompt = _prompt_given_to_the_cli(_ctx(tmp_path, helper=True), monkeypatch)
+    prompt, system = _prompts_given_to_the_cli(_ctx(tmp_path, helper=True), monkeypatch)
     # MUTATION: restore "Run scripts/changed-guards.sh once at the end" -> this
     # fails (archived issue 2981: the gate runs it after the turn; the agent's own run was
     # a second, ten-minute run of the same guards).
-    assert "changed-guards.sh once at the end" not in prompt
-    assert "Run scripts/changed-guards.sh" not in prompt
+    for text in (prompt, system):
+        assert "changed-guards.sh once at the end" not in text
+        assert "Run scripts/changed-guards.sh" not in text
 
 
 def test_the_note_names_the_helper_only_where_the_checkout_has_it(tmp_path, monkeypatch):
-    prompt = _prompt_given_to_the_cli(_ctx(tmp_path, helper=False), monkeypatch)
+    prompt, system = _prompts_given_to_the_cli(_ctx(tmp_path, helper=False), monkeypatch)
     # MUTATION: append the note whatever the checkout holds -> this fails.
     assert "related-tests.sh" not in prompt
+    assert "related-tests.sh" not in system
     assert claude_code.related_tests_note(None) is None
 
 
 def test_the_note_is_added_once(tmp_path, monkeypatch):
-    prompt = _prompt_given_to_the_cli(_ctx(tmp_path, helper=True), monkeypatch)
-    assert prompt.count(claude_code.RELATED_TESTS_NOTE) == 1
+    prompt, system = _prompts_given_to_the_cli(_ctx(tmp_path, helper=True), monkeypatch)
+    assert (system + prompt).count(claude_code.RELATED_TESTS_NOTE) == 1
