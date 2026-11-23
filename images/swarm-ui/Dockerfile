@@ -72,8 +72,12 @@ FROM ${MIRROR_DOCKER_HUB}/library/${NODE_IMAGE} AS build
 WORKDIR /build
 
 # Dependencies first, so a source-only change does not reinstall them.
-COPY apps/swarm-ui/package.json apps/swarm-ui/package-lock.json* ./
-RUN npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund
+# `npm ci` only, with no `npm install` fallback (#189): a package.json that
+# disagrees with package-lock.json FAILS THE IMAGE instead of resolving afresh,
+# which here would also run without apps/swarm-ui/.npmrc and so outside the
+# 14-day release-age window. The lock is required, not globbed.
+COPY apps/swarm-ui/package.json apps/swarm-ui/package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 COPY apps/swarm-ui/ ./
 # NO ENVIRONMENT IS COMPILED IN (DAYONE-UIENV-1). This stage used to take
