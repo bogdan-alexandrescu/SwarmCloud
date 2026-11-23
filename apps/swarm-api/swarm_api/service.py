@@ -139,7 +139,7 @@ from . import wfdescription
 from .store import Store, derived_service_account
 from .task_accounts import takes_pool_account
 from . import reviewgate
-from .stepclass import CLASS_CHOSEN_BY_KEY, REVIEW_AT_GATE
+from .stepclass import CLASS_CHOSEN_BY_KEY, REVIEW_AT_GATE, submitted_record
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
     AWAIT_STEP_REFUSED_FIELDS,
@@ -1048,6 +1048,11 @@ class SubmissionService:
             dispatch = workcontract.attach(dispatch, contract.compiled, environ=os.environ)
         metadata = dict(spec.metadata)
         metadata[DISPATCH_METADATA_KEY] = dispatch.to_metadata()
+        # `class_chosen_by` is unsigned and the caller's to write: stored only
+        # as a submission would have recorded it (`stepclass.submitted_record`).
+        recorded = submitted_record(metadata.pop(CLASS_CHOSEN_BY_KEY, None), spec.model_class)
+        if recorded is not None:
+            metadata[CLASS_CHOSEN_BY_KEY] = recorded
         # The limits go in the typed `Task.budget` below (contract request
         # 120, signed at spec format 6); where each came from goes in the
         # signed dispatch block, which no caller can write

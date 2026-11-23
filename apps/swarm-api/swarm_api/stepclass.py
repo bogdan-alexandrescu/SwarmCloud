@@ -156,6 +156,36 @@ def explicit_class(doc: Mapping[str, Any]) -> str | None:
     return stored if chosen in (None, CALLER) else None
 
 
+#: The roles only the review gate picks, after submission (`review_role`).
+GATE_ROLES = (ROLE_REVIEW, ROLE_REVIEW_RISK, ROLE_REVIEW_UNREAD, ROLE_REVIEW_LARGE)
+
+
+def submitted_record(record: Any, named: str | None) -> str | None:
+    """The `class_chosen_by` a submission stores for a step that carried
+    `record` in its metadata and named the class `named` (None for none).
+
+    The key is unsigned and a caller writes its own metadata, so a record is
+    not taken on trust. `REVIEW_AT_GATE` never (None, no record):
+    `submit_workflow` marks a first review itself. For a named class, only the record a role rule
+    writes for exactly that class (`role default: <role>`, `ROLE_CLASSES[role]`
+    equal to it, and not one of the `GATE_ROLES`, which no submission
+    writes); any other is `CALLER`, so a caller cannot make its own class
+    look role-chosen to `explicit_class` -- short of naming the very class
+    a non-gate role would have picked, which only gives up its own
+    fix-loop carry. With no class named the record selects nothing and is
+    kept.
+    """
+    if not isinstance(record, str) or record == REVIEW_AT_GATE:
+        return None  # no record: a stored class is the caller's (`explicit_class`)
+    if named is None:
+        return record
+    prefix = "role default: "
+    role = record[len(prefix):] if record.startswith(prefix) else None
+    if role in ROLE_CLASSES and role not in GATE_ROLES and ROLE_CLASSES[role] == named:
+        return record
+    return CALLER
+
+
 def at_gate(metadata: Any) -> bool:
     """Whether a review's class is the review gate's to pick (`REVIEW_AT_GATE`)."""
     return isinstance(metadata, Mapping) and metadata.get(CLASS_CHOSEN_BY_KEY) == REVIEW_AT_GATE
