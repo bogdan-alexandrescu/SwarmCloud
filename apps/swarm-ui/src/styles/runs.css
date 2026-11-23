@@ -196,3 +196,10 @@
     display: block; -webkit-line-clamp: unset; line-clamp: none; overflow: visible; overflow-wrap: anywhere;
   }
 }
+
+/* A held run's plan lint findings (Runs.tsx `PlanLintFindings`): one line per
+   finding, its code then its sentence, wrapping inside the plan's card. */
+.rn-lint { min-width: 0; margin: 0 0 12px; }
+.rn-lint ul { margin: 6px 0 0; padding-left: 18px; }
+.rn-lint li { overflow-wrap: anywhere; }
+.rn-lint code { margin-right: 4px; }

@@ -13,7 +13,7 @@ import {
   CostFact, PlanStepLive, planStepRow, previousAt, ProgressTime, progressEntries, redReading, shortSha, StepProgress, stepRows, StepsCard, useRunWorkflows,
   type ProgressEntry, type RunWorkflows, type StepRow,
 } from './RunSteps'
-import type { IssueRun, IssueRunState, IssueRunSummary, IssueRunSummaryPage, OpenWork, PlanOverlap, PlanStepDoc, RunCheckCounts, RunPlan } from './types'
+import type { IssueRun, IssueRunState, IssueRunSummary, IssueRunSummaryPage, OpenWork, PlanLintRecord, PlanOverlap, PlanStepDoc, RunCheckCounts, RunPlan } from './types'
 import { useNow } from './useNow'
 import { proseWords, stateWord } from './words'
 import { RunContextCard, SelectedTestsGate, useRunIndex, type RunIndexRead } from './RunIndex'
@@ -1203,6 +1203,7 @@ function RunPage({ run: served, reread, go, onHeading, names = null, want }: {
                 {digest !== null && <> · <code className="rn-digest" title={digest}>{shortDigest(digest)}</code></>}
               </h3>
             }>
+          {run.state === 'PLANNED' && <PlanLintFindings lint={run.plan_lint ?? null} />}
           {run.plan === null ? (
             <p className="sb-note">
               {run.state === 'PLANNING'
@@ -1913,6 +1914,32 @@ function overlapRead(o: unknown): PlanOverlap {
  * heading counts both from `overlapVerdict`: "5 checked · none need action",
  * or "5 checked · 1 needs action".
  */
+/**
+ * A HELD RUN'S PLAN LINT FINDINGS (improvement plan 2026-11-23, 'Plans that can
+ * be checked'): the planner's output failed the lint, the one re-plan failed
+ * too, and the run waits PLANNED for a person. One line per finding, its code
+ * and sentence; what the hold means sits behind the chip's tooltip, so the page
+ * gains no sentence of its own.
+ */
+function PlanLintFindings({ lint }: { lint: PlanLintRecord | null }) {
+  if (lint === null || !lint.held || lint.findings.length === 0) return null
+  return (
+    <div className="rn-lint" aria-label="Plan lint findings">
+      <Chip tone="park" title="The plan failed the plan lint, and so did its one re-plan: edit it, approve it or reject it.">
+        lint · {pluralise(lint.findings.length, 'finding')}
+      </Chip>
+      <ul>
+        {lint.findings.map((f, i) => (
+          <li key={i}>
+            <code title={f.step !== null ? `step ${f.step}` : f.requirement !== null ? `requirement ${f.requirement}` : undefined}>{f.code}</code>
+            {f.message !== null && <> {f.message}</>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function Overlaps({ plan, openWork, folded, ended }: { plan: RunPlan; openWork: OpenWork | null; folded: boolean; ended: boolean }) {
   const overlaps = plan.overlaps === undefined || plan.overlaps === null ? plan.overlaps : plan.overlaps.map(overlapRead)
   const found = overlaps !== undefined && overlaps !== null && overlaps.length > 0
