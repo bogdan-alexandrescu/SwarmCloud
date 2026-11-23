@@ -145,7 +145,11 @@ count is read from the run document: a restart, a second tick or a second
 replica between the first failure and the submit finds `replans == 1` and
 never starts a second re-plan; a claim whose task was never linked is adopted
 (the task found by `metadata.issue_run`) or, once older than
-`REPLAN_CLAIM_BOUND_SECONDS`, submitted again under the same claim.
+`REPLAN_CLAIM_BOUND_SECONDS`, submitted again under the same claim. Before that
+submit the visit renews the claim, a compare-and-set on `plan_lint.claimed_at`
+in one transaction: two visits that both found the claim overdue and nothing to
+adopt race on that write, the loser gets a Conflict and re-reads, so only one
+submits, and the renewed claim is inside the bound again for every later visit.
 
 **The hold.** If the re-plan's output fails parse or lint too, the run is not
 `FAILED`: it moves to `PLANNED`, the run's existing wait for a person, with
@@ -153,7 +157,10 @@ never starts a second re-plan; a claim whose task was never linked is adopted
 `PLANNED` is already where a person edits, approves or rejects, and it holds
 nothing. The plan shown is the re-plan's if it parsed, else the latest earlier
 output that did; with neither, the run is `PLANNED` with no plan and a person
-rejects it or starts again. The findings are on the run and served by
+edits one in or rejects it: there is no digest to send, so `plan:edit` sends
+none (`PlanEdit.plan_digest` is optional for that run alone, and refused
+`plan_changed` on a run that has a plan), and the console draws Edit plan and
+Reject, without Approve, the editor opening on one empty step. The findings are on the run and served by
 `GET /v1/runs/{run_id}` as `plan_lint` (`replans`, `held`, `findings`,
 `replan_findings`, `planner_task_ids`, `replan_error`); the console's run page
 lists them, code and sentence, above the plan's steps. An edit relints: the
