@@ -35,6 +35,13 @@
 //     the list and the sheet stays open on the plan, Available, lends kept; a
 //     borrower sees no control; a refused code and an expired device code
 //     change nothing and offer Start again.
+//   * a card that reads Sign-in needed has its own "Sign in again" (the
+//     owner's report of 23 November 2026): in the owning workspace it opens
+//     Manage at that section, focused; on a plan lent here it switches the
+//     tab to the owner and opens the same, for a platform admin or an admin
+//     of the owner, as `/v1/tenants/mine` says; anyone else gets no button
+//     and the state's (i) names the owner; a healthy card has none; nothing
+//     starts a sign-in until Start sign-in; the button fits a phone at 390.
 //
 // Placeholders only; nothing is token-shaped.
 
@@ -68,6 +75,7 @@ const spies = vi.hoisted(() => ({
   pollDeviceSignIn: vi.fn(),
   mintSetupLink: vi.fn(),
   loadAccountsBoard: vi.fn(),
+  loadMyTenants: vi.fn(),
   setAccountPools: vi.fn(),
 }))
 
@@ -82,6 +90,7 @@ vi.mock('../Accounts', async (importOriginal) => ({
 }))
 
 const api = await import('../api')
+const { chooseTenant, chosenTenant } = await import('../fetch')
 const realLoad = (await vi.importActual<typeof import('../api')>('../api')).loadAccountsBoard
 const { LlmProvidersScreen } = await import('../LlmProviders')
 
@@ -90,6 +99,7 @@ const WAIT = { timeout: 5000 } as const
 beforeEach(() => {
   spies.loadAccountsBoard.mockImplementation(realLoad)
   for (const k of Object.keys(spies) as (keyof typeof spies)[]) if (k !== 'loadAccountsBoard') spies[k].mockResolvedValue(OK)
+  spies.loadMyTenants.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: [] })
   spies.refreshAccount.mockResolvedValue({
     status: 'ok',
     fetchedAt: 0,
@@ -974,5 +984,109 @@ describe('Plans: Manage signs a plan in again', () => {
     expect(visible(sec)).toBe('Sign in again 1 Claude sign-in Start sign-in Label, lends and settings kept')
     expect(sec.querySelectorAll('.acct-i').length).toBe(3)
     for (const p of sec.querySelectorAll('p')) expect(p.getAttribute('role')).toBe('alert')
+  })
+})
+
+describe('Plans: a card that needs a sign-in has Sign in again', () => {
+  const PERSONAL = { tenant_id: 'u-owner', display_name: 'Your workspace (u-owner)', kind: 'user', via: 'personal', role: { name: 'admin', source: 'personal' } } as const
+  const eng = (role: string | null, via: 'member' | 'platform_admin') => ({
+    tenant_id: 'eng',
+    display_name: 'Engineering',
+    group: 'eng-team@example.test',
+    kind: 'group' as const,
+    via,
+    ...(role === null ? {} : { role: { name: role, source: via === 'platform_admin' ? 'platform_admin' : 'override' } }),
+  })
+
+  /** The list as served, `shared` (lent here by eng) needing a sign-in; under eng once the tab switches there. */
+  function lentNeedsSignIn(): void {
+    spies.loadAccountsBoard.mockImplementation(async () => {
+      const r = (await realLoad()) as Result<AccountsBoard> & { status: 'ok' }
+      const accounts = r.data.page.accounts.map((a) => (a.label === 'shared' ? { ...a, state: 'REAUTH_REQUIRED', reason: 'refresh refused' } : a))
+      return { ...r, data: { ...r.data, page: { ...r.data.page, accounts, tenant_id: chosenTenant() === 'eng' ? 'eng' : r.data.page.tenant_id } } }
+    })
+  }
+
+  function mine(...choices: object[]): void {
+    spies.loadMyTenants.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: choices })
+  }
+
+  afterEach(() => {
+    chooseTenant(null)
+  })
+
+  it('in the owning workspace: the card opens Manage at "Sign in again", focused, and starts nothing', async () => {
+    await openPlans()
+    const c = card('retired-laptop')
+    expect(text(c)).toContain('Sign-in needed')
+    // MUTATION: leave the card with Manage alone and there is nothing named Sign in again on it.
+    fireEvent.click(within(c).getByRole('button', { name: 'Sign in again retired-laptop' }))
+    const sheet = await screen.findByRole('dialog', { name: 'retired-laptop' })
+    const sec = sheet.querySelector('section[aria-label="Sign in again"]')
+    // MUTATION: open Manage the way its own button does and focus stays on the sheet's heading.
+    await waitFor(() => expect(document.activeElement).toBe(sec))
+    expect(window.location.search + window.location.hash).toContain('account=u-owner%3Aretired-laptop')
+    expect(api.beginAccountSignIn).not.toHaveBeenCalled()
+    expect(api.beginDeviceSignIn).not.toHaveBeenCalled()
+  })
+
+  for (const [who, owner] of [
+    ['a platform admin', eng('admin', 'platform_admin')],
+    ['an admin of the owner', eng('admin', 'member')],
+  ] as const) {
+    it(`on a lent card, for ${who}: switches this tab to the owner and opens Manage at "Sign in again"`, async () => {
+      lentNeedsSignIn()
+      mine(PERSONAL, owner)
+      await openPlans()
+      const c = card('shared')
+      // MUTATION: offer the button on owned cards only and a lent card has none.
+      const press = await within(c).findByRole('button', { name: 'Sign in again shared' }, WAIT)
+      expect(within(c).queryByRole('button', { name: 'Manage shared' })).toBeNull()
+      fireEvent.click(press)
+      // MUTATION: open the sheet without switching and the tab still acts as u-owner.
+      expect(chosenTenant()).toBe('eng')
+      await waitFor(() => expect(screen.getByRole('dialog', { name: 'shared' }).querySelector('section[aria-label="Sign in again"]')).toBeTruthy(), WAIT)
+      const sec = screen.getByRole('dialog', { name: 'shared' }).querySelector('section[aria-label="Sign in again"]')
+      await waitFor(() => expect(document.activeElement).toBe(sec), WAIT)
+      expect(api.beginAccountSignIn).not.toHaveBeenCalled()
+    })
+  }
+
+  it('on a lent card, for a person who cannot manage the owner: no button, and the (i) names the owner', async () => {
+    lentNeedsSignIn()
+    mine(PERSONAL, eng('member', 'member'))
+    await openPlans()
+    await waitFor(() => expect(spies.loadMyTenants).toHaveBeenCalled())
+    const c = card('shared')
+    expect(text(c)).toContain('Sign-in needed')
+    // MUTATION: count any membership as managing and the button is drawn here.
+    expect(within(c).queryByRole('button', { name: /Sign in again/ })).toBeNull()
+    // MUTATION: keep the old tip and it names nobody to ask.
+    await waitFor(() => expect(c.querySelector('.llp-st')?.getAttribute('title')).toContain('Engineering'))
+  })
+
+  it('draws no button on a healthy card', async () => {
+    mine(PERSONAL, eng('admin', 'platform_admin'))
+    await openPlans()
+    await waitFor(() => expect(spies.loadMyTenants).toHaveBeenCalled())
+    for (const label of ['primary', 'codex-plan', 'shared']) {
+      expect(within(card(label)).queryByRole('button', { name: /Sign in again/ }), label).toBeNull()
+    }
+    expect(within(card('primary')).getByRole('button', { name: 'Manage primary' })).toBeTruthy()
+  })
+
+  it('fits a phone at 390: the button is held inside its card', async () => {
+    await openPlans()
+    const press = within(card('retired-laptop')).getByRole('button', { name: 'Sign in again retired-laptop' })
+    const flat = PLANS_CSS.replace(/\/\*[\s\S]*?\*\//g, '')
+    const rules = [...flat.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1]!.trim(), body: m[2]! }))
+    // MUTATION: drop the cap and a long label in a 358px card runs past its edge.
+    expect(rules.find((r) => r.sel === '.lpc-foot .c-btn')?.body).toMatch(/max-width:\s*100%/)
+    expect(rules.find((r) => r.sel === '.lpc-foot')?.body).toMatch(/flex-wrap:\s*wrap/)
+    for (const r of rules.filter((r) => /\.lpc-foot|\.c-btn/.test(r.sel) && /\.lpc-/.test(r.sel))) {
+      for (const m of r.body.matchAll(/(?:^|;)\s*(?:min-)?width\s*:\s*(\d+)px/g)) expect(Number(m[1]), r.sel).toBeLessThanOrEqual(120)
+    }
+    expect(press.getAttribute('style')).toBeNull()
+    expect(press.closest('.lpc-foot')).toBeTruthy()
   })
 })
