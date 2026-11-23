@@ -842,7 +842,7 @@ def test_the_browser_reads_openais_refusal_as_served(db, tokens, group_map, obje
 # --------------------------------------------------------------------------
 
 #: Terraform's `local.runner_models`, as `model_class_env` hands it to swarm-api.
-CLASS_PINS = {"opus": "claude-opus-5-5", "fable": "claude-fable-5-1", "sonnet": "claude-sonnet-5-5",
+CLASS_PINS = {"opus": "claude-opus-5-5", "fable": "claude-fable-5-2", "sonnet": "claude-sonnet-5-5",
               "haiku": "claude-haiku-5-5"}
 
 

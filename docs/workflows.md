@@ -640,7 +640,7 @@ ID per class (`local.runner_models`), and the platform runs that pin:
 | `model_class` | runs | for |
 |---|---|---|
 | `opus` | `claude-opus-5-5` | coding and implementation. `opus` is the default |
-| `fable` | `claude-fable-5-1` | planning. Per token it costs 2.5 times `opus`, so it is a quality choice, not a saving |
+| `fable` | `claude-fable-5-2` (from `claude-fable-5-1`, owner 2026-11-23) | planning. Per token it costs 2.5 times `opus`, so it is a quality choice, not a saving |
 | `sonnet` | `claude-sonnet-5-5` | summarising a source, reformatting a document |
 | `haiku` | `claude-haiku-5-5` | classifying feedback, extracting fields |
 

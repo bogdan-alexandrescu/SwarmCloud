@@ -105,6 +105,11 @@ be stated:
   input / $20 output / $0.20 cache read per million tokens. It has
   **`claude-fable-5-1` at $10 / $50 / $0.25**, so Fable costs 2.5 times Opus
   per token. Planning on Fable is therefore a quality choice, not a saving.
+  The fable class's pin since 2026-11-23, `claude-fable-5-2`, is seeded at
+  the owner's stated **$8 / $40** (2026-11-23); its cache read ($0.20) and
+  cache write ($10.00) are derived from his input price at Fable 5.1's
+  ratios, not stated by him (its `updated_by` says so; docs/versions.md,
+  "Re-pinning a model class").
   Since the owner pinned the sonnet and haiku classes (6 November 2026), the
   seed (`SEED` in `apps/swarm-api/swarm_api/modelprices.py`) prices both 5.5
   classes from the provider's pricing page as read on 2026-10-19:
@@ -355,7 +360,7 @@ The vocabulary (request A) is four named classes, in a dict as
 | class | family word in the ID | pinned ID (Terraform, §4.2) | meant for |
 |---|---|---|---|
 | `opus` | `opus` | `claude-opus-5-5` | **the default**: coding and implementation steps |
-| `fable` | `fable` | `claude-fable-5-1` | planning ("Fable 5+") |
+| `fable` | `fable` | `claude-fable-5-2` (from `claude-fable-5-1`, owner 2026-11-23) | planning ("Fable 5+") |
 | `sonnet` | `sonnet` | `claude-sonnet-5-5` | summarising, reformatting |
 | `haiku` | `haiku` | `claude-haiku-5-5` | classifying, extracting |
 
@@ -400,11 +405,20 @@ classes are in the frozen catalogue, and the IDs are in Terraform.
 ```hcl
 runner_models = {
   opus   = "claude-opus-5-5"
-  fable  = "claude-fable-5-1"
+  fable  = "claude-fable-5-2"
   sonnet = "claude-sonnet-5-5"
   haiku  = "claude-haiku-5-5"
 }
 ```
+
+**Re-pinned by the owner on 2026-11-23:** `fable` moved from
+`claude-fable-5-1` to `claude-fable-5-2`, an edit to this map and a release
+as above. The voice planner's default (`claudeturn.MODEL`, which
+`VOICE_PLANNER_MODEL` overrides in a deployment) and every other class-pin
+literal under `apps/` are held equal to this map by
+`tests/unit/scripts/test_model_pins.py`, which lists each deliberate
+exception with its reason. The steps of a re-pin, canary first, are the
+checklist in [docs/versions.md](../versions.md#re-pinning-a-model-class).
 
 **Why by class and not by profile × class.** All three claude-code-family
 images run one CLI, pinned once in the base Dockerfile (§2.3), so an ID
@@ -571,7 +585,7 @@ fields per profile:
   "available": true,
   "model_classes": ["opus", "fable", "sonnet", "haiku"],
   "default_model_class": "opus",
-  "models": {"opus": "claude-opus-5-5", "fable": "claude-fable-5-1",
+  "models": {"opus": "claude-opus-5-5", "fable": "claude-fable-5-2",
              "sonnet": "claude-sonnet-5-5", "haiku": "claude-haiku-5-5"},
   "...": "every existing field, unchanged"
 }
