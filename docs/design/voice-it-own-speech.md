@@ -698,6 +698,43 @@ Two directions each, drawn in the real console before any build; the design does
   and one session's detail (start phases, percentiles, peaks, minutes, cost, crashes); Days
   (minutes, cost, utterances, p90 latency, stock-outs); empty and error states.
 
+### 12.6 Reply latency: end of speech to first audio, on both engines
+
+The first step of the voice latency work is to measure, then cut. One record per spoken turn holds
+**the span from the person's end of speech to the first audio of the reply**, on each engine, and
+the parts of it the code can tell apart without guessing. A duration that could not be measured is
+recorded as **not measured** (null), never as 0, and counted as such.
+
+| Engine | Span | Parts | Taken in |
+| --- | --- | --- | --- |
+| Own speech (`own`) | the browser's `utt.end` (sent at the voice detector's end of the utterance and at the push-to-talk release alike) to the first audio byte of the reply sent to the browser | `recognition_ms`: `utt.end` to the recogniser's final; `front_first_token_ms`: **always not measured**, the front's child streams whole messages (`claudeturn.py`), so no first token is seen anywhere; `front_ms`: the final to the reply handed to synthesis as `speak` (the read-back matcher and the front's round trip); `synthesis_ms`: that to the first audio byte sent | swarm-api, `voice/speech_relay.py` |
+| GPT-Live (`gpt-live`) | the sideband's person `*.speech_stopped` to `session.output_audio.started` | none: the sideband shows no part of the span | swarm-voice, `latency.py`, posted on the session grant's trace write |
+
+**Clocks.** Each span is taken on one side only, on that process's monotonic clock, so no two clocks
+are ever compared and there is no skew to bound. The own-speech relay stamps every point itself as
+the frame passes it (the browser's `utt.end` and the machine's final arriving, the `speak` leaving,
+the first audio byte leaving), so the browser's microphone-to-socket leg is outside the span. The
+hosted voice's two events arrive on the same sideband socket and are stamped on arrival, so that
+socket's transit is common to both and cancels; the WebRTC leg to the browser is not on the socket
+and is not in the span. When one of the two hosted events never comes in a session, the turn is
+recorded with the span not measured; nothing is estimated.
+
+**Content.** A record is `engine`, `turn_id`, `session_id` and durations, nothing else: no
+transcript, no reply text, no audio. `speech_telemetry.ALLOWED["turn"]` refuses any other field (a
+422 that names the field and keeps nothing), and the unit tests hold the record's keys.
+
+**Cost to a turn.** The relay hands its record to the telemetry sink inline, which stores off the
+event loop; swarm-voice posts in its own task, never awaited by the sideband. Measuring adds no wait.
+
+**Where to read it.** `GET /v1/voice/telemetry/latency?from=&to=&tz=[&scope=platform]` (the same
+readers as §12.4) serves, per engine, over the sessions that started in the range, `turns`, then for
+the span and each part `{count, p50, p90, not_measured}` (nearest rank, computed on read from the
+sessions' documents, nothing stored twice). **Voice it › Telemetry › Reply latency** shows them for
+the page's range as a table with the p50s as bars; each definition is the row's tooltip. The records
+live in the sessions' documents (`voice_speech_sessions/{session}.latency`, a hosted session's
+document marked `engine: gpt-live` and kept out of Sessions and Days) and their samples, retained as
+§12.3 says.
+
 ## 13. Cost and budget
 
 * The ledger gains one computed line, **Speech machine**: the minutes from the start call to the

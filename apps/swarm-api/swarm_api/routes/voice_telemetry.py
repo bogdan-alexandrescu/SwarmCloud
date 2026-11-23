@@ -8,6 +8,9 @@ voice/speech_telemetry.py).
     GET /v1/voice/telemetry/days?from=&to=&tz=[&scope=platform]
         -> {days: [{day, sessions, minutes, utterances, ...}, ...], scope, tz}
 
+    GET /v1/voice/telemetry/latency?from=&to=&tz=[&scope=platform]
+        -> {engines: {own: {turns, span_ms, parts}, gpt-live: {...}}, scope, tz}
+
 A session and a day both carry `machine_usd` (the ledger's Speech machine
 line) and `stockouts` (starts the zone refused), each null with its
 `*_reason` when its source cannot be read (speech_telemetry.py).
@@ -26,6 +29,12 @@ session holds the machine.
 DAYS ARE THE VIEWER'S. `from` and `to` are days, both included, in `tz`, the
 IANA zone the console sends; a session's `day` and every row of `days` are
 placed in that zone when read.
+
+LATENCY (§12.6) is end of speech to the reply's first audio, per engine, over
+the sessions that started in the range: `turns`, then for the span and for
+each part `{count, p50, p90, not_measured}` (nearest rank, as every
+percentile here; a turn that did not measure a duration is counted in
+`not_measured`, never as 0). The hosted voice has no parts.
 
 LIVE resumes like the card stream: `Last-Event-ID` or `after` is the last
 sample's seq; each sample is one `sample` event with its seq as the id. With no
@@ -136,6 +145,22 @@ async def list_days(
     span = tel.parse_span(start, end, tz)
     rows = await run_in_threadpool(_telemetry(ctx).days, span, tenant_id=tenant)
     return {"days": rows, "scope": _scope_word(tenant), "tz": tz}
+
+
+@router.get("/latency")
+async def turn_latency(
+    start: str | None = Query(default=None, alias="from"),
+    end: str | None = Query(default=None, alias="to"),
+    tz: str | None = Query(default=None, description="the viewer's IANA zone"),
+    scope: str | None = Query(default=None, description="workspace | platform"),
+    auth: AuthContext = Depends(reader),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict[str, Any]:
+    tenant = _tenant(auth, scope, tenant_id)
+    span = tel.parse_span(start, end, tz)
+    engines = await run_in_threadpool(_telemetry(ctx).latency, span, tenant_id=tenant)
+    return {"engines": engines, "scope": _scope_word(tenant), "tz": tz}
 
 
 def _event(name: str, data: Any, event_id: str | None = None) -> str:
