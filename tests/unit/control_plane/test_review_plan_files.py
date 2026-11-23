@@ -266,3 +266,42 @@ def test_the_approval_hands_the_review_context_the_fallback(client, db, objects,
     assert seen == [planfiles.AT_APPROVAL]
     inside = _section(prompt, run["id"])
     assert "src/widgets/sort.py" in inside and planfiles.AT_APPROVAL.why in inside
+
+
+class _Forge:
+    """A forge stand-in recording which repository and token the read used."""
+
+    def __init__(self, result=None, exc=None):
+        self.result, self.exc, self.calls = result, exc, []
+
+    def _pull_files(self, ref, number, token, cap):
+        self.calls.append((ref, number, token, cap))
+        if self.exc:
+            raise self.exc
+        return self.result
+
+
+def test_pull_changes_are_read_from_the_runs_own_repository_with_its_token():
+    run = _bare_run()
+    forge = _Forge(result=(("a.py", "./b/c.py", "a.py"), False))
+    token = "t-" + RUN_ID
+    got = planfiles.read_pull_changes(forge, run, 7, token)
+    assert got.files == ("a.py", "b/c.py")
+    assert forge.calls == [(run.issue, 7, token, planfiles.MAX_DIFF_FILES)]
+
+
+@pytest.mark.parametrize("forge", [
+    None,
+    _Forge(exc=RuntimeError("boom")),
+    _Forge(result=(None, False)),
+    _Forge(result=(("a.py",), True)),
+])
+def test_unreadable_pull_changes_are_unread_never_empty(forge):
+    got = planfiles.read_pull_changes(forge, _bare_run(), 7, "tok")
+    assert got.files is None and got.why
+
+
+def test_pull_changes_without_a_token_are_unread():
+    forge = _Forge(result=(("a.py",), False))
+    assert planfiles.read_pull_changes(forge, _bare_run(), 7, "").files is None
+    assert forge.calls == []

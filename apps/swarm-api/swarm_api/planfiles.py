@@ -100,6 +100,34 @@ AT_APPROVAL = ChangedFiles.unread(
     "the review's prompt is written when the plan is approved, before the build has a diff")
 
 
+#: The most changed files read from a pull request; past it the list is not
+#: known, because a partial list would call real changes "inside the plan".
+MAX_DIFF_FILES = 300
+
+
+def read_pull_changes(forge: Any, run: Any, number: int, token: str) -> ChangedFiles:
+    """The build's pull request's changed files, or why they could not be read.
+
+    Read through the forge with `token` -- the run's own tenant's -- from the
+    repository the run's own issue names (`run.issue`), the pull request's
+    base being the forge's own diff base. Any failure, a missing forge, or a
+    list cut at `MAX_DIFF_FILES` is `ChangedFiles.unread`, never an empty list.
+    """
+    if forge is None or not token:
+        return ChangedFiles.unread("the pull request's files were not read: no forge credential")
+    try:
+        files, cut = forge._pull_files(run.issue, int(number), token, MAX_DIFF_FILES)
+    except Exception as exc:  # noqa: BLE001 -- a failed read is not an empty diff
+        return ChangedFiles.unread(
+            f"the pull request's files were not read ({type(exc).__name__})")
+    if files is None:
+        return ChangedFiles.unread("the pull request's files could not be read from the forge")
+    if cut:
+        return ChangedFiles.unread(
+            f"the pull request changes more than {MAX_DIFF_FILES} files; the list is cut")
+    return ChangedFiles.read(files)
+
+
 def plan_files_markers(run_id: str) -> tuple[str, str]:
     """The section's delimiter lines, carrying the run id."""
     rid = run_id or "snapshot"
