@@ -1930,6 +1930,12 @@ def _duration(task: dict[str, Any]) -> dict[str, Any]:
             if isinstance(runs, list) and len(runs) > 1
             else "the last attempt's runner"
         )
+        # A run whose time is unknown was left out of that sum (issue 56):
+        # said, so the shortened total is not read as complete (issue 186).
+        if summary.get("duration_partial") is True:
+            basis = basis.replace(", summed", ", summed, partial (a run's time is unknown)")
+            if "summed" not in basis:
+                basis += ", partial (a run's time is unknown)"
         return {"duration_s": round(float(seconds), 1), "duration_basis": basis}
     return {"duration_s": None, "duration_basis": "not recorded"}
 

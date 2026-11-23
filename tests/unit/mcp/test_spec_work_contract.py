@@ -62,7 +62,7 @@ def test_the_contract_is_sent_through_submit_as_the_steps_metadata():
     sent: list[dict[str, Any]] = []
 
     class Client:
-        def request(self, method, path, payload=None):
+        def request(self, method, path, payload=None, timeout=60):  # noqa: ARG002
             sent.append(copy.deepcopy(payload))
             return {"workflow": {"workflow_id": "wf_1", "steps": []}}
 
@@ -139,7 +139,7 @@ def test_a_malformed_contract_is_refused_by_read_spec_before_submit():
     sent: list[Any] = []
 
     class Client:
-        def request(self, method, path, payload=None):
+        def request(self, method, path, payload=None, timeout=60):  # noqa: ARG002
             sent.append(payload)
             return {"workflow": {}}
 
