@@ -363,6 +363,8 @@ NO_LIVE_ACCOUNT = "no_voice_account_registered"
 #: A text turn, as the console sends it (swarm_voice.textchat.MAX_TURN_CHARS).
 MAX_TURN_CHARS = 4000
 TURN_TIMEOUT_SECONDS = 300.0
+#: swarm-voice's streamed speech turn (claudefront.TURN_LINES_TYPE).
+TURN_LINES_TYPE = "application/x-ndjson"
 #: `detail.reason` of the 409 for a turn on a session that takes none.
 NOT_LIVE = "voice_session_not_live"
 USAGE_LIMIT = "usage_limit_reached"
@@ -661,6 +663,9 @@ class TurnAnswer:
     cards: list[dict[str, Any]]
     #: The fast front's delegation to the planner, on a speech session.
     delegation_id: str | None = None
+    #: The front's first sentence, already handed to `on_sentence` while the
+    #: turn ran (a streamed speech turn); `reply` starts with it.
+    early: str | None = None
 
 
 @dataclass(frozen=True)
@@ -759,6 +764,44 @@ class HttpVoiceClient:
                 raw = b""
             return exc.code, raw or b""
 
+    def _post_lines(self, path: str, body: dict[str, Any], timeout: float,
+                    on_sentence: Callable[[str], None]) -> tuple[int, bytes]:
+        """`_post` for swarm-voice's streamed speech turn (claudefront.py
+        `turn_lines`): each `sentence` line goes to `on_sentence` as it is
+        read; the `answer` line is returned as the body, an `error` line as
+        its status and message. A swarm-voice that answers plain JSON (one
+        without the stream) is read as `_post` reads it."""
+        bearer = self._token(self._audience, timeout)
+        request = urllib.request.Request(
+            self._base + path, data=json.dumps(body).encode("utf-8"), method="POST",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {bearer}"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - our own internal URL
+                if not str(response.headers.get("Content-Type") or "").startswith(TURN_LINES_TYPE):
+                    return response.status, response.read(MAX_SDP_BYTES + 1024)
+                for raw in response:
+                    try:
+                        line = json.loads(raw.decode("utf-8"))
+                    except ValueError:
+                        continue
+                    if not isinstance(line, dict):
+                        continue
+                    if line.get("t") == "sentence" and isinstance(line.get("text"), str):
+                        on_sentence(line["text"])
+                    elif line.get("t") == "answer":
+                        return response.status, json.dumps(line).encode("utf-8")
+                    elif line.get("t") == "error":
+                        status = line.get("status")
+                        return (status if isinstance(status, int) else 502,
+                                json.dumps({"detail": str(line.get("message") or "")}).encode("utf-8"))
+                return 502, b""
+        except urllib.error.HTTPError as exc:
+            try:
+                raw_error = exc.read(16 * 1024) if exc.fp is not None else b""
+            except OSError:
+                raw_error = b""
+            return exc.code, raw_error or b""
+
     def _get(self, path: str, timeout: float) -> tuple[int, bytes]:
         bearer = self._token(self._audience, timeout)
         request = urllib.request.Request(self._base + path, method="GET",
@@ -827,10 +870,22 @@ class HttpVoiceClient:
             raise VoiceUnreachable("swarm-voice answered without an SDP answer; the session was ended.")
         return StartAnswer(answer=answer, live_session_id=live_id)
 
-    def turn(self, session_id: str, text: str) -> TurnAnswer:
+    #: `turn` takes `on_sentence` (speech_relay.ClientTurns reads this).
+    streams_sentences = True
+
+    def turn(self, session_id: str, text: str, *,
+             on_sentence: Callable[[str], None] | None = None) -> TurnAnswer:
+        """swarm-voice's answer to one turn. With `on_sentence` (a speech
+        session's relay), the turn is streamed: the front's first sentence is
+        handed to it as soon as swarm-voice has it, and the answer's `early`
+        names it."""
         path = "/internal/sessions/" + urllib.parse.quote(session_id, safe="") + "/turns"
         try:
-            status, raw = self._post(path, {"text": text}, TURN_TIMEOUT_SECONDS)
+            if on_sentence is not None:
+                status, raw = self._post_lines(path, {"text": text, "stream": True}, TURN_TIMEOUT_SECONDS,
+                                               on_sentence)
+            else:
+                status, raw = self._post(path, {"text": text}, TURN_TIMEOUT_SECONDS)
         except (OSError, ValueError) as exc:
             log.warning("voice turn for session=%s did not reach swarm-voice (%s)", session_id, type(exc).__name__)
             raise VoiceUnreachable("swarm-voice could not be reached for this turn.") from None
@@ -862,9 +917,11 @@ class HttpVoiceClient:
         if not isinstance(turn_id, str) or not isinstance(reply, str):
             raise VoiceUnreachable("swarm-voice answered the turn without a reply.")
         delegation = body.get("delegation_id")
+        early = body.get("early")
         return TurnAnswer(turn_id=turn_id, reply=reply,
                           cards=[c for c in cards if isinstance(c, dict)] if isinstance(cards, list) else [],
-                          delegation_id=delegation if isinstance(delegation, str) and delegation else None)
+                          delegation_id=delegation if isinstance(delegation, str) and delegation else None,
+                          early=early if isinstance(early, str) and early and reply.startswith(early) else None)
 
     def delegation(self, session_id: str, delegation_id: str, *, timeout: float) -> str | None:
         wait = max(0.0, min(float(timeout), DELEGATION_WAIT_SECONDS))
