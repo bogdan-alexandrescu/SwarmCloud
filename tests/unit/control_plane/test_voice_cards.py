@@ -548,7 +548,7 @@ def test_the_schema_route_serves_the_catalogue(client):
 
     assert response.status_code == 200, response.text
     served = response.json()
-    assert served["version"] == vcards.CATALOGUE_VERSION == 4
+    assert served["version"] == vcards.CATALOGUE_VERSION == 5
     assert served["contents"] == [{"content": c.content, "renderer": c.renderer}
                                   for c in vcards.CONTENTS]
     assert served["common_actions"] == list(DESIGN_COMMON_ACTIONS)
