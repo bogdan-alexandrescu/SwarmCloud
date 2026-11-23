@@ -175,9 +175,7 @@ from . import testservices as testservices_mod
 from . import typesafe_shim as typesafe_shim_mod
 from . import usage as usage_mod
 from . import pythonenv as pythonenv_mod
-from . import heartbeat as heartbeat_mod
 from .heartbeat import HeartbeatMixin
-from . import checkpointing as checkpointing_mod
 from .checkpointing import CheckpointMixin
 from . import owner_questions as owner_questions_mod
 from . import questions as questions_mod
@@ -537,12 +535,6 @@ POOL_UNANSWERED = ("broker_unreachable", "broker_client_error")
 #: down for the next quarter of an hour, which is what the park waits.
 POOL_ASKS = 2
 
-#: Moved to `heartbeat.py` (issue 68), where `_heartbeat` reads it; bound here
-#: by assignment so a cite of this file still resolves.
-HEARTBEAT_EVENT_EVERY = heartbeat_mod.HEARTBEAT_EVENT_EVERY
-#: Moved to `checkpointing.py` (issue 68), where `_recorded_checkpoint` reads
-#: it; bound here by assignment so a cite of this file still resolves.
-_KEY_SEGMENT_RE = checkpointing_mod._KEY_SEGMENT_RE
 #: Utilisation points one HEARTBEAT event carries at most, newest kept
 #: (LIVE-UTIL-API, archived issue 1689). 30 x `metrics.POINT_SECONDS` is 150 s, one heartbeat
 #: period at the platform's interval; a beat that came later than that loses
@@ -21164,31 +21156,16 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 # -- what an attempt used: token counts and cost (issue 68) ---------------------------
 #
-# Moved, unchanged, to `usage.py`. Each name a caller or a test reads is bound
-# by assignment, so a cite of this file still resolves.
-_USAGE_KEYS = usage_mod._USAGE_KEYS
-_SUMMED_SPEND = usage_mod._SUMMED_SPEND
-_SESSION_SPEND = usage_mod._SESSION_SPEND
+# Moved, unchanged, to `usage.py`. Bound here only the names this file or a
+# test still reads through it: `_add_spend`, `_stream_usage`,
+# `_unpriced_sessions`, `_cost_incomplete` and `_usage_summary`. Read every
+# other name in `usage` itself; a binding nothing reads let a stale
+# `monkeypatch.setattr(lifecycle, ...)` succeed and change nothing (issue 193).
 _add_spend = usage_mod._add_spend
-_UNNAMED_MODEL = usage_mod._UNNAMED_MODEL
-_PROMPT_BUCKET_TOKENS = usage_mod._PROMPT_BUCKET_TOKENS
-_MAX_PROMPT_BUCKETS = usage_mod._MAX_PROMPT_BUCKETS
-_ESTIMATE_READ_LIMIT = usage_mod._ESTIMATE_READ_LIMIT
 _stream_usage = usage_mod._stream_usage
-_BUCKET_FIELDS = usage_mod._BUCKET_FIELDS
-_has_usage_keys = usage_mod._has_usage_keys
 _unpriced_sessions = usage_mod._unpriced_sessions
 _cost_incomplete = usage_mod._cost_incomplete
 _usage_summary = usage_mod._usage_summary
-MODEL_USAGE_KEY = usage_mod.MODEL_USAGE_KEY
-SUBAGENT_COST_KEY = usage_mod.SUBAGENT_COST_KEY
-_MODEL_USAGE_FIELDS = usage_mod._MODEL_USAGE_FIELDS
-_TOKEN_WEIGHTS = usage_mod._TOKEN_WEIGHTS
-_is_number = usage_mod._is_number
-_model_usage_rows = usage_mod._model_usage_rows
-_weighted_tokens = usage_mod._weighted_tokens
-_subagent_cost_usd = usage_mod._subagent_cost_usd
-_add_model_usage = usage_mod._add_model_usage
 
 
 def _workspace_label(ws: workspace_mod.Workspace, path: Path) -> str:

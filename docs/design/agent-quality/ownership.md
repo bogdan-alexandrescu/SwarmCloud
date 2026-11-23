@@ -38,7 +38,7 @@ body under "Shared-file hunks".
 
 | File | Lines | What each package reaches there |
 |---|---|---|
-| `apps/agent-worker/agent_worker/lifecycle.py` | 21,782 | `Worker` (most of the file): graph staging (`graphstage_mod.prepare`, context packs), Jev's gates (`Worker._quality_gates_env`), the fencing revalidation before publish and merge (contracts), the leak scan at publish (`final_tree_leak`, verification), cost and usage (`_add_spend`, `_usage_summary`, `_subagent_cost_usd`, evidence), console links in the PR body (`pr_body_with_console_links`) |
+| `apps/agent-worker/agent_worker/lifecycle.py` | 21,782 | `Worker` (most of the file): graph staging (`graphstage_mod.prepare`, context packs), Jev's gates (`Worker._quality_gates_env`), the fencing revalidation before publish and merge (contracts), the leak scan at publish (`final_tree_leak`, verification), cost and usage (`_add_spend`, `_usage_summary`, bound from `usage.py`; evidence), console links in the PR body (`pr_body_with_console_links`) |
 | `apps/swarm-api/swarm_api/validation.py` | 4,880 | the workflow switches (`DISPATCH_SWITCHES`, the arm of an experiment), model class (`resolve_task_model`), max turns (`validate_max_turns`), the base commit of a replay (`check_repository_ref`), additional repositories' refusals (`AdditionalRepositoriesDisabled` and its siblings), registered MCP servers' refusals, merge planning |
 | `apps/swarm-api/swarm_api/issueruns.py` | 3,951 | plan territory and its lock (`territory_overlap`, `territory_refusal`), the planner's duplicate verdict (`NotReadyVerdict`), the owner signature that accepts Jev's hold (`_narrowed`), plan compilation (`compile_plan`) |
 
