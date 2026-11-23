@@ -313,7 +313,9 @@ def test_a_duplicated_wake_up_or_line_speaks_it_once():
 def test_a_delegated_line_waits_for_the_person_to_finish_then_is_spoken_once():
     async def go():
         vm = FakeVm()
-        h = Harness(dialer=Dialer(vm), turns=StreamingTurns(first=None))
+        turns = StreamingTurns(first=None)
+        turns.release.set()  # the front answers at once: the loop never blocks on it
+        h = Harness(dialer=Dialer(vm), turns=turns)
         task = await h.ready()
         h.browser.inbox.put_nowait(json.dumps({"t": "utt.start", "seq": 7}))
         await h.until(lambda: h.relay.state.utterance == 7, "the utterance")
