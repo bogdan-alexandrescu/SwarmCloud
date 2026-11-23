@@ -100,6 +100,12 @@
  * with its reason. A peer that drops waits REOPEN_WAIT_MS for that event
  * before it ends the talk: the spent Live session can close before the event
  * reaches the page.
+ *
+ * THE PAUSE (voice-it.md §3.12.7). After 45 s in which nobody speaks, with or
+ * without work running, swarm-voice closes the GPT-Live session and the stream
+ * says `paused`: the status reads Paused and a Resume control sits beside End;
+ * the peer is dropped (its drop ends nothing) and the mic stays open, so the
+ * person's next word wakes it (session.tsx). The why is the control's tooltip.
  */
 
 import { useEffect, useRef } from 'react'
@@ -297,9 +303,9 @@ function Captions({ lines }: { lines: CaptionLine[] }) {
  */
 export function TalkPane() {
   const held = useVoiceSession()
-  const { phase, problem, problemTip, lines, debug, turn, voice, micStream, voicePlaying, sessionId, streamId, projectId, talkMode, boot, speechState, fallback, tierLine, onPlan, level, typed, draft, cards, feed, mic } =
+  const { phase, problem, problemTip, lines, debug, turn, voice, micStream, voicePlaying, sessionId, streamId, projectId, talkMode, boot, speechState, fallback, tierLine, paused, onPlan, level, typed, draft, cards, feed, mic } =
     held
-  const { attach, setMuted, setMode, hold, setDraft, say, start, end } = held
+  const { attach, setMuted, setMode, hold, setDraft, say, start, end, resume } = held
   const live = phase === 'live'
   const textMode = live && talkMode === 'text'
   const speechMode = live && talkMode === 'speech'
@@ -321,7 +327,7 @@ export function TalkPane() {
           <ToneMark tone={live ? 'live' : 'unknown'} />
           {phase === 'idle' && 'Not connected'}
           {phase === 'connecting' && 'Connecting to Voice it…'}
-          {phase === 'live' && !speechMode && (mic.muted ? 'Live, muted' : 'Live')}
+          {phase === 'live' && !speechMode && (paused ? 'Paused' : mic.muted ? 'Live, muted' : 'Live')}
           {speechMode && boot.length > 0 && <BootPhases boot={boot} />}
           {speechMode && boot.length === 0 && (speechState ?? (mic.muted ? 'muted' : 'listening'))}
           {textMode && onPlan && ', on the ChatGPT plan'}
@@ -330,6 +336,12 @@ export function TalkPane() {
         <span className="vt-hud-actions">
           {/* The session's cost, beside End: the ledger's figures, every line behind the pill. */}
           {sessionId !== null && <CostPill sessionId={sessionId} live={live} />}
+          {/* THE PAUSE (§3.12.7): the voice closed after 45 s in which nobody spoke; the next word or Resume opens it. */}
+          {live && paused && (
+            <Button kind="primary" size="sm" onClick={resume} title="Paused after 45 seconds in which nobody spoke, so the voice is not billed. Say something or press Resume.">
+              Resume
+            </Button>
+          )}
           {live || phase === 'ending' ? (
             <Button kind="secondary" size="sm" onClick={() => void end()} busy={phase === 'ending'}>
               End
