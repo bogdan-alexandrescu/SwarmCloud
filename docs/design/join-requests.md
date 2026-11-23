@@ -584,6 +584,23 @@ route:
   subject; an `email` in it is 422. A person can only ever leave the
   workspace their own sign-in selected, so tenant isolation is the
   selection's, as on every tenant-scoped route.
+* takes **a JSON body, `{}` at least, sent as `application/json`**; no
+  body, or one a cross-site form can send (urlencoded, multipart,
+  `text/plain`), is 422 `validation_failed` before anything is read (epic
+  21). Why: the front door authenticates a browser by its cookie, whose
+  `SameSite` setting is the identity-aware proxy's and not this repository's
+  to record or rely on, and a bodiless POST is a "simple" request another
+  site's form can make with that cookie. `application/json` cannot be sent
+  cross-site without a CORS preflight, which swarm-api never grants, so a
+  signed-in person can be made to leave only by a request they chose to
+  make. The join decisions (`POST /v1/admin/join-requests/{ref}/approve`
+  and `/deny`) take the same rule (§4.8); the other `/v1/workspace/...` and
+  `/v1/workspaces/{tenant}/...` writes already require a JSON body through
+  their models (checked 2026-11-23). Withdrawing one's own open request
+  still takes no body: the console sends none, and the worst another site
+  can do with it is withdraw a request the person can make again.
+  `tests/unit/control_plane/test_workspace_leave.py` holds each form shape
+  to the refusal.
 * writes a `removed` grant **exactly as a removal does**, with `via: "self"`
   and `by` the person, and its `workspace_member_removed` row in the same
   batch (§4.7). It ends the platform membership only: when the Google group
@@ -626,7 +643,10 @@ route:
     and the other admins' memberships are read inside it, with the `removed`
     grant and its audit row written in it, and every leave also reads and
     writes the workspace's guard document
-    (`workspace_leave_guards/{tenant_id}`, which holds no authority); whether
+    (`workspace_leave_guards/{tenant_id}`, which holds no authority and
+    records no one: the workspace and the time it was last written, never
+    an address, so it needs no retention rule of its own; who changed what
+    is the audit rows', epic 21); whether
     the caller is an admin is read after the guard, inside it. Two
     admins leaving at once therefore conflict on that document; Firestore
     aborts one, the transaction runs again, and its re-read sees the other
@@ -664,6 +684,18 @@ above, unchanged, from `routes/last_admin.py`:
   group check are read fresh, and any of them that cannot be read is a 503
   (`role_unavailable`, `upstream_unavailable`, `membership_unavailable`),
   never a permissive answer.
+* **Every other admin is found, and the directory is asked before the
+  transaction** (epic 21). The other admins are read as the workspace's
+  `admin` grants themselves (`RoleStore.admin_subjects`, each confirmed by
+  `newest_valid`), never the capped, unordered roster `overrides()` lists,
+  which could miss the admin who remains in a large workspace and refuse a
+  leave 409. When the person changed holds `admin` by override, the group
+  checks for the other admins run BEFORE the transaction
+  (`last_admin.lookups_ahead`), stopping at the first the group holds:
+  made inside it, each network call held the guard document across it and
+  contention 503s grew under load. Inside, the roles and memberships are
+  read again and decide; an answer from before is used only for a person
+  still `admin` there, and anyone not asked before is asked there.
 * **One transaction per write, over the same guard document, and the
   decision inside it.** EVERY write these routes make -- guarded or not,
   naming an admin included -- reads `workspace_leave_guards/{tenant_id}`
@@ -816,6 +848,7 @@ there; only the caller, §4.4 "Leaving"):
 
 ```
 POST   /v1/workspace/leave              {reason?}         -> {email, state: "removed", still_in_group}
+                                        (JSON, `{}` at least; none is 422)
 ```
 
 **A workspace admin's, under the tenant `X-Swarm-Tenant` selects** (`admin`
@@ -834,7 +867,7 @@ tenant-switched. They use a new `join_scope` dependency, beside
 workspace, read fresh:
 
 ```
-POST   /v1/admin/join-requests/{ref}/approve   {role?}
+POST   /v1/admin/join-requests/{ref}/approve   {role?}  (JSON, `{}` at least; none is 422)
 POST   /v1/admin/join-requests/{ref}/deny      {reason}
 ```
 

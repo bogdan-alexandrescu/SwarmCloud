@@ -527,6 +527,13 @@ export interface JudgmentBackendWrite {
   judgment_backend: string
 }
 
+/**
+ * REQUIRED, `{}` at least, as application/json (epic 21): no body, or any body
+ * a cross-site form can send (urlencoded, multipart, text/plain), is a 422
+ * before anything is read, so another site cannot make a signed-in person
+ * leave on their front-door cookie alone -- a page elsewhere cannot send
+ * application/json without a CORS preflight swarm-api never grants.
+ */
 export interface LeaveBody {
   reason?: string | null
 }
@@ -1874,6 +1881,10 @@ export interface swarm_api__routes__access__GrantBody {
   mode: 'read' | 'write'
 }
 
+/**
+ * REQUIRED, `{}` at least, as application/json, as `LeaveBody` is: a form on
+ * another site cannot approve on an admin's front-door cookie.
+ */
 export interface swarm_api__routes__join_requests__ApproveBody {
   role?: string | null
 }

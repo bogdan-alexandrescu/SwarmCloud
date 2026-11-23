@@ -15,6 +15,7 @@ The person's own, in the tenant `X-Swarm-Tenant` selects (any role there;
 only the caller, never a subject):
 
     POST   /v1/workspace/leave            {reason?}         ends their platform membership
+                                                            (a JSON body, `{}` at least)
 
 A workspace admin's, in the tenant `X-Swarm-Tenant` selects (its `admin`, or
 a platform admin):
@@ -28,7 +29,7 @@ The decisions, for Admin › People and roles, which is not tenant-switched
 (`people_scope`, then `join_scope`: a platform admin, or an admin of THAT
 request's workspace, read fresh):
 
-    POST   /v1/admin/join-requests/{ref}/approve   {role?}
+    POST   /v1/admin/join-requests/{ref}/approve   {role?}  (JSON, `{}` at least)
     POST   /v1/admin/join-requests/{ref}/deny      {reason}
 
 WHAT A CODE SHOWS. A code that does not work -- unknown, rotated, switched
@@ -160,11 +161,20 @@ class MemberRemoval(StrictModel):
 
 
 class LeaveBody(StrictModel):
+    """REQUIRED, `{}` at least, as application/json (epic 21): no body, or
+    any body a cross-site form can send (urlencoded, multipart, text/plain),
+    is a 422 before anything is read, so another site cannot make a signed-in
+    person leave on their front-door cookie alone -- a page elsewhere cannot
+    send application/json without a CORS preflight swarm-api never grants."""
+
     #: No `email`: only the caller leaves, so a subject is a 422.
     reason: str | None = Field(default=None, max_length=memberships.REASON_MAX)
 
 
 class ApproveBody(StrictModel):
+    """REQUIRED, `{}` at least, as application/json, as `LeaveBody` is: a
+    form on another site cannot approve on an admin's front-door cookie."""
+
     #: `viewer` or the workspace's default; none given is the default (Q4 (a)).
     role: str | None = Field(default=None, max_length=32)
 
@@ -494,6 +504,10 @@ def remove_member(
         message = (f"{subject} is this workspace's only admin who can still select it; name "
                    "another admin who is a member before removing them. Nothing was written")
 
+    # The directory's answers about the other admins, before the transaction.
+    known = last_admin.lookups_ahead(request, ctx, tenant_id=tenant_id, subject=subject,
+                                     group=group, registered=registered)
+
     def _apply(txn: Any) -> bool | None:
         last_admin.read_guard(ctx, txn, tenant_id)
         current = store.read(subject, transaction=txn).newest.get(tenant_id)
@@ -509,10 +523,10 @@ def remove_member(
                               else _still_in_group(request, ctx, subject, group))
         if admin and not still:
             last_admin.require_admin_remains(
-                request, ctx, txn, tenant_id=tenant_id, subject=subject, by=by, group=group,
-                registered=registered, message=message)
+                request, ctx, txn, tenant_id=tenant_id, subject=subject, group=group,
+                registered=registered, message=message, known=known)
         else:
-            last_admin.write_guard(ctx, txn, tenant_id, by=by)
+            last_admin.write_guard(ctx, txn, tenant_id)
         store.write(tenant_id=tenant_id, group=current.group, subject=subject,
                     state=memberships.REMOVED, by=auth.email, via=via, reason=body.reason,
                     detail={"still_in_group": still}, writer=txn)
@@ -553,7 +567,7 @@ def _not_member() -> WorkspaceLeaveNotMember:
 @router.post(LEAVE_ROUTE)
 def leave_workspace(
     request: Request,
-    body: LeaveBody | None = None,
+    body: LeaveBody,
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
@@ -586,9 +600,13 @@ def leave_workspace(
     # Read fresh first, so a person with nothing to leave hears that before
     # any group lookup; read again inside the transaction, which decides.
     _leavable(store.read(email, fresh=True), tenant_id, registered)
-    reason = body.reason if body is not None else None
+    reason = body.reason
     message = ("you are this workspace's only admin who can still select it; name another "
                "admin who is a member before you leave. Nothing was written")
+
+    # The directory's answers about the other admins, before the transaction.
+    known = last_admin.lookups_ahead(request, ctx, tenant_id=tenant_id, subject=email,
+                                     group=group, registered=registered)
 
     def _apply(txn: Any) -> bool | None:
         last_admin.read_guard(ctx, txn, tenant_id)
@@ -602,10 +620,10 @@ def leave_workspace(
             still = _still_in_group(request, ctx, email, group)
         if admin and not still:
             last_admin.require_admin_remains(
-                request, ctx, txn, tenant_id=tenant_id, subject=email, by=email, group=group,
-                registered=registered, message=message)
+                request, ctx, txn, tenant_id=tenant_id, subject=email, group=group,
+                registered=registered, message=message, known=known)
         else:
-            last_admin.write_guard(ctx, txn, tenant_id, by=email)
+            last_admin.write_guard(ctx, txn, tenant_id)
         store.write(tenant_id=tenant_id, group=current.group, subject=email,
                     state=memberships.REMOVED, by=email, via=memberships.VIA_SELF,
                     reason=reason, detail={"still_in_group": still}, writer=txn)
@@ -653,7 +671,7 @@ def _role_change(ctx: AppContext, *, tenant_id: str, subject: str, chosen: str, 
 def approve_join_request(
     ref: str,
     request: Request,
-    body: ApproveBody | None = None,
+    body: ApproveBody,
     scope: dict[str, str] | None = Depends(people_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
@@ -684,7 +702,7 @@ def approve_join_request(
     store = ctx.roles
     assert store is not None
     default = store.default_role(tenant_id, fresh=True)[0]
-    chosen = default if body is None or body.role is None else roles.check_role(body.role)
+    chosen = default if body.role is None else roles.check_role(body.role)
     if chosen not in joinrequests.OFFERED_ROLES or chosen not in (default, roles.VIEWER):
         raise JoinRoleNotAllowed(
             f"an approval gives this workspace's default ({default}) or viewer below it; "
@@ -692,6 +710,7 @@ def approve_join_request(
     if via == joinrequests.VIA_PROBE_ADMIN:
         # A probe admin's approval never changes or clears a stored `admin`
         # role -- one a platform admin named ahead of the person's joining.
+        # A fast answer; `also` decides it again inside the transaction.
         roles.probe_admin_admin_target(store, tenant_id, subject, chosen)
     by = (auth.email or "").strip().lower()
     admitted = platform_memberships_on(ctx.settings)
@@ -701,6 +720,10 @@ def approve_join_request(
     # eviction is what the person's next request reads, not a second cache's
     # 15 s (§4.4).
     grants = membership_store(ctx)
+    # The directory's answers about the other admins, before the transaction.
+    known = (last_admin.lookups_ahead(request, ctx, tenant_id=tenant_id, subject=subject,
+                                      group=group, registered=registered)
+             if admitted else {})
 
     def also(writer: Any, asked: JoinRequest, decision: Decision) -> None:
         same(writer, asked, decision)
@@ -711,6 +734,10 @@ def approve_join_request(
         last_admin.read_guard(ctx, writer, tenant_id)
         role_change = _role_change(ctx, tenant_id=tenant_id, subject=subject, chosen=chosen,
                                    default=default, by=by, via=via, ref=view.request.ref)
+        if via == joinrequests.VIA_PROBE_ADMIN and role_change is not None:
+            # On the role read after the guard: an `admin` grant a platform
+            # admin stored since the early check is refused, never cleared.
+            roles.refuse_probe_admin_admin_target(tenant_id, role_change["previous"], chosen)
         lowers = (role_change is not None and role_change["previous"] is not None
                   and role_change["previous"].role == roles.ADMIN)
         if lowers:
@@ -720,13 +747,13 @@ def approve_join_request(
                       or _in_group(request, ctx, subject, group))
         if lowers:
             last_admin.require_admin_remains(
-                request, ctx, writer, tenant_id=tenant_id, subject=subject, by=by, group=group,
-                registered=registered,
+                request, ctx, writer, tenant_id=tenant_id, subject=subject, group=group,
+                registered=registered, known=known,
                 message=f"{subject} is this workspace's only admin who can still select it; "
                         "name another admin who is a member before approving them at a lower "
                         "role. Nothing was written")
         else:
-            last_admin.write_guard(ctx, writer, tenant_id, by=by)
+            last_admin.write_guard(ctx, writer, tenant_id)
         # The role first, the membership after: whichever fails, the
         # transaction carries both, so neither lands alone.
         if role_change is not None:

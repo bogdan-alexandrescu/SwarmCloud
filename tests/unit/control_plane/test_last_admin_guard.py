@@ -189,7 +189,7 @@ def test_a_kept_override_of_someone_who_left_is_no_other_admin(client, ctx, db) 
     lee_is_the_last_admin(client)
     grant_member(ctx, DAN)
     set_role(client, DAN, "admin")
-    assert client.post(LEAVE, headers=h("dan", "eng")).status_code == 200
+    assert client.post(LEAVE, headers=h("dan", "eng"), json={}).status_code == 200
     response = client.put(ROLES, headers=h("lee", "eng"), json={"email": LEE, "role": "member"})
     assert response.status_code == 409, response.text
 
@@ -203,7 +203,7 @@ def test_naming_an_admin_is_never_guarded(ctx, db) -> None:
 
 # -- fail closed ---------------------------------------------------------------------
 
-def _unreadable_roster(self, tenant_id: str, *, fresh: bool = False) -> list:
+def _unreadable_roster(self, tenant_id: str) -> list:
     raise RoleUnavailable("this workspace's roles could not be read; retry shortly")
 
 
@@ -212,10 +212,11 @@ def test_an_unreadable_roster_is_a_503_and_nothing_is_written(client, ctx, db, m
                                                               call) -> None:
     joined(client)
     set_role(client, LEE, "admin")
-    monkeypatch.setattr(roles.RoleStore, "overrides", _unreadable_roster)
+    # The guard reads the workspace's admins through `admin_subjects` (epic 21).
+    monkeypatch.setattr(roles.RoleStore, "admin_subjects", _unreadable_roster)
     before = written(db)
     if call == "leave":
-        response = client.post(LEAVE, headers=h("lee", "eng"))
+        response = client.post(LEAVE, headers=h("lee", "eng"), json={})
     elif call == "remove":
         response = remove(client, "lee", LEE)
     else:
@@ -287,7 +288,7 @@ def test_a_leave_and_a_demotion_of_the_only_two_admins_leave_one(first: str) -> 
     set_role(client, ALICE, None)
 
     def leave() -> Any:
-        return client.post(LEAVE, headers=h("lee", "eng"))
+        return client.post(LEAVE, headers=h("lee", "eng"), json={})
 
     def demote() -> Any:
         return client.put(ADMIN_ROLES, headers=h("ops"), json={"email": DAN, "role": "member"})
@@ -321,7 +322,8 @@ def test_a_leave_and_a_demotion_of_the_only_two_admins_leave_one(first: str) -> 
 # -- a promotion, a stale lowering and a leave ----------------------------------------
 
 @pytest.mark.parametrize("stale,read", [
-    ("demote", 1), ("demote", 2), ("clear", 1), ("clear", 2), ("remove", 1), ("leave", 1)])
+    ("demote", 1), ("demote", 2), ("demote", 3), ("clear", 1), ("clear", 2), ("clear", 3),
+    ("remove", 1), ("remove", 2), ("leave", 1), ("leave", 2)])
 def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, stale,
                                                                  read) -> None:
     """lee is eng's only admin; dan a member by platform membership. lee's
@@ -334,8 +336,9 @@ def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, s
 
     `read` is which of the change's reads of dan's role goes stale: the roles
     routes read it once before their transaction (to answer `role_unchanged`
-    early) and again inside it, which decides; removal and leave read it
-    inside only."""
+    early), once more for `last_admin.lookups_ahead` (whether to ask the
+    directory before the transaction, epic 21) and again inside it, which
+    decides; removal and leave read it for `lookups_ahead` and inside."""
     db = RacingFirestore()
     seed_tenant(db, "eng")
     seed_tenant(db, "research")
@@ -354,7 +357,7 @@ def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, s
     def interleave() -> None:
         between.append(client.put(ROLES, headers=h("lee", "eng"),
                                   json={"email": DAN, "role": "admin"}))
-        between.append(client.post(LEAVE, headers=h("lee", "eng")))
+        between.append(client.post(LEAVE, headers=h("lee", "eng"), json={}))
 
     def newest_valid(self, tenant_id, subject, **kwargs):
         seen = real(self, tenant_id, subject, **kwargs)
@@ -368,7 +371,7 @@ def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, s
     if stale == "remove":
         outcome = remove(client, "lee", DAN)
     elif stale == "leave":
-        outcome = client.post(LEAVE, headers=h("dan", "eng"))
+        outcome = client.post(LEAVE, headers=h("dan", "eng"), json={})
     else:
         outcome = client.request("PUT" if stale == "demote" else "DELETE", ROLES,
                                  headers=h("lee", "eng"),
@@ -385,7 +388,8 @@ def test_a_lowering_decided_on_a_stale_role_cannot_leave_no_admin(monkeypatch, s
     assert outcome.status_code == 409, outcome.text
     assert outcome.json()["code"] == LAST
     # A stale read inside the transaction is caught by the guard's abort.
-    assert db.aborts >= (1 if read == 2 or stale in ("remove", "leave") else 0)
+    inside = 2 if stale in ("remove", "leave") else 3
+    assert db.aborts >= (1 if read == inside else 0)
     assert role_of(ctx, DAN) == roles.ADMIN
     assert membership_store(ctx).read(DAN, fresh=True).newest["eng"].state == memberships.MEMBER
     assert [r["detail"]["route"] for r in refused(db)] == [
@@ -454,3 +458,67 @@ def test_a_refusal_is_served_in_the_workspace_role_events(client, ctx, db) -> No
     assert response.status_code == 409, response.text
     # MUTATION: leave the action off WORKSPACE_AUDIT_ACTIONS -> the row is never shown.
     assert "workspace_last_admin_refused" in [e["action"] for e in ctx.roles.audit("eng")]
+
+
+# -- the later minors of epic 21 ------------------------------------------------------
+
+FILLERS = tuple(f"filler{i}@example.com" for i in range(8))
+
+
+def test_another_admin_past_the_roster_cap_is_still_counted(client, ctx, db,
+                                                            monkeypatch) -> None:
+    """Epic 21: `overrides()` scans a capped, unordered roster, so in a large
+    workspace the admin who remains could be missed and the leave refused
+    409. The guard asks Firestore for the workspace's `admin` grants
+    themselves, so bob -- named after many other overrides, past the cap --
+    counts, and lee may leave."""
+    lee_is_the_last_admin(client)
+    for filler in FILLERS:
+        set_role(client, filler, "viewer")
+    set_role(client, "bob@example.com", "admin")
+    monkeypatch.setattr(roles, "ROSTER_MAX", 2)
+    response = client.post(LEAVE, headers=h("lee", "eng"), json={})
+    assert response.status_code == 200, response.text
+    assert not refused(db)
+
+
+def test_the_other_admins_group_lookups_run_before_the_transaction(client, ctx, db,
+                                                                   monkeypatch) -> None:
+    """Epic 21: the directory lookups for each other admin are network calls;
+    made inside the Firestore transaction they hold the guard across them,
+    and contention 503s grow under load. They run first; inside, only the
+    roles are read again."""
+    from swarm_api.routes import last_admin
+
+    lee_is_the_last_admin(client)
+    set_role(client, "bob@example.com", "admin")
+    events: list[str] = []
+    real_in_group, real_read_guard = last_admin.in_group, last_admin.read_guard
+
+    def in_group(request, ctx, email, group):
+        events.append(f"lookup {email}")
+        return real_in_group(request, ctx, email, group)
+
+    def read_guard(ctx, txn, tenant_id):
+        events.append("transaction")
+        return real_read_guard(ctx, txn, tenant_id)
+
+    monkeypatch.setattr(last_admin, "in_group", in_group)
+    monkeypatch.setattr(last_admin, "read_guard", read_guard)
+    response = client.post(LEAVE, headers=h("lee", "eng"), json={})
+    assert response.status_code == 200, response.text
+    assert "lookup bob@example.com" in events, events
+    assert events.index("transaction") > max(
+        i for i, e in enumerate(events) if e == "lookup bob@example.com"), events
+
+
+def test_the_guard_document_keeps_no_ones_address(client, ctx, db) -> None:
+    """Epic 21: `workspace_leave_guards` holds no authority and is kept for
+    as long as the workspace is, so it records no person's address -- only
+    the workspace and when it was last written."""
+    joined(client)
+    set_role(client, LEE, "admin")
+    assert client.post(LEAVE, headers=h("lee", "eng"), json={}).status_code == 200
+    guard = db.dump()[f"{memberships.LEAVE_GUARD_COLLECTION}/eng"]
+    assert set(guard) == {"tenant_id", "at"}
+    assert not any("@" in str(v) for v in guard.values())
