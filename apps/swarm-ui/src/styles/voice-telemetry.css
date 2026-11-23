@@ -185,4 +185,6 @@
 
 /* Reply latency (§12.6): a part's row sits under its engine's. */
 .vtel-lat tr.is-part th:first-child { padding-left: 16px; }
-.vtel-lat + .vtel-fig { margin-top: 8px; }
+/* The table scrolls inside its card rather than widen a 390 px page. */
+.vtel-lat-wrap { max-width: 100%; overflow-x: auto; }
+.vtel-lat-wrap + .vtel-fig { margin-top: 8px; }

@@ -355,30 +355,32 @@ function LatencyCard({ latency, error, onRetry }: { latency: VoiceLatency | null
         <p className="vtel-empty">Nothing measured yet</p>
       ) : (
         <>
-          <table className="vtel-pct vtel-lat">
-            <thead>
-              <tr>
-                <th />
-                <th title="Turns that measured it">n</th>
-                <th>p50</th>
-                <th>p90</th>
-                <th title="Turns that did not measure it">Unmeasured</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.key} data-latency={r.key} className={r.part ? 'is-part' : undefined}>
-                  <th scope="row" title={r.say}>
-                    {r.label}
-                  </th>
-                  <td>{r.fig.count}</td>
-                  <td>{ms(r.fig.p50)}</td>
-                  <td>{ms(r.fig.p90)}</td>
-                  <td>{r.fig.not_measured}</td>
+          <div className="vtel-lat-wrap">
+            <table className="vtel-pct vtel-lat">
+              <thead>
+                <tr>
+                  <th />
+                  <th title="Turns that measured it">n</th>
+                  <th>p50</th>
+                  <th>p90</th>
+                  <th title="Turns that did not measure it">Unmeasured</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.key} data-latency={r.key} className={r.part ? 'is-part' : undefined}>
+                    <th scope="row" title={r.say}>
+                      {r.label}
+                    </th>
+                    <td>{r.fig.count}</td>
+                    <td>{ms(r.fig.p50)}</td>
+                    <td>{ms(r.fig.p90)}</td>
+                    <td>{r.fig.not_measured}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           <figure className="vtel-fig">
             <figcaption>p50</figcaption>
             <Bars testId="vtel-latency-chart" data={rows.map((r) => r.fig.p50)} labels={rows.map((r) => r.label)} tone={1} label="Reply latency p50, per engine and part" unit="ms" />
