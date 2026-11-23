@@ -378,8 +378,22 @@ def probe_admin_admin_target(store: "RoleStore", tenant_id: str, subject: str,
     would outlive its entry, and narrowing one, or clearing one a platform
     admin stored ahead of a person's joining, would take the workspace from
     the people it belongs to. 403 `role_admin_required`, before anything is
-    written."""
-    current = store.newest_valid(tenant_id, subject, fresh=True)
+    written.
+
+    This early check reads outside any transaction, so it is a fast answer
+    only: every write it guards decides again with
+    `refuse_probe_admin_admin_target` inside its own transaction, on the role
+    read there after the last-admin guard (`routes/last_admin.py`), so a
+    platform admin storing an `admin` grant between the two is never
+    overwritten (epic 21)."""
+    refuse_probe_admin_admin_target(
+        tenant_id, store.newest_valid(tenant_id, subject, fresh=True), role)
+
+
+def refuse_probe_admin_admin_target(tenant_id: str, current: "Grant | None",
+                                    role: str | None) -> None:
+    """`probe_admin_admin_target` on a grant the caller already read --
+    inside the write's transaction, after its guard read, where it decides."""
     if role == ADMIN or (current is not None and current.role == ADMIN):
         raise RoleAdminRequired(
             f"a probe admin's role in {tenant_id} is scoped to it: it cannot grant, change "

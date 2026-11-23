@@ -143,7 +143,7 @@ def _guarded_write(request: Request, ctx: AppContext, *, tenant_id: str, subject
 
 
 def _set_person(request: Request, ctx: AppContext, *, tenant_id: str, group: str, by: str,
-                via: str, body: PersonRole) -> dict[str, Any]:
+                via: str, body: PersonRole, scoped: bool = False) -> dict[str, Any]:
     role = roles.check_role(body.role)
     subject = roles.subject_for_write(body.email)
     reason = roles.clean_reason(body.reason)
@@ -158,6 +158,10 @@ def _set_person(request: Request, ctx: AppContext, *, tenant_id: str, group: str
 
     def change(_txn: Any, detail: dict[str, Any]) -> tuple[bool, Callable[[Any], Any]]:
         current = store.newest_valid(tenant_id, subject, fresh=True)
+        if scoped:
+            # Decided here, on the role read after the guard, not only before
+            # the transaction: an `admin` grant stored in between is refused.
+            roles.refuse_probe_admin_admin_target(tenant_id, current, role)
         if current is not None and current.role == role:
             raise RoleUnchanged(
                 f"{subject} already holds {role} in {tenant_id}; nothing was written")
@@ -186,7 +190,7 @@ def _set_person(request: Request, ctx: AppContext, *, tenant_id: str, group: str
 
 
 def _clear_person(request: Request, ctx: AppContext, *, tenant_id: str, group: str, by: str,
-                  via: str, body: PersonClear) -> dict[str, Any]:
+                  via: str, body: PersonClear, scoped: bool = False) -> dict[str, Any]:
     subject = roles.subject_for_write(body.email)
     reason = roles.clean_reason(body.reason)
     store = ctx.roles
@@ -202,6 +206,9 @@ def _clear_person(request: Request, ctx: AppContext, *, tenant_id: str, group: s
 
     def change(_txn: Any, detail: dict[str, Any]) -> tuple[bool, Callable[[Any], Any]]:
         current = store.newest_valid(tenant_id, subject, fresh=True)
+        if scoped:
+            # As `_set_person`: decided on the role read after the guard.
+            roles.refuse_probe_admin_admin_target(tenant_id, current, None)
         if current is None or current.role is None:
             raise unchanged()
         held = current.role
@@ -279,16 +286,18 @@ def _workspace_writer(ctx: AppContext, auth: AuthContext, requested_via: str, *,
 
 
 def _probe_admin_limit(ctx: AppContext, auth: AuthContext, email: Any,
-                      role: str | None) -> None:
+                      role: str | None) -> bool:
     """A scoped probe admin (`roles.probe_admin_scope`) may narrow and widen
     viewers and members in its listed workspace, as the roles probe does, but
     never grant `admin` to a person nor change or clear a person who holds
-    it (`roles.probe_admin_admin_target`)."""
+    it (`roles.probe_admin_admin_target`). True for a probe admin: its write
+    decides the refusal again inside its transaction (`_set_person`)."""
     if not roles.probe_admin_scope(ctx.settings, auth):
-        return
+        return False
     store = ctx.roles
     assert store is not None
     roles.probe_admin_admin_target(store, auth.tenant_id, roles.subject_for_write(email), role)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -315,9 +324,9 @@ def workspace_set_person(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     via = _workspace_writer(ctx, auth, body.via, probe_admin=True)
-    _probe_admin_limit(ctx, auth, body.email, roles.check_role(body.role))
+    scoped = _probe_admin_limit(ctx, auth, body.email, roles.check_role(body.role))
     return _set_person(request, ctx, tenant_id=tenant_id, group=auth.tenant_principal,
-                       by=auth.email, via=via, body=body)
+                       by=auth.email, via=via, body=body, scoped=scoped)
 
 
 @router.delete("/v1/workspace/roles/person")
@@ -329,9 +338,9 @@ def workspace_clear_person(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     via = _workspace_writer(ctx, auth, body.via, probe_admin=True)
-    _probe_admin_limit(ctx, auth, body.email, None)
+    scoped = _probe_admin_limit(ctx, auth, body.email, None)
     return _clear_person(request, ctx, tenant_id=tenant_id, group=auth.tenant_principal,
-                         by=auth.email, via=via, body=body)
+                         by=auth.email, via=via, body=body, scoped=scoped)
 
 
 @router.put("/v1/workspace/roles/default")

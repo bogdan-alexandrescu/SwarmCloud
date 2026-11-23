@@ -692,6 +692,7 @@ def approve_join_request(
     if via == joinrequests.VIA_PROBE_ADMIN:
         # A probe admin's approval never changes or clears a stored `admin`
         # role -- one a platform admin named ahead of the person's joining.
+        # A fast answer; `also` decides it again inside the transaction.
         roles.probe_admin_admin_target(store, tenant_id, subject, chosen)
     by = (auth.email or "").strip().lower()
     admitted = platform_memberships_on(ctx.settings)
@@ -711,6 +712,10 @@ def approve_join_request(
         last_admin.read_guard(ctx, writer, tenant_id)
         role_change = _role_change(ctx, tenant_id=tenant_id, subject=subject, chosen=chosen,
                                    default=default, by=by, via=via, ref=view.request.ref)
+        if via == joinrequests.VIA_PROBE_ADMIN and role_change is not None:
+            # On the role read after the guard: an `admin` grant a platform
+            # admin stored since the early check is refused, never cleared.
+            roles.refuse_probe_admin_admin_target(tenant_id, role_change["previous"], chosen)
         lowers = (role_change is not None and role_change["previous"] is not None
                   and role_change["previous"].role == roles.ADMIN)
         if lowers:
