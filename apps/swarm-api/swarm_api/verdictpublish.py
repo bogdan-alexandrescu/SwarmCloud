@@ -733,6 +733,11 @@ def _dispatch_facts(doc: Mapping[str, Any], *, through_review: Collection[str] =
     )
     if not normalised or len(normalised) != len(verdicts):
         raise Decline("gate", "the verdict gate names no verdict this platform reads")
+    if "also_task_ids" in gate:
+        # A gate that reads further reviews (`when.also`) is decided by the
+        # worker, which reads every staged verdict; one review's MERGE here
+        # says nothing about the others'.
+        raise Decline("gate", "the verdict gate reads further reviews, which the worker decides")
     if not isinstance(builds_on, str) or (builds_on not in depends_on
                                           and builds_on not in through_review):
         raise Decline("contributors", "the step builds on no upstream branch")
