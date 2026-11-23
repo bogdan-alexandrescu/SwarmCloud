@@ -111,8 +111,7 @@ log = logging.getLogger(__name__)
 #: Who switched a tenant off (WAIT-PAUSER, part of archived issue 1782): swarm-api's
 #: `PUT /v1/admin/tenants/{id}/limits` appends one `admin_audit` row per change
 #: of `enabled` (`swarm_api.store.Store._switch_tenant`). Restated because the
-#: scheduler image does not carry swarm-api; held equal by
-#: tests/unit/control_plane/test_wait_pauser.py.
+#: scheduler image does not carry swarm-api; held equal by a test.
 ADMIN_AUDIT = "admin_audit"
 AUDIT_TENANT_DISABLED = "tenant_disabled"
 AUDIT_TENANT_ENABLED = "tenant_enabled"
@@ -173,15 +172,15 @@ def _newest_disable(db: Any, tenant: Tenant) -> dict[str, str]:
 #: §1): `metadata.merge_wait`, written by the worker's
 #: `control.ControlPlane.park_ci_pending`, and inside it the marker swarm-api's
 #: wake tick (`swarm_api.mergewake`) writes once the checks have settled.
-#: Restated because the scheduler image carries neither; held equal by
-#: tests/unit/worker/test_merge_action.py.
+#: Restated because the scheduler image carries neither; held equal by a
+#: test.
 MERGE_WAIT_METADATA_KEY = "merge_wait"
 MERGE_WAKE_MARKER = "wake_requested_at"
 #: The wake tick's record of a merge step's owner-question hold, inside
 #: `merge_wait` (MERGE-OUTSIDE-ENDS, part of archived issue 2441): the park instant it read
 #: (`parked_at`) and, once the hold's pull request was merged or closed
 #: outside the workflow, the marker. `swarm_api.mergewake.OWNER_HOLD_KEY`,
-#: held equal by tests/unit/control_plane/test_merge_outside_ends.py.
+#: held equal by a test.
 OWNER_HOLD_KEY = "owner_hold"
 #: The wake tick's own reading of a CI park's checks, inside `merge_wait`
 #: (`swarm_api.mergewake.READING_KEY`): `{head, read_at, pending, failed}`,
@@ -189,9 +188,8 @@ OWNER_HOLD_KEY = "owner_hold"
 #: without an answer, a repair round running at a red head included.
 MERGE_READING_KEY = "reading"
 #: The worker's bounds on a CI wait (`agent_worker.merge`), restated because
-#: the scheduler image does not carry it; held equal by
-#: tests/unit/control_plane/test_merge_wait_no_lease.py. The fallback is the
-#: park instant plus MERGE_CI_FALLBACK_SECONDS (the worker's
+#: the scheduler image does not carry it; held equal by a test. The
+#: fallback is the park instant plus MERGE_CI_FALLBACK_SECONDS (the worker's
 #: `next_eligible_at`), and here also how long a tick's reading stays fresh:
 #: 900 s is 30 of its CI_READ_SECONDS reads, so a reading that old means the
 #: tick is not reading this park.
@@ -210,8 +208,7 @@ MERGE_CI_RECHECK_SECONDS = MERGE_CI_STUCK_SECONDS
 #: A MERGE verdict's integrator, published by swarm-api without a worker
 #: (archived issue 748, `swarm_api.verdictpublish`): the marker it writes on the step, its
 #: `claimed` state, and how long a claim is honoured. Restated because the
-#: scheduler image does not carry swarm-api; held equal by
-#: tests/unit/control_plane/test_verdict_publish.py.
+#: scheduler image does not carry swarm-api; held equal by a test.
 CONTROL_PUBLISH_METADATA_KEY = "control_publish"
 CONTROL_PUBLISH_CLAIMED = "claimed"
 CONTROL_PUBLISH_CLAIM_SECONDS = 300
@@ -219,8 +216,8 @@ CONTROL_PUBLISH_CLAIM_SECONDS = 300
 #: A workflow that waits for named pull requests to merge (lane SPEED-D3,
 #: `swarm_api.prgate`): the gate on each of its root steps, PARKED on
 #: DEPENDENCY_INCOMPLETE, and the two states that end the wait. Restated
-#: because the scheduler image does not carry swarm-api; held equal by
-#: tests/unit/control_plane/test_workflow_after_pr.py.
+#: because the scheduler image does not carry swarm-api; held equal by a
+#: test.
 AFTER_PRS_METADATA_KEY = "after_prs"
 AFTER_PRS_MERGED = "merged"
 AFTER_PRS_CLOSED = "closed"
@@ -256,8 +253,7 @@ def after_prs_hold(metadata: Any) -> tuple[str, int | None] | None:
 #: this cause. Not an `EndCause` member -- the frozen enum has none -- so it is
 #: the `last_error` prefix and the event's `cause`, and `end_cause` is None as
 #: for every dead-lettered park. Restated from `swarm_api.handoff`, which this
-#: image does not carry; tests/unit/control_plane/test_handoff_api.py holds
-#: them equal.
+#: image does not carry; a test holds them equal.
 HUMAN_WAIT_EXPIRED = "human_wait_expired"
 #: The default for `human_park_max_seconds`, read through `getattr` so a
 #: settings field can be added without a change here. 24 hours: a person's
@@ -725,8 +721,8 @@ def _parent_cause(parents: dict[str, ParentEnd], failed: list[str]) -> EndCause 
 #: (`swarm_api.schemas.WorkflowCreate`) and the MCP tool advertises it as an
 #: enum. A rename on either side would make this scheduler ignore the setting
 #: again, silently, which is the defect this code fixes.
-#: `test_the_policy_vocabulary_agrees_everywhere_it_is_stated` holds all four
-#: statements together, and contract request 20 asks for one home.
+#: A test holds all four statements together, and contract request 20 asks
+#: for one home.
 FAIL_WORKFLOW = "fail_workflow"
 
 #: Step states that fail a workflow under `fail_workflow` (owner, 2026-09-24).

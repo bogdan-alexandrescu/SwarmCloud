@@ -1842,10 +1842,9 @@ QUEUED_STATES = frozenset(state.value for state in PENDING_STATES)
 _ACTIVE_ORDER = tuple(state.value for state in TaskState if state.value in RUNNING_STATES)
 
 #: States a task never leaves. Named FINISHED rather than TERMINAL_STATES on
-#: purpose: `test_the_contract_is_not_shadowed_by_a_local_terminal_set` holds
-#: this module to not re-exporting that name. It is the contract's set plus the
-#: `DEAD_LETTER` spelling older payloads use, the same pair `client.TERMINAL`
-#: carries.
+#: purpose, so this module does not re-export that name. It is the contract's
+#: set plus the `DEAD_LETTER` spelling older payloads use, the same pair
+#: `client.TERMINAL` carries.
 FINISHED_STATES = frozenset(state.value for state in _states.TERMINAL_STATES) | {"DEAD_LETTER"}
 
 _STATE_TONE = {

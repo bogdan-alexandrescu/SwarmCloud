@@ -122,8 +122,7 @@ CLOUD_RUN = Backend.CLOUD_RUN_JOB.value
 #: image carries `apps/common` and `apps/reconciler` and nothing else
 #: (images/swarm-reconciler/Dockerfile), and the frozen contract names no worker
 #: exit code. Contract request 21 (docs/contract-change-requests.md) asks for
-#: one. Until then, tests/unit/worker/test_worker_cannot_start.py
-#: (`test_the_reconcilers_78_is_the_workers_78`) holds the two together.
+#: one. Until then, a test holds the two together.
 WORKER_EXIT_CANNOT_START = 78
 
 #: How much of a worker's own account of itself reaches a task's `last_error`.

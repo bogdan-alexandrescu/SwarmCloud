@@ -10,10 +10,10 @@ THE SOURCE IS `ARG NODE_VERSION=` in images/agent-runtime-base/Dockerfile,
 which the base's build asserts `node --version` equals. The three images built
 FROM the base by digest install no Node of their own (the browser image links
 Playwright's driver to the base's /usr/local/bin/node), so all four carry the
-base's. tests/unit/control_plane/test_runtimes_node_version.py holds every
-value here equal to that ARG and requires an entry for every image a profile
-names, so re-pinning the base without this table, or adding an image without
-an entry, fails a test rather than serving a wrong or missing version.
+base's. A test holds every value here equal to that ARG and requires an
+entry for every image a profile names, so re-pinning the base without this
+table, or adding an image without an entry, fails a test rather than
+serving a wrong or missing version.
 """
 
 from __future__ import annotations

@@ -24,8 +24,7 @@ under the bridge's own per-user directory (`config.config_dir`), never in the
 repository. The project is the git top level of the session's directory
 (CLAUDE_PROJECT_DIR when Claude Code sets it, else the bridge's cwd), with
 symlinks resolved, so a session opened in a subdirectory is the same
-project. The hook derives the same key the same way, in bash
-(`tests/unit/mcp/test_sc_watch.py` holds the two together).
+project. The hook derives the same key the same way, in bash.
 
 IT ARMS ITSELF (SC-AUTO-WATCH, owner request 2026-10-14): "/sc watch should
 automatically be set if there is at least one workflow being worked on in sc

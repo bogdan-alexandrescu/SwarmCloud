@@ -146,8 +146,8 @@ GIT_CALL_TOOLS = frozenset({"git_push_branch", "git_fetch", "git_rebase_onto"})
 #: so the shim is still waiting when the answer comes. With ChildApi's 10 s a
 #: workflow-touching push (a fetch, then the workflow-path walk) came back
 #: `api_unavailable` while swarm-api was still pushing, and the step failed
-#: `publish_failed`. A mirrored value (docs/mirrored-values.md), held by
-#: tests/unit/worker/test_gittools_call_timeout.py.
+#: `publish_failed`. A mirrored value (docs/mirrored-values.md), held by a
+#: test.
 GIT_CALL_TIMEOUT_SECONDS = 660
 #: Each relayed argument's JSON type, checked before anything leaves.
 _RELAYED_TYPES: dict[str, tuple[type, ...]] = {
@@ -173,10 +173,9 @@ BUNDLE_OBJECT = "tenants/{tenant}/attempts/{attempt}/git/{call}.bundle"
 _PUBLISH_BRANCH = "swarm-publish"
 #: The artifact every refusal this relay answers is appended to (archived issue 1805), one
 #: `{"step", "tool", "request_id", "answer"}` line each. The same file the
-#: git-tools acceptance prompts have the agent append its answers to
-#: (`tests/acceptance/test_runner_git_tools.py` ANSWERS), so a refusal the
-#: worker answered before any request left -- one swarm-api never audits --
-#: is on record even when the agent wrote nothing.
+#: git-tools acceptance prompts have the agent append its answers to, so a
+#: refusal the worker answered before any request left -- one swarm-api
+#: never audits -- is on record even when the agent wrote nothing.
 ANSWERS_ARTIFACT = "git-answers.jsonl"
 #: The `step` of the worker's lines: no prompt names a step this, so a judge
 #: reading the agent's last answer for a step never reads one of these.

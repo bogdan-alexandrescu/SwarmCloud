@@ -31,9 +31,9 @@ and 122 of those typed a peer application's visual-check capture steps, which th
 renderer (`swarm_api.qaspec`) makes and whose role it names in the step id.
 The step id does not reach this process (the worker writes `input` alone into
 `input.json`), so a template is recognised by the lead its renderer writes:
-`TEMPLATE_LEADS`, each read from the renderer it names, and
-tests/unit/worker/test_tasktype_known_type.py renders the real templates and
-holds them recognised. Such a step keeps the type rules 1 to 3 give it, or
+`TEMPLATE_LEADS`, each read from the renderer it names, and a test renders
+the real templates and holds them recognised. Such a step keeps the type
+rules 1 to 3 give it, or
 implement: a template the six types do not name (a capture, a conflict fix)
 gets the local-only pack, which is what J0's answer would have been for every
 type but test and design, neither of which these steps are. Where the

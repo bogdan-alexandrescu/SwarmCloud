@@ -93,8 +93,7 @@ log = logging.getLogger(__name__)
 
 #: The grace now lives in `swarm_api.heartbeats`, which the task routes read
 #: too (archived issue 179). The old name stays bound to the SAME function, not a copy, for
-#: the importers that predate the move (tests/browser/fixtures.py,
-#: tests/unit/control_plane/test_lease_heartbeat_route.py).
+#: the importers that predate the move.
 _heartbeat_grace_seconds = heartbeat_grace_seconds
 
 

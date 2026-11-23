@@ -33,8 +33,7 @@ owner or an admin writes through swarm-api -- never a caller's (invariant 10).
 A read that fails, or a stored value this code does not know, is the
 DEFAULT, internal-jev: it is the choice that sends nothing outside your network.
 
-The names below restate swarm-api's; tests/unit/control_plane/
-test_dispatch_judgment.py holds them equal.
+The names below restate swarm-api's; a test holds them equal.
 
 A VALUE COUNTS ONLY WHEN SWARM-API SIGNED IT, once the switch is on
 (docs/design/tenant-settings-integrity.md §4.5, interim A; archived issue 1457). Every
@@ -98,8 +97,7 @@ _TAILNET_HOST = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.[a-z0-9-]+\.ts
 #: pod pins the tailnet name to it in /etc/hosts: a Service recreated with a
 #: new address would leave every such pod dialling nothing. Stated once, as
 #: terraform/infra/tailscale.tf `local.decision_api_cluster_ip`, which renders
-#: it into the manifest; tests/unit/control_plane/test_dispatch_judgment.py
-#: holds this copy equal to it.
+#: it into the manifest; a test holds this copy equal to it.
 DECISION_API_CLUSTER_IP = "10.48.6.120"
 #: The decision API's path per internal backend.
 INTERNAL_PATHS = {INTERNAL_JEV: "jev", INTERNAL_LAYA: "laya"}
@@ -417,8 +415,7 @@ JEV_JUDGMENTS_ENV = "SWARM_JEV_JUDGMENTS"
 #: Why a stored "on" is off, one of the GATES_REFUSED_* words.
 JEV_JUDGMENTS_REFUSED_ENV = "SWARM_JEV_JUDGMENTS_REFUSED"
 #: `agent_worker.judge.settings.INTERNAL_URL_ENV`, restated because the
-#: scheduler does not import the worker; tests/unit/control_plane/
-#: test_judge_address.py holds them equal.
+#: scheduler does not import the worker; a test holds them equal.
 JUDGE_INTERNAL_URL_ENV = "SWARM_JUDGE_INTERNAL_URL"
 
 

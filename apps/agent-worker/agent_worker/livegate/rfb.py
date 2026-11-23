@@ -1121,7 +1121,7 @@ class RfbSession:
         # write(), only on drain(), and the viewer sends ClientInit only after
         # it has read this SecurityResult: without the drain both sides wait
         # and the Browser tab stays on "Connecting" (measured on SwarmCloud
-        # 2026-10-12, test_live_rfb_tunnel_flush.py).
+        # 2026-10-12).
         await self._writer.drain()
         await self._reader.readexactly(1)  # ClientInit: shared or not, it is shared
         frame = self._hub.current.frame

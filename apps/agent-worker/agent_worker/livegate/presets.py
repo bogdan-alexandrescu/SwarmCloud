@@ -155,8 +155,7 @@ PRESETS: Mapping[str, Preset] = {
         # renders a UI lane's branch at its frames' size with it and compares
         # the two (`swarm-handoff compare`). phone-390 in every trait but the
         # size; its display fits inside phone-390's, so MAX_DISPLAY_* is
-        # unchanged. Every copy of this list is held to it by
-        # tests/unit/control_plane/test_preset_lists_agree.py.
+        # unchanged. Every copy of this list is held equal to the others.
         Preset("phone-380", 380, 800, 3.0, True, True, _SAFARI_IOS, "iPhone",
                "iOS", "17.0", "arm", "iPhone"),
         Preset("pixel-8", 412, 915, 2.625, True, True, _CHROME_ANDROID, "Linux armv81",
@@ -175,7 +174,7 @@ DEFAULT_PRESET = "desktop"
 #: `swarm-handoff theme <name>`. Named, as a preset is: the agent never sends a
 #: media feature. `system` lifts the override, so the page sees Chromium's own
 #: preference again. Restated in the stdlib-only `swarm-handoff` and in
-#: `agent_worker.handoff`; tests/unit/worker/test_handoff.py holds the three equal.
+#: `agent_worker.handoff`; the three are held equal.
 THEMES = ("dark", "light", "system")
 DEFAULT_THEME = "system"
 

@@ -83,7 +83,7 @@ from .workers import per_worker, per_worker_rate
 
 # --------------------------------------------------------------------------
 # The vocabulary. `agent_worker.statemcp.server` restates it for its fast
-# answer; tests/unit/worker/test_state_mcp.py holds the two equal.
+# answer; a test holds the two equal.
 # --------------------------------------------------------------------------
 
 #: The route's tuple: the worker's, signed with the path, never a tool's.

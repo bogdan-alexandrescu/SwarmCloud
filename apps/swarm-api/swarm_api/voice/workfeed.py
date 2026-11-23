@@ -12,8 +12,8 @@ the path parameters the template names, and nothing else:
   * `phrase` is the route's entry in `PHRASES`, a fixed table: the template's
     `{param}` placeholders are left for the console to fill from `ids`, so no
     value is ever spliced into text here. A route missing from the table is
-    `FALLBACK` ("Reading SwarmCloud"); tests/unit/voice/test_workfeed.py walks
-    the grant's lists and fails on any route without its own phrase.
+    `FALLBACK` ("Reading SwarmCloud"); every route on the grant's lists must
+    have its own phrase.
   * `class` is the call's class on the grant's lists: `read` for
     `ALLOWED_ROUTES`, `write` for `WRITE_ROUTES`. The step is written before
     the route runs, so it says what was asked, never how it ended.

@@ -132,8 +132,8 @@ CONNECTION_MISSING. A token has no refresh, so no App connection is asked.
 
 The document shapes are OB3's (`swarm_api.forgeapp`) and §3.1's, read by id
 and never written. The id recipes are RESTATED below because the scheduler's
-image does not carry swarm-api; tests/unit/control_plane/
-test_forge_connection_admission.py holds them to swarm-api's own functions.
+image does not carry swarm-api; a test holds them to swarm-api's own
+functions.
 
 A WORKSPACE SECRET A SLOT REQUIRES (docs/design/workspace-secrets.md §4.2;
 lane SEC-ADMIT-PARK, archived issue 1347). The last half of the same question, asked only
@@ -186,10 +186,10 @@ from .secret_slots import MissingSlot, WorkspaceGrants
 #:
 #: RESTATED from `agent_worker.accountlease.ACCOUNT_TOKEN_ENV`, because the
 #: scheduler's image does not carry the worker and cannot import it.
-#: tests/unit/worker/test_pool_credential_parity.py holds the two together by
-#: asking the REAL worker, for every profile in the catalogue, whether it asks
-#: the pool, and comparing that with this module's answer. Contract request 22
-#: asks for one home in `swarm_common.profiles`.
+#: A test holds the two together by asking the REAL worker, for every
+#: profile in the catalogue, whether it asks the pool, and comparing that
+#: with this module's answer. Contract request 22 asks for one home in
+#: `swarm_common.profiles`.
 SUBSCRIPTION_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 
 #: Which variables an account of each provider's pool fills: RESTATED from
@@ -597,9 +597,8 @@ def parse_repository(value: Any) -> tuple[str, str] | None:
 
 def attempt_repositories(task: Mapping[str, Any]) -> tuple[str, ...] | None:
     """`swarm_api.workspace_secrets.attempt_repositories`, restated (the
-    scheduler's image does not carry swarm-api; tests/unit/control_plane/
-    test_secret_slot_admission.py holds the two equal): the `repo_id`s an
-    attempt clones, its `repository_url`'s first, then each
+    scheduler's image does not carry swarm-api; a test holds the two equal):
+    the `repo_id`s an attempt clones, its `repository_url`'s first, then each
     `additional_repositories` entry's, its `repo_id` recomputed from its
     `repository` and the task's tenant. None when an entry does not match,
     which the release answers by withholding every repository secret; `()`

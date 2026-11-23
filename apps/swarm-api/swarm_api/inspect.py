@@ -13,9 +13,8 @@ THE LAYOUT IS RESTATED HERE, NOT IMPORTED
 nothing else, so `agent_worker` is not importable in the deployed API and an
 import of it would fail at runtime in the one environment that matters.
 `reconciler.checkpoints` restated the same layout for the same reason and
-documented it; this module follows that precedent, and
-`tests/unit/control_plane/test_checkpoint_read_path.py` compares these
-constants against `agent_worker.checkpoint.checkpoint_prefix` directly, because
+documented it; this module follows that precedent, and these constants must
+compare equal to `agent_worker.checkpoint.checkpoint_prefix` directly, because
 every rule restated twice in this repository has since drifted.
 
 THE TENANT BOUNDARY (invariant 9)
