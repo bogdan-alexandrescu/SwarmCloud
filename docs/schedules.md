@@ -1588,8 +1588,11 @@ the decision are `swarm_api/graphreports.py`. The design is
   (default 7 versions, 1-30) and `issue_label` (`bug`). No URL, command or
   credential is a parameter (invariant 10).
 * **Dry run** (§2.8). The same reads, and what each repository would do; no
-  write.
+  write. It also lists, as `measure_latency_unset`, the registered
+  repositories in room whose `index.measure_latency_hours` is unset.
 * **Produces.** One api_action per repository, `graph-latency-report:<repo_id>`,
+  whose detail carries the registration's `measure_latency_hours` (null when
+  unset, so an operator reads "no measurement" as the setting off),
   ended as it is recorded; a repository GitHub refused is that repository's
   `failed` with its code, as in `release-health`.
 * **Gate, budget, creates.** Run auto; risk R1 (one issue). `BUDGET_CAPS` in
