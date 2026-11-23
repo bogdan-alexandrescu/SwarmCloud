@@ -90,7 +90,7 @@ def test_a_terraform_tenant_still_gets_every_other_boundary(tmp_path) -> None:
     fakes = QaFakes(tmp_path)
     proc = fakes.run(
         [str(REGISTER), *FULL, "--providers", "anthropic", "--terraform-tenant"],
-        FAKE_MISSING_ACCOUNTS="swarm-agent-worker-eng@swarm-test-project.iam.gserviceaccount.com",
+        FAKE_MISSING_ACCOUNTS=WORKER,
     )
     out = _out(proc)
     assert proc.returncode == 0, out
