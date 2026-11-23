@@ -1241,6 +1241,26 @@ class VoiceSessions:
                 self._tell_abandoned(*done)
         return ended
 
+    def live_idle_seconds(self) -> int:
+        """The most whole seconds any `live` session a marker names has gone
+        without activity (`last_activity`), or 0 when none is live; read
+        outside a transaction, writing nothing. The speech sweep logs it
+        after `sweep_abandoned`, so a session still counted here past
+        LIVE_STALE_SECONDS is one the sweep failed to end: the
+        voice-session-idle alert reads it (terraform/infra/voice_alerts.tf)."""
+        now = self._now()
+        longest = 0
+        for marker_snap in self._db.collection(LIVE_MARKERS).stream():
+            marker = marker_snap.to_dict() or {}
+            if not marker.get("project_id") or not marker.get("session_id"):
+                continue
+            snap = _snapshot(self._session_ref(marker["project_id"], marker["session_id"]).get())
+            session = (snap.to_dict() or {}) if snap.exists else {}
+            last = last_activity(session) if session.get("state") == LIVE else None
+            if last is not None:
+                longest = max(longest, int((now - last).total_seconds()))
+        return longest
+
     def start(self, *, tenant_id: str, person: str, offer: str,
               project_id: str | None, mode: str = MODE_LIVE, fallback: str | None = None,
               chosen: Mapping[str, Any] | None = None) -> dict[str, Any]:
