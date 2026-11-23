@@ -454,3 +454,67 @@ def test_a_refusal_is_served_in_the_workspace_role_events(client, ctx, db) -> No
     assert response.status_code == 409, response.text
     # MUTATION: leave the action off WORKSPACE_AUDIT_ACTIONS -> the row is never shown.
     assert "workspace_last_admin_refused" in [e["action"] for e in ctx.roles.audit("eng")]
+
+
+# -- the later minors of epic 21 ------------------------------------------------------
+
+FILLERS = tuple(f"filler{i}@example.com" for i in range(8))
+
+
+def test_another_admin_past_the_roster_cap_is_still_counted(client, ctx, db,
+                                                            monkeypatch) -> None:
+    """Epic 21: `overrides()` scans a capped, unordered roster, so in a large
+    workspace the admin who remains could be missed and the leave refused
+    409. The guard asks Firestore for the workspace's `admin` grants
+    themselves, so bob -- named after many other overrides, past the cap --
+    counts, and lee may leave."""
+    lee_is_the_last_admin(client)
+    for filler in FILLERS:
+        set_role(client, filler, "viewer")
+    set_role(client, "bob@example.com", "admin")
+    monkeypatch.setattr(roles, "ROSTER_MAX", 2)
+    response = client.post(LEAVE, headers=h("lee", "eng"), json={})
+    assert response.status_code == 200, response.text
+    assert not refused(db)
+
+
+def test_the_other_admins_group_lookups_run_before_the_transaction(client, ctx, db,
+                                                                   monkeypatch) -> None:
+    """Epic 21: the directory lookups for each other admin are network calls;
+    made inside the Firestore transaction they hold the guard across them,
+    and contention 503s grow under load. They run first; inside, only the
+    roles are read again."""
+    from swarm_api.routes import last_admin
+
+    lee_is_the_last_admin(client)
+    set_role(client, "bob@example.com", "admin")
+    events: list[str] = []
+    real_in_group, real_read_guard = last_admin.in_group, last_admin.read_guard
+
+    def in_group(request, ctx, email, group):
+        events.append(f"lookup {email}")
+        return real_in_group(request, ctx, email, group)
+
+    def read_guard(ctx, txn, tenant_id):
+        events.append("transaction")
+        return real_read_guard(ctx, txn, tenant_id)
+
+    monkeypatch.setattr(last_admin, "in_group", in_group)
+    monkeypatch.setattr(last_admin, "read_guard", read_guard)
+    response = client.post(LEAVE, headers=h("lee", "eng"), json={})
+    assert response.status_code == 200, response.text
+    assert "lookup bob@example.com" in events, events
+    assert events.index("transaction") > max(
+        i for i, e in enumerate(events) if e == "lookup bob@example.com"), events
+
+
+def test_the_guard_document_keeps_no_ones_address(client, ctx, db) -> None:
+    """Epic 21: `workspace_leave_guards` holds no authority and is kept for
+    as long as the workspace is, so it records no person's address -- only
+    the workspace and when it was last written."""
+    joined(client)
+    set_role(client, LEE, "admin")
+    assert client.post(LEAVE, headers=h("lee", "eng"), json={}).status_code == 200
+    guard = db.dump()[f"{memberships.LEAVE_GUARD_COLLECTION}/eng"]
+    assert set(guard) == {"tenant_id", "at"}
+    assert not any("@" in str(v) for v in guard.values())
