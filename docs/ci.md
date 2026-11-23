@@ -199,7 +199,13 @@ credentials, and nothing here would change to show it. A commit cannot move.
 `scripts/check-action-pins.sh` refuses any other form, by file and line, and
 runs as a step of the `release workflow wiring (actionlint)` check above; its
 header says how to resolve a tag to its commit. To bump an action, resolve the
-new tag and change the SHA and the comment together.
+new tag and change the SHA and the comment together. It reads `uses` in block
+style only: `uses:`, `"uses":` or `'uses':` after an optional `- `, with the
+value on the same line. Every other shape of a `uses` key outside a comment
+line (a flow mapping `- {uses: ...}`, a space before the colon, a value on a
+later line) is refused as unreadable, even when what it names is pinned: a
+line-reader that skipped those shapes would pass them in silence (issue 190).
+Write `uses` in block style.
 
 **The tools CI installs are pinned too.** Every `astral-sh/setup-uv` step
 installs the uv the images copy in (`ARG UV_IMAGE` in `images/*/Dockerfile`),
