@@ -133,7 +133,7 @@ its order.
   (`apps/swarm-ui/src/styles.css` (`IS GONE FROM HERE AND FROM THE NAV BLOCK`) says why).
 
 The "Fencing fields" row's last sentence still holds: no screen reads
-`current_generation` itself. The type now sits at `apps/swarm-ui/src/types.ts` (`THE FENCING GENERATION.`).
+`current_generation` itself. The field is declared at `apps/swarm-api/swarm_api/wire_types.py` (`THE FENCING GENERATION.`), from which the console's `Task` type is generated (part of #72).
 
 **The six questions in §8: five answered, Q2 half answered**
 
