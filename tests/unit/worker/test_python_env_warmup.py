@@ -264,3 +264,201 @@ def test_the_real_runner_returns_the_output(tmp_path: Path) -> None:
     ran = pythonenv.run_sync([sys.executable, "-c", "print('synced')"], tmp_path,
                              {"PATH": "/usr/bin:/bin"}, 30)
     assert ran.code == 0 and "synced" in ran.output and not ran.timed_out
+
+
+# ---------------------------------------------------------------------------
+# the wiring in `lifecycle._prepare`, through `run` (invariants 4 and 5)
+# ---------------------------------------------------------------------------
+#
+# The tests above drive `PythonEnvWarmup` alone. These run the whole worker on
+# the worker conftest's fakes, with a clone that holds a `uv.lock` and a
+# recording runner in `worker._python_env`, so a `may_start` of `lambda: True`,
+# a dropped re-validation after the sync, or a warm-up moved before the quota
+# preflight turns one of them red.
+
+LIFECYCLE_URL = "https://github.com/acme/widgets.git"
+
+
+def _lifecycle_worker(db, worker_factory, monkeypatch, runner: Recorder):
+    """A worker whose clone lands a `uv.lock` at its root, whose warm-up runs
+    `runner`, and which records every agent it starts."""
+    from agent_worker import lifecycle
+    from agent_worker.gitops import CloneResult
+
+    from worker_seeds import seed_attempt
+
+    seed_attempt(db, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.01})
+
+    def clone(**kwargs: Any) -> CloneResult:
+        destination = Path(kwargs["destination"])
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / pythonenv.UV_LOCK).write_text("version = 1\n")
+        return CloneResult(path=destination, url=kwargs["url"], ref=kwargs["ref"],
+                           commit="a" * 40, duration_seconds=0.0)
+
+    monkeypatch.setattr(lifecycle, "shallow_clone", clone)
+    started: list[str] = []
+    real_child = lifecycle.ChildProcess
+
+    class RecordedChild(real_child):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            started.append("agent")
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(lifecycle, "ChildProcess", RecordedChild)
+    worker, _, _ = worker_factory(repository_url=LIFECYCLE_URL)
+    worker.egress_connect = lambda target, timeout=None: type(
+        "Conn", (), {"close": lambda self: None})()
+    worker._python_env = PythonEnvWarmup(redact=lambda text: text,
+                                         emit=worker._note_python_env, runner=runner)
+    return worker, started
+
+
+def _python_env_events(db) -> list[dict[str, Any]]:
+    return [e.get("detail") or {} for e in db.events("task_1")
+            if (e.get("detail") or {}).get("phase") == pythonenv.EVENT_PHASE]
+
+
+def _fence_when(worker, monkeypatch, decide) -> None:
+    """`validate_generation` raises `FencedError` on the call `decide(phase)` picks."""
+    real = worker.control.validate_generation
+
+    def validate():
+        if decide(worker.phases.current):
+            raise FencedError(worker.control.generation, worker.control.generation + 1,
+                              "superseded in the test")
+        return real()
+
+    monkeypatch.setattr(worker.control, "validate_generation", validate)
+
+
+def test_lifecycle_runs_the_warm_up_under_the_heartbeat_before_the_agent(
+        db, worker_factory, monkeypatch) -> None:
+    """(e) The sync runs inside `_heartbeat_meanwhile('python_env')`, after the
+    quota preflight, and before the agent starts."""
+    from agent_worker.errors import ExitCode
+
+    order: list[str] = []
+
+    class Ordered(Recorder):
+        def __call__(self, *args: Any) -> Synced:
+            order.append("sync")
+            return super().__call__(*args)
+
+    runner = Ordered()
+    worker, started = _lifecycle_worker(db, worker_factory, monkeypatch, runner)
+    real_meanwhile = worker._heartbeat_meanwhile
+
+    @contextmanager
+    def meanwhile(what: str, **kwargs: Any) -> Iterator[None]:
+        order.append(f"enter {what}")
+        with real_meanwhile(what, **kwargs):
+            yield
+        order.append(f"exit {what}")
+
+    monkeypatch.setattr(worker, "_heartbeat_meanwhile", meanwhile)
+    real_poll = worker.control.poll
+
+    def poll(*args: Any, **kwargs: Any):
+        if worker.phases.current == "quota_preflight":
+            order.append("quota_preflight")
+        return real_poll(*args, **kwargs)
+
+    monkeypatch.setattr(worker.control, "poll", poll)
+
+    assert worker.run() == ExitCode.OK, db.doc("tasks/task_1").get("last_error")
+    assert len(runner.calls) == 1
+    assert started == ["agent"]
+    at = order.index("sync")
+    assert order[at - 1:at + 2] == ["enter python_env", "sync", "exit python_env"], order
+    assert order.index("quota_preflight") < at, order
+    assert [e["status"] for e in _python_env_events(db)] == [pythonenv.READY]
+
+
+def test_lifecycle_a_stale_generation_before_the_warm_up_starts_nothing(
+        db, worker_factory, monkeypatch) -> None:
+    """(a) A `FencedError` from the `may_start` check: no sync, no agent, exit 70."""
+    from agent_worker.errors import ExitCode
+
+    runner = Recorder()
+    worker, started = _lifecycle_worker(db, worker_factory, monkeypatch, runner)
+    _fence_when(worker, monkeypatch, lambda phase: phase == pythonenv.EVENT_PHASE)
+
+    assert worker.run() == ExitCode.GENERATION_FENCED
+    assert runner.calls == []
+    assert started == []
+
+
+def test_lifecycle_a_cancel_before_the_warm_up_records_not_started(
+        db, worker_factory, monkeypatch) -> None:
+    """(b) A cancel requested by the `may_start` check: a not_started event and no sync."""
+    runner = Recorder()
+    worker, _started = _lifecycle_worker(db, worker_factory, monkeypatch, runner)
+    real_enter = worker.phases.enter
+
+    def enter(phase: str, *args: Any, **kwargs: Any):
+        if phase == pythonenv.EVENT_PHASE:
+            db.doc("tasks/task_1")["cancel_requested"] = True
+        return real_enter(phase, *args, **kwargs)
+
+    monkeypatch.setattr(worker.phases, "enter", enter)
+
+    worker.run()
+    assert runner.calls == []
+    assert [e["status"] for e in _python_env_events(db)] == [pythonenv.NOT_STARTED]
+
+
+def test_lifecycle_a_quota_park_pays_nothing_for_the_warm_up(
+        db, worker_factory, monkeypatch) -> None:
+    """(c) A park at the quota preflight returns before the warm-up: no sync, no agent."""
+    from agent_worker import lifecycle
+    from agent_worker.errors import ExitCode
+    from agent_worker.quota import QuotaSignal
+    from swarm_common.models import ProviderState
+
+    runner = Recorder()
+    worker, started = _lifecycle_worker(db, worker_factory, monkeypatch, runner)
+    monkeypatch.setattr(lifecycle, "signal_from_control", lambda *_a, **_k: QuotaSignal(
+        provider="anthropic", state=ProviderState.EXHAUSTED, source="control_plane",
+        retry_after_seconds=1800, detail="exhausted in the test"))
+    parked: list[str] = []
+
+    def park(decision: Any, *, source: str) -> Any:
+        parked.append(source)
+        return lifecycle.Outcome(exit_code=ExitCode.PARKED)
+
+    monkeypatch.setattr(worker, "_park_for_quota", park)
+
+    assert worker.run() == ExitCode.PARKED
+    assert parked == ["preflight"]
+    assert runner.calls == []
+    assert started == []
+    assert _python_env_events(db) == []
+
+
+def test_lifecycle_a_stale_generation_after_the_sync_propagates_out_of_prepare(
+        db, worker_factory, monkeypatch) -> None:
+    """(d) The sync ran; the generation read after it is stale: the `FencedError`
+    leaves `_prepare` and the agent never starts."""
+    from agent_worker.errors import ExitCode
+
+    runner = Recorder()
+    worker, started = _lifecycle_worker(db, worker_factory, monkeypatch, runner)
+    _fence_when(worker, monkeypatch,
+                lambda phase: phase == pythonenv.EVENT_PHASE and bool(runner.calls))
+    raised: list[BaseException] = []
+    real_prepare = worker._prepare
+
+    def prepare():
+        try:
+            return real_prepare()
+        except BaseException as exc:
+            raised.append(exc)
+            raise
+
+    monkeypatch.setattr(worker, "_prepare", prepare)
+
+    assert worker.run() == ExitCode.GENERATION_FENCED
+    assert len(runner.calls) == 1
+    assert [type(e) for e in raised] == [FencedError]
+    assert started == []
