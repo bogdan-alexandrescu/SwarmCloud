@@ -139,3 +139,57 @@ def test_an_object_component_is_an_interface_with_its_optional_fields_marked():
 def test_two_schemas_with_one_typescript_name_are_refused():
     with pytest.raises(SystemExit, match="one TypeScript name"):
         gen.render({"components": {"schemas": {"a.B": {}, "a_B": {}}}})
+
+
+# --------------------------------------------------------------------------
+# The inputs the generator declares (the pre-publish gate's trigger)
+# --------------------------------------------------------------------------
+
+_LOADED = r"""
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("gen_api_types", sys.argv[1])
+gen = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(gen)
+gen.openapi_document()
+repo = Path(sys.argv[2]).resolve()
+found = set()
+for module in list(sys.modules.values()):
+    path = getattr(module, "__file__", None)
+    if not path:
+        continue
+    path = Path(path).resolve()
+    if path.is_relative_to(repo) and ".venv" not in path.parts:
+        found.add(str(path.relative_to(repo)))
+print(json.dumps(sorted(found)))
+"""
+
+
+def test_the_declared_inputs_are_what_building_the_document_loads():
+    """The gate runs the drift check only when a change touches one of
+    `INPUTS`, so the list is held equal, both ways, to the repository's
+    modules that building the document imports -- in a fresh interpreter,
+    so no other test's imports count."""
+    import json
+    import subprocess
+    import sys
+
+    out = subprocess.run([sys.executable, "-c", _LOADED, str(SCRIPT), str(REPO)],
+                         check=True, capture_output=True, text=True, cwd=REPO).stdout
+    loaded = [p for p in json.loads(out) if p.startswith("apps/")]
+    packages = {"/".join(p.split("/")[:3]) + "/" for p in loaded}
+    declared = {p for p in gen.INPUTS if p.startswith("apps/") and p.endswith("/")}
+    # MUTATION: a package swarm-api starts importing that is not declared
+    # here is a model change the gate would not check.
+    assert packages == declared
+    assert gen.relpath(gen.OUTPUT) in gen.INPUTS
+    assert "scripts/gen_api_types.py" in gen.INPUTS and "uv.lock" in gen.INPUTS
+
+
+def test_inputs_mode_prints_them_without_importing_the_api(capsys, monkeypatch):
+    def refuse() -> dict:
+        raise AssertionError("--inputs must not build the document")
+
+    monkeypatch.setattr(gen, "openapi_document", refuse)
+    assert gen.main(["--inputs"]) == 0
+    assert capsys.readouterr().out.splitlines() == list(gen.INPUTS)
