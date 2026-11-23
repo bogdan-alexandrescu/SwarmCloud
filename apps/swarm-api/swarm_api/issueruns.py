@@ -225,7 +225,7 @@ from .schemas import (
 )
 from swarm_common.profiles import MODEL_CLASSES, RUNNER_PROFILES, step_model_class
 
-from . import sessiontag, workcontract
+from . import sessiontag, stepclass, workcontract
 from .plansections import (
     MAX_CHANGES,
     MAX_GRAPH_EDGES,
@@ -2267,7 +2267,7 @@ def planner_prompt(
 def planner_task(
     ref: IssueRef, run_id: str, open_work: Mapping[str, Any] | None = None,
     context: str | None = None, claude_session: str | None = None,
-    model_class: str | None = None,
+    model_class: str | None = None, class_models: Mapping[str, str] | None = None,
 ) -> TaskCreate:
     """The planner: an ordinary task, signed by `submit_tasks` like any other.
 
@@ -2275,11 +2275,15 @@ def planner_task(
     only input `claude-code` declares, and the profiles are frozen (request A
     of repo-index.md §6.3 is unfiled, owner decision Q7).
 
-    `model_class` is `RunCreate.model_class` (archived issue 1435): set only when the caller
-    named one, so a run that names none submits exactly today's planner, which
-    runs the profile's default (`opus`) and signs at its old format.
+    `model_class` is `RunCreate.model_class` (archived issue 1435), and wins
+    when the caller named one. A run that names none gets the planner's role
+    default (`stepclass`, the owner 2026-11-23: `fable`) where this deployment
+    pins it (`class_models`, `Settings.worker_class_models`), else the
+    profile's default (`opus`), as before. `metadata.class_chosen_by` says
+    which.
     """
-    classed = {"model_class": model_class} if model_class is not None else {}
+    choice = stepclass.choose(stepclass.ROLE_PLANNER, PLANNER_PROFILE, class_models,
+                              explicit=model_class)
     return TaskCreate(
         runner_profile=PLANNER_PROFILE,
         input={
@@ -2287,8 +2291,9 @@ def planner_task(
             "issue": ref.number,
         },
         repository_url=ref.repository_url,
-        metadata={ISSUE_RUN_METADATA_KEY: run_id, **sessiontag.tag(claude_session)},
-        **classed,
+        metadata={ISSUE_RUN_METADATA_KEY: run_id, **sessiontag.tag(claude_session),
+                  **choice.metadata()},
+        **choice.fields(),
     )
 
 
@@ -2826,7 +2831,8 @@ def compile_plan(run: "IssueRun", review_context: str | None = None, *,
             ),
         },
     })
-    return _workflow(run, _with_security_review(run, _with_review_rounds(run, steps)))
+    return _workflow(run, _with_security_review(
+        run, _with_review_rounds(run, steps, class_models=class_models)))
 
 
 def _step_specs(steps: list[dict[str, Any]]) -> list[StepSpec]:
@@ -2845,7 +2851,8 @@ def _step_specs(steps: list[dict[str, Any]]) -> list[StepSpec]:
     ]
 
 
-def _with_review_rounds(run: "IssueRun", steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _with_review_rounds(run: "IssueRun", steps: list[dict[str, Any]], *,
+                        class_models: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     """`steps`, then what judges the fix: the fix loop when it applies, else the re-review.
 
     docs/design/fix-loop.md §5.3, and the owner's rule for every workflow
@@ -2869,10 +2876,11 @@ def _with_review_rounds(run: "IssueRun", steps: list[dict[str, Any]]) -> list[di
             rounds = min(max(int(run.fix_rounds), FIX_LOOP_MIN_ROUNDS), FIX_LOOP_MAX_ROUNDS)
             loop[FIX_LOOP_FIELD] = {**loop[FIX_LOOP_FIELD], "max_rounds": rounds}
             return [*steps, loop]
-    return _with_rereview(steps)
+    return _with_rereview(steps, class_models=class_models)
 
 
-def _with_rereview(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _with_rereview(steps: list[dict[str, Any]], *,
+                   class_models: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     """`steps`, then the re-review of the fix's pushed head (archived issue 2217).
 
     Exactly the step `metadata.merge` "on_merge_verdict" appends
@@ -2886,7 +2894,7 @@ def _with_rereview(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     `auto_merge` on the first review's NOT_YET (wf_3cc4026eb34a43a885a4).
     """
     review = next(s for s in steps if s["step_id"] == REVIEW_STEP)
-    rereview = rereview_step_for(_step_specs(steps), review, "integrate")
+    rereview = rereview_step_for(_step_specs(steps), review, "integrate", class_models)
     if rereview is None or rereview["step_id"] != REREVIEW_STEP:
         # The fix is the integrator gated on the review, and the plan's ids
         # are reserved away from the re-review's: unreachable.
@@ -3148,7 +3156,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
             ),
         },
     })
-    return _with_review_rounds(run, steps)
+    return _with_review_rounds(run, steps, class_models=class_models)
 
 
 #: The most characters a compiled workflow's `title` keeps. A list row and a

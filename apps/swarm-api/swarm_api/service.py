@@ -138,6 +138,14 @@ from . import steprerun
 from . import wfdescription
 from .store import Store, derived_service_account
 from .task_accounts import takes_pool_account
+from . import reviewgate
+from .stepclass import (
+    CLASS_AT_GATE_KEY,
+    CLASS_CHOSEN_BY_KEY,
+    REVIEW_AT_GATE,
+    signed_record,
+    submitted_record,
+)
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
     AWAIT_STEP_REFUSED_FIELDS,
@@ -1046,6 +1054,17 @@ class SubmissionService:
             dispatch = workcontract.attach(dispatch, contract.compiled, environ=os.environ)
         metadata = dict(spec.metadata)
         metadata[DISPATCH_METADATA_KEY] = dispatch.to_metadata()
+        # `class_chosen_by` is unsigned and the caller's to write: stored only
+        # as a submission would have recorded it (`stepclass.submitted_record`).
+        recorded = submitted_record(metadata.pop(CLASS_CHOSEN_BY_KEY, None), spec.model_class)
+        if recorded is not None:
+            metadata[CLASS_CHOSEN_BY_KEY] = recorded
+        # A role's record for a NAMED class is copied into the signed block,
+        # the only copy `stepclass.explicit_class` reads; absent for a
+        # caller's class and for none, so those blocks keep their bytes.
+        role_record = signed_record(recorded, spec.model_class)
+        if role_record is not None:
+            metadata[DISPATCH_METADATA_KEY][CLASS_CHOSEN_BY_KEY] = role_record
         # The limits go in the typed `Task.budget` below (contract request
         # 120, signed at spec format 6); where each came from goes in the
         # signed dispatch block, which no caller can write
@@ -2022,6 +2041,24 @@ class SubmissionService:
                 }
             if step_id in default_gated:
                 task.metadata[REVIEW_GATE_METADATA_KEY] = dict(REVIEW_GATE_DEFAULT_BLOCK)
+            # A first review's class is the review gate's to pick, from the
+            # diff it reads (`stepclass`, the owner 2026-11-23): submitted on
+            # the profile's default, marked here, re-signed by the gate. Not a
+            # requirements check, a security review or the re-review, and
+            # never a step whose caller named a class. The mark the gate acts
+            # on is inside the SIGNED dispatch block, which no caller writes;
+            # `class_chosen_by` beside it is only the display record.
+            claude = RUNNER_PROFILES.get(task.runner_profile)
+            if (source.model_class is None and task.model_class is None
+                    and step_id != rereview_step_id
+                    and claude is not None and claude.model_classes
+                    and not is_security_review(task.metadata, os.environ)
+                    and task.metadata.get(REVIEW_GATE_METADATA_KEY)
+                    and not reviewgate.is_requirements_check(task.metadata)):
+                task.metadata[DISPATCH_METADATA_KEY][CLASS_AT_GATE_KEY] = True
+                task.metadata[CLASS_CHOSEN_BY_KEY] = REVIEW_AT_GATE
+            elif task.metadata.get(CLASS_CHOSEN_BY_KEY) == REVIEW_AT_GATE:
+                task.metadata.pop(CLASS_CHOSEN_BY_KEY)
             step_task_id[step_id] = task.id
             step_model_class[step_id] = task.model_class
             tasks.append(task)
@@ -2236,7 +2273,8 @@ class SubmissionService:
         if choice == "off":
             if fix_loop is not None:
                 return spec, None
-            return spec, self._stated_rereview(spec, step_specs, strategy)
+            return spec, self._stated_rereview(spec, step_specs, strategy,
+                                               self._settings.worker_class_models)
         explicit = choice is not None
         if not explicit:
             if not is_mergeable_forge(repository_url):
@@ -2281,6 +2319,7 @@ class SubmissionService:
     @staticmethod
     def _stated_rereview(
         spec: WorkflowCreate, step_specs: Sequence[StepSpec], strategy: str,
+        class_models: Mapping[str, str] | None = None,
     ) -> str | None:
         """The id of the re-review `spec` states itself, or None (archived issue 2217).
 
@@ -2308,7 +2347,8 @@ class SubmissionService:
             sources = merge_sources(rest, strategy)
             if sources is None or sources.review not in by_id:
                 continue
-            derived = rereview_step_for(rest, by_id[sources.review].model_dump(), strategy)
+            derived = rereview_step_for(rest, by_id[sources.review].model_dump(), strategy,
+                                        class_models)
             if derived is not None and (
                 WorkflowStepCreate.model_validate(derived).model_dump() == step.model_dump()
             ):
@@ -2359,7 +2399,8 @@ class SubmissionService:
         by_id = {s.step_id: s for s in spec.steps}
         sources = merge_sources(step_specs, strategy)
         rereview = (
-            rereview_step_for(step_specs, by_id[sources.review].model_dump(), strategy)
+            rereview_step_for(step_specs, by_id[sources.review].model_dump(), strategy,
+                              self._settings.worker_class_models)
             if sources is not None and sources.review in by_id else None
         )
         if rereview is None:

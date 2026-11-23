@@ -894,7 +894,15 @@ every tenant's data within one approval's reach.
   | `plan_approval` | `auto` | `auto`, `required` |
   | `merge` | `approve` | `off`, `approve`, `auto` (`auto` only through the audited switch, §4.2) |
   | `fix_rounds` | 3 | 1-5 |
+  | `planner_model_class` | `fable` | a class the planner's profile runs (`opus`, `fable`, `sonnet`, `haiku`) |
   | `territory_guard` | true | **not settable to false** by a member |
+
+  `planner_model_class` is the class of each run's planner, by name (owner
+  decision 2026-11-23, [model-per-step.md §4.12](design/model-per-step.md#412-role-defaults-the-owners-decision-of-2026-11-23)).
+  The default is the planner's role default, which falls back to the
+  profile's default (`opus`) where the deployment pins no model for it; any
+  other class is the schedule's own choice, and a run is refused at
+  submission where that class is not pinned.
 
   The cap of 8 is lane SWEEP's, and it is the upper bound here: one firing can
   hold at most 8 tenant slots of work at once.
@@ -912,7 +920,7 @@ every tenant's data within one approval's reach.
   issue run's existing approve. Nothing executes until a person approves.
 * **Parameters.** The selection parameters of §3.1, `max_pending_plans`
   (default 5, range 1-20: a new plan is not made while that many are waiting),
-  and `fix_rounds`.
+  `fix_rounds` and `planner_model_class` (as in §3.1).
 * **Default gate.** Approve plan. It is the floor, so it cannot be lowered.
 * **Produces.** `PLANNED` issue runs and plan comments on the issues.
 * **Blast radius.** One planner agent per issue, and plan comments on GitHub.
@@ -1286,7 +1294,9 @@ on lanes FR-1 (the hold categories in `issueruns.hard_stop_hold`) and FR-2
   its issue. A retried firing, or the next firing after a crash, carries on
   where the last one stopped.
 * **Parameters.** `summary_issue` (`owner/repo#N`, optional; posted to only
-  when it is in the platform's own repository) and `fix_rounds` (3, at most 5).
+  when it is in the platform's own repository), `fix_rounds` (3, at most 5)
+  and `planner_model_class` (as in §3.1: the fix run's planner, `fable` by
+  default).
 * **Default gate.** Plan auto; merge **`approve`**. Nothing in the code sets
   `auto`. The owner switches it once, through the audited switch (§4.2), when
   creating the schedule (owner decision 2026-10-22, Q8). Every hard stop of

@@ -865,6 +865,171 @@ the choice is §7 R2:
   runs `RunCreate.model_class`, which defaults to `opus`. The compiled review
   and fix steps run `opus`.
 
+> **Amended 2026-11-23.** The platform's own steps now take a class by their
+> ROLE when their caller named none: §4.12. The planner defaults to `fable`,
+> and the review, re-review, CI-fix and conflict-fix steps to `sonnet` where
+> §4.12 says so; the bullets above describe the platform before that.
+
+### 4.12 Role defaults: the owner's decision of 2026-11-23
+
+**Why.** Thirty days of run data showed the review, re-review, fix, CI-fix
+and conflict-fix steps, all on the default class (`opus`), were about a third
+of all recorded cost, and 373 of 413 planner tasks ran on `opus` because
+nothing named a planning class. On 2026-11-23 the owner decided defaults by
+ROLE, applied only when the caller named no class:
+
+| role | default class |
+|---|---|
+| planner (issue runs; the `issue-sweep`, `issue-plan-only` and `failure-review` schedules' runs) | `fable` |
+| build / implement | `opus` (unchanged) |
+| first review, when the change touches NO risk path and is at most 1,000 changed lines | `sonnet` |
+| first review, when the change touches a risk path (`reviewgate.DEFAULT_RISK_PATHS` plus the step's and the workspace's), is over 1,000 changed lines, or the diff cannot be read | `opus` (unchanged) |
+| security review | `opus` (unchanged) |
+| fix | `opus` (unchanged) |
+| re-review | `sonnet` |
+| CI-fix round, conflict-fix round | `sonnet` |
+| fix-loop rounds | re-review rounds `sonnet`, fix rounds `opus` |
+
+**One table, one function.** The table is data,
+`apps/swarm-api/swarm_api/stepclass.py::ROLE_CLASSES`, and every site calls
+`stepclass.choose(role, profile, class_models, explicit=...)`, so changing a
+default is one edit. Its rules, in order: a class the caller named always
+wins; a profile that runs no Claude model (`codex`, `mock`) gets none; the
+role's class where the profile runs it and the deployment pins it
+(`Settings.worker_class_models`); otherwise the profile's default, exactly as
+the requirements check already falls back (`issueruns._check_class`). A role
+class equal to the profile's default is sent as nothing, so those steps keep
+the bytes and the signing format they had before (§4.3).
+
+**Where each role is decided.**
+
+* planner: `issueruns.planner_task`, called by `routes.runs.start_run`; the
+  three schedules take a `planner_model_class` parameter
+  (`scheduletypes._PlannerClass`, default the table's planner class) and pass
+  it through `issue_sweep.run_options`. A schedule that names no class gets
+  the default, sent as "none named", so its pin fallback applies. A class
+  the schedule NAMED (the planning class included) that is not the
+  profile's default and that the deployment does not pin is refused
+  (`issue_sweep.planner_class`, `model_class_not_yet_available`) rather
+  than silently run on the default class.
+* re-review: `validation.rereview_step_for`, the step the platform appends to
+  any workflow that merges on a review's verdict and to every issue run
+  (`issueruns._with_rereview`). A class the caller named on the review is
+  kept.
+* CI-fix: `issueci.ci_fix_continuation` (issue runs and the merge step's
+  rounds); conflict-fix: `mergewake.conflict_fix_continuation`.
+* fix-loop rounds: `fixloop._next`. A round names a class only when the
+  loop's signed override does or the repeated step's caller did
+  (`stepclass.explicit_class`), never because a role default chose one.
+
+**The first review is decided at the review gate, after submission.** The
+rule needs the diff, and the diff exists only once the implementers finish.
+The review gate already reads the change's paths and size there
+(`verdictpublish._consider_review`). So:
+
+1. At submission, `SubmissionService.submit_workflow` stores every review
+   step the gate recognises (one with a `review_gate` block, the default
+   block included; not a requirements check, a security review or the
+   re-review) on its profile's default (`opus`), and marks it
+   `metadata.dispatch.class_at_gate: true` (`stepclass.CLASS_AT_GATE_KEY`)
+   -- inside the dispatch block, which the spec signature covers at every
+   format and which no caller can write -- but only when its caller named
+   no class and its profile runs a Claude model. The mark is signed with
+   the rest. `metadata.class_chosen_by: stepclass.REVIEW_AT_GATE` beside it
+   is the unsigned display record and decides nothing. This covers issue
+   runs and workflows submitted through the API alike.
+2. When the gate lets the review run, `stepclass.review_role` picks its role
+   from what the gate read: a risk path touched is "review, risk path"; no
+   decision, a parent that could not be read, or a file list cut short
+   (`Decision.truncated`) is "review, diff not read"; a diff read whole
+   that touches none but is over `stepclass.REVIEW_CHEAP_MAX_LINES` (1,000
+   changed lines, insertions plus deletions, the owner's ceiling of
+   2026-11-23) is "review, over the size ceiling"; only the rest is
+   "review, no risk path". For the CLASS, risk paths are looked for over
+   the union of each parent's `own_files` and `files` (`path` and
+   `old_path`): `own_files` comes from first-parent, no-merges history, so
+   a risk-path file committed on a side branch and merged with a merge
+   commit is in `files` alone (`Decision.class_risk_hits`). A parent whose
+   `files` is absent, cut short or unreadable is "diff not read"
+   (`Decision.files_unread`), and so is one with a malformed row (not a
+   map, a `path` that is not a non-empty string, an `old_path` set to
+   anything but one): a row skipped would hide its path from the risk-path
+   check (`reviewgate.files_of`). What the gate runs or skips still reads
+   `own_files` as before.
+3. FIRST, the stored spec must verify (`verdictpublish.stored_spec_refusal`:
+   `spec_refusal` on the document as stored and on its `browser_if_ui`
+   alternate subject). A tenant's agents can write any task of their
+   tenant, so a spec rewritten since submission is left exactly as stored,
+   its class untouched and nothing signed, and the worker refuses it as
+   before. The gate acts only on the SIGNED mark (`stepclass.at_gate`), and
+   only when the verified document is still one submission would have
+   marked: `model_class` unset, not a security review, not a requirements
+   check. An unsigned `class_chosen_by` added after signing therefore moves
+   no class and earns no signature: a caller's `haiku` stays `haiku`, a
+   security review stays `opus`.
+   `specsigning.resign_stored` refuses such a document itself too, so no
+   later caller can sign a tampered spec again.
+   Where the role's class differs from what the step was signed with,
+   swarm-api, the only holder of the signing key, signs the step again
+   (`specsigning.resign_stored`) as it will be stored, and its
+   `browser_if_ui` alternate with it. It writes the class, the pin and the
+   signature in the same transaction that hands the step back to the
+   scheduler (`verdictpublish._decline`). That write happens only while the
+   stored spec is still as the gate read it (`RESIGN_GUARD`: the signature,
+   format, class, model, profile, `input`, `depends_on` and `metadata` less
+   the gate's own claim marker). Nothing under `apps/common/swarm_common/`
+   changes; the format is the one `specsign.signing_format` picks for the
+   stored task with its class (a set class needs format 5, which already
+   covers it).
+4. A re-run (`steprerun.clone`) of a review whose class the gate decided
+   (its signed mark, which the gate's re-sign keeps, `stepclass.gate_decided`)
+   goes back to the profile's default and is marked again, so the clone is
+   decided on its own diff. A class the caller named is kept, whatever the
+   unsigned record says.
+
+**Fencing (invariant 5).** The re-sign happens while the step is PARKED and
+held by the gate's claim, before any attempt or fencing generation exists,
+and replaces the stored signature in the one transactional write: the
+worker verifies only the signature stored on the document, so there is one
+signed spec per step. The superseded signature still matches only the spec
+swarm-api signed at submission, identical but for the class; a writer who
+restores it restores the dearer `opus` run, never anything swarm-api did
+not sign. The gate signs only a step whose stored spec verifies and whose
+SIGNED data licenses the pick (the mark, no class named), and changes only
+`model_class` and `model` (on the alternate too): the new signature grants
+no field, profile, input or class the submission did not sign as the gate's
+to pick. The generation is not touched.
+
+**A caller's record is not trusted.** `class_chosen_by` is unsigned and in
+the caller's metadata, so submission stores it only as a role rule would
+have written it (`stepclass.submitted_record`): never `REVIEW_AT_GATE`
+(only `submit_workflow` marks a review), and for a named class only
+`role default: <role>` whose role picks exactly that class and is not a
+gate role; anything else is `caller`. A role's record for a named class is
+also copied into the signed dispatch block (`metadata.dispatch.class_chosen_by`,
+`stepclass.signed_record`), and that copy is the only one
+`stepclass.explicit_class` reads, so a tenant's agent rewriting the unsigned
+record after signing cannot relabel a caller's class as a role's.
+
+**Fail-safe.** A review whose gate never decides it (a lost wake, a
+swarm-api that is down, a gate switched off for the step or for the
+workspace), or one that cannot be signed again, runs the `opus` it was
+signed with. The fallback spends the dearer class; it never runs the cheaper
+one on a risk path.
+
+**What is recorded.** Every step a role default touched carries
+`metadata.class_chosen_by`: `caller`, `role default: <role>`, or the role
+plus why it fell back (for example `role default: review, no risk path;
+sonnet not pinned, profile default`). It is unsigned and selects nothing: never a
+model, never the gate's licence to re-sign, never whether a class was the
+caller's (those read the signed dispatch block). It is served with the task's metadata so the console can show it and a later
+scorecard can count verdicts by class.
+
+**Invariant 10 is untouched.** A model class is already a named choice from
+`MODEL_CLASSES`. Nothing here accepts an image, a command, a resource spec or
+a backend parameter from a caller, and the schedule's `planner_model_class`
+is validated against the planner profile's classes by name.
+
 ---
 
 ## 5. Frozen contract: change requests

@@ -62,7 +62,8 @@ from swarm_common.states import TERMINAL_STATES, TaskState, assert_transition
 
 from .codec import task_from_dict
 from .errors import Conflict, NotFound
-from .validation import AFTER_PRS_METADATA_KEY
+from .stepclass import CLASS_CHOSEN_BY_KEY, REVIEW_AT_GATE, gate_decided
+from .validation import AFTER_PRS_METADATA_KEY, RUNTIME_METADATA_KEY
 
 #: The states a step must have ended in to be offered a re-run.
 RERUNNABLE_STATES: frozenset[TaskState] = frozenset(
@@ -239,6 +240,19 @@ def clone(old: Task, ids: Mapping[str, str], now: datetime) -> Task:
     remapped["updated_at"] = now
     metadata = dict(remapped.get("metadata") or {})
     metadata[RERUN_OF_METADATA_KEY] = old.id
+    if gate_decided(metadata):
+        # A first review's class is the gate's, from the diff it reads
+        # (`stepclass`): the clone reviews a new diff, so it goes back to the
+        # profile's default and is marked to be decided again -- never the
+        # class the gate picked for the step it re-runs.
+        remapped["model_class"] = None
+        remapped["model"] = None
+        metadata[CLASS_CHOSEN_BY_KEY] = REVIEW_AT_GATE
+        runtime = metadata.get(RUNTIME_METADATA_KEY)
+        if isinstance(runtime, dict) and isinstance(runtime.get("alternate"), dict):
+            metadata[RUNTIME_METADATA_KEY] = {
+                **runtime, "alternate": {**runtime["alternate"], "model_class": None,
+                                         "model": None}}
     remapped["metadata"] = metadata
     return task_from_dict(remapped)
 
