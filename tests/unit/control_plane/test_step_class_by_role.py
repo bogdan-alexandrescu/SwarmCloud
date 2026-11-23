@@ -31,7 +31,15 @@ from fastapi.testclient import TestClient
 
 from swarm_common import specsign
 from swarm_common.profiles import RUNNER_PROFILES
-from swarm_api import fixloop, issueruns, mergewake, scheduletypes, specsigning, stepclass
+from swarm_api import (
+    fixloop,
+    issueruns,
+    mergewake,
+    reviewgate,
+    scheduletypes,
+    specsigning,
+    stepclass,
+)
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -75,6 +83,7 @@ REF = parse_issue_ref("example-org/example#7")
     (stepclass.ROLE_REVIEW, "sonnet"),
     (stepclass.ROLE_REVIEW_RISK, None),
     (stepclass.ROLE_REVIEW_UNREAD, None),
+    ("review, over the size ceiling", None),
     (stepclass.ROLE_SECURITY_REVIEW, None),
     (stepclass.ROLE_FIX, None),
     (stepclass.ROLE_REREVIEW, "sonnet"),
@@ -94,6 +103,7 @@ def test_the_table_is_the_owners():
         "review, no risk path": "sonnet", "review, risk path": "opus",
         "review, diff not read": "opus", "security review": "opus", "fix": "opus",
         "re-review": "sonnet", "CI fix": "sonnet", "conflict fix": "sonnet",
+        "review, over the size ceiling": "opus",
     }
 
 
@@ -329,12 +339,15 @@ def pinned_client(db, tokens, group_map, objects, github, waker, store) -> TestC
     return TestClient(create_app(context), raise_server_exceptions=False)
 
 
-def _parent(db, *paths: str, lines: int, truncated: bool = False) -> None:
+def _parent(db, *paths: str, lines: int, truncated: bool = False,
+            own: tuple[str, ...] | None = None, deletions: int = 0) -> dict[str, Any]:
     doc = seed_task(db, task_id=IMPL, tenant_id="eng", state="SUCCEEDED", runner_profile=CODE)
     doc["result_summary"] = {"git": {
         "files": [{"path": p, "status": "M"} for p in paths], "files_truncated": truncated,
-        "insertions": lines, "deletions": 0}}
+        "insertions": lines, "deletions": deletions,
+        **({"own_files": list(own)} if own is not None else {})}}
     doc["completed_at"] = datetime.now(timezone.utc)
+    return doc
 
 
 def _review(db, *, marked: bool = True, model_class: str | None = None,
@@ -388,6 +401,77 @@ def test_a_review_whose_file_list_was_cut_stays_on_opus(pinned_client, db):
 
     assert doc["model_class"] is None
     assert doc["metadata"]["class_chosen_by"] == "role default: review, diff not read"
+
+
+def test_a_risk_path_merged_in_from_a_side_branch_keeps_the_review_on_opus(pinned_client, db):
+    # `own_files` (first-parent history) misses a risk path a merge commit
+    # brought in; `files` lists it. The class reads both.
+    _parent(db, RISK_FILE, SMALL_FILE, lines=400, own=(SMALL_FILE,))
+    before = copy.deepcopy(_review(db))
+
+    doc = _decide(pinned_client, db)
+
+    assert doc["model_class"] is None
+    assert doc["spec_signature"] == before["spec_signature"]
+    assert doc["metadata"]["class_chosen_by"] == "role default: review, risk path"
+
+
+def test_a_renamed_risk_path_keeps_the_review_on_opus(pinned_client, db):
+    parent = _parent(db, SMALL_FILE, lines=400, own=(SMALL_FILE,))
+    parent["result_summary"]["git"]["files"] = [
+        {"path": SMALL_FILE, "old_path": RISK_FILE, "status": "R"}]
+    _review(db)
+
+    doc = _decide(pinned_client, db)
+
+    assert doc["model_class"] is None
+    assert doc["metadata"]["class_chosen_by"] == "role default: review, risk path"
+
+
+@pytest.mark.parametrize("files", ["absent", "truncated", "not a list"])
+def test_own_files_without_a_whole_file_list_keeps_the_review_on_opus(pinned_client, db, files):
+    parent = _parent(db, SMALL_FILE, lines=400, own=(SMALL_FILE,))
+    git = parent["result_summary"]["git"]
+    if files == "absent":
+        del git["files"]
+    elif files == "truncated":
+        git["files_truncated"] = True
+    else:
+        git["files"] = "apps/agent-worker"
+    _review(db)
+
+    doc = _decide(pinned_client, db)
+
+    assert doc["model_class"] is None
+    assert doc["metadata"]["class_chosen_by"] == "role default: review, diff not read"
+
+
+def test_what_the_gate_runs_or_skips_still_reads_own_files():
+    # The class reads `files` too; the gate's run-or-skip decision does not.
+    gate = reviewgate.Gate(min_lines=300, risk_paths=reviewgate.DEFAULT_RISK_PATHS)
+    parent = {"result_summary": {"git": {
+        "files": [{"path": RISK_FILE}], "own_files": [SMALL_FILE],
+        "insertions": 3, "deletions": 0}}}
+    decision = reviewgate.resolve([IMPL], gate, {IMPL: parent}.get)
+    assert not decision.run
+    assert decision.risk_hits == ()
+    assert stepclass.review_role(decision) == stepclass.ROLE_REVIEW_RISK
+
+
+@pytest.mark.parametrize("insertions, deletions, expected", [
+    (1000, 0, "sonnet"), (600, 400, "sonnet"), (1001, 0, None), (600, 401, None)])
+def test_a_first_review_moves_to_sonnet_only_up_to_the_size_ceiling(
+        pinned_client, db, insertions, deletions, expected):
+    assert stepclass.REVIEW_CHEAP_MAX_LINES == 1000
+    _parent(db, SMALL_FILE, lines=insertions, deletions=deletions)
+    _review(db)
+
+    doc = _decide(pinned_client, db)
+
+    assert doc.get("model_class") == expected
+    if expected is None:
+        assert doc["metadata"]["class_chosen_by"] == (
+            "role default: review, over the size ceiling")
 
 
 def test_a_review_whose_caller_named_a_class_is_not_touched(pinned_client, db):
