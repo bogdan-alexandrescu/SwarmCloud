@@ -545,6 +545,15 @@ def graph_tests(graph: Graph | None, changed: list[str], is_test, known: set[str
     return chosen
 
 
+def _cached_edges(found) -> bool:
+    """Whether a cache entry has import_edges' shape: each name maps to None
+    or a list of strings. Anything else is parsed again, never trusted."""
+    return isinstance(found, dict) and all(
+        isinstance(name, str) and (owners is None or (isinstance(owners, list)
+                                                      and all(isinstance(o, str) for o in owners)))
+        for name, owners in found.items())
+
+
 class EdgeCache:
     """select_unit_tests.import_edges, remembered by each file's content
     (RELATED-CAP, owner plan 2026-11-23). Parsing every Python file is about
@@ -574,7 +583,7 @@ class EdgeCache:
     def __call__(self, rel: str, text: str) -> dict[str, frozenset[str] | None]:
         key = hashlib.sha256(f"{rel}\0{text}".encode("utf-8", "surrogatepass")).hexdigest()
         found = self.new[key] if key in self.new else self.old.get(key)
-        if not isinstance(found, dict):
+        if not _cached_edges(found):
             found = {name: None if owners is None else sorted(owners)
                      for name, owners in sut.import_edges(rel, text).items()}
         self.new[key] = found
