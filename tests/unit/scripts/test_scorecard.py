@@ -433,3 +433,89 @@ def test_wrapper_reports_an_extract_offline(tmp_path):
     assert "agent tasks by workspace" in done.stdout and "personal 1" in done.stdout
     assert "not read: GitHub was not read (--no-github)" in done.stdout
     assert PERSONAL not in done.stdout + done.stderr
+
+
+# --- sessions per role: tool calls, turns, ceiling stops ---------------------
+
+
+def sessioned(tid, step, *, turns, families, sessions, stops=None, ceiling=True, **kw):
+    """An agent task with the session fields the runner records: the attempt's
+    tool calls per family (`metrics.tool_calls`), its session count
+    (`metrics.sessions`) and the ceiling record (`output.context_ceiling`)."""
+    record = task(tid, step, turns=turns, **kw)
+    runner = record["result_summary"]["runner"]
+    runner["metrics"] = {"tool_calls": {"read": True, "complete": True, "families": families},
+                         "sessions": {"count": sessions, "usage_unread": [], "cost_complete": True}}
+    if ceiling:
+        runner["output"] = {"context_ceiling": {
+            "limits": {"tokens": 200_000, "tool_calls": 150}, "max_fresh_sessions": 4,
+            "fresh_sessions": len(stops or []), "stops": list(stops or []), "skipped": None}}
+    return record
+
+
+def stop(turn, calls, why="tool_calls"):
+    return {"at": "turn_boundary", "why": why, "turn": turn, "context_tokens": 90_000,
+            "peak_context_tokens": 95_000, "tool_calls": calls, "fresh_session": 1}
+
+
+def test_sessions_per_role_from_the_recorded_fields():
+    records = [
+        # One session each: the attempt's numbers are the session's.
+        sessioned("task_s1", "implement", turns=40, families={"bash": 30, "read": 10}, sessions=1),
+        sessioned("task_s2", "implement", turns=60, families={"bash": 50}, sessions=1),
+        # Two sessions, the first stopped at the ceiling: its own numbers are the
+        # stop's; the second session's own numbers are not recorded.
+        sessioned("task_s3", "implement", turns=200, families={"bash": 170, "edit": 20},
+                  sessions=2, stops=[stop(120, 151)]),
+        sessioned("task_s4", "review:1", turns=12, families={"read": 8}, sessions=1),
+    ]
+    m = last_week(report_for(records))
+    assert m["attempt_tool_calls_by_role"] == {
+        "build": {"median": 50, "p90": 190, "p99": 190, "n": 3},
+        "review": {"median": 8, "p90": 8, "p99": 8, "n": 1}}
+    assert m["attempt_turns_by_role"]["build"] == {"median": 60, "p90": 200, "p99": 200, "n": 3}
+    assert m["session_tool_calls_by_role"]["build"] == {"median": 50, "p90": 151, "p99": 151, "n": 3}
+    assert m["session_turns_by_role"]["build"] == {"median": 60, "p90": 120, "p99": 120, "n": 3}
+    assert m["session_turns_by_role"]["review"] == {"median": 12, "p90": 12, "p99": 12, "n": 1}
+    # 1 stop of 4 build sessions; 0 of 1 review session.
+    assert m["sessions_at_ceiling_pct_by_role"] == {"build": 25.0, "review": 0.0}
+    assert m["fresh_sessions_per_attempt_by_role"]["build"] == {
+        "median": 0, "p90": 1, "p99": 1, "n": 3}
+    assert m["sessions_without_own_numbers"] == 1
+
+
+def test_session_measures_say_not_read_without_the_fields():
+    m = last_week(report_for([task("task_n1", "implement")]))
+    for key in ("attempt_tool_calls_by_role", "session_tool_calls_by_role",
+                "session_turns_by_role", "sessions_at_ceiling_pct_by_role",
+                "fresh_sessions_per_attempt_by_role", "sessions_without_own_numbers"):
+        assert isinstance(m[key], sc.NotRead), key
+    # Turns per attempt are recorded without the ceiling's fields.
+    assert m["attempt_turns_by_role"] == {"build": {"median": 10, "p90": 10, "p99": 10, "n": 1}}
+
+
+def test_a_cut_ceiling_record_is_not_read_as_no_stop():
+    # The runner's output is cut at 8,000 characters (`lifecycle._truncate_json`):
+    # the ceiling record is then unread, never "no stop".
+    record = sessioned("task_t1", "fix", turns=300, families={"bash": 400}, sessions=3,
+                       ceiling=False)
+    record["result_summary"]["runner"]["output"] = {"truncated": True, "preview": "{"}
+    m = last_week(report_for([record]))
+    assert isinstance(m["sessions_at_ceiling_pct_by_role"], sc.NotRead)
+    assert isinstance(m["session_tool_calls_by_role"], sc.NotRead)
+    assert m["sessions_without_own_numbers"] == 3
+    assert m["fresh_sessions_per_attempt_by_role"] == {"fix": {"median": 2, "p90": 2, "p99": 2, "n": 1}}
+
+
+def test_session_fields_are_in_the_mask_and_the_table():
+    for field in ("result_summary.runner.output.context_ceiling",
+                  "result_summary.runner.metrics.sessions",
+                  "result_summary.runner.metrics.tool_calls"):
+        assert field in sc.FIELD_MASK
+    keys = {key for key, _ in sc.ROWS}
+    assert {"attempt_tool_calls_by_role", "attempt_turns_by_role", "session_tool_calls_by_role",
+            "session_turns_by_role", "sessions_at_ceiling_pct_by_role",
+            "fresh_sessions_per_attempt_by_role", "sessions_without_own_numbers"} <= keys
+    text = sc.render_text(report_for([
+        sessioned("task_r1", "implement", turns=40, families={"bash": 30}, sessions=1)]))
+    assert "build: median 30, p90 30, p99 30 (n=1)" in text
