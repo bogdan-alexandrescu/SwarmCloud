@@ -64,7 +64,11 @@
       "Bash(make logs:*)",
       "Bash(make pool-check:*)",
       "Bash(make kubectl-guard:*)",
-      "Bash(uv run:*)"
+      "Bash(uv run pytest:*)",
+      "Bash(uv run --project . pytest:*)",
+      "Bash(uv run ruff:*)",
+      "Bash(uv run pyright:*)",
+      "Bash(uv run python scripts/:*)"
     ],
     "ask": [
       "Bash(terraform apply:*)",
@@ -92,7 +96,11 @@
       "Bash(make deploy:*)",
       "Bash(make destroy:*)",
       "Bash(make secrets:*)",
-      "Bash(make purge-data:*)"
+      "Bash(make purge-data:*)",
+      "Bash(uv run python -c:*)",
+      "Bash(uv run python -:*)",
+      "Bash(uv run kubectl:*)",
+      "Bash(uv run gcloud:*)"
     ],
     "deny": [
       "Bash(gcloud projects delete:*)",
