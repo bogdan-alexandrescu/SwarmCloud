@@ -475,5 +475,121 @@ def test_the_follower_tells_a_runs_pull_request_from_its_own_phase_and_never_wri
     assert speaker.lines == ["Run run-1 is done: its pull request is through."]
     assert {"run:run-1:started", "run:run-1:checking", "run:run-1:fixing", "run:run-1:done"} <= queue_said[0]
     # The roster carries its five fields only: the phase is never written.
-    assert [list(row) for body in posted for row in body["roster"]] == [
+    assert [list(row) for body in posted if "roster" in body for row in body["roster"]] == [
         ["kind", "id", "state", "done", "total"]] * 2
+
+
+# ---- the spend caps (swarm_api/voice/budget.py; voice-it.md §3.8) -------------
+
+class BudgetReads:
+    """The follower's reads with nothing on the roster and the caps' state as set."""
+
+    def __init__(self) -> None:
+        self.state: dict = {"warned": [], "capped": None, "ends_at": None, "notices": [], "ended": False}
+        self.asks = 0
+
+    async def tagged(self, project_id: str) -> list:
+        return []
+
+    async def started(self, items: list) -> list:
+        return []
+
+    async def write(self, rows: list) -> None:
+        raise AssertionError("nothing to write")
+
+    async def budget(self) -> dict:
+        self.asks += 1
+        return dict(self.state)
+
+
+def _budget_rig():
+    board = vu.Board()
+    speaker = FakeSpeaker()
+    clock = [100.0]
+    reads = BudgetReads()
+    return board, speaker, clock, reads
+
+
+def test_crossing_80_percent_of_a_cap_is_said_once_at_a_gap():
+    board, speaker, clock, reads = _budget_rig()
+
+    async def scenario():
+        queue = board.bind("vs_1", lambda: speaker, clock=lambda: clock[0], tick=None)
+        follower = follow.Follower(voice_id="vs_1", project_id="vp_1", reads=reads, updates=board)
+        await follower.tick()
+        reads.state["warned"] = ["session"]
+        for _ in range(3):
+            await follower.tick()
+            clock[0] += 1.5
+            await queue.pump()
+        reads.state["warned"] = ["session", "day"]
+        await follower.tick()
+        clock[0] += 1.5
+        await queue.pump()
+        await follower.tick()
+        clock[0] += 1.5
+        await queue.pump()
+        return reads.asks
+
+    asks = asyncio.run(asyncio.wait_for(scenario(), 10))
+    assert asks == 6
+    assert speaker.lines == [vu.BUDGET_LINES[("warning", "session")], vu.BUDGET_LINES[("warning", "day")]]
+
+
+def test_a_reached_cap_is_said_once_and_stands_for_its_warning():
+    board, speaker, clock, reads = _budget_rig()
+
+    async def scenario():
+        queue = board.bind("vs_1", lambda: speaker, clock=lambda: clock[0], tick=None)
+        follower = follow.Follower(voice_id="vs_1", project_id="vp_1", reads=reads, updates=board)
+        # Both at once (one big step): one line, the cap's.
+        reads.state.update(warned=["session"], capped="session", ends_at="2026-11-23T10:02:00+00:00")
+        for _ in range(3):
+            await follower.tick()
+            clock[0] += 1.5
+            await queue.pump()
+
+    asyncio.run(asyncio.wait_for(scenario(), 10))
+    assert speaker.lines == [vu.BUDGET_LINES[("capped", "session")]]
+    assert "two minutes" in speaker.lines[0]
+
+
+def test_a_reached_cap_wakes_a_paused_voice():
+    board, speaker, clock, reads = _budget_rig()
+    speaker.paused = True
+    woken: list[bool] = []
+
+    async def say_update(line: str, *, wakes: bool, delegation_id: str | None = None) -> bool:
+        speaker.lines.append(line)
+        woken.append(wakes)
+        return True
+
+    speaker.say_update = say_update  # type: ignore[method-assign]
+
+    async def scenario():
+        queue = board.bind("vs_1", lambda: speaker, clock=lambda: clock[0], tick=None)
+        board.budget("vs_1", {"warned": ["day"], "capped": "day"})
+        await queue.pump()
+
+    asyncio.run(asyncio.wait_for(scenario(), 10))
+    assert speaker.lines == [vu.BUDGET_LINES[("capped", "day")]] and woken == [True]
+
+
+def test_a_failed_caps_question_never_fails_the_roster_pass():
+    board, speaker, clock, reads = _budget_rig()
+
+    async def broken() -> dict:
+        raise RuntimeError("swarm-api is down")
+
+    reads.budget = broken  # type: ignore[method-assign]
+
+    async def scenario():
+        follower = follow.Follower(voice_id="vs_1", project_id="vp_1", reads=reads, updates=board)
+        return await follower.tick()
+
+    assert asyncio.run(scenario()) == []
+
+
+def test_a_state_that_is_not_the_caps_says_nothing():
+    for state in (None, [], {"warned": "session"}, {"capped": "week"}, {"warned": ["month"]}):
+        assert vu.budget_updates(state) == []

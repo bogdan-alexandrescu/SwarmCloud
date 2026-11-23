@@ -69,7 +69,10 @@ to this module, so no `progress` is sent. Each report goes through the grant
 the delegation started with, carries only its id and state, and is posted in
 the background: the turn and the delegation's result never wait on it. A
 delegation that never ran (still waiting when the session ended) reports
-nothing.
+nothing. The one wait is `started`, which swarm-api is asked before the
+delegation runs (worksink.py `admit`, the spend caps of voice-it.md §3.8): at
+a cap it is refused, nothing runs and its spoken answer is the cap's one
+sentence (worksink.CAP_SENTENCES).
 
 NO OPENAI. Nothing here, nor the planner, calls an OpenAI host; the only
 network the front's own code reaches is the quota broker (and the planner's
@@ -97,7 +100,7 @@ from .credential import CredentialError
 from .grant import SessionGrant
 from .planner import SAY_NO_GRANT, SAY_NO_LEASE, SAY_NO_POOL, SAY_POOL_FULL
 from .plannerlease import FRONT_HOLDER, LeaseFailed, PlannerAccounts, PlannerLease, PoolFull
-from .worksink import DONE, FAILED, REFUSED, STARTED, WorkSink
+from .worksink import CAP_SENTENCES, DONE, FAILED, REFUSED, WorkSink
 
 if TYPE_CHECKING:
     from .planner import Planner, TurnResult
@@ -555,7 +558,15 @@ class FrontSessions:
             session.running, delegation.state = delegation, "running"
             # The grant it started with: the session's end clears session.grant.
             grant = session.grant
-            self._report(grant, delegation, STARTED)
+            refused = await self._admit(grant, delegation)
+            if refused is not None:
+                # At a spend cap (worksink.py): one sentence, nothing started.
+                session.running, delegation.state, delegation.spoken = None, "done", CAP_SENTENCES[refused]
+                delegation.done.set()
+                self._trim(session)
+                log.info("voice session %s: delegation %s refused at a cap (%s)", session.voice_id,
+                         delegation.delegation_id, refused)
+                continue
             given = self._given(session, delegation)
             result: "TurnResult | None" = None
             ended = FAILED
@@ -585,6 +596,13 @@ class FrontSessions:
             log.info("voice session %s: delegation %s %s (%d card(s))", session.voice_id,
                      delegation.delegation_id, delegation.state, len(delegation.cards))
 
+    async def _admit(self, grant: SessionGrant | None, delegation: Delegation) -> str | None:
+        """Ask swarm-api whether the delegation may start (its `started`,
+        worksink.py `admit`): the cap's refusal reason, else None."""
+        if self._work is None:
+            return None
+        return await self._work.admit(grant, delegation.delegation_id)
+
     def _report(self, grant: SessionGrant | None, delegation: Delegation, state: str) -> None:
         """Hand `state` to the work sink; it posts in the background."""
         if self._work is not None:
@@ -599,7 +617,8 @@ class FrontSessions:
         assert self._planner is not None
         return await self._planner.delegate(person=session.person, grant=session.grant,
                                             transcript=self._given(session, delegation),
-                                            delegation_id=delegation.delegation_id, model=session.planner_model)
+                                            delegation_id=delegation.delegation_id, model=session.planner_model,
+                                            admitted=self._work is not None)
 
     def _traced(self, session: FrontSession, delegation: Delegation, given: list[tuple[str, str]],
                 result: "TurnResult | None") -> None:

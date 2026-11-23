@@ -241,7 +241,7 @@ export const CARD_KINDS: readonly CardKindSpec[] = [
     kind: 'budget',
     label: 'Budget',
     content: 'budget',
-    fields: ['lines', 'spent_usd', 'reserved_usd', 'session_cap_usd', 'day_cap_usd', 'not_counted'],
+    fields: ['lines', 'spent_usd', 'reserved_usd', 'session_cap_usd', 'day_cap_usd', 'not_counted', 'status', 'cap', 'ends_at'],
     states: ['waiting', 'done'],
     actions: ['raise'],
   },

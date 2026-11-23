@@ -40,10 +40,12 @@ from control_plane.fakes import FakeFirestore  # noqa: E402
 from test_speech_machine import CONFIG, Clock, FakeCompute, _lease, _machine  # noqa: E402
 
 from swarm_api.deps import get_context, tenant_scope  # noqa: E402
+from swarm_api import modelprices  # noqa: E402
 from swarm_api.errors import ApiError  # noqa: E402
 from swarm_api.routes import accounts as raccounts  # noqa: E402
 from swarm_api.routes import voice as rv  # noqa: E402
 from swarm_api.routes import voice_speech as rvs  # noqa: E402
+from swarm_api.voice import ledger as vledger  # noqa: E402
 from swarm_api.voice import sessions as vs  # noqa: E402
 from swarm_api.voice import settings as vsettings  # noqa: E402
 from swarm_api.voice import speech_catalogue as cat  # noqa: E402
@@ -397,6 +399,10 @@ def _route_app(rig: Rig, pool: FakePool, *, speech: sm.SpeechConfig) -> TestClie
     app.state.voice_client = rig.voice
     app.state.speech_config = speech
     app.state.speech_machine = rig.machine
+    # The start reads the day against its cap first (voice/budget.py): the
+    # bare context has no platform settings, so the ledger is given here.
+    app.state.voice_budget_ledger = vledger.VoiceLedger(
+        rig.db, now=rig.clock.now, prices=lambda: modelprices.SEED, time_zone=lambda email: None)
     app.dependency_overrides[rv.allowed_person] = lambda: ALICE
     app.dependency_overrides[tenant_scope] = lambda: TENANT
     app.dependency_overrides[get_context] = lambda: ctx
