@@ -201,6 +201,46 @@ def test_a_person_leaves_their_own_platform_membership_with_an_audit_row(client,
     assert listed == []
 
 
+# -- a cross-site form cannot make anyone leave (epic 21) -------------------------------
+
+#: What an HTML form, or a page's no-preflight request, can send: no body at
+#: all, or a body under one of the three CORS-safelisted content types.
+FORM_SENDABLE = [
+    pytest.param({}, id="no-body"),
+    pytest.param({"data": {"reason": "x"}}, id="urlencoded-form"),
+    pytest.param({"content": '{"reason": "x"}', "type": "text/plain"}, id="text-plain-json"),
+    pytest.param({"files": {"reason": ("r.txt", b"x")}}, id="multipart-form"),
+]
+
+
+@pytest.mark.parametrize("sent", FORM_SENDABLE)
+def test_a_request_a_cross_site_form_can_send_is_refused_and_writes_nothing(client, ctx, db,
+                                                                            sent) -> None:
+    """The leave needs a JSON body (`{}` at least) sent as application/json,
+    which a form on another site cannot send and a page elsewhere cannot send
+    without a CORS preflight swarm-api never grants -- so a signed-in person's
+    front-door cookie alone never makes them leave. 422 validation_failed,
+    decided before anything is read or written."""
+    joined(client)
+    before = written(db)
+    sent = dict(sent)
+    headers = h("lee", "eng")
+    if "type" in sent:
+        headers["Content-Type"] = sent.pop("type")
+    response = client.post(LEAVE, headers=headers, **sent)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "validation_failed"
+    assert written(db) == before
+    assert selects(client, "lee", "eng") == 200
+
+
+def test_an_empty_json_body_leaves(client, ctx, db) -> None:
+    joined(client)
+    response = client.post(LEAVE, headers=h("lee", "eng"), json={})
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "removed"
+
+
 def test_leaving_keeps_a_role_override_as_removal_does(client, ctx, db) -> None:
     """remove_member does not touch the person's role grant; leaving matches
     it, so asking and being approved again restores what an admin named."""
