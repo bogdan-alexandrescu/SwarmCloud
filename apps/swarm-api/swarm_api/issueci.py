@@ -223,6 +223,7 @@ from .issueruns import (
     OUTCOME_ALREADY_ON_MAIN,
     REREVIEW_STEP,
     REVIEW_STEP,
+    SECURITY_LENS_STEP,
     SECURITY_REVIEW_STEP,
     STEP_PROFILE,
     VERDICT_FILE,
@@ -2505,6 +2506,11 @@ def merge_gate(
                 log.info("issue run %s tenant=%s: hold %s cleared at %s: %s", run.id, tenant_id,
                          (before or {}).get("code"), head[:12], cleared)
             record["files_checked_head"] = head
+            # The plan's files are advisory for the security lens too: a real
+            # change on a risk path with no security review behind it is not
+            # merged on the code review alone.
+            record["security_unreviewed_head"] = (
+                head if _lacks_security_review(ctx, tenant_id, run, files) else None)
     changes: dict[str, Any] = {}
     if hold != run.approval_hold:
         changes["approval_hold"] = hold
@@ -2517,7 +2523,8 @@ def merge_gate(
             f"run {run.id} is held {hold.get('code')} at merge ({', '.join(hold.get('reasons') or [])})"
         ))
     approved_here = (run.merge_approved or {}).get("head_sha") == head
-    if not (blocks or run.merge_approval == "required") or approved_here:
+    unreviewed = record.get("security_unreviewed_head") == head
+    if not (blocks or run.merge_approval == "required" or unreviewed) or approved_here:
         if changes:
             # The widened hold is re-signed with the run; the caller goes on
             # with `run`, so it carries the new signature to `_merge`'s check.
@@ -2533,6 +2540,25 @@ def merge_gate(
     announce_merge(ctx, run, record_doc, token)
     log.info("issue run %s tenant=%s: merge of %s waits for approval", run.id, tenant_id, head[:12])
     return runs.patch(tenant_id, run.id, {**changes, "pull_request": record}, sign=resign)
+
+
+def _lacks_security_review(ctx: Any, tenant_id: str, run: IssueRun, files: Sequence[str]) -> bool:
+    """Whether the pull request's REAL files touch a risk path
+    (`reviewgate.DEFAULT_RISK_PATHS`) and the run's workflow has no security
+    review: neither the lens compiled from the plan's files
+    (`SECURITY_LENS_STEP`) nor the run's optional security review step.
+    A workflow that cannot be read counts as having none."""
+    if not any(reviewgate.matches(f.replace("\\", "/").lstrip("/"), glob)
+               for f in files for glob in reviewgate.DEFAULT_RISK_PATHS):
+        return False
+    if run.security_review:
+        return False
+    try:
+        workflow = ctx.store.get_workflow(tenant_id, run.workflow_id, submitted_by=None)
+    except NotFound:
+        return True
+    return not any(getattr(step, "step_id", None) == SECURITY_LENS_STEP
+                   for step in getattr(workflow, "steps", None) or [])
 
 
 def _review_verdict(ctx: Any, tenant_id: str, run: IssueRun) -> tuple[str | None, str]:

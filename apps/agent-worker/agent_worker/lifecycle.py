@@ -7935,12 +7935,31 @@ class Worker(HeartbeatMixin, CheckpointMixin):
         # by the gate's rule (`verdict_mod.gate_reading`); its file says SKIPPED.
         reading = verdict_mod.gate_reading(read)
         runs = reading in gate.verdict_in
+        # The gate's further reviews (`also_task_ids`): each one's staged
+        # verdict is read as strictly as the first's, and ANY in `verdict_in`
+        # runs the agent -- the security review beside the first review, whose
+        # NOT_YET runs the fix even when the first said MERGE.
+        also_read: list[tuple[inputs_mod.StagedInput, verdict_mod.Verdict, str]] = []
+        for also_id in gate.also_task_ids:
+            also_source = next(
+                (item for item in staged if item.upstream_task_id == also_id), None)
+            if also_source is None:
+                raise InputUnavailable(
+                    f"this step's verdict gate also reads the verdict of task {also_id}, "
+                    "and this step stages no file from that task; the agent was not "
+                    "started and nothing was published"
+                )
+            also_verdict = verdict_mod.read_verdict(
+                ws.work / also_source.path, task_id=also_id, filename=also_source.filename)
+            also_reading = verdict_mod.gate_reading(also_verdict)
+            also_read.append((also_source, also_verdict, also_reading))
+            runs = runs or also_reading in gate.verdict_in
         passed_on = ws.work / source.path
         # The no-op precheck, check (b) (archived issue 2524, the owner 2026-10-28): a NOT_YET
         # that would run the agent does not when this head already holds a
         # commit a review gave MERGE. The MERGE is then the verdict passed on.
         noop = self._noop_precheck_b(staged, source, read) if (
-            runs and read.verdict == "NOT_YET") else None
+            runs and read.verdict == "NOT_YET" and not also_read) else None
         if noop is not None:
             runs, passed_on = False, noop[1]
         self._verdict_staged = (passed_on, source.filename)
@@ -7950,9 +7969,17 @@ class Worker(HeartbeatMixin, CheckpointMixin):
             "verdict": read.verdict,
             "verdict_in": list(gate.verdict_in),
             "agent_ran": runs,
-            "findings": list(read.findings),
-            "findings_dropped": read.findings_dropped,
+            "findings": list(read.findings) + [
+                finding for _src, other, _r in also_read for finding in other.findings],
+            "findings_dropped": read.findings_dropped + sum(
+                other.findings_dropped for _src, other, _r in also_read),
         }
+        if also_read:
+            self._verdict["also"] = [
+                {"task_id": src.upstream_task_id, "file": src.filename,
+                 "verdict": other.verdict, "gate_reading": other_reading}
+                for src, other, other_reading in also_read
+            ]
         if read.skipped is not None:
             self._verdict["gate_reading"] = reading
             self._verdict["skipped_review"] = read.skipped

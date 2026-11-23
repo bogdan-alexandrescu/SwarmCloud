@@ -274,6 +274,11 @@ def republishes(
         return None
     if not isinstance(review_task_id, str) or gate.get("task_id") != review_task_id:
         return None
+    # A gate that also reads further reviews (swarm-api's `when.also`) opens on
+    # any of them, and the integrator's record is the first review's verdict:
+    # not a certain skip.
+    if "also_task_ids" in gate:
+        return None
     integrator = block.get("builds_on")
     if not isinstance(integrator, str) or integrator not in task_depends_on:
         return None
