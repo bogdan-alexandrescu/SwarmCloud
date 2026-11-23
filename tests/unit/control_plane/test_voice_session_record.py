@@ -11,12 +11,13 @@ import secrets
 import pytest
 from fastapi.testclient import TestClient
 
+from swarm_api.auth import TENANT_HEADER
 from swarm_api.voice import ledger as vledger
 from swarm_api.voice import record as vrecord
 from swarm_api.voice import sessions as vs
 from swarm_api.voice import store as vstore
 
-from .conftest import auth_header
+from .conftest import ENG_GROUP, RESEARCH_GROUP, auth_header
 from .test_voice_text_turns import FakePool, TextVoice, _start, _text_app, _turn
 
 
@@ -103,6 +104,40 @@ def test_another_person_or_workspace_gets_the_same_refusal_as_a_missing_session(
     assert other.status_code == 404 and other.json() == {**missing.json(), "message": other.json()["message"]}
     assert other_summary.status_code == 404
     assert "Plan the rollout" not in other.text
+
+
+@pytest.fixture
+def group_map() -> dict[str, tuple[str, ...]]:
+    """alice is in two workspaces (eng, research); bob is in eng with her."""
+    return {
+        "alice@example.com": (ENG_GROUP, RESEARCH_GROUP),
+        "bob@example.com": (ENG_GROUP,),
+    }
+
+
+@pytest.mark.parametrize("who, headers", [
+    ("same person, another selected workspace", {TENANT_HEADER: "research"}),
+    ("another person, the same workspace", None),
+])
+def test_each_filter_alone_refuses_the_transcript_and_summary_and_reads_no_line(
+        db, tokens, group_map, objects, voice, monkeypatch, who, headers):
+    client = _client(db, tokens, group_map, objects, voice)
+    session_id = _start(client).json()["session_id"]  # alice, her default workspace (eng)
+    _turn(client, session_id, "Plan the rollout")
+    missing = "vs_" + secrets.token_hex(8)
+    reads: list[str] = []
+    real = vrecord.lines_of
+    monkeypatch.setattr(vrecord, "lines_of", lambda *a, **k: reads.append("lines") or real(*a, **k))
+
+    caller = "alice" if headers else "bob"
+    head = {**auth_header(caller), **(headers or {})}
+    for route in ("transcript", "summary"):
+        refused = client.get(f"/v1/voice/sessions/{session_id}/{route}", headers=head)
+        absent = client.get(f"/v1/voice/sessions/{missing}/{route}", headers=head)
+        assert refused.status_code == 404, (who, route, refused.text)
+        assert refused.status_code == absent.status_code
+        assert "Plan the rollout" not in refused.text
+    assert reads == [], who
 
 
 def test_an_ended_session_gets_its_summary_once_and_it_is_counted(db, tokens, group_map, objects, voice):

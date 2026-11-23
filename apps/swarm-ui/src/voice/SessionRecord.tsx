@@ -8,12 +8,10 @@
  * through an object URL: a bare link would carry no tenant header. A failed
  * read is two words, its reason behind the tooltip, and nothing is saved.
  *
- * THE SUMMARY (the owner's console rule: a button, a short heading and the
- * summary, nothing else on the surface): written is the heading and the text;
- * capped, failed and pending one short line each; none draws nothing. The
- * text is the session's own, not the console's prose, so it is marked
- * `data-prose-content` as the stage's lines are. A summary read that fails
- * draws nothing: the button still offers the transcript.
+ * THE SUMMARY is the session's own text, drawn only once it is written, and
+ * marked `data-prose-content` as the stage's lines are. The console adds no
+ * heading and no status line of its own: capped, failed, pending and none
+ * draw nothing, and a failed summary read leaves the button alone.
  */
 import { useEffect, useState } from 'react'
 
@@ -21,13 +19,6 @@ import { loadVoiceSessionSummary, loadVoiceTranscript, type VoiceSessionSummary 
 import { Button } from '../components/Button'
 import { Tooltip } from '../components/Overlay'
 import type { ApiError } from '../fetch'
-
-/** The one line each unwritten state shows; `none` shows nothing. */
-export const SUMMARY_LINE: Readonly<Record<Exclude<VoiceSessionSummary['state'], 'written' | 'none'>, string>> = {
-  capped: 'No summary: session at its cap.',
-  failed: 'No summary.',
-  pending: 'Summary pending.',
-}
 
 /** Hand `blob` to the browser as a saved file named `filename`. */
 function save(blob: Blob, filename: string): void {
@@ -46,16 +37,12 @@ function save(blob: Blob, filename: string): void {
 }
 
 function Summary({ summary }: { summary: VoiceSessionSummary | null }) {
-  if (summary === null || summary.state === 'none') return null
-  if (summary.state === 'written') {
-    return (
-      <div className="vtel-summary">
-        <h2>Summary</h2>
-        {summary.text !== null && <p data-prose-content="">{summary.text}</p>}
-      </div>
-    )
-  }
-  return <p className="vtel-summary-line">{SUMMARY_LINE[summary.state]}</p>
+  if (summary === null || summary.state !== 'written' || summary.text === null) return null
+  return (
+    <p className="vtel-summary" data-prose-content="">
+      {summary.text}
+    </p>
+  )
 }
 
 export function SessionRecord({ sessionId }: { sessionId: string }) {

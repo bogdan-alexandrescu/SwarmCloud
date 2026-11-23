@@ -4,12 +4,12 @@
 //   * one button, "Download transcript", saves the transcript the api layer
 //     read (a Blob through an object URL, never a bare link: the read carries
 //     the tenant header a link cannot);
-//   * a written summary is a "Summary" heading and its text; capped, failed
-//     and pending are one short line each; none is nothing at all;
+//   * a written summary is its text alone, no heading; capped, failed, pending
+//     and none draw nothing;
 //   * Telemetry draws both for the session picked, ended sessions included.
 //
 // BREAK IT: drop the button, add a second one, link the route bare, draw a
-// heading for "none", or reword a state's line.
+// heading or a status line for a summary.
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -130,32 +130,14 @@ describe('the session record: the transcript button', () => {
 })
 
 describe('the session record: the summary', () => {
-  it('draws a "Summary" heading and the text when it is written', async () => {
+  it('draws only the summary text, no heading, when it is written', async () => {
     await drawn('written', 'Planned the export page and opened two lanes.')
-    expect(within(record()).getByRole('heading', { name: 'Summary' })).toBeTruthy()
-    expect(record().textContent).toContain('Planned the export page and opened two lanes.')
-  })
-
-  it('draws only "No summary: session at its cap." when it is capped', async () => {
-    await drawn('capped')
     expect(within(record()).queryByRole('heading')).toBeNull()
-    expect(record().textContent).toBe('Download transcriptNo summary: session at its cap.')
+    expect(record().textContent).toBe('Download transcriptPlanned the export page and opened two lanes.')
   })
 
-  it('draws only "No summary." when it failed', async () => {
-    await drawn('failed')
-    expect(within(record()).queryByRole('heading')).toBeNull()
-    expect(record().textContent).toBe('Download transcriptNo summary.')
-  })
-
-  it('draws only "Summary pending." while it is pending', async () => {
-    await drawn('pending')
-    expect(within(record()).queryByRole('heading')).toBeNull()
-    expect(record().textContent).toBe('Download transcriptSummary pending.')
-  })
-
-  it('draws nothing, not even the heading, when there is none', async () => {
-    await drawn('none')
+  it.each(['capped', 'failed', 'pending', 'none'])('draws only the button when the summary is %s', async (state) => {
+    await drawn(state)
     expect(within(record()).queryByRole('heading')).toBeNull()
     expect(record().textContent).toBe('Download transcript')
   })
@@ -164,9 +146,9 @@ describe('the session record: the summary', () => {
     voice.loadVoiceSessionSummary.mockResolvedValue(summary('written', 'First.'))
     const view = render(<SessionRecord sessionId={SESSION} />)
     await within(record()).findByText('First.')
-    voice.loadVoiceSessionSummary.mockResolvedValue({ ...summary('pending'), data: { ...summary('pending').data, session_id: 'vs_0002' } })
+    voice.loadVoiceSessionSummary.mockResolvedValue({ ...summary('written', 'Second.'), data: { ...summary('written', 'Second.').data, session_id: 'vs_0002' } })
     view.rerender(<SessionRecord sessionId="vs_0002" />)
-    await within(record()).findByText('Summary pending.')
+    await within(record()).findByText('Second.')
     expect(voice.loadVoiceSessionSummary).toHaveBeenLastCalledWith('vs_0002')
     expect(record().textContent).not.toContain('First.')
   })
