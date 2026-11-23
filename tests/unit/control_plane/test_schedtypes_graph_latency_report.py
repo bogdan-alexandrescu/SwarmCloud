@@ -20,6 +20,9 @@ WHAT IS HELD HERE
   served p50/p95 is held against 300 ms; the read route serves the same for
   the caller's own repository and 404s another tenant's.
 * DRY RUN: the same reads, and no write.
+* WHICH REGISTRATIONS ARE UNMEASURED (part of issue 9): each repository's
+  `index.measure_latency_hours` is on its action, None when unset, and a dry
+  run lists the registered repositories that leave it unset.
 
 No cloud and no emulator: the in-memory Firestore and bucket, and GitHub as a
 fake transport under the real `forgewrite.GitHubWriter`.
@@ -250,6 +253,26 @@ def test_an_unregistered_repository_fails_its_own_action(db, ctx, github) -> Non
     (item,) = fire(ctx, db, other)
     assert item["outcome"] == "failed"
     assert item["detail"]["code"] == graph_latency_report.REPOSITORY_NOT_REGISTERED
+
+
+
+def test_each_repository_records_its_measure_latency_setting_and_unset_reads_none(db, ctx, objects) -> None:
+    """Part of issue 9: the firing says which registrations are unmeasured, so an
+    operator sees "no promoted version carries a measurement" is the setting off."""
+    measured = register(db, repo="measured", index={"measure_latency_hours": 24})
+    unset = register(db, repo="unset")
+    refused = register(db, repo="refused", index={"measure_latency_hours": 0})
+    items = graph_latency_report.create(firing_for(ctx, report(db, measured, unset, refused)))
+    assert {item["detail"]["repo_id"]: item["detail"]["measure_latency_hours"] for item in items} == {
+        measured: 24, unset: None, refused: None}
+
+
+def test_a_dry_run_lists_the_registered_repositories_whose_measure_latency_is_unset(db, ctx, objects) -> None:
+    measured = register(db, repo="measured", index={"measure_latency_hours": 6})
+    unset = register(db, repo="unset")
+    missing = repo_id_for("eng", OWNER, "not-registered")
+    out = graph_latency_report.dry_run(firing_for(ctx, report(db, measured, unset, missing)))
+    assert out["measure_latency_unset"] == [unset]
 
 
 # ---------------------------------------------------------------------------
