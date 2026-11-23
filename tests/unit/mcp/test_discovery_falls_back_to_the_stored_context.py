@@ -157,3 +157,54 @@ def test_the_document_wins_over_the_stored_context_and_a_later_unreadable_docume
     assert client.skew.unchecked == f"cannot read {DOC_URL} (401)"
 
 
+
+
+OTHER_URL = "https://other.example.test"
+
+
+def _store_other(environ, client_id: str) -> None:
+    """Another deployment's context, as a sign-in to it would leave it."""
+    stored = config.load(environ)
+    stored.contexts["other"] = config.Context(name="other", url=OTHER_URL, oauth_client_id=client_id)
+    stored.current = "other"
+    config.save(stored)
+
+
+@FAILURES
+def test_another_deployments_stored_client_id_is_never_lent(tmp_path, monkeypatch, getter):
+    # A client id is an audience: lending another deployment's would send the
+    # sign-in to the wrong one. Only a context at the same address counts.
+    monkeypatch.setattr(discovery, "CACHE", discovery.Cache(get=getter))
+    environ = _env(tmp_path)
+    theirs = _client_id()
+    _store_other(environ, theirs)
+
+    with pytest.raises(discovery.DiscoveryUnreachable) as caught:
+        config.resolve(environ)
+    assert str(caught.value).endswith(discovery.NO_CLIENT_ID)
+
+    with pytest.raises(discovery.DiscoveryUnreachable) as seeded:
+        config.seed_from_plugin(environ, store=object())
+    assert str(seeded.value).endswith(discovery.NO_CLIENT_ID)
+    stored = config.load(environ)
+    assert stored.contexts["other"].oauth_client_id == theirs
+    for context in stored.contexts.values():
+        if context.url == URL:
+            assert context.oauth_client_id != theirs
+
+
+@FAILURES
+def test_with_contexts_at_both_addresses_the_same_address_id_is_chosen(
+    tmp_path, monkeypatch, getter
+):
+    monkeypatch.setattr(discovery, "CACHE", discovery.Cache(get=getter))
+    environ = _env(tmp_path)
+    _store_other(environ, _client_id())
+    mine = _client_id()
+    _store_context(environ, mine)
+    _store_other(environ, _client_id())
+
+    assert config.resolve(environ).client_id == mine
+    seeded = config.seed_from_plugin(environ, store=object())
+    assert seeded.client_id == mine
+    assert config.load(environ).contexts["swarm-example"].oauth_client_id == mine
