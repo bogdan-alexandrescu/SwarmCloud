@@ -573,3 +573,28 @@ def test_the_sweep_prunes_requests_decided_more_than_90_days_ago(client, ctx, db
     assert response.json()["join_requests_pruned"] == 1
     refs = {d.get("ref") for d in db.dump(f"{joinrequests.REQUESTS}/").values()}
     assert refs == {fresh}
+
+
+# -- a cross-site form cannot decide a request (epic 21) ----------------------------------
+
+@pytest.mark.parametrize("decision", ["approve", "deny"])
+@pytest.mark.parametrize("sent", [
+    pytest.param({}, id="no-body"),
+    pytest.param({"data": {"role": "viewer"}}, id="urlencoded-form"),
+    pytest.param({"content": "{}", "headers": {"Content-Type": "text/plain"}},
+                 id="text-plain-json"),
+])
+def test_a_decision_a_cross_site_form_can_send_is_refused_and_writes_nothing(client, db,
+                                                                             decision, sent):
+    """As POST /v1/workspace/leave (join-requests.md section 4.4): a decision
+    needs a JSON body, `{}` at least, sent as application/json, which a form
+    on another site cannot send on an admin's front-door cookie."""
+    ref, _code = asked(client)
+    before = written(db)
+    sent = dict(sent)
+    headers = dict(h("alice"), **sent.pop("headers", {}))
+    response = client.post(f"/v1/admin/join-requests/{ref}/{decision}", headers=headers, **sent)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "validation_failed"
+    assert written(db) == before
+    assert decisions(db) == []
