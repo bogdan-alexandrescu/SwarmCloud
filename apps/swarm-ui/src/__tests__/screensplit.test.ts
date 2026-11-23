@@ -6,8 +6,8 @@
 // static import is and the lazy() splits nothing. So the helpers live in
 // helper-only modules (guidePaths.ts, workspacePaths.ts ...) and this reads
 // the shell's import lines to keep it that way.
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { dirname, join, relative, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 const SRC = join(__dirname, '..')
@@ -21,6 +21,32 @@ function staticImports(file: string): string[] {
   const out: string[] = []
   for (const m of source(file).matchAll(/^\s*(import|export)\s+(?!type\b)(?:[^'";]*?\sfrom\s+)?['"]([^'"]+)['"]/gm)) out.push(m[2]!)
   return out
+}
+
+/** The file a relative import names, or null for a package or a stylesheet. */
+function resolved(from: string, spec: string): string | null {
+  if (!spec.startsWith('.')) return null
+  const base = resolve(dirname(join(SRC, from)), spec)
+  for (const f of [base, `${base}.ts`, `${base}.tsx`, join(base, 'index.ts'), join(base, 'index.tsx')]) {
+    if (/\.tsx?$/.test(f) && existsSync(f) && statSync(f).isFile()) return relative(SRC, f)
+  }
+  return null
+}
+
+/** Every module the main chunk holds: App.tsx and what it reaches through static imports, each with who imported it. */
+function eagerModules(): Map<string, string | null> {
+  const seen = new Map<string, string | null>([['App.tsx', null]])
+  const todo = ['App.tsx']
+  while (todo.length > 0) {
+    const file = todo.pop()!
+    for (const spec of staticImports(file)) {
+      const next = resolved(file, spec)
+      if (next === null || seen.has(next)) continue
+      seen.set(next, file)
+      todo.push(next)
+    }
+  }
+  return seen
 }
 
 /** Every screen App.tsx loads with its route, and the module that holds it. */
@@ -61,6 +87,23 @@ describe('the shell imports no lazy screen', () => {
 
   it('Schedules imports neither Approvals nor Profile, both lazy screens', () => {
     expect(staticImports('Schedules.tsx').filter((m) => m === './Approvals' || m === './Profile')).toEqual([])
+  })
+})
+
+describe('the main chunk holds no lazy module', () => {
+  it("no module App.tsx loads with a route is reached through the shell's static imports", () => {
+    // Vite keeps such a module in the main chunk ("dynamic import will not
+    // move module into another chunk"); the chain says which import to cut.
+    const eager = eagerModules()
+    const lazyMods = new Set([...source('App.tsx').matchAll(/import\('(\.[^']+)'\)/g)].map((m) => resolved('App.tsx', m[1]!)))
+    const chains: string[] = []
+    for (const mod of lazyMods) {
+      if (mod === null || !eager.has(mod)) continue
+      const chain: string[] = []
+      for (let at: string | null | undefined = mod; at != null; at = eager.get(at)) chain.unshift(at)
+      chains.push(chain.join(' -> '))
+    }
+    expect(chains).toEqual([])
   })
 })
 
