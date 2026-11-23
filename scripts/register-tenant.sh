@@ -3804,8 +3804,13 @@ step "Control plane"
 # --terraform-tenant: terraform/modules/firestore/bootstrap.tf makes both
 # documents in the release that adds the tenant (while
 # bootstrap_firestore_documents is on, its default), and one written here
-# first is a 409 there. Until that release the tenant has no tenants/ record,
-# so the API resolves nobody to it -- the same as before the registration.
+# first is a 409 there. Until that release the API resolves nobody to this
+# group, because swarm-api's TENANT_GROUPS is set from var.tenants
+# (terraform/infra/locals.tf) and the group is not in it yet -- not because
+# tenants/${TENANT_ID} is absent.
+# The Firestore database check below is skipped with the documents: this run
+# writes nothing there, so a missing database is no failure of it. The
+# preflight above still ran and still refuses a database it cannot read.
 if [[ "${TERRAFORM_TENANT}" -eq 1 ]]; then
   info "skipped: tenants/${TENANT_ID} and pools/tenant:${TENANT_ID} are made by the release"
   dim "  (terraform/modules/firestore/bootstrap.tf, google_firestore_document.tenant and google_firestore_document.pool);"
@@ -3912,7 +3917,11 @@ fi
 fi  # --terraform-tenant
 
 hr
-ok "tenant ${TENANT_ID} registered"
+if [[ "${TERRAFORM_TENANT}" -eq 1 ]]; then
+  ok "tenant ${TENANT_ID}: worker account, grants and namespace made; tenant record and pool come with the release"
+else
+  ok "tenant ${TENANT_ID} registered"
+fi
 # "then add it", NOT "then re-run this". This line used to print
 # `--${KIND} ${PRINCIPAL} --providers anthropic`: a full re-run, whose
 # --providers then REPLACED `credentials` (it adds now, lesson 40) and whose
@@ -3933,7 +3942,27 @@ else
                         pools/tenant:${TENANT_ID}, which the release that adds a tenant to var.tenants creates
                         and 409s on. A Terraform tenant is registered with --terraform-tenant (docs/ci.md)"
 fi
-cat >&2 <<EOF
+# With the flag the release makes swarm-tenant-<tenant>-<provider> for each
+# provider in var.tenants[*].providers (terraform/modules/secret_manager) and the
+# tenants/<tenant> document: a key stored first is a 409, an --add-provider run
+# first dies with "tenants/<tenant> does not exist".
+if [[ "${TERRAFORM_TENANT}" -eq 1 ]]; then
+  cat >&2 <<EOF
+
+Next:
+  terraform-managed?    ${TERRAFORM_NEXT}
+  after the release     store a provider key: scripts/create-secrets.sh --tenant ${TENANT_ID} --provider anthropic --stdin
+                        (it finds the release's secret and only adds a version)
+                        then, only if tenants/${TENANT_ID} lacks the provider:
+                        scripts/register-tenant.sh --tenant ${TENANT_ID} --add-provider anthropic
+  check it              scripts/status.sh --tenant ${TENANT_ID}
+
+Worker account, grants and namespace made; tenant record and pool come with the
+release. ${PRINCIPAL} is not resolved to tenant '${TENANT_ID}' until that release
+adds it to var.tenants, which is what swarm-api's TENANT_GROUPS is set from.
+EOF
+else
+  cat >&2 <<EOF
 
 Next:
   terraform-managed?    ${TERRAFORM_NEXT}
@@ -3944,3 +3973,4 @@ Next:
 Members of ${PRINCIPAL} now submit tasks with their own Google identity; the API
 resolves them to tenant '${TENANT_ID}'. No shared token exists, by design.
 EOF
+fi

@@ -2494,8 +2494,22 @@ that does not exist yet. So for a **new tenant**:
    each answers 409 "already exists" and the release keeps failing until
    someone repairs it (issue 141). With the flag the script makes everything
    else as usual — the account the release adopts, its grants, its namespace —
-   and leaves those three to the release; until the release the tenant has no
-   `tenants/` record, so nobody resolves to it. Import blocks were not the fix:
+   and leaves those three to the release; until the release nobody resolves to
+   the tenant, because the group is not yet in `TENANT_GROUPS`, which
+   `terraform/infra/locals.tf` sets from `var.tenants`. The run's closing
+   lines say the same: the worker account, grants and namespace are made, and
+   the tenant record and pool come with the release. Its provider keys wait for
+   the release too: the release creates `swarm-tenant-<tenant>-<provider>` for
+   each provider in `var.tenants[*].providers`
+   (`terraform/modules/secret_manager`), so `scripts/create-secrets.sh` run
+   first answers 409 on a fourth object, and `--add-provider` before the
+   release dies with "tenants/<tenant> does not exist". After the release,
+   `scripts/create-secrets.sh --tenant <tenant> --provider <provider> --stdin`
+   finds the release's secret and only adds a version, and
+   `scripts/register-tenant.sh --tenant <tenant> --add-provider <provider>`
+   is run only if `tenants/<tenant>` lacks the provider. The run also skips its
+   Firestore database check, since it writes nothing there; an unreadable
+   database still stops it at the preflight. Import blocks were not the fix:
    an `import` of an object that does not exist fails the plan, and these exist
    only when the script ran first. Without the flag the script makes all three,
    as a tenant Terraform never manages needs. An environment that sets
