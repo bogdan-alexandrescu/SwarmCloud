@@ -5777,6 +5777,24 @@ export interface RunTransition {
   by: string
 }
 
+/** One `planlint.lint` finding as a run serves it. */
+export interface PlanLintFinding {
+  code: string
+  step: string | null
+  requirement: number | null
+  message: string | null
+}
+
+/** `issueruns.served_plan_lint`. */
+export interface PlanLintRecord {
+  replans: number
+  held: boolean
+  findings: PlanLintFinding[]
+  replan_findings: PlanLintFinding[]
+  planner_task_ids: string[]
+  replan_error: string | null
+}
+
 /** `IssueRun.to_api()`. */
 export interface IssueRun {
   id: string
@@ -5793,6 +5811,10 @@ export interface IssueRun {
   plan_digest: string | null
   plan_revision: number
   plan_edited_by: string | null
+  /** `issueruns.served_plan_lint`: the re-plan count and, on a run held for a
+   *  person after a re-plan that failed too, the findings (code and sentence).
+   *  Null on a run whose plan was never refused. */
+  plan_lint?: PlanLintRecord | null
   /** `issueruns.plan_shape`: `8 steps in 4 stages (1 → 3 → 3 → 1), then review and fix`; null without a plan. */
   plan_shape?: string | null
   /** Null until approval creates the workflow. */
