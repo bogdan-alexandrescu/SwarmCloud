@@ -6,6 +6,27 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.88 (2026-11-23)
+
+The scheduled watch stops loading the whole sc skill on every firing.
+
+* `/sc:check` is a new command of about a kilobyte (`plugin/commands/check.md`):
+  one `swarm_check` call, the flagged items first (stuck before stale), then
+  the steps awaiting input, then each owner question put to the person, then
+  the one attach call with `new_only`, and the watch armed when the reply
+  says so. A newly armed watch fires `/sc:check`; `/sc check` keeps working
+  and does the same steps without loading the skill, and a watch already
+  armed with `/sc check` is still found by CronList and never doubled.
+* `swarm_check`'s reply carries its own reading rules: one `how_to_read`
+  paragraph, and a `say` on every flagged item (its report line and how its
+  rule is read), beside its `next`.
+* The sc skill is split: `SKILL.md` keeps the verb table, `check`, `watch`
+  and arming the watch (82,918 bytes before, about 14,500 now), and every
+  other verb's rules moved word for word into `skills/sc/reference/`, a file
+  per verb that only that verb reads. Its `allowed-tools` lists each tool
+  once (it listed 17 twice) and adds `Read`; its description is about a
+  third of its 3,151 bytes and keeps the phrases it triggers on.
+
 ## 0.5.87 (2026-11-14)
 
 Releases the plugin and bridge changes merged since 0.5.86, with the

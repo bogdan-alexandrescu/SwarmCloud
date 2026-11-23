@@ -151,5 +151,8 @@ def test_the_readme_and_the_sc_skill_name_the_bulk_tool():
     from pathlib import Path
 
     plugin = Path(__file__).resolve().parents[3] / "plugin"
-    for doc in (plugin / "README.md", plugin / "skills" / "sc" / "SKILL.md"):
-        assert "swarm_task_answers" in doc.read_text(encoding="utf-8"), doc
+    import sc_skill_text
+
+    for doc, read in ((plugin / "README.md", (plugin / "README.md").read_text),
+                      (plugin / "skills" / "sc" / "SKILL.md", sc_skill_text.text)):
+        assert "swarm_task_answers" in read(), doc

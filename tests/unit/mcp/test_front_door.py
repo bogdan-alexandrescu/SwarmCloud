@@ -48,6 +48,7 @@ import pytest
 from swarm_mcp import auth, client
 from swarm_mcp.auth import Tier
 from swarm_mcp.client import SwarmClient, SwarmError
+import sc_skill_text
 
 _REPO = Path(__file__).resolve().parents[3]
 
@@ -478,9 +479,8 @@ _IAP_GRANT_REMEDIES = {
         403, "<!doctype html><html>sign in</html>"
     ),
     "WHY_NOT[(IMPERSONATE, team)]": lambda: auth.WHY_NOT[(Tier.IMPERSONATE, "team")],
-    "plugin/skills/sc/SKILL.md": lambda: (
-        _REPO / "plugin" / "skills" / "sc" / "SKILL.md"
-    ).read_text(),
+    # The core and its on-demand reference files (the 2026-11-23 split).
+    "plugin/skills/sc/SKILL.md": sc_skill_text.text,
 }
 
 

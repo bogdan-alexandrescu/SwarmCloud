@@ -246,6 +246,17 @@ def test_every_tool_named_in_the_prose_exists_or_is_marked_as_not_existing(path)
     )
 
 
+#: A skill's on-demand reference files (the sc split, 2026-11-23): prose a
+#: verb loads, held to the same rule as the SKILL.md that names them.
+_REFERENCES = sorted(_PLUGIN.glob("skills/*/reference/*.md"))
+
+
+@pytest.mark.parametrize("path", _REFERENCES, ids=lambda p: f"{p.parent.parent.name}/{p.name}")
+def test_every_tool_a_reference_file_names_exists(path):
+    unexplained = sorted(_identifiers(path.read_text()) - _REAL)
+    assert not unexplained, f"{path.name} names {unexplained}, which the bridge does not serve"
+
+
 def _not_yet(body: str) -> set[str]:
     """The tools a skill declares as not-yet-built, from its own section."""
     if _NOT_YET_HEADING not in body:
