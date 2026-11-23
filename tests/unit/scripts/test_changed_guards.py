@@ -198,6 +198,22 @@ def test_the_cheap_walkers_that_read_a_doc_are_in_the_guard_set():
         assert guard not in DOC_GUARDS, guard
 
 
+def test_the_inventory_walkers_the_train_ejected_for_are_in_the_guard_set():
+    # Whole-tree inventories no diff selects (owner's improvement plan,
+    # 2026-11-23): pull requests were ejected from the merge train for a
+    # missing or stale row in docs/design/agent-quality/known-failures.md,
+    # which test_agent_quality_inventory checks over every test file; a new
+    # runbook or plugin agent breaks the other two without either naming it.
+    for guard in (
+        "tests/unit/scripts/test_agent_quality_inventory.py",
+        "tests/unit/scripts/test_runbook_index.py",
+        "tests/unit/mcp/test_plugin_agents_ignore_chat.py",
+    ):
+        # MUTATION: drop any of the three from GUARD_TESTS and this is red, naming it.
+        assert guard in GUARDS, guard
+        assert guard not in DOC_GUARDS, guard
+
+
 def test_a_doc_beside_a_code_change_keeps_the_whole_guard_set():
     # Read from the fixtures: a test naming either path would select itself.
     both = (FIXTURES / "unread.txt").read_text() + (FIXTURES / "unread-code.txt").read_text()

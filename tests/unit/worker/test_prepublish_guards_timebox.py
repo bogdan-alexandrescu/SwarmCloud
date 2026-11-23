@@ -434,3 +434,90 @@ def test_the_gate_runs_the_real_script_related_first_then_the_parts(lane):
     assert "parity" in calls and len(calls) == 2
     assert sorted(g for c in calls if c != "parity" for g in GUARDS if g in c) == sorted(GUARDS)
     assert "related test file(s) first" in record["guards"][0]
+
+
+# ---------------------------------------------------------------------------
+# 6. A parity overrun is a stop, not a failure, and the script's record decides
+# ---------------------------------------------------------------------------
+# Measured 2026-11-23: a parity check killed at PARITY_SECONDS printed only
+# `contract parity failed (exit 124)`, which `_GUARDS_TIMEOUT` does not match,
+# so the part was FAILED and the agent's one fix turn went on a timeout nobody
+# can fix. The script now says `ran past`, and the gate reads its result record.
+
+
+@needs_tools
+def test_a_parity_overrun_prints_ran_past_and_records_timed_out(lane):
+    (lane["repo"] / "scripts" / "lib" / "check-contract-parity.sh").write_text(
+        FAKE_PARITY + "exit 124\n")
+    only = lane["tmp"] / "only.txt"
+    only.write_text(f"{PARITY}\n")
+    record = lane["tmp"] / "result"
+    ran = subprocess.run(
+        ["bash", "scripts/changed-guards.sh", "--base", lane["base"], "--only", str(only)],
+        cwd=lane["repo"], env={**lane["env"], prepublish.GUARDS_RESULT_ENV: str(record)},
+        capture_output=True, text=True, timeout=120)
+    assert ran.returncode == 1
+    # MUTATION: dropping the parity branch's `ran past` line makes the gate
+    # read the overrun as a failure the agent is sent to fix.
+    assert "contract parity ran past 180 s" in ran.stderr
+    assert prepublish.guards_timed_out(ran.stdout + ran.stderr)
+    assert record.read_text().strip() == "timed_out"
+
+
+def test_the_parity_limit_is_180_seconds_and_redact_jobs_follow_nproc():
+    script = (REPO / "scripts" / "changed-guards.sh").read_text()
+    assert "\nPARITY_SECONDS=180\n" in script
+    parity = (REPO / "scripts" / "lib" / "check-contract-parity.sh").read_text()
+    (line,) = [x for x in parity.splitlines() if x.lstrip().startswith("REDACT_JOBS=\"$(")]
+    # getconf counts the node's CPUs; nproc counts the ones this process may use.
+    assert line.split("$(", 1)[1].lstrip().startswith("nproc")
+
+
+def _recording(script: Script, parity_result: str, parity_output: str) -> Any:
+    """A runner whose parity part writes `parity_result` to the script's
+    result record (`_CHANGED_GUARDS_RESULT`) and prints `parity_output`."""
+    def runner(argv: Any, cwd: Path, env: Any, timeout: float) -> prepublish.Ran:
+        if "--only" in argv:
+            entries = Path(argv[argv.index("--only") + 1]).read_text().splitlines()
+            record = Path(env[prepublish.GUARDS_RESULT_ENV])
+            if PARITY in entries:
+                record.write_text(f"{parity_result}\n")
+                return prepublish.Ran(1, parity_output)
+            record.write_text("passed\n")
+            return prepublish.Ran(0, "ok part")
+        return script(argv, cwd, env, timeout)
+    return runner
+
+
+def test_a_part_the_script_records_as_timed_out_is_left_to_ci(tmp_path):
+    runner = _recording(Script(), "timed_out", "contract parity failed (exit 124)")
+    status, output, report = _run(tmp_path, runner)  # type: ignore[arg-type]
+    # MUTATION: ignoring the record reads this part by the regex alone: FAILED.
+    assert status == prepublish.PASSED
+    assert report.left_to_ci == [PARITY]
+
+
+def test_the_scripts_failed_record_wins_over_a_ran_past_line(tmp_path):
+    runner = _recording(Script(), "failed", "pytest ran past 540 s\nparity mismatch")
+    status, output, report = _run(tmp_path, runner)  # type: ignore[arg-type]
+    assert status == prepublish.FAILED
+    assert PARITY not in report.left_to_ci
+    assert "parity mismatch" in output
+
+
+def test_the_one_command_run_reads_the_record_too(tmp_path):
+    def runner(argv: Any, cwd: Path, env: Any, timeout: float) -> prepublish.Ran:
+        if "--list" in argv:
+            return prepublish.Ran(2, "")
+        Path(env[prepublish.GUARDS_RESULT_ENV]).write_text("timed_out\n")
+        return prepublish.Ran(1, "contract parity failed (exit 124)")
+
+    report = prepublish.GuardsRun()
+    run = prepublish.timeboxed_guards(["bash", prepublish.GUARDS_SCRIPT], report=report,
+                                      cpus=4, remaining=lambda: 3600.0, scratch=tmp_path)
+    status, output = run(runner, _repo(tmp_path), {}, 600.0)
+    outcomes = prepublish._run_checks(
+        tmp_path, [prepublish.Check(prepublish.GUARDS_CHECK, ("x",), "guards",
+                                    run=lambda *a: (status, output))],
+        env={}, runner=prepublish.run_command, timeout=600.0, clock=time.monotonic)
+    assert outcomes[0].timed_out is True
