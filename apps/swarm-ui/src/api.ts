@@ -1686,12 +1686,15 @@ export async function approvePlan(runId: string, planDigest: string): Promise<Re
   >
 }
 
-/** Replace the plan, carrying the digest it replaces so two editors cannot overwrite each other. */
-export async function editPlan(runId: string, planDigest: string, plan: RunPlan): Promise<Result<IssueRunRead>> {
+/**
+ * Replace the plan, carrying the digest it replaces so two editors cannot overwrite each other.
+ * Null for a run held with no plan: no digest is sent, and the API checks there is still none.
+ */
+export async function editPlan(runId: string, planDigest: string | null, plan: RunPlan): Promise<Result<IssueRunRead>> {
   if (USE_FIXTURES) return fixturePlanAction(runId, 'edit', plan)
-  return write(route('/v1/runs/{id}/plan:edit', { id: runId }), 'POST', { plan_digest: planDigest, plan }) as Promise<
-    Result<IssueRunRead>
-  >
+  const body: { plan_digest?: string; plan: RunPlan } = { plan }
+  if (planDigest !== null) body.plan_digest = planDigest
+  return write(route('/v1/runs/{id}/plan:edit', { id: runId }), 'POST', body) as Promise<Result<IssueRunRead>>
 }
 
 /** Turn the plan down. The shown digest is sent, so a plan edited since is not rejected unseen. */

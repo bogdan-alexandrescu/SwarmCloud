@@ -135,8 +135,7 @@ describe('a held run with no plan', () => {
       expect(f).not.toBeNull()
       return f!
     }, WAIT)
-    const fields = form.querySelectorAll<HTMLTextAreaElement | HTMLInputElement>('textarea, input')
-    const [summary] = fields
+    const summary = form.querySelector<HTMLTextAreaElement>('textarea')!
     expect(summary.value).toBe('')
     fireEvent.change(summary, { target: { value: 'Sort the widget list by name.' } })
     const set = form.querySelector('fieldset')!
@@ -145,9 +144,10 @@ describe('a held run with no plan', () => {
     fireEvent.submit(form)
 
     await waitFor(() => expect(sent.length).toBe(1), WAIT)
-    expect(sent[0].url).toBe(`/v1/runs/${RUN_ID}/plan:edit`)
-    expect('plan_digest' in sent[0].body).toBe(false)
-    const plan = sent[0].body.plan as { summary: string; steps: { title: string; prompt: string }[] }
+    const [edit] = sent as [Sent]
+    expect(edit.url).toBe(`/v1/runs/${RUN_ID}/plan:edit`)
+    expect('plan_digest' in edit.body).toBe(false)
+    const plan = edit.body.plan as { summary: string; steps: { title: string; prompt: string }[] }
     expect(plan.summary).toBe('Sort the widget list by name.')
     expect(plan.steps.map((s) => [s.title, s.prompt])).toEqual([['Sort on the server', 'Edit the list route.']])
   })
@@ -164,8 +164,9 @@ describe('a held run with no plan', () => {
     fireEvent.submit(form)
 
     await waitFor(() => expect(sent.length).toBe(1), WAIT)
-    expect(sent[0].url).toBe(`/v1/runs/${RUN_ID}/plan:reject`)
-    expect('plan_digest' in sent[0].body).toBe(false)
+    const [reject] = sent as [Sent]
+    expect(reject.url).toBe(`/v1/runs/${RUN_ID}/plan:reject`)
+    expect('plan_digest' in reject.body).toBe(false)
   })
 })
 

@@ -542,6 +542,11 @@ def _resume_replan(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     tenant that the run does not list yet WAS submitted and only its link was
     lost, so it is adopted; otherwise the re-plan is submitted now. Either
     way there is one re-plan task.
+
+    Before it submits, the visit renews the claim (`_renew_replan_claim`):
+    two visits that both found the claim overdue and no task to adopt race
+    on that write, and the loser's Conflict sends it to re-read, so only one
+    of them submits.
     """
     if not issueruns_module.replan_claim_overdue(run, ctx.now()):
         return run
@@ -558,7 +563,29 @@ def _resume_replan(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             tenant_id, run.id, RunState.FAILED, by=SYSTEM,
             patch={"error": f"the planner task {run.planner_task_id} no longer exists"},
         )
-    return _submit_replan(ctx, tenant_id, run, first)
+    renewed = _renew_replan_claim(ctx, tenant_id, run)
+    return _submit_replan(ctx, tenant_id, renewed, first)
+
+
+def _renew_replan_claim(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
+    """The overdue claim `run` was read with, dated now, in one transaction:
+    a compare-and-set on `claimed_at`. Conflict when the claim moved since
+    the read -- another visit renewed it, or linked its task -- so of two
+    visits only the one whose write lands submits, and the claim it writes
+    is inside the bound again for every later visit."""
+    expected_ids = issueruns_module.replan_task_ids(run)
+    expected_at = (run.plan_lint or {}).get("claimed_at")
+    now = ctx.now()
+
+    def renew(current: IssueRun) -> dict:
+        if (not issueruns_module.replan_pending(current)
+                or issueruns_module.replan_task_ids(current) != expected_ids
+                or (current.plan_lint or {}).get("claimed_at") != expected_at):
+            raise Conflict(f"run {current.id}'s re-plan was resumed by another request")
+        return {"plan_lint": {**current.plan_lint, "claimed_at": now}}
+
+    return _runs(ctx).transition(tenant_id, run.id, RunState.PLANNING, by=SYSTEM,
+                                 from_states=_PLANNING_ONLY, patch=renew)
 
 
 def _submit_replan(ctx: AppContext, tenant_id: str, run: IssueRun, first) -> IssueRun:
@@ -1764,15 +1791,23 @@ def edit_plan(
     # the hold the claim reads.
     found = hard_stops_at_plan(ctx, tenant_id, current, plan)
     # A run held with no plan (both planner outputs failed to parse) has no
-    # digest to send: the edit is checked against there still being none.
-    planless = current.plan_digest is None
+    # digest to send, so the edit sends none: it is checked against there
+    # still being none. An edit sending none to a run that has a plan was
+    # shown a plan that is no longer the run's.
+    planless = body.plan_digest is None
+    if planless and current.plan_digest is not None:
+        raise PlanChanged(
+            f"the plan of run {run_id!r} has changed since it was shown; read the run "
+            "again and act on the plan it now holds",
+            detail={"plan_digest": current.plan_digest, "sent": None},
+        )
 
     def edited(latest: IssueRun) -> dict:
         if planless and latest.plan_digest is not None:
             raise PlanChanged(
                 f"the plan of run {run_id!r} has changed since it was shown; read the run "
                 "again and act on the plan it now holds",
-                detail={"plan_digest": latest.plan_digest, "sent": body.plan_digest[:128]},
+                detail={"plan_digest": latest.plan_digest, "sent": None},
             )
         patch = {
             "plan": plan,

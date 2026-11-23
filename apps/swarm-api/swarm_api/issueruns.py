@@ -2327,8 +2327,9 @@ MAX_REPLAN_SECTION_BYTES = 8 * 1024
 
 
 def replan_markers(run_id: str) -> tuple[str, str]:
-    """The re-plan section's delimiter lines, carrying the run id, which no
-    text the planner wrote can know in advance."""
+    """The re-plan section's delimiter lines, carrying the run id. The
+    planner's prompt names that id, so its output may quote them:
+    `replan_section` strips them from every finding until none is left."""
     rid = run_id or "snapshot"
     return f"=== PLAN ERRORS {rid} ===", f"=== END PLAN ERRORS {rid} ==="
 
@@ -2340,6 +2341,16 @@ def _finding_line(finding: Mapping[str, Any]) -> str:
     elif finding.get("requirement"):
         where = f" (requirement {finding['requirement']})"
     return " ".join(f"- {finding.get('code')}{where}: {finding.get('message')}".split())
+
+
+def _strip_markers(line: str, start: str, end: str) -> str:
+    """`line` with no `start` or `end` left in it: stripped until it stops
+    changing, so a marker nested inside another does not survive one pass."""
+    while True:
+        stripped = line.replace(start, "").replace(end, "")
+        if stripped == line:
+            return line
+        line = stripped
 
 
 def replan_section(run_id: str, findings: list[Mapping[str, Any]]) -> str:
@@ -2361,7 +2372,7 @@ def replan_section(run_id: str, findings: list[Mapping[str, Any]]) -> str:
     room = MAX_REPLAN_SECTION_BYTES - _utf8(head) - _utf8(tail) - 80
     kept: list[str] = []
     for finding in findings:
-        line = _finding_line(finding).replace(start, "").replace(end, "")
+        line = _strip_markers(_finding_line(finding), start, end)
         if _utf8(line) + 1 > room:
             break
         kept.append(line)
