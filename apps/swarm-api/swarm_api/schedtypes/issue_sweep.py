@@ -135,8 +135,8 @@ def planner_class(params: Any, class_models: Mapping[str, str] | None) -> str | 
     (`class_models`, `Settings.worker_class_models`) is refused here, rather
     than silently run on the default class.
     """
-    named = params.planner_model_class
-    if "planner_model_class" not in params.model_fields_set:
+    named = getattr(params, "planner_model_class", None)
+    if named is None or "planner_model_class" not in getattr(params, "model_fields_set", ()):
         return named
     profile = RUNNER_PROFILES[PLANNER_PROFILE]
     if named != profile.default_model_class and named not in (class_models or {}):
