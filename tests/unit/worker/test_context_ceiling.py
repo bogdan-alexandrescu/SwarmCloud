@@ -42,7 +42,8 @@ from test_cli_prompt_names_time_limit import without_limit_line
 #: turn per `contexts` value (that turn's `input_tokens`), each with `tools`
 #: tool calls, a turn boundary after every turn but the last, and a marker per
 #: turn it got to print. `pause` is slept before each boundary, `hold` instead
-#: from turn `hold_from` on.
+#: from turn `hold_from` on. `creations`, when given, is each turn's
+#: `cache_creation_input_tokens` (0 otherwise).
 FAKE_CLI = r"""#!{python}
 import json, os, sys, time
 home = os.environ["HOME"]
@@ -56,6 +57,7 @@ step = plan[min(n, len(plan) - 1)]
 sid = sys.argv[sys.argv.index("--resume") + 1] if "--resume" in sys.argv else f"sess-{{n:04d}}-abcdef"
 print(json.dumps({{"type": "system", "subtype": "init", "session_id": sid}}), flush=True)
 contexts = step["contexts"]
+creations = step.get("creations") or [0] * len(contexts)
 for turn, context in enumerate(contexts, 1):
     with open(os.path.join(home, "marks"), "a") as f:
         f.write(f"{{n}}:{{turn}}\n")
@@ -65,7 +67,8 @@ for turn, context in enumerate(contexts, 1):
         content = [{{"type": "text", "text": step.get("answer", "done")}}]
     print(json.dumps({{"type": "assistant", "session_id": sid, "message": {{
         "id": f"m{{n}}-{{turn}}", "content": content,
-        "usage": {{"input_tokens": context, "cache_read_input_tokens": 0, "output_tokens": 10}}}}}}),
+        "usage": {{"input_tokens": context, "cache_read_input_tokens": 0,
+                   "cache_creation_input_tokens": creations[turn - 1], "output_tokens": 10}}}}}}),
         flush=True)
     if turn == len(contexts):
         break
@@ -215,6 +218,121 @@ def test_a_resume_under_the_ceiling_still_resumes(ctx, monkeypatch):
     (only,) = _starts(ctx)
     assert only["argv"][-2:] == ["--resume", session] or session in only["argv"]
     assert "CONTEXT CEILING HANDOFF" not in only["stdin"]
+    assert out["context_ceiling"]["stops"] == []
+
+
+# A SWAP OF A LARGE SESSION GOES FRESH (the owner's "Shorter sessions" plan,
+# finding 3, 2026-11-23). A swap's `--resume` writes the whole transcript to
+# the new account's prompt cache, and the turn the session last ran may hold
+# much of it as `cache_creation_input_tokens` -- the cold first turn on the
+# account it was moved to, or the tool results its turn just added -- which
+# `cache_read + input` does not count. Each test moves one session twice: the
+# first restart resumes it (its recorded context is under the ceiling), its
+# one turn on the new account writes `creation` tokens to cache, and the
+# second restart is judged on what that turn left.
+
+
+def _moved_twice(ctx: RunnerContext, monkeypatch, creation: int, *, fresh_sessions: int = 0,
+                 then: dict[str, Any] = SMALL, recorded: int = 120_000) -> tuple[str, Any]:
+    session = _resume_from(ctx, monkeypatch, recorded)
+    if fresh_sessions:
+        path = ctx.work_dir.parent / "private" / ceiling.STATE_NAME
+        path.write_text(json.dumps({**json.loads(path.read_text()),
+                                    "fresh_sessions": fresh_sessions}))
+    _plan(ctx, {"contexts": [2_000], "creations": [creation]}, then)
+    first = run_cli_agent(ctx, _spec())
+    assert first["context_ceiling"]["stops"] == [], "the first move resumes"
+    return session, first
+
+
+def test_a_swap_whose_last_turn_wrote_its_context_to_cache_past_the_ceiling_is_fresh(
+    ctx, monkeypatch
+):
+    session, _ = _moved_twice(ctx, monkeypatch, 228_000)
+    out = run_cli_agent(ctx, _spec())
+
+    first, second = _starts(ctx)
+    assert first["argv"][first["argv"].index("--resume") + 1] == session
+    # MUTATION: judge the resume on `cache_read + input` alone (2,000) and the
+    # second move resumes, writing 230,000 tokens to the new account's cache.
+    assert "--resume" not in second["argv"] and session not in second["argv"]
+    assert second["stdin"].startswith("CONTEXT CEILING HANDOFF")
+    assert "do the work" in second["stdin"], "the task prompt is in the handoff"
+    (stop,) = out["context_ceiling"]["stops"]
+    assert stop["at"] == ceiling.AT_RESUME and stop["why"] == ceiling.WHY_CONTEXT
+    assert stop["resume_reason"] == "moved" and stop["context_tokens"] == 230_000
+    assert out["context_ceiling"]["fresh_sessions"] == 1
+
+
+def test_a_swap_whose_whole_prompt_is_under_the_ceiling_still_resumes(ctx, monkeypatch):
+    session, _ = _moved_twice(ctx, monkeypatch, 100_000)
+    out = run_cli_agent(ctx, _spec())
+
+    first, second = _starts(ctx)
+    # MUTATION: count something larger than the turn's prompt (the session's
+    # peak, the step's spend) and a session under the ceiling goes fresh.
+    assert second["argv"][second["argv"].index("--resume") + 1] == session
+    assert "CONTEXT CEILING HANDOFF" not in second["stdin"]
+    assert out["context_ceiling"]["stops"] == []
+
+
+def test_a_swap_judges_the_prompt_against_a_lowered_ceiling(ctx, monkeypatch):
+    ctx.payload = {**ctx.payload, "context_ceiling": {"tokens": 100_000}}
+    _moved_twice(ctx, monkeypatch, 110_000, recorded=50_000)
+    out = run_cli_agent(ctx, _spec())
+
+    _, second = _starts(ctx)
+    # MUTATION: compare with CONTEXT_CEILING_TOKENS instead of the resolved
+    # limits and 112,000 resumes.
+    assert "--resume" not in second["argv"]
+    (stop,) = out["context_ceiling"]["stops"]
+    assert stop["context_tokens"] == 112_000
+
+
+def test_a_swap_driven_handoff_counts_toward_the_fresh_sessions_bound(ctx, monkeypatch):
+    # One fresh session left; the session the swap hands off to passes the
+    # ceiling again and is NOT stopped, because the handoff spent the last one.
+    over = {"contexts": [250_000] * 4, "pause": 0.5}
+    _moved_twice(ctx, monkeypatch, 228_000, fresh_sessions=ceiling.MAX_FRESH_SESSIONS - 1,
+                 then=over)
+    out = run_cli_agent(ctx, _spec())
+
+    starts = _starts(ctx)
+    assert len(starts) == 2, "the handoff's session ran to its end: no fifth fresh session"
+    assert starts[1]["stdin"].startswith("CONTEXT CEILING HANDOFF")
+    (stop,) = out["context_ceiling"]["stops"]
+    assert stop["at"] == ceiling.AT_RESUME
+    assert out["context_ceiling"]["fresh_sessions"] == ceiling.MAX_FRESH_SESSIONS
+    assert "1:4" in (ctx.work_dir / "marks").read_text().split()
+
+
+def test_a_swap_over_the_ceiling_with_the_fresh_sessions_spent_resumes(ctx, monkeypatch):
+    session, _ = _moved_twice(ctx, monkeypatch, 228_000,
+                              fresh_sessions=ceiling.MAX_FRESH_SESSIONS)
+    out = run_cli_agent(ctx, _spec())
+
+    _, second = _starts(ctx)
+    # The bound holds: once spent, the ceiling stops nothing more, a swap's
+    # handoff included, and the session carries on where it was.
+    assert second["argv"][second["argv"].index("--resume") + 1] == session
+    assert out["context_ceiling"]["stops"] == []
+    assert out["context_ceiling"]["fresh_sessions"] == ceiling.MAX_FRESH_SESSIONS
+
+
+def test_a_resume_with_a_persons_answer_over_the_ceiling_still_resumes(ctx, monkeypatch):
+    from agent_worker.runners.cliagent import QUESTION_ANSWER_FILE_ENV, RESUME_ANSWERED
+
+    session, _ = _moved_twice(ctx, monkeypatch, 228_000)
+    answer = ctx.work_dir.parent / "private" / "answer.txt"
+    answer.write_text("Use the staging scope.")
+    monkeypatch.setenv(RESUME_REASON_ENV, RESUME_ANSWERED)
+    monkeypatch.setenv(QUESTION_ANSWER_FILE_ENV, str(answer))
+    out = run_cli_agent(ctx, _spec())
+
+    _, second = _starts(ctx)
+    # The answered question is in that session alone: never a handoff.
+    assert second["argv"][second["argv"].index("--resume") + 1] == session
+    assert second["stdin"].startswith("Use the staging scope.")
     assert out["context_ceiling"]["stops"] == []
 
 
