@@ -43,9 +43,8 @@ read it. Keys of the map this module does not own (CTXQ-J's
 The worker reads this document as it stands: `agent_worker.graphstage.decide`
 the `context` and `context_ab` keys, `agent_worker.judge.settings` the `jev`
 key, and (lane GS-WORKER, graph-service.md §8.1) `graphstage.prepare` the
-`graph_delivery` key. Their names and defaults are restated here because swarm-api does not
-import the worker; tests/unit/control_plane/test_code_intelligence.py holds
-the two equal.
+`graph_delivery` key. Their names and defaults are restated here because
+swarm-api does not import the worker; a test holds the two equal.
 
 WHO. Exactly as JUDGE-SELECT gates `judgment_backend`: the owner of a
 personal workspace -- `kind: user`, its principal the caller's verified

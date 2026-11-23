@@ -17,8 +17,8 @@ is the allowlist. `base_url` is `https` only, no userinfo, query or fragment,
 not an IP literal (`qaspec.base_url`, the renderer's own rule), and its host
 must be a public name: not single-label, not `localhost`, no internal suffix
 (`INTERNAL_SUFFIXES`, swarm_egress.policy's list, restated because swarm-api
-cannot import swarm-egress; tests/unit/control_plane/test_qa_targets.py holds
-the two equal), and every address it resolves to public unicast. A new target
+cannot import swarm-egress; a test holds the two equal), and every address
+it resolves to public unicast. A new target
 is `pending`; no run starts until a PLATFORM ADMIN approves it (VQ-Q1, "any
 platform admin, audited"), naming the host they approve, so an approval can
 never land on a host that changed under the approver. Changing the host,
@@ -332,7 +332,7 @@ QA_TARGET_PURPOSE = "swarm-qa-target-request/v1"
 MAX_REQUEST_BYTES = 4096
 
 #: swarm_egress.policy.INTERNAL_SUFFIXES, restated: swarm-api's image installs
-#: swarm-api alone. tests/unit/control_plane/test_qa_targets.py holds them equal.
+#: swarm-api alone. A test holds them equal.
 INTERNAL_SUFFIXES = (
     ".local", ".localhost", ".internal", ".cluster.local", ".svc", ".localdomain",
     ".home.arpa", ".intranet", ".lan",

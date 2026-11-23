@@ -74,8 +74,8 @@ a grant alone: `gate` holds it as a pending read-back and answers 202
 `X-Swarm-Voice-Readback: <id>` naming a confirmed, unused read-back of this
 session whose method, route and body hash match. The route declares
 `routes.voice_readback.readback_gate`, which reads the body and calls `gate`;
-tests/unit/voice/test_readback.py fails when a gated route on these lists
-does not, and when a non-GET route on them is unclassed.
+every gated route on these lists must actually gate, and a non-GET route on
+them must be classed.
 
 THE WORK FEED (voice-it.md §3.12.5). Every granted call writes one masked
 `work.step` event on its session's stream, right after its audit row

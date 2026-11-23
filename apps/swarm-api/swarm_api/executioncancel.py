@@ -8,8 +8,8 @@ their leases and pools. So the first cancel of a task whose attempt may be
 executing now asks for that execution to be stopped at once.
 
 WHY NOT FROM HERE. swarm-api holds no compute permission -- no run.*, no
-container.*, no swarm-reaper RoleBinding; tests/terraform/iam.tftest.hcl
-asserts it -- and it is the service a browser talks to. The reconciler holds
+container.*, no swarm-reaper RoleBinding; a Terraform test asserts it -- and
+it is the service a browser talks to. The reconciler holds
 exactly the grants a stop needs, and the backend clients that use them with
 their name and label checks. So this module publishes the attempt to
 EXECUTION_CANCEL_TOPIC and the reconciler's `/stop-execution` route

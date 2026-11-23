@@ -37,8 +37,8 @@ graph`, with the tenant and the bucket this worker's own configuration
 (`TENANT_ID`, `ARTIFACT_BUCKET`, set by dispatch), and the repo_id derived
 here from SIGNED fields only: the spec's tenant and `repository_url`, by the
 registration's own recipe (`swarm_api.repositories.repo_id_for`, held equal
-by tests/unit/worker/test_index_run_phases.py). The task's metadata names
-the repo_id too, but the spec signature does not cover it
+by a test). The task's metadata names the repo_id too, but the spec
+signature does not cover it
 (`swarm_common.specsign.SIGNED_METADATA_KEYS`), so the worker never reads
 it: a rewritten metadata cannot point the write at another registration.
 
@@ -74,8 +74,8 @@ incremental or full (`swarm_api.repoindex.choose_kind`) and names the base
 in the task's PROMPT, as one line of its own (`BASE_LINE`). The prompt is
 inside the signed `input`; the task's `metadata.index_kind` and `base_sha`
 are not (`swarm_common.specsign.SIGNED_METADATA_KEYS`, frozen), so the
-worker never reads them -- tests/unit/common/test_specsign_covers.py holds
-it to that. Before the extractor the worker stages the base, as a fourth
+worker never reads them -- a test holds it to that. Before the extractor the
+worker stages the base, as a fourth
 phase, `stage_base`:
 
     the version     repositories/<repo_id>/index_versions/<base_sha>, under the
@@ -278,9 +278,9 @@ def is_index_run(runner_profile: str) -> bool:
 
 
 #: How much history an index run's clone holds: the extractor's window
-#: (`repo_index_extract.HISTORY_DAYS`, held equal by
-#: tests/unit/worker/test_indexrun_clone_history.py). Measured 2026-10-07 on
-#: the live index: cloned one commit deep, every hot spot read `changes: 1`
+#: (`repo_index_extract.HISTORY_DAYS`, held equal by a test). Measured
+#: 2026-10-07 on the live index: cloned one commit deep, every hot spot read
+#: `changes: 1`
 #: and co-change was empty (G4-06). Bounded by date, so the fetch costs the
 #: window's commits and no older ones (`gitops.history_fetch_argv`).
 HISTORY_DAYS = 90
@@ -618,8 +618,8 @@ STATE_CALL_SECONDS = 30.0
 #: The most index versions `state/repository` serves: swarm-api's kept 20
 #: (`swarm_api.repoindex.KEPT_VERSIONS`) and one more, the read's own
 #: `limit(KEPT_VERSIONS + 1)`. An answer this long may have been cut short,
-#: so it is never read as the whole set. tests/unit/worker/test_state_reads.py
-#: holds it to swarm-api's value.
+#: so it is never read as the whole set. A test holds it to swarm-api's
+#: value.
 ROUTE_VERSIONS_SERVED = 21
 
 

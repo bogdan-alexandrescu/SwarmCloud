@@ -55,8 +55,8 @@ from swarm_common.states import CONCURRENCY_STATES, EventType
 from .store import EVENTS, LEASES, TASKS
 
 #: The `startup_progress` steps, in order: the pod's four, then the browser's
-#: three. tests/unit/common/test_startup_progress_contract.py holds this equal
-#: to the reconciler's and the worker's restatements.
+#: three. This must stay equal to the reconciler's and the worker's
+#: restatements.
 STARTUP_STEPS: tuple[str, ...] = (
     "pod_scheduled",
     "image_pulling",

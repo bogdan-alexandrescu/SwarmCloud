@@ -129,9 +129,8 @@ from agent_worker import verdict as verdict_mod
 #:
 #: swarm-api writes the same key through its own constant,
 #: `swarm_api.expected_outputs.EXPECTED_OUTPUTS_METADATA_KEY`. The two packages
-#: never import each other, so the two spellings are held equal by
-#: tests/unit/control_plane/test_expected_outputs_seam.py and recorded in
-#: docs/mirrored-values.md.
+#: never import each other, so the two spellings are held equal by a test and
+#: recorded in docs/mirrored-values.md.
 #:
 #: The same key in `input.json`, because it is the same list, and one word is
 #: one thing to grep for when an agent says it was never told. The worker
@@ -227,7 +226,7 @@ def is_review_step(step_id: Any) -> bool:
     swarm-api writes it on every step's task as the top-level `step_id`,
     which the step-spec signature covers (`swarm_common.specsign`). NOT
     `metadata.workflow_step`, the same id written where the signature does
-    not reach (tests/unit/common/test_specsign_covers.py).
+    not reach.
 
     The id's LAST word decides, case aside, after any trailing number (the
     suffix a repeated id takes, `re-review-2`): `review` or `rereview`. So
@@ -715,7 +714,7 @@ def missing_error(missing: Sequence[str], *, causes: Mapping[str, str] | None = 
 # gate's no-agent ending is (archived issue 264); swarm-api's rollup reads the marker.
 
 #: The dispatch-block keys, as swarm-api's `DispatchOptions.to_metadata`
-#: writes them (tests/unit/control_plane/test_allow_empty_diff_workflow.py).
+#: writes them.
 ALLOW_EMPTY_DIFF_KEY = "allow_empty_diff"
 PR_LABEL_KEY = "pr_label"
 #: `result_summary` keys. `SKIPPED_SUMMARY_KEY` is spelled again in

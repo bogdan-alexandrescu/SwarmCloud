@@ -10,7 +10,7 @@ and skills from here by name only, never a path, command, URL or version
 (invariant 10). `workcontract.PLUGIN_CATALOGUE` decodes contracts against it;
 `plugins.check_step` checks a step against it at submission;
 `agent_worker.plugins` restates it (the worker imports nothing from swarm-api)
-and tests/unit/worker/test_plugins_start.py holds the two equal.
+and a test holds the two equal.
 
 THE BUILT-INS SWITCH (docs/design/managed-plugins.md sections 1.4.1 and
 1.4.5, lane 17 of section 17.1). `SWARM_BUILTINS_MANAGED`, exactly `on`,

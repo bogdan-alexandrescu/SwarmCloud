@@ -102,9 +102,9 @@ LIVE_AUDIT = "live_audit"
 #: round_heads, unreadable}}`, from the park's `acknowledges`. The merge goes
 #: on past that verdict's unreadable entries while the verdict and head are
 #: the same (`agent_worker.merge._unreadable_hold`, whose
-#: `OWNER_READY_METADATA_KEY` tests/unit/worker/test_merge_ready_past_unreadable.py
-#: holds equal to this one). Before, nothing recorded the ready, and the
-#: attempt it started parked again on the same entries for eight hours.
+#: `OWNER_READY_METADATA_KEY` a test holds equal to this one). Before,
+#: nothing recorded the ready, and the attempt it started parked again on
+#: the same entries for eight hours.
 OWNER_READY_METADATA_KEY = "owner_hold_ready"
 #: The park phase that carries it, and the verdicts that may be acknowledged.
 OWNER_QUESTIONS_PHASE = "owner_questions"
@@ -141,7 +141,7 @@ MAX_REASON_CHARS = 200
 #: Q4). Not an `EndCause` member: the frozen enum has none, so it is the
 #: dead-letter's `last_error` prefix and its event's `cause`, and the task's
 #: `end_cause` is None as for every other dead-lettered park. The scheduler
-#: restates it; tests/unit/control_plane/test_handoff_api.py holds them equal.
+#: restates it; a test holds them equal.
 HUMAN_WAIT_EXPIRED = "human_wait_expired"
 
 #: LB-RETURN: HUMAN_RETURNED_METADATA_KEY (validation.py) is a person's return

@@ -14,9 +14,9 @@ merges them (docs/design/day-one-plan.md §1 conventions):
 The file's `counts:` header describes the base file alone; fragments carry no
 counts, so a lane's fragment never edits the base.
 
-`refs:` are the machine-matchable references `tests/unit/install/
-test_manifest_complete.py` collects from the tree. Each list holds exact keys or
-`fnmatch` patterns (`*` matches any run of characters):
+`refs:` are the machine-matchable references collected from the tree. Each
+list holds exact keys or `fnmatch` patterns (`*` matches any run of
+characters):
 
 * `terraform`: `<root>/<type>.<name>` for every `resource` block and
   `<root>/data.<type>.<name>` for every `data` block, root `bootstrap`, `infra`

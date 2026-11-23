@@ -6,10 +6,9 @@ else: the rollup sweeper (`auth.ROLLUP_SWEEPER_ROUTES`), the schedule tick
 (`auth.CONTINUATION_ROUTES`). Those three sets are the gate `current_auth`
 applies; this module is what the guards that hold them read.
 
-WHY THE DECLARATION SITS ON THE ROUTE. The guards
-(tests/unit/control_plane/test_rollup_sweeper_is_narrow.py,
-test_schedule_tick.py, test_continuation_scope_is_narrow.py) used to compare
-the gate against one hand-edited literal list each. Two changes that each
+WHY THE DECLARATION SITS ON THE ROUTE. The guards (one test per narrow
+caller) used to compare the gate against one hand-edited literal list each.
+Two changes that each
 added a route and passed against their own base could then fail together
 (the owner's pick, 6 November 2026: a whole-tree check two green changes must pass
 together). Now each route's own file says who may reach it, and the guards

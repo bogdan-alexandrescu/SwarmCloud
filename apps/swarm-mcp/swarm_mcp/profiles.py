@@ -74,10 +74,9 @@ from .client import SwarmError
 # a resource spec or a backend parameter. But an input means something only to
 # the runner that reads it: `input.model` was read by the CLI runners and
 # selected the model a `claude-code` agent ran, which is the contract change
-# test_model_flag_is_attribution_only.py exists to stop (since archived issue 226 the runner
-# reads only the Job's MODEL, and the worker drops a stored `input.model`). So
-# a profile that
-# declares nothing takes nothing, and a key a profile does not declare is
+# stopped since archived issue 226: the runner reads only the Job's MODEL,
+# and the worker drops a stored `input.model`. So a profile that declares
+# nothing takes nothing, and a key a profile does not declare is
 # refused by name -- never dropped, never passed through.
 #
 # EVERY PROFILE DECLARES. Until contract request 32 (archived issue 218, accepted by the
@@ -90,9 +89,9 @@ from .client import SwarmError
 # value be refused here, before it travels. A browser task's `url` and
 # `actions`, and a generic task's `command`, travel because they are declared.
 #
-# tests/unit/mcp/test_runner_inputs.py holds the bridge to the catalogue, every
-# declared key to a `payload` read in the runner's source, and every exit code
-# the worker reads as something other than a failure to a refusal.
+# The bridge is held to the catalogue, every declared key to a `payload` read
+# in the runner's source, and every exit code the worker reads as something
+# other than a failure to a refusal.
 
 
 def declared_inputs(name: str) -> dict[str, RunnerInput]:
@@ -246,7 +245,7 @@ def dispatchable() -> list[str]:
 #: Every runner image is built FROM agent-runtime-base, which pins Node by
 #: `ARG NODE_VERSION=` in images/agent-runtime-base/Dockerfile (the build
 #: asserts `node --version` equals it); these are a copy of that line,
-#: held equal to it by tests/unit/mcp/test_profiles_node_version.py.
+#: held equal to it by a unit test.
 NODE_VERSIONS: dict[str, str] = {
     "agent-runtime-base": "24.22.3",
     "agent-runtime-browser": "24.22.3",

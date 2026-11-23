@@ -505,8 +505,7 @@ def call_reading_again(
 #: `{tenant_id}__{user_hash}__{repo_id}`, written and deleted by swarm-api's
 #: Access routes (`swarm_api.access.AccessService.grant` / `revoke` /
 #: `remove_org`). RESTATED, because the worker's image does not carry
-#: swarm-api; tests/unit/worker/test_forge_credential.py holds it, and the
-#: id recipe, to swarm-api's own.
+#: swarm-api; it, and the id recipe, are held equal to swarm-api's own.
 FORGE_GRANTS = "forge_grants"
 #: The values of a grant's `mode` and of `Task.forge_access`.
 WRITE, READ = "write", "read"
@@ -556,8 +555,8 @@ def _user_key(email: str) -> str:
 
 def owner_slot_hash(email: str, owner: str) -> str:
     """`swarm_api.gittokens.owner_suffix`'s hex (D5): 16 hex of sha256 of
-    `lower(email) + "|" + lower(owner)`. RESTATED, as the grant id is;
-    tests/unit/control_plane/test_fallback_pat.py holds it to swarm-api's."""
+    `lower(email) + "|" + lower(owner)`. RESTATED, as the grant id is; held
+    equal to swarm-api's own."""
     return _hex16(_user_key(email) + "|" + (owner or "").strip().lower())
 
 

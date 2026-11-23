@@ -83,7 +83,7 @@ SHARED_INPUT_TOKENS_PER_TASK = 120_000
 RESERVED_CALLS = 1
 RESERVED_INPUT_TOKENS = 30_000
 #: The ledger's totals, 9 calls and 150,000 input tokens: what swarm-api's
-#: grant (`swarm_api.jevaccount`, held equal by test_jev_account.py) allows.
+#: grant (`swarm_api.jevaccount`, held equal by a test) allows.
 MAX_CALLS_PER_TASK = SHARED_CALLS_PER_TASK + RESERVED_CALLS
 MAX_INPUT_TOKENS_PER_TASK = SHARED_INPUT_TOKENS_PER_TASK + RESERVED_INPUT_TOKENS
 #: The ledger kind JC2's calls are audited and settled under.

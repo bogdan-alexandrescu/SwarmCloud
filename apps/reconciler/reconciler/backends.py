@@ -169,7 +169,7 @@ def is_namespace_gc_eligible(labels: dict[str, Any] | None) -> bool:
     cluster-scoped and it holds no ClusterRole (see
     `GkeBackend.list_job_resources`) -- so this is the rule any out-of-band
     deprovisioning must honour, kept beside the other ownership predicates and
-    pinned against the rendered manifest by test_kubernetes_manifests.py.
+    pinned against the rendered manifest by a test.
 
     Namespaces get their own rule because they are the one platform resource
     whose `managed-by` marker says `swarm-terraform` while no terraform state
@@ -1183,10 +1183,10 @@ def gke_api_host(endpoint: str) -> str:
     the FROZEN `swarm_common` package -- images/swarm-reconciler/Dockerfile
     copies `apps/common/` and `apps/reconciler/` and nothing else -- so neither
     can import the other and there is nowhere in-image to put a single copy.
-    `tests/unit/control_plane/test_gke_client_host.py` pins the two together by
-    asserting they agree on the same inputs, which is exactly the check that was
-    missing while they did not: this side added the scheme and the scheduler,
-    which dispatches to the very same cluster, did not.
+    A test pins the two together by asserting they agree on the same inputs,
+    which is exactly the check that was missing while they did not: this side
+    added the scheme and the scheduler, which dispatches to the very same
+    cluster, did not.
     """
     raw = (endpoint or "").strip()
     if not raw:
@@ -1269,9 +1269,9 @@ def install_google_bearer_token(configuration: Any, credentials: Any) -> None:
     the same reason `gke_api_host` is: the two services ship as separate images
     that share only the FROZEN `swarm_common` package, so neither can import the
     other and there is nowhere in-image to put a single copy.
-    `tests/unit/control_plane/test_gke_client_auth.py` pins the two copies
-    together, by running the same expiring credential through both and asserting
-    the same sequence of headers comes out.
+    A test pins the two copies together, by running the same expiring
+    credential through both and asserting the same sequence of headers comes
+    out.
     """
 
     def refresh(config: Any) -> None:
@@ -1320,8 +1320,7 @@ def sanitize_name(*parts: str, max_length: int = 63) -> str:
     nothing else (images/swarm-reconciler/Dockerfile), so it cannot import
     `scheduler.dispatch`, and the only home both images share is the frozen
     `swarm_common`. Moving it there is contract request 16 in
-    docs/contract-change-requests.md. Until then
-    `tests/unit/control_plane/test_reconciler_gke_namespaced.py` pins the two
+    docs/contract-change-requests.md. Until then a test pins the two
     copies together over a corpus that reaches every branch -- truncation,
     hashing, a leading digit -- which the short tenant ids in use today do not.
 
@@ -1361,7 +1360,7 @@ class GkeConnection:
 # and logged at ERROR; one inside it but different is KEPT and logged at
 # WARNING. The reconciler must agree, or it reads one namespace while the
 # dispatcher writes another and every task there looks abandoned.
-# tests/unit/control_plane/test_reconciler_gke_namespaced.py pins the two.
+# A test pins the two together.
 
 #: The event name the monitoring module's log-based metric counts.
 TENANT_NAMESPACE_MISMATCH = "tenant_namespace_mismatch"
@@ -1587,8 +1586,7 @@ class GkeBackend:
         The prefix is not restated here: it is the one this backend was built
         with, `ReconcilerConfig.namespace_prefix`, which
         `scripts/lib/check-contract-parity.sh` section 6 holds to the
-        dispatcher's template. `tests/unit/control_plane/
-        test_reconciler_gke_namespaced.py` pins this method to the dispatcher's
+        dispatcher's template. A test pins this method to the dispatcher's
         on the same tenants, long ids included, and pins the two sanitisers to
         each other.
         """

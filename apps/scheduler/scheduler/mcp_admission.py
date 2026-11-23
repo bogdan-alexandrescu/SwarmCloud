@@ -67,8 +67,7 @@ THE DOCUMENTS ARE swarm-api's (lane MCP-API), read by id and never written:
 
 The collection names and the id recipe are RESTATED, because the scheduler's
 image does not carry swarm-api. MCP-API's lane holds them to its own module
-with a test, as tests/unit/control_plane/test_secret_slot_admission.py holds
-`secret_slots`' to swarm-api's.
+with a test, as another test holds `secret_slots`' to swarm-api's.
 
 Every read is by id, and only for a task that names a server: at most four
 registrations, and for a `dispatch` server at most four credential rows plus

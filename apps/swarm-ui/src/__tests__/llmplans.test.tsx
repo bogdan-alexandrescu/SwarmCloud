@@ -27,7 +27,14 @@
 //     filed (the sheet closes, the list reloads), it expires (said, with a
 //     restart) or the sheet closes (polling stops); a failed start or poll
 //     says why and leaves the sheet as it was; the sheet's words stay under
-//     their count and its parts fit a phone at 390.
+//     their count and its parts fit a phone at 390;
+//   * Manage signs a plan in again (the owner's pick A of plans-resign-in):
+//     "Sign in again" first while it reads Sign-in needed, "Replace sign-in"
+//     last while healthy; both vendors start with the plan's own label and
+//     its lends (never `[]`, which would end every lend); success re-reads
+//     the list and the sheet stays open on the plan, Available, lends kept; a
+//     borrower sees no control; a refused code and an expired device code
+//     change nothing and offer Start again.
 //
 // Placeholders only; nothing is token-shaped.
 
@@ -787,5 +794,185 @@ describe('Plans: Add plan chooses its vendor', () => {
       for (const r of own) for (const m of r.body.matchAll(/(?:^|;)\s*(?:min-)?width\s*:\s*(\d+)px/g)) expect(Number(m[1]), r.sel).toBeLessThanOrEqual(120)
     }
     expect(add.querySelector('[style*="width"]')).toBeNull()
+  })
+})
+
+describe('Plans: Manage signs a plan in again', () => {
+  const DEVICE = {
+    status: 'ok',
+    fetchedAt: 0,
+    data: { state: 'dev-state-2', user_code: 'QRST-4455', verification_uri: 'https://device.example.test/activate', expires_in_seconds: 900, interval_seconds: 5 },
+  } as const
+  const REFUSED = {
+    status: 'error',
+    error: { kind: 'validation', httpStatus: 400, code: null, message: 'the code was already used or has expired' },
+  } as const
+
+  /** The sheet's section titles, top to bottom. */
+  function sections(sheet: HTMLElement): string[] {
+    return [...sheet.querySelectorAll('section.llp-ss')].map((s) => s.getAttribute('aria-label') ?? '')
+  }
+
+  /** The sign-in section of a sheet, under either of its titles. */
+  function signIn(sheet: HTMLElement): HTMLElement {
+    return (sheet.querySelector('section[aria-label="Sign in again"]') ?? sheet.querySelector('section[aria-label="Replace sign-in"]')) as HTMLElement
+  }
+
+  async function tick(ms = 0): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms)
+    })
+  }
+
+  beforeEach(() => {
+    spies.beginDeviceSignIn.mockResolvedValue(DEVICE)
+    spies.pollDeviceSignIn.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: { status: 'pending', interval_seconds: null } })
+  })
+
+  it('puts "Sign in again" first while the plan needs a sign-in, and "Replace sign-in" last while it is healthy', async () => {
+    await openPlans()
+    expect(text(card('retired-laptop'))).toContain('Sign-in needed')
+    // MUTATION: draw the section last whatever the state and this reads Leasing first.
+    expect(sections(await manage('retired-laptop'))).toEqual(['Sign in again', 'Leasing', 'Limits', 'Lends', 'Voice it', 'Name'])
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(sections(await manage('primary'))).toEqual(['Leasing', 'Limits', 'Lends', 'Voice it', 'Name', 'Replace sign-in'])
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(sections(await manage('codex-plan')).at(-1)).toBe('Replace sign-in')
+  })
+
+  it('a Claude plan starts with its own label and its lends, opens the sign-in, and finishes with the pasted code', async () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
+    await openPlans()
+    const sheet = await manage('retired-laptop')
+    const sec = signIn(sheet)
+    fireEvent.click(within(sec).getByRole('button', { name: 'Start sign-in' }))
+    // MUTATION: send Add plan's `lend_to: []` and the plan's lend to eng ends.
+    await waitFor(() => expect(api.beginAccountSignIn).toHaveBeenCalledWith({ label: 'retired-laptop', lend_to: ['eng'] }))
+    expect(api.beginDeviceSignIn).not.toHaveBeenCalled()
+    fireEvent.click(await within(sec).findByRole('button', { name: 'Open sign-in' }))
+    expect(open).toHaveBeenCalledWith('https://sign-in.example.test/authorize', '_blank', 'noopener')
+    open.mockRestore()
+    const done = within(sec).getByRole('button', { name: 'Sign in again' }) as HTMLButtonElement
+    expect(done.disabled).toBe(true)
+    fireEvent.change(within(sec).getByRole('textbox', { name: 'Sign-in code' }), { target: { value: 'pasted-code' } })
+    // The broker lifts REAUTH_REQUIRED when the new pair registers: the next read says Available.
+    withCaps('retired-laptop', { state: 'AVAILABLE', reason: undefined })
+    spies.finishAccountSignIn.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: { account: { account_id: 'u-owner:retired-laptop', state: 'AVAILABLE' }, expires_at: null } })
+    const reads = spies.loadAccountsBoard.mock.calls.length
+    fireEvent.click(done)
+    await waitFor(() => expect(api.finishAccountSignIn).toHaveBeenCalledWith({ state: 'st-1', code: 'pasted-code' }))
+    // THE RESULT: the list re-read, the sheet still open, the plan Available with its lend, the section last.
+    await waitFor(() => expect(sections(screen.getByRole('dialog', { name: 'retired-laptop' })).at(-1)).toBe('Replace sign-in'))
+    expect(spies.loadAccountsBoard.mock.calls.length).toBeGreaterThan(reads)
+    expect(api.setAccountState).not.toHaveBeenCalled()
+    expect(text(card('retired-laptop'))).toContain('Available')
+    expect(text(card('retired-laptop').querySelector('.lpc-lends'))).toContain('eng')
+    const after = screen.getByRole('dialog', { name: 'retired-laptop' })
+    expect(within(after).getByRole('button', { name: 'Edit lend to eng' })).toBeTruthy()
+    expect(within(signIn(after)).getByRole('button', { name: 'Start sign-in' })).toBeTruthy()
+  })
+
+  it('puts the state back when the registered plan still reads Sign-in needed', async () => {
+    await openPlans()
+    const sec = signIn(await manage('retired-laptop'))
+    fireEvent.click(within(sec).getByRole('button', { name: 'Start sign-in' }))
+    fireEvent.change(await within(sec).findByRole('textbox', { name: 'Sign-in code' }), { target: { value: 'pasted-code' } })
+    spies.finishAccountSignIn.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: { account: { account_id: 'u-owner:retired-laptop', state: 'REAUTH_REQUIRED' }, expires_at: null } })
+    fireEvent.click(within(sec).getByRole('button', { name: 'Sign in again' }))
+    await waitFor(() => expect(api.setAccountState).toHaveBeenCalledWith('u-owner:retired-laptop', 'AVAILABLE', ''))
+    expect(api.setAccountState).toHaveBeenCalledTimes(1)
+  })
+
+  it('a ChatGPT plan starts the device sign-in with its own label and its lends', async () => {
+    await openPlans()
+    const sec = signIn(await manage('codex-plan'))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    fireEvent.click(within(sec).getByRole('button', { name: 'Start sign-in' }))
+    await tick()
+    // MUTATION: send `lend_to: []` and the plan's lend to smoke ends.
+    expect(api.beginDeviceSignIn).toHaveBeenCalledWith({ label: 'codex-plan', lend_to: ['smoke'] })
+    expect(api.beginAccountSignIn).not.toHaveBeenCalled()
+    expect((within(sec).getByRole('textbox', { name: 'Device code' }) as HTMLInputElement).value).toBe('QRST-4455')
+    expect(text(sec)).toContain('waiting · 15:00 left')
+    await tick(5000)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledWith({ state: 'dev-state-2' })
+  })
+
+  it('a ChatGPT code that expires changes nothing and offers Start again, which starts with the lends again', async () => {
+    spies.pollDeviceSignIn.mockResolvedValue({ status: 'ok', fetchedAt: 0, data: { status: 'expired' } })
+    await openPlans()
+    const sec = signIn(await manage('codex-plan'))
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    fireEvent.click(within(sec).getByRole('button', { name: 'Start sign-in' }))
+    await tick()
+    await tick(5000)
+    expect(text(sec)).toContain('Code expired')
+    expect(within(sec).queryByRole('textbox', { name: 'Device code' })).toBeNull()
+    await tick(60_000)
+    expect(api.pollDeviceSignIn).toHaveBeenCalledTimes(1)
+    expect(api.setAccountState).not.toHaveBeenCalled()
+    fireEvent.click(within(sec).getByRole('button', { name: 'Start again' }))
+    await tick()
+    expect(api.beginDeviceSignIn).toHaveBeenCalledTimes(2)
+    expect(api.beginDeviceSignIn).toHaveBeenLastCalledWith({ label: 'codex-plan', lend_to: ['smoke'] })
+  })
+
+  it('a refused code leaves everything as it was and offers Start again', async () => {
+    await openPlans()
+    const sheet = await manage('retired-laptop')
+    const sec = signIn(sheet)
+    fireEvent.click(within(sec).getByRole('button', { name: 'Start sign-in' }))
+    fireEvent.change(await within(sec).findByRole('textbox', { name: 'Sign-in code' }), { target: { value: 'spent-code' } })
+    spies.finishAccountSignIn.mockResolvedValue(REFUSED)
+    const reads = spies.loadAccountsBoard.mock.calls.length
+    fireEvent.click(within(sec).getByRole('button', { name: 'Sign in again' }))
+    expect((await within(sec).findByRole('alert')).textContent).toBe('Sign-in refused: the code was already used or has expired. Nothing changed.')
+    const code = within(sec).getByRole('textbox', { name: 'Sign-in code' }) as HTMLInputElement
+    expect(code.disabled).toBe(true)
+    expect(code.value).toBe('')
+    expect(within(sec).queryByRole('button', { name: 'Sign in again' })).toBeNull()
+    // Nothing else moved: no state call, no re-read, the plan still Sign-in needed with its lend.
+    expect(api.setAccountState).not.toHaveBeenCalled()
+    expect(spies.loadAccountsBoard.mock.calls.length).toBe(reads)
+    expect(sections(sheet)[0]).toBe('Sign in again')
+    expect(text(card('retired-laptop'))).toContain('Sign-in needed')
+    expect(within(sheet).getByRole('button', { name: 'Edit lend to eng' })).toBeTruthy()
+    fireEvent.click(within(sec).getByRole('button', { name: 'Start again' }))
+    await waitFor(() => expect(api.beginAccountSignIn).toHaveBeenCalledTimes(2))
+    expect(api.beginAccountSignIn).toHaveBeenLastCalledWith({ label: 'retired-laptop', lend_to: ['eng'] })
+  })
+
+  it("draws no control for a borrower: the lent plan reads Sign-in needed and its sheet has no sign-in", async () => {
+    withCaps('shared', { state: 'REAUTH_REQUIRED' })
+    await openPlans()
+    // The owner of a plan in the same state has the control...
+    expect(within(await manage('retired-laptop')).getByRole('button', { name: 'Start sign-in' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    // ...the borrower of one has none.
+    expect(text(card('shared'))).toContain('Sign-in needed')
+    expect(within(card('shared')).queryAllByRole('button')).toEqual([])
+    cleanup()
+    window.history.replaceState(null, '', '/capacity/llm-providers/plans?account=eng%3Ashared')
+    await openPlans()
+    const sheet = await screen.findByRole('dialog', { name: 'shared' })
+    // MUTATION: draw the section outside the owner's gate and a borrower could re-register the owner's plan.
+    expect(signIn(sheet)).toBeNull()
+    expect(within(sheet).queryByRole('button', { name: /Start sign-in|Sign in again/ })).toBeNull()
+  })
+
+  it('keeps the section to one label a step: every explanation behind an (i)', async () => {
+    await openPlans()
+    const sec = signIn(await manage('retired-laptop'))
+    const visible = (el: HTMLElement) => {
+      const copy = el.cloneNode(true) as HTMLElement
+      for (const n of copy.querySelectorAll('[hidden], [role="tooltip"], .acct-i')) n.remove()
+      const walk = document.createTreeWalker(copy, NodeFilter.SHOW_TEXT)
+      const out: string[] = []
+      for (let n = walk.nextNode(); n !== null; n = walk.nextNode()) out.push(n.textContent ?? '')
+      return out.join(' ').replace(/\s+/g, ' ').trim()
+    }
+    expect(visible(sec)).toBe('Sign in again 1 Claude sign-in Start sign-in Label, lends and settings kept')
+    expect(sec.querySelectorAll('.acct-i').length).toBe(3)
+    for (const p of sec.querySelectorAll('p')) expect(p.getAttribute('role')).toBe('alert')
   })
 })

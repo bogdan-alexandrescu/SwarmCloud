@@ -39,10 +39,9 @@ from swarm_jev import sanitize
 #: The measured input tokens of one call, the floor a response that states no
 #: usable usage is charged. Stated here alone: the worker's ledger
 #: (`agent_worker.judge.budget`) and swarm-api's Jev account
-#: (`swarm_api.jevaccount`) import it, and one test
-#: (tests/unit/jev_client/test_shared_client.py) holds each module's value to
+#: (`swarm_api.jevaccount`) import it, and a test holds each module's value to
 #: this object by identity. The lane hooks' launcher (JavaScript) restates it;
-#: tests/unit/worker/test_jev_tool_calls.py holds that copy equal.
+#: a test holds that copy equal.
 MEASURED_TOKENS_PER_CALL = 2_850
 
 #: §5.5: 10 s per call, against jev.mjs's 60 s default. A lane waits on these.
