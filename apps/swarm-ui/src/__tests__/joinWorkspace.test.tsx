@@ -24,6 +24,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { screenLoaded } from './screenLoaded'
 
 type Json = Record<string, unknown>
 type Call = { method: string; url: string; body: unknown }
@@ -74,6 +75,7 @@ async function openApp(at: string) {
   vi.resetModules()
   const { App } = await import('../App')
   render(<App />)
+  await screenLoaded()
 }
 
 async function loadJoin() {
