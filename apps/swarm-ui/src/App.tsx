@@ -14,6 +14,7 @@ import {
 import { createPortal } from 'react-dom'
 import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList, type AgentTab } from './agentlist'
 import { AgentSplit } from './AgentSplit'
+import { ChunkBoundary } from './ChunkBoundary'
 import { HostedAgent, hostsAgent, type HostedAgentView } from './work/hostedAgent'
 import { Dock } from './Dock'
 import {
@@ -1935,7 +1936,11 @@ export function App() {
             <main className="work">
               {/* One boundary for the screens outside a section, and one round
                   each section's body below, so a Config page's setup strip
-                  stays up while its page loads. */}
+                  stays up while its page loads. Each sits in a ChunkBoundary,
+                  so a chunk a deploy has moved says "A newer version is out"
+                  here, under the shell, rather than crashing the console
+                  (issue 194); it clears when the address changes. */}
+              <ChunkBoundary resetKey={pathFor(at)}>
               <Suspense fallback={<ScreenLoading />}>
               {section === null ? (
                 at.sectionId === HELP ? (
@@ -1970,6 +1975,7 @@ export function App() {
                   <FrameAge.Provider value={at.taskId === null}>
                   {at.missing ? <NotFound path={at.missing} go={go} /> : (() => {
                     const body = (
+                      <ChunkBoundary resetKey={pathFor(at)}>
                       <Suspense fallback={<ScreenLoading />}>
                       <SectionBody
                         sectionId={section.id}
@@ -1988,6 +1994,7 @@ export function App() {
                         pluginLink={onPluginsPage ? pluginLink.current : null}
                       />
                       </Suspense>
+                      </ChunkBoundary>
                     )
                     return section.id === CONFIG ? <ConfigPage go={go}>{body}</ConfigPage> : body
                   })()}
@@ -1995,6 +2002,7 @@ export function App() {
                 </RoutedPage.Provider>
               )}
               </Suspense>
+              </ChunkBoundary>
             </main>
 
             {inspector && split}
@@ -2814,16 +2822,18 @@ function SectionBody({
  * address carries only the install id.
  *
  * Both plugin routes carry their own Suspense boundary round the lazy
- * `PluginDetailScreen`: they are exported and mounted on their own, outside
- * the page's boundary in `App`.
+ * `PluginDetailScreen`, inside their own ChunkBoundary (issue 194): they are
+ * exported and mounted on their own, outside the page's boundaries in `App`.
  */
 export function AdminPluginRoute({ installId }: { installId: string }) {
   return (
+    <ChunkBoundary resetKey={installId}>
     <Suspense fallback={<ScreenLoading />}>
       {pluginScopeOf(installId) === 'platform'
         ? <PluginDetailScreen installId={installId} tenantId={null} backHref={ADMIN_PLUGINS_PATH} />
         : <AdminWorkspacePluginRoute installId={installId} />}
     </Suspense>
+    </ChunkBoundary>
   )
 }
 
@@ -2848,10 +2858,12 @@ export function WorkspacePluginRoute({ installId }: { installId: string }) {
   return (
     <UrRegion state={read.state} route="GET /v1/plugins" what="The workspace's plugins" plural onRetry={read.reload}>
       {(d) => (
+        <ChunkBoundary resetKey={installId}>
         <Suspense fallback={<ScreenLoading />}>
           <PluginDetailScreen installId={installId} tenantId={d.tenant_id} backHref={addressToPath(`${CONFIG}/${PLUGINS_TAB}`)}
             settings={(name) => <PluginSettingsForm tenantId={d.tenant_id} installId={installId} name={name} />} />
         </Suspense>
+        </ChunkBoundary>
       )}
     </UrRegion>
   )
