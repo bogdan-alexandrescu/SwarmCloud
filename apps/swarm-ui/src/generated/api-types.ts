@@ -1793,6 +1793,9 @@ export interface VisualBody {
   source?: { [key: string]: unknown } | null
 }
 
+/** The warm takes no field: no machine, zone, image or engine (invariant 10). */
+export type WarmSpeech = { [key: string]: never }
+
 /**
  * `/work`'s body (voice/workfeed.py): swarm-voice's `{delegation:
  * {delegation_id, state}}` or the follower's `{roster: [rows]}`, each checked
