@@ -25,6 +25,7 @@ redirect that resolves to a 200 -- never on Google's exact wording.
 from __future__ import annotations
 
 import contextlib
+import functools
 import io
 import json
 import pkgutil
@@ -47,6 +48,7 @@ from swarm_api.metrics import ApiMetrics
 from swarm_api.waker import NullWaker
 
 from swarm_mcp import auth as mcp_auth
+from swarm_mcp import keys as mcp_keys
 from swarm_mcp import cli
 from swarm_mcp import client as mcp_client
 from swarm_mcp import patches, server
@@ -183,18 +185,39 @@ def submit(api: TestClient) -> str:
 
 PACKAGE = REPO / "apps/swarm-mcp/swarm_mcp"
 
-#: Calls the bridge makes ON PURPOSE to a route this API does not serve, each
-#: with the reason beside it: a route behind a setting, an older API the bridge
-#: still speaks to. A route here is still checked for being CALLED -- an entry
-#: whose call disappeared fails below, so the list cannot outlive its reason.
-NOT_SERVED_ON_PURPOSE: dict[tuple[str, str], str] = {}
+#: Calls whose path parameter is a CLOSED set of words the API serves as
+#: literal routes, not as one `{parameter}` route. The scan reads the hole as
+#: `{}`, which no served route matches, so each such call is named here with
+#: the reason and the values it stands for, and the seam test checks the call
+#: once per value instead. Never a blanket skip: every expansion must be served.
+EXPANDED_CALLS: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {
+    # `sc key set` stores a key for the person or for the tenant;
+    # `keys.check_scope` refuses anything outside `keys.SCOPES` before sending,
+    # and swarm-api serves `PUT /v1/provider-keys/{provider}/user` and
+    # `.../tenant` as two routes (their callers differ: anyone, or an admin).
+    ("PUT", "/v1/provider-keys/{}/{}"): (
+        "the scope segment is one of keys.SCOPES, each its own literal route",
+        mcp_keys.SCOPES,
+    ),
+}
 
 
+def expanded(call: tuple[str, str]) -> list[tuple[str, str]]:
+    """The routes a call stands for: itself, or one per value of its last hole."""
+    if call not in EXPANDED_CALLS:
+        return [call]
+    method, path = call
+    head, _, tail = path.rpartition("{}")
+    return [(method, f"{head}{value}{tail}") for value in EXPANDED_CALLS[call][1]]
+
+
+@functools.cache
 def scan() -> bridge_route_scan.Scan:
     """Every request every module of the package builds, read from its source
     rather than from a list kept in this file, because a list kept in this
     file is one more thing that only agrees with itself. How a call is found:
-    `bridge_route_scan`'s docstring."""
+    `bridge_route_scan`'s docstring. Read once per process (about a second
+    of parsing); every test here only reads the result."""
     return bridge_route_scan.scan(PACKAGE)
 
 
@@ -230,24 +253,23 @@ def test_every_route_the_bridge_calls_exists_on_this_api(api):
     assert ("GET", "/v1/stats") in served, "the served set was not built"
     found = scan()
     missing = sorted(
-        f"{method} {path} (from {', '.join(sorted(found.calls[(method, path)]))})"
-        for method, path in found.calls
-        if (method, path) not in served and (method, path) not in NOT_SERVED_ON_PURPOSE
+        f"{method} {path} (from {', '.join(sorted(found.calls[call]))})"
+        for call in found.calls
+        for method, path in expanded(call)
+        if (method, path) not in served
     )
     assert not missing, (
         f"the bridge calls routes this API does not serve: {missing}. "
         "Both ends exist and the seam does not."
     )
-
-
-def test_every_route_kept_on_purpose_is_still_called_and_still_unserved(api):
-    """An entry of `NOT_SERVED_ON_PURPOSE` is a reason, and a reason for a call
-    nobody makes, or for a route the API now serves, is a hole in the seam."""
-    served, found = served_routes(api), calls()
-    for call, reason in NOT_SERVED_ON_PURPOSE.items():
-        assert reason.strip(), f"{call} is kept with no reason"
-        assert call in found, f"{call} is kept on purpose but the bridge no longer calls it"
-        assert call not in served, f"{call} is kept on purpose but the API serves it now"
+    # An entry of `EXPANDED_CALLS` is a reason, and a reason for a call nobody
+    # makes, or for a hole the API now serves as one route, is a hole in the
+    # seam rather than a description of it. Checked here rather than in a test
+    # of its own: building the OpenAPI document costs seconds, so it is built once.
+    for call, (reason, values) in EXPANDED_CALLS.items():
+        assert reason.strip() and values, f"{call} is expanded with no reason or no values"
+        assert call in found.calls, f"{call} is expanded but the bridge no longer calls it"
+        assert call not in served, f"{call} is expanded but the API serves it as one route now"
 
 
 def test_the_route_scan_reads_every_module_of_the_package():

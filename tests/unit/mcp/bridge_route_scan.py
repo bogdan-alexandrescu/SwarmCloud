@@ -56,15 +56,28 @@ class _Module:
             for t in targets:
                 if isinstance(t, ast.Name):
                     self.constants[t.id] = node.value
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                self.functions.setdefault(node.name, node)
-            elif isinstance(node, ast.ImportFrom) and node.level == 1:
-                for a in node.names:
-                    if node.module is None:
+        self.methods: list = []  # every function defined directly in a class
+        self.calls: list = []  # (innermost enclosing function or None, call)
+        self._visit(tree, None)
+
+    def _visit(self, node, fn) -> None:
+        """One pass over the tree: what the scan needs, each call with its function."""
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.functions.setdefault(child.name, child)
+                if isinstance(node, ast.ClassDef):
+                    self.methods.append(child)
+                self._visit(child, child)
+                continue
+            if isinstance(child, ast.Call):
+                self.calls.append((fn, child))
+            elif isinstance(child, ast.ImportFrom) and child.level == 1:
+                for a in child.names:
+                    if child.module is None:
                         self.modules[a.asname or a.name] = a.name
                     else:
-                        self.names[a.asname or a.name] = (node.module, a.name)
+                        self.names[a.asname or a.name] = (child.module, a.name)
+            self._visit(child, fn)
 
 
 class _Scope:
@@ -112,15 +125,11 @@ class _Scanner:
         self.methods: dict = {}
         self.transport: set = set()
         for mod in self.mods.values():
-            for node in ast.walk(mod.tree):
-                if isinstance(node, ast.ClassDef):
-                    for item in node.body:
-                        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                            self.methods.setdefault(item.name, (mod, item))
-                            params = [a.arg for a in item.args.args]
-                            if params[:3] == ["self", "method", "path"]:
-                                # `SwarmClient.request` and the transport under it.
-                                self.transport.add(item.name)
+            for item in mod.methods:
+                self.methods.setdefault(item.name, (mod, item))
+                if [a.arg for a in item.args.args][:3] == ["self", "method", "path"]:
+                    # `SwarmClient.request` and the transport under it.
+                    self.transport.add(item.name)
         self.wrappers: dict = {}  # (module, function) -> the request site inside it
 
     # -- what a string expression can be -----------------------------------
@@ -225,15 +234,8 @@ class _Scanner:
     # -- the requests ------------------------------------------------------
     def sites(self, mod: _Module):
         """(function, call, method expr, path expr, wrapper) for every request built in `mod`."""
-        owner: dict = {}
-        for node in ast.walk(mod.tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                for inner in ast.walk(node):
-                    owner[id(inner)] = node  # walk is breadth first: the innermost def wins
-        for node in ast.walk(mod.tree):
-            if not isinstance(node, ast.Call):
-                continue
-            fn, f = owner.get(id(node)), node.func
+        for fn, node in mod.calls:
+            f = node.func
             if isinstance(f, ast.Attribute) and f.attr in self.transport and len(node.args) >= 2:
                 if fn is None or fn.name not in self.transport:  # the transport handing on its own call
                     yield fn, node, node.args[0], node.args[1], None
