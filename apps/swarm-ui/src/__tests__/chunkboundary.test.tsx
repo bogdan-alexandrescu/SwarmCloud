@@ -118,7 +118,8 @@ describe('the vite:preloadError handler', () => {
       act(() => {
         window.dispatchEvent(first)
       })
-      expect(first.defaultPrevented).toBe(true)
+      // Not prevented: the import's own rejection must still reach ChunkBoundary.
+      expect(first.defaultPrevented).toBe(false)
       expect(reload).toHaveBeenCalledTimes(1)
       expect(sessionStorage.getItem(CHUNK_RELOAD_KEY)).not.toBeNull()
 
@@ -126,6 +127,40 @@ describe('the vite:preloadError handler', () => {
       act(() => {
         window.dispatchEvent(second)
       })
+      expect(reload).toHaveBeenCalledTimes(1)
+    } finally {
+      remove()
+    }
+  })
+
+  it('leaves the rejection to ChunkBoundary on the first failure: the root boundary never shows', async () => {
+    // What Vite's preload helper does with a failed chunk: dispatch
+    // `vite:preloadError`, rethrow unless the event was prevented, and resolve
+    // to undefined when it was.
+    const err = new TypeError('Failed to fetch dynamically imported module: /assets/x-abc.js')
+    const Stale = lazy(() =>
+      Promise.reject(err).catch((reason: unknown) => {
+        const e = new Event('vite:preloadError', { cancelable: true })
+        window.dispatchEvent(e)
+        if (!e.defaultPrevented) throw reason
+        return undefined as unknown as { default: () => null }
+      }),
+    )
+    const remove = installPreloadReload()
+    try {
+      render(
+        <Shell>
+          <ChunkBoundary resetKey="/agents">
+            <Suspense fallback={<p>Loading…</p>}>
+              <Stale />
+            </Suspense>
+          </ChunkBoundary>
+        </Shell>,
+      )
+      const line = await screen.findByRole('status')
+      expect(line.textContent).toContain('A newer version is out')
+      expect(screen.getByText('the shell')).toBeTruthy()
+      expect(screen.queryByText('The interface crashed')).toBeNull()
       expect(reload).toHaveBeenCalledTimes(1)
     } finally {
       remove()
