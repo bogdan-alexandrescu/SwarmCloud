@@ -17,8 +17,8 @@ the same session with the answer? The answer is **yes**, with one flag the runne
 
 ## How it was measured
 
-The pinned CLI is `@anthropic-ai/claude-code` **2.1.283** (`images/agent-runtime-base/Dockerfile`,
-`CLAUDE_CODE_VERSION`), the same binary as the spike's container. The container has no model credentials, so the
+The CLI pinned when this was measured was `@anthropic-ai/claude-code` **2.1.283** (`images/agent-runtime-base/Dockerfile`,
+`CLAUDE_CODE_VERSION`, 2.1.330 since 2026-11-23), the same binary as the spike's container. The container has no model credentials, so the
 real CLI was pointed at a local fake of the Messages API (`ANTHROPIC_BASE_URL=http://127.0.0.1:<port>`, a key built
 at run time). The fake records every request body (so the tools offered to the model are read off the wire, not off
 the CLI's own report) and scripts the model: it answers the first main-loop request with an `AskUserQuestion` tool
@@ -173,8 +173,8 @@ lifecycle. What they need, from these findings:
 ## The one real check
 
 It needs model credentials, which the spike's container lacks: a `CLAUDE_CODE_OAUTH_TOKEN` or an
-`ANTHROPIC_API_KEY` in the environment (not a `~/.claude/.credentials.json`, since the check changes HOME), CLI
-2.1.283, and this branch checked out at `$REPO`. Run in bash:
+`ANTHROPIC_API_KEY` in the environment (not a `~/.claude/.credentials.json`, since the check changes HOME), the
+pinned CLI (`CLAUDE_CODE_VERSION`), and this branch checked out at `$REPO`. Run in bash:
 
 ```bash
 set -euo pipefail
