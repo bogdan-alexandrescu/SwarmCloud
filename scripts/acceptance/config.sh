@@ -71,9 +71,10 @@ ACC_ISSUE_EXPECT="${SWARM_ACCEPTANCE_ISSUE_EXPECT:-sandbox-probe.sh}"
 # §6 row 6, archived issue 1518). It narrows a whole workspace to `viewer` for a moment, so it
 # never runs in ACC_TENANT, where every other group submits: it needs a group
 # workspace of its own, and two identities swarm-verify may mint ID tokens for
-# (roles/iam.serviceAccountTokenCreator on each). All four are the owner's to
-# provision; accept.yml's smoke job passes them from the repository variables
-# ROLES_TENANT, ROLES_VIEWER_SA, ROLES_ADMIN_SA and ROLES_OTHER_WORKSPACE, and
+# (roles/iam.serviceAccountOpenIdTokenCreator on each, granted by
+# terraform/bootstrap/acceptance_probes.tf under enable_acceptance_probes, never
+# by hand). All four are the owner's to provision; accept.yml's smoke job passes
+# them from the repository variables ROLES_TENANT, ROLES_VIEWER_SA, ROLES_ADMIN_SA and ROLES_OTHER_WORKSPACE, and
 # until all four are set every roles check SKIPs and names what is missing.
 #: The group workspace the probe narrows and restores.
 ACC_ROLES_TENANT="${SWARM_ACCEPTANCE_ROLES_TENANT:-}"
