@@ -1077,11 +1077,10 @@ def _timed_out(exc: BaseException) -> bool:
 def submit_guard(path: str) -> Iterator[None]:
     """Wrap a dispatch or workflow submission's POST, which passes
     `timeout=SUBMIT_TIMEOUT_SECONDS` itself, with the route written out as a
-    literal so the route scan in tests/unit/mcp/test_against_the_real_api.py
-    reads it. A timeout's error
-    tells the caller to read the running workflows before sending again: the
-    first call may have been accepted, and a re-sent batch duplicates every
-    task in it."""
+    literal so the check that compares the bridge's calls with the real API
+    can read it. A timeout's error tells the caller to read the running
+    workflows before sending again: the first call may have been accepted, and
+    a re-sent batch duplicates every task in it."""
     try:
         yield
     except SwarmError as exc:
