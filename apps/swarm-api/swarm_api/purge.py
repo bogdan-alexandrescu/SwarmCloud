@@ -33,6 +33,17 @@ WHAT IT NEVER DELETES, each refused with its reason in `skipped`:
   `workflow_id`, its `planner_task_id` or `pr_task_id` (`issue_run`). An
   ended run keeps its record and may point at a purged workflow; that is the
   history the owner asked to drop;
+* a fix round -- CI, train, conflict or pick -- whose merge step is not terminal
+  (`live_merge`, issue 187). A round runs in a workflow of its own
+  (`mergewake._submit_round`), and the merge step reads the round's task
+  until it ends (the worker's `_round_running`): a purged round is a task
+  it can no longer read, so it waited out MERGE_CI_MAX_SECONDS (6 h) and
+  then refused. The merge step is the one the round's task names in
+  `metadata.merge_fix_round.merge_task` (a CI, train or pick round) or
+  `metadata.merge_conflict_round.merge_task` (a conflict round), as
+  mergewake stamps it, and holds the round only while it is this tenant's,
+  on a merge profile and not terminal. The pointer is not verified: a wrong
+  one can only keep history, never delete it;
 * anything named in `exclude_ids`, a workflow included when one of its steps
   is named (a workflow cannot be half purged);
 * a step task whose tenant is not its workflow's (`tenant_mismatch`): no
@@ -86,6 +97,7 @@ from .issueruns import RUNS_COLLECTION, RunState
 from .objects import UnsafeKeySegment, safe_segment
 from .redaction import redact_detail
 from .store import ATTEMPTS, EVENTS, LEASES, TASKS, WORKFLOWS
+from .validation import CONFLICT_ROUND_METADATA_KEY, is_merge_step
 
 log = logging.getLogger(__name__)
 
@@ -121,6 +133,11 @@ _ENDED_RUNS = frozenset({
 })
 _TERMINAL = frozenset(state.value for state in TERMINAL_STATES)
 _TOKEN = re.compile(r"^(w|t):([A-Za-z0-9_.-]*)$")
+#: Where a fix round's task names the merge step it serves: a CI, train or
+#: pick round's `merge_fix_round`, a conflict round's `merge_conflict_round`
+#: (`mergewake._on_red`, `_on_train`, `_on_pick`, `_on_conflict`;
+#: `agent_questions.ROUND_METADATA_KEYS` reads the same two).
+_ROUND_METADATA_KEYS = ("merge_fix_round", CONFLICT_ROUND_METADATA_KEY)
 
 
 class PurgeFailed(Exception):
@@ -457,6 +474,7 @@ class HistoryPurge:
             if str(task.get("tenant_id") or "") != tenant:
                 raise _Skip("tenant_mismatch",
                             f"step task {task_id} is stored under another tenant")
+            self._live_merge_guard(task_id, task)
             plans.append(self._plan_one(task_id, task))
         return _Item("workflow", workflow_id, tenant, str(data.get("state")), plans)
 
@@ -504,6 +522,29 @@ class HistoryPurge:
         plan.event_ids = [e.id for e in
                           self._db.collection(TASKS).document(task_id).collection(EVENTS).stream()]
         return plan
+
+    def _live_merge_guard(self, task_id: str, task: dict[str, Any]) -> None:
+        """Skip `live_merge` while the merge step this fix round serves is
+        live: one read of the task its round record names, held to the
+        round's tenant, a merge profile and a state not terminal -- the rule
+        `cifix._live_merge_step` reads a lane's merge step by."""
+        metadata = task.get("metadata")
+        if not isinstance(metadata, dict):
+            return
+        tenant = task.get("tenant_id")
+        for key in _ROUND_METADATA_KEYS:
+            record = metadata.get(key)
+            merge_task = record.get("merge_task") if isinstance(record, dict) else None
+            if (not isinstance(merge_task, str) or not merge_task or "/" in merge_task
+                    or merge_task == task_id):
+                continue
+            snap = self._db.collection(TASKS).document(merge_task).get()
+            merge = (snap.to_dict() or {}) if snap.exists else {}
+            profile = merge.get("runner_profile")
+            if (merge.get("tenant_id") == tenant and isinstance(profile, str)
+                    and is_merge_step(profile) and merge.get("state") not in _TERMINAL):
+                raise _Skip("live_merge", f"step task {task_id} is a fix round of merge step "
+                                          f"{merge_task}, which is {merge.get('state')}")
 
     def _issue_run_guard(self, field_path: str, value: str) -> None:
         for run in (self._db.collection(RUNS_COLLECTION)
