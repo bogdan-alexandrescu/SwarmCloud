@@ -180,7 +180,7 @@ from .issueci import NO_CHANGE_MARKER
 from .issuecomments import neutralise_mentions
 from .repositories import parse_repository, repo_id_for
 from .rollup import SKIPPED_SUMMARY_KEY
-from .specsigning import resign_stored
+from .specsigning import resign_stored, stored_refusal
 from .validation import (
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
@@ -1272,8 +1272,8 @@ def _review_class(ctx: Any, doc: Mapping[str, Any], decision: Any) -> ReviewClas
     Anything that cannot be signed keeps the class the step was signed with.
 
     The stored spec -- and its runtime alternate -- must verify FIRST
-    (`stored_spec_refusal`, this module's rule that the signature verifies
-    before any field is acted on): a tenant's agents can write its task, so
+    (`specsigning.stored_refusal` over `stored_spec_refusal`, this module's
+    rule that the signature verifies before any field is acted on): a tenant's agents can write its task, so
     a spec rewritten since submission is left exactly as stored, signed by
     no one, and the worker refuses it as before. Then the VERIFIED document
     must still be one submission would have marked: no class named
@@ -1287,7 +1287,7 @@ def _review_class(ctx: Any, doc: Mapping[str, Any], decision: Any) -> ReviewClas
         return None
     signer = getattr(getattr(ctx, "submissions", None), "signer", None)
     task_id = str(doc.get("id") or "")
-    if signer is not None and stored_spec_refusal(ctx.settings, doc, task_id) is not None:
+    if stored_refusal(doc, task_id=task_id, signer=signer, settings=ctx.settings) is not None:
         return ReviewClass(
             {}, f"{stepclass.REVIEW_AT_GATE}; spec does not verify, not signed again", doc)
     if (doc.get("model_class") is not None or is_security_review(metadata, os.environ)

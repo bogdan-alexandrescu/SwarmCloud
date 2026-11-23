@@ -133,7 +133,7 @@ from .schemas import (
 )
 from .served_limits import configured_limits
 from .settings import ApiSettings
-from .specsigning import SpecSigner, sign_task_specs
+from .specsigning import SpecSigner, sign_task_specs, stored_refusal
 from . import steprerun
 from . import wfdescription
 from .store import Store, derived_service_account
@@ -3164,12 +3164,15 @@ class SubmissionService:
         self, ctx: AuthContext, tenant_id: str, workflow_id: str, step_id: str
     ) -> steprerun.RerunResult:
         """Re-run a failed step inside its workflow (`swarm_api.steprerun`):
-        new tasks for it and for what its failure cancelled, signed like a
+        new tasks for it and for what its failure cancelled, each verified as
+        stored first (`specsigning.stored_refusal`) and signed like a
         submission's, swapped in with one transaction, then a wake so
         admission sees them now rather than on the safety tick."""
         result = steprerun.rerun(
             store=self._store,
             sign=self._sign,
+            refusal=lambda task: stored_refusal(task.to_firestore(), task_id=task.id,
+                                                signer=self._signer, settings=self._settings),
             tenant_id=tenant_id,
             workflow_id=workflow_id,
             step_id=step_id,

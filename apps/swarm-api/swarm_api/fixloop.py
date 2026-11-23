@@ -87,6 +87,7 @@ from .validation import (
     MERGE_METADATA_KEY,
     IssueRef,
 )
+from .specsigning import stored_refusal
 from .verdictpublish import (
     MAX_FINDING_CHARS,
     MAX_FINDINGS,
@@ -1099,15 +1100,30 @@ def _next(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, Any], *
             # pushed (§4.3), and round 1 the head the first review judged.
             head = moved
     seen = len(loop.rounds)
+    # The step the round repeats -- the root for a fix, the first review for a
+    # re-review -- gives the round its profile, class and prompt (`_override`),
+    # and the round is signed from them: its spec must verify as stored on
+    # THIS pass, by the rule the review gate applies before it signs again
+    # (`specsigning.stored_refusal`, issue 207). Round 0 checked the review,
+    # but a tenant's agent can rewrite it, or the root, while rounds run. A
+    # refusal is recorded on the claimed round and parks `round_refused`,
+    # as a submitter who left does: nothing is submitted, so nothing is held.
+    base = root_doc if kind == FIX_KIND else review
+    base_id = str(base.get("id") or "")
     refused = ""
+    signer = getattr(getattr(ctx, "submissions", None), "signer", None)
+    if stored_refusal(base, task_id=base_id, signer=signer, settings=ctx.settings) is not None:
+        refused = (f"the {'fix' if kind == FIX_KIND else 'review'}'s spec does not verify; "
+                   "the round is not built from it")
     owner = None
-    try:
-        owner = mergewake.submitter(ctx, loop.tenant, loop.doc)
-    except UpstreamUnavailable:
-        loop.report.waiting += 1
-        return
-    except Exception as exc:  # noqa: BLE001 -- recorded on the round, by name
-        refused = exc.message if isinstance(exc, ApiError) else type(exc).__name__
+    if not refused:
+        try:
+            owner = mergewake.submitter(ctx, loop.tenant, loop.doc)
+        except UpstreamUnavailable:
+            loop.report.waiting += 1
+            return
+        except Exception as exc:  # noqa: BLE001 -- recorded on the round, by name
+            refused = exc.message if isinstance(exc, ApiError) else type(exc).__name__
     head_key = "start_head" if kind == FIX_KIND else "head"
     index = claim_round(db, tenant_id, loop.id, seen=seen, now=loop.now,
                         entry={"round": round_no, "kind": kind, head_key: head})
@@ -1118,8 +1134,10 @@ def _next(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, Any], *
     if owner is None:
         _record(db, tenant_id, loop.id, index, {"error": failure_text(refused)})
         loop.doc = _doc(db, tenant_id, loop.id) or loop.doc
-        _park(loop, ROUND_REFUSED, {"round": round_no, "kind": kind,
+        _park(loop, ROUND_REFUSED, {"round": round_no, "kind": kind, "task_id": base_id,
                                     "error": failure_text(refused)})
+        log.warning("fix loop %s tenant=%s: round %d %s refused (%s)", loop.id, tenant_id,
+                    round_no, kind, refused)
         return
     record: dict[str, Any] = {"loop_task": loop.id, "round": round_no, "kind": kind,
                               head_key: head, "pull_request": number}
