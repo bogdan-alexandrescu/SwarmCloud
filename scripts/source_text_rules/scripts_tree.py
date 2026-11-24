@@ -14,6 +14,7 @@ replaces; a rule reports what the test refused, never less.
   workspace-apply-stdlib-and-frozen-specsign  tests/unit/scripts/test_workspace_apply_approval.py
   verify-identity-imports-stdlib-only         tests/unit/scripts/test_acceptance_await_own_tenant.py
   iso-probe-says-acceptance-runs-it           tests/unit/scripts/test_iso_accept_wiring.py
+  no-model-classes-enabled-flag               tests/unit/scripts/test_docs_describe_what_was_built.py
 
 `strip_comments` and `real_zero_hits` are also what
 tests/unit/scripts/test_no_real_zero_in_ui_copy.py runs its planted copy
@@ -260,6 +261,18 @@ def _check_probe_wording(path: str, text: str, tree: ast.Module | None) -> Hits:
                            "the probe must not say it does not ask")
 
 
+# --------------------------------------------------- no-model-classes-enabled-flag
+
+_FLAG = "MODEL_CLASSES" + "_ENABLED"  # split, so this module is no match itself
+
+
+def _check_no_model_classes_flag(path: str, text: str, tree: ast.Module | None) -> Hits:
+    if "/node_modules/" in f"/{path}":
+        return []
+    return _substring_hits(text, _FLAG, "model classes ship with no feature flag (R4); "
+                                        "nothing under apps/ or terraform/ reads one")
+
+
 # ------------------------------------------------------------------------ rules
 
 _IMP = "imp" + "ort"  # split, so the samples below read as no import of this file
@@ -424,6 +437,22 @@ RULES = (
         ),
         good=(
             (_PROBE, '"""accept.yml\'s `acceptance (tenant-isolation)` job runs it."""\n'),
+        ),
+    ),
+    Rule(
+        id="no-model-classes-enabled-flag",
+        why="R4: model classes ship with no feature flag, so nothing under apps/ or "
+            "terraform/ reads one (was test_docs_describe_what_was_built)",
+        roots=("apps", "terraform"),
+        suffixes=(".py", ".tf", ".ts", ".tsx"),
+        requires=_FLAG,
+        check=_check_no_model_classes_flag,
+        bad=(
+            ("apps/scheduler/scheduler/dispatch.py", f'ON = os.environ.get("{_FLAG}")\n'),
+            ("terraform/infra/variables.tf", f'locals {{\n  on = "{_FLAG}"\n}}\n'),
+        ),
+        good=(
+            ("apps/scheduler/scheduler/dispatch.py", 'CLASSES = ("haiku", "sonnet")\n'),
         ),
     ),
 )

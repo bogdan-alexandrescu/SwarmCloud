@@ -1,3 +1,4 @@
+# source-text: contract - Overview.tsx, checks.ts and types.ts must name unread accounts and the age of each headroom reading rather than claim every account was measured
 """SUBSCRIPTION HEADROOM read 100% while nothing had measured two of the three
 accounts, and said so on the same card.
 

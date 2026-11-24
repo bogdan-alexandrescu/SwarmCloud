@@ -1,3 +1,4 @@
+# source-text: contract - measure.ts, Workflows.tsx and Overview.tsx must render a step's duration, cost and tokens or a stated absence, never a made-up zero
 """A step node reported none of the four things the brief asks a run to report.
 
 THE DEFECT. `StepNode` in `apps/swarm-ui/src/Workflows.tsx` rendered a step id,

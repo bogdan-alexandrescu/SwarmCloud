@@ -407,6 +407,20 @@ def _check_stale_generation_note(path: str, text: str, tree: ast.Module | None) 
              "task_to_api sends it")]
 
 
+_VIS_IMPORT = re.compile(r"""(from|import\()\s*['"]vis-network""")
+
+
+def _check_vis_network_import(path: str, text: str, tree: ast.Module | None) -> list[tuple[int, str]]:
+    if "/__tests__/" in path:
+        return []
+    found = _VIS_IMPORT.search(text)
+    if not found:
+        return []
+    return [(_line_of(text, found.start()),
+             "vis-network is imported here: only the repository graph's Network view "
+             "(RepoGraphNetwork.tsx) may draw with it, never the workflow DAG")]
+
+
 # ----------------------------------------------------------------------- samples
 
 _SM = "SecretManager" + "Reader"
@@ -670,5 +684,23 @@ RULES = (
         check=_check_stale_generation_note,
         bad=((f"{UI}/types.ts", f"// {_STALE_NOTE}: `current_generation`\n"),),
         good=((f"{UI}/types.ts", "  current_generation: number;\n"),),
+    ),
+    Rule(
+        id="vis-network-only-in-the-repository-graph",
+        why="vis-network reaches the bundle through the repository graph's Network view "
+            "alone, never the workflow DAG (was test_workflow_graph_ui_surface)",
+        roots=(UI,),
+        suffixes=(".ts", ".tsx"),
+        requires="vis-network",
+        exempt=frozenset({f"{UI}/RepoGraphNetwork.tsx"}),
+        check=_check_vis_network_import,
+        bad=(
+            (f"{UI}/WorkflowGraph.tsx", "import { Network } from 'vis-network/standalone'\n"),
+            (f"{UI}/dag.ts", 'const m = await import("vis-network")\n'),
+        ),
+        good=(
+            (f"{UI}/dag.ts", "// not vis-network: six boxes are drawn as plain SVG\n"),
+            (f"{UI}/__tests__/graph.test.tsx", "import { Network } from 'vis-network'\n"),
+        ),
     ),
 )

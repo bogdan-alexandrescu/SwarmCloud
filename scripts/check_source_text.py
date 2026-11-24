@@ -14,15 +14,21 @@ sweep walked and read the tree again, once per test file. So this script:
   1. DETECTS a source-text test: a tracked (or new, unignored) .py file under
      tests/ or apps/*/tests/, of any name, whose AST holds any of
        * glob       a `.glob(...)`/`.rglob(...)` call (glob.glob too) with a
-                    string argument ending `*.py`, `*.ts` or `*.tsx`;
+                    string argument holding `*.py`, `*.ts` or `*.tsx` (so
+                    `*.ts*` too, but not `*.pyc` or `*.tsv`);
        * ast-parse  a call to `ast.parse`;
        * getsource  a call to `inspect.getsource` or a bare `getsource`;
        * read       a `.read_text()`, `.read_bytes()`, `.open()` or `open()`
                     whose path expression -- followed through plain
-                    `NAME = ...` assignments in the same file, at most three
-                    hops -- holds a string constant ending `.py`, `.ts` or
+                    `NAME = ...` assignments in the same file and through a
+                    parameter of the enclosing function to the arguments its
+                    callers in the same file pass (and the values a
+                    `parametrize` decorator gives it), at most three hops in
+                    all -- holds a string constant ending `.py`, `.ts` or
                     `.tsx`, or a `<expr>.__file__` attribute (a module's
                     file; the bare `__file__`, the test's own file, is not).
+                    So `def src(name): return (UI / name).read_text()`
+                    called as `src("api.ts")` is one.
      A file that reads only its own `__file__`, docs, YAML, JSON or shell is
      not one: issue 71 covers those.
 
@@ -78,7 +84,9 @@ RULES_PACKAGE = "source_text_rules"
 
 CLASSES = ("contract", "forbidden-pattern", "fixture")
 SOURCE_SUFFIXES = (".py", ".ts", ".tsx")
-GLOB_SUFFIXES = tuple("*" + s for s in SOURCE_SUFFIXES)
+#: A glob pattern that selects source: `*.py`, `*.ts`, `*.tsx`, `*.ts*`, not
+#: `*.pyc` or `*.tsv`.
+_SOURCE_GLOB = re.compile(r"\*\.(?:py|tsx?)(?![A-Za-z0-9_])")
 MAX_HOPS = 3
 
 _MARKER = re.compile(r"^# source-text: (?P<cls>\S+) - (?P<reason>\S.*)$")
@@ -240,18 +248,109 @@ def _assignments(tree: ast.Module) -> dict[str, list[ast.expr]]:
     return found
 
 
-def _names_source(expr: ast.expr, assigned: dict[str, list[ast.expr]], hops: int,
-                  seen: frozenset[str] = frozenset()) -> bool:
+class _Context:
+    """What following a read's path expression needs of the whole file:
+    its plain assignments, each node's parent, its functions by name and its
+    calls by called name. Built once per file, on the first read call."""
+
+    def __init__(self, tree: ast.Module) -> None:
+        self.parent: dict[ast.AST, ast.AST] = {}
+        self.functions: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+        self.calls: dict[str, list[ast.Call]] = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                self.parent[child] = node
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.functions.setdefault(node.name, []).append(node)
+            elif isinstance(node, ast.Call):
+                self.calls.setdefault(_call_name(node.func)[1], []).append(node)
+        self.assigned = _assignments(tree)
+
+    def enclosing(self, node: ast.AST) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+        while node in self.parent:
+            node = self.parent[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return node
+        return None
+
+
+def _parameter_names(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    a = func.args
+    return [p.arg for p in [*a.posonlyargs, *a.args, *a.kwonlyargs]]
+
+
+def _argument_for(call: ast.Call, func: ast.FunctionDef | ast.AsyncFunctionDef,
+                  name: str) -> ast.expr | None:
+    """The expression `call` passes for `func`'s parameter `name`, if any."""
+    for keyword in call.keywords:
+        if keyword.arg == name:
+            return keyword.value
+    positional = [p.arg for p in [*func.args.posonlyargs, *func.args.args]]
+    if name not in positional:
+        return None
+    index = positional.index(name)
+    # A method called through an instance does not pass `self` itself.
+    if isinstance(call.func, ast.Attribute) and positional[:1] in (["self"], ["cls"]):
+        index -= 1
+    args = [a for a in call.args if not isinstance(a, ast.Starred)]
+    return args[index] if 0 <= index < len(args) else None
+
+
+def _parametrized_values(func: ast.FunctionDef | ast.AsyncFunctionDef,
+                         name: str) -> list[ast.expr]:
+    """The value lists of `@pytest.mark.parametrize` decorators naming `name`."""
+    values: list[ast.expr] = []
+    for decorator in func.decorator_list:
+        if not (isinstance(decorator, ast.Call)
+                and _call_name(decorator.func)[1] == "parametrize"
+                and len(decorator.args) >= 2):
+            continue
+        names = decorator.args[0]
+        listed: list[str] = []
+        if isinstance(names, ast.Constant) and isinstance(names.value, str):
+            listed = [n.strip() for n in names.value.split(",")]
+        elif isinstance(names, (ast.Tuple, ast.List)):
+            listed = [e.value for e in names.elts
+                      if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        if name in listed:
+            values.append(decorator.args[1])
+    return values
+
+
+def _names_source(expr: ast.expr, ctx: _Context, hops: int,
+                  func: ast.FunctionDef | ast.AsyncFunctionDef | None = None,
+                  seen: frozenset[tuple[str, int]] = frozenset()) -> bool:
     for node in ast.walk(expr):
         if isinstance(node, ast.Constant) and isinstance(node.value, str) \
                 and node.value.endswith(SOURCE_SUFFIXES):
             return True
         if isinstance(node, ast.Attribute) and node.attr == "__file__":
             return True
-        if isinstance(node, ast.Name) and hops > 0 and node.id not in seen:
-            for value in assigned.get(node.id, ()):
-                if _names_source(value, assigned, hops - 1, seen | {node.id}):
-                    return True
+        if not isinstance(node, ast.Name) or hops <= 0:
+            continue
+        key = (node.id, id(func))
+        if key in seen:
+            continue
+        seen = seen | {key}
+        for value in ctx.assigned.get(node.id, ()):
+            # Plain assignments are followed file-wide, whatever function
+            # holds them; a parameter is followed onward only from an
+            # assignment in the same function, so `path = root / rel` in one
+            # helper does not lead to the callers of another.
+            here = func if func is not None and ctx.enclosing(value) is func else None
+            if _names_source(value, ctx, hops - 1, here, seen):
+                return True
+        if func is None or node.id not in _parameter_names(func):
+            continue
+        # A parameter: what the function's callers pass for it.
+        for call in ctx.calls.get(func.name, ()):
+            arg = _argument_for(call, func, node.id)
+            if arg is not None and _names_source(arg, ctx, hops - 1,
+                                                 ctx.enclosing(call), seen):
+                return True
+        for values in _parametrized_values(func, node.id):
+            if _names_source(values, ctx, hops - 1, None, seen):
+                return True
     return False
 
 
@@ -270,7 +369,7 @@ def detect(text: str, tree: ast.Module | None) -> list[str]:
     """The techniques by which a file reads source as text, sorted."""
     if tree is None:
         return []
-    assigned: dict[str, list[ast.expr]] | None = None
+    ctx: _Context | None = None
     found: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -279,21 +378,22 @@ def detect(text: str, tree: ast.Module | None) -> list[str]:
         if name in ("glob", "rglob"):
             for arg in [*node.args, *(k.value for k in node.keywords)]:
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str) \
-                        and arg.value.endswith(GLOB_SUFFIXES):
+                        and _SOURCE_GLOB.search(arg.value):
                     found.add("glob")
         elif name == "parse" and qual == "ast":
             found.add("ast-parse")
         elif name == "getsource":
             found.add("getsource")
-        elif name in ("read_text", "read_bytes", "open") and qual is not None:
-            assert isinstance(node.func, ast.Attribute)
-            if "read" not in found:
-                assigned = assigned if assigned is not None else _assignments(tree)
-                if _names_source(node.func.value, assigned, MAX_HOPS):
-                    found.add("read")
-        elif name == "open" and qual is None and node.args and "read" not in found:
-            assigned = assigned if assigned is not None else _assignments(tree)
-            if _names_source(node.args[0], assigned, MAX_HOPS):
+        elif name in ("read_text", "read_bytes", "open") and "read" not in found:
+            if qual is not None:
+                assert isinstance(node.func, ast.Attribute)
+                path = node.func.value
+            elif name == "open" and node.args:
+                path = node.args[0]
+            else:
+                continue
+            ctx = ctx if ctx is not None else _Context(tree)
+            if _names_source(path, ctx, MAX_HOPS, ctx.enclosing(node)):
                 found.add("read")
     return sorted(found)
 
@@ -301,7 +401,7 @@ def detect(text: str, tree: ast.Module | None) -> list[str]:
 #: Text every technique needs; a file without it is not parsed. A glob's
 #: pattern, `getsource`, `ast.parse`, or a read call together with a string
 #: ending in a source suffix or a `.__file__`.
-_MAY_GLOB_OR_PARSE = re.compile(r"\*\.(?:py|tsx?)['\"]|getsource|\bast\.parse\b")
+_MAY_GLOB_OR_PARSE = re.compile(r"\*\.(?:py|tsx?)(?![A-Za-z0-9_])|getsource|\bast\.parse\b")
 _READ_CALL = re.compile(r"\b(?:read_text|read_bytes|open)\(")
 _SOURCE_NAME = re.compile(r"\.(?:py|tsx?)['\"]|\.__file__")
 
@@ -402,9 +502,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.list is not None:
         detected = detect_tree(root, sources)
-        wanted = {p.removeprefix("./") for p in args.list}
+        # A PATH is a file or a directory: `--list tests/unit/worker` lists
+        # every detected file under it.
+        wanted = [p.removeprefix("./").rstrip("/") for p in args.list]
         for rel, techniques in detected.items():
-            if wanted and rel not in wanted:
+            if wanted and not any(rel == w or rel.startswith(w + "/") for w in wanted):
                 continue
             marker = read_marker(sources.text(rel))
             state = f"marked {marker.cls}" if marker.cls else "UNMARKED"

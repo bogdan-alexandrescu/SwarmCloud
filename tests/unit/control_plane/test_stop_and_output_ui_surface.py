@@ -1,3 +1,4 @@
+# source-text: contract - the stop control and ArtifactViewer.tsx must offer cancel on the states the API accepts and render artifact content without HTML injection
 """The two console surfaces added for B28 and B29, held to what the API does.
 
 Read as TEXT, like `test_blocker_ui_surface.py` and `test_runtimes_screen.py`

@@ -79,6 +79,23 @@ def _techniques(source: str) -> set[str]:
      "t = C.read_text()\n", "read"),
     ("from pathlib import Path\nROOT = Path('.')\nSRC: Path = ROOT / 'app.py'\n"
      "def test_x():\n    assert 'x' in SRC.read_text()\n", "read"),
+    # A glob whose pattern holds a source suffix, not only ends with one.
+    ("from pathlib import Path\nfiles = Path('ui/src').rglob('*.ts*')\n", "glob"),
+    # Through a helper's parameter to what its callers pass (the commonest
+    # shape: `src("api.ts")`), directly and through a local.
+    ("from pathlib import Path\nUI = Path('ui/src')\ndef src(name):\n"
+     "    return (UI / name).read_text()\ndef test_x():\n    assert 'x' in src('api.ts')\n",
+     "read"),
+    ("from pathlib import Path\nUI = Path('ui/src')\ndef src(name):\n    path = UI / name\n"
+     "    return path.read_text()\ndef test_x():\n    assert 'x' in src(name='App.tsx')\n",
+     "read"),
+    ("from pathlib import Path\nROOT = Path('.')\nclass Box:\n    def src(self, rel):\n"
+     "        return (ROOT / rel).read_text()\ndef test_x():\n"
+     "    assert 'x' in Box().src('apps/x/main.py')\n", "read"),
+    # ... and through a parametrized test's argument to its values.
+    ("import pytest\nfrom pathlib import Path\nUI = Path('ui/src')\ndef src(name):\n"
+     "    return (UI / name).read_text()\n@pytest.mark.parametrize('name', ['a.tsx', 'b.tsx'])\n"
+     "def test_x(name):\n    assert 'x' in src(name)\n", "read"),
 ])
 def test_each_technique_selects_a_file(source, technique):
     assert technique in _techniques(source)
@@ -95,6 +112,16 @@ def test_each_technique_selects_a_file(source, technique):
     "from pathlib import Path\nt = list(Path('tests').rglob('worker_seeds.py'))\n",
     # Four hops is past the three the detector follows.
     "from pathlib import Path\nA = 'm.py'\nB = A\nC = B\nD = C\nE = D\nt = Path(E).read_text()\n",
+    # Compiled files and TSV are not source.
+    "from pathlib import Path\nt = list(Path('a').rglob('*.pyc')) + list(Path('b').glob('*.tsv'))\n",
+    # A helper whose callers pass no source name.
+    "from pathlib import Path\nDOCS = Path('docs')\ndef doc(name):\n    return (DOCS / name).read_text()\n"
+    "def test_x():\n    assert 'x' in doc('ci.md')\n",
+    # A local of one helper does not lead to the callers of another: `path`
+    # read here is a JSON file, whatever `put`'s own `path` was built from.
+    "import json\nfrom pathlib import Path\ndef put(root, rel):\n    path = root / rel\n"
+    "    path.write_text('')\ndef test_x(tmp_path):\n    put(tmp_path, 'tests/a.py')\n"
+    "    (path,) = tmp_path.glob('cache-*.json')\n    json.loads(path.read_text())\n",
 ])
 def test_a_reader_of_anything_but_source_is_not_selected(source):
     assert _techniques(source) == set()
@@ -173,6 +200,17 @@ def test_list_takes_paths(tmp_path, capsys):
     assert cst.main(["--root", str(root), "--list", "tests/unit/test_c.py"]) == 0
     out = capsys.readouterr().out
     assert "test_c.py" in out and "test_a.py" not in out
+
+
+def test_list_takes_directories(tmp_path, capsys):
+    # Every area's check is `--list <its directory>`: a directory lists every
+    # detected file under it, and only those.
+    root = _repo(tmp_path, {"tests/unit/a/test_a.py": READER, "tests/unit/ab/test_b.py": READER,
+                            "tests/unit/c/test_c.py": READER})
+    assert cst.main(["--root", str(root), "--list", "tests/unit/a", "./tests/unit/c/"]) == 0
+    out = capsys.readouterr().out
+    assert "tests/unit/a/test_a.py" in out and "tests/unit/c/test_c.py" in out
+    assert "test_b.py" not in out
 
 
 def test_files_outside_the_test_trees_are_not_selected(tmp_path, capsys, no_exemptions):
@@ -340,6 +378,10 @@ def test_the_detector_finds_the_tree_s_source_text_tests(tree):
     assert len(result.detected) > 100
     assert all(rel.startswith(("tests/", "apps/")) for rel in result.detected)
     assert "tests/unit/scripts/test_check_source_text.py" in result.detected
+    # The helper shape, `def src(name): return (UI / name).read_text()`
+    # called as src("api.ts"), the review of issue 73 found unselected.
+    assert "tests/unit/control_plane/test_blocker_ui_surface.py" in result.detected
+    assert "tests/unit/control_plane/test_outcomes_classifier_parity.py" in result.detected
 
 
 def test_the_check_runs_in_the_guard_set_and_lint():

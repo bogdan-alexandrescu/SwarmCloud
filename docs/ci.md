@@ -5940,11 +5940,15 @@ a guard run read the same files once per sweep.
 custom rules) does three things in one pass:
 
 * **It finds the source-text tests**: any `.py` under `tests/` or
-  `apps/*/tests/` that globs `*.py`/`*.ts`/`*.tsx`, calls `ast.parse` or
-  `inspect.getsource`, or reads (`read_text`, `read_bytes`, `open`) a path
-  built from a string ending in a source suffix or a module's `__file__`.
+  `apps/*/tests/` that globs `*.py`/`*.ts`/`*.tsx` (`*.ts*` too), calls
+  `ast.parse` or `inspect.getsource`, or reads (`read_text`, `read_bytes`,
+  `open`) a path built from a string ending in a source suffix or a module's
+  `__file__` -- followed through assignments and through a helper's parameter
+  to what its callers pass, because `def src(name): return (UI /
+  name).read_text()` called as `src("api.ts")` is the commonest shape.
   `python3 scripts/check_source_text.py --list [PATH ...]` prints each with
-  its techniques and `marked <class>` or `UNMARKED`. A test that reads only
+  its techniques and `marked <class>` or `UNMARKED`; a PATH may be a file or
+  a directory. A test that reads only
   its own file, docs, YAML, JSON or shell is not one (issue 71).
 * **It holds their marker**, the file's first line (the second after a
   shebang): `# source-text: <class> - <reason>`, the reason saying why
