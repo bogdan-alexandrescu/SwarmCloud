@@ -8,7 +8,7 @@ first public release. The owner approves this runbook, then follows it.
 
 **How to read the citations.** Every step names the file and symbol, or the
 docs section, it was checked against when this runbook was written
-(2026-11-24, main at `0f256b6`). `SI` means
+(2026-11-24, on the branch's single commit `263ca01`). `SI` means
 `apps/swarm-install/swarm_install/`. A step that could not be checked says
 **not checked** and why. Where the docs and the code disagree, this runbook
 follows the code and says so; each such disagreement is listed in
@@ -122,6 +122,16 @@ engine makes, by kind:
 | `certificate`, `cluster`, `dns`, `oauth-brand` | 1 each | the managed certificate, the GKE Autopilot cluster, the A record, the brand |
 | `workspace-group`, `workspace-delegation`, `quota` | 1 each | checked or made outside the project (section 2.2) |
 
+**What a yes to Voice it adds (the proof answers no).** The Voice it questions
+at stage 0 (`infra.voice-it`, `infra.voice-speech`; `infra.voice-speech-zone`
+at stage 1) add core entries to the manifest that the table above counts only
+if they are on. A yes to the speech engine adds one L4 GPU machine from a
+regional instance template (`terraform/infra/voice_speech.tf`,
+`compute.voice-speech-machine`), its firewall and address, the
+`swarm-voice` and `swarm-speech` service accounts and their images. It needs
+one L4 of GPU quota in the region's zone (stage 1 checks it; section 2.2) and
+its cost is not in section 2.5's floor. Not priced here: not checked.
+
 The project itself is made by Python, not Terraform, labelled
 `managed-by=swarm-install` (`SI/steps/preflight.py`, `CREATED_BY_INSTALL`;
 `SI/steps/foundations.py`, `ProjectStep`). Every Terraform resource carries
@@ -135,6 +145,7 @@ The project itself is made by Python, not Terraform, labelled
 | Organisation (write) | A project created under the organisation or a folder you pick. | `SI/steps/foundations.py`, `ProjectStep`; [install.md § Stage 1](../install.md#stage-1-foundations) |
 | Organisation (Workspace) | Groups `swarm-admins@<example.com>` and, for a team, `swarm-team@<example.com>`, with you as owner. The **Groups Reader** admin role is assigned to swarm-api's service account, or domain-wide delegation if you choose it. | `SI/steps/identity.py`; [install.md § Stage 8](../install.md#stage-8-the-consoles-address-and-identity) items 3 and 4 |
 | Quotas (read, possibly a request) | KMS requests at least 600, Cloud Run jobs, regional CPUs at least 24, one GKE cluster and one static IP. A shortfall opens the Quotas page. | `SI/steps/preflight.py`, `QUOTAS`; [install.md § Stage 0](../install.md#stage-0-preflight) item 10 |
+| GPU quota (only for a yes to Voice it's speech engine) | one NVIDIA L4 in a zone of the region. The proof answers no. | `SI/steps/infra.py`, `VoiceSpeechZoneStep` |
 | Billing account | The project is linked to the billing account you pick. A budget `swarm-<project>` is created with alerts at 50, 90 and 100 %. | `SI/steps/foundations.py`, `BudgetStep`; `SI/uninstall.py`, `budget_name` |
 
 Terraform makes nothing above project level. A grep of `terraform/` on
@@ -145,13 +156,13 @@ resource.
 
 | Where | What | Undone by `swarm uninstall`? |
 |---|---|---|
-| Billing account | the project link and the budget `swarm-<project>` | The budget is deleted. If the billing account refuses, it is listed under `left`. The link goes with the project. (`SI/uninstall.py`, `_budget`) |
+| Billing account | the project link and the budget `swarm-<project>` | The budget is deleted. If the billing account refuses, it is listed under `left`. The link stays until the project is deleted; if you keep the project (C15) it stays too. (`SI/uninstall.py`, `_budget`) |
 | Google Workspace or Cloud Identity | the groups, the Groups Reader assignment or the delegation | No. Listed as `workspace-groups` (`SI/remains.py`) |
 | Your DNS provider, or a Cloud DNS zone | one `A` record for `<host>` | Deleted only if it sits in the project's own Cloud DNS zone; otherwise listed as `dns-record` (`SI/uninstall.py`, `_dns_record`) |
 | GitHub (`<example-org>`) | a GitHub App and its installation | No. Only the owning account can delete it; listed as `github-app` (`SI/remains.py`) |
 | Claude | each pool account's sign-in, from the console | not checked: no uninstall step names it |
 | The release home (`https://storage.googleapis.com/swarmcloud`, `us-docker.pkg.dev/swarmcloud-prod/swarmcloud`) | read only: the CLI, the bundle and the images are fetched | nothing to undo ([install.md](../install.md), intro) |
-| The installer's machine | the `swarm` and `sc` tool, uv if missing, one `PATH` line in the shell rc file, `~/.swarm/`, `~/.config/swarmcloud/install/<project>.{json,kubeconfig,remains.json}`, the `swarm` credential store | No. Not removed by any verb (`install/install.sh`; `SI/state.py`, `LOCAL_DIR`) |
+| The installer's machine | the `swarm` and `sc` tool, uv if missing, the Google Cloud SDK if you accept its install, the machine-wide Application Default Credentials (stage 0 runs `gcloud auth application-default login --disable-quota-project` with Directory scopes, replacing what other tools use; `SI/steps/preflight.py`, `adc_login`), one `PATH` line in the shell rc file, `~/.swarm/`, `~/.config/swarmcloud/install/<project>.{json,kubeconfig,remains.json}`, the `swarm` credential store | No. Not removed by any verb (`install/install.sh`; `SI/state.py`, `LOCAL_DIR`) |
 
 **How the engine keeps out of every other project.** It must touch nothing in
 any existing project. Six mechanisms do the work; one gap is open.
@@ -194,11 +205,23 @@ any existing project. Six mechanisms do the work; one gap is open.
 6. **Nothing above project level.** No Terraform resource sits at organisation,
    folder or billing level (the grep above).
 
-**Gap.** The repository's shell plan guard checks for a plan that writes
+**Gap 1: stage 1 can change an existing project before the never-touch
+approval.** `ProjectStep` treats an existing, billed project as met, with no
+typed approval. When an id is taken it asks `Type another project id to
+create`, and silently uses the id typed if that is a project you can see
+(`SI/steps/foundations.py`, `ProjectStep._another`). Stage 1 then runs the
+APIs, the budget, `DefaultComputeEditorStep` (removes `roles/editor` from that
+project's default compute account once `remove-editor` is typed) and the state
+bucket **before** `ConfigStep` shows the neighbours and asks for approval. A
+typo, or the retry at "is taken", that lands on an existing project therefore
+changes it. The runbook's guard is a person's check (C1, C3); the engine does
+not stop it. It is in [decision O7](#8-open-decisions-for-the-owner).
+
+**Gap 2.** The repository's shell plan guard checks for a plan that writes
 outside the target project (`scripts/lib/plan-guard.sh`, the `wrong_project`
 check). The installer does not run it: no file in `SI/` calls `plan-guard.sh`
 (grep, 2026-11-24). The installer's in-engine review has no wrong-project
-check. Between them, mechanisms 1, 2, 3 and 6 are what keep the install inside
+check. Between them, mechanisms 1, 2, 3 and 6 (and a person's care at C1 and C3, see gap 1) are what keep the install inside
 the new project. The guard is not a code change for this runbook; it is
 [decision O7](#8-open-decisions-for-the-owner).
 
@@ -242,6 +265,7 @@ Google's list price, the same figures as `SI/steps/foundations.py`
   are not in the floor (`SI/sizing.py`, comment above `BUDGET_FLOOR_USD`).
 - **Agents:** priced at 0.22 USD an agent-hour (`SI/sizing.py`,
   `USD_PER_AGENT_HOUR`). Verify's seven runs of 15 to 25 minutes cost cents.
+- **Voice it's speech engine** (a yes at stage 0; the proof answers no) adds one always-on L4 GPU machine, not in the floor and not priced here.
 - **Claude subscriptions** are paid outside Google Cloud.
 - **For the whole proof**, with two deployments standing two to three days
   each: about 40 to 60 USD of floor.
@@ -393,7 +417,7 @@ below unless the step says otherwise.
   - It exits **0**, or **4** only for the human steps it lists.
   - It prints, per stage, `Stage N` and a `plan <id> -- <summary>` line for
     each step not yet met.
-  - It writes nothing: no state, no cache, no lease. The verb opens the store
+  - It writes nothing to any project or to install state: no state, no cache, no lease. Stage 0 may still set up this machine (the Cloud SDK, sign-ins that write the machine's Application Default Credentials). The verb opens the store
     read-only (`SI/verbs/install.py`, `_RunStore.read_only`).
   - Stage 0's read-only preflight steps do run and may ask their questions.
     Answering them records nothing (`SI/engine.py`, the dry-run branch for a
@@ -438,7 +462,10 @@ each step started and ended.
 
   Then it prints a summary ending `Continue? [Y/n]`.
 - **What to type:** answer `<proof-project-1>` (a new id), `<host-1>`, and the
-  region, then Enter.
+  region, then Enter. Answer with a brand-new id only, never an existing
+  project's: the summary at C1 does not show whether the id exists. The check
+  comes at the stage 1 approval (C3), which shows `parent ...` for a project
+  to be created and `(exists)` for one that already is (section 2.3, gap 1).
 - **Log:** the questions exactly as printed, and the summary. Note whether the
   release line shows the candidate.
 - **If it fails:** any answer other than Enter, `y` or `yes` prints
@@ -464,7 +491,15 @@ each step started and ended.
   10. quotas;
   11. `Who is this SwarmCloud for? [1] just me  [2] a team [1]:`: **answer 2,
       a team** (O3), and a small number of people;
-  12. the CVE acceptances of the release.
+  12. the CVE acceptances of the release;
+  13. two optional questions install.md does not list (`SI/steps/infra.py`,
+      `VoiceItChoiceStep`, `VoiceSpeechChoiceStep`): `turn Voice it on`, and,
+      only after a yes, Voice it's own speech engine. **Answer no to both
+      (Enter, the default).** A yes adds an L4 speech machine and its pieces
+      (section 2.1), needs GPU quota and costs more (section 2.5); the proof
+      does not cover it.
+- **Cannot be undone:** item 3, creating a Cloud Identity organisation and
+  verifying its domain at the registrar; no step undoes it (section 2.4).
 - **Worked when:** every stage 0 step prints `done` (or `check ... met`), and
   no `UNMET`.
 - **Log:** each page it opened and why; how long the organisation, billing and
@@ -484,11 +519,16 @@ each step started and ended.
 
 - **Who:** the owner.
 - **Do:**
+  0. **First check the stage 1 summary and approval:** it must say the project
+     will be created (`parent ...`), not `(exists)`. If it says `(exists)`, do
+     not type the project id: type anything else and stop (section 2.3, gap 1).
+     At an `is taken` prompt type only a brand-new id, never one that exists.
   1. Answer `Monthly budget for <proof-project-1>, in US dollars (Enter keeps it) [<amount>]:`.
   2. Read what it will create and the cost estimate, then type the project id
      at `Type the project id (<proof-project-1>) to approve`.
   3. If it asks `Type remove-editor to remove roles/editor from ...`, type
-     `remove-editor`.
+     `remove-editor` **only if the approval said the project was created**. For
+     an existing project type anything else and stop.
 - **Worked when:**
   - the project exists, labelled `managed-by=swarm-install`;
   - the APIs are enabled;
@@ -558,6 +598,9 @@ each step started and ended.
   2. At the admin-role question that ends
      `Type ASSIGN to approve, or delegation for the fallback:`, type `ASSIGN`.
   3. If stage 0 deferred the Directory scopes, a consent page opens; sign in.
+- **Cannot be undone:** the Workspace groups and the org-wide Groups Reader
+  assignment (or delegation) stay after `swarm uninstall` (`workspace-groups`;
+  section 2.4).
 - **Worked when:** the console answers behind IAP; the groups exist;
   swarm-api proves it can read the admins' group.
 - **Log:**
@@ -618,8 +661,8 @@ re-read every 5 seconds, never marked by hand
 | # | Line | Who | Do (labels as the console draws them) | Worked when |
 |---|---|---|---|---|
 | C9.1 | **Cloud** | nobody | nothing: `swarm install` did it | `swarm install did the cloud part: stages 0-8, 10 and 13, ...` |
-| C9.2 | **Sign-in client** | owner | Open Google's **Branding** page: App name `SwarmCloud`, support email. Open **Audience**: choose **Internal**. Open **Desktop client**: create a client of type Desktop app named `SwarmCloud sc`, and keep Google's dialog open. Type the **Client id** and **Client secret** into the console's form yourself, then **Save**. Google shows the secret only in its dialog. | the line says the client is on IAP's programmatic-clients list |
-| C9.3 | **GitHub App** | owner, on GitHub | **Create the GitHub App** (GitHub opens with the manifest), then **Install on `<example-org>`** and choose the repositories. **Check again** checks at once. | `<app> · installed on <example-org> · self-check passed`. The self-check waits for infra pass 3, which the terminal applies by itself (stage 9). |
+| C9.2 | **Sign-in client** | owner | Open Google's **Branding** page: App name `SwarmCloud`, support email. Open **Audience**: choose **Internal**. Open **Desktop client**: create a client of type Desktop app named `SwarmCloud sc`, and keep Google's dialog open. Type the **Client id** and **Client secret** into the console's form yourself, then **Save**. Google shows the secret only in its dialog. | the line says the client is on IAP's programmatic-clients list. **Cannot be undone:** the OAuth brand has no delete method and goes only with the project (section 2.4). |
+| C9.3 | **GitHub App** | owner, on GitHub | **Create the GitHub App** (GitHub opens with the manifest), then **Install on `<example-org>`** and choose the repositories. **Check again** checks at once. | `<app> · installed on <example-org> · self-check passed`. **Cannot be undone by us:** the App's name is global and only the owning account can delete it (section 2.4).  The self-check waits for infra pass 3, which the terminal applies by itself (stage 9). |
 | C9.4 | **First team** | owner | **Workspace group** is filled with `swarm-team@<example.com>`. Press **Create the team**. Use **Invite** to add `<teammate>` to the group in Google Admin. | the workspace is ready; `<teammate>` no longer shows `waiting for <email> to join` |
 | C9.5 | **Claude accounts** | owner and each subscription owner | Give an **Account label** and **Its owner**. Use **Sign in my Claude account** for your own subscription; use **Make a sign-in link** for someone else's (one-time, 24 hours, only for that owner). The owner pastes the code Claude shows into the product's page, never into a chat or a log. | the count of signed-in accounts reaches stage 0's proposal |
 | C9.6 | **Smoke agent** | nobody | nothing; **Retry the smoke** if it failed | `succeeded`. It runs as swarm-api's own account and opens no pull request. |
@@ -735,13 +778,17 @@ In proof install 1 it is optional, but it finds snags early. In proof install
 [section 6](#6-rollback-uninstall-what-it-removes-what-it-leaves). At the last
 question, which asks you to type the id again to delete the project, **type
 anything else**: the reinstall in D4 needs `<proof-project-1>`. Note the date.
-The reinstall must start within 7 days (section 2.4, custom role ids).
+The reinstall must start within 7 days (section 2.4, custom role ids), so **do
+D4 now, before C16**: the clock started at this uninstall. Carry on to D4
+straight away, reinstalling the release recorded for proof 1 (decision O8).
 
 **C16. Triage.** File each snag as its own issue
 ([`.github/ISSUE_TEMPLATE/`](../../.github/ISSUE_TEMPLATE/); one issue per snag,
 as the epic asks). Mark each row in the log **fixed** (with the pull request)
 or **accepted** (with the owner's initials and date). A fix ships in a new
-candidate: repeat A1 and B with `-rc.<n+1>` before Phase D.
+candidate: repeat A1 and B with `-rc.<n+1>` before D1. Do C16 only after D4
+has finished; D4 does not wait for fixes. If D4 would start later than day 7
+from C15, the reinstall proof has not been met (see D4).
 
 ### Phase D: proof install 2, the reinstall, the upgrade
 
@@ -764,11 +811,13 @@ candidate: repeat A1 and B with `-rc.<n+1>` before Phase D.
 [Section 5](#5-the-teammates-path-from-the-plugin-to-a-merged-pull-request),
 in full, done by `<teammate>`.
 
-**D4. Reinstall into the uninstalled project 1.**
+**D4. Reinstall into the uninstalled project 1.** (Run it straight after C15,
+ahead of D1 to D3; it is listed here with the second proof's phase.)
 
 - **Who:** the owner.
 - **Do:** `swarm install --project <proof-project-1> --domain <host-1>`. Do it
-  within 7 days of C15.
+  straight after C15, before C16, and in any case within 7 days of C15; write
+  the deadline date next to C15's date in the log.
 - **Worked when:** the run adopts what survived instead of recreating it
   (`SI/adopt.py`, module docstring): the KMS ring, the undeleted custom roles,
   the brand and Desktop client (taken from the remains record's defaults), and
@@ -777,12 +826,17 @@ in full, done by `<teammate>`.
   - each adopted resource;
   - any step that asked again for something the remains record holds;
   - whether the old GitHub App was reused or a new one was asked for;
+  - any stop on a Cloud Logging bucket id: the buckets Terraform destroyed
+    (`workspace-apply`, `worker-logs`) stay pending deletion for 7 days and
+    may collide with the reinstall (section 6, "Also left"; not checked);
   - the Firestore wait if the old database id was still being released
     (`SI/adopt.py`, `FIRESTORE_ID`, bound 15 min).
 - **If it fails:**
   - A "custom roles ... were deleted more than 7 days ago" stop means the
-    window passed. Log it. Either wait for the date it prints, or make the
-    reinstall proof into a new project and note it in O4.
+    window passed. Log it. Wait for the date it prints (day 37) and run D4 then.
+    A reinstall into a new project does **not** prove the epic's "reinstall
+    into the first, uninstalled project": do not substitute it. Ask the owner
+    (decision O8).
   - Any other failure: resume.
 - **Checked against:** `SI/adopt.py`; `SI/steps/bootstrap.py`
   (`held_roles`); `SI/remains.py` docstring ("A reinstall never depends on
@@ -808,6 +862,8 @@ in full, done by `<teammate>`.
 - **Who:** the owner.
 - **Do:** A1 with `version=<V>`, from the same commit as the last candidate or
   a later one.
+- **Cannot be undone:** publishing `<V>` burns the version: it is never
+  overwritten, and a failed publish burns it too (section 2.4).
 - **Worked when:** the run is green, under `releases/<V>/`.
 - **Log:** the commit, the run URL.
 - **If it fails:** as A1.
@@ -860,6 +916,11 @@ in full, done by `<teammate>`.
 - **Who:** the owner.
 - **Do:** `scripts/release/publish.sh --promote <V>`, only after the
   checklist in section 7 is signed.
+- **Cannot be undone:** promoting makes `<V>` the public stable release.
+  `release.md` gives no un-promote. If the promoted release is bad, do not
+  try to reverse it: stop, tell the owner, and publish a fixed version and
+  promote that (not checked: whether `--promote <earlier version>` is
+  accepted).
 - **Worked when:** `marketplace.json`, `install.sh` and, last,
   `channels/stable` are moved and read back.
 - **Log:** the time.
@@ -1084,13 +1145,25 @@ the following, each with the page or step that removes it by hand:
 
 Also left:
 
+- **Firestore daily backups** (`terraform/modules/firestore/backups.tf`,
+  retention 7 days). Google's backups doc, quoted there, says deleting the
+  database does not delete them. `SI/uninstall.py` and `SI/remains.py` never
+  mention them. They hold the deployment's data and bill storage until they
+  expire after 7 days;
+- **Cloud Logging buckets** Terraform destroyed (`workspace-apply`, in
+  `terraform/bootstrap/workspace_deployer.tf`; `worker-logs`, in
+  `terraform/infra/log_bucket.tf`). They stay pending deletion for 7 days and
+  their ids are held meanwhile, which may collide with a reinstall in D4. Not
+  checked against a live project;
+- **for a project you kept (C15):** the billing link, the enabled APIs and the
+  Google-managed service agents;
 - anything in Terraform state without a `managed-by` label;
 - the enabled APIs and, if Google made one, a `default` network. No uninstall
   step names these (grep of `SI/uninstall.py`, 2026-11-24); not checked
   against a live project;
 - the files on the installer's machine (section 2.3).
 
-**R2. Confirm the project is empty again.** Do both checks.
+**R2. Confirm the uninstall finished.** Do both checks. They see only the remains record: nothing in the product proves the project is empty (decision O7).
 
 1. Run `swarm uninstall --project <project>` a second time. It prints
    `swarm uninstall: <project> is already uninstalled; what remains is in <path>`
@@ -1108,7 +1181,8 @@ find a state. Their output is not checked for this case: log it.
 
 **Not checked:** a product command that lists every resource left in the
 project. There is none. The product's proof of "empty" is the two checks
-above. Whether to add a check outside the product is
+above. Whether to add a check outside the product, and to add the
+existing-project path (section 2.3, gap 1) to the engine's guarantees, is
 [decision O7](#8-open-decisions-for-the-owner).
 
 ---
@@ -1231,10 +1305,12 @@ release's upgrade test (plan §7.3), at about 10 USD a day.
 
 **O7. The gaps in "touches nothing else" and "empty again".**
 
-- **(a)** Accept the engine's guarantees as written in section 2.3, and the
-  four checks in R2.
+- **(a)** Accept the engine's guarantees as written in section 2.3 (including
+  gap 1, the existing-project path in stage 1, held off by the checks at C1
+  and C3), and the two checks in R2.
 - **(b)** Before the release, add the shell plan guard's wrong-project check
-  to the engine's Terraform passes, and a product check that lists what an
+  to the engine's Terraform passes, make stage 1 ask for the typed approval
+  before it changes an existing project, and add a product check that lists what an
   uninstalled project still holds.
 
 **Recommendation: (a) for this proof, and file (b) as issues.** Nothing above
@@ -1254,3 +1330,28 @@ state. (b) is a code change, outside this runbook's scope.
 uninstalled project works"; adoption is what it proves, whatever the release.
 The extra upgrade is cheap, and (b) may need a code change before the proof
 can finish.
+
+---
+
+## What the independent review changed
+
+An independent review found four major gaps and four minor ones; each is fixed
+here and checked against the code it cites.
+
+- **Existing-project path (2.3, C1, C3, O7).** Stage 1 can change an existing
+  project (APIs, budget, default compute editor role, state bucket) before the
+  never-touch approval, if a typo or the "is taken" retry names it. Stated as
+  gap 1; C1 and C3 now say to use a new id and to check for `(exists)` at the stage 1 approval and say when not to type the
+  project id or `remove-editor`; added to O7.
+- **Voice it (C2, 2.1, 2.2, 2.5).** Stage 0's two Voice it questions are listed,
+  with the proof's answer (no) and what a yes adds.
+- **Reinstall window (C15, C16, D4).** D4 now follows C15 directly, before
+  triage; the "new project" fallback is dropped as not meeting the epic item;
+  the wrong O4 reference is now O8.
+- **Rollback (section 6).** Firestore backups, pending-deletion log buckets and
+  what a kept project keeps are listed; R2 is renamed "Confirm the uninstall
+  finished" and says nothing proves emptiness.
+- **Irreversible steps** are marked at C2, C6, C9.2, C9.3, D5 and E2.
+- **Minors:** the installer's-machine row (ADC, SDK), the dry-run "writes
+  nothing" wording, the commit citation, and the billing link staying with a
+  kept project.
