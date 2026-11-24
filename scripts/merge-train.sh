@@ -1551,6 +1551,28 @@ state_patch() {
   cp "${edited}" "${body}"
 }
 
+read_check_runs() {
+  # Reads every check run at the API path $1 into file $2 as
+  # {"total_count": N, "check_runs": [...]}, page by page. Returns 1 unless
+  # the runs read number exactly total_count: a truncated list must never be
+  # judged (a failing run past the first page would be invisible).
+  local path="$1" out="$2" page=1 got="$2.page" total n have=0
+  printf '{"total_count": 0, "check_runs": []}\n' >"${out}"
+  while [[ "${page}" -le 50 ]]; do
+    gh_read "the check runs, page ${page}" "${got}" gh api "${path}?per_page=100&page=${page}" || return 1
+    jq -e '(.total_count | type) == "number" and (.check_runs | type) == "array"' "${got}" >/dev/null 2>&1 || return 1
+    total="$(jq '.total_count' "${got}")"
+    jq -s '{total_count: .[1].total_count, check_runs: (.[0].check_runs + .[1].check_runs)}' "${out}" "${got}" >"${out}.next" || return 1
+    mv "${out}.next" "${out}"
+    n="$(jq '.check_runs | length' "${got}")"
+    have="$(jq '.check_runs | length' "${out}")"
+    [[ "${have}" -ge "${total}" ]] && return 0
+    [[ "${n}" -gt 0 ]] || return 1
+    page=$((page + 1))
+  done
+  return 1
+}
+
 main_checks() {
   # Judges main's head on the check names in the JSON array $1, by the same
   # latest-run-per-event rule as a train head (cmd_judge). Sets MAIN_SHA,
@@ -1567,7 +1589,7 @@ main_checks() {
   MAIN_SHA="$(jq -r '.sha // empty' "${commit}")" || return 1
   is_sha "${MAIN_SHA}" || return 1
   gh_read "the check runs on main" "${cr}" \
-    gh api "repos/${GH_REPO}/commits/${MAIN_SHA}/check-runs?per_page=100" || return 1
+    read_check_runs "repos/${GH_REPO}/commits/${MAIN_SHA}/check-runs" "${cr}" || return 1
   gh_read "the commit statuses on main" "${st}" \
     gh api "repos/${GH_REPO}/commits/${MAIN_SHA}/status?per_page=100" || return 1
   # Unread (no `actions: read`), each check suite is judged on its own, as
@@ -1684,13 +1706,13 @@ scan_ejections() {
       SCAN_WHY="could not read every annotation of \`${name}\`"
       return 1
     fi
-    jq -r --arg name "${name}" '.[] | select((.path // "") != "")
-        | [$name, .path, (.start_line // "" | tostring), (.title // ""), (.message // "")]
+    jq -r --arg name "${name}" '.[] | select((.path // "") != "" and .annotation_level == "failure")
+        | [$name, .path, (.start_line // "" | tostring), (.title // ""), (.message // ""), .annotation_level]
         | map(tostring | gsub("[\\t\\r\\n]"; " ")) | join("\t")' "${raw}" >>"${alerts}"
   done <"${scans}"
   alert_lines "${alerts}" >"${SCAN_ALERTS}"
   if [[ ! -s "${alerts}" ]]; then
-    SCAN_WHY="no annotation of the failing code-scanning check names a file"
+    SCAN_WHY="no failure-level annotation of the failing code-scanning check names a file"
     return 1
   fi
   for m in ${on_train}; do
@@ -1923,8 +1945,7 @@ handle_train() {
   for pair in ${pairs}; do train_prs="${train_prs:+${train_prs} }${pair%%:*}"; done
 
   local cr="${WORK}/check-runs.json" st="${WORK}/status.json" verdict_file="${WORK}/verdict.tsv"
-  gh_read "the check runs at train ${id}'s head" "${cr}" \
-    gh api "repos/${GH_REPO}/commits/${head}/check-runs?per_page=100" \
+  read_check_runs "repos/${GH_REPO}/commits/${head}/check-runs" "${cr}" \
     || die "could not read the check runs at train ${id}'s head ${head}"
   gh_read "the commit statuses at train ${id}'s head" "${st}" \
     gh api "repos/${GH_REPO}/commits/${head}/status?per_page=100" \

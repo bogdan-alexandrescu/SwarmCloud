@@ -33,7 +33,7 @@ import pytest
 
 import json
 
-from .test_merge_train import (REQUIRED, REQUIRED_TICK, SCRIPT, TRAIN_PR, UNIT, RedTick, _at, _main,
+from .test_merge_train import (REQUIRED, REQUIRED_TICK, SCRIPT, TRAIN_PR, UNIT, RedTick, _at, _green_train, _main,
                                _required_file, _run)
 
 TRIVY = "Trivy"
@@ -197,6 +197,32 @@ def test_annotations_are_read_past_the_first_page(train):
     t.run()
     assert sorted(t.ejected()) == ["issues/101/labels/ready", "issues/102/labels/ready"]
     assert f"{MANIFEST}:7" in t.comments(102)
+
+
+def test_warning_and_notice_annotations_never_eject_an_innocent_member(train):
+    t = train([101, 102, 103])
+    warn = {**_alert("b.py", 3, "KSV-0100"), "annotation_level": "warning"}
+    note = {**_alert("c.py", 4, "KSV-0101"), "annotation_level": "notice"}
+    _red_on_code_scanning(t, [warn, note, *ALERTS], {101: [MANIFEST], 102: ["b.py"], 103: ["c.py"]})
+    t.run()
+    assert t.ejected() == ["issues/101/labels/ready"]
+
+
+def test_only_non_failure_annotations_bisect_and_eject_nobody(train):
+    t = train([101, 102])
+    warn = {**_alert("b.py", 3, "KSV-0100"), "annotation_level": "warning"}
+    _red_on_code_scanning(t, [warn], {101: ["b.py"], 102: ["c.py"]})
+    t.run()
+    assert t.ejected() == []
+
+
+def test_a_check_run_list_not_read_whole_is_never_judged_green(train):
+    t = train([101, 102])
+    _green_train(t)
+    t.world["check_runs_total"] = len(t.world["checks"][t.head]["check_runs"]) + 5
+    with pytest.raises(AssertionError, match="could not read the check runs"):
+        t.run()
+    assert not json.loads(t.path.read_text()).get("merged")
 
 
 def test_a_code_scanning_red_beside_a_failed_actions_job_still_retries_the_job_first(train):

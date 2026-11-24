@@ -1483,7 +1483,10 @@ if args[:1] == ["api"]:
     if parts[0] == "commits":
         at = world["checks"].get(parts[1], {})
         if parts[2] == "check-runs":
-            print(json.dumps({"check_runs": at.get("check_runs", [])}))
+            rows = at.get("check_runs", [])
+            per, page = int(query.get("per_page", 30)), int(query.get("page", 1))
+            print(json.dumps({"total_count": world.get("check_runs_total", len(rows)),
+                              "check_runs": rows[(page - 1) * per:page * per]}))
         else:
             print(json.dumps({"statuses": at.get("statuses", [])}))
         sys.exit(0)
@@ -2180,7 +2183,7 @@ TICK_READS = [
     ("main's rules", _green_train, lambda t: [_api("rules/branches/main")], 1, 0),
     ("main's branch protection", _green_train, lambda t: [_api("branches/main")], 1, 0),
     ("the check runs at the train head", _green_train,
-     lambda t: [_api(f"commits/{t.head}/check-runs?per_page=100")], 1, 0),
+     lambda t: [_api(f"commits/{t.head}/check-runs?per_page=100&page=1")], 1, 0),
     ("the statuses at the train head", _green_train,
      lambda t: [_api(f"commits/{t.head}/status?per_page=100")], 1, 0),
     ("the Actions runs at the train head", _green_train_ran_twice, _head_runs, 1, 0),
@@ -2197,7 +2200,7 @@ TICK_READS = [
     ("rule 1's runs to re-run", _first_red, _head_runs, 2, 1),
     ("main's head commit", _red_while_main_is_red, lambda t: [_api("commits/main")], 1, 0),
     ("the check runs on main", _red_while_main_is_red,
-     lambda t: [_api(f"commits/{t.main}/check-runs?per_page=100")], 1, 0),
+     lambda t: [_api(f"commits/{t.main}/check-runs?per_page=100&page=1")], 1, 0),
     ("the statuses on main", _red_while_main_is_red,
      lambda t: [_api(f"commits/{t.main}/status?per_page=100")], 1, 0),
     ("the Actions runs on main", _red_while_main_is_red,
@@ -2245,7 +2248,7 @@ def test_the_tick_s_outcome_survives_one_timeout_on_each_read_it_decides_on(red_
     """Each read through gh_read decides as if it never failed."""
     t = red_tick([101, 102])
     _green_train(t)
-    faults = _faulty(t, [{"words": [_api(f"commits/{t.head}/check-runs?per_page=100")],
+    faults = _faulty(t, [{"words": [_api(f"commits/{t.head}/check-runs?per_page=100&page=1")],
                           "fail": ["timeout"]},
                          {"words": [_api(f"commits/{t.head}/status?per_page=100")],
                           "fail": ["eof"]},
