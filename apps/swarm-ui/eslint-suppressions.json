@@ -1029,7 +1029,7 @@
       "count": 3
     },
     "sonarjs/no-nested-conditional": {
-      "count": 7
+      "count": 6
     },
     "sonarjs/prefer-read-only-props": {
       "count": 7
@@ -2806,7 +2806,7 @@
       "count": 2
     },
     "testing-library/no-node-access": {
-      "count": 85
+      "count": 82
     }
   },
   "src/__tests__/access.phone-chooser.test.tsx": {
@@ -8588,7 +8588,7 @@
       "count": 2
     },
     "testing-library/no-node-access": {
-      "count": 17
+      "count": 16
     }
   },
   "src/__tests__/qa1.fix15.notfound-bell.test.tsx": {
@@ -14691,7 +14691,7 @@
       "count": 5
     },
     "sonarjs/no-nested-template-literals": {
-      "count": 9
+      "count": 8
     },
     "sonarjs/super-linear-regex": {
       "count": 1
