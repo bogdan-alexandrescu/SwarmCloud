@@ -2488,7 +2488,7 @@ The frozen catalogue says nothing about this. It lists the names, and the
 meaning of one of them is decided outside it:
 
 * `agent_worker.accountlease.ACCOUNT_TOKEN_ENV`, which the worker checks before
-  it asks the broker for an account (`lifecycle._lease_account`);
+  it asks the broker for an account (`accountpool._lease_account`);
 * `scheduler.credentials.SUBSCRIPTION_TOKEN_ENV`, which admission checks before
   it lets a tenant with no key of its own through on the pool.
 
@@ -15888,7 +15888,7 @@ a comment that it is a READ-SIDE VIEW ONLY.
   the totals in the same transaction as the attempt's end (`finish`, `park`,
   `retry`), and after its start, its spend and a bare `record_attempt_end`;
   the account in the same transaction as each `account_assigned` /
-  `account_unreadable` event (`emit`, which `lifecycle._lease_account`, the
+  `account_unreadable` event (`emit`, which `accountpool._lease_account`, the
   swap and `_reject_account` all go through). The rules are swarm-api's,
   restated in the worker's separate image, and a parity test holds the two
   equal. Only while the writer's attempt is the task document's current
