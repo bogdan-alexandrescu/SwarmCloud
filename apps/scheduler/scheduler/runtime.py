@@ -345,8 +345,9 @@ def _passed_on_entry(review: Mapping[str, Any] | None, *, tenant_id: str, review
     if isinstance(uri, str) and uri:
         size = entry.get("bytes")
         prefix = f"tenants/{tenant_id}/tasks/{review_task_id}/attempts/"
+        root = uri.find("tenants/")
         if (isinstance(size, bool) or not isinstance(size, int) or size < 0
-                or prefix not in uri or not uri.endswith(f"/artifacts/{filename}")):
+                or root < 0 or not uri[root:].startswith(prefix) or not uri.endswith(f"/artifacts/{filename}")):
             return None
         out.update({"uri": uri, "bytes": size})
         return out

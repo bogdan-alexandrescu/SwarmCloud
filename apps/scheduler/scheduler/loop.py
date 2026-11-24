@@ -1580,9 +1580,10 @@ class Scheduler:
         recorded shut, ended SUCCEEDED (contract request 157), whose dependants
         (the merge step) the rule promotes READY exactly as a worker's finish
         wake would. Either way this takes no lease itself: only `_admit_one`
-        does, so nothing here creates demand (invariant 1). The scheduler does not publish a `task_finished` wake to itself
-        instead: it is the wake's receiver, and that message would queue
-        behind the drain lock this run holds.
+        does, so nothing here creates demand (invariant 1). The scheduler does
+        not publish a `task_finished` wake to itself instead: it is the
+        wake's receiver, and that message would queue behind the drain lock
+        this run holds.
 
         A failure here is logged and the run goes on: resolving now is a
         latency win, and the next drain's `_promote_dependencies` resolves the
