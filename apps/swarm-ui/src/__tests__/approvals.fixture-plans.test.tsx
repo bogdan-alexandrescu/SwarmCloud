@@ -2,8 +2,9 @@
 // 6 November 2026: the page can be seen and tested on its fixtures).
 //
 // WHAT EACH CASE HOLDS:
-//   * the fixture inbox lists the three example runs waiting for approval,
-//     projected as the live API projects a PLANNED run (`run:<id>`);
+//   * the fixture inbox serves the three example runs waiting for approval,
+//     projected as the live API projects a PLANNED run (`run:<id>`); they are
+//     Pipeline board cards, so the narrowed Approvals list draws none;
 //   * each opens on its brief with every section the run read serves drawn:
 //     purpose, why, the change map, Risk, Validation and the steps;
 //   * the small plan is one low-risk step over a handful of files;
@@ -66,17 +67,20 @@ afterEach(() => {
 })
 
 describe('the fixture inbox', () => {
-  it('lists the three example plans waiting for approval', async () => {
-    const { USE_FIXTURES } = await import('../api')
+  it('serves the three example plans waiting for approval, which the Pipeline board lists, not Approvals', async () => {
+    const { USE_FIXTURES, loadApprovals } = await import('../api')
     expect(USE_FIXTURES).toBe(true)
+    const inbox = await loadApprovals()
+    if (inbox.status !== 'ok') throw new Error('fixture inbox not served')
+    const ids = (inbox.data.approvals as Array<{ approval_id: string; kind: string }>).filter((a) => a.kind === 'plan').map((a) => a.approval_id)
     await mount(null)
     // MUTATION: serve the fixture inbox empty again, and no plan can be opened.
     for (const id of [SMALL, HIGH, STEPS]) {
       const r = await run(id)
       expect(r.state).toBe('PLANNED')
-      const card = await screen.findByRole('region', { name: `${r.issue.ref}: ${r.plan!.summary}` }, WAIT)
-      const link = within(card).getByRole('link', { name: 'Review' })
-      expect(link.getAttribute('href')).toContain(encodeURIComponent(`run:${id}`))
+      expect(ids).toContain(`run:${id}`)
+      // A plan is a Pipeline board card (plans-pipeline.md §2.2): Approvals lists none.
+      expect(screen.queryByRole('region', { name: `${r.issue.ref}: ${r.plan!.summary}` })).toBeNull()
     }
   })
 })

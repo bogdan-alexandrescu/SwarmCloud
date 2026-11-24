@@ -1,6 +1,8 @@
 /**
  * AUTOMATE › APPROVALS (docs/schedules.md §4.5, §6.1; archived issue 2417 A4, proposal A):
- * the tenant's inbox, at `/automate/approvals`. One list holds every kind -- a
+ * the tenant's inbox, at `/automate/approvals`. NARROWED by plans-pipeline §2.2:
+ * a plan, a held plan, a merge and a proposal are the Pipeline board's cards
+ * (`Pipeline.tsx`); this list keeps the other kinds. It held every kind -- a
  * firing waiting to run, an issue run's plan (projected from the run, not
  * copied), a held plan, a green pull request waiting to merge, a proposal, a
  * spec, a workflow step waiting for an answer -- as `GET /v1/approvals`
@@ -23,7 +25,7 @@
  * A waiting item holds no capacity (invariant 1): nothing here is running.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { loadApprovals } from './api'
+import { loadApprovals, loadPipeline } from './api'
 import type { Result } from './fetch'
 import { Button, Dash, Tag } from './components'
 import { InfoTip } from './InfoTip'
@@ -35,7 +37,7 @@ import { Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
 import { ApprovalDecisionScreen, BackToList, decidersWords, when, type InboxItem } from './ApprovalDecision'
-import { APPROVAL_KIND, approvalAddress, approvalsAddress } from './approvalPaths'
+import { APPROVAL_KIND, BOARD_KINDS, approvalAddress, approvalsAddress, boardOf, pipelineAddress } from './approvalPaths'
 import './styles/schedules.css'
 import './styles/automate-approvals.css'
 
@@ -48,11 +50,21 @@ function approvalOf(view: string | null): string | null {
   return id === null || id === '' ? null : id
 }
 
-/** The kind an address filters to, or null for every kind; a kind the route does not know is none. */
+/**
+ * WHAT STAYS HERE (plans-pipeline §2.2, the owner 10:08Z): the kinds the
+ * Pipeline board does not draw -- a firing waiting to run, a custom-prompt
+ * spec, an agent's input wait, a contract judgment. A plan, a held plan, a
+ * merge and a proposal are the board's cards; their own addresses,
+ * `/automate/approvals/<id>`, still open their decision pages.
+ */
+const KEPT_KIND: Readonly<Record<string, string>> = Object.fromEntries(Object.entries(APPROVAL_KIND).filter(([k]) => !BOARD_KINDS.includes(k)))
+const isKept = (i: InboxItem) => !BOARD_KINDS.includes(i.kind)
+
+/** The kind an address filters to, or null for every kind; a kind the route does not know, or the board's, is none. */
 function kindOf(view: string | null): string | null {
   if (view === null || view === '') return null
   const kind = new URLSearchParams(view).get('kind')
-  return kind !== null && Object.prototype.hasOwnProperty.call(APPROVAL_KIND, kind) ? kind : null
+  return kind !== null && Object.prototype.hasOwnProperty.call(KEPT_KIND, kind) ? kind : null
 }
 
 /**
@@ -62,7 +74,7 @@ function kindOf(view: string | null): string | null {
  * as the filter, so a kind added there is named here.
  */
 const EVERY_KIND = (() => {
-  const words = Object.values(APPROVAL_KIND).map((w) => w.toLowerCase())
+  const words = Object.values(KEPT_KIND).map((w) => w.toLowerCase())
   return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} or ${words[words.length - 1]}`
 })()
 
@@ -214,7 +226,7 @@ function Panel({ title, note, tip, testId, children }: { title: string; note: st
  * read keeps its chip, since nobody measured it empty.
  */
 function KindFilter({ kind, items, every, go }: { kind: string | null; items: InboxItem[]; every: InboxItem[] | null; go: (to: string) => void }) {
-  const kinds: [string | null, string][] = [[null, 'Every kind'], ...Object.entries(APPROVAL_KIND)]
+  const kinds: [string | null, string][] = [[null, 'Every kind'], ...Object.entries(KEPT_KIND)]
   const waiting = (kind === null ? items : (every ?? [])).filter(isWaiting)
   const count = (k: string | null): number | null => {
     if (kind === null || every !== null) return k === null ? waiting.length : waiting.filter((i) => i.kind === k).length
@@ -246,7 +258,7 @@ const byAsked = (a: InboxItem, b: InboxItem) => (Date.parse(a.requested_at ?? ''
  * drawn, rather than drawn empty, which would read as "nothing was decided".
  * An answered await-input step is decided (QA2B-E review).
  */
-function ApprovalsList({ items, every, kind, go }: { items: InboxItem[]; every: InboxItem[] | null; kind: string | null; go: (to: string) => void }) {
+function ApprovalsList({ items, every, onBoard, kind, go }: { items: InboxItem[]; every: InboxItem[] | null; onBoard: number | null; kind: string | null; go: (to: string) => void }) {
   const waiting = items.filter(isWaiting).sort(byAsked)
   const decided = items
     .filter(isDecided)
@@ -258,6 +270,13 @@ function ApprovalsList({ items, every, kind, go }: { items: InboxItem[]; every: 
     <div className="apc-page">
       <div className="apc-bar-row">
         <KindFilter kind={kind} items={items} every={every} go={go} />
+        {onBoard !== null && onBoard > 0 && (
+          // §2.2: what waits on a person on the board, counted by the same
+          // read the board draws, so the two pages cannot disagree on it.
+          <Button size="sm" data-testid="apl-board" onClick={() => go(pipelineAddress('waits=person'))}>
+            {onBoard} waiting on the Pipeline board
+          </Button>
+        )}
       </div>
       <Panel title="Waiting" note={waiting.length === 0 ? null : `${waiting.length}, oldest first`} testId="apl-waiting">
         {waiting.length === 0 ? (
@@ -422,21 +441,33 @@ function InputScreen({ itemId, kind, round, go }: { itemId: string; kind: string
   )
 }
 
-/** The list's read: the inbox as filtered, and on a filtered page the whole inbox beside it, or null when unread. */
-type ListRead = { approvals: InboxItem[]; every: InboxItem[] | null }
+/**
+ * The list's read: the inbox as filtered, the board's kinds left out; on a
+ * filtered page the whole inbox beside it, or null when unread; and how many
+ * cards wait on a person on the Pipeline board, or null when that read failed.
+ */
+type ListRead = { approvals: InboxItem[]; every: InboxItem[] | null; onBoard: number | null }
 
 async function readList(kind: string | null): Promise<Result<ListRead>> {
   // `all` on the list read (automate2-01): the route's default is the inbox only.
-  const [r, all] = await Promise.all([loadApprovals(kind === null ? { state: 'all' } : { kind, state: 'all' }), kind === null ? null : loadApprovals()])
-  const every = all === null ? null : all.status === 'ok' ? (all.data.approvals as InboxItem[]) : all.status === 'empty' ? [] : null
-  if (r.status === 'empty') return { status: 'ok', data: { approvals: [], every }, fetchedAt: r.fetchedAt }
-  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: { approvals: r.data.approvals as InboxItem[], every } }
+  const [r, all, board] = await Promise.all([
+    loadApprovals(kind === null ? { state: 'all' } : { kind, state: 'all' }),
+    kind === null ? null : loadApprovals(),
+    loadPipeline(),
+  ])
+  const every = all === null ? null : all.status === 'ok' ? (all.data.approvals as InboxItem[]).filter(isKept) : all.status === 'empty' ? [] : null
+  // §2.2: `waits_on_person` of `GET /v1/pipeline`, the board's own count. An
+  // empty board is a measured zero; a failed read is no figure at all.
+  const onBoard = board.status === 'ok' ? board.data.waits_on_person : board.status === 'empty' ? 0 : null
+  if (r.status === 'empty') return { status: 'ok', data: { approvals: [], every, onBoard }, fetchedAt: r.fetchedAt }
+  if (r.status === 'ok' || r.status === 'stale') return { ...r, data: { approvals: (r.data.approvals as InboxItem[]).filter(isKept), every, onBoard } }
   return r
 }
 
 export function ApprovalsScreen({ view, go }: { view: string | null; go: (to: string) => void }) {
   const selected = approvalOf(view)
   const kind = kindOf(view)
+  const board = boardOf(view)
   const [round, setRound] = useState(0)
   const [said, setSaid] = useState<string | null>(null)
   // WHAT A DECISION SAID TAKES FOCUS (QA1 automate-15): Reject's button is
@@ -448,7 +479,7 @@ export function ApprovalsScreen({ view, go }: { view: string | null; go: (to: st
   }, [said])
   const decided = (word: string) => {
     setSaid(`${word}. The inbox was read again.`)
-    go(approvalsAddress(kind))
+    go(board !== null ? pipelineAddress(board) : approvalsAddress(kind))
     setRound((n) => n + 1)
   }
   return (
@@ -461,7 +492,7 @@ export function ApprovalsScreen({ view, go }: { view: string | null; go: (to: st
       {selected !== null && selected.startsWith(INPUT_PREFIX) ? (
         <InputScreen itemId={selected} kind={kind} round={round} go={go} />
       ) : selected !== null ? (
-        <ApprovalDecisionScreen itemId={selected} kind={kind} round={round} go={go} onDecided={decided} />
+        <ApprovalDecisionScreen itemId={selected} kind={kind} round={round} go={go} onDecided={decided} board={board} />
       ) : (
         <Screen
           key={`approvals:${kind ?? ''}:${round}`}
@@ -473,7 +504,7 @@ export function ApprovalsScreen({ view, go }: { view: string | null; go: (to: st
           // costs only those figures, never the page.
           load={() => readList(kind)}
         >
-          {(d) => <ApprovalsList items={d.approvals} every={d.every} kind={kind} go={go} />}
+          {(d) => <ApprovalsList items={d.approvals} every={d.every} onBoard={d.onBoard} kind={kind} go={go} />}
         </Screen>
       )}
     </>

@@ -74,6 +74,13 @@ const INBOX = [
   item('apr_newest', { kind: 'run', approvers: 'members', may_decide: { approve: true, reject: true, why: null, deciders: ['members'] } }),
 ]
 
+/**
+ * The list's own inbox (plans-pipeline §2.2): the list keeps only the kinds
+ * the Pipeline board does not draw, so a merge and a held plan become specs
+ * here. The decision page's tests keep INBOX, whose items open by address.
+ */
+const LIST = INBOX.map((i) => (i.kind === 'run' ? i : { ...i, kind: 'spec' }))
+
 function merge(over: Json = {}): Json {
   return {
     green_sha: HEAD,
@@ -132,7 +139,7 @@ afterEach(() => {
 
 describe('the Approvals list (A4)', () => {
   it('counts the waiting items on the Waiting panel, oldest first, the reader’s or not', async () => {
-    await mount('', routes(INBOX))
+    await mount('', routes(LIST))
     const waiting = await screen.findByTestId('apl-waiting', undefined, WAIT)
     // MUTATION: count only the items the reader may decide (2), not every item (3).
     expect(visible(waiting.querySelector('.apc-panel-h'))).toMatch(/^Waiting\s*3, oldest first$/)
@@ -141,7 +148,7 @@ describe('the Approvals list (A4)', () => {
   })
 
   it('lists waiting items oldest first with expiry and who may decide, each opening its own page', async () => {
-    await mount('', routes(INBOX))
+    await mount('', routes(LIST))
     const card = await screen.findByTestId('apl-waiting', undefined, WAIT)
     const rows = [...card.querySelectorAll<HTMLElement>('.apc-card[data-approval]')]
     expect(rows.map((r) => r.dataset.approval)).toEqual(['apr_oldest', 'run:run_4f0c', 'apr_newest'])
@@ -161,22 +168,24 @@ describe('the Approvals list (A4)', () => {
   })
 
   it('counts each kind on its chip from the whole inbox, and draws no chip for a kind with nothing waiting', async () => {
-    await mount('', routes(INBOX))
+    await mount('', routes(LIST))
     await screen.findByTestId('apl-waiting', undefined, WAIT)
     const chips = within(screen.getByRole('group', { name: 'Kind' }))
     expect(visible(chips.getByRole('button', { name: /^Every kind/ }))).toBe('Every kind · 3')
-    expect(visible(chips.getByRole('button', { name: /^Merge/ }))).toBe('Merge · 1')
+    expect(visible(chips.getByRole('button', { name: /^Spec/ }))).toBe('Spec · 2')
     // Visual QA automate-22: a zero chip is not drawn unless it is the chosen kind.
-    expect(chips.queryByRole('button', { name: /^Spec/ })).toBeNull()
+    expect(chips.queryByRole('button', { name: /^Answer/ })).toBeNull()
+    // plans-pipeline §2.2: the board's kinds have no chip here.
+    expect(chips.queryByRole('button', { name: /^Merge/ })).toBeNull()
   })
 
   it('draws decided, expired and superseded items the read serves in their own panels, with who decided', async () => {
     const inbox = [
-      ...INBOX,
-      item('apr_r', { state: 'rejected', decided_by: 'teammate@example.com', decided_at: hoursFromNow(-3), reason: 'split the workflow change out' }),
-      item('apr_a', { state: 'approved', decided_by: 'owner@example.com', decided_at: hoursFromNow(-4) }),
-      item('apr_x', { state: 'expired', expires_at: hoursFromNow(-1) }),
-      item('apr_s', { state: 'superseded', decided_at: hoursFromNow(-2) }),
+      ...LIST,
+      item('apr_r', { kind: 'spec', state: 'rejected', decided_by: 'teammate@example.com', decided_at: hoursFromNow(-3), reason: 'split the workflow change out' }),
+      item('apr_a', { kind: 'spec', state: 'approved', decided_by: 'owner@example.com', decided_at: hoursFromNow(-4) }),
+      item('apr_x', { kind: 'spec', state: 'expired', expires_at: hoursFromNow(-1) }),
+      item('apr_s', { kind: 'spec', state: 'superseded', decided_at: hoursFromNow(-2) }),
     ]
     await mount('', routes(inbox))
     const decided = await screen.findByTestId('apl-decided', undefined, WAIT)
@@ -187,7 +196,7 @@ describe('the Approvals list (A4)', () => {
     expect(visible(r)).toMatch(/Rejected by\s*teammate@example\.com/)
     expect(visible(decided.querySelector('.apc-card[data-approval="apr_a"]'))).toMatch(/Approved by\s*owner@example\.com/)
     expect(screen.getByTestId('apl-expired').querySelector('[data-approval="apr_x"]')).not.toBeNull()
-    expect(visible(screen.getByTestId('apl-superseded').querySelector('[data-approval="apr_s"]'))).toContain('head moved')
+    expect(visible(screen.getByTestId('apl-superseded').querySelector('[data-approval="apr_s"]'))).toContain('replaced')
   })
 
   it('is the Absent state when nothing waits: no lead, no table, the filter kept', async () => {
@@ -306,9 +315,9 @@ describe('one approval’s decision page (A5)', () => {
   })
 
   it('leads back to the list it was opened from, its kind kept', async () => {
-    await mount('approval=apr_oldest&kind=merge', routes(INBOX, detail()))
+    await mount('approval=apr_oldest&kind=spec', routes(INBOX, detail()))
     await page()
-    expect(screen.getByRole('link', { name: '‹ Approvals, Merge' }).getAttribute('href')).toBe('/automate/approvals?kind=merge')
+    expect(screen.getByRole('link', { name: '‹ Approvals, Spec' }).getAttribute('href')).toBe('/automate/approvals?kind=spec')
   })
 })
 
@@ -327,7 +336,7 @@ describe('the layout', () => {
   })
 
   it('stacks the list’s cards on one column at 390px, each card’s action a 44px target', async () => {
-    await mount('', routes(INBOX))
+    await mount('', routes(LIST))
     const card = await screen.findByTestId('apl-waiting', undefined, WAIT)
     // MUTATION: keep three cards across at 390px, and the page scrolls sideways.
     expect(painted(card.querySelector<HTMLElement>('.apc-grid')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')

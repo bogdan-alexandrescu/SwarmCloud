@@ -138,6 +138,7 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
   // the inbox count, as the section does on the spine.
   automate: [
     { key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'automate/schedules' },
+    { key: 'pipeline', label: 'Pipeline', icon: 'workflows', to: 'automate/pipeline' },
     { key: 'approvals', label: 'Approvals', icon: 'approvals', to: 'automate/approvals' },
   ],
   capacity: [
