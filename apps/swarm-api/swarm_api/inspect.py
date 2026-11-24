@@ -50,6 +50,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from collections.abc import Mapping
 from typing import Any, Callable, Sequence
 
 from swarm_common.models import Attempt, Task, utcnow
@@ -1073,6 +1074,7 @@ class InspectionService:
         name: str,
         offset: int = 0,
         limit_bytes: int | None = None,
+        _followed: bool = False,
     ) -> dict[str, Any]:
         """One artifact's CONTENT. The server picks the object; the caller names it.
 
@@ -1127,6 +1129,15 @@ class InspectionService:
         inline = self._inline_artifact(task, name)
         if inline is not None:
             return inline
+        source = None if _followed else self._republished_source(task, name)
+        if source is not None:
+            # A scheduler-ended re-review (request 157) points at its review's
+            # object instead of holding a copy. Serve the review's own entry,
+            # resolved under the REVIEW's prefix in this tenant, once only.
+            return self.read_artifact(
+                tenant_id, source, submitted_by=submitted_by, name=name,
+                offset=offset, limit_bytes=limit_bytes, _followed=True,
+            )
         entry, attempt_id, key, reader = self._resolve_artifact(task, name)
 
         window = self._default_artifact_bytes if limit_bytes is None else limit_bytes
@@ -1264,6 +1275,36 @@ class InspectionService:
                 "U+FFFD; the raw route (/artifacts/raw) serves them exactly",
             )
         return row
+
+    def _republished_source(self, task: Task, name: str) -> str | None:
+        """The review a scheduler-ended re-review's `republished_from` entry names, or None.
+
+        The same checks as `agent_worker.inputs.republished_source`: written
+        by the control plane, the record and the signed dispatch gate both
+        name the source, `agent_ran` false, the source one of the task's
+        parents. The tenant is held by the caller's tenant-scoped read of it.
+        """
+        entry = self._store.artifact_manifest(task).find(name) if isinstance(name, str) else None
+        if entry is None:
+            return None
+        source = entry.get("republished_from")
+        if (not isinstance(source, str) or not source or entry.get("name") != name
+                or entry.get("written_by") != "control_plane"):
+            return None
+        summary = task.result_summary
+        if not isinstance(summary, Mapping) or summary.get("published_by") != "control_plane":
+            return None
+        record = summary.get("verdict_gate")
+        if (not isinstance(record, Mapping) or record.get("agent_ran") is not False
+                or record.get("task_id") != source or record.get("file") != name):
+            return None
+        dispatch = task.metadata.get("dispatch") if isinstance(task.metadata, Mapping) else None
+        gate = dispatch.get("verdict_gate") if isinstance(dispatch, Mapping) else None
+        if not isinstance(gate, Mapping) or gate.get("task_id") != source:
+            return None
+        if source not in (task.depends_on or []):
+            return None
+        return source
 
     def _inline_artifact(self, task: Task, name: str) -> dict[str, Any] | None:
         """A skipped review's inline verdict, served whole and redacted, or None (archived issue 2524).
