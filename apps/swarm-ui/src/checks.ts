@@ -384,8 +384,15 @@ function quotaCheck(providers: Result<ProvidersPage>, now: number): Check {
         severity: 'warn',
         n: 1,
         headline: `${p.provider} is ${q.state.toLowerCase()}`,
-        detail: `${q.rate_limit_count} rate-limit responses so far; the ceiling this derives is ${q.effective_limit}${q.last_429_at ? `, last 429 ${timeAgo(q.last_429_at, now)}` : ''}.`,
-        why: 'Throughput is reduced, not stopped.',
+        // FACTS ON THE SURFACE (issue 81); the sentence they were is the why.
+        detail: [
+          `${q.rate_limit_count} rate-limit responses`,
+          `ceiling ${q.effective_limit}`,
+          ...(q.last_429_at ? [`last 429 ${timeAgo(q.last_429_at, now)}`] : []),
+        ].join(' · '),
+        why:
+          'Throughput is reduced, not stopped. ' +
+          `${q.rate_limit_count} rate-limit responses so far; the ceiling this derives is ${q.effective_limit}${q.last_429_at ? `, last 429 ${timeAgo(q.last_429_at, now)}` : ''}.`,
         href: '#capacity/quota',
         linkLabel: 'quota, all workspaces · admin',
       })
@@ -625,7 +632,17 @@ function failedProblem(failed: Task[], now: number, count: string, scope: string
     // (agent_worker/control.py), so FAILED is written only once nothing
     // will run it again: TERMINAL_STATES holds it, and no writer moves it
     // back. The attempt count says why, never whether.
-    detail: `${terminalClause(failed.length, exhausted.length)} Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`,
+    // FACTS ON THE SURFACE, THE SENTENCE BEHIND THE MARK (issue 81): the
+    // detail read "Terminal: nothing will retry them. 2 used every attempt.
+    // Newest: ...", a visible run of two sentences. It is the facts now,
+    // joined as a fact list; `terminalClause`'s sentence is the card's `why`,
+    // word for word.
+    detail: [
+      'Terminal',
+      ...terminalFacts(failed.length, exhausted.length),
+      `Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`,
+    ].join(' · '),
+    why: terminalClause(failed.length, exhausted.length),
     // A failed agent is a row in the agent list, not an entry on a board
     // of its own. THE ADDRESS OPENS EXACTLY THAT LIST (OV-10): the Recent
     // tab filtered to FAILED. The tab used to be component state the hash
@@ -674,6 +691,15 @@ export function newestEndedFirst(rows: readonly Task[]): Task[] {
 function namesOf(ids: string[]): string {
   const shown = ids.slice(0, 3).join(', ')
   return ids.length > 3 ? `${shown} +${ids.length - 3} more` : shown
+}
+
+/** `terminalClause`'s counts as short facts, for the card's surface. */
+export function terminalFacts(failed: number, exhausted: number): string[] {
+  const left = failed - exhausted
+  return [
+    ...(exhausted > 0 ? [`${exhausted} used every attempt`] : []),
+    ...(left > 0 ? [`${left} had attempts left, not retryable`] : []),
+  ]
 }
 
 /**
@@ -924,15 +950,18 @@ function workflowCheck(workflows: Result<WorkflowPage>, now: number): Check {
     // workflow this check did not look at, and a short problem list over rows
     // nobody examined is the reassuring silence this whole panel is built
     // against.
-    const why = page.rollup_report?.step_read_budget_exhausted
-      ? 'the route ran out of step reads for this page, so their state was never established'
-      : `their rollup came back incomplete (${unjudged[0]?.rollup?.reason ?? 'no reason given'})`
+    // THE REASON AS A SHORT FACT, ITS SENTENCE BEHIND THE MARK (issue 81).
+    const budget = page.rollup_report?.step_read_budget_exhausted === true
+    const reason = unjudged[0]?.rollup?.reason ?? 'no reason given'
+    const why = budget
+      ? 'The route ran out of step reads for this page, so their state was never established.'
+      : `Their rollup came back incomplete (${reason}).`
     problems.push({
       severity: 'warn',
       n: unjudged.length,
       headline: `${unjudged.length} workflow${unjudged.length === 1 ? ' could' : 's could'} not be judged`,
-      detail: `${unjudged.map((w) => w.workflow_id).slice(0, 3).join(', ')}${unjudged.length > 3 ? ', …' : ''} — ${why}.`,
-      why: `Whether ${unjudged.length === 1 ? 'it is' : 'they are'} moving is unknown, not fine.`,
+      detail: `${unjudged.map((w) => w.workflow_id).slice(0, 3).join(', ')}${unjudged.length > 3 ? ', …' : ''} · ${budget ? 'ran out of step reads' : `rollup incomplete: ${reason}`}`,
+      why: `${why} Whether ${unjudged.length === 1 ? 'it is' : 'they are'} moving is unknown, not fine.`,
       href: '#work/workflows',
     })
   }

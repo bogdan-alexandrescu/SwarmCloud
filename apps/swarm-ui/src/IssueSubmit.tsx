@@ -5,6 +5,7 @@ import { chosenTenant, subscribeTenant, type ApiError } from './fetch'
 import { useWorkspaceName } from './workspaceName'
 import { OWN_WORKSPACE_LABEL } from './Spine'
 import { Button, NamedMark, Tag, WarnMark } from './components'
+import { InfoTip } from './InfoTip'
 import { RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { FailedPanel, Screen } from './Shell'
 import { Move, OutcomeSlot } from './Submit'
@@ -333,15 +334,18 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             </Button>
           </div>
           {preview.kind === 'idle' && typed.trim() !== '' && !parses && (
+            // ONE SHORT LINE ON THE SURFACE, THE REST BEHIND THE (i) (issue 81),
+            // here and in every note of this form: each sentence that was drawn is
+            // its (i)'s tip, word for word.
             <p id="in-ref-say" className="sb-note sbf-bad">
-              Not an issue reference yet: name it as <code>owner/repo#N</code> or paste its URL,{' '}
-              <code>https://github.com/owner/repo/issues/N</code>.
+              Not an issue reference yet.{' '}
+              <InfoTip about="issue references" tip="Not an issue reference yet: name it as owner/repo#N or paste its URL, https://github.com/owner/repo/issues/N." />
             </p>
           )}
           {preview.kind === 'idle' && (typed.trim() === '' || parses) && (
             <p className="sb-note">
-              Read with this workspace&rsquo;s own forge credential: only repositories it can read are reachable from
-              here. Nothing is created by reading.
+              Read with this workspace&rsquo;s forge credential.{' '}
+              <InfoTip about="reading an issue" tip="Read with this workspace’s own forge credential: only repositories it can read are reachable from here. Nothing is created by reading." />
             </p>
           )}
           {preview.kind === 'reading' && (
@@ -366,7 +370,8 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             keys={keys} onPick={() => {}} onlyUsable heldAs="not used for issue runs" />
           {runner === null && (
             <p className="warn-text" role="alert">
-              {ISSUE_RUN_PROFILE} is not in this workspace&rsquo;s catalogue, so the API would have no runner to plan with.
+              {ISSUE_RUN_PROFILE} is not in this workspace&rsquo;s catalogue.{' '}
+              <InfoTip about="the missing runner" tip={`${ISSUE_RUN_PROFILE} is not in this workspace’s catalogue, so the API would have no runner to plan with.`} />
             </p>
           )}
           {runnerOff && (
@@ -374,7 +379,10 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               {ISSUE_RUN_PROFILE} is disabled for this workspace: {runner?.disabled_reason || 'refused by the platform'}.
             </p>
           )}
-          <p className="sb-note">The planner and every step it plans run as {ISSUE_RUN_PROFILE}.</p>
+          <p className="sb-note">
+            Planner and every step run as {ISSUE_RUN_PROFILE}.{' '}
+            <InfoTip about="the runner" tip={`The planner and every step it plans run as ${ISSUE_RUN_PROFILE}.`} />
+          </p>
         </Move>
 
         <Move n={3} title="Decide what it may do on its own" dim={read === null}>
@@ -394,9 +402,13 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             <div className="in-choice-t">
               <b>Plan approval</b>
               <small>
-                {approval === 'required'
-                  ? 'Required (default): the run waits, planned and holding no capacity, until someone in this workspace approves, edits or rejects the plan.'
-                  : 'Auto: the plan is approved the moment it is read, and the work starts without anyone being asked.'}
+                {approval === 'required' ? 'Required (default): waits for approval, holding no capacity.' : 'Auto: approved when read; starts without asking anyone.'}{' '}
+                <InfoTip
+                  about="plan approval"
+                  tip={approval === 'required'
+                    ? 'Required (default): the run waits, planned and holding no capacity, until someone in this workspace approves, edits or rejects the plan.'
+                    : 'Auto: the plan is approved the moment it is read, and the work starts without anyone being asked.'}
+                />
               </small>
             </div>
           </div>
@@ -418,24 +430,30 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
                 <small>
                   {/* "(default)" FOLLOWS THE SERVED DEFAULT, not the word "off". */}
                   {mergeOn
-                    ? `On${mergeDefault ? ' (default)' : ''}: once every required check is green, the merge step merges the pull request at the sha it proved.`
+                    ? <>{`On${mergeDefault ? ' (default)' : ''}: merges when required checks are green.`}{' '}
+                        <InfoTip about="auto-merge" tip={`On${mergeDefault ? ' (default)' : ''}: once every required check is green, the merge step merges the pull request at the sha it proved.`} /></>
                     : `Off${mergeDefault ? '' : ' (default)'}: a person merges the run’s pull request.`}
                 </small>
               ) : read === null ? (
                 /* NOTHING HAS BEEN ASKED YET (chrome-C29): the preview is what
                    says whether POST /v1/runs takes auto-merge, so before it the
                    switch says that, not "not available". */
-                <small>Decided when the issue is read: the API says then whether this run may merge its own pull request.</small>
-              ) : mergeServed === null ? (
                 <small>
-                  This API did not say whether it takes auto-merge, so the run is created with it off and a person merges
-                  its pull request.
+                  Decided when the issue is read.{' '}
+                  <InfoTip about="auto-merge" tip="Decided when the issue is read: the API says then whether this run may merge its own pull request." />
+                </small>
+              ) : mergeServed === null ? (
+                // A COULD-NOT-CHECK REASON: one short line stays (issue 81).
+                <small>
+                  The API did not say; it stays off.{' '}
+                  <InfoTip about="auto-merge" tip="This API did not say whether it takes auto-merge, so the run is created with it off and a person merges its pull request." />
                 </small>
               ) : (
                 /* The API's answer for the issue on screen, and its own reason. */
                 <small>
-                  Not available for this run: the API refuses auto-merge now, so a person merges the run&rsquo;s pull request.
-                  {mergeServed.reason && <> The API says: <i>{mergeServed.reason}</i></>}
+                  Not available for this run: a person merges.{' '}
+                  <InfoTip about="auto-merge" tip="Not available for this run: the API refuses auto-merge now, so a person merges the run’s pull request." />
+                  {mergeServed.reason && <>{' · '}<i>{mergeServed.reason}</i></>}
                 </small>
               )}
             </div>
@@ -453,9 +471,10 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault() }} />
             <div className="in-choice-t">
               <label htmlFor="in-fix-rounds"><b>Fix rounds when checks go red</b></label>
+              {/* A COST: the cap and what spends it stay as one short line (issue 81). */}
               <small>
-                {MIN_FIX_ROUNDS}–{MAX_FIX_ROUNDS}. Once the pull request is open, each red CI reading spends one fix
-                round; past the cap the run fails with the failing checks&rsquo; excerpt.
+                {MIN_FIX_ROUNDS}–{MAX_FIX_ROUNDS}: each red CI reading spends one round.{' '}
+                <InfoTip about="fix rounds" tip={`${MIN_FIX_ROUNDS}–${MAX_FIX_ROUNDS}. Once the pull request is open, each red CI reading spends one fix round; past the cap the run fails with the failing checks’ excerpt.`} />
               </small>
               {/* A STATE, NOT A CLICK'S RESULT (VQA V132): "Not sent" is what a
                   click that was refused says (TS-15), and nothing had been
@@ -530,9 +549,14 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             {sending.kind === 'sending' ? 'Planning…' : 'Plan this issue'}
           </Button>
           <p className="sb-note">
-            {approval === 'required'
-              ? 'A planner agent reads the issue and the repository and writes a plan; nothing else runs until the plan is approved.'
-              : 'A planner agent reads the issue and the repository and writes a plan; the plan is approved the moment it is written and the work starts without anyone being asked.'}
+            {approval === 'required' ? 'Nothing else runs until the plan is approved.' : 'The work starts without anyone being asked.'}{' '}
+            <InfoTip
+              about="what planning does"
+              end
+              tip={approval === 'required'
+                ? 'A planner agent reads the issue and the repository and writes a plan; nothing else runs until the plan is approved.'
+                : 'A planner agent reads the issue and the repository and writes a plan; the plan is approved the moment it is written and the work starts without anyone being asked.'}
+            />
           </p>
           {/* IN THE SLOT THE TASK AND WORKFLOW FORMS DRAW THEIRS IN (VQA V175):
               at 400 a POST 500 was drawn under the button at y 714-944 with
@@ -545,13 +569,15 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               <>
                 <FailedPanel error={sending.error} onRetry={() => void submit()} />
                 <p className="warn-text">
-                  <strong>Check Runs before submitting again.</strong> This failed on a write, so the run may exist anyway.
+                  <strong>Check Runs before submitting again.</strong>{' '}
+                  <InfoTip about="a failed write" end tip="This failed on a write, so the run may exist anyway." />
                 </p>
               </>
             )}
             {sending.kind === 'unnamed' && (
               <p className="warn-text" role="alert">
-                The API accepted this and named no run. Open Runs to find it before submitting again.
+                Accepted, but no run was named.{' '}
+                <InfoTip about="an unnamed run" end tip="The API accepted this and named no run. Open Runs to find it before submitting again." />
               </p>
             )}
           </OutcomeSlot>
@@ -620,13 +646,14 @@ function OpenRunsNote({ state, go }: { state: OpenRuns; go: (to: string) => void
   if (state.kind === 'unread') {
     return (
       <p className="sb-note in-open-runs-unread">
-        Whether this issue already has open runs was not checked: {state.message}
+        Open runs not checked · {state.message}{' '}
+        <InfoTip about="open runs" end tip="Whether this issue already has open runs was not checked." />
       </p>
     )
   }
   return (
     <p className="warn-text in-open-runs" role="status">
-      Open runs for this issue:{' '}
+      Open runs:{' '}
       {state.runs.map((r, i) => (
         <Fragment key={r.id}>
           {i > 0 && ', '}
@@ -637,7 +664,7 @@ function OpenRunsNote({ state, go }: { state: OpenRuns; go: (to: string) => void
           }}>{stateWord(r.state)}{Number.isFinite(Date.parse(r.created_at)) ? ` ${timeAgo(r.created_at, now)}` : ''}</a>
         </Fragment>
       ))}
-      . Planning it again starts another run.
+{' · '}planning it again starts another run
     </p>
   )
 }
@@ -731,17 +758,22 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway, onTakeBack 
       )}
       {issue.body_truncated && (
         <p className="sb-note">
-          The preview holds the first part of the body only; the API cut it. The planner reads all of it again.
+          Only the first part of the body shows.{' '}
+          <InfoTip about="the cut body" tip="The preview holds the first part of the body only; the API cut it. The planner reads all of it again." />
         </p>
       )}
       {issue.body_redacted && (
-        <p className="sb-note">Values that looked like credentials were masked by the API before this was served.</p>
+        <p className="sb-note">
+          Credential-like values were masked by the API.{' '}
+          <InfoTip about="masked values" tip="Values that looked like credentials were masked by the API before this was served." />
+        </p>
       )}
       {closed && (
         <div className="in-closed" role="alert">
           <WarnMark />
           <span>
-            <b>This issue is closed.</b> Planning it would reopen work someone marked done.
+            <b>This issue is closed.</b>{' '}
+            <InfoTip about="a closed issue" tip="Planning it would reopen work someone marked done." />
           </span>
           {/* AND IT CAN BE TAKEN BACK (live QA SUB-12): "planning it anyway"
               had no way back but reading the issue again. */}
@@ -769,60 +801,46 @@ function Refusal({ error, typed, tenant, onAgain, onTask }: {
 }) {
   const n = issueNumber(typed)
   const issue = n === null ? 'this issue' : `issue #${n}`
+  // THE HEADING ON THE SURFACE, THE REST BEHIND THE (i) (issue 81): each
+  // refusal drew a paragraph; its heading is one short line, and `more` holds
+  // the sentences that followed it, word for word.
   let words: ReactNode
+  let more: string
   let action: ReactNode = null
   switch (error.code) {
     case 'not_found':
-      words = (
-        <>
-          <b>{n === null ? 'No such issue' : `No issue #${n}`} that this workspace can see: not found or not visible.</b>{' '}
-          GitHub gives the same answer for an issue that does not exist and for a private repository the credential
-          cannot read, so this cannot tell the two apart. Check the number, or ask an operator whether this
-          workspace&rsquo;s credential covers the repository.
-        </>
-      )
+      words = <b>{n === null ? 'No such issue' : `No issue #${n}`} visible to this workspace.</b>
+      more =
+        `${n === null ? 'No such issue' : `No issue #${n}`} that this workspace can see: not found or not visible. ` +
+        'GitHub gives the same answer for an issue that does not exist and for a private repository the credential ' +
+        'cannot read, so this cannot tell the two apart. Check the number, or ask an operator whether this ' +
+        'workspace’s credential covers the repository.'
       break
     case 'no_access':
-      words = (
-        <>
-          <b>This workspace&rsquo;s forge credential was refused.</b> It lacks read access to the repository, or the
-          organisation requires single sign-on approval for it. Nothing was submitted. Another workspace&rsquo;s
-          repository is not reachable from here.
-        </>
-      )
+      words = <b>This workspace&rsquo;s forge credential was refused.</b>
+      more =
+        'It lacks read access to the repository, or the organisation requires single sign-on approval for it. ' +
+        'Nothing was submitted. Another workspace’s repository is not reachable from here.'
       break
     case 'is_pull_request':
-      words = (
-        <>
-          <b>{n === null ? 'That' : `#${n}`} is a pull request.</b> This form plans issues; a pull request that needs
-          finishing is an agent on its branch.
-        </>
-      )
+      words = <b>{n === null ? 'That' : `#${n}`} is a pull request.</b>
+      more = 'This form plans issues; a pull request that needs finishing is an agent on its branch.'
       action = <Button onClick={onTask}>Start an agent instead</Button>
       break
     case 'no_forge_credential':
-      words = (
-        <>
-          <b>{tenant === null ? 'This workspace has' : <>Workspace <code>{tenant}</code> has</>} no forge credential,</b> so no
-          issue can be read and no pull request opened. An operator stores it with{' '}
-          <code>scripts/create-secrets.sh --stdin</code>. It is never pasted here.
-        </>
-      )
+      words = <b>{tenant === null ? 'This workspace has' : <>Workspace <code>{tenant}</code> has</>} no forge credential.</b>
+      more =
+        `${tenant === null ? 'This workspace has' : `Workspace ${tenant} has`} no forge credential, so no issue can be read ` +
+        'and no pull request opened. An operator stores it with scripts/create-secrets.sh --stdin. It is never pasted here.'
       break
     case 'read_failed':
-      words = (
-        <>
-          <b>The read did not finish.</b> The state of {issue} is unknown, so it is shown as unknown, not as open.
-        </>
-      )
+      words = <b>The read did not finish.</b>
+      more = `The state of ${issue} is unknown, so it is shown as unknown, not as open.`
       action = <Button onClick={onAgain}>Read again</Button>
       break
     case 'validation_failed':
-      words = (
-        <>
-          <b>Not an issue reference.</b> Name it as <code>owner/repo#N</code> or paste its URL.
-        </>
-      )
+      words = <b>Not an issue reference.</b>
+      more = 'Name it as owner/repo#N or paste its URL.'
       break
     default:
       // SPACED FROM THE INPUT ROW AS EVERY OTHER ANSWER IN THIS SLOT IS
@@ -834,7 +852,7 @@ function Refusal({ error, typed, tenant, onAgain, onTask }: {
     <div className="in-refusal" role="alert" data-code={error.code ?? ''}>
       <WarnMark />
       <div className="in-refusal-t">
-        <p>{words}</p>
+        <p>{words} <InfoTip about="this refusal" tip={more} /></p>
         {/* The server's sentence names the tenant and the secret -- except a
             malformed reference's, which names the API's own fields
             (`repository_url`, QA G4-25) and nothing the reader typed into. */}

@@ -81,6 +81,7 @@ import {
 } from './lanes'
 import { STATE_MARK, type MarkName } from './marks'
 import { Button, ButtonLink, Chip, MarkIcon, Segmented, StateMark } from './components'
+import { InfoTip } from './InfoTip'
 import { DEFAULT_VIEW, alignedWords, ledgerRange, outcomesQuery, type Outcomes } from './outcomes'
 import { formatClock, formatDateTime } from './timezone'
 import { useTimeZone } from './useTimeZone'
@@ -2484,6 +2485,14 @@ function OutcomeStrip({
   // for a window more than a bucket off the span's, its figures are not this
   // span's: their place is a dash and the window the read answered for.
   const own = strip.status === 'ok' ? decidedWindow(strip.data, since, until) : null
+  // The sentences the line under the strip said, word for word, as its (i)'s tip (issue 81).
+  const unreadTail = reach !== null ? ', the newest attempts of the span, with a next page unread' : ''
+  const lanesSay =
+    strip.status === 'ok' && own !== null
+      ? `The lanes cover ${rangeWords(reach ?? since, until)}${unreadTail}. Parks and fences count only the lanes drawn.`
+      : strip.status === 'ok'
+        ? `Decided counts cover ${ledgerRange(strip.data)}${aligned !== null ? `, ${aligned} as on Outcomes` : ''}; the lanes cover ${rangeWords(reach ?? since, until)}${unreadTail}. Parks and fences count only the lanes drawn.`
+        : `Decided counts cover ${rangeWords(since, until)}; parks and fences count only the lanes drawn.`
   return (
     <div className="tl-strip">
       {strip.status === 'loading' ? (
@@ -2588,22 +2597,28 @@ function OutcomeStrip({
       {strip.status !== 'ok' && strip.status !== 'loading' && link}
       {/* WHAT IT COUNTS, IN THE READER'S WORDS (walkthrough E): where the
           counts come from is the Outcomes help topic, one click away. */}
+      {/* FACTS ON THE SURFACE, THE SENTENCES BEHIND THE (i) (issue 81): the
+          line read "The lanes cover … . Parks and fences count only the lanes
+          drawn. How these are counted", a run of two sentences. The ranges
+          stay as facts; the sentences are the tip, word for word. */}
       <p className="tl-q">
         {strip.status === 'ok' && own !== null ? (
           <>
-            The lanes cover <span className="tl-lanes-range">{rangeWords(reach ?? since, until)}</span>
-            {reach !== null && ', the newest attempts of the span, with a next page unread'}. Parks and fences count only the lanes drawn.{' '}
+            Lanes: <span className="tl-lanes-range">{rangeWords(reach ?? since, until)}</span>
+            {reach !== null && ' · newest attempts, next page unread'}
           </>
         ) : strip.status === 'ok' ? (
           <>
             Decided counts cover <span className="tl-strip-range">{ledgerRange(strip.data)}</span>
-            {aligned !== null && `, ${aligned} as on Outcomes`}; the lanes cover{' '}
+            {aligned !== null && ` · ${aligned} as on Outcomes`} · lanes:{' '}
             <span className="tl-lanes-range">{rangeWords(reach ?? since, until)}</span>
-            {reach !== null && ', the newest attempts of the span, with a next page unread'}. Parks and fences count only the lanes drawn.{' '}
+            {reach !== null && ' · newest attempts, next page unread'}
           </>
         ) : (
-          <>Decided counts cover {rangeWords(since, until)}; parks and fences count only the lanes drawn. </>
-        )}
+          <>Decided counts cover {rangeWords(since, until)}</>
+        )}{' '}
+        <InfoTip about="what the lanes count" tip={lanesSay} />
+        {' · '}
         <a className="ctl-link" href={`#${HELP['outcome-buckets'].anchor}`}>How these are counted</a>
       </p>
     </div>

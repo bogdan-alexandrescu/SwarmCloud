@@ -129,7 +129,12 @@ describe('G4-29: the task form speaks of one task, not of steps', () => {
     const label = option.closest('label')!
     expect(visible(label)).not.toMatch(/per step|one per|PR per/i)
     expect(within(label).getByText('Open a pull request')).toBeTruthy()
-    expect(visible(label.querySelector('.dsp-count'))).toBe('One pull request, from this agent’s branch — none if it changed nothing.')
+    // ISSUE 81: one sentence under nine words on the option; "none if it
+    // changed nothing" is the (i)'s tip, word for word.
+    const count = label.querySelector('.dsp-count')!
+    const tip = count.querySelector('[data-help-description]')!
+    expect(visible(count).replace(visible(tip), '').trim()).toBe('One pull request, from this agent’s branch.')
+    expect(visible(tip)).toContain('One pull request, from this agent’s branch — none if it changed nothing.')
   })
 
   it('keeps the per-step wording on the workflow form', () => {

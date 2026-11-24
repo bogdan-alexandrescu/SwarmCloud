@@ -321,7 +321,10 @@ test('a real zero says so in words, not only in a border colour', () => {
   // zero is the `.ctl-mark.is-zero` mark (its word is `none`), and no
   // sentence on the surface says "real zero" any more (owner, 2026-10-11).
   assert.ok(/no attempt yet/i.test(markup), 'the surface no longer says no attempt has been made')
-  assert.ok(/nothing has been admitted/i.test(markup), 'the surface no longer says nothing was admitted')
+  // ISSUE 81: "Not admitted yet: nothing measured." on the surface; the
+  // sentence it was, "Nothing has been admitted yet, ...", is its (i)'s tip.
+  assert.ok(/not admitted yet/i.test(markup), 'the surface no longer says nothing was admitted')
+  assert.ok(/nothing has been admitted/i.test(markup), 'the (i) lost the sentence that says nothing was admitted')
   assert.ok(markup.includes('ctl-mark is-zero'), 'nothing on the surface marks this zero as a measured one')
   assert.ok(!markup.includes('ctl-mark is-unread'), 'a measured zero is drawn as a failed read')
   assert.ok(!/aria-label="[^"]*real zero/i.test(markup), 'a sentence on the surface still says "real zero"')
@@ -332,7 +335,10 @@ test('a real zero says so in words, not only in a border colour', () => {
   // beside a chip reading `parked` passed it. It now pins the heading.
   assert.ok(markup.includes('no attempt yet · parked'), 'the heading lost the state, or shouts it')
   assert.ok(!markup.includes('no attempt yet · PARKED'), 'the heading prints the API’s uppercase state')
-  assert.ok(!markup.includes('role="tooltip"'), 'this surface should be at rest')
+  // AT REST: no tooltip OPEN. The note's (i) (issue 81) keeps its tip in the
+  // markup, hidden, as InfoTip does everywhere; an open one has no `hidden`.
+  const tips = markup.match(/<[^>]*role="tooltip"[^>]*>/g) ?? []
+  assert.ok(tips.every((t) => / hidden=""/.test(t)), 'this surface should be at rest')
 })
 
 test('a failed attempt read says so in words, and carries its detail', () => {

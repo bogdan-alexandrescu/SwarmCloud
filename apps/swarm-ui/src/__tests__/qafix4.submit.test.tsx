@@ -155,7 +155,16 @@ describe('N26: "lands as" speaks of waiting for a room of 0 and for a room not r
 // ---------------------------------------------------------------------------
 
 const C09 = 'It is accepted and waits, holding nothing, until every pool it needs has room.'
-const ADMITS = 'Nothing runs until the scheduler admits it into every pool it needs.'
+// ISSUE 81: the admits note is one short line on the surface; the sentence it
+// was is its (i)'s tip, word for word.
+const ADMITS = 'Nothing runs until the scheduler admits it.'
+const ADMITS_TIP = 'Nothing runs until the scheduler admits it into every pool it needs.'
+/** An element's text with its (i)'s tip taken out: what the surface shows. */
+const shown = (el: Element | null) => {
+  const clone = el?.cloneNode(true) as Element | undefined
+  for (const tip of [...(clone?.querySelectorAll('[data-help-description]') ?? [])]) tip.remove()
+  return visible(clone ?? null)
+}
 
 /** The notes drawn after the send button, in order. */
 function notesUnderButton(container: HTMLElement): HTMLElement[] {
@@ -173,10 +182,10 @@ describe('c09: with a measured room of 0 the note under the button says it is ac
     // The button is unchanged.
     expect(screen.getByRole('button', { name: 'Start one agent' })).not.toBeNull()
     const notes = notesUnderButton(container)
-    const note = notes.find((p) => visible(p) === C09)
+    const note = notes.find((p) => shown(p) === C09)
     // MUTATION: keep the admits note at room 0 -> nothing under the button says the task will wait.
     expect(note, `the notes under the button: ${JSON.stringify(notes.map(visible))}`).toBeDefined()
-    expect(notes.map(visible)).not.toContain(ADMITS)
+    expect(notes.map(shown)).not.toContain(ADMITS)
     for (const env of [WIDE, PHONE]) {
       const ink = painted(note!, 'color', env)
       expect(ink).not.toBeNull()
@@ -190,13 +199,15 @@ describe('c09: with a measured room of 0 the note under the button says it is ac
   it('room unknown and room to spare keep the admits note, and the sentence follows each pick', async () => {
     const container = await form()
     fireEvent.click(radio(container, 'claude-code'))
-    expect(notesUnderButton(container).map(visible)).toContain(C09)
+    expect(notesUnderButton(container).map(shown)).toContain(C09)
     for (const name of ['claude-code-browser', 'mock']) {
       fireEvent.click(radio(container, name))
-      const said = notesUnderButton(container).map(visible)
+      const notes = notesUnderButton(container)
+      const said = notes.map(shown)
       // MUTATION: test `agents === 0 || agents === null` for the note -> an unread room is told it has room for 0.
       expect(said, `${name}: the room-0 sentence`).not.toContain(C09)
       expect(said, `${name}: the admits note`).toContain(ADMITS)
+      expect(notes.map((p) => visible(p.querySelector('[data-help-description]'))), `${name}: the admits tip`).toContain(ADMITS_TIP)
     }
   })
 })

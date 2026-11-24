@@ -38,6 +38,7 @@ import { num, route, type Result } from './fetch'
 import { ElsewhereNotice, useElsewhere } from './elsewhere'
 import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
+import { InfoTip } from './InfoTip'
 import { addressToPath } from './paths'
 import { accountName } from './accountName'
 import { LivenessBadge, livenessOf } from './Liveness'
@@ -2197,18 +2198,20 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
       )
     }
   }
-  const note =
+  // ONE SHORT LINE, THE SENTENCE BEHIND THE (i) (issue 81): `[short, say]`,
+  // `say` word for word what the note used to draw; null where the line is it.
+  const [note, noteSay]: [string, string | null] =
     attempts === null
-      ? 'The attempt read failed, so no figure is drawn.'
+      ? ['Attempt read failed: no figure.', 'The attempt read failed, so no figure is drawn.']
       : latest === null
         ? TERMINAL_STATES.has(task.state)
-          ? 'It ended before anything was admitted, so nothing was measured.'
-          : 'Nothing has been admitted yet, so nothing has been measured.'
+          ? ['Ended before admission: nothing measured.', 'It ended before anything was admitted, so nothing was measured.']
+          : ['Not admitted yet: nothing measured.', 'Nothing has been admitted yet, so nothing has been measured.']
         : open
-          ? 'Live readings from the attempt record. Final figures are written when the attempt ends.'
+          ? ['Live readings from the attempt record.', 'Live readings from the attempt record. Final figures are written when the attempt ends.']
           : mem.kind === 'last'
-            ? 'No figure was written at exit: these are the last readings.'
-            : `Figures written at exit by attempt ${attempts.length}.`
+            ? ['No figure at exit: last readings.', 'No figure was written at exit: these are the last readings.']
+            : [`Figures written at exit by attempt ${attempts.length}.`, null]
   return (
     <section className="dt-card dt-resources">
       {/* NOT `Resources` AGAIN (QA2 overview-agents-25): this card sits inside
@@ -2227,7 +2230,7 @@ function DtResources({ run, now }: { run: AgentRun; now: number }) {
           </span>
         </div>
       ))}
-      <p className="dt-note">{note}</p>
+      <p className="dt-note">{note}{noteSay !== null && <>{' '}<InfoTip about="these readings" tip={noteSay} /></>}</p>
       {/* USE OVER TIME, NOT ONLY THE PEAK (LIVE-UTIL-UI; part of archived issue 1689). The
           rows above are the attempt's peak and mean, which the owner found
           "always show maximum"; this is CPU and memory per 5 s window of the

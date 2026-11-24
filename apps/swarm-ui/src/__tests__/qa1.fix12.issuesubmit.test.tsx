@@ -158,7 +158,8 @@ describe('runs-submit-14: an issue with open runs says so before the button', ()
       return el as HTMLElement
     }, WAIT)
     // By state and age since QA2-FIX-16 (runs2-35); the id is the link's title.
-    expect(visible(open)).toMatch(/^Open runs for this issue: Planned \S+ ago, Running \S+ ago\./)
+    // ISSUE 81: "Open runs:" and the warning as a fact after a middot.
+    expect(visible(open)).toMatch(/^Open runs: Planned \S+ ago, Running \S+ ago · planning it again starts another run$/)
     expect(visible(open)).not.toContain('run_0ld0ne00')
     expect(visible(open)).not.toContain('run_e1sewhere')
     // Before the button, in reading order.
@@ -184,7 +185,11 @@ describe('runs-submit-14: an issue with open runs says so before the button', ()
     const { container } = await mount()
     await readIssue('example-org/agent-swarm-infra#512')
     await waitFor(() => expect(container.querySelector('.in-open-runs-unread')).not.toBeNull(), WAIT)
-    expect(visible(container.querySelector('.in-open-runs-unread'))).toMatch(/^Whether this issue already has open runs was not checked/)
+    // ISSUE 81: one short could-not-check line on the surface; the sentence
+    // it was is the (i)'s tip, word for word.
+    const unread = container.querySelector('.in-open-runs-unread')!
+    expect(visible(unread)).toMatch(/^Open runs not checked · runs read broke/)
+    expect(visible(unread.querySelector('[data-help-description]'))).toBe('Whether this issue already has open runs was not checked.')
   })
 })
 

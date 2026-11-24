@@ -114,7 +114,10 @@ describe('runs2-04: outcomes figures are shown only over the span they cover', (
     expect(text(cell(/not this span, read for/))).toBe('outcomes — not this span, read for Sep 12 – Sep 25')
     // MUTATION: keep footnoting the mismatch, 'Decided counts cover Sep 12 …; the lanes cover …'.
     expect(text(strip())).not.toMatch(/Decided counts cover/)
-    expect(text(strip())).toMatch(/The lanes cover .+\. Parks and fences count only the lanes drawn\./)
+    // ISSUE 81: the lanes' range is a fact on the surface; the sentences it
+    // was are the (i)'s tip, word for word.
+    expect(text(strip().querySelector('.tl-q [data-help-description]'))).toMatch(/^The lanes cover .+\. Parks and fences count only the lanes drawn\.$/)
+    expect(text(strip().querySelector('.tl-q'))).toMatch(/^Lanes: /)
   })
 
   it('keeps the figures over a ledger that covers the span', async () => {
