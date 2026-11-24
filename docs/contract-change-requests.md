@@ -161,7 +161,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 154 | `profiles.py` / `states.py`: five comment lines name the owner by initials, and take the placeholder "the owner", behaviour unchanged (the repository move) | ACCEPTED by the owner 11 November 2026 and APPLIED by the pull request that adds this line |
 | 155 | `specsign.py`: a `"plans"` block in `SETTINGS_MAC_FIELDS`, `("diagrams", "chat_model_class")`, so a workspace's plan-review settings (`workspace_settings/{tenant_id}.plans`, docs/design/plans-pipeline.md sections 6.4 and 7.8) are signed by the frozen list (PLAN-SETTINGS) | REQUESTED 2026-11-13 by the pull request that adds this line; not applied. Until it is, `canonical_settings_block` refuses the block and swarm-api cannot sign it through the frozen list |
 | 157 | `states.py`: the scheduler may end a re-review whose verdict gate is shut PARKED -> SUCCEEDED, guarded on its own promotion write, without a lease (re-review gate) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, a re-review whose gate is shut is leased and dispatched as today |
-| 158 | `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, swarm-api refuses a step that carries `context_ceiling` and every session runs at the worker's ceilings |
+| 158 | `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits) | ACCEPTED by the owner 2026-11-24 and APPLIED by the pull request that adds this status (requested 2026-11-23): declared on the seven claude-code-runner profiles, and stamped per role by `swarm_api.stepceiling` |
 
 ---
 
@@ -18264,10 +18264,18 @@ owner's acceptance.
 
 ## 158. `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits)
 
-**Status:** REQUESTED 2026-11-23 by the pull request that adds this section;
-not applied. Nothing in `apps/common/swarm_common/` was changed for it, and
-nothing is built until the owner decides: a step that carries
-`context_ceiling` is refused today and stays refused.
+**Status:** ACCEPTED by the owner 2026-11-24 and APPLIED by the pull request
+that adds this status (requested 2026-11-23). The declaration below is in
+`apps/common/swarm_common/profiles.py` exactly as written here
+(`_CONTEXT_CEILING_INPUTS`, merged into the seven profiles' input dicts), and
+the per-role defaults are stamped by `apps/swarm-api/swarm_api/stepceiling.py`
+(`ROLE_CEILINGS`, each value explained beside it) at every site that resolves
+a step's role: the planner and its re-plan, a first review at workflow
+submission, the re-review, the fix loop's fix and re-review rounds, and the
+CI-fix and conflict-fix rounds. A build step is not stamped and keeps
+200,000 / 150. A caller's own value wins, inside the declared bounds. The
+worker needed no change. Tested by
+`tests/unit/control_plane/test_step_ceiling_by_role.py`.
 
 ### What is true today
 
@@ -18391,5 +18399,4 @@ resolved role and never from caller metadata.
 
 ### Who decides
 
-The owner: accepting it lets a later lane declare the input and stamp it.
-Awaiting the owner's acceptance.
+The owner: accepted 2026-11-24.
