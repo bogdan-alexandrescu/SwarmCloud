@@ -77,6 +77,10 @@ MAX_IDLE = 2
 #: Consecutive failed renewals after which the hold is taken as lost.
 RENEWALS_LOST = 2
 
+#: Put before a reused child's message: Claude Code notes the interrupt that
+#: ended the turn before it in the conversation, as if the person had made it.
+REUSED_NOTE = ("Your previous turn ended when `speak` was taken; an interruption noted there was not the "
+               "person's. What follows is a new turn, and replaces the transcript and brief you had.\n\n")
 #: What a tool call outside a running turn is answered.
 REFUSED = "refused: no turn is running"
 
@@ -190,6 +194,8 @@ class Held:
         that is yet to write something."""
         assert self.conversation is not None
         self.turns += 1
+        if self.reused:
+            text = REUSED_NOTE + text
         self.gate.open(handler)
         try:
             outcome = await self.conversation.say(text, done=done, closes=prompts.SPEAK_TOOL,
