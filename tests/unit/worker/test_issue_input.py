@@ -147,10 +147,12 @@ def test_issue_md_is_reserved_from_staging_only_when_an_issue_is_asked_for():
 
 def test_the_issue_and_every_page_of_its_comments_are_read_with_the_token(forge):
     page_one = [
-        {"user": {"login": f"u{i}"}, "created_at": "2026-09-28", "body": f"comment {i}"}
+        {"user": {"login": f"u{i}"}, "author_association": "MEMBER",
+         "created_at": "2026-09-28", "body": f"comment {i}"}
         for i in range(issue_mod.COMMENTS_PER_PAGE)
     ]
-    page_two = [{"user": {"login": "last"}, "created_at": "2026-09-29", "body": "the fix"}]
+    page_two = [{"user": {"login": "last"}, "author_association": "OWNER",
+                 "created_at": "2026-09-29", "body": "the fix"}]
     fake = forge({
         "/repos/octo/widgets/issues/265": (200, _issue_doc(comments=101)),
         "/repos/octo/widgets/issues/265/comments?per_page=100&page=1": (200, page_one),
@@ -481,6 +483,9 @@ def _prompt(tmp_path: Path, monkeypatch, payload: dict[str, Any], *, issue_text:
     binary.chmod(0o755)
     monkeypatch.setenv("FAKE_KEY", "sk-value-0123456789")
     monkeypatch.setenv("FAKE_BIN", str(binary))
+    # Hermetic: inside a SwarmCloud container the worker's own SWARM_CHILDREN is
+    # set, and the runner would add its child-tasks line to the prompt.
+    monkeypatch.delenv("SWARM_CHILDREN", raising=False)
     work = tmp_path / "work"
     artifacts = tmp_path / "artifacts"
     work.mkdir(exist_ok=True)
