@@ -4,9 +4,8 @@
 WHY THIS IS A TEST. A unit test that opens docs prose, CI YAML, a root *.md
 or the Makefile turns red on an edit to a tree it does not test.
 scripts/check_test_reads.py lists every such read. Issue 71's steps deleted
-them, emptying and deleting each baseline under scripts/guards/test-reads/
-(step 7 deleted the last), so the whole tree now passes with no baseline.
-The --baseline-dir option is still tested on planted trees. The whole-tree run below sits in
+them; step 8 removed the baselines and the --baseline-dir option, so the
+scanner holds the whole tree with no exception. The whole-tree run below sits in
 changed-guards.sh's GUARD_TESTS: a new read lands in a file no diff names, so
 only a whole-tree guard reaches it. The planted cases run in scratch trees.
 """
@@ -23,7 +22,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "check_test_reads.py"
-BASELINES = ROOT / "scripts" / "guards" / "test-reads"
 
 
 def _load():
@@ -181,112 +179,40 @@ def test_list_files_prints_each_offending_file_once(tmp_path, capsys):
     assert out.splitlines() == ["tests/unit/scripts/test_planted.py", "tests/unit/test_b.py"]
 
 
-def test_a_baselined_finding_is_tolerated(tmp_path, capsys):
-    base = tmp_path / "base"
-    base.mkdir()
-    (base / "one.txt").write_text(WHERE + "\n")
-    code, out = _scan(tmp_path, capsys, {WHERE: HEAD + "X = (ROOT / 'docs/a.md').read_text()\n"},
-                      "--baseline-dir", str(base))
-    assert code == 0, out
-
-
-def test_a_finding_outside_the_baseline_is_still_reported(tmp_path, capsys):
-    base = tmp_path / "base"
-    base.mkdir()
-    (base / "one.txt").write_text(WHERE + "\n")
-    other = "tests/unit/test_new.py"
-    code, out = _scan(tmp_path, capsys, {
-        WHERE: HEAD + "X = (ROOT / 'docs/a.md').read_text()\n",
-        other: HEAD.replace("[3]", "[2]") + "X = (ROOT / 'Makefile').read_text()\n",
-    }, "--baseline-dir", str(base))
-    assert code == 1
-    assert f"{other}:5:" in out and WHERE not in out
-
-
-def test_a_baseline_entry_with_no_finding_fails(tmp_path, capsys):
-    base = tmp_path / "base"
-    base.mkdir()
-    (base / "one.txt").write_text(WHERE + "\n")
-    code, out = _scan(tmp_path, capsys, {WHERE: HEAD + "X = 1\n"}, "--baseline-dir", str(base))
-    assert code == 1
-    assert WHERE in out
-
-
 def test_a_bad_option_exits_2():
     result = subprocess.run([sys.executable, str(SCRIPT), "--no-such-option"],
                             capture_output=True, text=True, check=False)
     assert result.returncode == 2
 
 
-def test_no_baseline_is_left():
-    # Step 7 deleted the last baseline: a read anywhere under tests/ is red.
-    # MUTATION: add any scripts/guards/test-reads/*.txt.
-    assert not sorted(BASELINES.glob("*.txt"))
-
-
-#: The baselines a step of issue 71 has emptied and deleted. scripts-ci.txt
-#: listed the 73 CI-YAML readers under tests/unit/scripts/ (steps 3 and 4);
-#: scripts-docs.txt listed its docs-prose, root *.md and Makefile readers
-#: (step 5); unit-a.txt listed the readers under tests/unit/common, worker
-#: and mcp (step 6); unit-b.txt listed the rest -- tests/unit/control_plane,
-#: install and docs, tests/integration (step 7).
-FINISHED_BASELINES = ("scripts-ci.txt", "scripts-docs.txt", "unit-a.txt", "unit-b.txt")
-
-
-@pytest.mark.parametrize("name", FINISHED_BASELINES)
-def test_a_finished_baseline_does_not_come_back(name):
-    assert not (BASELINES / name).exists()
-
-
-def test_no_file_under_unit_scripts_reads_out_of_its_tree():
-    # tests/unit/scripts/ is clean and no baseline names it: a read of docs
-    # prose, CI YAML, a root *.md or the Makefile there is red here.
-    # MUTATION: open docs/ci.md or .github/workflows/release.yml in any file here.
-    found = sorted({read.split(":", 1)[0] for read in _whole_tree_reads()
-                    if read.startswith("tests/unit/scripts/")})
-    assert not found, found
-    listed = [line for path in BASELINES.glob("*.txt")
-              for line in path.read_text().split() if line.startswith("tests/unit/scripts/")]
-    assert not listed, listed
-
-
-UNIT_A_DIRS = ("tests/unit/common/", "tests/unit/worker/", "tests/unit/mcp/")
-
-
-def test_no_file_under_unit_common_worker_or_mcp_reads_out_of_its_tree():
-    # tests/unit/common, worker and mcp are clean (step 6) and no baseline
-    # names them: a test there that opens docs prose -- the contract change
-    # requests log, a design doc -- CI YAML, a root *.md or the Makefile is red.
-    # MUTATION: open docs/contract-change-requests.md in tests/unit/common.
-    found = sorted({read.split(":", 1)[0] for read in _whole_tree_reads()
-                    if read.startswith(UNIT_A_DIRS)})
-    assert not found, found
-    listed = [line for path in BASELINES.glob("*.txt")
-              for line in path.read_text().split() if line.startswith(UNIT_A_DIRS)]
-    assert not listed, listed
-
-
-def _whole_tree_reads() -> list[str]:
-    result = subprocess.run([sys.executable, str(SCRIPT), "--root", str(ROOT)],
+def test_the_baseline_option_and_directory_are_gone(tmp_path):
+    # Step 8: no file may be tolerated. MUTATION: restore --baseline-dir or
+    # add scripts/guards/test-reads/.
+    assert not (ROOT / "scripts" / "guards" / "test-reads").exists()
+    result = subprocess.run([sys.executable, str(SCRIPT), "--root", str(tmp_path),
+                             "--baseline-dir", str(tmp_path)],
                             capture_output=True, text=True, check=False)
-    assert result.returncode in (0, 1), result.stderr
-    return result.stdout.splitlines()
+    assert result.returncode == 2, result.stdout
 
 
-def test_a_cleaned_file_is_not_read_back_into_a_baseline(tmp_path, capsys):
-    # The cap holds a list's length; this holds the rule behind it: a file the
-    # scanner finds clean cannot stay listed (the baseline would be stale).
-    helper = "tests/unit/scripts/cleaned.py"
-    root = _tree(tmp_path, {helper: HEAD + "def x():\n    return (ROOT / 'apps' / 'x.py').read_text()\n",
-                            "baselines/unit-a.txt": helper + "\n"})
-    code = ctr.main(["--root", str(root), "--baseline-dir", str(root / "baselines")])
+def test_a_docs_read_added_to_a_clean_tree_is_red(tmp_path, capsys):
+    # A clean tree passes with no option; add one test that opens
+    # ROOT / "docs" / "ci.md" and the same whole-tree run is red: no baseline
+    # can tolerate it.
+    clean = {"tests/unit/control_plane/test_clean.py":
+             HEAD + 'def test_x():\n    assert (ROOT / "apps" / "x.py")\n'}
+    code, out = _scan(tmp_path, capsys, clean)
+    assert code == 0, out
+    planted = "tests/unit/control_plane/test_reads_ci_doc.py"
+    code, out = _scan(tmp_path, capsys, {
+        planted: HEAD + 'def test_x():\n    assert (ROOT / "docs" / "ci.md").read_text()\n'})
     assert code == 1
-    assert helper in capsys.readouterr().out
+    assert f"{planted}:6:" in out
 
 
-def test_the_tree_holds_no_read_with_no_baseline(capsys):
-    # The whole tree, with no baseline: a read of docs prose, CI YAML, a root
-    # *.md or the Makefile anywhere under tests/ is red here.
+def test_the_tree_holds_no_read(capsys):
+    # The whole tree: a read of docs prose, CI YAML, a root *.md or the
+    # Makefile anywhere under tests/ is red here.
     # MUTATION: open docs/schedules.md in tests/unit/control_plane.
     code = ctr.main(["--root", str(ROOT)])
     assert code == 0, capsys.readouterr().out

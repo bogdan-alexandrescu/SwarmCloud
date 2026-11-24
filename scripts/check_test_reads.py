@@ -2,13 +2,14 @@
 """List every test that reads docs prose, CI YAML, a root *.md or the Makefile
 (part of issue 71).
 
-    check_test_reads.py [--root DIR] [--baseline-dir DIR] [--list-files] [FILE ...]
+    check_test_reads.py [--root DIR] [--list-files] [FILE ...]
 
 WHY. A unit test that opens docs/ci.md, a workflow under .github/, CLAUDE.md
 or the Makefile turns red on an edit to a tree it does not test: a docs pull
 request breaks the unit tests of code nobody touched, and a code pull request
 inherits a red it did not cause. Issue 71 deletes those pins; this scanner is
-its worklist while the steps run and its guard after them.
+its guard: it holds the whole tree with no baseline, so a read anywhere
+under tests/ is red (the rule: docs/ci.md#a-test-reads-only-its-own-tree).
 
 AN OUT-OF-TREE READ is an expression in a .py file under tests/ (test
 modules, conftest.py, helper modules) that builds a path of THIS repository,
@@ -56,14 +57,10 @@ NOT A READ: a file the test writes under tmp_path; "docs/x.md" as data; a
 read of apps/, scripts/, terraform/, kubernetes/, plugin/, install/ or
 tests/; running `make` as a subprocess from the root.
 
-  --baseline-dir DIR  a finding in a file listed (one repo-relative path a
-                      line, `#` comments allowed) in any DIR/*.txt is
-                      tolerated; a listed file with no finding is an error,
-                      so a baseline only shrinks.
   --list-files        print the distinct offending files instead of the reads.
 
-  exit 0  no read (outside the baseline)
-  exit 1  a read, each printed as `path:line: text`, or a stale baseline entry
+  exit 0  no read
+  exit 1  a read, each printed as `path:line: text`
   exit 2  usage error
 """
 
@@ -820,63 +817,32 @@ def test_files(root: Path) -> list[str]:
     return sorted({n for n in names if n.endswith(".py") and (root / n).is_file()})
 
 
-def read_baselines(directory: Path) -> set[str]:
-    listed: set[str] = set()
-    for path in sorted(directory.glob("*.txt")):
-        for line in path.read_text(encoding="utf-8").splitlines():
-            entry = line.split("#", 1)[0].strip()
-            if entry:
-                listed.add(entry)
-    return listed
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--root", default=".", help="repository root (default: .)")
-    parser.add_argument("--baseline-dir", help="directory of *.txt baselines of tolerated files")
     parser.add_argument("--list-files", action="store_true", help="print the distinct offending files")
     parser.add_argument("files", nargs="*", help="repo-relative files under tests/ (default: all)")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
     files = sorted(f for f in args.files if f.startswith("tests/") and f.endswith(".py")) \
         if args.files else test_files(root)
-    baseline: set[str] = set()
-    if args.baseline_dir:
-        directory = Path(args.baseline_dir)
-        if not directory.is_absolute():
-            directory = (Path.cwd() / directory)
-        if not directory.is_dir():
-            print(f"--baseline-dir {args.baseline_dir}: no such directory", file=sys.stderr)
-            return 2
-        baseline = read_baselines(directory)
     scanner = Scanner(root)
-    offending: list[str] = []
     bad = 0
     for rel in files:
         found = scanner.scan(rel)
         if not found:
             continue
-        offending.append(rel)
-        if rel in baseline:
-            continue
         bad += 1
-        if not args.list_files:
+        if args.list_files:
+            print(rel)
+        else:
             for line, text in found:
                 print(f"{rel}:{line}: {text}")
-    if args.list_files:
-        for rel in offending:
-            if rel not in baseline:
-                print(rel)
-    stale = sorted(baseline - set(offending)) if not args.files else sorted(
-        (baseline & set(files)) - set(offending))
-    for rel in stale:
-        print(f"{rel}: listed in a baseline but reads nothing out of its tree: "
-              "drop it from the baseline")
     if bad:
         print(f"{bad} file(s) under tests/ read docs prose, CI YAML, a root *.md or the "
               "Makefile: test the code, not the prose (issue 71; scripts/check_test_reads.py)",
               file=sys.stderr)
-    return 1 if bad or stale else 0
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":
