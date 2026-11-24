@@ -2378,10 +2378,14 @@ def revise_plan(
         with issueruns_module.submitting(spec):
             submission = ctx.submissions.submit_tasks(owner, [spec])
     except Exception as exc:
-        # Nothing was submitted: the claim ends `failed` and is not counted
-        # against the cap; the caller gets the refusal (a budget's 429, the
-        # owner's 403, the bucket's 503) as it was raised.
-        reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
+        # A refusal (a budget's 429, the owner's 403, the bucket's 503) comes
+        # before the task is stored: the claim ends `failed` and is not
+        # counted against the cap. Any other exception may have come after
+        # the store write, so the claim stays `submitting` and is adopted
+        # (or failed, still counted) by a later read.
+        if not isinstance(exc, ApiError):
+            raise
+        reason = exc.message
         try:
             runs.update_replan(tenant_id, run.id, replan_id, states={"submitting"},
                                changes={"state": "failed", "ended_at": ctx.now(),
@@ -2396,10 +2400,17 @@ def revise_plan(
         linked = runs.update_replan(tenant_id, run.id, replan_id, states={"submitting"},
                                     changes={"state": "running", "task_id": task_id})
     except Conflict:
-        # Cancelled while it was submitted: the record says so; stop the task.
-        linked = runs.update_replan(tenant_id, run.id, replan_id, states={"cancelling"},
-                                    changes={"task_id": task_id})
+        # Cancelled (or superseded) while it was submitted: the task is
+        # stopped whatever the record says now; it is linked only while the
+        # record is still this request's.
         _stop_replan_task(ctx, auth, tenant_id, task_id, by=auth.email)
+        try:
+            linked = runs.update_replan(tenant_id, run.id, replan_id, states={"cancelling"},
+                                        changes={"task_id": task_id})
+        except Conflict:
+            raise Conflict(f"run {run_id!r}'s re-plan {replan_id} was cancelled while it was "
+                           "submitted; its task was stopped",
+                           detail={"replan_id": replan_id, "task_id": task_id}) from None
     log.info("issue run %s tenant=%s: re-plan %s submitted for %d comments as task %s",
              run.id, tenant_id, replan_id, len(comments), task_id)
     response.status_code = status.HTTP_202_ACCEPTED
@@ -2478,6 +2489,7 @@ def _adopt_replan(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             .where(filter=FieldFilter("tenant_id", "==", tenant_id))
             .where(filter=FieldFilter(
                 f"metadata.{issueruns_module.REPLAN_METADATA_KEY}", "==", replan_id))
+            .where(filter=FieldFilter("metadata.issue_run", "==", run.id))
             .limit(1).stream())
     found = [(snap.to_dict() or {}, snap.id) for snap in rows]
     found = [(doc, sid) for doc, sid in found if doc.get("tenant_id") == tenant_id]
@@ -2570,6 +2582,14 @@ def _from_person_replan(ctx: AppContext, tenant_id: str, run: IssueRun) -> Issue
         return end("refused", failure_text(
             f"The planner's answer to revision {revision} was refused: {why}; {kept}."),
             plan=plan)
+    if record.get("cancelled") and run.state == RunState.PLANNED \
+            and run.plan_digest == record.get("from_digest"):
+        # A cancelled re-plan's answer is never a revision (§5.3), whatever
+        # state its task ended in: one entry, its plan kept to read.
+        return end("not_applied",
+                   f"The planner's answer to revision {revision}, not applied: the re-plan was "
+                   f"cancelled ({record.get('cancelled')}) before it was read. Its plan is kept "
+                   "here to read; no revision was made.", plan=plan)
     if run.state != RunState.PLANNED or run.plan_digest != record.get("from_digest"):
         return _not_applied(run, record, plan, end)
     found = hard_stops_at_plan(ctx, tenant_id, run, plan)
@@ -2582,7 +2602,8 @@ def _from_person_replan(ctx: AppContext, tenant_id: str, run: IssueRun) -> Issue
 
     def applied(latest: IssueRun) -> dict:
         current = latest.plan_replan or {}
-        if (current.get("replan_id") != replan_id
+        if (current.get("replan_id") != replan_id or current.get("cancelled")
+                or current.get("state") == "cancelling"
                 or current.get("state") not in issueruns_module.REPLAN_READ_STATES):
             raise Conflict(f"run {latest.id}'s re-plan {replan_id} was read by another request")
         number = latest.plan_revision + 1

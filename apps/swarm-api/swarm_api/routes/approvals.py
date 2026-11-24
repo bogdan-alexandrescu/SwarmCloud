@@ -651,6 +651,7 @@ def reject(
             )
         except InvalidRunTransition:
             raise ScheduleConflict("already_decided", f"run {run.id} was decided first") from None
+        run_routes._cancel_replan_quietly(ctx, auth, tenant_id, moved, why="rejected", by=auth.email)
         _audit_run(ctx, run, schedaudit.REJECTED, auth.email, {
             "approval_id": item_id, "subject": {"run_id": run.id}, "reason": verb.reason,
         })

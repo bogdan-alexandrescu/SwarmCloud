@@ -5629,7 +5629,7 @@ def _comment_line(entry: Mapping[str, Any], fences: Sequence[str]) -> str:
         "anchor": {"part": anchor.get("part"), "ref": anchor.get("ref")},
         "by": by.split("@", 1)[0],
         "text": text,
-    }, ensure_ascii=False, separators=(",", ":"))
+    }, ensure_ascii=True, separators=(",", ":"))
 
 
 def revise_section(run_id: str, nonce: str, plan: Mapping[str, Any],

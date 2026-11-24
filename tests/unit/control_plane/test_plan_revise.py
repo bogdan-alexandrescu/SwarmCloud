@@ -650,6 +650,62 @@ def test_a_replan_left_submitting_is_adopted_or_failed_by_a_later_read(client, d
         assert _revise(client, run["id"], {"plan_digest": run["plan_digest"]}).status_code == 202
 
 
+def test_a_cancelled_replan_whose_agent_still_succeeds_makes_no_revision(client, db, objects):
+    run = _planned(client, db, objects)
+    entry = _comment(client, run)
+    replan = _asked(client, run)
+    cancelled = _revise(client, run["id"], {"cancel": replan["replan_id"]})
+    assert cancelled.status_code == 200, cancelled.text
+    _finish(db, objects, replan["task_id"],
+            {**REVISED, "answers": {entry["entry_id"]: "Yes."}})
+
+    after = _read(client, run["id"])
+    assert after["plan_revision"] == 1
+    assert after["plan_digest"] == run["plan_digest"]
+    assert sorted(_sub(db, run["id"], "plan_revisions")) == ["1"]
+    assert len(_answers(db, run["id"])) == 1
+    assert _stored(db, run["id"])["plan_replan"]["state"] == "not_applied"
+
+
+def test_reject_through_the_inbox_cancels_the_replan_agent(client, db, objects):
+    run = _planned(client, db, objects)
+    _comment(client, run)
+    replan = _asked(client, run)
+    rejected = client.post(f"/v1/approvals/run:{run['id']}:reject", headers=auth_header("alice"),
+                           json={"reason": "not now"})
+    assert rejected.status_code == 200, rejected.text
+    task = _task(db, replan["task_id"])
+    assert task["state"] == "CANCELLED" or task.get("cancel_requested") is True
+    assert _stored(db, run["id"])["plan_replan"]["cancelled"] == "rejected"
+
+
+def test_a_members_task_carrying_the_replan_id_alone_is_not_adopted(client, db, objects):
+    run = _planned(client, db, objects)
+    entry = _comment(client, run)
+    replan_id = "rpl_" + secrets.token_hex(10)
+    stored = _stored(db, run["id"])
+    stored["plan_replan"] = {
+        "replan_id": replan_id, "task_id": None, "from_digest": run["plan_digest"],
+        "from_revision": 1, "entries": [entry["entry_id"]], "requested_by": "alice@example.com",
+        "at": datetime.now(timezone.utc) - timedelta(hours=1), "state": "submitting",
+    }
+    stored["plan_replans"] = 1
+    task_id = "task_" + secrets.token_hex(8)
+    db.docs[f"tasks/{task_id}"] = {"id": task_id, "tenant_id": "eng", "state": "QUEUED",
+                                   "metadata": {"replan": replan_id}}
+    _read(client, run["id"])
+    assert _stored(db, run["id"])["plan_replan"]["state"] == "failed"
+
+
+def test_a_comment_cannot_break_its_line_with_unicode_separators():
+    from swarm_api import issueruns
+
+    line = issueruns._comment_line(
+        {"entry_id": "e1", "anchor": {}, "by": "a@b", "text": "x\u2028y\u2029z\u0085w"}, [])
+    assert len(line.splitlines()) == 1
+    assert all(ord(ch) < 128 for ch in line)
+
+
 @pytest.mark.parametrize("code", ["edit_level_required", "nothing_to_revise", "replan_cap",
                                   "replan_running"])
 def test_the_lanes_refusals_ship_off(code):

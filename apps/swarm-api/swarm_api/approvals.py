@@ -1415,6 +1415,15 @@ def expire_due(ctx: Any, tenant_id: str) -> dict[str, int]:
             log.info("run %s not expired (%s)", run.id, type(exc).__name__)
             continue
         counts["plans"] += 1
+        # An expired plan's running re-plan is stopped as a rejected one's
+        # (§5.3); never fails the sweep.
+        try:
+            from .routes import runs as run_routes  # noqa: PLC0415 -- routes import this module
+            run_routes._cancel_replan_quietly(ctx, None, tenant_id, run, why="rejected",
+                                              by=EXPIRY_ACTOR)
+        except Exception as exc:  # noqa: BLE001
+            log.info("run %s: its re-plan was not cancelled on expiry (%s)", run.id,
+                     type(exc).__name__)
         if schedule is not None:
             batch = db.batch()
             schedaudit.append(batch, db, schedule_id=schedule["schedule_id"], tenant_id=tenant_id,
