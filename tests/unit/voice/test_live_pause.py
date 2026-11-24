@@ -263,6 +263,23 @@ def test_a_pause_tells_the_planner_to_let_its_account_and_child_go():
     asyncio.run(asyncio.wait_for(scenario(), 20))
 
 
+def test_a_turn_that_outlives_the_pause_has_the_planner_let_go_again_when_it_ends():
+    world = World()
+
+    async def scenario():
+        session, voice_id = await _paused(world)
+        world.planner.cooled.clear()
+        world.planner.go.set()
+        for _ in range(200):
+            if world.planner.cooled:
+                break
+            await asyncio.sleep(0.01)
+        assert world.planner.cooled == [(voice_id, "paused")]
+        await world.sessions.end_all()
+
+    asyncio.run(asyncio.wait_for(scenario(), 20))
+
+
 def test_the_pause_window_of_silence_with_a_delegation_in_flight_says_the_sentence_and_closes():
     world = World()
 

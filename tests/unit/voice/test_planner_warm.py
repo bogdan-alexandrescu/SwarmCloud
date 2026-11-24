@@ -85,6 +85,15 @@ class FakeChild:
             await self.handler("draw_details_input", _details_card())
             self.dead = True
             raise claudeturn.ChildGone("exited")
+        elif step == "draw-late-die":
+            # The card's write is still on its way when the child is gone.
+            self.late = asyncio.create_task(self.handler("draw_details_input", _details_card()))
+            await asyncio.sleep(0)
+            self.dead = True
+            raise claudeturn.ChildGone("exited", {"input_tokens": 5})
+        elif step == "used-die":
+            self.dead = True
+            raise claudeturn.ChildGone("exited", {"input_tokens": 5, "output_tokens": 1})
         elif step == "spent":
             return claudeturn.ChildOutcome(is_error=True, spent=claudeturn.SPENT_RATE, usage={})
         elif step == "refused":
@@ -432,6 +441,68 @@ def test_a_child_that_dies_after_drawing_is_not_run_again(world):
     _run(world, scenario)
     assert world.launcher.cold == [] and len(world.cards) == 1
     _released(world)
+
+
+def test_a_write_still_running_when_the_child_dies_is_the_turns_and_is_not_run_again(world):
+    world.launcher.script = ["speak", "draw-late-die"]
+
+    async def scenario(planner):  # noqa: ANN001, ANN202
+        await _ask(planner, world)
+        second = await _ask(planner, world)
+        # MUTATION: decide before the write lands and the person gets the card twice.
+        assert second.error is not None and len(second.cards) == 1
+
+    _run(world, scenario)
+    assert world.launcher.cold == [] and len(world.cards) == 1
+
+
+def test_the_failed_attempts_tokens_are_charged_with_the_turns(world):
+    world.launcher.script = ["speak", "used-die"]
+
+    async def scenario(planner):  # noqa: ANN001, ANN202
+        await _ask(planner, world)
+        return await _ask(planner, world)
+
+    second = _run(world, scenario)
+    assert second.spoken.startswith("Cold answer.")
+    assert (second.usage["input_tokens"], second.usage["output_tokens"]) == (105, 8)
+
+
+def test_an_error_from_a_child_just_started_is_todays_failure_and_is_not_run_again(world):
+    world.launcher.script = ["refused"]
+
+    async def scenario(planner):  # noqa: ANN001, ANN202
+        result = await _ask(planner, world)
+        assert result.error is not None and result.spoken == pl.SAY_FAILED
+
+    _run(world, scenario)
+    assert world.launcher.cold == []
+    _released(world)
+
+
+def test_a_reused_child_is_told_the_interrupt_before_its_message_was_not_the_persons(world):
+    async def scenario(planner):  # noqa: ANN001, ANN202
+        await _ask(planner, world)
+        await _ask(planner, world)
+
+    _run(world, scenario)
+    (child,) = world.launcher.children
+    assert plannerwarm.REUSED_NOTE not in child.said[0] and child.said[1].startswith(plannerwarm.REUSED_NOTE)
+
+
+def test_a_third_idle_session_has_the_longest_idle_one_let_go(tmp_path):
+    world = Warm(tmp_path)
+    grants = [world.grants[0], world.another(), world.another()]
+
+    async def scenario(planner):  # noqa: ANN001, ANN202
+        for grant in grants:
+            assert (await _ask(planner, world, grant=grant)).spoken.startswith("Warm answer.")
+        one, two, three = world.launcher.children
+        await _until(lambda: one.closed and world.count(RELEASE) == 1)
+        assert plannerwarm.MAX_IDLE == 2 and two.alive and three.alive
+
+    _run(world, scenario)
+    assert world.count(RELEASE) == 3
 
 
 def test_a_child_that_cannot_start_falls_back_and_leaves_no_lease(world):
