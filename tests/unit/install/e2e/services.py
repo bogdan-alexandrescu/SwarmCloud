@@ -12,9 +12,9 @@ from swarm_install import tools
 import shutil
 from subprocess import run as _real_run  # bound before the walk patches subprocess.run
 
-_real_which = shutil.which  # bound before the walk patches shutil.which
-
 from .world import World
+
+_real_which = shutil.which  # bound before the walk patches shutil.which
 
 
 def commands(world: World) -> None:
