@@ -431,7 +431,7 @@ def test_model_classes_frozen_count_and_dispatch_pin_the_model():
     assert "step_model_class(" in _cited_symbol(*step.split("::"))
     check = "apps/agent-worker/agent_worker/specverify.py::check_model"
     assert ".admits(" in _cited_symbol(*check.split("::"))
-    note = "apps/agent-worker/agent_worker/lifecycle.py::Worker._note_model_mismatch"
+    note = "apps/agent-worker/agent_worker/spend.py::SpendMixin._note_model_mismatch"
     assert '"model_mismatch' in _cited_symbol(*note.split("::"))
     assert "model" in {f.name for f in dataclasses.fields(Attempt)}
     start = "apps/agent-worker/agent_worker/control.py::ControlPlane.record_attempt_start"

@@ -1605,7 +1605,7 @@ export function usageOf(task: Task): Record<string, number | string[]> | null {
  * The models the CLI's stream reports, when the pinned one is NOT among them;
  * null otherwise (docs/design/model-per-step.md §4.6, archived issue 1435).
  *
- * The worker's own rule (`lifecycle.py::_note_model_mismatch`), so the console
+ * The worker's own rule (`spend.py::SpendMixin._note_model_mismatch`), so the console
  * and the worker's `model_mismatch` log never disagree: the pin missing from
  * `usage.models` is a mismatch, and another model BESIDE the pin is not -- the
  * CLI also reports the small model it runs for its own housekeeping. A `[...]`

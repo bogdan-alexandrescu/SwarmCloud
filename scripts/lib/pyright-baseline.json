@@ -71,8 +71,8 @@
       "reportArgumentType": 2
     },
     "apps/agent-worker/agent_worker/lifecycle.py": {
-      "reportArgumentType": 13,
-      "reportAssignmentType": 5,
+      "reportArgumentType": 10,
+      "reportAssignmentType": 4,
       "reportAttributeAccessIssue": 3,
       "reportCallIssue": 1,
       "reportOperatorIssue": 1,
