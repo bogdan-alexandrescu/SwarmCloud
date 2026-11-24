@@ -48,7 +48,6 @@ from swarm_common.profiles import RESOURCE_CLASSES
 ROOT = Path(__file__).resolve().parents[3]
 HELPER = ROOT / "scripts" / "startup_measure.py"
 SCRIPT = ROOT / "scripts" / "startup-measure.sh"
-DOC = ROOT / "docs" / "browser-startup-speed.md"
 
 NOW = "2026-10-13T12:00:00+00:00"
 DAY = "2026-10-13"
@@ -495,11 +494,6 @@ def test_the_script_reaches_kubectl_only_through_the_guard_and_only_to_read():
     assert verbs == {"top"}, verbs
     # Only GETs against the API.
     assert set(re.findall(r"api_request\s+([A-Z]+)", code)) == {"GET"}
-
-
-def test_the_doc_says_how_to_measure():
-    text = DOC.read_text()
-    assert "scripts/startup-measure.sh" in text
 
 
 @pytest.mark.skipif(not os.path.exists("/bin/bash"), reason="needs bash")

@@ -52,7 +52,6 @@ REPO = Path(__file__).resolve().parents[3]
 BASE_DOCKERFILE = REPO / "images" / "agent-runtime-base" / "Dockerfile"
 BROWSER = REPO / "images" / "agent-runtime-browser"
 SELFTEST = BROWSER / "selftest.py"
-SPEED_DOC = REPO / "docs" / "browser-startup-speed.md"
 NOCODEX = "agent-runtime-base-nocodex"
 
 
@@ -307,15 +306,3 @@ def test_the_self_test_names_the_base_toolbox():
 def test_the_self_test_runs_the_codex_check():
     main = SELFTEST.read_text().split('if __name__ == "__main__":', 1)[1]
     assert "no_codex()" in main
-
-
-# --- the docs -------------------------------------------------------------------
-
-
-def test_the_speed_doc_records_the_decision():
-    text = SPEED_DOC.read_text(encoding="utf-8")
-    section = text[text.index("### 2.3"):text.index("### 2.4")]
-    assert "BROWSER-NO-CODEX" in section and NOCODEX in section
-    assert "129.7" in section
-    decisions = text[text.index("## 9."):text.index("## 10.")]
-    assert "BROWSER-NO-CODEX" in decisions and "07:15" in decisions

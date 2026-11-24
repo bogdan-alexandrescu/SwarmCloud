@@ -25,7 +25,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[3]
 TERRAFORM = REPO / "terraform"
 BOOTSTRAP = TERRAFORM / "bootstrap"
-WORKSPACES = REPO / "docs" / "workspaces.md"
 
 # Every name the retired file declared: its resources and locals, and the two
 # role ids, which a re-created role under another resource name would reuse.
@@ -81,18 +80,3 @@ def test_nothing_in_terraform_names_the_retired_grants() -> None:
         if name in line
     ]
     assert offenders == []
-
-
-def test_w11_records_the_terraform_half_done_and_the_owner_steps() -> None:
-    text = WORKSPACES.read_text(encoding="utf-8")
-    row = next(line for line in text.splitlines() if line.startswith("| W11 |"))
-    assert "Terraform half done" in row
-    runbook = text[text.index("### W11: retiring the Cloud Build connection"):]
-    runbook = runbook[: runbook.index("\n## ")]
-    for step in (
-        "gcloud builds connections delete swarm-github --region=us-central1",
-        "swarm-github-github-oauthtoken-",
-        "gcloud secrets delete",
-        "Google Cloud Build",
-    ):
-        assert step in runbook, step

@@ -32,7 +32,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 PROBE = ROOT / "tests" / "acceptance" / "fixtures" / "tenant-isolation" / "test_cross_tenant_firestore.py"
-CI_MD = ROOT / "docs" / "ci.md"
 
 
 def _probe():
@@ -187,23 +186,3 @@ def test_the_probe_no_longer_says_acceptance_does_not_run_it():
     assert "does not ask today" not in text
     assert "ISO_PROBE_REQUIRED" in text
     assert "acceptance (tenant-isolation)" in text
-
-
-def test_docs_ci_names_the_probe_job_its_report_only_mode_and_the_variable_that_makes_it_required():
-    text = CI_MD.read_text()
-    row = next(line for line in text.splitlines() if line.startswith("| `accept.yml` |"))
-    # MUTATION: drop the job from the workflow table's accept.yml row.
-    assert "`acceptance (tenant-isolation)`" in row, row
-    assert "`ISO_PROBE_REQUIRED`" in row, row
-    section = text.split("### The cross-tenant Firestore probe is report-only until the cutover", 1)
-    # MUTATION: delete the section.
-    assert len(section) == 2, "docs/ci.md has no section for the cross-tenant probe"
-    body = " ".join(section[1].split("\n## ", 1)[0].split("\n### ", 1)[0].split())
-    for needle in (
-        "ISO_PROBE_REQUIRED",
-        "test_cross_tenant_firestore.py",
-        "docs/runbooks/isolation-cutover.md",
-        "report-only",
-        "after the last tenant is cut over",
-    ):
-        assert needle in body, f"the probe's section does not say {needle!r}"

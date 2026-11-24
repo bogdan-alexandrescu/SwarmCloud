@@ -270,8 +270,7 @@ def test_weights_covering_most_files_print_no_warning(tmp_path):
 @pytest.mark.parametrize(
     "areas, present, absent",
     [
-        ("docs", ["tests/unit/scripts/test_docs_describe_what_was_built.py",
-                  "tests/unit/scripts/test_docs_spec_amendments.py",
+        ("docs", ["tests/unit/common/test_await_input_contract.py",
                   "tests/unit/scripts/test_ci_gate.py"],
          ["tests/unit/scheduler/test_gke_browser_pod_dns.py"]),
         ("swarm-ui", ["tests/unit/control_plane/test_runtimes_screen.py",

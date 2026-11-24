@@ -1,15 +1,12 @@
-"""The roleAdmin route (archived issue 79) is recorded as closed AND applied, not pending.
+"""The roleAdmin route (archived issue 79) is recorded as closed AND applied, not pending, in the terraform.
 
 WHY THIS EXISTS. The owner's decision of 2026-09-25 on archived issue 79 took
 roles/iam.roleAdmin off the CI deployer and moved every custom role into
 owner-applied terraform/bootstrap. The owner's bootstrap apply of 2026-09-28
 23:21Z destroyed the live binding, and on 2026-09-29 the deployer held no
 roleAdmin (docs/runbooks/custom-roles-to-bootstrap.md, "What actually
-happened"). Three records still said the route was open until that apply:
-route 2 of docs/ci.md's log-reading table, route 2 of the comment in
-terraform/bootstrap/verify_logs.tf, and the sentence under that table listing
-2 among the routes not yet applied. A reader at 3am would believe CI can still
-widen a custom role. These tests pin each record to the applied state.
+happened"). The comment in terraform/bootstrap/verify_logs.tf still said route 2 was open
+until that apply. These tests pin it to the applied state.
 
 The tfvars "NOT CLOSED BY IT" bullet is held too, both to the past tense and
 to the issue's own requirement: a hasOnly condition stops a direct grant, not
@@ -27,13 +24,10 @@ from __future__ import annotations
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
-CI = REPO / "docs" / "ci.md"
 VERIFY_LOGS = REPO / "terraform" / "bootstrap" / "verify_logs.tf"
-#: A deployment's real bootstrap terraform.tfvars is private (the state bucket's config/ prefix,
-#: docs/ci.md); a placeholder deployment's stands in (tests/fixtures/tfvars/).
+#: A deployment's real bootstrap terraform.tfvars is private (the state bucket's config/ prefix); a placeholder deployment's stands in (tests/fixtures/tfvars/).
 TFVARS = REPO / "tests" / "fixtures" / "tfvars" / "bootstrap.tfvars.fixture"
 VARIABLES = REPO / "terraform" / "bootstrap" / "variables.tf"
-RUNBOOK = REPO / "docs" / "runbooks" / "custom-roles-to-bootstrap.md"
 
 APPLIED = "2026-09-28"
 
@@ -51,28 +45,6 @@ def _flat(text: str) -> str:
     """A comment block with its `#` prefixes and line breaks collapsed."""
     lines = [line.lstrip().lstrip("#").strip() for line in text.splitlines()]
     return " ".join(line for line in lines if line)
-
-
-def _ci_route_row(number: int, starts: str) -> str:
-    prefix = f"| {number} | {starts}"
-    rows = [line for line in _text(CI).splitlines() if line.startswith(prefix)]
-    assert len(rows) == 1, f"expected one route-{number} row in docs/ci.md, found {len(rows)}"
-    return rows[0]
-
-
-def test_ci_route_2_row_records_the_apply():
-    row = _ci_route_row(2, "`roles/iam.roleAdmin`")
-    assert "open until the owner's bootstrap apply destroys the live binding" not in row
-    assert APPLIED in row
-    assert "runbooks/custom-roles-to-bootstrap.md" in row
-
-
-def test_ci_unapplied_routes_sentence_does_not_list_route_2():
-    text = _text(CI)
-    assert "The same held for 2, 3, 5 and 6 until each is applied." not in text
-    sentence = _between(text, "What bounds routes 1 and 4 today", "Closing 1 means")
-    assert "The same held for 3, 5 and 6 until each is applied" in sentence
-    assert APPLIED in sentence
 
 
 def test_verify_logs_route_2_records_the_apply():
@@ -99,12 +71,6 @@ def test_tfvars_roleadmin_bullet_is_past_tense_and_keeps_the_reason():
     assert "#79" in bullet
     assert APPLIED in bullet
     assert "stops a direct grant, not one made through a custom-role update" in bullet
-
-
-def test_runbook_release_after_apply_is_recorded():
-    section = _between(_text(RUNBOOK), "## What actually happened (dates)", "## Why")
-    assert "still pending as of this PR" not in section
-    assert "36514377555" in section
 
 
 def test_variables_still_refuse_roleadmin():

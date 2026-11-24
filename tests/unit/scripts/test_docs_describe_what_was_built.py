@@ -2,12 +2,9 @@
 
 These tests began as doc-accuracy pins (owner decisions of 2026-10-02 on): each
 read a sentence from a document and the value it described from the code. Issue
-71 retired the sentence half: no test here reads a document's wording. What
-stays is the code-side property each pinned (a bound, a default, a route, a
-security setting, a refusal code, how two modules' values relate), asserted on
-the code, and the citation checks, which resolve every `path::qualname` and
-`path` (`anchor`) a listed document cites, so a renamed or deleted symbol still
-fails here as a link that no longer resolves.
+71 retired the document half: no test here reads a document. What stays is the
+code-side property each pinned (a bound, a default, a route, a security setting,
+a refusal code, how two modules' values relate), asserted on the code.
 """
 
 from __future__ import annotations
@@ -16,36 +13,17 @@ import dataclasses
 import re
 from pathlib import Path
 
-import pytest
-
 from swarm_common.profiles import RUNNER_PROFILES, RunnerProfile
 
-from .test_docs_spec_amendments import _ROOTS, _assert_cites_resolve, _cited_anchor, _cited_symbol
+from .test_docs_spec_amendments import _cited_anchor, _cited_symbol
 
 REPO = Path(__file__).resolve().parents[3]
-DOCS = REPO / "docs"
-BUILD_PROMPT = DOCS / "BUILD_PROMPT_V2.md"
-BACKENDS = DOCS / "execution-backends.md"
-TENANCY = DOCS / "multi-tenancy.md"
-CHECKPOINTING = DOCS / "checkpointing.md"
-DESIGN = DOCS / "design" / "dispatch-and-integration.md"
-UI_README = DOCS / "web-ui" / "README.md"
-REDESIGN = DOCS / "web-ui" / "redesign-v2.md"
 DISPATCH = REPO / "apps" / "scheduler" / "scheduler" / "dispatch.py"
 
-TOUCHED = (BUILD_PROMPT, BACKENDS, TENANCY, CHECKPOINTING, DESIGN, UI_README, REDESIGN)
 
 
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
-
-
-def _section(text: str, heading: str) -> str:
-    """The body under a markdown heading, up to the next heading of any level."""
-    start = text.index(heading)
-    rest = text[start + len(heading):]
-    nxt = re.search(r"^#{1,4} ", rest, flags=re.M)
-    return rest[: nxt.start()] if nxt else rest
 
 
 #: dispatch.py, as the docs cite it: `path::qualname` (lane CITD).
@@ -210,10 +188,6 @@ def test_spend_coverage_shape_has_exactly_these_fields():
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("doc", TOUCHED, ids=lambda p: p.name)
-def test_every_citation_is_a_symbol_or_an_anchor_that_resolves(doc: Path):
-    """No `path:N` (a merge above the code moves it); every `path::qualname` and `path` (`text`) resolves."""
-    _assert_cites_resolve(doc)
 
 
 # --------------------------------------------------------------------------
@@ -227,9 +201,6 @@ def test_every_citation_is_a_symbol_or_an_anchor_that_resolves(doc: Path):
 # type list or the three forms is held on the code below;
 # the documents' wording is not (issue 71).
 
-WORKFLOWS = DOCS / "workflows.md"
-NOTIFICATIONS = DOCS / "notifications.md"
-HUMAN_STEPS = DOCS / "design" / "human-steps.md"
 MIB = 1024 * 1024
 
 
@@ -279,9 +250,6 @@ def test_notifications_sources_registers_awaiting_input():
     assert "awaiting_input" in dict(SOURCES)
 
 
-@pytest.mark.parametrize("doc", (WORKFLOWS, NOTIFICATIONS), ids=lambda p: p.name)
-def test_await_input_docs_cite_only_what_resolves(doc: Path):
-    _assert_cites_resolve(doc)
 
 
 # --------------------------------------------------------------------------
@@ -295,8 +263,6 @@ def test_await_input_docs_cite_only_what_resolves(doc: Path):
 # carries the threat model. Every rule name, route, purpose and flag they
 # state is read from the code here.
 
-MCP_DESIGN = DOCS / "design" / "registered-mcp-servers.md"
-SECURITY = DOCS / "security.md"
 
 
 def _rule_fires(rule, text: str) -> bool:
@@ -364,9 +330,6 @@ def test_credential_serving_routes_count_is_two():
     assert len(paths) == 2, paths
 
 
-@pytest.mark.parametrize("doc", (MCP_DESIGN, SECURITY), ids=lambda p: p.name)
-def test_mcp_docs_cite_only_what_resolves(doc: Path):
-    _assert_cites_resolve(doc)
 
 
 # --------------------------------------------------------------------------
@@ -380,9 +343,6 @@ def test_mcp_docs_cite_only_what_resolves(doc: Path):
 # describe the built feature. Every class, pin, refusal code and format they
 # state is read from the code here.
 
-MODEL_DESIGN = DOCS / "design" / "model-per-step.md"
-AGENT_OUTPUT = DOCS / "agent-output.md"
-QUOTA = DOCS / "quota-management.md"
 LOCALS_TF = REPO / "terraform" / "infra" / "locals.tf"
 
 
@@ -465,9 +425,6 @@ def test_quota_window_binding_and_headroom_ignore_model_class():
     assert "model_class" not in accounts.Account.headroom.__code__.co_varnames
 
 
-@pytest.mark.parametrize("doc", (MODEL_DESIGN, AGENT_OUTPUT, QUOTA), ids=lambda p: p.name)
-def test_model_docs_cite_only_what_resolves(doc: Path):
-    _assert_cites_resolve(doc)
 
 
 # --------------------------------------------------------------------------
@@ -484,9 +441,6 @@ def test_model_docs_cite_only_what_resolves(doc: Path):
 # service workspace takes while no deprovisioning run exists (Q9 (a)). Every
 # step, code, route and name they state is read from the code here.
 
-KINDS_DESIGN = DOCS / "design" / "workspace-kinds.md"
-WORKSPACES_DOC = DOCS / "workspaces.md"
-OFFBOARDING = DOCS / "runbooks" / "tenant-offboarding.md"
 REGISTER = "scripts/register-tenant.sh"
 #: The failure codes §4.8 of the design added, each written by the job.
 KINDS_CODES = ("SERVICE_ACCOUNT_REFUSED", "DIRECTORY_CHECK_STALE", "FRONT_DOOR_OWNER",
@@ -535,9 +489,6 @@ def test_workspace_registry_read_counts_only_ready_records():
     assert "READY" in _cited_symbol("apps/swarm-api/swarm_api/registry.py", "WorkspaceRegistry._read")
 
 
-@pytest.mark.parametrize("doc", (KINDS_DESIGN, WORKSPACES_DOC, TENANCY, OFFBOARDING), ids=lambda p: p.name)
-def test_workspace_kinds_docs_cite_only_what_resolves(doc: Path):
-    _assert_cites_resolve(doc)
 
 
 # --------------------------------------------------------------------------
@@ -556,8 +507,6 @@ def test_workspace_kinds_docs_cite_only_what_resolves(doc: Path):
 # added is held on the code below;
 # the documents' wording is not (issue 71).
 
-ROLES_DESIGN = DOCS / "design" / "workspace-roles.md"
-SECRETS_DESIGN = DOCS / "design" / "workspace-secrets.md"
 ROLES_PY = "apps/swarm-api/swarm_api/roles.py"
 SETTINGS_PY = "apps/swarm-api/swarm_api/settings.py"
 ANSWER_GATE = "apps/swarm-api/swarm_api/awaitinput.py::member_refusal"
@@ -616,10 +565,6 @@ def test_reachable_groups_filters_to_tenant_prefix_and_current_auth_audits_admin
     assert "audit_platform_admin(" in _cited_symbol(*audit.split("::"))
 
 
-@pytest.mark.parametrize("doc", (ROLES_DESIGN, HUMAN_STEPS, SECRETS_DESIGN, SECURITY, WORKSPACES_DOC),
-                         ids=lambda p: p.name)
-def test_workspace_roles_docs_cite_only_what_resolves(doc: Path):
-    _assert_cites_resolve(doc)
 
 
 # --------------------------------------------------------------------------
@@ -637,8 +582,6 @@ def test_workspace_roles_docs_cite_only_what_resolves(doc: Path):
 # changing is held on the code below;
 # the documents' wording is not (issue 71).
 
-QI_DESIGN = DOCS / "design" / "qa-identity.md"
-LIVE_BROWSER = DOCS / "design" / "live-browser.md"
 QI_GATE_PY = "apps/agent-worker/agent_worker/livegate/qaidentity.py"
 QI_WORKER_PY = "apps/agent-worker/agent_worker/qa_identity.py"
 QI_API_PY = "apps/swarm-api/swarm_api/qa_identity.py"
@@ -705,9 +648,6 @@ def test_qa_identity_own_tenant_and_routes():
         assert f'"{path}"' in routes, path
 
 
-@pytest.mark.parametrize("doc", (QI_DESIGN, LIVE_BROWSER, WORKSPACES_DOC), ids=lambda p: p.name)
-def test_qa_identity_docs_cite_only_what_resolves(doc: Path):
-    _assert_cites_resolve(doc)
 
 
 
@@ -721,8 +661,6 @@ def test_qa_identity_docs_cite_only_what_resolves(doc: Path):
 # Autopilot; and locals.tf called its four-field table "byte-identical" to a
 # catalogue that now has a CPU limit. Each test reads the value from the code.
 
-ARCHITECTURE = DOCS / "architecture.md"
-K8S_README = REPO / "kubernetes" / "README.md"
 
 
 def test_gke_manifest_computes_cpu_via_cpu_quantity():
@@ -764,20 +702,13 @@ def test_locals_tf_resource_classes_table_matches_the_catalogue():
                          rf"disk_gib = {rc.disk_gib}, units = {rc.units} \}}", text), name
 
 
-@pytest.mark.parametrize("doc", (ARCHITECTURE, K8S_README), ids=lambda p: p.name)
-def test_runner_sizes_docs_cite_only_what_resolves(doc: Path):
-    _assert_cites_resolve(doc)
 
 
 # --------------------------------------------------------------------------
 # Test services: docs/design/test-services.md §11 (TS-DOCS-GUARDS)
 # --------------------------------------------------------------------------
 
-TS_DESIGN = DOCS / "design" / "test-services.md"
-TS_DOC = DOCS / "test-services.md"
 TS_PREPUBLISH_PY = "apps/agent-worker/agent_worker/prepublish.py"
-#: A backticked citation into the tree, with or without `::qualname`.
-_TS_CITE = re.compile(rf"`({_ROOTS}[\w./-]*?)(?:::([\w.]+))?`")
 
 
 def test_testservices_refuses_every_platform_owned_key():
@@ -814,33 +745,12 @@ def test_pytest_project_skip_reason_message():
     assert '"every selected test errored at setup connecting to it; CI runs it"' in source
 
 
-def _ts_agent_output_part(text: str) -> str:
-    """The test-services paragraph of agent-output.md's pre-publish section."""
-    section = _section(text, "## Before the worker publishes: a rebase and the repository's own checks (SPEED-D1)")
-    start = section.index("**A service the tests need**")
-    return section[start: section.index("\n\n", start)]
 
 
-#: Each doc, and the part of it that is the test-services doc's.
-_TS_CITED = {
-    "design-test-services.md": (TS_DESIGN, lambda t: t),
-    "test-services.md": (TS_DOC, lambda t: t),
-    "agent-output.md": (AGENT_OUTPUT, _ts_agent_output_part),
-}
 
 
-def _ts_assert_cites_resolve(text: str, scratch: Path) -> None:
-    """The file's own `_assert_cites_resolve`, on a scratch copy of `text`,
-    after holding that the copy cites something: an empty pass is not one."""
-    assert _TS_CITE.search(text), f"{scratch.name}: no citation found, so nothing was checked"
-    scratch.write_text(text, encoding="utf-8")
-    _assert_cites_resolve(scratch)
 
 
-@pytest.mark.parametrize("doc", sorted(_TS_CITED))
-def test_test_services_docs_cite_only_what_resolves(doc: str, tmp_path: Path):
-    path, part = _TS_CITED[doc]
-    _ts_assert_cites_resolve(part(_text(path)), tmp_path / doc)
 
 
 # --------------------------------------------------------------------------
@@ -859,8 +769,6 @@ def test_test_services_docs_cite_only_what_resolves(doc: str, tmp_path: Path):
 # switch turned on, a permission widened or step 5 shipping is held on the code
 # below; the documents' wording is not (issue 71).
 
-SSC_DESIGN = DOCS / "design" / "secrets-scopes.md"
-PROVIDER_KEYS = DOCS / "provider-keys.md"
 #: The new refusals the lanes shipped off (refusals.SWITCHES).
 SSC_SWITCHES = ("github_admin_required", "grant_key_required", "qa_bypass_link_required")
 
@@ -910,9 +818,6 @@ def test_secrets_scopes_switches_and_limits_ship_off():
     assert re.search(r'variable "enable_platform_secret_status" \{.*?default\s*=\s*false', tf, flags=re.S)
 
 
-@pytest.mark.parametrize("doc", (SSC_DESIGN, SECRETS_DESIGN, SECURITY, PROVIDER_KEYS), ids=lambda p: p.name)
-def test_secrets_scopes_docs_cite_only_what_resolves(doc: Path):
-    _assert_cites_resolve(doc)
 
 
 # -- QAENV-DOCS: one visual-QA dispatch over an app's environments ----------
@@ -925,8 +830,6 @@ def test_secrets_scopes_docs_cite_only_what_resolves(doc: Path):
 # day and one at a time, which the owner changed on 2026-10-23 (§10, Q9 (a)). Each
 # figure below is read from the code that holds it.
 
-QAENV_DESIGN = DOCS / "design" / "qa-environments.md"
-QAENV_ANY_APP = DOCS / "design" / "visual-qa-any-app.md"
 QAENV_QASPEC = "apps/swarm-api/swarm_api/qaspec.py"
 QAENV_VISUAL_QA = "apps/swarm-api/swarm_api/schedtypes/visual_qa.py"
 
@@ -949,9 +852,6 @@ def test_visual_qa_budget_caps_are_80_160_2():
     assert (per_run, per_day, concurrent) == (80, 160, 2)
 
 
-@pytest.mark.parametrize("doc", (QAENV_DESIGN, QAENV_ANY_APP), ids=lambda p: p.name)
-def test_qa_environments_docs_cite_only_what_resolves(doc: Path):
-    _assert_cites_resolve(doc)
 
 
 # -- The visual-QA sign-in gate's waits ------------------------------------

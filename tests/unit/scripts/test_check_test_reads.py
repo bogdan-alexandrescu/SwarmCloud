@@ -219,7 +219,7 @@ def test_a_bad_option_exits_2():
 
 def test_the_baselines_are_sorted_and_disjoint():
     names = sorted(p.name for p in BASELINES.glob("*.txt"))
-    assert names == ["scripts-docs.txt", "unit-a.txt", "unit-b.txt"]
+    assert names == ["unit-a.txt", "unit-b.txt"]
     seen: set[str] = set()
     for path in BASELINES.glob("*.txt"):
         entries = [line for line in path.read_text().splitlines() if line.strip()]
@@ -229,9 +229,10 @@ def test_the_baselines_are_sorted_and_disjoint():
 
 
 #: The baselines a step of issue 71 has emptied and deleted. scripts-ci.txt
-#: listed the 73 CI-YAML readers under tests/unit/scripts/; steps 3 and 4
-#: cleaned them.
-FINISHED_BASELINES = ("scripts-ci.txt",)
+#: listed the 73 CI-YAML readers under tests/unit/scripts/ (steps 3 and 4);
+#: scripts-docs.txt listed its docs-prose, root *.md and Makefile readers
+#: (step 5).
+FINISHED_BASELINES = ("scripts-ci.txt", "scripts-docs.txt")
 
 
 @pytest.mark.parametrize("name", FINISHED_BASELINES)
@@ -239,14 +240,16 @@ def test_a_finished_baseline_does_not_come_back(name):
     assert not (BASELINES / name).exists()
 
 
-def test_every_reader_left_under_unit_scripts_is_a_docs_reader():
-    # The CI-YAML half of tests/unit/scripts/ is done: what the scanner still
-    # finds there, scripts-docs.txt lists (the docs prose step's worklist).
-    # MUTATION: open .github/workflows/release.yml in any other file here.
-    found = {read.split(":", 1)[0] for read in _whole_tree_reads()
-             if read.startswith("tests/unit/scripts/")}
-    docs = set((BASELINES / "scripts-docs.txt").read_text().split())
-    assert found <= docs, sorted(found - docs)
+def test_no_file_under_unit_scripts_reads_out_of_its_tree():
+    # tests/unit/scripts/ is clean and no baseline names it: a read of docs
+    # prose, CI YAML, a root *.md or the Makefile there is red here.
+    # MUTATION: open docs/ci.md or .github/workflows/release.yml in any file here.
+    found = sorted({read.split(":", 1)[0] for read in _whole_tree_reads()
+                    if read.startswith("tests/unit/scripts/")})
+    assert not found, found
+    listed = [line for path in BASELINES.glob("*.txt")
+              for line in path.read_text().split() if line.startswith("tests/unit/scripts/")]
+    assert not listed, listed
 
 
 def _whole_tree_reads() -> list[str]:
@@ -261,7 +264,7 @@ def test_a_cleaned_file_is_not_read_back_into_a_baseline(tmp_path, capsys):
     # scanner finds clean cannot stay listed (the baseline would be stale).
     helper = "tests/unit/scripts/cleaned.py"
     root = _tree(tmp_path, {helper: HEAD + "def x():\n    return (ROOT / 'apps' / 'x.py').read_text()\n",
-                            "baselines/scripts-docs.txt": helper + "\n"})
+                            "baselines/unit-a.txt": helper + "\n"})
     code = ctr.main(["--root", str(root), "--baseline-dir", str(root / "baselines")])
     assert code == 1
     assert helper in capsys.readouterr().out

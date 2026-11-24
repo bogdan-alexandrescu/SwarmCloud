@@ -1,28 +1,20 @@
 """The spec says what the code does: owner decisions of 2026-10-01.
 
-WHY THIS EXISTS. Two documents described a platform this repository does not
-run:
-
-  * docs/BUILD_PROMPT_V2.md called itself "specification, not yet built" and
-    said the substrate was "GKE Autopilot, and only GKE Autopilot ...
-    Everything is a pod". The catalogue (`swarm_common.profiles`) puts four of
-    the five profiles on Cloud Run Jobs and `BackendRouter` in
-    apps/scheduler/scheduler/dispatch.py routes them there. The owner decided
-    on 2026-10-01 that Cloud Run Jobs STAY primary and GKE Autopilot runs only
-    the browser runner, and that the spec moves to match the code.
-  * docs/cost-control.md told an admin to set `monthly_budget_usd` and promised
-    `PARKED(BUDGET_EXHAUSTED)`. The API refuses that field (422) and nothing
-    writes that park. The owner decided the same day there are no per-tenant
-    budgets, and none are planned.
+WHY THIS EXISTS. The spec moved to match the code: the catalogue
+(`swarm_common.profiles`) puts GKE Autopilot on the profiles that reach the
+internet and Cloud Run Jobs on the rest, and `BackendRouter` in
+apps/scheduler/scheduler/dispatch.py routes them there. The owner decided on
+2026-10-01 that Cloud Run Jobs STAY primary and GKE Autopilot runs only the
+browser runner.
 
 Each test reads the live catalogue where it can, so a profile moving backend
-fails here rather than leaving the spec quietly wrong again.
+fails here. The `_cited_symbol` and `_cited_anchor` helpers resolve a symbol or
+a text anchor in the code and are shared with test_docs_describe_what_was_built.
 """
 
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
 
 import pytest
@@ -30,19 +22,6 @@ import pytest
 from swarm_common.profiles import RUNNER_PROFILES, Backend, resolve_backend
 
 REPO = Path(__file__).resolve().parents[3]
-BUILD_PROMPT = REPO / "docs" / "BUILD_PROMPT_V2.md"
-CONTRACT = REPO / "CONTRACT.md"
-COST = REPO / "docs" / "cost-control.md"
-TENANCY = REPO / "docs" / "multi-tenancy.md"
-QUOTA = REPO / "docs" / "quota-management.md"
-REQUESTS = REPO / "docs" / "contract-change-requests.md"
-ARCHITECTURE = REPO / "docs" / "architecture.md"
-
-AMENDED = (BUILD_PROMPT, CONTRACT, COST, TENANCY, QUOTA, REQUESTS, ARCHITECTURE)
-
-
-def _text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
 
 
 def _backends() -> dict[str, Backend]:
@@ -168,38 +147,6 @@ def _cited_anchor(path: str, text: str, *, once: bool = True) -> str:
     return next(line for line in source.splitlines() if text in line)
 
 
-#: The prefixes a citation into this repository starts with.
-_ROOTS = r"(?:apps|terraform|kubernetes|scripts|tests|images|plugin|docs|\.github)/"
-
-#: `path:N` or `path:N-M`: the form archived issue 647 and lane CITD retired. Any match fails.
-_LINE_CITE = re.compile(rf"`({_ROOTS}[\w./-]+\.\w+:\d+(?:-\d+)?)`")
-
-#: `path::qualname`, a Python function, class or name.
-_SYMBOL_CITE = re.compile(rf"`({_ROOTS}[\w./-]+\.py)::([\w.]+)`")
-
-#: `path` (`text`): the exact text a non-Python citation points at. `\s+`, not
-#: one space, so a citation the doc wraps between `path` and (`text`) is still
-#: checked rather than silently skipped.
-_ANCHOR_CITE = re.compile(rf"`({_ROOTS}[\w./-]+)`\s+\(`([^`]+)`\)")
-
-#: Anchors a doc cites that occur more than once in their file, and why each
-#: cannot be narrowed to one. Every other anchor must occur exactly once.
-_REPEATED_ANCHORS: frozenset[tuple[str, str]] = frozenset()
-
-
-def _assert_cites_resolve(doc: Path) -> None:
-    """Every citation in `doc` is a symbol or an anchor that resolves, and none is a line number."""
-    text = _text(doc)
-    stale = _LINE_CITE.findall(text)
-    assert not stale, f"{doc.name} still cites line numbers, which drift: {stale}"
-    for path, qualname in _SYMBOL_CITE.findall(text):
-        assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"
-        _cited_symbol(path, qualname)
-    for path, anchor in _ANCHOR_CITE.findall(text):
-        assert "\n" not in anchor, f"{doc.name} wraps the anchor it cites in {path}: keep it on one line"
-        _cited_anchor(path, anchor, once=(path, anchor) not in _REPEATED_ANCHORS)
-
-
 def test_the_runtime_image_runs_as_a_single_non_root_user():
     """images/agent-runtime-base/Dockerfile switches to `USER swarm:swarm` exactly once."""
     assert _cited_anchor("images/agent-runtime-base/Dockerfile", "USER swarm:swarm").strip() == "USER swarm:swarm"
@@ -221,23 +168,6 @@ def test_the_supervised_run_loop_checkpoints_periodically():
     """Worker._run_child_supervised calls self._checkpoint("periodic") in its run loop."""
     lifecycle = "apps/agent-worker/agent_worker/lifecycle.py"
     assert 'self._checkpoint("periodic")' in _cited_symbol(lifecycle, "Worker._run_child_supervised")
-
-
-# --------------------------------------------------------------------------
-# every citation an amended document makes resolves, and none is a line number
-# --------------------------------------------------------------------------
-
-CHILD_TASKS = REPO / "docs" / "design" / "child-tasks.md"
-
-#: The amended documents, and the child-tasks design, whose lifecycle.py line
-#: numbers drifted the same way archived issue 647's did.
-CITING = AMENDED + (CHILD_TASKS,)
-
-
-@pytest.mark.parametrize("doc", CITING, ids=lambda p: p.name)
-def test_every_citation_is_a_symbol_or_an_anchor_that_resolves(doc: Path):
-    """No `path:N`; every `path::qualname` names a def, class or name; every `path` (`text`) finds its text."""
-    _assert_cites_resolve(doc)
 
 
 def test_an_anchor_that_is_gone_or_ambiguous_fails():

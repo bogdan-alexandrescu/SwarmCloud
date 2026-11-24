@@ -147,11 +147,11 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # CI YAML, a root *.md or the Makefile outside scripts/guards/test-reads/'s
 # shrinking baselines -- a new read lands in a file no diff names, so only a
 # whole-tree run reaches it (part of issue 71). Then the inventory
-# walkers the merge train ejected for (owner's improvement plan, 2026-11-23)
-# -- test_runbook_index (every docs/runbooks/*.md is linked from its README;
-# 0.1 s) and test_plugin_agents_ignore_chat (every plugin/agents/*.md is a
-# known kind; 1.0 s). A new runbook or agent breaks them and names neither,
-# so no diff selects them. test_agent_quality_inventory was a third until
+# walker the merge train ejected for (owner's improvement plan, 2026-11-23)
+# -- test_plugin_agents_ignore_chat (every plugin/agents/*.md is a known kind;
+# 1.0 s). A new agent breaks it and names it not, so no diff selects it.
+# test_runbook_index was a second until issue 71 deleted it: it pinned the
+# runbooks README's text. test_agent_quality_inventory was a third until
 # issue 74 deleted it: its subject was the agent-quality docs, not the product.
 # Last, tests/unit/install/test_manifest_complete.py: every Terraform resource,
 # environment variable reference, secret, image and Kubernetes object in the
@@ -204,7 +204,6 @@ GUARD_TESTS=(
   tests/unit/scripts/test_verify_deployer_trust.py
   tests/unit/scripts/test_check_test_pointers.py
   tests/unit/scripts/test_check_test_reads.py
-  tests/unit/scripts/test_runbook_index.py
   tests/unit/mcp/test_plugin_agents_ignore_chat.py
   tests/unit/install/test_manifest_complete.py
 )

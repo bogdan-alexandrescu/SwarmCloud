@@ -165,7 +165,7 @@ def test_a_docs_only_change_still_selects_the_tests_that_read_the_changed_doc():
     # A non-doc guard may also be a READER of a changed doc: test_auto_merge_
     # base_merge reads docs/runbooks/merge-app.md and test_verify_deployer_
     # trust names CLAUDE.md (CI-GUARDS-THREE, part of archived issue 1822). Such a guard is selected as a
-    # reader, by the same rule that picks test_merge_step_docs, not because the
+    # reader, by the same rule that picks any other reader, not because the
     # guard set leaked in -- so it is allowed here only when its own text names
     # a changed doc, and every other non-doc guard is still refused.
     refused = [g for g in UNIT_GUARDS if not _names_a_changed_doc(g, changed)]
@@ -208,17 +208,13 @@ def test_the_out_of_tree_read_scanner_is_in_the_guard_set():
     assert guard not in DOC_GUARDS, guard
 
 
-def test_the_inventory_walkers_the_train_ejected_for_are_in_the_guard_set():
-    # Whole-tree inventories no diff selects (owner's improvement plan,
-    # 2026-11-23): a new runbook or plugin agent breaks them without either
-    # naming it.
-    for guard in (
-        "tests/unit/scripts/test_runbook_index.py",
-        "tests/unit/mcp/test_plugin_agents_ignore_chat.py",
-    ):
-        # MUTATION: drop either from GUARD_TESTS and this is red, naming it.
-        assert guard in GUARDS, guard
-        assert guard not in DOC_GUARDS, guard
+def test_the_inventory_walker_the_train_ejected_for_is_in_the_guard_set():
+    # A whole-tree inventory no diff selects (owner's improvement plan,
+    # 2026-11-23): a new plugin agent breaks it without naming it.
+    guard = "tests/unit/mcp/test_plugin_agents_ignore_chat.py"
+    # MUTATION: drop it from GUARD_TESTS and this is red.
+    assert guard in GUARDS, guard
+    assert guard not in DOC_GUARDS, guard
 
 
 def test_the_install_manifest_completeness_test_is_in_the_guard_set():

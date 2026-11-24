@@ -1,4 +1,4 @@
-"""Onboarding's migration lane, OB10 (the per-person-slots migration): the switch is deployed and the docs say what is built.
+"""Onboarding's migration lane, OB10 (the per-person-slots migration): the switch is deployed.
 
 WHY THIS EXISTS. `REPOSITORY_GRANTS_ENFORCED` (swarm_api.settings
 `repository_grants_enforced`) decides whether a PERSON's task on a repository
@@ -8,55 +8,22 @@ terraform set it, so the next apply would have put it back to off, and the
 tenant token would have gone on standing in for every unconnected person
 without anyone seeing it. Here terraform renders it from a variable, and dev's
 tfvars turns it on.
-
-The docs half: docs/onboarding.md said "Nothing described here is built" after
-lanes OB0-OB9 had shipped, so a reader of the design could not tell which
-routes exist. And the issue's four acceptance checks are live checks on two
-GitHub orgs that only the owner can run, so they are a runbook, held here to
-the commands, routes and codes they name: a runbook step that names a verb
-`sc` no longer has is the 3am failure CLAUDE.md warns about.
 """
 
 from __future__ import annotations
 
-import contextlib
-import importlib.util
-import io
 import re
 from pathlib import Path
 
-import pytest
-
-from .test_docs_spec_amendments import _assert_cites_resolve
-
 REPO = Path(__file__).resolve().parents[3]
-DOCS = REPO / "docs"
-ONBOARDING = DOCS / "onboarding.md"
-_spec = importlib.util.spec_from_file_location("placeholders", REPO / "tests" / "placeholders.py")
-placeholders = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(placeholders)
-ORG = placeholders.GITHUB_OWNER
-GIT_TOKENS = DOCS / "git-tokens.md"
-REPO_INDEX = DOCS / "repo-index.md"
-REFUSALS_DOC = DOCS / "api-refusals.md"
-RUNBOOK = DOCS / "runbooks" / "onboarding-acceptance.md"
 LOCALS = REPO / "terraform" / "infra" / "locals.tf"
 VARIABLES = REPO / "terraform" / "infra" / "variables.tf"
 DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars.example"
 PROD_TFVARS = REPO / "terraform" / "environments" / "prod" / "prod.tfvars.example"
 SETTINGS = REPO / "apps" / "swarm-api" / "swarm_api" / "settings.py"
-CODEC = REPO / "apps" / "swarm-api" / "swarm_api" / "codec.py"
 
 ENV_NAME = "REPOSITORY_GRANTS_ENFORCED"
 VAR_NAME = "repository_grants_enforced"
-
-#: The issue's "How would you know it worked?", one check each, in its order.
-ACCEPTANCE_CHECKS = (
-    "Check 1. A new user clones, pushes and opens a pull request as themselves in two orgs",
-    "Check 2. Every step shows its verified state",
-    "Check 3. A repository the user did not choose is refused",
-    "Check 4. Removing an org revokes SwarmCloud's access to it",
-)
 
 
 def _text(path: Path) -> str:
@@ -65,17 +32,6 @@ def _text(path: Path) -> str:
 
 def _flat(text: str) -> str:
     return " ".join(text.split())
-
-
-def _section(text: str, heading: str) -> str:
-    """The body under the heading line that starts `heading`, up to the next
-    heading of the same or a higher level."""
-    match = re.search(rf"^(#+) {re.escape(heading)}.*$", text, flags=re.M)
-    assert match, f"no heading {heading!r}"
-    level = len(match.group(1))
-    rest = text[match.end():]
-    nxt = re.search(rf"^#{{1,{level}}} ", rest, flags=re.M)
-    return rest[: nxt.start()] if nxt else rest
 
 
 def _uncommented(path: Path) -> str:
@@ -136,135 +92,3 @@ def test_prod_does_not_turn_it_on_before_the_owner_says_so():
 def test_the_settings_comment_points_at_the_tfvars():
     flat = _flat(_text(SETTINGS))
     assert f"var.{VAR_NAME}" in flat, "settings.py says where the deployed value comes from"
-
-
-# --------------------------------------------------------------------------
-# (2) the docs say what is built
-# --------------------------------------------------------------------------
-
-
-def test_onboarding_no_longer_says_nothing_is_built():
-    text = _text(ONBOARDING)
-    assert "Nothing described here is built" not in text
-    head = _flat("\n".join(text.splitlines()[:16]))
-    assert "BUILT on 2026-10-09" in head
-
-
-@pytest.mark.parametrize(
-    "built",
-    ["POST /v1/onboarding/github/token", "POST /v1/onboarding/dismiss", "push test"],
-)
-def test_onboarding_names_the_last_pieces_as_built(built):
-    head = _flat(_text(ONBOARDING).split("\n## 0. ")[0])
-    assert built in head, f"the status names {built!r} as built"
-
-
-def test_every_lane_of_the_build_plan_is_marked_built_with_its_pull_request():
-    plan = _section(_text(ONBOARDING), "5. Build plan")
-    rows = re.findall(r"^\| (OB\d+[a-z]?) \| \d \| ([^|]*) \|", plan, flags=re.M)
-    lanes = [lane for lane, _ in rows]
-    assert lanes[:2] == ["OB0", "OB0b"] and lanes[-1] == "OB10" and len(lanes) == 12
-    for lane, builds in rows:
-        if lane == "OB10":
-            assert builds.startswith("**built, this lane**"), "OB10 is this change"
-            continue
-        assert builds.startswith("**built**: "), f"{lane} is not marked built"
-
-
-@pytest.mark.parametrize(
-    "cited",
-    [
-        "apps/swarm-api/swarm_api/forgeapp.py::ForgeApp.store_owner_token",
-        "apps/swarm-api/swarm_api/gittokens.py::owner_suffix",
-        "apps/swarm-api/swarm_api/access.py::AccessService._push_test",
-        "apps/swarm-api/swarm_api/access.py::AccessService.request_install",
-        "apps/swarm-api/swarm_api/onboarding.py::dismiss",
-    ],
-)
-def test_onboarding_points_at_the_code_for_each_late_piece(cited):
-    text = _text(ONBOARDING)
-    today = _section(text, "0. ")
-    api = _section(text, "3. Data model")
-    assert f"`{cited}`" in today or f"`{cited}`" in api, f"§0 or §3 cites {cited}"
-
-
-@pytest.mark.parametrize("doc", [ONBOARDING, GIT_TOKENS, REPO_INDEX, REFUSALS_DOC, RUNBOOK],
-                         ids=lambda p: p.name)
-def test_every_citation_in_the_touched_docs_resolves(doc):
-    _assert_cites_resolve(doc)
-
-
-def test_the_service_submission_words_are_the_ones_the_api_serves():
-    words = "tenant token, service submission"
-    assert f'return "{words}"' in _text(CODEC)
-    for doc in (GIT_TOKENS, REPO_INDEX):
-        assert f"as {words}" in _flat(_text(doc)), f"{doc.name} quotes what a task says"
-
-
-@pytest.mark.parametrize("doc", [GIT_TOKENS, REPO_INDEX], ids=lambda p: p.name)
-def test_the_token_docs_describe_per_person_slots_and_the_migration(doc):
-    flat = _flat(_text(doc))
-    for needle in (
-        "git-u-",                      # the per-person slots
-        "owner_suffix",                # the per-owner fallback slot
-        ENV_NAME,                      # people refused once enforced
-        "REPOSITORY_NOT_GRANTED",
-        "retire the tenant token",
-    ):
-        assert needle in flat, f"{doc.name}: {needle}"
-
-
-def test_the_refusals_doc_says_the_switch_is_set_from_tfvars():
-    flat = _flat(_section(_text(REFUSALS_DOC), "The one refusal that predates this"))
-    assert f"var.{VAR_NAME}" in flat and "tfvars" in flat
-    assert "dev" in flat
-
-
-# --------------------------------------------------------------------------
-# (3) the issue's four acceptance checks, as an owner-run runbook
-# --------------------------------------------------------------------------
-
-
-def test_the_runbook_lists_the_four_acceptance_checks_from_780():
-    text = _text(RUNBOOK)
-    assert "the four checks of the per-person-slots migration" in text
-    at = [text.index(f"## {check}") for check in ACCEPTANCE_CHECKS]
-    assert at == sorted(at), "in the issue's order"
-
-
-@pytest.mark.parametrize("check", ACCEPTANCE_CHECKS, ids=lambda c: c.split(".")[0])
-def test_each_check_names_the_observation_that_would_show_it_failed(check):
-    body = _section(_text(RUNBOOK), check)
-    assert "**It failed if**" in body, f"{check}: no failing observation"
-
-
-def test_check_1_covers_both_surfaces_and_both_orgs():
-    body = _flat(_section(_text(RUNBOOK), ACCEPTANCE_CHECKS[0]))
-    for needle in ("console", "/sc:setup", ORG, "personal account", "clone", "push",
-                   "pull request", f"uv run sc setup token --owner {ORG}", "--push-test"):
-        assert needle in body, needle
-
-
-def test_check_3_and_4_name_the_refusal_and_the_removal():
-    refused = _flat(_section(_text(RUNBOOK), ACCEPTANCE_CHECKS[2]))
-    assert "REPOSITORY_NOT_GRANTED" in refused and ENV_NAME in refused
-    removed = _flat(_section(_text(RUNBOOK), ACCEPTANCE_CHECKS[3]))
-    assert f"uv run sc access remove-org {ORG}" in removed
-    assert "DELETE /v1/access/orgs/{owner}" in removed
-
-
-def test_every_sc_command_the_runbook_names_parses():
-    from swarm_mcp import sc
-
-    parser = sc.build_parser()
-    commands = re.findall(r"uv run sc ([a-z][a-z-]*(?: [a-z][a-z-]*)?)", _text(RUNBOOK))
-    assert len(commands) >= 6, f"the runbook drives sc: found {commands}"
-    for command in sorted(set(commands)):
-        words = command.split()
-        # `--help` exits 0 on a command argparse knows and 2 on an unknown
-        # verb, before any handler or network call runs.
-        try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                parser.parse_args(words + ["--help"])
-        except SystemExit as exit_:
-            assert exit_.code == 0, f"`sc {command}` is not a command sc parses"

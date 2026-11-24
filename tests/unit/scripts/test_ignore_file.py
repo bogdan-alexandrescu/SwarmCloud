@@ -11,11 +11,9 @@ What is held here:
     deletion does not leave a dead line that hides nothing;
   * the files agents are sent to (CLAUDE.md, CONTRACT.md, docs/ci.md, the
     working doc) stay searchable;
-  * the lanes section says how a census sees every occurrence anyway.
 
 BREAK IT: add `docs/ci.md` or a pattern for a file that does not exist to
-`.ignore`, or delete the census note from the lanes section. Each turns this
-red, naming what.
+`.ignore`. Each turns this red, naming what.
 """
 
 from __future__ import annotations
@@ -27,7 +25,6 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[3]
 IGNORE = REPO / ".ignore"
-DOC = REPO / "docs" / "working-in-this-repository.md"
 
 #: Files CLAUDE.md or the working doc send agents to search.
 MUST_STAY_SEARCHABLE = (
@@ -72,9 +69,3 @@ def test_files_agents_are_sent_to_stay_searchable():
     blocked = [path for path in MUST_STAY_SEARCHABLE if path in hidden]
     assert not blocked, f".ignore hides {blocked}, which CLAUDE.md sends agents to search"
 
-
-def test_the_lanes_section_says_how_a_census_sees_every_occurrence():
-    text = DOC.read_text(encoding="utf-8")
-    lanes = text.split("## Lanes", 1)[1].split("\n## ", 1)[0]
-    for needle in (".ignore", "git grep", "rg --no-ignore", "Read"):
-        assert needle in lanes, f"the lanes section does not mention {needle!r} for a census"
