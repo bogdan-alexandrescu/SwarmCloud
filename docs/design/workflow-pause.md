@@ -3,7 +3,7 @@
 **Status:** design only. Nothing here is built. The owner decided to design
 pause first, before the reconciler's pause-overdue rule. That rule (part of
 issue 7) needs a pause to act on, and main has none. Section 7's frozen-contract
-change is **NOT ACCEPTED** (request 159 in
+change is **NOT ACCEPTED** (request 160 in
 [`docs/contract-change-requests.md`](../contract-change-requests.md)). Section 10
 lists the owner decisions that are still open.
 
@@ -304,7 +304,7 @@ contention.
    `pause_reason`, and `updated_at`.
 
 Note: `pause_reason`, `resumed_at` and `resumed_by`, like `paused_by`, are raw
-   fields, as `superseded_task_ids` is: request 159 does not type them, and
+   fields, as `superseded_task_ids` is: request 160 does not type them, and
    `codec.workflow_to_firestore` and every full-document workflow write must
    preserve them.
 
@@ -442,7 +442,7 @@ workflow pause.
 
 This is the same argument that gave `HUMAN_REQUIRED` its own reason (see its
 comment in `states.py::ParkReason`). The reuse alternative is recorded as
-declined in request 159.
+declined in request 160.
 
 ### 4.4 Demand
 
@@ -624,7 +624,7 @@ default is explained next to its value.
 ## 7. Frozen contract
 
 Pause needs four additions in `apps/common/swarm_common/`. They are written as
-**request 159** in `docs/contract-change-requests.md`, marked **NOT ACCEPTED**:
+**request 160** in `docs/contract-change-requests.md`, marked **NOT ACCEPTED**:
 
 * `ParkReason.WORKFLOW_PAUSED`;
 * `Workflow.paused`, `Workflow.paused_at` and `Workflow.paused_by`;
@@ -808,7 +808,7 @@ may already do. A stricter rule for the milder act would be incoherent.
 meaningful capacity during pauses. Cascading needs the gate and the overdue
 rule to resolve a child's root workflow, which doubles the first build.
 
-### Q5. A new park reason, or reuse `MANUAL_PAUSE`? (request 159)
+### Q5. A new park reason, or reuse `MANUAL_PAUSE`? (request 160)
 
 **Options.**
 
@@ -825,7 +825,7 @@ the waiting line.
 Each lane is red first: the failing tests are pushed alone, then the fix. No two
 parallel lanes share a file. They run in dependency order.
 
-### P0. Contract (after the owner accepts request 159)
+### P0. Contract (after the owner accepts request 160)
 
 * **Files:** `apps/common/swarm_common/states.py`, `models.py`;
   `swarm_api/codec.py` (`workflow_to_firestore` and `workflow_from_dict`); the
