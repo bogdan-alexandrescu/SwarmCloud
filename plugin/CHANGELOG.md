@@ -6,6 +6,19 @@ tags the swarm-mcp bridge `sc-v<version>` only when that version moves
 so a change to the plugin or its bridge reaches a session only with an entry
 here.
 
+## 0.5.90 (2026-11-24)
+
+Opt-in brief templates for the three common lanes.
+
+* The delegate skill gains `reference/brief-build.md` (a build lane),
+  `reference/brief-review.md` (a read-only review) and `reference/brief-fix.md`
+  (a one-step fixer onto an existing pull request). Each is a short block with
+  `{{NAME: ...}}` places for the lane's own facts, and one line naming what it
+  leaves out because the worker already adds it to every coding agent's prompt.
+* The skill names each in one line and says they are opt-in. Nothing is
+  injected: a brief that uses no template is sent exactly as before, and the
+  bridge is unchanged.
+
 ## 0.5.89 (2026-11-24)
 
 Finished work is noticed in about a minute, not at the next scheduled check.
