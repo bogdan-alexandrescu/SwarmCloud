@@ -90,6 +90,7 @@ PHRASES: Mapping[tuple[str, str], str] = {
     ("GET", "/v1/failure-findings/{finding_id}"): "Reading failure finding {finding_id}",
     ("GET", "/v1/runtimes"): "Reading runtimes",
     ("GET", "/v1/voice/cards/schema"): "Reading the card catalogue",
+    ("GET", "/v1/voice/projects/{project_id}/status"): "Reading this project's status",
     ("POST", "/v1/voice/sessions/{session_id}/cards"): "Drawing a card",
     ("POST", "/v1/voice/sessions/{session_id}/readbacks/answer"): "Hearing your answer",
     ("POST", "/v1/voice/sessions/{session_id}/visuals"): "Drawing a visual",
@@ -98,6 +99,7 @@ PHRASES: Mapping[tuple[str, str], str] = {
     ("POST", "/v1/tasks/{task_id}/answers"): "Answering agent {task_id}'s question",
     ("POST", "/v1/voice/sessions/{session_id}/trace"): "Tracing the turn",
     ("POST", "/v1/voice/sessions/{session_id}/reopen"): "Reporting the voice's state",
+    ("POST", "/v1/voice/sessions/{session_id}/brief"): "Noting the project's brief",
 }
 
 #: A step's `class`.

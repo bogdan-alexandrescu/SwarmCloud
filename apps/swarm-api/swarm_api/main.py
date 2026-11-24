@@ -117,6 +117,7 @@ from .routes import voice_projects
 from .routes import voice_readback
 from .routes import voice_record
 from .routes import voice_roster
+from .routes import voice_status
 from .routes import voice_settings
 from .routes import voice_telemetry
 from .routes import voice_trace
@@ -675,6 +676,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     app.include_router(voice_cards.router)
     # Its agent roster (voice-it.md §3.12.6): read once on mount or reconnect.
     app.include_router(voice_roster.router)
+    # Its status view and planner brief (voice/projectbrief.py): the fast
+    # front's read of the project's cards and roster, the planner's note.
+    app.include_router(voice_status.router)
     # A person's project state moves (voice-it.md §3.13.2): Mark completed,
     # Cancel (through the platform's own cancels), Archive, Unarchive, Reopen.
     app.include_router(voice_projects.router)
