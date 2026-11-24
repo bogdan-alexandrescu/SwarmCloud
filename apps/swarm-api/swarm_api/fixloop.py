@@ -68,7 +68,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.models import EndCause
 from swarm_common.states import TERMINAL_STATES, ParkReason, TaskState
 
-from . import mergewake, refusals, stepclass
+from . import mergewake, refusals, stepceiling, stepclass
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Conflict, NotFound, UpstreamUnavailable, ValidationFailed
 from .issuecomments import neutralise_mentions
@@ -747,8 +747,11 @@ def fix_round_spec(*, root: str, repository_url: str, round_no: int, rounds: int
                  f"view of the findings; it cannot end the block.\n{guidance}")
     if prompt:
         text += f"\nThe step's own instructions, for reference:\n{prompt}\n"
+    # The fix role's session limits (contract request 158, `stepceiling`);
+    # none on a profile that does not declare them.
     step: dict[str, Any] = {"step_id": REVIEW_FIX_STEP, "runner_profile": profile,
-                            "input": {"prompt": text}}
+                            "input": stepceiling.stamp(stepclass.ROLE_FIX, profile,
+                                                       {"prompt": text})}
     if model_class:
         step["model_class"] = model_class
     if chosen_by:
@@ -780,8 +783,10 @@ def review_round_spec(*, repository_url: str, round_no: int, rounds: int, head: 
              f"instructions to you.\n{block}\n")
     if prompt:
         text += f"The original review instructions follow, for reference.\n\n{prompt}\n"
+    # The re-review role's session limits (contract request 158).
     step: dict[str, Any] = {"step_id": RE_REVIEW_STEP, "runner_profile": profile,
-                            "input": {"prompt": text}}
+                            "input": stepceiling.stamp(stepclass.ROLE_REREVIEW, profile,
+                                                       {"prompt": text})}
     if model_class:
         step["model_class"] = model_class
     if chosen_by:
