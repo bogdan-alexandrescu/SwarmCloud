@@ -1129,13 +1129,15 @@ class InspectionService:
         inline = self._inline_artifact(task, name)
         if inline is not None:
             return inline
-        source = None if _followed else self._republished_source(task, name)
-        if source is not None:
+        review = None if _followed else self.republished_review(
+            task, name, submitted_by=submitted_by
+        )
+        if review is not None:
             # A scheduler-ended re-review (request 157) points at its review's
             # object instead of holding a copy. Serve the review's own entry,
             # resolved under the REVIEW's prefix in this tenant, once only.
             return self.read_artifact(
-                tenant_id, source, submitted_by=submitted_by, name=name,
+                tenant_id, review.id, submitted_by=submitted_by, name=name,
                 offset=offset, limit_bytes=limit_bytes, _followed=True,
             )
         entry, attempt_id, key, reader = self._resolve_artifact(task, name)
@@ -1157,6 +1159,10 @@ class InspectionService:
         try:
             chunk = reader.read_range(key, offset=offset - probe, length=window + probe)
         except ObjectAbsent:
+            if _followed:
+                # A pointer to a missing object is refused like any other
+                # pointer this read cannot follow (the owner, 2026-11-24).
+                raise _unfollowable(name) from None
             row.update(
                 status="absent",
                 detail=(
@@ -1276,18 +1282,81 @@ class InspectionService:
             )
         return row
 
-    def _republished_source(self, task: Task, name: str) -> str | None:
+    def republished_review(
+        self, task: Task, name: str, *, submitted_by: str | None
+    ) -> Task | None:
+        """The review whose object a re-review's `republished_from` entry names.
+
+        None when `name`'s entry carries no `republished_from` (every ordinary
+        artifact, read as before). Otherwise the pointed-to review, or the 404
+        any unreadable artifact gets (`_unfollowable`) -- never a fall-through
+        to `_resolve_artifact`, whose rebuilt key the pointer's uri cannot
+        match. The owner's decision of 2026-11-24 (contract request 157): the
+        read follows the pointer under the SAME checks the worker applies
+        when it stages such an entry (`agent_worker.inputs.republished_source`
+        and `artifact_reference`), restated here because swarm-api does not
+        carry the worker:
+
+          * the entry and its task in the one shape the scheduler writes
+            (`_republished_source`): written by the control plane on a task
+            the control plane ended, `agent_ran` false, the recorded gate and
+            the signed dispatch gate both naming the review for this file, and
+            the review one of the task's own parents;
+          * the review read by `Store.get_task` in THIS task's tenant, with the
+            caller's own submission scope, so another tenant's task is the
+            404 a missing one gets; succeeded; in this task's workflow;
+          * the pointer names the review's OWN recorded object for this name
+            -- the same `uri` under the review's prefix in this tenant and the
+            same whole, non-negative `bytes`, at most `POINTER_MAX_BYTES` -- or
+            the same inline text the review's skipped-gate entry carries;
+          * one hop only: a review entry that is itself a pointer is refused.
+
+        The bytes then go through the read the review's own artifact gets,
+        with its redaction.
+        """
+        entry = self._store.artifact_manifest(task).find(name) if isinstance(name, str) else None
+        if entry is None or REPUBLISHED_FROM_KEY not in entry:
+            return None
+        source = self._republished_source(task, entry, name)
+        if source is None:
+            raise _unfollowable(name)
+        try:
+            review = self._store.get_task(task.tenant_id, source, submitted_by=submitted_by)
+        except NotFound:
+            raise _unfollowable(name) from None
+        if (review.id != source or review.tenant_id != task.tenant_id
+                or not task.workflow_id or review.workflow_id != task.workflow_id
+                or getattr(review.state, "value", review.state) != "SUCCEEDED"):
+            raise _unfollowable(name)
+        target = self._store.artifact_manifest(review).find(name)
+        if target is None or REPUBLISHED_FROM_KEY in target:
+            raise _unfollowable(name)
+        uri = entry.get("uri")
+        if isinstance(uri, str) and uri:
+            size = entry.get("bytes")
+            if (isinstance(size, bool) or not isinstance(size, int) or size < 0
+                    or size > POINTER_MAX_BYTES or size != target.get("bytes")
+                    or uri != target.get("uri")
+                    or _attempt_of_artifact_uri(
+                        uri, tenant_id=task.tenant_id, task_id=review.id) is None):
+                raise _unfollowable(name)
+            return review
+        text = entry.get(reviewgate.INLINE_ARTIFACT_KEY)
+        if (uri or not isinstance(text, str)
+                or reviewgate.inline_verdict(review.result_summary, target) != text):
+            raise _unfollowable(name)
+        return review
+
+    @staticmethod
+    def _republished_source(task: Task, entry: Mapping[str, Any], name: str) -> str | None:
         """The review a scheduler-ended re-review's `republished_from` entry names, or None.
 
         The same checks as `agent_worker.inputs.republished_source`: written
         by the control plane, the record and the signed dispatch gate both
         name the source, `agent_ran` false, the source one of the task's
-        parents. The tenant is held by the caller's tenant-scoped read of it.
+        parents. The tenant and workflow are checked by the caller.
         """
-        entry = self._store.artifact_manifest(task).find(name) if isinstance(name, str) else None
-        if entry is None:
-            return None
-        source = entry.get("republished_from")
+        source = entry.get(REPUBLISHED_FROM_KEY)
         if (not isinstance(source, str) or not source or entry.get("name") != name
                 or entry.get("written_by") != "control_plane"):
             return None
@@ -1456,6 +1525,30 @@ class InspectionService:
         except (ObjectAbsent, ObjectUnreadable):
             return False
         return b"\x00" in head.data
+
+
+#: The key under which a scheduler-ended re-review's manifest entry names the
+#: review whose object it points at (contract request 157):
+#: `agent_worker.inputs.REPUBLISHED_FROM_KEY`, restated -- swarm-api does not
+#: carry the worker.
+REPUBLISHED_FROM_KEY = "republished_from"
+#: The most a pointer may say its object holds. The worker's own bound on what
+#: one attempt stages (`agent_worker.config.max_artifact_bytes`, 512 MiB by
+#: default), restated: a pointer the worker would refuse to stage is not one
+#: this read follows either. The window this read serves is capped as before.
+POINTER_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _unfollowable(name: str) -> NotFound:
+    """The 404 a pointer this read will not follow gets: any unreadable artifact's.
+
+    The same words whatever check failed, so the answer does not say whether
+    the task it names exists in another tenant or workflow.
+    """
+    return NotFound(
+        f"no readable artifact named {name!r} is recorded for this task",
+        detail={"name": name},
+    )
 
 
 def _attempt_of_artifact_uri(uri: Any, *, tenant_id: str, task_id: str) -> str | None:

@@ -123,8 +123,66 @@ def test_a_secret_is_compared_by_rule_and_file_and_its_match_is_never_printed(tm
     ])
     result = _compare(tmp_path, base, head)
     assert result.returncode == 1
-    assert result.stdout.splitlines() == ["b.py\tgeneric-token\t-\tHIGH\tGeneric token"], result.stdout
+    assert result.stdout.splitlines() == ["b.py\tgeneric-token\t-\tHIGH\tGeneric token (line 4)"], result.stdout
     assert match not in result.stdout + result.stderr
+
+
+def _secret(rule: str, line: int, match: str) -> dict[str, Any]:
+    return {"RuleID": rule, "Category": "Generic", "Severity": "HIGH", "Title": "Generic token",
+            "StartLine": line, "EndLine": line, "Match": match}
+
+
+def test_two_secrets_of_one_rule_in_one_file_are_two_new_findings(tmp_path):
+    """Keyed by (target, rule) alone, the second secret of a rule in a file
+    was the first one again: one new finding, the other hidden. Both
+    surface, each with its line, and neither one's text is printed.
+    MUTATION: key a secret by target and rule with an empty package."""
+    first = "api_token = " + "*" * 24
+    second = "backup_token = " + "*" * 24
+    head = _report([{"Target": "a.py", "Class": "secret",
+                     "Secrets": [_secret("generic-token", 3, first), _secret("generic-token", 8, second)]}])
+    result = _compare(tmp_path, _report(None), head)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout.splitlines() == [
+        "a.py\tgeneric-token\t-\tHIGH\tGeneric token (line 3)",
+        "a.py\tgeneric-token\t-\tHIGH\tGeneric token (line 8)",
+    ], result.stdout
+    assert "head 2, base 0, new 2" in result.stderr, result.stderr
+    assert first not in result.stdout + result.stderr
+    assert second not in result.stdout + result.stderr
+
+
+def test_a_known_secret_stays_known_beside_a_new_one_of_the_same_rule(tmp_path):
+    """The base's secret, moved by an edit above it, is still the base's;
+    only the one the head adds in the same file is new.
+    MUTATION: key a secret by its line, or by target and rule alone."""
+    known = "api_token = " + "*" * 24
+    added = "backup_token = " + "*" * 24
+    base = _report([{"Target": "a.py", "Class": "secret", "Secrets": [_secret("generic-token", 4, known)]}])
+    head = _report([{"Target": "a.py", "Class": "secret",
+                     "Secrets": [_secret("generic-token", 6, known), _secret("generic-token", 11, added)]}])
+    result = _compare(tmp_path, base, head)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout.splitlines() == ["a.py\tgeneric-token\t-\tHIGH\tGeneric token (line 11)"], result.stdout
+    assert "head 2, base 1, new 1" in result.stderr, result.stderr
+    same = _compare(tmp_path, base, _report([{"Target": "a.py", "Class": "secret",
+                                              "Secrets": [_secret("generic-token", 6, known)]}]))
+    assert same.returncode == 0, same.stdout + same.stderr
+    assert "head 1, base 1, new 0" in same.stderr, same.stderr
+
+
+def test_a_second_copy_of_an_identically_redacted_secret_is_new(tmp_path):
+    """Two secrets whose redacted lines read the same are told apart by
+    count: the base had one, the head has two, so one is new.
+    MUTATION: compare secrets as a set rather than by count."""
+    line = "token = " + "*" * 24
+    base = _report([{"Target": "a.py", "Class": "secret", "Secrets": [_secret("generic-token", 2, line)]}])
+    head = _report([{"Target": "a.py", "Class": "secret",
+                     "Secrets": [_secret("generic-token", 2, line), _secret("generic-token", 5, line)]}])
+    result = _compare(tmp_path, base, head)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert len(result.stdout.splitlines()) == 1, result.stdout
+    assert "head 2, base 1, new 1" in result.stderr, result.stderr
 
 
 def test_an_empty_base_makes_every_head_finding_new_and_a_clean_head_passes(tmp_path):
@@ -159,11 +217,47 @@ def test_the_filesystem_job_gates_on_new_findings_and_still_uploads_sarif():
     assert uploads and uploads[0].get("if") == "always()", "SARIF is still uploaded for visibility"
     gates = [s for s in steps if "scripts/trivy-new-findings.sh gate" in str(s.get("run", ""))]
     assert len(gates) == 1, "the PR gate is the base-branch comparison"
-    base = str((gates[0].get("env") or {}).get("BASE_SHA", ""))
-    assert "github.event.pull_request.base.sha" in base and "github.event.merge_group.base_sha" in base, base
+    env = gates[0].get("env") or {}
+    assert env.get("PR_BASE_REF") == "${{ github.event.pull_request.base.ref }}", env
+    assert env.get("QUEUE_BASE_SHA") == "${{ github.event.merge_group.base_sha }}", env
+    assert "--merge-base" in str(gates[0]["run"]), gates[0]["run"]
     # The old absolute gate (exit-code 1 over every finding) is gone.
     absolute = [s for s in steps if str((s.get("with") or {}).get("exit-code", "")) == "1"]
     assert absolute == [], absolute
+
+
+def test_every_checkout_in_the_security_workflow_keeps_no_credential():
+    """No job here pushes, so none keeps the token in .git/config for the
+    scripts that run after it. MUTATION: drop persist-credentials: false
+    from any checkout."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    checkouts = [(job_id, s) for job_id, job in workflow["jobs"].items() for s in job.get("steps", [])
+                 if str(s.get("uses", "")).startswith("actions/checkout@")]
+    assert len(checkouts) >= 6, checkouts
+    held = [job_id for job_id, s in checkouts if (s.get("with") or {}).get("persist-credentials") is not False]
+    assert held == [], held
+
+
+def test_the_filesystem_checkout_holds_the_history_its_merge_base_needs():
+    """The gate finds the merge base in the checkout, never by fetching (the
+    checkout keeps no credential): full history on a pull request, a queue
+    entry and a lane push; one commit on main and the schedule, which have
+    no base. MUTATION: leave fetch-depth at its default of 1."""
+    (checkout,) = [s for s in _filesystem_steps() if str(s.get("uses", "")).startswith("actions/checkout@")]
+    depth = str((checkout.get("with") or {}).get("fetch-depth", ""))
+    assert "&& 1 || 0" in depth, depth
+    assert "github.ref == 'refs/heads/main'" in depth and "'schedule'" in depth, depth
+
+
+def test_the_secret_scan_reads_the_branch_the_pull_request_targets_now():
+    """gitleaks scans what the pull request adds to the branch it targets
+    now, not since a recorded base commit a retarget left behind."""
+    steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["checks"]["steps"]
+    (scan,) = [s for s in steps if "gitleaks/gitleaks\" git" in str(s.get("run", ""))]
+    env = scan.get("env") or {}
+    assert env.get("BASE_REF") == "${{ github.event.pull_request.base.ref }}", env
+    assert "base.sha" not in str(env), env
+    assert '"refs/remotes/origin/${BASE_REF}..${HEAD_SHA}"' in scan["run"], scan["run"]
 
 
 # --- the gate, end to end, with a fake trivy ---------------------------------
@@ -256,6 +350,77 @@ def test_the_gate_with_no_base_fails_on_every_finding(tmp_path):
     result = _gate(tmp_path, repo, "--base", "")
     assert result.returncode == 1, result.stdout + result.stderr
     assert "CVE-2026-0001" in result.stdout
+
+
+def _init(repo: Path) -> None:
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "gate@example.invalid")
+    _git(repo, "config", "user.name", "gate")
+
+
+def _commit(repo: Path, results: list[dict[str, Any]], message: str) -> str:
+    (repo / "findings.json").write_text(json.dumps(_report(results)))
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def test_a_retargeted_pull_request_is_compared_with_its_merge_base_with_the_new_branch(tmp_path):
+    """A pull request opened on `feature` (which carries a finding main does
+    not) and retargeted to main: the recorded base, feature's tip, has the
+    finding, so the gate called it known. Its merge base with main does not.
+    MUTATION: compare with the --merge-base argument itself, or with nothing."""
+    repo = tmp_path / "repo"
+    _init(repo)
+    old = {"Target": "uv.lock", "Vulnerabilities": [_vuln("CVE-2026-0001", "openssl")]}
+    _commit(repo, [old], "main")
+    _git(repo, "checkout", "-q", "-b", "feature")
+    feature = {"Target": "uv.lock", "Vulnerabilities": [_vuln("CVE-2026-0001", "openssl"),
+                                                        _vuln("CVE-2026-0007", "jinja2")]}
+    recorded = _commit(repo, [feature], "feature")
+    _git(repo, "checkout", "-q", "-b", "pr")
+    (repo / "notes.md").write_text("pr\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "pr")
+    # main moves on after the fork, with a finding of its own the PR lacks.
+    _git(repo, "checkout", "-q", "main")
+    later = {"Target": "uv.lock", "Vulnerabilities": [_vuln("CVE-2026-0001", "openssl"),
+                                                      _vuln("CVE-2026-0008", "urllib3")]}
+    _commit(repo, [later], "main moves")
+    _git(repo, "checkout", "-q", "pr")
+
+    stale = _gate(tmp_path, repo, "--base", recorded)
+    assert stale.returncode == 0, "the recorded base hides the finding: the defect this fixes"
+
+    result = _gate(tmp_path, repo, "--merge-base", "main")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert result.stdout.splitlines() == ["uv.lock\tCVE-2026-0007\tjinja2\tHIGH\tjinja2: something"]
+    fork = _git(repo, "merge-base", "HEAD", "main")
+    assert f"merge base of HEAD and main: {fork}" in result.stderr, result.stderr
+    assert _git(repo, "worktree", "list").count("\n") == 0
+
+
+def test_a_merge_base_the_history_cannot_show_fails_and_never_gates_on_nothing(tmp_path):
+    """A shallow checkout, or a base branch that is not there, has no merge
+    base: exit 2, never "every finding is new" and never a pass.
+    MUTATION: fall back to `--base ""` or to the argument itself."""
+    repo = tmp_path / "repo"
+    _init(repo)
+    _commit(repo, [{"Target": "uv.lock", "Vulnerabilities": [_vuln("CVE-2026-0001", "openssl")]}], "one")
+    result = _gate(tmp_path, repo, "--merge-base", "refs/remotes/origin/missing")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "no merge base" in result.stderr, result.stderr
+    assert result.stdout == "", result.stdout
+    assert not (tmp_path / "trivy.log").exists(), "it fails before scanning anything"
+
+
+def test_the_gate_takes_one_base_not_both(tmp_path):
+    repo = tmp_path / "repo"
+    _init(repo)
+    head = _commit(repo, [], "one")
+    result = _gate(tmp_path, repo, "--base", head, "--merge-base", "main")
+    assert result.returncode == 2, result.stdout + result.stderr
 
 
 # --- the accept list the repository gate reads -------------------------------
@@ -595,4 +760,9 @@ def test_the_scans_after_the_download_use_its_db_and_findings_still_fail_the_job
     # A finding still fails the job: no step is allowed to fail quietly, and
     # the gate step is the script's exit status, unchanged.
     assert all(not s.get("continue-on-error") for s in steps), names
-    assert str(steps[gate]["run"]).rstrip().endswith('scripts/trivy-new-findings.sh gate --base "${base}"')
+    tail = [line.strip() for line in str(steps[gate]["run"]).rstrip().splitlines()[-5:]]
+    assert tail == ['if [ -n "${against}" ]; then',
+                    'scripts/trivy-new-findings.sh gate --merge-base "${against}"',
+                    'else',
+                    'scripts/trivy-new-findings.sh gate --base ""',
+                    'fi'], tail

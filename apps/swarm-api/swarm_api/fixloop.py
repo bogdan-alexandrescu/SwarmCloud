@@ -56,6 +56,7 @@ import json
 import logging
 import re
 import secrets
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping
@@ -73,8 +74,9 @@ from .errors import ApiError, Conflict, NotFound, UpstreamUnavailable, Validatio
 from .issuecomments import neutralise_mentions
 from .issueci import LOST_ROUND_SECONDS
 from .issueruns import NO_CLOSING_KEYWORD, failure_text
-from .redaction import redact
+from .redaction import MASK, redact
 from .repositories import parse_repository
+from .reviewgate import SKIPPED_REASON_KEY
 from .schemas import WorkflowCreate
 from .validation import (
     DISPATCH_METADATA_KEY,
@@ -166,13 +168,28 @@ class LoopReport:
     waiting: int = 0
     failures: list[dict[str, str]] = field(default_factory=list)
 
-    def fail(self, task_id: str, code: str) -> None:
-        self.failures.append({"task_id": task_id, "code": code})
+    def fail(self, task_id: str, code: str, error: str | None = None) -> None:
+        """Record what a drive could not do; `error` is the exception's text,
+        stored redacted and bounded (`issueruns.failure_text`) so it can be
+        served, never the raw message (issue 338)."""
+        failure = {"task_id": task_id, "code": code}
+        if error:
+            failure["error"] = failure_text(error)
+        self.failures.append(failure)
+
+    def fail_drive(self, task_id: str, exc: BaseException) -> None:
+        """A drive raised: `drive_failed` with the exception's class and text."""
+        text = str(exc)
+        self.fail(task_id, "drive_failed",
+                  f"{type(exc).__name__}: {text}" if text else type(exc).__name__)
 
     def to_api(self) -> dict[str, Any]:
         return {"visited": self.visited, "driven": self.driven, "submitted": self.submitted,
                 "ended": self.ended, "parked": self.parked, "waiting": self.waiting,
-                "failed": len(self.failures)}
+                "failed": len(self.failures),
+                # Each failure's task id, code and redacted error (issue 338):
+                # a failed drive's text was logged only, never served.
+                "failures": [dict(f) for f in self.failures]}
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -353,14 +370,62 @@ def _minor_items(items: list[Any]) -> tuple[Minor, ...]:
     return tuple(out[:MAX_MINORS])
 
 
+#: The top-level keys of a verdict file the loop reads: the verdict, its
+#: findings and the skipped review's reason (`parse_verdict`). A mask in any
+#: other key (`minors` as a top-level list, `checks`, `needs_owner`,
+#: `open_questions`, ...) cannot change what the loop decides (issue 338).
+READ_VERDICT_KEYS = ("verdict", "findings", SKIPPED_REASON_KEY)
+
+
+class VerdictDecline(Decline):
+    """A `Decline` that names the verdict file's keys that refused it."""
+
+    def __init__(self, code: str, why: str, keys: tuple[str, ...] = ()) -> None:
+        super().__init__(code, why)
+        self.keys = keys
+
+
+def _masked_keys(document: Any) -> tuple[str, ...]:
+    """The top-level keys whose name or value holds the redaction's mask
+    (`redaction.MASK`, what `json_masking` writes in place of a value)."""
+    if not isinstance(document, dict):
+        return ()
+    return tuple(str(key) for key, value in document.items()
+                 if MASK in str(key) or MASK in json.dumps(value, default=str))
+
+
 def read_verdict(ctx: Any, tenant_id: str, task_id: str) -> Verdict:
     """A review's `verdict.json`, through `verdictpublish`'s size-capped,
     tenant-checked read and `parse_verdict`. Raises `Decline` for anything the
     worker would refuse: never read as MERGE, never as NOT_YET."""
+    # Invariant 9: the read is still the API's own tenant-checked, REDACTED
+    # read; `allow_redacted` only returns its masked text instead of refusing
+    # it. The raw bytes never reach this module. A masked file is read when
+    # every mask sits in a key the loop does not read (issue 338: a clean
+    # MERGE whose `open_questions` talk about a token is still a MERGE). Such
+    # a mask can never change the verdict: `parse_verdict` reads only
+    # READ_VERDICT_KEYS, and MERGE must still be a literal member of
+    # REVIEW_VERDICTS in the masked text. A mask in a key it does read
+    # refuses the file and names that key.
     text = _read_text(ctx, tenant_id, task_id, VERDICT_FILE, limit=MAX_VERDICT_BYTES,
-                      required=True, what="verdict")
-    read = parse_verdict(text or "")
-    document = json.loads(text or "")
+                      required=True, what="verdict", allow_redacted=True) or ""
+    if MASK in text:
+        try:
+            masked = _masked_keys(json.loads(text))
+        except ValueError:
+            masked = ()
+        refusing = tuple(k for k in masked if k in READ_VERDICT_KEYS)
+        if refusing or not masked:
+            # No key located is read as the worst case: the whole file.
+            names = ", ".join(f"`{k}`" for k in refusing) or "the file"
+            raise VerdictDecline(
+                "credential",
+                f"{VERDICT_FILE} of task {task_id}: the redaction masked its {names}",
+                refusing)
+        log.info("verdict of task %s tenant=%s: masked keys not read: %s", task_id,
+                 tenant_id, ", ".join(sorted(masked)))
+    read = parse_verdict(text)
+    document = json.loads(text)
     raw = document.get("findings")
     items = raw if isinstance(raw, list) else ([raw] if raw not in (None, "") else [])
     blocking = [t for t in (_finding_text(i) for i in items if not _is_minor(i)) if t]
@@ -776,8 +841,12 @@ def _root(loop: _Loop, review: Mapping[str, Any]) -> str | None:
     """The task whose branch the pull request is on (§4.3): the integrator
     under `integrate`, the implementer the review builds on under `direct-pr`,
     each from a signed block."""
-    if loop.strategy == "integrate":
-        return _task_id(loop.block.get("fix_task_id"))
+    return _root_id(loop.strategy, loop.block, review)
+
+
+def _root_id(strategy: str, block: Mapping[str, Any], review: Mapping[str, Any]) -> str | None:
+    if strategy == "integrate":
+        return _task_id(block.get("fix_task_id"))
     return _task_id(_dispatch(review).get("builds_on"))
 
 
@@ -869,6 +938,28 @@ def _finish(loop: _Loop, state: TaskState, **summary: Any) -> None:
              tenant_id=loop.tenant_id, state=state.value.lower())
 
 
+def _unreadable_detail(base: Mapping[str, Any], *, code: str, error: str,
+                       exc: Exception | None = None) -> dict[str, Any]:
+    """A `review_unreadable` park's detail (§4.4): what `base` names (task,
+    round, step, head when one exists), the refusal's `code`, the key that
+    refused the file when one did, and `error` as a sentence. Never a value
+    of the file: a key is a name the loop chose (READ_VERDICT_KEYS)."""
+    detail = {k: v for k, v in base.items() if v is not None}
+    detail["code"] = code
+    keys = getattr(exc, "keys", ()) if exc is not None else ()
+    if keys:
+        detail["keys"] = list(keys)
+    detail["error"] = failure_text(error)
+    return detail
+
+
+def _read_refusal(base: Mapping[str, Any], exc: Exception) -> dict[str, Any]:
+    """`_unreadable_detail` for a verdict file that could not be read."""
+    if isinstance(exc, Decline):
+        return _unreadable_detail(base, code=exc.code, error=exc.why, exc=exc)
+    return _unreadable_detail(base, code="verdict_unreadable", error=str(exc))
+
+
 def _failed_detail(doc: Mapping[str, Any], step: str) -> dict[str, Any]:
     return {"task_id": doc.get("id"), "step": step, "state": doc.get("state"),
             "end_cause": doc.get("end_cause")}
@@ -891,14 +982,23 @@ def _drive(loop: _Loop) -> None:
     if resume and resume.get("seen") == len(rounds):
         # A person added a round (§4.5): the action they asked for, once.
         head = _sha(resume.get("head"))
+        kind = REVIEW_KIND if resume.get("kind") == REVIEW_KIND else FIX_KIND
+        if head is None and not rounds:
+            # Round 0 (issue 338): the root's pushed head, read again from the
+            # signed block's tasks. This also un-sticks a loop whose added
+            # round was stored with no head before round-0 parks carried one.
+            head = _round_zero_heads(loop, root_doc)[1]
         if head is None:
-            loop.report.fail(loop.id, "resume_head_missing")
+            # No later pass can find a head nobody recorded: a person sees it
+            # and can stop the loop, rather than a failure counted forever.
+            _park(loop, ROUND_REFUSED, {"round": 0, "kind": kind, "code": "no_head",
+                                        "error": "no head is recorded for the added "
+                                                 "round to start from"})
             return
         findings = tuple(resume.get("findings") or ())
         # The added round is the next round: its step id is new and its
         # number counts against the rounds the person granted. Under
         # `integrate` the declared fix is round 1's, so a first added fix is 2.
-        kind = REVIEW_KIND if resume.get("kind") == REVIEW_KIND else FIX_KIND
         base = 1 if loop.strategy == "integrate" and kind == FIX_KIND else 0
         k = max((int(r.get("round") or 0) for r in rounds), default=base) + 1
         _next(loop, review, root_doc, kind=kind, round_no=k, head=head, findings=findings,
@@ -944,9 +1044,13 @@ def _drive(loop: _Loop) -> None:
         return
     signed = _signed_round(loop.ctx, doc, loop.id)
     if signed is None or signed.get("round") != k or signed.get("kind") != last.get("kind"):
-        phase = REVIEW_UNREADABLE if last.get("kind") == REVIEW_KIND else ROUND_FAILED
-        _park(loop, phase, {"task_id": task, "round": k, "step": step,
-                            "error": "the round's signed record does not name this loop"})
+        error = "the round's signed record does not name this loop"
+        base = {"task_id": task, "round": k, "step": step}
+        if last.get("kind") == REVIEW_KIND:
+            _park(loop, REVIEW_UNREADABLE, _unreadable_detail(
+                {**base, "head": _sha(last.get("head"))}, code="round_unsigned", error=error))
+        else:
+            _park(loop, ROUND_FAILED, {**base, "error": error})
         return
     if last.get("kind") == FIX_KIND:
         start = _sha(signed.get("start_head"))
@@ -967,9 +1071,8 @@ def _drive(loop: _Loop) -> None:
     try:
         verdict = read_verdict(loop.ctx, loop.tenant_id, task)
     except (Decline, ValueError) as exc:
-        reason = exc.why if isinstance(exc, Decline) else str(exc)
-        _park(loop, REVIEW_UNREADABLE, {"task_id": task, "round": k, "step": step,
-                                        "head": head, "error": failure_text(reason)})
+        _park(loop, REVIEW_UNREADABLE, _read_refusal(
+            {"task_id": task, "round": k, "step": step, "head": head}, exc))
         return
     patch: dict[str, Any] = {"verdict": verdict.verdict, "findings_count": len(verdict.findings),
                              "findings": list(verdict.findings), "minors": verdict.minors}
@@ -988,8 +1091,9 @@ def _drive(loop: _Loop) -> None:
                                 "max_rounds": loop.limit}, verdict)
         return
     if head is None:
-        _park(loop, REVIEW_UNREADABLE, {"task_id": task, "round": k, "step": step,
-                                        "error": "the re-review recorded no head"})
+        _park(loop, REVIEW_UNREADABLE, _unreadable_detail(
+            {"task_id": task, "round": k, "step": step}, code="no_head",
+            error="the re-review recorded no head"))
         return
     _next(loop, review, root_doc, kind=FIX_KIND, round_no=k + 1, head=head,
           findings=verdict.findings)
@@ -1000,6 +1104,36 @@ def _last_findings(loop: _Loop) -> tuple[str, ...]:
         if entry.get("kind") == REVIEW_KIND and isinstance(entry.get("findings"), list):
             return tuple(str(f) for f in entry["findings"])
     return tuple(_mapping(loop.state).get("first_findings") or ())
+
+
+def _round_zero_heads(loop: _Loop, root_doc: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """(the head the first review judged, the head round 1 starts from): under
+    `integrate` the fix's pushed head, else the implementer's it builds on;
+    under `direct-pr` the implementer's own. Read from the tasks the signed
+    block names, never from the loop's tenant-writable metadata."""
+    return _heads_of(loop.db, loop.tenant_id, loop.strategy, root_doc)
+
+
+def _heads_of(db: Any, tenant_id: str, strategy: str,
+              root_doc: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    if strategy == "integrate":
+        builds_on = _doc(db, tenant_id, _dispatch(root_doc).get("builds_on"))
+        judged = _pushed_head(builds_on) if builds_on else None
+        return judged, _pushed_head(root_doc) or judged
+    head = _pushed_head(root_doc)
+    return head, head
+
+
+def _root_head(db: Any, tenant_id: str, doc: Mapping[str, Any],
+               block: Mapping[str, Any]) -> str | None:
+    """Round 0's head for a loop `doc` whose signed `block` is given: the
+    review and the root are the tasks the signed block names."""
+    review = _doc(db, tenant_id, block.get("review_task_id"))
+    if review is None:
+        return None
+    strategy = str(_dispatch(doc).get("strategy") or "")
+    root_doc = _doc(db, tenant_id, _root_id(strategy, block, review))
+    return _heads_of(db, tenant_id, strategy, root_doc)[1] if root_doc is not None else None
 
 
 def _round_zero(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, Any]) -> None:
@@ -1019,23 +1153,19 @@ def _round_zero(loop: _Loop, review: Mapping[str, Any], root_doc: Mapping[str, A
             _park(loop, ROUND_FAILED, {**_failed_detail(parent, step), "round": 0})
             return
     review_id = str(review["id"])
+    # The head first, so both round-0 `review_unreadable` parks carry it: a
+    # round a person adds re-reviews it (§4.5, issue 338).
+    judged, head = _round_zero_heads(loop, root_doc)
+    base = {"task_id": review_id, "round": 0, "head": head}
     if spec_refusal(loop.ctx.settings, review, review_id) is not None:
-        _park(loop, REVIEW_UNREADABLE, {"task_id": review_id, "round": 0,
-                                        "error": "the review's spec does not verify"})
+        _park(loop, REVIEW_UNREADABLE, _unreadable_detail(
+            base, code="spec_unverified", error="the review's spec does not verify"))
         return
     try:
         verdict = read_verdict(loop.ctx, loop.tenant_id, review_id)
     except (Decline, ValueError) as exc:
-        reason = exc.why if isinstance(exc, Decline) else str(exc)
-        _park(loop, REVIEW_UNREADABLE, {"task_id": review_id, "round": 0,
-                                        "error": failure_text(reason)})
+        _park(loop, REVIEW_UNREADABLE, _read_refusal(base, exc))
         return
-    if loop.strategy == "integrate":
-        builds_on = _doc(loop.db, loop.tenant_id, _dispatch(root_doc).get("builds_on"))
-        judged = _pushed_head(builds_on) if builds_on else None
-        head = _pushed_head(root_doc) or judged
-    else:
-        judged = head = _pushed_head(root_doc)
     if verdict.ends_loop:
         _finish(loop, TaskState.SUCCEEDED, final_review=review_id, final_head=head,
                 verdict=verdict.verdict, findings_count=0)
@@ -1263,7 +1393,7 @@ def on_task_finished(ctx: Any, task_id: str, *, tenant_id: str | None = None) ->
             _drive_doc(ctx, tenant, doc, now, report)
         except Exception:  # noqa: BLE001 -- a doorbell: the sweep drives it again
             log.exception("fix loop %s: drive failed on the end of %s", loop_id, task_id)
-            report.fail(loop_id, "drive_failed")
+            report.fail_drive(loop_id, sys.exc_info()[1] or Exception())
     return report
 
 
@@ -1318,7 +1448,7 @@ def sweep_tenant(ctx: Any, tenant_id: str, *, limit: int = SWEEP_LIMIT) -> LoopR
             _drive_doc(ctx, tenant, doc, now, report)
         except Exception:  # noqa: BLE001 -- the next tick sweeps it again
             log.exception("fix loop %s: sweep failed", snap.id)
-            report.fail(snap.id, "drive_failed")
+            report.fail_drive(snap.id, sys.exc_info()[1] or Exception())
     return report
 
 
@@ -1388,6 +1518,9 @@ def add_rounds(ctx: Any, *, tenant_id: str, workflow_id: str, by: str, rounds: i
     now = ctx.now()
     ref = db.collection(TASKS).document(loop["id"])
     clean = redact(note).text if note else None
+    # Round 0's head, from the tasks the SIGNED block names (never the loop's
+    # tenant-writable metadata), for a park that recorded none (issue 338).
+    root_head = _root_head(db, tenant_id, loop, block)
 
     @firestore.transactional
     def _apply(txn: Any) -> int:
@@ -1412,6 +1545,15 @@ def add_rounds(ctx: Any, *, tenant_id: str, workflow_id: str, by: str, rounds: i
                       **({"note": clean} if clean else {})})
         state["added"] = added
         resume = _resume_of({**data, "id": loop["id"]})
+        if resume["head"] is None and not resume["seen"]:
+            resume["head"] = root_head
+        if resume["head"] is None:
+            # Nothing is written: a round that cannot start is refused, with
+            # why, instead of a 200 whose drive fails on every pass.
+            raise Conflict(
+                "no head is recorded for a round to start from: the loop's "
+                "review and fix pushed no commit; stop the loop instead",
+                detail={"reason": "no_head", "park_phase": park_phase_of(data)})
         if clean:
             resume["note"] = clean
         state["resume"] = resume
@@ -1431,10 +1573,17 @@ def add_rounds(ctx: Any, *, tenant_id: str, workflow_id: str, by: str, rounds: i
     report = LoopReport()
     doc = _doc(db, tenant_id, loop["id"])
     if doc is not None and tenant is not None:
-        _drive_doc(ctx, tenant, doc, now, report)
+        try:
+            _drive_doc(ctx, tenant, doc, now, report)
+        except Exception as exc:  # noqa: BLE001 -- the round is recorded; the sweep drives it again
+            log.exception("fix loop %s: drive failed after add-round", loop["id"])
+            report.fail_drive(loop["id"], exc)
     after = _doc(db, tenant_id, loop["id"]) or {}
     return {"task_id": loop["id"], "max_rounds": total, "park_phase": park_phase_of(after),
-            "state": after.get("state"), "report": report.to_api()}
+            "state": after.get("state"),
+            # What the drive could not do (issue 338): each failure's task id,
+            # code and redacted error text, as the admin tick routes serve it.
+            "report": report.to_api()}
 
 
 def stop(ctx: Any, *, tenant_id: str, workflow_id: str, by: str) -> dict[str, Any]:

@@ -164,6 +164,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 158 | `profiles.py`: declare `context_ceiling` as an optional object input on the claude-code runner family, so a step may carry its own lower session limits (per-role session limits) | REQUESTED 2026-11-23 by the pull request that adds this line; not applied. Until it is, swarm-api refuses a step that carries `context_ceiling` and every session runs at the worker's ceilings |
 | 159 | `profiles.py`: an `xlarge` resource class (16 CPU requested and limit, 64 GiB, GKE only, outside the admin-sized `CLASS_ORDER`) and a `recording` runner profile (no agent, a Docker daemon in a sandboxed pod, 86,400 s), shipped `available=False` (recording runner, docs/design/recording-runner.md, part of #8) | NOT ACCEPTED: waiting for the owner. REQUESTED 2026-11-24 by the pull request that adds this line; not applied. Until it is, no class is above 8 CPU or 32 GiB and no profile runs longer than 14,400 s |
 | 160 | `states.py` / `models.py`: `ParkReason.WORKFLOW_PAUSED`, `Workflow.paused`, `paused_at` and `paused_by`, and `EventType.PAUSE_REQUESTED` and `RESUME_REQUESTED`, so a workflow can be paused and resumed (docs/design/workflow-pause.md, part of issue 7) | NOT ACCEPTED: REQUESTED 2026-11-24 by the pull request that adds this line; not applied. Nothing is built on it; until the owner decides there is no workflow pause |
+| 161 | `admission.py`: export the transactional-get helper `_snapshot` under a public name (`transactional_snapshot`), so the ~94 modules that import the private name stop reaching into it | NOT ACCEPTED: waiting for the owner. REQUESTED 2026-11-24 by the pull request that adds this line (the owner decided on 2026-11-24 that the request be filed); not applied. Until it is, every importer keeps the private name |
 
 ---
 
@@ -18700,3 +18701,195 @@ reads as not paused; the parity check names the new members.
 
 The owner, together with question Q5 of docs/design/workflow-pause.md (a new
 reason, recommended, or reuse `MANUAL_PAUSE`). Awaiting the owner's decision.
+
+---
+
+## 161. `admission.py`: export `_snapshot` under a public name, `transactional_snapshot` (public snapshot helper)
+
+**Status:** NOT ACCEPTED. REQUESTED 2026-11-24 by the pull request that adds
+this section, as the owner decided on 2026-11-24 that it be filed; not applied.
+Nothing in `apps/common/swarm_common/` was edited for it and no code was
+changed: until the owner decides, every importer keeps importing the private
+name.
+
+### What is true today
+
+`apps/common/swarm_common/admission.py::_snapshot` (line 61) turns the result of
+a Firestore `Transaction.get()` into one `DocumentSnapshot`. The real client
+returns a generator (it also accepts a Query); in-memory doubles return the
+snapshot itself, so the helper accepts both shapes and raises `RuntimeError` on
+an empty result. `admission.py` uses it for its own reads. The name has a
+leading underscore, which says "private to this module", yet 94 files
+outside the frozen package import it with `from swarm_common.admission import
+_snapshot` (the brief's estimate of about fifteen modules under
+`apps/swarm-api` was low: swarm-api alone has 84, and the helper is also used by
+the scheduler, reconciler, agent worker, workflow rollup, a script and a test).
+No file reaches it as `admission._snapshot`. The package has no `__all__` in
+`admission.py`.
+
+### Why this is a contract request
+
+The helper is a de facto public API of the frozen package, and the frozen
+package may not be edited from outside this file. A public name needs a new
+`def` or an alias in `admission.py`, which is a change to a frozen file.
+
+### The requested change
+
+In `apps/common/swarm_common/admission.py`, add a public name for the helper.
+Two options:
+
+* **Option A (recommended): rename and keep the private name as an alias for
+  one release.** Rename the function to `transactional_snapshot` (same body, same
+  docstring) and add `_snapshot = transactional_snapshot` with a comment that it
+  is a deprecated alias to be removed once no importer uses it. Importers then
+  move to the public name over one release, in any order, without a flag day, and
+  a later request removes the alias.
+* **Option B: rename with no alias.** Only `transactional_snapshot` exists.
+  Cleaner, but every importer below must change in the same pull request, or the
+  tree does not import.
+
+Option A is recommended: it makes the change a no-op for every importer on the
+day it lands, and the 94-file migration is mechanical and can be split.
+The helper's behaviour does not change in either option.
+
+### Every importer today
+
+Found with `grep -rlE "from swarm_common.admission import .*_snapshot"` plus the
+multi-name import lines, over the whole tree outside `apps/common/swarm_common/`
+(94 files):
+
+* `apps/agent-worker/agent_worker/control.py`
+* `apps/agent-worker/agent_worker/mergeslot.py`
+* `apps/agent-worker/agent_worker/mergetrain.py`
+* `apps/reconciler/reconciler/plugingc.py`
+* `apps/reconciler/reconciler/store.py`
+* `apps/scheduler/scheduler/children.py`
+* `apps/scheduler/scheduler/store.py`
+* `apps/swarm-api/swarm_api/actions_secrets.py`
+* `apps/swarm-api/swarm_api/admins.py`
+* `apps/swarm-api/swarm_api/agent_questions.py`
+* `apps/swarm-api/swarm_api/approvals.py`
+* `apps/swarm-api/swarm_api/attemptstate.py`
+* `apps/swarm-api/swarm_api/awaitinput.py`
+* `apps/swarm-api/swarm_api/browser_logins.py`
+* `apps/swarm-api/swarm_api/browser_slots.py`
+* `apps/swarm-api/swarm_api/budget.py`
+* `apps/swarm-api/swarm_api/children.py`
+* `apps/swarm-api/swarm_api/cifix.py`
+* `apps/swarm-api/swarm_api/codeintel.py`
+* `apps/swarm-api/swarm_api/contractreask.py`
+* `apps/swarm-api/swarm_api/contractreview.py`
+* `apps/swarm-api/swarm_api/display_names.py`
+* `apps/swarm-api/swarm_api/failurecauses.py`
+* `apps/swarm-api/swarm_api/fixloop.py`
+* `apps/swarm-api/swarm_api/forgeapp.py`
+* `apps/swarm-api/swarm_api/ghapprove.py`
+* `apps/swarm-api/swarm_api/gittokens.py`
+* `apps/swarm-api/swarm_api/gittools.py`
+* `apps/swarm-api/swarm_api/graph_ticket.py`
+* `apps/swarm-api/swarm_api/handoff.py`
+* `apps/swarm-api/swarm_api/handoffbranches.py`
+* `apps/swarm-api/swarm_api/heldworkflows.py`
+* `apps/swarm-api/swarm_api/idempotency.py`
+* `apps/swarm-api/swarm_api/issueruns.py`
+* `apps/swarm-api/swarm_api/jevaccount.py`
+* `apps/swarm-api/swarm_api/jevusage.py`
+* `apps/swarm-api/swarm_api/judgment.py`
+* `apps/swarm-api/swarm_api/live.py`
+* `apps/swarm-api/swarm_api/mcp_credentials.py`
+* `apps/swarm-api/swarm_api/mcp_servers.py`
+* `apps/swarm-api/swarm_api/mergesettings.py`
+* `apps/swarm-api/swarm_api/mergetrain.py`
+* `apps/swarm-api/swarm_api/mergewake.py`
+* `apps/swarm-api/swarm_api/notifications.py`
+* `apps/swarm-api/swarm_api/people.py`
+* `apps/swarm-api/swarm_api/plansettings.py`
+* `apps/swarm-api/swarm_api/platformswitches.py`
+* `apps/swarm-api/swarm_api/pluginbundle.py`
+* `apps/swarm-api/swarm_api/plugincatalogue.py`
+* `apps/swarm-api/swarm_api/pluginconfig.py`
+* `apps/swarm-api/swarm_api/plugins.py`
+* `apps/swarm-api/swarm_api/pluginstore.py`
+* `apps/swarm-api/swarm_api/preferences.py`
+* `apps/swarm-api/swarm_api/prgate.py`
+* `apps/swarm-api/swarm_api/provider_keys.py`
+* `apps/swarm-api/swarm_api/purge.py`
+* `apps/swarm-api/swarm_api/qa_identity.py`
+* `apps/swarm-api/swarm_api/qasettings.py`
+* `apps/swarm-api/swarm_api/qatargets.py`
+* `apps/swarm-api/swarm_api/qualitygates.py`
+* `apps/swarm-api/swarm_api/repoindex.py`
+* `apps/swarm-api/swarm_api/repositories.py`
+* `apps/swarm-api/swarm_api/reviewgate.py`
+* `apps/swarm-api/swarm_api/routes/approvals.py`
+* `apps/swarm-api/swarm_api/routes/attempts_mcp.py`
+* `apps/swarm-api/swarm_api/routes/attempts_secrets.py`
+* `apps/swarm-api/swarm_api/routes/last_admin.py`
+* `apps/swarm-api/swarm_api/routes/runs.py`
+* `apps/swarm-api/swarm_api/routes/schedules.py`
+* `apps/swarm-api/swarm_api/routes/tenants.py`
+* `apps/swarm-api/swarm_api/routes/workspace_name.py`
+* `apps/swarm-api/swarm_api/runnersizes.py`
+* `apps/swarm-api/swarm_api/schedulefire.py`
+* `apps/swarm-api/swarm_api/search.py`
+* `apps/swarm-api/swarm_api/store.py`
+* `apps/swarm-api/swarm_api/trainboard.py`
+* `apps/swarm-api/swarm_api/verdictpublish.py`
+* `apps/swarm-api/swarm_api/voice/budget.py`
+* `apps/swarm-api/swarm_api/voice/grant.py`
+* `apps/swarm-api/swarm_api/voice/preferences.py`
+* `apps/swarm-api/swarm_api/voice/projectstate.py`
+* `apps/swarm-api/swarm_api/voice/readback.py`
+* `apps/swarm-api/swarm_api/voice/record.py`
+* `apps/swarm-api/swarm_api/voice/sessions.py`
+* `apps/swarm-api/swarm_api/voice/settings.py`
+* `apps/swarm-api/swarm_api/voice/speech_machine.py`
+* `apps/swarm-api/swarm_api/voice/speech_telemetry.py`
+* `apps/swarm-api/swarm_api/voice/store.py`
+* `apps/swarm-api/swarm_api/voice/visuals.py`
+* `apps/swarm-api/swarm_api/workspace_secrets.py`
+* `apps/swarm-api/swarm_api/workspaces.py`
+* `apps/workflow-rollup/swarm_rollup/__init__.py`
+* `scripts/bench_contention.py`
+* `tests/unit/control_plane/test_transactional_get_shape.py`
+
+### What it would break if accepted
+
+Option A: nothing; the old name still resolves. Option B: all 94 files
+above fail at import until each is changed to the new name, including
+`tests/unit/control_plane/test_transactional_get_shape.py`, which pins the
+helper's behaviour, and `scripts/bench_contention.py`. In both options,
+anything outside this tree that imports the private name (an out-of-tree
+script, a notebook) breaks under B only. `scripts/lib/check-frozen-contract.sh`
+requires an accepted entry for any `swarm_common` diff, so the change cannot
+land before this entry is ACCEPTED.
+
+### Invariants
+
+It touches none of the `CONTRACT.md` invariants and changes no behaviour. The
+helper is used inside the transactions that implement invariant 2 (all-or-nothing
+capacity reservation) and invariant 5 (fencing generation checks); the request
+renames how it is called and leaves what it returns unchanged, so both are
+preserved.
+
+### How it would be tested
+
+Not built here. If accepted: a unit test imports `transactional_snapshot` and
+asserts it is the same object as `_snapshot` (option A), or that `_snapshot` no
+longer exists (option B); the existing generator-versus-snapshot cases in
+`tests/unit/control_plane/test_transactional_get_shape.py` run against the
+public name; the empty-result case still raises `RuntimeError`. A guard greps
+the tree for `import _snapshot` once the alias is to be removed.
+
+### If it is declined
+
+Every importer keeps the private name. That works, but a private name used by
+94 files cannot be renamed or changed in signature without a contract
+request, and a linter that flags private imports must exempt it. The cost is
+paid whenever someone touches the helper.
+
+### Who decides
+
+The owner. The owner's decision of 2026-11-24 was that the request be filed, not
+that it be accepted; the choice between options A and B is also the owner's.
+Awaiting the owner's decision.
