@@ -43,6 +43,7 @@ from test_handoff import (  # noqa: F401 -- `agent` and `trace` are fixtures
 from agent_worker import handoff as handoff_mod
 from agent_worker import lifecycle
 from agent_worker.errors import ExitCode
+from agent_worker.hardening import FAILED, MemoryProtection
 from swarm_common.models import EndCause
 from swarm_common.states import EventType, ParkReason, TaskState
 
@@ -231,6 +232,53 @@ def test_a_browser_that_comes_back_does_not_fail_the_attempt(
     assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
     assert len(_marks(db, "live_browser_restarted")) == 1
     assert _marks(db, handoff_mod.LIVE_BROWSER_CRASHED) == []
+
+
+# --------------------------------------------------------------------------
+# no hand-off offered: the browser is still watched after start-up settles
+# --------------------------------------------------------------------------
+
+# The gate's start-up times: once the two browser steps are dated, start-up has settled.
+STARTED = {"startup": {"browser_launching": 1_790_000_000.0, "browser_ready": 1_790_000_001.0}}
+
+
+def test_a_live_attempt_with_no_hand_off_offered_still_fails_when_its_browser_is_gone(
+    db, worker_factory, trace, monkeypatch, sleeper
+):
+    """The agent keeps its browser with no hand-off offered (an unprotected
+    heap here; equally no attempt key, or no live session), so a Chromium
+    exit mid-task must still end the attempt retryably, named on the task."""
+    record = sleeper(30)
+    seed_attempt(db)
+    # Several reads with start-up settled and the browser running, then gone.
+    script = [{**RUNNING, **STARTED}] * 4 + [{**GONE, **STARTED}]
+    gate = BrowserGate(trace, script)
+    worker = _live_worker(
+        worker_factory, FakeLiveRoutes(db, trace), gate, trace, monkeypatch,
+        memory=MemoryProtection(FAILED, "prctl refused in this test"), **QUIET,
+    )
+    retried: list[dict[str, Any]] = []
+    real = worker.control.fail_retryably
+
+    def fail_retryably(**kw: Any) -> TaskState:
+        retried.append(kw)
+        return real(**kw)
+
+    monkeypatch.setattr(worker.control, "fail_retryably", fail_retryably)
+    assert worker.run() == ExitCode.FAILED
+    assert worker.handoff.unavailable == handoff_mod.WORKER_UNPROTECTED
+    assert not worker.handoff.offered and worker.handoff.browser_ready
+    # MUTATION: stop reading the gate's status once start-up settles and this fails.
+    assert gate.reads >= len(script), "the gate's status stopped being read after start-up"
+    assert record.read_text().splitlines() == ["started"], record.read_text()
+    (call,) = retried
+    assert call["cause"] == handoff_mod.LIVE_BROWSER_CRASHED
+    assert call["result_summary"]["live_browser"]["state"] == "crashed"
+    (crashed,) = _marks(db, handoff_mod.LIVE_BROWSER_CRASHED)
+    assert crashed["oom_kills"] == 2 and crashed["exit_cause"] == "signal_SIGKILL"
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.READY.value, task.get("last_error")
+    assert task["last_error"].startswith("live_browser_crashed: ")
 
 
 # --------------------------------------------------------------------------

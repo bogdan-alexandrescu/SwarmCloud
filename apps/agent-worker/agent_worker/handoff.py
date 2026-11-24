@@ -2112,17 +2112,28 @@ class HandoffPath:
         return [step for step in wanted if step not in self.startup_noted]
 
     def _poll_startup(self, root: Path) -> None:
-        """One `status` read for the start-up steps, on a gate with no live
-        path (whose tick reads no status otherwise). Stops once they are settled.
-        The browser's state is noted from the same read (`note_browser`)."""
-        if self.gate is None or self._progress is None or not self._startup_outstanding():
+        """One `status` read per tick on a gate with no live path (whose tick
+        reads no status otherwise), for the start-up steps and the browser's
+        state (`note_browser`) from the same read.
+
+        Once the steps are settled the read goes on while the agent has its
+        browser (`browser_ready`) and it is not gone for good: without it a
+        Chromium exit mid-task on an attempt with no hand-off offered was
+        never noticed, and the task ended as if it worked (part of issue
+        272). The read is a local ctl.sock call."""
+        if self.gate is None:
+            return
+        starting = self._progress is not None and bool(self._startup_outstanding())
+        watching = self.browser_ready and self.browser_gone is None
+        if not starting and not watching:
             return
         try:
             status = self.gate.call("status", {})
         except GateLost as exc:
             self.note_browser(root, None, lost=exc)
             return
-        self.note_startup(status)
+        if starting:
+            self.note_startup(status)
         self.note_browser(root, status)
 
     def note_startup(self, status: Any) -> None:

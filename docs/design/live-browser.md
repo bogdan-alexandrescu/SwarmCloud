@@ -304,6 +304,13 @@ review on a task that looked as if it had worked. So:
   `last_exit` and a one-sentence `message`. It keeps one note per restart or
   loss for the task's events and, once the browser is gone, `browser_gone`,
   from which the lifecycle ends the attempt retryably (below).
+  This holds with **no hand-off offered** too (an unprotected heap, no
+  attempt key, no live session): the agent still has its browser, so the
+  worker goes on reading the gate's `status` once per poll after the start-up
+  steps settle (`HandoffPath._poll_startup`), and stops only once the browser
+  is gone. **Why:** a status read that stopped with start-up left a Chromium
+  exit mid-task unseen on those attempts, and the task ended as if it worked.
+  The read is one local `ctl.sock` call per poll.
   The file is **not** `browser.json`: that name in the spool is the runner's
   browser-tool state (BSTATUS-API, §3.2.4), forwarded to the gate on every
   poll, and two writers on one file would lose one of them;
