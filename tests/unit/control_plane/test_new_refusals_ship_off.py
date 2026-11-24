@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - the `x.code = "..."` sweep over swarm_api is joined with the imported ApiError subclasses and refusals.SWITCHES, so it needs the package imported and cannot be a pure parse
 """A new refusal in swarm-api ships switched off (observer proposal I).
 
 Owner decision 2026-10-08. On 2026-10-07 archived pull request 845 deployed 403

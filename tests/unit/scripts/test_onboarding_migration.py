@@ -1,3 +1,4 @@
+# source-text: contract - swarm-api settings.py and codec.py must hold the onboarding flag's default and refusal words the runbook documents
 """Onboarding's migration lane, OB10 (the per-person-slots migration): the switch is deployed and the docs say what is built.
 
 WHY THIS EXISTS. `REPOSITORY_GRANTS_ENFORCED` (swarm_api.settings

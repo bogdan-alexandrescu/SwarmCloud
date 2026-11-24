@@ -1,3 +1,4 @@
+# source-text: contract - each state op control.py and the merge, CI-fix and index modules send must be a route swarm-api's attemptstate serves
 """`statecall.StateCall`: the signed wire under `RemoteControlPlane`.
 
 Lane ISO-WORKER-CORE (docs/design/tenant-settings-integrity.md §4.1, §4.2,

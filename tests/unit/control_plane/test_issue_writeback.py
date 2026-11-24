@@ -1,3 +1,4 @@
+# source-text: contract - run_console_url must follow the /runs/<id> address paths.ts builds
 """An issue run writes back to its issue: the plan, one status comment, the PR keyword (archived issue 454).
 
 What these tests hold, in the order they matter:

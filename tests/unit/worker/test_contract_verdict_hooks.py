@@ -1,3 +1,4 @@
+# source-text: contract - Worker._record_finalised must deliver the contract verdict after _mark_publish and before the success transition
 """The worker's two JC2 hooks (part of archived issue 2688; jev-contract.md section 5).
 
 The runner's end-of-step judgment (`cliagent._contract_post_step`) reads the

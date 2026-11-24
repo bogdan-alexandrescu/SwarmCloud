@@ -1,3 +1,4 @@
+# source-text: contract - McpServers.tsx and BrowserToolPicker.tsx must spell the declared-input keys and fields the capacity API serves
 """GET /v1/capacity serves each runner profile's DECLARED inputs (MCP-INPUTS, part of archived issue 1433).
 
 THE GAP THIS CLOSES. The Submit form's MCP server picker (MCP-UI) and its

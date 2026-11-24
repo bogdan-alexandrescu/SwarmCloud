@@ -1,3 +1,4 @@
+# source-text: contract - run.js marks must equal launch.TASK_MARK and WORKFLOW_MARK; also runs dag.ts levelsOf in node as a fixture against the plugin rows' stages
 """A SwarmCloud workflow reads the same in Claude Code's /workflows as in the console.
 
 Owner request, 2026-10-04: "if I see a workflow with 2/4 or 4/6 or more steps

@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - select_unit_tests.py must restate no guard path; it stays a test because the guard list is what changed-guards.sh prints at run time; also holds unit_shards.py's selected mode as a contract
 """A pull request runs the unit tests its change reaches (B2, owner decision
 2026-10-14; docs/ci.md "A pull request runs the unit tests its change
 reaches").

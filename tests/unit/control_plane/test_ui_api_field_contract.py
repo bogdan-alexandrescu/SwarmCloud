@@ -1,3 +1,4 @@
+# source-text: forbidden-pattern - the leaseLiveliness caller sweep must also find at least one caller in src/*.ts and *.tsx, which a per-file rule cannot; the rest pins types.ts fields to the API's
 """Every FIELD the browser reads must be a field this API sends, and back.
 
 THE GAP THIS CLOSES. `test_every_path_the_ui_calls_exists_on_this_api` (in

@@ -1,3 +1,4 @@
+# source-text: fixture - copies apps/swarm-ui/src/types.ts and its peers into a scratch tree and edits the copy, to run check-contract-parity.sh section 5 on it
 """Section 5 of `scripts/lib/check-contract-parity.sh` holds contract request 152.
 
 `Attempt` gains `account_id`, `credential_source` and `credential_tier`

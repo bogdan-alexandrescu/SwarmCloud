@@ -1,3 +1,4 @@
+# source-text: contract - swarm_qa's pending markers must be Shell.tsx's, and its INTERNAL_SUFFIXES must equal swarm_egress/policy.py's, which the image cannot import
 """QA-CAPTURE (docs/design/visual-qa.md §4.2, §6; part of archived issue 1649): `swarm_qa`.
 
 `python -m swarm_qa capture` sweeps one group of the console's route list

@@ -1,3 +1,4 @@
+# source-text: contract - pane.tsx must re-attach with 'attach --all' and run exactly two commands, agreeing with the session hook, plugin.json and the marketplace pin
 """the owner's three answers to SC-BROWSER-BUILD, built (SC-BROWSER-FOLLOWUP, archived issue 2318; recorded 2026-10-25).
 
 1. SWITCHING LAYOUTS ALSO RE-ATTACHES ("Also re-attach automatically"):

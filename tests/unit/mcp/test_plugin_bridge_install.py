@@ -1,3 +1,4 @@
+# source-text: contract - client.py's gzip header, the manifest's script entry points and swarm_mcp's swarm_common imports must agree with plugin.json and the pyprojects; the pin-once sweep reads only plugin and toml files
 """The plugin's MCP server has to start on a machine that has only the plugin.
 
 MEASURED 2026-09-25 on 0.4.0 (commit ea1355d). `/plugin marketplace add

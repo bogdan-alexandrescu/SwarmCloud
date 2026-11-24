@@ -1,3 +1,4 @@
+# source-text: contract - the count of Depends(admin_auth|people_scope) written in the router modules must equal the admin-gated routes the app walk finds
 """A pool admin reaches ONE admin route. Every other admin route stays admin-only.
 
 WHY THIS EXISTS

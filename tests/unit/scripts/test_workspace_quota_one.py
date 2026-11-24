@@ -1,3 +1,4 @@
+# source-text: contract - kubernetes/render.py must read workspace-quota.json and people.py's PODS_PER_AGENT must equal it
 """QUOTA-ONE (archived issue 2039): a workspace tenant's namespace quota has one formula.
 
 THE INCIDENT. u-owner's workspace (w-752763) read `failed` on 2026-10-23.

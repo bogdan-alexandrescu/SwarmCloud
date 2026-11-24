@@ -35,8 +35,6 @@ from agent_worker.runners import cliagent
 
 from test_standalone_outputs import _run, _seed, _summary
 
-WORKER_SOURCE = Path(lifecycle.__file__).resolve().parent
-
 
 # -- archived issue 361: the dead whole-diff helper ----------------------------------------
 
@@ -45,16 +43,11 @@ def test_the_whole_diff_credential_helper_no_path_called_is_gone():
     """`_adds_a_credential` and its parser `_added_by_file` had no caller in
     the worker: both publish scans run `_DiffLeakScanner`. A second parser of
     the same diff, held by tests alone, is one a fix can miss. No worker
-    module may define or name either."""
+    module may define or name either: that sweep of the package is the rule
+    `worker-no-dead-diff-credential-helper` in
+    scripts/source_text_rules/worker.py (issue 73)."""
     assert not hasattr(lifecycle, "_adds_a_credential")
     assert not hasattr(lifecycle, "_added_by_file")
-    named = [
-        f"{path.relative_to(WORKER_SOURCE)}:{number}"
-        for path in sorted(WORKER_SOURCE.rglob("*.py"))
-        for number, line in enumerate(path.read_text().splitlines(), 1)
-        if re.search(r"\b_adds_a_credential\b|\b_added_by_file\b", line)
-    ]
-    assert named == [], named
 
 
 # -- archived issue 361: a JWT header nested past the parser's depth -----------------------
