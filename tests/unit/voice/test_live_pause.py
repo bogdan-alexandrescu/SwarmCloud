@@ -160,6 +160,8 @@ class SlowPlanner:
         self.spoken = "The plan is on screen as one card."
         self.calls = 0
         self.forgotten: list[str] = []
+        #: The sessions the planner was told to let its account and child go for.
+        self.cooled: list[tuple[str, str]] = []
 
     async def delegate(self, **kwargs):
         self.calls += 1
@@ -171,6 +173,9 @@ class SlowPlanner:
 
     def forget(self, voice_id: str) -> None:
         self.forgotten.append(voice_id)
+
+    def cool(self, voice_id: str, why: str) -> None:
+        self.cooled.append((voice_id, why))
 
 
 class Gate:
@@ -242,6 +247,37 @@ async def _paused(world: World) -> tuple[live.LiveSession, str]:
     socket.push({"type": VOICE_FINAL, "transcript": live.PAUSE_SENTENCE, "response_id": "resp_b"})
     await _until(lambda: session.paused)
     return session, voice_id
+
+
+def test_a_pause_tells_the_planner_to_let_its_account_and_child_go():
+    world = World()
+
+    async def scenario():
+        _session, voice_id = await _paused(world)
+        assert world.planner.cooled == [(voice_id, "paused")]
+        # Not the session's end: its act ledger and its turn live on.
+        assert world.planner.forgotten == []
+        world.planner.go.set()
+        await world.sessions.end_all()
+
+    asyncio.run(asyncio.wait_for(scenario(), 20))
+
+
+def test_a_turn_that_outlives_the_pause_has_the_planner_let_go_again_when_it_ends():
+    world = World()
+
+    async def scenario():
+        session, voice_id = await _paused(world)
+        world.planner.cooled.clear()
+        world.planner.go.set()
+        for _ in range(200):
+            if world.planner.cooled:
+                break
+            await asyncio.sleep(0.01)
+        assert world.planner.cooled == [(voice_id, "paused")]
+        await world.sessions.end_all()
+
+    asyncio.run(asyncio.wait_for(scenario(), 20))
 
 
 def test_the_pause_window_of_silence_with_a_delegation_in_flight_says_the_sentence_and_closes():
