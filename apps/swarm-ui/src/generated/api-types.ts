@@ -319,6 +319,14 @@ export interface AnswerBody {
   session?: string | null
 }
 
+/** `object` on the answer: the stored stream the answer was read from. */
+export interface AnswerObject {
+  stream: 'agent_stdout'
+  source: 'final' | 'live' | 'artifact'
+  uri: string | null
+  object_updated_at: string | null
+}
+
 export interface ApplyBody {
   version_id: string
   diff_sha256: string
@@ -328,6 +336,99 @@ export interface ApplyBody {
 export interface Approval {
   frame: string
   session_id?: string | null
+}
+
+/**
+ * `GET /v1/tasks/{id}/artifacts/content?name=`: one artifact's text, bounded
+ * and redacted.
+ */
+export interface ArtifactContent {
+  task_id: string
+  tenant_id: string
+  /** Empty for an inline control-plane entry. */
+  attempt_id: string
+  artifact: ArtifactContentRef
+  status: 'ok' | 'absent' | 'unreadable' | 'binary'
+  detail: string | null
+  key: string | null
+  uri: string | null
+  /** Null unless `status` is `ok`. */
+  content: string | null
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  next_offset: number | null
+  truncated: boolean
+  redacted: boolean
+  redaction_count: number
+  invalid_utf8_bytes?: number | null
+  redaction: ReadRedaction
+  kind?: string | null
+  content_type?: string | null
+}
+
+/** `artifact` on an artifact read: the manifest entry the name resolved to. */
+export interface ArtifactContentRef {
+  name: string | null
+  bytes: number | null
+  uri: string | null
+}
+
+/**
+ * One entry of `GET /v1/tasks/{id}/artifacts`: the worker's manifest entry as
+ * stored, plus the four keys the listing derives beside it (`attempt_id`,
+ * `kind`, `content_type`, `role`). The stored keys pass through unchanged, so
+ * only `name` is required of them.
+ */
+export interface ArtifactEntry {
+  name: string
+  bytes?: number | null
+  /**
+   * A `gs://` reference, never a download URL. Absent on an inline control-plane
+   * entry.
+   */
+  uri?: string | null
+  /**
+   * The attempt the stored uri lies under; null when the uri is absent or not
+   * under this task.
+   */
+  attempt_id?: string | null
+  /** From the one name table: markdown, json, ndjson, log, text, image or binary. */
+  kind?: string | null
+  content_type?: string | null
+  /**
+   * `agent_stdout`, `agent_stderr` or `agent_transcript` for the agent's own
+   * streams.
+   */
+  role?: string | null
+  /** Set on an entry carried over from an earlier attempt. */
+  carried_from?: string | null
+  /** Set on a control-plane entry. */
+  written_by?: string | null
+  /** Set on a control-plane entry. */
+  republished_from?: string | null
+  /** The text of an inline control-plane entry, which has no stored object. */
+  inline?: string | null
+  attachments?: unknown
+}
+
+/** `GET /v1/tasks/{id}/artifacts`: what the attempt left in GCS, by reference. */
+export interface ArtifactListing {
+  task_id: string
+  artifacts: ArtifactEntry[]
+  artifacts_skipped: SkippedArtifact[]
+  /**
+   * Files past the 500-file cap (archived issue 227): null until `complete`, 0
+   * when none were.
+   */
+  artifacts_over_cap?: number | null
+  artifact_bytes: number | null
+  /**
+   * False until the task is terminal and its result summary is written, so "no
+   * artifacts yet" and "produced none" differ.
+   */
+  complete: boolean
+  attempt_id?: string | null
 }
 
 export interface AskBody {
@@ -1179,8 +1280,58 @@ export interface LoanRequest {
   lend: boolean
 }
 
+/** `attempt` on the logs, transcript and answer reads: which attempt was read. */
+export interface LogAttempt {
+  status: 'latest' | 'requested' | 'unknown_attempt' | 'no_attempt_yet'
+  known: boolean
+  generation: number | null
+  created_at: string | null
+  completed_at: string | null
+  exit_code: number | null
+}
+
+/** One stream of `GET /v1/tasks/{id}/logs`. */
+export interface LogStream {
+  /**
+   * `stdout`/`stderr` are the runner process's; `agent_stdout`/`agent_stderr`
+   * the agent CLI's.
+   */
+  stream: string
+  source: 'final' | 'live' | 'artifact' | null
+  status: 'ok' | 'absent' | 'unreadable' | 'not_applicable'
+  detail: string | null
+  key: string | null
+  uri: string | null
+  /** Null for absent and unreadable; an empty string is a real, empty log. */
+  content: string | null
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  next_offset: number | null
+  truncated: boolean
+  redacted: boolean
+  redaction_count: number
+  tail_window: TailWindow | null
+  object_updated_at?: string | null
+  age_seconds?: number | null
+  invalid_utf8_bytes?: number | null
+}
+
 export interface ManifestStart {
   name?: string | null
+}
+
+/** The task's metadata, masked by the same masker as its input. */
+export interface MaskedMetadata {
+  value: { [key: string]: unknown }
+  redaction_count: number
+  platform_keys: string[]
+}
+
+/** A text as `redaction.redact` returns it, with its own count. */
+export interface MaskedText {
+  text: string
+  redaction_count: number
 }
 
 /**
@@ -1732,6 +1883,15 @@ export interface Rate {
   hi: number
 }
 
+/**
+ * `redaction` on every read-time-redacted read: the masking ran when this
+ * response was built, with this many rules.
+ */
+export interface ReadRedaction {
+  applied_at_read_time: boolean
+  rules: number
+}
+
 export interface ReadRequest {
   ids: string[]
 }
@@ -2084,6 +2244,16 @@ export interface SignInClient {
   client_secret: string
 }
 
+/** One file the worker wrote and did not upload. */
+export interface SkippedArtifact {
+  name: string
+  /**
+   * `cap`, `upload_error` or `refused` (archived issue 165); null for a bare
+   * name from an older summary.
+   */
+  cause: string | null
+}
+
 export interface SourceBody {
   kind: string
   repository: string
@@ -2185,6 +2355,13 @@ export interface StepVerdictGate {
 
 export interface StrandedSweepRequest {
   redrive?: boolean
+}
+
+/** `tail_window` on a live stream read from object offset 0. */
+export interface TailWindow {
+  object_offset: number
+  stream_size: number
+  published_at?: string | null
 }
 
 /**
@@ -2509,6 +2686,31 @@ export interface Task {
   budget?: unknown
 }
 
+/** `GET /v1/tasks/{id}/answer`: the agent's final answer, redacted. */
+export interface TaskAnswer {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  read_at: string
+  status: 'ok' | 'not_yet' | 'absent' | 'unreadable'
+  source: 'agent_result_event' | 'runner_summary' | null
+  object: AnswerObject | null
+  format: 'markdown' | 'text' | null
+  content: string | null
+  complete: boolean | null
+  is_error: boolean | null
+  subtype: string | null
+  stop_reason: string | null
+  terminal_reason: string | null
+  num_turns: number | null
+  bytes: number | null
+  redacted: boolean
+  redaction_count: number
+  capture_truncated?: boolean | null
+  detail: string | null
+}
+
 export interface TaskBatchCreate {
   tasks: TaskCreate[]
   idempotency_key?: string | null
@@ -2563,6 +2765,26 @@ export interface TaskEventPage {
   next_page_token: string | null
 }
 
+/**
+ * `GET /v1/tasks/{id}/input`: the task's input as a screen may draw it, masked
+ * at read time.
+ */
+export interface TaskInputCopy {
+  task_id: string
+  tenant_id: string
+  read_at: string
+  prompt_key: 'string' | 'missing' | 'other'
+  /** Null unless `input.prompt` is a string. */
+  prompt: MaskedText | null
+  rest: MaskedText | null
+  full: MaskedText
+  /** Optional and never null: an older API omits it. */
+  metadata?: MaskedMetadata
+  redacted: boolean
+  redaction_count: number
+  redaction: ReadRedaction
+}
+
 /** `links` on a task: its console page, for surfaces OUTSIDE the console. */
 export interface TaskLinks {
   /**
@@ -2570,6 +2792,22 @@ export interface TaskLinks {
    * when the deployment has no console (`agent_console_url`).
    */
   console: string | null
+}
+
+/**
+ * `GET /v1/tasks/{id}/logs`: an attempt's captured streams, redacted at read
+ * time.
+ */
+export interface TaskLogs {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  /** Optional and never null: an older API omits it. */
+  read_at?: string
+  streams: LogStream[]
+  prefix: string
+  redaction: ReadRedaction
 }
 
 /** `GET /v1/tasks`: one page of tasks. The paging key is `next_page_token`. */
@@ -2584,6 +2822,30 @@ export interface TaskPage {
 }
 
 export type TaskState = 'SUBMITTED' | 'QUEUED' | 'PARKED' | 'READY' | 'LEASED' | 'DISPATCHED' | 'STARTING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'DEAD_LETTERED'
+
+/** `GET /v1/tasks/{id}/transcript`: the agent's own stdout, parsed into steps. */
+export interface TaskTranscript {
+  task_id: string
+  tenant_id: string
+  attempt_id: string | null
+  attempt: LogAttempt
+  read_at: string
+  stream: TranscriptStream
+  format: 'claude-stream-json' | 'claude-json' | 'codex-exec-json' | 'ndjson' | 'text' | null
+  /** Null for `text`; `[]` for an empty object. */
+  steps: TranscriptStep[] | null
+  complete: boolean
+  window_starts_mid_stream: boolean
+  skipped_lines: number
+  answer_in_window: boolean
+  /**
+   * True when the capture was cut at its cap, so the transcript is not the whole
+   * run.
+   */
+  capture_truncated?: boolean | null
+  redaction: ReadRedaction
+  redaction_count: number
+}
 
 export interface TeamCreate {
   group: string
@@ -2676,6 +2938,64 @@ export interface TotalsCost {
   per_succeeded_task: PerSucceededTask
   retries: CostCell
   declared: DeclaredCost
+}
+
+/** One step of the parsed transcript (`transcript._step`). */
+export interface TranscriptStep {
+  id: string | null
+  line_offset: number
+  block: number
+  kind: 'init' | 'text' | 'thinking' | 'tool_call' | 'tool_result' | 'result' | 'rate_limit' | 'system' | 'usage' | 'error' | 'other'
+  role: 'assistant' | 'user' | 'system' | null
+  parent_tool_use_id: string | null
+  text: string | null
+  tool: TranscriptTool | null
+  tool_result: TranscriptToolResult | null
+  meta: { [key: string]: unknown } | null
+  truncated_fields: string[]
+  /** The redacted source event; only with `include_raw=true`. */
+  raw: string | null
+}
+
+/**
+ * `stream` on the transcript: the agent stdout object the steps were parsed
+ * from.
+ */
+export interface TranscriptStream {
+  stream: 'agent_stdout'
+  source: 'final' | 'live' | 'artifact' | null
+  status: 'ok' | 'absent' | 'unreadable' | 'not_applicable'
+  detail: string | null
+  uri: string | null
+  object_updated_at: string | null
+  age_seconds: number | null
+  total_bytes: number | null
+  offset: number
+  returned_bytes: number
+  next_offset: number | null
+  truncated: boolean
+  tail_window: TailWindow | null
+}
+
+/**
+ * `tool` on a `tool_call` step. Each may be null on the wire
+ * (`_Scrubber.text`).
+ */
+export interface TranscriptTool {
+  id: string | null
+  name: string | null
+  input: string | null
+}
+
+/**
+ * `tool_result` on a `tool_result` step; `tool_use_id` and `is_error` may be
+ * null.
+ */
+export interface TranscriptToolResult {
+  tool_use_id: string | null
+  is_error: boolean | null
+  content: string | null
+  images: number
 }
 
 export interface UndoPreferences {

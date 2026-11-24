@@ -431,6 +431,14 @@ DOCUMENTED: dict[tuple[Any, str, str], type[BaseModel]] = {
     (tasks, "GET", "/v1/tasks"): wire_types.TaskPage,
     (tasks, "GET", "/v1/tasks/{task_id}/attempts"): wire_types.AttemptPage,
     (tasks, "GET", "/v1/tasks/{task_id}/events"): wire_types.TaskEventPage,
+    # The Artifacts tab's reads; test_artifacts_tab_field_contract.py walks
+    # their payloads against these models.
+    (tasks, "GET", "/v1/tasks/{task_id}/artifacts"): wire_types.ArtifactListing,
+    (tasks, "GET", "/v1/tasks/{task_id}/artifacts/content"): wire_types.ArtifactContent,
+    (tasks, "GET", "/v1/tasks/{task_id}/logs"): wire_types.TaskLogs,
+    (tasks, "GET", "/v1/tasks/{task_id}/transcript"): wire_types.TaskTranscript,
+    (tasks, "GET", "/v1/tasks/{task_id}/answer"): wire_types.TaskAnswer,
+    (tasks, "GET", "/v1/tasks/{task_id}/input"): wire_types.TaskInputCopy,
     (admin, "GET", "/v1/admin/leases"): wire_types.LeasePage,
     (leases, "GET", "/v1/leases"): wire_types.LeaseHeartbeatPage,
     (admin, "GET", "/v1/admin/quota"): wire_types.QuotaPage,

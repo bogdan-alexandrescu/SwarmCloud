@@ -1464,3 +1464,356 @@ class AccountsPage(BaseModel):
         "How many account documents the broker could not read; the ids are named only to "
         "their owner."))
     refresh_sweep: RefreshSweep | None = None
+
+
+# --------------------------------------------------------------------------
+# The Artifacts tab and the task's masked input (#184): the artifact listing
+# and one artifact's content, the logs, the parsed transcript, the final
+# answer and `GET /v1/tasks/{id}/input`. Built by `agent_output.py`,
+# `inspect.py`, `transcript.py` and `task_input.py`. Every key below is sent
+# on every path of its builder (ok, absent, unreadable, binary, no attempt
+# yet); the few with a default are the ones the console reads as optional
+# because an API older than the field does not send them (as `Task` does). The literal unions
+# are the builders' own closed sets; a value outside one fails the two-way
+# test in tests/unit/control_plane/test_wire_types.py.
+# --------------------------------------------------------------------------
+
+
+class ReadRedaction(BaseModel):
+    """`redaction` on every read-time-redacted read: the masking ran when this
+    response was built, with this many rules."""
+
+    model_config = ConfigDict(title="ReadRedaction")
+
+    applied_at_read_time: bool
+    rules: int
+
+
+class SkippedArtifact(BaseModel):
+    """One file the worker wrote and did not upload."""
+
+    model_config = ConfigDict(title="SkippedArtifact")
+
+    name: str
+    cause: str | None = Field(description=(
+        "`cap`, `upload_error` or `refused` (archived issue 165); null for a bare name from an "
+        "older summary."
+    ))
+
+
+class ArtifactEntry(BaseModel):
+    """One entry of `GET /v1/tasks/{id}/artifacts`: the worker's manifest entry as stored,
+    plus the four keys the listing derives beside it (`attempt_id`, `kind`, `content_type`,
+    `role`). The stored keys pass through unchanged, so only `name` is required of them."""
+
+    model_config = ConfigDict(title="ArtifactEntry")
+
+    name: str
+    bytes: int | None = None
+    uri: str | None = Field(None, description=(
+        "A `gs://` reference, never a download URL. Absent on an inline control-plane entry."
+    ))
+    attempt_id: str | None = Field(None, description=(
+        "The attempt the stored uri lies under; null when the uri is absent or not under this task."
+    ))
+    kind: str | None = Field(None, description=(
+        "From the one name table: markdown, json, ndjson, log, text, image or binary."
+    ))
+    content_type: str | None = None
+    role: str | None = Field(None, description=(
+        "`agent_stdout`, `agent_stderr` or `agent_transcript` for the agent's own streams."
+    ))
+    carried_from: str | None = Field(None, description=(
+        "Set on an entry carried over from an earlier attempt."
+    ))
+    written_by: str | None = Field(None, description="Set on a control-plane entry.")
+    republished_from: str | None = Field(None, description="Set on a control-plane entry.")
+    inline: str | None = Field(None, description=(
+        "The text of an inline control-plane entry, which has no stored object."
+    ))
+    attachments: Any = None
+
+
+class ArtifactListing(BaseModel):
+    """`GET /v1/tasks/{id}/artifacts`: what the attempt left in GCS, by reference."""
+
+    model_config = ConfigDict(title="ArtifactListing")
+
+    task_id: str
+    artifacts: list[ArtifactEntry]
+    artifacts_skipped: list[SkippedArtifact]
+    artifacts_over_cap: int | None = Field(None, description=(
+        "Files past the 500-file cap (archived issue 227): null until `complete`, 0 when none were."
+    ))
+    artifact_bytes: int | None
+    complete: bool = Field(description=(
+        "False until the task is terminal and its result summary is written, so \"no artifacts "
+        "yet\" and \"produced none\" differ."
+    ))
+    attempt_id: str | None = None
+
+
+class ArtifactContentRef(BaseModel):
+    """`artifact` on an artifact read: the manifest entry the name resolved to."""
+
+    model_config = ConfigDict(title="ArtifactContentRef")
+
+    name: str | None
+    bytes: int | None
+    uri: str | None
+
+
+class ArtifactContent(BaseModel):
+    """`GET /v1/tasks/{id}/artifacts/content?name=`: one artifact's text, bounded and redacted."""
+
+    model_config = ConfigDict(title="ArtifactContent")
+
+    task_id: str
+    tenant_id: str
+    attempt_id: str = Field(description="Empty for an inline control-plane entry.")
+    artifact: ArtifactContentRef
+    status: Literal["ok", "absent", "unreadable", "binary"]
+    detail: str | None
+    key: str | None
+    uri: str | None
+    content: str | None = Field(description="Null unless `status` is `ok`.")
+    total_bytes: int | None
+    offset: int
+    returned_bytes: int
+    next_offset: int | None
+    truncated: bool
+    redacted: bool
+    redaction_count: int
+    invalid_utf8_bytes: int | None = None
+    redaction: ReadRedaction
+    kind: str | None = None
+    content_type: str | None = None
+
+
+class LogAttempt(BaseModel):
+    """`attempt` on the logs, transcript and answer reads: which attempt was read."""
+
+    model_config = ConfigDict(title="LogAttempt")
+
+    status: Literal["latest", "requested", "unknown_attempt", "no_attempt_yet"]
+    known: bool
+    generation: int | None
+    created_at: datetime | None
+    completed_at: datetime | None
+    exit_code: int | None
+
+
+class TailWindow(BaseModel):
+    """`tail_window` on a live stream read from object offset 0."""
+
+    model_config = ConfigDict(title="TailWindow")
+
+    object_offset: int
+    stream_size: int
+    published_at: str | None = None
+
+
+class LogStream(BaseModel):
+    """One stream of `GET /v1/tasks/{id}/logs`."""
+
+    model_config = ConfigDict(title="LogStream")
+
+    stream: str = Field(description=(
+        "`stdout`/`stderr` are the runner process's; `agent_stdout`/`agent_stderr` the agent CLI's."
+    ))
+    source: Literal["final", "live", "artifact"] | None
+    status: Literal["ok", "absent", "unreadable", "not_applicable"]
+    detail: str | None
+    key: str | None
+    uri: str | None
+    content: str | None = Field(description=(
+        "Null for absent and unreadable; an empty string is a real, empty log."
+    ))
+    total_bytes: int | None
+    offset: int
+    returned_bytes: int
+    next_offset: int | None
+    truncated: bool
+    redacted: bool
+    redaction_count: int
+    tail_window: TailWindow | None
+    object_updated_at: str | None = None
+    age_seconds: float | None = None
+    invalid_utf8_bytes: int | None = None
+
+
+class TaskLogs(BaseModel):
+    """`GET /v1/tasks/{id}/logs`: an attempt's captured streams, redacted at read time."""
+
+    model_config = ConfigDict(title="TaskLogs")
+
+    task_id: str
+    tenant_id: str
+    attempt_id: str | None
+    attempt: LogAttempt
+    read_at: datetime = Field(None, description="Optional and never null: an older API omits it.")
+    streams: list[LogStream]
+    prefix: str
+    redaction: ReadRedaction
+
+
+class TranscriptStream(BaseModel):
+    """`stream` on the transcript: the agent stdout object the steps were parsed from."""
+
+    model_config = ConfigDict(title="TranscriptStream")
+
+    stream: Literal["agent_stdout"]
+    source: Literal["final", "live", "artifact"] | None
+    status: Literal["ok", "absent", "unreadable", "not_applicable"]
+    detail: str | None
+    uri: str | None
+    object_updated_at: str | None
+    age_seconds: float | None
+    total_bytes: int | None
+    offset: int
+    returned_bytes: int
+    next_offset: int | None
+    truncated: bool
+    tail_window: TailWindow | None
+
+
+class TranscriptTool(BaseModel):
+    """`tool` on a `tool_call` step. Each may be null on the wire (`_Scrubber.text`)."""
+
+    model_config = ConfigDict(title="TranscriptTool")
+
+    id: str | None
+    name: str | None
+    input: str | None
+
+
+class TranscriptToolResult(BaseModel):
+    """`tool_result` on a `tool_result` step; `tool_use_id` and `is_error` may be null."""
+
+    model_config = ConfigDict(title="TranscriptToolResult")
+
+    tool_use_id: str | None
+    is_error: bool | None
+    content: str | None
+    images: int
+
+
+class TranscriptStep(BaseModel):
+    """One step of the parsed transcript (`transcript._step`)."""
+
+    model_config = ConfigDict(title="TranscriptStep")
+
+    id: str | None
+    line_offset: int
+    block: int
+    kind: Literal["init", "text", "thinking", "tool_call", "tool_result", "result",
+                  "rate_limit", "system", "usage", "error", "other"]
+    role: Literal["assistant", "user", "system"] | None
+    parent_tool_use_id: str | None
+    text: str | None
+    tool: TranscriptTool | None
+    tool_result: TranscriptToolResult | None
+    meta: dict[str, Any] | None
+    truncated_fields: list[str]
+    raw: str | None = Field(description="The redacted source event; only with `include_raw=true`.")
+
+
+class TaskTranscript(BaseModel):
+    """`GET /v1/tasks/{id}/transcript`: the agent's own stdout, parsed into steps."""
+
+    model_config = ConfigDict(title="TaskTranscript")
+
+    task_id: str
+    tenant_id: str
+    attempt_id: str | None
+    attempt: LogAttempt
+    read_at: datetime
+    stream: TranscriptStream
+    format: Literal["claude-stream-json", "claude-json", "codex-exec-json", "ndjson",
+                    "text"] | None
+    steps: list[TranscriptStep] | None = Field(description="Null for `text`; `[]` for an empty object.")
+    complete: bool
+    window_starts_mid_stream: bool
+    skipped_lines: int
+    answer_in_window: bool
+    capture_truncated: bool | None = Field(None, description=(
+        "True when the capture was cut at its cap, so the transcript is not the whole run."
+    ))
+    redaction: ReadRedaction
+    redaction_count: int
+
+
+class AnswerObject(BaseModel):
+    """`object` on the answer: the stored stream the answer was read from."""
+
+    model_config = ConfigDict(title="AnswerObject")
+
+    stream: Literal["agent_stdout"]
+    source: Literal["final", "live", "artifact"]
+    uri: str | None
+    object_updated_at: str | None
+
+
+class TaskAnswer(BaseModel):
+    """`GET /v1/tasks/{id}/answer`: the agent's final answer, redacted."""
+
+    model_config = ConfigDict(title="TaskAnswer")
+
+    task_id: str
+    tenant_id: str
+    attempt_id: str | None
+    attempt: LogAttempt
+    read_at: datetime
+    status: Literal["ok", "not_yet", "absent", "unreadable"]
+    source: Literal["agent_result_event", "runner_summary"] | None
+    object: AnswerObject | None
+    format: Literal["markdown", "text"] | None
+    content: str | None
+    complete: bool | None
+    is_error: bool | None
+    subtype: str | None
+    stop_reason: str | None
+    terminal_reason: str | None
+    num_turns: int | None
+    bytes: int | None
+    redacted: bool
+    redaction_count: int
+    capture_truncated: bool | None = None
+    detail: str | None
+
+
+class MaskedText(BaseModel):
+    """A text as `redaction.redact` returns it, with its own count."""
+
+    model_config = ConfigDict(title="MaskedText")
+
+    text: str
+    redaction_count: int
+
+
+class MaskedMetadata(BaseModel):
+    """The task's metadata, masked by the same masker as its input."""
+
+    model_config = ConfigDict(title="MaskedMetadata")
+
+    value: dict[str, Any]
+    redaction_count: int
+    platform_keys: list[str]
+
+
+class TaskInputCopy(BaseModel):
+    """`GET /v1/tasks/{id}/input`: the task's input as a screen may draw it, masked at read time."""
+
+    model_config = ConfigDict(title="TaskInputCopy")
+
+    task_id: str
+    tenant_id: str
+    read_at: datetime
+    prompt_key: Literal["string", "missing", "other"]
+    prompt: MaskedText | None = Field(description="Null unless `input.prompt` is a string.")
+    rest: MaskedText | None
+    full: MaskedText
+    metadata: MaskedMetadata = Field(None, description="Optional and never null: an older API omits it.")
+    redacted: bool
+    redaction_count: int
+    redaction: ReadRedaction

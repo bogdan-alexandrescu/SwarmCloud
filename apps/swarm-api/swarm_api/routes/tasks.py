@@ -75,7 +75,18 @@ from ..utilisation import utilisation_of
 from ..waiting import waiting_for_page
 from ..waiting_detail import build_waiting, read_inputs, waiting_row
 from ..waker import TASK_FINISHED, ring
-from ..wire_types import AttemptPage, TaskEnvelope, TaskEventPage, TaskPage
+from ..wire_types import (
+    ArtifactContent,
+    ArtifactListing,
+    AttemptPage,
+    TaskAnswer,
+    TaskEnvelope,
+    TaskEventPage,
+    TaskInputCopy,
+    TaskLogs,
+    TaskPage,
+    TaskTranscript,
+)
 
 log = logging.getLogger(__name__)
 
@@ -1190,7 +1201,7 @@ def list_attempts(
     }
 
 
-@router.get("/{task_id}/artifacts")
+@router.get("/{task_id}/artifacts", responses={200: {"model": ArtifactListing}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def list_artifacts(
     task_id: str,
@@ -1228,7 +1239,7 @@ def list_artifacts(
     )
 
 
-@router.get("/{task_id}/artifacts/content")
+@router.get("/{task_id}/artifacts/content", responses={200: {"model": ArtifactContent}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def read_artifact(
     task_id: str,
@@ -1397,7 +1408,7 @@ def list_checkpoints(
     )
 
 
-@router.get("/{task_id}/logs")
+@router.get("/{task_id}/logs", responses={200: {"model": TaskLogs}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def read_logs(
     task_id: str,
@@ -1465,7 +1476,7 @@ def read_logs(
     )
 
 
-@router.get("/{task_id}/transcript")
+@router.get("/{task_id}/transcript", responses={200: {"model": TaskTranscript}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def read_transcript(
     task_id: str,
@@ -1501,7 +1512,7 @@ def read_transcript(
     )
 
 
-@router.get("/{task_id}/answer")
+@router.get("/{task_id}/answer", responses={200: {"model": TaskAnswer}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def read_answer(
     task_id: str,
@@ -1620,7 +1631,7 @@ def answer_question(
     }
 
 
-@router.get("/{task_id}/input")
+@router.get("/{task_id}/input", responses={200: {"model": TaskInputCopy}})
 @route_scope.reachable_by(route_scope.CONTINUATION)
 def read_input(
     task_id: str,

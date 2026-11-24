@@ -1,10 +1,11 @@
 // Shapes returned by swarm-api. `Task`, and the shapes imported below as
 // `Api*` (pools, runner profiles, capacity, task page, attempts, leases,
 // heartbeats, quota, tenants, stats, `me`, the dispatch switch, workflow,
-// providers, events, the runtimes catalogue and its resource classes, and the
-// account listing), are GENERATED from the API's OpenAPI document
-// (./generated/api-types.ts, `scripts/gen_api_types.py`, from
-// `swarm_api/wire_types.py`; part of #72). A drift check (`gen_api_types.py
+// providers, events, the runtimes catalogue and its resource classes, the
+// account listing, and the Artifacts tab's reads: the artifact listing and
+// content, logs, transcript, answer and the masked input), are GENERATED
+// from the API's OpenAPI document (./generated/api-types.ts,
+// `scripts/gen_api_types.py`, from `swarm_api/wire_types.py`; part of #72). A drift check (`gen_api_types.py
 // --check`, in CI and the unit suite) fails when that file is stale, and the
 // API's unit suite holds each model to what its routes serve, both
 // directions. Each interface here extends its generated shape and keeps only
@@ -18,6 +19,9 @@ import type {
   Account as ApiAccount,
   AccountsPage as ApiAccountsPage,
   AccountWindow as ApiAccountWindow,
+  ArtifactContent as ApiArtifactContent,
+  ArtifactEntry as ApiArtifactEntry,
+  ArtifactListing as ApiArtifactListing,
   AttemptRow as ApiAttemptRow,
   Capacity as ApiCapacity,
   Counterfactual as ApiCounterfactual,
@@ -26,6 +30,10 @@ import type {
   LeaseHeartbeatPage as ApiLeaseHeartbeatPage,
   LeasePage as ApiLeasePage,
   LeaseRow as ApiLeaseRow,
+  LogAttempt as ApiLogAttempt,
+  LogStream as ApiLogStream,
+  MaskedMetadata as ApiMaskedMetadata,
+  MaskedText as ApiMaskedText,
   Me as ApiMe,
   Pool as ApiPool,
   ProfileAdmission as ApiProfileAdmission,
@@ -38,9 +46,15 @@ import type {
   Runtime as ApiRuntime,
   Stats as ApiStats,
   Task as ApiTask,
+  TaskAnswer as ApiTaskAnswer,
   TaskEvent as ApiTaskEvent,
+  TaskInputCopy as ApiTaskInputCopy,
+  TaskLogs as ApiTaskLogs,
   TaskPage as ApiTaskPage,
+  TaskTranscript as ApiTaskTranscript,
   Tenant as ApiTenant,
+  TranscriptStep as ApiTranscriptStep,
+  TranscriptStream as ApiTranscriptStream,
   Workflow as ApiWorkflow,
 } from './generated/api-types'
 import { currentZone, formatClock, formatDateTime, isToday } from './timezone'
@@ -5040,7 +5054,7 @@ export type LogStatus = 'ok' | 'absent' | 'unreadable' | 'not_applicable'
  */
 export type LogStreamName = 'stdout' | 'stderr' | 'agent_stdout' | 'agent_stderr'
 
-export interface LogStream {
+export interface LogStream extends ApiLogStream {
   stream: LogStreamName
   source: LogSource | null
   status: LogStatus
@@ -5080,7 +5094,7 @@ export interface LogStream {
 }
 
 /** Which attempt a log, transcript or answer read describes. */
-export interface LogAttempt {
+export interface LogAttempt extends ApiLogAttempt {
   status: 'latest' | 'requested' | 'unknown_attempt' | 'no_attempt_yet'
   known: boolean
   generation: number | null
@@ -5089,7 +5103,7 @@ export interface LogAttempt {
   exit_code: number | null
 }
 
-export interface TaskLogs {
+export interface TaskLogs extends ApiTaskLogs {
   task_id: string
   tenant_id: string
   attempt_id: string | null
@@ -5124,7 +5138,11 @@ export type AgentStreamRole = 'agent_stdout' | 'agent_stderr' | 'agent_transcrip
  * OPTIONAL: an API older than that change serves `{name, bytes, uri}` only, and
  * the viewer then falls back to the name rule it always used (`artifactKind`).
  */
-export interface ArtifactEntry extends ArtifactRef {
+export interface ArtifactEntry extends ArtifactRef, ApiArtifactEntry {
+  // Redeclared: ArtifactRef's manifest reading narrows the generated entry's.
+  name: string
+  bytes: number
+  uri: string
   /** Null when the stored uri is not under this task. */
   attempt_id?: string | null
   kind?: ArtifactKindName | null
@@ -5144,7 +5162,7 @@ export interface SkippedArtifact {
  * uploaded then, never live, so an empty incomplete list is "not yet", never
  * "none".
  */
-export interface ArtifactListing {
+export interface ArtifactListing extends ApiArtifactListing {
   task_id: string
   artifacts: ArtifactEntry[]
   /**
@@ -5218,7 +5236,7 @@ export type TranscriptStepKind =
  * decoding and capped at 16 KiB; a capped field is named in
  * `truncated_fields`. `raw` is present only when the read asked for it.
  */
-export interface TranscriptStep {
+export interface TranscriptStep extends ApiTranscriptStep {
   id: string
   line_offset: number
   block: number
@@ -5244,7 +5262,7 @@ export interface TranscriptStep {
 export type TranscriptFormat = 'claude-stream-json' | 'claude-json' | 'codex-exec-json' | 'ndjson' | 'text'
 
 /** The object a transcript read parsed: the same one `/logs?stream=agent_stdout` would choose. */
-export interface TranscriptStream {
+export interface TranscriptStream extends ApiTranscriptStream {
   stream: 'agent_stdout'
   source: LogSource | null
   status: LogStatus
@@ -5260,7 +5278,7 @@ export interface TranscriptStream {
   tail_window: { object_offset: number; stream_size: number; published_at?: string | null } | null
 }
 
-export interface TaskTranscript {
+export interface TaskTranscript extends ApiTaskTranscript {
   task_id: string
   tenant_id: string
   attempt_id: string | null
@@ -5303,7 +5321,7 @@ export interface TaskTranscript {
  */
 export type AnswerStatus = 'ok' | 'not_yet' | 'absent' | 'unreadable'
 
-export interface TaskAnswer {
+export interface TaskAnswer extends ApiTaskAnswer {
   task_id: string
   tenant_id: string
   attempt_id: string | null
@@ -5348,7 +5366,7 @@ export interface TaskAnswer {
 // ---------------------------------------------------------------------------
 
 /** One text of the copy: what `redaction.redact` made of it, and how many masks that took. */
-export interface MaskedText {
+export interface MaskedText extends ApiMaskedText {
   text: string
   redaction_count: number
 }
@@ -5370,7 +5388,7 @@ export interface MaskedText {
  * a convention of the CLI and mock runners), or `other` (not text).
  * `redaction_count` is `full`'s: every mask in the input, counted once.
  */
-export interface TaskInputCopy {
+export interface TaskInputCopy extends ApiTaskInputCopy {
   task_id: string
   tenant_id: string
   read_at: string
@@ -5396,7 +5414,7 @@ export interface TaskInputCopy {
  * because only the platform writes them (`dispatch`, `input_from`,
  * `expected_outputs`: submission refuses them from every caller).
  */
-export interface MaskedMetadata {
+export interface MaskedMetadata extends ApiMaskedMetadata {
   value: Record<string, unknown>
   redaction_count: number
   platform_keys: string[]
@@ -5420,7 +5438,7 @@ export interface MaskedMetadata {
  */
 export type ArtifactContentStatus = 'ok' | 'absent' | 'unreadable' | 'binary'
 
-export interface ArtifactContent {
+export interface ArtifactContent extends ApiArtifactContent {
   task_id: string
   tenant_id: string
   attempt_id: string
