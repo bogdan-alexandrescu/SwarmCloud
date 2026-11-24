@@ -36,7 +36,7 @@ from reconciler.model import ExecutionPhase, ExecutionView
 from reconciler.repair import Reconciler
 from reconciler.store import ControlStore
 from swarm_common.models import pool_names_for, utcnow
-from swarm_common.states import TaskState
+from swarm_common.states import EventType, TaskState
 
 TENANT = "eng"
 WORKFLOW = "wf_1"
@@ -194,7 +194,7 @@ def _untouched(db: FakeFirestore, backend: FakeBackend) -> None:
 
 
 def _ready_event(db: FakeFirestore) -> dict[str, Any]:
-    ready = [e for e in db.events("task_1") if e["type"] == "READY"]
+    ready = [e for e in db.events("task_1") if e["type"] == EventType.READY.value]
     assert len(ready) == 1, db.event_types("task_1")
     return ready[0]
 
@@ -472,6 +472,26 @@ def test_the_step_task_carries_its_workflow_id(db, config):
     snapshot = store_for(db).snapshot()
 
     assert snapshot.tasks["task_1"].workflow_id == WORKFLOW
+
+
+class _UnreadablePauses(FakeFirestore):
+    def collection(self, name: str):
+        if name == "workflows":
+            raise RuntimeError("503 the workflows query timed out")
+        return super().collection(name)
+
+
+def test_an_unreadable_pause_read_stands_the_rule_down_and_says_so(config):
+    """A failed pause read withholds only this rule's kill, never the pass."""
+    db = _UnreadablePauses()
+    seed_paused_running(db, pause_age=BOUND + 300)
+    backend = FakeBackend(executions=[running_execution()], journal=db.writes)
+
+    report = build(db, config, backend).run_once()
+
+    assert any(e.startswith("paused_workflows:") for e in report.errors), report.errors
+    assert FindingKind.PAUSE_OVERDUE.value not in [o.kind for o in report.outcomes]
+    _untouched(db, backend)
 
 
 # --------------------------------------------------------------------------
