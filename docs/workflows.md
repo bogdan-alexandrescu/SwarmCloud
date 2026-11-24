@@ -433,7 +433,22 @@ dependency bot, an App that echoes a commenter's text) can post it, so a bot
 is trusted only as the platform's App; when that id is unknown -- the agent
 worker reads no App key, so today it always is -- no bot comment is kept. A
 platform comment posted with the owner's token is kept by its `OWNER`
-association. `CONTRIBUTOR`,
+association.
+
+Why the id is unknown today: the platform App's id is `var.github_app_id`
+(`terraform/infra/github_app.tf`), rendered as `GITHUB_APP_ID` into
+swarm-api's environment only (`terraform/infra/locals.tf`, the `swarm-api`
+service). No worker Job environment, no `WorkerConfig` field, no field of the
+signed task (`swarm_common.specsign`) and no answer of the forge broker
+(`forgebroker.py`, which returns a slot's name and token) carries it, and
+`REVIEW_APP_ID` names the review App on the merge and post-verdict Jobs, not
+the App that posts the platform's comments. The id is never taken from a
+task's input, the issue or a comment. To trust the platform's App comments,
+the id has to reach the worker from a platform-configured source -- Terraform
+rendering `var.github_app_id` onto every worker Job and GKE worker pod (it is
+public, not a secret), read by `WorkerConfig` -- and the lifecycle then passes
+it to both `IssuePrefetch` and `stage_issue`, which reuse a prefetch only when
+it was made with the same id. `CONTRIBUTOR`,
 `FIRST_TIMER`, `FIRST_TIME_CONTRIBUTOR`, `MANNEQUIN`, `NONE`, a missing value
 and any value GitHub does not define are not trusted. An untrusted comment is
 not written at all, nor its author: the file ends with one line counting the
