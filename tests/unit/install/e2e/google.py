@@ -73,6 +73,9 @@ class Cloud:
     certificates: dict[tuple[str, str], dict[str, Any]] = field(default_factory=dict)
     brands: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     adc_scopes: tuple[str, ...] = ()
+    #: Google refuses gcloud's client the two Directory scopes (audit N14): a sign-in that asks
+    #: for them fails, so stage 0 goes on with Cloud Platform alone.
+    refuses_directory_scopes: bool = False
     releases: dict[str, bytes] = field(default_factory=dict)
     key_rings: dict[str, dict[str, Any]] = field(default_factory=dict)
     crypto_keys: dict[str, dict[str, Any]] = field(default_factory=dict)
