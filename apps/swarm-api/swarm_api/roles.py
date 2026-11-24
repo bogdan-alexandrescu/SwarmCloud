@@ -222,9 +222,14 @@ AUDIT_PLATFORM_ADMIN_VIEWED = "platform_admin_viewed"
 #: A refused leave, removal, demotion or approval (`routes/last_admin.py`
 #: writes it): served here so Admin › People and roles can show it.
 AUDIT_LAST_ADMIN_REFUSED = "workspace_last_admin_refused"
+#: A scoped probe admin's refused member removal, or its refused change of a
+#: person who holds `admin` (approval, role set, role clear): who tried, on
+#: whom, and the refusal's code (`routes/last_admin.py`, epic 21).
+AUDIT_PROBE_ADMIN_REFUSED = "workspace_probe_admin_refused"
 WORKSPACE_AUDIT_ACTIONS = frozenset({
     AUDIT_GRANTED, AUDIT_CLEARED, AUDIT_DEFAULT_SET, AUDIT_GRANT_INVALID,
     AUDIT_PLATFORM_ADMIN_ACTED, AUDIT_PLATFORM_ADMIN_VIEWED, AUDIT_LAST_ADMIN_REFUSED,
+    AUDIT_PROBE_ADMIN_REFUSED,
 })
 
 _EMAIL = re.compile(r"^[^@\s\"'<>(),;:\\]+@[^@\s\"'<>(),;:\\]+\.[^@\s\"'<>(),;:\\]+$")

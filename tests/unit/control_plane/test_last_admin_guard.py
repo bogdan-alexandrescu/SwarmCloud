@@ -258,9 +258,13 @@ def test_removing_a_non_admin_with_the_roles_store_unreadable_is_a_503(client, c
     written -- no `removed` grant, no guard document, no audit row."""
     joined(client)
     assert role_of(ctx, LEE) is None
+    real = roles.RoleStore.newest_valid
 
     def newest_valid(self, tenant_id, subject, **kwargs):
-        raise RoleUnavailable("this workspace's roles could not be read; retry shortly")
+        # lee's role, the one the removal must read; alice's own still answers.
+        if subject == LEE:
+            raise RoleUnavailable("this workspace's roles could not be read; retry shortly")
+        return real(self, tenant_id, subject, **kwargs)
 
     monkeypatch.setattr(roles.RoleStore, "newest_valid", newest_valid)
     before = {k: v for k, v in db.dump().items() if not k.startswith("people/")}
